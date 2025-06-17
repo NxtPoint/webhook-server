@@ -5,7 +5,7 @@ import os
 print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
-app = Flask(__name__, template_folder='templates')
+app = Flask(__name__)
 
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 
