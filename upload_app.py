@@ -53,7 +53,7 @@ def check_status():
         "Authorization": f"Bearer {SPORT_AI_TOKEN}"
     }
 
-    url = f"https://api.sportai.com/api/activity_detection/tasks/{task_id}"
+    url = f"https://api.sportai.com/api/activity_detection/task/{task_id}"
 
     response = requests.get(url, headers=headers)
 
