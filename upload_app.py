@@ -7,7 +7,20 @@ print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
-CORS(app, origins=["https://www.nextpointtennis.com"], supports_credentials=True)
+from flask_cors import CORS
+
+CORS(app, resources={
+    r"/upload": {
+        "origins": "https://www.nextpointtennis.com",
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    },
+    r"/status": {
+        "origins": "https://www.nextpointtennis.com",
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 
