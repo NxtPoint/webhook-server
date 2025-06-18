@@ -1,11 +1,13 @@
 from flask import Flask, render_template, request
 import requests
 import os
+from flask_cors import CORS  # 👈 Add this
 
 print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
+CORS(app, origins=["https://www.nextpointtennis.com"], supports_credentials=True)  # 👈 Add this
 
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 
