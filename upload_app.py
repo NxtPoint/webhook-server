@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 
-# ✅ Apply CORS headers to every response
+# ✅ Add CORS headers to all responses (POST)
 @app.after_request
 def apply_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
@@ -21,10 +21,14 @@ def apply_cors(response):
 def index():
     return render_template('upload.html')
 
-# ✅ Handle OPTIONS preflight explicitly
+# ✅ Manually handle OPTIONS preflight with headers
 @app.route('/upload', methods=['OPTIONS'])
 def upload_options():
-    return '', 204
+    response = make_response('', 204)
+    response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return response
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -62,10 +66,14 @@ def upload():
             "details": response.text
         }), response.status_code
 
-# ✅ Handle OPTIONS for status route
+# ✅ Manually handle preflight for /status
 @app.route('/status', methods=['OPTIONS'])
 def status_options():
-    return '', 204
+    response = make_response('', 204)
+    response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return response
 
 @app.route('/status', methods=['POST'])
 def check_status():
