@@ -1,12 +1,14 @@
 
 from flask_cors import CORS
+
+CORS(app, origins=["https://www.nextpointtennis.com"], supports_credentials=True, allow_headers="*", methods=["GET", "POST"])
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import json
 from datetime import datetime
 
 app = Flask(__name__)
-CORS(app, origins=["https://www.nextpointtennis.com"])  # ✅ Allow Wix site)
+CORS(app, resources={r"/upload": {"origins": "https://www.nextpointtennis.com"}})  # ✅ Allow Wix site)
 
 
 # Route to handle incoming webhook from Sport AI
