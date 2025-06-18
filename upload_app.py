@@ -7,8 +7,8 @@ print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
-from flask_cors import CORS
 
+# ✅ CORS config for POST and OPTIONS from Wix
 CORS(app, resources={
     r"/upload": {
         "origins": "https://www.nextpointtennis.com",
@@ -27,6 +27,11 @@ SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 @app.route('/')
 def index():
     return render_template('upload.html')
+
+# ✅ Explicitly handle CORS preflight OPTIONS for /upload
+@app.route('/upload', methods=['OPTIONS'])
+def upload_options():
+    return '', 204
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -59,10 +64,15 @@ def upload():
         return jsonify({"message": "Task created", "task_id": task_id}), 201
     else:
         return jsonify({
-            "error": f"Upload failed",
+            "error": "Upload failed",
             "status": response.status_code,
             "details": response.text
         }), response.status_code
+
+# ✅ Explicitly handle CORS preflight OPTIONS for /status
+@app.route('/status', methods=['OPTIONS'])
+def status_options():
+    return '', 204
 
 @app.route('/status', methods=['POST'])
 def check_status():
@@ -83,7 +93,7 @@ def check_status():
         return jsonify(response.json())
     else:
         return jsonify({
-            "error": f"Status check failed",
+            "error": "Status check failed",
             "status": response.status_code,
             "details": response.text
         }), response.status_code
