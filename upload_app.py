@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, make_response
+from flask import Flask, request, jsonify, make_response, render_template
 import requests
 import os
 
@@ -6,32 +6,22 @@ print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
-
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
-
-# ✅ Add CORS headers to all responses (POST)
-@app.after_request
-def apply_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    return response
+ALLOWED_ORIGIN = "https://www.nextpointtennis.com"
 
 @app.route('/')
 def index():
     return render_template('upload.html')
 
-# ✅ Manually handle OPTIONS preflight with headers
-@app.route('/upload', methods=['OPTIONS'])
-def upload_options():
-    response = make_response('', 204)
-    response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    return response
-
-@app.route('/upload', methods=['POST'])
+@app.route('/upload', methods=['OPTIONS', 'POST'])
 def upload():
+    if request.method == 'OPTIONS':
+        response = make_response('', 204)
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        return response
+
     data = request.get_json()
     dropbox_link = data.get('dropbox_link')
 
@@ -49,6 +39,7 @@ def upload():
         "video_url": dropbox_link,
         "version": "latest"
     }
+
     headers = {
         "Authorization": f"Bearer {SPORT_AI_TOKEN}",
         "Content-Type": "application/json"
@@ -56,27 +47,34 @@ def upload():
 
     response = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
 
+    final_response = None
     if response.status_code == 201:
         task_id = response.json()['data']['task_id']
-        return jsonify({"message": "Task created", "task_id": task_id}), 201
+        final_response = jsonify({"message": "Task created", "task_id": task_id}), 201
     else:
-        return jsonify({
+        final_response = jsonify({
             "error": "Upload failed",
             "status": response.status_code,
             "details": response.text
         }), response.status_code
 
-# ✅ Manually handle preflight for /status
-@app.route('/status', methods=['OPTIONS'])
-def status_options():
-    response = make_response('', 204)
-    response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    return response
+    if isinstance(final_response, tuple):
+        res = make_response(final_response[0], final_response[1])
+    else:
+        res = make_response(final_response)
 
-@app.route('/status', methods=['POST'])
-def check_status():
+    res.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    return res
+
+@app.route('/status', methods=['OPTIONS', 'POST'])
+def status():
+    if request.method == 'OPTIONS':
+        response = make_response('', 204)
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        return response
+
     data = request.get_json()
     task_id = data.get('task_id')
 
@@ -91,13 +89,21 @@ def check_status():
     response = requests.get(url, headers=headers)
 
     if response.status_code == 200:
-        return jsonify(response.json())
+        res = jsonify(response.json())
     else:
-        return jsonify({
+        res = jsonify({
             "error": "Status check failed",
             "status": response.status_code,
             "details": response.text
         }), response.status_code
+
+    if isinstance(res, tuple):
+        res_obj = make_response(res[0], res[1])
+    else:
+        res_obj = make_response(res)
+
+    res_obj.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    return res_obj
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
