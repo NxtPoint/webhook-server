@@ -1,13 +1,13 @@
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, jsonify
 import requests
 import os
-from flask_cors import CORS  # 👈 Add this
+from flask_cors import CORS
 
 print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
-CORS(app, origins=["https://www.nextpointtennis.com"], supports_credentials=True)  # 👈 Add this
+CORS(app, origins=["https://www.nextpointtennis.com"], supports_credentials=True)
 
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 
@@ -15,12 +15,14 @@ SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
 def index():
     return render_template('upload.html')
 
-
 @app.route('/upload', methods=['POST'])
 def upload():
-    dropbox_link = request.form['dropbox_link']
+    data = request.get_json()
+    dropbox_link = data.get('dropbox_link')
 
-    # Normalize Dropbox link to raw=1 for clean streaming
+    if not dropbox_link:
+        return jsonify({"error": "Missing dropbox_link"}), 400
+
     if "dl=0" in dropbox_link:
         dropbox_link = dropbox_link.replace("dl=0", "raw=1")
     elif "dl=1" in dropbox_link:
@@ -28,7 +30,6 @@ def upload():
     elif "raw=1" not in dropbox_link:
         dropbox_link += "?raw=1"
 
-    # Send to Sport AI
     payload = {
         "video_url": dropbox_link,
         "version": "latest"
@@ -42,29 +43,37 @@ def upload():
 
     if response.status_code == 201:
         task_id = response.json()['data']['task_id']
-        return render_template('upload.html', message=f"✅ Task created. Task ID: {task_id}")
+        return jsonify({"message": "Task created", "task_id": task_id}), 201
     else:
-        return render_template('upload.html', message=f"❌ Upload failed: {response.status_code} - {response.text}")
-
+        return jsonify({
+            "error": f"Upload failed",
+            "status": response.status_code,
+            "details": response.text
+        }), response.status_code
 
 @app.route('/status', methods=['POST'])
 def check_status():
-    task_id = request.form['task_id']
+    data = request.get_json()
+    task_id = data.get('task_id')
+
+    if not task_id:
+        return jsonify({"error": "Missing task_id"}), 400
 
     headers = {
         "Authorization": f"Bearer {SPORT_AI_TOKEN}"
     }
 
     url = f"https://api.sportai.com/api/activity_detection/task/{task_id}"
-
     response = requests.get(url, headers=headers)
 
     if response.status_code == 200:
-        status_info = response.json()
-        return render_template('upload.html', status=status_info)
+        return jsonify(response.json())
     else:
-        return render_template('upload.html', message=f"❌ Error checking status: {response.status_code} - {response.text}")
-
+        return jsonify({
+            "error": f"Status check failed",
+            "status": response.status_code,
+            "details": response.text
+        }), response.status_code
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
