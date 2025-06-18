@@ -1,34 +1,27 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, make_response
 import requests
 import os
-from flask_cors import CORS
 
 print("✅ Flask app is launching...")
 print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
 
-# ✅ CORS config for POST and OPTIONS from Wix
-CORS(app, resources={
-    r"/upload": {
-        "origins": "https://www.nextpointtennis.com",
-        "methods": ["POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
-    },
-    r"/status": {
-        "origins": "https://www.nextpointtennis.com",
-        "methods": ["POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
-    }
-})
-
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
+
+# ✅ Apply CORS headers to every response
+@app.after_request
+def apply_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "https://www.nextpointtennis.com"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return response
 
 @app.route('/')
 def index():
     return render_template('upload.html')
 
-# ✅ Explicitly handle CORS preflight OPTIONS for /upload
+# ✅ Handle OPTIONS preflight explicitly
 @app.route('/upload', methods=['OPTIONS'])
 def upload_options():
     return '', 204
@@ -69,7 +62,7 @@ def upload():
             "details": response.text
         }), response.status_code
 
-# ✅ Explicitly handle CORS preflight OPTIONS for /status
+# ✅ Handle OPTIONS for status route
 @app.route('/status', methods=['OPTIONS'])
 def status_options():
     return '', 204
