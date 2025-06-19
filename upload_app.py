@@ -45,9 +45,17 @@ def upload():
         data=file_bytes
     )
 
-    if not upload_res.ok:
-        print("❌ Dropbox upload failed:", upload_res.text)
-        return jsonify({"error": "Dropbox upload failed"}), 500
+if not upload_res.ok:
+    print("❌ Dropbox upload failed!")
+    print("📄 Status Code:", upload_res.status_code)
+    print("📄 Response:", upload_res.text)
+    print("📄 Headers:", upload_res.headers)
+    return jsonify({
+        "error": "Dropbox upload failed",
+        "status": upload_res.status_code,
+        "details": upload_res.text
+    }), 500
+
 
     print("✅ Uploaded to Dropbox:", dropbox_path)
     return jsonify({"message": "Upload successful", "path": dropbox_path})
