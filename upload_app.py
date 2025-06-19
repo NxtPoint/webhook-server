@@ -7,7 +7,8 @@ print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
-ALLOWED_ORIGIN = "https://www.nextpointtennis.com"
+ALLOWED_ORIGIN = "https://api.nextpointtennis.com"
+
 
 @app.route('/')
 def index():
