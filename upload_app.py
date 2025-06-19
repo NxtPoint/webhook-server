@@ -13,10 +13,6 @@ ALLOWED_ORIGINS = [
     "https://www.nextpointtennis.com"
 ]
 
-@app.route('/')
-def index():
-    return render_template('upload.html')
-
 @app.route('/upload', methods=['POST'])
 def upload():
     if 'video' not in request.files:
@@ -57,51 +53,49 @@ def upload():
         }), 500
 
     print("✅ Uploaded to Dropbox:", dropbox_path)
-    return jsonify({"message": "Upload successful", "path": dropbox_path})
 
-# Step 1: Create Dropbox shareable link
-link_res = requests.post(
-    "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
-    headers={
-        "Authorization": f"Bearer {DROPBOX_TOKEN}",
+    # Step 1: Get Dropbox share link
+    link_res = requests.post(
+        "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        headers={
+            "Authorization": f"Bearer {DROPBOX_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        json={"path": dropbox_path, "settings": {"requested_visibility": "public"}}
+    )
+
+    if link_res.status_code != 200:
+        return jsonify({
+            "error": "Failed to create Dropbox link",
+            "details": link_res.text
+        }), 500
+
+    link_data = link_res.json()
+    raw_url = link_data.get("url", "").replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
+
+    # Step 2: Send to Sport AI
+    payload = {
+        "video_url": raw_url,
+        "version": "latest"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {SPORT_AI_TOKEN}",
         "Content-Type": "application/json"
-    },
-    json={"path": dropbox_path, "settings": {"requested_visibility": "public"}}
-)
+    }
 
-if link_res.status_code != 200:
-    return jsonify({"error": "Failed to create Dropbox link", "details": link_res.text}), 500
+    ai_response = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
 
-link_data = link_res.json()
-raw_url = link_data.get("url", "").replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
-
-# Step 2: Send the Dropbox link to Sport AI
-payload = {
-    "video_url": raw_url,
-    "version": "latest"
-}
-
-headers = {
-    "Authorization": f"Bearer {SPORT_AI_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-ai_response = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
-
-if ai_response.status_code == 201:
-    task_id = ai_response.json()['data']['task_id']
-    return jsonify({
-        "message": "Upload successful",
-        "dropbox_path": dropbox_path,
-        "sportai_task_id": task_id
-    }), 201
-else:
-    return jsonify({
-        "error": "Failed to trigger Sport AI",
-        "status": ai_response.status_code,
-        "details": ai_response.text
-    }), ai_response.status_code
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    if ai_response.status_code == 201:
+        task_id = ai_response.json()['data']['task_id']
+        return jsonify({
+            "message": "Upload successful",
+            "dropbox_path": dropbox_path,
+            "sportai_task_id": task_id
+        }), 201
+    else:
+        return jsonify({
+            "error": "Failed to trigger Sport AI",
+            "status": ai_response.status_code,
+            "details": ai_response.text
+        }), ai_response.status_code
