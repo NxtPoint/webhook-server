@@ -7,8 +7,16 @@ print("🔥 Hello from inside app.py")
 
 app = Flask(__name__)
 SPORT_AI_TOKEN = "qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST"
-ALLOWED_ORIGIN = "https://api.nextpointtennis.com"
+ALLOWED_ORIGINS = [
+    "https://www.nextpointtennis.com",
+    "https://nextpointtennis.com"
+]
 
+def set_cors_headers(response, origin):
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return response
 
 @app.route('/')
 def index():
@@ -16,18 +24,18 @@ def index():
 
 @app.route('/upload', methods=['OPTIONS', 'POST'])
 def upload():
+    origin = request.headers.get('Origin', '')
     if request.method == 'OPTIONS':
-        response = make_response('', 204)
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        return response
+        return set_cors_headers(make_response('', 204), origin)
+
+    if origin not in ALLOWED_ORIGINS:
+        return jsonify({"error": "Origin not allowed"}), 403
 
     data = request.get_json()
     dropbox_link = data.get('dropbox_link')
 
     if not dropbox_link:
-        return jsonify({"error": "Missing dropbox_link"}), 400
+        return set_cors_headers(jsonify({"error": "Missing dropbox_link"}), origin), 400
 
     if "dl=0" in dropbox_link:
         dropbox_link = dropbox_link.replace("dl=0", "raw=1")
@@ -48,39 +56,35 @@ def upload():
 
     response = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
 
-    final_response = None
     if response.status_code == 201:
         task_id = response.json()['data']['task_id']
-        final_response = jsonify({"message": "Task created", "task_id": task_id}), 201
+        res = jsonify({"message": "Task created", "task_id": task_id}), 201
     else:
-        final_response = jsonify({
+        res = jsonify({
             "error": "Upload failed",
             "status": response.status_code,
             "details": response.text
         }), response.status_code
 
-    if isinstance(final_response, tuple):
-        res = make_response(final_response[0], final_response[1])
+    if isinstance(res, tuple):
+        return set_cors_headers(make_response(res[0], res[1]), origin)
     else:
-        res = make_response(final_response)
-
-    res.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-    return res
+        return set_cors_headers(make_response(res), origin)
 
 @app.route('/status', methods=['OPTIONS', 'POST'])
 def status():
+    origin = request.headers.get('Origin', '')
     if request.method == 'OPTIONS':
-        response = make_response('', 204)
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-        return response
+        return set_cors_headers(make_response('', 204), origin)
+
+    if origin not in ALLOWED_ORIGINS:
+        return jsonify({"error": "Origin not allowed"}), 403
 
     data = request.get_json()
     task_id = data.get('task_id')
 
     if not task_id:
-        return jsonify({"error": "Missing task_id"}), 400
+        return set_cors_headers(jsonify({"error": "Missing task_id"}), origin), 400
 
     headers = {
         "Authorization": f"Bearer {SPORT_AI_TOKEN}"
@@ -99,12 +103,9 @@ def status():
         }), response.status_code
 
     if isinstance(res, tuple):
-        res_obj = make_response(res[0], res[1])
+        return set_cors_headers(make_response(res[0], res[1]), origin)
     else:
-        res_obj = make_response(res)
-
-    res_obj.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-    return res_obj
+        return set_cors_headers(make_response(res), origin)
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
