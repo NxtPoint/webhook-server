@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, make_response, render_template
+from flask import Flask, request, jsonify, render_template
 import requests
 import os
 import json
@@ -13,6 +13,13 @@ ALLOWED_ORIGINS = [
     "https://www.nextpointtennis.com"
 ]
 
+# ✅ Show the form at the root URL
+@app.route('/')
+def index():
+    return render_template('upload.html')
+
+
+# ✅ Handle the form submission
 @app.route('/upload', methods=['POST'])
 def upload():
     if 'video' not in request.files:
@@ -22,7 +29,7 @@ def upload():
     file_name = file.filename
     file_bytes = file.read()
 
-    # Upload to Dropbox
+    # ✅ Upload to Dropbox
     DROPBOX_TOKEN = os.environ.get("DROPBOX_TOKEN")
     dropbox_path = f"/wix-uploads/{file_name}"
 
@@ -54,7 +61,7 @@ def upload():
 
     print("✅ Uploaded to Dropbox:", dropbox_path)
 
-    # Step 1: Get Dropbox share link
+    # ✅ Create share link
     link_res = requests.post(
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
         headers={
@@ -73,7 +80,7 @@ def upload():
     link_data = link_res.json()
     raw_url = link_data.get("url", "").replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    # Step 2: Send to Sport AI
+    # ✅ Send to Sport AI
     payload = {
         "video_url": raw_url,
         "version": "latest"
@@ -100,8 +107,8 @@ def upload():
             "details": ai_response.text
         }), ai_response.status_code
 
-import os
 
+# ✅ Port binding for Render
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
