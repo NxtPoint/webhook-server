@@ -99,3 +99,9 @@ def upload():
             "status": ai_response.status_code,
             "details": ai_response.text
         }), ai_response.status_code
+
+import os
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
