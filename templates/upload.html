@@ -6,11 +6,12 @@
 <body>
   <h2>📤 Upload Match Video to Sport AI</h2>
 
-  <form action="/upload" method="POST" enctype="multipart/form-data">
-    <label for="video">Choose .mp4 file:</label><br><br>
-    <input type="file" name="video" accept="video/mp4, video/quicktime" required>
-    <button type="submit">Upload & Analyze</button>
-  </form>
+<form action="/upload" method="post" enctype="multipart/form-data">
+  <label for="video">Choose a video file (.mp4 or .mov):</label>
+  <input type="file" id="video" name="video" accept="video/mp4,video/quicktime" required><br><br>
+  <button type="submit">Upload & Analyze</button>
+</form>
+
 
   {% if message %}
     <p><strong>{{ message }}</strong></p>
