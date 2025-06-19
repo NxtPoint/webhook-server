@@ -3,6 +3,6 @@ services:
     name: webhook-server
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "python upload_app.py"
     envVars: []

@@ -1,57 +1,67 @@
-
+from flask import Flask, request, jsonify, send_from_directory, render_template
 from flask_cors import CORS
-
-CORS(app, origins=["https://www.nextpointtennis.com"], supports_credentials=True, allow_headers="*", methods=["GET", "POST"])
-from flask import Flask, request, jsonify, send_from_directory
 import os
 import json
 from datetime import datetime
+import requests
 
 app = Flask(__name__)
-CORS(app, resources={r"/upload": {"origins": "https://www.nextpointtennis.com"}})  # ✅ Allow Wix site)
+CORS(app, resources={r"/upload": {"origins": "https://www.nextpointtennis.com"}})
+
+# Set tokens (use real tokens or pull from environment)
+DROPBOX_TOKEN = os.getenv("DROPBOX_TOKEN") or "your-dropbox-token"
+SPORT_AI_TOKEN = os.getenv("SPORT_AI_TOKEN") or "your-sportai-token"
+
+# ---- PAGE: Upload Form ----
+@app.route("/")
+def index():
+    return render_template("upload.html")
 
 
-# Route to handle incoming webhook from Sport AI
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-    print("✅ Received JSON data")
+# ---- FILE UPLOAD LOGIC ----
+@app.route("/upload", methods=["POST"])
+def upload():
+    file = request.files.get("video")
 
-    os.makedirs('data', exist_ok=True)
+    if not file:
+        return render_template("upload.html", message="❌ No file uploaded.")
 
-    # Save with timestamp for archiving
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    archive_filename = f"data/sportai-{timestamp}.json"
-    with open(archive_filename, 'w') as f:
-        json.dump(data, f, indent=2)
+    file_bytes = file.read()
+    filename = file.filename
+    dropbox_path = f"/wix-uploads/{filename}"
 
-    # Save latest version to a fixed file
-    latest_file = "data/latest.json"
-    with open(latest_file, 'w') as f:
-        json.dump(data, f, indent=2)
+    # Upload to Dropbox
+    upload_res = requests.post(
+        "https://content.dropboxapi.com/2/files/upload",
+        headers={
+            "Authorization": f"Bearer {DROPBOX_TOKEN}",
+            "Dropbox-API-Arg": json.dumps({
+                "path": dropbox_path,
+                "mode": "add",
+                "autorename": True
+            }),
+            "Content-Type": "application/octet-stream"
+        },
+        data=file_bytes
+    )
 
-    return jsonify({"message": "✅ Webhook received and files saved"}), 200
+    if not upload_res.ok:
+        return render_template("upload.html", message="❌ Dropbox upload failed.")
 
-# Route to list all saved files
-@app.route('/files', methods=['GET'])
-def list_files():
-    folder = 'data'
-    if not os.path.exists(folder):
-        return jsonify({"files": []})
-    files = sorted(os.listdir(folder))
-    return jsonify({"files": files})
+    # Create share link
+    share_res = requests.post(
+        "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        headers={
+            "Authorization": f"Bearer {DROPBOX_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "path": dropbox_path,
+            "settings": {
+                "requested_visibility": "public"
+            }
+        }
+    )
 
-# Route to get a specific file (e.g. for Power BI)
-@app.route('/data/<filename>', methods=['GET'])
-def get_file(filename):
-    return send_from_directory('data', filename)
-
-# Shortcut route to get the latest JSON file
-@app.route('/data/latest.json', methods=['GET'])
-def get_latest():
-    return send_from_directory('data', 'latest.json')
-
-# Run the server (Render uses PORT environment variable)
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    if not share_res.ok:
+        return render_template("upload.html"_

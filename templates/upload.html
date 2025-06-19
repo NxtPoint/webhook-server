@@ -1,32 +1,21 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Send to Sport AI</title>
+  <title>Send to Sport AI</title>
 </head>
 <body>
-    <h2>Submit Dropbox Link to Sport AI</h2>
-    <form action="/upload" method="post">
-        <label for="dropbox_link">Dropbox Video Link:</label><br>
-        <input type="url" name="dropbox_link" required style="width: 400px;"><br><br>
-        <button type="submit">Send to Sport AI</button>
-    </form>
+  <h2>📤 Upload Match Video to Sport AI</h2>
 
-    {% if message %}
-        <p><strong>{{ message }}</strong></p>
-    {% endif %}
+  <form action="/upload" method="POST" enctype="multipart/form-data">
+    <label for="video">Choose .mp4 file:</label><br><br>
+    <input type="file" name="video" accept="video/mp4, video/quicktime" required>
+    <button type="submit">Upload & Analyze</button>
+  </form>
 
-    <hr>
+  {% if message %}
+    <p><strong>{{ message }}</strong></p>
+  {% endif %}
+<label for="video">Choose a video file (.mp4 or .mov):</label>
 
-    <h2>Check Task Status</h2>
-    <form action="/status" method="post">
-        <label for="task_id">Task ID:</label><br>
-        <input type="text" name="task_id" required style="width: 400px;"><br><br>
-        <button type="submit">Check Status</button>
-    </form>
-
-    {% if status %}
-        <h3>Task Status:</h3>
-        <pre>{{ status | tojson(indent=2) }}</pre>
-    {% endif %}
 </body>
 </html>
