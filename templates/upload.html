@@ -1,22 +1,124 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Send to Sport AI</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Upload Match Video</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background-color: #f8f9fa;
+      color: #333;
+      padding: 40px;
+      display: flex;
+      justify-content: center;
+    }
+    .upload-container {
+      background: white;
+      padding: 30px 40px;
+      border-radius: 10px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.05);
+      width: 100%;
+      max-width: 480px;
+    }
+    h2 {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #2a8543;
+    }
+    input[type="file"] {
+      display: block;
+      margin: 10px auto 20px;
+      font-size: 16px;
+    }
+    button {
+      background-color: #2a8543;
+      color: white;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      display: block;
+      margin: 0 auto;
+    }
+    button:hover {
+      background-color: #246c39;
+    }
+    .note {
+      margin-top: 20px;
+      font-size: 14px;
+      text-align: center;
+      color: #777;
+    }
+    #progressBar {
+      width: 100%;
+      background-color: #e0e0e0;
+      border-radius: 5px;
+      overflow: hidden;
+      margin: 20px 0;
+      display: none;
+    }
+    #progressFill {
+      height: 10px;
+      background-color: #2a8543;
+      width: 0%;
+    }
+  </style>
 </head>
 <body>
-  <h2>📤 Upload Match Video to Sport AI</h2>
+  <div class="upload-container">
+    <h2>🎾 Upload Match Video to Sport AI</h2>
+    <form id="uploadForm">
+      <input type="file" name="video" accept="video/mp4,video/quicktime" required />
+      <button type="submit">Upload & Analyze</button>
+    </form>
+    <div id="progressBar"><div id="progressFill"></div></div>
+    <div class="note">Supported formats: .mp4, .mov<br/>Max file size: 500MB</div>
+  </div>
 
-<form action="/upload" method="post" enctype="multipart/form-data">
-  <label for="video">Choose a video file (.mp4 or .mov):</label>
-  <input type="file" id="video" name="video" accept="video/mp4,video/quicktime" required><br><br>
-  <button type="submit">Upload & Analyze</button>
-</form>
+  <script>
+    const form = document.getElementById('uploadForm');
+    const progressBar = document.getElementById('progressBar');
+    const progressFill = document.getElementById('progressFill');
 
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const fileInput = form.querySelector('input[type="file"]');
+      const file = fileInput.files[0];
+      if (!file) return;
 
-  {% if message %}
-    <p><strong>{{ message }}</strong></p>
-  {% endif %}
-<label for="video">Choose a video file (.mp4 or .mov):</label>
+      const formData = new FormData();
+      formData.append('video', file);
 
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload', true);
+
+      xhr.upload.addEventListener('progress', function (e) {
+        if (e.lengthComputable) {
+          const percent = (e.loaded / e.total) * 100;
+          progressBar.style.display = 'block';
+          progressFill.style.width = percent + '%';
+        }
+      });
+
+      xhr.onload = function () {
+        if (xhr.status === 201 || xhr.status === 200) {
+          alert('✅ Upload successful. Redirecting...');
+          window.location.href = "https://www.nextpointtennis.com";
+        } else {
+          alert('❌ Upload failed.');
+          console.error(xhr.responseText);
+        }
+      };
+
+      xhr.onerror = function () {
+        alert('❌ Upload error.');
+        console.error(xhr.responseText);
+      };
+
+      xhr.send(formData);
+    });
+  </script>
 </body>
 </html>
