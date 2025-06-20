@@ -1,7 +1,7 @@
 import requests
 
 # Replace with your real values
-ACCESS_CODE = "1fWtI26YsakAAAAAAAAAeFi6h7uKtrKArmVu6_Co0HE"
+ACCESS_CODE = "1fWtI26YsakAAAAAAAAAebxwA_-nfZ0nsOpCkguLGC4"
 APP_KEY = "dybxtvkad43jct6"
 APP_SECRET = "jev0a0q513eaidf"
 REDIRECT_URI = "https://localhost"
