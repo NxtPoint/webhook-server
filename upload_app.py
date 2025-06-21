@@ -7,7 +7,6 @@ from datetime import datetime
 app = Flask(__name__)
 
 SPORT_AI_TOKEN = os.environ.get("SPORT_AI_TOKEN")
-
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
@@ -31,6 +30,26 @@ def get_dropbox_access_token():
         print("❌ Dropbox token refresh failed.")
         print(response.text)
         return None
+
+def check_video_accessibility(video_url):
+    print("🔍 Checking video accessibility with Sport AI...")
+    url = "https://api.sportai.com/api/videos/check"
+    headers = {
+        "Authorization": f"Bearer {SPORT_AI_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "version": "stable",
+        "video_urls": [video_url]
+    }
+    response = requests.post(url, json=payload, headers=headers)
+    if response.status_code == 200:
+        print("✅ Video passed accessibility check.")
+        return True
+    else:
+        print("❌ Video failed accessibility check.")
+        print(response.text)
+        return False
 
 @app.route('/')
 def index():
@@ -72,7 +91,6 @@ def upload():
 
     print("✅ Uploaded to Dropbox:", dropbox_path)
 
-    # Try to create a new shared link
     link_res = requests.post(
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
         headers={
@@ -85,7 +103,6 @@ def upload():
     if link_res.status_code != 200:
         error_data = link_res.json()
         if error_data.get('error', {}).get('.tag') == 'shared_link_already_exists':
-            # Try to retrieve existing link
             existing_link_res = requests.post(
                 "https://api.dropboxapi.com/2/sharing/list_shared_links",
                 headers={
@@ -98,25 +115,24 @@ def upload():
                 link_data = existing_link_res.json()
                 raw_url = link_data['links'][0]['url'].replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
             else:
-                return jsonify({
-                    "error": "Failed to retrieve existing shared link",
-                    "details": existing_link_res.text
-                }), 500
+                return jsonify({"error": "Failed to retrieve existing shared link", "details": existing_link_res.text}), 500
         else:
-            return jsonify({
-                "error": "Failed to create Dropbox link",
-                "details": link_res.text
-            }), 500
+            return jsonify({"error": "Failed to create Dropbox link", "details": link_res.text}), 500
     else:
         link_data = link_res.json()
         raw_url = link_data['url'].replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
+
+    # ✅ Check video before upload to Sport AI
+    if not check_video_accessibility(raw_url):
+        return jsonify({
+            "error": "Video failed validation with Sport AI"
+        }), 400
 
     # ✅ Send to Sport AI
     payload = {
         "video_url": raw_url,
         "version": "latest"
     }
-
     headers = {
         "Authorization": f"Bearer {SPORT_AI_TOKEN}",
         "Content-Type": "application/json"
