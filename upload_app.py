@@ -21,7 +21,6 @@ def get_dropbox_access_token():
             "refresh_token": DROPBOX_REFRESH_TOKEN
         }
     )
-
     if response.status_code == 200:
         token = response.json().get("access_token")
         print("✅ Dropbox token refreshed successfully.")
@@ -53,7 +52,7 @@ def check_video_accessibility(video_url):
 
 @app.route('/')
 def index():
-    return render_template('upload.html')
+    return render_template('upload_progress.html')
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -85,11 +84,7 @@ def upload():
     )
 
     if not upload_res.ok:
-        print("❌ Dropbox upload failed!")
-        print(upload_res.text)
         return jsonify({"error": "Dropbox upload failed", "details": upload_res.text}), 500
-
-    print("✅ Uploaded to Dropbox:", dropbox_path)
 
     link_res = requests.post(
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
@@ -122,13 +117,9 @@ def upload():
         link_data = link_res.json()
         raw_url = link_data['url'].replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    # ✅ Check video before upload to Sport AI
     if not check_video_accessibility(raw_url):
-        return jsonify({
-            "error": "Video failed validation with Sport AI"
-        }), 400
+        return jsonify({"error": "Video failed validation with Sport AI"}), 400
 
-    # ✅ Send to Sport AI
     payload = {
         "video_url": raw_url,
         "version": "latest"
@@ -138,7 +129,6 @@ def upload():
         "Content-Type": "application/json"
     }
 
-        # Optional hyperparameters from query string or use defaults
     query_params = {
         "min_activity_window": request.args.get("min_activity_window", "30"),
         "min_no_activity_window": request.args.get("min_no_activity_window", "10"),
@@ -151,25 +141,26 @@ def upload():
         headers=headers,
         params=query_params
     )
+
     if ai_response.status_code == 201:
         task_id = ai_response.json()['data']['task_id']
 
-        # 🔁 Check task status immediately (optional, useful for confirming start)
         status_url = f"https://api.sportai.com/api/activity_detection/{task_id}/status"
+        result_url = f"https://api.sportai.com/api/activity_detection/{task_id}"
+
         status_headers = {
             "Authorization": f"Bearer {SPORT_AI_TOKEN}"
         }
-        status_response = requests.get(status_url, headers=status_headers)
 
-        # 🧠 Try to fetch full result (may still be processing)
-        result_url = f"https://api.sportai.com/api/activity_detection/{task_id}"
+        status_response = requests.get(status_url, headers=status_headers)
         result_response = requests.get(result_url, headers=status_headers)
-        
+
         return jsonify({
             "message": "Upload successful",
             "dropbox_path": dropbox_path,
             "sportai_task_id": task_id,
-            "initial_status": status_response.json()
+            "initial_status": status_response.json(),
+            "initial_result": result_response.json()
         }), 201
 
     else:
