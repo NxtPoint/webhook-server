@@ -138,7 +138,19 @@ def upload():
         "Content-Type": "application/json"
     }
 
-    ai_response = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
+        # Optional hyperparameters from query string or use defaults
+    query_params = {
+        "min_activity_window": request.args.get("min_activity_window", "30"),
+        "min_no_activity_window": request.args.get("min_no_activity_window", "10"),
+        "n_players_threshold": request.args.get("n_players_threshold", "1")
+    }
+
+    ai_response = requests.post(
+        "https://api.sportai.com/api/activity_detection",
+        json=payload,
+        headers=headers,
+        params=query_params
+    )
 
     if ai_response.status_code == 201:
         task_id = ai_response.json()['data']['task_id']
