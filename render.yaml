@@ -7,7 +7,7 @@ services:
     startCommand: "python upload_app.py"
     envVars:
       - key: DROPBOX_REFRESH_TOKEN
-        value: 1fWtI26YsakAAAAAAAAAdBoy0m130bmjBbKrO8FZhcU
+        value: LzIbVz2RXwwAAAAAAAAAAR_ixZxMMTE7eABTIn6ooAhbcCwUlues78XWdEuRwmEZ
       - key: DROPBOX_APP_KEY
         value: dybxtvkad43jct6
       - key: DROPBOX_APP_SECRET
