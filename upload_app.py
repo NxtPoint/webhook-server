@@ -52,7 +52,7 @@ def check_video_accessibility(video_url):
 
 @app.route('/')
 def index():
-    return render_template('upload_progress.html')
+    return render_template('upload.html')
 
 @app.route('/upload', methods=['POST'])
 def upload():
