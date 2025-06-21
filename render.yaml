@@ -5,4 +5,12 @@ services:
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "python upload_app.py"
-    envVars: []
+    envVars:
+      - key: DROPBOX_REFRESH_TOKEN
+        value: 1fWtI26YsakAAAAAAAAAdBoy0m130bmjBbKrO8FZhcU
+      - key: DROPBOX_APP_KEY
+        value: dybxtvkad43jct6
+      - key: DROPBOX_APP_SECRET
+        value: jev0a0q513eaidf
+      - key: SPORT_AI_TOKEN
+        value: qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST
