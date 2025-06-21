@@ -151,14 +151,27 @@ def upload():
         headers=headers,
         params=query_params
     )
-
     if ai_response.status_code == 201:
         task_id = ai_response.json()['data']['task_id']
+
+        # 🔁 Check task status immediately (optional, useful for confirming start)
+        status_url = f"https://api.sportai.com/api/activity_detection/{task_id}/status"
+        status_headers = {
+            "Authorization": f"Bearer {SPORT_AI_TOKEN}"
+        }
+        status_response = requests.get(status_url, headers=status_headers)
+
+        # 🧠 Try to fetch full result (may still be processing)
+        result_url = f"https://api.sportai.com/api/activity_detection/{task_id}"
+        result_response = requests.get(result_url, headers=status_headers)
+        
         return jsonify({
             "message": "Upload successful",
             "dropbox_path": dropbox_path,
-            "sportai_task_id": task_id
+            "sportai_task_id": task_id,
+            "initial_status": status_response.json()
         }), 201
+
     else:
         return jsonify({
             "error": "Failed to trigger Sport AI",
