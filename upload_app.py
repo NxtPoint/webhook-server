@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify, render_template, send_file
 import requests
 import os
 import json
-import time
 from datetime import datetime
 from werkzeug.utils import secure_filename
 
@@ -43,8 +42,10 @@ def check_video_accessibility(video_url):
     try:
         resp_json = res.json()
         quality_ok = resp_json["data"][0].get("video_quality_ok", False)
-        if not quality_ok:
-            return False, "Video quality is too low for analysis"
+        issues = resp_json["data"][0].get("issues", [])
+        if not quality_ok or issues:
+            issue_text = ", ".join(issues) if issues else "Video quality too low"
+            return False, issue_text
         return True, None
     except Exception as e:
         return False, f"Video quality check failed to parse: {str(e)}"
@@ -110,11 +111,34 @@ def upload():
 
     raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    is_ok, error_msg = check_video_accessibility(raw_url)
-    if not is_ok:
-        return jsonify({"error": error_msg}), 400
+    # ✅ Return early now — frontend will check quality before sending to SportAI
+    return jsonify({
+        "message": "Uploaded successfully",
+        "dropbox_url": raw_url
+    }), 200
 
-    payload = {"video_url": raw_url, "version": "latest"}
+
+@app.route('/check_video', methods=['POST'])
+def check_video():
+    data = request.get_json()
+    video_url = data.get("video_url")
+    if not video_url:
+        return jsonify({"error": "Missing video URL"}), 400
+
+    is_ok, error = check_video_accessibility(video_url)
+    if not is_ok:
+        return jsonify({"error": error}), 400
+    return jsonify({"message": "Video quality is OK"}), 200
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    data = request.get_json()
+    video_url = data.get("video_url")
+    if not video_url:
+        return jsonify({"error": "Missing video URL"}), 400
+
+    payload = {"video_url": video_url, "version": "latest"}
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     res = requests.post("https://api.sportai.com/api/statistics", json=payload, headers=headers)
 
@@ -122,7 +146,7 @@ def upload():
         return jsonify({"error": "Sport AI failed to accept video", "details": res.text}), 500
 
     task_id = res.json()['data']['task_id']
-    return jsonify({"message": "Video sent to Sport AI", "sportai_task_id": task_id}), 201
+    return jsonify({"sportai_task_id": task_id}), 200
 
 
 @app.route('/task_status/<task_id>')
