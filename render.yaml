@@ -6,6 +6,8 @@ services:
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "python upload_app.py"
     envVars:
+      - key: PORT
+        value: 10000
       - key: DROPBOX_REFRESH_TOKEN
         value: LzIbVz2RXwwAAAAAAAAAAR_ixZxMMTE7eABTIn6ooAhbcCwUlues78XWdEuRwmEZ
       - key: DROPBOX_APP_KEY
