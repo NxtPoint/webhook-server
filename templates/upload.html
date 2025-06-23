@@ -1,5 +1,3 @@
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -85,7 +83,7 @@
     </form>
     <div class="spinner" id="spinner"></div>
     <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
-    <div id="status"></div>
+    <div id="status"></div><div id="subtasks"></div>
   </div>
 
   <script>
@@ -123,7 +121,7 @@
             html += `- ${readable}: ${Math.round(v * 100)}%\n`;
           }
 
-          statusText.innerText = html;
+          document.getElementById("subtasks").innerText = html;
 
           if (s.task_status === 'in_progress') {
             setTimeout(() => pollStatus(taskId), 4000);
