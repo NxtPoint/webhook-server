@@ -83,7 +83,8 @@
     </form>
     <div class="spinner" id="spinner"></div>
     <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
-    <div id="status"></div><div id="subtasks"></div>
+    <div id="status"></div>
+    <div id="subtasks"></div>
   </div>
 
   <script>
@@ -110,12 +111,16 @@
 
           let html = `🧠 Task ID: ${s.task_id}\n📊 Status: ${s.task_status.toUpperCase()}\n\nSubtasks:\n`;
           const readableNames = {
-            'ball_bounce': '📍 Ball Bounce Detection',
-            'swing': '🎾 Swing Identification',
-            'movement': '🚶 Movement Tracking',
-            'rally': '⏱️ Rally Duration Analysis',
-            'serve': '🎯 Serve Recognition'
+            'BallBounceDetectionTask': '📍 Ball Bounce Detection',
+            'BallDetectionTask': '🎾 Ball Detection',
+            'BoxMotReIDTask': '👤 Player Tracking',
+            'CourtDetectionTask': '🗺️ Court Mapping',
+            'MMPoseEstimationTask': '💪 Pose Estimation',
+            'PadelStatisticsTask': '📈 Stats Compilation',
+            'PostReIDTask': '🧍 Player Re-ID',
+            'SwingIdentificationTask': '🎾 Swing Identification'
           };
+
           for (const [k, v] of Object.entries(s.subtask_progress)) {
             const readable = readableNames[k] || k;
             html += `- ${readable}: ${Math.round(v * 100)}%\n`;
@@ -151,15 +156,53 @@
       })
       .then(res => res.json())
       .then(data => {
-        spinner.style.display = "none";
         if (data.error) {
-          updateStatusSteps(`❌ Error: ${data.error}`);
-        } else {
-          updateProgressBar(10);
-          updateStatusSteps("2️⃣ Video uploaded. Checking accessibility...");
-          updateStatusSteps("3️⃣ Submitting video to Sport AI...");
-          pollStatus(data.sportai_task_id);
+          spinner.style.display = "none";
+          updateStatusSteps(`❌ Upload Error: ${data.error}`);
+          return;
         }
+
+        const dropboxURL = data.dropbox_url;
+        updateProgressBar(20);
+        updateStatusSteps("2️⃣ Video uploaded. Checking quality...");
+
+        fetch("/check_video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ video_url: dropboxURL })
+        })
+        .then(res => res.json())
+        .then(result => {
+          if (result.error) {
+            spinner.style.display = "none";
+            updateStatusSteps(`❌ Quality Check Failed: ${result.error}`);
+            return;
+          }
+
+          updateProgressBar(40);
+          updateStatusSteps("✅ Video quality passed. Submitting to Sport AI...");
+
+          return fetch("/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ video_url: dropboxURL })
+          });
+        })
+        .then(res => res?.json())
+        .then(final => {
+          spinner.style.display = "none";
+          if (final?.sportai_task_id) {
+            updateProgressBar(60);
+            pollStatus(final.sportai_task_id);
+          } else if (final?.error) {
+            updateStatusSteps(`❌ Sport AI Error: ${final.error}`);
+          }
+        })
+        .catch(err => {
+          spinner.style.display = "none";
+          updateStatusSteps("❌ Final step failed. Check console.");
+          console.error(err);
+        });
       })
       .catch(err => {
         spinner.style.display = "none";
