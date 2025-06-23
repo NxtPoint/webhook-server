@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -97,7 +99,7 @@
     }
 
     function updateStatusSteps(message) {
-      statusText.innerText += "\\n" + message;
+      statusText.innerText += "\n" + message;
     }
 
     function pollStatus(taskId) {
@@ -108,14 +110,17 @@
           const s = data.data;
           updateProgressBar(s.task_progress * 100);
 
-          let html = `
-🧠 Task ID: ${s.task_id}
-📊 Status: ${s.task_status.toUpperCase()}
-
-Subtasks:
-`;
+          let html = `🧠 Task ID: ${s.task_id}\n📊 Status: ${s.task_status.toUpperCase()}\n\nSubtasks:\n`;
+          const readableNames = {
+            'ball_bounce': '📍 Ball Bounce Detection',
+            'swing': '🎾 Swing Identification',
+            'movement': '🚶 Movement Tracking',
+            'rally': '⏱️ Rally Duration Analysis',
+            'serve': '🎯 Serve Recognition'
+          };
           for (const [k, v] of Object.entries(s.subtask_progress)) {
-            html += `- ${k}: ${Math.round(v * 100)}%\\n`;
+            const readable = readableNames[k] || k;
+            html += `- ${readable}: ${Math.round(v * 100)}%\n`;
           }
 
           statusText.innerText = html;
@@ -137,7 +142,7 @@ Subtasks:
     form.addEventListener("submit", function(e) {
       e.preventDefault();
       const formData = new FormData(form);
-      statusText.innerText = "🚀 Starting upload workflow...\n";
+      statusText.innerText = "🚀 Starting upload...\n";
       spinner.style.display = "block";
       updateProgressBar(5);
       updateStatusSteps("1️⃣ Uploading video to Dropbox...");
