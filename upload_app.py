@@ -1,152 +1,172 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Upload Match Video</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      background: #f4f4f4;
-      padding: 20px;
-    }
-    .container {
-      max-width: 500px;
-      margin: 0 auto;
-      background: #fff;
-      padding: 20px;
-      border-radius: 12px;
-      box-shadow: 0 0 15px rgba(0,0,0,0.05);
-      text-align: center;
-    }
-    #status {
-      margin-top: 10px;
-      font-size: 0.95rem;
-      color: #333;
-      text-align: left;
-      background: #f9f9f9;
-      padding: 15px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-    }
-    .spinner {
-      display: none;
-      margin: 20px auto;
-      border: 6px solid #f3f3f3;
-      border-top: 6px solid #16a34a;
-      border-radius: 50%;
-      width: 40px;
-      height: 40px;
-      animation: spin 1s linear infinite;
-    }
-    .progress-bar {
-      margin-top: 10px;
-      background-color: #e0e0e0;
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    .progress-bar-fill {
-      height: 16px;
-      width: 0;
-      background-color: #16a34a;
-      transition: width 0.3s ease-in-out;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    input[type="file"],
-    input[type="email"] {
-      margin: 10px 0;
-      width: 100%;
-      padding: 10px;
-      box-sizing: border-box;
-    }
-    button {
-      background-color: #16a34a;
-      color: white;
-      padding: 10px 20px;
-      border: none;
-      font-size: 1rem;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h2>🎾 Upload Match Video</h2>
-    <form id="uploadForm" enctype="multipart/form-data">
-      <input type="file" name="video" accept=".mp4,.mov" required><br>
-      <input type="email" name="email" placeholder="Your email" required><br>
-      <button type="submit">Upload & Analyze</button>
-    </form>
-    <div class="spinner" id="spinner"></div>
-    <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
-    <div id="status"></div>
-  </div>
+from flask import Flask, request, jsonify, render_template, send_file
+import requests
+import os
+import json
+import time
+from datetime import datetime
+from werkzeug.utils import secure_filename
 
-  <script>
-    const form = document.getElementById("uploadForm");
-    const statusText = document.getElementById("status");
-    const spinner = document.getElementById("spinner");
-    const progressFill = document.getElementById("progressFill");
+app = Flask(__name__)
 
-    function updateProgressBar(percent) {
-      progressFill.style.width = percent + '%';
-    }
+# Environment variables
+SPORT_AI_TOKEN = os.environ.get("SPORT_AI_TOKEN")
+DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
+DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
+DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 
-    function pollStatus(taskId) {
-      fetch(`/task_status/${taskId}`)
-        .then(res => res.json())
-        .then(data => {
-          const s = data.data;
-          updateProgressBar(s.task_progress * 100);
-          let html = `
-            <p><strong>🧠 Task ID:</strong> <code>${s.task_id}</code></p>
-            <p><strong>📊 Status:</strong> <span style="color: ${
-              s.task_status === 'in_progress' ? '#d97706' :
-              s.task_status === 'failed' ? '#dc2626' : '#16a34a'
-            }; font-weight: bold;">${s.task_status.replace('_', ' ').toUpperCase()}</span></p>
-            <div><strong>Subtasks:</strong><ul>`;
-          for (const [k, v] of Object.entries(s.subtask_progress)) {
-            html += `<li>${k}: ${v * 100}%</li>`;
-          }
-          html += `</ul></div>`;
-          statusText.innerHTML = html;
-          if (s.task_status === 'in_progress') {
-            setTimeout(() => pollStatus(taskId), 4000);
-          }
-        })
-        .catch(err => console.error("Polling error:", err));
-    }
 
-    form.addEventListener("submit", function(e) {
-      e.preventDefault();
-      const formData = new FormData(form);
-      spinner.style.display = "block";
-      statusText.innerText = "Uploading to Dropbox...";
-      updateProgressBar(5);
-
-      fetch("/upload", {
-        method: "POST",
-        body: formData
-      })
-      .then(res => res.json())
-      .then(data => {
-        spinner.style.display = "none";
-        if (data.error) {
-          statusText.innerText = `❌ Error: ${data.error}`;
-        } else {
-          updateProgressBar(10);
-          pollStatus(data.sportai_task_id);
+def get_dropbox_access_token():
+    res = requests.post(
+        "https://api.dropboxapi.com/oauth2/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": DROPBOX_REFRESH_TOKEN,
+            "client_id": DROPBOX_APP_KEY,
+            "client_secret": DROPBOX_APP_SECRET
         }
-      })
-      .catch(err => {
-        spinner.style.display = "none";
-        statusText.innerText = "❌ Upload failed. Check console.";
-        console.error(err);
-      });
-    });
-  </script>
-</body>
-</html>
+    )
+    if res.status_code == 200:
+        return res.json()['access_token']
+    print("❌ Dropbox token refresh failed:", res.text)
+    return None
+
+
+def check_video_accessibility(video_url):
+    res = requests.post(
+        "https://api.sportai.com/api/videos/check",
+        json={"version": "stable", "video_urls": [video_url]},
+        headers={"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
+    )
+    return res.status_code == 200
+
+
+@app.route('/')
+def index():
+    return render_template("upload.html")
+
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'video' not in request.files or 'email' not in request.form:
+        return jsonify({"error": "Video and email are required"}), 400
+
+    email = request.form['email']
+    video = request.files['video']
+    file_name = video.filename
+    file_bytes = video.read()
+    dropbox_path = f"/wix-uploads/{file_name}"
+
+    token = get_dropbox_access_token()
+    if not token:
+        return jsonify({"error": "Dropbox token refresh failed"}), 500
+
+    upload_res = requests.post(
+        "https://content.dropboxapi.com/2/files/upload",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Dropbox-API-Arg": json.dumps({
+                "path": dropbox_path,
+                "mode": "add",
+                "autorename": True,
+                "mute": False
+            }),
+            "Content-Type": "application/octet-stream"
+        },
+        data=file_bytes
+    )
+
+    if not upload_res.ok:
+        return jsonify({"error": "Dropbox upload failed", "details": upload_res.text}), 500
+
+    link_res = requests.post(
+        "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"path": dropbox_path, "settings": {"requested_visibility": "public"}}
+    )
+
+    if link_res.status_code != 200:
+        err = link_res.json()
+        if err.get('error', {}).get('.tag') == 'shared_link_already_exists':
+            link_data = requests.post(
+                "https://api.dropboxapi.com/2/sharing/list_shared_links",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"path": dropbox_path, "direct_only": True}
+            ).json()
+            raw_url = link_data['links'][0]['url']
+        else:
+            return jsonify({"error": "Failed to generate Dropbox link"}), 500
+    else:
+        raw_url = link_res.json()['url']
+
+    raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
+
+    if not check_video_accessibility(raw_url):
+        return jsonify({"error": "Video is not accessible by Sport AI"}), 400
+
+    payload = {"video_url": raw_url, "version": "latest"}
+    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
+    res = requests.post("https://api.sportai.com/api/statistics", json=payload, headers=headers)
+
+    if res.status_code != 201:
+        return jsonify({"error": "Sport AI failed to accept video", "details": res.text}), 500
+
+    task_id = res.json()['data']['task_id']
+    return jsonify({"message": "Video sent to Sport AI", "sportai_task_id": task_id}), 201
+
+
+@app.route('/task_status/<task_id>')
+def task_status(task_id):
+    url = f"https://api.sportai.com/api/statistics/{task_id}/status"
+    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
+    response = requests.get(url, headers=headers)
+    return jsonify(response.json()), response.status_code
+
+
+@app.route('/get_result/<task_id>')
+def get_result(task_id):
+    url = f"https://api.sportai.com/api/statistics/{task_id}"
+    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
+    response = requests.get(url, headers=headers)
+    return jsonify(response.json()), response.status_code
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        data = request.json
+        os.makedirs("data", exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        filename = f"data/sportai-{timestamp}.json"
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+        return jsonify({"message": "Webhook data saved", "filename": filename}), 200
+    except Exception as e:
+        print("❌ Webhook error:", str(e))
+        return jsonify({"error": "Failed to save webhook data"}), 500
+
+
+@app.route('/results', methods=['GET'])
+def list_results():
+    try:
+        files = sorted(os.listdir('data'), reverse=True)
+        json_files = [f for f in files if f.endswith('.json')]
+        return jsonify({"results": json_files})
+    except Exception as e:
+        return jsonify({"error": "Could not list result files", "details": str(e)}), 500
+
+
+@app.route('/download/<filename>', methods=['GET'])
+def download_result(filename):
+    try:
+        safe_name = secure_filename(filename)
+        filepath = os.path.join('data', safe_name)
+        if not os.path.exists(filepath):
+            return jsonify({"error": "File not found"}), 404
+        return send_file(filepath, as_attachment=True)
+    except Exception as e:
+        return jsonify({"error": "Download failed", "details": str(e)}), 500
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
