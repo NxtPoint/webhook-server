@@ -37,7 +37,17 @@ def check_video_accessibility(video_url):
         json={"version": "stable", "video_urls": [video_url]},
         headers={"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     )
-    return res.status_code == 200
+    if res.status_code != 200:
+        return False, "Video is not accessible (status code != 200)"
+
+    try:
+        resp_json = res.json()
+        quality_ok = resp_json["data"][0].get("video_quality_ok", False)
+        if not quality_ok:
+            return False, "Video quality is too low for analysis"
+        return True, None
+    except Exception as e:
+        return False, f"Video quality check failed to parse: {str(e)}"
 
 
 @app.route('/')
@@ -100,8 +110,9 @@ def upload():
 
     raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    if not check_video_accessibility(raw_url):
-        return jsonify({"error": "Video is not accessible by Sport AI"}), 400
+    is_ok, error_msg = check_video_accessibility(raw_url)
+    if not is_ok:
+        return jsonify({"error": error_msg}), 400
 
     payload = {"video_url": raw_url, "version": "latest"}
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
