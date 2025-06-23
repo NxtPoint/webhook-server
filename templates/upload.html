@@ -9,7 +9,6 @@
       background: #f4f4f4;
       padding: 20px;
     }
-
     .container {
       max-width: 500px;
       margin: 0 auto;
@@ -19,7 +18,6 @@
       box-shadow: 0 0 15px rgba(0,0,0,0.05);
       text-align: center;
     }
-
     #status {
       margin-top: 10px;
       font-size: 0.95rem;
@@ -29,8 +27,8 @@
       padding: 15px;
       border-radius: 10px;
       border: 1px solid #ccc;
+      white-space: pre-wrap;
     }
-
     .spinner {
       display: none;
       margin: 20px auto;
@@ -41,30 +39,29 @@
       height: 40px;
       animation: spin 1s linear infinite;
     }
-
     .progress-bar {
       margin-top: 10px;
       background-color: #e0e0e0;
       border-radius: 8px;
       overflow: hidden;
     }
-
     .progress-bar-fill {
       height: 16px;
       width: 0;
       background-color: #16a34a;
       transition: width 0.3s ease-in-out;
     }
-
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-
-    input[type="file"] {
+    input[type="file"],
+    input[type="email"] {
       margin: 10px 0;
+      width: 100%;
+      padding: 10px;
+      box-sizing: border-box;
     }
-
     button {
       background-color: #16a34a;
       color: white;
@@ -81,6 +78,7 @@
     <h2>🎾 Upload Match Video</h2>
     <form id="uploadForm" enctype="multipart/form-data">
       <input type="file" name="video" accept=".mp4,.mov" required><br>
+      <input type="email" name="email" placeholder="Your email" required><br>
       <button type="submit">Upload & Analyze</button>
     </form>
     <div class="spinner" id="spinner"></div>
@@ -94,44 +92,55 @@
     const spinner = document.getElementById("spinner");
     const progressFill = document.getElementById("progressFill");
 
-    let currentTaskId = null;
-
     function updateProgressBar(percent) {
       progressFill.style.width = percent + '%';
     }
 
+    function updateStatusSteps(message) {
+      statusText.innerText += "\\n" + message;
+    }
+
     function pollStatus(taskId) {
+      updateStatusSteps("📡 Polling Sport AI for progress...");
       fetch(`/task_status/${taskId}`)
         .then(res => res.json())
         .then(data => {
           const s = data.data;
-          const pct = s.task_progress * 100;
-          updateProgressBar(pct);
+          updateProgressBar(s.task_progress * 100);
 
           let html = `
-            <p><strong>🧠 Task ID:</strong> <code>${s.task_id}</code></p>
-            <p><strong>📎 Dropbox Link:</strong> <a href="${s.video_url}" target="_blank" style="color: #2563eb;">View Video 🔗</a></p>
-            <p><strong>📊 Status:</strong> <span style="color: ${s.task_status === 'in_progress' ? '#d97706' : (s.task_status === 'failed' ? '#dc2626' : '#16a34a')}; font-weight: bold;">${s.task_status.replace('_', ' ').toUpperCase()}</span></p>
-            <div><strong>Subtask Progress:</strong><ul>`;
+🧠 Task ID: ${s.task_id}
+📊 Status: ${s.task_status.toUpperCase()}
+
+Subtasks:
+`;
           for (const [k, v] of Object.entries(s.subtask_progress)) {
-            html += `<li>${k}: ${v * 100}%</li>`;
+            html += `- ${k}: ${Math.round(v * 100)}%\\n`;
           }
-          html += `</ul></div>`;
-          statusText.innerHTML = html;
+
+          statusText.innerText = html;
 
           if (s.task_status === 'in_progress') {
             setTimeout(() => pollStatus(taskId), 4000);
+          } else if (s.task_status === 'completed') {
+            updateStatusSteps("✅ Analysis complete. You may now download results.");
+          } else if (s.task_status === 'failed') {
+            updateStatusSteps("❌ Analysis failed. Please check video quality or contact support.");
           }
         })
-        .catch(err => console.error("Polling error:", err));
+        .catch(err => {
+          updateStatusSteps("❌ Polling error. See console for details.");
+          console.error("Polling error:", err);
+        });
     }
 
     form.addEventListener("submit", function(e) {
       e.preventDefault();
       const formData = new FormData(form);
+      statusText.innerText = "🚀 Starting upload workflow...\n";
       spinner.style.display = "block";
-      statusText.innerText = "Uploading to Dropbox...";
       updateProgressBar(5);
+      updateStatusSteps("1️⃣ Uploading video to Dropbox...");
 
       fetch("/upload", {
         method: "POST",
@@ -141,16 +150,17 @@
       .then(data => {
         spinner.style.display = "none";
         if (data.error) {
-          statusText.innerText = `❌ Error: ${data.error}`;
+          updateStatusSteps(`❌ Error: ${data.error}`);
         } else {
           updateProgressBar(10);
-          currentTaskId = data.sportai_task_id;
-          pollStatus(currentTaskId);
+          updateStatusSteps("2️⃣ Video uploaded. Checking accessibility...");
+          updateStatusSteps("3️⃣ Submitting video to Sport AI...");
+          pollStatus(data.sportai_task_id);
         }
       })
       .catch(err => {
         spinner.style.display = "none";
-        statusText.innerText = "❌ Upload failed. Check console.";
+        updateStatusSteps("❌ Upload failed. Check console.");
         console.error(err);
       });
     });
