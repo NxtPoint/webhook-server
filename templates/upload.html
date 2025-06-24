@@ -7,7 +7,7 @@
     body {
       margin: 0;
       font-family: Arial, sans-serif;
-      background: url('/static/background-male-serve.jpg') no-repeat center center fixed;
+      background: url('/static/background-male-serve.jpg.png') no-repeat center center fixed;
       background-size: cover;
       color: #ffffff;
     }
@@ -137,7 +137,7 @@
     }
 
     function pollStatus(taskId) {
-      updateStatusSteps("📡 Polling Sport AI for progress...");
+      updateStatusSteps("📱 Polling Sport AI for progress...");
       fetch(`/task_status/${taskId}`)
         .then(res => res.json())
         .then(data => {
@@ -152,7 +152,7 @@
             'CourtDetectionTask': '🗺️ Court Mapping',
             'MMPoseEstimationTask': '💪 Pose Estimation',
             'PadelStatisticsTask': '📈 Stats Compilation',
-            'PostReIDTask': '🧍 Player Re-ID',
+            'PostReIDTask': '🧕 Player Re-ID',
             'SwingIdentificationTask': '🎾 Swing Identification'
           };
 
