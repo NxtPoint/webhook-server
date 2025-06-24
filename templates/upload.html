@@ -10,7 +10,7 @@
       padding: 20px;
     }
     .container {
-      max-width: 500px;
+      max-width: 550px;
       margin: 0 auto;
       background: #fff;
       padding: 20px;
@@ -18,8 +18,8 @@
       box-shadow: 0 0 15px rgba(0,0,0,0.05);
       text-align: center;
     }
-    #status {
-      margin-top: 10px;
+    .status-block {
+      margin-top: 15px;
       font-size: 0.95rem;
       color: #333;
       text-align: left;
@@ -81,10 +81,12 @@
       <input type="email" name="email" placeholder="Your email" required><br>
       <button type="submit">Upload & Analyze</button>
     </form>
+
     <div class="spinner" id="spinner"></div>
     <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
-    <div id="status"></div>
-    <div id="subtasks"></div>
+
+    <div class="status-block" id="status"></div>
+    <div class="status-block" id="subtasks"></div>
   </div>
 
   <script>
@@ -101,7 +103,11 @@
       statusText.innerText += "\n" + message;
     }
 
+    let pollingStarted = false;
     function pollStatus(taskId) {
+      if (pollingStarted) return;
+      pollingStarted = true;
+
       updateStatusSteps("📡 Polling Sport AI for progress...");
       fetch(`/task_status/${taskId}`)
         .then(res => res.json())
