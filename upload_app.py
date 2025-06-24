@@ -13,7 +13,6 @@ DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 
-
 def get_dropbox_access_token():
     res = requests.post(
         "https://api.dropboxapi.com/oauth2/token",
@@ -29,23 +28,21 @@ def get_dropbox_access_token():
     print("❌ Dropbox token refresh failed:", res.text)
     return None
 
-
 def check_video_accessibility(video_url):
     res = requests.post(
         "https://api.sportai.com/api/videos/check",
         json={"version": "stable", "video_urls": [video_url]},
         headers={"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     )
+
     if res.status_code != 200:
         return False, "Video is not accessible (status code != 200)"
 
     try:
         resp_json = res.json()
-        quality_ok = resp_json["data"][0].get("video_quality_ok", False)
-        issues = resp_json["data"][0].get("issues", [])
-        if not quality_ok or issues:
-            issue_text = ", ".join(issues) if issues else "Video quality too low"
-            return False, issue_text
+        inner = resp_json["data"][video_url]
+        if not inner.get("video_ok", False):
+            return False, "Video quality is too low for analysis"
         return True, None
     except Exception as e:
         return False, f"Video quality check failed to parse: {str(e)}"
