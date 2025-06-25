@@ -106,7 +106,6 @@ def upload():
 
     raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    # ✅ Return early now — frontend will check quality before sending to SportAI
     return jsonify({
         "message": "Uploaded successfully",
         "dropbox_url": raw_url
@@ -139,6 +138,29 @@ def analyze():
         return jsonify({"error": "Activity detection failed", "details": res.text}), 500
 
     return jsonify(res.json()), 200
+
+@app.route('/fetch_activity_result/<task_id>', methods=['GET'])
+def fetch_activity_result(task_id):
+    try:
+        url = f"https://api.sportai.com/api/activity_detection/{task_id}"
+        headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
+        response = requests.get(url, headers=headers)
+
+        if response.status_code not in [200, 201, 202]:
+            return jsonify({"error": "Failed to fetch result", "details": response.text}), 500
+
+        data = response.json()
+        os.makedirs("data", exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        filename = f"data/activity_result_{task_id}_{timestamp}.json"
+
+        with open(filename, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        return jsonify({"message": "Result saved", "filename": filename}), 200
+
+    except Exception as e:
+        return jsonify({"error": "Fetch error", "details": str(e)}), 500
 
 @app.route('/task_status/<task_id>')
 def task_status(task_id):
