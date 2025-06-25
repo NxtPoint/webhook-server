@@ -13,6 +13,7 @@ DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 
+
 def get_dropbox_access_token():
     res = requests.post(
         "https://api.dropboxapi.com/oauth2/token",
@@ -27,6 +28,7 @@ def get_dropbox_access_token():
         return res.json()['access_token']
     print("❌ Dropbox token refresh failed:", res.text)
     return None
+
 
 def check_video_accessibility(video_url):
     res = requests.post(
@@ -47,9 +49,11 @@ def check_video_accessibility(video_url):
     except Exception as e:
         return False, f"Video quality check failed to parse: {str(e)}"
 
+
 @app.route('/')
 def index():
     return render_template("upload.html")
+
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -106,89 +110,36 @@ def upload():
 
     raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    return jsonify({
-        "message": "Uploaded successfully",
-        "dropbox_url": raw_url
-    }), 200
-
-@app.route('/check_video', methods=['POST'])
-def check_video():
-    data = request.get_json()
-    video_url = data.get("video_url")
-    if not video_url:
-        return jsonify({"error": "Missing video URL"}), 400
-
-    is_ok, error = check_video_accessibility(video_url)
-    if not is_ok:
-        return jsonify({"error": error}), 400
-    return jsonify({"message": "Video quality is OK"}), 200
-
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    data = request.get_json()
-    video_url = data.get("video_url")
-    if not video_url:
-        return jsonify({"error": "Missing video URL"}), 400
-
-    payload = {"video_url": video_url, "version": "latest"}
+    # Submit to Sport AI
+    payload = {"video_url": raw_url, "version": "latest"}
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     res = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
 
     if res.status_code not in [200, 201, 202]:
         return jsonify({"error": "Activity detection failed", "details": res.text}), 500
 
-    return jsonify(res.json()), 200
+    task_id = res.json().get("task_id")
 
-@app.route('/fetch_activity_result/<task_id>', methods=['GET'])
-def fetch_activity_result(task_id):
-    try:
-        url = f"https://api.sportai.com/api/activity_detection/{task_id}"
-        headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code not in [200, 201, 202]:
-            return jsonify({"error": "Failed to fetch result", "details": response.text}), 500
-
-        data = response.json()
+    # Fetch result metadata after a delay (in real use, use polling or webhook)
+    fetch_url = f"https://api.sportai.com/api/activity_detection/{task_id}"
+    fetch_res = requests.get(fetch_url, headers=headers)
+    if fetch_res.status_code == 200:
+        result = fetch_res.json()
         os.makedirs("data", exist_ok=True)
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         filename = f"data/activity_result_{task_id}_{timestamp}.json"
+        with open(filename, "w") as f:
+            json.dump(result, f, indent=2)
+    else:
+        return jsonify({"error": "Fetch failed", "details": fetch_res.text}), 500
 
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
+    return jsonify({
+        "message": "Uploaded and analyzed successfully",
+        "dropbox_url": raw_url,
+        "task_id": task_id,
+        "result_file": filename
+    }), 200
 
-        return jsonify({"message": "Result saved", "filename": filename}), 200
-
-    except Exception as e:
-        return jsonify({"error": "Fetch error", "details": str(e)}), 500
-
-@app.route('/task_status/<task_id>')
-def task_status(task_id):
-    url = f"https://api.sportai.com/api/statistics/{task_id}/status"
-    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
-    response = requests.get(url, headers=headers)
-    return jsonify(response.json()), response.status_code
-
-@app.route('/get_result/<task_id>')
-def get_result(task_id):
-    url = f"https://api.sportai.com/api/statistics/{task_id}"
-    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
-    response = requests.get(url, headers=headers)
-    return jsonify(response.json()), response.status_code
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        data = request.json
-        os.makedirs("data", exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        filename = f"data/sportai-{timestamp}.json"
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
-        return jsonify({"message": "Webhook data saved", "filename": filename}), 200
-    except Exception as e:
-        print("❌ Webhook error:", str(e))
-        return jsonify({"error": "Failed to save webhook data"}), 500
 
 @app.route('/results', methods=['GET'])
 def list_results():
@@ -198,6 +149,7 @@ def list_results():
         return jsonify({"results": json_files})
     except Exception as e:
         return jsonify({"error": "Could not list result files", "details": str(e)}), 500
+
 
 @app.route('/download/<filename>', methods=['GET'])
 def download_result(filename):
@@ -209,6 +161,7 @@ def download_result(filename):
         return send_file(filepath, as_attachment=True)
     except Exception as e:
         return jsonify({"error": "Download failed", "details": str(e)}), 500
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
