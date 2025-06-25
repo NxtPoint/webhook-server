@@ -23,7 +23,7 @@ def get_dropbox_access_token():
             "client_secret": DROPBOX_APP_SECRET
         }
     )
-    if res.status_code == 200:
+    if res.status_code in [200, 201, 202]:
         return res.json()['access_token']
     print("❌ Dropbox token refresh failed:", res.text)
     return None
@@ -35,7 +35,7 @@ def check_video_accessibility(video_url):
         headers={"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     )
 
-    if res.status_code != 200:
+    if res.status_code not in [200, 201, 202]:
         return False, "Video is not accessible (status code != 200)"
 
     try:
@@ -90,7 +90,7 @@ def upload():
         json={"path": dropbox_path, "settings": {"requested_visibility": "public"}}
     )
 
-    if link_res.status_code != 200:
+    if link_res.status_code not in [200, 201, 202]:
         err = link_res.json()
         if err.get('error', {}).get('.tag') == 'shared_link_already_exists':
             link_data = requests.post(
@@ -135,7 +135,7 @@ def analyze():
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     res = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
 
-    if res.status_code != 200:
+    if res.status_code not in [200, 201, 202]:
         return jsonify({"error": "Activity detection failed", "details": res.text}), 500
 
     return jsonify(res.json()), 200
