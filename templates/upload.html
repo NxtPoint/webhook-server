@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <title>Upload Match Video</title>
   <style>
-    body {
+    html, body {
       margin: 0;
       font-family: Arial, sans-serif;
       background: url('/static/background-clean-male-serve.jpg') no-repeat center center fixed;
@@ -127,6 +127,7 @@
     const statusText = document.getElementById("status");
     const spinner = document.getElementById("spinner");
     const progressFill = document.getElementById("progressFill");
+    let pollingInterval;
 
     function updateProgressBar(percent) {
       progressFill.style.width = percent + '%';
@@ -136,45 +137,49 @@
       statusText.innerText += "\n" + message;
     }
 
+    function updateSubtasks(s) {
+      let html = `🧠 Task ID: ${s.task_id}\n📊 Status: ${s.task_status.toUpperCase()}\n\nSubtasks:\n`;
+      const readableNames = {
+        'BallBounceDetectionTask': '📍 Ball Bounce Detection',
+        'BallDetectionTask': '🎾 Ball Detection',
+        'BoxMotReIDTask': '👤 Player Tracking',
+        'CourtDetectionTask': '🗺️ Court Mapping',
+        'MMPoseEstimationTask': '💪 Pose Estimation',
+        'PadelStatisticsTask': '📈 Stats Compilation',
+        'PostReIDTask': '🧕 Player Re-ID',
+        'SwingIdentificationTask': '🎾 Swing Identification'
+      };
+
+      for (const [k, v] of Object.entries(s.subtask_progress)) {
+        const readable = readableNames[k] || k;
+        html += `- ${readable}: ${Math.round(v * 100)}%\n`;
+      }
+      document.getElementById("subtasks").innerText = html;
+    }
+
     function pollStatus(taskId) {
-      updateStatusSteps("📱 Polling Sport AI for progress...");
-      fetch(`/task_status/${taskId}`)
-        .then(res => res.json())
-        .then(data => {
-          const s = data.data;
-          updateProgressBar(s.task_progress * 100);
+      pollingInterval = setInterval(() => {
+        fetch(`/task_status/${taskId}`)
+          .then(res => res.json())
+          .then(data => {
+            const s = data.data;
+            updateProgressBar(s.task_progress * 100);
+            updateSubtasks(s);
 
-          let html = `🧠 Task ID: ${s.task_id}\n📊 Status: ${s.task_status.toUpperCase()}\n\nSubtasks:\n`;
-          const readableNames = {
-            'BallBounceDetectionTask': '📍 Ball Bounce Detection',
-            'BallDetectionTask': '🎾 Ball Detection',
-            'BoxMotReIDTask': '👤 Player Tracking',
-            'CourtDetectionTask': '🗺️ Court Mapping',
-            'MMPoseEstimationTask': '💪 Pose Estimation',
-            'PadelStatisticsTask': '📈 Stats Compilation',
-            'PostReIDTask': '🧕 Player Re-ID',
-            'SwingIdentificationTask': '🎾 Swing Identification'
-          };
-
-          for (const [k, v] of Object.entries(s.subtask_progress)) {
-            const readable = readableNames[k] || k;
-            html += `- ${readable}: ${Math.round(v * 100)}%\n`;
-          }
-
-          document.getElementById("subtasks").innerText = html;
-
-          if (s.task_status === 'in_progress') {
-            setTimeout(() => pollStatus(taskId), 4000);
-          } else if (s.task_status === 'completed') {
-            updateStatusSteps("✅ Analysis complete. You may now download results.");
-          } else if (s.task_status === 'failed') {
-            updateStatusSteps("❌ Analysis failed. Please check video quality or contact support.");
-          }
-        })
-        .catch(err => {
-          updateStatusSteps("❌ Polling error. See console for details.");
-          console.error("Polling error:", err);
-        });
+            if (s.task_status === 'completed') {
+              clearInterval(pollingInterval);
+              updateStatusSteps("✅ Analysis complete. You may now download results.");
+            } else if (s.task_status === 'failed') {
+              clearInterval(pollingInterval);
+              updateStatusSteps("❌ Analysis failed. Please check video quality or contact support.");
+            }
+          })
+          .catch(err => {
+            clearInterval(pollingInterval);
+            updateStatusSteps("❌ Polling error. See console for details.");
+            console.error("Polling error:", err);
+          });
+      }, 4000);
     }
 
     form.addEventListener("submit", function(e) {
@@ -228,6 +233,7 @@
           spinner.style.display = "none";
           if (final?.sportai_task_id) {
             updateProgressBar(60);
+            updateStatusSteps("📡 Polling Sport AI for progress...");
             pollStatus(final.sportai_task_id);
           } else if (final?.error) {
             updateStatusSteps(`❌ Sport AI Error: ${final.error}`);

@@ -7,7 +7,7 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# Environment variables
+# Environment variables  
 SPORT_AI_TOKEN = os.environ.get("SPORT_AI_TOKEN")
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
@@ -47,11 +47,9 @@ def check_video_accessibility(video_url):
     except Exception as e:
         return False, f"Video quality check failed to parse: {str(e)}"
 
-
 @app.route('/')
 def index():
     return render_template("upload.html")
-
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -114,7 +112,6 @@ def upload():
         "dropbox_url": raw_url
     }), 200
 
-
 @app.route('/check_video', methods=['POST'])
 def check_video():
     data = request.get_json()
@@ -127,7 +124,6 @@ def check_video():
         return jsonify({"error": error}), 400
     return jsonify({"message": "Video quality is OK"}), 200
 
-
 @app.route('/analyze', methods=['POST'])
 def analyze():
     data = request.get_json()
@@ -137,14 +133,12 @@ def analyze():
 
     payload = {"video_url": video_url, "version": "latest"}
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
-    res = requests.post("https://api.sportai.com/api/statistics", json=payload, headers=headers)
+    res = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
 
-    if res.status_code != 201:
-        return jsonify({"error": "Sport AI failed to accept video", "details": res.text}), 500
+    if res.status_code != 200:
+        return jsonify({"error": "Activity detection failed", "details": res.text}), 500
 
-    task_id = res.json()['data']['task_id']
-    return jsonify({"sportai_task_id": task_id}), 200
-
+    return jsonify(res.json()), 200
 
 @app.route('/task_status/<task_id>')
 def task_status(task_id):
@@ -153,14 +147,12 @@ def task_status(task_id):
     response = requests.get(url, headers=headers)
     return jsonify(response.json()), response.status_code
 
-
 @app.route('/get_result/<task_id>')
 def get_result(task_id):
     url = f"https://api.sportai.com/api/statistics/{task_id}"
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
     response = requests.get(url, headers=headers)
     return jsonify(response.json()), response.status_code
-
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -176,7 +168,6 @@ def webhook():
         print("❌ Webhook error:", str(e))
         return jsonify({"error": "Failed to save webhook data"}), 500
 
-
 @app.route('/results', methods=['GET'])
 def list_results():
     try:
@@ -185,7 +176,6 @@ def list_results():
         return jsonify({"results": json_files})
     except Exception as e:
         return jsonify({"error": "Could not list result files", "details": str(e)}), 500
-
 
 @app.route('/download/<filename>', methods=['GET'])
 def download_result(filename):
@@ -197,7 +187,6 @@ def download_result(filename):
         return send_file(filepath, as_attachment=True)
     except Exception as e:
         return jsonify({"error": "Download failed", "details": str(e)}), 500
-
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
