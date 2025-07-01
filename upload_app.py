@@ -7,7 +7,7 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-# Environment variables  
+# Environment variables
 SPORT_AI_TOKEN = os.environ.get("SPORT_AI_TOKEN")
 DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
@@ -130,37 +130,27 @@ def analyze():
     if not video_url:
         return jsonify({"error": "Missing video URL"}), 400
 
-    payload = {"video_url": video_url, "version": "latest"}
-    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
-    res = requests.post("https://api.sportai.com/api/activity_detection", json=payload, headers=headers)
+    payload = {
+        "video_url": video_url,
+        "only_in_rally_data": False,
+        "version": "stable"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {SPORT_AI_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    res = requests.post("https://api.sportai.com/api/statistics", json=payload, headers=headers)
 
     if res.status_code not in [200, 201, 202]:
-        return jsonify({"error": "Activity detection failed", "details": res.text}), 500
+        return jsonify({"error": "Statistics task registration failed", "details": res.text}), 500
 
-    return jsonify(res.json()), 200
-
-@app.route('/fetch_activity_result/<task_id>', methods=['GET'])
-def fetch_activity_result(task_id):
     try:
-        url = f"https://api.sportai.com/api/activity_detection/{task_id}"
-        headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
-        response = requests.get(url, headers=headers)
-
-        if response.status_code not in [200, 201, 202]:
-            return jsonify({"error": "Failed to fetch result", "details": response.text}), 500
-
-        data = response.json()
-        os.makedirs("data", exist_ok=True)
-        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        filename = f"data/activity_result_{task_id}_{timestamp}.json"
-
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
-
-        return jsonify({"message": "Result saved", "filename": filename}), 200
-
+        task_id = res.json()["data"]["task_id"]
+        return jsonify({"sportai_task_id": task_id}), 200
     except Exception as e:
-        return jsonify({"error": "Fetch error", "details": str(e)}), 500
+        return jsonify({"error": "Task ID parsing error", "details": str(e)}), 500
 
 @app.route('/task_status/<task_id>')
 def task_status(task_id):
