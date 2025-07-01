@@ -166,6 +166,38 @@ def get_result(task_id):
     response = requests.get(url, headers=headers)
     return jsonify(response.json()), response.status_code
 
+@app.route('/finalize/<task_id>', methods=['GET'])
+def finalize(task_id):
+    filename = fetch_and_save_result(task_id)
+    if filename:
+        return jsonify({"message": "Result saved", "filename": filename}), 200
+    return jsonify({"error": "Failed to fetch and save result"}), 500
+
+def fetch_and_save_result(task_id):
+    try:
+        url = f"https://api.sportai.com/api/statistics/{task_id}"
+        headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
+        meta_res = requests.get(url, headers=headers)
+
+        if meta_res.status_code in [200, 201]:
+            result_url = meta_res.json()["data"]["result_url"]
+            result_res = requests.get(result_url)
+
+            if result_res.status_code == 200:
+                os.makedirs("data", exist_ok=True)
+                filename = f"data/statistics_result_{task_id}.json"
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(result_res.text)
+                print(f"✅ Saved result to: {filename}")
+                return filename
+            else:
+                print(f"❌ Failed to download result JSON. Status: {result_res.status_code}")
+        else:
+            print(f"❌ Failed to get metadata. Status: {meta_res.status_code}")
+    except Exception as e:
+        print("❌ Exception in fetch_and_save_result:", str(e))
+    return None
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
