@@ -140,9 +140,14 @@
               clearInterval(pollingInterval);
               updateStatusSteps("✅ Analysis complete. You can now download results.");
             } else if (s.task_status === 'failed') {
-              clearInterval(pollingInterval);
-              updateStatusSteps("❌ Analysis failed. Please check video quality or contact support.");
-            }
+              if (!document.getElementById("fail-msg")) {
+                clearInterval(pollingInterval);
+                const fail = document.createElement("div");
+                fail.id = "fail-msg";
+                fail.innerText = "❌ Analysis failed. Please check video quality or contact support.";
+                statusText.appendChild(fail);
+  }
+}
           })
           .catch(err => {
             clearInterval(pollingInterval);
