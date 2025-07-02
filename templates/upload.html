@@ -108,6 +108,7 @@
       <div id="status"></div>
     </div>
   </div>
+
   <script>
     const form = document.getElementById("uploadForm");
     const statusText = document.getElementById("status");
@@ -118,44 +119,59 @@
     function updateProgressBar(percent) {
       progressFill.style.width = percent + '%';
     }
+
     function updateStatusSteps(message) {
       statusText.innerText += "\n" + message;
     }
-    function pollStatus(taskId) {
+
+    function pollStatus(taskId, maxAttempts = 75) {
+      let attempts = 0;
+
       pollingInterval = setInterval(() => {
         fetch(`/task_status/${taskId}`)
           .then(res => res.json())
           .then(data => {
             const s = data.data;
             updateProgressBar(s.task_progress * 100);
+
             const taskStatusId = "task-status-line";
             let taskStatusEl = document.getElementById(taskStatusId);
             if (!taskStatusEl) {
               taskStatusEl = document.createElement("div");
               taskStatusEl.id = taskStatusId;
               statusText.appendChild(taskStatusEl);
-}
+            }
+
             taskStatusEl.innerText = `📊 Task Status: ${s.task_status} (${Math.round(s.task_progress * 100)}%)`;
-            if (s.task_status === 'completed') {
+
+            if (s.task_status === 'success' || s.task_status === 'completed') {
               clearInterval(pollingInterval);
+              updateProgressBar(100);
               updateStatusSteps("✅ Analysis complete. You can now download results.");
             } else if (s.task_status === 'failed') {
+              clearInterval(pollingInterval);
               if (!document.getElementById("fail-msg")) {
-                clearInterval(pollingInterval);
                 const fail = document.createElement("div");
                 fail.id = "fail-msg";
                 fail.innerText = "❌ Analysis failed. Please check video quality or contact support.";
                 statusText.appendChild(fail);
-  }
-}
+              }
+            }
+
+            attempts++;
+            if (attempts > maxAttempts) {
+              clearInterval(pollingInterval);
+              updateStatusSteps("⚠️ Task timed out. Please try again or use a shorter clip.");
+            }
           })
           .catch(err => {
             clearInterval(pollingInterval);
             updateStatusSteps("❌ Polling error. See console for details.");
             console.error("Polling error:", err);
           });
-      }, 4000);
+      }, 5000);
     }
+
     form.addEventListener("submit", function(e) {
       e.preventDefault();
       const formData = new FormData(form);
@@ -163,6 +179,7 @@
       spinner.style.display = "block";
       updateProgressBar(5);
       updateStatusSteps("1️⃣ Uploading video to Dropbox...");
+
       fetch("/upload", {
         method: "POST",
         body: formData
