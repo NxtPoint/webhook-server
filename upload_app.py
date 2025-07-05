@@ -140,8 +140,8 @@ def upload():
 
 def poll_and_save_result(task_id, email):
     print(f"⏳ Polling started for task {task_id}...")
-    max_attempts = 60
-    delay = 10
+    max_attempts = 720       # Wait for up to 360 minutes
+    delay = 30               # Delay between polls in seconds
     url = f"https://api.sportai.com/api/statistics/{task_id}/status"
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
 
@@ -151,14 +151,22 @@ def poll_and_save_result(task_id, email):
             status = res.json()["data"].get("status")
             print(f"🔄 Attempt {attempt+1}: Status = {status}")
             if status == "completed":
-                filename = fetch_and_save_result(task_id, email)
-                if filename:
-                    print(f"✅ Result saved to {filename}")
+                # Retry JSON download up to 5 times
+                for retry in range(5):
+                    filename = fetch_and_save_result(task_id, email)
+                    if filename:
+                        print(f"✅ Result saved to {filename}")
+                        return
+                    else:
+                        print(f"⏳ Retry {retry+1}/5: Waiting for result_url to become active...")
+                        time.sleep(5)
+                print("❌ JSON download failed after completion status.")
                 return
         else:
             print("⚠️ Failed to check status:", res.text)
         time.sleep(delay)
-    print("❌ Polling timed out after waiting.")
+
+    print("❌ Polling timed out after 60 minutes.")
 
 
 def fetch_and_save_result(task_id, email):
