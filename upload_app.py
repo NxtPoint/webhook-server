@@ -150,7 +150,7 @@ def poll_and_save_result(task_id, email):
         if res.status_code == 200:
             status = res.json()["data"].get("status")
             print(f"🔄 Attempt {attempt+1}: Status = {status}")
-            if status == "done":
+            if status == "completed":
                 filename = fetch_and_save_result(task_id, email)
                 if filename:
                     print(f"✅ Result saved to {filename}")
@@ -163,29 +163,33 @@ def poll_and_save_result(task_id, email):
 
 def fetch_and_save_result(task_id, email):
     try:
-        url = f"https://api.sportai.com/api/statistics/{task_id}"
+        meta_url = f"https://api.sportai.com/api/statistics/{task_id}"
         headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
-        meta_res = requests.get(url, headers=headers)
+        meta_res = requests.get(meta_url, headers=headers)
 
         if meta_res.status_code in [200, 201]:
-            result_url = meta_res.json()["data"]["result_url"]
-            result_res = requests.get(result_url)
+            meta_json = meta_res.json()
+            result_url = meta_json["data"].get("result_url")
+            if not result_url:
+                print("❌ No result_url found in metadata.")
+                return None
 
+            print(f"📡 Downloading JSON from: {result_url}")
+            result_res = requests.get(result_url)
             if result_res.status_code == 200:
                 os.makedirs("data", exist_ok=True)
                 timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-                filename = f"data/sportai-{task_id}-{email}-{timestamp}.json"
-                with open(filename, "w", encoding="utf-8") as f:
+                local_filename = f"data/sportai-{task_id}-{email}-{timestamp}.json"
+                with open(local_filename, "w", encoding="utf-8") as f:
                     f.write(result_res.text)
-                return filename
+                return local_filename
             else:
-                print(f"❌ Failed to download result JSON. Status: {result_res.status_code}")
+                print(f"❌ Could not download JSON. Status: {result_res.status_code}")
         else:
-            print(f"❌ Failed to get metadata. Status: {meta_res.status_code}")
+            print(f"❌ Metadata fetch failed. Status: {meta_res.status_code}")
     except Exception as e:
         print("❌ Exception in fetch_and_save_result:", str(e))
     return None
-
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
