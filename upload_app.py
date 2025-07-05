@@ -6,6 +6,7 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 from threading import Thread
 import time
+from json_to_powerbi_csv import export_csv_from_json
 
 app = Flask(__name__)
 
@@ -190,6 +191,14 @@ def fetch_and_save_result(task_id, email):
                 local_filename = f"data/sportai-{task_id}-{email}-{timestamp}.json"
                 with open(local_filename, "w", encoding="utf-8") as f:
                     f.write(result_res.text)
+
+                # ✅ NEW: Trigger automatic CSV export
+                try:
+                    export_csv_from_json(local_filename)
+                    print(f"📊 CSVs exported for {local_filename}")
+                except Exception as e:
+                    print(f"⚠️ Failed to export CSV for {local_filename}: {str(e)}")
+
                 return local_filename
             else:
                 print(f"❌ Could not download JSON. Status: {result_res.status_code}")
