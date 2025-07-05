@@ -108,127 +108,93 @@
       <div id="status"></div>
     </div>
   </div>
+
   <script>
     const form = document.getElementById("uploadForm");
     const statusText = document.getElementById("status");
     const spinner = document.getElementById("spinner");
     const progressFill = document.getElementById("progressFill");
-    let pollingInterval;
 
     function updateProgressBar(percent) {
       progressFill.style.width = percent + '%';
     }
 
-    function updateStatusSteps(message) {
+    function updateStatus(message) {
       statusText.innerText += "\n" + message;
     }
 
-    function pollStatus(taskId) {
-      const MAX_ATTEMPTS = 1800;
-      let attempts = 0;
-
-      pollingInterval = setInterval(() => {
-        attempts++;
-        fetch(`/task_status/${taskId}`)
-          .then(res => res.json())
-          .then(data => {
-            const s = data.data;
-            updateProgressBar(s.task_progress * 100);
-
-            let taskStatusEl = document.getElementById("task-status-line");
-            if (!taskStatusEl) {
-              taskStatusEl = document.createElement("div");
-              taskStatusEl.id = "task-status-line";
-              statusText.appendChild(taskStatusEl);
-            }
-
-            taskStatusEl.innerText = `📊 Task Status: ${s.task_status} (${Math.round(s.task_progress * 100)}%)`;
-
-            if (s.task_status === 'completed') {
-              clearInterval(pollingInterval);
-              updateStatusSteps("✅ Analysis complete. You can now download results.");
-            } else if (s.task_status === 'failed') {
-              clearInterval(pollingInterval);
-              updateStatusSteps("❌ Analysis failed. Please check the video or try a different clip.");
-            } else if (attempts >= MAX_ATTEMPTS) {
-              clearInterval(pollingInterval);
-              updateStatusSteps("⚠️ Task still running. Try refreshing or using a shorter clip.");
-            }
-          })
-          .catch(err => {
-            clearInterval(pollingInterval);
-            updateStatusSteps("❌ Polling error. Check console.");
-            console.error("Polling error:", err);
-          });
-      }, 4000);
-    }
-
-    form.addEventListener("submit", function(e) {
+    form.addEventListener("submit", function (e) {
       e.preventDefault();
       const formData = new FormData(form);
-      statusText.innerText = "🚀 Starting upload...\n";
-      spinner.style.display = "block";
+      statusText.innerText = "🚀 Starting upload...";
       updateProgressBar(5);
-      updateStatusSteps("1️⃣ Uploading video to Dropbox...");
+      spinner.style.display = "block";
 
       fetch("/upload", {
         method: "POST",
         body: formData
       })
-      .then(res => res.json())
-      .then(data => {
-        if (data.error) {
-          spinner.style.display = "none";
-          updateStatusSteps(`❌ Upload Error: ${data.error}`);
-          return;
-        }
-
-        const dropboxURL = data.dropbox_url;
-        updateProgressBar(20);
-        updateStatusSteps("2️⃣ Video uploaded. Checking quality...");
-
-        return fetch("/check_video", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ video_url: dropboxURL })
-        }).then(res => res.json()).then(result => {
-          if (result.error) {
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            updateStatus(`❌ Upload Error: ${data.error}`);
             spinner.style.display = "none";
-            updateStatusSteps(`❌ Quality Check Failed: ${result.error}`);
+            updateProgressBar(0);
             return;
           }
 
           updateProgressBar(40);
-          updateStatusSteps("✅ Video quality passed. Submitting to Sport AI...");
+          updateStatus("✅ Video uploaded. Task registered with Sport AI...");
+          updateStatus("📡 Waiting for analysis to complete...");
 
-          return fetch("/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ video_url: dropboxURL })
-          });
+          pollForCompletion(data.sportai_task_id);
+        })
+        .catch(err => {
+          updateStatus("❌ Final step failed. Check console.");
+          console.error("Upload error:", err);
+          spinner.style.display = "none";
         });
-      })
-      .then(res => res?.json())
-      .then(final => {
-        spinner.style.display = "none";
-        if (final?.sportai_task_id) {
-          updateProgressBar(60);
-          updateStatusSteps("📡 Polling Sport AI for progress...");
-          pollStatus(final.sportai_task_id);
-        } else if (final?.data?.task_id) {
-          updateProgressBar(60);
-          updateStatusSteps("📡 Task submitted. Beginning polling...");
-          pollStatus(final.data.task_id);
-        } else {
-          updateStatusSteps(`⚠️ Unexpected response: ${JSON.stringify(final)}`);
-        }
-      })
-      .catch(err => {
-        spinner.style.display = "none";
-        updateStatusSteps("❌ Final step failed. Check console.");
-        console.error("Final error:", err);
-      });
     });
+
+    function pollForCompletion(taskId) {
+      let attempts = 0;
+      const maxAttempts = 120;
+      const delay = 5000;
+
+      const interval = setInterval(() => {
+        attempts++;
+        fetch(`/task_status/${taskId}`)
+          .then(res => res.json())
+          .then(data => {
+            const status = data?.data?.task_status;
+            const progress = data?.data?.task_progress ?? 0;
+            updateProgressBar(progress * 100);
+
+            if (status === "completed") {
+              updateProgressBar(100);
+              updateStatus("✅ Analysis complete! Results saved.");
+              clearInterval(interval);
+              spinner.style.display = "none";
+            } else if (status === "failed") {
+              updateStatus("❌ Analysis failed. Please try again.");
+              clearInterval(interval);
+              spinner.style.display = "none";
+            } else if (attempts >= maxAttempts) {
+              updateStatus("⚠️ Timeout. Try refreshing or uploading again.");
+              clearInterval(interval);
+              spinner.style.display = "none";
+            } else {
+              updateStatus(`🔄 Status: ${status} (${Math.round(progress * 100)}%)`);
+            }
+          })
+          .catch(err => {
+            console.error("Polling error:", err);
+            updateStatus("❌ Polling failed.");
+            clearInterval(interval);
+            spinner.style.display = "none";
+          });
+      }, delay);
+    }
   </script>
 </body>
 </html>
