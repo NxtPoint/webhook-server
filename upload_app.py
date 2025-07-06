@@ -16,7 +16,6 @@ DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN")
 DROPBOX_APP_KEY = os.environ.get("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 
-
 def get_dropbox_access_token():
     res = requests.post(
         "https://api.dropboxapi.com/oauth2/token",
@@ -31,7 +30,6 @@ def get_dropbox_access_token():
         return res.json()['access_token']
     print("❌ Dropbox token refresh failed:", res.text)
     return None
-
 
 def check_video_accessibility(video_url):
     res = requests.post(
@@ -50,11 +48,9 @@ def check_video_accessibility(video_url):
     except Exception as e:
         return False, f"Video check failed: {str(e)}"
 
-
 @app.route('/')
 def index():
     return render_template("upload.html")
-
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -138,7 +134,6 @@ def upload():
         "sportai_task_id": task_id
     }), 200
 
-
 def poll_and_save_result(task_id, email):
     print(f"⏳ Polling started for task {task_id}...")
     max_attempts = 720       # Wait for up to 360 minutes
@@ -147,28 +142,28 @@ def poll_and_save_result(task_id, email):
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
 
     for attempt in range(max_attempts):
-        res = requests.get(url, headers=headers)
-        if res.status_code == 200:
-            status = res.json()["data"].get("status")
-            print(f"🔄 Attempt {attempt+1}: Status = {status}")
-            if status == "completed":
-                # Retry JSON download up to 5 times
-                for retry in range(5):
-                    filename = fetch_and_save_result(task_id, email)
-                    if filename:
-                        print(f"✅ Result saved to {filename}")
-                        return
-                    else:
-                        print(f"⏳ Retry {retry+1}/5: Waiting for result_url to become active...")
+        try:
+            res = requests.get(url, headers=headers)
+            if res.status_code == 200:
+                status = res.json()["data"].get("status")
+                print(f"🔄 Attempt {attempt+1}: Status = {status}")
+                if status == "completed":
+                    for retry in range(5):
+                        filename = fetch_and_save_result(task_id, email)
+                        if filename:
+                            print(f"✅ Result saved to {filename}")
+                            return
+                        print(f"⏳ Retry {retry+1}/5: Waiting for result_url...")
                         time.sleep(5)
-                print("❌ JSON download failed after completion status.")
-                return
-        else:
-            print("⚠️ Failed to check status:", res.text)
+                    print("❌ JSON download failed after completion status.")
+                    return
+            else:
+                print("⚠️ Failed to check status:", res.text)
+        except Exception as e:
+            print("❌ Exception while polling status:", str(e))
         time.sleep(delay)
 
     print("❌ Polling timed out after 60 minutes.")
-
 
 def fetch_and_save_result(task_id, email):
     try:
@@ -192,7 +187,6 @@ def fetch_and_save_result(task_id, email):
                 with open(local_filename, "w", encoding="utf-8") as f:
                     f.write(result_res.text)
 
-                # ✅ NEW: Trigger automatic CSV export
                 try:
                     export_csv_from_json(local_filename)
                     print(f"📊 CSVs exported for {local_filename}")
