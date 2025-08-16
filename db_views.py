@@ -4,7 +4,7 @@ from sqlalchemy import text
 def create_views(engine):
     """
     Drops and recreates analytic views so column lists can change safely.
-    Re-run whenever schema evolves.
+    Compatible with legacy columns (is_serve, swing_start_ts, ball_player_dist, ball_x/ball_y).
     """
     view_sql = [
         # -- Bounce view
@@ -25,7 +25,7 @@ def create_views(engine):
         LEFT JOIN dim_rally r USING (rally_id);
         """,
 
-        # -- Swing view
+        # -- Swing view (coalesce legacy/new cols)
         """
         DROP VIEW IF EXISTS vw_swing;
         CREATE VIEW vw_swing AS
@@ -35,7 +35,7 @@ def create_views(engine):
             r.rally_number,
             s.player_id,
             s.swing_type,
-            s.serve,
+            COALESCE(s.serve, s.is_serve)                        AS serve,
             s.volley,
             s.is_in_rally,
             s.confidence,
@@ -44,11 +44,11 @@ def create_views(engine):
             s.ball_hit_ts,
             s.ball_hit_s,
             s.ball_speed,
-            s.ball_player_distance,
-            s.ball_hit_x,
-            s.ball_hit_y,
-            s.start_ts,
-            s.end_ts,
+            COALESCE(s.ball_player_distance, s.ball_player_dist) AS ball_player_distance,
+            COALESCE(s.ball_hit_x, s.ball_x)                     AS ball_hit_x,
+            COALESCE(s.ball_hit_y, s.ball_y)                     AS ball_hit_y,
+            COALESCE(s.start_ts, s.swing_start_ts)               AS start_ts,
+            COALESCE(s.end_ts, s.swing_end_ts)                   AS end_ts,
             s.start_s,
             s.end_s
         FROM fact_swing s
