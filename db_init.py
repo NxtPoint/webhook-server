@@ -166,15 +166,14 @@ DDL_CREATE = [
     """
 ]
 
-# Add columns safely if table already exists (schema drift fix)
 DDL_MIGRATE = [
-    # dim_rally
+    # dim_rally columns
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
 
-    # fact_swing
+    # fact_swing columns
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_s DOUBLE PRECISION;",
@@ -190,22 +189,34 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve_type TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS meta JSONB;",
 
-    # fact_bounce
+    # fact_bounce columns + FK (with LANGUAGE plpgsql)
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INTEGER;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_s DOUBLE PRECISION;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_ts TIMESTAMPTZ;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT;",
-    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_bounce_rally_id_fkey') THEN ALTER TABLE fact_bounce ADD CONSTRAINT fact_bounce_rally_id_fkey FOREIGN KEY (rally_id) REFERENCES dim_rally(rally_id) ON DELETE SET NULL; END IF; END $$;",
+    """
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fact_bounce_rally_id_fkey'
+      ) THEN
+        ALTER TABLE fact_bounce
+          ADD CONSTRAINT fact_bounce_rally_id_fkey
+          FOREIGN KEY (rally_id) REFERENCES dim_rally(rally_id) ON DELETE SET NULL;
+      END IF;
+    END $$ LANGUAGE plpgsql;
+    """,
 
-    # fact_ball_position
+    # fact_ball_position columns
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS ts_s DOUBLE PRECISION;",
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ;",
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
 
-    # fact_player_position
+    # fact_player_position columns
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS ts_s DOUBLE PRECISION;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
