@@ -8,8 +8,8 @@ def _engine():
         raise RuntimeError("DATABASE_URL not set")
     return create_engine(url, pool_pre_ping=True)
 
-DDL = [
-# ------------------ core dims ------------------
+DDL_CREATE = [
+# ------------------ core dims (create if they don't exist) ------------------
 """
 CREATE TABLE IF NOT EXISTS dim_session (
   session_id           SERIAL PRIMARY KEY,
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS dim_session (
 """
 CREATE TABLE IF NOT EXISTS dim_player (
   player_id              BIGSERIAL PRIMARY KEY,
-  session_id             INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id             INT,
   sportai_player_uid     TEXT NOT NULL,
   full_name              TEXT,
   handedness             TEXT,
@@ -35,20 +35,18 @@ CREATE TABLE IF NOT EXISTS dim_player (
   fastest_sprint_timestamp_s REAL,
   activity_score         REAL,
   swing_type_distribution JSONB,
-  location_heatmap       JSONB,
-  UNIQUE (session_id, sportai_player_uid)
+  location_heatmap       JSONB
 );
 """,
 """
 CREATE TABLE IF NOT EXISTS dim_rally (
   rally_id                 BIGSERIAL PRIMARY KEY,
-  session_id               INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id               INT,
   rally_number             INT NOT NULL,
   start_ts                 TIMESTAMPTZ,
   end_ts                   TIMESTAMPTZ,
-  point_winner_player_id   INT REFERENCES dim_player(player_id),
-  length_shots             INT,
-  UNIQUE (session_id, rally_number)
+  point_winner_player_id   INT,
+  length_shots             INT
 );
 """,
 
@@ -56,38 +54,31 @@ CREATE TABLE IF NOT EXISTS dim_rally (
 """
 CREATE TABLE IF NOT EXISTS fact_swing (
   swing_id               BIGSERIAL PRIMARY KEY,
-  session_id             INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
-  rally_id               INT REFERENCES dim_rally(rally_id) ON DELETE SET NULL,
-  player_id              INT REFERENCES dim_player(player_id) ON DELETE SET NULL,
-  -- absolute timestamps (derived)
+  session_id             INT,
+  rally_id               INT,
+  player_id              INT,
   start_ts               TIMESTAMPTZ,
   end_ts                 TIMESTAMPTZ,
   ball_hit_ts            TIMESTAMPTZ,
-  -- seconds/frame as in API
   start_s                REAL,
   end_s                  REAL,
   ball_hit_s             REAL,
   start_frame            INT,
   end_frame              INT,
   ball_hit_frame         INT,
-  -- attributes
   swing_type             TEXT,
   serve                  BOOLEAN,
   volley                 BOOLEAN,
   is_in_rally            BOOLEAN,
-  -- confidences
   confidence             REAL,
   confidence_swing_type  REAL,
   confidence_volley      REAL,
-  -- rally window on the swing (seconds)
   rally_start_s          REAL,
   rally_end_s            REAL,
-  -- at-impact info
   ball_hit_x             REAL,
   ball_hit_y             REAL,
   ball_player_distance   REAL,
   ball_speed             REAL,
-  -- future fields (nullable)
   ball_impact_location_x REAL,
   ball_impact_location_y REAL,
   ball_impact_type       TEXT,
@@ -99,20 +90,20 @@ CREATE TABLE IF NOT EXISTS fact_swing (
 """
 CREATE TABLE IF NOT EXISTS fact_bounce (
   bounce_id            BIGSERIAL PRIMARY KEY,
-  session_id           INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
-  rally_id             INT REFERENCES dim_rally(rally_id) ON DELETE SET NULL,
-  timestamp_s          REAL,       -- as delivered by API
-  bounce_ts            TIMESTAMPTZ, -- absolute (derived from seconds)
+  session_id           INT,
+  rally_id             INT,
+  timestamp_s          REAL,
+  bounce_ts            TIMESTAMPTZ,
   bounce_x             REAL,
   bounce_y             REAL,
-  hitter_player_id     INT REFERENCES dim_player(player_id) ON DELETE SET NULL,
-  bounce_type          TEXT        -- "floor" | "swing"
+  hitter_player_id     INT,
+  bounce_type          TEXT
 );
 """,
 """
 CREATE TABLE IF NOT EXISTS fact_ball_position (
   id             BIGSERIAL PRIMARY KEY,
-  session_id     INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id     INT,
   timestamp_s    REAL,
   ts             TIMESTAMPTZ,
   x_image        REAL,
@@ -122,8 +113,8 @@ CREATE TABLE IF NOT EXISTS fact_ball_position (
 """
 CREATE TABLE IF NOT EXISTS fact_player_position (
   id             BIGSERIAL PRIMARY KEY,
-  session_id     INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
-  player_id      INT REFERENCES dim_player(player_id) ON DELETE CASCADE,
+  session_id     INT,
+  player_id      INT,
   timestamp_s    REAL,
   ts             TIMESTAMPTZ,
   img_x          REAL,
@@ -137,7 +128,7 @@ CREATE TABLE IF NOT EXISTS fact_player_position (
 """
 CREATE TABLE IF NOT EXISTS team_session (
   id            BIGSERIAL PRIMARY KEY,
-  session_id    INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id    INT,
   start_s       REAL,
   end_s         REAL,
   front_team    INT[],
@@ -147,7 +138,7 @@ CREATE TABLE IF NOT EXISTS team_session (
 """
 CREATE TABLE IF NOT EXISTS highlight (
   id                  BIGSERIAL PRIMARY KEY,
-  session_id          INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id          INT,
   type                TEXT,
   start_s             REAL,
   end_s               REAL,
@@ -163,13 +154,13 @@ CREATE TABLE IF NOT EXISTS highlight (
 """,
 """
 CREATE TABLE IF NOT EXISTS bounce_heatmap (
-  session_id   INT PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id   INT PRIMARY KEY,
   heatmap      JSONB
 );
 """,
 """
 CREATE TABLE IF NOT EXISTS session_confidences (
-  session_id           INT PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id           INT PRIMARY KEY,
   pose                 REAL,
   swing                REAL,
   swing_ball           REAL,
@@ -183,7 +174,7 @@ CREATE TABLE IF NOT EXISTS session_confidences (
 """
 CREATE TABLE IF NOT EXISTS thumbnail (
   id            BIGSERIAL PRIMARY KEY,
-  session_id    INT REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id    INT,
   player_uid    TEXT,
   frame_nr      INT,
   timestamp_s   REAL,
@@ -193,12 +184,150 @@ CREATE TABLE IF NOT EXISTS thumbnail (
 """,
 """
 CREATE TABLE IF NOT EXISTS raw_result (
-  session_id   INT PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
+  session_id   INT PRIMARY KEY,
   payload      JSONB
 );
+"""
+]
+
+MIGRATION = [
+# --- Add missing columns on dim_player (v1 -> v2)
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS session_id INT",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS age REAL",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS utr REAL",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS covered_distance REAL",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS fastest_sprint REAL",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS fastest_sprint_timestamp_s REAL",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS activity_score REAL",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB",
+"ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS location_heatmap JSONB",
+
+# --- Ensure FK dim_player.session_id -> dim_session
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'dim_player_session_fk'
+  ) THEN
+    ALTER TABLE dim_player
+      ADD CONSTRAINT dim_player_session_fk
+      FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
+  END IF;
+END$$;
 """,
 
-# ------------------ indexes for speed ------------------
+# --- Drop old unique on sportai_player_uid only (name from Postgres default)
+"ALTER TABLE dim_player DROP CONSTRAINT IF EXISTS dim_player_sportai_player_uid_key",
+"DROP INDEX IF EXISTS dim_player_sportai_player_uid_key",
+
+# --- Add composite unique (session_id, sportai_player_uid)
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid)",
+
+# --- Add FKs we rely on elsewhere (best-effort; they may already exist)
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dim_rally_session_fk') THEN
+    ALTER TABLE dim_rally
+      ADD CONSTRAINT dim_rally_session_fk
+      FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dim_rally_winner_fk') THEN
+    ALTER TABLE dim_rally
+      ADD CONSTRAINT dim_rally_winner_fk
+      FOREIGN KEY (point_winner_player_id) REFERENCES dim_player(player_id);
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_swing_session_fk') THEN
+    ALTER TABLE fact_swing
+      ADD CONSTRAINT fact_swing_session_fk
+      FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_swing_rally_fk') THEN
+    ALTER TABLE fact_swing
+      ADD CONSTRAINT fact_swing_rally_fk
+      FOREIGN KEY (rally_id) REFERENCES dim_rally(rally_id) ON DELETE SET NULL;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_swing_player_fk') THEN
+    ALTER TABLE fact_swing
+      ADD CONSTRAINT fact_swing_player_fk
+      FOREIGN KEY (player_id) REFERENCES dim_player(player_id) ON DELETE SET NULL;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_bounce_session_fk') THEN
+    ALTER TABLE fact_bounce
+      ADD CONSTRAINT fact_bounce_session_fk
+      FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_bounce_rally_fk') THEN
+    ALTER TABLE fact_bounce
+      ADD CONSTRAINT fact_bounce_rally_fk
+      FOREIGN KEY (rally_id) REFERENCES dim_rally(rally_id) ON DELETE SET NULL;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_bounce_player_fk') THEN
+    ALTER TABLE fact_bounce
+      ADD CONSTRAINT fact_bounce_player_fk
+      FOREIGN KEY (hitter_player_id) REFERENCES dim_player(player_id) ON DELETE SET NULL;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_player_pos_session_fk') THEN
+    ALTER TABLE fact_player_position
+      ADD CONSTRAINT fact_player_pos_session_fk
+      FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
+  END IF;
+END$$;
+""",
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='fact_player_pos_player_fk') THEN
+    ALTER TABLE fact_player_position
+      ADD CONSTRAINT fact_player_pos_player_fk
+      FOREIGN KEY (player_id) REFERENCES dim_player(player_id) ON DELETE CASCADE;
+  END IF;
+END$$;
+""",
+
+# --- performance indexes
 "CREATE INDEX IF NOT EXISTS idx_dim_player_session ON dim_player(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_dim_rally_session ON dim_rally(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_fact_bounce_session ON fact_bounce(session_id)",
@@ -212,6 +341,10 @@ CREATE TABLE IF NOT EXISTS raw_result (
 def init_db():
     eng = _engine()
     with eng.begin() as conn:
-        for stmt in DDL:
+        # 1) Create tables if missing
+        for stmt in DDL_CREATE:
             conn.execute(text(stmt))
-    return "schema v2 ready"
+        # 2) Run migration / ensure columns, constraints, indexes
+        for stmt in MIGRATION:
+            conn.execute(text(stmt))
+    return "schema v2 ready (auto-migrated)"
