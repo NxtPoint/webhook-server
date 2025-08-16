@@ -1,3 +1,4 @@
+# db_views.py
 from sqlalchemy import text
 
 VIEW_NAMES = [
@@ -96,10 +97,6 @@ def _column_exists(conn, t, c):
     """), {"t": t, "c": c}).first() is not None
 
 def _get_relkind(conn, name):
-    """
-    Returns:
-      'v' = view, 'm' = materialized view, None = not found
-    """
     row = conn.execute(text("""
         SELECT c.relkind
         FROM pg_class c
@@ -107,7 +104,7 @@ def _get_relkind(conn, name):
         WHERE n.nspname='public' AND c.relname=:name
         LIMIT 1
     """), {"name": name}).first()
-    return row[0] if row else None
+    return row[0] if row else None  # 'v' view, 'm' matview
 
 def _drop_view_or_matview(conn, name):
     kind = _get_relkind(conn, name)
@@ -115,9 +112,6 @@ def _drop_view_or_matview(conn, name):
         conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
     elif kind == 'm':
         conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
-    else:
-        # Not found; nothing to drop
-        return
 
 def _preflight_or_raise(conn):
     required_tables = [
@@ -147,11 +141,7 @@ def _preflight_or_raise(conn):
 def run_views(engine):
     with engine.begin() as conn:
         _preflight_or_raise(conn)
-
-        # Drop each object with the correct command for its type
         for name in VIEW_NAMES:
             _drop_view_or_matview(conn, name)
-
-        # Create fresh views
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))

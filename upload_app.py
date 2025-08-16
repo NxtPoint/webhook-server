@@ -26,6 +26,47 @@ def _guard():
 def _forbid():
     return Response("Forbidden", status=403)
 
+def _float(v):
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except Exception:
+        try:
+            return float(str(v))
+        except Exception:
+            return None
+
+def _bool(v):
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("1","true","t","yes","y"): return True
+    if s in ("0","false","f","no","n"): return False
+    return None
+
+def _get_time_s(val):
+    """
+    Accepts:
+      - number/string seconds
+      - dicts like {"timestamp": 12.3, "frame_nr": 123}
+      - dicts like {"ts": 12.3}
+    Returns float seconds or None.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, dict):
+        for k in ("timestamp", "ts", "seconds", "sec", "s"):
+            if k in val:
+                return _float(val[k])
+        # sometimes nested under {"start": {"timestamp": ...}}
+        # already handled here
+    return _float(val)
+
 def seconds_to_ts(base_dt, s):
     if s is None:
         return None
@@ -33,21 +74,6 @@ def seconds_to_ts(base_dt, s):
         return base_dt + timedelta(seconds=float(s))
     except Exception:
         return None
-
-def _float(v):
-    if v is None: return None
-    try: return float(v)
-    except Exception:
-        try: return float(str(v))
-        except Exception: return None
-
-def _bool(v):
-    if v is None: return None
-    if isinstance(v, bool): return v
-    s = str(v).strip().lower()
-    if s in ("1","true","t","yes","y"): return True
-    if s in ("0","false","f","no","n"): return False
-    return None
 
 def _get_json_from_sources():
     """
@@ -57,7 +83,6 @@ def _get_json_from_sources():
       3) POST file field 'file'
       4) raw JSON body
     """
-    # ---- Option B: name= with dual-path fallback ----
     name = request.args.get("name")
     if name:
         candidates = []
@@ -76,7 +101,6 @@ def _get_json_from_sources():
                 continue
         raise FileNotFoundError(f"File not found. Tried: {', '.join(candidates)}")
 
-    # URL source
     url = request.args.get("url")
     if url:
         import requests
@@ -84,11 +108,9 @@ def _get_json_from_sources():
         r.raise_for_status()
         return r.json()
 
-    # Multipart upload
     if "file" in request.files:
         return json.load(request.files["file"].stream)
 
-    # Raw JSON body
     if request.data:
         return json.loads(request.data.decode("utf-8"))
 
@@ -140,7 +162,7 @@ def _base_dt_for_session(session_date):
     return session_date if session_date else datetime(1970,1,1,tzinfo=timezone.utc)
 
 # -----------------------------
-# Ingestion (SportAI v2)
+# Ingestion (SportAI v2 tolerant)
 # -----------------------------
 def ingest_result_v2(conn, payload, replace=False):
     session_uid = _resolve_session_uid(payload)
@@ -150,11 +172,9 @@ def ingest_result_v2(conn, payload, replace=False):
     meta = payload.get("meta") or payload.get("metadata") or {}
     meta_json = json.dumps(meta)
 
-    # Replace-mode: wipe session rows
     if replace:
         conn.execute(text("DELETE FROM dim_session WHERE session_uid = :u"), {"u": session_uid})
 
-    # Upsert session
     conn.execute(text("""
         INSERT INTO dim_session (session_uid, fps, session_date, meta)
         VALUES (:u, :fps, :sdt, CAST(:m AS JSONB))
@@ -170,19 +190,19 @@ def ingest_result_v2(conn, payload, replace=False):
         {"u": session_uid}
     ).scalar_one()
 
-    # Raw snapshot
     conn.execute(text("""
         INSERT INTO raw_result (session_id, payload_json, created_at)
         VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
     """), {"sid": session_id, "p": json.dumps(payload)})
 
-    # Players & nested swings
+    # Players (accept player_id, id, sportai_player_uid, uid)
     players = payload.get("players") or []
     uid_to_player_id = {}
     for p in players:
-        puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or "")
-        if not puid:
+        puid = p.get("player_id") or p.get("id") or p.get("sportai_player_uid") or p.get("uid")
+        if puid is None:
             continue
+        puid = str(puid)
         full_name = p.get("full_name") or p.get("name")
         handed = p.get("handedness")
         age = p.get("age")
@@ -232,21 +252,21 @@ def ingest_result_v2(conn, payload, replace=False):
         for s in p.get("swings") or []:
             _insert_swing(conn, session_id, pid, s, base_dt)
 
-    # Optional top-level swings
+    # Optional top-level swings (map by uid/player_id if provided)
     for s in payload.get("swings") or []:
-        puid = str(s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid") or "")
-        pid = uid_to_player_id.get(puid)
+        puid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid") or s.get("uid")
+        pid = uid_to_player_id.get(str(puid)) if puid is not None else None
         _insert_swing(conn, session_id, pid, s, base_dt)
 
-    # Rallies
+    # Rallies: list of dicts or pairs; allow nested start/end dicts
     rallies = payload.get("rallies") or []
     for i, r in enumerate(rallies, start=1):
         if isinstance(r, dict):
-            start_s = _float(r.get("start_ts") or r.get("start"))
-            end_s   = _float(r.get("end_ts") or r.get("end"))
+            start_s = _get_time_s(r.get("start_ts")) or _get_time_s(r.get("start"))
+            end_s   = _get_time_s(r.get("end_ts"))   or _get_time_s(r.get("end"))
         else:
             try:
-                start_s = _float(r[0]); end_s = _float(r[1])
+                start_s = _get_time_s(r[0]); end_s = _get_time_s(r[1])
             except Exception:
                 start_s, end_s = None, None
         conn.execute(text("""
@@ -261,7 +281,7 @@ def ingest_result_v2(conn, payload, replace=False):
         """), {"sid": session_id, "n": i, "ss": start_s, "es": end_s,
                "sts": seconds_to_ts(base_dt, start_s), "ets": seconds_to_ts(base_dt, end_s)})
 
-    # Helper to map timestamp -> rally_id
+    # Helper: timestamp -> rally_id
     def rally_id_for_ts(ts_s):
         if ts_s is None:
             return None
@@ -274,11 +294,11 @@ def ingest_result_v2(conn, payload, replace=False):
 
     # Bounces
     for b in payload.get("ball_bounces") or []:
-        s = _float(b.get("timestamp_s") or b.get("ts") or b.get("t"))
+        s = _get_time_s(b.get("timestamp_s")) or _get_time_s(b.get("timestamp")) or _get_time_s(b.get("ts")) or _get_time_s(b.get("t"))
         x = _float(b.get("x")); y = _float(b.get("y"))
         btype = b.get("type") or b.get("bounce_type")
-        hitter_uid = str(b.get("player_id") or b.get("sportai_player_uid") or "") if b.get("player_id") or b.get("sportai_player_uid") else None
-        hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
+        hitter_uid = b.get("player_id") or b.get("sportai_player_uid")
+        hitter_pid = uid_to_player_id.get(str(hitter_uid)) if hitter_uid is not None else None
         conn.execute(text("""
             INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id, bounce_s, bounce_ts, x, y, bounce_type)
             VALUES (:sid, :pid, :rid, :s, :ts, :x, :y, :bt)
@@ -287,7 +307,7 @@ def ingest_result_v2(conn, payload, replace=False):
 
     # Ball positions
     for p in payload.get("ball_positions") or []:
-        s = _float(p.get("timestamp_s") or p.get("ts") or p.get("t"))
+        s = _get_time_s(p.get("timestamp_s")) or _get_time_s(p.get("timestamp")) or _get_time_s(p.get("ts")) or _get_time_s(p.get("t"))
         x = _float(p.get("x")); y = _float(p.get("y"))
         conn.execute(text("""
             INSERT INTO fact_ball_position (session_id, ts_s, ts, x, y)
@@ -298,7 +318,7 @@ def ingest_result_v2(conn, payload, replace=False):
     for puid, arr in (payload.get("player_positions") or {}).items():
         pid = uid_to_player_id.get(str(puid))
         for p in arr or []:
-            s = _float(p.get("timestamp_s") or p.get("ts") or p.get("t"))
+            s = _get_time_s(p.get("timestamp_s")) or _get_time_s(p.get("timestamp")) or _get_time_s(p.get("ts")) or _get_time_s(p.get("t"))
             x = _float(p.get("x")); y = _float(p.get("y"))
             conn.execute(text("""
                 INSERT INTO fact_player_position (session_id, player_id, ts_s, ts, x, y)
@@ -339,9 +359,9 @@ def ingest_result_v2(conn, payload, replace=False):
 
 def _insert_swing(conn, session_id, player_id, s, base_dt):
     suid = s.get("id") or s.get("swing_uid") or s.get("uid")
-    start_s = _float(s.get("start_ts") or s.get("start") or s.get("start_s"))
-    end_s   = _float(s.get("end_ts") or s.get("end") or s.get("end_s"))
-    bh_s    = _float(s.get("ball_hit_timestamp") or s.get("ball_hit_ts") or s.get("ball_hit_s"))
+    start_s = _get_time_s(s.get("start_ts")) or _get_time_s(s.get("start")) or _get_time_s(s.get("start_s"))
+    end_s   = _get_time_s(s.get("end_ts"))   or _get_time_s(s.get("end"))   or _get_time_s(s.get("end_s"))
+    bh_s    = _get_time_s(s.get("ball_hit_timestamp")) or _get_time_s(s.get("ball_hit_ts")) or _get_time_s(s.get("ball_hit_s"))
     bh = s.get("ball_hit_location") or {}
     bhx = _float(bh.get("x")) if isinstance(bh, dict) else None
     bhy = _float(bh.get("y")) if isinstance(bh, dict) else None
@@ -452,8 +472,7 @@ def ops_ingest_file():
     replace = str(request.args.get("replace","0")).strip().lower() in ("1","true","yes","y")
     try:
         payload = _get_json_from_sources()
-        # ensure schema/migrations present before ingest
-        init_db(engine)
+        init_db(engine)  # ensure migrations before ingest
         with engine.begin() as conn:
             res = ingest_result_v2(conn, payload, replace=replace)
         return jsonify({"ok": True, **res, "replace": replace})
