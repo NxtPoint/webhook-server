@@ -3,6 +3,7 @@ import os, json, time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OPS_KEY = os.environ.get("OPS_KEY")
@@ -38,7 +39,7 @@ def _time_s(val):
     """
     Accepts:
       - number-like: 54.36 / "54.36"
-      - dict like: {"timestamp": 54.36, "frame_nr": 1358}, {"ts": 54.36}, {"time_s": 54.36}, {"t": 54.36}, {"seconds": 54.36}
+      - dict like: {"timestamp": 54.36}, {"ts": 54.36}, {"time_s": 54.36}, {"t": 54.36}, {"seconds": 54.36}
     Returns float seconds or None.
     """
     if val is None:
@@ -118,49 +119,148 @@ def _resolve_session_date(payload):
 
 def _base_dt_for_session(dt): return dt if dt else datetime(1970,1,1,tzinfo=timezone.utc)
 
-# ---------------------- ingest core ----------------------
-def _insert_swing(conn, session_id, player_id, s, base_dt):
-    # ids
-    suid = s.get("id") or s.get("swing_uid") or s.get("uid")
+# ---------- swing extraction (robust) ----------
+_SWING_TYPES = {"swing","stroke","shot","hit","serve","forehand","backhand","volley","overhead","slice","drop","lob"}
 
-    # times – robust to dicts and alternate keys
-    start_s = _time_s(s.get("start_ts")) or _time_s(s.get("start_s")) or _time_s(s.get("start"))
-    end_s   = _time_s(s.get("end_ts"))   or _time_s(s.get("end_s"))   or _time_s(s.get("end"))
+def _extract_ball_hit_from_events(events):
+    """Find a ball-hit-like event in an events list."""
+    if not isinstance(events, list): return (None, None, None)
+    for ev in events:
+        if not isinstance(ev, dict): continue
+        label = (str(ev.get("type") or ev.get("label") or "")).lower()
+        if label in {"ball_hit","contact","impact"}:
+            ts = _time_s(ev.get("timestamp") or ev.get("ts") or ev.get("time_s") or ev.get("t"))
+            loc = ev.get("location") or {}
+            return ts, _float((loc or {}).get("x")), _float((loc or {}).get("y"))
+    return (None, None, None)
 
-    # ball hit time: can be flat or nested under ball_hit{timestamp}
-    bh_s_sources = [
-        s.get("ball_hit_timestamp"), s.get("ball_hit_ts"), s.get("ball_hit_s"),
-        (s.get("ball_hit") or {}).get("timestamp") if isinstance(s.get("ball_hit"), dict) else None,
-        s.get("ball_hit") if not isinstance(s.get("ball_hit"), dict) else None
-    ]
-    bh_s = None
-    for v in bh_s_sources:
-        bh_s = _time_s(v)
-        if bh_s is not None:
-            break
+def _normalize_swing_obj(obj):
+    """
+    Normalize a swing-like object to our schema.
+    Returns dict with keys:
+      suid, player_uid, start_s, end_s, ball_hit_s, ball_hit_x, ball_hit_y, serve, serve_type, meta
+    or None if it doesn't look like a swing.
+    """
+    if not isinstance(obj, dict): return None
 
-    # ball hit location may be ball_hit_location or ball_hit.location
-    bh_loc = s.get("ball_hit_location")
-    if bh_loc is None and isinstance(s.get("ball_hit"), dict):
-        bh_loc = (s.get("ball_hit") or {}).get("location")
-    bhx = _float(bh_loc.get("x")) if isinstance(bh_loc, dict) else None
-    bhy = _float(bh_loc.get("y")) if isinstance(bh_loc, dict) else None
+    suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
 
-    bspeed = _float(s.get("ball_speed"))
-    bpd    = _float(s.get("ball_player_distance"))
-    in_rally = _bool(s.get("is_in_rally"))
-    serve    = _bool(s.get("serve"))
-    serve_type = s.get("serve_type")
+    # times: look at common variants + nested
+    start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
+    end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
 
-    # preserve unknown keys as meta
-    meta = {k: v for k, v in s.items() if k not in {
-        "id","swing_uid","uid","player_id","sportai_player_uid",
+    # If only a timestamp exists, treat it as both start/end (zero-duration swing)
+    if start_s is None and end_s is None:
+        only_ts = _time_s(obj.get("timestamp") or obj.get("ts") or obj.get("time_s") or obj.get("t"))
+        if only_ts is not None:
+            start_s = end_s = only_ts
+
+    # ball hit time + location
+    bh_s = None; bhx = None; bhy = None
+    # explicit fields
+    bh_s = _time_s(obj.get("ball_hit_timestamp") or obj.get("ball_hit_ts") or obj.get("ball_hit_s"))
+    if bh_s is None:
+        # nested ball_hit object
+        if isinstance(obj.get("ball_hit"), dict):
+            bh_s = _time_s(obj["ball_hit"].get("timestamp"))
+            loc = obj["ball_hit"].get("location") or {}
+            bhx = _float(loc.get("x"))
+            bhy = _float(loc.get("y"))
+    # fallback: search events
+    if bh_s is None:
+        ev_bh_s, ev_bhx, ev_bhy = _extract_ball_hit_from_events(obj.get("events"))
+        bh_s = ev_bh_s
+        bhx = bhx if bhx is not None else ev_bhx
+        bhy = bhy if bhy is not None else ev_bhy
+
+    # explicit ball_hit_location
+    if (bhx is None or bhy is None) and isinstance(obj.get("ball_hit_location"), dict):
+        bhx = _float(obj["ball_hit_location"].get("x"))
+        bhy = _float(obj["ball_hit_location"].get("y"))
+
+    # serve detection / type
+    label = (str(obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower()
+    serve = _bool(obj.get("serve"))
+    serve_type = obj.get("serve_type")
+    if not serve and label in {"serve","first_serve","second_serve"}:
+        serve = True
+        if serve_type is None and label != "serve":
+            serve_type = label
+
+    player_uid = (obj.get("player_id") or obj.get("sportai_player_uid") or obj.get("player_uid") or obj.get("player"))
+    if player_uid is not None:
+        player_uid = str(player_uid)
+
+    # looks like a swing if we have at least a time or ball-hit
+    if start_s is None and end_s is None and bh_s is None:
+        return None
+
+    # preserve unknown fields
+    meta = {k: v for k, v in obj.items() if k not in {
+        "id","uid","swing_uid",
+        "player_id","sportai_player_uid","player_uid","player",
+        "type","label","stroke_type",
         "start","start_s","start_ts","end","end_s","end_ts",
+        "timestamp","ts","time_s","t",
         "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
-        "ball_speed","ball_player_distance","is_in_rally","serve","serve_type"
+        "events","serve","serve_type"
     }}
-    meta_json = json.dumps(meta) if meta else None
+    return {
+        "suid": suid,
+        "player_uid": player_uid,
+        "start_s": start_s,
+        "end_s": end_s,
+        "ball_hit_s": bh_s,
+        "ball_hit_x": bhx,
+        "ball_hit_y": bhy,
+        "serve": serve,
+        "serve_type": serve_type,
+        "meta": meta if meta else None,
+        "label": label,
+    }
 
+def _iter_candidate_swings_from_container(container):
+    """Yield swing-like dicts from a generic container (dict with arrays)."""
+    if not isinstance(container, dict):
+        return
+    # direct arrays
+    for key in ("swings","strokes","swing_events","events"):
+        arr = container.get(key)
+        if isinstance(arr, list):
+            for item in arr:
+                # If searching events[], require swing-ish label
+                if key == "events":
+                    lbl = str((item or {}).get("type") or (item or {}).get("label") or "").lower()
+                    if lbl and (lbl in _SWING_TYPES or "swing" in lbl or "stroke" in lbl):
+                        norm = _normalize_swing_obj(item)
+                        if norm: yield norm
+                else:
+                    norm = _normalize_swing_obj(item)
+                    if norm: yield norm
+
+def _gather_all_swings(payload):
+    """Collect swings from all plausible places, normalized."""
+    # 1) top-level
+    for norm in _iter_candidate_swings_from_container(payload or {}):
+        yield norm
+    # 2) players[*]
+    for p in (payload.get("players") or []):
+        # propagate player id to child objects if missing
+        p_uid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
+        # direct swings/strokes/events under the player
+        for norm in _iter_candidate_swings_from_container(p):
+            if not norm.get("player_uid") and p_uid:
+                norm["player_uid"] = p_uid
+            yield norm
+        # sometimes swings are bundled under nested "statistics" or similar
+        stats = p.get("statistics") or p.get("stats") or {}
+        for norm in _iter_candidate_swings_from_container(stats):
+            if not norm.get("player_uid") and p_uid:
+                norm["player_uid"] = p_uid
+            yield norm
+
+# ---------------------- ingest ----------------------
+def _insert_swing(conn, session_id, player_id, s, base_dt):
     conn.execute(text("""
         INSERT INTO fact_swing (
             session_id, player_id, sportai_swing_uid,
@@ -178,12 +278,14 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
     """), {
         "sid": session_id,
         "pid": player_id,
-        "suid": str(suid) if suid else None,
-        "ss": start_s, "es": end_s, "bhs": bh_s,
-        "sts": seconds_to_ts(base_dt, start_s), "ets": seconds_to_ts(base_dt, end_s),
-        "bh_ts": seconds_to_ts(base_dt, bh_s),
-        "bhx": bhx, "bhy": bhy, "bs": bspeed, "bpd": bpd,
-        "inr": in_rally, "srv": serve, "stype": serve_type, "meta": meta_json
+        "suid": s.get("suid"),
+        "ss": s.get("start_s"), "es": s.get("end_s"), "bhs": s.get("ball_hit_s"),
+        "sts": seconds_to_ts(base_dt, s.get("start_s")), "ets": seconds_to_ts(base_dt, s.get("end_s")),
+        "bh_ts": seconds_to_ts(base_dt, s.get("ball_hit_s")),
+        "bhx": s.get("ball_hit_x"), "bhy": s.get("ball_hit_y"),
+        "bs": s.get("ball_speed"), "bpd": s.get("ball_player_distance"),
+        "inr": s.get("is_in_rally"), "srv": s.get("serve"), "stype": s.get("serve_type"),
+        "meta": json.dumps(s.get("meta")) if s.get("meta") else None
     })
 
 def ingest_result_v2(conn, payload, replace=False):
@@ -216,11 +318,11 @@ def ingest_result_v2(conn, payload, replace=False):
         VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
     """), {"sid": session_id, "p": json.dumps(payload)})
 
-    # players (+ nested swings)
+    # players (+ nested swings handled later by generic gatherer too)
     players = payload.get("players") or []
     uid_to_player_id = {}
     for p in players:
-        puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or "")
+        puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
         if not puid: continue
         full_name = p.get("full_name") or p.get("name")
         handed    = p.get("handedness")
@@ -267,15 +369,6 @@ def ingest_result_v2(conn, payload, replace=False):
             WHERE session_id = :sid AND sportai_player_uid = :puid
         """), {"sid": session_id, "puid": puid}).scalar_one()
         uid_to_player_id[puid] = pid
-
-        for s in p.get("swings") or []:
-            _insert_swing(conn, session_id, pid, s, base_dt)
-
-    # top-level swings (optional)
-    for s in payload.get("swings") or []:
-        puid = str(s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid") or "")
-        pid = uid_to_player_id.get(puid)
-        _insert_swing(conn, session_id, pid, s, base_dt)
 
     # rallies
     for i, r in enumerate(payload.get("rallies") or [], start=1):
@@ -374,12 +467,53 @@ def ingest_result_v2(conn, payload, replace=False):
             conn.execute(text("INSERT INTO thumbnail (session_id, crops) VALUES (:sid, CAST(:c AS JSONB))"),
                          {"sid": session_id, "c": c})
 
+    # --------- NEW: wide swing discovery (with in-memory dedupe) ----------
+    seen = set()  # keys: ('suid', <str>) or ('fb', pid, start_s, end_s)
+    def _seen_key(pid, norm):
+        if norm.get("suid"): return ("suid", str(norm["suid"]))
+        return ("fb", pid, norm.get("start_s"), norm.get("end_s"))
+
+    for norm in _gather_all_swings(payload):
+        # map player
+        pid = None
+        if norm.get("player_uid"):
+            pid = uid_to_player_id.get(str(norm["player_uid"]))
+        # tolerate string "14"/int 14 mismatches by trying plain cast
+        if pid is None and norm.get("player_uid") is not None:
+            pid = uid_to_player_id.get(str(norm["player_uid"]))
+        # dedupe key
+        k = _seen_key(pid, norm)
+        if k in seen: 
+            continue
+        seen.add(k)
+
+        # build struct for insert
+        s = {
+            "suid": str(norm["suid"]) if norm.get("suid") else None,
+            "start_s": norm.get("start_s"),
+            "end_s": norm.get("end_s"),
+            "ball_hit_s": norm.get("ball_hit_s"),
+            "ball_hit_x": norm.get("ball_hit_x"),
+            "ball_hit_y": norm.get("ball_hit_y"),
+            "ball_speed": norm.get("ball_speed"),
+            "ball_player_distance": norm.get("ball_player_distance"),
+            "is_in_rally": norm.get("is_in_rally"),
+            "serve": norm.get("serve"),
+            "serve_type": norm.get("serve_type"),
+            "meta": norm.get("meta"),
+        }
+        try:
+            _insert_swing(conn, session_id, pid, s, base_dt)
+        except IntegrityError:
+            # If legacy unique indexes exist and conflict, ignore duplicate
+            pass
+
     return {"session_uid": session_uid}
 
 # ---------------------- endpoints ----------------------
 @app.get("/")
 def root():
-    return jsonify({"service": "NextPoint Upload/Ingester v2", "status": "ok"})
+    return jsonify({"service": "NextPoint Upload/Ingester v3", "status": "ok"})
 
 @app.get("/ops/db-ping")
 def db_ping():
