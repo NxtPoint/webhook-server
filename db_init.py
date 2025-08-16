@@ -79,7 +79,7 @@ DDL_CREATE = [
         bounce_id        SERIAL PRIMARY KEY,
         session_id       INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
         hitter_player_id INTEGER REFERENCES dim_player(player_id) ON DELETE SET NULL,
-        rally_id         INTEGER, -- FK ensured later
+        rally_id         INTEGER,
         bounce_s         DOUBLE PRECISION,
         bounce_ts        TIMESTAMPTZ,
         x                DOUBLE PRECISION,
@@ -173,7 +173,7 @@ DDL_MIGRATE = [
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS session_date TIMESTAMPTZ;",
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS meta JSONB;",
 
-    # dim_player (defensive)
+    # dim_player
     "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS full_name TEXT;",
     "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT;",
     "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS age INTEGER;",
@@ -228,14 +228,14 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
 
-    # side tables: ensure JSONB columns exist
+    # side tables: ensure JSONB
     "ALTER TABLE team_session ADD COLUMN IF NOT EXISTS data JSONB;",
     "ALTER TABLE highlight ADD COLUMN IF NOT EXISTS data JSONB;",
     "ALTER TABLE bounce_heatmap ADD COLUMN IF NOT EXISTS heatmap JSONB;",
     "ALTER TABLE session_confidences ADD COLUMN IF NOT EXISTS data JSONB;",
     "ALTER TABLE thumbnail ADD COLUMN IF NOT EXISTS crops JSONB;",
 
-    # safe unique indexes (not required after update→insert, but harmless)
+    # helpful uniques (harmless even if we no longer rely on ON CONFLICT)
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
@@ -275,7 +275,6 @@ def _ensure_jsonb(conn, t, c):
         conn.execute(text(f"ALTER TABLE {t} ALTER COLUMN {c} TYPE JSONB USING {c}::jsonb;"))
 
 def _ensure_fact_bounce_fk(conn):
-    # Add FK fact_bounce.rally_id -> dim_rally.rally_id if none exists
     check = conn.execute(text("""
         SELECT COUNT(*) FROM pg_constraint c
         JOIN pg_class r ON r.oid = c.conrelid
@@ -333,19 +332,17 @@ def run_init(engine):
         for stmt in DDL_MIGRATE:
             conn.execute(text(stmt))
 
-        # JSONB hygiene for side-tables
         _ensure_jsonb(conn, "team_session", "data")
         _ensure_jsonb(conn, "highlight", "data")
         _ensure_jsonb(conn, "bounce_heatmap", "heatmap")
         _ensure_jsonb(conn, "session_confidences", "data")
         _ensure_jsonb(conn, "thumbnail", "crops")
 
-        # raw_result compatibility + FK + swing indexes
         _ensure_raw_result_columns(conn)
         _ensure_fact_bounce_fk(conn)
         _ensure_fact_swing_indexes(conn)
 
-        # keep these (harmless) even though we no longer rely on ON CONFLICT
+        # keep these (harmless) even though not required after UPDATE→INSERT
         _ensure_unique_on_session_id(conn, "bounce_heatmap", "uq_bounce_heatmap_session")
         _ensure_unique_on_session_id(conn, "session_confidences", "uq_session_confidences_session")
         _ensure_unique_on_session_id(conn, "thumbnail", "uq_thumbnail_session")

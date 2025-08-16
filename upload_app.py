@@ -1,5 +1,5 @@
 # upload_app.py
-import os, json, time
+import os, json, time, hashlib
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
 from sqlalchemy import create_engine, text
@@ -36,12 +36,7 @@ def _bool(v):
     return True if s in ("1","true","t","yes","y") else False if s in ("0","false","f","no","n") else None
 
 def _time_s(val):
-    """
-    Accepts:
-      - number-like: 54.36 / "54.36"
-      - dict like: {"timestamp": 54.36}, {"ts": 54.36}, {"time_s": 54.36}, {"t": 54.36}, {"seconds": 54.36}
-    Returns float seconds or None.
-    """
+    """Accepts number-like or dict with timestamp/ts/time_s/t/seconds."""
     if val is None:
         return None
     if isinstance(val, (int, float, str)):
@@ -51,6 +46,12 @@ def _time_s(val):
             if k in val:
                 return _float(val[k])
     return None
+
+def _canonical_json(obj) -> str:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+def _sha1_hex(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 def _get_json_from_sources():
     """
@@ -96,10 +97,26 @@ def init_views(engine):
     run_views(engine)
 
 # ---------------------- mappers ----------------------
-def _resolve_session_uid(payload):
+def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
+    if forced_uid:
+        return str(forced_uid)
+
     meta = payload.get("meta") or payload.get("metadata") or {}
-    return str(payload.get("session_uid") or meta.get("session_uid") or meta.get("video_uid")
-               or meta.get("file_name") or f"session_{int(time.time())}")
+    for k in ("session_uid", "video_uid", "video_id"):
+        if payload.get(k): return str(payload[k])
+        if meta.get(k):    return str(meta[k])
+
+    fn = meta.get("file_name") or meta.get("filename")
+    if not fn and src_hint:
+        try:
+            fn = os.path.splitext(os.path.basename(src_hint))[0]
+        except Exception:
+            pass
+    if fn:
+        return str(fn)
+
+    fp = _sha1_hex(_canonical_json(payload))[:12]
+    return f"sha1_{fp}"
 
 def _resolve_fps(payload):
     meta = payload.get("meta") or payload.get("metadata") or {}
@@ -123,7 +140,7 @@ def _base_dt_for_session(dt): return dt if dt else datetime(1970,1,1,tzinfo=time
 _SWING_TYPES = {"swing","stroke","shot","hit","serve","forehand","backhand","volley","overhead","slice","drop","lob"}
 
 def _extract_ball_hit_from_events(events):
-    """Find a ball-hit-like event in an events list."""
+    """Find ball-hit-like event in an events list."""
     if not isinstance(events, list): return (None, None, None)
     for ev in events:
         if not isinstance(ev, dict): continue
@@ -136,49 +153,34 @@ def _extract_ball_hit_from_events(events):
 
 def _normalize_swing_obj(obj):
     """
-    Normalize a swing-like object to our schema.
-    Returns dict with keys:
-      suid, player_uid, start_s, end_s, ball_hit_s, ball_hit_x, ball_hit_y, serve, serve_type, meta
-    or None if it doesn't look like a swing.
+    Normalize a swing-like object.
+    Returns dict with: suid, player_uid, start_s, end_s, ball_hit_s, ball_hit_x, ball_hit_y, serve, serve_type, meta
     """
     if not isinstance(obj, dict): return None
 
     suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
 
-    # times: look at common variants + nested
     start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
     end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
-
-    # If only a timestamp exists, treat it as both start/end (zero-duration swing)
     if start_s is None and end_s is None:
         only_ts = _time_s(obj.get("timestamp") or obj.get("ts") or obj.get("time_s") or obj.get("t"))
         if only_ts is not None:
             start_s = end_s = only_ts
 
-    # ball hit time + location
-    bh_s = None; bhx = None; bhy = None
-    # explicit fields
     bh_s = _time_s(obj.get("ball_hit_timestamp") or obj.get("ball_hit_ts") or obj.get("ball_hit_s"))
-    if bh_s is None:
-        # nested ball_hit object
-        if isinstance(obj.get("ball_hit"), dict):
-            bh_s = _time_s(obj["ball_hit"].get("timestamp"))
-            loc = obj["ball_hit"].get("location") or {}
-            bhx = _float(loc.get("x"))
-            bhy = _float(loc.get("y"))
-    # fallback: search events
+    bhx = bhy = None
+    if bh_s is None and isinstance(obj.get("ball_hit"), dict):
+        bh_s = _time_s(obj["ball_hit"].get("timestamp"))
+        loc = obj["ball_hit"].get("location") or {}
+        bhx = _float(loc.get("x")); bhy = _float(loc.get("y"))
     if bh_s is None:
         ev_bh_s, ev_bhx, ev_bhy = _extract_ball_hit_from_events(obj.get("events"))
         bh_s = ev_bh_s
         bhx = bhx if bhx is not None else ev_bhx
         bhy = bhy if bhy is not None else ev_bhy
-
-    # explicit ball_hit_location
     if (bhx is None or bhy is None) and isinstance(obj.get("ball_hit_location"), dict):
-        bhx = _float(obj["ball_hit_location"].get("x"))
-        bhy = _float(obj["ball_hit_location"].get("y"))
+        bhx = _float(obj["ball_hit_location"].get("x")); bhy = _float(obj["ball_hit_location"].get("y"))
 
-    # serve detection / type
     label = (str(obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower()
     serve = _bool(obj.get("serve"))
     serve_type = obj.get("serve_type")
@@ -191,11 +193,9 @@ def _normalize_swing_obj(obj):
     if player_uid is not None:
         player_uid = str(player_uid)
 
-    # looks like a swing if we have at least a time or ball-hit
     if start_s is None and end_s is None and bh_s is None:
         return None
 
-    # preserve unknown fields
     meta = {k: v for k, v in obj.items() if k not in {
         "id","uid","swing_uid",
         "player_id","sportai_player_uid","player_uid","player",
@@ -220,15 +220,12 @@ def _normalize_swing_obj(obj):
     }
 
 def _iter_candidate_swings_from_container(container):
-    """Yield swing-like dicts from a generic container (dict with arrays)."""
     if not isinstance(container, dict):
         return
-    # direct arrays
     for key in ("swings","strokes","swing_events","events"):
         arr = container.get(key)
         if isinstance(arr, list):
             for item in arr:
-                # If searching events[], require swing-ish label
                 if key == "events":
                     lbl = str((item or {}).get("type") or (item or {}).get("label") or "").lower()
                     if lbl and (lbl in _SWING_TYPES or "swing" in lbl or "stroke" in lbl):
@@ -239,20 +236,14 @@ def _iter_candidate_swings_from_container(container):
                     if norm: yield norm
 
 def _gather_all_swings(payload):
-    """Collect swings from all plausible places, normalized."""
-    # 1) top-level
     for norm in _iter_candidate_swings_from_container(payload or {}):
         yield norm
-    # 2) players[*]
     for p in (payload.get("players") or []):
-        # propagate player id to child objects if missing
         p_uid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
-        # direct swings/strokes/events under the player
         for norm in _iter_candidate_swings_from_container(p):
             if not norm.get("player_uid") and p_uid:
                 norm["player_uid"] = p_uid
             yield norm
-        # sometimes swings are bundled under nested "statistics" or similar
         stats = p.get("statistics") or p.get("stats") or {}
         for norm in _iter_candidate_swings_from_container(stats):
             if not norm.get("player_uid") and p_uid:
@@ -288,8 +279,8 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
         "meta": json.dumps(s.get("meta")) if s.get("meta") else None
     })
 
-def ingest_result_v2(conn, payload, replace=False):
-    session_uid  = _resolve_session_uid(payload)
+def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=None):
+    session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
     fps          = _resolve_fps(payload)
     session_date = _resolve_session_date(payload)
     base_dt      = _base_dt_for_session(session_date)
@@ -318,7 +309,7 @@ def ingest_result_v2(conn, payload, replace=False):
         VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
     """), {"sid": session_id, "p": json.dumps(payload)})
 
-    # players (+ nested swings handled later by generic gatherer too)
+    # players
     players = payload.get("players") or []
     uid_to_player_id = {}
     for p in players:
@@ -442,7 +433,7 @@ def ingest_result_v2(conn, payload, replace=False):
         conn.execute(text("INSERT INTO highlight (session_id, data) VALUES (:sid, CAST(:d AS JSONB))"),
                      {"sid": session_id, "d": json.dumps(h)})
 
-    # UPDATE→INSERT (no unique needed)
+    # UPDATE→INSERT (no unique index required)
     if "bounce_heatmap" in payload:
         h = json.dumps(payload.get("bounce_heatmap"))
         res = conn.execute(text("UPDATE bounce_heatmap SET heatmap = CAST(:h AS JSONB) WHERE session_id = :sid"),
@@ -467,27 +458,21 @@ def ingest_result_v2(conn, payload, replace=False):
             conn.execute(text("INSERT INTO thumbnail (session_id, crops) VALUES (:sid, CAST(:c AS JSONB))"),
                          {"sid": session_id, "c": c})
 
-    # --------- NEW: wide swing discovery (with in-memory dedupe) ----------
-    seen = set()  # keys: ('suid', <str>) or ('fb', pid, start_s, end_s)
+    # --------- wide swing discovery (with in-memory dedupe) ----------
+    seen = set()  # ('suid', <str>) or ('fb', pid, start_s, end_s)
     def _seen_key(pid, norm):
         if norm.get("suid"): return ("suid", str(norm["suid"]))
         return ("fb", pid, norm.get("start_s"), norm.get("end_s"))
 
     for norm in _gather_all_swings(payload):
-        # map player
         pid = None
         if norm.get("player_uid"):
             pid = uid_to_player_id.get(str(norm["player_uid"]))
-        # tolerate string "14"/int 14 mismatches by trying plain cast
-        if pid is None and norm.get("player_uid") is not None:
-            pid = uid_to_player_id.get(str(norm["player_uid"]))
-        # dedupe key
         k = _seen_key(pid, norm)
-        if k in seen: 
+        if k in seen:
             continue
         seen.add(k)
 
-        # build struct for insert
         s = {
             "suid": str(norm["suid"]) if norm.get("suid") else None,
             "start_s": norm.get("start_s"),
@@ -505,7 +490,7 @@ def ingest_result_v2(conn, payload, replace=False):
         try:
             _insert_swing(conn, session_id, pid, s, base_dt)
         except IntegrityError:
-            # If legacy unique indexes exist and conflict, ignore duplicate
+            # ignore duplicates if legacy unique indexes exist
             pass
 
     return {"session_uid": session_uid}
@@ -577,14 +562,26 @@ def ops_sql():
 def ops_ingest_file():
     if not _guard(): return _forbid()
     replace = str(request.args.get("replace","0")).strip().lower() in ("1","true","yes","y")
+    forced_uid = request.args.get("session_uid")
+    src_hint = request.args.get("name") or request.args.get("url")
     try:
         payload = _get_json_from_sources()
         init_db(engine)  # ensure migrations/ensures ran
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=replace)
+            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=src_hint)
         return jsonify({"ok": True, **res, "replace": replace})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/ops/delete-session")
+def ops_delete_session():
+    if not _guard(): return _forbid()
+    uid = request.args.get("session_uid")
+    if not uid:
+        return jsonify({"ok": False, "error": "session_uid is required"}), 400
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM dim_session WHERE session_uid = :u"), {"u": uid})
+    return jsonify({"ok": True, "deleted_session_uid": uid})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT","8000")))

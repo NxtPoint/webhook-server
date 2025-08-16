@@ -97,7 +97,6 @@ def _column_exists(conn, t, c):
     """), {"t": t, "c": c}).first() is not None
 
 def _get_relkind(conn, name):
-    # returns 'v' (view), 'm' (matview), or None
     row = conn.execute(text("""
         SELECT c.relkind
         FROM pg_class c
@@ -105,7 +104,7 @@ def _get_relkind(conn, name):
         WHERE n.nspname='public' AND c.relname=:name
         LIMIT 1
     """), {"name": name}).first()
-    return row[0] if row else None
+    return row[0] if row else None  # 'v' view, 'm' matview, None
 
 def _drop_view_or_matview(conn, name):
     kind = _get_relkind(conn, name)
@@ -113,8 +112,6 @@ def _drop_view_or_matview(conn, name):
         conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
     elif kind == 'm':
         conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
-    else:
-        return
 
 def _preflight_or_raise(conn):
     required_tables = [
