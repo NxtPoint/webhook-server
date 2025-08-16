@@ -12,7 +12,7 @@ from json_to_powerbi_csv import export_csv_from_json
 from sqlalchemy import create_engine, text
 from db_init import init_db  # schema creator
 
-APP_VERSION = "ingest-1.4-listsafe"
+APP_VERSION = "ingest-1.5-xy"
 
 app = Flask(__name__)
 
@@ -56,31 +56,71 @@ def g(obj, key, default=None):
         return obj.get(key, default)
     return default
 
-def first_present(dct, keys, default=None):
-    if not isinstance(dct, dict):
-        return default
-    for k in keys:
-        if k in dct:
-            return dct[k]
-    return default
-
 def dict_root(data):
     """Pick a dict root even if the JSON file is a list at top."""
     if is_dict(data):
         return data
     if is_list(data):
-        # prefer an element that looks relevant
         for cand in data:
             if is_dict(cand) and any(k in cand for k in [
                 "ball_bounces","bounces","rallies","players","session",
                 "events","shots","strokes","swings","analysis_date","video"
             ]):
                 return cand
-        # fallback: first dict in the list
         for cand in data:
             if is_dict(cand):
                 return cand
-    return {}  # safest fallback
+    return {}
+
+# robust numeric parse
+def to_float_or_none(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+# try to extract x,y from many shapes
+def xy_from_any(val):
+    """
+    Accepts:
+      - dict with various key names (x,y | x_percent,y_percent | cx,cy | normalized_x,normalized_y, ...)
+      - list/tuple [x, y]
+      - string "x,y"
+    Returns (x, y) as floats or (None, None)
+    """
+    if is_dict(val):
+        pairs = [
+            ("x","y"),
+            ("ball_x","ball_y"),
+            ("x_percent","y_percent"),
+            ("xPerc","yPerc"),
+            ("xpct","ypct"),
+            ("cx","cy"),
+            ("court_x","court_y"),
+            ("norm_x","norm_y"),
+            ("normalized_x","normalized_y"),
+            ("px","py"),
+            ("pos_x","pos_y"),
+        ]
+        for a,b in pairs:
+            x = to_float_or_none(val.get(a))
+            y = to_float_or_none(val.get(b))
+            if x is not None or y is not None:
+                return (x, y)
+        # sometimes nested like {"point": {"x":..,"y":..}}
+        for k in val.keys():
+            if is_dict(val[k]):
+                x, y = xy_from_any(val[k])
+                if x is not None or y is not None:
+                    return (x, y)
+        return (None, None)
+    if is_list(val) and len(val) >= 2:
+        return (to_float_or_none(val[0]), to_float_or_none(val[1]))
+    if isinstance(val, str) and "," in val:
+        parts = [p.strip() for p in val.split(",")]
+        if len(parts) >= 2:
+            return (to_float_or_none(parts[0]), to_float_or_none(parts[1]))
+    return (None, None)
 
 # ==========================================
 # Dropbox OAuth
@@ -195,7 +235,6 @@ def upload():
         return jsonify({"error": "Failed to register task", "details": analyze_res.text}), 500
 
     task_id = analyze_res.json()["data"]["task_id"]
-
     Thread(target=poll_and_save_result, args=(task_id, email), daemon=True).start()
 
     return jsonify({"message": "Upload and analysis started", "dropbox_url": raw_url, "sportai_task_id": task_id}), 200
@@ -216,7 +255,7 @@ def poll_and_save_result(task_id, email):
             status = g(res.json(), "data", {}).get("status")
             print(f"🔄 Attempt {attempt+1}: Status = {status}")
             if status == "completed":
-                for _ in range(15):  # retries to allow result_url to appear
+                for _ in range(15):
                     filename = fetch_and_save_result(task_id, email)
                     if filename:
                         print(f"✅ Result saved to {filename}")
@@ -277,6 +316,10 @@ def fetch_and_save_result(task_id, email):
 # ==========================================
 # Ops endpoints
 # ==========================================
+@app.get("/ops/version")
+def version_dup():
+    return {"ok": True, "version": APP_VERSION}
+
 @app.get("/ops/init-db")
 def ops_init_db():
     key = request.args.get("key")
@@ -396,6 +439,34 @@ def peek_json():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# NEW: peek an indexed item of an array (e.g. first bounce) to see exact shape
+@app.get("/ops/peek-item")
+def peek_item():
+    key = request.args.get("key")  # e.g., ball_bounces
+    idx = int(request.args.get("idx", "0"))
+    name = request.args.get("name")
+    if not OPS_KEY or request.args.get("key_token") != OPS_KEY:
+        return ("Forbidden", 403)
+    if not name or not key:
+        return ("Missing ?name=...&key=...&idx=...", 400)
+
+    p = os.path.join(os.getcwd(), "data", name)
+    if not os.path.isfile(p): return (f"File not found: {p}", 404)
+
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        root = dict_root(data)
+        arr = g(root, key)
+        if not is_list(arr):
+            return jsonify({"ok": False, "error": f"{key} is not a list or not present"}), 400
+        if not (0 <= idx < len(arr)):
+            return jsonify({"ok": False, "error": f"idx out of range 0..{len(arr)-1}"}), 400
+        item = arr[idx]
+        return jsonify({"ok": True, "key": key, "idx": idx, "item": item})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # ==========================================
 # SQL helper endpoints (read-only)
 # ==========================================
@@ -407,8 +478,7 @@ def _is_safe_select(query: str) -> bool:
 
 @app.get("/ops/sql")
 def ops_sql_get():
-    key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY: return jsonify({"error": "unauthorized"}), 403
+    if request.args.get("key") != OPS_KEY: return jsonify({"error": "unauthorized"}), 403
     if engine is None: return jsonify({"error": "no database engine"}), 500
     q = request.args.get("q", "")
     if not _is_safe_select(q): return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
@@ -421,8 +491,7 @@ def ops_sql_get():
 
 @app.post("/ops/sql")
 def ops_sql_post():
-    key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY: return jsonify({"error": "unauthorized"}), 403
+    if request.args.get("key") != OPS_KEY: return jsonify({"error": "unauthorized"}), 403
     if engine is None: return jsonify({"error": "no database engine"}), 500
     payload = request.get_json(silent=True) or {}
     q = (payload.get("q") or "").strip()
@@ -572,7 +641,7 @@ def insert_fact_bounce_batch(rows):
     return len(rows)
 
 # ==========================================
-# Ingest (list-aware root, bounce-first; derive rallies; strict swings)
+# Ingest (list-aware root, bounce-first; derive rallies; strict swings; robust xy)
 # ==========================================
 def ingest_sportai_json(json_path, source_file_name):
     if engine is None:
@@ -593,7 +662,8 @@ def ingest_sportai_json(json_path, source_file_name):
             if not is_dict(b): continue
             raw_t = b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame")
             abs_t = _parse_ts_flex(raw_t, session_start=None, fps=fps)
-            if abs_t: pre_bounce_abs.append(abs_t)
+            if abs_t:
+                pre_bounce_abs.append(abs_t)
             else:
                 try:
                     if isinstance(raw_t, (int, float)) and float(raw_t) < 1e9:
@@ -657,8 +727,13 @@ def ingest_sportai_json(json_path, source_file_name):
             b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame"),
             session_start, fps
         )
-        bx = (b.get("court_pos") or {}).get("x") if is_dict(b.get("court_pos")) else b.get("x") or b.get("ball_x")
-        by = (b.get("court_pos") or {}).get("y") if is_dict(b.get("court_pos")) else b.get("y") or b.get("ball_y")
+        # court positions in many shapes
+        court_pos = b.get("court_pos")
+        bx, by = xy_from_any(court_pos)
+        if bx is None and by is None:
+            # other fallbacks
+            bx = to_float_or_none(b.get("x") or b.get("ball_x"))
+            by = to_float_or_none(b.get("y") or b.get("ball_y"))
         bounce_rows.append({"rally_no": rn, "bounce_ts": ts, "bounce_x": bx, "bounce_y": by})
         if rn is not None and ts is not None:
             bounces_by_rally.setdefault(rn, []).append(ts)
@@ -828,16 +903,18 @@ def ingest_sportai_json(json_path, source_file_name):
     else:
         print("🟨 No swing-like arrays present — skipping swings.")
 
-    # --- Insert bounces with rally_ids
+    # --- Insert bounces with rally_ids (skip those with no timestamp)
     final_bounce_rows = []
     for b in bounce_rows:
+        if b.get("bounce_ts") is None:
+            continue
         rn = b.get("rally_no")
-        rid = next((rid for rno, rid, st, en in win_list if rno == rn), None)
-        if rid is None:
-            rid = find_rid_for_time(b.get("bounce_ts"))
+        with_rid = next((rid for rno, rid, st, en in win_list if rno == rn), None)
+        if with_rid is None:
+            with_rid = find_rid_for_time(b.get("bounce_ts"))
         final_bounce_rows.append({
             "session_id": session_id,
-            "rally_id": rid,
+            "rally_id": with_rid,
             "bounce_ts": b["bounce_ts"],
             "bounce_x": b["bounce_x"],
             "bounce_y": b["bounce_y"],
