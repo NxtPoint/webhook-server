@@ -284,10 +284,6 @@ def db_counts():
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
-@app.get("/ops/engest-file")  # typo-safe? keep the correct one below.
-def typo_guard():
-    return ("Use /ops/ingest-file", 400)
-
 @app.get("/ops/ingest-file")
 def ops_ingest_file():
     key = request.args.get("key")
@@ -345,7 +341,7 @@ def upsert_dim_player(*, sportai_player_uid, full_name=None, handedness=None, ag
         VALUES (:uid, :name, :handedness, :age, :utr)
         ON CONFLICT (sportai_player_uid) DO UPDATE SET
             full_name  = COALESCE(EXCLUDED.full_name, dim_player.full_name),
-            handedness = COALESCE(EXCLUDED.handednesS, dim_player.handedness),
+            handedness = COALESCE(EXCLUDED.handedness, dim_player.handedness),
             age        = COALESCE(EXCLUDED.age, dim_player.age),
             utr        = COALESCE(EXCLUDED.utr, dim_player.utr)
         RETURNING player_id;
