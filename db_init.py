@@ -70,8 +70,6 @@ DDL_CREATE = [
         meta JSONB
     );
     """,
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_sess_suid ON fact_swing(session_id, sportai_swing_uid) WHERE sportai_swing_uid IS NOT NULL;",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_fallback ON fact_swing(session_id, player_id, start_s, end_s) WHERE sportai_swing_uid IS NULL;",
 
     # ---------------------- fact_bounce ----------------------
     """
@@ -166,7 +164,7 @@ DDL_CREATE = [
     """
 ]
 
-# Add/repair columns in-place (safe on existing DBs)
+# add/repair columns (safe on existing DBs)
 DDL_MIGRATE = [
     # dim_rally
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
@@ -174,7 +172,7 @@ DDL_MIGRATE = [
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
 
-    # fact_swing
+    # fact_swing (make sure the column exists BEFORE index creation)
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS sportai_swing_uid TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
@@ -190,9 +188,6 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve BOOLEAN;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve_type TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS meta JSONB;",
-    # (then the unique indexes)
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_sess_suid ON fact_swing(session_id, sportai_swing_uid) WHERE sportai_swing_uid IS NOT NULL;",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_fallback ON fact_swing(session_id, player_id, start_s, end_s) WHERE sportai_swing_uid IS NULL;",
 
     # fact_bounce
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INTEGER;",
@@ -214,13 +209,29 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
 
-    # unique indexes (idempotent)
+    # other unique indexes (safe)
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_sess_suid ON fact_swing(session_id, sportai_swing_uid) WHERE sportai_swing_uid IS NOT NULL;",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_fallback ON fact_swing(session_id, player_id, start_s, end_s) WHERE sportai_swing_uid IS NULL;"
 ]
+
+def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    sql = text("""
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=:t AND column_name=:c
+        LIMIT 1
+    """)
+    return conn.execute(sql, {"t": table_name, "c": column_name}).first() is not None
+
+def _index_exists(conn, index_name: str) -> bool:
+    sql = text("""
+        SELECT 1
+        FROM pg_class
+        WHERE relkind='i' AND relname=:n
+        LIMIT 1
+    """)
+    return conn.execute(sql, {"n": index_name}).first() is not None
 
 def _ensure_fact_bounce_fk(conn):
     # Create FK only if no FK from fact_bounce -> dim_rally exists (any name)
@@ -241,10 +252,31 @@ def _ensure_fact_bounce_fk(conn):
             FOREIGN KEY (rally_id) REFERENCES public.dim_rally(rally_id) ON DELETE SET NULL;
         """))
 
+def _ensure_fact_swing_indexes(conn):
+    # Only create indexes after columns exist
+    if _column_exists(conn, "fact_swing", "session_id") and _column_exists(conn, "fact_swing", "sportai_swing_uid"):
+        if not _index_exists(conn, "uq_fact_swing_sess_suid"):
+            conn.execute(text("""
+                CREATE UNIQUE INDEX uq_fact_swing_sess_suid
+                ON fact_swing(session_id, sportai_swing_uid)
+                WHERE sportai_swing_uid IS NOT NULL;
+            """))
+    if all(_column_exists(conn, "fact_swing", c) for c in ("session_id","player_id","start_s","end_s")):
+        if not _index_exists(conn, "uq_fact_swing_fallback"):
+            conn.execute(text("""
+                CREATE UNIQUE INDEX uq_fact_swing_fallback
+                ON fact_swing(session_id, player_id, start_s, end_s)
+                WHERE sportai_swing_uid IS NULL;
+            """))
+
 def run_init(engine):
     with engine.begin() as conn:
+        # Create base tables
         for stmt in DDL_CREATE:
             conn.execute(text(stmt))
+        # Run additive migrations (columns, safe indexes)
         for stmt in DDL_MIGRATE:
             conn.execute(text(stmt))
+        # Ensure FK & the two swing indexes in the correct order
         _ensure_fact_bounce_fk(conn)
+        _ensure_fact_swing_indexes(conn)
