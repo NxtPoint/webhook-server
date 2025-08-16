@@ -394,6 +394,55 @@ def peek_json():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# 🆕 Read-only SQL endpoint (GET and POST), guarded by OPS_KEY
+def _is_safe_select(query: str) -> bool:
+    if not query:
+        return False
+    q = query.strip().lower()
+    # allow only select/with (CTE) queries; block ; to avoid batching
+    if ";" in q:
+        return False
+    return q.startswith("select ") or q.startswith("with ")
+
+@app.get("/ops/sql")
+def ops_sql_get():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY:
+        return jsonify({"error": "unauthorized"}), 403
+    if engine is None:
+        return jsonify({"error": "no database engine"}), 500
+
+    q = request.args.get("q", "")
+    if not _is_safe_select(q):
+        return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(q)).mappings().all()
+        return jsonify({"ok": True, "rows": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+@app.post("/ops/sql")
+def ops_sql_post():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY:
+        return jsonify({"error": "unauthorized"}), 403
+    if engine is None:
+        return jsonify({"error": "no database engine"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    q = (payload.get("q") or "").strip()
+    if not _is_safe_select(q):
+        return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(q)).mappings().all()
+        return jsonify({"ok": True, "rows": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
 # ==========================================
 # Ingestion helpers & glue (idempotent + flexible)
 # ==========================================
@@ -606,10 +655,8 @@ def ingest_sportai_json(json_path, source_file_name):
         if isinstance(obj, dict):
             for k, v in obj.items():
                 if isinstance(v, list):
-                    # direct hit on known keys
                     if k in SWING_LIST_KEYS and v and isinstance(v[0], dict):
                         results.append(v)
-                    # generic list of dicts — peek if looks swing-like
                     elif v and isinstance(v[0], dict):
                         sample = v[:5]
                         hits = 0
@@ -628,7 +675,6 @@ def ingest_sportai_json(json_path, source_file_name):
     swing_rows = []
     candidates = collect_candidate_lists(data)
 
-    # If nothing found, also check per-rally nested lists explicitly
     if not candidates and isinstance(rallies, list):
         for r in rallies:
             for key in ["swings", "shots", "strokes", "events"]:
@@ -672,7 +718,6 @@ def ingest_sportai_json(json_path, source_file_name):
             "annotations_json": s.get("annotations"),
         })
 
-    # add global & nested candidates
     for lst in candidates:
         rally_hint = None
         for s in lst[:3]:
