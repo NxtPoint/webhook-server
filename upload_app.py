@@ -357,7 +357,7 @@ def upload_json_and_ingest():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# 🆕 Peek at JSON structure: top-level keys + sample keys for arrays
+# 🆕 Peek at JSON structure
 @app.get("/ops/peek-json")
 def peek_json():
     key = request.args.get("key")
@@ -450,7 +450,7 @@ def ops_sql_post():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 # ==========================================
-# Ingestion helpers & glue (idempotent + flexible)
+# Timestamp helpers (robust)
 # ==========================================
 def _parse_ts_iso(v):
     if not v:
@@ -460,60 +460,86 @@ def _parse_ts_iso(v):
     except Exception:
         return None
 
+def _from_epoch_like(val):
+    """
+    Accepts seconds or milliseconds since epoch (int/float/str).
+    Returns aware UTC datetime or None.
+    """
+    if val is None:
+        return None
+    try:
+        x = float(val)
+    except Exception:
+        return None
+    # Heuristic: > 1e12 => ms, > 1e9 => seconds
+    try:
+        if x > 1e12:
+            return datetime.fromtimestamp(x / 1000.0, tz=timezone.utc)
+        if x > 1e9:
+            return datetime.fromtimestamp(x, tz=timezone.utc)
+    except Exception:
+        return None
+    return None
+
 def _parse_ts_flex(v, session_start=None, fps=None):
     """
-    - If ISO string -> parse to aware UTC
-    - If int/float -> treat as seconds offset from session_start
-    - If dict contains *_ms -> convert ms to seconds
-    - If frame index exists and fps provided -> convert frames to seconds
+    Priority:
+      1) ISO strings
+      2) epoch seconds/ms (absolute)
+      3) numeric seconds from session_start (relative)
+      4) dict keys (seconds/ms/frame)
+      5) frames -> seconds using fps
     """
-    # direct ISO
+    # 1) ISO
     t = _parse_ts_iso(v)
     if t:
         return t
 
-    # direct numeric seconds
+    # 2) epoch-like (absolute)
+    if isinstance(v, (int, float, str)):
+        abs_t = _from_epoch_like(v)
+        if abs_t:
+            return abs_t
+
+    # 3) numeric seconds relative to session_start
     if isinstance(v, (int, float)) and session_start:
         try:
             return (session_start + timedelta(seconds=float(v))).astimezone(timezone.utc)
         except Exception:
             pass
 
-    # try dict-like / other keys pattern
+    # 4) dict keys
     sec = None
     ms = None
     frame_idx = None
-
     if isinstance(v, dict):
         sec = v.get("seconds") or v.get("time_s") or v.get("sec")
-        ms = v.get("time_ms") or v.get("timestamp_ms") or v.get("ms") or v.get("millis")
+        ms  = v.get("time_ms") or v.get("timestamp_ms") or v.get("ms") or v.get("millis") or v.get("epoch_ms")
+        # try epoch contained in dict
+        if ms is None:
+            maybe_epoch = v.get("epoch") or v.get("unix") or v.get("unix_s")
+            e = _from_epoch_like(maybe_epoch)
+            if e:
+                return e
         frame_idx = v.get("frame") or v.get("frame_idx") or v.get("frameIndex") or v.get("contact_frame")
-    else:
-        # sometimes the caller passes raw values; we'll check via a dict-free path next
-        pass
 
-    # fallbacks if not dict
-    if sec is None and isinstance(v, (int, float)):
-        sec = float(v)
-
-    if ms is None and isinstance(v, str) and v.isdigit():
-        ms = float(v)
-
-    # return by sec
     if sec is not None and session_start is not None:
         try:
             return (session_start + timedelta(seconds=float(sec))).astimezone(timezone.utc)
         except Exception:
             pass
 
-    # return by ms
-    if ms is not None and session_start is not None:
-        try:
-            return (session_start + timedelta(milliseconds=float(ms))).astimezone(timezone.utc)
-        except Exception:
-            pass
+    if ms is not None:
+        # if looks like epoch ms, convert absolute; else relative to session start
+        e = _from_epoch_like(ms)
+        if e:
+            return e
+        if session_start is not None:
+            try:
+                return (session_start + timedelta(milliseconds=float(ms))).astimezone(timezone.utc)
+            except Exception:
+                pass
 
-    # return by frames
     if frame_idx is not None and session_start is not None and fps:
         try:
             return (session_start + timedelta(seconds=float(frame_idx) / float(fps))).astimezone(timezone.utc)
@@ -532,10 +558,16 @@ def _first_present(dct, keys, default=None):
 
 def _get_fps(data):
     try:
-        return (data.get("session") or {}).get("fps") or data.get("fps")
+        s = (data.get("session") or {})
+        return s.get("fps") or s.get("frame_rate") or s.get("frames_per_second") \
+               or (data.get("video") or {}).get("fps") \
+               or data.get("fps")
     except Exception:
         return None
 
+# ==========================================
+# DB upserts/inserts
+# ==========================================
 def upsert_dim_session(*, session_uid, source_file=None, session_date=None, court_surface=None, venue=None):
     sql = text("""
         INSERT INTO dim_session (session_uid, source_file, session_date, court_surface, venue)
@@ -617,15 +649,18 @@ def insert_fact_bounce_batch(rows):
         conn.execute(sql, rows)
     return len(rows)
 
+# ==========================================
+# Ingest (flexible + idempotent + rally derivation)
+# ==========================================
 def ingest_sportai_json(json_path, source_file_name):
     """
-    Reads a SportAI result JSON from disk and loads:
+    Loads:
       - session -> dim_session
       - players -> dim_player
-      - rallies -> dim_rally (flex keys; or derived from bounces)
-      - swings  -> fact_swing (recursive discovery with flex keys)
-      - ball_bounces -> fact_bounce (flex keys)
-    Also: clears facts for the session first (idempotent re-ingest).
+      - rallies -> dim_rally (flex keys) or derived from bounces/time-gaps
+      - swings  -> fact_swing (recursive discovery + robust timestamps)
+      - bounces -> fact_bounce
+    Clears facts for this session on each ingest (idempotent).
     """
     if engine is None:
         print("⚠️ No DB engine. Skipping ingest.")
@@ -639,30 +674,36 @@ def ingest_sportai_json(json_path, source_file_name):
     session_uid = session_payload.get("id") or data.get("id") or source_file_name
     session_start = _parse_ts_iso(session_payload.get("start_time")) or _parse_ts_iso(data.get("analysis_date"))
     fps = _get_fps(data)
-    session_date = session_start
-
     session_id = upsert_dim_session(
         session_uid=session_uid,
         source_file=source_file_name,
-        session_date=session_date,
+        session_date=session_start,
         court_surface=session_payload.get("surface"),
         venue=session_payload.get("venue"),
     )
 
-    # Make re-ingest idempotent: clear facts for this session before inserting
+    # Idempotent: clear facts first
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM fact_swing  WHERE session_id = :sid"), {"sid": session_id})
         conn.execute(text("DELETE FROM fact_bounce WHERE session_id = :sid"), {"sid": session_id})
     print("♻️ Cleared existing fact rows for session_id", session_id)
 
-    # ---- Players
+    # ---- Players (best-effort names)
     player_map = {}
-    for p in data.get("players", []):
+    players = data.get("players", [])
+    if isinstance(players, dict):
+        # sometimes players is a dict of {id: {...}}
+        players = [
+            {"id": k, **(v if isinstance(v, dict) else {})}
+            for k, v in players.items()
+        ]
+    for p in players or []:
         uid = str(p.get("id") or p.get("player_id") or p.get("playerId") or p.get("athlete_id") or p.get("player_index"))
+        name = p.get("name") or p.get("full_name") or (" ".join([x for x in [p.get("first_name"), p.get("last_name")] if x])) or None
         pid = upsert_dim_player(
             sportai_player_uid=uid,
-            full_name=p.get("name") or p.get("full_name"),
-            handedness=p.get("handedness"),
+            full_name=name,
+            handedness=p.get("handedness") or p.get("hand") or p.get("dominant_hand"),
             age=p.get("age"),
             utr=p.get("utr"),
         )
@@ -695,7 +736,7 @@ def ingest_sportai_json(json_path, source_file_name):
             )
             rally_id_map[(session_id, rally_number)] = rid
 
-    # ---- Collect swings (recursive discovery), but DON'T insert yet
+    # ---- Swings (collect, don't insert yet)
     SWING_LIST_KEYS = {"swings", "shots", "strokes", "events"}
 
     def is_swing_like_event(ev: dict) -> bool:
@@ -703,14 +744,13 @@ def ingest_sportai_json(json_path, source_file_name):
             return False
         et = ev.get("event_type") or ev.get("type") or ev.get("swing_type") or ev.get("shot_type")
         if et is None:
-            return True  # many JSONs omit explicit type for swing rows
+            return True
         if isinstance(et, str):
             etl = et.lower()
             return any(tok in etl for tok in ["swing", "stroke", "shot", "hit"])
         return True
 
     def collect_candidate_lists(obj):
-        """Recursively yield lists of dicts under any SWING_LIST_KEYS; also yield any list of dicts that looks swingy."""
         results = []
         if isinstance(obj, dict):
             for k, v in obj.items():
@@ -721,7 +761,7 @@ def ingest_sportai_json(json_path, source_file_name):
                         sample = v[:5]
                         hits = 0
                         for it in sample:
-                            if any(x in it for x in ["swing_type", "shot_type", "player_id", "ball_hit_ts", "contact_ts", "start_ts", "end_ts", "timestamp_ms", "frame"]):
+                            if any(x in it for x in ["swing_type","shot_type","player_id","ball_hit_ts","contact_ts","start_ts","end_ts","timestamp_ms","frame","time_ms","seconds"]):
                                 hits += 1
                         if hits >= max(2, len(sample)//2):
                             results.append(v)
@@ -741,9 +781,7 @@ def ingest_sportai_json(json_path, source_file_name):
                     candidates.append(r[key])
 
     def make_swing_payload(s, rally_no_hint=None):
-        if not isinstance(s, dict):
-            return None
-        if not is_swing_like_event(s):
+        if not isinstance(s, dict) or not is_swing_like_event(s):
             return None
 
         uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id") or s.get("hitter") or s.get("playerId") or s.get("athlete_id") or s.get("player_index")
@@ -751,9 +789,19 @@ def ingest_sportai_json(json_path, source_file_name):
 
         rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index") or s.get("rallyIndex") or s.get("point") or rally_no_hint
 
-        swing_start = _parse_ts_flex(s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time") or s.get("start") or s.get("time_s") or s.get("seconds") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") or s.get("frame") or s.get("frame_idx") or s.get("frameIndex"), session_start, fps)
-        swing_end   = _parse_ts_flex(s.get("swing_end_ts")   or s.get("end_ts")   or s.get("end_time")   or s.get("end"),   session_start, fps)
-        hit_src = s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts") or s.get("timestamp") or s.get("time") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") or s.get("frame") or s.get("contact_frame")
+        swing_start = _parse_ts_flex(
+            s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time") or s.get("start") \
+            or s.get("time_s") or s.get("seconds") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") \
+            or s.get("frame") or s.get("frame_idx") or s.get("frameIndex"),
+            session_start, fps
+        )
+        swing_end   = _parse_ts_flex(
+            s.get("swing_end_ts")   or s.get("end_ts")   or s.get("end_time")   or s.get("end"),
+            session_start, fps
+        )
+        hit_src = s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts") \
+                  or s.get("timestamp") or s.get("time") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") \
+                  or s.get("frame") or s.get("contact_frame") or {"epoch": s.get("epoch_ms") if "epoch_ms" in s else None}
         ball_hit_ts = _parse_ts_flex(hit_src, session_start, fps)
 
         return {
@@ -787,7 +835,7 @@ def ingest_sportai_json(json_path, source_file_name):
             if payload:
                 swings_collected.append(payload)
 
-    # ---- Collect bounces (with more timestamp fallbacks); also prep rally derivation
+    # ---- Bounces (collect + rally derivation by time gaps if needed)
     bounces = first_present(data, ["ball_bounces", "bounces"], default=[])
     bounce_rows = []
     bounces_by_rally = {}  # rally_no -> list of ts
@@ -796,7 +844,10 @@ def ingest_sportai_json(json_path, source_file_name):
             if not isinstance(b, dict):
                 continue
             rally_no = b.get("rally_number") or b.get("rally") or b.get("point_index") or b.get("rallyIndex") or b.get("point")
-            ts = _parse_ts_flex(b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame"), session_start, fps)
+            ts = _parse_ts_flex(
+                b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame"),
+                session_start, fps
+            )
             bx = b.get("x") or b.get("ball_x")
             by = b.get("y") or b.get("ball_y")
             bounce_rows.append({
@@ -808,7 +859,78 @@ def ingest_sportai_json(json_path, source_file_name):
             if rally_no is not None and ts is not None:
                 bounces_by_rally.setdefault(rally_no, []).append(ts)
 
-    # ---- If no rallies were present earlier, derive them from bounces
+    # If no rallies present and no rally_no in bounces, derive by time-gap clustering
+    need_time_cluster = (not rally_id_map) and (all(b.get("rally_no") is None for b in bounce_rows) if bounce_rows else False)
+    if need_time_cluster:
+        # cluster sorted bounce ts with >6s gaps
+        ts_sorted = sorted([b["bounce_ts"] for b in bounce_rows if b["bounce_ts"] is not None])
+        clusters = []
+        if ts_sorted:
+            current = [ts_sorted[0]]
+            for t in ts_sorted[1:]:
+                if (t - current[-1]).total_seconds() > 6.0:
+                    clusters.append(current)
+                    current = [t]
+                else:
+                    current.append(t)
+            clusters.append(current)
+        # assign rally numbers 1..N
+        cluster_map = {}
+        for idx, cl in enumerate(clusters, start=1):
+            start_ts = min(cl); end_ts = max(cl)
+            rid = upsert_dim_rally(
+                session_id=session_id,
+                rally_number=idx,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                point_winner_player_id=None,
+                length_shots=None,
+            )
+            rally_id_map[(session_id, idx)] = rid
+            cluster_map[idx] = (start_ts, end_ts)
+
+        # set rally_no on bounces by nearest window
+        for b in bounce_rows:
+            t = b["bounce_ts"]
+            if t is None:
+                continue
+            # find first cluster whose window contains t (or closest)
+            chosen = None
+            for idx, (st, en) in cluster_map.items():
+                if st <= t <= en:
+                    chosen = idx; break
+            if chosen is None:
+                # choose closest window by absolute delta
+                best = None; best_idx = None
+                for idx, (st, en) in cluster_map.items():
+                    delta = min(abs((t-st).total_seconds()), abs((t-en).total_seconds()))
+                    if best is None or delta < best:
+                        best = delta; best_idx = idx
+                chosen = best_idx
+            b["rally_no"] = chosen
+
+        print(f"🧩 Derived {len(cluster_map)} rallies by time-gap clustering.")
+
+    # If we had rallies but some bounces lacked rally_no, try assign by [start,end]
+    if rally_id_map and any(b.get("rally_no") is None and b.get("bounce_ts") is not None for b in bounce_rows):
+        # build rally windows
+        with engine.connect() as conn:
+            windows = conn.execute(text("""
+                SELECT rally_id, rally_number, start_ts, end_ts
+                FROM dim_rally WHERE session_id = :sid
+            """), {"sid": session_id}).mappings().all()
+        win_list = [(w["rally_number"], w["start_ts"], w["end_ts"]) for w in windows]
+        for b in bounce_rows:
+            if b.get("rally_no") is not None or b.get("bounce_ts") is None:
+                continue
+            t = b["bounce_ts"]
+            chosen = None
+            for rn, st, en in win_list:
+                if st and en and st <= t <= en:
+                    chosen = rn; break
+            b["rally_no"] = chosen
+
+    # If still no rallies and we DO have bounces_by_rally keyed → create them
     if not rally_id_map and bounces_by_rally:
         for rally_no, ts_list in bounces_by_rally.items():
             start_ts = min(ts_list) if ts_list else None
@@ -822,16 +944,50 @@ def ingest_sportai_json(json_path, source_file_name):
                 length_shots=None,
             )
             rally_id_map[(session_id, rally_no)] = rid
-        print(f"🧩 Derived {len(bounces_by_rally)} rallies from bounces.")
+        print(f"🧩 Derived {len(bounces_by_rally)} rallies from bounces with rally numbers.")
 
-    # ---- Now attach swings to rally_ids and player_ids, then insert
+    # ---- Attach swings to rallies (by rally_no if provided, else by time window)
+    # Build rally windows
+    with engine.connect() as conn:
+        windows = conn.execute(text("""
+            SELECT rally_id, rally_number, start_ts, end_ts
+            FROM dim_rally WHERE session_id = :sid
+        """), {"sid": session_id}).mappings().all()
+    win_list = [(w["rally_number"], w["rally_id"], w["start_ts"], w["end_ts"]) for w in windows]
+
+    def _find_rally_id_for_time(ts):
+        if ts is None:
+            return None
+        for rn, rid, st, en in win_list:
+            if st and en and st <= ts <= en:
+                return rid
+        # fallback: nearest rally window center
+        best = None; best_rid = None
+        for rn, rid, st, en in win_list:
+            if st and en:
+                mid = st + (en - st) / 2
+                delta = abs((ts - mid).total_seconds())
+                if best is None or delta < best:
+                    best = delta; best_rid = rid
+        return best_rid
+
     swing_rows = []
     for sw in swings_collected:
-        rally_id = rally_id_map.get((session_id, sw["rally_no"]))
-        player_id = player_map.get(str(sw["player_uid"])) if sw["player_uid"] is not None else None
+        # prefer provided rally_no; otherwise match by ball_hit_ts, or start/end
+        rid = None
+        if sw["rally_no"] is not None:
+            rid = next((rid for rn, rid, st, en in win_list if rn == sw["rally_no"]), None)
+        if rid is None:
+            ts_for_match = sw["ball_hit_ts"] or sw["swing_start_ts"] or sw["swing_end_ts"]
+            rid = _find_rally_id_for_time(ts_for_match)
+
+        player_id = None
+        if sw["player_uid"] is not None:
+            player_id = player_map.get(str(sw["player_uid"]))
+
         swing_rows.append({
             "session_id": session_id,
-            "rally_id": rally_id,
+            "rally_id": rid,
             "player_id": player_id,
             "swing_start_ts": sw["swing_start_ts"],
             "swing_end_ts": sw["swing_end_ts"],
@@ -857,10 +1013,11 @@ def ingest_sportai_json(json_path, source_file_name):
     else:
         print("🟨 No swings discovered anywhere in JSON.")
 
-    # ---- Insert bounces (map rally ids)
+    # ---- Insert bounces with mapped rally_ids
     final_bounce_rows = []
     for b in bounce_rows:
-        rid = rally_id_map.get((session_id, b["rally_no"]))
+        rn = b.get("rally_no")
+        rid = next((rid for rno, rid, st, en in win_list if rno == rn), None) if rn is not None else _find_rally_id_for_time(b.get("bounce_ts"))
         final_bounce_rows.append({
             "session_id": session_id,
             "rally_id": rid,
