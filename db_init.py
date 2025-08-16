@@ -23,19 +23,19 @@ CREATE TABLE IF NOT EXISTS dim_session (
 """,
 """
 CREATE TABLE IF NOT EXISTS dim_player (
-  player_id                 BIGSERIAL PRIMARY KEY,
-  session_id                INT,
-  sportai_player_uid        TEXT NOT NULL,
-  full_name                 TEXT,
-  handedness                TEXT,
-  age                       REAL,
-  utr                       REAL,
-  covered_distance          REAL,
-  fastest_sprint            REAL,
+  player_id                  BIGSERIAL PRIMARY KEY,
+  session_id                 INT,
+  sportai_player_uid         TEXT NOT NULL,
+  full_name                  TEXT,
+  handedness                 TEXT,
+  age                        REAL,
+  utr                        REAL,
+  covered_distance           REAL,
+  fastest_sprint             REAL,
   fastest_sprint_timestamp_s REAL,
-  activity_score            REAL,
-  swing_type_distribution   JSONB,
-  location_heatmap          JSONB
+  activity_score             REAL,
+  swing_type_distribution    JSONB,
+  location_heatmap           JSONB
 );
 """,
 """
@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS raw_result (
 ]
 
 MIGRATION = [
-# ---------- Add any missing columns first ----------
+# ---------- Add any missing columns (covers older installs) ----------
 # dim_player
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT",
@@ -207,12 +207,40 @@ MIGRATION = [
 # dim_rally
 "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS point_winner_player_id INT",
 
-# fact_swing (FK columns)
+# fact_swing – ensure *all* v2 columns exist
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_id INT",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS player_id INT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_ts TIMESTAMPTZ",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_s REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_frame INT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_frame INT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_frame INT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS swing_type TEXT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve BOOLEAN",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS volley BOOLEAN",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS confidence REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS confidence_swing_type REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS confidence_volley REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_start_s REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_end_s REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_x REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_y REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_player_distance REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_speed REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_location_x REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_location_y REAL",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_type TEXT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS intercepting_player_uid TEXT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_trajectory JSONB",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS annotations_json JSONB",
 
-# fact_bounce (make sure ALL projected cols exist)
+# fact_bounce – ensure columns exist
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS timestamp_s REAL",
@@ -222,11 +250,25 @@ MIGRATION = [
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS hitter_player_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT",
 
-# fact_player_position (FK columns)
+# fact_player_position
 "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS player_id INT",
 
-# ---------- Clean up old uniqueness that blocks duplicates across sessions ----------
+# ---------- Backfill from legacy columns (if present) ----------
+# If old 'is_serve' exists, copy values into new 'serve'
+"""
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='fact_swing' AND column_name='is_serve'
+  ) THEN
+    UPDATE fact_swing SET serve = COALESCE(serve, is_serve);
+  END IF;
+END$$;
+""",
+
+# ---------- Clean up old uniqueness that might conflict ----------
 "ALTER TABLE dim_player DROP CONSTRAINT IF EXISTS dim_player_sportai_player_uid_key",
 "DROP INDEX IF EXISTS dim_player_sportai_player_uid_key",
 
@@ -234,9 +276,7 @@ MIGRATION = [
 """
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname='dim_player_session_fk'
-  ) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dim_player_session_fk') THEN
     ALTER TABLE dim_player
       ADD CONSTRAINT dim_player_session_fk
       FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
@@ -344,10 +384,8 @@ BEGIN
 END$$;
 """,
 
-# ---------- Composite unique for players (per session) ----------
+# ---------- Composite unique + performance indexes ----------
 "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid)",
-
-# ---------- Performance indexes ----------
 "CREATE INDEX IF NOT EXISTS idx_dim_player_session ON dim_player(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_dim_rally_session ON dim_rally(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_fact_bounce_session ON fact_bounce(session_id)",
