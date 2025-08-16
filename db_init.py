@@ -191,8 +191,12 @@ CREATE TABLE IF NOT EXISTS raw_result (
 ]
 
 MIGRATION = [
-# ---------- Add any missing columns (covers older installs) ----------
-# dim_player
+# ---------- dim_session: add new columns if table already existed ----------
+"ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS fps REAL",
+"ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS court_surface TEXT",
+"ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS venue TEXT",
+
+# ---------- dim_player ----------
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS age REAL",
@@ -204,10 +208,10 @@ MIGRATION = [
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS location_heatmap JSONB",
 
-# dim_rally
+# ---------- dim_rally ----------
 "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS point_winner_player_id INT",
 
-# fact_swing – ensure *all* v2 columns exist
+# ---------- fact_swing – ensure *all* v2 columns exist ----------
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_id INT",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS player_id INT",
@@ -240,7 +244,7 @@ MIGRATION = [
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_trajectory JSONB",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS annotations_json JSONB",
 
-# fact_bounce – ensure columns exist
+# ---------- fact_bounce ----------
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS timestamp_s REAL",
@@ -250,12 +254,11 @@ MIGRATION = [
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS hitter_player_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT",
 
-# fact_player_position
+# ---------- fact_player_position ----------
 "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS player_id INT",
 
-# ---------- Backfill from legacy columns (if present) ----------
-# If old 'is_serve' exists, copy values into new 'serve'
+# ---------- Backfill from legacy is_serve -> serve ----------
 """
 DO $$
 BEGIN
@@ -384,7 +387,9 @@ BEGIN
 END$$;
 """,
 
-# ---------- Composite unique + performance indexes ----------
+# ---------- Unique + performance indexes ----------
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session(session_uid)",
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sid_num ON dim_rally(session_id, rally_number)",
 "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid)",
 "CREATE INDEX IF NOT EXISTS idx_dim_player_session ON dim_player(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_dim_rally_session ON dim_rally(session_id)",
