@@ -12,6 +12,8 @@ from json_to_powerbi_csv import export_csv_from_json
 from sqlalchemy import create_engine, text
 from db_init import init_db  # schema creator
 
+APP_VERSION = "ingest-1.4-listsafe"
+
 app = Flask(__name__)
 
 # =======================
@@ -41,6 +43,44 @@ if DATABASE_URL:
         print("❌ Failed to create SQLAlchemy engine:", str(e))
 else:
     print("⚠️ DATABASE_URL is not set. DB features will be disabled.")
+
+# ==========================================
+# Small helpers (SAFE getters)
+# ==========================================
+def is_dict(x): return isinstance(x, dict)
+def is_list(x): return isinstance(x, list)
+
+def g(obj, key, default=None):
+    """Safe dict getter."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return default
+
+def first_present(dct, keys, default=None):
+    if not isinstance(dct, dict):
+        return default
+    for k in keys:
+        if k in dct:
+            return dct[k]
+    return default
+
+def dict_root(data):
+    """Pick a dict root even if the JSON file is a list at top."""
+    if is_dict(data):
+        return data
+    if is_list(data):
+        # prefer an element that looks relevant
+        for cand in data:
+            if is_dict(cand) and any(k in cand for k in [
+                "ball_bounces","bounces","rallies","players","session",
+                "events","shots","strokes","swings","analysis_date","video"
+            ]):
+                return cand
+        # fallback: first dict in the list
+        for cand in data:
+            if is_dict(cand):
+                return cand
+    return {}  # safest fallback
 
 # ==========================================
 # Dropbox OAuth
@@ -80,11 +120,18 @@ def check_video_accessibility(video_url):
 # ==========================================
 # Basic routes
 # ==========================================
-@app.route('/')
+@app.get("/")
 def index():
     return render_template("upload.html")
 
-@app.route('/upload', methods=['POST'])
+@app.get("/ops/version")
+def ops_version():
+    return {"ok": True, "version": APP_VERSION}
+
+# ==========================================
+# Upload video -> Dropbox -> SportAI task
+# ==========================================
+@app.post("/upload")
 def upload():
     if 'video' not in request.files or 'email' not in request.form:
         return jsonify({"error": "Video and email are required"}), 400
@@ -123,7 +170,7 @@ def upload():
     )
     if link_res.status_code not in [200, 201, 202]:
         err = link_res.json()
-        if err.get('error', {}).get('.tag') == 'shared_link_already_exists':
+        if g(err, 'error', {}).get('.tag') == 'shared_link_already_exists':
             link_data = requests.post(
                 "https://api.dropboxapi.com/2/sharing/list_shared_links",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -137,31 +184,21 @@ def upload():
 
     raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    # Register task with SportAI
     analyze_payload = {
         "video_url": raw_url,
         "only_in_rally_data": False,
         "version": "stable"
     }
-    headers = {
-        "Authorization": f"Bearer {SPORT_AI_TOKEN}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}", "Content-Type": "application/json"}
     analyze_res = requests.post("https://api.sportai.com/api/statistics", json=analyze_payload, headers=headers)
     if analyze_res.status_code not in [200, 201, 202]:
         return jsonify({"error": "Failed to register task", "details": analyze_res.text}), 500
 
     task_id = analyze_res.json()["data"]["task_id"]
 
-    # Start polling thread immediately
-    thread = Thread(target=poll_and_save_result, args=(task_id, email))
-    thread.start()
+    Thread(target=poll_and_save_result, args=(task_id, email), daemon=True).start()
 
-    return jsonify({
-        "message": "Upload and analysis started",
-        "dropbox_url": raw_url,
-        "sportai_task_id": task_id
-    }), 200
+    return jsonify({"message": "Upload and analysis started", "dropbox_url": raw_url, "sportai_task_id": task_id}), 200
 
 # ==========================================
 # Polling + JSON download
@@ -176,25 +213,20 @@ def poll_and_save_result(task_id, email):
     for attempt in range(max_attempts):
         res = requests.get(url, headers=headers)
         if res.status_code == 200:
-            status = res.json()["data"].get("status")
+            status = g(res.json(), "data", {}).get("status")
             print(f"🔄 Attempt {attempt+1}: Status = {status}")
             if status == "completed":
-                max_retries = 15
-                retry_delay = 10
-                for retry in range(max_retries):
+                for _ in range(15):  # retries to allow result_url to appear
                     filename = fetch_and_save_result(task_id, email)
                     if filename:
                         print(f"✅ Result saved to {filename}")
                         return
-                    else:
-                        print(f"⏳ Retry {retry+1}/{max_retries}: Waiting for result_url to activate...")
-                        time.sleep(retry_delay)
+                    time.sleep(10)
                 print("❌ JSON download failed after completion status.")
                 return
         else:
             print("⚠️ Failed to check status:", res.text)
         time.sleep(delay)
-
     print("❌ Polling timed out after 6 hours.")
 
 def fetch_and_save_result(task_id, email):
@@ -205,10 +237,9 @@ def fetch_and_save_result(task_id, email):
 
         if meta_res.status_code in [200, 201]:
             meta_json = meta_res.json()
-            result_url = meta_json["data"].get("result_url")
+            result_url = g(g(meta_json, "data", {}), "result_url")
             if not result_url:
                 print("📭 Waiting for result_url to become active. Metadata:", meta_json)
-                print("❌ No result_url found in metadata.")
                 return None
 
             print(f"📡 Downloading JSON from: {result_url}")
@@ -220,14 +251,12 @@ def fetch_and_save_result(task_id, email):
                 with open(local_filename, "w", encoding="utf-8") as f:
                     f.write(result_res.text)
 
-                # Export CSV for Power BI
                 try:
                     export_csv_from_json(local_filename)
                     print(f"📊 CSVs exported for {local_filename}")
                 except Exception as e:
                     print(f"⚠️ Failed to export CSV for {local_filename}: {str(e)}")
 
-                # Ingest JSON into Postgres
                 try:
                     if engine is None:
                         print("⚠️ No DB engine available, skipping DB ingestion.")
@@ -236,7 +265,6 @@ def fetch_and_save_result(task_id, email):
                         print("✅ Ingestion into Postgres completed.")
                 except Exception as e:
                     print("❌ Ingestion error:", str(e))
-
                 return local_filename
             else:
                 print(f"❌ Could not download JSON. Status: {result_res.status_code}")
@@ -247,13 +275,12 @@ def fetch_and_save_result(task_id, email):
     return None
 
 # ==========================================
-# Ops endpoints (init, ping, counts, manual ingest)
+# Ops endpoints
 # ==========================================
 @app.get("/ops/init-db")
 def ops_init_db():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return ("Forbidden", 403)
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
     try:
         result = init_db()
         return jsonify({"status": result})
@@ -278,7 +305,7 @@ def db_counts():
     try:
         counts = {}
         with engine.connect() as conn:
-            for t in ["dim_session", "dim_player", "dim_rally", "fact_swing", "fact_bounce"]:
+            for t in ["dim_session","dim_player","dim_rally","fact_swing","fact_bounce"]:
                 counts[t] = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
         return {"ok": True, "counts": counts}
     except Exception as e:
@@ -287,21 +314,13 @@ def db_counts():
 @app.get("/ops/ingest-file")
 def ops_ingest_file():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return ("Forbidden", 403)
-
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
     json_name = request.args.get("name")
-    if not json_name:
-        return ("Missing ?name=<filename.json>", 400)
-
-    data_dir = os.path.join(os.getcwd(), "data")
-    json_path = os.path.join(data_dir, json_name)
-
-    if not os.path.isfile(json_path):
-        return (f"File not found: {json_path}", 404)
-
+    if not json_name: return ("Missing ?name=<filename.json>", 400)
+    p = os.path.join(os.getcwd(), "data", json_name)
+    if not os.path.isfile(p): return (f"File not found: {p}", 404)
     try:
-        ingest_sportai_json(json_path, json_name)
+        ingest_sportai_json(p, json_name)
         return {"ok": True, "ingested": json_name}
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
@@ -309,14 +328,11 @@ def ops_ingest_file():
 @app.get("/ops/reingest")
 def ops_reingest():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return ("Forbidden", 403)
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
     json_name = request.args.get("name")
-    if not json_name:
-        return ("Missing ?name=<filename.json>", 400)
+    if not json_name: return ("Missing ?name=<filename.json>", 400)
     p = os.path.join(os.getcwd(), "data", json_name)
-    if not os.path.isfile(p):
-        return (f"File not found: {p}", 404)
+    if not os.path.isfile(p): return (f"File not found: {p}", 404)
     try:
         ingest_sportai_json(p, json_name)
         return {"ok": True, "reingested": json_name}
@@ -326,28 +342,19 @@ def ops_reingest():
 @app.post("/ops/upload-json")
 def upload_json_and_ingest():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return ("Forbidden", 403)
-
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
     name = request.args.get("name")
-    if not name:
-        return ("Missing ?name=<filename.json>", 400)
-    if not name.endswith(".json"):
-        return ("Name must end with .json", 400)
+    if not name: return ("Missing ?name=<filename.json>", 400)
+    if not name.endswith(".json"): return ("Name must end with .json", 400)
 
     os.makedirs("data", exist_ok=True)
     dest_path = os.path.join(os.getcwd(), "data", secure_filename(name))
-
     try:
         if "file" in request.files:
-            f = request.files["file"]
-            f.save(dest_path)
+            request.files["file"].save(dest_path)
         else:
-            if not request.data:
-                return ("No file part and no request body provided", 400)
-            with open(dest_path, "wb") as out:
-                out.write(request.data)
-
+            if not request.data: return ("No file part and no request body provided", 400)
+            with open(dest_path, "wb") as out: out.write(request.data)
         ingest_sportai_json(dest_path, name)
         return jsonify({"ok": True, "saved": name, "ingested": True})
     except Exception as e:
@@ -356,45 +363,35 @@ def upload_json_and_ingest():
 @app.get("/ops/peek-json")
 def peek_json():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return ("Forbidden", 403)
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
     json_name = request.args.get("name")
-    if not json_name:
-        return ("Missing ?name=<filename.json>", 400)
+    if not json_name: return ("Missing ?name=<filename.json>", 400)
     p = os.path.join(os.getcwd(), "data", json_name)
-    if not os.path.isfile(p):
-        return (f"File not found: {p}", 404)
+    if not os.path.isfile(p): return (f"File not found: {p}", 404)
 
     try:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-        root = _dict_root(data)
-        out = {
-            "top_level_type": type(data).__name__,
-            "root_detected_type": type(root).__name__,
-            "root_keys": sorted(list(root.keys())) if isinstance(root, dict) else []
-        }
+        root = dict_root(data)
 
         def sample_keys(obj):
-            if isinstance(obj, dict):
-                return sorted(list(obj.keys()))[:30]
-            if isinstance(obj, list) and obj:
-                if isinstance(obj[0], dict):
-                    return sorted(list(obj[0].keys()))[:30]
+            if is_dict(obj): return sorted(list(obj.keys()))[:30]
+            if is_list(obj) and obj:
+                if is_dict(obj[0]): return sorted(list(obj[0].keys()))[:30]
                 return ["<list-primitive>"]
             return ["<unknown>"]
 
-        for arr_key in ["swings", "shots", "strokes", "events", "rallies", "points", "ball_bounces", "bounces", "players", "session"]:
-            if isinstance(root, dict) and arr_key in root:
-                val = root[arr_key]
-                if isinstance(val, list):
-                    out[arr_key] = {"len": len(val), "sample_item_keys": sample_keys(val)}
-                elif isinstance(val, dict):
-                    out[arr_key] = {"type": "dict", "keys": sorted(list(val.keys()))[:30]}
-                else:
-                    out[arr_key] = {"type": type(val).__name__}
-
+        out = {
+            "top_level_type": type(data).__name__,
+            "root_detected_type": type(root).__name__,
+            "root_keys": sorted(list(root.keys())) if is_dict(root) else []
+        }
+        for k in ["swings","shots","strokes","events","rallies","points","ball_bounces","bounces","players","session","analysis_date"]:
+            val = g(root, k)
+            if val is None: continue
+            if is_list(val): out[k] = {"len": len(val), "sample_item_keys": sample_keys(val)}
+            elif is_dict(val): out[k] = {"type": "dict", "keys": sample_keys(val)}
+            else: out[k] = {"type": type(val).__name__}
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -403,25 +400,18 @@ def peek_json():
 # SQL helper endpoints (read-only)
 # ==========================================
 def _is_safe_select(query: str) -> bool:
-    if not query:
-        return False
+    if not query: return False
     q = query.strip().lower()
-    if ";" in q:
-        return False
+    if ";" in q: return False
     return q.startswith("select ") or q.startswith("with ")
 
 @app.get("/ops/sql")
 def ops_sql_get():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return jsonify({"error": "unauthorized"}), 403
-    if engine is None:
-        return jsonify({"error": "no database engine"}), 500
-
+    if not OPS_KEY or key != OPS_KEY: return jsonify({"error": "unauthorized"}), 403
+    if engine is None: return jsonify({"error": "no database engine"}), 500
     q = request.args.get("q", "")
-    if not _is_safe_select(q):
-        return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
-
+    if not _is_safe_select(q): return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
     try:
         with engine.connect() as conn:
             rows = conn.execute(text(q)).mappings().all()
@@ -432,16 +422,11 @@ def ops_sql_get():
 @app.post("/ops/sql")
 def ops_sql_post():
     key = request.args.get("key")
-    if not OPS_KEY or key != OPS_KEY:
-        return jsonify({"error": "unauthorized"}), 403
-    if engine is None:
-        return jsonify({"error": "no database engine"}), 500
-
+    if not OPS_KEY or key != OPS_KEY: return jsonify({"error": "unauthorized"}), 403
+    if engine is None: return jsonify({"error": "no database engine"}), 500
     payload = request.get_json(silent=True) or {}
     q = (payload.get("q") or "").strip()
-    if not _is_safe_select(q):
-        return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
-
+    if not _is_safe_select(q): return jsonify({"error": "only single SELECT/WITH queries without ';' are allowed"}), 400
     try:
         with engine.connect() as conn:
             rows = conn.execute(text(q)).mappings().all()
@@ -453,20 +438,16 @@ def ops_sql_post():
 # Timestamp helpers
 # ==========================================
 def _parse_ts_iso(v):
-    if not v:
-        return None
+    if not v: return None
     try:
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
         return None
 
 def _from_epoch_like(val):
-    if val is None:
-        return None
-    try:
-        x = float(val)
-    except Exception:
-        return None
+    if val is None: return None
+    try: x = float(val)
+    except Exception: return None
     try:
         if x > 1e12:  # ms
             return datetime.fromtimestamp(x / 1000.0, tz=timezone.utc)
@@ -477,85 +458,41 @@ def _from_epoch_like(val):
     return None
 
 def _parse_ts_flex(v, session_start=None, fps=None):
-    # 1) ISO
     t = _parse_ts_iso(v)
-    if t:
-        return t
-    # 2) epoch-like absolute
+    if t: return t
     if isinstance(v, (int, float, str)):
         abs_t = _from_epoch_like(v)
-        if abs_t:
-            return abs_t
-    # 3) numeric seconds relative
+        if abs_t: return abs_t
     if isinstance(v, (int, float)) and session_start:
-        try:
-            return (session_start + timedelta(seconds=float(v))).astimezone(timezone.utc)
-        except Exception:
-            pass
-    # 4) dict keys
+        try: return (session_start + timedelta(seconds=float(v))).astimezone(timezone.utc)
+        except Exception: pass
     sec = None; ms = None; frame_idx = None
-    if isinstance(v, dict):
-        sec = v.get("seconds") or v.get("time_s") or v.get("sec")
-        ms  = v.get("time_ms") or v.get("timestamp_ms") or v.get("ms") or v.get("millis") or v.get("epoch_ms")
+    if is_dict(v):
+        sec = g(v, "seconds") or g(v, "time_s") or g(v, "sec")
+        ms  = g(v, "time_ms") or g(v, "timestamp_ms") or g(v, "ms") or g(v, "millis") or g(v, "epoch_ms")
         if ms is None:
-            maybe_epoch = v.get("epoch") or v.get("unix") or v.get("unix_s")
+            maybe_epoch = g(v, "epoch") or g(v, "unix") or g(v, "unix_s")
             e = _from_epoch_like(maybe_epoch)
-            if e:
-                return e
-        frame_idx = v.get("frame") or v.get("frame_idx") or v.get("frameIndex") or v.get("contact_frame")
+            if e: return e
+        frame_idx = g(v, "frame") or g(v, "frame_idx") or g(v, "frameIndex") or g(v, "contact_frame")
     if sec is not None and session_start is not None:
-        try:
-            return (session_start + timedelta(seconds=float(sec))).astimezone(timezone.utc)
-        except Exception:
-            pass
+        try: return (session_start + timedelta(seconds=float(sec))).astimezone(timezone.utc)
+        except Exception: pass
     if ms is not None:
         e = _from_epoch_like(ms)
-        if e:
-            return e
+        if e: return e
         if session_start is not None:
-            try:
-                return (session_start + timedelta(milliseconds=float(ms))).astimezone(timezone.utc)
-            except Exception:
-                pass
+            try: return (session_start + timedelta(milliseconds=float(ms))).astimezone(timezone.utc)
+            except Exception: pass
     if frame_idx is not None and session_start is not None and fps:
-        try:
-            return (session_start + timedelta(seconds=float(frame_idx) / float(fps))).astimezone(timezone.utc)
-        except Exception:
-            pass
+        try: return (session_start + timedelta(seconds=float(frame_idx) / float(fps))).astimezone(timezone.utc)
+        except Exception: pass
     return None
 
-# ==========================================
-# JSON root helpers
-# ==========================================
-def _dict_root(data):
-    """
-    If data is a list, pick the first dict that looks relevant.
-    """
-    if isinstance(data, dict):
-        return data
-    if isinstance(data, list):
-        # Prefer an element that has keys we care about
-        for cand in data:
-            if isinstance(cand, dict) and any(k in cand for k in [
-                "ball_bounces", "bounces", "rallies", "players", "session",
-                "events", "shots", "strokes", "swings"
-            ]):
-                return cand
-        # Fallback to first dict element
-        for cand in data:
-            if isinstance(cand, dict):
-                return cand
-    return {}
-
-def _get_fps_safe(data):
-    root = _dict_root(data)
-    try:
-        s = (root.get("session") or {})
-        return s.get("fps") or s.get("frame_rate") or s.get("frames_per_second") \
-               or (root.get("video") or {}).get("fps") \
-               or root.get("fps")
-    except Exception:
-        return None
+def get_fps_safe(data):
+    root = dict_root(data)
+    s = g(root, "session", {})
+    return g(s, "fps") or g(s, "frame_rate") or g(s, "frames_per_second") or g(g(root, "video", {}), "fps") or g(root, "fps")
 
 # ==========================================
 # DB upserts/inserts
@@ -614,8 +551,7 @@ def upsert_dim_rally(*, session_id, rally_number, start_ts=None, end_ts=None, po
     return rid
 
 def insert_fact_swing_batch(rows):
-    if not rows:
-        return 0
+    if not rows: return 0
     cols = [
         "session_id","rally_id","player_id","swing_start_ts","swing_end_ts","ball_hit_ts",
         "swing_type","is_serve","is_return","is_in_rally","valid",
@@ -623,39 +559,22 @@ def insert_fact_swing_batch(rows):
         "ball_x","ball_y","ball_speed","ball_player_dist","annotations_json"
     ]
     placeholders = ",".join([f":{c}" for c in cols])
-    sql = text(f"""
-        INSERT INTO fact_swing ({",".join(cols)})
-        VALUES ({placeholders})
-    """)
-    with engine.begin() as conn:
-        conn.execute(sql, rows)
+    sql = text(f"INSERT INTO fact_swing ({','.join(cols)}) VALUES ({placeholders})")
+    with engine.begin() as conn: conn.execute(sql, rows)
     return len(rows)
 
 def insert_fact_bounce_batch(rows):
-    if not rows:
-        return 0
+    if not rows: return 0
     cols = ["session_id","rally_id","bounce_ts","bounce_x","bounce_y"]
     placeholders = ",".join([f":{c}" for c in cols])
     sql = text(f"INSERT INTO fact_bounce ({','.join(cols)}) VALUES ({placeholders})")
-    with engine.begin() as conn:
-        conn.execute(sql, rows)
+    with engine.begin() as conn: conn.execute(sql, rows)
     return len(rows)
 
 # ==========================================
 # Ingest (list-aware root, bounce-first; derive rallies; strict swings)
 # ==========================================
 def ingest_sportai_json(json_path, source_file_name):
-    """
-    Loads:
-      - supports list-at-root JSON by auto-selecting a dict root
-      - bounces FIRST (to set fallback session_start)
-      - session -> dim_session
-      - players -> dim_player
-      - rallies -> dim_rally (from JSON or derived from bounces/time gaps)
-      - swings  -> fact_swing (only if real swing-like data exists)
-      - bounces -> fact_bounce
-    Clears facts for this session on each ingest (idempotent).
-    """
     if engine is None:
         print("⚠️ No DB engine. Skipping ingest.")
         return
@@ -663,29 +582,29 @@ def ingest_sportai_json(json_path, source_file_name):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    root = _dict_root(data)
-    fps = _get_fps_safe(data)
+    root = dict_root(data)
+    fps  = get_fps_safe(data)
 
-    # -------- Collect bounces first (to maybe derive session_start)
-    raw_bounces = (root.get("ball_bounces") or root.get("bounces") or [])
+    # --- Collect bounces first
+    raw_bounces = (g(root, "ball_bounces") or g(root, "bounces") or [])
     pre_bounce_abs, pre_bounce_rel, pre_bounces = [], [], []
-    for b in raw_bounces if isinstance(raw_bounces, list) else []:
-        if not isinstance(b, dict):
-            continue
-        raw_t = b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame")
-        abs_t = _parse_ts_flex(raw_t, session_start=None, fps=fps)
-        if abs_t:
-            pre_bounce_abs.append(abs_t)
-        try:
-            if abs_t is None and isinstance(raw_t, (int, float)) and float(raw_t) < 1e9:
-                pre_bounce_rel.append(float(raw_t))
-        except Exception:
-            pass
-        pre_bounces.append(b)
+    if is_list(raw_bounces):
+        for b in raw_bounces:
+            if not is_dict(b): continue
+            raw_t = b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame")
+            abs_t = _parse_ts_flex(raw_t, session_start=None, fps=fps)
+            if abs_t: pre_bounce_abs.append(abs_t)
+            else:
+                try:
+                    if isinstance(raw_t, (int, float)) and float(raw_t) < 1e9:
+                        pre_bounce_rel.append(float(raw_t))
+                except Exception:
+                    pass
+            pre_bounces.append(b)
 
-    # -------- Work out session_start
-    session_payload = (root.get("session") or {})
-    session_start = _parse_ts_iso(session_payload.get("start_time")) or _parse_ts_iso(root.get("analysis_date"))
+    # --- session_start
+    sess = g(root, "session", {})
+    session_start = _parse_ts_iso(g(sess, "start_time")) or _parse_ts_iso(g(root, "analysis_date"))
     if session_start is None:
         if pre_bounce_abs:
             session_start = min(pre_bounce_abs) - timedelta(seconds=2)
@@ -694,40 +613,42 @@ def ingest_sportai_json(json_path, source_file_name):
             session_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
             print("⏰ session_start set to epoch (relative-seconds mode)")
 
-    # -------- Upsert session
-    session_uid = session_payload.get("id") or root.get("id") or source_file_name
+    # --- Upsert session
+    session_uid = g(sess, "id") or g(root, "id") or source_file_name
     session_id = upsert_dim_session(
         session_uid=session_uid,
         source_file=source_file_name,
         session_date=session_start,
-        court_surface=session_payload.get("surface"),
-        venue=session_payload.get("venue"),
+        court_surface=g(sess, "surface"),
+        venue=g(sess, "venue"),
     )
 
-    # -------- Idempotent: clear facts for this session
+    # --- Clear facts for idempotency
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM fact_swing  WHERE session_id = :sid"), {"sid": session_id})
         conn.execute(text("DELETE FROM fact_bounce WHERE session_id = :sid"), {"sid": session_id})
-    print("♻️ Cleared existing fact rows for session_id", session_id)
+    print("♻️ Cleared existing facts for session_id", session_id)
 
-    # -------- Players (best-effort)
+    # --- Players
     player_map = {}
-    players = root.get("players", [])
-    if isinstance(players, dict):
-        players = [{"id": k, **(v if isinstance(v, dict) else {})} for k, v in players.items()]
-    for p in players or []:
-        uid = str(p.get("id") or p.get("player_id") or p.get("playerId") or p.get("athlete_id") or p.get("player_index"))
-        name = p.get("name") or p.get("full_name") or (" ".join([x for x in [p.get("first_name"), p.get("last_name")] if x])) or None
-        pid = upsert_dim_player(
-            sportai_player_uid=uid,
-            full_name=name,
-            handedness=p.get("handedness") or p.get("hand") or p.get("dominant_hand"),
-            age=p.get("age"),
-            utr=p.get("utr"),
-        )
-        player_map[uid] = pid
+    players = g(root, "players", [])
+    if is_dict(players):
+        players = [{"id": k, **(v if is_dict(v) else {})} for k, v in players.items()]
+    if is_list(players):
+        for p in players:
+            if not is_dict(p): continue
+            uid = str(p.get("id") or p.get("player_id") or p.get("playerId") or p.get("athlete_id") or p.get("player_index"))
+            name = p.get("name") or p.get("full_name") or (" ".join([x for x in [p.get("first_name"), p.get("last_name")] if x])) or None
+            pid = upsert_dim_player(
+                sportai_player_uid=uid,
+                full_name=name,
+                handedness=p.get("handedness") or p.get("hand") or p.get("dominant_hand"),
+                age=p.get("age"),
+                utr=p.get("utr"),
+            )
+            player_map[uid] = pid
 
-    # -------- Build bounces with final session_start
+    # --- Build bounces with final session_start
     bounce_rows = []
     bounces_by_rally = {}
     for b in pre_bounces:
@@ -736,17 +657,18 @@ def ingest_sportai_json(json_path, source_file_name):
             b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame"),
             session_start, fps
         )
-        bx = (b.get("court_pos") or {}).get("x") if isinstance(b.get("court_pos"), dict) else b.get("x") or b.get("ball_x")
-        by = (b.get("court_pos") or {}).get("y") if isinstance(b.get("court_pos"), dict) else b.get("y") or b.get("ball_y")
+        bx = (b.get("court_pos") or {}).get("x") if is_dict(b.get("court_pos")) else b.get("x") or b.get("ball_x")
+        by = (b.get("court_pos") or {}).get("y") if is_dict(b.get("court_pos")) else b.get("y") or b.get("ball_y")
         bounce_rows.append({"rally_no": rn, "bounce_ts": ts, "bounce_x": bx, "bounce_y": by})
         if rn is not None and ts is not None:
             bounces_by_rally.setdefault(rn, []).append(ts)
 
-    # -------- Rallies from JSON (if present)
-    raw_rallies = root.get("rallies") or root.get("points") or root.get("rally_list") or []
+    # --- Rallies from JSON
+    raw_rallies = g(root, "rallies") or g(root, "points") or g(root, "rally_list") or []
     rally_id_map = {}
-    if isinstance(raw_rallies, list) and raw_rallies:
+    if is_list(raw_rallies) and raw_rallies:
         for r in raw_rallies:
+            if not is_dict(r): continue
             rally_number = r.get("rally_number") or r.get("index") or r.get("rally") or r.get("point_index") or r.get("rallyIndex") or r.get("point")
             rid = upsert_dim_rally(
                 session_id=session_id,
@@ -758,59 +680,42 @@ def ingest_sportai_json(json_path, source_file_name):
             )
             rally_id_map[(session_id, rally_number)] = rid
 
-    # -------- Derive rallies (by number if present in bounces, else by time gaps)
+    # --- Derive rallies
     if not rally_id_map and bounces_by_rally:
         for rn, ts_list in bounces_by_rally.items():
-            start_ts = min(ts_list) if ts_list else None
-            end_ts = max(ts_list) if ts_list else None
-            rid = upsert_dim_rally(
-                session_id=session_id,
-                rally_number=rn,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                point_winner_player_id=None,
-                length_shots=None,
-            )
+            st = min(ts_list) if ts_list else None
+            en = max(ts_list) if ts_list else None
+            rid = upsert_dim_rally(session_id=session_id, rally_number=rn, start_ts=st, end_ts=en,
+                                   point_winner_player_id=None, length_shots=None)
             rally_id_map[(session_id, rn)] = rid
         print(f"🧩 Derived {len(bounces_by_rally)} rallies from bounces (numbered).")
 
     if not rally_id_map and bounce_rows:
-        # cluster by time gaps when no rally numbers at all
         ts_sorted = sorted([b["bounce_ts"] for b in bounce_rows if b["bounce_ts"]])
         clusters = []
         if ts_sorted:
             current = [ts_sorted[0]]
             for t in ts_sorted[1:]:
                 if (t - current[-1]).total_seconds() > 6.0:
-                    clusters.append(current)
-                    current = [t]
+                    clusters.append(current); current = [t]
                 else:
                     current.append(t)
             clusters.append(current)
         cluster_map = {}
         for idx, cl in enumerate(clusters, start=1):
             st = min(cl); en = max(cl)
-            rid = upsert_dim_rally(
-                session_id=session_id,
-                rally_number=idx,
-                start_ts=st,
-                end_ts=en,
-                point_winner_player_id=None,
-                length_shots=None,
-            )
+            rid = upsert_dim_rally(session_id=session_id, rally_number=idx, start_ts=st, end_ts=en,
+                                   point_winner_player_id=None, length_shots=None)
             rally_id_map[(session_id, idx)] = rid
             cluster_map[idx] = (st, en)
         # assign rally_no to bounces
         for b in bounce_rows:
             t = b["bounce_ts"]
-            if t is None:
-                continue
+            if t is None: continue
             chosen = None
             for idx, (st, en) in cluster_map.items():
-                if st <= t <= en:
-                    chosen = idx; break
+                if st <= t <= en: chosen = idx; break
             if chosen is None:
-                # nearest window center
                 best = None; best_idx = None
                 for idx, (st, en) in cluster_map.items():
                     mid = st + (en - st)/2
@@ -821,7 +726,7 @@ def ingest_sportai_json(json_path, source_file_name):
             b["rally_no"] = chosen
         print(f"🧩 Derived {len(cluster_map)} rallies by time-gap clustering.")
 
-    # -------- Build rally windows for mapping
+    # --- Rally windows for mapping
     with engine.connect() as conn:
         windows = conn.execute(text("""
             SELECT rally_id, rally_number, start_ts, end_ts
@@ -829,13 +734,10 @@ def ingest_sportai_json(json_path, source_file_name):
         """), {"sid": session_id}).mappings().all()
     win_list = [(w["rally_number"], w["rally_id"], w["start_ts"], w["end_ts"]) for w in windows]
 
-    def _find_rid_for_time(ts):
-        if ts is None:
-            return None
+    def find_rid_for_time(ts):
+        if ts is None: return None
         for rn, rid, st, en in win_list:
-            if st and en and st <= ts <= en:
-                return rid
-        # nearest window center
+            if st and en and st <= ts <= en: return rid
         best = None; best_rid = None
         for rn, rid, st, en in win_list:
             if st and en:
@@ -845,15 +747,14 @@ def ingest_sportai_json(json_path, source_file_name):
                     best = delta; best_rid = rid
         return best_rid
 
-    # -------- STRICT swing collection (only real swing-like arrays)
+    # --- STRICT swing collection (only if real swing-like arrays exist)
     swings_collected = []
-    for key in ["swings", "shots", "strokes", "events"]:
-        lst = root.get(key)
-        if isinstance(lst, list) and lst and isinstance(lst[0], dict):
+    for key in ["swings","shots","strokes","events"]:
+        lst = g(root, key)
+        if is_list(lst) and lst and is_dict(lst[0]):
             for s in lst:
-                if not isinstance(s, dict):
-                    continue
-                if not any(k in s for k in ["swing_type", "shot_type", "ball_hit_ts", "contact_ts"]):
+                if not is_dict(s): continue
+                if not any(k in s for k in ["swing_type","shot_type","ball_hit_ts","contact_ts"]):
                     continue
                 uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id") or s.get("hitter") or s.get("playerId") or s.get("athlete_id") or s.get("player_index")
                 uid = str(uid_raw) if uid_raw is not None else None
@@ -864,11 +765,10 @@ def ingest_sportai_json(json_path, source_file_name):
                     or s.get("frame") or s.get("frame_idx") or s.get("frameIndex"),
                     session_start, fps
                 )
-                swing_end   = _parse_ts_flex(
-                    s.get("swing_end_ts") or s.get("end_ts") or s.get("end_time") or s.get("end"),
-                    session_start, fps
-                )
-                ball_hit_ts = _parse_ts_flex(s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts"), session_start, fps)
+                swing_end   = _parse_ts_flex(s.get("swing_end_ts") or s.get("end_ts") or s.get("end_time") or s.get("end"),
+                                             session_start, fps)
+                ball_hit_ts = _parse_ts_flex(s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts"),
+                                             session_start, fps)
                 swings_collected.append({
                     "rally_no": rally_no,
                     "player_uid": uid,
@@ -890,6 +790,7 @@ def ingest_sportai_json(json_path, source_file_name):
                     "annotations_json": s.get("annotations"),
                 })
 
+    # --- Insert swings
     swing_rows = []
     if swings_collected:
         for sw in swings_collected:
@@ -898,7 +799,7 @@ def ingest_sportai_json(json_path, source_file_name):
                 rid = next((rid for rn, rid, st, en in win_list if rn == sw["rally_no"]), None)
             if rid is None:
                 ts_for_match = sw["ball_hit_ts"] or sw["swing_start_ts"] or sw["swing_end_ts"]
-                rid = _find_rid_for_time(ts_for_match)
+                rid = find_rid_for_time(ts_for_match)
             pid = player_map.get(str(sw["player_uid"])) if sw["player_uid"] is not None else None
             swing_rows.append({
                 "session_id": session_id,
@@ -925,15 +826,15 @@ def ingest_sportai_json(json_path, source_file_name):
             inserted_sw = insert_fact_swing_batch(swing_rows)
             print(f"🟩 Swings discovered: {len(swing_rows)}, inserted: {inserted_sw}")
     else:
-        print("🟨 No swings arrays present in this JSON — skipping swings.")
+        print("🟨 No swing-like arrays present — skipping swings.")
 
-    # Insert bounces with rally_ids
+    # --- Insert bounces with rally_ids
     final_bounce_rows = []
     for b in bounce_rows:
         rn = b.get("rally_no")
         rid = next((rid for rno, rid, st, en in win_list if rno == rn), None)
         if rid is None:
-            rid = _find_rid_for_time(b.get("bounce_ts"))
+            rid = find_rid_for_time(b.get("bounce_ts"))
         final_bounce_rows.append({
             "session_id": session_id,
             "rally_id": rid,
