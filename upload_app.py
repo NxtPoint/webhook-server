@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template
 import requests
 import os
 import json
@@ -8,9 +8,9 @@ from threading import Thread
 import time
 from json_to_powerbi_csv import export_csv_from_json
 
-# ✅ DB imports (single approach: SQL-only)
+# DB imports (single approach: SQL-only)
 from sqlalchemy import create_engine, text
-from db_init import init_db  # our schema creator (Step 1)
+from db_init import init_db  # our schema creator
 
 app = Flask(__name__)
 
@@ -306,8 +306,96 @@ def ops_ingest_file():
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
+# 🆕 Reingest an already-saved JSON (no save step, just parse & load)
+@app.get("/ops/reingest")
+def ops_reingest():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY:
+        return ("Forbidden", 403)
+    json_name = request.args.get("name")
+    if not json_name:
+        return ("Missing ?name=<filename.json>", 400)
+    p = os.path.join(os.getcwd(), "data", json_name)
+    if not os.path.isfile(p):
+        return (f"File not found: {p}", 404)
+    try:
+        ingest_sportai_json(p, json_name)
+        return {"ok": True, "reingested": json_name}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+# 🆕 Upload a JSON directly to the server, then auto-ingest
+@app.post("/ops/upload-json")
+def upload_json_and_ingest():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY:
+        return ("Forbidden", 403)
+
+    name = request.args.get("name")
+    if not name:
+        return ("Missing ?name=<filename.json>", 400)
+    if not name.endswith(".json"):
+        return ("Name must end with .json", 400)
+
+    os.makedirs("data", exist_ok=True)
+    dest_path = os.path.join(os.getcwd(), "data", secure_filename(name))
+
+    try:
+        if "file" in request.files:
+            # multipart/form-data upload
+            f = request.files["file"]
+            f.save(dest_path)
+        else:
+            # raw JSON body
+            if not request.data:
+                return ("No file part and no request body provided", 400)
+            with open(dest_path, "wb") as out:
+                out.write(request.data)
+
+        ingest_sportai_json(dest_path, name)
+        return jsonify({"ok": True, "saved": name, "ingested": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# 🆕 Peek at JSON structure: top-level keys + sample keys for arrays
+@app.get("/ops/peek-json")
+def peek_json():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY:
+        return ("Forbidden", 403)
+    json_name = request.args.get("name")
+    if not json_name:
+        return ("Missing ?name=<filename.json>", 400)
+    p = os.path.join(os.getcwd(), "data", json_name)
+    if not os.path.isfile(p):
+        return (f"File not found: {p}", 404)
+
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        def sample_keys(obj):
+            if isinstance(obj, dict):
+                return sorted(list(obj.keys()))[:30]
+            if isinstance(obj, list) and obj:
+                if isinstance(obj[0], dict):
+                    return sorted(list(obj[0].keys()))[:30]
+                return ["<list-primitive>"]
+            return ["<unknown>"]
+
+        top = sorted(list(data.keys())) if isinstance(data, dict) else ["<not-a-dict>"]
+        out = {"top_level_keys": top}
+
+        for arr_key in ["swings", "shots", "strokes", "events", "rallies", "points", "ball_bounces", "bounces"]:
+            if isinstance(data, dict) and arr_key in data:
+                out[arr_key] = {"len": len(data[arr_key]), "sample_item_keys": sample_keys(data[arr_key])}
+
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ==========================================
-# Ingestion helpers & glue (SQL-only)
+# Ingestion helpers & glue (SQL-only, now key-flexible)
 # ==========================================
 def _parse_ts(v):
     if not v:
@@ -316,6 +404,14 @@ def _parse_ts(v):
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
         return None
+
+def _first_present(dct, keys, default=None):
+    if not isinstance(dct, dict):
+        return default
+    for k in keys:
+        if k in dct:
+            return dct[k]
+    return default
 
 def upsert_dim_session(*, session_uid, source_file=None, session_date=None, court_surface=None, venue=None):
     sql = text("""
@@ -403,10 +499,9 @@ def ingest_sportai_json(json_path, source_file_name):
     Reads a SportAI result JSON from disk and loads:
       - session -> dim_session
       - players -> dim_player
-      - rallies -> dim_rally
-      - swings  -> fact_swing
-      - ball_bounces -> fact_bounce
-    Adjust key names if your JSON differs.
+      - rallies -> dim_rally (auto-detect keys)
+      - swings  -> fact_swing (auto-detect keys)
+      - ball_bounces -> fact_bounce (already handled)
     """
     if engine is None:
         print("⚠️ No DB engine. Skipping ingest.")
@@ -434,7 +529,7 @@ def ingest_sportai_json(json_path, source_file_name):
     )
 
     # --- Players
-    player_map = {}  # sportai_player_uid -> db player_id
+    player_map = {}
     for p in data.get("players", []):
         uid = str(p.get("id") or p.get("player_id"))
         pid = upsert_dim_player(
@@ -446,65 +541,75 @@ def ingest_sportai_json(json_path, source_file_name):
         )
         player_map[uid] = pid
 
-    # --- Rallies (optional)
-    rally_id_map = {}  # (session_id, rally_number) -> rally_id
-    for r in data.get("rallies", []):
-        rally_number = r.get("rally_number") or r.get("index")
-        winner_uid = str(r.get("winner_player_id")) if r.get("winner_player_id") is not None else None
+    # --- Rallies (flex keys)
+    rallies = _first_present(data, ["rallies", "points", "rally_list"], default=[])
+    rally_id_map = {}
+    for r in rallies or []:
+        rally_number = r.get("rally_number") or r.get("index") or r.get("rally") or r.get("point_index")
+        winner_uid = r.get("winner_player_id") or r.get("winner") or r.get("point_winner_player_id")
+        winner_uid = str(winner_uid) if winner_uid is not None else None
+
         rid = upsert_dim_rally(
             session_id=session_id,
             rally_number=rally_number,
-            start_ts=_parse_ts(r.get("start_ts")),
-            end_ts=_parse_ts(r.get("end_ts")),
+            start_ts=_parse_ts(r.get("start_ts") or r.get("start_time")),
+            end_ts=_parse_ts(r.get("end_ts") or r.get("end_time")),
             point_winner_player_id=player_map.get(winner_uid),
-            length_shots=r.get("length_shots"),
+            length_shots=r.get("length_shots") or r.get("shots") or r.get("strokes"),
         )
         rally_id_map[(session_id, rally_number)] = rid
 
-    # --- Swings
+    # --- Swings (flex keys)
+    swings = _first_present(data, ["swings", "shots", "strokes", "events"], default=[])
     swing_rows = []
-    for s in data.get("swings", []):
-        uid = str(s.get("player_id")) if s.get("player_id") is not None else None
-        rally_no = s.get("rally_number")
+    for s in swings or []:
+        uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id")
+        uid = str(uid_raw) if uid_raw is not None else None
+
+        rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index")
+
         swing_rows.append({
             "session_id": session_id,
             "rally_id": rally_id_map.get((session_id, rally_no)),
             "player_id": player_map.get(uid),
-            "swing_start_ts": _parse_ts(s.get("swing_start_ts")),
-            "swing_end_ts": _parse_ts(s.get("swing_end_ts")),
-            "ball_hit_ts": _parse_ts(s.get("ball_hit_ts")),
-            "swing_type": s.get("swing_type"),
-            "is_serve": bool(s.get("is_serve")),
-            "is_return": bool(s.get("is_return")),
-            "is_in_rally": bool(s.get("is_in_rally")),
+            "swing_start_ts": _parse_ts(s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time")),
+            "swing_end_ts": _parse_ts(s.get("swing_end_ts") or s.get("end_ts") or s.get("end_time")),
+            "ball_hit_ts": _parse_ts(s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts")),
+            "swing_type": s.get("swing_type") or s.get("type") or s.get("shot_type"),
+            "is_serve": bool(s.get("is_serve") or s.get("serve")),
+            "is_return": bool(s.get("is_return") or s.get("return")),
+            "is_in_rally": bool(s.get("is_in_rally") or s.get("in_rally")),
             "valid": s.get("valid"),
             "serve_number": s.get("serve_number"),
             "serve_location": s.get("serve_location"),
             "return_depth_box": s.get("return_depth_box"),
-            "ball_x": s.get("ball_x"),
-            "ball_y": s.get("ball_y"),
-            "ball_speed": s.get("ball_speed"),
-            "ball_player_dist": s.get("ball_player_dist"),
+            "ball_x": s.get("ball_x") or s.get("x"),
+            "ball_y": s.get("ball_y") or s.get("y"),
+            "ball_speed": s.get("ball_speed") or s.get("speed"),
+            "ball_player_dist": s.get("ball_player_dist") or s.get("distance"),
             "annotations_json": s.get("annotations"),
         })
+
     if swing_rows:
         insert_fact_swing_batch(swing_rows)
 
-    # --- Bounces
+    # --- Bounces (we already handled, keep alias too)
+    bounces = _first_present(data, ["ball_bounces", "bounces"], default=[])
     bounce_rows = []
-    for b in data.get("ball_bounces", []):
-        rally_no = b.get("rally_number")
+    for b in bounces or []:
+        rally_no = b.get("rally_number") or b.get("rally") or b.get("point_index")
         bounce_rows.append({
             "session_id": session_id,
             "rally_id": rally_id_map.get((session_id, rally_no)),
-            "bounce_ts": _parse_ts(b.get("timestamp")),
-            "bounce_x": b.get("x"),
-            "bounce_y": b.get("y"),
+            "bounce_ts": _parse_ts(b.get("timestamp") or b.get("ts") or b.get("time")),
+            "bounce_x": b.get("x") or b.get("ball_x"),
+            "bounce_y": b.get("y") or b.get("ball_y"),
         })
     if bounce_rows:
         insert_fact_bounce_batch(bounce_rows)
 
-    print(f"✅ Ingest complete for session_uid={session_uid}  | swings={len(swing_rows)}  bounces={len(bounce_rows)}")
+    print(f"✅ Ingest complete for session_uid={session_uid} | "
+          f"rallies={len(rallies or [])} swings={len(swing_rows)} bounces={len(bounce_rows)}")
 
 # ==========================================
 # Entrypoint
