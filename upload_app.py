@@ -331,9 +331,13 @@ def ops_diag():
 
 @app.get("/ops/init-views")
 def ops_init_views():
-    if not _guard(): return _forbid()
-    init_views(engine)
-    return jsonify({"ok": True, "message": "Views created/refreshed"})
+    if not _guard():
+        return _forbid()
+    try:
+        init_views(engine)
+        return jsonify({"ok": True, "message": "Views created/refreshed"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/ops/db-counts")
 def ops_db_counts():
