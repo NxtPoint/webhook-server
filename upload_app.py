@@ -8,9 +8,9 @@ from threading import Thread
 import time
 from json_to_powerbi_csv import export_csv_from_json
 
-# DB imports
+# ✅ DB imports (single approach: SQL-only)
 from sqlalchemy import create_engine, text
-from db_init import init_db  # Step 1 schema creator
+from db_init import init_db  # our schema creator (Step 1)
 
 app = Flask(__name__)
 
@@ -24,7 +24,9 @@ DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OPS_KEY = os.environ.get("OPS_KEY")
 
-# Create a shared SQLAlchemy engine
+# =======================
+# Single, shared engine
+# =======================
 engine = None
 if DATABASE_URL:
     try:
@@ -111,7 +113,6 @@ def upload():
         },
         data=file_bytes
     )
-
     if not upload_res.ok:
         return jsonify({"error": "Dropbox upload failed", "details": upload_res.text}), 500
 
@@ -120,7 +121,6 @@ def upload():
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json={"path": dropbox_path, "settings": {"requested_visibility": "public"}}
     )
-
     if link_res.status_code not in [200, 201, 202]:
         err = link_res.json()
         if err.get('error', {}).get('.tag') == 'shared_link_already_exists':
@@ -148,7 +148,6 @@ def upload():
         "Content-Type": "application/json"
     }
     analyze_res = requests.post("https://api.sportai.com/api/statistics", json=analyze_payload, headers=headers)
-
     if analyze_res.status_code not in [200, 201, 202]:
         return jsonify({"error": "Failed to register task", "details": analyze_res.text}), 500
 
@@ -169,7 +168,6 @@ def upload():
 # ==========================================
 def poll_and_save_result(task_id, email):
     print(f"⏳ Polling started for task {task_id}...")
-
     max_attempts = 720  # up to 6 hours
     delay = 30
     url = f"https://api.sportai.com/api/statistics/{task_id}/status"
@@ -229,7 +227,7 @@ def fetch_and_save_result(task_id, email):
                 except Exception as e:
                     print(f"⚠️ Failed to export CSV for {local_filename}: {str(e)}")
 
-                # NEW: Ingest JSON into Postgres
+                # Ingest JSON into Postgres
                 try:
                     if engine is None:
                         print("⚠️ No DB engine available, skipping DB ingestion.")
@@ -273,7 +271,6 @@ def db_ping():
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
-# --- TEMP: quick table counts
 @app.get("/ops/db-counts")
 def db_counts():
     if engine is None:
@@ -287,7 +284,10 @@ def db_counts():
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
-# --- TEMP: ingest a local JSON file in /data (guarded)
+@app.get("/ops/engest-file")  # typo-safe? keep the correct one below.
+def typo_guard():
+    return ("Use /ops/ingest-file", 400)
+
 @app.get("/ops/ingest-file")
 def ops_ingest_file():
     key = request.args.get("key")
@@ -311,7 +311,7 @@ def ops_ingest_file():
         return {"ok": False, "error": str(e)}, 500
 
 # ==========================================
-# Ingestion helpers & glue
+# Ingestion helpers & glue (SQL-only)
 # ==========================================
 def _parse_ts(v):
     if not v:
@@ -345,7 +345,7 @@ def upsert_dim_player(*, sportai_player_uid, full_name=None, handedness=None, ag
         VALUES (:uid, :name, :handedness, :age, :utr)
         ON CONFLICT (sportai_player_uid) DO UPDATE SET
             full_name  = COALESCE(EXCLUDED.full_name, dim_player.full_name),
-            handedness = COALESCE(EXCLUDED.handedness, dim_player.handedness),
+            handedness = COALESCE(EXCLUDED.handednesS, dim_player.handedness),
             age        = COALESCE(EXCLUDED.age, dim_player.age),
             utr        = COALESCE(EXCLUDED.utr, dim_player.utr)
         RETURNING player_id;
