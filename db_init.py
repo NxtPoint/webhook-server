@@ -1,8 +1,11 @@
 # db_init.py
 from sqlalchemy import text
 
-# ---------------- Base DDL (no-ops if tables exist) ----------------
+# ---------------------------
+# Base DDL (no-ops if exists)
+# ---------------------------
 DDL_CREATE = [
+    # dim_session
     """
     CREATE TABLE IF NOT EXISTS dim_session (
         session_id SERIAL PRIMARY KEY,
@@ -14,6 +17,7 @@ DDL_CREATE = [
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
 
+    # dim_player
     """
     CREATE TABLE IF NOT EXISTS dim_player (
         player_id SERIAL PRIMARY KEY,
@@ -33,6 +37,7 @@ DDL_CREATE = [
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
 
+    # dim_rally
     """
     CREATE TABLE IF NOT EXISTS dim_rally (
         rally_id SERIAL PRIMARY KEY,
@@ -46,6 +51,7 @@ DDL_CREATE = [
     """,
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
 
+    # fact_swing
     """
     CREATE TABLE IF NOT EXISTS fact_swing (
         swing_id SERIAL PRIMARY KEY,
@@ -69,12 +75,13 @@ DDL_CREATE = [
     );
     """,
 
+    # fact_bounce
     """
     CREATE TABLE IF NOT EXISTS fact_bounce (
         bounce_id SERIAL PRIMARY KEY,
         session_id INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
         hitter_player_id INTEGER REFERENCES dim_player(player_id) ON DELETE SET NULL,
-        rally_id INTEGER,
+        rally_id INTEGER, -- FK ensured later
         bounce_s DOUBLE PRECISION,
         bounce_ts TIMESTAMPTZ,
         x DOUBLE PRECISION,
@@ -83,6 +90,7 @@ DDL_CREATE = [
     );
     """,
 
+    # fact_ball_position
     """
     CREATE TABLE IF NOT EXISTS fact_ball_position (
         id SERIAL PRIMARY KEY,
@@ -94,6 +102,7 @@ DDL_CREATE = [
     );
     """,
 
+    # fact_player_position
     """
     CREATE TABLE IF NOT EXISTS fact_player_position (
         id SERIAL PRIMARY KEY,
@@ -106,6 +115,7 @@ DDL_CREATE = [
     );
     """,
 
+    # team_session
     """
     CREATE TABLE IF NOT EXISTS team_session (
         id SERIAL PRIMARY KEY,
@@ -114,6 +124,7 @@ DDL_CREATE = [
     );
     """,
 
+    # highlight
     """
     CREATE TABLE IF NOT EXISTS highlight (
         id SERIAL PRIMARY KEY,
@@ -122,6 +133,7 @@ DDL_CREATE = [
     );
     """,
 
+    # bounce_heatmap
     """
     CREATE TABLE IF NOT EXISTS bounce_heatmap (
         session_id INTEGER PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
@@ -129,6 +141,7 @@ DDL_CREATE = [
     );
     """,
 
+    # session_confidences
     """
     CREATE TABLE IF NOT EXISTS session_confidences (
         session_id INTEGER PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
@@ -136,6 +149,7 @@ DDL_CREATE = [
     );
     """,
 
+    # thumbnail
     """
     CREATE TABLE IF NOT EXISTS thumbnail (
         session_id INTEGER PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
@@ -143,6 +157,7 @@ DDL_CREATE = [
     );
     """,
 
+    # raw_result
     """
     CREATE TABLE IF NOT EXISTS raw_result (
         id SERIAL PRIMARY KEY,
@@ -153,9 +168,11 @@ DDL_CREATE = [
     """
 ]
 
-# ---------------- Add/repair columns & safe indexes ----------------
+# ---------------------------
+# Add/repair columns & indexes
+# ---------------------------
 DDL_MIGRATE = [
-    # dim_session
+    # dim_session (fix legacy)
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS fps DOUBLE PRECISION;",
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS session_date TIMESTAMPTZ;",
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS meta JSONB;",
@@ -216,7 +233,9 @@ DDL_MIGRATE = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
 ]
 
-# ---------------- Helpers ----------------
+# ---------------------------
+# Helper introspection
+# ---------------------------
 def _table_exists(conn, t):
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
@@ -240,28 +259,21 @@ def _column_udt(conn, t, c):
     """), {"t": t, "c": c}).first()
     return row[0] if row else None
 
-def _index_exists(conn, name):
+def _index_exists(conn, index_name: str) -> bool:
     return conn.execute(text("""
         SELECT 1 FROM pg_class
         WHERE relkind='i' AND relname=:n
         LIMIT 1
-    """), {"n": name}).first() is not None
+    """), {"n": index_name}).first() is not None
 
 def _ensure_jsonb(conn, t, c):
-    if _column_exists(conn, t, c) and _column_udt(conn, t, c) != "jsonb":
-        conn.execute(text(f"ALTER TABLE {t} ALTER COLUMN {c} TYPE JSONB USING {c}::jsonb;"))
+    if _column_exists(conn, t, c):
+        if _column_udt(conn, t, c) != "jsonb":
+            conn.execute(text(f"ALTER TABLE {t} ALTER COLUMN {c} TYPE JSONB USING {c}::jsonb;"))
 
-def _ensure_raw_result_columns(conn):
-    if not _table_exists(conn, "raw_result"):
-        return
-    if (not _column_exists(conn, "raw_result", "payload_json")) and _column_exists(conn, "raw_result", "payload"):
-        conn.execute(text("ALTER TABLE raw_result RENAME COLUMN payload TO payload_json;"))
-    if not _column_exists(conn, "raw_result", "payload_json"):
-        conn.execute(text("ALTER TABLE raw_result ADD COLUMN payload_json JSONB;"))
-    _ensure_jsonb(conn, "raw_result", "payload_json")
-    if not _column_exists(conn, "raw_result", "created_at"):
-        conn.execute(text("ALTER TABLE raw_result ADD COLUMN created_at TIMESTAMPTZ DEFAULT (now() AT TIME ZONE 'utc');"))
-
+# ---------------------------
+# Ensures for FK & swing indexes
+# ---------------------------
 def _ensure_fact_bounce_fk(conn):
     check = conn.execute(text("""
         SELECT COUNT(*) FROM pg_constraint c
@@ -281,6 +293,7 @@ def _ensure_fact_bounce_fk(conn):
         """))
 
 def _ensure_fact_swing_indexes(conn):
+    # Create swing unique indexes only after columns exist
     if _column_exists(conn, "fact_swing", "session_id") and _column_exists(conn, "fact_swing", "sportai_swing_uid"):
         if not _index_exists(conn, "uq_fact_swing_sess_suid"):
             conn.execute(text("""
@@ -296,26 +309,45 @@ def _ensure_fact_swing_indexes(conn):
                 WHERE sportai_swing_uid IS NULL;
             """))
 
-# ---------------- Runner ----------------
+# ---------------------------
+# Raw result fixups
+# ---------------------------
+def _ensure_raw_result_columns(conn):
+    if not _table_exists(conn, "raw_result"):
+        return
+    # rename payload -> payload_json if legacy
+    if (not _column_exists(conn, "raw_result", "payload_json")) and _column_exists(conn, "raw_result", "payload"):
+        conn.execute(text("ALTER TABLE raw_result RENAME COLUMN payload TO payload_json;"))
+    # add payload_json if still missing
+    if not _column_exists(conn, "raw_result", "payload_json"):
+        conn.execute(text("ALTER TABLE raw_result ADD COLUMN payload_json JSONB;"))
+    # ensure JSONB type
+    if _column_udt(conn, "raw_result", "payload_json") != "jsonb":
+        conn.execute(text("ALTER TABLE raw_result ALTER COLUMN payload_json TYPE JSONB USING payload_json::jsonb;"))
+    # ensure created_at exists
+    if not _column_exists(conn, "raw_result", "created_at"):
+        conn.execute(text("ALTER TABLE raw_result ADD COLUMN created_at TIMESTAMPTZ DEFAULT (now() AT TIME ZONE 'utc');"))
+
+# ---------------------------
+# Entry point
+# ---------------------------
 def run_init(engine):
     with engine.begin() as conn:
+        # Base tables (no-op if exist)
         for stmt in DDL_CREATE:
             conn.execute(text(stmt))
+        # Add/repair columns & safe indexes
         for stmt in DDL_MIGRATE:
             conn.execute(text(stmt))
 
-        # Fix legacy types/columns
-        _ensure_raw_result_columns(conn)
-        _ensure_jsonb(conn, "dim_session", "meta")
-        _ensure_jsonb(conn, "fact_swing", "meta")
-        _ensure_jsonb(conn, "dim_player", "swing_type_distribution")
-        _ensure_jsonb(conn, "dim_player", "location_heatmap")
+        # JSONB type enforcement for side tables (safe no-ops if already JSONB)
         _ensure_jsonb(conn, "team_session", "data")
         _ensure_jsonb(conn, "highlight", "data")
         _ensure_jsonb(conn, "bounce_heatmap", "heatmap")
         _ensure_jsonb(conn, "session_confidences", "data")
         _ensure_jsonb(conn, "thumbnail", "crops")
 
-        # FK & special indexes
+        # raw_result fixups, FK, and swing unique indexes
+        _ensure_raw_result_columns(conn)
         _ensure_fact_bounce_fk(conn)
         _ensure_fact_swing_indexes(conn)
