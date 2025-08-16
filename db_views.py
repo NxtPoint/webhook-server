@@ -18,6 +18,8 @@ CREATE_STMTS = {
             ds.session_uid,
             s.player_id,
             dp.full_name AS player_name,
+            dp.sportai_player_uid AS player_uid,
+            COALESCE(dp.full_name, dp.sportai_player_uid) AS player_label,
             s.sportai_swing_uid,
             s.start_s, s.end_s, s.ball_hit_s,
             s.start_ts, s.end_ts, s.ball_hit_ts,
@@ -30,6 +32,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
     """,
+    
     "vw_bounce": """
         CREATE VIEW vw_bounce AS
         SELECT
