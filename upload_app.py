@@ -312,9 +312,22 @@ def db_ping():
 
 @app.get("/ops/init-db")
 def ops_init_db():
-    if not _guard(): return _forbid()
-    init_db(engine)
-    return jsonify({"ok": True, "message": "DB initialized / migrated"})
+    if not _guard():
+        return _forbid()
+    try:
+        init_db(engine)
+        return jsonify({"ok": True, "message": "DB initialized / migrated"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    
+@app.get("/ops/diag")
+def ops_diag():
+    if not _guard(): 
+        return _forbid()
+    with engine.connect() as conn:
+        version = conn.execute(text("SELECT version()")).scalar_one()
+        langs = [r[0] for r in conn.execute(text("SELECT lanname FROM pg_language ORDER BY 1")).fetchall()]
+    return jsonify({"ok": True, "version": version, "languages": langs})
 
 @app.get("/ops/init-views")
 def ops_init_views():

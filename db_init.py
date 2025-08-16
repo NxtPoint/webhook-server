@@ -79,7 +79,7 @@ DDL_CREATE = [
         bounce_id SERIAL PRIMARY KEY,
         session_id INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
         hitter_player_id INTEGER REFERENCES dim_player(player_id) ON DELETE SET NULL,
-        rally_id INTEGER REFERENCES dim_rally(rally_id) ON DELETE SET NULL,
+        rally_id INTEGER, -- FK ensured later
         bounce_s DOUBLE PRECISION,
         bounce_ts TIMESTAMPTZ,
         x DOUBLE PRECISION,
@@ -166,14 +166,15 @@ DDL_CREATE = [
     """
 ]
 
+# Add/repair columns in-place (safe on existing DBs)
 DDL_MIGRATE = [
-    # dim_rally columns
+    # dim_rally
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
 
-    # fact_swing columns
+    # fact_swing
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_s DOUBLE PRECISION;",
@@ -189,40 +190,27 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve_type TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS meta JSONB;",
 
-    # fact_bounce columns + FK (with LANGUAGE plpgsql)
+    # fact_bounce
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INTEGER;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_s DOUBLE PRECISION;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_ts TIMESTAMPTZ;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT;",
-    """
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'fact_bounce_rally_id_fkey'
-      ) THEN
-        ALTER TABLE fact_bounce
-          ADD CONSTRAINT fact_bounce_rally_id_fkey
-          FOREIGN KEY (rally_id) REFERENCES dim_rally(rally_id) ON DELETE SET NULL;
-      END IF;
-    END $$ LANGUAGE plpgsql;
-    """,
 
-    # fact_ball_position columns
+    # fact_ball_position
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS ts_s DOUBLE PRECISION;",
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ;",
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
 
-    # fact_player_position columns
+    # fact_player_position
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS ts_s DOUBLE PRECISION;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
 
-    # ensure unique indexes
+    # unique indexes (idempotent)
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
@@ -230,9 +218,29 @@ DDL_MIGRATE = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_fallback ON fact_swing(session_id, player_id, start_s, end_s) WHERE sportai_swing_uid IS NULL;"
 ]
 
+def _ensure_fact_bounce_fk(conn):
+    # Create FK only if no FK from fact_bounce -> dim_rally exists (any name)
+    check = conn.execute(text("""
+        SELECT COUNT(*) FROM pg_constraint c
+        JOIN pg_class r ON r.oid = c.conrelid
+        JOIN pg_namespace nr ON nr.oid = r.relnamespace
+        JOIN pg_class f ON f.oid = c.confrelid
+        JOIN pg_namespace nf ON nf.oid = f.relnamespace
+        WHERE c.contype = 'f'
+          AND nr.nspname = 'public' AND r.relname = 'fact_bounce'
+          AND nf.nspname = 'public' AND f.relname = 'dim_rally';
+    """)).scalar_one()
+    if int(check or 0) == 0:
+        conn.execute(text("""
+            ALTER TABLE public.fact_bounce
+            ADD CONSTRAINT fact_bounce_rally_id_fkey
+            FOREIGN KEY (rally_id) REFERENCES public.dim_rally(rally_id) ON DELETE SET NULL;
+        """))
+
 def run_init(engine):
     with engine.begin() as conn:
         for stmt in DDL_CREATE:
             conn.execute(text(stmt))
         for stmt in DDL_MIGRATE:
             conn.execute(text(stmt))
+        _ensure_fact_bounce_fk(conn)
