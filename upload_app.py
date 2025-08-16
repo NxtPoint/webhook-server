@@ -7,6 +7,7 @@ from threading import Thread
 from werkzeug.utils import secure_filename
 from sqlalchemy import create_engine, text
 from db_init import init_db
+from db_views import create_views
 
 APP_VERSION = "sportai-ingest-2.0-full"
 
@@ -138,9 +139,11 @@ def ops_init_views():
     key = request.args.get("key")
     if not OPS_KEY or key != OPS_KEY:
         return ("Forbidden", 403)
+    if engine is None:
+        return {"ok": False, "error": "No engine (DATABASE_URL not set)."}, 500
     try:
-        _create_views()
-        return {"ok": True, "status": "views ready"}
+        create_views(engine)
+        return {"ok": True, "status": "views dropped & recreated"}
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
