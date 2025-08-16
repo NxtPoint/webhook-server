@@ -1,3 +1,4 @@
+# upload_app.py
 import os, json, time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
@@ -32,6 +33,23 @@ def _bool(v):
     if isinstance(v, bool): return v
     s = str(v).strip().lower()
     return True if s in ("1","true","t","yes","y") else False if s in ("0","false","f","no","n") else None
+
+def _time_s(val):
+    """
+    Accepts:
+      - number-like: 54.36 / "54.36"
+      - dict like: {"timestamp": 54.36, "frame_nr": 1358}, {"ts": 54.36}, {"time_s": 54.36}, {"t": 54.36}, {"seconds": 54.36}
+    Returns float seconds or None.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float, str)):
+        return _float(val)
+    if isinstance(val, dict):
+        for k in ("timestamp", "ts", "time_s", "t", "seconds"):
+            if k in val:
+                return _float(val[k])
+    return None
 
 def _get_json_from_sources():
     """
@@ -102,23 +120,43 @@ def _base_dt_for_session(dt): return dt if dt else datetime(1970,1,1,tzinfo=time
 
 # ---------------------- ingest core ----------------------
 def _insert_swing(conn, session_id, player_id, s, base_dt):
-    suid   = s.get("id") or s.get("swing_uid") or s.get("uid")
-    start_s= _float(s.get("start_ts") or s.get("start") or s.get("start_s"))
-    end_s  = _float(s.get("end_ts") or s.get("end") or s.get("end_s"))
-    bh_s   = _float(s.get("ball_hit_timestamp") or s.get("ball_hit_ts") or s.get("ball_hit_s"))
-    bh     = s.get("ball_hit_location") or {}
-    bhx    = _float(bh.get("x")) if isinstance(bh, dict) else None
-    bhy    = _float(bh.get("y")) if isinstance(bh, dict) else None
+    # ids
+    suid = s.get("id") or s.get("swing_uid") or s.get("uid")
+
+    # times – robust to dicts and alternate keys
+    start_s = _time_s(s.get("start_ts")) or _time_s(s.get("start_s")) or _time_s(s.get("start"))
+    end_s   = _time_s(s.get("end_ts"))   or _time_s(s.get("end_s"))   or _time_s(s.get("end"))
+
+    # ball hit time: can be flat or nested under ball_hit{timestamp}
+    bh_s_sources = [
+        s.get("ball_hit_timestamp"), s.get("ball_hit_ts"), s.get("ball_hit_s"),
+        (s.get("ball_hit") or {}).get("timestamp") if isinstance(s.get("ball_hit"), dict) else None,
+        s.get("ball_hit") if not isinstance(s.get("ball_hit"), dict) else None
+    ]
+    bh_s = None
+    for v in bh_s_sources:
+        bh_s = _time_s(v)
+        if bh_s is not None:
+            break
+
+    # ball hit location may be ball_hit_location or ball_hit.location
+    bh_loc = s.get("ball_hit_location")
+    if bh_loc is None and isinstance(s.get("ball_hit"), dict):
+        bh_loc = (s.get("ball_hit") or {}).get("location")
+    bhx = _float(bh_loc.get("x")) if isinstance(bh_loc, dict) else None
+    bhy = _float(bh_loc.get("y")) if isinstance(bh_loc, dict) else None
+
     bspeed = _float(s.get("ball_speed"))
     bpd    = _float(s.get("ball_player_distance"))
     in_rally = _bool(s.get("is_in_rally"))
     serve    = _bool(s.get("serve"))
     serve_type = s.get("serve_type")
 
-    meta = {k:v for k,v in s.items() if k not in {
+    # preserve unknown keys as meta
+    meta = {k: v for k, v in s.items() if k not in {
         "id","swing_uid","uid","player_id","sportai_player_uid",
-        "start_ts","start","start_s","end_ts","end","end_s",
-        "ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
+        "start","start_s","start_ts","end","end_s","end_ts",
+        "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
         "ball_speed","ball_player_distance","is_in_rally","serve","serve_type"
     }}
     meta_json = json.dumps(meta) if meta else None
@@ -138,7 +176,9 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
             :inr, :srv, :stype, CAST(:meta AS JSONB)
         )
     """), {
-        "sid": session_id, "pid": player_id, "suid": str(suid) if suid else None,
+        "sid": session_id,
+        "pid": player_id,
+        "suid": str(suid) if suid else None,
         "ss": start_s, "es": end_s, "bhs": bh_s,
         "sts": seconds_to_ts(base_dt, start_s), "ets": seconds_to_ts(base_dt, end_s),
         "bh_ts": seconds_to_ts(base_dt, bh_s),
@@ -240,8 +280,8 @@ def ingest_result_v2(conn, payload, replace=False):
     # rallies
     for i, r in enumerate(payload.get("rallies") or [], start=1):
         if isinstance(r, dict):
-            start_s = _float(r.get("start_ts") or r.get("start"))
-            end_s   = _float(r.get("end_ts") or r.get("end"))
+            start_s = _time_s(r.get("start_ts")) or _time_s(r.get("start"))
+            end_s   = _time_s(r.get("end_ts"))   or _time_s(r.get("end"))
         else:
             try: start_s = _float(r[0]); end_s = _float(r[1])
             except Exception: start_s, end_s = None, None
@@ -269,7 +309,7 @@ def ingest_result_v2(conn, payload, replace=False):
 
     # bounces
     for b in payload.get("ball_bounces") or []:
-        s = _float(b.get("timestamp_s") or b.get("ts") or b.get("t"))
+        s = _time_s(b.get("timestamp_s")) or _time_s(b.get("ts")) or _time_s(b.get("t"))
         x = _float(b.get("x")); y = _float(b.get("y"))
         btype = b.get("type") or b.get("bounce_type")
         hitter_uid = str(b.get("player_id") or b.get("sportai_player_uid") or "") if (b.get("player_id") or b.get("sportai_player_uid")) else None
@@ -282,7 +322,7 @@ def ingest_result_v2(conn, payload, replace=False):
 
     # ball positions
     for p in payload.get("ball_positions") or []:
-        s = _float(p.get("timestamp_s") or p.get("ts") or p.get("t"))
+        s = _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t"))
         x = _float(p.get("x")); y = _float(p.get("y"))
         conn.execute(text("""
             INSERT INTO fact_ball_position (session_id, ts_s, ts, x, y)
@@ -293,14 +333,14 @@ def ingest_result_v2(conn, payload, replace=False):
     for puid, arr in (payload.get("player_positions") or {}).items():
         pid = uid_to_player_id.get(str(puid))
         for p in arr or []:
-            s = _float(p.get("timestamp_s") or p.get("ts") or p.get("t"))
+            s = _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t"))
             x = _float(p.get("x")); y = _float(p.get("y"))
             conn.execute(text("""
                 INSERT INTO fact_player_position (session_id, player_id, ts_s, ts, x, y)
                 VALUES (:sid, :pid, :ss, :ts, :x, :y)
             """), {"sid": session_id, "pid": pid, "ss": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y})
 
-    # optional blocks (UPDATE→INSERT pattern: no unique index required)
+    # optional blocks
     for t in payload.get("team_sessions") or []:
         conn.execute(text("INSERT INTO team_session (session_id, data) VALUES (:sid, CAST(:d AS JSONB))"),
                      {"sid": session_id, "d": json.dumps(t)})
@@ -309,6 +349,7 @@ def ingest_result_v2(conn, payload, replace=False):
         conn.execute(text("INSERT INTO highlight (session_id, data) VALUES (:sid, CAST(:d AS JSONB))"),
                      {"sid": session_id, "d": json.dumps(h)})
 
+    # UPDATE→INSERT (no unique needed)
     if "bounce_heatmap" in payload:
         h = json.dumps(payload.get("bounce_heatmap"))
         res = conn.execute(text("UPDATE bounce_heatmap SET heatmap = CAST(:h AS JSONB) WHERE session_id = :sid"),
