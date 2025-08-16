@@ -560,8 +560,7 @@ def upsert_dim_player(*, sportai_player_uid, full_name=None, handedness=None, ag
         VALUES (:uid, :name, :handedness, :age, :utr)
         ON CONFLICT (sportai_player_uid) DO UPDATE SET
             full_name  = COALESCE(EXCLUDED.full_name, dim_player.full_name),
-            handedness = COALESCE(EXCLUDED.handednes
-            , dim_player.handedness),
+            handedness = COALESCE(EXCLUDED.handedness, dim_player.handedness),
             age        = COALESCE(EXCLUDED.age, dim_player.age),
             utr        = COALESCE(EXCLUDED.utr, dim_player.utr)
         RETURNING player_id;
