@@ -191,7 +191,8 @@ CREATE TABLE IF NOT EXISTS raw_result (
 ]
 
 MIGRATION = [
-# --- Add missing columns on dim_player (v1 -> v2)
+# ---------- Ensure new columns exist BEFORE adding FKs (covers old installs) ----------
+# dim_player
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS age REAL",
@@ -203,13 +204,30 @@ MIGRATION = [
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS location_heatmap JSONB",
 
-# --- Ensure FK dim_player.session_id -> dim_session
+# dim_rally
+"ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS point_winner_player_id INT",
+
+# fact_swing (minimal required for FKs; others are already handled by create-if-not-exists)
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS session_id INT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_id INT",
+"ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS player_id INT",
+
+# fact_bounce
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS session_id INT",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INT",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS hitter_player_id INT",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT",
+
+# fact_player_position
+"ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS session_id INT",
+"ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS player_id INT",
+
+# ---------- Constraints (FKs) ----------
 """
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'dim_player_session_fk'
+    SELECT 1 FROM pg_constraint WHERE conname='dim_player_session_fk'
   ) THEN
     ALTER TABLE dim_player
       ADD CONSTRAINT dim_player_session_fk
@@ -217,15 +235,14 @@ BEGIN
   END IF;
 END$$;
 """,
-
-# --- Drop old unique on sportai_player_uid only (name from Postgres default)
-"ALTER TABLE dim_player DROP CONSTRAINT IF EXISTS dim_player_sportai_player_uid_key",
-"DROP INDEX IF EXISTS dim_player_sportai_player_uid_key",
-
-# --- Add composite unique (session_id, sportai_player_uid)
-"CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid)",
-
-# --- Add FKs we rely on elsewhere (best-effort; they may already exist)
+"""
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uq_dim_player_sess_uid') THEN
+    CREATE UNIQUE INDEX uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);
+  END IF;
+END$$;
+""",
 """
 DO $$
 BEGIN
@@ -327,7 +344,7 @@ BEGIN
 END$$;
 """,
 
-# --- performance indexes
+# ---------- Performance indexes ----------
 "CREATE INDEX IF NOT EXISTS idx_dim_player_session ON dim_player(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_dim_rally_session ON dim_rally(session_id)",
 "CREATE INDEX IF NOT EXISTS idx_fact_bounce_session ON fact_bounce(session_id)",
