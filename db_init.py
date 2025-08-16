@@ -164,15 +164,20 @@ DDL_CREATE = [
     """
 ]
 
-# add/repair columns (safe on existing DBs)
+# -------- Add/repair columns on existing tables (safe, idempotent) --------
 DDL_MIGRATE = [
+    # dim_session (fix for your error)
+    "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS fps DOUBLE PRECISION;",
+    "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS session_date TIMESTAMPTZ;",
+    "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS meta JSONB;",
+
     # dim_rally
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ;",
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
 
-    # fact_swing (make sure the column exists BEFORE index creation)
+    # fact_swing
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS sportai_swing_uid TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
@@ -209,7 +214,7 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
     "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
 
-    # other unique indexes (safe)
+    # safe unique indexes
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
@@ -253,7 +258,7 @@ def _ensure_fact_bounce_fk(conn):
         """))
 
 def _ensure_fact_swing_indexes(conn):
-    # Only create indexes after columns exist
+    # create the 2 swing uniqueness paths AFTER required columns exist
     if _column_exists(conn, "fact_swing", "session_id") and _column_exists(conn, "fact_swing", "sportai_swing_uid"):
         if not _index_exists(conn, "uq_fact_swing_sess_suid"):
             conn.execute(text("""
@@ -271,12 +276,12 @@ def _ensure_fact_swing_indexes(conn):
 
 def run_init(engine):
     with engine.begin() as conn:
-        # Create base tables
+        # Create base tables (no-op if they exist)
         for stmt in DDL_CREATE:
             conn.execute(text(stmt))
-        # Run additive migrations (columns, safe indexes)
+        # Add missing columns / safe indexes
         for stmt in DDL_MIGRATE:
             conn.execute(text(stmt))
-        # Ensure FK & the two swing indexes in the correct order
+        # Ensure FK and the two swing indexes
         _ensure_fact_bounce_fk(conn)
         _ensure_fact_swing_indexes(conn)
