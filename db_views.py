@@ -95,8 +95,31 @@ def _column_exists(conn, t, c):
         LIMIT 1
     """), {"t": t, "c": c}).first() is not None
 
+def _get_relkind(conn, name):
+    """
+    Returns:
+      'v' = view, 'm' = materialized view, None = not found
+    """
+    row = conn.execute(text("""
+        SELECT c.relkind
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname='public' AND c.relname=:name
+        LIMIT 1
+    """), {"name": name}).first()
+    return row[0] if row else None
+
+def _drop_view_or_matview(conn, name):
+    kind = _get_relkind(conn, name)
+    if kind == 'v':
+        conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
+    elif kind == 'm':
+        conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
+    else:
+        # Not found; nothing to drop
+        return
+
 def _preflight_or_raise(conn):
-    # Ensure base tables exist (init-db should have run)
     required_tables = [
         "dim_session", "dim_player", "dim_rally",
         "fact_swing", "fact_bounce", "fact_ball_position", "fact_player_position"
@@ -105,7 +128,6 @@ def _preflight_or_raise(conn):
     if missing:
         raise RuntimeError(f"Missing base tables before creating views: {', '.join(missing)}")
 
-    # Ensure columns we reference exist (defensive)
     checks = [
         ("dim_session", "session_uid"),
         ("dim_player", "full_name"),
@@ -126,11 +148,9 @@ def run_views(engine):
     with engine.begin() as conn:
         _preflight_or_raise(conn)
 
-        # Drop both materialized views and views, to avoid type conflicts; use CASCADE to clean dependencies
+        # Drop each object with the correct command for its type
         for name in VIEW_NAMES:
-            conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
-        for name in VIEW_NAMES:
-            conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
+            _drop_view_or_matview(conn, name)
 
         # Create fresh views
         for name in VIEW_NAMES:
