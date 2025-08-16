@@ -166,7 +166,7 @@ DDL_CREATE = [
 
 # -------- Add/repair columns on existing tables (safe, idempotent) --------
 DDL_MIGRATE = [
-    # dim_session (fix for your error)
+    # dim_session
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS fps DOUBLE PRECISION;",
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS session_date TIMESTAMPTZ;",
     "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS meta JSONB;",
@@ -220,26 +220,39 @@ DDL_MIGRATE = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
 ]
 
-def _column_exists(conn, table_name: str, column_name: str) -> bool:
-    sql = text("""
-        SELECT 1
+# ---------------- Helper introspection ----------------
+def _table_exists(conn, t):
+    return conn.execute(text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema='public' AND table_name=:t
+        LIMIT 1
+    """), {"t": t}).first() is not None
+
+def _column_exists(conn, t, c):
+    return conn.execute(text("""
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=:t AND column_name=:c
+        LIMIT 1
+    """), {"t": t, "c": c}).first() is not None
+
+def _column_udt(conn, t, c):
+    row = conn.execute(text("""
+        SELECT udt_name
         FROM information_schema.columns
         WHERE table_schema='public' AND table_name=:t AND column_name=:c
         LIMIT 1
-    """)
-    return conn.execute(sql, {"t": table_name, "c": column_name}).first() is not None
+    """), {"t": t, "c": c}).first()
+    return row[0] if row else None
 
 def _index_exists(conn, index_name: str) -> bool:
-    sql = text("""
-        SELECT 1
-        FROM pg_class
+    return conn.execute(text("""
+        SELECT 1 FROM pg_class
         WHERE relkind='i' AND relname=:n
         LIMIT 1
-    """)
-    return conn.execute(sql, {"n": index_name}).first() is not None
+    """), {"n": index_name}).first() is not None
 
+# ---------------- Ensures for FK & special indexes ----------------
 def _ensure_fact_bounce_fk(conn):
-    # Create FK only if no FK from fact_bounce -> dim_rally exists (any name)
     check = conn.execute(text("""
         SELECT COUNT(*) FROM pg_constraint c
         JOIN pg_class r ON r.oid = c.conrelid
@@ -258,7 +271,6 @@ def _ensure_fact_bounce_fk(conn):
         """))
 
 def _ensure_fact_swing_indexes(conn):
-    # create the 2 swing uniqueness paths AFTER required columns exist
     if _column_exists(conn, "fact_swing", "session_id") and _column_exists(conn, "fact_swing", "sportai_swing_uid"):
         if not _index_exists(conn, "uq_fact_swing_sess_suid"):
             conn.execute(text("""
@@ -274,14 +286,29 @@ def _ensure_fact_swing_indexes(conn):
                 WHERE sportai_swing_uid IS NULL;
             """))
 
+# ---------------- Raw result fixups ----------------
+def _ensure_raw_result_columns(conn):
+    if not _table_exists(conn, "raw_result"):
+        return
+    # rename payload -> payload_json if that's what exists
+    if (not _column_exists(conn, "raw_result", "payload_json")) and _column_exists(conn, "raw_result", "payload"):
+        conn.execute(text("ALTER TABLE raw_result RENAME COLUMN payload TO payload_json;"))
+    # add payload_json if still missing
+    if not _column_exists(conn, "raw_result", "payload_json"):
+        conn.execute(text("ALTER TABLE raw_result ADD COLUMN payload_json JSONB;"))
+    # ensure JSONB type
+    if _column_udt(conn, "raw_result", "payload_json") != "jsonb":
+        conn.execute(text("ALTER TABLE raw_result ALTER COLUMN payload_json TYPE JSONB USING payload_json::jsonb;"))
+    # ensure created_at exists
+    if not _column_exists(conn, "raw_result", "created_at"):
+        conn.execute(text("ALTER TABLE raw_result ADD COLUMN created_at TIMESTAMPTZ DEFAULT (now() AT TIME ZONE 'utc');"))
+
 def run_init(engine):
     with engine.begin() as conn:
-        # Create base tables (no-op if they exist)
         for stmt in DDL_CREATE:
             conn.execute(text(stmt))
-        # Add missing columns / safe indexes
         for stmt in DDL_MIGRATE:
             conn.execute(text(stmt))
-        # Ensure FK and the two swing indexes
+        _ensure_raw_result_columns(conn)
         _ensure_fact_bounce_fk(conn)
         _ensure_fact_swing_indexes(conn)
