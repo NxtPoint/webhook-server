@@ -2,15 +2,15 @@ from flask import Flask, request, jsonify, render_template, send_file
 import requests
 import os
 import json
-from datetime import datetime, timezone  # ⬅️ added timezone
+from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
 from threading import Thread
 import time
 from json_to_powerbi_csv import export_csv_from_json
 
-# ⬇️ NEW: database imports
+# DB imports
 from sqlalchemy import create_engine, text
-from db_init import init_db  # uses the schema file we created in Step 1
+from db_init import init_db  # Step 1 schema creator
 
 app = Flask(__name__)
 
@@ -24,7 +24,7 @@ DROPBOX_APP_SECRET = os.environ.get("DROPBOX_APP_SECRET")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OPS_KEY = os.environ.get("OPS_KEY")
 
-# ⬇️ NEW: create a shared SQLAlchemy engine (if DATABASE_URL is set)
+# Create a shared SQLAlchemy engine
 engine = None
 if DATABASE_URL:
     try:
@@ -41,7 +41,7 @@ else:
     print("⚠️ DATABASE_URL is not set. DB features will be disabled.")
 
 # ==========================================
-# Dropbox OAuth (unchanged)
+# Dropbox OAuth
 # ==========================================
 def get_dropbox_access_token():
     res = requests.post(
@@ -58,7 +58,6 @@ def get_dropbox_access_token():
     print("❌ Dropbox token refresh failed:", res.text)
     return None
 
-# (unused helper kept if you want to call it later)
 def check_video_accessibility(video_url):
     res = requests.post(
         "https://api.sportai.com/api/videos/check",
@@ -138,7 +137,7 @@ def upload():
 
     raw_url = raw_url.replace("dl=0", "raw=1").replace("www.dropbox.com", "dl.dropboxusercontent.com")
 
-    # ✅ Register task with SportAI
+    # Register task with SportAI
     analyze_payload = {
         "video_url": raw_url,
         "only_in_rally_data": False,
@@ -155,7 +154,7 @@ def upload():
 
     task_id = analyze_res.json()["data"]["task_id"]
 
-    # ✅ Start polling thread immediately
+    # Start polling thread immediately
     thread = Thread(target=poll_and_save_result, args=(task_id, email))
     thread.start()
 
@@ -171,8 +170,8 @@ def upload():
 def poll_and_save_result(task_id, email):
     print(f"⏳ Polling started for task {task_id}...")
 
-    max_attempts = 720  # Wait for up to 6 hours
-    delay = 30  # Delay between polls in seconds
+    max_attempts = 720  # up to 6 hours
+    delay = 30
     url = f"https://api.sportai.com/api/statistics/{task_id}/status"
     headers = {"Authorization": f"Bearer {SPORT_AI_TOKEN}"}
 
@@ -182,9 +181,8 @@ def poll_and_save_result(task_id, email):
             status = res.json()["data"].get("status")
             print(f"🔄 Attempt {attempt+1}: Status = {status}")
             if status == "completed":
-                # Retry JSON download
                 max_retries = 15
-                retry_delay = 10  # seconds
+                retry_delay = 10
                 for retry in range(max_retries):
                     filename = fetch_and_save_result(task_id, email)
                     if filename:
@@ -224,14 +222,14 @@ def fetch_and_save_result(task_id, email):
                 with open(local_filename, "w", encoding="utf-8") as f:
                     f.write(result_res.text)
 
-                # ✅ Auto-export CSV for Power BI
+                # Export CSV for Power BI
                 try:
                     export_csv_from_json(local_filename)
                     print(f"📊 CSVs exported for {local_filename}")
                 except Exception as e:
                     print(f"⚠️ Failed to export CSV for {local_filename}: {str(e)}")
 
-                # ⬇️ NEW: Ingest JSON into Postgres
+                # NEW: Ingest JSON into Postgres
                 try:
                     if engine is None:
                         print("⚠️ No DB engine available, skipping DB ingestion.")
@@ -251,11 +249,10 @@ def fetch_and_save_result(task_id, email):
     return None
 
 # ==========================================
-# 🔧 NEW: Ops endpoints (temporary)
+# Ops endpoints (init, ping, counts, manual ingest)
 # ==========================================
 @app.get("/ops/init-db")
 def ops_init_db():
-    # simple guard so only you can run it
     key = request.args.get("key")
     if not OPS_KEY or key != OPS_KEY:
         return ("Forbidden", 403)
@@ -276,14 +273,50 @@ def db_ping():
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
 
+# --- TEMP: quick table counts
+@app.get("/ops/db-counts")
+def db_counts():
+    if engine is None:
+        return {"ok": False, "error": "No engine (DATABASE_URL not set)."}, 500
+    try:
+        counts = {}
+        with engine.connect() as conn:
+            for t in ["dim_session", "dim_player", "dim_rally", "fact_swing", "fact_bounce"]:
+                counts[t] = conn.execute(text(f"SELECT COUNT(*) FROM {t}")).scalar()
+        return {"ok": True, "counts": counts}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+# --- TEMP: ingest a local JSON file in /data (guarded)
+@app.get("/ops/ingest-file")
+def ops_ingest_file():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY:
+        return ("Forbidden", 403)
+
+    json_name = request.args.get("name")
+    if not json_name:
+        return ("Missing ?name=<filename.json>", 400)
+
+    data_dir = os.path.join(os.getcwd(), "data")
+    json_path = os.path.join(data_dir, json_name)
+
+    if not os.path.isfile(json_path):
+        return (f"File not found: {json_path}", 404)
+
+    try:
+        ingest_sportai_json(json_path, json_name)
+        return {"ok": True, "ingested": json_name}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
 # ==========================================
-# 🔄 NEW: Ingestion helpers & glue
+# Ingestion helpers & glue
 # ==========================================
 def _parse_ts(v):
     if not v:
         return None
     try:
-        # Accepts ISO 8601, converts Z to +00:00, keeps TZ-aware
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
         return None
@@ -461,7 +494,7 @@ def ingest_sportai_json(json_path, source_file_name):
     if swing_rows:
         insert_fact_swing_batch(swing_rows)
 
-    # --- Bounces (optional)
+    # --- Bounces
     bounce_rows = []
     for b in data.get("ball_bounces", []):
         rally_no = b.get("rally_number")
