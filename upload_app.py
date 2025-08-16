@@ -12,7 +12,7 @@ from json_to_powerbi_csv import export_csv_from_json
 from sqlalchemy import create_engine, text
 from db_init import init_db  # schema creator
 
-APP_VERSION = "ingest-1.5-xy"
+APP_VERSION = "ingest-1.6-views-clean"
 
 app = Flask(__name__)
 
@@ -49,15 +49,12 @@ else:
 # ==========================================
 def is_dict(x): return isinstance(x, dict)
 def is_list(x): return isinstance(x, list)
-
 def g(obj, key, default=None):
-    """Safe dict getter."""
     if isinstance(obj, dict):
         return obj.get(key, default)
     return default
 
 def dict_root(data):
-    """Pick a dict root even if the JSON file is a list at top."""
     if is_dict(data):
         return data
     if is_list(data):
@@ -72,42 +69,26 @@ def dict_root(data):
                 return cand
     return {}
 
-# robust numeric parse
 def to_float_or_none(v):
     try:
         return float(v)
     except (TypeError, ValueError):
         return None
 
-# try to extract x,y from many shapes
 def xy_from_any(val):
-    """
-    Accepts:
-      - dict with various key names (x,y | x_percent,y_percent | cx,cy | normalized_x,normalized_y, ...)
-      - list/tuple [x, y]
-      - string "x,y"
-    Returns (x, y) as floats or (None, None)
-    """
     if is_dict(val):
         pairs = [
-            ("x","y"),
-            ("ball_x","ball_y"),
-            ("x_percent","y_percent"),
-            ("xPerc","yPerc"),
-            ("xpct","ypct"),
-            ("cx","cy"),
-            ("court_x","court_y"),
-            ("norm_x","norm_y"),
-            ("normalized_x","normalized_y"),
-            ("px","py"),
-            ("pos_x","pos_y"),
+            ("x","y"), ("ball_x","ball_y"),
+            ("x_percent","y_percent"), ("xPerc","yPerc"), ("xpct","ypct"),
+            ("cx","cy"), ("court_x","court_y"),
+            ("norm_x","norm_y"), ("normalized_x","normalized_y"),
+            ("px","py"), ("pos_x","pos_y")
         ]
         for a,b in pairs:
             x = to_float_or_none(val.get(a))
             y = to_float_or_none(val.get(b))
             if x is not None or y is not None:
                 return (x, y)
-        # sometimes nested like {"point": {"x":..,"y":..}}
         for k in val.keys():
             if is_dict(val[k]):
                 x, y = xy_from_any(val[k])
@@ -316,10 +297,6 @@ def fetch_and_save_result(task_id, email):
 # ==========================================
 # Ops endpoints
 # ==========================================
-@app.get("/ops/version")
-def version_dup():
-    return {"ok": True, "version": APP_VERSION}
-
 @app.get("/ops/init-db")
 def ops_init_db():
     key = request.args.get("key")
@@ -439,7 +416,6 @@ def peek_json():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# NEW: peek an indexed item of an array (e.g. first bounce) to see exact shape
 @app.get("/ops/peek-item")
 def peek_item():
     key = request.args.get("key")  # e.g., ball_bounces
@@ -466,6 +442,73 @@ def peek_item():
         return jsonify({"ok": True, "key": key, "idx": idx, "item": item})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+# ========== NEW: Views, indexes, cleanup ==========
+def init_views_and_indexes():
+    stmts = [
+        # Indexes for fast BI filtering
+        "CREATE INDEX IF NOT EXISTS idx_fact_bounce_session ON fact_bounce(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_bounce_rally_ts ON fact_bounce(rally_id, bounce_ts)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_session ON fact_swing(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_rally_ts ON fact_swing(rally_id, ball_hit_ts)",
+
+        # Views
+        """
+        CREATE OR REPLACE VIEW vw_bounce AS
+        SELECT b.session_id, b.rally_id, r.rally_number, b.bounce_ts, b.bounce_x, b.bounce_y
+        FROM fact_bounce b
+        LEFT JOIN dim_rally r USING (rally_id)
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_rally_summary AS
+        SELECT
+          r.session_id,
+          r.rally_id,
+          r.rally_number,
+          MIN(b.bounce_ts) AS first_bounce_ts,
+          MAX(b.bounce_ts) AS last_bounce_ts,
+          COUNT(b.*)       AS bounces_in_rally
+        FROM dim_rally r
+        LEFT JOIN fact_bounce b ON b.rally_id = r.rally_id
+        GROUP BY 1,2,3
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_swing AS
+        SELECT
+          s.session_id, s.rally_id, r.rally_number, s.player_id, p.full_name,
+          s.swing_type, s.ball_hit_ts, s.is_serve, s.is_return, s.is_in_rally
+        FROM fact_swing s
+        LEFT JOIN dim_rally  r ON r.rally_id  = s.rally_id
+        LEFT JOIN dim_player p ON p.player_id = s.player_id
+        """,
+    ]
+    with engine.begin() as conn:
+        for sql in stmts:
+            conn.execute(text(sql))
+    return "views+indexes created"
+
+@app.get("/ops/init-views")
+def ops_init_views():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
+    try:
+        msg = init_views_and_indexes()
+        return {"ok": True, "status": msg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
+@app.get("/ops/cleanup-null-facts")
+def ops_cleanup_null_facts():
+    key = request.args.get("key")
+    if not OPS_KEY or key != OPS_KEY: return ("Forbidden", 403)
+    try:
+        with engine.begin() as conn:
+            del_b = conn.execute(text("DELETE FROM fact_bounce WHERE bounce_ts IS NULL OR (bounce_x IS NULL AND bounce_y IS NULL)"))
+            del_s = conn.execute(text("DELETE FROM fact_swing  WHERE ball_hit_ts IS NULL AND swing_type IS NULL AND player_id IS NULL"))
+        return {"ok": True, "deleted_bounce": del_b.rowcount, "deleted_swing": del_s.rowcount}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+# ===================================================
 
 # ==========================================
 # SQL helper endpoints (read-only)
@@ -518,9 +561,9 @@ def _from_epoch_like(val):
     try: x = float(val)
     except Exception: return None
     try:
-        if x > 1e12:  # ms
+        if x > 1e12:
             return datetime.fromtimestamp(x / 1000.0, tz=timezone.utc)
-        if x > 1e9:   # sec
+        if x > 1e9:
             return datetime.fromtimestamp(x, tz=timezone.utc)
     except Exception:
         return None
@@ -641,7 +684,7 @@ def insert_fact_bounce_batch(rows):
     return len(rows)
 
 # ==========================================
-# Ingest (list-aware root, bounce-first; derive rallies; strict swings; robust xy)
+# Ingest pipeline
 # ==========================================
 def ingest_sportai_json(json_path, source_file_name):
     if engine is None:
@@ -654,7 +697,7 @@ def ingest_sportai_json(json_path, source_file_name):
     root = dict_root(data)
     fps  = get_fps_safe(data)
 
-    # --- Collect bounces first
+    # Collect bounces (pre-scan for timestamps)
     raw_bounces = (g(root, "ball_bounces") or g(root, "bounces") or [])
     pre_bounce_abs, pre_bounce_rel, pre_bounces = [], [], []
     if is_list(raw_bounces):
@@ -672,7 +715,7 @@ def ingest_sportai_json(json_path, source_file_name):
                     pass
             pre_bounces.append(b)
 
-    # --- session_start
+    # session_start
     sess = g(root, "session", {})
     session_start = _parse_ts_iso(g(sess, "start_time")) or _parse_ts_iso(g(root, "analysis_date"))
     if session_start is None:
@@ -683,7 +726,7 @@ def ingest_sportai_json(json_path, source_file_name):
             session_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
             print("⏰ session_start set to epoch (relative-seconds mode)")
 
-    # --- Upsert session
+    # Upsert session + clear facts
     session_uid = g(sess, "id") or g(root, "id") or source_file_name
     session_id = upsert_dim_session(
         session_uid=session_uid,
@@ -692,14 +735,12 @@ def ingest_sportai_json(json_path, source_file_name):
         court_surface=g(sess, "surface"),
         venue=g(sess, "venue"),
     )
-
-    # --- Clear facts for idempotency
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM fact_swing  WHERE session_id = :sid"), {"sid": session_id})
         conn.execute(text("DELETE FROM fact_bounce WHERE session_id = :sid"), {"sid": session_id})
     print("♻️ Cleared existing facts for session_id", session_id)
 
-    # --- Players
+    # Players
     player_map = {}
     players = g(root, "players", [])
     if is_dict(players):
@@ -718,7 +759,7 @@ def ingest_sportai_json(json_path, source_file_name):
             )
             player_map[uid] = pid
 
-    # --- Build bounces with final session_start
+    # Build bounces (now with final session_start)
     bounce_rows = []
     bounces_by_rally = {}
     for b in pre_bounces:
@@ -727,18 +768,16 @@ def ingest_sportai_json(json_path, source_file_name):
             b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame"),
             session_start, fps
         )
-        # court positions in many shapes
         court_pos = b.get("court_pos")
         bx, by = xy_from_any(court_pos)
         if bx is None and by is None:
-            # other fallbacks
             bx = to_float_or_none(b.get("x") or b.get("ball_x"))
             by = to_float_or_none(b.get("y") or b.get("ball_y"))
         bounce_rows.append({"rally_no": rn, "bounce_ts": ts, "bounce_x": bx, "bounce_y": by})
         if rn is not None and ts is not None:
             bounces_by_rally.setdefault(rn, []).append(ts)
 
-    # --- Rallies from JSON
+    # Rallies (from JSON or derived)
     raw_rallies = g(root, "rallies") or g(root, "points") or g(root, "rally_list") or []
     rally_id_map = {}
     if is_list(raw_rallies) and raw_rallies:
@@ -755,7 +794,6 @@ def ingest_sportai_json(json_path, source_file_name):
             )
             rally_id_map[(session_id, rally_number)] = rid
 
-    # --- Derive rallies
     if not rally_id_map and bounces_by_rally:
         for rn, ts_list in bounces_by_rally.items():
             st = min(ts_list) if ts_list else None
@@ -783,7 +821,6 @@ def ingest_sportai_json(json_path, source_file_name):
                                    point_winner_player_id=None, length_shots=None)
             rally_id_map[(session_id, idx)] = rid
             cluster_map[idx] = (st, en)
-        # assign rally_no to bounces
         for b in bounce_rows:
             t = b["bounce_ts"]
             if t is None: continue
@@ -801,7 +838,7 @@ def ingest_sportai_json(json_path, source_file_name):
             b["rally_no"] = chosen
         print(f"🧩 Derived {len(cluster_map)} rallies by time-gap clustering.")
 
-    # --- Rally windows for mapping
+    # Rally windows
     with engine.connect() as conn:
         windows = conn.execute(text("""
             SELECT rally_id, rally_number, start_ts, end_ts
@@ -822,7 +859,7 @@ def ingest_sportai_json(json_path, source_file_name):
                     best = delta; best_rid = rid
         return best_rid
 
-    # --- STRICT swing collection (only if real swing-like arrays exist)
+    # Swings (strict detection — may be empty depending on file)
     swings_collected = []
     for key in ["swings","shots","strokes","events"]:
         lst = g(root, key)
@@ -835,15 +872,15 @@ def ingest_sportai_json(json_path, source_file_name):
                 uid = str(uid_raw) if uid_raw is not None else None
                 rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index") or s.get("rallyIndex") or s.get("point")
                 swing_start = _parse_ts_flex(
-                    s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time") or s.get("start") \
-                    or s.get("time_s") or s.get("seconds") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") \
+                    s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time") or s.get("start")
+                    or s.get("time_s") or s.get("seconds") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms")
                     or s.get("frame") or s.get("frame_idx") or s.get("frameIndex"),
-                    session_start, fps
+                    session_start, get_fps_safe(data)
                 )
                 swing_end   = _parse_ts_flex(s.get("swing_end_ts") or s.get("end_ts") or s.get("end_time") or s.get("end"),
-                                             session_start, fps)
+                                             session_start, get_fps_safe(data))
                 ball_hit_ts = _parse_ts_flex(s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts"),
-                                             session_start, fps)
+                                             session_start, get_fps_safe(data))
                 swings_collected.append({
                     "rally_no": rally_no,
                     "player_uid": uid,
@@ -864,8 +901,6 @@ def ingest_sportai_json(json_path, source_file_name):
                     "ball_player_dist": s.get("ball_player_dist") or s.get("distance"),
                     "annotations_json": s.get("annotations"),
                 })
-
-    # --- Insert swings
     swing_rows = []
     if swings_collected:
         for sw in swings_collected:
@@ -903,7 +938,7 @@ def ingest_sportai_json(json_path, source_file_name):
     else:
         print("🟨 No swing-like arrays present — skipping swings.")
 
-    # --- Insert bounces with rally_ids (skip those with no timestamp)
+    # Insert bounces with rally_ids (skip null-ts)
     final_bounce_rows = []
     for b in bounce_rows:
         if b.get("bounce_ts") is None:
