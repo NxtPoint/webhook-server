@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, render_template
 import requests
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from werkzeug.utils import secure_filename
 from threading import Thread
 import time
@@ -397,13 +397,30 @@ def peek_json():
 # ==========================================
 # Ingestion helpers & glue (SQL-only, now key-flexible)
 # ==========================================
-def _parse_ts(v):
+def _parse_ts_iso(v):
     if not v:
         return None
     try:
         return datetime.fromisoformat(str(v).replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
         return None
+
+def _parse_ts_flex(v, session_start=None):
+    """
+    - If ISO string -> parse to aware UTC
+    - If int/float -> treat as seconds offset from session_start (if provided)
+    """
+    # ISO path
+    t = _parse_ts_iso(v)
+    if t:
+        return t
+    # numeric offset
+    if isinstance(v, (int, float)) and session_start:
+        try:
+            return (session_start + timedelta(seconds=float(v))).astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
 
 def _first_present(dct, keys, default=None):
     if not isinstance(dct, dict):
@@ -500,8 +517,8 @@ def ingest_sportai_json(json_path, source_file_name):
       - session -> dim_session
       - players -> dim_player
       - rallies -> dim_rally (auto-detect keys)
-      - swings  -> fact_swing (auto-detect keys)
-      - ball_bounces -> fact_bounce (already handled)
+      - swings  -> fact_swing (auto-detect keys; supports nested per-rally swings)
+      - ball_bounces -> fact_bounce (aliases supported)
     """
     if engine is None:
         print("⚠️ No DB engine. Skipping ingest.")
@@ -511,21 +528,18 @@ def ingest_sportai_json(json_path, source_file_name):
         data = json.load(f)
 
     # --- Session
-    session_uid = (data.get("session", {}) or {}).get("id") or data.get("id") or source_file_name
-    session_date = None
-    ts = (data.get("session", {}) or {}).get("start_time") or data.get("analysis_date")
-    if ts:
-        try:
-            session_date = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(timezone.utc)
-        except Exception:
-            session_date = None
+    session_payload = (data.get("session", {}) or {})
+    session_uid = session_payload.get("id") or data.get("id") or source_file_name
+    # session start (for numeric offsets)
+    session_start = _parse_ts_iso(session_payload.get("start_time")) or _parse_ts_iso(data.get("analysis_date"))
+    session_date = session_start  # we store the start as the session_date if available
 
     session_id = upsert_dim_session(
         session_uid=session_uid,
         source_file=source_file_name,
         session_date=session_date,
-        court_surface=(data.get("session", {}) or {}).get("surface"),
-        venue=(data.get("session", {}) or {}).get("venue"),
+        court_surface=session_payload.get("surface"),
+        venue=session_payload.get("venue"),
     )
 
     # --- Players
@@ -552,30 +566,43 @@ def ingest_sportai_json(json_path, source_file_name):
         rid = upsert_dim_rally(
             session_id=session_id,
             rally_number=rally_number,
-            start_ts=_parse_ts(r.get("start_ts") or r.get("start_time")),
-            end_ts=_parse_ts(r.get("end_ts") or r.get("end_time")),
+            start_ts=_parse_ts_flex(r.get("start_ts") or r.get("start_time"), session_start),
+            end_ts=_parse_ts_flex(r.get("end_ts") or r.get("end_time"), session_start),
             point_winner_player_id=player_map.get(winner_uid),
             length_shots=r.get("length_shots") or r.get("shots") or r.get("strokes"),
         )
         rally_id_map[(session_id, rally_number)] = rid
 
-    # --- Swings (flex keys)
+    # --- Swings (flex keys; global + nested under rallies)
     swings = _first_present(data, ["swings", "shots", "strokes", "events"], default=[])
     swing_rows = []
-    for s in swings or []:
-        uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id")
+
+    def maybe_add_swing(s, rally_no_hint=None):
+        # Filter events to only swing-like
+        event_type = (s.get("event_type") or s.get("type") or "").lower() if isinstance(s.get("event_type") or s.get("type"), str) else s.get("event_type") or s.get("type")
+        if "events" in data and event_type:
+            allowed = {"swing", "stroke", "shot", "hit"}
+            if isinstance(event_type, str) and event_type.lower() not in allowed:
+                return
+
+        uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id") or s.get("hitter")
         uid = str(uid_raw) if uid_raw is not None else None
 
-        rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index")
+        rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index") or rally_no_hint
+
+        # Timestamps: accept ISO or numeric offsets
+        swing_start = _parse_ts_flex(s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time"), session_start)
+        swing_end   = _parse_ts_flex(s.get("swing_end_ts")   or s.get("end_ts")   or s.get("end_time"),   session_start)
+        hit_ts      = _parse_ts_flex(s.get("ball_hit_ts")    or s.get("contact_ts") or s.get("timestamp") or s.get("time"), session_start)
 
         swing_rows.append({
             "session_id": session_id,
             "rally_id": rally_id_map.get((session_id, rally_no)),
             "player_id": player_map.get(uid),
-            "swing_start_ts": _parse_ts(s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time")),
-            "swing_end_ts": _parse_ts(s.get("swing_end_ts") or s.get("end_ts") or s.get("end_time")),
-            "ball_hit_ts": _parse_ts(s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts")),
-            "swing_type": s.get("swing_type") or s.get("type") or s.get("shot_type"),
+            "swing_start_ts": swing_start,
+            "swing_end_ts": swing_end,
+            "ball_hit_ts": hit_ts,
+            "swing_type": s.get("swing_type") or s.get("shot_type") or event_type,
             "is_serve": bool(s.get("is_serve") or s.get("serve")),
             "is_return": bool(s.get("is_return") or s.get("return")),
             "is_in_rally": bool(s.get("is_in_rally") or s.get("in_rally")),
@@ -590,10 +617,29 @@ def ingest_sportai_json(json_path, source_file_name):
             "annotations_json": s.get("annotations"),
         })
 
-    if swing_rows:
-        insert_fact_swing_batch(swing_rows)
+    # 1) global swings/events
+    if isinstance(swings, list):
+        for s in swings:
+            if isinstance(s, dict):
+                maybe_add_swing(s)
 
-    # --- Bounces (we already handled, keep alias too)
+    # 2) nested swings under rallies
+    if (not swing_rows) and isinstance(rallies, list):
+        for r in rallies:
+            rally_no = r.get("rally_number") or r.get("index") or r.get("rally") or r.get("point_index")
+            for arr_key in ["swings", "shots", "strokes", "events"]:
+                if isinstance(r.get(arr_key), list):
+                    for s in r.get(arr_key):
+                        if isinstance(s, dict):
+                            maybe_add_swing(s, rally_no_hint=rally_no)
+
+    if swing_rows:
+        inserted = insert_fact_swing_batch(swing_rows)
+        print(f"🟩 Swings detected: {len(swing_rows)}, inserted: {inserted}")
+    else:
+        print("🟨 No swings detected in JSON (checked global and per-rally lists).")
+
+    # --- Bounces (aliases supported)
     bounces = _first_present(data, ["ball_bounces", "bounces"], default=[])
     bounce_rows = []
     for b in bounces or []:
@@ -601,16 +647,17 @@ def ingest_sportai_json(json_path, source_file_name):
         bounce_rows.append({
             "session_id": session_id,
             "rally_id": rally_id_map.get((session_id, rally_no)),
-            "bounce_ts": _parse_ts(b.get("timestamp") or b.get("ts") or b.get("time")),
+            "bounce_ts": _parse_ts_flex(b.get("timestamp") or b.get("ts") or b.get("time"), session_start),
             "bounce_x": b.get("x") or b.get("ball_x"),
             "bounce_y": b.get("y") or b.get("ball_y"),
         })
     if bounce_rows:
-        insert_fact_bounce_batch(bounce_rows)
+        inserted_b = insert_fact_bounce_batch(bounce_rows)
+        print(f"🟩 Bounces detected: {len(bounce_rows)}, inserted: {inserted_b}")
+    else:
+        print("🟨 No bounces detected in JSON.")
 
-    print(f"✅ Ingest complete for session_uid={session_uid} | "
-          f"rallies={len(rallies or [])} swings={len(swing_rows)} bounces={len(bounce_rows)}")
-
+    print(f"✅ Ingest complete for session_uid={session_uid}")
 # ==========================================
 # Entrypoint
 # ==========================================
