@@ -175,6 +175,7 @@ DDL_MIGRATE = [
     "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
 
     # fact_swing
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS sportai_swing_uid TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_s DOUBLE PRECISION;",
@@ -189,6 +190,9 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve BOOLEAN;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve_type TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS meta JSONB;",
+    # (then the unique indexes)
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_sess_suid ON fact_swing(session_id, sportai_swing_uid) WHERE sportai_swing_uid IS NOT NULL;",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_swing_fallback ON fact_swing(session_id, player_id, start_s, end_s) WHERE sportai_swing_uid IS NULL;",
 
     # fact_bounce
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INTEGER;",
