@@ -389,6 +389,13 @@ def peek_json():
         for arr_key in ["swings", "shots", "strokes", "events", "rallies", "points", "ball_bounces", "bounces"]:
             if isinstance(data, dict) and arr_key in data:
                 out[arr_key] = {"len": len(data[arr_key]), "sample_item_keys": sample_keys(data[arr_key])}
+        # include session fps if present
+        try:
+            fps = (data.get("session") or {}).get("fps") or data.get("fps")
+            if fps:
+                out["fps"] = fps
+        except Exception:
+            pass
 
         return jsonify(out)
     except Exception as e:
@@ -399,7 +406,6 @@ def _is_safe_select(query: str) -> bool:
     if not query:
         return False
     q = query.strip().lower()
-    # allow only select/with (CTE) queries; block ; to avoid batching
     if ";" in q:
         return False
     return q.startswith("select ") or q.startswith("with ")
@@ -454,19 +460,66 @@ def _parse_ts_iso(v):
     except Exception:
         return None
 
-def _parse_ts_flex(v, session_start=None):
+def _parse_ts_flex(v, session_start=None, fps=None):
     """
     - If ISO string -> parse to aware UTC
-    - If int/float -> treat as seconds offset from session_start (if provided)
+    - If int/float -> treat as seconds offset from session_start
+    - If dict contains *_ms -> convert ms to seconds
+    - If frame index exists and fps provided -> convert frames to seconds
     """
+    # direct ISO
     t = _parse_ts_iso(v)
     if t:
         return t
+
+    # direct numeric seconds
     if isinstance(v, (int, float)) and session_start:
         try:
             return (session_start + timedelta(seconds=float(v))).astimezone(timezone.utc)
         except Exception:
-            return None
+            pass
+
+    # try dict-like / other keys pattern
+    sec = None
+    ms = None
+    frame_idx = None
+
+    if isinstance(v, dict):
+        sec = v.get("seconds") or v.get("time_s") or v.get("sec")
+        ms = v.get("time_ms") or v.get("timestamp_ms") or v.get("ms") or v.get("millis")
+        frame_idx = v.get("frame") or v.get("frame_idx") or v.get("frameIndex") or v.get("contact_frame")
+    else:
+        # sometimes the caller passes raw values; we'll check via a dict-free path next
+        pass
+
+    # fallbacks if not dict
+    if sec is None and isinstance(v, (int, float)):
+        sec = float(v)
+
+    if ms is None and isinstance(v, str) and v.isdigit():
+        ms = float(v)
+
+    # return by sec
+    if sec is not None and session_start is not None:
+        try:
+            return (session_start + timedelta(seconds=float(sec))).astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    # return by ms
+    if ms is not None and session_start is not None:
+        try:
+            return (session_start + timedelta(milliseconds=float(ms))).astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    # return by frames
+    if frame_idx is not None and session_start is not None and fps:
+        try:
+            return (session_start + timedelta(seconds=float(frame_idx) / float(fps))).astimezone(timezone.utc)
+        except Exception:
+            pass
+
     return None
 
 def _first_present(dct, keys, default=None):
@@ -476,6 +529,12 @@ def _first_present(dct, keys, default=None):
         if k in dct:
             return dct[k]
     return default
+
+def _get_fps(data):
+    try:
+        return (data.get("session") or {}).get("fps") or data.get("fps")
+    except Exception:
+        return None
 
 def upsert_dim_session(*, session_uid, source_file=None, session_date=None, court_surface=None, venue=None):
     sql = text("""
@@ -501,7 +560,8 @@ def upsert_dim_player(*, sportai_player_uid, full_name=None, handedness=None, ag
         VALUES (:uid, :name, :handedness, :age, :utr)
         ON CONFLICT (sportai_player_uid) DO UPDATE SET
             full_name  = COALESCE(EXCLUDED.full_name, dim_player.full_name),
-            handedness = COALESCE(EXCLUDED.handedness, dim_player.handedness),
+            handedness = COALESCE(EXCLUDED.handednes
+            , dim_player.handedness),
             age        = COALESCE(EXCLUDED.age, dim_player.age),
             utr        = COALESCE(EXCLUDED.utr, dim_player.utr)
         RETURNING player_id;
@@ -563,7 +623,7 @@ def ingest_sportai_json(json_path, source_file_name):
     Reads a SportAI result JSON from disk and loads:
       - session -> dim_session
       - players -> dim_player
-      - rallies -> dim_rally (flex keys)
+      - rallies -> dim_rally (flex keys; or derived from bounces)
       - swings  -> fact_swing (recursive discovery with flex keys)
       - ball_bounces -> fact_bounce (flex keys)
     Also: clears facts for the session first (idempotent re-ingest).
@@ -579,6 +639,7 @@ def ingest_sportai_json(json_path, source_file_name):
     session_payload = (data.get("session", {}) or {})
     session_uid = session_payload.get("id") or data.get("id") or source_file_name
     session_start = _parse_ts_iso(session_payload.get("start_time")) or _parse_ts_iso(data.get("analysis_date"))
+    fps = _get_fps(data)
     session_date = session_start
 
     session_id = upsert_dim_session(
@@ -598,10 +659,10 @@ def ingest_sportai_json(json_path, source_file_name):
     # ---- Players
     player_map = {}
     for p in data.get("players", []):
-        uid = str(p.get("id") or p.get("player_id"))
+        uid = str(p.get("id") or p.get("player_id") or p.get("playerId") or p.get("athlete_id") or p.get("player_index"))
         pid = upsert_dim_player(
             sportai_player_uid=uid,
-            full_name=p.get("name"),
+            full_name=p.get("name") or p.get("full_name"),
             handedness=p.get("handedness"),
             age=p.get("age"),
             utr=p.get("utr"),
@@ -619,23 +680,23 @@ def ingest_sportai_json(json_path, source_file_name):
 
     rallies = first_present(data, ["rallies", "points", "rally_list"], default=[])
     rally_id_map = {}
-    if isinstance(rallies, list):
+    if isinstance(rallies, list) and rallies:
         for r in rallies:
-            rally_number = r.get("rally_number") or r.get("index") or r.get("rally") or r.get("point_index")
+            rally_number = r.get("rally_number") or r.get("index") or r.get("rally") or r.get("point_index") or r.get("rallyIndex") or r.get("point")
             winner_uid = r.get("winner_player_id") or r.get("winner") or r.get("point_winner_player_id")
             winner_uid = str(winner_uid) if winner_uid is not None else None
 
             rid = upsert_dim_rally(
                 session_id=session_id,
                 rally_number=rally_number,
-                start_ts=_parse_ts_flex(r.get("start_ts") or r.get("start_time"), session_start),
-                end_ts=_parse_ts_flex(r.get("end_ts") or r.get("end_time"), session_start),
+                start_ts=_parse_ts_flex(r.get("start_ts") or r.get("start_time") or r.get("start"), session_start, fps),
+                end_ts=_parse_ts_flex(r.get("end_ts") or r.get("end_time") or r.get("end"), session_start, fps),
                 point_winner_player_id=player_map.get(winner_uid),
                 length_shots=r.get("length_shots") or r.get("shots") or r.get("strokes"),
             )
             rally_id_map[(session_id, rally_number)] = rid
 
-    # ---- Swings (recursive discovery)
+    # ---- Collect swings (recursive discovery), but DON'T insert yet
     SWING_LIST_KEYS = {"swings", "shots", "strokes", "events"}
 
     def is_swing_like_event(ev: dict) -> bool:
@@ -661,7 +722,7 @@ def ingest_sportai_json(json_path, source_file_name):
                         sample = v[:5]
                         hits = 0
                         for it in sample:
-                            if any(x in it for x in ["swing_type", "shot_type", "player_id", "ball_hit_ts", "contact_ts", "start_ts", "end_ts"]):
+                            if any(x in it for x in ["swing_type", "shot_type", "player_id", "ball_hit_ts", "contact_ts", "start_ts", "end_ts", "timestamp_ms", "frame"]):
                                 hits += 1
                         if hits >= max(2, len(sample)//2):
                             results.append(v)
@@ -672,37 +733,36 @@ def ingest_sportai_json(json_path, source_file_name):
                 results += collect_candidate_lists(it)
         return results
 
-    swing_rows = []
+    swings_collected = []
     candidates = collect_candidate_lists(data)
-
     if not candidates and isinstance(rallies, list):
         for r in rallies:
             for key in ["swings", "shots", "strokes", "events"]:
                 if isinstance(r.get(key), list) and r.get(key) and isinstance(r[key][0], dict):
                     candidates.append(r[key])
 
-    def add_swing_row(s, rally_no_hint=None):
+    def make_swing_payload(s, rally_no_hint=None):
         if not isinstance(s, dict):
-            return
+            return None
         if not is_swing_like_event(s):
-            return
+            return None
 
-        uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id") or s.get("hitter")
+        uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id") or s.get("hitter") or s.get("playerId") or s.get("athlete_id") or s.get("player_index")
         uid = str(uid_raw) if uid_raw is not None else None
 
-        rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index") or rally_no_hint
+        rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index") or s.get("rallyIndex") or s.get("point") or rally_no_hint
 
-        swing_start = _parse_ts_flex(s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time"), session_start)
-        swing_end   = _parse_ts_flex(s.get("swing_end_ts")   or s.get("end_ts")   or s.get("end_time"),   session_start)
-        hit_ts      = _parse_ts_flex(s.get("ball_hit_ts")    or s.get("contact_ts") or s.get("timestamp") or s.get("time"), session_start)
+        swing_start = _parse_ts_flex(s.get("swing_start_ts") or s.get("start_ts") or s.get("start_time") or s.get("start") or s.get("time_s") or s.get("seconds") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") or s.get("frame") or s.get("frame_idx") or s.get("frameIndex"), session_start, fps)
+        swing_end   = _parse_ts_flex(s.get("swing_end_ts")   or s.get("end_ts")   or s.get("end_time")   or s.get("end"),   session_start, fps)
+        hit_src = s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts") or s.get("timestamp") or s.get("time") or s.get("time_ms") or s.get("timestamp_ms") or s.get("ms") or s.get("frame") or s.get("contact_frame")
+        ball_hit_ts = _parse_ts_flex(hit_src, session_start, fps)
 
-        swing_rows.append({
-            "session_id": session_id,
-            "rally_id": rally_id_map.get((session_id, rally_no)),
-            "player_id": player_map.get(uid),
+        return {
+            "rally_no": rally_no,
+            "player_uid": uid,
             "swing_start_ts": swing_start,
             "swing_end_ts": swing_end,
-            "ball_hit_ts": hit_ts,
+            "ball_hit_ts": ball_hit_ts,
             "swing_type": s.get("swing_type") or s.get("shot_type") or (s.get("type") if isinstance(s.get("type"), str) else None),
             "is_serve": bool(s.get("is_serve") or s.get("serve")),
             "is_return": bool(s.get("is_return") or s.get("return")),
@@ -716,15 +776,81 @@ def ingest_sportai_json(json_path, source_file_name):
             "ball_speed": s.get("ball_speed") or s.get("speed"),
             "ball_player_dist": s.get("ball_player_dist") or s.get("distance"),
             "annotations_json": s.get("annotations"),
-        })
+        }
 
     for lst in candidates:
         rally_hint = None
         for s in lst[:3]:
             if isinstance(s, dict):
-                rally_hint = s.get("rally_number") or s.get("rally") or s.get("point_index") or rally_hint
+                rally_hint = s.get("rally_number") or s.get("rally") or s.get("point_index") or s.get("rallyIndex") or s.get("point") or rally_hint
         for s in lst:
-            add_swing_row(s, rally_no_hint=rally_hint)
+            payload = make_swing_payload(s, rally_no_hint=rally_hint)
+            if payload:
+                swings_collected.append(payload)
+
+    # ---- Collect bounces (with more timestamp fallbacks); also prep rally derivation
+    bounces = first_present(data, ["ball_bounces", "bounces"], default=[])
+    bounce_rows = []
+    bounces_by_rally = {}  # rally_no -> list of ts
+    if isinstance(bounces, list):
+        for b in bounces:
+            if not isinstance(b, dict):
+                continue
+            rally_no = b.get("rally_number") or b.get("rally") or b.get("point_index") or b.get("rallyIndex") or b.get("point")
+            ts = _parse_ts_flex(b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame"), session_start, fps)
+            bx = b.get("x") or b.get("ball_x")
+            by = b.get("y") or b.get("ball_y")
+            bounce_rows.append({
+                "rally_no": rally_no,
+                "bounce_ts": ts,
+                "bounce_x": bx,
+                "bounce_y": by,
+            })
+            if rally_no is not None and ts is not None:
+                bounces_by_rally.setdefault(rally_no, []).append(ts)
+
+    # ---- If no rallies were present earlier, derive them from bounces
+    if not rally_id_map and bounces_by_rally:
+        for rally_no, ts_list in bounces_by_rally.items():
+            start_ts = min(ts_list) if ts_list else None
+            end_ts = max(ts_list) if ts_list else None
+            rid = upsert_dim_rally(
+                session_id=session_id,
+                rally_number=rally_no,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                point_winner_player_id=None,
+                length_shots=None,
+            )
+            rally_id_map[(session_id, rally_no)] = rid
+        print(f"🧩 Derived {len(bounces_by_rally)} rallies from bounces.")
+
+    # ---- Now attach swings to rally_ids and player_ids, then insert
+    swing_rows = []
+    for sw in swings_collected:
+        rally_id = rally_id_map.get((session_id, sw["rally_no"]))
+        player_id = player_map.get(str(sw["player_uid"])) if sw["player_uid"] is not None else None
+        swing_rows.append({
+            "session_id": session_id,
+            "rally_id": rally_id,
+            "player_id": player_id,
+            "swing_start_ts": sw["swing_start_ts"],
+            "swing_end_ts": sw["swing_end_ts"],
+            "ball_hit_ts": sw["ball_hit_ts"],
+            "swing_type": sw["swing_type"],
+            "is_serve": sw["is_serve"],
+            "is_return": sw["is_return"],
+            "is_in_rally": sw["is_in_rally"],
+            "valid": sw["valid"],
+            "serve_number": sw["serve_number"],
+            "serve_location": sw["serve_location"],
+            "return_depth_box": sw["return_depth_box"],
+            "ball_x": sw["ball_x"],
+            "ball_y": sw["ball_y"],
+            "ball_speed": sw["ball_speed"],
+            "ball_player_dist": sw["ball_player_dist"],
+            "annotations_json": sw["annotations_json"],
+        })
 
     if swing_rows:
         inserted_sw = insert_fact_swing_batch(swing_rows)
@@ -732,22 +858,20 @@ def ingest_sportai_json(json_path, source_file_name):
     else:
         print("🟨 No swings discovered anywhere in JSON.")
 
-    # ---- Bounces (flex)
-    bounces = first_present(data, ["ball_bounces", "bounces"], default=[])
-    bounce_rows = []
-    if isinstance(bounces, list):
-        for b in bounces:
-            rally_no = b.get("rally_number") or b.get("rally") or b.get("point_index")
-            bounce_rows.append({
-                "session_id": session_id,
-                "rally_id": rally_id_map.get((session_id, rally_no)),
-                "bounce_ts": _parse_ts_flex(b.get("timestamp") or b.get("ts") or b.get("time"), session_start),
-                "bounce_x": b.get("x") or b.get("ball_x"),
-                "bounce_y": b.get("y") or b.get("ball_y"),
-            })
-    if bounce_rows:
-        inserted_b = insert_fact_bounce_batch(bounce_rows)
-        print(f"🟩 Bounces detected: {len(bounce_rows)}, inserted: {inserted_b}")
+    # ---- Insert bounces (map rally ids)
+    final_bounce_rows = []
+    for b in bounce_rows:
+        rid = rally_id_map.get((session_id, b["rally_no"]))
+        final_bounce_rows.append({
+            "session_id": session_id,
+            "rally_id": rid,
+            "bounce_ts": b["bounce_ts"],
+            "bounce_x": b["bounce_x"],
+            "bounce_y": b["bounce_y"],
+        })
+    if final_bounce_rows:
+        inserted_b = insert_fact_bounce_batch(final_bounce_rows)
+        print(f"🟩 Bounces detected: {len(final_bounce_rows)}, inserted: {inserted_b}")
     else:
         print("🟨 No bounces detected.")
 
