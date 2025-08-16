@@ -1,95 +1,55 @@
 import os, json, math, time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import quote_plus
 from flask import Flask, request, jsonify, Response
 from sqlalchemy import create_engine, text
 
-# -------------------------------------------------
-# Config
-# -------------------------------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OPS_KEY = os.environ.get("OPS_KEY")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL env var is required")
-if not OPS_KEY:
-    raise RuntimeError("OPS_KEY env var is required")
+if not DATABASE_URL: raise RuntimeError("DATABASE_URL required")
+if not OPS_KEY: raise RuntimeError("OPS_KEY required")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 app = Flask(__name__)
 
-# -------------------------------------------------
-# Utilities
-# -------------------------------------------------
 def _guard():
-    # Your contract: query param ?key=...
-    key = request.args.get("key")
-    return (key is not None) and (key == OPS_KEY)
+    return request.args.get("key") == OPS_KEY
 
-def _forbid():
-    return Response("Forbidden", status=403)
+def _forbid(): return Response("Forbidden", status=403)
 
-def seconds_to_ts(base_dt: datetime, s):
-    if s is None:
-        return None
-    try:
-        sec = float(s)
-    except Exception:
-        return None
-    return base_dt + timedelta(seconds=sec)
+def seconds_to_ts(base_dt, s):
+    if s is None: return None
+    try: return base_dt + timedelta(seconds=float(s))
+    except Exception: return None
 
 def _float(v):
-    if v is None:
-        return None
-    try:
-        return float(v)
+    if v is None: return None
+    try: return float(v)
     except Exception:
-        try:
-            return float(str(v))
-        except Exception:
-            return None
+        try: return float(str(v))
+        except Exception: return None
 
 def _bool(v):
-    if v is None:
-        return None
-    if isinstance(v, bool):
-        return v
+    if v is None: return None
+    if isinstance(v, bool): return v
     s = str(v).strip().lower()
-    if s in ("1","true","t","yes","y"): return True
-    if s in ("0","false","f","no","n"): return False
-    return None
+    return True if s in ("1","true","t","yes","y") else False if s in ("0","false","f","no","n") else None
 
 def _get_json_from_sources():
-    """
-    Ingest JSON from (priority):
-      1) local file name ?name=... (from /mnt/data/)
-      2) direct URL ?url=...
-      3) multipart upload file field 'file' (POST only)
-      4) raw JSON body (POST only)
-    """
     name = request.args.get("name")
     if name:
-        path = f"/mnt/data/{name}"
-        with open(path, "rb") as f:
+        with open(f"/mnt/data/{name}","rb") as f:
             return json.load(f)
-
     url = request.args.get("url")
     if url:
         import requests
-        r = requests.get(url, timeout=90)
-        r.raise_for_status()
+        r = requests.get(url, timeout=90); r.raise_for_status()
         return r.json()
-
     if "file" in request.files:
         return json.load(request.files["file"].stream)
-
     if request.data:
         return json.loads(request.data.decode("utf-8"))
-
     raise ValueError("No JSON supplied (use ?name=, ?url=, multipart file, or raw body).")
 
-# -------------------------------------------------
-# DB init / views
-# -------------------------------------------------
 def init_db(engine):
     from db_init import run_init
     run_init(engine)
@@ -98,27 +58,15 @@ def init_views(engine):
     from db_views import run_views
     run_views(engine)
 
-# -------------------------------------------------
-# Core helpers
-# -------------------------------------------------
 def _resolve_session_uid(payload):
     meta = payload.get("meta") or payload.get("metadata") or {}
-    uid = (
-        payload.get("session_uid")
-        or meta.get("session_uid")
-        or meta.get("video_uid")
-        or meta.get("file_name")
-        or f"session_{int(time.time())}"
-    )
-    return str(uid)
+    return str(payload.get("session_uid") or meta.get("session_uid") or meta.get("video_uid") or meta.get("file_name") or f"session_{int(time.time())}")
 
 def _resolve_fps(payload):
+    meta = payload.get("meta") or payload.get("metadata") or {}
     for k in ("fps","frame_rate","frames_per_second"):
-        if k in payload and payload[k] is not None:
-            return _float(payload[k])
-        meta = payload.get("meta") or payload.get("metadata") or {}
-        if k in meta and meta[k] is not None:
-            return _float(meta[k])
+        if k in payload and payload[k] is not None: return _float(payload[k])
+        if k in meta and meta[k] is not None: return _float(meta[k])
     return None
 
 def _resolve_session_date(payload):
@@ -126,18 +74,13 @@ def _resolve_session_date(payload):
     for k in ("session_date","date","recorded_at"):
         raw = payload.get(k) if k in payload else meta.get(k)
         if raw:
-            try:
-                return datetime.fromisoformat(str(raw).replace("Z","+00:00")).astimezone(timezone.utc)
-            except Exception:
-                return None
+            try: return datetime.fromisoformat(str(raw).replace("Z","+00:00")).astimezone(timezone.utc)
+            except Exception: return None
     return None
 
 def _base_dt_for_session(session_date):
     return session_date if session_date else datetime(1970,1,1,tzinfo=timezone.utc)
 
-# -------------------------------------------------
-# Ingestion v2 (SportAI official)
-# -------------------------------------------------
 def ingest_result_v2(conn, payload, replace=False):
     session_uid = _resolve_session_uid(payload)
     fps = _resolve_fps(payload)
@@ -161,19 +104,16 @@ def ingest_result_v2(conn, payload, replace=False):
 
     session_id = conn.execute(text("SELECT session_id FROM dim_session WHERE session_uid = :u"), {"u": session_uid}).scalar_one()
 
-    raw_json = json.dumps(payload)
     conn.execute(text("""
         INSERT INTO raw_result (session_id, payload_json, created_at)
         VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
-    """), {"sid": session_id, "p": raw_json})
+    """), {"sid": session_id, "p": json.dumps(payload)})
 
-    # players
     players = payload.get("players") or []
     uid_to_player_id = {}
     for p in players:
         puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or "")
-        if not puid:
-            continue
+        if not puid: continue
         full_name = p.get("full_name") or p.get("name")
         handed = p.get("handedness")
         age = p.get("age")
@@ -185,7 +125,6 @@ def ingest_result_v2(conn, payload, replace=False):
         activity_score = _float(metrics.get("activity_score"))
         swing_type_distribution = p.get("swing_type_distribution")
         location_heatmap = p.get("location_heatmap") or p.get("heatmap")
-
         conn.execute(text("""
             INSERT INTO dim_player (
                 session_id, sportai_player_uid, full_name, handedness, age, utr,
@@ -222,23 +161,19 @@ def ingest_result_v2(conn, payload, replace=False):
         for s in p.get("swings") or []:
             _insert_swing(conn, session_id, pid, s, base_dt)
 
-    # optional top-level swings
     for s in payload.get("swings") or []:
         puid = str(s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid") or "")
         pid = uid_to_player_id.get(puid)
         _insert_swing(conn, session_id, pid, s, base_dt)
 
-    # rallies
     rallies = payload.get("rallies") or []
     for i, r in enumerate(rallies, start=1):
         if isinstance(r, dict):
             start_s = _float(r.get("start_ts") or r.get("start"))
             end_s   = _float(r.get("end_ts") or r.get("end"))
         else:
-            try:
-                start_s = _float(r[0]); end_s = _float(r[1])
-            except Exception:
-                start_s, end_s = None, None
+            try: start_s = _float(r[0]); end_s = _float(r[1])
+            except Exception: start_s, end_s = None, None
         conn.execute(text("""
             INSERT INTO dim_rally (session_id, rally_number, start_s, end_s, start_ts, end_ts)
             VALUES (:sid, :n, :ss, :es, :sts, :ets)
@@ -252,8 +187,7 @@ def ingest_result_v2(conn, payload, replace=False):
                "sts": seconds_to_ts(base_dt, start_s), "ets": seconds_to_ts(base_dt, end_s)})
 
     def rally_id_for_ts(ts_s):
-        if ts_s is None:
-            return None
+        if ts_s is None: return None
         row = conn.execute(text("""
             SELECT rally_id FROM dim_rally
             WHERE session_id = :sid AND :s BETWEEN start_s AND end_s
@@ -261,7 +195,6 @@ def ingest_result_v2(conn, payload, replace=False):
         """), {"sid": session_id, "s": ts_s}).fetchone()
         return row[0] if row else None
 
-    # ball_bounces
     for b in payload.get("ball_bounces") or []:
         s = _float(b.get("timestamp_s") or b.get("ts") or b.get("t"))
         x = _float(b.get("x")); y = _float(b.get("y"))
@@ -269,16 +202,11 @@ def ingest_result_v2(conn, payload, replace=False):
         hitter_uid = str(b.get("player_id") or b.get("sportai_player_uid") or "") if b.get("player_id") or b.get("sportai_player_uid") else None
         hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
         conn.execute(text("""
-            INSERT INTO fact_bounce (
-                session_id, hitter_player_id, rally_id,
-                bounce_s, bounce_ts, x, y, bounce_type
-            ) VALUES (
-                :sid, :pid, :rid, :s, :ts, :x, :y, :bt
-            )
+            INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id, bounce_s, bounce_ts, x, y, bounce_type)
+            VALUES (:sid, :pid, :rid, :s, :ts, :x, :y, :bt)
         """), {"sid": session_id, "pid": hitter_pid, "rid": rally_id_for_ts(s),
                "s": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y, "bt": btype})
 
-    # ball_positions
     for p in payload.get("ball_positions") or []:
         s = _float(p.get("timestamp_s") or p.get("ts") or p.get("t"))
         x = _float(p.get("x")); y = _float(p.get("y"))
@@ -287,7 +215,6 @@ def ingest_result_v2(conn, payload, replace=False):
             VALUES (:sid, :ss, :ts, :x, :y)
         """), {"sid": session_id, "ss": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y})
 
-    # player_positions
     for puid, arr in (payload.get("player_positions") or {}).items():
         pid = uid_to_player_id.get(str(puid))
         for p in arr or []:
@@ -298,45 +225,33 @@ def ingest_result_v2(conn, payload, replace=False):
                 VALUES (:sid, :pid, :ss, :ts, :x, :y)
             """), {"sid": session_id, "pid": pid, "ss": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y})
 
-    # team_sessions
     for t in payload.get("team_sessions") or []:
-        conn.execute(text("""
-            INSERT INTO team_session (session_id, data)
-            VALUES (:sid, CAST(:d AS JSONB))
-        """), {"sid": session_id, "d": json.dumps(t)})
+        conn.execute(text("INSERT INTO team_session (session_id, data) VALUES (:sid, CAST(:d AS JSONB))"),
+                     {"sid": session_id, "d": json.dumps(t)})
 
-    # highlights
     for h in payload.get("highlights") or []:
-        conn.execute(text("""
-            INSERT INTO highlight (session_id, data)
-            VALUES (:sid, CAST(:d AS JSONB))
-        """), {"sid": session_id, "d": json.dumps(h)})
+        conn.execute(text("INSERT INTO highlight (session_id, data) VALUES (:sid, CAST(:d AS JSONB))"),
+                     {"sid": session_id, "d": json.dumps(h)})
 
-    # bounce_heatmap
     if "bounce_heatmap" in payload:
         conn.execute(text("""
             INSERT INTO bounce_heatmap (session_id, heatmap)
             VALUES (:sid, CAST(:h AS JSONB))
-            ON CONFLICT (session_id)
-            DO UPDATE SET heatmap = EXCLUDED.heatmap
+            ON CONFLICT (session_id) DO UPDATE SET heatmap = EXCLUDED.heatmap
         """), {"sid": session_id, "h": json.dumps(payload.get("bounce_heatmap"))})
 
-    # session_confidences
     if "confidences" in payload:
         conn.execute(text("""
             INSERT INTO session_confidences (session_id, data)
             VALUES (:sid, CAST(:d AS JSONB))
-            ON CONFLICT (session_id)
-            DO UPDATE SET data = EXCLUDED.data
+            ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
         """), {"sid": session_id, "d": json.dumps(payload.get("confidences"))})
 
-    # thumbnail(s)
     if "thumbnail_crops" in payload:
         conn.execute(text("""
             INSERT INTO thumbnail (session_id, crops)
             VALUES (:sid, CAST(:c AS JSONB))
-            ON CONFLICT (session_id)
-            DO UPDATE SET crops = EXCLUDED.crops
+            ON CONFLICT (session_id) DO UPDATE SET crops = EXCLUDED.crops
         """), {"sid": session_id, "c": json.dumps(payload.get("thumbnail_crops"))})
 
     return {"session_uid": session_uid}
@@ -354,7 +269,6 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
     in_rally = _bool(s.get("is_in_rally"))
     serve = _bool(s.get("serve"))
     serve_type = s.get("serve_type")
-
     meta = {k:v for k,v in s.items() if k not in {
         "id","swing_uid","uid","player_id","sportai_player_uid",
         "start_ts","start","start_s","end_ts","end","end_s",
@@ -362,7 +276,6 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
         "ball_speed","ball_player_distance","is_in_rally","serve","serve_type"
     }}
     meta_json = json.dumps(meta) if meta else None
-
     conn.execute(text("""
         INSERT INTO fact_swing (
             session_id, player_id, sportai_swing_uid,
@@ -370,8 +283,7 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
             start_ts, end_ts, ball_hit_ts,
             ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
             is_in_rally, serve, serve_type, meta
-        )
-        VALUES (
+        ) VALUES (
             :sid, :pid, :suid,
             :ss, :es, :bhs,
             :sts, :ets, :bh_ts,
@@ -387,39 +299,32 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
         "inr": in_rally, "srv": serve, "stype": serve_type, "meta": meta_json
     })
 
-# -------------------------------------------------
-# Flask endpoints
-# -------------------------------------------------
 @app.get("/")
 def root():
     return jsonify({"service": "NextPoint Upload/Ingester v2", "status": "ok"})
 
 @app.get("/ops/db-ping")
 def db_ping():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     with engine.connect() as conn:
         now = conn.execute(text("SELECT now() AT TIME ZONE 'utc'")).scalar_one()
     return jsonify({"ok": True, "now_utc": str(now)})
 
 @app.get("/ops/init-db")
 def ops_init_db():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     init_db(engine)
-    return jsonify({"ok": True, "message": "DB initialized / indexes ensured"})
+    return jsonify({"ok": True, "message": "DB initialized / migrated"})
 
 @app.get("/ops/init-views")
 def ops_init_views():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     init_views(engine)
     return jsonify({"ok": True, "message": "Views created/refreshed"})
 
 @app.get("/ops/db-counts")
 def ops_db_counts():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     with engine.connect() as conn:
         def c(tbl): return conn.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar_one()
         counts = {
@@ -441,13 +346,10 @@ def ops_db_counts():
 
 @app.get("/ops/sql")
 def ops_sql():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     q = request.args.get("q","").strip()
-    if not q.lower().startswith("select"):
-        return Response("Only SELECT is allowed", status=400)
-    if "limit" not in q.lower():
-        q = f"{q.rstrip(';')} LIMIT 200"
+    if not q.lower().startswith("select"): return Response("Only SELECT is allowed", status=400)
+    if "limit" not in q.lower(): q = f"{q.rstrip(';')} LIMIT 200"
     with engine.connect() as conn:
         rows = conn.execute(text(q)).mappings().all()
         data = [dict(r) for r in rows]
@@ -455,19 +357,17 @@ def ops_sql():
 
 @app.route("/ops/ingest-file", methods=["GET","POST"])
 def ops_ingest_file():
-    if not _guard():
-        return _forbid()
-    replace = request.args.get("replace", "0").strip() in ("1","true","yes","y")
+    if not _guard(): return _forbid()
+    replace = request.args.get("replace", "0").strip().lower() in ("1","true","yes","y")
     try:
         payload = _get_json_from_sources()
+        init_db(engine)  # ensures migrations run
+        with engine.begin() as conn:
+            res = ingest_result_v2(conn, payload, replace=replace)
+        return jsonify({"ok": True, **res, "replace": replace})
     except Exception as e:
-        return jsonify({"ok": False, "error": f"{e}"}), 400
-
-    init_db(engine)
-    with engine.begin() as conn:
-        res = ingest_result_v2(conn, payload, replace=replace)
-
-    return jsonify({"ok": True, **res, "replace": replace})
+        # Surface the error in JSON so we never see a blank 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT","8000")))
