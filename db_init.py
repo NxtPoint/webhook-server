@@ -9,7 +9,7 @@ def _engine():
     return create_engine(url, pool_pre_ping=True)
 
 DDL_CREATE = [
-# ------------------ core dims (create if they don't exist) ------------------
+# ------------------ core dims ------------------
 """
 CREATE TABLE IF NOT EXISTS dim_session (
   session_id           SERIAL PRIMARY KEY,
@@ -23,19 +23,19 @@ CREATE TABLE IF NOT EXISTS dim_session (
 """,
 """
 CREATE TABLE IF NOT EXISTS dim_player (
-  player_id              BIGSERIAL PRIMARY KEY,
-  session_id             INT,
-  sportai_player_uid     TEXT NOT NULL,
-  full_name              TEXT,
-  handedness             TEXT,
-  age                    REAL,
-  utr                    REAL,
-  covered_distance       REAL,
-  fastest_sprint         REAL,
+  player_id                 BIGSERIAL PRIMARY KEY,
+  session_id                INT,
+  sportai_player_uid        TEXT NOT NULL,
+  full_name                 TEXT,
+  handedness                TEXT,
+  age                       REAL,
+  utr                       REAL,
+  covered_distance          REAL,
+  fastest_sprint            REAL,
   fastest_sprint_timestamp_s REAL,
-  activity_score         REAL,
-  swing_type_distribution JSONB,
-  location_heatmap       JSONB
+  activity_score            REAL,
+  swing_type_distribution   JSONB,
+  location_heatmap          JSONB
 );
 """,
 """
@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS raw_result (
 ]
 
 MIGRATION = [
-# ---------- Ensure new columns exist BEFORE adding FKs (covers old installs) ----------
+# ---------- Add any missing columns first ----------
 # dim_player
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT",
@@ -207,20 +207,28 @@ MIGRATION = [
 # dim_rally
 "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS point_winner_player_id INT",
 
-# fact_swing (minimal required for FKs; others are already handled by create-if-not-exists)
+# fact_swing (FK columns)
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_id INT",
 "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS player_id INT",
 
-# fact_bounce
+# fact_bounce (make sure ALL projected cols exist)
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INT",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS timestamp_s REAL",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_ts TIMESTAMPTZ",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_x REAL",
+"ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_y REAL",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS hitter_player_id INT",
 "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT",
 
-# fact_player_position
+# fact_player_position (FK columns)
 "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS session_id INT",
 "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS player_id INT",
+
+# ---------- Clean up old uniqueness that blocks duplicates across sessions ----------
+"ALTER TABLE dim_player DROP CONSTRAINT IF EXISTS dim_player_sportai_player_uid_key",
+"DROP INDEX IF EXISTS dim_player_sportai_player_uid_key",
 
 # ---------- Constraints (FKs) ----------
 """
@@ -232,14 +240,6 @@ BEGIN
     ALTER TABLE dim_player
       ADD CONSTRAINT dim_player_session_fk
       FOREIGN KEY (session_id) REFERENCES dim_session(session_id) ON DELETE CASCADE;
-  END IF;
-END$$;
-""",
-"""
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uq_dim_player_sess_uid') THEN
-    CREATE UNIQUE INDEX uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);
   END IF;
 END$$;
 """,
@@ -343,6 +343,9 @@ BEGIN
   END IF;
 END$$;
 """,
+
+# ---------- Composite unique for players (per session) ----------
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid)",
 
 # ---------- Performance indexes ----------
 "CREATE INDEX IF NOT EXISTS idx_dim_player_session ON dim_player(session_id)",
