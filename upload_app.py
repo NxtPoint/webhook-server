@@ -369,6 +369,13 @@ def peek_json():
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        root = _dict_root(data)
+        out = {
+            "top_level_type": type(data).__name__,
+            "root_detected_type": type(root).__name__,
+            "root_keys": sorted(list(root.keys())) if isinstance(root, dict) else []
+        }
+
         def sample_keys(obj):
             if isinstance(obj, dict):
                 return sorted(list(obj.keys()))[:30]
@@ -378,18 +385,15 @@ def peek_json():
                 return ["<list-primitive>"]
             return ["<unknown>"]
 
-        top = sorted(list(data.keys())) if isinstance(data, dict) else ["<not-a-dict>"]
-        out = {"top_level_keys": top}
-
-        for arr_key in ["swings", "shots", "strokes", "events", "rallies", "points", "ball_bounces", "bounces"]:
-            if isinstance(data, dict) and arr_key in data:
-                out[arr_key] = {"len": len(data[arr_key]), "sample_item_keys": sample_keys(data[arr_key])}
-        try:
-            fps = (data.get("session") or {}).get("fps") or data.get("fps")
-            if fps:
-                out["fps"] = fps
-        except Exception:
-            pass
+        for arr_key in ["swings", "shots", "strokes", "events", "rallies", "points", "ball_bounces", "bounces", "players", "session"]:
+            if isinstance(root, dict) and arr_key in root:
+                val = root[arr_key]
+                if isinstance(val, list):
+                    out[arr_key] = {"len": len(val), "sample_item_keys": sample_keys(val)}
+                elif isinstance(val, dict):
+                    out[arr_key] = {"type": "dict", "keys": sorted(list(val.keys()))[:30]}
+                else:
+                    out[arr_key] = {"type": type(val).__name__}
 
         return jsonify(out)
     except Exception as e:
@@ -521,6 +525,39 @@ def _parse_ts_flex(v, session_start=None, fps=None):
     return None
 
 # ==========================================
+# JSON root helpers
+# ==========================================
+def _dict_root(data):
+    """
+    If data is a list, pick the first dict that looks relevant.
+    """
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        # Prefer an element that has keys we care about
+        for cand in data:
+            if isinstance(cand, dict) and any(k in cand for k in [
+                "ball_bounces", "bounces", "rallies", "players", "session",
+                "events", "shots", "strokes", "swings"
+            ]):
+                return cand
+        # Fallback to first dict element
+        for cand in data:
+            if isinstance(cand, dict):
+                return cand
+    return {}
+
+def _get_fps_safe(data):
+    root = _dict_root(data)
+    try:
+        s = (root.get("session") or {})
+        return s.get("fps") or s.get("frame_rate") or s.get("frames_per_second") \
+               or (root.get("video") or {}).get("fps") \
+               or root.get("fps")
+    except Exception:
+        return None
+
+# ==========================================
 # DB upserts/inserts
 # ==========================================
 def upsert_dim_session(*, session_uid, source_file=None, session_date=None, court_surface=None, venue=None):
@@ -605,11 +642,12 @@ def insert_fact_bounce_batch(rows):
     return len(rows)
 
 # ==========================================
-# Ingest (bounce-first; derive session_start; derive rallies; strict swings)
+# Ingest (list-aware root, bounce-first; derive rallies; strict swings)
 # ==========================================
 def ingest_sportai_json(json_path, source_file_name):
     """
     Loads:
+      - supports list-at-root JSON by auto-selecting a dict root
       - bounces FIRST (to set fallback session_start)
       - session -> dim_session
       - players -> dim_player
@@ -625,23 +663,19 @@ def ingest_sportai_json(json_path, source_file_name):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    fps = _get_fps_safe(data=data)
+    root = _dict_root(data)
+    fps = _get_fps_safe(data)
 
     # -------- Collect bounces first (to maybe derive session_start)
-    raw_bounces = (data.get("ball_bounces") or data.get("bounces") or [])
-    pre_bounce_abs = []   # absolute datetimes parsed (epoch/ISO)
-    pre_bounce_rel = []   # numeric seconds (relative)
-    pre_bounces = []
-
+    raw_bounces = (root.get("ball_bounces") or root.get("bounces") or [])
+    pre_bounce_abs, pre_bounce_rel, pre_bounces = [], [], []
     for b in raw_bounces if isinstance(raw_bounces, list) else []:
         if not isinstance(b, dict):
             continue
         raw_t = b.get("timestamp") or b.get("ts") or b.get("time") or b.get("time_ms") or b.get("timestamp_ms") or b.get("ms") or b.get("frame")
-        # absolute attempt
         abs_t = _parse_ts_flex(raw_t, session_start=None, fps=fps)
         if abs_t:
             pre_bounce_abs.append(abs_t)
-        # relative seconds detection (small numbers < epoch sec)
         try:
             if abs_t is None and isinstance(raw_t, (int, float)) and float(raw_t) < 1e9:
                 pre_bounce_rel.append(float(raw_t))
@@ -650,21 +684,18 @@ def ingest_sportai_json(json_path, source_file_name):
         pre_bounces.append(b)
 
     # -------- Work out session_start
-    session_payload = (data.get("session") or {})
-    session_start = _parse_ts_iso(session_payload.get("start_time")) or _parse_ts_iso(data.get("analysis_date"))
-
+    session_payload = (root.get("session") or {})
+    session_start = _parse_ts_iso(session_payload.get("start_time")) or _parse_ts_iso(root.get("analysis_date"))
     if session_start is None:
         if pre_bounce_abs:
-            # If any bounce had an absolute time, anchor session_start just before the earliest
             session_start = min(pre_bounce_abs) - timedelta(seconds=2)
             print("⏰ session_start from absolute bounces:", session_start.isoformat())
         elif pre_bounce_rel:
-            # All we have are relative seconds; anchor to epoch 1970-01-01 so DB timestamps aren’t null
             session_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
             print("⏰ session_start set to epoch (relative-seconds mode)")
 
     # -------- Upsert session
-    session_uid = session_payload.get("id") or data.get("id") or source_file_name
+    session_uid = session_payload.get("id") or root.get("id") or source_file_name
     session_id = upsert_dim_session(
         session_uid=session_uid,
         source_file=source_file_name,
@@ -681,7 +712,7 @@ def ingest_sportai_json(json_path, source_file_name):
 
     # -------- Players (best-effort)
     player_map = {}
-    players = data.get("players", [])
+    players = root.get("players", [])
     if isinstance(players, dict):
         players = [{"id": k, **(v if isinstance(v, dict) else {})} for k, v in players.items()]
     for p in players or []:
@@ -712,7 +743,7 @@ def ingest_sportai_json(json_path, source_file_name):
             bounces_by_rally.setdefault(rn, []).append(ts)
 
     # -------- Rallies from JSON (if present)
-    raw_rallies = data.get("rallies") or data.get("points") or data.get("rally_list") or []
+    raw_rallies = root.get("rallies") or root.get("points") or root.get("rally_list") or []
     rally_id_map = {}
     if isinstance(raw_rallies, list) and raw_rallies:
         for r in raw_rallies:
@@ -727,7 +758,7 @@ def ingest_sportai_json(json_path, source_file_name):
             )
             rally_id_map[(session_id, rally_number)] = rid
 
-    # -------- Derive rallies from bounces
+    # -------- Derive rallies (by number if present in bounces, else by time gaps)
     if not rally_id_map and bounces_by_rally:
         for rn, ts_list in bounces_by_rally.items():
             start_ts = min(ts_list) if ts_list else None
@@ -814,19 +845,16 @@ def ingest_sportai_json(json_path, source_file_name):
                     best = delta; best_rid = rid
         return best_rid
 
-    # -------- STRICT swing collection (your file likely has none)
-    # Only consider arrays explicitly named swings/shots/strokes/events, AND
-    # require at least ONE of these keys in item: swing_type, shot_type, ball_hit_ts, contact_ts
+    # -------- STRICT swing collection (only real swing-like arrays)
     swings_collected = []
-    candidate_keys = ["swings", "shots", "strokes", "events"]
-    for key in candidate_keys:
-        lst = data.get(key)
+    for key in ["swings", "shots", "strokes", "events"]:
+        lst = root.get(key)
         if isinstance(lst, list) and lst and isinstance(lst[0], dict):
             for s in lst:
                 if not isinstance(s, dict):
                     continue
                 if not any(k in s for k in ["swing_type", "shot_type", "ball_hit_ts", "contact_ts"]):
-                    continue  # not swing-like enough
+                    continue
                 uid_raw = s.get("player_id") or s.get("player") or s.get("hitter_id") or s.get("hitter") or s.get("playerId") or s.get("athlete_id") or s.get("player_index")
                 uid = str(uid_raw) if uid_raw is not None else None
                 rally_no = s.get("rally_number") or s.get("rally") or s.get("point_index") or s.get("rallyIndex") or s.get("point")
@@ -840,8 +868,7 @@ def ingest_sportai_json(json_path, source_file_name):
                     s.get("swing_end_ts") or s.get("end_ts") or s.get("end_time") or s.get("end"),
                     session_start, fps
                 )
-                hit_src = s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts")
-                ball_hit_ts = _parse_ts_flex(hit_src, session_start, fps)
+                ball_hit_ts = _parse_ts_flex(s.get("ball_hit_ts") or s.get("contact_ts") or s.get("hit_ts"), session_start, fps)
                 swings_collected.append({
                     "rally_no": rally_no,
                     "player_uid": uid,
@@ -863,7 +890,6 @@ def ingest_sportai_json(json_path, source_file_name):
                     "annotations_json": s.get("annotations"),
                 })
 
-    # Map swings to rallies + players, then insert
     swing_rows = []
     if swings_collected:
         for sw in swings_collected:
@@ -922,16 +948,6 @@ def ingest_sportai_json(json_path, source_file_name):
         print("🟨 No bounces detected.")
 
     print(f"✅ Ingest complete for session_uid={session_uid}")
-
-# small helper to get fps safely
-def _get_fps_safe(data):
-    try:
-        s = (data.get("session") or {})
-        return s.get("fps") or s.get("frame_rate") or s.get("frames_per_second") \
-               or (data.get("video") or {}).get("fps") \
-               or data.get("fps")
-    except Exception:
-        return None
 
 # ==========================================
 # Entrypoint
