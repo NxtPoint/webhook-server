@@ -1,14 +1,19 @@
-__pycache__/ 
-*.py[cod] 
-*.pyo 
-*.pyd 
-.venv/ 
-venv/ 
-.env 
-.DS_Store 
-data/* 
-!data/.gitkeep 
-powerbi_exports/ 
-scripts/__pycache__/ 
-.idea/ 
-.vscode/ 
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# editors / env
+.venv/
+venv/
+.env
+.DS_Store
+.vscode/
+.idea/
+
+# generated data & artifacts
+data/*
+!data/.gitkeep
+result_*.json
+powerbi_exports/
