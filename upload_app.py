@@ -549,15 +549,28 @@ def ops_db_counts():
 
 @app.get("/ops/sql")
 def ops_sql():
-    if not _guard(): return _forbid()
-    q = request.args.get("q","").strip()
+    if not _guard(): 
+        return _forbid()
+    q = request.args.get("q", "").strip()
     ql = q.lstrip().lower()
-    # allow SELECT or CTEs that start with WITH
+
+    # allow plain SELECT or CTEs (WITH/with recursive)
     if not (ql.startswith("select") or ql.startswith("with")):
         return Response("Only SELECT/CTE queries are allowed", status=400)
-    if "limit" not in ql:
-        q = f"{q.rstrip(';')} LIMIT 200"
-    with engine.connect() as conn:
+
+    # simple single-statement guard (no chaining multiple statements)
+    stripped = q.strip()
+    if ";" in stripped[:-1]:  # allow a single trailing semicolon only
+        return Response("Only a single statement is allowed", status=400)
+
+    # enforce a default LIMIT when not present
+    if " limit " not in ql:
+        q = f"{stripped.rstrip(';')} LIMIT 200"
+
+    # run read-only with a short timeout
+    with engine.begin() as conn:
+        conn.execute(text("SET LOCAL statement_timeout = 5000"))           # 5s
+        conn.execute(text("SET LOCAL TRANSACTION READ ONLY"))              # cannot write, even via WITH
         rows = conn.execute(text(q)).mappings().all()
         data = [dict(r) for r in rows]
     return jsonify({"ok": True, "rows": len(data), "data": data})
