@@ -12,114 +12,101 @@
       color: #ffffff;
     }
     .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 540px; text-align: center; box-shadow: 0 0 20px #00ff80; }
-    h2 { font-size: 1.6rem; margin-bottom: 12px; }
-    p, .hint { font-size: 0.95rem; opacity: .95; }
-    input[type="email"] { width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem; }
-    .btn { background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
-    .btn:hover { background-color: #00cc66; }
-    .btn-row { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:10px; }
+    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 520px; text-align: center; box-shadow: 0 0 20px #00ff80; }
+    h2 { font-size: 1.6rem; margin-bottom: 16px; }
+    input[type="email"], input[type="file"] { width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem; }
+    button { background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
+    button:hover { background-color: #00cc66; }
     #status { background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 15px; margin-top: 20px; font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80; }
     .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
     .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out; }
+    .spinner { display: none; margin: 20px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin-top:8px; }
     .warn { color:#fca5a5; }
   </style>
 </head>
 <body>
   <div class="overlay">
-    <div class="container">
-      <h2>🎾 Upload Match Video (Dropbox only)</h2>
+    <div class="container" data-max-mb="{{ max_upload_mb }}">
+      <h2>🎾 Upload Match Video</h2>
 
-      {% if not dbx_ready %}
+      {% if not dropbox_ready %}
         <div class="pill warn">Dropbox server credentials are not configured.</div>
       {% endif %}
       {% if not sportai_ready %}
         <div class="pill warn">SPORT_AI_TOKEN is not configured.</div>
       {% endif %}
 
-      <p class="hint">
-        Step 1: Click the button below to upload your video to our Dropbox folder
-        <strong>{{ target_folder }}</strong>.
-        {% if file_request_url %}
-          This opens a Dropbox File Request page.
-        {% else %}
-          Ask the admin to set <code>DROPBOX_FILE_REQUEST_URL</code>.
-        {% endif %}
-      </p>
+      <form id="uploadForm" enctype="multipart/form-data">
+        <input type="email" name="email" placeholder="Your email" required />
+        <input type="file" name="video" accept=".mp4,.mov" required />
+        <button type="submit">Upload to Our Dropbox & Analyze</button>
+      </form>
 
-      <div class="btn-row">
-        {% if file_request_url %}
-          <a class="btn" href="{{ file_request_url }}" target="_blank" rel="noopener">Upload to Our Dropbox</a>
-        {% else %}
-          <button class="btn" disabled>Upload to Our Dropbox (not configured)</button>
-        {% endif %}
-      </div>
-
-      <p class="hint" style="margin-top:14px;">
-        Step 2: After the upload finishes, enter your email and click
-        <em>Analyze Latest Upload</em>. We’ll automatically pick the most-recent
-        <code>.mp4</code>/<code>.mov</code> in <strong>{{ target_folder }}</strong>, send it to SportAI,
-        download the JSON, and ingest it into our database.
-      </p>
-
-      <input type="email" id="email" placeholder="Your email" required />
-
-      <div class="btn-row">
-        <button class="btn" id="analyzeBtn">Analyze Latest Upload</button>
-      </div>
-
+      <div class="spinner" id="spinner"></div>
       <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
       <div id="status"></div>
     </div>
   </div>
 
   <script>
+    const form = document.getElementById("uploadForm");
     const statusText = document.getElementById("status");
-    const progressEl = document.getElementById("progressFill");
-    const analyzeBtn = document.getElementById("analyzeBtn");
-    const emailEl = document.getElementById("email");
+    const spinner = document.getElementById("spinner");
+    const progressFill = document.getElementById("progressFill");
+    const MAX_MB = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
+    const MAX_BYTES = MAX_MB * 1024 * 1024;
 
+    function updateProgressBar(p){ progressFill.style.width = p + "%"; }
     function updateStatus(m){ statusText.innerText += (statusText.innerText ? "\n" : "") + m; }
-    function setProgress(p){ progressEl.style.width = p + "%"; }
 
-    analyzeBtn.addEventListener("click", async () => {
-      statusText.innerText = "🚀 Checking latest Dropbox upload...";
-      setProgress(5);
-
-      const email = (emailEl.value || "").trim();
-      if (!email) { updateStatus("❌ Please enter your email."); setProgress(0); return; }
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      statusText.innerText = "🚀 Starting upload...";
+      updateProgressBar(5);
+      spinner.style.display = "block";
 
       try {
-        const form = new FormData();
-        form.append("email", email);
-        const res = await fetch("/upload/analyze-latest", { method: "POST", body: form });
+        const fd = new FormData(form);
+        const f = form.querySelector('input[type="file"]').files[0];
+        if (!f) { updateStatus("❌ Please select a video file."); spinner.style.display="none"; updateProgressBar(0); return; }
+        if (f.size > MAX_BYTES) {
+          updateStatus(`❌ File is ${Math.round(f.size/1024/1024)}MB > ${MAX_MB}MB (server limit). Try a smaller clip.`);
+          spinner.style.display="none"; updateProgressBar(0); return;
+        }
+
+        const res = await fetch("/upload", { method: "POST", body: fd });
         const raw = await res.text();
         let data = null; try { data = JSON.parse(raw); } catch {}
 
         if (!res.ok) {
           const msg = (data && data.error) ? data.error : `HTTP ${res.status} ${res.statusText}: ${raw.slice(0,400)}`;
-          updateStatus(`❌ Error: ${msg}`); setProgress(0); return;
+          updateStatus(`❌ Upload Error: ${msg}`); spinner.style.display="none"; updateProgressBar(0); return;
         }
-        if (data && data.error) { updateStatus(`❌ Error: ${data.error}`); setProgress(0); return; }
+        if (data && data.error) {
+          updateStatus(`❌ Upload Error: ${data.error}`); spinner.style.display="none"; updateProgressBar(0); return;
+        }
 
         const taskId = data?.task_id || data?.sportai_task_id;
-        const chosen = data?.dropbox_name || data?.dropbox_path || "(unknown)";
-        updateStatus(`✅ Latest file selected: ${chosen}`);
-        updateStatus("📡 Submitted to SportAI. Waiting for analysis to complete...");
+        if (!taskId) { updateStatus("❌ No task id returned."); spinner.style.display="none"; return; }
+
+        updateProgressBar(40);
+        updateStatus("✅ Uploaded to our Dropbox and registered with SportAI...");
         if (data.dropbox_url) updateStatus(`📎 Source: ${data.dropbox_url}`);
-        setProgress(40);
+        updateStatus("📡 Waiting for analysis to complete...");
 
         poll(taskId);
-      } catch (e) {
-        updateStatus(`❌ Failed: ${String(e)}`); setProgress(0);
+      } catch (err) {
+        updateStatus(`❌ Final step failed: ${String(err)}`);
+        spinner.style.display = "none";
       }
     });
 
-    function poll(taskId){
-      let tries = 0, max = 120, delay = 5000;
-      const t = setInterval(async () => {
-        tries++;
+    async function poll(taskId){
+      let attempts = 0, maxAttempts = 120, delay = 5000;
+      const timer = setInterval(async () => {
+        attempts++;
         try {
           const res = await fetch(`/upload/task_status/${taskId}`);
           const raw = await res.text();
@@ -127,26 +114,29 @@
           if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0,300)}`);
 
           const status = data?.data?.task_status;
-          const prog   = data?.data?.task_progress ?? 0;
-          setProgress(Math.round(prog * 100));
+          const progress = data?.data?.task_progress ?? 0;
+          updateProgressBar(progress * 100);
 
           if (status === "completed") {
-            setProgress(100);
+            updateProgressBar(100);
             updateStatus("✅ Analysis complete! JSON downloaded and ingested.");
-            clearInterval(t);
+            clearInterval(timer);
+            spinner.style.display = "none";
           } else if (status === "failed") {
-            updateStatus("❌ Analysis failed. Please check the video and try again.");
-            clearInterval(t);
-            setProgress(0);
-          } else if (tries >= max) {
+            updateStatus("❌ Analysis failed. Please try another video.");
+            clearInterval(timer);
+            spinner.style.display = "none";
+          } else if (attempts >= maxAttempts) {
             updateStatus("⚠️ Timeout. Try again later.");
-            clearInterval(t);
+            clearInterval(timer);
+            spinner.style.display = "none";
           } else {
-            updateStatus(`🔄 Status: ${status} (${Math.round(prog*100)}%)`);
+            updateStatus(`🔄 Status: ${status} (${Math.round(progress*100)}%)`);
           }
-        } catch (e) {
-          updateStatus(`❌ Polling error: ${String(e)}`);
-          clearInterval(t);
+        } catch (err) {
+          updateStatus(`❌ Polling failed: ${String(err)}`);
+          clearInterval(timer);
+          spinner.style.display = "none";
         }
       }, delay);
     }
