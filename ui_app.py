@@ -168,21 +168,23 @@ def _sportai_submit(video_url, *, processing_windows=None, only_in_rally_data=Fa
 
 def _sportai_status(task_id):
     """
+    Calls the correct tennis-scoped status endpoint.
     Supports both old (status/progress) and new (task_status/task_progress) keys.
     """
     headers, err = _sportai_headers()
     if err:
         return None, None, err
     r = requests.get(
-        f"https://api.sportai.com/api/statistics/{task_id}/status",
+        f"https://api.sportai.com/api/statistics/tennis/{task_id}/status",
         headers=headers,
-        timeout=30,
+        timeout=45,
     )
     if r.status_code != 200:
         return None, None, f"status HTTP {r.status_code}: {r.text}"
-    j = r.json().get("data", {})
-    status   = j.get("status") or j.get("task_status")
-    progress = j.get("progress") or j.get("task_progress")
+    body = r.json()
+    data = body.get("data") or body  # be tolerant
+    status   = data.get("task_status") or data.get("status")
+    progress = data.get("task_progress") or data.get("progress")
     return status, progress, None
 
 # ---------------- Download, webhook, and ingest ----------------
@@ -221,8 +223,9 @@ def _download_result_and_ingest(task_id, save_prefix):
         _log_ingest({"stage": "token-missing", "error": err})
         return
 
+    # 👇 use the tennis-scoped details endpoint
     meta = requests.get(
-        f"https://api.sportai.com/api/statistics/{task_id}",
+        f"https://api.sportai.com/api/statistics/tennis/{task_id}",
         headers=headers,
         timeout=60,
     )
@@ -230,7 +233,9 @@ def _download_result_and_ingest(task_id, save_prefix):
         _log_ingest({"stage": "meta", "http": meta.status_code, "body": meta.text[:300]})
         return
 
-    result_url = meta.json().get("data", {}).get("result_url")
+    m = meta.json()
+    data = m.get("data") or m
+    result_url = (data or {}).get("result_url")
     if not result_url:
         _log_ingest({"stage": "no-result-url"})
         return
@@ -346,14 +351,14 @@ def ui_task_status(task_id):
 
 @ui_bp.get("/debug/sportai-status/<task_id>")
 def debug_sportai_status(task_id):
-    """
-    Raw passthrough of SportAI status for troubleshooting.
-    """
     headers, err = _sportai_headers()
     if err:
         return jsonify({"http": 0, "error": err})
-    r = requests.get(f"https://api.sportai.com/api/statistics/{task_id}/status",
-                     headers=headers, timeout=30)
+    r = requests.get(
+        f"https://api.sportai.com/api/statistics/tennis/{task_id}/status",
+        headers=headers,
+        timeout=45,
+    )
     try:
         body = r.json()
     except Exception:
