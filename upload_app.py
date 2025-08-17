@@ -790,29 +790,67 @@ def ops_ingest_file():
     replace = str(request.args.get("replace","0")).strip().lower() in ("1","true","yes","y")
     forced_uid = request.args.get("session_uid")
     src_hint = request.args.get("name") or request.args.get("url")
+    mode = (request.args.get("mode") or "hard").strip().lower()  # "hard" | "soft"
+
     try:
         payload = _get_json_from_sources()
 
-        # --- STRICT_REINGEST guard (require replace=1 for existing sessions) ---
+        # Guess the session uid first so we can enforce rules before ingest
         try:
             session_uid_guess = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
         except Exception:
             session_uid_guess = forced_uid
-        if STRICT_REINGEST:
-            with engine.connect() as c:
-                sid = c.execute(text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
-                                {"u": session_uid_guess}).scalar()
-            if sid is not None and not replace:
-                return jsonify({
-                    "ok": False,
-                    "error": f"Session '{session_uid_guess}' already exists; re-ingest with &replace=1 to overwrite"
-                }), 400
-        # ----------------------------------------------------------------------
 
-        init_db(engine)  # ensure migrations/ensures ran
+        # Read existing session_id (if any)
+        existing_sid = None
+        with engine.connect() as c:
+            existing_sid = c.execute(
+                text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
+                {"u": session_uid_guess}
+            ).scalar()
+
+        # STRICT_REINGEST guard
+        if STRICT_REINGEST and existing_sid is not None and not replace:
+            return jsonify({
+                "ok": False,
+                "error": f"Session '{session_uid_guess}' already exists; re-ingest with &replace=1 to overwrite"
+            }), 400
+
+        # If soft-replace is requested and session exists, clear children but keep the session row
+        if replace and mode == "soft" and existing_sid is not None:
+            with engine.begin() as conn:
+                # delete children in FK-safe order; keep raw_result for audit trail
+                conn.execute(text("DELETE FROM fact_ball_position WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM fact_player_position WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM fact_bounce WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM fact_swing WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM dim_rally WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM dim_player WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM bounce_heatmap WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM highlight WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM team_session WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM session_confidences WHERE session_id=:sid"), {"sid": existing_sid})
+                conn.execute(text("DELETE FROM thumbnail WHERE session_id=:sid"), {"sid": existing_sid})
+            # For ingest we must NOT delete dim_session; call ingest with replace=False so it updates
+            replace_for_ingest = False
+        else:
+            # Hard-replace or new session → use the original flag
+            replace_for_ingest = replace
+
+        # Ensure schema is present
+        init_db(engine)
+
+        # Ingest
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=src_hint)
-        return jsonify({"ok": True, **res, "replace": replace})
+            res = ingest_result_v2(
+                conn,
+                payload,
+                replace=replace_for_ingest,
+                forced_uid=forced_uid,
+                src_hint=src_hint
+            )
+
+        return jsonify({"ok": True, **res, "replace": replace, "mode": mode})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
