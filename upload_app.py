@@ -829,3 +829,25 @@ def ops_delete_session():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT","8000")))
+
+@app.get("/ops/list-sessions")
+def ops_list_sessions():
+    if request.args.get("key") != OPS_KEY:
+        return Response("Forbidden", status=403)
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT s.session_uid,
+               (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id) AS players,
+               (SELECT COUNT(*) FROM dim_rally dr WHERE dr.session_id=s.session_id) AS rallies,
+               (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id) AS swings,
+               (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id) AS ball_bounces,
+               (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
+               (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
+               (SELECT COUNT(*) FROM highlight h WHERE h.session_id=s.session_id) AS highlights,
+               (SELECT COUNT(*) FROM team_session t WHERE t.session_id=s.session_id) AS team_sessions,
+               (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id) AS snapshots
+            FROM dim_session s
+            ORDER BY s.session_uid
+        """)).mappings().all()
+        data = [dict(r) for r in rows]
+    return jsonify({"ok": True, "rows": len(data), "data": data})
