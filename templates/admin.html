@@ -107,10 +107,11 @@
   const base = () => document.getElementById('base').value.trim().replace(/\/+$/,'');
   const key  = () => document.getElementById('ops').value.trim();
 
-  async function asJsonOrText(r){
-    try { return await r.json(); }
-    catch { return { text: await r.text() }; }
-  }
+async function asJsonOrText(r){
+  const txt = await r.text();            // read once
+  try { return JSON.parse(txt); }        // try parse
+  catch { return { text: txt }; }        // fallback: raw text
+}
 
   async function hit(path, panelId){
     const url = `${base()}${path}?key=${encodeURIComponent(key())}`;

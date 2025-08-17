@@ -17,3 +17,18 @@ data/*
 !data/.gitkeep
 result_*.json
 powerbi_exports/
+
+powershell -Command "$lines=@('__pycache__/','*.py[cod]','*.pyo','*.pyd','.venv/','venv/','.env','.DS_Store','.vscode/','.idea/','data/*','!data/.gitkeep','result_*.json','powerbi_exports/'); Add-Content .gitignore ($lines -join [Environment]::NewLine)"
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.DS_Store
+.vscode/
+.idea/
+data/*
+!data/.gitkeep
+result_*.json
