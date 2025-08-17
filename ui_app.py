@@ -2,9 +2,8 @@
 import os, time, json, requests
 from threading import Thread
 from flask import Blueprint, request, render_template, jsonify
-from werkzeug.utils import secure_filename
 
-# Blueprint (so we don't modify your backend file)
+# ---------- Blueprint ----------
 ui_bp = Blueprint(
     "ui",
     __name__,
@@ -12,18 +11,30 @@ ui_bp = Blueprint(
     template_folder="templates"  # uses templates/upload.html
 )
 
-# Config pulled from env
+# ---------- Config (env) ----------
 BASE_URL = os.getenv("BASE_URL", "https://api.nextpointtennis.com")
 OPS_KEY  = os.getenv("OPS_KEY", "")
 
-SPORTAI_TOKEN     = os.getenv("SPORT_AI_TOKEN") or os.getenv("SPORTAI_TOKEN", "")
+# SportAI
+SPORTAI_TOKEN = os.getenv("SPORT_AI_TOKEN") or os.getenv("SPORTAI_TOKEN", "")
+
+# Dropbox OAuth (MUST be YOUR Dropbox account)
 DBX_APP_KEY       = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET    = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 
+# Where file requests drop videos inside YOUR Dropbox (e.g. "/uploads/incoming")
+DROPBOX_TARGET_FOLDER = os.getenv("DROPBOX_TARGET_FOLDER", "/uploads")
+
+# A public File Request link that drops files into DROPBOX_TARGET_FOLDER
+# (Create this in Dropbox → File requests, point to the same folder)
+DROPBOX_FILE_REQUEST_URL = os.getenv("DROPBOX_FILE_REQUEST_URL", "")
+
+# ---------- Dropbox helpers ----------
 def _dbx_access_token():
+    """Refresh app access token for YOUR Dropbox account."""
     if not (DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH_TOKEN):
-        return None, "Dropbox creds not configured"
+        return None, "Dropbox credentials not configured (DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)"
     r = requests.post(
         "https://api.dropbox.com/oauth2/token",
         data={
@@ -35,29 +46,56 @@ def _dbx_access_token():
         timeout=30,
     )
     if r.status_code != 200:
-        return None, r.text
+        return None, f"Dropbox token error: {r.text}"
     return r.json().get("access_token"), None
 
-def _dbx_upload_and_link(file_storage):
-    token, err = _dbx_access_token()
-    if err: return None, err
-    filename = secure_filename(file_storage.filename or f"upload_{int(time.time())}.mp4")
-    path = f"/uploads/{filename}"
-    data = file_storage.read()
+def _dbx_list_latest_video(token: str, folder_path: str):
+    """
+    List files in folder_path and return the most-recent .mp4/.mov entry.
+    Chooses by server_modified (fallback client_modified).
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    url_list = "https://api.dropboxapi.com/2/files/list_folder"
+    url_cont = "https://api.dropboxapi.com/2/files/list_folder/continue"
 
-    up = requests.post(
-        "https://content.dropboxapi.com/2/files/upload",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Dropbox-API-Arg": json.dumps({"path": path, "mode": "overwrite", "mute": True}),
-            "Content-Type": "application/octet-stream",
-        },
-        data=data,
-        timeout=600,
-    )
-    if up.status_code != 200:
-        return None, f"Dropbox upload error: {up.text}"
+    body = {
+        "path": folder_path,
+        "recursive": False,
+        "include_non_downloadable_files": False,
+    }
+    entries = []
+    r = requests.post(url_list, headers=headers, json=body, timeout=30)
+    if r.status_code != 200:
+        return None, f"Dropbox list error: {r.text}"
+    j = r.json()
+    entries.extend(j.get("entries", []))
+    while j.get("has_more"):
+        r = requests.post(url_cont, headers=headers, json={"cursor": j["cursor"]}, timeout=30)
+        if r.status_code != 200:
+            return None, f"Dropbox list-continue error: {r.text}"
+        j = r.json()
+        entries.extend(j.get("entries", []))
 
+    vids = []
+    for e in entries:
+        if e.get(".tag") != "file":
+            continue
+        nm = str(e.get("name", "")).lower()
+        if not (nm.endswith(".mp4") or nm.endswith(".mov")):
+            continue
+        vids.append(e)
+
+    if not vids:
+        return None, "No .mp4 or .mov files found in the Dropbox target folder."
+
+    def _ts(e):
+        return e.get("server_modified") or e.get("client_modified") or ""
+    vids.sort(key=_ts, reverse=True)
+    latest = vids[0]
+    return latest, None
+
+def _dbx_create_or_get_shared_link(token: str, path: str):
+    """Create or fetch a shared link for an internal path; normalize to direct bytes."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     sh = requests.post(
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
@@ -73,19 +111,20 @@ def _dbx_upload_and_link(file_storage):
             timeout=30,
         )
         if ls.status_code != 200:
-            return None, f"Dropbox link error: {ls.text}"
+            return None, f"Dropbox link fetch error: {ls.text}"
         url = ls.json()["links"][0]["url"]
     elif sh.status_code != 200:
-        return None, f"Dropbox link error: {sh.text}"
+        return None, f"Dropbox link create error: {sh.text}"
     else:
         url = sh.json()["url"]
 
-    # force direct bytes
+    # normalize to direct bytes
     url = url.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace("?dl=0", "")
     if "?raw=1" not in url:
         url = url + ("&raw=1" if "?" in url else "?raw=1")
     return url, None
 
+# ---------- SportAI helpers ----------
 def _sportai_check(video_url):
     r = requests.post(
         "https://api.sportai.com/api/videos/check",
@@ -94,7 +133,7 @@ def _sportai_check(video_url):
         timeout=60,
     )
     if r.status_code != 200:
-        return False, r.text
+        return False, f"SportAI check HTTP {r.status_code}: {r.text}"
     try:
         ok = r.json()["data"][video_url]["video_ok"]
         return bool(ok), None
@@ -109,7 +148,7 @@ def _sportai_submit(video_url):
         timeout=60,
     )
     if r.status_code not in (200, 201, 202):
-        return None, r.text
+        return None, f"SportAI submit HTTP {r.status_code}: {r.text}"
     return r.json()["data"]["task_id"], None
 
 def _sportai_status(task_id):
@@ -119,7 +158,7 @@ def _sportai_status(task_id):
         timeout=30,
     )
     if r.status_code != 200:
-        return None, None, r.text
+        return None, None, f"status HTTP {r.status_code}: {r.text}"
     j = r.json().get("data", {})
     return j.get("status"), j.get("progress"), None
 
@@ -141,7 +180,6 @@ def _download_result_and_ingest(task_id, save_prefix):
     with open(fn, "w", encoding="utf-8") as f:
         f.write(res.text)
 
-    # Auto-ingest using your existing backend endpoint
     if OPS_KEY:
         try:
             with open(fn, "rb") as fh:
@@ -156,7 +194,7 @@ def _download_result_and_ingest(task_id, save_prefix):
             pass
 
 def _poll_and_download(task_id, save_prefix):
-    for _ in range(120):   # ~10 minutes
+    for _ in range(120):  # ~10 minutes
         st, prog, err = _sportai_status(task_id)
         if st in ("done", "completed"):
             _download_result_and_ingest(task_id, save_prefix)
@@ -165,29 +203,48 @@ def _poll_and_download(task_id, save_prefix):
             break
         time.sleep(5)
 
+# ---------- Routes ----------
 @ui_bp.get("/")
-def page():
-    return render_template("upload.html")
+def upload_page():
+    # Surface helpful info in the template
+    return render_template(
+        "upload.html",
+        file_request_url=DROPBOX_FILE_REQUEST_URL,
+        target_folder=DROPBOX_TARGET_FOLDER,
+        sportai_ready=bool(SPORTAI_TOKEN),
+        dbx_ready=bool(DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH_TOKEN),
+    )
 
-@ui_bp.post("/")
-def upload_video():
+@ui_bp.post("/analyze-latest")
+def analyze_latest():
+    """Pick the most recent .mp4/.mov from YOUR Dropbox target folder and send to SportAI."""
     if not SPORTAI_TOKEN:
         return jsonify({"error": "SPORT_AI_TOKEN not configured on server"}), 500
 
-    file = request.files.get("video")
     email = (request.form.get("email") or "").strip().replace("@", "_at_")
-    if not file:
-        return jsonify({"error": "Please choose a video file"}), 400
 
-    link, err = _dbx_upload_and_link(file)
+    token, err = _dbx_access_token()
     if err:
         return jsonify({"error": err}), 500
 
-    ok, err = _sportai_check(link)
+    latest, err = _dbx_list_latest_video(token, DROPBOX_TARGET_FOLDER)
+    if err:
+        return jsonify({"error": err}), 400
+
+    path = latest.get("path_lower") or latest.get("path_display")
+    name = latest.get("name")
+    if not path:
+        return jsonify({"error": "Could not resolve Dropbox path for the latest video."}), 400
+
+    direct_url, err = _dbx_create_or_get_shared_link(token, path)
+    if err:
+        return jsonify({"error": err}), 400
+
+    ok, err = _sportai_check(direct_url)
     if not ok:
         return jsonify({"error": err or "Video not accepted by SportAI"}), 400
 
-    task_id, err = _sportai_submit(link)
+    task_id, err = _sportai_submit(direct_url)
     if not task_id:
         return jsonify({"error": err or "Submit to SportAI failed"}), 502
 
@@ -195,14 +252,16 @@ def upload_video():
     Thread(target=_poll_and_download, args=(task_id, prefix), daemon=True).start()
 
     return jsonify({
-        "message": "Upload OK. Analysis submitted to SportAI.",
-        "dropbox_url": link,
+        "message": "OK. Submitted latest Dropbox video to SportAI.",
+        "dropbox_path": path,
+        "dropbox_name": name,
+        "dropbox_url": direct_url,
         "task_id": task_id,
         "sportai_task_id": task_id,
     })
 
 @ui_bp.get("/task_status/<task_id>")
-def task_status(task_id):
+def ui_task_status(task_id):
     st, prog, err = _sportai_status(task_id)
     if err:
         return jsonify({"error": err}), 502
