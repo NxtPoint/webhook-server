@@ -192,6 +192,27 @@ def _sportai_details(task_id):
     except Exception as e:
         return None, f"details parse error: {e}"
 
+def _sportai_status(task_id):
+    """
+    GET https://api.sportai.com/api/statistics/tennis/{task_id}/status
+    Returns (status, progress, error). Supports both old/new key names.
+    """
+    headers, err = _sportai_headers()
+    if err:
+        return None, None, err
+    r = requests.get(
+        f"https://api.sportai.com/api/statistics/tennis/{task_id}/status",
+        headers=headers,
+        timeout=45,
+    )
+    if r.status_code != 200:
+        return None, None, f"status HTTP {r.status_code}: {r.text}"
+    body = r.json()
+    data = body.get("data") or body
+    status   = data.get("task_status") or data.get("status")
+    progress = data.get("task_progress") or data.get("progress")
+    return status, progress, None
+
 # ---------------- Download, webhook, and ingest ----------------
 def _post_to_ingester(local_path, forced_uid=None):
     if not OPS_KEY or not BASE_URL:
@@ -315,6 +336,7 @@ def upload_page():
         sportai_ready=bool(_get_sportai_token()),
         target_folder=DROPBOX_TARGET_FOLDER,
     )
+
 @ui_bp.post("/resume/<task_id>")
 def resume_poll(task_id):
     """
