@@ -7,48 +7,22 @@
     html, body {
       margin: 0;
       font-family: Arial, sans-serif;
-      background: url('/static/background-clean-male-serve.jpg') no-repeat center center fixed;
+      background: url('/upload/static/background-clean-male-serve.jpg') no-repeat center center fixed;
       background-size: cover;
       color: #ffffff;
     }
-    .overlay {
-      background: rgba(0, 0, 0, 0.6);
-      min-height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 20px;
-    }
-    .container {
-      background: rgba(0, 128, 0, 0.2);
-      border: 2px solid #00ff80;
-      border-radius: 15px;
-      padding: 20px;
-      width: 100%;
-      max-width: 450px;
-      text-align: center;
-      box-shadow: 0 0 20px #00ff80;
-    }
+    .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
+    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 480px; text-align: center; box-shadow: 0 0 20px #00ff80; }
     h2 { font-size: 1.6rem; margin-bottom: 20px; }
-    input[type="file"], input[type="email"] {
-      width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem;
-    }
-    button {
-      background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px;
-      font-size: 1rem; cursor: pointer; transition: background 0.3s ease;
-    }
+    input[type="file"], input[type="email"], input[type="url"] { width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem; }
+    button { background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
     button:hover { background-color: #00cc66; }
-    #status {
-      background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 15px; margin-top: 20px;
-      font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80;
-    }
+    #status { background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 15px; margin-top: 20px; font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80; }
     .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
     .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out; }
-    .spinner {
-      display: none; margin: 20px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80;
-      border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;
-    }
+    .spinner { display: none; margin: 20px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .hint { font-size: 0.85rem; opacity: .9; }
   </style>
 </head>
 <body>
@@ -56,7 +30,9 @@
     <div class="container">
       <h2>🎾 Upload Match Video</h2>
       <form id="uploadForm" enctype="multipart/form-data">
-        <input type="file" name="video" accept=".mp4,.mov" required />
+        <input type="file" name="video" accept=".mp4,.mov" />
+        <div class="hint">or paste a public video URL (e.g., Dropbox share link)</div>
+        <input type="url" name="video_url" placeholder="https://..." />
         <input type="email" name="email" placeholder="Your email" required />
         <button type="submit">Upload & Analyze</button>
       </form>
@@ -75,42 +51,63 @@
     function updateProgressBar(percent) { progressFill.style.width = percent + '%'; }
     function updateStatus(message) { statusText.innerText += (statusText.innerText ? "\n" : "") + message; }
 
-    form.addEventListener("submit", function (e) {
+    form.addEventListener("submit", async function (e) {
       e.preventDefault();
-      const formData = new FormData(form);
       statusText.innerText = "🚀 Starting upload...";
       updateProgressBar(5);
       spinner.style.display = "block";
 
-      // Because the UI app is mounted at /upload, POSTing to /upload hits ui_app.POST("/")
-      fetch("/upload", { method: "POST", body: formData })
-        .then(res => res.json())
-        .then(data => {
-          if (data.error) {
-            updateStatus(`❌ Upload Error: ${data.error}`);
-            spinner.style.display = "none";
-            updateProgressBar(0);
-            return;
-          }
-          const taskId = data.task_id || data.sportai_task_id;
-          if (!taskId) {
-            updateStatus("❌ No task id returned.");
-            spinner.style.display = "none";
-            return;
-          }
-
-          updateProgressBar(40);
-          updateStatus("✅ Video uploaded. Task registered with SportAI...");
-          if (data.dropbox_url) updateStatus(`📎 Dropbox: ${data.dropbox_url}`);
-          updateStatus("📡 Waiting for analysis to complete...");
-
-          pollForCompletion(taskId);
-        })
-        .catch(err => {
-          updateStatus("❌ Final step failed. Check console.");
-          console.error("Upload error:", err);
+      try {
+        const formData = new FormData(form);
+        // Guard: require either a file or a URL
+        const hasFile = form.querySelector('input[name="video"]').files.length > 0;
+        const urlVal = (form.querySelector('input[name="video_url"]').value || "").trim();
+        if (!hasFile && !urlVal) {
+          updateStatus("❌ Please choose a file or paste a video URL.");
           spinner.style.display = "none";
-        });
+          updateProgressBar(0);
+          return;
+        }
+
+        const res = await fetch("/upload", { method: "POST", body: formData });
+
+        // Read text first so we can surface non-JSON errors (e.g., 413)
+        const raw = await res.text();
+        let data = null;
+        try { data = JSON.parse(raw); } catch (e) {}
+
+        if (!res.ok) {
+          const msg = (data && data.error) ? data.error : `HTTP ${res.status} ${res.statusText}: ${raw.slice(0, 400)}`;
+          updateStatus(`❌ Upload Error: ${msg}`);
+          spinner.style.display = "none";
+          updateProgressBar(0);
+          return;
+        }
+        if (data && data.error) {
+          updateStatus(`❌ Upload Error: ${data.error}`);
+          spinner.style.display = "none";
+          updateProgressBar(0);
+          return;
+        }
+
+        const taskId = data?.task_id || data?.sportai_task_id;
+        if (!taskId) {
+          updateStatus("❌ No task id returned.");
+          spinner.style.display = "none";
+          return;
+        }
+
+        updateProgressBar(40);
+        updateStatus("✅ Video registered with SportAI...");
+        if (data.dropbox_url) updateStatus(`📎 Source: ${data.dropbox_url}`);
+        updateStatus("📡 Waiting for analysis to complete...");
+
+        pollForCompletion(taskId);
+      } catch (err) {
+        updateStatus(`❌ Final step failed: ${String(err)}`);
+        console.error("Upload error:", err);
+        spinner.style.display = "none";
+      }
     });
 
     function pollForCompletion(taskId) {
@@ -118,39 +115,41 @@
       const maxAttempts = 120;
       const delay = 5000;
 
-      const interval = setInterval(() => {
+      const interval = setInterval(async () => {
         attempts++;
-        // Poll the UI endpoint mounted under /upload
-        fetch(`/upload/task_status/${taskId}`)
-          .then(res => res.json())
-          .then(data => {
-            const status = data?.data?.task_status;
-            const progress = data?.data?.task_progress ?? 0;
-            updateProgressBar(progress * 100);
+        try {
+          const res = await fetch(`/upload/task_status/${taskId}`);
+          const raw = await res.text();
+          let data = null;
+          try { data = JSON.parse(raw); } catch (e) {}
+          if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0,300)}`);
 
-            if (status === "completed") {
-              updateProgressBar(100);
-              updateStatus("✅ Analysis complete! JSON downloaded and ingested.");
-              clearInterval(interval);
-              spinner.style.display = "none";
-            } else if (status === "failed") {
-              updateStatus("❌ Analysis failed. Please try again.");
-              clearInterval(interval);
-              spinner.style.display = "none";
-            } else if (attempts >= maxAttempts) {
-              updateStatus("⚠️ Timeout. Try refreshing or uploading again.");
-              clearInterval(interval);
-              spinner.style.display = "none";
-            } else {
-              updateStatus(`🔄 Status: ${status} (${Math.round(progress * 100)}%)`);
-            }
-          })
-          .catch(err => {
-            console.error("Polling error:", err);
-            updateStatus("❌ Polling failed.");
+          const status = data?.data?.task_status;
+          const progress = data?.data?.task_progress ?? 0;
+          updateProgressBar(progress * 100);
+
+          if (status === "completed") {
+            updateProgressBar(100);
+            updateStatus("✅ Analysis complete! JSON downloaded and ingested.");
             clearInterval(interval);
             spinner.style.display = "none";
-          });
+          } else if (status === "failed") {
+            updateStatus("❌ Analysis failed. Please try again.");
+            clearInterval(interval);
+            spinner.style.display = "none";
+          } else if (attempts >= maxAttempts) {
+            updateStatus("⚠️ Timeout. Try refreshing or uploading again.");
+            clearInterval(interval);
+            spinner.style.display = "none";
+          } else {
+            updateStatus(`🔄 Status: ${status} (${Math.round(progress * 100)}%)`);
+          }
+        } catch (err) {
+          console.error("Polling error:", err);
+          updateStatus(`❌ Polling failed: ${String(err)}`);
+          clearInterval(interval);
+          spinner.style.display = "none";
+        }
       }, delay);
     }
   </script>
