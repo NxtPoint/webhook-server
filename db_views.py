@@ -1,15 +1,27 @@
 # db_views.py
 from sqlalchemy import text
 
+# --- Views to (re)create ---
 VIEW_NAMES = [
+    # your originals
     "vw_swing",
     "vw_bounce",
     "vw_rally",
     "vw_ball_position",
     "vw_player_position",
+
+    # new, Power BI–friendly views
+    "vw_session_summary",
+    "vw_dim_player",
+    "vw_fact_swing_enriched",
+    "vw_dim_rally_enriched",
+    "vw_player_position_1s",
 ]
 
 CREATE_STMTS = {
+    # -----------------------
+    # ORIGINAL VIEWS (UNCHANGED)
+    # -----------------------
     "vw_swing": """
         CREATE VIEW vw_swing AS
         WITH membership AS (
@@ -53,7 +65,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player  dp ON dp.player_id   = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id   = s.session_id
         LEFT JOIN membership  m  ON m.session_id    = s.session_id
-                                AND m.player_uid    = dp.sportai_player_uid
+                                AND m.player_uid    = dp.sportai_player_uid;
     """,
 
     "vw_bounce": """
@@ -68,9 +80,10 @@ CREATE_STMTS = {
             b.bounce_s, b.bounce_ts,
             b.x, b.y, b.bounce_type
         FROM fact_bounce b
-        LEFT JOIN dim_player dp ON dp.player_id = b.hitter_player_id
-        LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
+        LEFT JOIN dim_player  dp ON dp.player_id   = b.hitter_player_id
+        LEFT JOIN dim_session ds ON ds.session_id  = b.session_id;
     """,
+
     "vw_rally": """
         CREATE VIEW vw_rally AS
         SELECT
@@ -83,6 +96,7 @@ CREATE_STMTS = {
         FROM dim_rally r
         LEFT JOIN dim_session ds ON ds.session_id = r.session_id;
     """,
+
     "vw_ball_position": """
         CREATE VIEW vw_ball_position AS
         SELECT
@@ -93,6 +107,7 @@ CREATE_STMTS = {
         FROM fact_ball_position p
         LEFT JOIN dim_session ds ON ds.session_id = p.session_id;
     """,
+
     "vw_player_position": """
         CREATE VIEW vw_player_position AS
         SELECT
@@ -104,10 +119,109 @@ CREATE_STMTS = {
             p.ts_s, p.ts, p.x, p.y
         FROM fact_player_position p
         LEFT JOIN dim_session ds ON ds.session_id = p.session_id
-        LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
+        LEFT JOIN dim_player  dp ON dp.player_id  = p.player_id;
+    """,
+
+    # -----------------------
+    # NEW VIEWS (FOR POWER BI)
+    # -----------------------
+    "vw_session_summary": """
+        CREATE VIEW vw_session_summary AS
+        SELECT
+          s.session_id,
+          s.session_uid,
+          s.session_date,
+          s.fps,
+          (SELECT COUNT(*) FROM dim_player dp  WHERE dp.session_id=s.session_id) AS players,
+          (SELECT COUNT(*) FROM dim_rally  dr  WHERE dr.session_id=s.session_id) AS rallies,
+          (SELECT COUNT(*) FROM fact_swing fs  WHERE fs.session_id=s.session_id) AS swings,
+          (SELECT COUNT(*) FROM fact_bounce b  WHERE b.session_id=s.session_id) AS ball_bounces,
+          (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
+          (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions
+        FROM dim_session s;
+    """,
+
+    "vw_dim_player": """
+        CREATE VIEW vw_dim_player AS
+        SELECT
+          dp.player_id,
+          dp.session_id,
+          s.session_uid,
+          (s.session_uid || ':' || dp.sportai_player_uid) AS player_key,
+          dp.sportai_player_uid AS player_uid,
+          COALESCE(dp.full_name, dp.sportai_player_uid) AS player_name,
+          dp.handedness,
+          dp.age,
+          dp.utr
+        FROM dim_player dp
+        JOIN dim_session s ON s.session_id = dp.session_id;
+    """,
+
+    "vw_fact_swing_enriched": """
+        CREATE VIEW vw_fact_swing_enriched AS
+        SELECT
+          fs.session_id,
+          s.session_uid,
+          dp.player_id,
+          dp.sportai_player_uid AS player_uid,
+          (s.session_uid || ':' || dp.sportai_player_uid) AS player_key,
+          fs.start_s,
+          fs.end_s,
+          fs.ball_hit_s,
+          fs.ball_hit_x, fs.ball_hit_y,
+          fs.serve, fs.serve_type
+        FROM fact_swing fs
+        LEFT JOIN dim_player dp ON dp.player_id = fs.player_id
+        JOIN dim_session s ON s.session_id = fs.session_id;
+    """,
+
+    "vw_dim_rally_enriched": """
+        CREATE VIEW vw_dim_rally_enriched AS
+        SELECT
+          r.session_id,
+          s.session_uid,
+          r.rally_number,
+          r.start_s,
+          r.end_s,
+          (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=r.session_id AND b.rally_id=r.rally_id) AS bounces
+        FROM dim_rally r
+        JOIN dim_session s ON s.session_id = r.session_id;
+    """,
+
+    "vw_player_position_1s": """
+        CREATE VIEW vw_player_position_1s AS
+        WITH ranked AS (
+          SELECT
+            p.session_id,
+            s.session_uid,
+            dp.player_id,
+            dp.sportai_player_uid AS player_uid,
+            (s.session_uid || ':' || dp.sportai_player_uid) AS player_key,
+            floor(p.ts_s)::int AS t_sec,
+            p.ts_s, p.x, p.y,
+            row_number() OVER (
+              PARTITION BY p.session_id, p.player_id, floor(p.ts_s)
+              ORDER BY p.ts_s
+            ) AS rn
+          FROM fact_player_position p
+          JOIN dim_player  dp ON dp.player_id   = p.player_id
+          JOIN dim_session s  ON s.session_id   = p.session_id
+        )
+        SELECT session_id, session_uid, player_id, player_uid, player_key, t_sec, ts_s, x, y
+        FROM ranked WHERE rn=1;
     """,
 }
 
+# Helpful indexes (idempotent)
+INDEX_STMTS = [
+    "CREATE INDEX IF NOT EXISTS fact_swing_sid_bhs      ON fact_swing (session_id, ball_hit_s);",
+    "CREATE INDEX IF NOT EXISTS fact_player_pos_sid_pid ON fact_player_position (session_id, player_id, ts_s);",
+    "CREATE INDEX IF NOT EXISTS fact_bounce_sid_s       ON fact_bounce (session_id, bounce_s);",
+    "CREATE INDEX IF NOT EXISTS dim_rally_sid_num       ON dim_rally (session_id, rally_number);",
+    "CREATE INDEX IF NOT EXISTS dim_player_sid_uid      ON dim_player (session_id, sportai_player_uid);",
+]
+
+# ---- helpers ----
 def _table_exists(conn, t):
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
@@ -167,7 +281,11 @@ def _preflight_or_raise(conn):
 def run_views(engine):
     with engine.begin() as conn:
         _preflight_or_raise(conn)
+        # Drop then recreate (stable order)
         for name in VIEW_NAMES:
             _drop_view_or_matview(conn, name)
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
+        # Helpful indexes (no-op if already present)
+        for stmt in INDEX_STMTS:
+            conn.execute(text(stmt))
