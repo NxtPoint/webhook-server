@@ -29,69 +29,26 @@
       text-align: center;
       box-shadow: 0 0 20px #00ff80;
     }
-    h2 {
-      font-size: 1.6rem;
-      margin-bottom: 20px;
-    }
-    input[type="file"],
-    input[type="email"] {
-      width: 100%;
-      padding: 12px;
-      margin: 10px 0;
-      border-radius: 6px;
-      border: none;
-      font-size: 1rem;
+    h2 { font-size: 1.6rem; margin-bottom: 20px; }
+    input[type="file"], input[type="email"] {
+      width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem;
     }
     button {
-      background-color: #00ff80;
-      color: #000;
-      padding: 12px 20px;
-      border: none;
-      border-radius: 6px;
-      font-size: 1rem;
-      cursor: pointer;
-      transition: background 0.3s ease;
+      background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px;
+      font-size: 1rem; cursor: pointer; transition: background 0.3s ease;
     }
-    button:hover {
-      background-color: #00cc66;
-    }
+    button:hover { background-color: #00cc66; }
     #status {
-      background: rgba(255, 255, 255, 0.1);
-      border-radius: 10px;
-      padding: 15px;
-      margin-top: 20px;
-      font-size: 0.95rem;
-      white-space: pre-wrap;
-      text-align: left;
-      border: 1px solid #00ff80;
+      background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 15px; margin-top: 20px;
+      font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80;
     }
-    .progress-bar {
-      background-color: #ffffff40;
-      border-radius: 8px;
-      margin-top: 10px;
-      height: 12px;
-      overflow: hidden;
-    }
-    .progress-bar-fill {
-      height: 100%;
-      width: 0%;
-      background-color: #00ff80;
-      transition: width 0.3s ease-in-out;
-    }
+    .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out; }
     .spinner {
-      display: none;
-      margin: 20px auto;
-      border: 6px solid #ccc;
-      border-top: 6px solid #00ff80;
-      border-radius: 50%;
-      width: 40px;
-      height: 40px;
-      animation: spin 1s linear infinite;
+      display: none; margin: 20px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80;
+      border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite;
     }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -115,13 +72,8 @@
     const spinner = document.getElementById("spinner");
     const progressFill = document.getElementById("progressFill");
 
-    function updateProgressBar(percent) {
-      progressFill.style.width = percent + '%';
-    }
-
-    function updateStatus(message) {
-      statusText.innerText += "\n" + message;
-    }
+    function updateProgressBar(percent) { progressFill.style.width = percent + '%'; }
+    function updateStatus(message) { statusText.innerText += (statusText.innerText ? "\n" : "") + message; }
 
     form.addEventListener("submit", function (e) {
       e.preventDefault();
@@ -130,10 +82,8 @@
       updateProgressBar(5);
       spinner.style.display = "block";
 
-      fetch("/upload", {
-        method: "POST",
-        body: formData
-      })
+      // Because the UI app is mounted at /upload, POSTing to /upload hits ui_app.POST("/")
+      fetch("/upload", { method: "POST", body: formData })
         .then(res => res.json())
         .then(data => {
           if (data.error) {
@@ -142,12 +92,19 @@
             updateProgressBar(0);
             return;
           }
+          const taskId = data.task_id || data.sportai_task_id;
+          if (!taskId) {
+            updateStatus("❌ No task id returned.");
+            spinner.style.display = "none";
+            return;
+          }
 
           updateProgressBar(40);
-          updateStatus("✅ Video uploaded. Task registered with Sport AI...");
+          updateStatus("✅ Video uploaded. Task registered with SportAI...");
+          if (data.dropbox_url) updateStatus(`📎 Dropbox: ${data.dropbox_url}`);
           updateStatus("📡 Waiting for analysis to complete...");
 
-          pollForCompletion(data.sportai_task_id);
+          pollForCompletion(taskId);
         })
         .catch(err => {
           updateStatus("❌ Final step failed. Check console.");
@@ -163,7 +120,8 @@
 
       const interval = setInterval(() => {
         attempts++;
-        fetch(`/task_status/${taskId}`)
+        // Poll the UI endpoint mounted under /upload
+        fetch(`/upload/task_status/${taskId}`)
           .then(res => res.json())
           .then(data => {
             const status = data?.data?.task_status;
@@ -172,7 +130,7 @@
 
             if (status === "completed") {
               updateProgressBar(100);
-              updateStatus("✅ Analysis complete! Results saved.");
+              updateStatus("✅ Analysis complete! JSON downloaded and ingested.");
               clearInterval(interval);
               spinner.style.display = "none";
             } else if (status === "failed") {
