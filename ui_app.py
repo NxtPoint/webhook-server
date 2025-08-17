@@ -38,6 +38,11 @@ def _log_ingest(event: dict):
         event["ts"] = int(time.time())
         _INGEST_LOG.appendleft(event)
 
+POLL_MAX_MINUTES = int(os.getenv("POLL_MAX_MINUTES", "120"))          # total time to poll a task
+POLL_INTERVAL_FAST_SECONDS = int(os.getenv("POLL_INTERVAL_FAST_SECONDS", "5"))
+POLL_SLOW_AFTER_MINUTES = int(os.getenv("POLL_SLOW_AFTER_MINUTES", "20"))
+POLL_INTERVAL_SLOW_SECONDS = int(os.getenv("POLL_INTERVAL_SLOW_SECONDS", "15"))
+
 # ---------------- Dropbox helpers ----------------
 def _dbx_access_token():
     """
@@ -166,26 +171,26 @@ def _sportai_submit(video_url, *, processing_windows=None, only_in_rally_data=Fa
     except Exception as e:
         return None, f"parse error: {e}; body={r.text[:400]}"
 
-def _sportai_status(task_id):
+def _sportai_details(task_id):
     """
-    Calls the correct tennis-scoped status endpoint.
-    Supports both old (status/progress) and new (task_status/task_progress) keys.
+    GET https://api.sportai.com/api/statistics/tennis/{task_id}
+    Returns (details_dict_or_None, error_or_None)
     """
     headers, err = _sportai_headers()
     if err:
-        return None, None, err
+        return None, err
     r = requests.get(
-        f"https://api.sportai.com/api/statistics/tennis/{task_id}/status",
+        f"https://api.sportai.com/api/statistics/tennis/{task_id}",
         headers=headers,
-        timeout=45,
+        timeout=60,
     )
     if r.status_code != 200:
-        return None, None, f"status HTTP {r.status_code}: {r.text}"
-    body = r.json()
-    data = body.get("data") or body  # be tolerant
-    status   = data.get("task_status") or data.get("status")
-    progress = data.get("task_progress") or data.get("progress")
-    return status, progress, None
+        return None, f"details HTTP {r.status_code}: {r.text}"
+    try:
+        body = r.json()
+        return body.get("data") or body, None
+    except Exception as e:
+        return None, f"details parse error: {e}"
 
 # ---------------- Download, webhook, and ingest ----------------
 def _post_to_ingester(local_path, forced_uid=None):
@@ -263,17 +268,42 @@ def _download_result_and_ingest(task_id, save_prefix):
     # Post into your ingester (upload_app.py) — keep rows unique per job
     _post_to_ingester(fn, forced_uid=task_id)
 
-def _poll_and_download(task_id, save_prefix):
-    for _ in range(120):  # ~10 minutes
-        st, prog, err = _sportai_status(task_id)
+def _poll_and_download(initial_task_id, save_prefix):
+    """
+    Polls a task patiently with backoff. If you previously added auto-resubmit logic,
+    keep it (this function works either way).
+    """
+    start = time.time()
+    current_id = initial_task_id
+
+    # helper to decide interval
+    def _interval_sec():
+        elapsed_min = (time.time() - start) / 60.0
+        return POLL_INTERVAL_SLOW_SECONDS if elapsed_min >= POLL_SLOW_AFTER_MINUTES else POLL_INTERVAL_FAST_SECONDS
+
+    while True:
+        st, prog, err = _sportai_status(current_id)
+
         if st in ("done", "completed"):
-            _log_ingest({"stage": "completed", "task_id": task_id})
-            _download_result_and_ingest(task_id, save_prefix)
-            break
+            _log_ingest({"stage": "completed", "task_id": current_id})
+            _download_result_and_ingest(current_id, save_prefix)
+            return
+
         if st == "failed":
-            _log_ingest({"stage": "failed", "task_id": task_id})
-            break
-        time.sleep(5)
+            _log_ingest({"stage": "failed", "task_id": current_id})
+            return
+
+        # still running → optional: log a heartbeat every ~5 minutes
+        elapsed_min = (time.time() - start) / 60.0
+        if int(elapsed_min) % 5 == 0:
+            _log_ingest({"stage": "heartbeat", "task_id": current_id, "status": st, "progress": prog})
+
+        # give up after max minutes
+        if elapsed_min >= POLL_MAX_MINUTES:
+            _log_ingest({"stage": "timeout", "task_id": current_id, "minutes": int(elapsed_min)})
+            return
+
+        time.sleep(_interval_sec())
 
 # ---------------- Routes ----------------
 @ui_bp.get("/")
@@ -285,6 +315,15 @@ def upload_page():
         sportai_ready=bool(_get_sportai_token()),
         target_folder=DROPBOX_TARGET_FOLDER,
     )
+@ui_bp.post("/resume/<task_id>")
+def resume_poll(task_id):
+    """
+    If a job is still running at SportAI but our background thread ended (e.g. after a deploy),
+    call this to reattach the poller. We only need the task_id to eventually download results.
+    """
+    prefix = f"resume_{int(time.time())}"
+    Thread(target=_poll_and_download, args=(task_id, prefix), daemon=True).start()
+    return jsonify({"ok": True, "resumed": task_id})
 
 @ui_bp.post("")
 @ui_bp.post("/")
@@ -330,24 +369,27 @@ def upload_and_analyze():
 
 @ui_bp.get("/task_status/<task_id>")
 def ui_task_status(task_id):
-    """
-    Always 200 so the front-end doesn't throw; includes any upstream error
-    in the payload. Supports both old/new key names from SportAI.
-    """
     st, prog, err = _sportai_status(task_id)
+    payload = {"task_id": task_id, "task_status": None, "task_progress": 0.0}
+
     if err:
-        # Return a friendly payload, not a 502
-        return jsonify({
-            "data": {
-                "task_id": task_id,
-                "task_status": "error",
-                "task_progress": 0.0
-            },
-            "error": err
-        })
+        payload.update({"task_status": "error", "task_progress": 0.0})
+        return jsonify({"data": payload, "error": err})
+
     mapped = "completed" if st in ("done", "completed") else ("failed" if st == "failed" else st or "queued")
     progress = float(prog) if isinstance(prog, (int, float)) else (1.0 if mapped in ("completed", "failed") else 0.0)
-    return jsonify({"data": {"task_id": task_id, "task_status": mapped, "task_progress": progress}})
+    payload.update({"task_status": mapped, "task_progress": progress})
+
+    # When in progress, also fetch subtask breakdown (if SportAI provides it)
+    if mapped in ("in_progress", "processing", "running"):
+        details, derr = _sportai_details(task_id)
+        if details and isinstance(details, dict):
+            if "total_subtask_progress" in details:
+                payload["total_subtask_progress"] = details.get("total_subtask_progress")
+            if "subtask_progress" in details:
+                payload["subtask_progress"] = details.get("subtask_progress")
+
+    return jsonify({"data": payload})
 
 @ui_bp.get("/debug/sportai-status/<task_id>")
 def debug_sportai_status(task_id):
