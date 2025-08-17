@@ -96,12 +96,27 @@ def init_views(engine):
     from db_views import run_views
     run_views(engine)
 
-# --------- NEW: snap times to frame ticks ---------
+# -------- quantization helpers --------
 def _quantize_time_to_fps(s, fps):
     if s is None or not fps:
         return s
-    # nearest frame, then keep a stable, compact representation
+    # nearest frame, then stable representation
     return round(round(float(s) * float(fps)) / float(fps), 5)
+
+_INVALID_PUIDS = {"", "0", "none", "null", "nan"}
+def _valid_puid(p):
+    if p is None: 
+        return False
+    s = str(p).strip().lower()
+    return s not in _INVALID_PUIDS
+
+def _quantize_time(s, fps):
+    """Use fps if available, else stable 1ms grid to kill float jitter."""
+    if s is None:
+        return None
+    if fps:
+        return _quantize_time_to_fps(s, fps)
+    return round(float(s), 3)  # 1ms
 
 # ---------------------- mappers ----------------------
 def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
@@ -259,10 +274,10 @@ def _gather_all_swings(payload):
 
 # ---------------------- ingest ----------------------
 def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
-    # Quantize times to fps for stable storage
-    q_start = _quantize_time_to_fps(s.get("start_s"), fps)
-    q_end   = _quantize_time_to_fps(s.get("end_s"), fps)
-    q_hit   = _quantize_time_to_fps(s.get("ball_hit_s"), fps)
+    # Quantize times for stable storage
+    q_start = _quantize_time(s.get("start_s"), fps)
+    q_end   = _quantize_time(s.get("end_s"), fps)
+    q_hit   = _quantize_time(s.get("ball_hit_s"), fps)
 
     conn.execute(text("""
         INSERT INTO fact_swing (
@@ -373,9 +388,10 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         """), {"sid": session_id, "puid": puid}).scalar_one()
         uid_to_player_id[puid] = pid
 
-    # -------- NEW: ensure players exist for any UIDs only in player_positions --------
-    pp_uids = set(str(k) for k in (payload.get("player_positions") or {}).keys())
-    missing_pp = [u for u in pp_uids if u and u not in uid_to_player_id]
+    # ensure players exist for any valid UIDs that only appear in player_positions
+    pp = payload.get("player_positions") or {}
+    pp_uids = [str(k) for k, arr in pp.items() if _valid_puid(k) and arr]
+    missing_pp = [u for u in pp_uids if u not in uid_to_player_id]
     for puid in missing_pp:
         conn.execute(text("""
             INSERT INTO dim_player (session_id, sportai_player_uid)
@@ -387,7 +403,6 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             WHERE session_id=:sid AND sportai_player_uid=:p
         """), {"sid": session_id, "p": puid}).scalar_one()
         uid_to_player_id[puid] = pid
-    # -------------------------------------------------------------------------------
 
     # rallies
     for i, r in enumerate(payload.get("rallies") or [], start=1):
@@ -492,8 +507,8 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         if norm.get("suid"): return ("suid", str(norm["suid"]))
         # dedupe on quantized times to avoid float jitter
         return ("fb", pid,
-                _quantize_time_to_fps(norm.get("start_s"), fps),
-                _quantize_time_to_fps(norm.get("end_s"), fps))
+                _quantize_time(norm.get("start_s"), fps),
+                _quantize_time(norm.get("end_s"), fps))
 
     for norm in _gather_all_swings(payload):
         pid = None
@@ -667,14 +682,14 @@ def ops_reconcile():
                         payload_players.add(str(p[k]))
                         break
 
-            # player_positions payload counts per player
+            # player_positions payload counts per player (and add to players set)
             pp_payload = {}
-            for puid, arr in (payload.get("player_positions") or {}).items():
-                try:
-                    puid_s = str(puid)
-                    pp_payload[puid_s] = int(len(arr or []))
-                except Exception:
-                    pass
+            pp = payload.get("player_positions") or {}
+            for puid, arr in pp.items():
+                puid_s = str(puid)
+                pp_payload[puid_s] = int(len(arr or []))
+                if _valid_puid(puid_s) and arr:
+                    payload_players.add(puid_s)
 
             payload_rallies        = len(payload.get("rallies") or [])
             payload_bounces        = len(payload.get("ball_bounces") or [])
@@ -696,8 +711,8 @@ def ops_reconcile():
                     k = ("suid", str(norm["suid"]))
                 else:
                     k = ("fb", pid,
-                         _quantize_time_to_fps(norm.get("start_s"), fps),
-                         _quantize_time_to_fps(norm.get("end_s"), fps))
+                         _quantize_time(norm.get("start_s"), fps),
+                         _quantize_time(norm.get("end_s"), fps))
                 payload_swing_keys.add(k)
 
             # 3) DB counts & sets
@@ -731,8 +746,8 @@ def ops_reconcile():
                     db_swing_keys.add(("suid", str(r["sportai_swing_uid"])))
                 else:
                     db_swing_keys.add(("fb", r["player_id"],
-                                       _quantize_time_to_fps(r["start_s"], fps),
-                                       _quantize_time_to_fps(r["end_s"], fps)))
+                                       _quantize_time(r["start_s"], fps),
+                                       _quantize_time(r["end_s"], fps)))
 
             # 4) diffs
             players_missing_in_db = sorted(list(payload_players - db_players))[:20]
