@@ -190,16 +190,20 @@ def _sportai_status(task_id):
     return j.get("status"), j.get("progress"), None
 
 # ---------------- Download, webhook, and ingest ----------------
-def _post_to_ingester(local_path):
+def _post_to_ingester(local_path, forced_uid=None):
     if not OPS_KEY or not BASE_URL:
         _log_ingest({"stage": "ingest-skip", "reason": "missing OPS_KEY or BASE_URL"})
         return
     try:
+        params = {"key": OPS_KEY, "replace": "1"}
+        if forced_uid:
+            params["session_uid"] = forced_uid  # ensure uniqueness per task
+
         with open(local_path, "rb") as fh:
             files = {"file": (os.path.basename(local_path), fh, "application/json")}
             resp = requests.post(
                 f"{BASE_URL}/ops/ingest-file",
-                params={"key": OPS_KEY, "replace": "1"},
+                params=params,
                 files=files,
                 timeout=300,
             )
@@ -256,7 +260,7 @@ def _download_result_and_ingest(task_id, save_prefix):
             _log_ingest({"stage": "webhook-exception", "error": str(e)})
 
     # Post into your ingester (upload_app.py)
-    _post_to_ingester(fn)
+    _post_to_ingester(fn, forced_uid=task_id)
 
 def _poll_and_download(task_id, save_prefix):
     for _ in range(120):  # ~10 minutes
