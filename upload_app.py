@@ -871,7 +871,7 @@ def api_session_summary(session_uid):
 
         labels = _front_back_labels(conn, sid)
 
-        counts = conn.execute(text("""
+        counts_row = conn.execute(text("""
             SELECT
               (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=:sid) AS players,
               (SELECT COUNT(*) FROM dim_rally dr WHERE dr.session_id=:sid) AS rallies,
@@ -881,6 +881,8 @@ def api_session_summary(session_uid):
               (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=:sid) AS player_positions,
               (SELECT COUNT(*) FROM highlight h WHERE h.session_id=:sid) AS highlights
         """), {"sid": sid}).mappings().first()
+
+        counts = {k: int(v) for k, v in counts_row.items()} if counts_row else {}
 
         players = conn.execute(text("""
             SELECT sportai_player_uid AS uid, full_name, handedness
