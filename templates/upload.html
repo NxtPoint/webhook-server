@@ -4,13 +4,9 @@
   <meta charset="UTF-8" />
   <title>Upload Match Video</title>
   <style>
-    html, body {
-      margin: 0;
-      font-family: Arial, sans-serif;
+    html, body { margin: 0; font-family: Arial, sans-serif;
       background: url('/upload/static/background-clean-male-serve.jpg') no-repeat center center fixed;
-      background-size: cover;
-      color: #ffffff;
-    }
+      background-size: cover; color: #ffffff; }
     .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
     .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 520px; text-align: center; box-shadow: 0 0 20px #00ff80; }
     h2 { font-size: 1.6rem; margin-bottom: 16px; }
@@ -37,6 +33,7 @@
       {% if not sportai_ready %}
         <div class="pill warn">SPORT_AI_TOKEN is not configured.</div>
       {% endif %}
+      <div class="pill">Target folder: <strong>{{ target_folder }}</strong></div>
 
       <form id="uploadForm" enctype="multipart/form-data">
         <input type="email" name="email" placeholder="Your email" required />

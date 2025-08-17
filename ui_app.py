@@ -24,8 +24,8 @@ DBX_APP_KEY       = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET    = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 
-# Target folder inside your Dropbox to store uploads (must exist or we’ll create)
-DROPBOX_TARGET_FOLDER = os.getenv("DROPBOX_TARGET_FOLDER", "/uploads")
+# Default back to the folder you used previously
+DROPBOX_TARGET_FOLDER = os.getenv("DROPBOX_TARGET_FOLDER", "/wix-uploads")
 
 # Max size we’ll accept from the browser (MB) to avoid edge drops
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
@@ -86,7 +86,7 @@ def _dbx_create_or_get_shared_link(token: str, path: str):
     else:
         url = sh.json()["url"]
 
-    # normalize to direct bytes
+    # normalize to direct bytes (same as previous working code)
     url = url.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace("?dl=0", "")
     if "?raw=1" not in url:
         url = url + ("&raw=1" if "?" in url else "?raw=1")
@@ -110,11 +110,17 @@ def _dbx_upload_and_link(file_storage):
     path = f"{DROPBOX_TARGET_FOLDER.rstrip('/')}/{filename}"
     data = file_storage.read()
 
+    # Match prior behavior: add + autorename + not muted
     up = requests.post(
         "https://content.dropboxapi.com/2/files/upload",
         headers={
             "Authorization": f"Bearer {token}",
-            "Dropbox-API-Arg": json.dumps({"path": path, "mode": "overwrite", "mute": True}),
+            "Dropbox-API-Arg": json.dumps({
+                "path": path,
+                "mode": {".".join(["tag"]): "add"} if False else "add",  # compact schema works fine
+                "autorename": True,
+                "mute": False
+            }),
             "Content-Type": "application/octet-stream",
         },
         data=data,
@@ -216,7 +222,7 @@ def upload_page():
         target_folder=DROPBOX_TARGET_FOLDER,
     )
 
-# Accept both /upload and /upload/ to avoid 308 redirects on POST
+# Accept both /upload and /upload/ to avoid POST redirect issues
 @ui_bp.post("")
 @ui_bp.post("/")
 def upload_and_analyze():
@@ -271,27 +277,22 @@ def ui_task_status(task_id):
     progress = float(prog) if isinstance(prog, (int, float)) else (1.0 if mapped in ("completed", "failed") else 0.5)
     return jsonify({"data": {"task_status": mapped, "task_progress": progress}})
 
-# ---------- Debug: quick sanity check for Dropbox on the server ----------
+# Debug to confirm Dropbox from server side quickly
 @ui_bp.get("/debug/dropbox")
 def debug_dropbox():
-    """GET /upload/debug/dropbox → validates token, ensures folder, and reports a quick listing count."""
     token, err = _dbx_access_token()
     if err:
         return jsonify({"ok": False, "stage": "token", "error": err}), 500
-
     ferr = _dbx_ensure_folder(token, DROPBOX_TARGET_FOLDER)
     if ferr:
         return jsonify({"ok": False, "stage": "ensure_folder", "error": ferr}), 500
-
-    # try listing minimal info (first page)
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     r = requests.post(
         "https://api.dropboxapi.com/2/files/list_folder",
         headers=headers,
-        json={"path": DROPBOX_TARGET_FOLDER, "limit": 10, "recursive": False},
+        json={"path": DROPBOX_TARGET_FOLDER, "limit": 5, "recursive": False},
         timeout=30,
     )
     if r.status_code != 200:
         return jsonify({"ok": False, "stage": "list_folder", "error": r.text}), 500
-    entries = r.json().get("entries", [])
-    return jsonify({"ok": True, "folder": DROPBOX_TARGET_FOLDER, "entries_seen": len(entries)})
+    return jsonify({"ok": True, "folder": DROPBOX_TARGET_FOLDER, "entries_seen": len(r.json().get("entries", []))})
