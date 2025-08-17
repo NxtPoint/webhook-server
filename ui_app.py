@@ -27,8 +27,7 @@ DBX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 # Target folder inside your Dropbox to store uploads (must exist or we’ll create)
 DROPBOX_TARGET_FOLDER = os.getenv("DROPBOX_TARGET_FOLDER", "/uploads")
 
-# Max size for direct uploads from browser to our server (MB).
-# Large files can still work, but your hosting proxy may cap body size.
+# Max size we’ll accept from the browser (MB) to avoid edge drops
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
 
 # ---------- Dropbox helpers ----------
@@ -119,7 +118,7 @@ def _dbx_upload_and_link(file_storage):
             "Content-Type": "application/octet-stream",
         },
         data=data,
-        timeout=1200,  # up to 20 minutes for big files
+        timeout=1200,  # up to 20 minutes for large files
     )
     if up.status_code != 200:
         return None, f"Dropbox upload error: {up.text}"
@@ -217,6 +216,8 @@ def upload_page():
         target_folder=DROPBOX_TARGET_FOLDER,
     )
 
+# Accept both /upload and /upload/ to avoid 308 redirects on POST
+@ui_bp.post("")
 @ui_bp.post("/")
 def upload_and_analyze():
     """Accept ONLY a local file, upload it into YOUR Dropbox, then send to SportAI."""
@@ -229,13 +230,17 @@ def upload_and_analyze():
     if not file or not file.filename:
         return jsonify({"error": "Please choose a .mp4/.mov file to upload."}), 400
 
-    # Client-side should limit size, but guard here too if Content-Length present
+    # Edge-safe size guard: if the host reports content length bigger than our limit, fail early.
     clen = request.content_length
     if clen and clen > MAX_UPLOAD_MB * 1024 * 1024:
         return jsonify({"error": f"File exceeds server limit of {MAX_UPLOAD_MB} MB."}), 413
 
     # Upload into YOUR Dropbox, then generate direct URL
-    link, err = _dbx_upload_and_link(file)
+    try:
+        link, err = _dbx_upload_and_link(file)
+    except Exception as e:
+        return jsonify({"error": f"Dropbox upload raised: {e}"}), 502
+
     if err:
         return jsonify({"error": err}), 502
 
@@ -265,3 +270,28 @@ def ui_task_status(task_id):
     mapped = "completed" if st in ("done", "completed") else ("failed" if st == "failed" else st or "queued")
     progress = float(prog) if isinstance(prog, (int, float)) else (1.0 if mapped in ("completed", "failed") else 0.5)
     return jsonify({"data": {"task_status": mapped, "task_progress": progress}})
+
+# ---------- Debug: quick sanity check for Dropbox on the server ----------
+@ui_bp.get("/debug/dropbox")
+def debug_dropbox():
+    """GET /upload/debug/dropbox → validates token, ensures folder, and reports a quick listing count."""
+    token, err = _dbx_access_token()
+    if err:
+        return jsonify({"ok": False, "stage": "token", "error": err}), 500
+
+    ferr = _dbx_ensure_folder(token, DROPBOX_TARGET_FOLDER)
+    if ferr:
+        return jsonify({"ok": False, "stage": "ensure_folder", "error": ferr}), 500
+
+    # try listing minimal info (first page)
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    r = requests.post(
+        "https://api.dropboxapi.com/2/files/list_folder",
+        headers=headers,
+        json={"path": DROPBOX_TARGET_FOLDER, "limit": 10, "recursive": False},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        return jsonify({"ok": False, "stage": "list_folder", "error": r.text}), 500
+    entries = r.json().get("entries", [])
+    return jsonify({"ok": True, "folder": DROPBOX_TARGET_FOLDER, "entries_seen": len(entries)})
