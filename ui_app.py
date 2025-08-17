@@ -462,3 +462,26 @@ def debug_ingest_log():
 def admin_panel():
     # Renders the admin helper page with buttons/links to ops endpoints
     return render_template("admin.html")
+
+@ui_bp.get("/debug/raw-payload/<session_uid>")
+def debug_raw_payload(session_uid):
+    """
+    Proxies the stored payload for a session and returns *only* the raw JSON payload.
+    Useful so /ops/ingest-file?url=... can ingest directly from this URL.
+    """
+    if not BASE_URL or not OPS_KEY:
+        return jsonify({"error": "server missing BASE_URL/OPS_KEY"}), 500
+    try:
+        r = requests.get(
+            f"{BASE_URL}/api/session/{session_uid}/payload",
+            params={"key": OPS_KEY},
+            timeout=60
+        )
+        j = r.json()
+        payload = j.get("payload")
+        if payload is None:
+            return jsonify({"error": "no payload found for that session_uid"}), 404
+        # return only the payload, not a wrapper
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
