@@ -40,17 +40,17 @@ def _log_ingest(event: dict):
 
 # ---------------- Dropbox helpers ----------------
 def _dbx_access_token():
+    """
+    Exchange refresh token for a short-lived Dropbox access token.
+    Uses HTTP Basic auth (recommended).
+    """
     if not (DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH_TOKEN):
         return None, "Dropbox credentials not configured (DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)"
     r = requests.post(
         "https://api.dropbox.com/oauth2/token",
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": DBX_REFRESH_TOKEN,
-            "client_id": DBX_APP_KEY,
-            "client_secret": DBX_APP_SECRET,
-        },
-        timeout=30,
+        data={"grant_type": "refresh_token", "refresh_token": DBX_REFRESH_TOKEN},
+        auth=(DBX_APP_KEY, DBX_APP_SECRET),
+        timeout=60,
     )
     if r.status_code != 200:
         return None, f"Dropbox token error: {r.text}"
@@ -68,35 +68,25 @@ def _dbx_ensure_folder(token: str, folder_path: str):
         return None
     return f"Dropbox create_folder error: {r.text}"
 
-def _dbx_create_or_get_shared_link(token: str, path: str):
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    sh = requests.post(
-        "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
-        headers=headers,
-        json={"path": path, "settings": {"requested_visibility": "public"}},
-        timeout=30,
+def _dbx_get_temporary_link(token: str, path: str):
+    """
+    Returns a fresh, fetchable URL (preferred for server-to-server access).
+    """
+    r = requests.post(
+        "https://api.dropboxapi.com/2/files/get_temporary_link",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"path": path},
+        timeout=60,
     )
-    if sh.status_code == 409:
-        ls = requests.post(
-            "https://api.dropboxapi.com/2/sharing/list_shared_links",
-            headers=headers,
-            json={"path": path, "direct_only": True},
-            timeout=30,
-        )
-        if ls.status_code != 200:
-            return None, f"Dropbox link fetch error: {ls.text}"
-        url = ls.json()["links"][0]["url"]
-    elif sh.status_code != 200:
-        return None, f"Dropbox link create error: {sh.text}"
-    else:
-        url = sh.json()["url"]
-
-    url = url.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace("?dl=0", "")
-    if "?raw=1" not in url:
-        url = url + ("&raw=1" if "?" in url else "?raw=1")
-    return url, None
+    if r.status_code != 200:
+        return None, f"Dropbox get_temporary_link error: {r.text}"
+    return r.json().get("link"), None  # e.g. https://dl.dropboxusercontent.com/...
 
 def _dbx_upload_and_link(file_storage):
+    """
+    Uploads the file to Dropbox and returns a *temporary* direct link.
+    This avoids cookie/expiry issues seen with shared links.
+    """
     token, err = _dbx_access_token()
     if err:
         return None, err
@@ -105,7 +95,7 @@ def _dbx_upload_and_link(file_storage):
         return None, ferr
 
     filename = secure_filename(file_storage.filename or f"upload_{int(time.time())}.mp4")
-    path = f"{DROPBOX_TARGET_FOLDER.rstrip('/')}/{filename}"
+    path = f"{DROPBOX_TARGET_FOLDER.rstrip('/')}/{int(time.time())}_{filename}"
     data = file_storage.read()
 
     up = requests.post(
@@ -123,7 +113,8 @@ def _dbx_upload_and_link(file_storage):
     if up.status_code != 200:
         return None, f"Dropbox upload error: {up.text}"
 
-    return _dbx_create_or_get_shared_link(token, path)
+    # Return a fresh temporary link (no need to add ?raw=1 etc.)
+    return _dbx_get_temporary_link(token, path)
 
 # ---------------- SportAI helpers ----------------
 def _sportai_headers():
@@ -176,6 +167,9 @@ def _sportai_submit(video_url, *, processing_windows=None, only_in_rally_data=Fa
         return None, f"parse error: {e}; body={r.text[:400]}"
 
 def _sportai_status(task_id):
+    """
+    Supports both old (status/progress) and new (task_status/task_progress) keys.
+    """
     headers, err = _sportai_headers()
     if err:
         return None, None, err
@@ -187,7 +181,9 @@ def _sportai_status(task_id):
     if r.status_code != 200:
         return None, None, f"status HTTP {r.status_code}: {r.text}"
     j = r.json().get("data", {})
-    return j.get("status"), j.get("progress"), None
+    status   = j.get("status") or j.get("task_status")
+    progress = j.get("progress") or j.get("task_progress")
+    return status, progress, None
 
 # ---------------- Download, webhook, and ingest ----------------
 def _post_to_ingester(local_path, forced_uid=None):
@@ -259,7 +255,7 @@ def _download_result_and_ingest(task_id, save_prefix):
         except Exception as e:
             _log_ingest({"stage": "webhook-exception", "error": str(e)})
 
-    # Post into your ingester (upload_app.py)
+    # Post into your ingester (upload_app.py) — keep rows unique per job
     _post_to_ingester(fn, forced_uid=task_id)
 
 def _poll_and_download(task_id, save_prefix):
@@ -300,6 +296,7 @@ def upload_and_analyze():
     if clen and clen > MAX_UPLOAD_MB * 1024 * 1024:
         return jsonify({"error": f"File exceeds server limit of {MAX_UPLOAD_MB} MB."}), 413
 
+    # Upload to Dropbox and get a FRESH temporary link (server-to-server friendly)
     try:
         link, err = _dbx_upload_and_link(file)
     except Exception as e:
@@ -307,6 +304,7 @@ def upload_and_analyze():
     if err:
         return jsonify({"error": err}), 502
 
+    # Optional: sanity check with SportAI
     ok, err = _sportai_check(link)
     if not ok:
         return jsonify({"error": err or "Video not accepted by SportAI"}), 400
