@@ -346,3 +346,67 @@ def run_init(engine):
         _ensure_unique_on_session_id(conn, "bounce_heatmap", "uq_bounce_heatmap_session")
         _ensure_unique_on_session_id(conn, "session_confidences", "uq_session_confidences_session")
         _ensure_unique_on_session_id(conn, "thumbnail", "uq_thumbnail_session")
+    with engine.begin() as conn:
+        # Ensure columns exist
+        conn.execute(text("""
+            ALTER TABLE raw_result
+            ADD COLUMN IF NOT EXISTS payload_json JSONB
+        """))
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='raw_result' AND column_name='created_at'
+                ) THEN
+                    ALTER TABLE raw_result ADD COLUMN created_at timestamptz DEFAULT now() NOT NULL;
+                END IF;
+            END $$;
+        """))
+
+        # If PK(session_id) exists, drop it and switch to surrogate key
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'raw_result_pkey'
+                    AND conrelid = 'raw_result'::regclass
+                ) THEN
+                    -- If PK is on session_id, drop it
+                    ALTER TABLE raw_result DROP CONSTRAINT raw_result_pkey;
+                END IF;
+            END $$;
+        """))
+
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='raw_result' AND column_name='raw_result_id'
+                ) THEN
+                    ALTER TABLE raw_result ADD COLUMN raw_result_id BIGSERIAL;
+                END IF;
+            END $$;
+        """))
+
+        # Make raw_result_id the PK if not already
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'raw_result_pkey'
+                    AND conrelid = 'raw_result'::regclass
+                ) THEN
+                    ALTER TABLE raw_result ADD CONSTRAINT raw_result_pkey PRIMARY KEY (raw_result_id);
+                END IF;
+            END $$;
+        """))
+
+        # Helpful index for latest-by-session lookups
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_raw_result_session_created
+                ON raw_result (session_id, created_at DESC);
+        """))
