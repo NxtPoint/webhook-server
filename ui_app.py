@@ -325,12 +325,40 @@ def upload_and_analyze():
 
 @ui_bp.get("/task_status/<task_id>")
 def ui_task_status(task_id):
+    """
+    Always 200 so the front-end doesn't throw; includes any upstream error
+    in the payload. Supports both old/new key names from SportAI.
+    """
     st, prog, err = _sportai_status(task_id)
     if err:
-        return jsonify({"error": err}), 502
+        # Return a friendly payload, not a 502
+        return jsonify({
+            "data": {
+                "task_id": task_id,
+                "task_status": "error",
+                "task_progress": 0.0
+            },
+            "error": err
+        })
     mapped = "completed" if st in ("done", "completed") else ("failed" if st == "failed" else st or "queued")
-    progress = float(prog) if isinstance(prog, (int, float)) else (1.0 if mapped in ("completed", "failed") else 0.5)
-    return jsonify({"data": {"task_status": mapped, "task_progress": progress}})
+    progress = float(prog) if isinstance(prog, (int, float)) else (1.0 if mapped in ("completed", "failed") else 0.0)
+    return jsonify({"data": {"task_id": task_id, "task_status": mapped, "task_progress": progress}})
+
+@ui_bp.get("/debug/sportai-status/<task_id>")
+def debug_sportai_status(task_id):
+    """
+    Raw passthrough of SportAI status for troubleshooting.
+    """
+    headers, err = _sportai_headers()
+    if err:
+        return jsonify({"http": 0, "error": err})
+    r = requests.get(f"https://api.sportai.com/api/statistics/{task_id}/status",
+                     headers=headers, timeout=30)
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text
+    return jsonify({"http": r.status_code, "body": body})
 
 # -------- Debug helpers -------
 @ui_bp.get("/debug/sportai-token")
