@@ -337,7 +337,7 @@ def upload_page():
         target_folder=DROPBOX_TARGET_FOLDER,
     )
 
-@ui_bp.post("/resume/<task_id>")
+@ui_bp.route("/resume/<task_id>", methods=["POST", "GET"])
 def resume_poll(task_id):
     """
     If a job is still running at SportAI but our background thread ended (e.g. after a deploy),
