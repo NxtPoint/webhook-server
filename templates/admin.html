@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NextPoint Admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{--bg:#0b1220;--card:#121a2b;--txt:#e6f0ff;--muted:#9bb0d3;--acc:#00ff80;--warn:#ffd166;--err:#ff6b6b}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.4 system-ui,Segoe UI,Roboto,Arial}
+  header{padding:16px 20px;border-bottom:1px solid #22314f;background:linear-gradient(180deg,#111b2e,#0d1627)}
+  h1{margin:0;font-size:18px} .wrap{max-width:1100px;margin:0 auto;padding:18px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid #243453;border-radius:14px;padding:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+  .card h3{margin:0 0 10px;font-size:16px;color:#cfe2ff}
+  .row{display:flex;gap:8px;align-items:center;margin:8px 0}
+  input,textarea,button{border-radius:10px;border:1px solid #2c3f63;background:#0f182a;color:var(--txt)}
+  input,button{height:38px} input,textarea{padding:8px 10px;width:100%}
+  textarea{min-height:100px;resize:vertical}
+  button{background:var(--acc);border:none;color:#041015;font-weight:600;padding:0 14px;cursor:pointer}
+  button.secondary{background:#2a3a5c;color:var(--txt);border:1px solid #334a77}
+  button.danger{background:var(--err);color:#141414}
+  .hint{color:var(--muted);font-size:12px}
+  pre{white-space:pre-wrap;background:#0b1323;border:1px solid #22314f;border-radius:10px;padding:10px;max-height:320px;overflow:auto}
+  .ok{color:#7cf29a}.warn{color:var(--warn)}.err{color:var(--err)}
+  .tag{display:inline-block;padding:2px 8px;border:1px solid #334a77;border-radius:999px;background:#0f182a;color:#cfe2ff;font-size:12px;margin-left:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>NextPoint Admin
+    <span class="tag">ENV: production</span>
+  </h1>
+  <div class="hint">Private tools to manage DB, views, and ingest. Keep this page private—OPS key is embedded.</div>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <!-- CONFIG -->
+    <div class="card">
+      <h3>Configuration</h3>
+      <div class="row"><label>Base URL</label></div>
+      <input id="base" value="https://api.nextpointtennis.com">
+      <div class="row"><label>OPS KEY</label></div>
+      <input id="ops" value="270fb80a747d459eafded0ae67b9b8f6">
+      <div class="hint">If you rotate the key in Render, update it here too.</div>
+    </div>
+
+    <!-- DB + VIEWS -->
+    <div class="card">
+      <h3>DB & Views</h3>
+      <div class="row">
+        <button onclick="hit('/ops/init-db')">Init DB</button>
+        <button onclick="hit('/ops/init-views')">Init Views</button>
+        <button class="secondary" onclick="hit('/ops/db-counts')">DB Counts</button>
+      </div>
+      <pre id="dbout">Result will appear here…</pre>
+    </div>
+
+    <!-- SQL RUNNER -->
+    <div class="card" style="grid-column: span 2;">
+      <h3>Read-only SQL</h3>
+      <textarea id="sql">select * from vw_session_summary limit 5;</textarea>
+      <div class="row">
+        <button onclick="runSQL()">Run</button>
+        <div class="hint">Only SELECT/CTEs allowed, auto LIMIT 200 applied.</div>
+      </div>
+      <pre id="sqlout">Rows will appear here…</pre>
+    </div>
+
+    <!-- SESSIONS -->
+    <div class="card">
+      <h3>Sessions</h3>
+      <div class="row"><button class="secondary" onclick="hit('/ops/list-sessions')">List Sessions</button></div>
+      <div class="row">
+        <input id="session_uid" placeholder="session_uid">
+      </div>
+      <div class="row">
+        <button onclick="reconcile()">Reconcile</button>
+        <button class="danger" onclick="deleteSession()">Delete</button>
+      </div>
+      <pre id="sessout">Session tools output…</pre>
+    </div>
+
+    <!-- UPLOAD / TASKS -->
+    <div class="card">
+      <h3>Upload & Tasks</h3>
+      <div class="row">
+        <a class="secondary" href="/upload" target="_blank"><button class="secondary">Open Upload Page</button></a>
+      </div>
+      <div class="row">
+        <input id="task_id" placeholder="SportAI task_id (uuid)">
+      </div>
+      <div class="row">
+        <button onclick="taskStatus()">Check Task Status</button>
+        <button class="secondary" onclick="ingestLog()">Ingest Log</button>
+      </div>
+      <pre id="taskout">Task & ingest output…</pre>
+    </div>
+
+    <!-- MANUAL JSON INGEST -->
+    <div class="card" style="grid-column: span 2;">
+      <h3>Manual JSON Ingest</h3>
+      <div class="row">
+        <input type="file" id="jsonfile" accept=".json">
+        <button onclick="manualIngest()">Ingest JSON</button>
+      </div>
+      <div class="hint">Use only if the auto-ingest missed a file. This posts to /ops/ingest-file?replace=1</div>
+      <pre id="ingestout">Manual ingest output…</pre>
+    </div>
+  </div>
+</div>
+
+<script>
+  const out = (id, data) => {
+    const el = document.getElementById(id);
+    try { el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2); }
+    catch(e){ el.textContent = String(data); }
+  };
+  const base = () => document.getElementById('base').value.trim().replace(/\/+$/,'');
+  const key  = () => document.getElementById('ops').value.trim();
+
+  async function hit(path){
+    const url = `${base()}${path}?key=${encodeURIComponent(key())}`;
+    try{
+      const r = await fetch(url);
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('dbout', j);
+    }catch(e){ out('dbout', {error:String(e)}) }
+  }
+
+  async function runSQL(){
+    const q = document.getElementById('sql').value;
+    const url = `${base()}/ops/sql?key=${encodeURIComponent(key())}&q=${encodeURIComponent(q)}`;
+    try{
+      const r = await fetch(url);
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('sqlout', j);
+    }catch(e){ out('sqlout', {error:String(e)}) }
+  }
+
+  async function reconcile(){
+    const uid = document.getElementById('session_uid').value.trim();
+    if(!uid){ out('sessout', {error:'enter session_uid'}); return; }
+    const url = `${base()}/ops/reconcile?key=${encodeURIComponent(key())}&session_uid=${encodeURIComponent(uid)}`;
+    try{
+      const r = await fetch(url);
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('sessout', j);
+    }catch(e){ out('sessout', {error:String(e)}) }
+  }
+
+  async function deleteSession(){
+    const uid = document.getElementById('session_uid').value.trim();
+    if(!uid){ out('sessout', {error:'enter session_uid'}); return; }
+    if(!confirm(`Delete session ${uid}?`)) return;
+    const url = `${base()}/ops/delete-session?key=${encodeURIComponent(key())}&session_uid=${encodeURIComponent(uid)}`;
+    try{
+      const r = await fetch(url);
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('sessout', j);
+    }catch(e){ out('sessout', {error:String(e)}) }
+  }
+
+  async function taskStatus(){
+    const tid = document.getElementById('task_id').value.trim();
+    if(!tid){ out('taskout', {error:'enter task_id'}); return; }
+    const url = `${base()}/upload/task_status/${encodeURIComponent(tid)}`;
+    try{
+      const r = await fetch(url);
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('taskout', j);
+    }catch(e){ out('taskout', {error:String(e)}) }
+  }
+
+  async function ingestLog(){
+    const url = `${base()}/upload/debug/ingest-log`;
+    try{
+      const r = await fetch(url);
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('taskout', j);
+    }catch(e){ out('taskout', {error:String(e)}) }
+  }
+
+  async function manualIngest(){
+    const f = document.getElementById('jsonfile').files[0];
+    if(!f){ out('ingestout', {error:'choose a .json file'}); return; }
+    const url = `${base()}/ops/ingest-file?key=${encodeURIComponent(key())}&replace=1`;
+    const form = new FormData();
+    form.append('file', f, f.name);
+    try{
+      const r = await fetch(url, {method:'POST', body:form});
+      const j = await r.json().catch(()=>({text: await r.text()}));
+      out('ingestout', j);
+    }catch(e){ out('ingestout', {error:String(e)}) }
+  }
+</script>
+</body>
+</html>

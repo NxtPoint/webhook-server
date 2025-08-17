@@ -1,40 +1,45 @@
 # ui_app.py
-import os, time, json, requests
+import os, time, json, requests, threading, collections
 from threading import Thread
 from flask import Blueprint, request, render_template, jsonify
 from werkzeug.utils import secure_filename
 
-# ---------- Blueprint ----------
 ui_bp = Blueprint(
     "ui",
     __name__,
-    static_folder="static",      # serves /upload/static/...
-    template_folder="templates"  # uses templates/upload.html
+    static_folder="static",
+    template_folder="templates"
 )
 
-# ---------- Config (env) ----------
+# ---------------- Config ----------------
 BASE_URL = os.getenv("BASE_URL", "https://api.nextpointtennis.com")
 OPS_KEY  = os.getenv("OPS_KEY", "")
 
-# SportAI token MUST come from environment (Render)
 def _get_sportai_token():
     tok = os.getenv("SPORT_AI_TOKEN") or os.getenv("SPORTAI_TOKEN")
     return tok.strip() if tok else None
 
-# Dropbox OAuth for YOUR Dropbox account (server will upload files here)
 DBX_APP_KEY       = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET    = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN", "")
-
-# Default to your original folder name
 DROPBOX_TARGET_FOLDER = os.getenv("DROPBOX_TARGET_FOLDER", "/wix-uploads")
 
-# Max size we’ll accept from the browser (MB) to avoid edge drops
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
 
-# ---------- Dropbox helpers ----------
+# Optional: also ship the JSON to your webhook
+RESULT_WEBHOOK_URL = os.getenv("RESULT_WEBHOOK_URL")
+
+# In-memory ingest log (for quick debugging in UI)
+_INGEST_LOG = collections.deque(maxlen=50)
+_INGEST_LOCK = threading.Lock()
+
+def _log_ingest(event: dict):
+    with _INGEST_LOCK:
+        event["ts"] = int(time.time())
+        _INGEST_LOG.appendleft(event)
+
+# ---------------- Dropbox helpers ----------------
 def _dbx_access_token():
-    """Refresh app access token for YOUR Dropbox account."""
     if not (DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH_TOKEN):
         return None, "Dropbox credentials not configured (DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)"
     r = requests.post(
@@ -52,7 +57,6 @@ def _dbx_access_token():
     return r.json().get("access_token"), None
 
 def _dbx_ensure_folder(token: str, folder_path: str):
-    """Create folder if missing (idempotent)."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     r = requests.post(
         "https://api.dropboxapi.com/2/files/create_folder_v2",
@@ -61,11 +65,10 @@ def _dbx_ensure_folder(token: str, folder_path: str):
         timeout=30,
     )
     if r.status_code in (200, 409):
-        return None  # ok (already exists or created)
+        return None
     return f"Dropbox create_folder error: {r.text}"
 
 def _dbx_create_or_get_shared_link(token: str, path: str):
-    """Create or fetch a shared link for an internal path; normalize to direct bytes."""
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     sh = requests.post(
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
@@ -88,22 +91,15 @@ def _dbx_create_or_get_shared_link(token: str, path: str):
     else:
         url = sh.json()["url"]
 
-    # normalize to direct bytes (dl + raw=1)
     url = url.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace("?dl=0", "")
     if "?raw=1" not in url:
         url = url + ("&raw=1" if "?" in url else "?raw=1")
     return url, None
 
 def _dbx_upload_and_link(file_storage):
-    """
-    Upload the received file to YOUR Dropbox under DROPBOX_TARGET_FOLDER/<filename>,
-    then return a direct-download URL for SportAI.
-    """
     token, err = _dbx_access_token()
     if err:
         return None, err
-
-    # ensure folder exists
     ferr = _dbx_ensure_folder(token, DROPBOX_TARGET_FOLDER)
     if ferr:
         return None, ferr
@@ -112,28 +108,24 @@ def _dbx_upload_and_link(file_storage):
     path = f"{DROPBOX_TARGET_FOLDER.rstrip('/')}/{filename}"
     data = file_storage.read()
 
-    # Prior working behavior: add + autorename + not muted
     up = requests.post(
         "https://content.dropboxapi.com/2/files/upload",
         headers={
             "Authorization": f"Bearer {token}",
             "Dropbox-API-Arg": json.dumps({
-                "path": path,
-                "mode": "add",
-                "autorename": True,
-                "mute": False
+                "path": path, "mode": "add", "autorename": True, "mute": False
             }),
             "Content-Type": "application/octet-stream",
         },
         data=data,
-        timeout=1200,  # up to 20 minutes for large files
+        timeout=1200,
     )
     if up.status_code != 200:
         return None, f"Dropbox upload error: {up.text}"
 
     return _dbx_create_or_get_shared_link(token, path)
 
-# ---------- SportAI helpers (aligned with docs) ----------
+# ---------------- SportAI helpers ----------------
 def _sportai_headers():
     token = _get_sportai_token()
     if not token:
@@ -159,15 +151,10 @@ def _sportai_check(video_url):
         return False, f"video check parse error: {e}"
 
 def _sportai_submit(video_url, *, processing_windows=None, only_in_rally_data=False, version=None):
-    """
-    Submit per docs:
-      POST https://api.sportai.com/api/statistics/tennis
-    """
     headers, err = _sportai_headers()
     if err:
         return None, err
-
-    ver = version or os.getenv("SPORTAI_VERSION") or "latest"  # docs default
+    ver = version or os.getenv("SPORTAI_VERSION") or "latest"
     payload = {
         "video_url": video_url,
         "only_in_rally_data": bool(only_in_rally_data),
@@ -175,7 +162,6 @@ def _sportai_submit(video_url, *, processing_windows=None, only_in_rally_data=Fa
     }
     if processing_windows:
         payload["processing_windows"] = processing_windows
-
     r = requests.post(
         "https://api.sportai.com/api/statistics/tennis",
         json=payload,
@@ -203,22 +189,55 @@ def _sportai_status(task_id):
     j = r.json().get("data", {})
     return j.get("status"), j.get("progress"), None
 
+# ---------------- Download, webhook, and ingest ----------------
+def _post_to_ingester(local_path):
+    if not OPS_KEY or not BASE_URL:
+        _log_ingest({"stage": "ingest-skip", "reason": "missing OPS_KEY or BASE_URL"})
+        return
+    try:
+        with open(local_path, "rb") as fh:
+            files = {"file": (os.path.basename(local_path), fh, "application/json")}
+            resp = requests.post(
+                f"{BASE_URL}/ops/ingest-file",
+                params={"key": OPS_KEY, "replace": "1"},
+                files=files,
+                timeout=300,
+            )
+        ok = False
+        detail = None
+        try:
+            body = resp.json()
+            ok = body.get("ok") is True
+            detail = body
+        except Exception:
+            detail = resp.text
+        _log_ingest({"stage": "ingest-post", "http": resp.status_code, "ok": ok, "detail": detail})
+    except Exception as e:
+        _log_ingest({"stage": "ingest-exception", "error": str(e)})
+
 def _download_result_and_ingest(task_id, save_prefix):
     headers, err = _sportai_headers()
     if err:
+        _log_ingest({"stage": "token-missing", "error": err})
         return
+
     meta = requests.get(
         f"https://api.sportai.com/api/statistics/{task_id}",
         headers=headers,
         timeout=60,
     )
     if meta.status_code != 200:
+        _log_ingest({"stage": "meta", "http": meta.status_code, "body": meta.text[:300]})
         return
+
     result_url = meta.json().get("data", {}).get("result_url")
     if not result_url:
+        _log_ingest({"stage": "no-result-url"})
         return
+
     res = requests.get(result_url, timeout=300)
     if res.status_code != 200:
+        _log_ingest({"stage": "download", "http": res.status_code, "body": res.text[:300]})
         return
 
     os.makedirs("data", exist_ok=True)
@@ -226,31 +245,32 @@ def _download_result_and_ingest(task_id, save_prefix):
     with open(fn, "w", encoding="utf-8") as f:
         f.write(res.text)
 
-    # Auto-ingest into your DB via existing backend
-    if OPS_KEY:
+    _log_ingest({"stage": "saved", "file": fn, "bytes": len(res.content)})
+
+    # Optional webhook push
+    if RESULT_WEBHOOK_URL:
         try:
-            with open(fn, "rb") as fh:
-                files = {"file": (os.path.basename(fn), fh, "application/json")}
-                requests.post(
-                    f"{BASE_URL}/ops/ingest-file",
-                    params={"key": OPS_KEY, "replace": "1"},
-                    files=files,
-                    timeout=300,
-                )
-        except Exception:
-            pass
+            w = requests.post(RESULT_WEBHOOK_URL, data=res.text, headers={"Content-Type": "application/json"}, timeout=30)
+            _log_ingest({"stage": "webhook", "http": w.status_code})
+        except Exception as e:
+            _log_ingest({"stage": "webhook-exception", "error": str(e)})
+
+    # Post into your ingester (upload_app.py)
+    _post_to_ingester(fn)
 
 def _poll_and_download(task_id, save_prefix):
     for _ in range(120):  # ~10 minutes
         st, prog, err = _sportai_status(task_id)
         if st in ("done", "completed"):
+            _log_ingest({"stage": "completed", "task_id": task_id})
             _download_result_and_ingest(task_id, save_prefix)
             break
         if st == "failed":
+            _log_ingest({"stage": "failed", "task_id": task_id})
             break
         time.sleep(5)
 
-# ---------- Routes ----------
+# ---------------- Routes ----------------
 @ui_bp.get("/")
 def upload_page():
     return render_template(
@@ -261,26 +281,21 @@ def upload_page():
         target_folder=DROPBOX_TARGET_FOLDER,
     )
 
-# Accept both /upload and /upload/ to avoid POST redirect issues
 @ui_bp.post("")
 @ui_bp.post("/")
 def upload_and_analyze():
-    """Accept ONLY a local file, upload it into YOUR Dropbox, then send to SportAI."""
     if not _get_sportai_token():
         return jsonify({"error": "SPORT_AI_TOKEN not configured on server"}), 500
 
     email = (request.form.get("email") or "").strip().replace("@", "_at_")
     file = request.files.get("video")
-
     if not file or not file.filename:
         return jsonify({"error": "Please choose a .mp4/.mov file to upload."}), 400
 
-    # Edge-safe size guard: if the host reports content length bigger than our limit, fail early.
     clen = request.content_length
     if clen and clen > MAX_UPLOAD_MB * 1024 * 1024:
         return jsonify({"error": f"File exceeds server limit of {MAX_UPLOAD_MB} MB."}), 413
 
-    # Upload into YOUR Dropbox, then generate direct URL
     try:
         link, err = _dbx_upload_and_link(file)
     except Exception as e:
@@ -292,7 +307,6 @@ def upload_and_analyze():
     if not ok:
         return jsonify({"error": err or "Video not accepted by SportAI"}), 400
 
-    # Submit using sport-specific endpoint per docs
     task_id, err = _sportai_submit(link, version="latest", only_in_rally_data=False)
     if not task_id:
         return jsonify({"error": err or "Submit to SportAI failed"}), 502
@@ -316,24 +330,20 @@ def ui_task_status(task_id):
     progress = float(prog) if isinstance(prog, (int, float)) else (1.0 if mapped in ("completed", "failed") else 0.5)
     return jsonify({"data": {"task_status": mapped, "task_progress": progress}})
 
-# ---------- Debug (safe: does NOT reveal secrets) ----------
+# -------- Debug helpers -------
 @ui_bp.get("/debug/sportai-token")
 def debug_sportai_token():
-    present = bool(_get_sportai_token())
-    return jsonify({"present": present})
+    return jsonify({"present": bool(_get_sportai_token())})
 
 @ui_bp.get("/debug/dropbox")
 def debug_dropbox():
-    """GET /upload/debug/dropbox → validates token, ensures folder, and reports a quick listing count."""
-    token, err = _dbx_access_token()
+    tok, err = _dbx_access_token()
     if err:
         return jsonify({"ok": False, "stage": "token", "error": err}), 500
-
-    ferr = _dbx_ensure_folder(token, DROPBOX_TARGET_FOLDER)
+    ferr = _dbx_ensure_folder(tok, DROPBOX_TARGET_FOLDER)
     if ferr:
         return jsonify({"ok": False, "stage": "ensure_folder", "error": ferr}), 500
-
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
     r = requests.post(
         "https://api.dropboxapi.com/2/files/list_folder",
         headers=headers,
@@ -342,5 +352,14 @@ def debug_dropbox():
     )
     if r.status_code != 200:
         return jsonify({"ok": False, "stage": "list_folder", "error": r.text}), 500
-    entries = r.json().get("entries", [])
-    return jsonify({"ok": True, "folder": DROPBOX_TARGET_FOLDER, "entries_seen": len(entries)})
+    return jsonify({"ok": True, "folder": DROPBOX_TARGET_FOLDER, "entries_seen": len(r.json().get("entries", []))})
+
+@ui_bp.get("/debug/ingest-log")
+def debug_ingest_log():
+    with _INGEST_LOCK:
+        return jsonify(list(_INGEST_LOG))
+
+@ui_bp.get("/admin")
+def admin_panel():
+    # Renders the admin helper page with buttons/links to ops endpoints
+    return render_template("admin.html")
