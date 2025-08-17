@@ -7,6 +7,8 @@ from sqlalchemy.exc import IntegrityError
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OPS_KEY = os.environ.get("OPS_KEY")
+STRICT_REINGEST = os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1","true","yes","y")
+
 if not DATABASE_URL: raise RuntimeError("DATABASE_URL required")
 if not OPS_KEY: raise RuntimeError("OPS_KEY required")
 
@@ -100,12 +102,11 @@ def init_views(engine):
 def _quantize_time_to_fps(s, fps):
     if s is None or not fps:
         return s
-    # nearest frame, then stable representation
     return round(round(float(s) * float(fps)) / float(fps), 5)
 
 _INVALID_PUIDS = {"", "0", "none", "null", "nan"}
 def _valid_puid(p):
-    if p is None: 
+    if p is None:
         return False
     s = str(p).strip().lower()
     return s not in _INVALID_PUIDS
@@ -274,7 +275,6 @@ def _gather_all_swings(payload):
 
 # ---------------------- ingest ----------------------
 def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
-    # Quantize times for stable storage
     q_start = _quantize_time(s.get("start_s"), fps)
     q_end   = _quantize_time(s.get("end_s"), fps)
     q_hit   = _quantize_time(s.get("ball_hit_s"), fps)
@@ -505,7 +505,6 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
     seen = set()  # ('suid', <str>) or ('fb', pid, start_s, end_s)
     def _seen_key(pid, norm, fps):
         if norm.get("suid"): return ("suid", str(norm["suid"]))
-        # dedupe on quantized times to avoid float jitter
         return ("fb", pid,
                 _quantize_time(norm.get("start_s"), fps),
                 _quantize_time(norm.get("end_s"), fps))
@@ -536,12 +535,11 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         try:
             _insert_swing(conn, session_id, pid, s, base_dt, fps)
         except IntegrityError:
-            # ignore duplicates if legacy unique indexes exist
             pass
 
     return {"session_uid": session_uid}
 
-# ---------------------- endpoints ----------------------
+# ---------------------- OPS ENDPOINTS ----------------------
 @app.get("/")
 def root():
     return jsonify({"service": "NextPoint Upload/Ingester v3", "status": "ok"})
@@ -595,7 +593,7 @@ def ops_db_counts():
 
 @app.get("/ops/sql")
 def ops_sql():
-    if not _guard(): 
+    if not _guard():
         return _forbid()
     q = request.args.get("q", "").strip()
     ql = q.lstrip().lower()
@@ -604,44 +602,29 @@ def ops_sql():
     if not (ql.startswith("select") or ql.startswith("with")):
         return Response("Only SELECT/CTE queries are allowed", status=400)
 
-    # simple single-statement guard (no chaining multiple statements)
     stripped = q.strip()
     if ";" in stripped[:-1]:  # allow a single trailing semicolon only
         return Response("Only a single statement is allowed", status=400)
 
-    # enforce a default LIMIT when not present
     if " limit " not in ql:
         q = f"{stripped.rstrip(';')} LIMIT 200"
 
-    # run read-only with a short timeout
     with engine.begin() as conn:
-        conn.execute(text("SET LOCAL statement_timeout = 5000"))           # 5s
-        conn.execute(text("SET LOCAL TRANSACTION READ ONLY"))              # cannot write, even via WITH
+        conn.execute(text("SET LOCAL statement_timeout = 5000"))
+        conn.execute(text("SET LOCAL TRANSACTION READ ONLY"))
         rows = conn.execute(text(q)).mappings().all()
         data = [dict(r) for r in rows]
     return jsonify({"ok": True, "rows": len(data), "data": data})
 
 @app.get("/ops/reconcile")
 def ops_reconcile():
-    """
-    Reconciles DB vs. payload for a session.
-    Sources:
-      - If ?name= / ?url= / multipart 'file' / raw body provided -> use that payload.
-      - Else require ?session_uid=... and load the latest raw_result snapshot for it.
-    Returns:
-      - headline counts (payload vs DB)
-      - swing key diffs (missing/extra samples)
-      - player set diffs
-      - player-position per-player mismatches (sample)
-    """
-    if not _guard(): 
+    if not _guard():
         return _forbid()
 
     forced_uid = request.args.get("session_uid")
     src_hint = request.args.get("name") or request.args.get("url")
 
     try:
-        # 1) choose payload (explicit input beats stored snapshot)
         payload = None
         try:
             if src_hint or "file" in request.files or request.data:
@@ -665,16 +648,13 @@ def ops_reconcile():
                 if payload is None:
                     return jsonify({"ok": False, "error": f"No raw_result snapshot found for session_uid '{forced_uid}'"}), 404
 
-            # derive canonical session_uid (matches ingest logic)
             session_uid = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
 
-            # ensure session exists + read fps
             row = conn.execute(text("SELECT session_id, fps FROM dim_session WHERE session_uid=:u"), {"u": session_uid}).mappings().first()
             if not row:
                 return jsonify({"ok": False, "error": f"Session not found in DB: {session_uid}"}), 404
             sid, fps = row["session_id"], row["fps"]
 
-            # 2) payload counts & sets
             payload_players = set()
             for p in (payload.get("players") or []):
                 for k in ("id","sportai_player_uid","uid","player_id"):
@@ -682,7 +662,6 @@ def ops_reconcile():
                         payload_players.add(str(p[k]))
                         break
 
-            # player_positions payload counts per player (and add to players set)
             pp_payload = {}
             pp = payload.get("player_positions") or {}
             for puid, arr in pp.items():
@@ -695,14 +674,12 @@ def ops_reconcile():
             payload_bounces        = len(payload.get("ball_bounces") or [])
             payload_ball_positions = len(payload.get("ball_positions") or [])
 
-            # build DB player map
             rows = conn.execute(text("""
                 SELECT player_id, sportai_player_uid 
                 FROM dim_player WHERE session_id=:sid
             """), {"sid": sid}).mappings().all()
             uid_to_pid = {str(r["sportai_player_uid"]): r["player_id"] for r in rows}
 
-            # payload swing keys (quantized)
             payload_swing_keys = set()
             for norm in _gather_all_swings(payload):
                 puid = str(norm.get("player_uid") or "")
@@ -715,7 +692,6 @@ def ops_reconcile():
                          _quantize_time(norm.get("end_s"), fps))
                 payload_swing_keys.add(k)
 
-            # 3) DB counts & sets
             db_rallies = conn.execute(text("SELECT COUNT(*) FROM dim_rally WHERE session_id=:sid"), {"sid": sid}).scalar_one()
             db_bounces = conn.execute(text("SELECT COUNT(*) FROM fact_bounce WHERE session_id=:sid"), {"sid": sid}).scalar_one()
             db_ball_positions = conn.execute(text("SELECT COUNT(*) FROM fact_ball_position WHERE session_id=:sid"), {"sid": sid}).scalar_one()
@@ -725,7 +701,6 @@ def ops_reconcile():
                 SELECT sportai_player_uid FROM dim_player WHERE session_id=:sid
             """), {"sid": sid}).scalars().all())
 
-            # player_positions DB counts per player
             pp_rows = conn.execute(text("""
                 SELECT dp.sportai_player_uid AS puid, COUNT(*) AS cnt
                 FROM fact_player_position f
@@ -735,7 +710,6 @@ def ops_reconcile():
             """), {"sid": sid}).mappings().all()
             pp_db = {str(r["puid"]): int(r["cnt"]) for r in pp_rows}
 
-            # DB swing keys (quantized)
             db_rows = conn.execute(text("""
                 SELECT player_id, sportai_swing_uid, start_s, end_s
                 FROM fact_swing WHERE session_id=:sid
@@ -749,14 +723,12 @@ def ops_reconcile():
                                        _quantize_time(r["start_s"], fps),
                                        _quantize_time(r["end_s"], fps)))
 
-            # 4) diffs
             players_missing_in_db = sorted(list(payload_players - db_players))[:20]
             players_extra_in_db   = sorted(list(db_players - payload_players))[:20]
 
             swings_missing_in_db = sorted(list(payload_swing_keys - db_swing_keys))[:50]
             swings_extra_in_db   = sorted(list(db_swing_keys - payload_swing_keys))[:50]
 
-            # per-player position mismatches sample
             all_puids = set(pp_payload.keys()) | set(pp_db.keys())
             pos_mismatch_sample = []
             for pu in sorted(all_puids):
@@ -810,6 +782,23 @@ def ops_ingest_file():
     src_hint = request.args.get("name") or request.args.get("url")
     try:
         payload = _get_json_from_sources()
+
+        # --- STRICT_REINGEST guard (require replace=1 for existing sessions) ---
+        try:
+            session_uid_guess = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
+        except Exception:
+            session_uid_guess = forced_uid
+        if STRICT_REINGEST:
+            with engine.connect() as c:
+                sid = c.execute(text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
+                                {"u": session_uid_guess}).scalar()
+            if sid is not None and not replace:
+                return jsonify({
+                    "ok": False,
+                    "error": f"Session '{session_uid_guess}' already exists; re-ingest with &replace=1 to overwrite"
+                }), 400
+        # ----------------------------------------------------------------------
+
         init_db(engine)  # ensure migrations/ensures ran
         with engine.begin() as conn:
             res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=src_hint)
@@ -827,13 +816,9 @@ def ops_delete_session():
         conn.execute(text("DELETE FROM dim_session WHERE session_uid = :u"), {"u": uid})
     return jsonify({"ok": True, "deleted_session_uid": uid})
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT","8000")))
-
 @app.get("/ops/list-sessions")
 def ops_list_sessions():
-    if request.args.get("key") != OPS_KEY:
-        return Response("Forbidden", status=403)
+    if not _guard(): return _forbid()
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT s.session_uid,
@@ -851,3 +836,207 @@ def ops_list_sessions():
         """)).mappings().all()
         data = [dict(r) for r in rows]
     return jsonify({"ok": True, "rows": len(data), "data": data})
+
+# ---------------------- DASHBOARD API (read-only) ----------------------
+def _get_session_row(conn, session_uid):
+    return conn.execute(text("SELECT session_id, fps, session_date FROM dim_session WHERE session_uid=:u"),
+                        {"u": session_uid}).mappings().first()
+
+def _front_back_labels(conn, session_id):
+    labels = {}
+    rows = conn.execute(text("SELECT data FROM team_session WHERE session_id=:sid"), {"sid": session_id}).scalars().all()
+    fronts, backs = set(), set()
+    for d in rows:
+        try:
+            obj = d if isinstance(d, dict) else json.loads(d)
+            for u in obj.get("team_front") or []:
+                fronts.add(str(u))
+            for u in obj.get("team_back") or []:
+                backs.add(str(u))
+        except Exception:
+            pass
+    for u in fronts:
+        labels[str(u)] = "front"
+    for u in backs:
+        labels[str(u)] = "back"
+    return labels
+
+@app.get("/api/session/<session_uid>/summary")
+def api_session_summary(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid, fps, sdt = srow["session_id"], srow["fps"], srow["session_date"]
+
+        labels = _front_back_labels(conn, sid)
+
+        counts = conn.execute(text("""
+            SELECT
+              (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=:sid) AS players,
+              (SELECT COUNT(*) FROM dim_rally dr WHERE dr.session_id=:sid) AS rallies,
+              (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=:sid) AS swings,
+              (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=:sid) AS ball_bounces,
+              (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=:sid) AS ball_positions,
+              (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=:sid) AS player_positions,
+              (SELECT COUNT(*) FROM highlight h WHERE h.session_id=:sid) AS highlights
+        """), {"sid": sid}).mappings().first()
+
+        players = conn.execute(text("""
+            SELECT sportai_player_uid AS uid, full_name, handedness
+            FROM dim_player WHERE session_id=:sid
+            ORDER BY uid
+        """), {"sid": sid}).mappings().all()
+        plist = []
+        for r in players:
+            uid = str(r["uid"])
+            display = f"{uid} ({labels.get(uid)})" if labels.get(uid) else uid
+            plist.append({
+                "uid": uid,
+                "display": display,
+                "full_name": r["full_name"],
+                "handedness": r["handedness"],
+            })
+
+        return jsonify({
+            "ok": True,
+            "session_uid": session_uid,
+            "fps": fps,
+            "session_date": str(sdt) if sdt else None,
+            "counts": counts,
+            "players": plist
+        })
+
+@app.get("/api/session/<session_uid>/swings")
+def api_session_swings(session_uid):
+    if not _guard(): return _forbid()
+    limit = max(1, min(int(request.args.get("limit", 200)), 1000))
+    offset = max(0, int(request.args.get("offset", 0)))
+    order = request.args.get("order", "ball_hit_s asc").strip().lower()
+    allowed_order = {"ball_hit_s asc","ball_hit_s desc","start_s asc","start_s desc"}
+    if order not in allowed_order:
+        order = "ball_hit_s asc"
+    player_uid_filter = request.args.get("player_uid")
+    side = request.args.get("side")  # "front" / "back"
+
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        labels = _front_back_labels(conn, sid)
+
+        base_sql = """
+            SELECT fs.start_s, fs.end_s, fs.ball_hit_s, fs.ball_hit_x, fs.ball_hit_y,
+                   fs.serve, fs.serve_type, dp.sportai_player_uid AS player_uid
+            FROM fact_swing fs
+            LEFT JOIN dim_player dp ON dp.player_id = fs.player_id
+            WHERE fs.session_id=:sid
+        """
+        params = {"sid": sid}
+
+        if player_uid_filter:
+            base_sql += " AND dp.sportai_player_uid=:puid"
+            params["puid"] = player_uid_filter
+
+        rows = conn.execute(text(base_sql + f" ORDER BY {order} LIMIT :lim OFFSET :off"),
+                            {**params, "lim": limit, "off": offset}).mappings().all()
+
+        data = []
+        for r in rows:
+            uid = r["player_uid"]
+            display = f"{uid} ({labels.get(uid)})" if uid and labels.get(uid) else uid
+            if side and labels.get(uid) != side:
+                continue
+            data.append({
+                "player_uid": uid,
+                "player_display": display,
+                "start_s": r["start_s"],
+                "end_s": r["end_s"],
+                "ball_hit_s": r["ball_hit_s"],
+                "ball_hit_x": r["ball_hit_x"],
+                "ball_hit_y": r["ball_hit_y"],
+                "serve": r["serve"],
+                "serve_type": r["serve_type"],
+            })
+        return jsonify({"ok": True, "rows": len(data), "data": data})
+
+@app.get("/api/session/<session_uid>/rallies")
+def api_session_rallies(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        rows = conn.execute(text("""
+            SELECT r.rally_number, r.start_s, r.end_s,
+                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=r.session_id AND b.rally_id=r.rally_id) AS bounces
+            FROM dim_rally r
+            WHERE r.session_id=:sid
+            ORDER BY r.rally_number
+        """), {"sid": sid}).mappings().all()
+        return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
+
+@app.get("/api/session/<session_uid>/players")
+def api_session_players(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        labels = _front_back_labels(conn, sid)
+        rows = conn.execute(text("""
+            SELECT sportai_player_uid AS uid, full_name, handedness
+            FROM dim_player WHERE session_id=:sid
+            ORDER BY uid
+        """), {"sid": sid}).mappings().all()
+        data = []
+        for r in rows:
+            uid = str(r["uid"])
+            data.append({
+                "uid": uid,
+                "display": f"{uid} ({labels.get(uid)})" if labels.get(uid) else uid,
+                "full_name": r["full_name"],
+                "handedness": r["handedness"],
+            })
+        return jsonify({"ok": True, "rows": len(data), "data": data})
+
+@app.get("/api/session/<session_uid>/bounces")
+def api_session_bounces(session_uid):
+    if not _guard(): return _forbid()
+    limit = max(1, min(int(request.args.get("limit", 500)), 5000))
+    offset = max(0, int(request.args.get("offset", 0)))
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        rows = conn.execute(text("""
+            SELECT b.bounce_s, b.x, b.y, dp.sportai_player_uid AS player_uid, r.rally_number
+            FROM fact_bounce b
+            LEFT JOIN dim_player dp ON dp.player_id=b.hitter_player_id
+            LEFT JOIN dim_rally  r ON r.rally_id=b.rally_id
+            WHERE b.session_id=:sid
+            ORDER BY b.bounce_s
+            LIMIT :lim OFFSET :off
+        """), {"sid": sid, "lim": limit, "off": offset}).mappings().all()
+        return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
+
+@app.get("/api/session/<session_uid>/highlights")
+def api_session_highlights(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        rows = conn.execute(text("SELECT data FROM highlight WHERE session_id=:sid ORDER BY 1"),
+                            {"sid": sid}).scalars().all()
+        out = []
+        for d in rows:
+            try:
+                out.append(d if isinstance(d, dict) else json.loads(d))
+            except Exception:
+                pass
+        return jsonify({"ok": True, "rows": len(out), "data": out})
+
+# ---------------------- main ----------------------
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT","8000")))
