@@ -551,8 +551,12 @@ def ops_db_counts():
 def ops_sql():
     if not _guard(): return _forbid()
     q = request.args.get("q","").strip()
-    if not q.lower().startswith("select"): return Response("Only SELECT is allowed", status=400)
-    if "limit" not in q.lower(): q = f"{q.rstrip(';')} LIMIT 200"
+    ql = q.lstrip().lower()
+    # allow SELECT or CTEs that start with WITH
+    if not (ql.startswith("select") or ql.startswith("with")):
+        return Response("Only SELECT/CTE queries are allowed", status=400)
+    if "limit" not in ql:
+        q = f"{q.rstrip(';')} LIMIT 200"
     with engine.connect() as conn:
         rows = conn.execute(text(q)).mappings().all()
         data = [dict(r) for r in rows]
