@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 DATABASE_URL = os.environ.get("DATABASE_URL")
 OPS_KEY = os.environ.get("OPS_KEY")
 STRICT_REINGEST = os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1","true","yes","y")
+ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").strip().lower() in ("1","true","yes","y")
 
 if not DATABASE_URL: raise RuntimeError("DATABASE_URL required")
 if not OPS_KEY: raise RuntimeError("OPS_KEY required")
@@ -18,6 +19,15 @@ app = Flask(__name__)
 # ---------------------- util ----------------------
 def _guard(): return request.args.get("key") == OPS_KEY
 def _forbid(): return Response("Forbidden", status=403)
+
+# (Optional) CORS for dashboard calls hosted elsewhere
+@app.after_request
+def _maybe_cors(resp):
+    if ENABLE_CORS:
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return resp
 
 def seconds_to_ts(base_dt, s):
     if s is None: return None
@@ -920,6 +930,8 @@ def api_session_swings(session_uid):
         order = "ball_hit_s asc"
     player_uid_filter = request.args.get("player_uid")
     side = request.args.get("side")  # "front" / "back"
+    start_s = _float(request.args.get("start_s"))
+    end_s   = _float(request.args.get("end_s"))
 
     with engine.connect() as conn:
         srow = _get_session_row(conn, session_uid)
@@ -939,6 +951,12 @@ def api_session_swings(session_uid):
         if player_uid_filter:
             base_sql += " AND dp.sportai_player_uid=:puid"
             params["puid"] = player_uid_filter
+        if start_s is not None:
+            base_sql += " AND COALESCE(fs.ball_hit_s, fs.start_s) >= :start_s"
+            params["start_s"] = start_s
+        if end_s is not None:
+            base_sql += " AND COALESCE(fs.ball_hit_s, fs.start_s) <= :end_s"
+            params["end_s"] = end_s
 
         rows = conn.execute(text(base_sql + f" ORDER BY {order} LIMIT :lim OFFSET :off"),
                             {**params, "lim": limit, "off": offset}).mappings().all()
@@ -1038,6 +1056,105 @@ def api_session_highlights(session_uid):
             except Exception:
                 pass
         return jsonify({"ok": True, "rows": len(out), "data": out})
+
+@app.get("/api/session/<session_uid>/player-positions")
+def api_session_player_positions(session_uid):
+    if not _guard(): return _forbid()
+    player_uid = request.args.get("player_uid")
+    role = request.args.get("role")  # 'front' or 'back'
+    limit  = max(1, min(int(request.args.get("limit", 5000)), 20000))
+    offset = max(0, int(request.args.get("offset", 0)))
+    start_s = _float(request.args.get("start_s"))
+    end_s   = _float(request.args.get("end_s"))
+
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        labels = _front_back_labels(conn, sid)
+
+        # choose UID
+        chosen_uid = None
+        if player_uid:
+            chosen_uid = str(player_uid)
+        elif role:
+            role = role.lower()
+            # pick first player matching role
+            for uid, rname in labels.items():
+                if rname == role:
+                    chosen_uid = uid
+                    break
+            if not chosen_uid:
+                return jsonify({"ok": False, "error": f"no player labeled {role}"}), 404
+        else:
+            return jsonify({"ok": False, "error": "provide player_uid= or role=front|back"}), 400
+
+        pid = conn.execute(text("""
+            SELECT player_id FROM dim_player
+            WHERE session_id=:sid AND sportai_player_uid=:p
+        """), {"sid": sid, "p": chosen_uid}).scalar()
+        if pid is None:
+            return jsonify({"ok": False, "error": "player_uid not found for session"}), 404
+
+        sql = """
+            SELECT ts_s, x, y
+            FROM fact_player_position
+            WHERE session_id=:sid AND player_id=:pid
+        """
+        params = {"sid": sid, "pid": pid, "lim": limit, "off": offset}
+        if start_s is not None:
+            sql += " AND ts_s >= :start_s"
+            params["start_s"] = start_s
+        if end_s is not None:
+            sql += " AND ts_s <= :end_s"
+            params["end_s"] = end_s
+        sql += " ORDER BY ts_s LIMIT :lim OFFSET :off"
+
+        rows = conn.execute(text(sql), params).mappings().all()
+        return jsonify({"ok": True, "player_uid": chosen_uid, "rows": len(rows), "data": [dict(r) for r in rows]})
+
+@app.get("/api/session/<session_uid>/heatmap")
+def api_session_heatmap(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        row = conn.execute(text("SELECT heatmap FROM bounce_heatmap WHERE session_id=:sid"),
+                           {"sid": sid}).mappings().first()
+        return jsonify({"ok": True, "heatmap": row["heatmap"] if row else None})
+
+@app.get("/api/session/<session_uid>/confidences")
+def api_session_confidences(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        row = conn.execute(text("SELECT data FROM session_confidences WHERE session_id=:sid"),
+                           {"sid": sid}).mappings().first()
+        out = None
+        if row:
+            try:
+                out = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+            except Exception:
+                out = row["data"]
+        return jsonify({"ok": True, "data": out})
+
+@app.get("/api/session/<session_uid>/payload")
+def api_session_payload(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow: return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+        payload = conn.execute(text("""
+            SELECT payload_json FROM raw_result
+            WHERE session_id=:sid
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 1
+        """), {"sid": sid}).scalar()
+        return jsonify({"ok": True, "payload": payload})
 
 # ---------------------- main ----------------------
 if __name__ == "__main__":
