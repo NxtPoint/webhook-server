@@ -612,8 +612,10 @@ def ops_reconcile():
                 if sid is None:
                     return jsonify({"ok": False, "error": f"session_uid '{forced_uid}' not found"}), 404
                 payload = conn.execute(text("""
-                    SELECT payload_json FROM raw_result
-                    WHERE session_id=:sid ORDER BY id DESC LIMIT 1
+                SELECT payload_json FROM raw_result
+                WHERE session_id=:sid
+                ORDER BY created_at DESC NULLS LAST
+                LIMIT 1
                 """), {"sid": sid}).scalar()
                 if payload is None:
                     return jsonify({"ok": False, "error": f"No raw_result snapshot found for session_uid '{forced_uid}'"}), 404
