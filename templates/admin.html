@@ -1,148 +1,189 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8"/>
   <title>NextPoint Admin</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <style>
-    body{margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:#0b1220;color:#e6f0ff}
-    .wrap{max-width:1100px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .card{background:#0f172a;border:1px solid #203154;border-radius:12px;padding:16px;box-shadow:0 0 0 1px rgba(0,0,0,.05) inset}
-    h3{margin:0 0 10px 0;font-weight:600}
-    input,textarea,button{border-radius:8px;border:1px solid #334155;background:#0b1220;color:#e6f0ff}
-    input,textarea{width:100%;padding:10px;font-size:14px}
-    textarea{min-height:110px}
-    .row{display:flex;gap:8px;align-items:center;margin-top:8px}
-    .btn{cursor:pointer;padding:10px 12px;background:#10b981;border:1px solid #22c55e;color:#062b1f;font-weight:600}
-    .btn.dim{background:#1f2937;border-color:#334155;color:#cbd5e1}
-    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-size:13px;white-space:pre-wrap;background:#0b1220;border:1px solid #203154;border-radius:8px;padding:10px}
-    .full{grid-column:1 / span 2}
-    .pill{display:inline-block;margin:6px 0;padding:4px 8px;border-radius:999px;border:1px solid #22c55e;background:rgba(34,197,94,.08);font-size:.85rem}
+    :root { --bg:#0b1220; --panel:#111a2b; --text:#e5eefc; --muted:#a9b6cf; --accent:#39ff88; --accent2:#00d1ff; --danger:#ff6b6b; }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,Segoe UI,Roboto,Arial}
+    h2{margin:0 0 .75rem 0;font-size:1rem;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+    .grid{display:grid;gap:16px;padding:16px;grid-template-columns:repeat(12,1fr)}
+    .card{background:var(--panel);border:1px solid #1f2b46;border-radius:12px;padding:14px}
+    .span-4{grid-column:span 4} .span-6{grid-column:span 6} .span-8{grid-column:span 8} .span-12{grid-column:span 12}
+    input[type=text],textarea{width:100%;background:#0a1323;color:var(--text);border:1px solid #203453;border-radius:8px;padding:10px}
+    textarea{min-height:140px;font-family:ui-monospace,Consolas,Monaco,monospace;font-size:13px}
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .btn{border:0;border-radius:8px;padding:9px 12px;cursor:pointer;font-weight:600}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .btn-accent{background:var(--accent);color:#05220e}
+    .btn-accent2{background:var(--accent2);color:#04131a}
+    .btn-plain{background:#172239;color:var(--text);border:1px solid #263757}
+    .btn-danger{background:var(--danger);color:#320000}
+    pre{margin:8px 0 0 0;background:#0a1323;border:1px solid #203453;border-radius:8px;padding:10px;overflow:auto;max-height:320px}
+    .small{font-size:.85rem;color:var(--muted)}
+    .pill{display:inline-block;border:1px solid #2f4369;border-radius:999px;padding:4px 8px;color:var(--muted)}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h3>Configuration</h3>
-      <div>Base URL</div>
-      <input id="baseUrl" value="https://api.nextpointtennis.com" />
-      <div style="margin-top:10px">OPS KEY</div>
-      <input id="opsKey" value="270fb80a747d459eafded0ae67b9b8f6" />
-      <div class="pill">If you rotate the key in Render, update it here too.</div>
+  <div class="grid">
+    <!-- Config -->
+    <div class="card span-4">
+      <h2>Configuration</h2>
+      <div class="small">Base URL</div>
+      <input id="baseUrl" type="text" placeholder="https://api.nextpointtennis.com" value="https://api.nextpointtennis.com">
+      <div class="small" style="margin-top:8px;">OPS KEY</div>
+      <input id="opsKey" type="text" placeholder="paste OPS key" value="">
+      <div style="margin-top:8px" class="small">If you rotate the key in Render, update it here too.</div>
     </div>
 
-    <div class="card">
-      <h3>DB & Views</h3>
-      <div class="row">
-        <button class="btn" onclick="initDb()">Init DB</button>
-        <button class="btn" onclick="initViews()">Init Views</button>
-        <button class="btn dim" onclick="dbCounts()">DB Counts</button>
+    <!-- DB & Views -->
+    <div class="card span-4">
+      <h2>DB & Views</h2>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn btn-accent"  id="btnInitDb">Init DB</button>
+        <button class="btn btn-accent2" id="btnInitViews">Init Views</button>
+        <button class="btn btn-plain"   id="btnCounts">DB Counts</button>
       </div>
-      <div id="dbOut" class="mono" style="margin-top:10px;height:180px;overflow:auto">Result will appear here…</div>
+      <pre id="dbOut">Result will appear here…</pre>
     </div>
 
-    <div class="card full">
-      <h3>Read-only SQL</h3>
-      <textarea id="sqlBox">select * from vw_session_summary limit 5;</textarea>
-      <div class="row"><button class="btn" onclick="runSql()">Run</button><span>Only SELECT/CTEs allowed, auto LIMIT 200 applied.</span></div>
-      <div id="sqlOut" class="mono" style="margin-top:10px;height:120px;overflow:auto">Rows will appear here…</div>
-    </div>
-
-    <div class="card">
-      <h3>Sessions</h3>
-      <div class="row"><button class="btn dim" onclick="listSessions()">List Sessions</button></div>
-      <input id="sessionUid" placeholder="session_uid" style="margin-top:8px" />
-      <div class="row">
-        <button class="btn" onclick="reconcile()">Reconcile</button>
-        <button class="btn dim" onclick="deleteSession()">Delete</button>
+    <!-- Sessions -->
+    <div class="card span-4">
+      <h2>Sessions</h2>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn btn-plain" id="btnList">List Sessions</button>
       </div>
-      <div id="sessOut" class="mono" style="margin-top:10px;height:220px;overflow:auto">Session tools output…</div>
+      <input id="sessUid" type="text" placeholder="session_uid" style="margin-bottom:8px">
+      <div class="row">
+        <button class="btn btn-accent"  id="btnReconcile">Reconcile</button>
+        <button class="btn btn-danger"  id="btnDelete">Delete</button>
+      </div>
+      <pre id="sessOut">Session tools output…</pre>
     </div>
 
-    <div class="card">
-      <h3>Upload & Tasks</h3>
-      <div class="row"><a class="btn dim" href="/upload" target="_blank">Open Upload Page</a></div>
-      <input id="taskId" placeholder="task id" style="margin-top:8px" />
-      <div class="row">
-        <button class="btn dim" onclick="checkStatus()">Check Task Status</button>
-        <button class="btn" onclick="resumePoller()">Resume Poller</button>
-        <button class="btn dim" onclick="ingestLog()">Ingest Log</button>
+    <!-- Read-only SQL -->
+    <div class="card span-8">
+      <h2>Read-only SQL</h2>
+      <textarea id="sqlBox" placeholder="SELECT * FROM vw_session_summary LIMIT 5;"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn-accent" id="btnRunSql">Run</button>
+        <span class="pill">Only SELECT/CTEs allowed, auto LIMIT 200 applied.</span>
       </div>
-      <div id="taskOut" class="mono" style="margin-top:10px;height:220px;overflow:auto">{ }</div>
+      <pre id="sqlOut">Rows will appear here…</pre>
     </div>
 
-    <div class="card full">
-      <h3>Manual JSON Ingest</h3>
-      <div class="row">
-        <input id="filePick" type="file" />
-        <button class="btn" onclick="ingestJson()">Ingest JSON</button>
+    <!-- Upload & Tasks -->
+    <div class="card span-4">
+      <h2>Upload & Tasks</h2>
+      <div class="row" style="margin-bottom:8px">
+        <a class="btn btn-plain" href="/upload" target="_blank">Open Upload Page</a>
       </div>
-      <div class="pill">Use only if the auto-ingest missed a file. This posts to /ops/ingest-file?replace=1</div>
-      <div id="ingestOut" class="mono" style="margin-top:10px;height:140px;overflow:auto">Manual ingest output…</div>
+      <input id="taskId" type="text" placeholder="paste SportAI task_id" style="margin-bottom:8px">
+      <div class="row">
+        <button class="btn btn-plain" id="btnCheckTask">Check Task Status</button>
+        <button class="btn btn-accent2" id="btnResume">Resume Poller</button>
+      </div>
+      <pre id="taskOut">{ }</pre>
+    </div>
+
+    <!-- Manual JSON ingest -->
+    <div class="card span-4">
+      <h2>Manual JSON Ingest</h2>
+      <div class="row" style="margin-bottom:8px">
+        <input id="jsonFile" type="file" accept=".json">
+        <button class="btn btn-accent" id="btnIngest">Ingest JSON</button>
+      </div>
+      <pre id="ingestOut">Manual ingest output…</pre>
+    </div>
+
+    <!-- Player sides suggestion/apply -->
+    <div class="card span-4">
+      <h2>Player Sides</h2>
+      <input id="sidesUid" type="text" placeholder="session_uid" style="margin-bottom:8px">
+      <div class="row">
+        <button class="btn btn-plain"  id="btnSuggestSides">Suggest</button>
+        <button class="btn btn-accent" id="btnApplySides">Apply</button>
+      </div>
+      <pre id="sidesOut">Sides tools output…</pre>
     </div>
   </div>
 
 <script>
-const $ = (id)=>document.getElementById(id);
-const BU = ()=>$('baseUrl').value.trim().replace(/\/$/,'');
-const KEY= ()=>$('opsKey').value.trim();
+  const $ = id => document.getElementById(id);
+  const base = () => ($('baseUrl').value || '').replace(/\/+$/,'');
+  const key  = () => $('opsKey').value.trim();
 
-async function j(url, opts){const r=await fetch(url,opts);let t;try{t=await r.json()}catch{t=await r.text()}return {r,t};}
-function show(el, val){$(el).textContent=(typeof val==='string')?val:JSON.stringify(val,null,2);}
+  async function getJSON(url){
+    const r = await fetch(url);
+    const t = await r.text();
+    try { return { ok:r.ok, body: JSON.parse(t) }; } catch { return { ok:r.ok, body: t }; }
+  }
+  async function postJSON(url, body){
+    const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})});
+    const t = await r.text();
+    try { return { ok:r.ok, body: JSON.parse(t) }; } catch { return { ok:r.ok, body: t }; }
+  }
+  function show(el, obj){ el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
 
-async function initDb(){show('dbOut','…');const {t}=await j(`${BU()}/ops/init-db?key=${KEY()}`);show('dbOut',t);}
-async function initViews(){show('dbOut','…');const {t}=await j(`${BU()}/ops/init-views?key=${KEY()}`);show('dbOut',t);}
-async function dbCounts(){show('dbOut','…');const {t}=await j(`${BU()}/ops/db-counts?key=${KEY()}`);show('dbOut',t);}
+  // DB buttons
+  $('btnInitDb').onclick    = async () => show($('dbOut'), (await getJSON(`${base()}/ops/init-db?key=${encodeURIComponent(key())}`)).body);
+  $('btnInitViews').onclick = async () => show($('dbOut'), (await getJSON(`${base()}/ops/init-views?key=${encodeURIComponent(key())}`)).body);
+  $('btnCounts').onclick    = async () => show($('dbOut'), (await getJSON(`${base()}/ops/db-counts?key=${encodeURIComponent(key())}`)).body);
 
-async function runSql(){
-  const q = encodeURIComponent($('sqlBox').value);
-  show('sqlOut','…');
-  const {t}=await j(`${BU()}/ops/sql?key=${KEY()}&q=${q}`);
-  show('sqlOut',t);
-}
+  // Sessions
+  $('btnList').onclick = async () => show($('sessOut'), (await getJSON(`${base()}/ops/list-sessions?key=${encodeURIComponent(key())}`)).body);
+  $('btnReconcile').onclick = async () => {
+    const u = $('sessUid').value.trim(); if(!u) return show($('sessOut'), {error:"enter session_uid"});
+    show($('sessOut'), (await getJSON(`${base()}/ops/reconcile?key=${encodeURIComponent(key())}&session_uid=${encodeURIComponent(u)}`)).body);
+  };
+  $('btnDelete').onclick = async () => {
+    const u = $('sessUid').value.trim(); if(!u) return show($('sessOut'), {error:"enter session_uid"});
+    show($('sessOut'), (await getJSON(`${base()}/ops/delete-session?key=${encodeURIComponent(key())}&session_uid=${encodeURIComponent(u)}`)).body);
+  };
 
-async function listSessions(){show('sessOut','…');const {t}=await j(`${BU()}/ops/list-sessions?key=${KEY()}`);show('sessOut',t);}
-async function reconcile(){
-  const u=encodeURIComponent($('sessionUid').value.trim());
-  if(!u) return show('sessOut','Enter a session_uid first.');
-  show('sessOut','…');
-  const {t}=await j(`${BU()}/ops/reconcile?key=${KEY()}&session_uid=${u}`);
-  show('sessOut',t);
-}
-async function deleteSession(){
-  const u=encodeURIComponent($('sessionUid').value.trim());
-  if(!u) return show('sessOut','Enter a session_uid first.');
-  if(!confirm(`Delete session ${u}?`)) return;
-  const {t}=await j(`${BU()}/ops/delete-session?key=${KEY()}&session_uid=${u}`);
-  show('sessOut',t);
-}
+  // Read-only SQL (POST!)
+  $('btnRunSql').onclick = async () => {
+    const q = $('sqlBox').value.trim();
+    if(!q){ show($('sqlOut'), {error:"enter a SELECT/CTE query"}); return; }
+    const res = await postJSON(`${base()}/ops/sql?key=${encodeURIComponent(key())}`, { q });
+    show($('sqlOut'), res.body);
+  };
 
-async function checkStatus(){
-  const id=$('taskId').value.trim();
-  if(!id) return show('taskOut','Enter a task id first.');
-  show('taskOut','…');
-  const {t}=await j(`/upload/task_status/${id}`);
-  show('taskOut',t);
-}
-async function resumePoller(){
-  const id=$('taskId').value.trim();
-  if(!id) return show('taskOut','Enter a task id first.');
-  show('taskOut','…');
-  const {t}=await j(`/upload/resume/${id}`, {method:'GET'});
-  show('taskOut',t);
-}
-async function ingestLog(){
-  const {t}=await j(`/upload/debug/ingest-log`);
-  show('taskOut',t);
-}
-async function ingestJson(){
-  const f=$('filePick').files[0]; if(!f){return show('ingestOut','Pick a file first.');}
-  const fd = new FormData(); fd.append('file', f, f.name);
-  const url = `${BU()}/ops/ingest-file?key=${KEY()}&replace=1`;
-  show('ingestOut','Uploading…');
-  const r = await fetch(url, {method:'POST', body: fd});
-  let t; try{t=await r.json()}catch{t=await r.text()}
-  show('ingestOut', t);
-}
+  // Tasks
+  $('btnCheckTask').onclick = async () => {
+    const id = $('taskId').value.trim(); if(!id) return show($('taskOut'), {error:"enter task_id"});
+    const r = await getJSON(`${base()}/upload/debug/sportai-status/${encodeURIComponent(id)}`); // proxied helper
+    show($('taskOut'), r.body);
+  };
+  $('btnResume').onclick = async () => {
+    const id = $('taskId').value.trim(); if(!id) return show($('taskOut'), {error:"enter task_id"});
+    const r = await postJSON(`${base()}/upload/resume/${encodeURIComponent(id)}`, {});
+    show($('taskOut'), r.body);
+  };
+
+  // Manual JSON ingest
+  $('btnIngest').onclick = async () => {
+    const f = $('jsonFile').files[0];
+    if(!f){ show($('ingestOut'), {error:'choose a .json file'}); return; }
+    const fd = new FormData(); fd.append('file', f, f.name);
+    const url = `${base()}/ops/ingest-file?key=${encodeURIComponent(key())}&replace=1&mode=hard`;
+    const r = await fetch(url, { method:'POST', body: fd });
+    const t = await r.text();
+    try { show($('ingestOut'), JSON.parse(t)); } catch { show($('ingestOut'), t); }
+  };
+
+  // Player sides
+  $('btnSuggestSides').onclick = async () => {
+    const u = $('sidesUid').value.trim(); if(!u) return show($('sidesOut'), {error:"enter session_uid"});
+    const r = await postJSON(`${base()}/ops/suggest-sides?key=${encodeURIComponent(key())}`, { session_uid: u });
+    show($('sidesOut'), r.body);
+  };
+  $('btnApplySides').onclick = async () => {
+    const u = $('sidesUid').value.trim(); if(!u) return show($('sidesOut'), {error:"enter session_uid"});
+    const r = await postJSON(`${base()}/ops/apply-sides?key=${encodeURIComponent(key())}`, { session_uid: u });
+    show($('sidesOut'), r.body);
+  };
 </script>
 </body>
 </html>
