@@ -96,6 +96,13 @@ def init_views(engine):
     from db_views import run_views
     run_views(engine)
 
+# --------- NEW: snap times to frame ticks ---------
+def _quantize_time_to_fps(s, fps):
+    if s is None or not fps:
+        return s
+    # nearest frame, then keep a stable, compact representation
+    return round(round(float(s) * float(fps)) / float(fps), 5)
+
 # ---------------------- mappers ----------------------
 def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
     if forced_uid:
@@ -251,7 +258,12 @@ def _gather_all_swings(payload):
             yield norm
 
 # ---------------------- ingest ----------------------
-def _insert_swing(conn, session_id, player_id, s, base_dt):
+def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
+    # Quantize times to fps for stable storage
+    q_start = _quantize_time_to_fps(s.get("start_s"), fps)
+    q_end   = _quantize_time_to_fps(s.get("end_s"), fps)
+    q_hit   = _quantize_time_to_fps(s.get("ball_hit_s"), fps)
+
     conn.execute(text("""
         INSERT INTO fact_swing (
             session_id, player_id, sportai_swing_uid,
@@ -270,9 +282,9 @@ def _insert_swing(conn, session_id, player_id, s, base_dt):
         "sid": session_id,
         "pid": player_id,
         "suid": s.get("suid"),
-        "ss": s.get("start_s"), "es": s.get("end_s"), "bhs": s.get("ball_hit_s"),
-        "sts": seconds_to_ts(base_dt, s.get("start_s")), "ets": seconds_to_ts(base_dt, s.get("end_s")),
-        "bh_ts": seconds_to_ts(base_dt, s.get("ball_hit_s")),
+        "ss": q_start, "es": q_end, "bhs": q_hit,
+        "sts": seconds_to_ts(base_dt, q_start), "ets": seconds_to_ts(base_dt, q_end),
+        "bh_ts": seconds_to_ts(base_dt, q_hit),
         "bhx": s.get("ball_hit_x"), "bhy": s.get("ball_hit_y"),
         "bs": s.get("ball_speed"), "bpd": s.get("ball_player_distance"),
         "inr": s.get("is_in_rally"), "srv": s.get("serve"), "stype": s.get("serve_type"),
@@ -360,6 +372,22 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             WHERE session_id = :sid AND sportai_player_uid = :puid
         """), {"sid": session_id, "puid": puid}).scalar_one()
         uid_to_player_id[puid] = pid
+
+    # -------- NEW: ensure players exist for any UIDs only in player_positions --------
+    pp_uids = set(str(k) for k in (payload.get("player_positions") or {}).keys())
+    missing_pp = [u for u in pp_uids if u and u not in uid_to_player_id]
+    for puid in missing_pp:
+        conn.execute(text("""
+            INSERT INTO dim_player (session_id, sportai_player_uid)
+            VALUES (:sid, :puid)
+            ON CONFLICT (session_id, sportai_player_uid) DO NOTHING
+        """), {"sid": session_id, "puid": puid})
+        pid = conn.execute(text("""
+            SELECT player_id FROM dim_player
+            WHERE session_id=:sid AND sportai_player_uid=:p
+        """), {"sid": session_id, "p": puid}).scalar_one()
+        uid_to_player_id[puid] = pid
+    # -------------------------------------------------------------------------------
 
     # rallies
     for i, r in enumerate(payload.get("rallies") or [], start=1):
@@ -460,15 +488,18 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
 
     # --------- wide swing discovery (with in-memory dedupe) ----------
     seen = set()  # ('suid', <str>) or ('fb', pid, start_s, end_s)
-    def _seen_key(pid, norm):
+    def _seen_key(pid, norm, fps):
         if norm.get("suid"): return ("suid", str(norm["suid"]))
-        return ("fb", pid, norm.get("start_s"), norm.get("end_s"))
+        # dedupe on quantized times to avoid float jitter
+        return ("fb", pid,
+                _quantize_time_to_fps(norm.get("start_s"), fps),
+                _quantize_time_to_fps(norm.get("end_s"), fps))
 
     for norm in _gather_all_swings(payload):
         pid = None
         if norm.get("player_uid"):
             pid = uid_to_player_id.get(str(norm["player_uid"]))
-        k = _seen_key(pid, norm)
+        k = _seen_key(pid, norm, fps)
         if k in seen:
             continue
         seen.add(k)
@@ -488,7 +519,7 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             "meta": norm.get("meta"),
         }
         try:
-            _insert_swing(conn, session_id, pid, s, base_dt)
+            _insert_swing(conn, session_id, pid, s, base_dt, fps)
         except IntegrityError:
             # ignore duplicates if legacy unique indexes exist
             pass
@@ -601,7 +632,6 @@ def ops_reconcile():
             if src_hint or "file" in request.files or request.data:
                 payload = _get_json_from_sources()
         except Exception:
-            # fall back to snapshot if explicit fetch fails
             payload = None
 
         with engine.connect() as conn:
@@ -623,10 +653,11 @@ def ops_reconcile():
             # derive canonical session_uid (matches ingest logic)
             session_uid = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
 
-            # ensure session exists
-            sid = conn.execute(text("SELECT session_id FROM dim_session WHERE session_uid=:u"), {"u": session_uid}).scalar()
-            if sid is None:
+            # ensure session exists + read fps
+            row = conn.execute(text("SELECT session_id, fps FROM dim_session WHERE session_uid=:u"), {"u": session_uid}).mappings().first()
+            if not row:
                 return jsonify({"ok": False, "error": f"Session not found in DB: {session_uid}"}), 404
+            sid, fps = row["session_id"], row["fps"]
 
             # 2) payload counts & sets
             payload_players = set()
@@ -645,19 +676,18 @@ def ops_reconcile():
                 except Exception:
                     pass
 
-            # payload rally/bounce/positions
             payload_rallies        = len(payload.get("rallies") or [])
             payload_bounces        = len(payload.get("ball_bounces") or [])
             payload_ball_positions = len(payload.get("ball_positions") or [])
 
-            # swings (distinct) using the same normalizer + dedupe keys as ingest
-            # build DB player map first (needed for fallback key)
+            # build DB player map
             rows = conn.execute(text("""
                 SELECT player_id, sportai_player_uid 
                 FROM dim_player WHERE session_id=:sid
             """), {"sid": sid}).mappings().all()
             uid_to_pid = {str(r["sportai_player_uid"]): r["player_id"] for r in rows}
 
+            # payload swing keys (quantized)
             payload_swing_keys = set()
             for norm in _gather_all_swings(payload):
                 puid = str(norm.get("player_uid") or "")
@@ -665,7 +695,9 @@ def ops_reconcile():
                 if norm.get("suid"):
                     k = ("suid", str(norm["suid"]))
                 else:
-                    k = ("fb", pid, norm.get("start_s"), norm.get("end_s"))
+                    k = ("fb", pid,
+                         _quantize_time_to_fps(norm.get("start_s"), fps),
+                         _quantize_time_to_fps(norm.get("end_s"), fps))
                 payload_swing_keys.add(k)
 
             # 3) DB counts & sets
@@ -688,7 +720,7 @@ def ops_reconcile():
             """), {"sid": sid}).mappings().all()
             pp_db = {str(r["puid"]): int(r["cnt"]) for r in pp_rows}
 
-            # DB swing keys
+            # DB swing keys (quantized)
             db_rows = conn.execute(text("""
                 SELECT player_id, sportai_swing_uid, start_s, end_s
                 FROM fact_swing WHERE session_id=:sid
@@ -698,7 +730,9 @@ def ops_reconcile():
                 if r["sportai_swing_uid"]:
                     db_swing_keys.add(("suid", str(r["sportai_swing_uid"])))
                 else:
-                    db_swing_keys.add(("fb", r["player_id"], r["start_s"], r["end_s"]))
+                    db_swing_keys.add(("fb", r["player_id"],
+                                       _quantize_time_to_fps(r["start_s"], fps),
+                                       _quantize_time_to_fps(r["end_s"], fps)))
 
             # 4) diffs
             players_missing_in_db = sorted(list(payload_players - db_players))[:20]
@@ -718,7 +752,6 @@ def ops_reconcile():
                 if len(pos_mismatch_sample) >= 20:
                     break
 
-            # 5) response
             return jsonify({
                 "ok": True,
                 "session_uid": session_uid,
