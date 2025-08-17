@@ -601,19 +601,29 @@ def ops_db_counts():
         }
     return jsonify({"ok": True, "counts": counts})
 
-@app.get("/ops/sql")
+# 🔧 UPDATED: accept GET or POST with JSON-body { "q": "select ..." }
+@app.route("/ops/sql", methods=["GET", "POST"])
 def ops_sql():
     if not _guard():
         return _forbid()
-    q = request.args.get("q", "").strip()
+
+    q = None
+    if request.method == "POST":
+        if request.is_json:
+            q = (request.get_json(silent=True) or {}).get("q")
+        if not q:
+            q = request.form.get("q")
+    if not q:
+        q = request.args.get("q", "")
+
+    q = (q or "").strip()
     ql = q.lstrip().lower()
 
-    # allow plain SELECT or CTEs (WITH/with recursive)
     if not (ql.startswith("select") or ql.startswith("with")):
         return Response("Only SELECT/CTE queries are allowed", status=400)
 
     stripped = q.strip()
-    if ";" in stripped[:-1]:  # allow a single trailing semicolon only
+    if ";" in stripped[:-1]:
         return Response("Only a single statement is allowed", status=400)
 
     if " limit " not in ql:
@@ -1193,6 +1203,69 @@ def api_session_payload(session_uid):
             LIMIT 1
         """), {"sid": sid}).scalar()
         return jsonify({"ok": True, "payload": payload})
+
+# ---------- NEW: suggest front/back from positions ----------
+@app.get("/api/session/<session_uid>/player-sides-suggest")
+def api_session_player_sides_suggest(session_uid):
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow:
+            return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+
+        current = _front_back_labels(conn, sid)
+
+        rows = conn.execute(text("""
+            SELECT dp.sportai_player_uid AS uid, AVG(f.y) AS mean_y, COUNT(*) AS n
+            FROM fact_player_position f
+            JOIN dim_player dp ON dp.player_id=f.player_id
+            WHERE f.session_id=:sid
+            GROUP BY dp.sportai_player_uid
+            ORDER BY uid
+        """), {"sid": sid}).mappings().all()
+
+        suggested = {}
+        basis = "mean_y asc ⇒ front (two-player heuristic)"
+        if len(rows) == 2:
+            rows_sorted = sorted(rows, key=lambda r: (r["mean_y"] if r["mean_y"] is not None else 0))
+            suggested[str(rows_sorted[0]["uid"])] = "front"
+            suggested[str(rows_sorted[1]["uid"])] = "back"
+
+        return jsonify({"ok": True, "labels_current": current, "labels_suggested": suggested, "basis": basis})
+
+# ---------- NEW: apply front/back labels ----------
+@app.post("/ops/set-sides")
+def ops_set_sides():
+    if not _guard(): return _forbid()
+    body = request.get_json(silent=True) or {}
+    session_uid = request.args.get("session_uid") or body.get("session_uid")
+    front = body.get("team_front") or []
+    back  = body.get("team_back") or []
+    if not session_uid:
+        return jsonify({"ok": False, "error": "session_uid required"}), 400
+    front = [str(u) for u in front if u is not None]
+    back  = [str(u) for u in back if u is not None]
+
+    with engine.begin() as conn:
+        srow = _get_session_row(conn, session_uid)
+        if not srow:
+            return jsonify({"ok": False, "error": "session not found"}), 404
+        sid = srow["session_id"]
+
+        # validate UIDs exist for the session
+        existing = set(conn.execute(text("""
+            SELECT sportai_player_uid FROM dim_player WHERE session_id=:sid
+        """), {"sid": sid}).scalars().all())
+        unknown = [u for u in (front + back) if u not in existing]
+        if unknown:
+            return jsonify({"ok": False, "error": f"unknown player_uids for this session: {', '.join(unknown)}"}), 400
+
+        data = {"team_front": front, "team_back": back}
+        conn.execute(text("INSERT INTO team_session (session_id, data) VALUES (:sid, CAST(:d AS JSONB))"),
+                     {"sid": sid, "d": json.dumps(data)})
+
+    return jsonify({"ok": True, "session_uid": session_uid, "applied": {"team_front": front, "team_back": back}})
 
 # ---------------------- main ----------------------
 if __name__ == "__main__":
