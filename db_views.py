@@ -2,328 +2,244 @@
 from sqlalchemy import text
 
 VIEW_NAMES = [
-    # existing
-    "vw_swing",
-    "vw_bounce",
-    "vw_rally",
-    "vw_ball_position",
-    "vw_player_position",
-    # new metrics layer
     "vw_session_summary",
-    "vw_player_movement",
     "vw_player_summary",
     "vw_rally_summary",
     "vw_shot_tempo",
+    "vw_player_movement",
 ]
 
 CREATE_STMTS = {
-    # ---------- YOUR ORIGINAL LIGHTWEIGHT VIEWS ----------
-    "vw_swing": """
-        CREATE VIEW vw_swing AS
-        WITH membership AS (
-          SELECT DISTINCT
-            ts.session_id,
-            'front'::text AS side,
-            x::text       AS player_uid
-          FROM team_session ts,
-               jsonb_array_elements_text(ts.data->'team_front') AS x
-          UNION
-          SELECT DISTINCT
-            ts.session_id,
-            'back'::text AS side,
-            x::text      AS player_uid
-          FROM team_session ts,
-               jsonb_array_elements_text(ts.data->'team_back') AS x
-        )
-        SELECT
-          s.swing_id,
-          s.session_id,
-          ds.session_uid,
-          s.player_id,
-          dp.full_name AS player_name,
-          dp.sportai_player_uid AS player_uid,
-          COALESCE(dp.full_name, dp.sportai_player_uid) AS player_label,
-          m.side AS player_side,
-          CASE WHEN m.side IS NOT NULL
-               THEN COALESCE(dp.full_name, dp.sportai_player_uid) || ' (' || m.side || ')'
-               ELSE COALESCE(dp.full_name, dp.sportai_player_uid)
-          END AS player_display,
-          s.sportai_swing_uid,
-          s.start_s, s.end_s, s.ball_hit_s,
-          s.start_ts, s.end_ts, s.ball_hit_ts,
-          s.ball_hit_x, s.ball_hit_y,
-          s.ball_speed, s.ball_player_distance,
-          COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
-          s.serve, s.serve_type,
-          s.meta
-        FROM fact_swing s
-        LEFT JOIN dim_player  dp ON dp.player_id   = s.player_id
-        LEFT JOIN dim_session ds ON ds.session_id   = s.session_id
-        LEFT JOIN membership  m  ON m.session_id    = s.session_id
-                                AND m.player_uid    = dp.sportai_player_uid;
+    # ---------------- SESSION SUMMARY ----------------
+    "vw_session_summary": r"""
+    CREATE VIEW vw_session_summary AS
+    WITH s AS (
+      SELECT session_id, session_uid, COALESCE(fps, 0)::float AS fps
+      FROM dim_session
+    ),
+    r AS (
+      SELECT session_id,
+             COUNT(*)                         AS rallies,
+             AVG(GREATEST(0, end_s - start_s))::float AS avg_rally_duration_s,
+             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY GREATEST(0, end_s - start_s))::float AS med_rally_duration_s
+      FROM dim_rally
+      GROUP BY 1
+    ),
+    sw AS (
+      SELECT fs.session_id,
+             COUNT(*)::int                    AS swings,
+             SUM(CASE WHEN COALESCE(fs.serve,false) THEN 1 ELSE 0 END)::int AS serve_swings,
+             AVG(NULLIF(LEAD(fs.ball_hit_s) OVER(PARTITION BY fs.session_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s,0))::float AS avg_tempo_s,
+             PERCENTILE_CONT(0.75) WITHIN GROUP
+                (ORDER BY NULLIF(LEAD(fs.ball_hit_s) OVER(PARTITION BY fs.session_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s,0))::float AS p75_tempo_s,
+             PERCENTILE_CONT(0.90) WITHIN GROUP
+                (ORDER BY NULLIF(LEAD(fs.ball_hit_s) OVER(PARTITION BY fs.session_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s,0))::float AS p90_tempo_s
+      FROM fact_swing fs
+      GROUP BY 1
+    ),
+    rs AS (
+      -- shots per rally
+      SELECT fs.session_id, dr.rally_id, COUNT(*)::int AS shots_in_rally
+      FROM fact_swing fs
+      JOIN dim_rally dr
+        ON dr.session_id = fs.session_id
+       AND COALESCE(fs.ball_hit_s, fs.start_s) BETWEEN dr.start_s AND dr.end_s
+      GROUP BY 1,2
+    ),
+    rs_agg AS (
+      SELECT session_id,
+             AVG(shots_in_rally)::float AS avg_rally_shots,
+             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY shots_in_rally)::float AS med_rally_shots
+      FROM rs GROUP BY 1
+    ),
+    b AS (
+      SELECT session_id,
+             COUNT(*)::int AS bounces,
+             -- depth buckets on Y; tweak thresholds to your court units
+             SUM(CASE WHEN y <= -2.5 THEN 1 ELSE 0 END)::int AS deep_back,
+             SUM(CASE WHEN y > -2.5 AND y < 2.5 THEN 1 ELSE 0 END)::int AS mid_court,
+             SUM(CASE WHEN y >= 2.5 THEN 1 ELSE 0 END)::int AS near_net
+      FROM fact_bounce GROUP BY 1
+    )
+    SELECT
+      s.session_uid,
+      r.rallies,
+      sw.swings,
+      COALESCE(sw.serve_swings,0)                    AS serve_swings,
+      (COALESCE(sw.serve_swings,0)::float / NULLIF(sw.swings,0))::float AS pct_serve_swings,
+      rs_agg.avg_rally_shots,
+      rs_agg.med_rally_shots,
+      r.avg_rally_duration_s,
+      r.med_rally_duration_s,
+      sw.avg_tempo_s,
+      sw.p75_tempo_s,
+      sw.p90_tempo_s,
+      COALESCE(b.bounces,0)                          AS bounces,
+      b.deep_back, b.mid_court, b.near_net
+    FROM s
+    LEFT JOIN r       ON r.session_id       = s.session_id
+    LEFT JOIN sw      ON sw.session_id      = s.session_id
+    LEFT JOIN rs_agg  ON rs_agg.session_id  = s.session_id
+    LEFT JOIN b       ON b.session_id       = s.session_id;
     """,
 
-    "vw_bounce": """
-        CREATE VIEW vw_bounce AS
-        SELECT
-            b.bounce_id,
-            b.session_id,
-            ds.session_uid,
-            b.hitter_player_id,
-            dp.full_name AS hitter_name,
-            dp.sportai_player_uid AS hitter_uid,
-            b.rally_id,
-            b.bounce_s, b.bounce_ts,
-            b.x, b.y, b.bounce_type
-        FROM fact_bounce b
-        LEFT JOIN dim_player dp ON dp.player_id = b.hitter_player_id
-        LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
+    # ---------------- PLAYER SUMMARY ----------------
+    "vw_player_summary": r"""
+    CREATE VIEW vw_player_summary AS
+    WITH membership AS (
+      SELECT DISTINCT
+        ts.session_id,
+        'front'::text AS side,
+        x::text       AS player_uid
+      FROM team_session ts, jsonb_array_elements_text(ts.data->'team_front') AS x
+      UNION
+      SELECT DISTINCT
+        ts.session_id,
+        'back'::text  AS side,
+        x::text       AS player_uid
+      FROM team_session ts, jsonb_array_elements_text(ts.data->'team_back') AS x
+    ),
+    swings AS (
+      SELECT
+        fs.session_id, dp.player_id, dp.sportai_player_uid AS player_uid,
+        COUNT(*)::int                                       AS swings,
+        SUM(CASE WHEN COALESCE(fs.serve,false) THEN 1 ELSE 0 END)::int AS serve_swings,
+        AVG(fs.ball_hit_x)::float                           AS avg_contact_x,
+        AVG(fs.ball_hit_y)::float                           AS avg_contact_y,
+        AVG(NULLIF(LEAD(fs.ball_hit_s) OVER(PARTITION BY fs.session_id, dp.player_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s,0))::float AS avg_tempo_s,
+        SUM(CASE WHEN fs.ball_hit_y > 0 THEN 1 ELSE 0 END)::int AS contacts_in_front
+      FROM fact_swing fs
+      LEFT JOIN dim_player dp ON dp.player_id = fs.player_id
+      GROUP BY 1,2,3
+    ),
+    serve_dir AS (
+      -- naive L/Body/R by contact X (tune thresholds!)
+      SELECT
+        fs.session_id, dp.player_id,
+        SUM(CASE WHEN fs.serve AND fs.ball_hit_x <= -2.5 THEN 1 ELSE 0 END)::int AS srv_left,
+        SUM(CASE WHEN fs.serve AND fs.ball_hit_x >  -2.5 AND fs.ball_hit_x < 2.5 THEN 1 ELSE 0 END)::int AS srv_body,
+        SUM(CASE WHEN fs.serve AND fs.ball_hit_x >=  2.5 THEN 1 ELSE 0 END)::int AS srv_right
+      FROM fact_swing fs
+      LEFT JOIN dim_player dp ON dp.player_id = fs.player_id
+      GROUP BY 1,2
+    ),
+    movement AS (
+      -- distance from consecutive player_position points
+      SELECT
+        p.session_id, p.player_id,
+        SUM( sqrt( power(p.x - LAG(p.x) OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s), 2)
+                 + power(p.y - LAG(p.y) OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s), 2) ) )::float AS total_distance_units,
+        (MAX(p.ts_s) - MIN(p.ts_s))::float AS active_time_s
+      FROM fact_player_position p
+      GROUP BY 1,2
+    )
+    SELECT
+      ds.session_uid,
+      dp.sportai_player_uid  AS player_uid,
+      COALESCE(dp.full_name, dp.sportai_player_uid) AS player_name,
+      m.side                 AS player_side,                          -- front/back if available
+      sw.swings, sw.serve_swings,
+      (sw.serve_swings::float / NULLIF(sw.swings,0))::float AS pct_serve_swings,
+      sw.avg_contact_x, sw.avg_contact_y,
+      (sw.contacts_in_front::float / NULLIF(sw.swings,0))::float AS pct_contacts_in_front,
+      sd.srv_left, sd.srv_body, sd.srv_right,
+      CASE WHEN (sd.srv_left+sd.srv_body+sd.srv_right) > 0
+           THEN sd.srv_left::float  / (sd.srv_left+sd.srv_body+sd.srv_right) END AS pct_srv_left,
+      CASE WHEN (sd.srv_left+sd.srv_body+sd.srv_right) > 0
+           THEN sd.srv_body::float  / (sd.srv_left+sd.srv_body+sd.srv_right) END AS pct_srv_body,
+      CASE WHEN (sd.srv_left+sd.srv_body+sd.srv_right) > 0
+           THEN sd.srv_right::float / (sd.srv_left+sd.srv_body+sd.srv_right) END AS pct_srv_right,
+      sw.avg_tempo_s,
+      mv.total_distance_units,
+      CASE WHEN mv.active_time_s > 0 THEN mv.total_distance_units / mv.active_time_s END AS avg_speed_units_per_s
+    FROM dim_player dp
+    JOIN dim_session ds ON ds.session_id = dp.session_id
+    LEFT JOIN swings   sw ON sw.session_id = dp.session_id AND sw.player_id = dp.player_id
+    LEFT JOIN serve_dir sd ON sd.session_id = dp.session_id AND sd.player_id = dp.player_id
+    LEFT JOIN movement mv ON mv.session_id = dp.session_id AND mv.player_id = dp.player_id
+    LEFT JOIN membership m ON m.session_id = dp.session_id AND m.player_uid = dp.sportai_player_uid;
     """,
 
-    "vw_rally": """
-        CREATE VIEW vw_rally AS
-        SELECT
-            r.rally_id,
-            r.session_id,
-            ds.session_uid,
-            r.rally_number,
-            r.start_s, r.end_s,
-            r.start_ts, r.end_ts
-        FROM dim_rally r
-        LEFT JOIN dim_session ds ON ds.session_id = r.session_id;
+    # ---------------- RALLY SUMMARY ----------------
+    "vw_rally_summary": r"""
+    CREATE VIEW vw_rally_summary AS
+    WITH shots AS (
+      SELECT
+        dr.session_id, dr.rally_id,
+        COUNT(*)::int AS shot_count,
+        AVG(NULLIF(LEAD(fs.ball_hit_s) OVER (PARTITION BY dr.session_id, dr.rally_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s, 0))::float AS avg_tempo_s
+      FROM dim_rally dr
+      LEFT JOIN fact_swing fs
+        ON fs.session_id = dr.session_id
+       AND COALESCE(fs.ball_hit_s, fs.start_s) BETWEEN dr.start_s AND dr.end_s
+      GROUP BY 1,2
+    ),
+    b AS (
+      SELECT session_id, rally_id, COUNT(*)::int AS bounces
+      FROM fact_bounce
+      GROUP BY 1,2
+    )
+    SELECT
+      ds.session_uid,
+      dr.rally_number,
+      GREATEST(0, dr.end_s - dr.start_s)::float AS duration_s,
+      s.shot_count,
+      COALESCE(b.bounces,0) AS bounces,
+      s.avg_tempo_s
+    FROM dim_rally dr
+    JOIN dim_session ds ON ds.session_id = dr.session_id
+    LEFT JOIN shots s    ON s.session_id = dr.session_id AND s.rally_id = dr.rally_id
+    LEFT JOIN b     b    ON b.session_id = dr.session_id AND b.rally_id = dr.rally_id
+    ORDER BY ds.session_uid, dr.rally_number;
     """,
 
-    "vw_ball_position": """
-        CREATE VIEW vw_ball_position AS
-        SELECT
-            p.id,
-            p.session_id,
-            ds.session_uid,
-            p.ts_s, p.ts, p.x, p.y
-        FROM fact_ball_position p
-        LEFT JOIN dim_session ds ON ds.session_id = p.session_id;
+    # ---------------- SHOT TEMPO (raw rows) ----------------
+    "vw_shot_tempo": r"""
+    CREATE VIEW vw_shot_tempo AS
+    SELECT
+      ds.session_uid,
+      dp.sportai_player_uid AS player_uid,
+      fs.ball_hit_s AS this_contact_s,
+      LEAD(fs.ball_hit_s) OVER (PARTITION BY fs.session_id, fs.player_id ORDER BY fs.ball_hit_s) AS next_contact_s,
+      NULLIF(LEAD(fs.ball_hit_s) OVER (PARTITION BY fs.session_id, fs.player_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s, 0)::float AS tempo_s
+    FROM fact_swing fs
+    JOIN dim_session ds ON ds.session_id = fs.session_id
+    LEFT JOIN dim_player dp ON dp.player_id = fs.player_id;
     """,
 
-    "vw_player_position": """
-        CREATE VIEW vw_player_position AS
-        SELECT
-            p.id,
-            p.session_id,
-            ds.session_uid,
-            p.player_id,
-            dp.sportai_player_uid AS player_uid,
-            dp.full_name AS player_name,
-            p.ts_s, p.ts, p.x, p.y
-        FROM fact_player_position p
-        LEFT JOIN dim_session ds ON ds.session_id = p.session_id
-        LEFT JOIN dim_player dp  ON dp.player_id  = p.player_id;
-    """,
-
-    # ---------- NEW METRIC VIEWS ----------
-    "vw_session_summary": """
-        CREATE VIEW vw_session_summary AS
-        WITH shots AS (
-          SELECT s.session_id,
-                 COUNT(*) AS swings,
-                 COUNT(*) FILTER (WHERE COALESCE(s.serve, false)) AS serves,
-                 AVG(s.ball_speed) AS avg_ball_speed,
-                 AVG(s.ball_player_distance) AS avg_ball_player_dist
-          FROM fact_swing s
-          GROUP BY s.session_id
-        ),
-        bounces AS (
-          SELECT session_id,
-                 COUNT(*) AS bounces
-          FROM fact_bounce
-          GROUP BY session_id
-        ),
-        rallies AS (
-          SELECT r.session_id,
-                 COUNT(*) AS rally_count,
-                 AVG(NULLIF(r.end_s - r.start_s,0)) AS avg_rally_seconds,
-                 MAX(NULLIF(r.end_s - r.start_s,0)) AS max_rally_seconds,
-                 SUM(NULLIF(r.end_s - r.start_s,0)) AS total_rally_seconds
-          FROM dim_rally r
-          GROUP BY r.session_id
-        ),
-        players AS (
-          SELECT session_id, COUNT(*) AS players
-          FROM dim_player GROUP BY session_id
-        ),
-        ball_span AS (
-          SELECT session_id,
-                 (MAX(ts_s) - MIN(ts_s)) AS recording_seconds
-          FROM fact_ball_position
-          GROUP BY session_id
-        )
-        SELECT
-          s.session_id,
-          ds.session_uid,
-          COALESCE(p.players,0) AS players,
-          COALESCE(sh.swings,0) AS swings,
-          COALESCE(sh.serves,0) AS serves,
-          CASE WHEN COALESCE(sh.swings,0)>0 THEN sh.serves::decimal/sh.swings ELSE 0 END AS pct_serves,
-          COALESCE(b.bounces,0) AS bounces,
-          COALESCE(r.rally_count,0) AS rallies,
-          COALESCE(r.avg_rally_seconds,0) AS avg_rally_seconds,
-          COALESCE(r.max_rally_seconds,0) AS max_rally_seconds,
-          COALESCE(r.total_rally_seconds,0) AS total_rally_seconds,
-          COALESCE(bs.recording_seconds,0)  AS recording_seconds,
-          COALESCE(sh.avg_ball_speed, NULL) AS avg_ball_speed,
-          COALESCE(sh.avg_ball_player_dist, NULL) AS avg_ball_player_dist,
-          CASE WHEN COALESCE(r.rally_count,0)>0
-               THEN COALESCE(sh.swings,0)::decimal / r.rally_count
-               ELSE NULL END AS shots_per_rally,
-          CASE WHEN COALESCE(r.rally_count,0)>0
-               THEN COALESCE(b.bounces,0)::decimal / r.rally_count
-               ELSE NULL END AS bounces_per_rally
-        FROM (SELECT DISTINCT session_id FROM dim_session) s
-        LEFT JOIN dim_session ds ON ds.session_id = s.session_id
-        LEFT JOIN shots   sh ON sh.session_id = s.session_id
-        LEFT JOIN bounces b  ON b.session_id  = s.session_id
-        LEFT JOIN rallies r  ON r.session_id  = s.session_id
-        LEFT JOIN players p  ON p.session_id  = s.session_id
-        LEFT JOIN ball_span bs ON bs.session_id = s.session_id;
-    """,
-
-    "vw_player_movement": """
-        CREATE VIEW vw_player_movement AS
-        WITH pos AS (
-          SELECT
-            p.session_id, p.player_id, dp.sportai_player_uid AS player_uid,
-            p.ts_s,
-            p.x, p.y,
-            LAG(p.ts_s) OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s) AS prev_ts_s,
-            LAG(p.x)    OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s) AS prev_x,
-            LAG(p.y)    OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s) AS prev_y
-          FROM fact_player_position p
-          JOIN dim_player dp ON dp.player_id = p.player_id
-        ),
-        steps AS (
-          SELECT
-            session_id, player_id, player_uid,
-            CASE WHEN prev_x IS NULL OR prev_y IS NULL THEN 0
-                 ELSE sqrt( (x - prev_x)^2 + (y - prev_y)^2 ) END AS step_distance,
-            GREATEST(0, ts_s - COALESCE(prev_ts_s, ts_s)) AS step_seconds,
-            x, y
-          FROM pos
-        )
-        SELECT
-          s.session_id,
-          ds.session_uid,
-          s.player_id,
-          s.player_uid,
-          SUM(step_distance) AS total_distance,
-          SUM(step_seconds)  AS total_seconds,
-          CASE WHEN SUM(step_seconds) > 0
-               THEN SUM(step_distance) / SUM(step_seconds)
-               ELSE NULL END AS avg_speed,
-          AVG(x)  AS mean_x,
-          AVG(y)  AS mean_y,
-          STDDEV_POP(x) AS sd_x,
-          STDDEV_POP(y) AS sd_y,
-          COUNT(*) AS samples
-        FROM steps s
-        JOIN dim_session ds ON ds.session_id = s.session_id
-        GROUP BY s.session_id, ds.session_uid, s.player_id, s.player_uid;
-    """,
-
-    "vw_player_summary": """
-        CREATE VIEW vw_player_summary AS
-        WITH swings AS (
-          SELECT
-            s.session_id, s.player_id,
-            COUNT(*) AS swings,
-            COUNT(*) FILTER (WHERE COALESCE(s.serve,false)) AS serves,
-            AVG(s.ball_speed) AS avg_ball_speed,
-            AVG(s.ball_player_distance) AS avg_ball_player_dist
-          FROM fact_swing s
-          GROUP BY s.session_id, s.player_id
-        )
-        SELECT
-          d.session_id,
-          ds.session_uid,
-          d.player_id,
-          d.sportai_player_uid AS player_uid,
-          d.full_name          AS player_name,
-          COALESCE(sw.swings,0) AS swings,
-          COALESCE(sw.serves,0) AS serves,
-          CASE WHEN COALESCE(sw.swings,0)>0 THEN sw.serves::decimal/sw.swings ELSE 0 END AS pct_serves,
-          sw.avg_ball_speed,
-          sw.avg_ball_player_dist,
-          mv.total_distance,
-          mv.total_seconds,
-          mv.avg_speed,
-          mv.mean_x, mv.mean_y, mv.sd_x, mv.sd_y,
-          mv.samples AS position_samples
-        FROM dim_player d
-        JOIN dim_session ds   ON ds.session_id = d.session_id
-        LEFT JOIN swings sw   ON sw.session_id = d.session_id AND sw.player_id = d.player_id
-        LEFT JOIN vw_player_movement mv ON mv.session_id = d.session_id AND mv.player_id = d.player_id;
-    """,
-
-    "vw_rally_summary": """
-        CREATE VIEW vw_rally_summary AS
-        WITH shot_counts AS (
-          SELECT r.session_id, r.rally_id,
-                 COUNT(*) AS swings
-          FROM dim_rally r
-          LEFT JOIN fact_swing s ON s.session_id = r.session_id
-                                AND s.ball_hit_s BETWEEN r.start_s AND r.end_s
-          GROUP BY r.session_id, r.rally_id
-        ),
-        bounce_counts AS (
-          SELECT r.session_id, r.rally_id,
-                 COUNT(*) AS bounces
-          FROM dim_rally r
-          LEFT JOIN fact_bounce b ON b.session_id = r.session_id
-                                 AND b.bounce_s BETWEEN r.start_s AND r.end_s
-          GROUP BY r.session_id, r.rally_id
-        )
-        SELECT
-          r.session_id,
-          ds.session_uid,
-          r.rally_id,
-          r.rally_number,
-          r.start_s, r.end_s,
-          NULLIF(r.end_s - r.start_s,0) AS duration_s,
-          COALESCE(sc.swings,0)  AS swings,
-          COALESCE(bc.bounces,0) AS bounces,
-          CASE WHEN NULLIF(r.end_s - r.start_s,0) IS NOT NULL AND (r.end_s - r.start_s) > 0
-               THEN sc.swings::decimal / (r.end_s - r.start_s)
-               ELSE NULL END AS shots_per_second
-        FROM dim_rally r
-        JOIN dim_session ds ON ds.session_id = r.session_id
-        LEFT JOIN shot_counts   sc ON sc.session_id = r.session_id AND sc.rally_id = r.rally_id
-        LEFT JOIN bounce_counts bc ON bc.session_id = r.session_id AND bc.rally_id = r.rally_id;
-    """,
-
-    "vw_shot_tempo": """
-        CREATE VIEW vw_shot_tempo AS
-        WITH s AS (
-          SELECT
-            s.session_id,
-            ds.session_uid,
-            s.player_id,
-            dp.sportai_player_uid AS player_uid,
-            s.ball_hit_s,
-            LAG(s.ball_hit_s) OVER (PARTITION BY s.session_id ORDER BY s.ball_hit_s) AS prev_global,
-            LAG(s.ball_hit_s) OVER (PARTITION BY s.session_id, s.player_id ORDER BY s.ball_hit_s) AS prev_player
-          FROM fact_swing s
-          JOIN dim_session ds ON ds.session_id = s.session_id
-          LEFT JOIN dim_player dp ON dp.player_id = s.player_id
-          WHERE s.ball_hit_s IS NOT NULL
-        )
-        SELECT
-          session_id, session_uid, player_id, player_uid,
-          AVG( CASE WHEN prev_global IS NOT NULL THEN (ball_hit_s - prev_global) END ) AS avg_intershot_s,
-          AVG( CASE WHEN prev_player IS NOT NULL THEN (ball_hit_s - prev_player) END ) AS avg_player_cadence_s,
-          COUNT(*) AS shots_count
-        FROM s
-        GROUP BY session_id, session_uid, player_id, player_uid;
+    # ---------------- PLAYER MOVEMENT (raw & agg) ----------------
+    "vw_player_movement": r"""
+    CREATE VIEW vw_player_movement AS
+    WITH moves AS (
+      SELECT
+        ds.session_uid,
+        dp.sportai_player_uid AS player_uid,
+        p.ts_s,
+        LAG(p.ts_s) OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s) AS prev_ts_s,
+        p.x, p.y,
+        LAG(p.x) OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s) AS px,
+        LAG(p.y) OVER (PARTITION BY p.session_id, p.player_id ORDER BY p.ts_s) AS py
+      FROM fact_player_position p
+      JOIN dim_session ds ON ds.session_id = p.session_id
+      JOIN dim_player  dp ON dp.player_id  = p.player_id
+    ),
+    step AS (
+      SELECT
+        session_uid, player_uid, ts_s,
+        sqrt( power(x - px, 2) + power(y - py, 2) )::float AS step_dist
+      FROM moves
+      WHERE px IS NOT NULL AND py IS NOT NULL
+    )
+    SELECT
+      session_uid, player_uid,
+      SUM(step_dist)::float AS total_distance_units,
+      COUNT(*)::int        AS steps
+    FROM step
+    GROUP BY 1,2;
     """,
 }
 
+# ----------- helpers (unchanged) -----------
 def _table_exists(conn, t):
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
@@ -336,7 +252,7 @@ def _column_exists(conn, t, c):
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='public' AND table_name=:t AND column_name=:c
         LIMIT 1
-    """), {"t": t, "c": c}).first() is not None
+    """), {"t": t}).first() is not None
 
 def _get_relkind(conn, name):
     row = conn.execute(text("""
@@ -357,8 +273,8 @@ def _drop_view_or_matview(conn, name):
 
 def _preflight_or_raise(conn):
     required_tables = [
-        "dim_session", "dim_player", "dim_rally",
-        "fact_swing", "fact_bounce", "fact_ball_position", "fact_player_position"
+        "dim_session","dim_player","dim_rally",
+        "fact_swing","fact_bounce","fact_ball_position","fact_player_position"
     ]
     missing = [t for t in required_tables if not _table_exists(conn, t)]
     if missing:
