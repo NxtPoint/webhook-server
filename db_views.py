@@ -1,17 +1,14 @@
 # db_views.py
 from sqlalchemy import text
 
-# -----------------------------------------------------------------------------
-# Which views to (re)create, in this order
-# -----------------------------------------------------------------------------
 VIEW_NAMES = [
-    # base convenience views (already in your app before)
+    # base convenience views
     "vw_swing",
     "vw_bounce",
     "vw_rally",
     "vw_ball_position",
     "vw_player_position",
-    # analytics views
+    # analytics views (with surrogate keys for BI)
     "vw_session_summary",
     "vw_player_summary",
     "vw_rally_summary",
@@ -19,27 +16,16 @@ VIEW_NAMES = [
     "vw_player_movement",
 ]
 
-# -----------------------------------------------------------------------------
-# SQL text for each view
-# -----------------------------------------------------------------------------
 CREATE_STMTS = {
     # ----------------------- BASE VIEWS -----------------------
     "vw_swing": """
         CREATE VIEW vw_swing AS
         WITH membership AS (
-          SELECT DISTINCT
-            ts.session_id,
-            'front'::text AS side,
-            x::text       AS player_uid
-          FROM team_session ts,
-               jsonb_array_elements_text(ts.data->'team_front') AS x
+          SELECT DISTINCT ts.session_id, 'front'::text AS side, x::text AS player_uid
+          FROM team_session ts, jsonb_array_elements_text(ts.data->'team_front') AS x
           UNION
-          SELECT DISTINCT
-            ts.session_id,
-            'back'::text AS side,
-            x::text      AS player_uid
-          FROM team_session ts,
-               jsonb_array_elements_text(ts.data->'team_back') AS x
+          SELECT DISTINCT ts.session_id, 'back'::text AS side, x::text AS player_uid
+          FROM team_session ts, jsonb_array_elements_text(ts.data->'team_back') AS x
         )
         SELECT
           s.swing_id,
@@ -64,10 +50,10 @@ CREATE_STMTS = {
           s.serve, s.serve_type,
           s.meta
         FROM fact_swing s
-        LEFT JOIN dim_player  dp ON dp.player_id   = s.player_id
-        LEFT JOIN dim_session ds ON ds.session_id   = s.session_id
-        LEFT JOIN membership  m  ON m.session_id    = s.session_id
-                                AND m.player_uid    = dp.sportai_player_uid;
+        LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
+        LEFT JOIN dim_session ds ON ds.session_id  = s.session_id
+        LEFT JOIN membership  m  ON m.session_id   = s.session_id
+                                AND m.player_uid   = dp.sportai_player_uid;
     """,
 
     "vw_bounce": """
@@ -82,8 +68,8 @@ CREATE_STMTS = {
             b.bounce_s, b.bounce_ts,
             b.x, b.y, b.bounce_type
         FROM fact_bounce b
-        LEFT JOIN dim_player dp  ON dp.player_id   = b.hitter_player_id
-        LEFT JOIN dim_session ds ON ds.session_id  = b.session_id;
+        LEFT JOIN dim_player  dp ON dp.player_id  = b.hitter_player_id
+        LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
     """,
 
     "vw_rally": """
@@ -122,12 +108,11 @@ CREATE_STMTS = {
             p.ts_s, p.ts, p.x, p.y
         FROM fact_player_position p
         LEFT JOIN dim_session ds ON ds.session_id = p.session_id
-        LEFT JOIN dim_player  dp ON dp.player_id   = p.player_id;
+        LEFT JOIN dim_player  dp ON dp.player_id  = p.player_id;
     """,
 
-    # ----------------------- ANALYTICS VIEWS -----------------------
+    # ----------------------- ANALYTICS VIEWS (with keys) -----------------------
 
-    # Fixed: no window function inside aggregate. We stage tempo gaps first, then aggregate.
     "vw_session_summary": """
         CREATE VIEW vw_session_summary AS
         WITH s AS (
@@ -211,22 +196,15 @@ CREATE_STMTS = {
         LEFT JOIN b         ON b.session_id         = s.session_id;
     """,
 
+    # Add a composite key for per-session players
     "vw_player_summary": """
         CREATE VIEW vw_player_summary AS
         WITH membership AS (
-          SELECT DISTINCT
-            ts.session_id,
-            'front'::text AS side,
-            x::text       AS player_uid
-          FROM team_session ts,
-               jsonb_array_elements_text(ts.data->'team_front') AS x
+          SELECT DISTINCT ts.session_id, 'front'::text AS side, x::text AS player_uid
+          FROM team_session ts, jsonb_array_elements_text(ts.data->'team_front') AS x
           UNION
-          SELECT DISTINCT
-            ts.session_id,
-            'back'::text AS side,
-            x::text      AS player_uid
-          FROM team_session ts,
-               jsonb_array_elements_text(ts.data->'team_back') AS x
+          SELECT DISTINCT ts.session_id, 'back'::text AS side, x::text AS player_uid
+          FROM team_session ts, jsonb_array_elements_text(ts.data->'team_back') AS x
         ),
         players AS (
           SELECT dp.session_id, dp.player_id, dp.sportai_player_uid, dp.full_name
@@ -257,6 +235,7 @@ CREATE_STMTS = {
         SELECT
           ds.session_uid,
           p.sportai_player_uid AS player_uid,
+          (ds.session_uid || '|' || COALESCE(p.sportai_player_uid,'')) AS session_player_key,
           COALESCE(p.full_name, p.sportai_player_uid) AS player_name,
           m.side AS player_side,
           COALESCE(sc.swings,0) AS swings,
@@ -274,6 +253,7 @@ CREATE_STMTS = {
         CREATE VIEW vw_rally_summary AS
         SELECT
           ds.session_uid,
+          (ds.session_uid || '|' || r.rally_number::text) AS rally_key,
           r.rally_number,
           r.start_s,
           r.end_s,
@@ -287,13 +267,16 @@ CREATE_STMTS = {
         ORDER BY ds.session_uid, r.rally_number;
     """,
 
-    # Shot-level tempo gaps (for histograms or detailed analysis)
+    # Shot-level with keys (row_id + composite session_player_key)
     "vw_shot_tempo": """
         CREATE VIEW vw_shot_tempo AS
         SELECT
           ds.session_uid,
           dp.sportai_player_uid AS player_uid,
+          (ds.session_uid || '|' || COALESCE(dp.sportai_player_uid,'')) AS session_player_key,
           fs.ball_hit_s AS shot_s,
+          -- stable row id within (session, player)
+          ROW_NUMBER() OVER (PARTITION BY fs.session_id, fs.player_id ORDER BY fs.ball_hit_s) AS row_id,
           LEAD(fs.ball_hit_s) OVER (PARTITION BY fs.session_id, fs.player_id ORDER BY fs.ball_hit_s) - fs.ball_hit_s AS tempo_gap
         FROM fact_swing fs
         JOIN dim_session ds ON ds.session_id=fs.session_id
@@ -301,7 +284,7 @@ CREATE_STMTS = {
         WHERE fs.ball_hit_s IS NOT NULL;
     """,
 
-    # Very light movement summary using step-to-step distance
+    # Movement with key
     "vw_player_movement": """
         CREATE VIEW vw_player_movement AS
         WITH base AS (
@@ -315,14 +298,15 @@ CREATE_STMTS = {
         steps AS (
           SELECT
             session_id, player_id, ts_s,
-            sqrt(POWER(x - prev_x, 2) + POWER(y - prev_y, 2))           AS step_dist,
-            (ts_s - prev_ts)                                            AS dt
+            sqrt(POWER(x - prev_x, 2) + POWER(y - prev_y, 2)) AS step_dist,
+            (ts_s - prev_ts)                                  AS dt
           FROM base
           WHERE prev_x IS NOT NULL AND prev_y IS NOT NULL AND prev_ts IS NOT NULL
         )
         SELECT
           ds.session_uid,
           dp.sportai_player_uid AS player_uid,
+          (ds.session_uid || '|' || COALESCE(dp.sportai_player_uid,'')) AS session_player_key,
           SUM(step_dist)::float  AS total_distance,
           AVG(step_dist)::float  AS avg_step_distance,
           AVG(dt)::float         AS avg_dt
@@ -333,9 +317,6 @@ CREATE_STMTS = {
     """,
 }
 
-# -----------------------------------------------------------------------------
-# Helpers (same contract as your existing file)
-# -----------------------------------------------------------------------------
 def _table_exists(conn, t):
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
@@ -358,7 +339,7 @@ def _get_relkind(conn, name):
         WHERE n.nspname='public' AND c.relname=:name
         LIMIT 1
     """), {"name": name}).first()
-    return row[0] if row else None  # 'v' view, 'm' matview, None
+    return row[0] if row else None
 
 def _drop_view_or_matview(conn, name):
     kind = _get_relkind(conn, name)
