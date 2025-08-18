@@ -2,7 +2,7 @@
 from sqlalchemy import text
 
 VIEW_NAMES = [
-    # base views (kept from your file)
+    # base views
     "vw_swing",
     "vw_bounce",
     "vw_rally",
@@ -17,7 +17,7 @@ VIEW_NAMES = [
 ]
 
 CREATE_STMTS = {
-    # ---------- BASE VIEWS (unchanged logic, tidied) ----------
+    # ---------- BASE VIEWS ----------
     "vw_swing": """
         CREATE VIEW vw_swing AS
         WITH membership AS (
@@ -119,7 +119,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
     """,
 
-    # ---------- ANALYTICS VIEWS FOR POWER BI ----------
+    # ---------- ANALYTICS VIEWS ----------
     "Session_Summary": """
         CREATE VIEW Session_Summary AS
         WITH s AS (
@@ -142,7 +142,7 @@ CREATE_STMTS = {
           GROUP BY 1
         ),
         sw_tempo AS (
-          -- compute per-shot deltas in a subquery, then aggregate to avoid window-in-aggregate error
+          -- window deltas in subquery then aggregate
           SELECT x.session_id,
                  AVG(x.delta_s)::float AS avg_tempo_s,
                  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY x.delta_s)::float AS p75_tempo_s,
@@ -150,7 +150,7 @@ CREATE_STMTS = {
           FROM (
             SELECT fs.session_id,
                    (LEAD(COALESCE(fs.ball_hit_s, fs.start_s))
-                    OVER (PARTITION BY fs.session_id ORDER BY COALESCE(fs.ball_hit_s, fs.start_s))
+                      OVER (PARTITION BY fs.session_id ORDER BY COALESCE(fs.ball_hit_s, fs.start_s))
                    - COALESCE(fs.ball_hit_s, fs.start_s)) AS delta_s
             FROM fact_swing fs
           ) x
@@ -158,7 +158,6 @@ CREATE_STMTS = {
           GROUP BY x.session_id
         ),
         rs AS (
-          -- shots per rally
           SELECT fs.session_id, dr.rally_id, COUNT(*)::int AS shots_in_rally
           FROM fact_swing fs
           JOIN dim_rally dr
@@ -175,7 +174,6 @@ CREATE_STMTS = {
         b AS (
           SELECT session_id,
                  COUNT(*)::int AS bounces,
-                 -- depth buckets on Y (tweak thresholds to your coordinate system)
                  SUM(CASE WHEN y <= -2.5 THEN 1 ELSE 0 END)::int AS deep_back,
                  SUM(CASE WHEN y > -2.5 AND y <  2.5 THEN 1 ELSE 0 END)::int AS mid_court,
                  SUM(CASE WHEN y >=  2.5 THEN 1 ELSE 0 END)::int AS near_net
@@ -308,20 +306,22 @@ CREATE_STMTS = {
             player_uid,
             (LEAD(t) OVER (PARTITION BY session_id, player_uid ORDER BY t) - t) AS delta_s
           FROM base
+        ),
+        deltas_pos AS (
+          SELECT session_id, player_uid, delta_s
+          FROM deltas
+          WHERE delta_s IS NOT NULL AND delta_s > 0
         )
         SELECT
           ds.session_uid,
           d.player_uid,
           (ds.session_uid || '|' || d.player_uid) AS session_player_key,
-          COUNT(*) FILTER (WHERE d.delta_s IS NOT NULL AND d.delta_s > 0)::int AS intervals,
-          AVG(d.delta_s) FILTER (WHERE d.delta_s IS NOT NULL AND d.delta_s > 0)::float AS avg_tempo_s,
-          PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY d.delta_s)::float
-            FILTER (WHERE d.delta_s IS NOT NULL AND d.delta_s > 0) AS p75_tempo_s,
-          PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY d.delta_s)::float
-            FILTER (WHERE d.delta_s IS NOT NULL AND d.delta_s > 0) AS p90_tempo_s
-        FROM deltas d
+          COUNT(*)::int AS intervals,
+          AVG(d.delta_s)::float AS avg_tempo_s,
+          PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY d.delta_s)::float AS p75_tempo_s,
+          PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY d.delta_s)::float AS p90_tempo_s
+        FROM deltas_pos d
         JOIN dim_session ds ON ds.session_id = d.session_id
-        WHERE d.delta_s IS NOT NULL AND d.delta_s > 0
         GROUP BY ds.session_uid, d.player_uid;
     """,
 
