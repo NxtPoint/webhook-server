@@ -108,20 +108,6 @@ def init_views(engine):
     from db_views import run_views
     run_views(engine)
 
-  # --- add near other imports ---
-from db_views_extra import init_views_extra
-
-# --- add near other /ops endpoints ---
-@app.get("/ops/init-views-extra")
-def ops_init_views_extra():
-    key = request.args.get("key", "")
-    if key != os.environ.get("OPS_KEY"):
-        return {"ok": False, "error": "unauthorized"}, 401
-    with get_db() as conn:
-        out = init_views_extra(conn)
-    return {"ok": True, **out}
-  
-
 # -------- quantization helpers --------
 def _quantize_time_to_fps(s, fps):
     if s is None or not fps:
