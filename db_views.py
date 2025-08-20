@@ -2,18 +2,26 @@
 from sqlalchemy import text
 
 VIEW_NAMES = [
-    # base views
+    # ---------- BASE VIEWS ----------
     "vw_swing",
     "vw_bounce",
     "vw_rally",
     "vw_ball_position",
     "vw_player_position",
-    # analytics views for Power BI
+
+    # ---------- ANALYTICS SUMMARY VIEWS (existing) ----------
     "Session_Summary",
     "Player_Summary",
     "Rally_Summary",
     "Shot_Tempo",
     "Player_Movement",
+
+    # ---------- NEW HELPER VIEWS (additive) ----------
+    # Order matters: shot_order before serve_return
+    "vw_shot_order",
+    "vw_point",
+    "vw_serve_return",
+    "vw_shot_tempo",
 ]
 
 CREATE_STMTS = {
@@ -119,7 +127,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
     """,
 
-    # ---------- ANALYTICS VIEWS ----------
+    # ---------- ANALYTICS SUMMARY VIEWS (existing) ----------
     "Session_Summary": """
         CREATE VIEW Session_Summary AS
         WITH s AS (
@@ -142,7 +150,6 @@ CREATE_STMTS = {
           GROUP BY 1
         ),
         sw_tempo AS (
-          -- window deltas in subquery then aggregate
           SELECT x.session_id,
                  AVG(x.delta_s)::float AS avg_tempo_s,
                  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY x.delta_s)::float AS p75_tempo_s,
@@ -196,11 +203,11 @@ CREATE_STMTS = {
           COALESCE(b.bounces,0)                        AS bounces,
           b.deep_back, b.mid_court, b.near_net
         FROM s
-        LEFT JOIN r        ON r.session_id        = s.session_id
+        LEFT JOIN r         ON r.session_id         = s.session_id
         LEFT JOIN sw_counts ON sw_counts.session_id = s.session_id
-        LEFT JOIN sw_tempo ON sw_tempo.session_id  = s.session_id
-        LEFT JOIN rs_agg   ON rs_agg.session_id    = s.session_id
-        LEFT JOIN b        ON b.session_id         = s.session_id;
+        LEFT JOIN sw_tempo  ON sw_tempo.session_id  = s.session_id
+        LEFT JOIN rs_agg    ON rs_agg.session_id    = s.session_id
+        LEFT JOIN b         ON b.session_id         = s.session_id;
     """,
 
     "Player_Summary": """
@@ -342,6 +349,191 @@ CREATE_STMTS = {
         WHERE dp.sportai_player_uid IS NOT NULL
         GROUP BY ds.session_uid, dp.sportai_player_uid;
     """,
+
+    # ---------- NEW HELPER VIEWS (additive) ----------
+
+    "vw_shot_order": """
+        CREATE VIEW vw_shot_order AS
+        SELECT
+          fs.swing_id,
+          fs.session_id,
+          ds.session_uid,
+          fs.player_id,
+          dp.sportai_player_uid AS player_uid,
+          fs.rally_id,
+          dr.rally_number,
+          COALESCE(fs.ball_hit_s, fs.start_s) AS t,
+          ROW_NUMBER() OVER (
+            PARTITION BY fs.session_id, fs.rally_id
+            ORDER BY COALESCE(fs.ball_hit_s, fs.start_s), fs.swing_id
+          ) AS shot_index,
+          ROW_NUMBER() OVER (
+            PARTITION BY fs.session_id, fs.rally_id, fs.player_id
+            ORDER BY COALESCE(fs.ball_hit_s, fs.start_s), fs.swing_id
+          ) AS player_shot_num
+        FROM fact_swing fs
+        JOIN dim_session ds ON ds.session_id = fs.session_id
+        LEFT JOIN dim_player dp ON dp.player_id = fs.player_id
+        LEFT JOIN dim_rally  dr ON dr.session_id = fs.session_id AND dr.rally_id = fs.rally_id
+        WHERE fs.rally_id IS NOT NULL;
+    """,
+
+    "vw_point": """
+        CREATE VIEW vw_point AS
+        WITH first_shot AS (
+          SELECT DISTINCT ON (fs.session_id, fs.rally_id)
+            fs.session_id,
+            fs.rally_id,
+            fs.swing_id AS first_swing_id,
+            fs.player_id AS first_hitter_id,
+            (CASE WHEN COALESCE(fs.serve,false) THEN fs.player_id END) AS server_id,
+            COALESCE(fs.ball_hit_s, fs.start_s) AS t0
+          FROM fact_swing fs
+          WHERE fs.rally_id IS NOT NULL
+          ORDER BY fs.session_id, fs.rally_id, COALESCE(fs.ball_hit_s, fs.start_s), fs.swing_id
+        ),
+        last_shot AS (
+          SELECT DISTINCT ON (fs.session_id, fs.rally_id)
+            fs.session_id,
+            fs.rally_id,
+            fs.swing_id AS last_swing_id,
+            COALESCE(fs.ball_hit_s, fs.end_s) AS t1
+          FROM fact_swing fs
+          WHERE fs.rally_id IS NOT NULL
+          ORDER BY fs.session_id, fs.rally_id, COALESCE(fs.ball_hit_s, fs.end_s) DESC, fs.swing_id DESC
+        ),
+        agg AS (
+          SELECT fs.session_id, fs.rally_id, COUNT(*)::int AS total_swings
+          FROM fact_swing fs
+          WHERE fs.rally_id IS NOT NULL
+          GROUP BY 1,2
+        )
+        SELECT
+          ds.session_uid,
+          a.session_id,
+          a.rally_id,
+          dr.rally_number,
+          a.total_swings,
+          f.first_swing_id,
+          f.first_hitter_id,
+          COALESCE(f.server_id, f.first_hitter_id) AS server_id,
+          l.last_swing_id,
+          GREATEST(0, l.t1 - f.t0)::float AS rally_duration_s
+        FROM agg a
+        JOIN first_shot f ON f.session_id = a.session_id AND f.rally_id = a.rally_id
+        JOIN last_shot  l ON l.session_id = a.session_id AND l.rally_id = a.rally_id
+        JOIN dim_session ds ON ds.session_id = a.session_id
+        LEFT JOIN dim_rally dr ON dr.session_id = a.session_id AND dr.rally_id = a.rally_id;
+    """,
+
+    "vw_serve_return": """
+        CREATE VIEW vw_serve_return AS
+        WITH so AS (
+          SELECT * FROM vw_shot_order
+        ),
+        serve_row AS (
+          SELECT DISTINCT ON (fs.session_id, fs.rally_id)
+            fs.session_id,
+            ds.session_uid,
+            fs.rally_id,
+            fs.player_id AS server_player_id,
+            fs.swing_id  AS serve_swing_id,
+            so.shot_index
+          FROM fact_swing fs
+          JOIN so ON so.swing_id = fs.swing_id
+          JOIN dim_session ds ON ds.session_id = fs.session_id
+          WHERE fs.rally_id IS NOT NULL
+          ORDER BY fs.session_id, fs.rally_id,
+            CASE WHEN COALESCE(fs.serve,false) THEN 0 ELSE 1 END,
+            so.shot_index
+        ),
+        return_row AS (
+          SELECT
+            s.session_id,
+            s.rally_id,
+            MAX(CASE WHEN s.shot_index = 2 THEN s.swing_id END) AS return_swing_id
+          FROM so s
+          GROUP BY s.session_id, s.rally_id
+        ),
+        serve_plus1_row AS (
+          SELECT
+            s.session_id,
+            s.rally_id,
+            MIN(s.shot_index) AS serve_plus1_index
+          FROM so s
+          JOIN serve_row sr
+            ON s.session_id = sr.session_id
+           AND s.rally_id   = sr.rally_id
+           AND s.player_id  = sr.server_player_id
+           AND s.shot_index > sr.shot_index
+          GROUP BY s.session_id, s.rally_id
+        ),
+        serve_plus1 AS (
+          SELECT so.session_id, so.rally_id, so.swing_id AS serve_plus1_swing_id
+          FROM so
+          JOIN serve_plus1_row sp1
+            ON so.session_id = sp1.session_id
+           AND so.rally_id   = sp1.rally_id
+           AND so.shot_index = sp1.serve_plus1_index
+        )
+        SELECT
+          sr.session_id,
+          sr.session_uid,
+          sr.rally_id,
+          dr.rally_number,
+          sr.server_player_id,
+          sr.serve_swing_id,
+          rr.return_swing_id,
+          sp.serve_plus1_swing_id
+        FROM serve_row sr
+        LEFT JOIN return_row rr
+          ON rr.session_id = sr.session_id AND rr.rally_id = sr.rally_id
+        LEFT JOIN serve_plus1 sp
+          ON sp.session_id = sr.session_id AND sp.rally_id = sr.rally_id
+        LEFT JOIN dim_rally dr
+          ON dr.session_id = sr.session_id AND dr.rally_id = sr.rally_id;
+    """,
+
+    "vw_shot_tempo": """
+        CREATE VIEW vw_shot_tempo AS
+        WITH base AS (
+          SELECT
+            fs.session_id,
+            ds.session_uid,
+            fs.player_id,
+            dp.sportai_player_uid AS player_uid,
+            fs.swing_id,
+            COALESCE(fs.ball_hit_s, fs.start_s) AS t
+          FROM fact_swing fs
+          JOIN dim_session ds ON ds.session_id = fs.session_id
+          LEFT JOIN dim_player dp ON dp.player_id = fs.player_id
+          WHERE dp.sportai_player_uid IS NOT NULL
+        ),
+        deltas AS (
+          SELECT
+            session_id,
+            session_uid,
+            player_id,
+            player_uid,
+            swing_id,
+            (t - LAG(t) OVER (
+              PARTITION BY session_id, player_id
+              ORDER BY t, swing_id
+            )) AS delta_s,
+            t
+          FROM base
+        )
+        SELECT
+          session_id,
+          session_uid,
+          player_id,
+          player_uid,
+          swing_id,
+          t,
+          delta_s
+        FROM deltas
+        WHERE delta_s IS NOT NULL AND delta_s >= 0;
+    """,
 }
 
 def _table_exists(conn, t):
@@ -401,7 +593,9 @@ def _preflight_or_raise(conn):
 def run_views(engine):
     with engine.begin() as conn:
         _preflight_or_raise(conn)
+        # drop first to avoid dependency issues
         for name in VIEW_NAMES:
             _drop_view_or_matview(conn, name)
+        # create in the declared order (shot_order precedes serve_return)
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
