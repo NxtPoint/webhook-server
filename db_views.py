@@ -555,16 +555,22 @@ def _get_relkind(conn, name):
         SELECT c.relkind
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname='public' AND c.relname=:name
+        WHERE n.nspname='public' AND lower(c.relname)=lower(:name)
         LIMIT 1
     """), {"name": name}).first()
-    return row[0] if row else None  # 'v' view, 'm' matview, None
+    return row[0] if row else None  # 'v' view, 'm' matview, 'r' table, None
 
 def _drop_view_or_matview(conn, name):
     kind = _get_relkind(conn, name)
     if kind == 'v':
         conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
     elif kind == 'm':
+        conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
+    elif kind == 'r':
+        conn.execute(text(f"DROP TABLE IF EXISTS {name} CASCADE;"))
+    else:
+        # fallback: attempt both view types just in case
+        conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
         conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
 
 def _preflight_or_raise(conn):
