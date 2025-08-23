@@ -363,7 +363,7 @@ CREATE_STMTS = {
             s.rally_id,
             r.rally_number AS point_number_real,
             so.shot_number_in_point,
-            s.inferred_point_id,                        -- for points without rally_id
+            s.inferred_point_id,
             s.player_id,
             s.player_name,
             s.player_uid,
@@ -378,7 +378,6 @@ CREATE_STMTS = {
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
 
-            -- column or JSON fallback (cast before COALESCE)
             COALESCE(
               s.ball_speed,
               NULLIF(s.meta->>'ball_speed','')::double precision
@@ -388,11 +387,9 @@ CREATE_STMTS = {
               NULLIF(s.meta->>'ball_player_distance','')::double precision
             ) AS ball_player_distance,
 
-            -- From normalization
             s.inferred_serve,
             s.normalized_swing_type,
 
-            -- Robust swing text from meta keys (lowercased)
             LOWER(NULLIF(COALESCE(
               s.meta->>'swing_type',
               s.meta->>'stroke',
@@ -408,38 +405,31 @@ CREATE_STMTS = {
           ORDER BY s.swing_id, s.t_clean
         ),
 
-        -- Detect per-stream unit scale and original t0 (pre-alignment) for the session
+        -- Per-session unit scales + pre-alignment zero (t0_raw)
         scales AS (
           SELECT
             b.session_id,
-
             CASE
               WHEN (SELECT COALESCE(MAX(ts_s),0) FROM fact_ball_position    WHERE session_id=b.session_id) > 1e5 THEN 1000.0
               WHEN (SELECT COALESCE(MAX(ts_s),0) FROM fact_ball_position    WHERE session_id=b.session_id) > 1e3 THEN 100.0
               ELSE 1.0
             END AS bp_scale,
-
             CASE
               WHEN (SELECT COALESCE(MAX(ts_s),0) FROM fact_player_position  WHERE session_id=b.session_id) > 1e5 THEN 1000.0
               WHEN (SELECT COALESCE(MAX(ts_s),0) FROM fact_player_position  WHERE session_id=b.session_id) > 1e3 THEN 100.0
               ELSE 1.0
             END AS pp_scale,
-
             CASE
               WHEN (SELECT COALESCE(MAX(bounce_s),0) FROM fact_bounce       WHERE session_id=b.session_id) > 1e5 THEN 1000.0
               WHEN (SELECT COALESCE(MAX(bounce_s),0) FROM fact_bounce       WHERE session_id=b.session_id) > 1e3 THEN 100.0
               ELSE 1.0
             END AS bo_scale,
-
-            -- original zero in seconds (before _rebuild_ts_from_seconds changed swing *_ts)
-            (
-              SELECT MIN(COALESCE(ball_hit_s, start_s, end_s))
-              FROM fact_swing WHERE session_id=b.session_id
-            ) AS t0_raw
+            (SELECT MIN(COALESCE(ball_hit_s, start_s, end_s))
+               FROM fact_swing WHERE session_id=b.session_id) AS t0_raw
           FROM (SELECT DISTINCT session_id FROM base) b
         ),
 
-        -- nearest player position at hit (±1.5s) on the re-based timeline
+        -- Player XY at hit (range predicate → uses index)
         player_loc AS (
           SELECT
             b.swing_id,
@@ -452,13 +442,15 @@ CREATE_STMTS = {
             FROM fact_player_position p
             WHERE p.session_id = b.session_id
               AND p.player_id  = b.player_id
-              AND ABS( (p.ts_s / sc.pp_scale) - sc.t0_raw - b.ball_hit_s ) <= 1.5
-            ORDER BY ABS( (p.ts_s / sc.pp_scale) - sc.t0_raw - b.ball_hit_s )
+              AND p.ts_s BETWEEN
+                    sc.pp_scale * (sc.t0_raw + b.ball_hit_s - 1.5)
+                AND sc.pp_scale * (sc.t0_raw + b.ball_hit_s + 1.5)
+            ORDER BY ABS(p.ts_s - sc.pp_scale * (sc.t0_raw + b.ball_hit_s))
             LIMIT 1
           ) pp ON TRUE
         ),
 
-        -- nearest ball position at hit (±1.0s)
+        -- Ball XY at hit (range predicate)
         ball_pos_at_hit AS (
           SELECT
             b.swing_id,
@@ -470,13 +462,15 @@ CREATE_STMTS = {
             SELECT pb.*
             FROM fact_ball_position pb
             WHERE pb.session_id = b.session_id
-              AND ABS( (pb.ts_s / sc.bp_scale) - sc.t0_raw - b.ball_hit_s ) <= 1.0
-            ORDER BY ABS( (pb.ts_s / sc.bp_scale) - sc.t0_raw - b.ball_hit_s )
+              AND pb.ts_s BETWEEN
+                    sc.bp_scale * (sc.t0_raw + b.ball_hit_s - 1.0)
+                AND sc.bp_scale * (sc.t0_raw + b.ball_hit_s + 1.0)
+            ORDER BY ABS(pb.ts_s - sc.bp_scale * (sc.t0_raw + b.ball_hit_s))
             LIMIT 1
           ) pb ON TRUE
         ),
 
-        -- first bounce after the hit (>= hit time)
+        -- First bounce after hit (>= hit)
         first_bounce_after_hit AS (
           SELECT
             b.swing_id,
@@ -490,13 +484,13 @@ CREATE_STMTS = {
             SELECT bb.*
             FROM fact_bounce bb
             WHERE bb.session_id = b.session_id
-              AND (bb.bounce_s / sc.bo_scale) - sc.t0_raw >= b.ball_hit_s
-            ORDER BY (bb.bounce_s / sc.bo_scale) - sc.t0_raw
+              AND bb.bounce_s >= sc.bo_scale * (sc.t0_raw + b.ball_hit_s)
+            ORDER BY bb.bounce_s
             LIMIT 1
           ) bb ON TRUE
         ),
 
-        -- fallback: first ball position shortly after hit (0.1–2.0s)
+        -- Fallback: earliest ball position soon after hit (0.1–2.0s)
         approx_bounce_from_ballpos AS (
           SELECT
             b.swing_id,
@@ -508,9 +502,10 @@ CREATE_STMTS = {
             SELECT pb2.*
             FROM fact_ball_position pb2
             WHERE pb2.session_id = b.session_id
-              AND (pb2.ts_s / sc.bp_scale) - sc.t0_raw >  b.ball_hit_s + 0.1
-              AND (pb2.ts_s / sc.bp_scale) - sc.t0_raw <= b.ball_hit_s + 2.0
-            ORDER BY (pb2.ts_s / sc.bp_scale) - sc.t0_raw
+              AND pb2.ts_s BETWEEN
+                    sc.bp_scale * (sc.t0_raw + b.ball_hit_s + 0.1)
+                AND sc.bp_scale * (sc.t0_raw + b.ball_hit_s + 2.0)
+            ORDER BY pb2.ts_s
             LIMIT 1
           ) pb2 ON TRUE
         ),
@@ -521,22 +516,18 @@ CREATE_STMTS = {
             pl.player_x_at_hit, pl.player_y_at_hit,
             fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
 
-            -- final ball-hit XY with fallback to ball positions
             COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
             COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
 
-            -- final bounce XY with fallback to ball positions
             COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
             COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
 
-            -- Shot result
             CASE
               WHEN fb.bounce_type IN ('out','net','long','wide') THEN 'out'
               WHEN fb.bounce_type IS NULL THEN NULL
               ELSE 'in'
             END AS shot_result,
 
-            -- Bounce surface summary
             CASE
               WHEN fb.bounce_type = 'net' THEN 'net'
               WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
@@ -548,7 +539,6 @@ CREATE_STMTS = {
               ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
             END AS ball_bounce_is_floor,
 
-            -- Depth label
             CASE
               WHEN fb.bounce_type IN ('net') THEN 'net'
               WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
@@ -567,8 +557,6 @@ CREATE_STMTS = {
         final_map AS (
           SELECT
             c.*,
-
-            -- Canonical swing type mapping (serve vs non-serve)
             CASE
               WHEN (c.inferred_serve OR c.serve) THEN
                 CASE
@@ -592,7 +580,6 @@ CREATE_STMTS = {
                 END
             END AS swing_type_final,
 
-            -- Human friendly timecodes
             TO_CHAR((TIME '00:00' + (c.start_s    * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS start_timecode,
             TO_CHAR((TIME '00:00' + (c.end_s      * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS end_timecode,
             TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode
@@ -602,48 +589,29 @@ CREATE_STMTS = {
           f.session_uid,
           f.session_id,
           f.rally_id,
-
           COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
-
           f.shot_number_in_point AS shot_number,
           f.swing_id,
-
           f.player_id,
           f.player_name,
           f.player_uid,
-
           f.swing_type_final,
-
           f.shot_result,
           f.shot_description_depth,
-
-          -- Bounce XY (with fallback)
           f.ball_bounce_surface,
           f.ball_bounce_is_floor,
           f.bounce_x_final AS ball_bounce_x,
           f.bounce_y_final AS ball_bounce_y,
-
-          -- Serve detail
           f.serve_type,
           f.serve,
-
-          -- Player position at hit
           f.player_x_at_hit, f.player_y_at_hit,
-
-          -- Ball hit XY (with fallback)
           f.ball_hit_x_final AS ball_hit_x,
           f.ball_hit_y_final AS ball_hit_y,
-
-          -- Timing
           f.start_s, f.end_s, f.ball_hit_s,
           f.start_ts, f.end_ts, f.ball_hit_ts,
           f.start_timecode, f.end_timecode, f.ball_hit_timecode,
-
-          -- Extras
           f.ball_speed,
           f.ball_player_distance,
-
-          -- QA
           f.inferred_serve
         FROM final_map f
         ORDER BY session_uid, point_number, shot_number;
