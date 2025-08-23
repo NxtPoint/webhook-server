@@ -10,7 +10,7 @@ VIEW_NAMES = [
     "vw_rally",
     "vw_bounce",
     "vw_player_position",
-    "vw_player_swing_dist",    # per-player distribution summary
+    "vw_player_swing_dist",    # per-player distribution summary (kept, not used in point_log)
 
     # Ordering helpers
     "vw_shot_order",           # legacy (rally-only)
@@ -32,10 +32,10 @@ CREATE_STMTS = {
           s.session_id,
           ds.session_uid,
           s.player_id,
-          dp.full_name AS player_name,
+          COALESCE(dp.full_name, 'Player ' || s.player_id::text) AS player_name,
           dp.sportai_player_uid AS player_uid,
 
-          -- Pass through SportAI player distribution JSON
+          -- Pass through SportAI player distribution JSON (not used in point_log anymore)
           (dp.swing_type_distribution)::jsonb AS player_swing_type_distribution,
 
           s.rally_id,
@@ -45,8 +45,8 @@ CREATE_STMTS = {
           s.ball_speed, s.ball_player_distance,
           COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
           s.serve, s.serve_type,
-          s.swing_type,                 -- raw label if present
-          s.meta                        -- raw per-swing json
+          s.swing_type,                 -- raw label if present (from SportAI)
+          s.meta                        -- raw per-swing json (used only for fallbacks in views)
         FROM fact_swing s
         LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
@@ -72,7 +72,7 @@ CREATE_STMTS = {
           SELECT
             b.*,
 
-            -- Sanitized timeline for ordering (always from *_ts)
+            -- Sanitized timeline for ordering (always from *_ts-derived seconds)
             COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean) AS t_clean,
 
             LAG(b.rally_id) OVER (
@@ -164,7 +164,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
     """,
 
-    # ---------- PER-PLAYER DISTRIBUTION SUMMARY ----------
+    # ---------- PER-PLAYER DISTRIBUTION SUMMARY (kept for dashboards, not used in point_log) ----------
     "vw_player_swing_dist": """
       CREATE VIEW vw_player_swing_dist AS
       SELECT
@@ -328,7 +328,8 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
-    # Now uses vw_shot_order_norm so all swings appear; LEFT JOIN rally for point_number
+    # Uses vw_shot_order_norm so all swings appear; LEFT JOIN rally for point_number
+    # No meta column exposed; no distribution columns in point_log.
     "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
@@ -359,35 +360,15 @@ CREATE_STMTS = {
               s.ball_speed,
               NULLIF(s.meta->>'ball_speed','')::double precision
             ) AS ball_speed,
-
             COALESCE(
               s.ball_player_distance,
               NULLIF(s.meta->>'ball_player_distance','')::double precision
             ) AS ball_player_distance,
 
-            s.meta,
-
             -- From normalization
             s.inferred_serve,
             s.normalized_swing_type,
-
-            -- Distribution (raw JSON)
-            s.player_swing_type_distribution AS player_swing_type_dist,
-
-            -- unpacked numeric fields
-            (s.player_swing_type_distribution->>'forehand')::float   AS dist_forehand,
-            (s.player_swing_type_distribution->>'backhand')::float   AS dist_backhand,
-            (s.player_swing_type_distribution->>'fh_slice')::float   AS dist_fh_slice,
-            (s.player_swing_type_distribution->>'bh_slice')::float   AS dist_bh_slice,
-            (s.player_swing_type_distribution->>'fh_volley')::float  AS dist_fh_volley,
-            (s.player_swing_type_distribution->>'bh_volley')::float  AS dist_bh_volley,
-            (s.player_swing_type_distribution->>'smash')::float      AS dist_smash,
-            (s.player_swing_type_distribution->>'1st_serve')::float  AS dist_first_serve,
-            (s.player_swing_type_distribution->>'2nd_serve')::float  AS dist_second_serve,
-            (s.player_swing_type_distribution->>'drop_shot')::float  AS dist_drop_shot,
-            (s.player_swing_type_distribution->>'tweener')::float    AS dist_tweener,
-            (s.player_swing_type_distribution->>'other')::float      AS dist_other
-
+            s.swing_type
           FROM vw_swing_norm s
           JOIN vw_shot_order_norm so
             ON so.session_id = s.session_id AND so.swing_id = s.swing_id
@@ -441,6 +422,18 @@ CREATE_STMTS = {
               ELSE 'in'
             END AS shot_result,
 
+            -- Bounce surface summary
+            CASE
+              WHEN fb.bounce_type = 'net' THEN 'net'
+              WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
+              WHEN fb.bounce_type IS NULL THEN NULL
+              ELSE 'floor'
+            END AS ball_bounce_surface,
+            CASE
+              WHEN fb.bounce_type IS NULL THEN NULL
+              ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
+            END AS ball_bounce_is_floor,
+
             -- Depth label (tune thresholds)
             CASE
               WHEN fb.bounce_type IN ('net') THEN 'net'
@@ -449,96 +442,92 @@ CREATE_STMTS = {
               WHEN fb.bounce_y <= -2.5 THEN 'deep'
               WHEN fb.bounce_y BETWEEN -2.5 AND 2.5 THEN 'mid'
               ELSE 'short'
-            END AS shot_description_depth,
-
-            -- Rally box A-D (quadrant-style; adjust to your axes)
-            CASE
-              WHEN b.serve THEN NULL
-              WHEN fb.bounce_x IS NULL OR fb.bounce_y IS NULL THEN NULL
-              WHEN fb.bounce_x < 0 AND fb.bounce_y >= 0 THEN 'A'
-              WHEN fb.bounce_x >= 0 AND fb.bounce_y >= 0 THEN 'B'
-              WHEN fb.bounce_x < 0 AND fb.bounce_y < 0 THEN 'C'
-              WHEN fb.bounce_x >= 0 AND fb.bounce_y < 0 THEN 'D'
-            END AS rally_box_ad,
-
-            -- Serve target 1–8 (only for serves; simple split)
-            CASE
-              WHEN b.serve IS NOT TRUE THEN NULL
-              WHEN fb.bounce_x IS NULL OR fb.bounce_y IS NULL THEN NULL
-              ELSE
-                CASE
-                  WHEN fb.bounce_y >= 0 THEN   -- deuce court 1–4
-                    CASE
-                      WHEN fb.bounce_x <  -1.5 THEN 1
-                      WHEN fb.bounce_x BETWEEN -1.5 AND -0.5 THEN 2
-                      WHEN fb.bounce_x BETWEEN -0.5 AND  0.5 THEN 3
-                      ELSE 4
-                    END
-                  ELSE                          -- ad court 5–8
-                    CASE
-                      WHEN fb.bounce_x <  -1.5 THEN 5
-                      WHEN fb.bounce_x BETWEEN -1.5 AND -0.5 THEN 6
-                      WHEN fb.bounce_x BETWEEN -0.5 AND  0.5 THEN 7
-                      ELSE 8
-                    END
-                END
-            END AS serve_target_1_8,
-
-            -- Simple shot confidence if present in meta JSON
-            NULLIF((b.meta->>'confidence'), '')::float AS shot_confidence
+            END AS shot_description_depth
           FROM base b
           LEFT JOIN player_loc pl ON pl.swing_id = b.swing_id
           LEFT JOIN first_bounce_after_hit fb ON fb.swing_id = b.swing_id
+        ),
+        final_map AS (
+          SELECT
+            c.*,
+
+            -- Canonical swing type mapping (SportAI taxonomy)
+            CASE
+              WHEN (c.inferred_serve OR c.serve) THEN
+                CASE
+                  WHEN c.serve_type ILIKE '1%%serve' THEN '1st_serve'
+                  WHEN c.serve_type ILIKE '2%%serve' THEN '2nd_serve'
+                  ELSE 'serve'
+                END
+              ELSE
+                CASE
+                  WHEN c.swing_type ILIKE 'forehand%%' OR c.swing_type ILIKE 'fh%%' THEN 'forehand'
+                  WHEN c.swing_type ILIKE 'backhand%%' OR c.swing_type ILIKE 'bh%%' THEN 'backhand'
+                  WHEN c.swing_type ILIKE '%%forehand%%slice%%' OR c.swing_type ILIKE 'fh_slice%%' THEN 'fh_slice'
+                  WHEN c.swing_type ILIKE '%%backhand%%slice%%' OR c.swing_type ILIKE 'bh_slice%%' THEN 'bh_slice'
+                  WHEN c.swing_type ILIKE '%%forehand%%volley%%' OR c.swing_type ILIKE 'fh_volley%%' THEN 'fh_volley'
+                  WHEN c.swing_type ILIKE '%%backhand%%volley%%' OR c.swing_type ILIKE 'bh_volley%%' THEN 'bh_volley'
+                  WHEN c.swing_type ILIKE '%%smash%%' OR c.swing_type ILIKE '%%overhead%%' THEN 'smash'
+                  WHEN c.swing_type ILIKE '%%drop%%' THEN 'drop_shot'
+                  WHEN c.swing_type ILIKE '%%tweener%%' THEN 'tweener'
+                  ELSE 'other'
+                END
+            END AS swing_type_final,
+
+            -- Human friendly timecodes (keep *_ts for traceability, but use these in BI)
+            TO_CHAR((TIME '00:00' + (c.start_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')     AS start_timecode,
+            TO_CHAR((TIME '00:00' + (c.end_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')       AS end_timecode,
+            TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')  AS ball_hit_timecode
+          FROM classify c
         )
         SELECT
-          c.session_uid,
-          c.session_id,
-          c.rally_id,
+          f.session_uid,
+          f.session_id,
+          f.rally_id,
 
           -- Real rally number if present; else inferred point id
-          COALESCE(c.point_number_real, c.inferred_point_id) AS point_number,
+          COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
 
-          c.shot_number_in_point AS shot_number,
-          c.swing_id,
+          f.shot_number_in_point AS shot_number,
+          f.swing_id,
 
           -- Player who executed the shot
-          c.player_id,
-          c.player_name,
-          c.player_uid,
+          f.player_id,
+          f.player_name,
+          f.player_uid,
+
+          -- Canonical swing type
+          f.swing_type_final,
 
           -- Result & description
-          c.shot_result,
-          c.shot_description_depth,
+          f.shot_result,
+          f.shot_description_depth,
 
-          -- Positions / classifications
-          c.serve_type,
-          c.serve,
-          c.serve_target_1_8,
-          c.rally_box_ad,
-          c.player_x_at_hit, c.player_y_at_hit,
-          c.ball_hit_x, c.ball_hit_y,
-          c.bounce_x AS ball_bounce_x, c.bounce_y AS ball_bounce_y,
+          -- Bounce fields
+          f.ball_bounce_surface,
+          f.ball_bounce_is_floor,
+          f.bounce_x AS ball_bounce_x, f.bounce_y AS ball_bounce_y,
 
-          -- Timing (clean seconds)
-          c.start_s, c.end_s, c.ball_hit_s,
-          c.start_ts, c.end_ts, c.ball_hit_ts,
+          -- Serve detail
+          f.serve_type,
+          f.serve,
+
+          -- Position fields
+          f.player_x_at_hit, f.player_y_at_hit,
+          f.ball_hit_x, f.ball_hit_y,
+
+          -- Timing
+          f.start_s, f.end_s, f.ball_hit_s,
+          f.start_ts, f.end_ts, f.ball_hit_ts,
+          f.start_timecode, f.end_timecode, f.ball_hit_timecode,
 
           -- Extras
-          c.ball_speed,
-          c.ball_player_distance,
-          c.shot_confidence,
-          c.meta AS meta,     -- expose raw JSON for debugging
+          f.ball_speed,
+          f.ball_player_distance,
 
-          -- QA fields
-          c.inferred_serve,
-          c.normalized_swing_type,
-
-          -- Distribution fields for convenience in BI
-          c.player_swing_type_dist,
-          c.dist_forehand, c.dist_backhand, c.dist_fh_slice, c.dist_bh_slice,
-          c.dist_fh_volley, c.dist_bh_volley, c.dist_smash,
-          c.dist_first_serve, c.dist_second_serve, c.dist_drop_shot, c.dist_tweener, c.dist_other
-        FROM classify c
+          -- QA (keep if you want visibility on inference)
+          f.inferred_serve
+        FROM final_map f
         ORDER BY session_uid, point_number, shot_number_in_point;
     """,
 }
@@ -611,7 +600,6 @@ def _preflight_or_raise(conn):
         ("fact_bounce", "x"),
         ("fact_bounce", "y"),
         ("fact_player_position", "ts"),
-        # distribution JSON lives on dim_player; view will fail if absent
         ("dim_player", "swing_type_distribution"),
     ]
     missing_cols = [(t,c) for (t,c) in checks if not _column_exists(conn, t, c)]
