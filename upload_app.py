@@ -695,12 +695,13 @@ def ops_db_counts():
         }
     return jsonify({"ok": True, "counts": counts})
 
-# 🔧 UPDATED: accept GET or POST with JSON-body { "q": "select ..." }
+# 🔧 UPDATED: accept GET/POST, optional ?timeout_ms= (default 60000)
 @app.route("/ops/sql", methods=["GET", "POST"])
 def ops_sql():
     if not _guard():
         return _forbid()
 
+    # pull query from POST json/form or GET
     q = None
     if request.method == "POST":
         if request.is_json:
@@ -713,26 +714,34 @@ def ops_sql():
     q = (q or "").strip()
     ql = q.lstrip().lower()
 
+    # only SELECT/CTEs for this endpoint
     if not (ql.startswith("select") or ql.startswith("with")):
         return Response("Only SELECT/CTE queries are allowed", status=400)
 
+    # single statement only
     stripped = q.strip()
     if ";" in stripped[:-1]:
         return Response("Only a single statement is allowed", status=400)
 
+    # default LIMIT safety if user forgot
     if " limit " not in ql:
         q = f"{stripped.rstrip(';')} LIMIT 200"
 
+    # allow custom timeout (ms); default 60s
+    try:
+        timeout_ms = int(request.args.get("timeout_ms", "60000"))
+    except Exception:
+        timeout_ms = 60000
+
     try:
         with engine.begin() as conn:
-            conn.execute(text("SET LOCAL statement_timeout = 10000"))
+            conn.execute(text(f"SET LOCAL statement_timeout = {timeout_ms}"))
             conn.execute(text("SET LOCAL TRANSACTION READ ONLY"))
             rows = conn.execute(text(q)).mappings().all()
             data = [dict(r) for r in rows]
         return jsonify({"ok": True, "rows": len(data), "data": data})
     except Exception as e:
-        # Return the actual DB error text for fast diagnosis
-        return jsonify({"ok": False, "error": str(e), "query": q}), 400
+        return jsonify({"ok": False, "error": str(e), "query": q, "timeout_ms": timeout_ms}), 400
     
 @app.get("/ops/reconcile")
 def ops_reconcile():
