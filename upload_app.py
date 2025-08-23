@@ -638,41 +638,70 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         """), {"sid": session_id, "s": ts_s}).fetchone()
         return row[0] if row else None
 
-    # bounces
-    for b in payload.get("ball_bounces") or []:
-        s = (_time_s(b.get("timestamp")) or
-            _time_s(b.get("timestamp_s")) or _time_s(b.get("ts")) or _time_s(b.get("t")))
-        btype = b.get("type") or b.get("bounce_type")
-        hitter_uid = str(b.get("player_id") or b.get("sportai_player_uid") or "") if (b.get("player_id") or b.get("sportai_player_uid")) else None
-        hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
+# --- bounces (safe vars, no shadowing) ---
+for b in (payload.get("ball_bounces") or []):
+    s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) \
+         or _time_s(b.get("ts")) or _time_s(b.get("t"))
+    bx = _float(b.get("x")) if b.get("x") is not None else None
+    by = _float(b.get("y")) if b.get("y") is not None else None
+    btype = b.get("type") or b.get("bounce_type")
+    hitter_uid = (b.get("player_id") or b.get("sportai_player_uid"))
+    hitter_uid = str(hitter_uid) if hitter_uid is not None else None
+    hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
+
+    conn.execute(text("""
+        INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id,
+                                 bounce_s, bounce_ts, x,  y,  bounce_type)
+        VALUES                   (:sid,      :pid,             :rid,
+                                 :s,        :ts,       :x, :y, :bt)
+    """), {
+        "sid": session_id,
+        "pid": hitter_pid,
+        "rid": rally_id_for_ts(s),
+        "s": s,
+        "ts": seconds_to_ts(base_dt, s),
+        "x": bx, "y": by,
+        "bt": btype
+    })
+
+# --- ball positions (accept timestamp OR timestamp_s) ---
+for p in (payload.get("ball_positions") or []):
+    s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
+         or _time_s(p.get("ts")) or _time_s(p.get("t"))
+    hx = _float(p.get("x")) if p.get("x") is not None else None
+    hy = _float(p.get("y")) if p.get("y") is not None else None
+
+    conn.execute(text("""
+        INSERT INTO fact_ball_position (session_id, ts_s, ts,  x,  y)
+        VALUES                         (:sid,       :ss,  :ts, :x, :y)
+    """), {
+        "sid": session_id,
+        "ss": s,
+        "ts": seconds_to_ts(base_dt, s),
+        "x": hx, "y": hy
+    })
+
+# --- player positions (accept timestamp OR timestamp_s) ---
+for puid, arr in (payload.get("player_positions") or {}).items():
+    pid = uid_to_player_id.get(str(puid))
+    if not pid:
+        continue
+    for p in (arr or []):
+        s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
+             or _time_s(p.get("ts")) or _time_s(p.get("t"))
+        px = _float(p.get("x")) if p.get("x") is not None else None
+        py = _float(p.get("y")) if p.get("y") is not None else None
+
         conn.execute(text("""
-            INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id, bounce_s, bounce_ts, x, y, bounce_type)
-            VALUES (:sid, :pid, :rid, :s, :ts, :x, :y, :bt)
-        """), {"sid": session_id, "pid": hitter_pid, "rid": rally_id_for_ts(s),
-               "s": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y, "bt": btype})
-
-    # ball positions
-    for p in payload.get("ball_positions") or []:
-        s = (_time_s(p.get("timestamp")) or
-            _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t")))
-
-        x = _float(p.get("x")); y = _float(p.get("y"))
-        conn.execute(text("""
-            INSERT INTO fact_ball_position (session_id, ts_s, ts, x, y)
-            VALUES (:sid, :ss, :ts, :x, :y)
-        """), {"sid": session_id, "ss": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y})
-
-    # player positions
-    for puid, arr in (payload.get("player_positions") or {}).items():
-        pid = uid_to_player_id.get(str(puid))
-        for p in arr or []:
-            s = (_time_s(p.get("timestamp")) or
-                _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t")))
-            x = _float(p.get("x")); y = _float(p.get("y"))
-            conn.execute(text("""
-                INSERT INTO fact_player_position (session_id, player_id, ts_s, ts, x, y)
-                VALUES (:sid, :pid, :ss, :ts, :x, :y)
-            """), {"sid": session_id, "pid": pid, "ss": s, "ts": seconds_to_ts(base_dt, s), "x": x, "y": y})
+            INSERT INTO fact_player_position (session_id, player_id, ts_s, ts,  x,  y)
+            VALUES                           (:sid,       :pid,      :ss,  :ts, :x, :y)
+        """), {
+            "sid": session_id,
+            "pid": pid,
+            "ss": s,
+            "ts": seconds_to_ts(base_dt, s),
+            "x": px, "y": py
+        })
 
     # optional blocks
     for t in payload.get("team_sessions") or []:
