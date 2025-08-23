@@ -283,13 +283,15 @@ def _gather_all_swings(payload):
                 norm["player_uid"] = p_uid
             yield norm
 
-# ---------------------- ingestion post-processing helpers ----------------------
+# ---------------------- ingestion repair helpers ----------------------
 def _link_swings_to_rallies(conn, session_id=None):
     """
-    Stamp fact_swing.rally_id by matching each swing's hit/start time into the rally window.
-    Idempotent; can run for one session or all.
+    Stamp fact_swing.rally_id by matching each swing's hit/start time
+    into the rally [start_s, end_s] window. Idempotent.
+    If session_id is None, runs for all sessions.
     """
     cond = "TRUE" if session_id is None else "fs.session_id = :sid"
+
     sql_link = f"""
     WITH t AS (
       SELECT fs.swing_id, dr.rally_id
@@ -309,20 +311,22 @@ def _link_swings_to_rallies(conn, session_id=None):
 
 def _normalize_serve_flags(conn, session_id=None):
     """
-    Ensure exactly one serve per rally:
-      - If no serve flagged: set first swing to serve=TRUE.
-      - If multiple serves: keep earliest only.
+    Ensure exactly one serve per rally (the first swing).
+    - If SportAI provided serve=True, we keep it.
+    - If no serve flagged in a rally, set the earliest swing to serve=True.
+    - If multiple serves flagged, keep only the earliest.
+    Idempotent; limited to session_id if provided.
     """
     cond = "TRUE" if session_id is None else "fs.session_id = :sid"
 
-    # First swing per rally
     sql_first = f"""
     DROP TABLE IF EXISTS _first_sw;
     CREATE TEMP TABLE _first_sw AS
     SELECT fs.session_id, fs.rally_id,
            MIN(COALESCE(fs.ball_hit_s, fs.start_s)) AS t0
       FROM fact_swing fs
-     WHERE {cond} AND fs.rally_id IS NOT NULL
+     WHERE fs.rally_id IS NOT NULL
+       AND {cond}
      GROUP BY fs.session_id, fs.rally_id;
 
     DROP TABLE IF EXISTS _first_sw_ids;
@@ -336,23 +340,21 @@ def _normalize_serve_flags(conn, session_id=None):
     """
     conn.execute(text(sql_first), {"sid": session_id} if session_id else {})
 
-    # If no serve in rally, set first swing to serve=TRUE
     sql_set_first_if_none = f"""
-    WITH rws AS (
+    WITH rallies_without_serve AS (
       SELECT fs.session_id, fs.rally_id
       FROM fact_swing fs
       WHERE {cond} AND fs.rally_id IS NOT NULL
       GROUP BY fs.session_id, fs.rally_id
-      HAVING SUM(CASE WHEN COALESCE(fs.serve,FALSE) THEN 1 ELSE 0 END) = 0
+      HAVING SUM(CASE WHEN COALESCE(fs.serve, FALSE) THEN 1 ELSE 0 END) = 0
     )
     UPDATE fact_swing fs
        SET serve = TRUE
      WHERE fs.swing_id IN (SELECT swing_id FROM _first_sw_ids)
-       AND (fs.session_id, fs.rally_id) IN (SELECT session_id, rally_id FROM rws);
+       AND (fs.session_id, fs.rally_id) IN (SELECT session_id, rally_id FROM rallies_without_serve);
     """
     conn.execute(text(sql_set_first_if_none), {"sid": session_id} if session_id else {})
 
-    # If multiple serves, clear all but earliest
     sql_clear_extra_serves = f"""
     WITH serves AS (
       SELECT fs.session_id, fs.rally_id, fs.swing_id,
@@ -635,7 +637,7 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         except IntegrityError:
             pass
 
-    # >>> Link swings to rallies & normalize serves for THIS session <<<
+    # === NEW: link swings to rallies and normalize serves for THIS session ===
     _link_swings_to_rallies(conn, session_id)
     _normalize_serve_flags(conn, session_id)
 
@@ -987,15 +989,18 @@ def ops_list_sessions():
         data = [dict(r) for r in rows]
     return jsonify({"ok": True, "rows": len(data), "data": data})
 
-# ---------- NEW: repair endpoint to backfill rally_id + serve flags ----------
+# ---------- NEW: repair/backfill swings ↔ rallies + serve flags ----------
 @app.get("/ops/repair-swings")
 def ops_repair_swings():
     if not _guard(): return _forbid()
-    session_uid = request.args.get("session_uid")
+    session_uid = request.args.get("session_uid")  # optional
     with engine.begin() as conn:
         session_id = None
         if session_uid:
-            row = conn.execute(text("SELECT session_id FROM dim_session WHERE session_uid = :u"), {"u": session_uid}).first()
+            row = conn.execute(
+                text("SELECT session_id FROM dim_session WHERE session_uid = :u"),
+                {"u": session_uid}
+            ).first()
             if not row:
                 return jsonify({"ok": False, "error": "unknown session_uid"}), 400
             session_id = row[0]
@@ -1159,7 +1164,7 @@ def api_session_rallies(session_uid):
         sid = srow["session_id"]
         rows = conn.execute(text("""
             SELECT r.rally_number, r.start_s, r.end_s,
-                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=r.session_id AND b.rally_id=r.rally_id) AS bounces
+                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=r.session_id AND b.rally_id=b.rally_id) AS bounces
             FROM dim_rally r
             WHERE r.session_id=:sid
             ORDER BY r.rally_number
