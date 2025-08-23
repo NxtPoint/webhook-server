@@ -527,6 +527,7 @@ CREATE_STMTS = {
           c.ball_speed,
           c.ball_player_distance,
           c.shot_confidence,
+          c.meta AS meta,     -- expose raw JSON for debugging
 
           -- QA fields
           c.inferred_serve,
