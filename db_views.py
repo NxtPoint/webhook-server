@@ -370,12 +370,14 @@ CREATE_STMTS = {
         s.serve,
         s.serve_type,
 
-        -- Clean seconds derived from *_ts (post-alignment)
-        s.start_s_clean     AS start_s,
-        s.end_s_clean       AS end_s,
-        s.ball_hit_s_clean  AS ball_hit_s,
+        -- Use seconds that share the same origin as other fact tables.
+        COALESCE(s.start_s,     s.start_s_clean)     AS start_s,
+        COALESCE(s.end_s,       s.end_s_clean)       AS end_s,
+        COALESCE(s.ball_hit_s,  s.ball_hit_s_clean)  AS ball_hit_s,
 
+        -- keep *_ts for traceability/timecodes
         s.start_ts, s.end_ts, s.ball_hit_ts,
+
         s.ball_hit_x, s.ball_hit_y,
 
         COALESCE(
@@ -405,6 +407,7 @@ CREATE_STMTS = {
       ORDER BY s.swing_id, s.t_clean
     ),
 
+    -- Nearest player position by seconds (same origin)
     player_loc AS (
       SELECT
         b.swing_id,
@@ -416,13 +419,13 @@ CREATE_STMTS = {
         FROM fact_player_position p
         WHERE p.session_id = b.session_id
           AND p.player_id  = b.player_id
-          AND p.ts BETWEEN b.ball_hit_ts - INTERVAL '3 seconds'
-                      AND b.ball_hit_ts + INTERVAL '3 seconds'
-        ORDER BY ABS(EXTRACT(EPOCH FROM (p.ts - b.ball_hit_ts)))
+          AND p.ts_s IS NOT NULL
+        ORDER BY ABS(p.ts_s - b.ball_hit_s)     -- seconds vs seconds
         LIMIT 1
       ) pp ON TRUE
     ),
 
+    -- Ball XY at contact (fallback for ball_hit_x/y)
     ball_pos_at_hit AS (
       SELECT
         b.swing_id,
@@ -433,13 +436,13 @@ CREATE_STMTS = {
         SELECT pb.*
         FROM fact_ball_position pb
         WHERE pb.session_id = b.session_id
-          AND pb.ts BETWEEN b.ball_hit_ts - INTERVAL '1 second'
-                      AND b.ball_hit_ts + INTERVAL '1 second'
-        ORDER BY ABS(EXTRACT(EPOCH FROM (pb.ts - b.ball_hit_ts)))
+          AND pb.ts_s BETWEEN b.ball_hit_s - 1 AND b.ball_hit_s + 1
+        ORDER BY ABS(pb.ts_s - b.ball_hit_s)
         LIMIT 1
       ) pb ON TRUE
     ),
 
+    -- First bounce after the hit (by seconds)
     first_bounce_after_hit AS (
       SELECT
         b.swing_id,
@@ -453,15 +456,16 @@ CREATE_STMTS = {
         FROM fact_bounce bb
         WHERE bb.session_id = b.session_id
           AND (
-                (b.rally_id IS NOT NULL AND bb.rally_id = b.rally_id AND bb.bounce_ts >= b.ball_hit_ts)
-            OR (b.rally_id IS NULL     AND bb.bounce_ts >= b.ball_hit_ts
-                                      AND bb.bounce_ts <= b.ball_hit_ts + INTERVAL '2 seconds')
+                (b.rally_id IS NOT NULL AND bb.rally_id = b.rally_id AND bb.bounce_s >= b.ball_hit_s)
+            OR (b.rally_id IS NULL     AND bb.bounce_s >= b.ball_hit_s
+                                      AND bb.bounce_s <= b.ball_hit_s + 2)
               )
-        ORDER BY bb.bounce_ts
+        ORDER BY bb.bounce_s
         LIMIT 1
       ) bb ON TRUE
     ),
 
+    -- Approximate bounce from first ball position after the hit (fallback)
     approx_bounce_from_ballpos AS (
       SELECT
         b.swing_id,
@@ -472,9 +476,9 @@ CREATE_STMTS = {
         SELECT pb2.*
         FROM fact_ball_position pb2
         WHERE pb2.session_id = b.session_id
-          AND pb2.ts > b.ball_hit_ts
-          AND pb2.ts <= b.ball_hit_ts + INTERVAL '2 seconds'
-        ORDER BY pb2.ts
+          AND pb2.ts_s >  b.ball_hit_s
+          AND pb2.ts_s <= b.ball_hit_s + 2
+        ORDER BY pb2.ts_s
         LIMIT 1
       ) pb2 ON TRUE
     ),
@@ -485,9 +489,11 @@ CREATE_STMTS = {
         pl.player_x_at_hit, pl.player_y_at_hit,
         fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
 
+        -- ball-hit XY with fallback
         COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
         COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
 
+        -- bounce XY with fallback
         COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
         COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
 
@@ -549,6 +555,7 @@ CREATE_STMTS = {
             END
         END AS swing_type_final,
 
+        -- timecodes (derived from seconds; just for display)
         TO_CHAR((TIME '00:00' + (c.start_s    * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS start_timecode,
         TO_CHAR((TIME '00:00' + (c.end_s      * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS end_timecode,
         TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode
