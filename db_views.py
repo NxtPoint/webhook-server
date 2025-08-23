@@ -1,7 +1,7 @@
 # db_views.py
 from sqlalchemy import text
 
-# Only the views needed to support the transaction log + minimal helpers
+# Views required for the transaction log + minimal helpers
 VIEW_NAMES = [
     # Base helpers
     "vw_swing",
@@ -37,7 +37,8 @@ CREATE_STMTS = {
           s.ball_speed, s.ball_player_distance,
           COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
           s.serve, s.serve_type,
-          s.meta
+          s.swing_type,            -- if present in fact_swing (kept for traceability)
+          s.meta                   -- raw per-swing json for deep dives
         FROM fact_swing s
         LEFT JOIN dim_player  dp ON dp.player_id   = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id   = s.session_id;
@@ -67,7 +68,7 @@ CREATE_STMTS = {
             b.rally_id,
             b.bounce_s, b.bounce_ts,
             b.x, b.y,
-            b.bounce_type  -- expect values like 'in','out','net','long','wide' (tune to your feed)
+            b.bounce_type  -- expect values like 'in','out','net','long','wide'
         FROM fact_bounce b
         LEFT JOIN dim_player dp ON dp.player_id = b.hitter_player_id
         LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
@@ -128,7 +129,7 @@ CREATE_STMTS = {
           GROUP BY session_id, rally_id, rally_number
         ),
         serve_row AS (
-          -- identify server as the player for the first swing that has serve=TRUE, otherwise fallback to first hitter
+          -- server is the first swing flagged serve=TRUE, else fallback to first hitter
           SELECT
             fl.session_id, fl.rally_id,
             COALESCE( (SELECT fs.player_id
@@ -142,7 +143,7 @@ CREATE_STMTS = {
           FROM first_last fl
         ),
         last_swing_bounce AS (
-          -- find the first bounce after the last swing (within same rally)
+          -- first bounce after the last swing (within same rally)
           SELECT
             fl.session_id, fl.rally_id,
             b.bounce_id, b.bounce_type, b.x AS bounce_x, b.y AS bounce_y
@@ -179,8 +180,8 @@ CREATE_STMTS = {
                   FROM dim_player dp2
                   WHERE dp2.session_id = fl.session_id
                     AND dp2.player_id <> fl.last_hitter_id
-                  LIMIT 1) -- opponent wins
-            ELSE fl.last_hitter_id -- last hitter wins (ball not returned)
+                  LIMIT 1)   -- opponent wins
+            ELSE fl.last_hitter_id           -- last hitter wins (ball not returned)
           END AS winner_player_id
         FROM first_last fl
         JOIN dim_session ds ON ds.session_id = fl.session_id
@@ -266,7 +267,7 @@ CREATE_STMTS = {
               WHEN fb.bounce_type IN ('net') THEN 'net'
               WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
               WHEN fb.bounce_y IS NULL THEN NULL
-              WHEN fb.bounce_y <= -2.5 THEN 'deep'     -- adjust cut lines as needed
+              WHEN fb.bounce_y <= -2.5 THEN 'deep'
               WHEN fb.bounce_y BETWEEN -2.5 AND 2.5 THEN 'mid'
               ELSE 'short'
             END AS shot_description_depth,
@@ -281,22 +282,20 @@ CREATE_STMTS = {
               WHEN fb.bounce_x >= 0 AND fb.bounce_y < 0 THEN 'D'
             END AS rally_box_ad,
 
-            -- Serve target 1–8 (only for serves; split by deuce/ad + wide/body/T)
+            -- Serve target 1–8 (only for serves; simple split example)
             CASE
               WHEN b.serve IS NOT TRUE THEN NULL
               WHEN fb.bounce_x IS NULL OR fb.bounce_y IS NULL THEN NULL
               ELSE
-                -- Example split: y>=0 deuce court (1–4), y<0 ad court (5–8).
-                -- Within each side, x< -1.5 = wide, |x|<=1.5 = body/T, x>1.5 = T/into middle.
                 CASE
-                  WHEN fb.bounce_y >= 0 THEN
+                  WHEN fb.bounce_y >= 0 THEN   -- deuce court 1–4
                     CASE
                       WHEN fb.bounce_x <  -1.5 THEN 1
                       WHEN fb.bounce_x BETWEEN -1.5 AND -0.5 THEN 2
                       WHEN fb.bounce_x BETWEEN -0.5 AND  0.5 THEN 3
                       ELSE 4
                     END
-                  ELSE
+                  ELSE                          -- ad court 5–8
                     CASE
                       WHEN fb.bounce_x <  -1.5 THEN 5
                       WHEN fb.bounce_x BETWEEN -1.5 AND -0.5 THEN 6
@@ -316,8 +315,8 @@ CREATE_STMTS = {
           c.session_uid,
           c.session_id,
           c.rally_id,
-          c.point_number,                    -- Point #
-          c.shot_number_in_point AS shot_number,  -- Shot # within point
+          c.point_number,                        -- Point #
+          c.shot_number_in_point AS shot_number, -- Shot # within point
           c.swing_id,
 
           -- Player who executed the shot
@@ -326,14 +325,14 @@ CREATE_STMTS = {
           c.player_uid,
 
           -- Result & description
-          c.shot_result,                     -- 'in' or 'out' (includes net/long/wide grouped as out)
-          c.shot_description_depth,         -- 'short'/'mid'/'deep'/'net'/'long'/'wide'
+          c.shot_result,                         -- 'in' or 'out' (net/long/wide treated as out)
+          c.shot_description_depth,              -- 'short'/'mid'/'deep'/'net'/'long'/'wide'
 
-          -- Positions
+          -- Positions / classifications
           c.serve_type,
           c.serve,
-          c.serve_target_1_8,               -- for serves only
-          c.rally_box_ad,                   -- for rally shots only (A-D)
+          c.serve_target_1_8,                    -- serves only
+          c.rally_box_ad,                        -- rally shots only (A–D)
           c.player_x_at_hit, c.player_y_at_hit,
           c.ball_hit_x, c.ball_hit_y,
           c.bounce_x AS ball_bounce_x, c.bounce_y AS ball_bounce_y,
@@ -350,6 +349,8 @@ CREATE_STMTS = {
         ORDER BY c.session_uid, c.point_number, c.shot_number_in_point;
     """,
 }
+
+# ---------- helpers ----------
 
 def _table_exists(conn, t):
     return conn.execute(text("""
@@ -390,21 +391,29 @@ def _drop_view_or_matview(conn, name):
 def _preflight_or_raise(conn):
     required_tables = [
         "dim_session", "dim_player", "dim_rally",
-        "fact_swing", "fact_bounce", "fact_ball_position", "fact_player_position"
+        "fact_swing", "fact_bounce", "fact_player_position"
     ]
     missing = [t for t in required_tables if not _table_exists(conn, t)]
     if missing:
         raise RuntimeError(f"Missing base tables before creating views: {', '.join(missing)}")
 
+    # Minimal columns used by these views
     checks = [
         ("dim_session", "session_uid"),
-        ("dim_player", "sportai_player_uid"),
+        ("dim_rally", "rally_id"),
+        ("dim_rally", "rally_number"),
+        ("dim_rally", "start_s"),
+        ("dim_rally", "end_s"),
+        ("fact_swing", "swing_id"),
+        ("fact_swing", "session_id"),
+        ("fact_swing", "player_id"),
         ("fact_swing", "start_s"),
+        ("fact_swing", "end_s"),
         ("fact_swing", "ball_hit_s"),
         ("fact_swing", "ball_hit_ts"),
         ("fact_swing", "ball_hit_x"),
         ("fact_swing", "ball_hit_y"),
-        ("fact_bounce", "bounce_s"),
+        ("fact_swing", "serve"),
         ("fact_bounce", "bounce_ts"),
         ("fact_bounce", "x"),
         ("fact_bounce", "y"),
