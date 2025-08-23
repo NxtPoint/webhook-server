@@ -1,5 +1,5 @@
 # upload_app.py
-import os, json, hashlib
+import os, json, hashlib, re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
 from sqlalchemy import create_engine, text
@@ -758,15 +758,23 @@ def ops_sql():
     if not q:
         q = request.args.get("q", "")
 
-    q = (q or "").strip()
-    ql = q.lstrip().lower()
-    if not (ql.startswith("select") or ql.startswith("with")):
-        return Response("Only SELECT/CTE queries are allowed", status=400)
-    stripped = q.strip()
-    if ";" in stripped[:-1]:
-        return Response("Only a single statement is allowed", status=400)
-    if " limit " not in ql:
-        q = f"{stripped.rstrip(';')} LIMIT 200"
+        q = (q or "").strip()
+        ql = q.lstrip().lower()
+
+        if not (ql.startswith("select") or ql.startswith("with")):
+            return Response("Only SELECT/CTE queries are allowed", status=400)
+
+        stripped = q.strip()
+        # Single statement guard (allow a trailing ';')
+        if ";" in stripped[:-1]:
+            return Response("Only a single statement is allowed", status=400)
+
+        # Do NOT append our LIMIT if the query already contains any LIMIT (handles newlines/tabs)
+        if not re.search(r"\blimit\b", stripped, flags=re.IGNORECASE):
+            q = f"{stripped.rstrip(';')}\nLIMIT 200"
+        else:
+            q = stripped.rstrip(';')  # keep the user's LIMIT as-is
+
 
     try:
         timeout_ms = int(request.args.get("timeout_ms", "60000"))
