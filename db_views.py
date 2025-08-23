@@ -365,10 +365,19 @@ CREATE_STMTS = {
               NULLIF(s.meta->>'ball_player_distance','')::double precision
             ) AS ball_player_distance,
 
-            -- From normalization
-            s.inferred_serve,
-            s.normalized_swing_type,
-            s.swing_type
+              -- From normalization
+              s.inferred_serve,
+              s.normalized_swing_type,
+
+              -- Robust swing text from meta keys (lowercased)
+              LOWER(NULLIF(COALESCE(
+                s.meta->>'swing_type',
+                s.meta->>'stroke',
+                s.meta->>'shot_type',
+                s.meta->>'label',
+                s.meta->>'predicted_class'
+              , ''), '')) AS swing_text
+                      
           FROM vw_swing_norm s
           JOIN vw_shot_order_norm so
             ON so.session_id = s.session_id AND so.swing_id = s.swing_id
@@ -452,27 +461,41 @@ CREATE_STMTS = {
             c.*,
 
             -- Canonical swing type mapping (SportAI taxonomy)
-            CASE
-              WHEN (c.inferred_serve OR c.serve) THEN
-                CASE
-                  WHEN c.serve_type ILIKE '1%%serve' THEN '1st_serve'
-                  WHEN c.serve_type ILIKE '2%%serve' THEN '2nd_serve'
-                  ELSE 'serve'
-                END
-              ELSE
-                CASE
-                  WHEN c.swing_type ILIKE 'forehand%%' OR c.swing_type ILIKE 'fh%%' THEN 'forehand'
-                  WHEN c.swing_type ILIKE 'backhand%%' OR c.swing_type ILIKE 'bh%%' THEN 'backhand'
-                  WHEN c.swing_type ILIKE '%%forehand%%slice%%' OR c.swing_type ILIKE 'fh_slice%%' THEN 'fh_slice'
-                  WHEN c.swing_type ILIKE '%%backhand%%slice%%' OR c.swing_type ILIKE 'bh_slice%%' THEN 'bh_slice'
-                  WHEN c.swing_type ILIKE '%%forehand%%volley%%' OR c.swing_type ILIKE 'fh_volley%%' THEN 'fh_volley'
-                  WHEN c.swing_type ILIKE '%%backhand%%volley%%' OR c.swing_type ILIKE 'bh_volley%%' THEN 'bh_volley'
-                  WHEN c.swing_type ILIKE '%%smash%%' OR c.swing_type ILIKE '%%overhead%%' THEN 'smash'
-                  WHEN c.swing_type ILIKE '%%drop%%' THEN 'drop_shot'
-                  WHEN c.swing_type ILIKE '%%tweener%%' THEN 'tweener'
-                  ELSE 'other'
-                END
-            END AS swing_type_final,
+          CASE
+            WHEN (c.inferred_serve OR c.serve) THEN
+              CASE
+                WHEN c.serve_type ILIKE '1%' OR c.serve_type ILIKE 'first%'  THEN '1st_serve'
+                WHEN c.serve_type ILIKE '2%' OR c.serve_type ILIKE 'second%' THEN '2nd_serve'
+                ELSE 'serve'
+              END
+            ELSE
+              CASE
+                WHEN c.swing_text IS NULL OR c.swing_text = ''                THEN 'other'
+
+                -- specific patterns first
+                WHEN c.swing_text ~* 'tweener'                                THEN 'tweener'
+                WHEN c.swing_text ~* 'drop'                                    THEN 'drop_shot'
+                WHEN c.swing_text ~* '(overhead|smash|^oh$)'                   THEN 'smash'
+
+                -- volleys
+                WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^fh|forehand)'
+                                                                              THEN 'fh_volley'
+                WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^bh|backhand)'
+                                                                              THEN 'bh_volley'
+
+                -- slices
+                WHEN c.swing_text ~* 'slice' AND c.swing_text ~* '(^fh|forehand)'
+                                                                              THEN 'fh_slice'
+                WHEN c.swing_text ~* 'slice' AND c.swing_text ~* '(^bh|backhand)'
+                                                                              THEN 'bh_slice'
+
+                -- plain groundstrokes (accept short codes like fh/bh)
+                WHEN c.swing_text ~* '(^fh|forehand)'                          THEN 'forehand'
+                WHEN c.swing_text ~* '(^bh|backhand)'                          THEN 'backhand'
+                ELSE 'other'
+              END
+          END AS swing_type_final,
+
 
             -- Human friendly timecodes (keep *_ts for traceability, but use these in BI)
             TO_CHAR((TIME '00:00' + (c.start_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')     AS start_timecode,
