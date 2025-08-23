@@ -6,7 +6,7 @@ from sqlalchemy import text
 VIEW_NAMES = [
     # Base helpers
     "vw_swing",
-    "vw_swing_norm",           # <= NEW: depends on vw_swing
+    "vw_swing_norm",           # depends on vw_swing
     "vw_rally",
     "vw_bounce",
     "vw_player_position",
@@ -39,45 +39,62 @@ CREATE_STMTS = {
           s.ball_speed, s.ball_player_distance,
           COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
           s.serve, s.serve_type,
-          s.swing_type,            -- if present in fact_swing (kept for traceability)
-          s.meta                   -- raw per-swing json for deep dives
+          s.swing_type,            -- raw label if present
+          s.meta                   -- raw per-swing json
         FROM fact_swing s
         LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
     """,
 
-    # ---------- NEW: NORMALIZED SWING VIEW (view-only; no schema changes) ----------
+    # ---------- NORMALIZED SWING VIEW (view-only; adds clean seconds + serve normalization) ----------
     "vw_swing_norm": """
         CREATE VIEW vw_swing_norm AS
         WITH base AS (
           SELECT
             vws.*,
-            COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t,
-            LAG(vws.rally_id) OVER (
-              PARTITION BY vws.session_id
-              ORDER BY COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s), vws.swing_id
-            ) AS prev_rally_id,
-            LAG(COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s)) OVER (
-              PARTITION BY vws.session_id
-              ORDER BY COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s), vws.swing_id
-            ) AS prev_t
+
+            -- Clean seconds derived from timestamps (authoritative)
+            EXTRACT(EPOCH FROM vws.start_ts)     AS start_s_clean,
+            EXTRACT(EPOCH FROM vws.end_ts)       AS end_s_clean,
+            EXTRACT(EPOCH FROM vws.ball_hit_ts)  AS ball_hit_s_clean,
+
+            -- Raw best-available time (kept for reference)
+            COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t_raw
           FROM vw_swing vws
+        ),
+        ordered AS (
+          SELECT
+            b.*,
+
+            -- Sanitized timeline for ordering (always from *_ts)
+            COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean) AS t_clean,
+
+            LAG(b.rally_id) OVER (
+              PARTITION BY b.session_id
+              ORDER BY COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean), b.swing_id
+            ) AS prev_rally_id,
+
+            LAG(COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean)) OVER (
+              PARTITION BY b.session_id
+              ORDER BY COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean), b.swing_id
+            ) AS prev_t_clean
+          FROM base b
         ),
         inferred AS (
           SELECT
-            b.*,
+            o.*,
             CASE
               -- Rally id appears/changes ⇒ start of point
-              WHEN b.rally_id IS NOT NULL
-                   AND (b.prev_rally_id IS DISTINCT FROM b.rally_id)
+              WHEN o.rally_id IS NOT NULL
+                   AND (o.prev_rally_id IS DISTINCT FROM o.rally_id)
               THEN TRUE
               -- No rally yet + clear time gap from prior swing ⇒ likely new point (default 5s)
-              WHEN b.rally_id IS NULL
-                   AND (b.prev_t IS NULL OR (b.t - b.prev_t) > 5.0)
+              WHEN o.rally_id IS NULL
+                   AND (o.prev_t_clean IS NULL OR (o.t_clean - o.prev_t_clean) > 5.0)
               THEN TRUE
               ELSE FALSE
             END AS inferred_point_start
-          FROM base b
+          FROM ordered o
         )
         SELECT
           i.*,
@@ -113,7 +130,7 @@ CREATE_STMTS = {
             b.rally_id,
             b.bounce_s, b.bounce_ts,
             b.x, b.y,
-            b.bounce_type  -- expect values like 'in','out','net','long','wide'
+            b.bounce_type  -- 'in','out','net','long','wide'
         FROM fact_bounce b
         LEFT JOIN dim_player dp ON dp.player_id = b.hitter_player_id
         LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
@@ -225,8 +242,8 @@ CREATE_STMTS = {
                   FROM dim_player dp2
                   WHERE dp2.session_id = fl.session_id
                     AND dp2.player_id <> fl.last_hitter_id
-                  LIMIT 1)   -- opponent wins
-            ELSE fl.last_hitter_id           -- last hitter wins (ball not returned)
+                  LIMIT 1)
+            ELSE fl.last_hitter_id
           END AS winner_player_id
         FROM first_last fl
         JOIN dim_session ds ON ds.session_id = fl.session_id
@@ -235,11 +252,11 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
-    # NOTE: Now sources from vw_swing_norm to include normalized serve labeling.
+    # Now uses vw_swing_norm; de-dups with DISTINCT ON(swing_id); uses clean seconds.
     "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
-          SELECT
+          SELECT DISTINCT ON (s.swing_id)
             s.swing_id,
             s.session_id,
             s.session_uid,
@@ -251,13 +268,18 @@ CREATE_STMTS = {
             s.player_uid,
             s.serve,
             s.serve_type,
-            s.start_s, s.end_s, s.ball_hit_s,
+
+            -- Use clean seconds derived from *_ts
+            s.start_s_clean AS start_s,
+            s.end_s_clean   AS end_s,
+            s.ball_hit_s_clean AS ball_hit_s,
+
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
             s.ball_speed, s.ball_player_distance,
             s.meta,
 
-            -- NEW from vw_swing_norm
+            -- From normalization
             s.inferred_serve,
             s.normalized_swing_type
           FROM vw_swing_norm s
@@ -265,6 +287,7 @@ CREATE_STMTS = {
             ON r.session_id = s.session_id AND r.rally_id = s.rally_id
           JOIN vw_shot_order so
             ON so.session_id = s.session_id AND so.rally_id = s.rally_id AND so.swing_id = s.swing_id
+          ORDER BY s.swing_id, s.t_clean
         ),
         player_loc AS (
           -- nearest player position at hit time
@@ -376,7 +399,7 @@ CREATE_STMTS = {
           c.player_uid,
 
           -- Result & description
-          c.shot_result,                         -- 'in' or 'out' (net/long/wide treated as out)
+          c.shot_result,                         -- 'in' or 'out'
           c.shot_description_depth,              -- 'short'/'mid'/'deep'/'net'/'long'/'wide'
 
           -- Positions / classifications
@@ -388,7 +411,7 @@ CREATE_STMTS = {
           c.ball_hit_x, c.ball_hit_y,
           c.bounce_x AS ball_bounce_x, c.bounce_y AS ball_bounce_y,
 
-          -- Timing
+          -- Timing (clean seconds)
           c.start_s, c.end_s, c.ball_hit_s,
           c.start_ts, c.end_ts, c.ball_hit_ts,
 
@@ -397,7 +420,7 @@ CREATE_STMTS = {
           c.ball_player_distance,
           c.shot_confidence,
 
-          -- NEW extras for downstream use / QA
+          -- QA fields
           c.inferred_serve,
           c.normalized_swing_type
         FROM classify c
