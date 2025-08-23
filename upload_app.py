@@ -640,9 +640,8 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
 
     # bounces
     for b in payload.get("ball_bounces") or []:
-        s = (_time_s(b.get("timestamp_s")) or _time_s(b.get("timestamp"))
-            or _time_s(b.get("ts")) or _time_s(b.get("t")))
-        x = _float(b.get("x")); y = _float(b.get("y"))
+        s = (_time_s(b.get("timestamp")) or
+            _time_s(b.get("timestamp_s")) or _time_s(b.get("ts")) or _time_s(b.get("t")))
         btype = b.get("type") or b.get("bounce_type")
         hitter_uid = str(b.get("player_id") or b.get("sportai_player_uid") or "") if (b.get("player_id") or b.get("sportai_player_uid")) else None
         hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
@@ -654,8 +653,9 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
 
     # ball positions
     for p in payload.get("ball_positions") or []:
-        s = (_time_s(p.get("timestamp_s")) or _time_s(p.get("timestamp"))
-            or _time_s(p.get("ts")) or _time_s(p.get("t")))
+        s = (_time_s(p.get("timestamp")) or
+            _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t")))
+
         x = _float(p.get("x")); y = _float(p.get("y"))
         conn.execute(text("""
             INSERT INTO fact_ball_position (session_id, ts_s, ts, x, y)
@@ -666,8 +666,8 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
     for puid, arr in (payload.get("player_positions") or {}).items():
         pid = uid_to_player_id.get(str(puid))
         for p in arr or []:
-            s = (_time_s(p.get("timestamp_s")) or _time_s(p.get("timestamp"))
-                or _time_s(p.get("ts")) or _time_s(p.get("t")))
+            s = (_time_s(p.get("timestamp")) or
+                _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t")))
             x = _float(p.get("x")); y = _float(p.get("y"))
             conn.execute(text("""
                 INSERT INTO fact_player_position (session_id, player_id, ts_s, ts, x, y)
