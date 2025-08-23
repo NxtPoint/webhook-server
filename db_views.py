@@ -11,8 +11,9 @@ VIEW_NAMES = [
     "vw_bounce",
     "vw_player_position",
 
-    # Ordering helper
-    "vw_shot_order",
+    # Ordering helpers
+    "vw_shot_order",           # legacy (rally-only)
+    "vw_shot_order_norm",      # NEW: rally + inferred points
 
     # Point-level summary (winner/error)
     "vw_point_summary",
@@ -46,7 +47,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
     """,
 
-    # ---------- NORMALIZED SWING VIEW (view-only; adds clean seconds + serve normalization) ----------
+    # ---------- NORMALIZED SWING VIEW (adds clean seconds + serve normalization) ----------
     "vw_swing_norm": """
         CREATE VIEW vw_swing_norm AS
         WITH base AS (
@@ -58,7 +59,7 @@ CREATE_STMTS = {
             EXTRACT(EPOCH FROM vws.end_ts)       AS end_s_clean,
             EXTRACT(EPOCH FROM vws.ball_hit_ts)  AS ball_hit_s_clean,
 
-            -- Raw best-available time (kept for reference)
+            -- Raw best-available time (for reference)
             COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t_raw
           FROM vw_swing vws
         ),
@@ -95,15 +96,24 @@ CREATE_STMTS = {
               ELSE FALSE
             END AS inferred_point_start
           FROM ordered o
+        ),
+        numbered AS (
+          SELECT
+            i.*,
+            -- Session-scoped running counter of inferred points
+            SUM(CASE WHEN i.inferred_point_start THEN 1 ELSE 0 END)
+              OVER (PARTITION BY i.session_id ORDER BY i.t_clean, i.swing_id
+                    ROWS UNBOUNDED PRECEDING) AS inferred_point_id
+          FROM inferred i
         )
         SELECT
-          i.*,
-          (COALESCE(i.serve, FALSE) OR i.inferred_point_start) AS inferred_serve,
+          n.*,
+          (COALESCE(n.serve, FALSE) OR n.inferred_point_start) AS inferred_serve,
           CASE
-            WHEN (COALESCE(i.serve, FALSE) OR i.inferred_point_start) THEN 'serve'
-            ELSE i.swing_type
+            WHEN (COALESCE(n.serve, FALSE) OR n.inferred_point_start) THEN 'serve'
+            ELSE n.swing_type
           END AS normalized_swing_type
-        FROM inferred i;
+        FROM numbered n;
     """,
 
     "vw_rally": """
@@ -151,7 +161,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
     """,
 
-    # ---------- ORDERING HELPER ----------
+    # ---------- ORDERING HELPERS ----------
     "vw_shot_order": """
         CREATE VIEW vw_shot_order AS
         SELECT
@@ -170,7 +180,40 @@ CREATE_STMTS = {
         WHERE fs.rally_id IS NOT NULL;
     """,
 
+    # NEW: shot ordering that works with (rally_id OR inferred points)
+    "vw_shot_order_norm": """
+        CREATE VIEW vw_shot_order_norm AS
+        WITH seq AS (
+          SELECT
+            s.session_id,
+            s.swing_id,
+            s.rally_id,
+            s.inferred_point_id,
+            s.t_clean
+          FROM vw_swing_norm s
+        ),
+        ordered AS (
+          SELECT
+            q.*,
+            -- Use real rally_id when present; otherwise use a negative surrogate so keys never collide
+            COALESCE(q.rally_id, -q.inferred_point_id) AS group_key,
+            ROW_NUMBER() OVER (
+              PARTITION BY q.session_id, COALESCE(q.rally_id, -q.inferred_point_id)
+              ORDER BY q.t_clean, q.swing_id
+            ) AS shot_number_in_point
+          FROM seq q
+        )
+        SELECT
+          o.session_id,
+          o.swing_id,
+          o.rally_id,
+          o.inferred_point_id,
+          o.shot_number_in_point
+        FROM ordered o;
+    """,
+
     # ---------- POINT SUMMARY (winner/error) ----------
+    # (kept on legacy shot_order that uses real rallies only)
     "vw_point_summary": """
         CREATE VIEW vw_point_summary AS
         WITH ordered AS (
@@ -191,7 +234,6 @@ CREATE_STMTS = {
           GROUP BY session_id, rally_id, rally_number
         ),
         serve_row AS (
-          -- server is the first swing flagged serve=TRUE, else fallback to first hitter
           SELECT
             fl.session_id, fl.rally_id,
             COALESCE( (SELECT fs.player_id
@@ -205,7 +247,6 @@ CREATE_STMTS = {
           FROM first_last fl
         ),
         last_swing_bounce AS (
-          -- first bounce after the last swing (within same rally)
           SELECT
             fl.session_id, fl.rally_id,
             b.bounce_id, b.bounce_type, b.x AS bounce_x, b.y AS bounce_y
@@ -252,7 +293,7 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
-    # Now uses vw_swing_norm; de-dups with DISTINCT ON(swing_id); uses clean seconds.
+    # Now uses vw_shot_order_norm (so all swings appear), LEFT JOIN rally for point_number
     "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
@@ -261,15 +302,16 @@ CREATE_STMTS = {
             s.session_id,
             s.session_uid,
             s.rally_id,
-            r.rally_number AS point_number,
+            r.rally_number AS point_number_real,
             so.shot_number_in_point,
+            s.inferred_point_id,                        -- for points without rally_id
             s.player_id,
             s.player_name,
             s.player_uid,
             s.serve,
             s.serve_type,
 
-            -- Use clean seconds derived from *_ts
+            -- Clean seconds derived from *_ts
             s.start_s_clean AS start_s,
             s.end_s_clean   AS end_s,
             s.ball_hit_s_clean AS ball_hit_s,
@@ -283,14 +325,13 @@ CREATE_STMTS = {
             s.inferred_serve,
             s.normalized_swing_type
           FROM vw_swing_norm s
-          JOIN vw_rally r
+          JOIN vw_shot_order_norm so
+            ON so.session_id = s.session_id AND so.swing_id = s.swing_id
+          LEFT JOIN vw_rally r
             ON r.session_id = s.session_id AND r.rally_id = s.rally_id
-          JOIN vw_shot_order so
-            ON so.session_id = s.session_id AND so.rally_id = s.rally_id AND so.swing_id = s.swing_id
           ORDER BY s.swing_id, s.t_clean
         ),
         player_loc AS (
-          -- nearest player position at hit time
           SELECT
             b.swing_id,
             pp.x AS player_x_at_hit,
@@ -317,7 +358,7 @@ CREATE_STMTS = {
             SELECT bb.*
             FROM vw_bounce bb
             WHERE bb.session_id = b.session_id
-              AND bb.rally_id   = b.rally_id
+              AND (bb.rally_id = b.rally_id OR b.rally_id IS NULL)   -- allow no-rally case
               AND bb.bounce_ts >= b.ball_hit_ts
             ORDER BY bb.bounce_ts
             LIMIT 1
@@ -336,7 +377,7 @@ CREATE_STMTS = {
               ELSE 'in'
             END AS shot_result,
 
-            -- Depth label (tune thresholds to your coordinate system)
+            -- Depth label (tune thresholds)
             CASE
               WHEN fb.bounce_type IN ('net') THEN 'net'
               WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
@@ -356,7 +397,7 @@ CREATE_STMTS = {
               WHEN fb.bounce_x >= 0 AND fb.bounce_y < 0 THEN 'D'
             END AS rally_box_ad,
 
-            -- Serve target 1–8 (only for serves; simple split example)
+            -- Serve target 1–8 (only for serves; simple split)
             CASE
               WHEN b.serve IS NOT TRUE THEN NULL
               WHEN fb.bounce_x IS NULL OR fb.bounce_y IS NULL THEN NULL
@@ -389,8 +430,11 @@ CREATE_STMTS = {
           c.session_uid,
           c.session_id,
           c.rally_id,
-          c.point_number,                        -- Point #
-          c.shot_number_in_point AS shot_number, -- Shot # within point
+
+          -- Real rally number if present; else inferred point id
+          COALESCE(c.point_number_real, c.inferred_point_id) AS point_number,
+
+          c.shot_number_in_point AS shot_number,
           c.swing_id,
 
           -- Player who executed the shot
@@ -399,14 +443,14 @@ CREATE_STMTS = {
           c.player_uid,
 
           -- Result & description
-          c.shot_result,                         -- 'in' or 'out'
-          c.shot_description_depth,              -- 'short'/'mid'/'deep'/'net'/'long'/'wide'
+          c.shot_result,
+          c.shot_description_depth,
 
           -- Positions / classifications
           c.serve_type,
           c.serve,
-          c.serve_target_1_8,                    -- serves only
-          c.rally_box_ad,                        -- rally shots only (A–D)
+          c.serve_target_1_8,
+          c.rally_box_ad,
           c.player_x_at_hit, c.player_y_at_hit,
           c.ball_hit_x, c.ball_hit_y,
           c.bounce_x AS ball_bounce_x, c.bounce_y AS ball_bounce_y,
@@ -424,7 +468,7 @@ CREATE_STMTS = {
           c.inferred_serve,
           c.normalized_swing_type
         FROM classify c
-        ORDER BY c.session_uid, c.point_number, c.shot_number_in_point;
+        ORDER BY c.session_uid, point_number, c.shot_number_in_point;
     """,
 }
 
