@@ -464,10 +464,11 @@ CREATE_STMTS = {
           CASE
             WHEN (c.inferred_serve OR c.serve) THEN
               CASE
-                WHEN c.serve_type ILIKE '1%' OR c.serve_type ILIKE 'first%'  THEN '1st_serve'
-                WHEN c.serve_type ILIKE '2%' OR c.serve_type ILIKE 'second%' THEN '2nd_serve'
+                WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '1%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'first%'  THEN '1st_serve'
+                WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '2%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'second%' THEN '2nd_serve'
                 ELSE 'serve'
               END
+
             ELSE
               CASE
                 WHEN c.swing_text IS NULL OR c.swing_text = ''                THEN 'other'
@@ -551,7 +552,7 @@ CREATE_STMTS = {
           -- QA (keep if you want visibility on inference)
           f.inferred_serve
         FROM final_map f
-        ORDER BY session_uid, point_number, shot_number_in_point;
+        ORDER BY session_uid, point_number, shot_number;
     """,
 }
 
