@@ -10,10 +10,11 @@ VIEW_NAMES = [
     "vw_rally",
     "vw_bounce",
     "vw_player_position",
+    "vw_player_swing_dist",    # per-player distribution summary
 
     # Ordering helpers
     "vw_shot_order",           # legacy (rally-only)
-    "vw_shot_order_norm",      # NEW: rally + inferred points
+    "vw_shot_order_norm",      # rally + inferred points
 
     # Point-level summary (winner/error)
     "vw_point_summary",
@@ -33,6 +34,10 @@ CREATE_STMTS = {
           s.player_id,
           dp.full_name AS player_name,
           dp.sportai_player_uid AS player_uid,
+
+          -- Pass through SportAI player distribution JSON
+          (dp.swing_type_distribution)::jsonb AS player_swing_type_distribution,
+
           s.rally_id,
           s.start_s, s.end_s, s.ball_hit_s,
           s.start_ts, s.end_ts, s.ball_hit_ts,
@@ -40,8 +45,8 @@ CREATE_STMTS = {
           s.ball_speed, s.ball_player_distance,
           COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
           s.serve, s.serve_type,
-          s.swing_type,            -- raw label if present
-          s.meta                   -- raw per-swing json
+          s.swing_type,                 -- raw label if present
+          s.meta                        -- raw per-swing json
         FROM fact_swing s
         LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
@@ -59,7 +64,7 @@ CREATE_STMTS = {
             EXTRACT(EPOCH FROM vws.end_ts)       AS end_s_clean,
             EXTRACT(EPOCH FROM vws.ball_hit_ts)  AS ball_hit_s_clean,
 
-            -- Raw best-available time (for reference)
+            -- Raw best-available time (for reference only)
             COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t_raw
           FROM vw_swing vws
         ),
@@ -86,12 +91,10 @@ CREATE_STMTS = {
             o.*,
             CASE
               -- Rally id appears/changes ⇒ start of point
-              WHEN o.rally_id IS NOT NULL
-                   AND (o.prev_rally_id IS DISTINCT FROM o.rally_id)
+              WHEN o.rally_id IS NOT NULL AND (o.prev_rally_id IS DISTINCT FROM o.rally_id)
               THEN TRUE
               -- No rally yet + clear time gap from prior swing ⇒ likely new point (default 5s)
-              WHEN o.rally_id IS NULL
-                   AND (o.prev_t_clean IS NULL OR (o.t_clean - o.prev_t_clean) > 5.0)
+              WHEN o.rally_id IS NULL AND (o.prev_t_clean IS NULL OR (o.t_clean - o.prev_t_clean) > 5.0)
               THEN TRUE
               ELSE FALSE
             END AS inferred_point_start
@@ -159,6 +162,38 @@ CREATE_STMTS = {
         FROM fact_player_position p
         LEFT JOIN dim_session ds ON ds.session_id = p.session_id
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
+    """,
+
+    # ---------- PER-PLAYER DISTRIBUTION SUMMARY ----------
+    "vw_player_swing_dist": """
+      CREATE VIEW vw_player_swing_dist AS
+      SELECT
+        dp.session_id,
+        ds.session_uid,
+        dp.player_id,
+        dp.full_name AS player_name,
+        dp.sportai_player_uid AS player_uid,
+        (dp.swing_type_distribution)::jsonb AS swing_type_dist,
+
+        -- unpacked numeric fields (SportAI keys)
+        ((dp.swing_type_distribution)::jsonb->>'forehand')::float   AS dist_forehand,
+        ((dp.swing_type_distribution)::jsonb->>'backhand')::float   AS dist_backhand,
+        ((dp.swing_type_distribution)::jsonb->>'fh_slice')::float   AS dist_fh_slice,
+        ((dp.swing_type_distribution)::jsonb->>'bh_slice')::float   AS dist_bh_slice,
+        ((dp.swing_type_distribution)::jsonb->>'fh_volley')::float  AS dist_fh_volley,
+        ((dp.swing_type_distribution)::jsonb->>'bh_volley')::float  AS dist_bh_volley,
+        ((dp.swing_type_distribution)::jsonb->>'smash')::float      AS dist_smash,
+        ((dp.swing_type_distribution)::jsonb->>'1st_serve')::float  AS dist_first_serve,
+        ((dp.swing_type_distribution)::jsonb->>'2nd_serve')::float  AS dist_second_serve,
+        ((dp.swing_type_distribution)::jsonb->>'drop_shot')::float  AS dist_drop_shot,
+        ((dp.swing_type_distribution)::jsonb->>'tweener')::float    AS dist_tweener,
+        ((dp.swing_type_distribution)::jsonb->>'other')::float      AS dist_other,
+        (
+          COALESCE(((dp.swing_type_distribution)::jsonb->>'1st_serve')::float,0) +
+          COALESCE(((dp.swing_type_distribution)::jsonb->>'2nd_serve')::float,0)
+        ) AS dist_serve_total
+      FROM dim_player dp
+      JOIN dim_session ds ON ds.session_id = dp.session_id;
     """,
 
     # ---------- ORDERING HELPERS ----------
@@ -293,7 +328,7 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
-    # Now uses vw_shot_order_norm (so all swings appear), LEFT JOIN rally for point_number
+    # Now uses vw_shot_order_norm so all swings appear; LEFT JOIN rally for point_number
     "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
@@ -318,12 +353,35 @@ CREATE_STMTS = {
 
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
-            s.ball_speed, s.ball_player_distance,
+
+            -- pull from column, or fall back to meta JSON
+            COALESCE(s.ball_speed, NULLIF((s.meta->>'ball_speed'), ''))::float          AS ball_speed,
+            COALESCE(s.ball_player_distance, NULLIF((s.meta->>'ball_player_distance'), ''))::float
+                                                                                         AS ball_player_distance,
+
             s.meta,
 
             -- From normalization
             s.inferred_serve,
-            s.normalized_swing_type
+            s.normalized_swing_type,
+
+            -- Distribution (raw JSON)
+            s.player_swing_type_distribution AS player_swing_type_dist,
+
+            -- unpacked numeric fields
+            (s.player_swing_type_distribution->>'forehand')::float   AS dist_forehand,
+            (s.player_swing_type_distribution->>'backhand')::float   AS dist_backhand,
+            (s.player_swing_type_distribution->>'fh_slice')::float   AS dist_fh_slice,
+            (s.player_swing_type_distribution->>'bh_slice')::float   AS dist_bh_slice,
+            (s.player_swing_type_distribution->>'fh_volley')::float  AS dist_fh_volley,
+            (s.player_swing_type_distribution->>'bh_volley')::float  AS dist_bh_volley,
+            (s.player_swing_type_distribution->>'smash')::float      AS dist_smash,
+            (s.player_swing_type_distribution->>'1st_serve')::float  AS dist_first_serve,
+            (s.player_swing_type_distribution->>'2nd_serve')::float  AS dist_second_serve,
+            (s.player_swing_type_distribution->>'drop_shot')::float  AS dist_drop_shot,
+            (s.player_swing_type_distribution->>'tweener')::float    AS dist_tweener,
+            (s.player_swing_type_distribution->>'other')::float      AS dist_other
+
           FROM vw_swing_norm s
           JOIN vw_shot_order_norm so
             ON so.session_id = s.session_id AND so.swing_id = s.swing_id
@@ -466,9 +524,15 @@ CREATE_STMTS = {
 
           -- QA fields
           c.inferred_serve,
-          c.normalized_swing_type
+          c.normalized_swing_type,
+
+          -- Distribution fields for convenience in BI
+          c.player_swing_type_dist,
+          c.dist_forehand, c.dist_backhand, c.dist_fh_slice, c.dist_bh_slice,
+          c.dist_fh_volley, c.dist_bh_volley, c.dist_smash,
+          c.dist_first_serve, c.dist_second_serve, c.dist_drop_shot, c.dist_tweener, c.dist_other
         FROM classify c
-        ORDER BY c.session_uid, point_number, c.shot_number_in_point;
+        ORDER BY c.session_uid, c.point_number, c.shot_number_in_point;
     """,
 }
 
@@ -540,6 +604,8 @@ def _preflight_or_raise(conn):
         ("fact_bounce", "x"),
         ("fact_bounce", "y"),
         ("fact_player_position", "ts"),
+        # distribution JSON lives on dim_player; view will fail if absent
+        ("dim_player", "swing_type_distribution"),
     ]
     missing_cols = [(t,c) for (t,c) in checks if not _column_exists(conn, t, c)]
     if missing_cols:
