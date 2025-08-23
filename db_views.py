@@ -350,6 +350,9 @@ CREATE_STMTS = {
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
     # Re-bases ball/player/bounce streams to the same time origin as swings
     # and auto-detects unit scale (sec / centisec / millisec).
+    # ---------- SHOT-LEVEL TRANSACTION LOG ----------
+    # Re-bases ball/player/bounce streams to the same time origin as swings
+    # and auto-detects unit scale (sec / centisec / millisec).
     "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
@@ -367,7 +370,7 @@ CREATE_STMTS = {
             s.serve,
             s.serve_type,
 
-            -- Clean seconds derived from *_ts
+            -- Clean seconds derived from *_ts (post-alignment)
             s.start_s_clean     AS start_s,
             s.end_s_clean       AS end_s,
             s.ball_hit_s_clean  AS ball_hit_s,
@@ -375,7 +378,7 @@ CREATE_STMTS = {
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
 
-            -- pull from column, or fall back to meta JSON (cast before COALESCE)
+            -- column or JSON fallback (cast before COALESCE)
             COALESCE(
               s.ball_speed,
               NULLIF(s.meta->>'ball_speed','')::double precision
@@ -428,7 +431,7 @@ CREATE_STMTS = {
               ELSE 1.0
             END AS bo_scale,
 
-            -- original zero in seconds (before _rebuild_ts_from_seconds)
+            -- original zero in seconds (before _rebuild_ts_from_seconds changed swing *_ts)
             (
               SELECT MIN(COALESCE(ball_hit_s, start_s, end_s))
               FROM fact_swing WHERE session_id=b.session_id
@@ -493,7 +496,7 @@ CREATE_STMTS = {
           ) bb ON TRUE
         ),
 
-        -- fallback "approx bounce" from first ball position shortly after hit
+        -- fallback: first ball position shortly after hit (0.1–2.0s)
         approx_bounce_from_ballpos AS (
           SELECT
             b.swing_id,
