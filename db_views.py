@@ -401,6 +401,7 @@ CREATE_STMTS = {
             ON r.session_id = s.session_id AND r.rally_id = s.rally_id
           ORDER BY s.swing_id, s.t_clean
         ),
+        
         player_loc AS (
           SELECT
             b.swing_id,
@@ -412,7 +413,7 @@ CREATE_STMTS = {
             FROM fact_player_position p
             WHERE p.session_id = b.session_id
               AND p.player_id  = b.player_id
-            ORDER BY ABS(EXTRACT(EPOCH FROM (p.ts - b.ball_hit_ts)))
+            ORDER BY ABS((p.ts_s) - (b.ball_hit_s))
             LIMIT 1
           ) pp ON TRUE
         ),
@@ -428,9 +429,8 @@ CREATE_STMTS = {
             SELECT pb.*
             FROM fact_ball_position pb
             WHERE pb.session_id = b.session_id
-              AND pb.ts >= b.ball_hit_ts - INTERVAL '120 ms'
-              AND pb.ts <= b.ball_hit_ts + INTERVAL '120 ms'
-            ORDER BY ABS(EXTRACT(EPOCH FROM (pb.ts - b.ball_hit_ts)))
+              AND pb.ts_s BETWEEN (b.ball_hit_s - 0.12) AND (b.ball_hit_s + 0.12)
+            ORDER BY ABS(pb.ts_s - b.ball_hit_s)
             LIMIT 1
           ) pb ON TRUE
         ),
@@ -448,8 +448,8 @@ CREATE_STMTS = {
             FROM vw_bounce bb
             WHERE bb.session_id = b.session_id
               AND (bb.rally_id = b.rally_id OR b.rally_id IS NULL)
-              AND bb.bounce_ts >= b.ball_hit_ts
-            ORDER BY bb.bounce_ts
+              AND bb.bounce_s >= b.ball_hit_s
+            ORDER BY bb.bounce_s
             LIMIT 1
           ) bx ON TRUE
         ),
@@ -465,12 +465,13 @@ CREATE_STMTS = {
             SELECT pb2.*
             FROM fact_ball_position pb2
             WHERE pb2.session_id = b.session_id
-              AND pb2.ts > b.ball_hit_ts
-              AND pb2.ts < b.ball_hit_ts + INTERVAL '2 second'
-            ORDER BY pb2.ts
+              AND pb2.ts_s >  b.ball_hit_s
+              AND pb2.ts_s <= b.ball_hit_s + 2.0
+            ORDER BY pb2.ts_s
             LIMIT 1
           ) pb2 ON TRUE
         ),
+
 
         classify AS (
           SELECT
