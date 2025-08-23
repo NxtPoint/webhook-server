@@ -356,8 +356,8 @@ CREATE_STMTS = {
             s.session_uid,
             s.rally_id,
             r.rally_number AS point_number_real,
-            so.serve_point_id,                 -- inferred point number (by serves)
             so.shot_number_in_point,
+            s.inferred_point_id,
             s.player_id,
             s.player_name,
             s.player_uid,
@@ -401,7 +401,8 @@ CREATE_STMTS = {
             ON r.session_id = s.session_id AND r.rally_id = s.rally_id
           ORDER BY s.swing_id, s.t_clean
         ),
-        
+
+        -- Player XY at hit: match by seconds, nearest sample
         player_loc AS (
           SELECT
             b.swing_id,
@@ -413,12 +414,12 @@ CREATE_STMTS = {
             FROM fact_player_position p
             WHERE p.session_id = b.session_id
               AND p.player_id  = b.player_id
-            ORDER BY ABS((p.ts_s) - (b.ball_hit_s))
+            ORDER BY ABS(p.ts_s - b.ball_hit_s)
             LIMIT 1
           ) pp ON TRUE
         ),
 
-        -- ball position at the instant of contact (fallback for ball_hit_x/y)
+        -- Ball XY at hit (fallback for ball_hit_x/y): widen window to ±0.5s
         ball_pos_at_hit AS (
           SELECT
             b.swing_id,
@@ -429,12 +430,13 @@ CREATE_STMTS = {
             SELECT pb.*
             FROM fact_ball_position pb
             WHERE pb.session_id = b.session_id
-              AND pb.ts_s BETWEEN (b.ball_hit_s - 0.12) AND (b.ball_hit_s + 0.12)
+              AND pb.ts_s BETWEEN (b.ball_hit_s - 0.5) AND (b.ball_hit_s + 0.5)
             ORDER BY ABS(pb.ts_s - b.ball_hit_s)
             LIMIT 1
           ) pb ON TRUE
         ),
 
+        -- First bounce after the hit: relax rally filter, use seconds
         first_bounce_after_hit AS (
           SELECT
             b.swing_id,
@@ -445,16 +447,15 @@ CREATE_STMTS = {
           FROM base b
           LEFT JOIN LATERAL (
             SELECT bb.*
-            FROM vw_bounce bb
+            FROM fact_bounce bb
             WHERE bb.session_id = b.session_id
-              AND (bb.rally_id = b.rally_id OR b.rally_id IS NULL)
               AND bb.bounce_s >= b.ball_hit_s
             ORDER BY bb.bounce_s
             LIMIT 1
           ) bx ON TRUE
         ),
 
-        -- approximate bounce from first ball position after the hit (fallback)
+        -- If no formal bounce row, approximate from first ball position after hit (within 2s)
         approx_bounce_from_ballpos AS (
           SELECT
             b.swing_id,
@@ -472,18 +473,17 @@ CREATE_STMTS = {
           ) pb2 ON TRUE
         ),
 
-
         classify AS (
           SELECT
             b.*,
             pl.player_x_at_hit, pl.player_y_at_hit,
             fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
 
-            -- final ball-hit XY with fallback
+            -- final ball-hit XY with fallback to ball positions
             COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
             COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
 
-            -- final bounce XY with fallback
+            -- final bounce XY with fallback to ball positions
             COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
             COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
 
@@ -492,11 +492,33 @@ CREATE_STMTS = {
               WHEN fb.bounce_type IN ('out','net','long','wide') THEN 'out'
               WHEN fb.bounce_type IS NULL THEN NULL
               ELSE 'in'
-            END AS shot_result
+            END AS shot_result,
+
+            -- Bounce surface summary
+            CASE
+              WHEN fb.bounce_type = 'net' THEN 'net'
+              WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
+              WHEN fb.bounce_type IS NULL THEN NULL
+              ELSE 'floor'
+            END AS ball_bounce_surface,
+            CASE
+              WHEN fb.bounce_type IS NULL THEN NULL
+              ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
+            END AS ball_bounce_is_floor,
+
+            -- Depth label
+            CASE
+              WHEN fb.bounce_type IN ('net') THEN 'net'
+              WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
+              WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) IS NULL THEN NULL
+              WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) <= -2.5 THEN 'deep'
+              WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) BETWEEN -2.5 AND 2.5 THEN 'mid'
+              ELSE 'short'
+            END AS shot_description_depth
           FROM base b
-          LEFT JOIN player_loc pl               ON pl.swing_id = b.swing_id
-          LEFT JOIN ball_pos_at_hit bh          ON bh.swing_id = b.swing_id
-          LEFT JOIN first_bounce_after_hit fb   ON fb.swing_id = b.swing_id
+          LEFT JOIN player_loc pl ON pl.swing_id = b.swing_id
+          LEFT JOIN ball_pos_at_hit bh ON bh.swing_id = b.swing_id
+          LEFT JOIN first_bounce_after_hit fb ON fb.swing_id = b.swing_id
           LEFT JOIN approx_bounce_from_ballpos ab ON ab.swing_id = b.swing_id
         ),
 
@@ -504,32 +526,12 @@ CREATE_STMTS = {
           SELECT
             c.*,
 
-            -- Bounce surface summary + depth label based on final bounce Y
-            CASE
-              WHEN c.bounce_type = 'net' THEN 'net'
-              WHEN c.bounce_type IN ('out','long','wide') THEN 'out_of_court'
-              WHEN c.bounce_type IS NULL THEN NULL
-              ELSE 'floor'
-            END AS ball_bounce_surface,
-            CASE
-              WHEN c.bounce_type IS NULL THEN NULL
-              ELSE (c.bounce_type NOT IN ('net','out','long','wide'))
-            END AS ball_bounce_is_floor,
-            CASE
-              WHEN c.bounce_type IN ('net') THEN 'net'
-              WHEN c.bounce_type IN ('long','wide','out') THEN c.bounce_type
-              WHEN (c.bounce_y_final) IS NULL THEN NULL
-              WHEN (c.bounce_y_final) <= -2.5 THEN 'deep'
-              WHEN (c.bounce_y_final) BETWEEN -2.5 AND 2.5 THEN 'mid'
-              ELSE 'short'
-            END AS shot_description_depth,
-
             -- Canonical swing type mapping (serve vs non-serve)
             CASE
               WHEN (c.inferred_serve OR c.serve) THEN
                 CASE
-                  WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '1%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'first%'  THEN '1st_serve'
-                  WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '2%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'second%' THEN '2nd_serve'
+                  WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '1%%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'first%%'  THEN '1st_serve'
+                  WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '2%%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'second%%' THEN '2nd_serve'
                   ELSE 'serve'
                 END
               ELSE
@@ -554,30 +556,27 @@ CREATE_STMTS = {
             TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')  AS ball_hit_timecode
           FROM classify c
         )
+
         SELECT
           f.session_uid,
           f.session_id,
           f.rally_id,
 
-          -- Prefer official rally number; else serve-based point id
-          COALESCE(f.point_number_real, f.serve_point_id) AS point_number,
+          COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
 
           f.shot_number_in_point AS shot_number,
           f.swing_id,
 
-          -- Who hit
           f.player_id,
           f.player_name,
           f.player_uid,
 
-          -- Canonical swing type
           f.swing_type_final,
 
-          -- Result & description
           f.shot_result,
           f.shot_description_depth,
 
-          -- Bounce XY + surface
+          -- Bounce XY (with fallback)
           f.ball_bounce_surface,
           f.ball_bounce_is_floor,
           f.bounce_x_final AS ball_bounce_x,
@@ -587,7 +586,7 @@ CREATE_STMTS = {
           f.serve_type,
           f.serve,
 
-          -- Player pos at hit
+          -- Player position at hit
           f.player_x_at_hit, f.player_y_at_hit,
 
           -- Ball hit XY (with fallback)
@@ -606,7 +605,6 @@ CREATE_STMTS = {
           -- QA
           f.inferred_serve
         FROM final_map f
-        WHERE COALESCE(f.point_number_real, f.serve_point_id) IS NOT NULL   -- drop pre-serve swings
         ORDER BY session_uid, point_number, shot_number;
     """,
 }
