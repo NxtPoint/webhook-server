@@ -354,10 +354,16 @@ CREATE_STMTS = {
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
 
-            -- pull from column, or fall back to meta JSON
-            COALESCE(s.ball_speed, NULLIF((s.meta->>'ball_speed'), ''))::float          AS ball_speed,
-            COALESCE(s.ball_player_distance, NULLIF((s.meta->>'ball_player_distance'), ''))::float
-                                                                                         AS ball_player_distance,
+            -- pull from column, or fall back to meta JSON (cast before COALESCE)
+            COALESCE(
+              s.ball_speed,
+              NULLIF(s.meta->>'ball_speed','')::double precision
+            ) AS ball_speed,
+
+            COALESCE(
+              s.ball_player_distance,
+              NULLIF(s.meta->>'ball_player_distance','')::double precision
+            ) AS ball_player_distance,
 
             s.meta,
 
