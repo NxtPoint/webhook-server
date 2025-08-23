@@ -538,7 +538,7 @@ CREATE_STMTS = {
           c.dist_fh_volley, c.dist_bh_volley, c.dist_smash,
           c.dist_first_serve, c.dist_second_serve, c.dist_drop_shot, c.dist_tweener, c.dist_other
         FROM classify c
-        ORDER BY c.session_uid, c.point_number, c.shot_number_in_point;
+        ORDER BY session_uid, point_number, shot_number_in_point;
     """,
 }
 
