@@ -10,11 +10,11 @@ VIEW_NAMES = [
     "vw_rally",
     "vw_bounce",
     "vw_player_position",
-    "vw_player_swing_dist",    # per-player distribution summary (kept, not used in point_log)
+    "vw_player_swing_dist",    # per-player distribution (kept for dashboards)
 
     # Ordering helpers
     "vw_shot_order",           # legacy (rally-only)
-    "vw_shot_order_norm",      # rally + inferred points
+    "vw_shot_order_norm",      # rally OR serve-based inferred points
 
     # Point-level summary (winner/error)
     "vw_point_summary",
@@ -35,7 +35,7 @@ CREATE_STMTS = {
           COALESCE(dp.full_name, 'Player ' || s.player_id::text) AS player_name,
           dp.sportai_player_uid AS player_uid,
 
-          -- Pass through SportAI player distribution JSON (not used in point_log anymore)
+          -- Pass through SportAI player distribution JSON (not used in point_log)
           (dp.swing_type_distribution)::jsonb AS player_swing_type_distribution,
 
           s.rally_id,
@@ -46,7 +46,7 @@ CREATE_STMTS = {
           COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
           s.serve, s.serve_type,
           s.swing_type,                 -- raw label if present (from SportAI)
-          s.meta                        -- raw per-swing json (used only for fallbacks in views)
+          s.meta                        -- raw per-swing json (used for fallbacks in views)
         FROM fact_swing s
         LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
@@ -103,7 +103,7 @@ CREATE_STMTS = {
         numbered AS (
           SELECT
             i.*,
-            -- Session-scoped running counter of inferred points
+            -- Session-scoped running counter of inferred starts
             SUM(CASE WHEN i.inferred_point_start THEN 1 ELSE 0 END)
               OVER (PARTITION BY i.session_id ORDER BY i.t_clean, i.swing_id
                     ROWS UNBOUNDED PRECEDING) AS inferred_point_id
@@ -164,7 +164,7 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
     """,
 
-    # ---------- PER-PLAYER DISTRIBUTION SUMMARY ----------
+    # ---------- PER-PLAYER DISTRIBUTION SUMMARY (kept for dashboards) ----------
     "vw_player_swing_dist": """
       CREATE VIEW vw_player_swing_dist AS
       SELECT
@@ -215,7 +215,7 @@ CREATE_STMTS = {
         WHERE fs.rally_id IS NOT NULL;
     """,
 
-    # Rally or inferred points
+    # NEW: Serve-based grouping when rally_id is missing
     "vw_shot_order_norm": """
         CREATE VIEW vw_shot_order_norm AS
         WITH seq AS (
@@ -223,25 +223,46 @@ CREATE_STMTS = {
             s.session_id,
             s.swing_id,
             s.rally_id,
-            s.inferred_point_id,
-            s.t_clean
+            s.t_clean,
+            (COALESCE(s.serve, FALSE) OR COALESCE(s.inferred_serve, FALSE)) AS is_serve
           FROM vw_swing_norm s
+        ),
+        first_serve AS (
+          SELECT session_id, MIN(t_clean) AS first_t
+          FROM seq
+          WHERE is_serve
+          GROUP BY session_id
+        ),
+        seq2 AS (
+          SELECT
+            q.*,
+            CASE
+              WHEN fs.first_t IS NOT NULL AND q.t_clean >= fs.first_t THEN
+                SUM(CASE WHEN q.is_serve THEN 1 ELSE 0 END)
+                  OVER (PARTITION BY q.session_id ORDER BY q.t_clean, q.swing_id)
+              ELSE NULL
+            END AS serve_point_id
+          FROM seq q
+          LEFT JOIN first_serve fs ON fs.session_id = q.session_id
         ),
         ordered AS (
           SELECT
-            q.*,
-            COALESCE(q.rally_id, -q.inferred_point_id) AS group_key,
+            s2.session_id,
+            s2.swing_id,
+            s2.rally_id,
+            s2.serve_point_id,
             ROW_NUMBER() OVER (
-              PARTITION BY q.session_id, COALESCE(q.rally_id, -q.inferred_point_id)
-              ORDER BY q.t_clean, q.swing_id
+              PARTITION BY s2.session_id, COALESCE(s2.rally_id, s2.serve_point_id)
+              ORDER BY s2.t_clean, s2.swing_id
             ) AS shot_number_in_point
-          FROM seq q
+          FROM seq2 s2
+          WHERE s2.serve_point_id IS NOT NULL OR s2.rally_id IS NOT NULL
         )
         SELECT
           o.session_id,
           o.swing_id,
           o.rally_id,
-          o.inferred_point_id,
+          o.serve_point_id,
           o.shot_number_in_point
         FROM ordered o;
     """,
@@ -335,8 +356,8 @@ CREATE_STMTS = {
             s.session_uid,
             s.rally_id,
             r.rally_number AS point_number_real,
+            so.serve_point_id,                 -- inferred point number (by serves)
             so.shot_number_in_point,
-            s.inferred_point_id,                        -- for points without rally_id
             s.player_id,
             s.player_name,
             s.player_uid,
@@ -396,7 +417,7 @@ CREATE_STMTS = {
           ) pp ON TRUE
         ),
 
-        -- Ball position at the instant of contact (fallback for ball_hit_x/y)
+        -- ball position at the instant of contact (fallback for ball_hit_x/y)
         ball_pos_at_hit AS (
           SELECT
             b.swing_id,
@@ -407,8 +428,8 @@ CREATE_STMTS = {
             SELECT pb.*
             FROM fact_ball_position pb
             WHERE pb.session_id = b.session_id
-              AND pb.ts >= b.ball_hit_ts - INTERVAL '120 milliseconds'
-              AND pb.ts <= b.ball_hit_ts + INTERVAL '120 milliseconds'
+              AND pb.ts >= b.ball_hit_ts - INTERVAL '120 ms'
+              AND pb.ts <= b.ball_hit_ts + INTERVAL '120 ms'
             ORDER BY ABS(EXTRACT(EPOCH FROM (pb.ts - b.ball_hit_ts)))
             LIMIT 1
           ) pb ON TRUE
@@ -433,7 +454,7 @@ CREATE_STMTS = {
           ) bx ON TRUE
         ),
 
-        -- Approximate bounce from first ball position after the hit (fallback)
+        -- approximate bounce from first ball position after the hit (fallback)
         approx_bounce_from_ballpos AS (
           SELECT
             b.swing_id,
@@ -445,7 +466,7 @@ CREATE_STMTS = {
             FROM fact_ball_position pb2
             WHERE pb2.session_id = b.session_id
               AND pb2.ts > b.ball_hit_ts
-              AND pb2.ts < b.ball_hit_ts + INTERVAL '2 seconds'
+              AND pb2.ts < b.ball_hit_ts + INTERVAL '2 second'
             ORDER BY pb2.ts
             LIMIT 1
           ) pb2 ON TRUE
@@ -457,11 +478,11 @@ CREATE_STMTS = {
             pl.player_x_at_hit, pl.player_y_at_hit,
             fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
 
-            -- final ball-hit XY with fallback to ball positions
+            -- final ball-hit XY with fallback
             COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
             COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
 
-            -- final bounce XY with fallback to ball positions
+            -- final bounce XY with fallback
             COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
             COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
 
@@ -470,39 +491,37 @@ CREATE_STMTS = {
               WHEN fb.bounce_type IN ('out','net','long','wide') THEN 'out'
               WHEN fb.bounce_type IS NULL THEN NULL
               ELSE 'in'
-            END AS shot_result,
-
-            -- Bounce surface summary
-            CASE
-              WHEN fb.bounce_type = 'net' THEN 'net'
-              WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
-              WHEN fb.bounce_type IS NULL THEN NULL
-              ELSE 'floor'
-            END AS ball_bounce_surface,
-            CASE
-              WHEN fb.bounce_type IS NULL THEN NULL
-              ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
-            END AS ball_bounce_is_floor,
-
-            -- Depth label (uses fallback Y if real bounce is missing)
-            CASE
-              WHEN fb.bounce_type IN ('net') THEN 'net'
-              WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
-              WHEN (COALESCE(fb.bounce_y, ab.approx_bounce_y)) IS NULL THEN NULL
-              WHEN (COALESCE(fb.bounce_y, ab.approx_bounce_y)) <= -2.5 THEN 'deep'
-              WHEN (COALESCE(fb.bounce_y, ab.approx_bounce_y)) BETWEEN -2.5 AND 2.5 THEN 'mid'
-              ELSE 'short'
-            END AS shot_description_depth
+            END AS shot_result
           FROM base b
-          LEFT JOIN player_loc pl ON pl.swing_id = b.swing_id
-          LEFT JOIN ball_pos_at_hit bh ON bh.swing_id = b.swing_id
-          LEFT JOIN first_bounce_after_hit fb ON fb.swing_id = b.swing_id
+          LEFT JOIN player_loc pl               ON pl.swing_id = b.swing_id
+          LEFT JOIN ball_pos_at_hit bh          ON bh.swing_id = b.swing_id
+          LEFT JOIN first_bounce_after_hit fb   ON fb.swing_id = b.swing_id
           LEFT JOIN approx_bounce_from_ballpos ab ON ab.swing_id = b.swing_id
         ),
 
         final_map AS (
           SELECT
             c.*,
+
+            -- Bounce surface summary + depth label based on final bounce Y
+            CASE
+              WHEN c.bounce_type = 'net' THEN 'net'
+              WHEN c.bounce_type IN ('out','long','wide') THEN 'out_of_court'
+              WHEN c.bounce_type IS NULL THEN NULL
+              ELSE 'floor'
+            END AS ball_bounce_surface,
+            CASE
+              WHEN c.bounce_type IS NULL THEN NULL
+              ELSE (c.bounce_type NOT IN ('net','out','long','wide'))
+            END AS ball_bounce_is_floor,
+            CASE
+              WHEN c.bounce_type IN ('net') THEN 'net'
+              WHEN c.bounce_type IN ('long','wide','out') THEN c.bounce_type
+              WHEN (c.bounce_y_final) IS NULL THEN NULL
+              WHEN (c.bounce_y_final) <= -2.5 THEN 'deep'
+              WHEN (c.bounce_y_final) BETWEEN -2.5 AND 2.5 THEN 'mid'
+              ELSE 'short'
+            END AS shot_description_depth,
 
             -- Canonical swing type mapping (serve vs non-serve)
             CASE
@@ -539,21 +558,25 @@ CREATE_STMTS = {
           f.session_id,
           f.rally_id,
 
-          COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
+          -- Prefer official rally number; else serve-based point id
+          COALESCE(f.point_number_real, f.serve_point_id) AS point_number,
 
           f.shot_number_in_point AS shot_number,
           f.swing_id,
 
+          -- Who hit
           f.player_id,
           f.player_name,
           f.player_uid,
 
+          -- Canonical swing type
           f.swing_type_final,
 
+          -- Result & description
           f.shot_result,
           f.shot_description_depth,
 
-          -- Bounce XY (with fallback)
+          -- Bounce XY + surface
           f.ball_bounce_surface,
           f.ball_bounce_is_floor,
           f.bounce_x_final AS ball_bounce_x,
@@ -563,7 +586,7 @@ CREATE_STMTS = {
           f.serve_type,
           f.serve,
 
-          -- Player position at hit
+          -- Player pos at hit
           f.player_x_at_hit, f.player_y_at_hit,
 
           -- Ball hit XY (with fallback)
@@ -582,6 +605,7 @@ CREATE_STMTS = {
           -- QA
           f.inferred_serve
         FROM final_map f
+        WHERE COALESCE(f.point_number_real, f.serve_point_id) IS NOT NULL   -- drop pre-serve swings
         ORDER BY session_uid, point_number, shot_number;
     """,
 }
@@ -628,7 +652,7 @@ def _preflight_or_raise(conn):
     required_tables = [
         "dim_session", "dim_player", "dim_rally",
         "fact_swing", "fact_bounce", "fact_player_position",
-        "fact_ball_position",   # used for XY fallbacks
+        "fact_ball_position"     # used for XY fallbacks
     ]
     missing = [t for t in required_tables if not _table_exists(conn, t)]
     if missing:
