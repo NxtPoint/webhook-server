@@ -347,7 +347,7 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
-    "vw_point_log": """
+        "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
           SELECT DISTINCT ON (s.swing_id)
@@ -364,29 +364,26 @@ CREATE_STMTS = {
             s.serve,
             s.serve_type,
 
-            -- Clean seconds derived from *_ts
-            s.start_s_clean AS start_s,
-            s.end_s_clean   AS end_s,
-            s.ball_hit_s_clean AS ball_hit_s,
+            -- CLEAN (zero-anchored) seconds for timecodes/ordering
+            s.start_s_clean     AS start_s,
+            s.end_s_clean       AS end_s,
+            s.ball_hit_s_clean  AS ball_hit_s,
+
+            -- RAW payload seconds for matching other tables
+            s.start_s           AS start_s_raw,
+            s.end_s             AS end_s_raw,
+            s.ball_hit_s        AS ball_hit_s_raw,
 
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
 
-            -- pull from column, or fall back to meta JSON (cast before COALESCE)
-            COALESCE(
-              s.ball_speed,
-              NULLIF(s.meta->>'ball_speed','')::double precision
-            ) AS ball_speed,
-            COALESCE(
-              s.ball_player_distance,
-              NULLIF(s.meta->>'ball_player_distance','')::double precision
-            ) AS ball_player_distance,
+            COALESCE(s.ball_speed, NULLIF(s.meta->>'ball_speed','')::double precision) AS ball_speed,
+            COALESCE(s.ball_player_distance, NULLIF(s.meta->>'ball_player_distance','')::double precision)
+              AS ball_player_distance,
 
-            -- From normalization
             s.inferred_serve,
             s.normalized_swing_type,
 
-            -- Robust swing text from meta keys (lowercased)
             LOWER(NULLIF(COALESCE(
               s.meta->>'swing_type',
               s.meta->>'stroke',
@@ -402,7 +399,6 @@ CREATE_STMTS = {
           ORDER BY s.swing_id, s.t_clean
         ),
 
-        -- Player XY at hit: match by seconds, nearest sample
         player_loc AS (
           SELECT
             b.swing_id,
@@ -414,12 +410,11 @@ CREATE_STMTS = {
             FROM fact_player_position p
             WHERE p.session_id = b.session_id
               AND p.player_id  = b.player_id
-            ORDER BY ABS(p.ts_s - b.ball_hit_s)
+            ORDER BY ABS(p.ts_s - COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw))
             LIMIT 1
           ) pp ON TRUE
         ),
 
-        -- Ball XY at hit (fallback for ball_hit_x/y): widen window to ±0.5s
         ball_pos_at_hit AS (
           SELECT
             b.swing_id,
@@ -430,13 +425,13 @@ CREATE_STMTS = {
             SELECT pb.*
             FROM fact_ball_position pb
             WHERE pb.session_id = b.session_id
-              AND pb.ts_s BETWEEN (b.ball_hit_s - 0.5) AND (b.ball_hit_s + 0.5)
-            ORDER BY ABS(pb.ts_s - b.ball_hit_s)
+              AND pb.ts_s BETWEEN (COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw) - 0.5)
+                              AND (COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw) + 0.5)
+            ORDER BY ABS(pb.ts_s - COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw))
             LIMIT 1
           ) pb ON TRUE
         ),
 
-        -- First bounce after the hit: relax rally filter, use seconds
         first_bounce_after_hit AS (
           SELECT
             b.swing_id,
@@ -449,13 +444,12 @@ CREATE_STMTS = {
             SELECT bb.*
             FROM fact_bounce bb
             WHERE bb.session_id = b.session_id
-              AND bb.bounce_s >= b.ball_hit_s
+              AND bb.bounce_s >= COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw)
             ORDER BY bb.bounce_s
             LIMIT 1
           ) bx ON TRUE
         ),
 
-        -- If no formal bounce row, approximate from first ball position after hit (within 2s)
         approx_bounce_from_ballpos AS (
           SELECT
             b.swing_id,
@@ -466,8 +460,8 @@ CREATE_STMTS = {
             SELECT pb2.*
             FROM fact_ball_position pb2
             WHERE pb2.session_id = b.session_id
-              AND pb2.ts_s >  b.ball_hit_s
-              AND pb2.ts_s <= b.ball_hit_s + 2.0
+              AND pb2.ts_s >  COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw)
+              AND pb2.ts_s <= COALESCE(b.ball_hit_s_raw, b.start_s_raw, b.end_s_raw) + 2.0
             ORDER BY pb2.ts_s
             LIMIT 1
           ) pb2 ON TRUE
@@ -479,22 +473,18 @@ CREATE_STMTS = {
             pl.player_x_at_hit, pl.player_y_at_hit,
             fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
 
-            -- final ball-hit XY with fallback to ball positions
             COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
             COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
 
-            -- final bounce XY with fallback to ball positions
             COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
             COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
 
-            -- Shot result
             CASE
               WHEN fb.bounce_type IN ('out','net','long','wide') THEN 'out'
               WHEN fb.bounce_type IS NULL THEN NULL
               ELSE 'in'
             END AS shot_result,
 
-            -- Bounce surface summary
             CASE
               WHEN fb.bounce_type = 'net' THEN 'net'
               WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
@@ -506,7 +496,6 @@ CREATE_STMTS = {
               ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
             END AS ball_bounce_is_floor,
 
-            -- Depth label
             CASE
               WHEN fb.bounce_type IN ('net') THEN 'net'
               WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
@@ -516,17 +505,15 @@ CREATE_STMTS = {
               ELSE 'short'
             END AS shot_description_depth
           FROM base b
-          LEFT JOIN player_loc pl ON pl.swing_id = b.swing_id
-          LEFT JOIN ball_pos_at_hit bh ON bh.swing_id = b.swing_id
-          LEFT JOIN first_bounce_after_hit fb ON fb.swing_id = b.swing_id
-          LEFT JOIN approx_bounce_from_ballpos ab ON ab.swing_id = b.swing_id
+          LEFT JOIN player_loc                   pl ON pl.swing_id = b.swing_id
+          LEFT JOIN ball_pos_at_hit              bh ON bh.swing_id = b.swing_id
+          LEFT JOIN first_bounce_after_hit       fb ON fb.swing_id = b.swing_id
+          LEFT JOIN approx_bounce_from_ballpos   ab ON ab.swing_id = b.swing_id
         ),
 
         final_map AS (
           SELECT
             c.*,
-
-            -- Canonical swing type mapping (serve vs non-serve)
             CASE
               WHEN (c.inferred_serve OR c.serve) THEN
                 CASE
@@ -536,24 +523,23 @@ CREATE_STMTS = {
                 END
               ELSE
                 CASE
-                  WHEN c.swing_text IS NULL OR c.swing_text = ''                THEN 'other'
-                  WHEN c.swing_text ~* 'tweener'                                THEN 'tweener'
-                  WHEN c.swing_text ~* 'drop'                                    THEN 'drop_shot'
-                  WHEN c.swing_text ~* '(overhead|smash|^oh$)'                   THEN 'smash'
+                  WHEN c.swing_text IS NULL OR c.swing_text = '' THEN 'other'
+                  WHEN c.swing_text ~* 'tweener'               THEN 'tweener'
+                  WHEN c.swing_text ~* 'drop'                  THEN 'drop_shot'
+                  WHEN c.swing_text ~* '(overhead|smash|^oh$)' THEN 'smash'
                   WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_volley'
                   WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_volley'
                   WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_slice'
                   WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_slice'
-                  WHEN c.swing_text ~* '(^fh|forehand)'                          THEN 'forehand'
-                  WHEN c.swing_text ~* '(^bh|backhand)'                          THEN 'backhand'
+                  WHEN c.swing_text ~* '(^fh|forehand)'         THEN 'forehand'
+                  WHEN c.swing_text ~* '(^bh|backhand)'         THEN 'backhand'
                   ELSE 'other'
                 END
             END AS swing_type_final,
 
-            -- Human friendly timecodes
-            TO_CHAR((TIME '00:00' + (c.start_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')     AS start_timecode,
-            TO_CHAR((TIME '00:00' + (c.end_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')       AS end_timecode,
-            TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')  AS ball_hit_timecode
+            TO_CHAR((TIME '00:00' + (c.start_s * INTERVAL '1 second')), 'HH24:MI:SS.MS')    AS start_timecode,
+            TO_CHAR((TIME '00:00' + (c.end_s   * INTERVAL '1 second')), 'HH24:MI:SS.MS')    AS end_timecode,
+            TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode
           FROM classify c
         )
 
@@ -561,53 +547,34 @@ CREATE_STMTS = {
           f.session_uid,
           f.session_id,
           f.rally_id,
-
           COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
-
           f.shot_number_in_point AS shot_number,
           f.swing_id,
-
           f.player_id,
           f.player_name,
           f.player_uid,
-
           f.swing_type_final,
-
           f.shot_result,
           f.shot_description_depth,
-
-          -- Bounce XY (with fallback)
           f.ball_bounce_surface,
           f.ball_bounce_is_floor,
           f.bounce_x_final AS ball_bounce_x,
           f.bounce_y_final AS ball_bounce_y,
-
-          -- Serve detail
           f.serve_type,
           f.serve,
-
-          -- Player position at hit
           f.player_x_at_hit, f.player_y_at_hit,
-
-          -- Ball hit XY (with fallback)
           f.ball_hit_x_final AS ball_hit_x,
           f.ball_hit_y_final AS ball_hit_y,
-
-          -- Timing
           f.start_s, f.end_s, f.ball_hit_s,
           f.start_ts, f.end_ts, f.ball_hit_ts,
           f.start_timecode, f.end_timecode, f.ball_hit_timecode,
-
-          -- Extras
           f.ball_speed,
           f.ball_player_distance,
-
-          -- QA
           f.inferred_serve
         FROM final_map f
         ORDER BY session_uid, point_number, shot_number;
-    """,
-}
+        """,
+    }
 
 # ---------- helpers ----------
 
