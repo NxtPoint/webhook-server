@@ -723,13 +723,17 @@ def ops_sql():
     if " limit " not in ql:
         q = f"{stripped.rstrip(';')} LIMIT 200"
 
-    with engine.begin() as conn:
-        conn.execute(text("SET LOCAL statement_timeout = 5000"))
-        conn.execute(text("SET LOCAL TRANSACTION READ ONLY"))
-        rows = conn.execute(text(q)).mappings().all()
-        data = [dict(r) for r in rows]
-    return jsonify({"ok": True, "rows": len(data), "data": data})
-
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SET LOCAL statement_timeout = 10000"))
+            conn.execute(text("SET LOCAL TRANSACTION READ ONLY"))
+            rows = conn.execute(text(q)).mappings().all()
+            data = [dict(r) for r in rows]
+        return jsonify({"ok": True, "rows": len(data), "data": data})
+    except Exception as e:
+        # Return the actual DB error text for fast diagnosis
+        return jsonify({"ok": False, "error": str(e), "query": q}), 400
+    
 @app.get("/ops/reconcile")
 def ops_reconcile():
     if not _guard():
@@ -1164,7 +1168,8 @@ def api_session_rallies(session_uid):
         sid = srow["session_id"]
         rows = conn.execute(text("""
             SELECT r.rally_number, r.start_s, r.end_s,
-                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=r.session_id AND b.rally_id=b.rally_id) AS bounces
+                   (SELECT COUNT(*) FROM fact_bounce b
+                     WHERE b.session_id=r.session_id AND b.rally_id=r.rally_id) AS bounces
             FROM dim_rally r
             WHERE r.session_id=:sid
             ORDER BY r.rally_number
