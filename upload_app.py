@@ -401,7 +401,7 @@ def _normalize_serve_flags(conn, session_id):
     """), {"sid": session_id})
 
 def _rebuild_ts_from_seconds(conn, session_id):
-    """Make *_ts video-relative: anchor zero at first swing’s time."""
+    """Anchor all *_ts to a common zero (first swing time) so ts lines up across tables."""
     conn.execute(text("""
     WITH z AS (
       SELECT :sid AS session_id,
@@ -411,6 +411,7 @@ def _rebuild_ts_from_seconds(conn, session_id):
                0
              ) AS t0
     )
+    -- swings
     UPDATE fact_swing fs
        SET start_ts    = make_timestamp(1970,1,1,0,0,0)
                         + make_interval(secs => GREATEST(0, COALESCE(fs.start_s,0)    - z.t0)),
@@ -420,7 +421,29 @@ def _rebuild_ts_from_seconds(conn, session_id):
                         + make_interval(secs => GREATEST(0, COALESCE(fs.ball_hit_s,0) - z.t0))
       FROM z
      WHERE fs.session_id = z.session_id;
+
+    -- bounces
+    UPDATE fact_bounce b
+       SET bounce_ts = make_timestamp(1970,1,1,0,0,0)
+                       + make_interval(secs => GREATEST(0, COALESCE(b.bounce_s,0) - z.t0))
+      FROM z
+     WHERE b.session_id = z.session_id;
+
+    -- ball positions
+    UPDATE fact_ball_position bp
+       SET ts = make_timestamp(1970,1,1,0,0,0)
+                + make_interval(secs => GREATEST(0, COALESCE(bp.ts_s,0) - z.t0))
+      FROM z
+     WHERE bp.session_id = z.session_id;
+
+    -- player positions
+    UPDATE fact_player_position pp
+       SET ts = make_timestamp(1970,1,1,0,0,0)
+                + make_interval(secs => GREATEST(0, COALESCE(pp.ts_s,0) - z.t0))
+      FROM z
+     WHERE pp.session_id = z.session_id;
     """), {"sid": session_id})
+
 
 # ---------------------- ingest ----------------------
 def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
