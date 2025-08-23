@@ -1002,6 +1002,38 @@ def ops_list_sessions():
         data = [dict(r) for r in rows]
     return jsonify({"ok": True, "rows": len(data), "data": data})
 
+ # ---------- NEW: one-click performance indexes ----------
+@app.post("/ops/perf-indexes")
+def ops_perf_indexes():
+    if not _guard():
+        return _forbid()
+    ddl = [
+        # Swings
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_rally ON fact_swing(session_id, rally_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_hitstart_expr ON fact_swing ((COALESCE(ball_hit_s, start_s)))",
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_hitstart ON fact_swing(session_id, (COALESCE(ball_hit_s, start_s)))",
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_player ON fact_swing(session_id, player_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_serve_true ON fact_swing(session_id) WHERE serve IS TRUE",
+
+        # Rallies
+        "CREATE INDEX IF NOT EXISTS idx_dim_rally_session_bounds ON dim_rally(session_id, start_s, end_s)",
+
+        # Bounces
+        "CREATE INDEX IF NOT EXISTS idx_fact_bounce_session_rally ON fact_bounce(session_id, rally_id)",
+
+        # Positions
+        "CREATE INDEX IF NOT EXISTS idx_fact_player_position_session_player ON fact_player_position(session_id, player_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fact_ball_position_session_ts ON fact_ball_position(session_id, ts_s)"
+    ]
+    created = []
+    with engine.begin() as conn:
+        for stmt in ddl:
+            conn.execute(text(stmt))
+            created.append(stmt)
+        conn.execute(text("ANALYZE"))
+    return jsonify({"ok": True, "created_or_exists": created})
+
+
 # ---------- NEW: repair/backfill swings ↔ rallies + serve flags ----------
 @app.get("/ops/repair-swings")
 def ops_repair_swings():
