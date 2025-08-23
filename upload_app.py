@@ -975,42 +975,120 @@ def ops_reconcile():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+def _render_upload_page(message: str = ""):
+    key = request.args.get("key","")
+    action = f"/ops/ingest-file?key={key}"
+    return Response(f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>NextPoint – Upload Session JSON</title>
+  <style>
+    body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }}
+    .card {{ max-width: 720px; padding: 20px; border: 1px solid #e5e7eb; border-radius: 12px; }}
+    label {{ display:block; margin: 12px 0 6px; font-weight: 600; }}
+    input[type=text] {{ width:100%; padding:8px; border:1px solid #d1d5db; border-radius:8px; }}
+    .row {{ display:flex; gap:12px; align-items:center; }}
+    .muted {{ color:#6b7280; font-size: 12px; }}
+    button {{ padding:10px 16px; border-radius:10px; border:1px solid #111827; background:#111827; color:#fff; cursor:pointer; }}
+    button:hover {{ opacity:.9 }}
+    .msg {{ margin-bottom: 12px; color:#b45309; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Upload SportAI Session JSON</h2>
+    {"<div class='msg'>" + message + "</div>" if message else ""}
+    <form method="post" action="{action}" enctype="multipart/form-data">
+      <label>JSON file</label>
+      <input type="file" name="file" accept="application/json" />
+
+      <div class="muted">— or —</div>
+
+      <label>Direct JSON URL (public GET)</label>
+      <input type="text" name="url" placeholder="https://example.com/session.json" />
+
+      <div class="muted">— or —</div>
+
+      <label>Server file name (on /mnt/data)</label>
+      <input type="text" name="name" placeholder="s1.json" />
+
+      <div class="row" style="margin-top:12px;">
+        <label style="margin:0;"><input type="checkbox" name="replace" value="1" checked /> Replace existing</label>
+        <label style="margin:0;">Mode:
+          <select name="mode">
+            <option value="soft" selected>soft</option>
+            <option value="hard">hard</option>
+          </select>
+        </label>
+        <label style="margin:0;">Session UID:
+          <input type="text" name="session_uid" placeholder="(optional)" style="width:220px;" />
+        </label>
+      </div>
+
+      <div style="margin-top:18px;">
+        <button type="submit">Upload</button>
+        <span class="muted">Your ops key is carried in the URL.</span>
+      </div>
+    </form>
+  </div>
+</body>
+</html>
+""", mimetype="text/html")
+
 @app.route("/ops/ingest-file", methods=["GET","POST"])
 def ops_ingest_file():
-    if not _guard(): return _forbid()
-    replace = str(request.args.get("replace","0")).strip().lower() in ("1","true","yes","y")
-    forced_uid = request.args.get("session_uid")
-    src_hint = request.args.get("name") or request.args.get("url")
-    mode = (request.args.get("mode") or "hard").strip().lower()  # "hard" | "soft"
+    if not _guard(): 
+        return _forbid()
+
+    # When you just open the page (GET, no inputs) → render the HTML form
+    has_input = ("file" in request.files) or request.args.get("url") or request.args.get("name") \
+                or (request.method == "POST" and (request.form.get("url") or request.form.get("name") or request.data))
+
+    if request.method == "GET" and not has_input:
+        return _render_upload_page()
+
+    # Parse flags from either args (GET) or form (POST)
+    def _get_arg(name, default=None):
+        if request.method == "POST":
+            v = request.form.get(name)
+            if v is not None:
+                return v
+        return request.args.get(name, default)
 
     try:
-        payload = _get_json_from_sources()
+        replace = str(_get_arg("replace","0")).strip().lower() in ("1","true","yes","y","on")
+        forced_uid = _get_arg("session_uid")
+        src_hint = _get_arg("name") or _get_arg("url")
+        mode = (_get_arg("mode") or "hard").strip().lower()  # "hard" | "soft"
 
-        # Guess the session uid first so we can enforce rules before ingest
+        # Try to obtain the payload:
+        #  - file (multipart) OR url (server fetch) OR name (server disk) OR raw body
+        try:
+            payload = _get_json_from_sources()
+        except Exception as e:
+            # If this came from the HTML form, show the page with message instead of JSON
+            if request.method == "POST" and "file" in request.files:
+                return _render_upload_page(f"Upload failed: {str(e)}")
+            raise
+
+        # Guess/ensure session uid, then maybe clear existing (soft mode keeps session row)
         try:
             session_uid_guess = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
         except Exception:
             session_uid_guess = forced_uid
 
         # Read existing session_id (if any)
-        existing_sid = None
         with engine.connect() as c:
             existing_sid = c.execute(
                 text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
                 {"u": session_uid_guess}
             ).scalar()
 
-        # STRICT_REINGEST guard
-        if STRICT_REINGEST and existing_sid is not None and not replace:
-            return jsonify({
-                "ok": False,
-                "error": f"Session '{session_uid_guess}' already exists; re-ingest with &replace=1 to overwrite"
-            }), 400
-
-        # If soft-replace is requested and session exists, clear children but keep the session row
         if replace and mode == "soft" and existing_sid is not None:
             with engine.begin() as conn:
-                # delete children in FK-safe order; keep raw_result for audit trail
+                # delete children in FK-safe order; keep raw_result
                 conn.execute(text("DELETE FROM fact_ball_position WHERE session_id=:sid"), {"sid": existing_sid})
                 conn.execute(text("DELETE FROM fact_player_position WHERE session_id=:sid"), {"sid": existing_sid})
                 conn.execute(text("DELETE FROM fact_bounce WHERE session_id=:sid"), {"sid": existing_sid})
@@ -1022,11 +1100,8 @@ def ops_ingest_file():
                 conn.execute(text("DELETE FROM team_session WHERE session_id=:sid"), {"sid": existing_sid})
                 conn.execute(text("DELETE FROM session_confidences WHERE session_id=:sid"), {"sid": existing_sid})
                 conn.execute(text("DELETE FROM thumbnail WHERE session_id=:sid"), {"sid": existing_sid})
-            replace_for_ingest = False
-        else:
-            replace_for_ingest = replace
 
-        # Ensure schema is present
+        # Ensure schema exists
         init_db(engine)
 
         # Ingest
@@ -1034,13 +1109,23 @@ def ops_ingest_file():
             res = ingest_result_v2(
                 conn,
                 payload,
-                replace=replace_for_ingest,
+                replace=(replace and not (mode == "soft" and existing_sid is not None)),
                 forced_uid=forced_uid,
                 src_hint=src_hint
             )
 
+        # If the request came from the HTML form, show a friendly success page
+        if request.method == "POST" and ("file" in request.files or request.form.get("url") or request.form.get("name")):
+            msg = f"Upload OK. Session UID: {res.get('session_uid')}. Now go run Init Views."
+            return _render_upload_page(msg)
+
+        # Otherwise return JSON (API usage)
         return jsonify({"ok": True, **res, "replace": replace, "mode": mode})
+
     except Exception as e:
+        # HTML form → return a page with the error; API → JSON error
+        if request.method == "POST" and ("file" in request.files or request.form.get("url") or request.form.get("name")):
+            return _render_upload_page(f"Error: {str(e)}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/ops/delete-session")
