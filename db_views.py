@@ -2,9 +2,11 @@
 from sqlalchemy import text
 
 # Views required for the transaction log + minimal helpers
+# NOTE: Order matters. Dependencies must come after their sources.
 VIEW_NAMES = [
     # Base helpers
     "vw_swing",
+    "vw_swing_norm",           # <= NEW: depends on vw_swing
     "vw_rally",
     "vw_bounce",
     "vw_player_position",
@@ -40,8 +42,51 @@ CREATE_STMTS = {
           s.swing_type,            -- if present in fact_swing (kept for traceability)
           s.meta                   -- raw per-swing json for deep dives
         FROM fact_swing s
-        LEFT JOIN dim_player  dp ON dp.player_id   = s.player_id
-        LEFT JOIN dim_session ds ON ds.session_id   = s.session_id;
+        LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
+        LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
+    """,
+
+    # ---------- NEW: NORMALIZED SWING VIEW (view-only; no schema changes) ----------
+    "vw_swing_norm": """
+        CREATE VIEW vw_swing_norm AS
+        WITH base AS (
+          SELECT
+            vws.*,
+            COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t,
+            LAG(vws.rally_id) OVER (
+              PARTITION BY vws.session_id
+              ORDER BY COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s), vws.swing_id
+            ) AS prev_rally_id,
+            LAG(COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s)) OVER (
+              PARTITION BY vws.session_id
+              ORDER BY COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s), vws.swing_id
+            ) AS prev_t
+          FROM vw_swing vws
+        ),
+        inferred AS (
+          SELECT
+            b.*,
+            CASE
+              -- Rally id appears/changes ⇒ start of point
+              WHEN b.rally_id IS NOT NULL
+                   AND (b.prev_rally_id IS DISTINCT FROM b.rally_id)
+              THEN TRUE
+              -- No rally yet + clear time gap from prior swing ⇒ likely new point (default 5s)
+              WHEN b.rally_id IS NULL
+                   AND (b.prev_t IS NULL OR (b.t - b.prev_t) > 5.0)
+              THEN TRUE
+              ELSE FALSE
+            END AS inferred_point_start
+          FROM base b
+        )
+        SELECT
+          i.*,
+          (COALESCE(i.serve, FALSE) OR i.inferred_point_start) AS inferred_serve,
+          CASE
+            WHEN (COALESCE(i.serve, FALSE) OR i.inferred_point_start) THEN 'serve'
+            ELSE i.swing_type
+          END AS normalized_swing_type
+        FROM inferred i;
     """,
 
     "vw_rally": """
@@ -190,6 +235,7 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
+    # NOTE: Now sources from vw_swing_norm to include normalized serve labeling.
     "vw_point_log": """
         CREATE VIEW vw_point_log AS
         WITH base AS (
@@ -203,13 +249,18 @@ CREATE_STMTS = {
             s.player_id,
             s.player_name,
             s.player_uid,
-            s.serve, s.serve_type,
+            s.serve,
+            s.serve_type,
             s.start_s, s.end_s, s.ball_hit_s,
             s.start_ts, s.end_ts, s.ball_hit_ts,
             s.ball_hit_x, s.ball_hit_y,
             s.ball_speed, s.ball_player_distance,
-            s.meta
-          FROM vw_swing s
+            s.meta,
+
+            -- NEW from vw_swing_norm
+            s.inferred_serve,
+            s.normalized_swing_type
+          FROM vw_swing_norm s
           JOIN vw_rally r
             ON r.session_id = s.session_id AND r.rally_id = s.rally_id
           JOIN vw_shot_order so
@@ -344,7 +395,11 @@ CREATE_STMTS = {
           -- Extras
           c.ball_speed,
           c.ball_player_distance,
-          c.shot_confidence
+          c.shot_confidence,
+
+          -- NEW extras for downstream use / QA
+          c.inferred_serve,
+          c.normalized_swing_type
         FROM classify c
         ORDER BY c.session_uid, c.point_number, c.shot_number_in_point;
     """,
