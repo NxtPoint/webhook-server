@@ -1033,6 +1033,33 @@ def ops_perf_indexes():
         conn.execute(text("ANALYZE"))
     return jsonify({"ok": True, "created_or_exists": created})
 
+def _link_swings_to_rallies(conn, session_id):
+    conn.execute(text("""
+        UPDATE fact_swing fs
+        SET rally_id = dr.rally_id
+        FROM dim_rally dr
+        WHERE fs.session_id = :sid
+          AND dr.session_id = :sid
+          AND fs.rally_id IS NULL
+          AND COALESCE(fs.ball_hit_s, fs.start_s) BETWEEN dr.start_s AND dr.end_s
+    """), {"sid": session_id})
+
+@app.post("/ops/link-swings-to-rallies")
+def ops_link_swings_to_rallies():
+    if not _guard(): 
+        return _forbid()
+    session_uid = request.args.get("session_uid") or (request.get_json(silent=True) or {}).get("session_uid")
+    if not session_uid:
+        return jsonify({"ok": False, "error": "session_uid required"}), 400
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
+                           {"u": session_uid}).mappings().first()
+        if not row:
+            return jsonify({"ok": False, "error": f"session_uid '{session_uid}' not found"}), 404
+        sid = row["session_id"]
+        _link_swings_to_rallies(conn, sid)
+    return jsonify({"ok": True, "session_uid": session_uid, "linked": True})
+
 
 # ---------- NEW: repair/backfill swings ↔ rallies + serve flags ----------
 @app.get("/ops/repair-swings")
