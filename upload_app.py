@@ -1624,6 +1624,137 @@ def ops_repair_swings():
 
     return jsonify({"ok": True, "data": [dict(x) for x in summary]})
 
+# ---------- OPS: validate swings (distribution + serve integrity) ----------
+@app.get("/ops/validate-swings")
+def ops_validate_swings():
+    if not _guard():
+        return _forbid()
+
+    session_uid = request.args.get("session_uid")
+    if not session_uid:
+        return jsonify({"ok": False, "error": "session_uid required"}), 400
+
+    try:
+        with engine.connect() as conn:
+            sid = conn.execute(text(
+                "SELECT session_id FROM dim_session WHERE session_uid=:u"
+            ), {"u": session_uid}).scalar()
+            if not sid:
+                return jsonify({"ok": False, "error": "unknown session_uid"}), 404
+
+            # --- load players + their JSON distribution
+            rows = conn.execute(text("""
+                SELECT player_id, sportai_player_uid, swing_type_distribution
+                FROM dim_player
+                WHERE session_id=:sid
+            """), {"sid": sid}).mappings().all()
+
+            puid_by_pid = {}
+            dist_by_pid = {}
+            for r in rows:
+                pid  = int(r["player_id"])
+                puid = r["sportai_player_uid"]
+                puid_by_pid[pid] = None if puid is None else str(puid)
+
+                d = r["swing_type_distribution"]
+                if isinstance(d, str):
+                    try:
+                        d = json.loads(d)
+                    except Exception:
+                        d = {}
+                dv = {}
+                if isinstance(d, dict):
+                    for k, v in d.items():
+                        try:
+                            dv[str(k)] = float(v)
+                        except Exception:
+                            pass
+                dist_by_pid[pid] = dv
+
+            # --- bronze counts by player_id x swing_type
+            rows = conn.execute(text("""
+                SELECT player_id, COALESCE(swing_type,'other') AS k, COUNT(*) AS cnt
+                FROM fact_swing
+                WHERE session_id=:sid
+                GROUP BY player_id, COALESCE(swing_type,'other')
+            """), {"sid": sid}).mappings().all()
+
+            counts_by_pid = {}
+            totals_by_pid = {}
+            for r in rows:
+                pid = int(r["player_id"]) if r["player_id"] is not None else None
+                k   = r["k"]
+                cnt = int(r["cnt"])
+                counts_by_pid.setdefault(pid, {})[k] = cnt
+                totals_by_pid[pid] = totals_by_pid.get(pid, 0) + cnt
+
+            # --- build comparison table
+            comp = []
+            for pid in set(list(counts_by_pid.keys()) + list(dist_by_pid.keys())):
+                puid  = puid_by_pid.get(pid)
+                total = float(totals_by_pid.get(pid, 0) or 0.0)
+                bronze_map = counts_by_pid.get(pid, {})
+                keys = set(bronze_map.keys()) | set((dist_by_pid.get(pid) or {}).keys())
+                for k in sorted(keys):
+                    bronze_pct = (bronze_map.get(k, 0) / total) if total > 0 else 0.0
+                    dist_pct   = float((dist_by_pid.get(pid) or {}).get(k, 0.0) or 0.0)
+                    comp.append({
+                        "player_uid": puid,
+                        "swing_type": k,
+                        "bronze_pct": round(bronze_pct, 6),
+                        "dist_pct":   round(dist_pct,   6),
+                        "delta_pct":  round(bronze_pct - dist_pct, 6),
+                        "bronze_cnt": int(bronze_map.get(k, 0)),
+                        "swings_total": int(total)
+                    })
+
+            # --- serve integrity (first swing per rally should be the only serve)
+            rows = conn.execute(text("""
+                SELECT rally_id, swing_id, serve, COALESCE(ball_hit_s, start_s) AS t
+                FROM fact_swing
+                WHERE session_id=:sid AND rally_id IS NOT NULL
+            """), {"sid": sid}).mappings().all()
+
+            by_rally = {}
+            for r in rows:
+                by_rally.setdefault(r["rally_id"], []).append(r)
+
+            rallies = len(by_rally)
+            serve_swings = 0
+            correct_first_serves = 0
+            extra_serves = 0
+            missing_first_serves = 0
+
+            for rid, swings in by_rally.items():
+                swings_sorted = sorted(swings, key=lambda s: (s["t"], s["swing_id"]))
+                first = swings_sorted[0] if swings_sorted else None
+                serves = [s for s in swings_sorted if s["serve"]]
+                serve_swings += len(serves)
+
+                if first:
+                    if first["serve"]:
+                        correct_first_serves += 1
+                        if len(serves) > 1:
+                            extra_serves += (len(serves) - 1)
+                    else:
+                        missing_first_serves += 1
+                        extra_serves += len(serves)  # later serves exist but first wasn't marked
+
+            return jsonify({
+                "ok": True,
+                "session_uid": session_uid,
+                "serve_integrity": {
+                    "rallies": rallies,
+                    "serve_swings": serve_swings,
+                    "correct_first_serves": correct_first_serves,
+                    "extra_serves": extra_serves,
+                    "missing_first_serves": missing_first_serves
+                },
+                "swing_distribution": comp
+            })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # ---------------------- main ----------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT","8000")))
