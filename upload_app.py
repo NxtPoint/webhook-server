@@ -54,7 +54,7 @@ def _time_s(val):
     if isinstance(val, (int, float, str)):
         return _float(val)
     if isinstance(val, dict):
-        for k in ("timestamp", "ts", "time_s", "t", "seconds"):
+        for k in ("timestamp", "timestamp_s", "ts", "time_s", "t", "seconds"):
             if k in val:
                 return _float(val[k])
     return None
@@ -75,8 +75,8 @@ def _get_json_from_sources():
     """
     name = request.args.get("name")
     if name:
-        import os
-        paths = [name] if os.path.isabs(name) else [f"/mnt/data/{name}", os.path.join(os.getcwd(), name)]
+        import os as _os
+        paths = [name] if _os.path.isabs(name) else [f"/mnt/data/{name}", _os.path.join(os.getcwd(), name)]
         last_err = None
         for p in paths:
             try:
@@ -638,70 +638,70 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         """), {"sid": session_id, "s": ts_s}).fetchone()
         return row[0] if row else None
 
-# --- bounces (safe vars, no shadowing) ---
-for b in (payload.get("ball_bounces") or []):
-    s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) \
-         or _time_s(b.get("ts")) or _time_s(b.get("t"))
-    bx = _float(b.get("x")) if b.get("x") is not None else None
-    by = _float(b.get("y")) if b.get("y") is not None else None
-    btype = b.get("type") or b.get("bounce_type")
-    hitter_uid = (b.get("player_id") or b.get("sportai_player_uid"))
-    hitter_uid = str(hitter_uid) if hitter_uid is not None else None
-    hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
-
-    conn.execute(text("""
-        INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id,
-                                 bounce_s, bounce_ts, x,  y,  bounce_type)
-        VALUES                   (:sid,      :pid,             :rid,
-                                 :s,        :ts,       :x, :y, :bt)
-    """), {
-        "sid": session_id,
-        "pid": hitter_pid,
-        "rid": rally_id_for_ts(s),
-        "s": s,
-        "ts": seconds_to_ts(base_dt, s),
-        "x": bx, "y": by,
-        "bt": btype
-    })
-
-# --- ball positions (accept timestamp OR timestamp_s) ---
-for p in (payload.get("ball_positions") or []):
-    s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
-         or _time_s(p.get("ts")) or _time_s(p.get("t"))
-    hx = _float(p.get("x")) if p.get("x") is not None else None
-    hy = _float(p.get("y")) if p.get("y") is not None else None
-
-    conn.execute(text("""
-        INSERT INTO fact_ball_position (session_id, ts_s, ts,  x,  y)
-        VALUES                         (:sid,       :ss,  :ts, :x, :y)
-    """), {
-        "sid": session_id,
-        "ss": s,
-        "ts": seconds_to_ts(base_dt, s),
-        "x": hx, "y": hy
-    })
-
-# --- player positions (accept timestamp OR timestamp_s) ---
-for puid, arr in (payload.get("player_positions") or {}).items():
-    pid = uid_to_player_id.get(str(puid))
-    if not pid:
-        continue
-    for p in (arr or []):
-        s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
-             or _time_s(p.get("ts")) or _time_s(p.get("t"))
-        px = _float(p.get("x")) if p.get("x") is not None else None
-        py = _float(p.get("y")) if p.get("y") is not None else None
+    # --- bounces (safe vars, no shadowing) ---
+    for b in (payload.get("ball_bounces") or []):
+        s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) \
+             or _time_s(b.get("ts")) or _time_s(b.get("t"))
+        bx = _float(b.get("x")) if b.get("x") is not None else None
+        by = _float(b.get("y")) if b.get("y") is not None else None
+        btype = b.get("type") or b.get("bounce_type")
+        hitter_uid = b.get("player_id") or b.get("sportai_player_uid")
+        hitter_uid = str(hitter_uid) if hitter_uid is not None else None
+        hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
 
         conn.execute(text("""
-            INSERT INTO fact_player_position (session_id, player_id, ts_s, ts,  x,  y)
-            VALUES                           (:sid,       :pid,      :ss,  :ts, :x, :y)
+            INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id,
+                                     bounce_s, bounce_ts, x, y, bounce_type)
+            VALUES                   (:sid,      :pid,             :rid,
+                                     :s,        :ts,       :x, :y, :bt)
         """), {
             "sid": session_id,
-            "pid": pid,
+            "pid": hitter_pid,
+            "rid": rally_id_for_ts(s),
+            "s": s,
+            "ts": seconds_to_ts(base_dt, s),
+            "x": bx, "y": by,
+            "bt": btype
+        })
+
+    # --- ball positions (accept timestamp OR timestamp_s) ---
+    for p in (payload.get("ball_positions") or []):
+        s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
+             or _time_s(p.get("ts")) or _time_s(p.get("t"))
+        hx = _float(p.get("x")) if p.get("x") is not None else None
+        hy = _float(p.get("y")) if p.get("y") is not None else None
+
+        conn.execute(text("""
+            INSERT INTO fact_ball_position (session_id, ts_s, ts, x, y)
+            VALUES                         (:sid,       :ss,  :ts, :x, :y)
+        """), {
+            "sid": session_id,
             "ss": s,
             "ts": seconds_to_ts(base_dt, s),
-            "x": px, "y": py
+            "x": hx, "y": hy
         })
+
+    # --- player positions (accept timestamp OR timestamp_s) ---
+    for puid, arr in (payload.get("player_positions") or {}).items():
+        pid = uid_to_player_id.get(str(puid))
+        if not pid:
+            continue
+        for p in (arr or []):
+            s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
+                 or _time_s(p.get("ts")) or _time_s(p.get("t"))
+            px = _float(p.get("x")) if p.get("x") is not None else None
+            py = _float(p.get("y")) if p.get("y") is not None else None
+
+            conn.execute(text("""
+                INSERT INTO fact_player_position (session_id, player_id, ts_s, ts, x, y)
+                VALUES                           (:sid,       :pid,      :ss, :ts, :x, :y)
+            """), {
+                "sid": session_id,
+                "pid": pid,
+                "ss": s,
+                "ts": seconds_to_ts(base_dt, s),
+                "x": px, "y": py
+            })
 
     # optional blocks
     for t in payload.get("team_sessions") or []:
@@ -830,11 +830,12 @@ def ops_db_counts():
         }
     return jsonify({"ok": True, "counts": counts})
 
-# 🔧 UPDATED: accept GET/POST, optional ?timeout_ms=
+# 🔧 Always validate query & add LIMIT, regardless of GET/POST
 @app.route("/ops/sql", methods=["GET", "POST"])
 def ops_sql():
     if not _guard():
         return _forbid()
+
     q = None
     if request.method == "POST":
         if request.is_json:
@@ -844,23 +845,18 @@ def ops_sql():
     if not q:
         q = request.args.get("q", "")
 
-        q = (q or "").strip()
-        ql = q.lstrip().lower()
+    q = (q or "").strip()
+    ql = q.lstrip().lower()
+    if not (ql.startswith("select") or ql.startswith("with")):
+        return Response("Only SELECT/CTE queries are allowed", status=400)
 
-        if not (ql.startswith("select") or ql.startswith("with")):
-            return Response("Only SELECT/CTE queries are allowed", status=400)
-
-        stripped = q.strip()
-        # Single statement guard (allow a trailing ';')
-        if ";" in stripped[:-1]:
-            return Response("Only a single statement is allowed", status=400)
-
-        # Do NOT append our LIMIT if the query already contains any LIMIT (handles newlines/tabs)
-        if not re.search(r"\blimit\b", stripped, flags=re.IGNORECASE):
-            q = f"{stripped.rstrip(';')}\nLIMIT 200"
-        else:
-            q = stripped.rstrip(';')  # keep the user's LIMIT as-is
-
+    stripped = q.strip()
+    if ";" in stripped[:-1]:
+        return Response("Only a single statement is allowed", status=400)
+    if not re.search(r"\blimit\b", stripped, flags=re.IGNORECASE):
+        q = f"{stripped.rstrip(';')}\nLIMIT 200"
+    else:
+        q = stripped.rstrip(';')
 
     try:
         timeout_ms = int(request.args.get("timeout_ms", "60000"))
