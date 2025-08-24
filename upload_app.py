@@ -901,6 +901,192 @@ def ops_db_counts():
 
     return jsonify({"ok": True, "counts": counts})
 
+# --- XY Backfill helpers ------------------------------------------------------
+
+def _get_session_id(conn, session_uid: str):
+    row = conn.execute(text("""
+        SELECT session_id FROM dim_session WHERE session_uid=:u
+    """), {"u": session_uid}).first()
+    return row[0] if row else None
+
+def _latest_payload(conn, session_id: int):
+    row = conn.execute(text("""
+        SELECT payload_json
+        FROM raw_result
+        WHERE session_id=:sid
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {"sid": session_id}).first()
+    return (row[0] if row else None)
+
+def _coerce_f(f, default=None):
+    try:
+        if f is None:
+            return default
+        return float(f)
+    except Exception:
+        return default
+
+# Inspect top-level keys & sizes in latest raw for a session
+@app.get("/ops/inspect-raw")
+def ops_inspect_raw():
+    if not _guard(): return _forbid()
+    session_uid = request.args.get("session_uid")
+    if not session_uid:
+        return jsonify({"ok": False, "error": "missing session_uid"}), 400
+
+    with engine.connect() as conn:
+        sid = _get_session_id(conn, session_uid)
+        if not sid:
+            return jsonify({"ok": False, "error": "unknown session_uid"}), 404
+        doc = _latest_payload(conn, sid)
+
+    if doc is None:
+        return jsonify({"ok": False, "error": "no raw_result for session"}), 404
+
+    # doc should already be a dict (JSONB). if not, try json.loads
+    if isinstance(doc, str):
+        try:
+            import json as _json
+            doc = _json.loads(doc)
+        except Exception:
+            return jsonify({"ok": False, "error": "payload not JSON"}), 500
+
+    bp = doc.get("ball_positions") or doc.get("ballPositions")
+    bb = doc.get("ball_bounces")  or doc.get("ballBounces")
+    pp = doc.get("player_positions") or doc.get("playerPositions")
+
+    summary = {
+        "keys": sorted(doc.keys()),
+        "ball_positions_len": (len(bp) if isinstance(bp, list) else None),
+        "ball_bounces_len":   (len(bb) if isinstance(bb, list) else None),
+        "player_positions_players": (len(pp) if isinstance(pp, dict) else None),
+    }
+    return jsonify({"ok": True, "session_uid": session_uid, "summary": summary})
+
+# Backfill XY into Bronze from latest raw_result (by session or all)
+@app.get("/ops/backfill-xy")
+def ops_backfill_xy():
+    if not _guard(): return _forbid()
+    session_uid = request.args.get("session_uid")  # optional; if absent → all sessions
+
+    try:
+        with engine.begin() as conn:
+            if session_uid:
+                sid = _get_session_id(conn, session_uid)
+                if not sid:
+                    return jsonify({"ok": False, "error": "unknown session_uid"}), 404
+                sid_rows = [(sid, session_uid)]
+            else:
+                sid_rows = conn.execute(text("""
+                    SELECT DISTINCT rr.session_id, ds.session_uid
+                    FROM raw_result rr
+                    JOIN dim_session ds ON ds.session_id = rr.session_id
+                """)).fetchall()
+
+            totals = []
+            for sid, suid in sid_rows:
+                doc = _latest_payload(conn, sid)
+                if doc is None:
+                    totals.append({"session_uid": suid, "inserted": 0, "note": "no raw_result"})
+                    continue
+
+                if isinstance(doc, str):
+                    try:
+                        import json as _json
+                        doc = _json.loads(doc)
+                    except Exception:
+                        totals.append({"session_uid": suid, "inserted": 0, "note": "payload not JSON"})
+                        continue
+
+                # Idempotent: clear existing rows for this session
+                conn.execute(text("DELETE FROM fact_ball_position   WHERE session_id=:sid"), {"sid": sid})
+                conn.execute(text("DELETE FROM fact_bounce          WHERE session_id=:sid"), {"sid": sid})
+                conn.execute(text("DELETE FROM fact_player_position WHERE session_id=:sid"), {"sid": sid})
+
+                inserted_bp = inserted_bb = inserted_pp = 0
+
+                # --- Ball positions (image coords 0..1) ---
+                bp = doc.get("ball_positions") or doc.get("ballPositions")
+                if isinstance(bp, list):
+                    rows = []
+                    for itm in bp:
+                        ts_s = _coerce_f(itm.get("timestamp"))
+                        x    = _coerce_f(itm.get("X"))
+                        y    = _coerce_f(itm.get("Y"))
+                        if ts_s is None or x is None or y is None:
+                            continue
+                        rows.append({"sid": sid, "ts_s": ts_s, "x": x, "y": y})
+                    if rows:
+                        conn.execute(text("""
+                            INSERT INTO fact_ball_position(session_id, ts_s, x, y)
+                            VALUES (:sid, :ts_s, :x, :y)
+                        """), rows)
+                        inserted_bp = len(rows)
+
+                # --- Ball bounces (court meters; timestamp is DELTA seconds since hit) ---
+                bb = doc.get("ball_bounces") or doc.get("ballBounces")
+                if isinstance(bb, list):
+                    rows = []
+                    for itm in bb:
+                        bounce_s = _coerce_f(itm.get("timestamp"))
+                        court = itm.get("court_pos") or []
+                        x = _coerce_f(court[0] if len(court) > 0 else None)
+                        y = _coerce_f(court[1] if len(court) > 1 else None)
+                        hitter = itm.get("player_id")
+                        btype  = itm.get("type")
+                        if x is None or y is None:
+                            continue
+                        rows.append({
+                            "sid": sid,
+                            "bounce_s": bounce_s,
+                            "x": x, "y": y,
+                            "hitter": hitter,
+                            "btype": btype
+                        })
+                    if rows:
+                        conn.execute(text("""
+                            INSERT INTO fact_bounce(session_id, bounce_s, x, y, hitter_player_id, bounce_type)
+                            VALUES (:sid, :bounce_s, :x, :y, :hitter, :btype)
+                        """), rows)
+                        inserted_bb = len(rows)
+
+                # --- Player positions (prefer court_X/Y, else image X/Y) ---
+                pp = doc.get("player_positions") or doc.get("playerPositions")
+                if isinstance(pp, dict):
+                    rows = []
+                    for pid_key, arr in pp.items():
+                        try:
+                            pid = int(pid_key)
+                        except Exception:
+                            pid = pid_key if isinstance(pid_key, int) else None
+                        if not isinstance(arr, list):
+                            continue
+                        for itm in arr:
+                            ts_s = _coerce_f(itm.get("timestamp"))
+                            x = _coerce_f(itm.get("court_X"), _coerce_f(itm.get("X")))
+                            y = _coerce_f(itm.get("court_Y"), _coerce_f(itm.get("Y")))
+                            if ts_s is None or x is None or y is None:
+                                continue
+                            rows.append({"sid": sid, "pid": pid, "ts_s": ts_s, "x": x, "y": y})
+                    if rows:
+                        conn.execute(text("""
+                            INSERT INTO fact_player_position(session_id, player_id, ts_s, x, y)
+                            VALUES (:sid, :pid, :ts_s, :x, :y)
+                        """), rows)
+                        inserted_pp = len(rows)
+
+                totals.append({
+                    "session_uid": suid,
+                    "inserted_ball_positions": inserted_bp,
+                    "inserted_bounces": inserted_bb,
+                    "inserted_player_positions": inserted_pp
+                })
+
+        return jsonify({"ok": True, "totals": totals})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # 🔧 Always validate query & add LIMIT, regardless of GET/POST
 @app.route("/ops/sql", methods=["GET", "POST"])
 def ops_sql():
