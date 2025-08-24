@@ -761,7 +761,7 @@ def init_views(engine):
     # keep VIEW_SQL_STMTS populated for any code importing it
     global VIEW_SQL_STMTS
     VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
-    
+
     # ---- back-compat for older /ops/init-views import paths ----
     def run_views(engine):
         # Older code does: from db_views import run_views
@@ -776,3 +776,24 @@ def init_views(engine):
         # create in the declared order
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
+# ---- unified apply function + aliases (bottom of file) ----
+def _apply_views(engine):
+    # Build VIEW_SQL_STMTS for any code that imports it
+    global VIEW_SQL_STMTS
+    VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
+
+    with engine.begin() as conn:
+        _preflight_or_raise(conn)
+        # Drop first to avoid dependency issues
+        for name in VIEW_NAMES:
+            _drop_view_or_matview(conn, name)
+        # Create in declared order
+        for name in VIEW_NAMES:
+            conn.execute(text(CREATE_STMTS[name]))
+
+# Expose both names for back-compat
+init_views = _apply_views
+run_views  = _apply_views
+
+# (Optional, helps linters and dynamic import tools)
+__all__ = ["init_views", "run_views", "VIEW_SQL_STMTS", "VIEW_NAMES", "CREATE_STMTS"]
