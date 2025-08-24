@@ -761,6 +761,12 @@ def init_views(engine):
     # keep VIEW_SQL_STMTS populated for any code importing it
     global VIEW_SQL_STMTS
     VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
+    
+    # ---- back-compat for older /ops/init-views import paths ----
+    def run_views(engine):
+        # Older code does: from db_views import run_views
+        # Keep it working by delegating to init_views.
+        return init_views(engine)
 
     with engine.begin() as conn:
         _preflight_or_raise(conn)
