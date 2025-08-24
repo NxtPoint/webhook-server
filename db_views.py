@@ -322,55 +322,62 @@ CREATE_STMTS = {
 
     # Serve-based grouping when rally_id may be missing (uses vw_swing_norm)
     "vw_shot_order_norm": """
-        CREATE VIEW vw_shot_order_norm AS
-        WITH seq AS (
-          SELECT
-            s.session_id,
-            s.swing_id,
-            s.rally_id,
-            s.t_clean,
-            (COALESCE(s.serve, FALSE) OR COALESCE(s.inferred_serve, FALSE)) AS is_serve
-          FROM vw_swing_norm s
-        ),
-        first_serve AS (
-          SELECT session_id, MIN(t_clean) AS first_t
-          FROM seq
-          WHERE is_serve
-          GROUP BY session_id
-        ),
-        seq2 AS (
-          SELECT
-            q.*,
-            CASE
-              WHEN fs.first_t IS NOT NULL AND q.t_clean >= fs.first_t THEN
-                SUM(CASE WHEN q.is_serve THEN 1 ELSE 0 END)
-                  OVER (PARTITION BY q.session_id ORDER BY q.t_clean, q.swing_id)
-              ELSE NULL
-            END AS serve_point_id
-          FROM seq q
-          LEFT JOIN first_serve fs ON fs.session_id = q.session_id
-        ),
-        ordered AS (
-          SELECT
-            s2.session_id,
-            s2.swing_id,
-            s2.rally_id,
-            s2.serve_point_id,
-            ROW_NUMBER() OVER (
-              PARTITION BY s2.session_id, COALESCE(s2.rally_id, s2.serve_point_id)
-              ORDER BY s2.t_clean, s2.swing_id
-            ) AS shot_number_in_point
-          FROM seq2 s2
-          WHERE s2.serve_point_id IS NOT NULL OR s2.rally_id IS NOT NULL
-        )
-        SELECT
-          o.session_id,
-          o.swing_id,
-          o.rally_id,
-          o.serve_point_id,
-          o.shot_number_in_point
-        FROM ordered o;
-    """,
+    CREATE VIEW vw_shot_order_norm AS
+    -- Robust ordering that works with rally_id or inferred serve-grouping
+    WITH seq AS (
+      SELECT
+        s.session_id,
+        s.swing_id,
+        s.rally_id,
+        s.t_clean,  -- seconds timeline derived from timestamps
+        (COALESCE(s.serve, FALSE) OR COALESCE(s.inferred_serve, FALSE)) AS is_serve
+      FROM vw_swing_norm s
+    ),
+    first_serve AS (
+      SELECT session_id, MIN(t_clean) AS first_t
+      FROM seq
+      WHERE is_serve
+      GROUP BY session_id
+    ),
+    seq2 AS (
+      SELECT
+        q.*,
+        CASE
+          WHEN fs.first_t IS NOT NULL AND q.t_clean >= fs.first_t THEN
+            SUM(CASE WHEN q.is_serve THEN 1 ELSE 0 END)
+              OVER (PARTITION BY q.session_id ORDER BY q.t_clean, q.swing_id)
+          ELSE NULL
+        END AS serve_point_id
+      FROM seq q
+      LEFT JOIN first_serve fs ON fs.session_id = q.session_id
+    ),
+    ordered AS (
+      SELECT
+        s2.session_id,
+        s2.swing_id,
+        s2.rally_id,
+        s2.serve_point_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY s2.session_id, COALESCE(s2.rally_id, s2.serve_point_id)
+          ORDER BY s2.t_clean, s2.swing_id
+        ) AS shot_number_in_point,
+        s2.t_clean,
+        LEAD(s2.t_clean) OVER (
+          PARTITION BY s2.session_id, COALESCE(s2.rally_id, s2.serve_point_id)
+          ORDER BY s2.t_clean, s2.swing_id
+        ) AS t_next
+      FROM seq2 s2
+      WHERE s2.serve_point_id IS NOT NULL OR s2.rally_id IS NOT NULL
+    )
+    SELECT
+      o.session_id,
+      o.swing_id,
+      o.rally_id,
+      o.serve_point_id,
+      o.shot_number_in_point,
+      (o.t_next - o.t_clean) AS delta_s  -- seconds; expect >= 0
+    FROM ordered o;
+""",
 
     # ---------- POINT SUMMARY ----------
     "vw_point_summary": """
