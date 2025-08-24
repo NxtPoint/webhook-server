@@ -818,6 +818,33 @@ def ops_build_gold():
     if not _guard():
         return _forbid()
 
+@app.get("/ops/refresh-gold")
+def ops_refresh_gold():
+    if not _guard():
+        return _forbid()
+    try:
+        # 1) Rebuild views (idempotent)
+        init_views(engine)
+
+        # 2) Materialize gold tables (drop & recreate each time)
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS point_log_tbl;"))
+            conn.execute(text("CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;"))
+            conn.execute(text("DROP TABLE IF EXISTS point_summary_tbl;"))
+            conn.execute(text("CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary;"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_pl_session "
+                "ON point_log_tbl(session_uid, point_number, shot_number);"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_ps_session "
+                "ON point_summary_tbl(session_uid, point_number);"
+            ))
+
+        return jsonify({"ok": True, "message": "views + gold refreshed"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
     ddl = [
         "DROP TABLE IF EXISTS point_log_tbl;",
         "CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;",
