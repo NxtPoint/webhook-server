@@ -855,32 +855,50 @@ def ops_build_gold():
     if not _guard():
         return _forbid()
 
+from flask import jsonify
+from sqlalchemy import text
+
 @app.get("/ops/refresh-gold")
 def ops_refresh_gold():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     try:
-        # 1) Rebuild views (idempotent)
-        init_views(engine)
-
-        # 2) Materialize gold tables (drop & recreate each time)
         with engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS point_log_tbl;"))
-            conn.execute(text("CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;"))
-            conn.execute(text("DROP TABLE IF EXISTS point_summary_tbl;"))
-            conn.execute(text("CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary;"))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_pl_session "
-                "ON point_log_tbl(session_uid, point_number, shot_number);"
-            ))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_ps_session "
-                "ON point_summary_tbl(session_uid, point_number);"
-            ))
+            # point_log_tbl
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                  IF to_regclass('public.point_log_tbl') IS NULL THEN
+                    CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log WHERE false;
+                  END IF;
+                END $$;
+            """))
+            conn.execute(text("TRUNCATE point_log_tbl;"))
+            conn.execute(text("INSERT INTO point_log_tbl SELECT * FROM vw_point_log;"))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_pl_sess_point_shot
+                ON point_log_tbl(session_uid, point_number, shot_number);
+            """))
 
-        return jsonify({"ok": True, "message": "views + gold refreshed"})
+            # point_summary_tbl
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                  IF to_regclass('public.point_summary_tbl') IS NULL THEN
+                    CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary WHERE false;
+                  END IF;
+                END $$;
+            """))
+            conn.execute(text("TRUNCATE point_summary_tbl;"))
+            conn.execute(text("INSERT INTO point_summary_tbl SELECT * FROM vw_point_summary;"))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_ps_session
+                ON point_summary_tbl(session_uid, point_number);
+            """))
+
+        return jsonify({"ok": True, "message": "gold refreshed"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
     ddl = [
         "DROP TABLE IF EXISTS point_log_tbl;",
