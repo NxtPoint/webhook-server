@@ -536,7 +536,7 @@ ball_pos_at_hit AS (
     SELECT pb.*
     FROM fact_ball_position pb
     WHERE pb.session_id = b.session_id
-      AND COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) BETWEEN b.hit_time_s - 1 AND b.hit_time_s + 1
+      AND COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) BETWEEN b.hit_time_s - 1.5 AND b.hit_time_s + 1.5
     ORDER BY ABS(COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) - b.hit_time_s)
     LIMIT 1
   ) pb ON TRUE
@@ -577,8 +577,8 @@ approx_bounce_from_ballpos AS (
     SELECT pb2.*
     FROM fact_ball_position pb2
     WHERE pb2.session_id = b.session_id
-      AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) >  b.hit_time_s
-      AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) <= b.hit_time_s + 2
+      AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) >  b.ball_hit_s
+      AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) <= b.ball_hit_s + 2.5
     ORDER BY COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts))
     LIMIT 1
   ) pb2 ON TRUE
