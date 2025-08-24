@@ -801,6 +801,20 @@ def _player_map(conn, session_id: int) -> dict:
             mp[str(suid)] = pid  # normalize key to string (SportAI dict keys often come as strings)
     return mp
 
+# FK mapper: SportAI player id -> internal dim_player.player_id for a session
+def _player_map(conn, session_id: int) -> dict:
+    rows = conn.execute(text("""
+        SELECT sportai_player_uid, player_id
+        FROM dim_player
+        WHERE session_id = :sid
+    """), {"sid": session_id}).mappings().all()
+    mp = {}
+    for r in rows:
+        suid = r.get("sportai_player_uid")
+        pid  = r.get("player_id")
+        if suid is not None and pid is not None:
+            mp[str(suid)] = pid
+    return mp
 
 # ---------------------- OPS ENDPOINTS ----------------------
 @app.get("/")
@@ -1047,89 +1061,61 @@ def ops_backfill_xy():
                         """), rows)
                         inserted_bp = len(rows)
 
-                # --- Ball bounces (court meters; timestamp is DELTA seconds since hit) ---
+                # ==== BEGIN PATCH: Ball bounces (uses _player_map) ====
                 bb = doc.get("ball_bounces") or doc.get("ballBounces")
-                inserted_bb = 0
+                rows = []
                 if isinstance(bb, list):
-                    rows = []
+                    id_map = _player_map(conn, sid)  # FK mapping: SportAI -> dim_player.player_id
                     for itm in bb:
                         bounce_s = _coerce_f(itm.get("timestamp"))
-                        court    = itm.get("court_pos") or []
+                        court = itm.get("court_pos") or itm.get("courtPos") or []
                         x = _coerce_f(court[0]) if len(court) > 0 else None
                         y = _coerce_f(court[1]) if len(court) > 1 else None
-                        btype = (itm.get("type") or "").strip().lower()  # 'floor' or 'swing'
-                        if bounce_s is None or x is None or y is None:
+                        sportai_pid = itm.get("player_id")
+                        hitter = id_map.get(str(sportai_pid)) if sportai_pid is not None else None
+                        btype = itm.get("type")
+                        if x is None or y is None:
                             continue
                         rows.append({
-                            "sid": sid,
-                            "bounce_s": bounce_s,
-                            "x": x,
-                            "y": y,
-                            "btype": btype,
+                            "sid": sid, "bounce_s": bounce_s, "x": x, "y": y,
+                            "hitter": hitter, "btype": btype
                         })
 
-                    if rows:
-                        # If you want to make repeated runs idempotent, uncomment this line:
-                        # conn.execute(text("DELETE FROM fact_bounce WHERE session_id = :sid"), {"sid": sid})
+                if rows:
+                    conn.execute(text("""
+                        INSERT INTO fact_bounce(session_id, bounce_s, x, y, hitter_player_id, bounce_type)
+                        VALUES (:sid, :bounce_s, :x, :y, :hitter, :btype)
+                    """), rows)
+                # ==== END PATCH ====
 
-                        conn.execute(text("""
-                            INSERT INTO fact_bounce (session_id, bounce_s, x, y, bounce_type)
-                            VALUES (:sid, :bounce_s, :x, :y, :btype)
-                        """), rows)
-                        inserted_bb = len(rows)
-
-
-                # --- Player positions (court meters, ~6 Hz) ---
+                # ==== BEGIN PATCH: Player positions (uses _player_map) ====
                 pp = doc.get("player_positions") or doc.get("playerPositions") or {}
-                inserted_pp = 0
-
+                rows = []
                 if isinstance(pp, dict):
-                    # Map SportAI player IDs to our dim_player.player_id for this session
-                    pmap = _player_map(conn, sid)
-
-                    rows = []
-                    for pid_key, frames in pp.items():
-                        # SportAI keys are often "161" etc. Normalize to string.
-                        internal_pid = pmap.get(str(pid_key))  # may be None; NULL is allowed by FK
-
-                        if not isinstance(frames, list):
-                            continue
-                        for fr in frames:
-                            ts_s = _coerce_f(fr.get("timestamp"))
-                            # prefer court coords; these are already meters
-                            x = _coerce_f(fr.get("court_X") or fr.get("court_x") or fr.get("courtX"))
-                            y = _coerce_f(fr.get("court_Y") or fr.get("court_y") or fr.get("courtY"))
-                            if ts_s is None or x is None or y is None:
+                    id_map = _player_map(conn, sid)  # FK mapping
+                    for sportai_pid, samples in pp.items():
+                        pid = id_map.get(str(sportai_pid))
+                        if pid is None:
+                            continue  # skip players we didn’t map
+                        for s in (samples or []):
+                            ts_s = _coerce_f(s.get("timestamp"))
+                            # Prefer court_* (meters). If missing, you can later add an image->court fallback.
+                            x = _coerce_f(s.get("court_X") or s.get("court_x") or s.get("courtX"))
+                            y = _coerce_f(s.get("court_Y") or s.get("court_y") or s.get("courtY"))
+                            if x is None or y is None:
                                 continue
-                            rows.append({
-                                "sid": sid,
-                                "pid": internal_pid,  # None is OK (FK lets NULL through)
-                                "ts_s": ts_s,
-                                "x": x,
-                                "y": y,
-                            })
+                            rows.append({"sid": sid, "pid": pid, "ts_s": ts_s, "x": x, "y": y})
 
-                    if rows:
-                        # Optional: make it idempotent per-session
-                        # conn.execute(text("DELETE FROM fact_player_position WHERE session_id = :sid"), {"sid": sid})
-
-                        conn.execute(text("""
-                            INSERT INTO fact_player_position (session_id, player_id, ts_s, x, y)
-                            VALUES (:sid, :pid, :ts_s, :x, :y)
-                        """), rows)
-                        inserted_pp = len(rows)
-
-
-                totals.append({
-                    "session_uid": suid,
-                    "inserted_ball_positions": inserted_bp,
-                    "inserted_bounces": inserted_bb,
-                    "inserted_player_positions": inserted_pp
-                })
+                if rows:
+                    conn.execute(text("""
+                        INSERT INTO fact_player_position(session_id, player_id, ts_s, x, y)
+                        VALUES (:sid, :pid, :ts_s, :x, :y)
+                    """), rows)            
 
         return jsonify({"ok": True, "totals": totals})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 
 # 🔧 Always validate query & add LIMIT, regardless of GET/POST
