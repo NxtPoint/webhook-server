@@ -2,11 +2,25 @@
 from sqlalchemy import text
 from typing import List
 
-# Symbol must exist for imports and /ops/init-views
-VIEW_SQL_STMTS: List[str] = []  # will be populated from VIEW_NAMES/CREATE_STMTS
+# Keep this symbol for any code that imports it
+VIEW_SQL_STMTS: List[str] = []  # populated from VIEW_NAMES/CREATE_STMTS
 
-# Views required for the transaction log + minimal helpers
-# NOTE: Order matters. Dependencies must come after their sources.
+# -------- Bronze helper: make raw_ingest table if missing (safe to re-run) --------
+def _ensure_raw_ingest(conn):
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS raw_ingest (
+          id           BIGSERIAL PRIMARY KEY,
+          source       TEXT NOT NULL,
+          doc_type     TEXT NOT NULL,
+          session_uid  TEXT NOT NULL,
+          ingest_ts    TIMESTAMPTZ NOT NULL DEFAULT now(),
+          payload      JSONB NOT NULL
+        );
+    """))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
+    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
+
+# -------- Views to build (order matters) --------
 VIEW_NAMES = [
     # Base helpers
     "vw_swing",
@@ -15,20 +29,20 @@ VIEW_NAMES = [
     "vw_bounce",
     "vw_player_position",
 
-    # XY normalization (new)
+    # XY normalization (timestamp-mapped)
     "vw_ball_position_norm",   # depends on dim_rally + fact_ball_position
     "vw_player_position_norm", # depends on vw_ball_position_norm
 
-    "vw_player_swing_dist",    # per-player distribution (kept for dashboards)
+    "vw_player_swing_dist",    # dashboards
 
     # Ordering helpers
-    "vw_shot_order",           # legacy (rally-only)
-    "vw_shot_order_norm",      # rally OR serve-based inferred points
+    "vw_shot_order",           # legacy rally-only
+    "vw_shot_order_norm",      # robust order (works even if rally missing)
 
-    # Point-level summary (winner/error)
+    # Point-level summary
     "vw_point_summary",
 
-    # Shot-level transaction log
+    # Shot-level transaction log (PowerBI target)
     "vw_point_log",
 ]
 
@@ -54,8 +68,8 @@ CREATE_STMTS = {
           s.ball_speed, s.ball_player_distance,
           COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
           s.serve, s.serve_type,
-          s.swing_type,                 -- raw label if present (from SportAI)
-          s.meta                        -- raw per-swing json (used for fallbacks in views)
+          s.swing_type,
+          s.meta
         FROM fact_swing s
         LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
         LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
@@ -67,28 +81,20 @@ CREATE_STMTS = {
         WITH base AS (
           SELECT
             vws.*,
-
-            -- Clean seconds derived from timestamps (authoritative)
             EXTRACT(EPOCH FROM vws.start_ts)     AS start_s_clean,
             EXTRACT(EPOCH FROM vws.end_ts)       AS end_s_clean,
             EXTRACT(EPOCH FROM vws.ball_hit_ts)  AS ball_hit_s_clean,
-
-            -- Raw best-available time (for reference only)
             COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t_raw
           FROM vw_swing vws
         ),
         ordered AS (
           SELECT
             b.*,
-
-            -- Sanitized timeline for ordering (always from *_ts-derived seconds)
             COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean) AS t_clean,
-
             LAG(b.rally_id) OVER (
               PARTITION BY b.session_id
               ORDER BY COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean), b.swing_id
             ) AS prev_rally_id,
-
             LAG(COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean)) OVER (
               PARTITION BY b.session_id
               ORDER BY COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean), b.swing_id
@@ -99,12 +105,8 @@ CREATE_STMTS = {
           SELECT
             o.*,
             CASE
-              -- Rally id appears/changes ⇒ start of point
-              WHEN o.rally_id IS NOT NULL AND (o.prev_rally_id IS DISTINCT FROM o.rally_id)
-              THEN TRUE
-              -- No rally yet + clear time gap from prior swing ⇒ likely new point (default 5s)
-              WHEN o.rally_id IS NULL AND (o.prev_t_clean IS NULL OR (o.t_clean - o.prev_t_clean) > 5.0)
-              THEN TRUE
+              WHEN o.rally_id IS NOT NULL AND (o.prev_rally_id IS DISTINCT FROM o.rally_id) THEN TRUE
+              WHEN o.rally_id IS NULL AND (o.prev_t_clean IS NULL OR (o.t_clean - o.prev_t_clean) > 5.0) THEN TRUE
               ELSE FALSE
             END AS inferred_point_start
           FROM ordered o
@@ -112,7 +114,6 @@ CREATE_STMTS = {
         numbered AS (
           SELECT
             i.*,
-            -- Session-scoped running counter of inferred starts
             SUM(CASE WHEN i.inferred_point_start THEN 1 ELSE 0 END)
               OVER (PARTITION BY i.session_id ORDER BY i.t_clean, i.swing_id
                     ROWS UNBOUNDED PRECEDING) AS inferred_point_id
@@ -121,10 +122,8 @@ CREATE_STMTS = {
         SELECT
           n.*,
           (COALESCE(n.serve, FALSE) OR n.inferred_point_start) AS inferred_serve,
-          CASE
-            WHEN (COALESCE(n.serve, FALSE) OR n.inferred_point_start) THEN 'serve'
-            ELSE n.swing_type
-          END AS normalized_swing_type
+          CASE WHEN (COALESCE(n.serve, FALSE) OR n.inferred_point_start) THEN 'serve'
+               ELSE n.swing_type END AS normalized_swing_type
         FROM numbered n;
     """,
 
@@ -134,7 +133,7 @@ CREATE_STMTS = {
             r.rally_id,
             r.session_id,
             ds.session_uid,
-            r.rally_number,  -- Treat as Point #
+            r.rally_number,
             r.start_s, r.end_s,
             r.start_ts, r.end_ts
         FROM dim_rally r
@@ -152,7 +151,7 @@ CREATE_STMTS = {
             b.rally_id,
             b.bounce_s, b.bounce_ts,
             b.x, b.y,
-            b.bounce_type  -- 'in','out','net','long','wide'
+            b.bounce_type
         FROM fact_bounce b
         LEFT JOIN dim_player dp ON dp.player_id = b.hitter_player_id
         LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
@@ -173,91 +172,83 @@ CREATE_STMTS = {
         LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
     """,
 
-    # ---------- XY NORMALIZATION (NEW) ----------
+    # ---------- XY NORMALIZATION (timestamp-mapped; no reliance on fbp.rally_id) ----------
     "vw_ball_position_norm": """
         CREATE VIEW vw_ball_position_norm AS
-        WITH dir_sample AS (
-          -- Sample first 1s of each rally to infer initial ball travel direction
+        WITH mapped AS (
           SELECT
-            s.session_id,
-            s.rally_id,
-            SUM(CASE WHEN s.dy IS NOT NULL THEN s.dy ELSE 0 END) AS sum_dy
-          FROM (
-            SELECT
-              fbp.session_id,
-              fbp.rally_id,
-              fbp.timestamp_ts,
-              fbp.y,
-              LAG(fbp.y) OVER (
-                PARTITION BY fbp.session_id, fbp.rally_id
-                ORDER BY fbp.timestamp_ts
-              ) AS y_prev,
-              (fbp.y - LAG(fbp.y) OVER (
-                PARTITION BY fbp.session_id, fbp.rally_id
-                ORDER BY fbp.timestamp_ts
-              )) AS dy
-            FROM fact_ball_position fbp
-            JOIN dim_rally dr
-              ON dr.session_id = fbp.session_id
-             AND dr.rally_id   = fbp.rally_id
-            WHERE fbp.timestamp_ts BETWEEN dr.start_ts AND dr.start_ts + INTERVAL '1 second'
-          ) s
-          GROUP BY s.session_id, s.rally_id
+            fbp.session_id,
+            fbp.ts AS timestamp_ts,
+            fbp.x, fbp.y,
+            dr.rally_id,
+            dr.start_ts,
+            dr.end_ts
+          FROM fact_ball_position fbp
+          LEFT JOIN dim_rally dr
+            ON dr.session_id = fbp.session_id
+           AND fbp.ts >= dr.start_ts
+           AND (dr.end_ts IS NULL OR fbp.ts < dr.end_ts)
         ),
-        rally_dir AS (
+        first1s AS (
           SELECT
-            session_id,
-            rally_id,
-            CASE
-              WHEN sum_dy IS NULL THEN 1   -- no data → keep as-is
-              WHEN sum_dy = 0   THEN 1     -- ambiguous → keep as-is
-              WHEN sum_dy > 0   THEN 1     -- ball moved toward +Y → keep
-              ELSE -1                      -- ball moved toward −Y → flip 180°
-            END AS dir_sign
-          FROM dir_sample
+            m.session_id,
+            m.rally_id,
+            SUM( m.y - LAG(m.y) OVER (PARTITION BY m.session_id, m.rally_id ORDER BY m.timestamp_ts) ) AS sum_dy
+          FROM mapped m
+          WHERE m.rally_id IS NOT NULL
+            AND m.timestamp_ts >= m.start_ts
+            AND m.timestamp_ts <  m.start_ts + INTERVAL '1 second'
+          GROUP BY m.session_id, m.rally_id
+        ),
+        dir AS (
+          SELECT
+            session_id, rally_id,
+            CASE WHEN sum_dy IS NULL OR sum_dy >= 0 THEN 1 ELSE -1 END AS dir_sign
+          FROM first1s
         )
         SELECT
-          fbp.session_id,
-          fbp.rally_id,
-          fbp.timestamp_ts,
-          CASE WHEN rd.dir_sign = -1 THEN -fbp.x ELSE fbp.x END AS x_norm,
-          CASE WHEN rd.dir_sign = -1 THEN -fbp.y ELSE fbp.y END AS y_norm,
-          fbp.x AS x_orig,
-          fbp.y AS y_orig,
-          rd.dir_sign
-        FROM fact_ball_position fbp
-        LEFT JOIN rally_dir rd
-          ON rd.session_id = fbp.session_id
-         AND rd.rally_id   = fbp.rally_id;
+          m.session_id, m.rally_id, m.timestamp_ts,
+          CASE WHEN d.dir_sign = -1 THEN -m.x ELSE m.x END AS x_norm,
+          CASE WHEN d.dir_sign = -1 THEN -m.y ELSE m.y END AS y_norm,
+          m.x AS x_orig, m.y AS y_orig,
+          d.dir_sign
+        FROM mapped m
+        LEFT JOIN dir d
+          ON d.session_id = m.session_id AND d.rally_id = m.rally_id;
     """,
 
     "vw_player_position_norm": """
         CREATE VIEW vw_player_position_norm AS
-        WITH rally_dir AS (
+        WITH mapped AS (
           SELECT
-            session_id,
-            rally_id,
-            MAX(dir_sign) AS dir_sign
+            fpp.session_id,
+            fpp.player_id,
+            fpp.ts AS timestamp_ts,
+            fpp.x, fpp.y,
+            dr.rally_id
+          FROM fact_player_position fpp
+          LEFT JOIN dim_rally dr
+            ON dr.session_id = fpp.session_id
+           AND fpp.ts >= dr.start_ts
+           AND (dr.end_ts IS NULL OR fpp.ts < dr.end_ts)
+        ),
+        dir AS (
+          SELECT session_id, rally_id, MAX(dir_sign) AS dir_sign
           FROM vw_ball_position_norm
           GROUP BY session_id, rally_id
         )
         SELECT
-          fpp.session_id,
-          fpp.rally_id,
-          fpp.player_id,
-          fpp.timestamp_ts,
-          CASE WHEN rd.dir_sign = -1 THEN -fpp.x ELSE fpp.x END AS x_norm,
-          CASE WHEN rd.dir_sign = -1 THEN -fpp.y ELSE fpp.y END AS y_norm,
-          fpp.x AS x_orig,
-          fpp.y AS y_orig,
-          rd.dir_sign
-        FROM fact_player_position fpp
-        LEFT JOIN rally_dir rd
-          ON rd.session_id = fpp.session_id
-         AND rd.rally_id   = fpp.rally_id;
+          m.session_id, m.rally_id, m.player_id, m.timestamp_ts,
+          CASE WHEN d.dir_sign = -1 THEN -m.x ELSE m.x END AS x_norm,
+          CASE WHEN d.dir_sign = -1 THEN -m.y ELSE m.y END AS y_norm,
+          m.x AS x_orig, m.y AS y_orig,
+          d.dir_sign
+        FROM mapped m
+        LEFT JOIN dir d
+          ON d.session_id = m.session_id AND d.rally_id = m.rally_id;
     """,
 
-    # ---------- PER-PLAYER DISTRIBUTION SUMMARY (kept for dashboards) ----------
+    # ---------- PER-PLAYER DISTRIBUTION SUMMARY ----------
     "vw_player_swing_dist": """
       CREATE VIEW vw_player_swing_dist AS
       SELECT
@@ -267,8 +258,6 @@ CREATE_STMTS = {
         dp.full_name AS player_name,
         dp.sportai_player_uid AS player_uid,
         (dp.swing_type_distribution)::jsonb AS swing_type_dist,
-
-        -- unpacked numeric fields (SportAI keys)
         ((dp.swing_type_distribution)::jsonb->>'forehand')::float   AS dist_forehand,
         ((dp.swing_type_distribution)::jsonb->>'backhand')::float   AS dist_backhand,
         ((dp.swing_type_distribution)::jsonb->>'fh_slice')::float   AS dist_fh_slice,
@@ -308,7 +297,7 @@ CREATE_STMTS = {
         WHERE fs.rally_id IS NOT NULL;
     """,
 
-    # Serve-based grouping when rally_id is missing (uses vw_swing_norm)
+    # Serve-based grouping when rally_id may be missing (uses vw_swing_norm)
     "vw_shot_order_norm": """
         CREATE VIEW vw_shot_order_norm AS
         WITH seq AS (
@@ -360,14 +349,15 @@ CREATE_STMTS = {
         FROM ordered o;
     """,
 
-    # ---------- POINT SUMMARY (winner/error) ----------
+    # ---------- POINT SUMMARY ----------
     "vw_point_summary": """
         CREATE VIEW vw_point_summary AS
         WITH ordered AS (
           SELECT
             so.session_id, so.rally_id, so.rally_number,
-            so.swing_id, so.player_id, so.shot_number_in_point
+            so.swing_id, fs.player_id, so.shot_number_in_point
           FROM vw_shot_order so
+          JOIN fact_swing fs ON fs.swing_id = so.swing_id
         ),
         first_last AS (
           SELECT DISTINCT ON (session_id, rally_id)
@@ -456,29 +446,15 @@ CREATE_STMTS = {
         s.player_uid,
         s.serve,
         s.serve_type,
-
-        -- Use seconds that share the same origin as other fact tables.
         COALESCE(s.start_s,     s.start_s_clean)     AS start_s,
         COALESCE(s.end_s,       s.end_s_clean)       AS end_s,
         COALESCE(s.ball_hit_s,  s.ball_hit_s_clean)  AS ball_hit_s,
-
-        -- keep *_ts for traceability/timecodes
         s.start_ts, s.end_ts, s.ball_hit_ts,
-
         s.ball_hit_x, s.ball_hit_y,
-
-        COALESCE(
-          s.ball_speed,
-          NULLIF(s.meta->>'ball_speed','')::double precision
-        ) AS ball_speed,
-        COALESCE(
-          s.ball_player_distance,
-          NULLIF(s.meta->>'ball_player_distance','')::double precision
-        ) AS ball_player_distance,
-
+        COALESCE(s.ball_speed, NULLIF(s.meta->>'ball_speed','')::double precision) AS ball_speed,
+        COALESCE(s.ball_player_distance, NULLIF(s.meta->>'ball_player_distance','')::double precision) AS ball_player_distance,
         s.inferred_serve,
         s.normalized_swing_type,
-
         LOWER(NULLIF(COALESCE(
           s.meta->>'swing_type',
           s.meta->>'stroke',
@@ -493,13 +469,10 @@ CREATE_STMTS = {
         ON r.session_id = s.session_id AND r.rally_id = s.rally_id
       ORDER BY s.swing_id, s.t_clean
     ),
-
-    -- Nearest player position by seconds (same origin)
     player_loc AS (
-      SELECT
-        b.swing_id,
-        pp.x AS player_x_at_hit,
-        pp.y AS player_y_at_hit
+      SELECT b.swing_id,
+             pp.x AS player_x_at_hit,
+             pp.y AS player_y_at_hit
       FROM base b
       LEFT JOIN LATERAL (
         SELECT p.*
@@ -507,17 +480,14 @@ CREATE_STMTS = {
         WHERE p.session_id = b.session_id
           AND p.player_id  = b.player_id
           AND p.ts_s IS NOT NULL
-        ORDER BY ABS(p.ts_s - b.ball_hit_s)     -- seconds vs seconds
+        ORDER BY ABS(p.ts_s - b.ball_hit_s)
         LIMIT 1
       ) pp ON TRUE
     ),
-
-    -- Ball XY at contact (fallback for ball_hit_x/y)
     ball_pos_at_hit AS (
-      SELECT
-        b.swing_id,
-        pb.x AS hit_x_from_ballpos,
-        pb.y AS hit_y_from_ballpos
+      SELECT b.swing_id,
+             pb.x AS hit_x_from_ballpos,
+             pb.y AS hit_y_from_ballpos
       FROM base b
       LEFT JOIN LATERAL (
         SELECT pb.*
@@ -528,15 +498,12 @@ CREATE_STMTS = {
         LIMIT 1
       ) pb ON TRUE
     ),
-
-    -- First bounce after the hit (by seconds)
     first_bounce_after_hit AS (
-      SELECT
-        b.swing_id,
-        bb.bounce_id,
-        bb.x AS bounce_x,
-        bb.y AS bounce_y,
-        bb.bounce_type
+      SELECT b.swing_id,
+             bb.bounce_id,
+             bb.x AS bounce_x,
+             bb.y AS bounce_y,
+             bb.bounce_type
       FROM base b
       LEFT JOIN LATERAL (
         SELECT bb.*
@@ -544,20 +511,16 @@ CREATE_STMTS = {
         WHERE bb.session_id = b.session_id
           AND (
                 (b.rally_id IS NOT NULL AND bb.rally_id = b.rally_id AND bb.bounce_s >= b.ball_hit_s)
-            OR (b.rally_id IS NULL     AND bb.bounce_s >= b.ball_hit_s
-                                      AND bb.bounce_s <= b.ball_hit_s + 2)
+             OR (b.rally_id IS NULL     AND bb.bounce_s >= b.ball_hit_s AND bb.bounce_s <= b.ball_hit_s + 2)
               )
         ORDER BY bb.bounce_s
         LIMIT 1
       ) bb ON TRUE
     ),
-
-    -- Approximate bounce from first ball position after the hit (fallback)
     approx_bounce_from_ballpos AS (
-      SELECT
-        b.swing_id,
-        pb2.x AS approx_bounce_x,
-        pb2.y AS approx_bounce_y
+      SELECT b.swing_id,
+             pb2.x AS approx_bounce_x,
+             pb2.y AS approx_bounce_y
       FROM base b
       LEFT JOIN LATERAL (
         SELECT pb2.*
@@ -569,27 +532,20 @@ CREATE_STMTS = {
         LIMIT 1
       ) pb2 ON TRUE
     ),
-
     classify AS (
       SELECT
         b.*,
         pl.player_x_at_hit, pl.player_y_at_hit,
         fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
-
-        -- ball-hit XY with fallback
         COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
         COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
-
-        -- bounce XY with fallback
         COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
         COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
-
         CASE
           WHEN fb.bounce_type IN ('out','net','long','wide') THEN 'out'
           WHEN fb.bounce_type IS NULL THEN NULL
           ELSE 'in'
         END AS shot_result,
-
         CASE
           WHEN fb.bounce_type = 'net' THEN 'net'
           WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
@@ -600,9 +556,8 @@ CREATE_STMTS = {
           WHEN fb.bounce_type IS NULL THEN NULL
           ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
         END AS ball_bounce_is_floor,
-
         CASE
-          WHEN fb.bounce_type IN ('net') THEN 'net'
+          WHEN fb.bounce_type = 'net' THEN 'net'
           WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
           WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) IS NULL THEN NULL
           WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) <= -2.5 THEN 'deep'
@@ -614,70 +569,60 @@ CREATE_STMTS = {
       LEFT JOIN ball_pos_at_hit            bh ON bh.swing_id = b.swing_id
       LEFT JOIN first_bounce_after_hit     fb ON fb.swing_id = b.swing_id
       LEFT JOIN approx_bounce_from_ballpos ab ON ab.swing_id = b.swing_id
-    ),
-
-    final_map AS (
-      SELECT
-        c.*,
-        CASE
-          WHEN (c.inferred_serve OR c.serve) THEN
-            CASE
-              WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '1%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'first%'  THEN '1st_serve'
-              WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '2%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'second%' THEN '2nd_serve'
-              ELSE 'serve'
-            END
-          ELSE
-            CASE
-              WHEN c.swing_text IS NULL OR c.swing_text = ''                THEN 'other'
-              WHEN c.swing_text ~* 'tweener'                                THEN 'tweener'
-              WHEN c.swing_text ~* 'drop'                                    THEN 'drop_shot'
-              WHEN c.swing_text ~* '(overhead|smash|^oh$)'                   THEN 'smash'
-              WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_volley'
-              WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_volley'
-              WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_slice'
-              WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_slice'
-              WHEN c.swing_text ~* '(^fh|forehand)'                          THEN 'forehand'
-              WHEN c.swing_text ~* '(^bh|backhand)'                          THEN 'backhand'
-              ELSE 'other'
-            END
-        END AS swing_type_final,
-
-        -- timecodes (derived from seconds; just for display)
-        TO_CHAR((TIME '00:00' + (c.start_s    * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS start_timecode,
-        TO_CHAR((TIME '00:00' + (c.end_s      * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS end_timecode,
-        TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode
-      FROM classify c
     )
     SELECT
-      f.session_uid,
-      f.session_id,
-      f.rally_id,
-      COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
-      f.shot_number_in_point AS shot_number,
-      f.swing_id,
-      f.player_id,
-      f.player_name,
-      f.player_uid,
-      f.swing_type_final,
-      f.shot_result,
-      f.shot_description_depth,
-      f.ball_bounce_surface,
-      f.ball_bounce_is_floor,
-      f.bounce_x_final AS ball_bounce_x,
-      f.bounce_y_final AS ball_bounce_y,
-      f.serve_type,
-      f.serve,
-      f.player_x_at_hit, f.player_y_at_hit,
-      f.ball_hit_x_final AS ball_hit_x,
-      f.ball_hit_y_final AS ball_hit_y,
-      f.start_s, f.end_s, f.ball_hit_s,
-      f.start_ts, f.end_ts, f.ball_hit_ts,
-      f.start_timecode, f.end_timecode, f.ball_hit_timecode,
-      f.ball_speed,
-      f.ball_player_distance,
-      f.inferred_serve
-    FROM final_map f
-    ORDER BY session_uid, point_number, shot_number;
+      ds.session_uid,
+      c.session_id,
+      c.rally_id,
+      COALESCE(c.point_number_real, c.inferred_point_id) AS point_number,
+      c.shot_number_in_point AS shot_number,
+      c.swing_id,
+      c.player_id,
+      c.player_name,
+      c.player_uid,
+      CASE
+        WHEN (c.inferred_serve OR c.serve) THEN
+          CASE
+            WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '1%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'first%'  THEN '1st_serve'
+            WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '2%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'second%' THEN '2nd_serve'
+            ELSE 'serve' END
+        ELSE
+          CASE
+            WHEN c.swing_text IS NULL OR c.swing_text = ''                THEN 'other'
+            WHEN c.swing_text ~* 'tweener'                                THEN 'tweener'
+            WHEN c.swing_text ~* 'drop'                                   THEN 'drop_shot'
+            WHEN c.swing_text ~* '(overhead|smash|^oh$)'                  THEN 'smash'
+            WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_volley'
+            WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_volley'
+            WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_slice'
+            WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_slice'
+            WHEN c.swing_text ~* '(^fh|forehand)'                          THEN 'forehand'
+            WHEN c.swing_text ~* '(^bh|backhand)'                          THEN 'backhand'
+            ELSE 'other'
+          END
+      END AS swing_type_final,
+      c.shot_result,
+      c.shot_description_depth,
+      c.ball_bounce_surface,
+      c.ball_bounce_is_floor,
+      c.bounce_x_final AS ball_bounce_x,
+      c.bounce_y_final AS ball_bounce_y,
+      c.serve_type,
+      c.serve,
+      c.player_x_at_hit, c.player_y_at_hit,
+      c.ball_hit_x_final AS ball_hit_x,
+      c.ball_hit_y_final AS ball_hit_y,
+      c.start_s, c.end_s, c.ball_hit_s,
+      c.start_ts, c.end_ts, c.ball_hit_ts,
+      TO_CHAR((TIME '00:00' + (c.start_s    * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS start_timecode,
+      TO_CHAR((TIME '00:00' + (c.end_s      * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS end_timecode,
+      TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode,
+      c.ball_speed,
+      c.ball_player_distance,
+      c.inferred_serve
+    FROM classify c
+    JOIN dim_session ds ON ds.session_id = c.session_id
+    ORDER BY ds.session_uid, point_number, shot_number;
     """,
 }
 
@@ -732,8 +677,8 @@ def _preflight_or_raise(conn):
         ("dim_session", "session_uid"),
         ("dim_rally", "rally_id"),
         ("dim_rally", "rally_number"),
-        ("dim_rally", "start_s"),
-        ("dim_rally", "end_s"),
+        ("dim_rally", "start_ts"),
+        ("dim_rally", "end_ts"),
         ("fact_swing", "swing_id"),
         ("fact_swing", "session_id"),
         ("fact_swing", "player_id"),
@@ -756,44 +701,24 @@ def _preflight_or_raise(conn):
         msg = ", ".join([f"{t}.{c}" for (t,c) in missing_cols])
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
-# The endpoint expects this function name:
-def init_views(engine):
-    # keep VIEW_SQL_STMTS populated for any code importing it
-    global VIEW_SQL_STMTS
-    VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
-
-    # ---- back-compat for older /ops/init-views import paths ----
-    def run_views(engine):
-        # Older code does: from db_views import run_views
-        # Keep it working by delegating to init_views.
-        return init_views(engine)
-
-    with engine.begin() as conn:
-        _preflight_or_raise(conn)
-        # drop first to avoid dependency issues
-        for name in VIEW_NAMES:
-            _drop_view_or_matview(conn, name)
-        # create in the declared order
-        for name in VIEW_NAMES:
-            conn.execute(text(CREATE_STMTS[name]))
-# ---- unified apply function + aliases (bottom of file) ----
+# ---------- apply all views ----------
 def _apply_views(engine):
-    # Build VIEW_SQL_STMTS for any code that imports it
     global VIEW_SQL_STMTS
     VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
 
     with engine.begin() as conn:
+        _ensure_raw_ingest(conn)   # Step 1: ensure Bronze table exists
         _preflight_or_raise(conn)
-        # Drop first to avoid dependency issues
+
+        # Drop in order to avoid dependency issues
         for name in VIEW_NAMES:
             _drop_view_or_matview(conn, name)
         # Create in declared order
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
 
-# Expose both names for back-compat
+# Export both names for back-compat
 init_views = _apply_views
 run_views  = _apply_views
 
-# (Optional, helps linters and dynamic import tools)
 __all__ = ["init_views", "run_views", "VIEW_SQL_STMTS", "VIEW_NAMES", "CREATE_STMTS"]
