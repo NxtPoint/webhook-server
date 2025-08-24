@@ -680,3 +680,155 @@ def run_views(engine):
         # create in the declared order
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
+# --- APPEND BELOW THIS LINE (keep all prior content intact) ---
+
+# Additive: extend the existing view list with XY normalization + shot order views.
+VIEW_SQL_STMTS += [
+
+# A) Ball XY normalization — 180° flip per rally so server always serves from −Y toward +Y
+"""
+CREATE OR REPLACE VIEW vw_ball_position_norm AS
+WITH dir_sample AS (
+  -- Sample first 1s of each rally to infer initial ball travel direction
+  SELECT
+    s.session_id,
+    s.rally_id,
+    SUM(CASE WHEN s.dy IS NOT NULL THEN s.dy ELSE 0 END) AS sum_dy
+  FROM (
+    SELECT
+      fbp.session_id,
+      fbp.rally_id,
+      fbp.timestamp_ts,
+      fbp.y,
+      LAG(fbp.y) OVER (
+        PARTITION BY fbp.session_id, fbp.rally_id
+        ORDER BY fbp.timestamp_ts
+      ) AS y_prev,
+      (fbp.y - LAG(fbp.y) OVER (
+        PARTITION BY fbp.session_id, fbp.rally_id
+        ORDER BY fbp.timestamp_ts
+      )) AS dy
+    FROM fact_ball_position fbp
+    JOIN dim_rally dr
+      ON dr.session_id = fbp.session_id
+     AND dr.rally_id   = fbp.rally_id
+    WHERE fbp.timestamp_ts BETWEEN dr.start_ts AND dr.start_ts + INTERVAL '1 second'
+  ) s
+  GROUP BY s.session_id, s.rally_id
+),
+rally_dir AS (
+  SELECT
+    session_id,
+    rally_id,
+    CASE
+      WHEN sum_dy IS NULL THEN 1   -- no data → keep as-is
+      WHEN sum_dy = 0   THEN 1     -- ambiguous → keep as-is
+      WHEN sum_dy > 0   THEN 1     -- ball moved toward +Y → keep
+      ELSE -1                      -- ball moved toward −Y → flip 180°
+    END AS dir_sign
+  FROM dir_sample
+)
+SELECT
+  fbp.session_id,
+  fbp.rally_id,
+  fbp.timestamp_ts,
+  CASE WHEN rd.dir_sign = -1 THEN -fbp.x ELSE fbp.x END AS x_norm,
+  CASE WHEN rd.dir_sign = -1 THEN -fbp.y ELSE fbp.y END AS y_norm,
+  fbp.x AS x_orig,
+  fbp.y AS y_orig,
+  rd.dir_sign
+FROM fact_ball_position fbp
+LEFT JOIN rally_dir rd
+  ON rd.session_id = fbp.session_id
+ AND rd.rally_id   = fbp.rally_id;
+""",
+
+# B) Player XY normalization — apply the same rally flip to player positions
+"""
+CREATE OR REPLACE VIEW vw_player_position_norm AS
+WITH rally_dir AS (
+  SELECT
+    session_id,
+    rally_id,
+    MAX(dir_sign) AS dir_sign
+  FROM vw_ball_position_norm
+  GROUP BY session_id, rally_id
+)
+SELECT
+  fpp.session_id,
+  fpp.rally_id,
+  fpp.player_id,
+  fpp.timestamp_ts,
+  CASE WHEN rd.dir_sign = -1 THEN -fpp.x ELSE fpp.x END AS x_norm,
+  CASE WHEN rd.dir_sign = -1 THEN -fpp.y ELSE fpp.y END AS y_norm,
+  fpp.x AS x_orig,
+  fpp.y AS y_orig,
+  rd.dir_sign
+FROM fact_player_position fpp
+LEFT JOIN rally_dir rd
+  ON rd.session_id = fpp.session_id
+ AND rd.rally_id   = fpp.rally_id;
+""",
+
+# C) Shot order normalization — stable numbering + server inference
+"""
+CREATE OR REPLACE VIEW vw_shot_order_norm AS
+WITH base AS (
+  SELECT
+    fs.session_id,
+    fs.rally_id,
+    fs.player_id,
+    fs.swing_id,
+    fs.serve AS is_serve,
+    COALESCE(fs.ball_hit_ts, fs.start_ts) AS t
+  FROM fact_swing fs
+  WHERE fs.rally_id IS NOT NULL
+),
+ord AS (
+  SELECT
+    b.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY b.session_id, b.rally_id
+      ORDER BY b.t,
+               CASE WHEN b.is_serve THEN 0 ELSE 1 END,
+               b.swing_id
+    ) AS shot_no,
+    LEAD(b.t) OVER (
+      PARTITION BY b.session_id, b.rally_id
+      ORDER BY b.t,
+               CASE WHEN b.is_serve THEN 0 ELSE 1 END,
+               b.swing_id
+    ) AS t_next
+  FROM base b
+),
+svr AS (
+  -- Server = player who hits first serve (or first shot if serve flag missing)
+  SELECT
+    o.session_id,
+    o.rally_id,
+    COALESCE(
+      MIN(CASE WHEN o.is_serve THEN o.player_id END),
+      MIN(o.player_id)
+    ) AS server_player_id
+  FROM ord o
+  WHERE o.shot_no = 1
+  GROUP BY o.session_id, o.rally_id
+)
+SELECT
+  o.session_id,
+  o.rally_id,
+  o.shot_no,
+  o.swing_id,
+  o.player_id,
+  o.is_serve,
+  o.t,
+  EXTRACT(EPOCH FROM (o.t_next - o.t)) AS delta_s,
+  s.server_player_id,
+  (o.t IS NULL) AS has_null_time
+FROM ord o
+LEFT JOIN svr s
+  ON s.session_id = o.session_id
+ AND s.rally_id   = o.rally_id
+ORDER BY o.session_id, o.rally_id, o.shot_no;
+"""
+]
