@@ -1,5 +1,15 @@
 # db_init.py
-from sqlalchemy import text
+import os
+from sqlalchemy import create_engine, text  # ← add create_engine
+
+# ---------------- Engine (exported) ----------------
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is required")
+
+# One singleton engine for the whole app (Render-friendly).
+# pool_pre_ping avoids stale connections after idling.
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 
 # ---------------- Base CREATEs (no-op if tables already exist) ----------------
 DDL_CREATE = [
@@ -235,7 +245,7 @@ DDL_MIGRATE = [
     "ALTER TABLE session_confidences ADD COLUMN IF NOT EXISTS data JSONB;",
     "ALTER TABLE thumbnail ADD COLUMN IF NOT EXISTS crops JSONB;",
 
-    # helpful uniques (harmless even if we no longer rely on ON CONFLICT)
+    # helpful uniques
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
@@ -342,12 +352,10 @@ def run_init(engine):
         _ensure_fact_bounce_fk(conn)
         _ensure_fact_swing_indexes(conn)
 
-        # keep these (harmless) even though not required after UPDATE→INSERT
         _ensure_unique_on_session_id(conn, "bounce_heatmap", "uq_bounce_heatmap_session")
         _ensure_unique_on_session_id(conn, "session_confidences", "uq_session_confidences_session")
         _ensure_unique_on_session_id(conn, "thumbnail", "uq_thumbnail_session")
     with engine.begin() as conn:
-        # Ensure columns exist
         conn.execute(text("""
             ALTER TABLE raw_result
             ADD COLUMN IF NOT EXISTS payload_json JSONB
@@ -363,8 +371,6 @@ def run_init(engine):
                 END IF;
             END $$;
         """))
-
-        # If PK(session_id) exists, drop it and switch to surrogate key
         conn.execute(text("""
             DO $$
             BEGIN
@@ -373,12 +379,10 @@ def run_init(engine):
                     WHERE conname = 'raw_result_pkey'
                     AND conrelid = 'raw_result'::regclass
                 ) THEN
-                    -- If PK is on session_id, drop it
                     ALTER TABLE raw_result DROP CONSTRAINT raw_result_pkey;
                 END IF;
             END $$;
         """))
-
         conn.execute(text("""
             DO $$
             BEGIN
@@ -390,8 +394,6 @@ def run_init(engine):
                 END IF;
             END $$;
         """))
-
-        # Make raw_result_id the PK if not already
         conn.execute(text("""
             DO $$
             BEGIN
@@ -404,9 +406,9 @@ def run_init(engine):
                 END IF;
             END $$;
         """))
-
-        # Helpful index for latest-by-session lookups
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_raw_result_session_created
                 ON raw_result (session_id, created_at DESC);
         """))
+
+__all__ = ["engine", "run_init", "DATABASE_URL"]
