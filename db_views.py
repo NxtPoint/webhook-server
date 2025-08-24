@@ -459,7 +459,7 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
-        # ---------- SHOT-LEVEL TRANSACTION LOG ----------
+            # ---------- SHOT-LEVEL TRANSACTION LOG ----------
     "vw_point_log": """
     CREATE VIEW vw_point_log AS
     WITH base AS (
@@ -477,15 +477,15 @@ CREATE_STMTS = {
         s.serve,
         s.serve_type,
 
-        -- Use seconds derived from timestamps when available (shared origin)
+        -- Prefer seconds derived from timestamps (shared origin)
         COALESCE(s.start_s_clean,    s.start_s)     AS start_s,
         COALESCE(s.end_s_clean,      s.end_s)       AS end_s,
         COALESCE(s.ball_hit_s_clean, s.ball_hit_s)  AS ball_hit_s,
 
-        -- keep raw timestamps for traceability
+        -- raw timestamps for traceability
         s.start_ts, s.end_ts, s.ball_hit_ts,
 
-        -- both representations of the hit time for robust joins
+        -- both time scales for robust matching
         EXTRACT(EPOCH FROM s.ball_hit_ts) AS hit_epoch,
         s.ball_hit_s                      AS hit_rel,
 
@@ -535,7 +535,7 @@ CREATE_STMTS = {
       ) pp ON TRUE
     ),
 
-    -- Ball XY at contact (fallback for ball_hit_x/y). Same scale matching.
+    -- Ball XY at contact (fallback for ball_hit_x/y). Same-scale matching.
     ball_pos_at_hit AS (
       SELECT b.swing_id,
              pb.x AS hit_x_from_ballpos,
@@ -605,7 +605,7 @@ CREATE_STMTS = {
       ) bb ON TRUE
     ),
 
-    -- Approximate bounce from first ball-pos sample after the hit (fallback).
+    -- Approximate bounce from earliest ball-position sample > hit (fallback)
     approx_bounce_from_ballpos AS (
       SELECT b.swing_id,
              pb2.x AS approx_bounce_x,
@@ -641,11 +641,9 @@ CREATE_STMTS = {
         pl.player_x_at_hit, pl.player_y_at_hit,
         fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
 
-        -- ball-hit XY with fallback
         COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
         COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
 
-        -- bounce XY with fallback
         COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
         COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
 
@@ -708,7 +706,6 @@ CREATE_STMTS = {
             END
         END AS swing_type_final,
 
-        -- timecodes (derived from seconds; just for display)
         TO_CHAR((TIME '00:00' + (c.start_s    * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS start_timecode,
         TO_CHAR((TIME '00:00' + (c.end_s      * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS end_timecode,
         TO_CHAR((TIME '00:00' + (c.ball_hit_s * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode
