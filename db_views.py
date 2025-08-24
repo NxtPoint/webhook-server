@@ -459,6 +459,7 @@ CREATE_STMTS = {
     """,
 
     # ---------- SHOT-LEVEL TRANSACTION LOG ----------
+        # ---------- SHOT-LEVEL TRANSACTION LOG ----------
     "vw_point_log": """
     CREATE VIEW vw_point_log AS
     WITH base AS (
@@ -476,17 +477,21 @@ CREATE_STMTS = {
         s.serve,
         s.serve_type,
 
-        -- Use seconds derived from timestamps (shared origin across facts)
+        -- Use seconds derived from timestamps when available (shared origin)
         COALESCE(s.start_s_clean,    s.start_s)     AS start_s,
         COALESCE(s.end_s_clean,      s.end_s)       AS end_s,
         COALESCE(s.ball_hit_s_clean, s.ball_hit_s)  AS ball_hit_s,
 
-        -- keep *_ts for traceability/timecodes
+        -- keep raw timestamps for traceability
         s.start_ts, s.end_ts, s.ball_hit_ts,
+
+        -- both representations of the hit time for robust joins
+        EXTRACT(EPOCH FROM s.ball_hit_ts) AS hit_epoch,
+        s.ball_hit_s                      AS hit_rel,
 
         s.ball_hit_x, s.ball_hit_y,
 
-        COALESCE(s.ball_speed, NULLIF(s.meta->>'ball_speed','')::double precision)            AS ball_speed,
+        COALESCE(s.ball_speed, NULLIF(s.meta->>'ball_speed','')::double precision)                 AS ball_speed,
         COALESCE(s.ball_player_distance, NULLIF(s.meta->>'ball_player_distance','')::double precision) AS ball_player_distance,
 
         s.inferred_serve,
@@ -507,23 +512,30 @@ CREATE_STMTS = {
       ORDER BY s.swing_id, s.t_clean
     ),
 
-    -- Nearest player position at contact (epoch seconds)
+    -- Nearest player position at contact (match epoch↔epoch or sec↔sec)
     player_loc AS (
       SELECT b.swing_id,
-             p.x AS player_x_at_hit,
-             p.y AS player_y_at_hit
+             pp.x AS player_x_at_hit,
+             pp.y AS player_y_at_hit
       FROM base b
       LEFT JOIN LATERAL (
         SELECT p.*
         FROM fact_player_position p
         WHERE p.session_id = b.session_id
           AND p.player_id  = b.player_id
-        ORDER BY ABS(COALESCE(p.ts_s, EXTRACT(EPOCH FROM p.ts)) - b.ball_hit_s)
+        ORDER BY
+          CASE
+            WHEN b.hit_epoch IS NOT NULL AND p.ts IS NOT NULL
+              THEN ABS(EXTRACT(EPOCH FROM p.ts) - b.hit_epoch)
+            WHEN b.hit_epoch IS NULL AND b.hit_rel IS NOT NULL AND p.ts_s IS NOT NULL
+              THEN ABS(p.ts_s - b.hit_rel)
+            ELSE 1e9
+          END
         LIMIT 1
-      ) p ON TRUE
+      ) pp ON TRUE
     ),
 
-    -- Ball XY at contact (fallback for ball_hit_x/y)
+    -- Ball XY at contact (fallback for ball_hit_x/y). Same scale matching.
     ball_pos_at_hit AS (
       SELECT b.swing_id,
              pb.x AS hit_x_from_ballpos,
@@ -533,13 +545,26 @@ CREATE_STMTS = {
         SELECT pb.*
         FROM fact_ball_position pb
         WHERE pb.session_id = b.session_id
-          AND COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) BETWEEN b.ball_hit_s - 1 AND b.ball_hit_s + 1
-        ORDER BY ABS(COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) - b.ball_hit_s)
+          AND (
+            (b.hit_epoch IS NOT NULL AND pb.ts IS NOT NULL
+               AND ABS(EXTRACT(EPOCH FROM pb.ts) - b.hit_epoch) <= 1)
+            OR
+            (b.hit_epoch IS NULL AND b.hit_rel IS NOT NULL AND pb.ts_s IS NOT NULL
+               AND ABS(pb.ts_s - b.hit_rel) <= 1)
+          )
+        ORDER BY
+          CASE
+            WHEN b.hit_epoch IS NOT NULL AND pb.ts IS NOT NULL
+              THEN ABS(EXTRACT(EPOCH FROM pb.ts) - b.hit_epoch)
+            WHEN b.hit_epoch IS NULL AND b.hit_rel IS NOT NULL AND pb.ts_s IS NOT NULL
+              THEN ABS(pb.ts_s - b.hit_rel)
+            ELSE 1e9
+          END
         LIMIT 1
       ) pb ON TRUE
     ),
 
-    -- First bounce after the hit (by epoch seconds; rally-aware when available)
+    -- First bounce after the hit. Rally-aware when available.
     first_bounce_after_hit AS (
       SELECT b.swing_id,
              bb.bounce_id,
@@ -551,20 +576,36 @@ CREATE_STMTS = {
         SELECT bb.*
         FROM fact_bounce bb
         WHERE bb.session_id = b.session_id
+          AND (b.rally_id IS NULL OR bb.rally_id = b.rally_id)
           AND (
-                (b.rally_id IS NOT NULL
-                 AND bb.rally_id = b.rally_id
-                 AND COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts)) >= b.ball_hit_s)
-             OR (b.rally_id IS NULL
-                 AND COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts)) >= b.ball_hit_s
-                 AND COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts)) <= b.ball_hit_s + 2)
-              )
-        ORDER BY COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts))
+            (b.hit_epoch IS NOT NULL AND bb.bounce_ts IS NOT NULL
+               AND EXTRACT(EPOCH FROM bb.bounce_ts) >= b.hit_epoch)
+            OR
+            (b.hit_epoch IS NULL AND b.hit_rel IS NOT NULL AND bb.bounce_s IS NOT NULL
+               AND bb.bounce_s >= b.hit_rel)
+          )
+          AND (
+            b.rally_id IS NOT NULL OR
+            ( (b.hit_epoch IS NOT NULL AND bb.bounce_ts IS NOT NULL
+                 AND EXTRACT(EPOCH FROM bb.bounce_ts) <= b.hit_epoch + 2)
+              OR
+              (b.hit_epoch IS NULL AND b.hit_rel IS NOT NULL AND bb.bounce_s IS NOT NULL
+                 AND bb.bounce_s <= b.hit_rel + 2)
+            )
+          )
+        ORDER BY
+          CASE
+            WHEN b.hit_epoch IS NOT NULL AND bb.bounce_ts IS NOT NULL
+              THEN EXTRACT(EPOCH FROM bb.bounce_ts)
+            WHEN b.hit_epoch IS NULL AND bb.bounce_s IS NOT NULL
+              THEN bb.bounce_s
+            ELSE NULL
+          END
         LIMIT 1
       ) bb ON TRUE
     ),
 
-    -- Approximate bounce from first ball position sample after the hit (fallback)
+    -- Approximate bounce from first ball-pos sample after the hit (fallback).
     approx_bounce_from_ballpos AS (
       SELECT b.swing_id,
              pb2.x AS approx_bounce_x,
@@ -574,9 +615,22 @@ CREATE_STMTS = {
         SELECT pb2.*
         FROM fact_ball_position pb2
         WHERE pb2.session_id = b.session_id
-          AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) >  b.ball_hit_s
-          AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) <= b.ball_hit_s + 2
-        ORDER BY COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts))
+          AND (
+            (b.hit_epoch IS NOT NULL AND pb2.ts IS NOT NULL
+               AND EXTRACT(EPOCH FROM pb2.ts) > b.hit_epoch
+               AND EXTRACT(EPOCH FROM pb2.ts) <= b.hit_epoch + 2)
+            OR
+            (b.hit_epoch IS NULL AND b.hit_rel IS NOT NULL AND pb2.ts_s IS NOT NULL
+               AND pb2.ts_s > b.hit_rel AND pb2.ts_s <= b.hit_rel + 2)
+          )
+        ORDER BY
+          CASE
+            WHEN b.hit_epoch IS NOT NULL AND pb2.ts IS NOT NULL
+              THEN EXTRACT(EPOCH FROM pb2.ts)
+            WHEN b.hit_epoch IS NULL AND pb2.ts_s IS NOT NULL
+              THEN pb2.ts_s
+            ELSE NULL
+          END
         LIMIT 1
       ) pb2 ON TRUE
     ),
