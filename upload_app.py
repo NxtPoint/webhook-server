@@ -678,15 +678,33 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         return row[0] if row else None
 
     # --- bounces (safe vars, no shadowing) ---
-    for b in (payload.get("ball_bounces") or []):
+        # --- bounces (accept court_pos [x,y] or court_X/Y; fallback to x/y) ---
+    for b in (payload.get("ball_bounces") or payload.get("ballBounces") or []):
         s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) \
              or _time_s(b.get("ts")) or _time_s(b.get("t"))
-        bx = _float(b.get("x")) if b.get("x") is not None else None
-        by = _float(b.get("y")) if b.get("y") is not None else None
+
+        bx = by = None
+        # array form: court_pos / courtPos -> [x,y] in meters
+        cp = b.get("court_pos") or b.get("courtPos")
+        if isinstance(cp, (list, tuple)) and len(cp) >= 2:
+            bx = _float(cp[0]); by = _float(cp[1])
+        else:
+            # object/individual keys in meters
+            bx = _float(b.get("court_X") or b.get("court_x") or b.get("courtX") or b.get("x"))
+            by = _float(b.get("court_Y") or b.get("court_y") or b.get("courtY") or b.get("y"))
+            if (bx is None or by is None) and isinstance(b.get("court"), dict):
+                bx = bx if bx is not None else _float(b["court"].get("x"))
+                by = by if by is not None else _float(b["court"].get("y"))
+
         btype = b.get("type") or b.get("bounce_type")
+
         hitter_uid = b.get("player_id") or b.get("sportai_player_uid")
         hitter_uid = str(hitter_uid) if hitter_uid is not None else None
         hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
+
+        # skip if we have no court-space coords
+        if bx is None or by is None:
+            continue
 
         conn.execute(text("""
             INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id,
@@ -702,6 +720,7 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             "x": bx, "y": by,
             "bt": btype
         })
+
 
     # --- ball positions (accept timestamp OR timestamp_s) ---
     for p in (payload.get("ball_positions") or []):
@@ -721,6 +740,7 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         })
 
     # --- player positions (accept timestamp OR timestamp_s) ---
+        # --- player positions (prefer court_* meters; fallback to x/y if provided) ---
     for puid, arr in (payload.get("player_positions") or {}).items():
         pid = uid_to_player_id.get(str(puid))
         if not pid:
@@ -728,8 +748,14 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         for p in (arr or []):
             s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) \
                  or _time_s(p.get("ts")) or _time_s(p.get("t"))
-            px = _float(p.get("x")) if p.get("x") is not None else None
-            py = _float(p.get("y")) if p.get("y") is not None else None
+
+            px = _float(p.get("court_X") or p.get("court_x") or p.get("courtX")
+                        or p.get("x"))  # last resort
+            py = _float(p.get("court_Y") or p.get("court_y") or p.get("courtY")
+                        or p.get("y"))  # last resort
+
+            if px is None or py is None:
+                continue  # require both to avoid junk rows
 
             conn.execute(text("""
                 INSERT INTO fact_player_position (session_id, player_id, ts_s, ts, x, y)
