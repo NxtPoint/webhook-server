@@ -1,4 +1,4 @@
-# upload_app.py
+﻿# upload_app.py
 import os, json, hashlib, re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
@@ -191,9 +191,13 @@ def _extract_ball_hit_from_events(events):
 def _normalize_swing_obj(obj):
     """
     Normalize a swing-like object.
-    Returns dict with: suid, player_uid, start_s, end_s, ball_hit_s, ball_hit_x, ball_hit_y, serve, serve_type, meta, label, ball_speed
+    Returns dict with: suid, player_uid, start_s, end_s, ball_hit_s, ball_hit_x, ball_hit_y,
+                       swing_type, volley, is_in_rally, serve, serve_type,
+                       confidence_swing_type, confidence, confidence_volley,
+                       ball_speed, ball_player_distance, meta
     """
-    if not isinstance(obj, dict): return None
+    if not isinstance(obj, dict): 
+        return None
 
     suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
 
@@ -215,25 +219,41 @@ def _normalize_swing_obj(obj):
         bh_s = ev_bh_s
         bhx = bhx if bhx is not None else ev_bhx
         bhy = bhy if bhy is not None else ev_bhy
-    if (bhx is None or bhy is None) and isinstance(obj.get("ball_hit_location"), dict):
-        bhx = _float(obj["ball_hit_location"].get("x")); bhy = _float(obj["ball_hit_location"].get("y"))
 
-    label = (str(obj.get("type") or obj.get("label") or obj.get("stroke_type") or (obj.get("swing_type") if isinstance(obj.get("swing_type"), str) else "") or "")).lower()
+    # accept dict OR [x,y] array for ball_hit_location
+    loc_any = obj.get("ball_hit_location")
+    if (bhx is None or bhy is None) and isinstance(loc_any, dict):
+        bhx = _float(loc_any.get("x")); bhy = _float(loc_any.get("y"))
+    if (bhx is None or bhy is None) and isinstance(loc_any, (list, tuple)) and len(loc_any) >= 2:
+        bhx = _float(loc_any[0]); bhy = _float(loc_any[1])
+
+    swing_type = (str(
+        obj.get("swing_type")
+        or obj.get("type")
+        or obj.get("label")
+        or obj.get("stroke_type")
+        or ""
+    )).lower()
 
     serve = _bool(obj.get("serve"))
     serve_type = obj.get("serve_type")
-    # If not explicitly flagged, treat serve-like labels as serve
-    if not serve and label in _SERVE_LABELS:
+    if not serve and swing_type in _SERVE_LABELS:
         serve = True
-        if serve_type is None and label != "serve":
-            serve_type = label
+        if serve_type is None and swing_type != "serve":
+            serve_type = swing_type
 
     player_uid = (obj.get("player_id") or obj.get("sportai_player_uid") or obj.get("player_uid") or obj.get("player"))
     if player_uid is not None:
         player_uid = str(player_uid)
 
-    # Collect common scalar meta (don’t drop anything from meta)
-    ball_speed = _float(obj.get("ball_speed"))
+    # scalar extras straight from raw
+    ball_speed            = _float(obj.get("ball_speed"))
+    ball_player_distance  = _float(obj.get("ball_player_distance"))
+    volley                = _bool(obj.get("volley"))
+    is_in_rally           = _bool(obj.get("is_in_rally"))
+    confidence_swing_type = _float(obj.get("confidence_swing_type"))
+    confidence            = _float(obj.get("confidence"))
+    confidence_volley     = _float(obj.get("confidence_volley"))
 
     if start_s is None and end_s is None and bh_s is None:
         return None
@@ -245,8 +265,11 @@ def _normalize_swing_obj(obj):
         "start","start_s","start_ts","end","end_s","end_ts",
         "timestamp","ts","time_s","t",
         "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
-        "events","serve","serve_type","ball_speed"
+        "events","serve","serve_type","ball_speed",
+        "ball_player_distance","volley","is_in_rally",
+        "confidence_swing_type","confidence","confidence_volley"
     }}
+
     return {
         "suid": suid,
         "player_uid": player_uid,
@@ -255,11 +278,17 @@ def _normalize_swing_obj(obj):
         "ball_hit_s": bh_s,
         "ball_hit_x": bhx,
         "ball_hit_y": bhy,
+        "swing_type": swing_type,
+        "volley": volley,
+        "is_in_rally": is_in_rally,
         "serve": serve,
         "serve_type": serve_type,
-        "meta": meta if meta else None,
-        "label": label,
+        "confidence_swing_type": confidence_swing_type,
+        "confidence": confidence,
+        "confidence_volley": confidence_volley,
         "ball_speed": ball_speed,
+        "ball_player_distance": ball_player_distance,
+        "meta": meta if meta else None,
     }
 
 def _iter_candidate_swings_from_container(container):
@@ -489,27 +518,36 @@ def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
             start_s, end_s, ball_hit_s,
             start_ts, end_ts, ball_hit_ts,
             ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
-            is_in_rally, serve, serve_type, meta
+            swing_type, volley, is_in_rally, serve, serve_type,
+            confidence_swing_type, confidence, confidence_volley, meta
         ) VALUES (
             :sid, :pid, :suid,
             :ss, :es, :bhs,
             :sts, :ets, :bh_ts,
             :bhx, :bhy, :bs, :bpd,
-            :inr, :srv, :stype, CAST(:meta AS JSONB)
+            :sw_type, :vol, :inr, :srv, :srv_type,
+            :cst, :conf, :cv, CAST(:meta AS JSONB)
         )
     """), {
         "sid": session_id,
         "pid": player_id,
         "suid": s.get("suid"),
         "ss": q_start, "es": q_end, "bhs": q_hit,
-        # temporary timestamps: realignment happens in _rebuild_ts_from_seconds
         "sts": seconds_to_ts(base_dt, q_start), "ets": seconds_to_ts(base_dt, q_end),
         "bh_ts": seconds_to_ts(base_dt, q_hit),
         "bhx": s.get("ball_hit_x"), "bhy": s.get("ball_hit_y"),
         "bs": s.get("ball_speed"), "bpd": s.get("ball_player_distance"),
-        "inr": s.get("is_in_rally"), "srv": s.get("serve"), "stype": s.get("serve_type"),
+        "sw_type": s.get("swing_type"),
+        "vol": s.get("volley"),
+        "inr": s.get("is_in_rally"),
+        "srv": s.get("serve"),
+        "srv_type": s.get("serve_type"),
+        "cst": s.get("confidence_swing_type"),
+        "conf": s.get("confidence"),
+        "cv": s.get("confidence_volley"),
         "meta": json.dumps(s.get("meta")) if s.get("meta") else None
     })
+
 
 def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=None):
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
@@ -761,11 +799,17 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             "ball_hit_y": norm.get("ball_hit_y"),
             "ball_speed": norm.get("ball_speed") or (norm.get("meta") or {}).get("ball_speed"),
             "ball_player_distance": norm.get("ball_player_distance"),
+            "swing_type": norm.get("swing_type") or norm.get("label"),
+            "volley": norm.get("volley"),
             "is_in_rally": norm.get("is_in_rally"),
             "serve": norm.get("serve"),
             "serve_type": norm.get("serve_type"),
+            "confidence_swing_type": norm.get("confidence_swing_type"),
+            "confidence": norm.get("confidence"),
+            "confidence_volley": norm.get("confidence_volley"),
             "meta": norm.get("meta"),
         }
+
         try:
             _insert_swing(conn, session_id, pid, s, base_dt, fps)
         except IntegrityError:
@@ -855,32 +899,50 @@ def ops_build_gold():
     if not _guard():
         return _forbid()
 
+from flask import jsonify
+from sqlalchemy import text
+
 @app.get("/ops/refresh-gold")
 def ops_refresh_gold():
-    if not _guard():
-        return _forbid()
+    if not _guard(): return _forbid()
     try:
-        # 1) Rebuild views (idempotent)
-        init_views(engine)
-
-        # 2) Materialize gold tables (drop & recreate each time)
         with engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS point_log_tbl;"))
-            conn.execute(text("CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;"))
-            conn.execute(text("DROP TABLE IF EXISTS point_summary_tbl;"))
-            conn.execute(text("CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary;"))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_pl_session "
-                "ON point_log_tbl(session_uid, point_number, shot_number);"
-            ))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS ix_ps_session "
-                "ON point_summary_tbl(session_uid, point_number);"
-            ))
+            # point_log_tbl
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                  IF to_regclass('public.point_log_tbl') IS NULL THEN
+                    CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log WHERE false;
+                  END IF;
+                END $$;
+            """))
+            conn.execute(text("TRUNCATE point_log_tbl;"))
+            conn.execute(text("INSERT INTO point_log_tbl SELECT * FROM vw_point_log;"))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_pl_sess_point_shot
+                ON point_log_tbl(session_uid, point_number, shot_number);
+            """))
 
-        return jsonify({"ok": True, "message": "views + gold refreshed"})
+            # point_summary_tbl
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                  IF to_regclass('public.point_summary_tbl') IS NULL THEN
+                    CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary WHERE false;
+                  END IF;
+                END $$;
+            """))
+            conn.execute(text("TRUNCATE point_summary_tbl;"))
+            conn.execute(text("INSERT INTO point_summary_tbl SELECT * FROM vw_point_summary;"))
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS ix_ps_session
+                ON point_summary_tbl(session_uid, point_number);
+            """))
+
+        return jsonify({"ok": True, "message": "gold refreshed"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
     ddl = [
         "DROP TABLE IF EXISTS point_log_tbl;",
