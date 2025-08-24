@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
+from db_init import engine
 
 # ---------------------- config ----------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -808,6 +809,7 @@ def ops_init_views():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+from db_init import engine
 @app.get("/ops/db-counts")
 def ops_db_counts():
     if not _guard(): return _forbid()
