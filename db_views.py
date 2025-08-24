@@ -174,48 +174,71 @@ CREATE_STMTS = {
 
     # ---------- XY NORMALIZATION (timestamp-mapped; no reliance on fbp.rally_id) ----------
     "vw_ball_position_norm": """
-        CREATE VIEW vw_ball_position_norm AS
-        WITH mapped AS (
-          SELECT
-            fbp.session_id,
-            fbp.ts AS timestamp_ts,
-            fbp.x, fbp.y,
-            dr.rally_id,
-            dr.start_ts,
-            dr.end_ts
-          FROM fact_ball_position fbp
-          LEFT JOIN dim_rally dr
-            ON dr.session_id = fbp.session_id
-           AND fbp.ts >= dr.start_ts
-           AND (dr.end_ts IS NULL OR fbp.ts < dr.end_ts)
-        ),
-        first1s AS (
-          SELECT
-            m.session_id,
-            m.rally_id,
-            SUM( m.y - LAG(m.y) OVER (PARTITION BY m.session_id, m.rally_id ORDER BY m.timestamp_ts) ) AS sum_dy
-          FROM mapped m
-          WHERE m.rally_id IS NOT NULL
-            AND m.timestamp_ts >= m.start_ts
-            AND m.timestamp_ts <  m.start_ts + INTERVAL '1 second'
-          GROUP BY m.session_id, m.rally_id
-        ),
-        dir AS (
-          SELECT
-            session_id, rally_id,
-            CASE WHEN sum_dy IS NULL OR sum_dy >= 0 THEN 1 ELSE -1 END AS dir_sign
-          FROM first1s
-        )
-        SELECT
-          m.session_id, m.rally_id, m.timestamp_ts,
-          CASE WHEN d.dir_sign = -1 THEN -m.x ELSE m.x END AS x_norm,
-          CASE WHEN d.dir_sign = -1 THEN -m.y ELSE m.y END AS y_norm,
-          m.x AS x_orig, m.y AS y_orig,
-          d.dir_sign
-        FROM mapped m
-        LEFT JOIN dir d
-          ON d.session_id = m.session_id AND d.rally_id = m.rally_id;
-    """,
+    CREATE VIEW vw_ball_position_norm AS
+    -- Map ball positions to rallies by timestamp, then infer rally direction from the first 1s
+    WITH mapped AS (
+      SELECT
+        fbp.session_id,
+        fbp.ts AS timestamp_ts,
+        fbp.x, fbp.y,
+        dr.rally_id,
+        dr.start_ts,
+        dr.end_ts
+      FROM fact_ball_position fbp
+      LEFT JOIN dim_rally dr
+        ON dr.session_id = fbp.session_id
+       AND fbp.ts >= dr.start_ts
+       AND (dr.end_ts IS NULL OR fbp.ts < dr.end_ts)
+    ),
+    -- Compute per-row dy using a window function (allowed here)
+    diffs AS (
+      SELECT
+        m.session_id,
+        m.rally_id,
+        m.timestamp_ts,
+        m.start_ts,
+        m.end_ts,
+        m.x, m.y,
+        (m.y - LAG(m.y) OVER (
+           PARTITION BY m.session_id, m.rally_id
+           ORDER BY m.timestamp_ts
+        )) AS dy
+      FROM mapped m
+      WHERE m.rally_id IS NOT NULL
+        AND m.timestamp_ts >= m.start_ts
+        AND m.timestamp_ts <  m.start_ts + INTERVAL '1 second'
+    ),
+    -- Now aggregate without window functions
+    first1s AS (
+      SELECT
+        session_id,
+        rally_id,
+        SUM(COALESCE(dy,0)) AS sum_dy
+      FROM diffs
+      GROUP BY session_id, rally_id
+    ),
+    dir AS (
+      SELECT
+        session_id,
+        rally_id,
+        CASE WHEN sum_dy IS NULL OR sum_dy >= 0 THEN 1 ELSE -1 END AS dir_sign
+      FROM first1s
+    )
+    SELECT
+      m.session_id,
+      m.rally_id,
+      m.timestamp_ts,
+      CASE WHEN d.dir_sign = -1 THEN -m.x ELSE m.x END AS x_norm,
+      CASE WHEN d.dir_sign = -1 THEN -m.y ELSE m.y END AS y_norm,
+      m.x AS x_orig,
+      m.y AS y_orig,
+      d.dir_sign
+    FROM mapped m
+    LEFT JOIN dir d
+      ON d.session_id = m.session_id
+     AND d.rally_id   = m.rally_id;
+""",
+
 
     "vw_player_position_norm": """
         CREATE VIEW vw_player_position_norm AS
