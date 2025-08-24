@@ -779,6 +779,29 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
 
     return {"session_uid": session_uid}
 
+
+# --- Helper: map SportAI player IDs -> our dim_player.player_id for a session ---
+def _player_map(conn, session_id: int) -> dict:
+    """
+    Returns a dict {sportai_player_uid (as str) -> dim_player.player_id (int)}
+    for the given session_id. Use this to translate IDs from SportAI payloads 
+    before inserting into fact tables that FK to dim_player.
+    """
+    rows = conn.execute(text("""
+        SELECT sportai_player_uid, player_id
+        FROM dim_player
+        WHERE session_id = :sid
+    """), {"sid": session_id}).mappings().all()
+
+    mp = {}
+    for r in rows:
+        suid = r.get("sportai_player_uid")
+        pid  = r.get("player_id")
+        if suid is not None and pid is not None:
+            mp[str(suid)] = pid  # normalize key to string (SportAI dict keys often come as strings)
+    return mp
+
+
 # ---------------------- OPS ENDPOINTS ----------------------
 @app.get("/")
 def root():
@@ -1056,30 +1079,46 @@ def ops_backfill_xy():
                         inserted_bb = len(rows)
 
 
-                # --- Player positions (prefer court_X/Y, else image X/Y) ---
-                pp = doc.get("player_positions") or doc.get("playerPositions")
+                # --- Player positions (court meters, ~6 Hz) ---
+                pp = doc.get("player_positions") or doc.get("playerPositions") or {}
+                inserted_pp = 0
+
                 if isinstance(pp, dict):
+                    # Map SportAI player IDs to our dim_player.player_id for this session
+                    pmap = _player_map(conn, sid)
+
                     rows = []
-                    for pid_key, arr in pp.items():
-                        try:
-                            pid = int(pid_key)
-                        except Exception:
-                            pid = pid_key if isinstance(pid_key, int) else None
-                        if not isinstance(arr, list):
+                    for pid_key, frames in pp.items():
+                        # SportAI keys are often "161" etc. Normalize to string.
+                        internal_pid = pmap.get(str(pid_key))  # may be None; NULL is allowed by FK
+
+                        if not isinstance(frames, list):
                             continue
-                        for itm in arr:
-                            ts_s = _coerce_f(itm.get("timestamp"))
-                            x = _coerce_f(itm.get("court_X"), _coerce_f(itm.get("X")))
-                            y = _coerce_f(itm.get("court_Y"), _coerce_f(itm.get("Y")))
+                        for fr in frames:
+                            ts_s = _coerce_f(fr.get("timestamp"))
+                            # prefer court coords; these are already meters
+                            x = _coerce_f(fr.get("court_X") or fr.get("court_x") or fr.get("courtX"))
+                            y = _coerce_f(fr.get("court_Y") or fr.get("court_y") or fr.get("courtY"))
                             if ts_s is None or x is None or y is None:
                                 continue
-                            rows.append({"sid": sid, "pid": pid, "ts_s": ts_s, "x": x, "y": y})
+                            rows.append({
+                                "sid": sid,
+                                "pid": internal_pid,  # None is OK (FK lets NULL through)
+                                "ts_s": ts_s,
+                                "x": x,
+                                "y": y,
+                            })
+
                     if rows:
+                        # Optional: make it idempotent per-session
+                        # conn.execute(text("DELETE FROM fact_player_position WHERE session_id = :sid"), {"sid": sid})
+
                         conn.execute(text("""
-                            INSERT INTO fact_player_position(session_id, player_id, ts_s, x, y)
+                            INSERT INTO fact_player_position (session_id, player_id, ts_s, x, y)
                             VALUES (:sid, :pid, :ts_s, :x, :y)
                         """), rows)
                         inserted_pp = len(rows)
+
 
                 totals.append({
                     "session_uid": suid,
@@ -1091,6 +1130,7 @@ def ops_backfill_xy():
         return jsonify({"ok": True, "totals": totals})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 # 🔧 Always validate query & add LIMIT, regardless of GET/POST
 @app.route("/ops/sql", methods=["GET", "POST"])
