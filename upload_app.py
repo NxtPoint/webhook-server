@@ -1026,30 +1026,35 @@ def ops_backfill_xy():
 
                 # --- Ball bounces (court meters; timestamp is DELTA seconds since hit) ---
                 bb = doc.get("ball_bounces") or doc.get("ballBounces")
+                inserted_bb = 0
                 if isinstance(bb, list):
                     rows = []
                     for itm in bb:
                         bounce_s = _coerce_f(itm.get("timestamp"))
-                        court = itm.get("court_pos") or []
-                        x = _coerce_f(court[0] if len(court) > 0 else None)
-                        y = _coerce_f(court[1] if len(court) > 1 else None)
-                        hitter = itm.get("player_id")
-                        btype  = itm.get("type")
-                        if x is None or y is None:
+                        court    = itm.get("court_pos") or []
+                        x = _coerce_f(court[0]) if len(court) > 0 else None
+                        y = _coerce_f(court[1]) if len(court) > 1 else None
+                        btype = (itm.get("type") or "").strip().lower()  # 'floor' or 'swing'
+                        if bounce_s is None or x is None or y is None:
                             continue
                         rows.append({
                             "sid": sid,
                             "bounce_s": bounce_s,
-                            "x": x, "y": y,
-                            "hitter": hitter,
-                            "btype": btype
+                            "x": x,
+                            "y": y,
+                            "btype": btype,
                         })
+
                     if rows:
+                        # If you want to make repeated runs idempotent, uncomment this line:
+                        # conn.execute(text("DELETE FROM fact_bounce WHERE session_id = :sid"), {"sid": sid})
+
                         conn.execute(text("""
-                            INSERT INTO fact_bounce(session_id, bounce_s, x, y, hitter_player_id, bounce_type)
-                            VALUES (:sid, :bounce_s, :x, :y, :hitter, :btype)
+                            INSERT INTO fact_bounce (session_id, bounce_s, x, y, bounce_type)
+                            VALUES (:sid, :bounce_s, :x, :y, :btype)
                         """), rows)
                         inserted_bb = len(rows)
+
 
                 # --- Player positions (prefer court_X/Y, else image X/Y) ---
                 pp = doc.get("player_positions") or doc.get("playerPositions")
