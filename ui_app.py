@@ -1,6 +1,6 @@
 # ui_app.py
 import os
-from flask import Blueprint, render_template_string, request, redirect, url_for
+from flask import Blueprint, render_template_string, request, redirect, url_for, jsonify  # NEW: jsonify
 from sqlalchemy import create_engine, text
 
 # --- DB / config ---
@@ -12,6 +12,11 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 OPS_KEY = os.environ.get("OPS_KEY", "")
 
 ui_bp = Blueprint("ui", __name__, template_folder=".", static_folder=".")
+
+# --- small helper for ops auth (keeps behavior consistent with other ops endpoints) ---
+def _require_ops_key() -> bool:  # NEW
+    key = request.args.get("key", "")
+    return bool(OPS_KEY) and key == OPS_KEY
 
 # ------------ templates ------------
 _BASE = """
@@ -79,6 +84,7 @@ def sessions():
         <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
         <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
         <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
+        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>  <!-- NEW -->
       </div>
 
       <table>
@@ -230,7 +236,32 @@ def sql():
         <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
         <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
         <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
+        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>  <!-- NEW -->
       </p>
     {% endblock %}
     """
     return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY)
+
+# ---------------------
+# NEW: server-side endpoint to build Power BI gold tables
+# ---------------------
+@ui_bp.route("/ops/build-gold", methods=["GET"])
+def ops_build_gold():
+    if not _require_ops_key():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    ddl = [
+        "DROP TABLE IF EXISTS point_log_tbl;",
+        "CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;",
+        "DROP TABLE IF EXISTS point_summary_tbl;",
+        "CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary;",
+        "CREATE INDEX IF NOT EXISTS ix_pl_session ON point_log_tbl(session_uid, point_number, shot_number);",
+        "CREATE INDEX IF NOT EXISTS ix_ps_session ON point_summary_tbl(session_uid, point_number);",
+    ]
+    try:
+        with engine.begin() as conn:
+            for stmt in ddl:
+                conn.execute(text(stmt))
+        return jsonify({"ok": True, "built": ["point_log_tbl", "point_summary_tbl"]})
+    except Exception as e:
+        # Return the error to caller; logs can be added if you have a logger
+        return jsonify({"ok": False, "error": str(e)}), 500
