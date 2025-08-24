@@ -800,21 +800,57 @@ def ops_init_db():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ---------- OPS: (re)create views ----------
 @app.get("/ops/init-views")
 def ops_init_views():
-    if not _guard(): return _forbid()
+    if not _guard():
+        return _forbid()
     try:
-        init_views(engine)
+        init_views(engine)  # idempotent: drops & recreates in dependency order
         return jsonify({"ok": True, "message": "Views created/refreshed"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-from db_init import engine
+
+# ---------- OPS: materialize gold tables for Power BI ----------
+@app.get("/ops/build-gold")
+def ops_build_gold():
+    if not _guard():
+        return _forbid()
+
+    ddl = [
+        "DROP TABLE IF EXISTS point_log_tbl;",
+        "CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;",
+        "DROP TABLE IF EXISTS point_summary_tbl;",
+        "CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary;",
+        # helpful indexes
+        "CREATE INDEX IF NOT EXISTS ix_pl_session ON point_log_tbl(session_uid, point_number, shot_number);",
+        "CREATE INDEX IF NOT EXISTS ix_ps_session ON point_summary_tbl(session_uid, point_number);",
+    ]
+    try:
+        with engine.begin() as conn:  # not read-only
+            for stmt in ddl:
+                conn.execute(text(stmt))
+        return jsonify({"ok": True, "built": ["point_log_tbl", "point_summary_tbl"]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------- OPS: lightweight counts (safe if tables missing) ----------
 @app.get("/ops/db-counts")
 def ops_db_counts():
-    if not _guard(): return _forbid()
+    if not _guard():
+        return _forbid()
+
+    def _exists(conn, tbl):
+        # returns True if regclass resolves (table or view exists)
+        return bool(conn.execute(text("SELECT to_regclass(:t) IS NOT NULL"),
+                                 {"t": f"public.{tbl}"}).scalar())
+
     with engine.connect() as conn:
-        def c(tbl): return conn.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar_one()
+        def c(tbl):
+            return conn.execute(text(f"SELECT COUNT(*) FROM {tbl}")).scalar_one()
+
         counts = {
             "dim_session": c("dim_session"),
             "dim_player": c("dim_player"),
@@ -828,8 +864,14 @@ def ops_db_counts():
             "bounce_heatmap": c("bounce_heatmap"),
             "session_confidences": c("session_confidences"),
             "thumbnail": c("thumbnail"),
-            "raw_result": c("raw_result")
+            "raw_result": c("raw_result"),
         }
+
+        # include gold tables only if they exist
+        for t in ("point_log_tbl", "point_summary_tbl"):
+            if _exists(conn, t):
+                counts[t] = c(t)
+
     return jsonify({"ok": True, "counts": counts})
 
 # 🔧 Always validate query & add LIMIT, regardless of GET/POST
