@@ -123,84 +123,102 @@ CREATE_STMTS = {
 
     # Primary BI gold view (this is what Power BI reads via public.vw_point_log)
     "vw_point_log": """
-        CREATE OR REPLACE VIEW vw_point_log AS
-        WITH s AS (
-          SELECT * FROM vw_swing
-        ),
-        ord AS (
-          SELECT session_id, rally_id, rally_number, swing_id, shot_number_in_point
-          FROM vw_shot_order_gold
-        ),
-        b_after AS (
-          SELECT s2.swing_id,
-                 bx.bounce_id,
-                 bx.bounce_ts,
-                 bx.x AS bounce_x,
-                 bx.y AS bounce_y,
-                 bx.bounce_type
-          FROM s s2
-          LEFT JOIN LATERAL (
-            SELECT b.*
-            FROM vw_bounce b
-            WHERE b.session_id = s2.session_id
-              AND b.rally_id   = s2.rally_id
-              AND b.bounce_ts  >= s2.ball_hit_ts
-            ORDER BY b.bounce_ts
-            LIMIT 1
-          ) bx ON TRUE
-        ),
-        pp_exact AS (
-          SELECT s2.swing_id,
-                 p.x AS player_x_at_hit,
-                 p.y AS player_y_at_hit
-          FROM s s2
-          LEFT JOIN vw_player_position p
-            ON p.session_id = s2.session_id
-           AND p.player_id  = s2.player_id
-           AND p.ts         = s2.ball_hit_ts
-        )
-        SELECT
-          s.session_uid,
-          s.session_id,
-          s.rally_id,
-          ord.rally_number         AS point_number,
-          ord.shot_number_in_point AS shot_number,
-          s.swing_id,
-          s.player_id, s.player_name, s.player_uid,
-          s.serve, s.serve_type, s.swing_type AS swing_type_raw,
-          s.ball_speed, s.ball_player_distance,
-          s.start_s, s.end_s, s.ball_hit_s,
-          s.start_ts, s.end_ts, s.ball_hit_ts,
-          s.ball_hit_x, s.ball_hit_y,
-          b_after.bounce_id,
-          b_after.bounce_x  AS ball_bounce_x,
-          b_after.bounce_y  AS ball_bounce_y,
-          b_after.bounce_type AS bounce_type_raw,
-          CASE
-            WHEN b_after.bounce_type IN ('out','net','long','wide') THEN TRUE
-            WHEN b_after.bounce_type IS NULL THEN NULL
-            ELSE FALSE
-          END AS is_error,
-          CASE
-            WHEN b_after.bounce_type IN ('out','net','long','wide') THEN b_after.bounce_type
-            ELSE NULL
-          END AS error_type,
-          pp_exact.player_x_at_hit,
-          pp_exact.player_y_at_hit,
-          NULL::text AS baseline_zone_abcd,
-          NULL::int  AS serve_location_1_8
-        FROM s
-        LEFT JOIN ord      ON ord.session_id = s.session_id AND ord.swing_id = s.swing_id
-        LEFT JOIN b_after  ON b_after.swing_id = s.swing_id
-        LEFT JOIN pp_exact ON pp_exact.swing_id = s.swing_id
-        ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
-    """,
+    CREATE OR REPLACE VIEW vw_point_log AS
+    WITH s AS (
+      SELECT * FROM vw_swing
+    ),
+    ord AS (
+      SELECT session_id, rally_id, rally_number, swing_id, shot_number_in_point
+      FROM vw_shot_order_gold
+    ),
+    b_after AS (
+      SELECT s2.swing_id,
+             bx.bounce_id,
+             bx.bounce_ts,
+             bx.x AS bounce_x,
+             bx.y AS bounce_y,
+             bx.bounce_type
+      FROM s s2
+      LEFT JOIN LATERAL (
+        SELECT b.*
+        FROM vw_bounce b
+        WHERE b.session_id = s2.session_id
+          AND b.rally_id   = s2.rally_id
+          AND b.bounce_ts  >= s2.ball_hit_ts
+        ORDER BY b.bounce_ts
+        LIMIT 1
+      ) bx ON TRUE
+    ),
+    pp_exact AS (
+      SELECT s2.swing_id,
+             p.x AS player_x_at_hit,
+             p.y AS player_y_at_hit
+      FROM s s2
+      LEFT JOIN vw_player_position p
+        ON p.session_id = s2.session_id
+       AND p.player_id  = s2.player_id
+       AND p.ts         = s2.ball_hit_ts
+    )
+    SELECT
+      -- ids / linking
+      s.session_uid,
+      s.session_id,
+      s.rally_id,
+      ord.rally_number         AS point_number,
+      ord.shot_number_in_point AS shot_number,
+      s.swing_id,
 
-    # Convenience alias so BOTH names exist (keeps prior references happy)
-    "vw_point_shot_log_gold": """
-        CREATE OR REPLACE VIEW vw_point_shot_log_gold AS
-        SELECT * FROM vw_point_log;
-    """,
+      -- player
+      s.player_id,
+      s.player_name,
+      s.player_uid,
+
+      -- raw swing fields
+      s.serve,
+      s.serve_type,
+      s.swing_type AS swing_type_raw,
+
+      -- raw metrics
+      s.ball_speed,
+      s.ball_player_distance,
+
+      -- raw times
+      s.start_s, s.end_s, s.ball_hit_s,
+      s.start_ts, s.end_ts, s.ball_hit_ts,
+
+      -- raw hit XY
+      s.ball_hit_x, s.ball_hit_y,
+
+      -- raw first bounce after hit (may be NULL)
+      b_after.bounce_id,
+      b_after.bounce_x  AS ball_bounce_x,
+      b_after.bounce_y  AS ball_bounce_y,
+      b_after.bounce_type AS bounce_type_raw,
+
+      -- raw error flag from bounce_type only
+      CASE
+        WHEN b_after.bounce_type IN ('out','net','long','wide') THEN TRUE
+        WHEN b_after.bounce_type IS NULL THEN NULL
+        ELSE FALSE
+      END AS is_error,
+      CASE
+        WHEN b_after.bounce_type IN ('out','net','long','wide') THEN b_after.bounce_type
+        ELSE NULL
+      END AS error_type,
+
+      -- exact player pos at hit (may be NULL)
+      pp_exact.player_x_at_hit,
+      pp_exact.player_y_at_hit,
+
+      -- placeholders (remain NULL)
+      NULL::text AS baseline_zone_abcd,
+      NULL::int  AS serve_location_1_8
+    FROM s
+    LEFT JOIN ord      ON ord.session_id = s.session_id AND ord.swing_id = s.swing_id
+    LEFT JOIN b_after  ON b_after.swing_id = s.swing_id
+    LEFT JOIN pp_exact ON pp_exact.swing_id = s.swing_id
+    ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
+""",
 }
 
 # ---------- helpers ----------
