@@ -38,57 +38,52 @@ VIEW_NAMES = [
 CREATE_STMTS = {
     # ---------------- SILVER (PURE passthrough + labels) ----------------
     "vw_swing": """
-        CREATE OR REPLACE VIEW vw_swing AS
-        SELECT
-          ds.session_uid,
-          fs.session_id,
-          fs.swing_id,
-          fs.player_id,
-          dp.full_name          AS player_name,   -- raw label
-          dp.sportai_player_uid AS player_uid,    -- raw UID
-          fs.rally_id,
-
-          -- raw times
-          fs.start_s, fs.end_s, fs.ball_hit_s,
-          fs.start_ts, fs.end_ts, fs.ball_hit_ts,
-
-          -- raw XY at hit
-          fs.ball_hit_x, fs.ball_hit_y,
-
-          -- raw metrics / flags
-          fs.ball_speed,
-          fs.ball_player_distance,
-          fs.is_in_rally,
-          fs.serve, fs.serve_type, fs.swing_type,
-
-          -- raw metadata
-          fs.meta
-        FROM fact_swing fs
-        LEFT JOIN dim_session ds ON ds.session_id = fs.session_id
-        LEFT JOIN dim_player  dp ON dp.player_id  = fs.player_id;
-    """,
+    CREATE OR REPLACE VIEW vw_swing AS
+    SELECT
+      ds.session_uid,
+      fs.session_id,
+      fs.swing_id,
+      fs.player_id,
+      dp.full_name          AS player_name,
+      dp.sportai_player_uid AS player_uid,
+      fs.rally_id,
+      fs.start_s, fs.end_s, fs.ball_hit_s,
+      fs.start_ts, fs.end_ts, fs.ball_hit_ts,
+      fs.ball_hit_x, fs.ball_hit_y,
+      fs.ball_speed,
+      fs.ball_player_distance,
+      fs.is_in_rally,
+      fs.serve, fs.serve_type, fs.swing_type,
+      fs.meta
+    FROM fact_swing fs
+    LEFT JOIN dim_session ds
+           ON ds.session_id = fs.session_id
+    LEFT JOIN dim_player  dp
+           ON dp.session_id = fs.session_id
+          AND dp.player_id  = fs.player_id;
+""",
 
     "vw_bounce": """
-        CREATE OR REPLACE VIEW vw_bounce AS
-        SELECT
-          ds.session_uid,
-          b.session_id,
-          b.bounce_id,
-          b.hitter_player_id,
-          dp.full_name          AS hitter_name,       -- raw label
-          dp.sportai_player_uid AS hitter_player_uid, -- raw UID
-          b.rally_id,
+    CREATE OR REPLACE VIEW vw_bounce AS
+    SELECT
+      ds.session_uid,
+      b.session_id,
+      b.bounce_id,
+      b.hitter_player_id,
+      dp.full_name          AS hitter_name,
+      dp.sportai_player_uid AS hitter_player_uid,
+      b.rally_id,
+      b.bounce_s, b.bounce_ts,
+      b.x, b.y,
+      b.bounce_type
+    FROM fact_bounce b
+    LEFT JOIN dim_session ds
+           ON ds.session_id = b.session_id
+    LEFT JOIN dim_player  dp
+           ON dp.session_id = b.session_id
+          AND dp.player_id  = b.hitter_player_id;
+""",
 
-          -- raw time & XY
-          b.bounce_s, b.bounce_ts,
-          b.x, b.y,
-
-          -- raw classification from SportAI
-          b.bounce_type
-        FROM fact_bounce b
-        LEFT JOIN dim_session ds ON ds.session_id = b.session_id
-        LEFT JOIN dim_player  dp ON dp.player_id  = b.hitter_player_id;
-    """,
 
     "vw_ball_position": """
         CREATE OR REPLACE VIEW vw_ball_position AS
@@ -102,19 +97,23 @@ CREATE_STMTS = {
     """,
 
     "vw_player_position": """
-        CREATE OR REPLACE VIEW vw_player_position AS
-        SELECT
-          ds.session_uid,
-          u.session_id,
-          u.player_id,
-          dp.full_name          AS player_name,   -- raw label
-          dp.sportai_player_uid AS player_uid,    -- raw UID
-          u.ts_s, u.ts,
-          u.x, u.y
-        FROM fact_player_position u
-        LEFT JOIN dim_session ds ON ds.session_id = u.session_id
-        LEFT JOIN dim_player  dp ON dp.player_id  = u.player_id;
-    """,
+    CREATE OR REPLACE VIEW vw_player_position AS
+    SELECT
+      ds.session_uid,
+      u.session_id,
+      u.player_id,
+      dp.full_name          AS player_name,
+      dp.sportai_player_uid AS player_uid,
+      u.ts_s, u.ts,
+      u.x, u.y
+    FROM fact_player_position u
+    LEFT JOIN dim_session ds
+           ON ds.session_id = u.session_id
+    LEFT JOIN dim_player  dp
+           ON dp.session_id = u.session_id
+          AND dp.player_id  = u.player_id;
+""",
+
 
     # ---------------- GOLD (no inference; uses only SILVER) ----------------
     "vw_shot_order_gold": """
@@ -181,16 +180,22 @@ CREATE_STMTS = {
       ) pb2 ON TRUE
     ),
     -- PURE: exact-timestamp player location at hit (often NULL)
-    pp_exact AS (
+      pp_exact AS (
       SELECT s2.swing_id,
              p.x AS player_x_at_hit,
              p.y AS player_y_at_hit
       FROM s s2
-      LEFT JOIN vw_player_position p
-        ON p.session_id = s2.session_id
-       AND p.player_id  = s2.player_id
-       AND p.ts         = s2.ball_hit_ts
+      LEFT JOIN LATERAL (
+        SELECT p.x, p.y
+        FROM vw_player_position p
+        WHERE p.session_id = s2.session_id
+          AND p.player_id  = s2.player_id
+          AND p.ts         = s2.ball_hit_ts
+        ORDER BY p.ts  -- deterministic if multiples exist
+        LIMIT 1
+      ) p ON TRUE
     ),
+
     -- DERIVED (optional): nearest-neighbor player location within ±1.5s
     pp_nearest AS (
       SELECT s2.swing_id,
