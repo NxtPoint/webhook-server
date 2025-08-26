@@ -98,57 +98,55 @@ CREATE_STMTS = {
 
     # PURE bounce; if fact_bounce.x/y are NULL, take exact-equality XY from fact_ball_position at the same instant
     "vw_bounce": """
-        CREATE OR REPLACE VIEW vw_bounce AS
-        WITH src AS (
-          SELECT
-            b.session_id,
-            b.bounce_id,
-            b.hitter_player_id,
-            b.rally_id,
-            b.bounce_s,
-            b.bounce_ts,
-            b.x AS x_raw,
-            b.y AS y_raw,
-            b.bounce_type
-          FROM fact_bounce b
-        ),
-        xy_at_bounce AS (
-          SELECT
-            s.bounce_id,
-            bp.x AS x_bp,
-            bp.y AS y_bp
-          FROM src s
-          LEFT JOIN LATERAL (
-            SELECT fbp.x, fbp.y
-            FROM fact_ball_position fbp
-            WHERE fbp.session_id = s.session_id
-              AND (
-                    (fbp.ts IS NOT NULL AND s.bounce_ts IS NOT NULL AND fbp.ts = s.bounce_ts)
-                 OR ((fbp.ts IS NULL OR s.bounce_ts IS NULL)
-                     AND fbp.ts_s IS NOT NULL AND s.bounce_s IS NOT NULL
-                     AND fbp.ts_s = s.bounce_s)
-                  )
-            LIMIT 1
-          ) bp ON TRUE
-        )
-        SELECT
-          ds.session_uid,
-          s.session_id,
-          s.bounce_id,
-          s.hitter_player_id,
-          dp.full_name          AS hitter_name,
-          dp.sportai_player_uid AS hitter_player_uid,
-          s.rally_id,
-          s.bounce_s,
-          s.bounce_ts,
-          COALESCE(s.x_raw, xab.x_bp) AS x,
-          COALESCE(s.y_raw, xab.y_bp) AS y,
-          s.bounce_type
-        FROM src s
-        LEFT JOIN xy_at_bounce xab ON xab.bounce_id = s.bounce_id
-        LEFT JOIN dim_session ds    ON ds.session_id = s.session_id
-        LEFT JOIN dim_player  dp    ON dp.session_id = s.session_id AND dp.player_id = s.hitter_player_id;
-    """,
+    CREATE OR REPLACE VIEW vw_bounce AS
+    WITH src AS (
+      SELECT
+        b.session_id,
+        b.bounce_id,
+        b.hitter_player_id,
+        b.rally_id,
+        b.bounce_s,
+        b.bounce_ts,
+        b.x AS x_raw,
+        b.y AS y_raw,
+        b.bounce_type
+      FROM fact_bounce b
+    ),
+    xy_at_bounce AS (
+      SELECT
+        s.bounce_id,
+        bp.x AS x_bp,
+        bp.y AS y_bp
+      FROM src s
+      LEFT JOIN LATERAL (
+        SELECT fbp.x, fbp.y
+        FROM fact_ball_position fbp
+        WHERE fbp.session_id = s.session_id
+          AND (
+                (fbp.ts   IS NOT NULL AND s.bounce_ts IS NOT NULL AND fbp.ts   = s.bounce_ts)
+             OR (fbp.ts_s IS NOT NULL AND s.bounce_s  IS NOT NULL AND fbp.ts_s = s.bounce_s)
+              )
+        LIMIT 1
+      ) bp ON TRUE
+    )
+    SELECT
+      ds.session_uid,
+      s.session_id,
+      s.bounce_id,
+      s.hitter_player_id,
+      dp.full_name          AS hitter_name,
+      dp.sportai_player_uid AS hitter_player_uid,
+      s.rally_id,
+      s.bounce_s,
+      s.bounce_ts,
+      COALESCE(s.x_raw, xab.x_bp) AS x,
+      COALESCE(s.y_raw, xab.y_bp) AS y,
+      s.bounce_type
+    FROM src s
+    LEFT JOIN xy_at_bounce xab ON xab.bounce_id = s.bounce_id
+    LEFT JOIN dim_session ds    ON ds.session_id = s.session_id
+    LEFT JOIN dim_player  dp    ON dp.session_id = s.session_id AND dp.player_id = s.hitter_player_id;
+""",
 
     # ---------------- GOLD (no inference; uses only SILVER) ----------------
     "vw_shot_order_gold": """
