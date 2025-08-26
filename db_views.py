@@ -1,9 +1,10 @@
-# db_views.py
+# db_views.py  — PURE silver from bronze; gold reads from silver (no inference)
 from sqlalchemy import text
 from typing import List
 
 # Keep this symbol for any code that imports it
 VIEW_SQL_STMTS: List[str] = []  # populated from VIEW_NAMES/CREATE_STMTS
+
 
 # -------- Bronze helper: make raw_ingest table if missing (safe to re-run) --------
 def _ensure_raw_ingest(conn):
@@ -20,680 +21,233 @@ def _ensure_raw_ingest(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
+
 # -------- Views to build (order matters) --------
+# Silver = STRICT pass-through from bronze (no COALESCE, no heuristics, no flips)
+# Gold    = Reads from silver; adds ordering by rally only; no inference/backfills
 VIEW_NAMES = [
-    # Base helpers
+    # SILVER (pure)
     "vw_swing",
-    "vw_swing_norm",           # depends on vw_swing
-    "vw_rally",
     "vw_bounce",
+    "vw_ball_position",
     "vw_player_position",
 
-    # XY normalization (timestamp-mapped)
-    "vw_ball_position_norm",   # depends on dim_rally + fact_ball_position
-    "vw_player_position_norm", # depends on vw_ball_position_norm
-
-    "vw_player_swing_dist",    # dashboards
-
-    # Ordering helpers
-    "vw_shot_order",           # legacy rally-only
-    "vw_shot_order_norm",      # robust order (works even if rally missing)
-
-    # Point-level summary
-    "vw_point_summary",
-
-    # Shot-level transaction log (PowerBI target)
-    "vw_point_log",
+    # GOLD (depends on SILVER)
+    "vw_shot_order_gold",       # rally-only ordering
+    "vw_point_shot_log_gold",   # one row per swing, raw fields; placeholders for future derived
 ]
 
 CREATE_STMTS = {
-    # ---------- BASE HELPERS ----------
+    # ---------------- SILVER (PURE) ----------------
+    # NOTE: Joins to dims here are for labeling only (no transforms of the fact values).
     "vw_swing": """
-        CREATE VIEW vw_swing AS
+        CREATE OR REPLACE VIEW vw_swing AS
         SELECT
-          s.swing_id,
-          s.session_id,
           ds.session_uid,
-          s.player_id,
-          COALESCE(dp.full_name, 'Player ' || s.player_id::text) AS player_name,
-          dp.sportai_player_uid AS player_uid,
+          fs.session_id,
+          fs.swing_id,
+          fs.player_id,
+          dp.full_name                  AS player_name,          -- raw label (no fallback)
+          dp.sportai_player_uid         AS player_uid,           -- raw UID from dim_player
 
-          -- Pass through SportAI player distribution JSON (not used in point_log)
-          (dp.swing_type_distribution)::jsonb AS player_swing_type_distribution,
+          fs.rally_id,
 
-          s.rally_id,
-          s.start_s, s.end_s, s.ball_hit_s,
-          s.start_ts, s.end_ts, s.ball_hit_ts,
-          s.ball_hit_x, s.ball_hit_y,
-          s.ball_speed, s.ball_player_distance,
-          COALESCE(s.is_in_rally, FALSE) AS is_in_rally,
-          s.serve, s.serve_type,
-          s.swing_type,
-          s.meta
-        FROM fact_swing s
-        LEFT JOIN dim_player  dp ON dp.player_id  = s.player_id
-        LEFT JOIN dim_session ds ON ds.session_id = s.session_id;
-    """,
+          -- raw times (seconds & timestamps)
+          fs.start_s, fs.end_s, fs.ball_hit_s,
+          fs.start_ts, fs.end_ts, fs.ball_hit_ts,
 
-    # ---------- NORMALIZED SWING VIEW (adds clean seconds + serve normalization) ----------
-    "vw_swing_norm": """
-        CREATE VIEW vw_swing_norm AS
-        WITH base AS (
-          SELECT
-            vws.*,
-            EXTRACT(EPOCH FROM vws.start_ts)     AS start_s_clean,
-            EXTRACT(EPOCH FROM vws.end_ts)       AS end_s_clean,
-            EXTRACT(EPOCH FROM vws.ball_hit_ts)  AS ball_hit_s_clean,
-            COALESCE(vws.ball_hit_s, vws.start_s, vws.end_s) AS t_raw
-          FROM vw_swing vws
-        ),
-        ordered AS (
-          SELECT
-            b.*,
-            COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean) AS t_clean,
-            LAG(b.rally_id) OVER (
-              PARTITION BY b.session_id
-              ORDER BY COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean), b.swing_id
-            ) AS prev_rally_id,
-            LAG(COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean)) OVER (
-              PARTITION BY b.session_id
-              ORDER BY COALESCE(b.ball_hit_s_clean, b.start_s_clean, b.end_s_clean), b.swing_id
-            ) AS prev_t_clean
-          FROM base b
-        ),
-        inferred AS (
-          SELECT
-            o.*,
-            CASE
-              WHEN o.rally_id IS NOT NULL AND (o.prev_rally_id IS DISTINCT FROM o.rally_id) THEN TRUE
-              WHEN o.rally_id IS NULL AND (o.prev_t_clean IS NULL OR (o.t_clean - o.prev_t_clean) > 5.0) THEN TRUE
-              ELSE FALSE
-            END AS inferred_point_start
-          FROM ordered o
-        ),
-        numbered AS (
-          SELECT
-            i.*,
-            SUM(CASE WHEN i.inferred_point_start THEN 1 ELSE 0 END)
-              OVER (PARTITION BY i.session_id ORDER BY i.t_clean, i.swing_id
-                    ROWS UNBOUNDED PRECEDING) AS inferred_point_id
-          FROM inferred i
-        )
-        SELECT
-          n.*,
-          (COALESCE(n.serve, FALSE) OR n.inferred_point_start) AS inferred_serve,
-          CASE WHEN (COALESCE(n.serve, FALSE) OR n.inferred_point_start) THEN 'serve'
-               ELSE n.swing_type END AS normalized_swing_type
-        FROM numbered n;
-    """,
+          -- raw XY at hit
+          fs.ball_hit_x, fs.ball_hit_y,
 
-    "vw_rally": """
-        CREATE VIEW vw_rally AS
-        SELECT
-            r.rally_id,
-            r.session_id,
-            ds.session_uid,
-            r.rally_number,
-            r.start_s, r.end_s,
-            r.start_ts, r.end_ts
-        FROM dim_rally r
-        LEFT JOIN dim_session ds ON ds.session_id = r.session_id;
+          -- raw metrics / flags
+          fs.ball_speed,
+          fs.ball_player_distance,
+          fs.is_in_rally,
+          fs.serve,
+          fs.serve_type,
+          fs.swing_type,
+
+          -- raw metadata blob
+          fs.meta
+        FROM fact_swing fs
+        LEFT JOIN dim_session ds ON ds.session_id = fs.session_id
+        LEFT JOIN dim_player  dp ON dp.player_id  = fs.player_id;
     """,
 
     "vw_bounce": """
-        CREATE VIEW vw_bounce AS
+        CREATE OR REPLACE VIEW vw_bounce AS
         SELECT
-            b.bounce_id,
-            b.session_id,
-            ds.session_uid,
-            b.hitter_player_id,
-            dp.full_name AS hitter_name,
-            b.rally_id,
-            b.bounce_s, b.bounce_ts,
-            b.x, b.y,
-            b.bounce_type
+          ds.session_uid,
+          b.session_id,
+          b.bounce_id,
+          b.hitter_player_id,
+          dp.full_name                  AS hitter_name,          -- raw label
+          dp.sportai_player_uid         AS hitter_player_uid,    -- raw UID
+
+          b.rally_id,
+
+          -- raw time & XY
+          b.bounce_s, b.bounce_ts,
+          b.x, b.y,
+
+          -- raw classification as sent by SportAI
+          b.bounce_type
         FROM fact_bounce b
-        LEFT JOIN dim_player dp ON dp.player_id = b.hitter_player_id
-        LEFT JOIN dim_session ds ON ds.session_id = b.session_id;
+        LEFT JOIN dim_session ds ON ds.session_id = b.session_id
+        LEFT JOIN dim_player  dp ON dp.player_id  = b.hitter_player_id;
+    """,
+
+    "vw_ball_position": """
+        CREATE OR REPLACE VIEW vw_ball_position AS
+        SELECT
+          ds.session_uid,
+          p.session_id,
+          p.ts_s, p.ts,
+          p.x, p.y
+        FROM fact_ball_position p
+        LEFT JOIN dim_session ds ON ds.session_id = p.session_id;
     """,
 
     "vw_player_position": """
-        CREATE VIEW vw_player_position AS
+        CREATE OR REPLACE VIEW vw_player_position AS
         SELECT
-            p.id,
-            p.session_id,
-            ds.session_uid,
-            p.player_id,
-            dp.full_name AS player_name,
-            dp.sportai_player_uid AS player_uid,
-            p.ts_s, p.ts, p.x, p.y
-        FROM fact_player_position p
-        LEFT JOIN dim_session ds ON ds.session_id = p.session_id
-        LEFT JOIN dim_player dp ON dp.player_id = p.player_id;
+          ds.session_uid,
+          u.session_id,
+          u.player_id,
+          dp.full_name                  AS player_name,        -- raw label
+          dp.sportai_player_uid         AS player_uid,         -- raw UID
+          u.ts_s, u.ts,
+          u.x, u.y
+        FROM fact_player_position u
+        LEFT JOIN dim_session ds ON ds.session_id = u.session_id
+        LEFT JOIN dim_player  dp ON dp.player_id  = u.player_id;
     """,
 
-    # ---------- XY NORMALIZATION (timestamp-mapped; no reliance on fbp.rally_id) ----------
-    "vw_ball_position_norm": """
-    CREATE VIEW vw_ball_position_norm AS
-    -- Map ball positions to rallies by timestamp, then infer rally direction from the first 1s
-    WITH mapped AS (
-      SELECT
-        fbp.session_id,
-        fbp.ts AS timestamp_ts,
-        fbp.x, fbp.y,
-        dr.rally_id,
-        dr.start_ts,
-        dr.end_ts
-      FROM fact_ball_position fbp
-      LEFT JOIN dim_rally dr
-        ON dr.session_id = fbp.session_id
-       AND fbp.ts >= dr.start_ts
-       AND (dr.end_ts IS NULL OR fbp.ts < dr.end_ts)
-    ),
-    -- Compute per-row dy using a window function (allowed here)
-    diffs AS (
-      SELECT
-        m.session_id,
-        m.rally_id,
-        m.timestamp_ts,
-        m.start_ts,
-        m.end_ts,
-        m.x, m.y,
-        (m.y - LAG(m.y) OVER (
-           PARTITION BY m.session_id, m.rally_id
-           ORDER BY m.timestamp_ts
-        )) AS dy
-      FROM mapped m
-      WHERE m.rally_id IS NOT NULL
-        AND m.timestamp_ts >= m.start_ts
-        AND m.timestamp_ts <  m.start_ts + INTERVAL '1 second'
-    ),
-    -- Now aggregate without window functions
-    first1s AS (
-      SELECT
-        session_id,
-        rally_id,
-        SUM(COALESCE(dy,0)) AS sum_dy
-      FROM diffs
-      GROUP BY session_id, rally_id
-    ),
-    dir AS (
-      SELECT
-        session_id,
-        rally_id,
-        CASE WHEN sum_dy IS NULL OR sum_dy >= 0 THEN 1 ELSE -1 END AS dir_sign
-      FROM first1s
-    )
-    SELECT
-      m.session_id,
-      m.rally_id,
-      m.timestamp_ts,
-      CASE WHEN d.dir_sign = -1 THEN -m.x ELSE m.x END AS x_norm,
-      CASE WHEN d.dir_sign = -1 THEN -m.y ELSE m.y END AS y_norm,
-      m.x AS x_orig,
-      m.y AS y_orig,
-      d.dir_sign
-    FROM mapped m
-    LEFT JOIN dir d
-      ON d.session_id = m.session_id
-     AND d.rally_id   = m.rally_id;
-    """,
-
-    "vw_player_position_norm": """
-        CREATE VIEW vw_player_position_norm AS
-        WITH mapped AS (
-          SELECT
-            fpp.session_id,
-            fpp.player_id,
-            fpp.ts AS timestamp_ts,
-            fpp.x, fpp.y,
-            dr.rally_id
-          FROM fact_player_position fpp
-          LEFT JOIN dim_rally dr
-            ON dr.session_id = fpp.session_id
-           AND fpp.ts >= dr.start_ts
-           AND (dr.end_ts IS NULL OR fpp.ts < dr.end_ts)
-        ),
-        dir AS (
-          SELECT session_id, rally_id, MAX(dir_sign) AS dir_sign
-          FROM vw_ball_position_norm
-          GROUP BY session_id, rally_id
-        )
+    # ---------------- GOLD (no inference; uses only SILVER) ----------------
+    # Rally-only shot order (no inferred serves, no grouping by time-gaps)
+    "vw_shot_order_gold": """
+        CREATE OR REPLACE VIEW vw_shot_order_gold AS
         SELECT
-          m.session_id, m.rally_id, m.player_id, m.timestamp_ts,
-          CASE WHEN d.dir_sign = -1 THEN -m.x ELSE m.x END AS x_norm,
-          CASE WHEN d.dir_sign = -1 THEN -m.y ELSE m.y END AS y_norm,
-          m.x AS x_orig, m.y AS y_orig,
-          d.dir_sign
-        FROM mapped m
-        LEFT JOIN dir d
-          ON d.session_id = m.session_id AND d.rally_id = m.rally_id;
-    """,
-
-    # ---------- PER-PLAYER DISTRIBUTION SUMMARY ----------
-    "vw_player_swing_dist": """
-      CREATE VIEW vw_player_swing_dist AS
-      SELECT
-        dp.session_id,
-        ds.session_uid,
-        dp.player_id,
-        dp.full_name AS player_name,
-        dp.sportai_player_uid AS player_uid,
-        (dp.swing_type_distribution)::jsonb AS swing_type_dist,
-        ((dp.swing_type_distribution)::jsonb->>'forehand')::float   AS dist_forehand,
-        ((dp.swing_type_distribution)::jsonb->>'backhand')::float   AS dist_backhand,
-        ((dp.swing_type_distribution)::jsonb->>'fh_slice')::float   AS dist_fh_slice,
-        ((dp.swing_type_distribution)::jsonb->>'bh_slice')::float   AS dist_bh_slice,
-        ((dp.swing_type_distribution)::jsonb->>'fh_volley')::float  AS dist_fh_volley,
-        ((dp.swing_type_distribution)::jsonb->>'bh_volley')::float  AS dist_bh_volley,
-        ((dp.swing_type_distribution)::jsonb->>'smash')::float      AS dist_smash,
-        ((dp.swing_type_distribution)::jsonb->>'1st_serve')::float  AS dist_first_serve,
-        ((dp.swing_type_distribution)::jsonb->>'2nd_serve')::float  AS dist_second_serve,
-        ((dp.swing_type_distribution)::jsonb->>'drop_shot')::float  AS dist_drop_shot,
-        ((dp.swing_type_distribution)::jsonb->>'tweener')::float    AS dist_tweener,
-        ((dp.swing_type_distribution)::jsonb->>'other')::float      AS dist_other,
-        (
-          COALESCE(((dp.swing_type_distribution)::jsonb->>'1st_serve')::float,0) +
-          COALESCE(((dp.swing_type_distribution)::jsonb->>'2nd_serve')::float,0)
-        ) AS dist_serve_total
-      FROM dim_player dp
-      JOIN dim_session ds ON ds.session_id = dp.session_id;
-    """,
-
-    # ---------- ORDERING HELPERS ----------
-    "vw_shot_order": """
-        CREATE VIEW vw_shot_order AS
-        SELECT
-          fs.swing_id,
           fs.session_id,
           fs.rally_id,
           dr.rally_number,
-          fs.player_id,
-          COALESCE(fs.ball_hit_s, fs.start_s) AS t_order,
+          fs.swing_id,
+
+          -- simple, raw ordering key (no normalization)
+          COALESCE(fs.ball_hit_s, fs.start_s) AS t_order_s,
+
           ROW_NUMBER() OVER (
             PARTITION BY fs.session_id, fs.rally_id
             ORDER BY COALESCE(fs.ball_hit_s, fs.start_s), fs.swing_id
           ) AS shot_number_in_point
-        FROM fact_swing fs
-        JOIN dim_rally  dr ON dr.session_id = fs.session_id AND dr.rally_id = fs.rally_id
+        FROM vw_swing fs
+        JOIN dim_rally dr
+          ON dr.session_id = fs.session_id
+         AND dr.rally_id   = fs.rally_id
         WHERE fs.rally_id IS NOT NULL;
     """,
 
-    # Serve-based grouping when rally_id may be missing (uses vw_swing_norm)
-    "vw_shot_order_norm": """
-    CREATE VIEW vw_shot_order_norm AS
-    -- Robust ordering that works with rally_id or inferred serve-grouping
-    WITH seq AS (
-      SELECT
-        s.session_id,
-        s.swing_id,
-        s.rally_id,
-        s.t_clean,  -- seconds timeline derived from timestamps
-        (COALESCE(s.serve, FALSE) OR COALESCE(s.inferred_serve, FALSE)) AS is_serve
-      FROM vw_swing_norm s
-    ),
-    first_serve AS (
-      SELECT session_id, MIN(t_clean) AS first_t
-      FROM seq
-      WHERE is_serve
-      GROUP BY session_id
-    ),
-    seq2 AS (
-      SELECT
-        q.*,
-        CASE
-          WHEN fs.first_t IS NOT NULL AND q.t_clean >= fs.first_t THEN
-            SUM(CASE WHEN q.is_serve THEN 1 ELSE 0 END)
-              OVER (PARTITION BY q.session_id ORDER BY q.t_clean, q.swing_id)
-          ELSE NULL
-        END AS serve_point_id
-      FROM seq q
-      LEFT JOIN first_serve fs ON fs.session_id = q.session_id
-    ),
-    ordered AS (
-      SELECT
-        s2.session_id,
-        s2.swing_id,
-        s2.rally_id,
-        s2.serve_point_id,
-        ROW_NUMBER() OVER (
-          PARTITION BY s2.session_id, COALESCE(s2.rally_id, s2.serve_point_id)
-          ORDER BY s2.t_clean, s2.swing_id
-        ) AS shot_number_in_point,
-        s2.t_clean,
-        LEAD(s2.t_clean) OVER (
-          PARTITION BY s2.session_id, COALESCE(s2.rally_id, s2.serve_point_id)
-          ORDER BY s2.t_clean, s2.swing_id
-        ) AS t_next
-      FROM seq2 s2
-      WHERE s2.serve_point_id IS NOT NULL OR s2.rally_id IS NOT NULL
-    )
-    SELECT
-      o.session_id,
-      o.swing_id,
-      o.rally_id,
-      o.serve_point_id,
-      o.shot_number_in_point,
-      (o.t_next - o.t_clean) AS delta_s  -- seconds; expect >= 0
-    FROM ordered o;
-    """,
-
-    # ---------- POINT SUMMARY ----------
-    "vw_point_summary": """
-        CREATE VIEW vw_point_summary AS
-        WITH ordered AS (
-          SELECT
-            so.session_id, so.rally_id, so.rally_number,
-            so.swing_id, fs.player_id, so.shot_number_in_point
-          FROM vw_shot_order so
-          JOIN fact_swing fs ON fs.swing_id = so.swing_id
+    # Final gold table for BI: one row per swing with point/shot sequence.
+    # IMPORTANT: Everything here is raw from SILVER; NO backfills or approximations.
+    "vw_point_shot_log_gold": """
+        CREATE OR REPLACE VIEW vw_point_shot_log_gold AS
+        WITH s AS (
+          SELECT * FROM vw_swing
         ),
-        first_last AS (
-          SELECT DISTINCT ON (session_id, rally_id)
-            session_id, rally_id, rally_number,
-            (ARRAY_AGG(swing_id ORDER BY shot_number_in_point))[1] AS first_swing_id,
-            (ARRAY_AGG(player_id ORDER BY shot_number_in_point))[1] AS first_hitter_id,
-            (ARRAY_AGG(swing_id ORDER BY shot_number_in_point DESC))[1] AS last_swing_id,
-            (ARRAY_AGG(player_id ORDER BY shot_number_in_point DESC))[1] AS last_hitter_id,
-            (ARRAY_AGG(shot_number_in_point ORDER BY shot_number_in_point DESC))[1] AS total_shots
-          FROM ordered
-          GROUP BY session_id, rally_id, rally_number
+        ord AS (
+          SELECT session_id, rally_id, rally_number, swing_id, shot_number_in_point
+          FROM vw_shot_order_gold
         ),
-        serve_row AS (
-          SELECT
-            fl.session_id, fl.rally_id,
-            COALESCE( (SELECT fs.player_id
-                       FROM fact_swing fs
-                       WHERE fs.session_id = fl.session_id
-                         AND fs.rally_id   = fl.rally_id
-                         AND COALESCE(fs.serve,FALSE) = TRUE
-                       ORDER BY COALESCE(fs.ball_hit_s, fs.start_s), fs.swing_id
-                       LIMIT 1),
-                     fl.first_hitter_id) AS server_player_id
-          FROM first_last fl
-        ),
-        last_swing_bounce AS (
-          SELECT
-            fl.session_id, fl.rally_id,
-            b.bounce_id, b.bounce_type, b.x AS bounce_x, b.y AS bounce_y
-          FROM first_last fl
-          JOIN vw_swing s ON s.swing_id = fl.last_swing_id
+        -- First recorded bounce AFTER the hit, in the SAME rally (raw; may be NULL)
+        b_after AS (
+          SELECT s2.swing_id,
+                 bx.bounce_id,
+                 bx.bounce_ts,
+                 bx.x AS bounce_x,
+                 bx.y AS bounce_y,
+                 bx.bounce_type
+          FROM s s2
           LEFT JOIN LATERAL (
             SELECT b.*
             FROM vw_bounce b
-            WHERE b.session_id = fl.session_id
-              AND b.rally_id   = fl.rally_id
-              AND b.bounce_ts >= s.ball_hit_ts
+            WHERE b.session_id = s2.session_id
+              AND b.rally_id   = s2.rally_id
+              AND b.bounce_ts  >= s2.ball_hit_ts
             ORDER BY b.bounce_ts
             LIMIT 1
-          ) b ON TRUE
+          ) bx ON TRUE
+        ),
+        -- Player position EXACTLY at hit timestamp (raw; may be NULL if no exact sample)
+        pp_exact AS (
+          SELECT s2.swing_id,
+                 p.x AS player_x_at_hit,
+                 p.y AS player_y_at_hit
+          FROM s s2
+          LEFT JOIN vw_player_position p
+            ON p.session_id = s2.session_id
+           AND p.player_id  = s2.player_id
+           AND p.ts         = s2.ball_hit_ts
         )
         SELECT
-          ds.session_uid,
-          fl.session_id,
-          fl.rally_id,
-          fl.rally_number AS point_number,
-          fl.first_swing_id,
-          fl.first_hitter_id,
-          sr.server_player_id,
-          fl.last_swing_id,
-          fl.last_hitter_id,
-          fl.total_shots,
+          -- ids / linking
+          s.session_uid,
+          s.session_id,
+          s.rally_id,
+          ord.rally_number                      AS point_number,
+          ord.shot_number_in_point              AS shot_number,
+          s.swing_id,
+
+          -- player
+          s.player_id,
+          s.player_name,                         -- raw label
+          s.player_uid,                          -- raw UID
+
+          -- raw swing fields
+          s.serve,
+          s.serve_type,
+          s.swing_type        AS swing_type_raw,
+
+          -- raw metrics
+          s.ball_speed,
+          s.ball_player_distance,
+
+          -- raw times
+          s.start_s, s.end_s, s.ball_hit_s,
+          s.start_ts, s.end_ts, s.ball_hit_ts,
+
+          -- raw XY at hit
+          s.ball_hit_x, s.ball_hit_y,
+
+          -- raw first bounce after hit (may be NULL)
+          b_after.bounce_id,
+          b_after.bounce_x      AS ball_bounce_x,
+          b_after.bounce_y      AS ball_bounce_y,
+          b_after.bounce_type   AS bounce_type_raw,
+
+          -- simple raw classifications from bounce_type (no inference)
           CASE
-            WHEN COALESCE(lsb.bounce_type,'in') IN ('out','net','long','wide') THEN 'error'
-            ELSE 'winner'
-          END AS point_result_type,
+            WHEN b_after.bounce_type IN ('out','net','long','wide') THEN TRUE
+            WHEN b_after.bounce_type IS NULL THEN NULL
+            ELSE FALSE
+          END AS is_error,
           CASE
-            WHEN COALESCE(lsb.bounce_type,'in') IN ('out','net','long','wide') THEN
-                 (SELECT dp2.player_id
-                  FROM dim_player dp2
-                  WHERE dp2.session_id = fl.session_id
-                    AND dp2.player_id <> fl.last_hitter_id
-                  LIMIT 1)
-            ELSE fl.last_hitter_id
-          END AS winner_player_id
-        FROM first_last fl
-        JOIN dim_session ds ON ds.session_id = fl.session_id
-        LEFT JOIN serve_row sr ON sr.session_id = fl.session_id AND sr.rally_id = fl.rally_id
-        LEFT JOIN last_swing_bounce lsb ON lsb.session_id = fl.session_id AND lsb.rally_id = fl.rally_id;
-    """,
+            WHEN b_after.bounce_type IN ('out','net','long','wide') THEN b_after.bounce_type
+            ELSE NULL
+          END AS error_type,
 
-        # ---------- SHOT-LEVEL TRANSACTION LOGs ----------
-    "vw_point_log": """
-CREATE VIEW vw_point_log AS
-WITH base AS (
-  SELECT DISTINCT ON (s.swing_id)
-    s.swing_id,
-    s.session_id,
-    s.session_uid,
-    s.rally_id,
-    r.rally_number AS point_number_real,
-    so.shot_number_in_point,
-    s.inferred_point_id,
-    s.player_id,
-    s.player_name,
-    s.player_uid,
-    s.serve,
-    s.serve_type,
+          -- player location at hit (exact match only)
+          pp_exact.player_x_at_hit,
+          pp_exact.player_y_at_hit,
 
-    -- Authoritative epoch seconds from timestamps when present; fall back to raw seconds
-    COALESCE(s.start_s_clean,    s.start_s)     AS start_s,
-    COALESCE(s.end_s_clean,      s.end_s)       AS end_s,
-    COALESCE(s.ball_hit_s_clean, s.ball_hit_s)  AS ball_hit_s,
-
-    -- A guaranteed hit time for joins (fallback to start/end when ball_hit is missing)
-    COALESCE(s.ball_hit_s_clean, s.ball_hit_s, s.start_s_clean, s.end_s_clean) AS hit_time_s,
-
-    -- keep *_ts for traceability/timecodes
-    s.start_ts, s.end_ts, s.ball_hit_ts,
-
-    s.ball_hit_x, s.ball_hit_y,
-
-    COALESCE(s.ball_speed, NULLIF(s.meta->>'ball_speed','')::double precision)                       AS ball_speed,
-    COALESCE(s.ball_player_distance, NULLIF(s.meta->>'ball_player_distance','')::double precision)   AS ball_player_distance,
-
-    s.inferred_serve,
-    s.normalized_swing_type,
-
-    LOWER(NULLIF(COALESCE(
-      s.meta->>'swing_type',
-      s.meta->>'stroke',
-      s.meta->>'shot_type',
-      s.meta->>'label',
-      s.meta->>'predicted_class'
-    , ''), '')) AS swing_text
-  FROM vw_swing_norm s
-  JOIN vw_shot_order_norm so
-    ON so.session_id = s.session_id AND so.swing_id = s.swing_id
-  LEFT JOIN vw_rally r
-    ON r.session_id = s.session_id AND r.rally_id = s.rally_id
-  ORDER BY s.swing_id, s.t_clean
-),
-
--- Nearest player position at contact (epoch seconds)
-player_loc AS (
-  SELECT b.swing_id,
-         p.x AS player_x_at_hit,
-         p.y AS player_y_at_hit
-  FROM base b
-  LEFT JOIN LATERAL (
-    SELECT p.*
-    FROM fact_player_position p
-    WHERE p.session_id = b.session_id
-      AND p.player_id  = b.player_id
-    ORDER BY ABS(COALESCE(p.ts_s, EXTRACT(EPOCH FROM p.ts)) - b.hit_time_s)
-    LIMIT 1
-  ) p ON TRUE
-),
-
--- Ball XY at (approx) contact (fallback for missing swing ball_hit_x/y)
-ball_pos_at_hit AS (
-  SELECT b.swing_id,
-         pb.x AS hit_x_from_ballpos,
-         pb.y AS hit_y_from_ballpos
-  FROM base b
-  LEFT JOIN LATERAL (
-    SELECT pb.*
-    FROM fact_ball_position pb
-    WHERE pb.session_id = b.session_id
-      AND COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) BETWEEN b.hit_time_s - 1.5 AND b.hit_time_s + 1.5
-    ORDER BY ABS(COALESCE(pb.ts_s, EXTRACT(EPOCH FROM pb.ts)) - b.hit_time_s)
-    LIMIT 1
-  ) pb ON TRUE
-),
-
--- First bounce after the hit (by epoch seconds; rally-aware if available)
-first_bounce_after_hit AS (
-  SELECT b.swing_id,
-         bb.bounce_id,
-         bb.x AS bounce_x,
-         bb.y AS bounce_y,
-         bb.bounce_type
-  FROM base b
-  LEFT JOIN LATERAL (
-    SELECT bb.*
-    FROM fact_bounce bb
-    WHERE bb.session_id = b.session_id
-      AND (
-            (b.rally_id IS NOT NULL
-             AND bb.rally_id = b.rally_id
-             AND COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts)) >= b.hit_time_s)
-         OR (b.rally_id IS NULL
-             AND COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts)) >= b.hit_time_s
-             AND COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts)) <= b.hit_time_s + 2)
-          )
-    ORDER BY COALESCE(bb.bounce_s, EXTRACT(EPOCH FROM bb.bounce_ts))
-    LIMIT 1
-  ) bb ON TRUE
-),
-
--- Approximate bounce from first ball position sample after the hit (fallback)
-approx_bounce_from_ballpos AS (
-  SELECT b.swing_id,
-         pb2.x AS approx_bounce_x,
-         pb2.y AS approx_bounce_y
-  FROM base b
-  LEFT JOIN LATERAL (
-    SELECT pb2.*
-    FROM fact_ball_position pb2
-    WHERE pb2.session_id = b.session_id
-      AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) >  b.ball_hit_s
-      AND COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts)) <= b.ball_hit_s + 2.5
-    ORDER BY COALESCE(pb2.ts_s, EXTRACT(EPOCH FROM pb2.ts))
-    LIMIT 1
-  ) pb2 ON TRUE
-),
-
-classify AS (
-  SELECT
-    b.*,
-    pl.player_x_at_hit, pl.player_y_at_hit,
-    fb.bounce_id, fb.bounce_x, fb.bounce_y, fb.bounce_type,
-
-    -- ball-hit XY with fallback
-    COALESCE(b.ball_hit_x, bh.hit_x_from_ballpos) AS ball_hit_x_final,
-    COALESCE(b.ball_hit_y, bh.hit_y_from_ballpos) AS ball_hit_y_final,
-
-    -- bounce XY with fallback
-    COALESCE(fb.bounce_x, ab.approx_bounce_x) AS bounce_x_final,
-    COALESCE(fb.bounce_y, ab.approx_bounce_y) AS bounce_y_final,
-
-    CASE
-      WHEN fb.bounce_type IN ('out','net','long','wide') THEN 'out'
-      WHEN fb.bounce_type IS NULL THEN NULL
-      ELSE 'in'
-    END AS shot_result,
-
-    CASE
-      WHEN fb.bounce_type = 'net' THEN 'net'
-      WHEN fb.bounce_type IN ('out','long','wide') THEN 'out_of_court'
-      WHEN fb.bounce_type IS NULL THEN NULL
-      ELSE 'floor'
-    END AS ball_bounce_surface,
-
-    CASE
-      WHEN fb.bounce_type IS NULL THEN NULL
-      ELSE (fb.bounce_type NOT IN ('net','out','long','wide'))
-    END AS ball_bounce_is_floor,
-
-    CASE
-      WHEN fb.bounce_type IN ('net') THEN 'net'
-      WHEN fb.bounce_type IN ('long','wide','out') THEN fb.bounce_type
-      WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) IS NULL THEN NULL
-      WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) <= -2.5 THEN 'deep'
-      WHEN COALESCE(fb.bounce_y, ab.approx_bounce_y) BETWEEN -2.5 AND 2.5 THEN 'mid'
-      ELSE 'short'
-    END AS shot_description_depth
-  FROM base b
-  LEFT JOIN player_loc                 pl ON pl.swing_id = b.swing_id
-  LEFT JOIN ball_pos_at_hit            bh ON bh.swing_id = b.swing_id
-  LEFT JOIN first_bounce_after_hit     fb ON fb.swing_id = b.swing_id
-  LEFT JOIN approx_bounce_from_ballpos ab ON ab.swing_id = b.swing_id
-),
-
-final_map AS (
-  SELECT
-    c.*,
-    CASE
-      WHEN (c.inferred_serve OR c.serve) THEN
-        CASE
-          WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '1%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'first%'  THEN '1st_serve'
-          WHEN TRIM(COALESCE(c.serve_type,'')) ILIKE '2%' OR TRIM(COALESCE(c.serve_type,'')) ILIKE 'second%' THEN '2nd_serve'
-          ELSE 'serve'
-        END
-      ELSE
-        CASE
-          WHEN c.swing_text IS NULL OR c.swing_text = ''                THEN 'other'
-          WHEN c.swing_text ~* 'tweener'                                THEN 'tweener'
-          WHEN c.swing_text ~* 'drop'                                   THEN 'drop_shot'
-          WHEN c.swing_text ~* '(overhead|smash|^oh$)'                  THEN 'smash'
-          WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_volley'
-          WHEN c.swing_text ~* 'volley' AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_volley'
-          WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^fh|forehand)'  THEN 'fh_slice'
-          WHEN c.swing_text ~* 'slice'  AND c.swing_text ~* '(^bh|backhand)'  THEN 'bh_slice'
-          WHEN c.swing_text ~* '(^fh|forehand)'                         THEN 'forehand'
-          WHEN c.swing_text ~* '(^bh|backhand)'                         THEN 'backhand'
-          ELSE 'other'
-        END
-    END AS swing_type_final,
-
-    -- timecodes (fallback to hit_time_s if ball_hit_s is null)
-    TO_CHAR((TIME '00:00' + (c.start_s                         * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS start_timecode,
-    TO_CHAR((TIME '00:00' + (c.end_s                           * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS end_timecode,
-    TO_CHAR((TIME '00:00' + (COALESCE(c.ball_hit_s, c.hit_time_s) * INTERVAL '1 second')), 'HH24:MI:SS.MS') AS ball_hit_timecode
-  FROM classify c
-)
-SELECT
-  f.session_uid,
-  f.session_id,
-  f.rally_id,
-  COALESCE(f.point_number_real, f.inferred_point_id) AS point_number,
-  f.shot_number_in_point AS shot_number,
-  f.swing_id,
-  f.player_id,
-  f.player_name,
-  f.player_uid,
-  f.swing_type_final,
-  f.shot_result,
-  f.shot_description_depth,
-  f.ball_bounce_surface,
-  f.ball_bounce_is_floor,
-  f.bounce_x_final AS ball_bounce_x,
-  f.bounce_y_final AS ball_bounce_y,
-  f.serve_type,
-  f.serve,
-  f.player_x_at_hit, f.player_y_at_hit,
-  f.ball_hit_x_final AS ball_hit_x,
-  f.ball_hit_y_final AS ball_hit_y,
-  f.start_s, f.end_s, f.ball_hit_s,
-  f.start_ts, f.end_ts, f.ball_hit_ts,
-  f.start_timecode, f.end_timecode, f.ball_hit_timecode,
-  f.ball_speed,
-  f.ball_player_distance,
-  f.inferred_serve
-FROM final_map f
-ORDER BY session_uid, point_number, shot_number;
-"""
+          -- placeholders for future, rule-based derived fields (keep NULL for now)
+          NULL::text AS baseline_zone_abcd,
+          NULL::int  AS serve_location_1_8
+        FROM s
+        LEFT JOIN ord     ON ord.session_id = s.session_id AND ord.swing_id = s.swing_id
+        LEFT JOIN b_after ON b_after.swing_id = s.swing_id
+        LEFT JOIN pp_exact ON pp_exact.swing_id = s.swing_id
+        ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
+    """
 }
 
 # ---------- helpers ----------
@@ -737,7 +291,7 @@ def _preflight_or_raise(conn):
     required_tables = [
         "dim_session", "dim_player", "dim_rally",
         "fact_swing", "fact_bounce", "fact_player_position",
-        "fact_ball_position"
+        "fact_ball_position",
     ]
     missing = [t for t in required_tables if not _table_exists(conn, t)]
     if missing:
@@ -747,8 +301,6 @@ def _preflight_or_raise(conn):
         ("dim_session", "session_uid"),
         ("dim_rally", "rally_id"),
         ("dim_rally", "rally_number"),
-        ("dim_rally", "start_ts"),
-        ("dim_rally", "end_ts"),
         ("fact_swing", "swing_id"),
         ("fact_swing", "session_id"),
         ("fact_swing", "player_id"),
@@ -759,12 +311,16 @@ def _preflight_or_raise(conn):
         ("fact_swing", "ball_hit_x"),
         ("fact_swing", "ball_hit_y"),
         ("fact_swing", "serve"),
+        ("fact_swing", "serve_type"),
+        ("fact_swing", "swing_type"),
         ("fact_bounce", "bounce_ts"),
         ("fact_bounce", "x"),
         ("fact_bounce", "y"),
+        ("fact_bounce", "bounce_type"),
         ("fact_player_position", "ts"),
         ("fact_ball_position", "ts"),
-        ("dim_player", "swing_type_distribution"),
+        ("dim_player", "full_name"),
+        ("dim_player", "sportai_player_uid"),
     ]
     missing_cols = [(t,c) for (t,c) in checks if not _column_exists(conn, t, c)]
     if missing_cols:
@@ -777,7 +333,7 @@ def _apply_views(engine):
     VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
 
     with engine.begin() as conn:
-        _ensure_raw_ingest(conn)   # Step 1: ensure Bronze table exists
+        _ensure_raw_ingest(conn)   # Step 1: ensure Bronze helper exists
         _preflight_or_raise(conn)
 
         # Drop in order to avoid dependency issues
