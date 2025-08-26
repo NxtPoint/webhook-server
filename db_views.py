@@ -273,6 +273,11 @@ CREATE_STMTS = {
     LEFT JOIN pp_nearest ON pp_nearest.swing_id = s.swing_id
     ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
 """,
+    # === Compatibility alias ===
+    "vw_point_shot_log_gold": """
+        CREATE OR REPLACE VIEW vw_point_shot_log_gold AS
+        SELECT * FROM vw_point_log;
+    """,
 }
 
 # ---------- helpers ----------
