@@ -1,10 +1,9 @@
-# db_views.py  — PURE silver from bronze; gold reads from silver (no inference)
+# db_views.py — PURE silver from bronze; gold reads only from silver (no inference)
 from sqlalchemy import text
 from typing import List
 
-# Keep this symbol for any code that imports it
+# public API (other code imports these)
 VIEW_SQL_STMTS: List[str] = []  # populated from VIEW_NAMES/CREATE_STMTS
-
 
 # -------- Bronze helper: make raw_ingest table if missing (safe to re-run) --------
 def _ensure_raw_ingest(conn):
@@ -18,13 +17,16 @@ def _ensure_raw_ingest(conn):
           payload      JSONB NOT NULL
         );
     """))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
-
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"
+    ))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type ON raw_ingest(doc_type);"
+    ))
 
 # -------- Views to build (order matters) --------
-# Silver = STRICT pass-through from bronze (no COALESCE, no heuristics, no flips)
-# Gold    = Reads from silver; adds ordering by rally only; no inference/backfills
+# SILVER = strict pass-through from BRONZE (no edits)
+# GOLD   = reads only SILVER; rally-based ordering; no inference/backfills
 VIEW_NAMES = [
     # SILVER (pure)
     "vw_swing",
@@ -32,14 +34,17 @@ VIEW_NAMES = [
     "vw_ball_position",
     "vw_player_position",
 
-    # GOLD (depends on SILVER)
-    "vw_shot_order_gold",       # rally-only ordering
-    "vw_point_shot_log_gold",   # one row per swing, raw fields; placeholders for future derived
+    # GOLD (pure log for BI)
+    "vw_shot_order_gold",       # rally-only ordering (no inferred serves)
+    "vw_point_shot_log_gold",   # one row per swing; raw fields
+    "vw_point_log",             # alias for Power BI (public.vw_point_log)
 ]
 
 CREATE_STMTS = {
     # ---------------- SILVER (PURE) ----------------
-    # NOTE: Joins to dims here are for labeling only (no transforms of the fact values).
+    # Notes:
+    # * Joins to dims are for labeling only (no transformation of fact values)
+    # * No COALESCE, no defaults, no axis flips
     "vw_swing": """
         CREATE OR REPLACE VIEW vw_swing AS
         SELECT
@@ -47,12 +52,12 @@ CREATE_STMTS = {
           fs.session_id,
           fs.swing_id,
           fs.player_id,
-          dp.full_name                  AS player_name,          -- raw label (no fallback)
-          dp.sportai_player_uid         AS player_uid,           -- raw UID from dim_player
+          dp.full_name          AS player_name,   -- raw label
+          dp.sportai_player_uid AS player_uid,    -- raw UID
 
           fs.rally_id,
 
-          -- raw times (seconds & timestamps)
+          -- raw times
           fs.start_s, fs.end_s, fs.ball_hit_s,
           fs.start_ts, fs.end_ts, fs.ball_hit_ts,
 
@@ -67,7 +72,7 @@ CREATE_STMTS = {
           fs.serve_type,
           fs.swing_type,
 
-          -- raw metadata blob
+          -- raw metadata
           fs.meta
         FROM fact_swing fs
         LEFT JOIN dim_session ds ON ds.session_id = fs.session_id
@@ -81,8 +86,8 @@ CREATE_STMTS = {
           b.session_id,
           b.bounce_id,
           b.hitter_player_id,
-          dp.full_name                  AS hitter_name,          -- raw label
-          dp.sportai_player_uid         AS hitter_player_uid,    -- raw UID
+          dp.full_name          AS hitter_name,       -- raw label
+          dp.sportai_player_uid AS hitter_player_uid, -- raw UID
 
           b.rally_id,
 
@@ -90,7 +95,7 @@ CREATE_STMTS = {
           b.bounce_s, b.bounce_ts,
           b.x, b.y,
 
-          -- raw classification as sent by SportAI
+          -- raw classification from SportAI
           b.bounce_type
         FROM fact_bounce b
         LEFT JOIN dim_session ds ON ds.session_id = b.session_id
@@ -114,8 +119,8 @@ CREATE_STMTS = {
           ds.session_uid,
           u.session_id,
           u.player_id,
-          dp.full_name                  AS player_name,        -- raw label
-          dp.sportai_player_uid         AS player_uid,         -- raw UID
+          dp.full_name          AS player_name,   -- raw label
+          dp.sportai_player_uid AS player_uid,    -- raw UID
           u.ts_s, u.ts,
           u.x, u.y
         FROM fact_player_position u
@@ -123,8 +128,8 @@ CREATE_STMTS = {
         LEFT JOIN dim_player  dp ON dp.player_id  = u.player_id;
     """,
 
-    # ---------------- GOLD (no inference; uses only SILVER) ----------------
-    # Rally-only shot order (no inferred serves, no grouping by time-gaps)
+    # ---------------- GOLD (PURE; uses only SILVER) ----------------
+    # Rally-only shot order (no inferred serves / gap heuristics)
     "vw_shot_order_gold": """
         CREATE OR REPLACE VIEW vw_shot_order_gold AS
         SELECT
@@ -132,10 +137,6 @@ CREATE_STMTS = {
           fs.rally_id,
           dr.rally_number,
           fs.swing_id,
-
-          -- simple, raw ordering key (no normalization)
-          COALESCE(fs.ball_hit_s, fs.start_s) AS t_order_s,
-
           ROW_NUMBER() OVER (
             PARTITION BY fs.session_id, fs.rally_id
             ORDER BY COALESCE(fs.ball_hit_s, fs.start_s), fs.swing_id
@@ -147,8 +148,12 @@ CREATE_STMTS = {
         WHERE fs.rally_id IS NOT NULL;
     """,
 
-    # Final gold table for BI: one row per swing with point/shot sequence.
-    # IMPORTANT: Everything here is raw from SILVER; NO backfills or approximations.
+    # Final BI-facing gold log (pure):
+    #  - one row per swing
+    #  - raw swing fields (serve/serve_type/swing_type, hit XY/times, speed)
+    #  - first recorded bounce AFTER hit in SAME rally (may be NULL)
+    #  - error flags derived only from raw bounce_type (no other inference)
+    #  - placeholders for baseline_zone_abcd & serve_location_1_8 (NULL for now)
     "vw_point_shot_log_gold": """
         CREATE OR REPLACE VIEW vw_point_shot_log_gold AS
         WITH s AS (
@@ -158,7 +163,6 @@ CREATE_STMTS = {
           SELECT session_id, rally_id, rally_number, swing_id, shot_number_in_point
           FROM vw_shot_order_gold
         ),
-        -- First recorded bounce AFTER the hit, in the SAME rally (raw; may be NULL)
         b_after AS (
           SELECT s2.swing_id,
                  bx.bounce_id,
@@ -177,7 +181,6 @@ CREATE_STMTS = {
             LIMIT 1
           ) bx ON TRUE
         ),
-        -- Player position EXACTLY at hit timestamp (raw; may be NULL if no exact sample)
         pp_exact AS (
           SELECT s2.swing_id,
                  p.x AS player_x_at_hit,
@@ -193,19 +196,19 @@ CREATE_STMTS = {
           s.session_uid,
           s.session_id,
           s.rally_id,
-          ord.rally_number                      AS point_number,
-          ord.shot_number_in_point              AS shot_number,
+          ord.rally_number         AS point_number,
+          ord.shot_number_in_point AS shot_number,
           s.swing_id,
 
           -- player
           s.player_id,
-          s.player_name,                         -- raw label
-          s.player_uid,                          -- raw UID
+          s.player_name,           -- raw label
+          s.player_uid,            -- raw UID
 
           -- raw swing fields
           s.serve,
           s.serve_type,
-          s.swing_type        AS swing_type_raw,
+          s.swing_type AS swing_type_raw,
 
           -- raw metrics
           s.ball_speed,
@@ -215,16 +218,16 @@ CREATE_STMTS = {
           s.start_s, s.end_s, s.ball_hit_s,
           s.start_ts, s.end_ts, s.ball_hit_ts,
 
-          -- raw XY at hit
+          -- raw hit XY
           s.ball_hit_x, s.ball_hit_y,
 
           -- raw first bounce after hit (may be NULL)
           b_after.bounce_id,
-          b_after.bounce_x      AS ball_bounce_x,
-          b_after.bounce_y      AS ball_bounce_y,
-          b_after.bounce_type   AS bounce_type_raw,
+          b_after.bounce_x  AS ball_bounce_x,
+          b_after.bounce_y  AS ball_bounce_y,
+          b_after.bounce_type AS bounce_type_raw,
 
-          -- simple raw classifications from bounce_type (no inference)
+          -- simple raw mapping from bounce_type (no inference)
           CASE
             WHEN b_after.bounce_type IN ('out','net','long','wide') THEN TRUE
             WHEN b_after.bounce_type IS NULL THEN NULL
@@ -235,37 +238,43 @@ CREATE_STMTS = {
             ELSE NULL
           END AS error_type,
 
-          -- player location at hit (exact match only)
+          -- player loc at hit (exact timestamp match only; may be NULL)
           pp_exact.player_x_at_hit,
           pp_exact.player_y_at_hit,
 
-          -- placeholders for future, rule-based derived fields (keep NULL for now)
+          -- placeholders for later rule-based derivations (NULL for now)
           NULL::text AS baseline_zone_abcd,
           NULL::int  AS serve_location_1_8
         FROM s
-        LEFT JOIN ord     ON ord.session_id = s.session_id AND ord.swing_id = s.swing_id
-        LEFT JOIN b_after ON b_after.swing_id = s.swing_id
+        LEFT JOIN ord      ON ord.session_id = s.session_id AND ord.swing_id = s.swing_id
+        LEFT JOIN b_after  ON b_after.swing_id = s.swing_id
         LEFT JOIN pp_exact ON pp_exact.swing_id = s.swing_id
         ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
-    """
+    """,
+
+    # Power BI reads public.vw_point_log — make it a pure alias
+    "vw_point_log": """
+        CREATE OR REPLACE VIEW vw_point_log AS
+        SELECT * FROM vw_point_shot_log_gold;
+    """,
 }
 
 # ---------- helpers ----------
-def _table_exists(conn, t):
+def _table_exists(conn, t: str) -> bool:
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
         WHERE table_schema='public' AND table_name=:t
         LIMIT 1
     """), {"t": t}).first() is not None
 
-def _column_exists(conn, t, c):
+def _column_exists(conn, t: str, c: str) -> bool:
     return conn.execute(text("""
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='public' AND table_name=:t AND column_name=:c
         LIMIT 1
     """), {"t": t, "c": c}).first() is not None
 
-def _get_relkind(conn, name):
+def _get_relkind(conn, name: str):
     row = conn.execute(text("""
         SELECT c.relkind
         FROM pg_class c
@@ -275,7 +284,7 @@ def _get_relkind(conn, name):
     """), {"name": name}).first()
     return row[0] if row else None  # 'v' view, 'm' matview, 'r' table, None
 
-def _drop_view_or_matview(conn, name):
+def _drop_view_or_matview(conn, name: str):
     kind = _get_relkind(conn, name)
     if kind == 'v':
         conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
@@ -290,60 +299,86 @@ def _drop_view_or_matview(conn, name):
 def _preflight_or_raise(conn):
     required_tables = [
         "dim_session", "dim_player", "dim_rally",
-        "fact_swing", "fact_bounce", "fact_player_position",
-        "fact_ball_position",
+        "fact_swing", "fact_bounce",
+        "fact_player_position", "fact_ball_position",
     ]
     missing = [t for t in required_tables if not _table_exists(conn, t)]
     if missing:
         raise RuntimeError(f"Missing base tables before creating views: {', '.join(missing)}")
 
+    # ensure the columns we SELECT are present
     checks = [
         ("dim_session", "session_uid"),
+        ("dim_player", "full_name"),
+        ("dim_player", "sportai_player_uid"),
         ("dim_rally", "rally_id"),
         ("dim_rally", "rally_number"),
+
         ("fact_swing", "swing_id"),
         ("fact_swing", "session_id"),
         ("fact_swing", "player_id"),
+        ("fact_swing", "rally_id"),
         ("fact_swing", "start_s"),
         ("fact_swing", "end_s"),
         ("fact_swing", "ball_hit_s"),
+        ("fact_swing", "start_ts"),
+        ("fact_swing", "end_ts"),
         ("fact_swing", "ball_hit_ts"),
         ("fact_swing", "ball_hit_x"),
         ("fact_swing", "ball_hit_y"),
+        ("fact_swing", "ball_speed"),
+        ("fact_swing", "ball_player_distance"),
+        ("fact_swing", "is_in_rally"),
         ("fact_swing", "serve"),
         ("fact_swing", "serve_type"),
         ("fact_swing", "swing_type"),
+        ("fact_swing", "meta"),
+
+        ("fact_bounce", "bounce_id"),
+        ("fact_bounce", "session_id"),
+        ("fact_bounce", "hitter_player_id"),
+        ("fact_bounce", "rally_id"),
+        ("fact_bounce", "bounce_s"),
         ("fact_bounce", "bounce_ts"),
         ("fact_bounce", "x"),
         ("fact_bounce", "y"),
         ("fact_bounce", "bounce_type"),
+
+        ("fact_player_position", "session_id"),
+        ("fact_player_position", "player_id"),
+        ("fact_player_position", "ts_s"),
         ("fact_player_position", "ts"),
+        ("fact_player_position", "x"),
+        ("fact_player_position", "y"),
+
+        ("fact_ball_position", "session_id"),
+        ("fact_ball_position", "ts_s"),
         ("fact_ball_position", "ts"),
-        ("dim_player", "full_name"),
-        ("dim_player", "sportai_player_uid"),
+        ("fact_ball_position", "x"),
+        ("fact_ball_position", "y"),
     ]
-    missing_cols = [(t,c) for (t,c) in checks if not _column_exists(conn, t, c)]
+    missing_cols = [(t, c) for (t, c) in checks if not _column_exists(conn, t, c)]
     if missing_cols:
-        msg = ", ".join([f"{t}.{c}" for (t,c) in missing_cols])
+        msg = ", ".join([f"{t}.{c}" for (t, c) in missing_cols])
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
 # ---------- apply all views ----------
 def _apply_views(engine):
+    """Drops & recreates all views listed in VIEW_NAMES in the order above."""
     global VIEW_SQL_STMTS
     VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
 
     with engine.begin() as conn:
-        _ensure_raw_ingest(conn)   # Step 1: ensure Bronze helper exists
+        _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
 
-        # Drop in order to avoid dependency issues
+        # Drop first to avoid dependency issues, then create in order.
         for name in VIEW_NAMES:
             _drop_view_or_matview(conn, name)
-        # Create in declared order
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
 
-# Export both names for back-compat
+# Back-compat export names
 init_views = _apply_views
 run_views  = _apply_views
 
