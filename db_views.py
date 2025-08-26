@@ -37,83 +37,118 @@ VIEW_NAMES = [
 
 CREATE_STMTS = {
     # ---------------- SILVER (PURE passthrough + labels) ----------------
-    "vw_swing": """
-    CREATE OR REPLACE VIEW vw_swing AS
+    "vw_point_log": """
+    -- PURE GOLD: only pass-through fields; no fallbacks, no derived columns
+    CREATE OR REPLACE VIEW vw_point_log AS
+    WITH s AS (
+      SELECT * FROM vw_swing
+    ),
+    ord AS (
+      SELECT session_id, rally_id, rally_number, swing_id, shot_number_in_point
+      FROM vw_shot_order_gold
+    ),
+    -- PURE bounce: same rally, first bounce AFTER the hit.
+    -- Use raw timestamps if present, otherwise raw seconds. No windowing / inference.
+    b_after AS (
+      SELECT s2.swing_id,
+             bx.bounce_id,
+             bx.bounce_ts,
+             bx.bounce_s,
+             bx.x AS bounce_x,
+             bx.y AS bounce_y,
+             bx.bounce_type
+      FROM s s2
+      LEFT JOIN LATERAL (
+        SELECT b.*
+        FROM vw_bounce b
+        WHERE b.session_id = s2.session_id
+          AND b.rally_id   = s2.rally_id
+          AND (
+               (b.bounce_ts IS NOT NULL AND s2.ball_hit_ts IS NOT NULL AND b.bounce_ts >= s2.ball_hit_ts)
+            OR ((b.bounce_ts IS NULL OR s2.ball_hit_ts IS NULL)
+                AND b.bounce_s  IS NOT NULL AND s2.ball_hit_s IS NOT NULL
+                AND b.bounce_s >= s2.ball_hit_s)
+          )
+        ORDER BY
+          COALESCE(b.bounce_ts,
+                   (TIMESTAMP 'epoch' + b.bounce_s * INTERVAL '1 second'))
+        LIMIT 1
+      ) bx ON TRUE
+    ),
+    -- PURE player XY: exact sample at contact time only (timestamp OR seconds).
+    pp_exact AS (
+      SELECT s2.swing_id,
+             p.x AS player_x_at_hit,
+             p.y AS player_y_at_hit
+      FROM s s2
+      LEFT JOIN LATERAL (
+        SELECT p.x, p.y
+        FROM vw_player_position p
+        WHERE p.session_id = s2.session_id
+          AND p.player_id  = s2.player_id
+          AND (
+               (p.ts IS NOT NULL AND s2.ball_hit_ts IS NOT NULL AND p.ts = s2.ball_hit_ts)
+            OR ((p.ts IS NULL OR s2.ball_hit_ts IS NULL)
+                AND p.ts_s IS NOT NULL AND s2.ball_hit_s IS NOT NULL
+                AND p.ts_s = s2.ball_hit_s)
+          )
+        ORDER BY COALESCE(p.ts, (TIMESTAMP 'epoch' + p.ts_s * INTERVAL '1 second'))
+        LIMIT 1
+      ) p ON TRUE
+    )
     SELECT
-      ds.session_uid,
-      fs.session_id,
-      fs.swing_id,
-      fs.player_id,
-      dp.full_name          AS player_name,
-      dp.sportai_player_uid AS player_uid,
-      fs.rally_id,
-      fs.start_s, fs.end_s, fs.ball_hit_s,
-      fs.start_ts, fs.end_ts, fs.ball_hit_ts,
-      fs.ball_hit_x, fs.ball_hit_y,
-      fs.ball_speed,
-      fs.ball_player_distance,
-      fs.is_in_rally,
-      fs.serve, fs.serve_type, fs.swing_type,
-      fs.meta
-    FROM fact_swing fs
-    LEFT JOIN dim_session ds
-           ON ds.session_id = fs.session_id
-    LEFT JOIN dim_player  dp
-           ON dp.session_id = fs.session_id
-          AND dp.player_id  = fs.player_id;
+      -- ids / linking
+      s.session_uid,
+      s.session_id,
+      s.rally_id,
+      ord.rally_number         AS point_number,
+      ord.shot_number_in_point AS shot_number,
+      s.swing_id,
+
+      -- player (labels are raw from dim_player for that session)
+      s.player_id, s.player_name, s.player_uid,
+
+      -- raw swing fields
+      s.serve, s.serve_type,
+      s.swing_type AS swing_type_raw,
+
+      -- raw metrics
+      s.ball_speed,
+      s.ball_player_distance,
+
+      -- raw times
+      s.start_s, s.end_s, s.ball_hit_s,
+      s.start_ts, s.end_ts, s.ball_hit_ts,
+
+      -- raw hit XY
+      s.ball_hit_x, s.ball_hit_y,
+
+      -- raw first bounce after hit (may be NULL)
+      b_after.bounce_id,
+      b_after.bounce_x  AS ball_bounce_x,
+      b_after.bounce_y  AS ball_bounce_y,
+      b_after.bounce_type AS bounce_type_raw,
+
+      -- raw error flag from bounce_type only
+      CASE
+        WHEN b_after.bounce_type IN ('out','net','long','wide') THEN TRUE
+        WHEN b_after.bounce_type IS NULL THEN NULL
+        ELSE FALSE
+      END AS is_error,
+      CASE
+        WHEN b_after.bounce_type IN ('out','net','long','wide') THEN b_after.bounce_type
+        ELSE NULL
+      END AS error_type,
+
+      -- PURE exact player pos at hit (may be NULL)
+      pp_exact.player_x_at_hit,
+      pp_exact.player_y_at_hit
+    FROM s
+    LEFT JOIN ord      ON ord.session_id = s.session_id AND ord.swing_id = s.swing_id
+    LEFT JOIN b_after  ON b_after.swing_id = s.swing_id
+    LEFT JOIN pp_exact ON pp_exact.swing_id = s.swing_id
+    ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
 """,
-
-    "vw_bounce": """
-    CREATE OR REPLACE VIEW vw_bounce AS
-    SELECT
-      ds.session_uid,
-      b.session_id,
-      b.bounce_id,
-      b.hitter_player_id,
-      dp.full_name          AS hitter_name,
-      dp.sportai_player_uid AS hitter_player_uid,
-      b.rally_id,
-      b.bounce_s, b.bounce_ts,
-      b.x, b.y,
-      b.bounce_type
-    FROM fact_bounce b
-    LEFT JOIN dim_session ds
-           ON ds.session_id = b.session_id
-    LEFT JOIN dim_player  dp
-           ON dp.session_id = b.session_id
-          AND dp.player_id  = b.hitter_player_id;
-""",
-
-
-    "vw_ball_position": """
-        CREATE OR REPLACE VIEW vw_ball_position AS
-        SELECT
-          ds.session_uid,
-          p.session_id,
-          p.ts_s, p.ts,
-          p.x, p.y
-        FROM fact_ball_position p
-        LEFT JOIN dim_session ds ON ds.session_id = p.session_id;
-    """,
-
-    "vw_player_position": """
-    CREATE OR REPLACE VIEW vw_player_position AS
-    SELECT
-      ds.session_uid,
-      u.session_id,
-      u.player_id,
-      dp.full_name          AS player_name,
-      dp.sportai_player_uid AS player_uid,
-      u.ts_s, u.ts,
-      u.x, u.y
-    FROM fact_player_position u
-    LEFT JOIN dim_session ds
-           ON ds.session_id = u.session_id
-    LEFT JOIN dim_player  dp
-           ON dp.session_id = u.session_id
-          AND dp.player_id  = u.player_id;
-""",
-
 
     # ---------------- GOLD (no inference; uses only SILVER) ----------------
     "vw_shot_order_gold": """
