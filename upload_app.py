@@ -676,6 +676,72 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         """), {"sid": session_id, "puid": puid}).scalar_one()
         uid_to_player_id[puid] = pid
 
+        # ---------- swings ----------
+        # Write players[].swings[] -> fact_swing
+        # Assumes:
+        #   - session_id (int)
+        #   - conn (tx connection)
+        #   - players (list from payload)
+        #   - uid_to_player_id (dict mapping SportAI player uid -> dim_player.player_id)
+        sw_rows = []
+
+        def _num(*vals):
+            for v in vals:
+                if v is None:
+                    continue
+                try:
+                    return float(v)
+                except Exception:
+                    # handle dict-shaped timestamps like {"s": 12.34}
+                    if isinstance(v, dict) and "s" in v:
+                        try:
+                            return float(v.get("s"))
+                        except Exception:
+                            pass
+            return None
+
+        for p in (players or []):
+            puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
+            pid = uid_to_player_id.get(puid)
+            if not pid:
+                continue
+
+            for s in (p.get("swings") or []):
+                # be tolerant to different timestamp shapes
+                ts_s = _num(
+                    s.get("timestamp_s"),
+                    s.get("t"),
+                    s.get("ball_hit_s"),
+                    s.get("timestamp"),
+                )
+
+                swing_type = s.get("swing_type") or s.get("type")
+                subtype    = s.get("subtype")
+                outcome    = s.get("outcome")
+
+                sw_rows.append({
+                    "session_id": session_id,
+                    "player_id":  pid,
+                    "ts_s":       ts_s,
+                    "ts":         None,     # keep NULL unless your payload has a true absolute timestamp
+                    "swing_type": swing_type,
+                    "subtype":    subtype,
+                    "outcome":    outcome,
+                    "meta":       s,        # full original swing object for traceability
+                })
+
+        if sw_rows:
+            stmt_sw = text("""
+                INSERT INTO fact_swing (
+                    session_id, player_id, ts_s, ts, swing_type, subtype, outcome, meta
+                )
+                VALUES (
+                    :session_id, :player_id, :ts_s, :ts, :swing_type, :subtype, :outcome, :meta
+                )
+            """).bindparams(bindparam("meta", type_=JSONB))
+            conn.execute(stmt_sw, sw_rows)
+
+
     # ensure players exist that appear only in player_positions
     pp_obj = payload.get("player_positions") or {}
     pp_uids = [str(k) for k, arr in pp_obj.items() if _valid_puid(k) and arr]
