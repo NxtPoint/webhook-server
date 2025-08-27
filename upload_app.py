@@ -271,13 +271,14 @@ def _normalize_swing_obj(obj):
 
 def _iter_candidate_swings_from_container(container):
     if not isinstance(container, dict): return
-    for key in ("swings","strokes","swing_events","events"):
+    # Added "hits" and "shots" to catch alt schemas
+    for key in ("swings","strokes","swing_events","events","hits","shots"):
         arr = container.get(key)
         if isinstance(arr, list):
             for item in arr:
                 if key == "events":
                     lbl = str((item or {}).get("type") or (item or {}).get("label") or "").lower()
-                    if lbl and (lbl in _SWING_TYPES or "swing" in lbl or "stroke" in lbl):
+                    if lbl and (lbl in _SWING_TYPES or "swing" in lbl or "stroke" in lbl or "shot" in lbl or "hit" in lbl):
                         norm = _normalize_swing_obj(item)
                         if norm: yield norm
                 else:
@@ -306,7 +307,6 @@ def _insert_raw_result(conn, sid: int, payload: dict) -> None:
         VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
     """)
     conn.execute(stmt, {"sid": sid, "p": json.dumps(payload)})
-
 
 def _fact_swing_ts_cols(conn):
     """Detect timestamp column names on fact_swing (ts_s/ts vs ball_hit_s/ball_hit_ts)."""
@@ -943,6 +943,30 @@ def ops_db_counts():
 
     return jsonify({"ok": True, "counts": counts})
 
+# ---------- OPS: per-session rollup with XY (NEW helper) ----------
+@app.get("/ops/db-rollup")
+def ops_db_rollup():
+    if not _guard(): return _forbid()
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text("""
+            SELECT
+              ds.session_uid,
+              ds.session_id,
+              (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id = ds.session_id) AS n_players_dim,
+              (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id = ds.session_id) AS n_rallies_dim,
+              (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id = ds.session_id) AS n_swings,
+              (SELECT COUNT(*) FROM fact_bounce fb WHERE fb.session_id = ds.session_id) AS n_bounces,
+              (SELECT COUNT(*) FROM fact_bounce fb WHERE fb.session_id = ds.session_id AND fb.x IS NOT NULL AND fb.y IS NOT NULL) AS n_bounces_xy,
+              (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id = ds.session_id) AS n_ballpos,
+              (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id = ds.session_id AND bp.x IS NOT NULL AND bp.y IS NOT NULL) AS n_ballpos_xy,
+              (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id = ds.session_id) AS n_pp,
+              (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id = ds.session_id AND pp.x IS NOT NULL AND pp.y IS NOT NULL) AS n_pp_xy
+            FROM dim_session ds
+            ORDER BY ds.session_id DESC
+            LIMIT 100
+        """)).mappings().all()
+    return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
+
 # ---------- SQL runner (read-only, SELECT/CTE only) ----------
 @app.route("/ops/sql", methods=["GET", "POST"])
 def ops_sql():
@@ -1014,7 +1038,7 @@ def ops_inspect_raw():
     pp = doc.get("player_positions") or doc.get("playerPositions")
 
     summary = {
-        "keys": sorted(doc.keys()),
+        "keys": sorted(doc.keys() if isinstance(doc, dict) else []),
         "ball_positions_len": (len(bp) if isinstance(bp, list) else None),
         "ball_bounces_len":   (len(bb) if isinstance(bb, list) else None),
         "player_positions_players": (len(pp) if isinstance(pp, dict) else None),
@@ -1131,135 +1155,183 @@ def ops_backfill_xy():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ---------- Upload page + file ingest ----------
-def _render_upload_page(message: str = ""):
-    key = request.args.get("key","")
-    action = f"/ops/ingest-file?key={key}"
-    return Response(f"""
-<!doctype html>
-<html><head>
-  <meta charset="utf-8" />
-  <title>NextPoint – Upload Session JSON</title>
-  <style>
-    body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }}
-    .card {{ max-width: 720px; padding: 20px; border: 1px solid #e5e7eb; border-radius: 12px; }}
-    label {{ display:block; margin: 12px 0 6px; font-weight: 600; }}
-    input[type=text] {{ width:100%; padding:8px; border:1px solid #d1d5db; border-radius:8px; }}
-    .row {{ display:flex; gap:12px; align-items:center; }}
-    .muted {{ color:#6b7280; font-size: 12px; }}
-    button {{ padding:10px 16px; border-radius:10px; border:1px solid #111827; background:#111827; color:#fff; cursor:pointer; }}
-    button:hover {{ opacity:.9 }}
-    .msg {{ margin-bottom: 12px; color:#b45309; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Upload SportAI Session JSON</h2>
-    {"<div class='msg'>" + message + "</div>" if message else ""}
-    <form method="post" action="{action}" enctype="multipart/form-data">
-      <label>JSON file</label>
-      <input type="file" name="file" accept="application/json" />
-      <div class="muted">— or —</div>
-      <label>Direct JSON URL (public GET)</label>
-      <input type="text" name="url" placeholder="https://example.com/session.json" />
-      <div class="muted">— or —</div>
-      <label>Server file name (on /mnt/data)</label>
-      <input type="text" name="name" placeholder="s1.json" />
-      <div class="row" style="margin-top:12px;">
-        <label style="margin:0;"><input type="checkbox" name="replace" value="1" checked /> Replace existing</label>
-        <label style="margin:0;">Mode:
-          <select name="mode"><option value="soft" selected>soft</option><option value="hard">hard</option></select>
-        </label>
-        <label style="margin:0;">Session UID:
-          <input type="text" name="session_uid" placeholder="(optional)" style="width:220px;" />
-        </label>
-      </div>
-      <div style="margin-top:18px;">
-        <button type="submit">Upload</button>
-        <span class="muted">Your ops key is carried in the URL.</span>
-      </div>
-    </form>
-  </div>
-</body></html>
-""", mimetype="text/html")
-
-@app.route("/ops/ingest-file", methods=["GET","POST"])
-def ops_ingest_file():
+# ---------- RAW ↔ BRONZE RECONCILE (NEW) ----------
+@app.get("/ops/reconcile")
+def ops_reconcile():
     if not _guard(): return _forbid()
 
-    has_input = ("file" in request.files) or request.args.get("url") or request.args.get("name") \
-                or (request.method == "POST" and (request.form.get("url") or request.form.get("name") or request.data))
-    if request.method == "GET" and not has_input:
-        return _render_upload_page()
+    session_uid = request.args.get("session_uid")
+    raw_result_id = request.args.get("raw_result_id")
 
-    def _get_arg(name, default=None):
-        if request.method == "POST":
-            v = request.form.get(name)
-            if v is not None: return v
-        return request.args.get(name, default)
-
-    try:
-        replace = str(_get_arg("replace","0")).strip().lower() in ("1","true","yes","y","on")
-        forced_uid = _get_arg("session_uid")
-        src_hint = _get_arg("name") or _get_arg("url")
-        mode = (_get_arg("mode") or "hard").strip().lower()  # "hard" | "soft"
+    with engine.begin() as conn:
+        # Resolve session & payload
+        if raw_result_id:
+            rr = conn.execute(sql_text("""
+                SELECT rr.raw_result_id, rr.session_id, rr.payload_json::text AS payload_text
+                FROM raw_result rr
+                WHERE rr.raw_result_id = :rid
+            """), {"rid": int(raw_result_id)}).mappings().first()
+            if not rr:
+                return jsonify({"ok": False, "error": "raw_result_id not found"}), 404
+            sid = rr["session_id"]
+            suid = conn.execute(sql_text("SELECT session_uid FROM dim_session WHERE session_id=:sid"),
+                                {"sid": sid}).scalar()
+            session_uid = suid
+            payload_text = rr["payload_text"]
+        else:
+            if not session_uid:
+                return jsonify({"ok": False, "error": "session_uid or raw_result_id required"}), 400
+            sid = conn.execute(sql_text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
+                               {"u": session_uid}).scalar()
+            if not sid:
+                return jsonify({"ok": False, "error": "unknown session_uid"}), 404
+            payload_text = conn.execute(sql_text("""
+                SELECT payload_json::text
+                FROM raw_result
+                WHERE session_id=:sid
+                ORDER BY created_at DESC
+                LIMIT 1
+            """), {"sid": sid}).scalar()
+            if not payload_text:
+                return jsonify({"ok": False, "error": "no raw_result for this session"}), 404
 
         try:
-            payload = _get_json_from_sources()
+            payload = json.loads(payload_text)
         except Exception as e:
-            if request.method == "POST" and "file" in request.files:
-                return _render_upload_page(f"Upload failed: {str(e)}")
-            raise
+            return jsonify({"ok": False, "error": f"invalid payload_json: {e}"}), 500
 
-        try:
-            session_uid_guess = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
-        except Exception:
-            session_uid_guess = forced_uid
+        # RAW counts
+        players = payload.get("players") or []
+        n_players_raw = len(players)
 
-        with engine.connect() as c:
-            existing_sid = c.execute(
-                sql_text("SELECT session_id FROM dim_session WHERE session_uid=:u"),
-                {"u": session_uid_guess}
-            ).scalar()
+        # swings in raw: sum player swings + top-level swings/hits/shots
+        def _len_safe(x): return len(x) if isinstance(x, list) else 0
+        n_swings_raw = 0
+        n_swings_raw += _len_safe(payload.get("swings"))
+        n_swings_raw += _len_safe(payload.get("strokes"))
+        n_swings_raw += _len_safe(payload.get("hits"))
+        n_swings_raw += _len_safe(payload.get("shots"))
+        for p in players:
+            n_swings_raw += _len_safe(p.get("swings"))
+            n_swings_raw += _len_safe(p.get("strokes"))
+            stats = p.get("statistics") or p.get("stats") or {}
+            n_swings_raw += _len_safe(stats.get("swings"))
+            n_swings_raw += _len_safe(stats.get("strokes"))
 
-        if replace and mode == "soft" and existing_sid is not None:
-            with engine.begin() as conn:
-                conn.execute(sql_text("DELETE FROM fact_ball_position WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM fact_player_position WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM fact_bounce WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM fact_swing WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM dim_rally WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM dim_player WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM bounce_heatmap WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM highlight WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM team_session WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM session_confidences WHERE session_id=:sid"), {"sid": existing_sid})
-                conn.execute(sql_text("DELETE FROM thumbnail WHERE session_id=:sid"), {"sid": existing_sid})
+        rallies = payload.get("rallies") or []
+        n_rallies_raw = len(rallies)
 
-        # Ensure schema exists
-        from db_init import run_init
-        run_init(engine)
+        ball_bounces = payload.get("ball_bounces") or []
+        n_bounces_raw = len(ball_bounces)
+        n_bounces_xy_raw = 0
+        for b in ball_bounces:
+            bx = b.get("x"); by = b.get("y")
+            cp = b.get("court_pos") or b.get("court_position")
+            if (bx is not None and by is not None) or (isinstance(cp, (list,tuple)) and len(cp) >= 2 and cp[0] is not None and cp[1] is not None):
+                n_bounces_xy_raw += 1
 
-        with engine.begin() as conn:
-            res = ingest_result_v2(
-                conn,
-                payload,
-                replace=(replace and not (mode == "soft" and existing_sid is not None)),
-                forced_uid=forced_uid,
-                src_hint=src_hint
-            )
+        ball_positions = payload.get("ball_positions") or []
+        n_ballpos_raw = len(ball_positions)
+        n_ballpos_xy_raw = sum(1 for p in ball_positions if p.get("x") is not None and p.get("y") is not None)
 
-        if request.method == "POST" and ("file" in request.files or request.form.get("url") or request.form.get("name")):
-            msg = f"Upload OK. Session UID: {res.get('session_uid')}. Now go run Init Views."
-            return _render_upload_page(msg)
+        pp = payload.get("player_positions") or {}
+        if isinstance(pp, dict):
+            n_pp_raw = sum(len(v or []) for v in pp.values())
+            def _has_xy(rec):
+                return (rec.get("court_x") is not None and rec.get("court_y") is not None) or \
+                       (rec.get("court_X") is not None and rec.get("court_Y") is not None) or \
+                       (rec.get("x") is not None and rec.get("y") is not None) or \
+                       (rec.get("X") is not None and rec.get("Y") is not None)
+            n_pp_xy_raw = sum(sum(1 for r in (v or []) if _has_xy(r)) for v in pp.values())
+            raw_player_uids = {str(k) for k in pp.keys()} | {str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "") for p in players if (p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id"))}
+        elif isinstance(pp, list):
+            n_pp_raw = len(pp)
+            n_pp_xy_raw = sum(1 for r in pp if (r.get("court_x") is not None and r.get("court_y") is not None) or (r.get("x") is not None and r.get("y") is not None))
+            raw_player_uids = {str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "") for p in players if (p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id"))}
+        else:
+            n_pp_raw = 0
+            n_pp_xy_raw = 0
+            raw_player_uids = {str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "") for p in players if (p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id"))}
 
-        return jsonify({"ok": True, **res, "replace": replace, "mode": mode})
+        highlights = payload.get("highlights") or []
+        n_highlights_raw = len(highlights)
+        team_sessions = payload.get("team_sessions") or []
+        n_team_sessions_raw = len(team_sessions)
+        heatmap_present_raw = (payload.get("bounce_heatmap") is not None)
 
-    except Exception as e:
-        if request.method == "POST" and ("file" in request.files or request.form.get("url") or request.form.get("name")):
-            return _render_upload_page(f"Error: {str(e)}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+        # BRONZE counts
+        n_players_dim = conn.execute(sql_text("SELECT COUNT(*) FROM dim_player WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_rallies_dim = conn.execute(sql_text("SELECT COUNT(*) FROM dim_rally WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_swings = conn.execute(sql_text("SELECT COUNT(*) FROM fact_swing WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_bounces = conn.execute(sql_text("SELECT COUNT(*) FROM fact_bounce WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_bounces_xy = conn.execute(sql_text("SELECT COUNT(*) FROM fact_bounce WHERE session_id=:sid AND x IS NOT NULL AND y IS NOT NULL"), {"sid": sid}).scalar() or 0
+        n_ballpos = conn.execute(sql_text("SELECT COUNT(*) FROM fact_ball_position WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_ballpos_xy = conn.execute(sql_text("SELECT COUNT(*) FROM fact_ball_position WHERE session_id=:sid AND x IS NOT NULL AND y IS NOT NULL"), {"sid": sid}).scalar() or 0
+        n_pp = conn.execute(sql_text("SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_pp_xy = conn.execute(sql_text("SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid AND x IS NOT NULL AND y IS NOT NULL"), {"sid": sid}).scalar() or 0
+        n_highlights = conn.execute(sql_text("SELECT COUNT(*) FROM highlight WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        n_team_sessions = conn.execute(sql_text("SELECT COUNT(*) FROM team_session WHERE session_id=:sid"), {"sid": sid}).scalar() or 0
+        heatmap_present = bool(conn.execute(sql_text("SELECT COUNT(*) FROM bounce_heatmap WHERE session_id=:sid"), {"sid": sid}).scalar() or 0)
 
+        # Player set diffs
+        db_player_uids = {r[0] for r in conn.execute(sql_text("SELECT sportai_player_uid FROM dim_player WHERE session_id=:sid AND sportai_player_uid IS NOT NULL"), {"sid": sid}).fetchall()}
+        players_diff = {
+            "extra_in_db": sorted(list(db_player_uids - raw_player_uids)),
+            "missing_in_db": sorted(list(raw_player_uids - db_player_uids)),
+        }
+
+        return jsonify({
+            "ok": True,
+            "session_uid": session_uid,
+            "session_id": sid,
+            "summary": {
+                "db": {
+                    "players": n_players_dim,
+                    "rallies": n_rallies_dim,
+                    "swings": n_swings,
+                    "ball_bounces": n_bounces,
+                    "ball_bounces_xy": n_bounces_xy,
+                    "ball_positions": n_ballpos,
+                    "ball_positions_xy": n_ballpos_xy,
+                    "player_positions": n_pp,
+                    "player_positions_xy": n_pp_xy,
+                    "highlights": n_highlights,
+                    "team_sessions": n_team_sessions,
+                    "bounce_heatmap_present": heatmap_present
+                },
+                "payload": {
+                    "players": n_players_raw,
+                    "rallies": n_rallies_raw,
+                    "swings": n_swings_raw,
+                    "ball_bounces": n_bounces_raw,
+                    "ball_bounces_xy": n_bounces_xy_raw,
+                    "ball_positions": n_ballpos_raw,
+                    "ball_positions_xy": n_ballpos_xy_raw,
+                    "player_positions": n_pp_raw,
+                    "player_positions_xy": n_pp_xy_raw,
+                    "highlights": n_highlights_raw,
+                    "team_sessions": n_team_sessions_raw,
+                    "bounce_heatmap_present": bool(heatmap_present_raw)
+                }
+            },
+            "deltas": {
+                "players_vs_dim": n_players_raw - n_players_dim,
+                "rallies_vs_dim": n_rallies_raw - n_rallies_dim,
+                "swings": n_swings_raw - n_swings,
+                "ball_bounces": n_bounces_raw - n_bounces,
+                "ball_bounces_xy": n_bounces_xy_raw - n_bounces_xy,
+                "ball_positions": n_ballpos_raw - n_ballpos,
+                "ball_positions_xy": n_ballpos_xy_raw - n_ballpos_xy,
+                "player_positions": n_pp_raw - n_pp,
+                "player_positions_xy": n_pp_xy_raw - n_pp_xy,
+                "highlights": n_highlights_raw - n_highlights,
+                "team_sessions": n_team_sessions_raw - n_team_sessions,
+                "bounce_heatmap_present": (1 if heatmap_present_raw else 0) - (1 if heatmap_present else 0),
+            },
+            "players": players_diff
+        })
+
+# ---------- Delete / List / Perf ----------
 @app.get("/ops/delete-session")
 def ops_delete_session():
     if not _guard(): return _forbid()
@@ -1297,7 +1369,6 @@ def ops_perf_indexes():
         "CREATE INDEX IF NOT EXISTS idx_fact_swing_hitstart_expr ON fact_swing ((COALESCE(ball_hit_s, start_s)))",
         "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_hitstart ON fact_swing(session_id, (COALESCE(ball_hit_s, start_s)))",
         "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_player ON fact_swing(session_id, player_id)",
-        "CREATE INDEX IF NOT EXISTS idx_fact_swing_session_serve_true ON fact_swing(session_id) WHERE serve IS TRUE",
         "CREATE INDEX IF NOT EXISTS idx_dim_rally_session_bounds ON dim_rally(session_id, start_s, end_s)",
         "CREATE INDEX IF NOT EXISTS idx_fact_bounce_session_rally ON fact_bounce(session_id, rally_id)",
         "CREATE INDEX IF NOT EXISTS idx_fact_player_position_session_player ON fact_player_position(session_id, player_id)",
