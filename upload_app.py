@@ -2,7 +2,8 @@
 import os, json, hashlib, re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
-from sqlalchemy import create_engine, text, bindparam
+from sqlalchemy import create_engine, bindparam
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from db_init import engine
@@ -358,28 +359,28 @@ def _gather_all_swings(payload):
             yield norm
 
 def _insert_raw_result(conn, sid: int, payload: dict) -> None:
-    stmt = text("""
+    stmt = sql_text("""
         INSERT INTO raw_result (session_id, payload_json, created_at)
         VALUES (:sid, :p, now() AT TIME ZONE 'utc')
     """).bindparams(bindparam("p", type_=JSONB))
-    conn.execute(stmt, {"sid": sid, "p": payload})  # pass dict directly
+    conn.execute(stmt, {"sid": sid, "p": payload})
+
 
     from sqlalchemy import text, bindparam
 from sqlalchemy.dialects.postgresql import JSONB
 
 def _fact_swing_ts_cols(conn):
     """Detect timestamp column names on fact_swing (ts_s/ts vs ball_hit_s/ball_hit_ts)."""
-    rows = conn.execute(text("""
+    rows = conn.execute(sql_text("""
         SELECT column_name
         FROM information_schema.columns
         WHERE table_schema='public' AND table_name='fact_swing'
     """)).fetchall()
+
     cols = {r[0] for r in rows}
-
-    ts_col = 'ball_hit_s' if 'ball_hit_s' in cols else ('ts_s' if 'ts_s' in cols else None)
-    ts_abs_col = 'ball_hit_ts' if 'ball_hit_ts' in cols else ('ts' if 'ts' in cols else None)
+    ts_col     = 'ball_hit_s'  if 'ball_hit_s'  in cols else ('ts_s' if 'ts_s' in cols else None)
+    ts_abs_col = 'ball_hit_ts' if 'ball_hit_ts' in cols else ('ts'   if 'ts'   in cols else None)
     return ts_col, ts_abs_col
-
 
 # ---------------------- ingestion repair helpers ----------------------
 def _ensure_rallies_from_swings(conn, session_id, gap_s=6.0):
@@ -777,7 +778,10 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         cols_sql += ", swing_type, subtype, outcome, meta"
         vals_sql += ", :swing_type, :subtype, :outcome, :meta"
 
-        stmt_sw = text(f"""
+        if replace:
+            conn.execute(sql_text("DELETE FROM fact_swing WHERE session_id=:sid"), {"sid": session_id})
+
+        stmt_sw = sql_text(f"""
             INSERT INTO fact_swing ({cols_sql})
             VALUES ({vals_sql})
         """).bindparams(bindparam("meta", type_=JSONB))
