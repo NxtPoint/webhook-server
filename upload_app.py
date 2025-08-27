@@ -2,7 +2,8 @@
 import os, json, hashlib, re
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify, Response
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, bindparam
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from db_init import engine
 
@@ -356,6 +357,13 @@ def _gather_all_swings(payload):
                 norm["player_uid"] = p_uid
             yield norm
 
+def _insert_raw_result(conn, sid: int, payload: dict) -> None:
+    stmt = text("""
+        INSERT INTO raw_result (session_id, payload_json, created_at)
+        VALUES (:sid, :p, now() AT TIME ZONE 'utc')
+    """).bindparams(bindparam("p", type_=JSONB))
+    conn.execute(stmt, {"sid": sid, "p": payload})  # pass dict directly
+
 # ---------------------- ingestion repair helpers ----------------------
 def _ensure_rallies_from_swings(conn, session_id, gap_s=6.0):
     """
@@ -613,10 +621,7 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
 
     # ---------- raw snapshot (verbatim) ----------
     # (This guarantees 100% of the incoming payload is stored for later recon.)
-    conn.execute(text("""
-        INSERT INTO raw_result (session_id, payload_json, created_at)
-        VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
-    """), {"sid": session_id, "p": json.dumps(payload)})
+    _insert_raw_result(conn, session_id, payload)
 
     # ---------- players ----------
     players = payload.get("players") or []
