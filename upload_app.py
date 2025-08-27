@@ -301,13 +301,12 @@ def _gather_all_swings(payload):
 
 # ---------------------- DB helpers ----------------------
 def _insert_raw_result(conn, sid: int, payload: dict) -> None:
-    # RAW snapshot
-    stmt = sql_text("""
-    INSERT INTO raw_result (session_id, payload_json, created_at)
-    VALUES (:sid, :p, now() AT TIME ZONE 'utc')
-    """).bindparams(sa.bindparam("p", type_=JSONB))
+    stmt = text("""
+        INSERT INTO raw_result (session_id, payload_json, created_at)
+        VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
+    """)
+    conn.execute(stmt, {"sid": sid, "p": json.dumps(payload)})
 
-    conn.execute(stmt, {"sid": sid, "p": payload})
 
 def _fact_swing_ts_cols(conn):
     """Detect timestamp column names on fact_swing (ts_s/ts vs ball_hit_s/ball_hit_ts)."""
