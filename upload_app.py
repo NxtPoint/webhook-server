@@ -364,6 +364,23 @@ def _insert_raw_result(conn, sid: int, payload: dict) -> None:
     """).bindparams(bindparam("p", type_=JSONB))
     conn.execute(stmt, {"sid": sid, "p": payload})  # pass dict directly
 
+    from sqlalchemy import text, bindparam
+from sqlalchemy.dialects.postgresql import JSONB
+
+def _fact_swing_ts_cols(conn):
+    """Detect timestamp column names on fact_swing (ts_s/ts vs ball_hit_s/ball_hit_ts)."""
+    rows = conn.execute(text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='fact_swing'
+    """)).fetchall()
+    cols = {r[0] for r in rows}
+
+    ts_col = 'ball_hit_s' if 'ball_hit_s' in cols else ('ts_s' if 'ts_s' in cols else None)
+    ts_abs_col = 'ball_hit_ts' if 'ball_hit_ts' in cols else ('ts' if 'ts' in cols else None)
+    return ts_col, ts_abs_col
+
+
 # ---------------------- ingestion repair helpers ----------------------
 def _ensure_rallies_from_swings(conn, session_id, gap_s=6.0):
     """
@@ -740,6 +757,49 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
                 )
             """).bindparams(bindparam("meta", type_=JSONB))
             conn.execute(stmt_sw, sw_rows)
+
+        # Remove existing swings for this session if replace=1 (avoid duplicates)
+        if replace:
+            conn.execute(text("DELETE FROM fact_swing WHERE session_id=:sid"), {"sid": session_id})
+
+        # Detect real column names on fact_swing
+        ts_col, ts_abs_col = _fact_swing_ts_cols(conn)
+        if not ts_col:
+            # safety: if the table is missing any known ts column, bail with a clear error
+            raise RuntimeError("fact_swing is missing a timestamp column (expected ball_hit_s or ts_s)")
+
+        # Build the SQL dynamically to match your schema
+        cols_sql = f"session_id, player_id, {ts_col}"
+        vals_sql = ":session_id, :player_id, :ts_s"
+        if ts_abs_col:
+            cols_sql += f", {ts_abs_col}"
+            vals_sql += ", :ts_abs"
+        cols_sql += ", swing_type, subtype, outcome, meta"
+        vals_sql += ", :swing_type, :subtype, :outcome, :meta"
+
+        stmt_sw = text(f"""
+            INSERT INTO fact_swing ({cols_sql})
+            VALUES ({vals_sql})
+        """).bindparams(bindparam("meta", type_=JSONB))
+
+        # Map our row dicts to the param names the SQL expects
+        params = []
+        for r in sw_rows:
+            p = {
+                "session_id": r["session_id"],
+                "player_id":  r["player_id"],
+                "ts_s":       r["ts_s"],       # will go to ball_hit_s or ts_s based on detection
+                "swing_type": r.get("swing_type"),
+                "subtype":    r.get("subtype"),
+                "outcome":    r.get("outcome"),
+                "meta":       r.get("meta"),
+            }
+            if ts_abs_col:
+                p["ts_abs"] = r.get("ts")  # keep None unless you have a real absolute timestamp
+            params.append(p)
+
+        if params:
+            conn.execute(stmt_sw, params)
 
 
     # ensure players exist that appear only in player_positions
