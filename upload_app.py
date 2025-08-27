@@ -4,8 +4,8 @@ from datetime import datetime, timezone, timedelta
 
 from flask import Flask, request, jsonify, Response
 
-from sqlalchemy import create_engine
-from sqlalchemy import text as sql_text
+from sqlalchemy import create_engine, text
+sql_text = text  # compatibility alias for existing calls
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
