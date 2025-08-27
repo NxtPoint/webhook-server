@@ -950,6 +950,54 @@ def ops_init_db():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ---------- OPS: SportAI JSON webhook -> RAW + BRONZE ----------
+@app.post("/ops/sportai-callback")
+def ops_sportai_callback():
+    if not _guard(): 
+        return _forbid()
+
+    # accept full JSON body posted by SportAI
+    try:
+        payload = request.get_json(force=True, silent=False)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Invalid JSON: {e}"}), 400
+
+    # knobs
+    replace    = (request.args.get("replace", "1").strip().lower() in ("1","true","yes","y"))
+    forced_uid = request.args.get("session_uid")  # optional: pin session_uid if you send it
+
+    try:
+        with engine.begin() as conn:
+            # store RAW snapshot + populate BRONZE
+            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint="sportai-webhook")
+
+            sid = res.get("session_id")
+            # quick counts for confirmation
+            counts = conn.execute(text("""
+                SELECT
+                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid) AS n_rallies,
+                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid) AS n_bounces,
+                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid) AS n_ball_positions,
+                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid) AS n_player_positions,
+                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid) AS n_swings
+            """), {"sid": sid}).fetchone()
+
+        return jsonify({
+            "ok": True,
+            "session_uid": res.get("session_uid"),
+            "session_id":  sid,
+            "bronze_counts": {
+                "rallies":          counts[0],
+                "ball_bounces":     counts[1],
+                "ball_positions":   counts[2],
+                "player_positions": counts[3],
+                "swings":           counts[4],
+            }
+        }), 200
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # ---------- OPS: (re)create views ----------
 @app.get("/ops/init-views")
 def ops_init_views():
