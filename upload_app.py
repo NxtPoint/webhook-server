@@ -896,6 +896,11 @@ def _render_upload_html():
 def upload_page():
     return _render_upload_html()
 
+@app.get("/upload/sessions")
+@app.get("/upload/index")
+def upload_legacy_alias():
+    return _render_upload_html()
+
 @app.get("/upload/static/<path:filename>")
 def upload_static(filename):
     # optional background/image support if you add files under static/upload/
