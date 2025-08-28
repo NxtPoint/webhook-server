@@ -19,7 +19,7 @@ STRICT_REINGEST= os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1",
 ENABLE_CORS    = os.environ.get("ENABLE_CORS", "0").strip().lower() in ("1","true","yes","y")
 
 # Prefer payload rallies in BRONZE; only derive rallies from swings if payload has none
-PREFER_PAYLOAD_RALLIES = os.environ.get("PREFER_PAYLOAD_RALLIES", "1").strip().lower() in ("1", "true", "yes", "y")
+PREFER_PAYLOAD_RALLIES = os.environ.get("PREFER_PAYLOAD_RALLIES", "1").strip().lower() in ("1","true","yes","y")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
@@ -685,6 +685,8 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
     # ---------- rallies (from payload if provided) ----------
     payload_rallies = payload.get("rallies") or []
     has_payload_rallies = isinstance(payload_rallies, list) and len(payload_rallies) > 0
+    # loop inserting payload rallies...
+
 
     for i, r in enumerate(payload_rallies, start=1):
         if isinstance(r, dict):
@@ -816,14 +818,12 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             pass
 
     # === Build/repair rallies, link, normalize serve, and align *_ts ===
-    if not (PREFER_PAYLOAD_RALLIES and has_payload_rallies):
-        # Only derive rallies when payload didn't provide them
-        _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
+        if not (PREFER_PAYLOAD_RALLIES and has_payload_rallies):
+            _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
 
-    _link_swings_to_rallies(conn, session_id)
-    _normalize_serve_flags(conn, session_id)
-    _rebuild_ts_from_seconds(conn, session_id)
-
+        _link_swings_to_rallies(conn, session_id)
+        _normalize_serve_flags(conn, session_id)
+        _rebuild_ts_from_seconds(conn, session_id)
 
     return {"session_uid": session_uid, "session_id": session_id}
 
@@ -1462,6 +1462,7 @@ def ops_repair_swings():
     # Respect the same preference as ingest
     if not (PREFER_PAYLOAD_RALLIES and has_payload_rallies):
         _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
+
 
     _link_swings_to_rallies(conn, session_id)
     _normalize_serve_flags(conn, session_id)
