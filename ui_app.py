@@ -1,7 +1,8 @@
 # ui_app.py
 import os
 import traceback
-from flask import Blueprint, render_template_string, request, redirect, url_for, jsonify, Response
+import requests
+from flask import Blueprint, render_template_string, request, jsonify, Response, url_for
 from sqlalchemy import text
 from db_init import engine  # uses the existing engine/pool
 
@@ -44,6 +45,9 @@ _BASE = """
     .small{color:#4a5568;font-size:12px}
     .row{margin:10px 0}
     .pill{display:inline-block;background:#edf2f7;border:1px solid #e2e8f0;border-radius:12px;padding:2px 8px;margin-left:6px;font-size:12px}
+    .ok{color:#0a0}
+    .warn{color:#aa0}
+    .bad{color:#a00}
   </style>
 </head>
 <body>
@@ -51,6 +55,7 @@ _BASE = """
   <div class="row">
     <a class="btn" href="{{ url_for('ui.sessions') }}">Sessions</a>
     <a class="btn" href="{{ url_for('ui.sql') }}">SQL</a>
+    <a class="btn" href="{{ url_for('ui.home') }}">Upload</a>
   </div>
   {% block body %}{% endblock %}
 </body>
@@ -64,8 +69,7 @@ def home():
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
     max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB", "200"))
-    # NOTE: upload.html references /upload/static/..., which works because this
-    # blueprint is mounted at /upload in wsgi.py and we set static_folder="static".
+    # Renders /templates/upload.html
     return render_template_string(
         "{% include 'upload.html' %}",
         dropbox_ready=dropbox_ready,
@@ -73,6 +77,30 @@ def home():
         target_folder=target_folder,
         max_upload_mb=max_upload_mb,
     )
+
+@ui_bp.post("/submit")
+def upload_submit():
+    """
+    Server-side bridge: takes a URL from the Upload form and calls /ops/ingest-file
+    with the server-side OPS_KEY so we don't expose the key in the browser.
+    """
+    video_url = (request.form.get("url") or "").strip()
+    replace = (request.form.get("replace") or "1").strip()
+    if not video_url:
+        return jsonify(ok=False, error="No URL provided"), 400
+
+    # Build an absolute URL to our own service
+    base = request.host_url.rstrip("/")
+    endpoint = f"{base}/ops/ingest-file"
+    try:
+        resp = requests.post(
+            endpoint,
+            params={"key": OPS_KEY, "url": video_url, "replace": replace},
+            timeout=180,
+        )
+        return (resp.text, resp.status_code, [("Content-Type", resp.headers.get("Content-Type", "application/json"))])
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
 
 @ui_bp.route("/sessions")
 def sessions():
@@ -98,14 +126,14 @@ def sessions():
           <h2>Sessions</h2>
           <div class="small">
             UI prefix:
-            <span class="mono">{{ request.url_root.rstrip('/') }}{{ request.script_root }}/upload</span>
+            <span class="mono">{{ request.url_root.rstrip('/') }}/upload</span>
           </div>
           <div class="row small">
-            Global ops:
+            Quick ops:
             <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
             <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
             <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
-            <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
+            <a class="pill" href="{{ url_for('ui.ops_build_gold') }}?key={{ key }}" target="_blank">/upload/ops/build-gold</a>
           </div>
           <table>
             <thead>
@@ -132,7 +160,7 @@ def sessions():
                      href="/ops/link-swings-to-rallies?key={{ key }}&session_uid={{ r.session_uid }}">Link rallies</a>
                   <a class="btn" target="_blank"
                      href="/ops/repair-swings?key={{ key }}&session_uid={{ r.session_uid }}">Repair serves</a>
-                  <a class="btn" target="_blank"
+                  <a class="btn"
                      href="{{ url_for('ui.peek', session_uid=r.session_uid) }}">Peek</a>
                   <a class="btn danger"
                      href="{{ url_for('ui.delete_confirm', session_uid=r.session_uid) }}">Delete</a>
@@ -252,7 +280,7 @@ def sql():
         <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
         <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
         <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
-        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
+        <a class="pill" href="{{ url_for('ui.ops_build_gold') }}?key={{ key }}" target="_blank">/upload/ops/build-gold</a>
       </p>
     {% endblock %}
     """
@@ -302,7 +330,7 @@ def ops_build_gold():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ---------- blueprint-wide error handler (shows trace instead of generic 500) ----------
+# ---------- blueprint-wide error handler ----------
 @ui_bp.app_errorhandler(Exception)
 def _ui_error(e):
     tb = traceback.format_exc()
