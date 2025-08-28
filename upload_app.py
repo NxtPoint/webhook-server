@@ -586,33 +586,56 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
     # ---------- raw snapshot (verbatim) ----------
     _insert_raw_result(conn, session_id, payload)
 
-    # ---------- players ----------
+        # ---------- players ----------
     players = payload.get("players") or []
     uid_to_player_id = {}
+
+    # (optional, safe) ensure meta column exists; no-op if already there
+    conn.execute(sql_text("ALTER TABLE IF EXISTS dim_player ADD COLUMN IF NOT EXISTS meta JSONB"))
+
     for p in players:
         puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
         if not puid:
             continue
+
         full_name = p.get("full_name") or p.get("name")
         handed    = p.get("handedness")
         age       = p.get("age")
         utr       = _float(p.get("utr"))
-        metrics   = p.get("metrics") or {}
-        covered_distance   = _float(metrics.get("covered_distance"))
-        fastest_sprint     = _float(metrics.get("fastest_sprint"))
-        fastest_sprint_ts  = _float(metrics.get("fastest_sprint_timestamp_s"))
-        activity_score     = _float(metrics.get("activity_score"))
+
+        # --- metrics from top-level or nested metrics dict ---
+        metrics = p.get("metrics") or {}
+
+        covered_distance  = _float(p.get("covered_distance") or metrics.get("covered_distance"))
+        fastest_sprint    = _float(p.get("fastest_sprint")   or metrics.get("fastest_sprint"))
+        fastest_sprint_ts = _float(
+            p.get("fastest_sprint_timestamp") or
+            p.get("fastest_sprint_timestamp_s") or
+            metrics.get("fastest_sprint_timestamp") or
+            metrics.get("fastest_sprint_timestamp_s")
+        )
+        activity_score    = _float(p.get("activity_score")   or metrics.get("activity_score"))
+
         swing_type_distribution = p.get("swing_type_distribution")
-        location_heatmap   = p.get("location_heatmap") or p.get("heatmap")
+        location_heatmap        = p.get("location_heatmap") or p.get("heatmap")
+
+        # capture any other top-level leftovers (e.g., "swings") into meta JSONB
+        player_meta = {k: v for k, v in p.items() if k not in {
+            "id","sportai_player_uid","uid","player_id",
+            "full_name","name","handedness","age","utr",
+            "metrics","statistics","stats",
+            "swing_type_distribution","location_heatmap","heatmap"
+        }}
 
         conn.execute(sql_text("""
             INSERT INTO dim_player (
                 session_id, sportai_player_uid, full_name, handedness, age, utr,
                 covered_distance, fastest_sprint, fastest_sprint_timestamp_s,
-                activity_score, swing_type_distribution, location_heatmap
+                activity_score, swing_type_distribution, location_heatmap, meta
             ) VALUES (
                 :sid, :puid, :nm, :hand, :age, :utr,
-                :cd, :fs, :fst, :ascore, CAST(:dist AS JSONB), CAST(:lheat AS JSONB)
+                :cd, :fs, :fst,
+                :ascore, CAST(:dist AS JSONB), CAST(:lheat AS JSONB), CAST(:pmeta AS JSONB)
             )
             ON CONFLICT (session_id, sportai_player_uid)
             DO UPDATE SET
@@ -625,12 +648,14 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
               fastest_sprint_timestamp_s = COALESCE(EXCLUDED.fastest_sprint_timestamp_s, dim_player.fastest_sprint_timestamp_s),
               activity_score = COALESCE(EXCLUDED.activity_score, dim_player.activity_score),
               swing_type_distribution = COALESCE(EXCLUDED.swing_type_distribution, dim_player.swing_type_distribution),
-              location_heatmap = COALESCE(EXCLUDED.location_heatmap, dim_player.location_heatmap)
+              location_heatmap = COALESCE(EXCLUDED.location_heatmap, dim_player.location_heatmap),
+              meta = COALESCE(EXCLUDED.meta, dim_player.meta)
         """), {
             "sid": session_id, "puid": puid, "nm": full_name, "hand": handed, "age": age, "utr": utr,
             "cd": covered_distance, "fs": fastest_sprint, "fst": fastest_sprint_ts, "ascore": activity_score,
             "dist": json.dumps(swing_type_distribution) if swing_type_distribution is not None else None,
-            "lheat": json.dumps(location_heatmap) if location_heatmap is not None else None
+            "lheat": json.dumps(location_heatmap) if location_heatmap is not None else None,
+            "pmeta": json.dumps(player_meta) if player_meta else None
         })
 
         pid = conn.execute(sql_text("""
