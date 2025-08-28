@@ -18,8 +18,10 @@ OPS_KEY        = os.environ.get("OPS_KEY") or "270fb80a747d459eafded0ae67b9b8f6"
 STRICT_REINGEST= os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1","true","yes","y")
 ENABLE_CORS    = os.environ.get("ENABLE_CORS", "0").strip().lower() in ("1","true","yes","y")
 
-# Prefer payload rallies in BRONZE; only derive rallies from swings if payload has none
-PREFER_PAYLOAD_RALLIES = os.environ.get("PREFER_PAYLOAD_RALLIES", "1").strip().lower() in ("1","true","yes","y")
+# NEW: enforce bronze == raw (defaults to ON)
+STRICT_BRONZE_RAW = os.environ.get("STRICT_BRONZE_RAW", "1").strip().lower() in ("1", "true", "yes", "y")
+# Prefer payload-provided rallies over derived ones (keeps bronze == raw when rallies exist)
+PREFER_PAYLOAD_RALLIES = os.environ.get("PREFER_PAYLOAD_RALLIES", "1").strip().lower() in ("1", "true", "yes", "y")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
@@ -284,20 +286,29 @@ def _normalize_swing_obj(obj):
     }
 
 def _iter_candidate_swings_from_container(container):
-    if not isinstance(container, dict): return
-    # Added "hits" and "shots" to catch alt schemas
-    for key in ("swings","strokes","swing_events","events","hits","shots"):
+    if not isinstance(container, dict):
+        return
+
+    # When strict, only trust explicit swing containers; do NOT infer from generic events
+    keys = ("swings", "strokes", "swing_events") if STRICT_BRONZE_RAW else ("swings", "strokes", "swing_events", "events")
+
+    for key in keys:
         arr = container.get(key)
-        if isinstance(arr, list):
+        if not isinstance(arr, list):
+            continue
+
+        if key == "events":
             for item in arr:
-                if key == "events":
-                    lbl = str((item or {}).get("type") or (item or {}).get("label") or "").lower()
-                    if lbl and (lbl in _SWING_TYPES or "swing" in lbl or "stroke" in lbl or "shot" in lbl or "hit" in lbl):
-                        norm = _normalize_swing_obj(item)
-                        if norm: yield norm
-                else:
+                lbl = str((item or {}).get("type") or (item or {}).get("label") or "").lower()
+                if lbl and (lbl in _SWING_TYPES or "swing" in lbl or "stroke" in lbl):
                     norm = _normalize_swing_obj(item)
-                    if norm: yield norm
+                    if norm:
+                        yield norm
+        else:
+            for item in arr:
+                norm = _normalize_swing_obj(item)
+                if norm:
+                    yield norm
 
 def _gather_all_swings(payload):
     for norm in _iter_candidate_swings_from_container(payload or {}):
@@ -866,6 +877,177 @@ def ops_init_db():
         return jsonify({"ok": True, "message": "DB initialized / migrated"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# === HTML upload page + ingest (restore) ======================================
+
+def _render_upload_page():
+    if not _guard(): return _forbid()
+    key = request.args.get("key") or request.args.get("ops_key") or ""
+    html = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<title>Upload SportAI Session JSON</title>
+<style>
+  body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+  .card {{ max-width: 720px; margin:auto; border:1px solid #e5e7eb; border-radius:12px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,.05); }}
+  h2 {{ margin:0 0 12px 0; }}
+  label {{ display:block; font-weight:600; margin-top:16px; margin-bottom:6px; }}
+  input[type="text"] {{ width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; }}
+  .muted {{ color:#6b7280; font-size:12px; }}
+  button {{ margin-top:18px; padding:10px 16px; background:#111827; color:#fff; border:none; border-radius:10px; cursor:pointer; }}
+  .row {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }}
+  .row > * {{ flex: 1 1 auto; }}
+  .chip {{ display:inline-block; padding:2px 8px; border-radius:9999px; background:#eef2ff; color:#3730a3; font-size:12px; }}
+</style>
+</head><body>
+<div class="card">
+  <h2>Upload SportAI Session JSON</h2>
+  <div class="muted">Use a file, a public JSON URL, or a Dropbox share link (set to “Anyone with the link”).</div>
+
+  <form action="/ops/ingest-file?key={key}" method="post" enctype="multipart/form-data">
+    <label>JSON file</label>
+    <input type="file" name="file" accept="application/json"/>
+
+    <label>Public JSON URL</label>
+    <input type="text" name="url" placeholder="https://example.com/session.json"/>
+    <div class="muted">Dropbox tip: if your link ends with <span class="chip">dl=0</span> we will convert it to <span class="chip">dl=1</span> automatically.</div>
+
+    <div class="row">
+      <div>
+        <label>Replace</label>
+        <label class="muted"><input type="checkbox" name="replace" value="1" checked /> Replace existing</label>
+      </div>
+      <div>
+        <label>Mode</label>
+        <select name="mode">
+          <option value="soft" selected>soft</option>
+          <option value="hard">hard</option>
+        </select>
+      </div>
+      <div>
+        <label>Session UID (optional override)</label>
+        <input type="text" name="session_uid" placeholder="71053b3e-...." />
+      </div>
+    </div>
+
+    <button type="submit">Ingest</button>
+    <div class="muted" style="margin-top:8px;">Your ops key is carried in the URL.</div>
+  </form>
+</div>
+</body></html>"""
+    return Response(html, mimetype="text/html")
+
+
+def _normalize_dropbox_url(u: str) -> str:
+    # convert www.dropbox.com share -> dl.dropboxusercontent.com + dl=1
+    try:
+        from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+        if "dropbox.com" not in u:
+            return u
+        p = urlparse(u)
+        q = dict(parse_qsl(p.query, keep_blank_values=True))
+        q["dl"] = "1"
+        host = "dl.dropboxusercontent.com" if "dropbox.com" in p.netloc else p.netloc
+        return urlunparse((p.scheme, host, p.path, p.params, urlencode(q), p.fragment))
+    except Exception:
+        return u
+
+
+@app.route("/ops/ingest-file", methods=["GET", "POST"])
+def ops_ingest_file():
+    if not _guard(): return _forbid()
+
+    # GET -> show HTML form
+    if request.method == "GET":
+        return _render_upload_page()
+
+    # POST -> accept file/url/name/raw JSON and ingest
+    replace   = str(request.form.get("replace", "1")).strip().lower() in ("1","true","yes","y","on")
+    mode      = (request.form.get("mode") or "soft").strip().lower()
+    forced_uid= request.form.get("session_uid") or None
+
+    payload = None
+
+    # 1) multipart file
+    if "file" in request.files and request.files["file"].filename:
+        try:
+            payload = json.load(request.files["file"].stream)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"file not JSON: {e}"}), 400
+
+    # 2) URL (normalize Dropbox links)
+    elif request.form.get("url"):
+        url = _normalize_dropbox_url(request.form["url"])
+        try:
+            import requests
+            r = requests.get(url, timeout=90)
+            r.raise_for_status()
+            payload = r.json()
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"failed to fetch URL: {e}"}), 400
+
+    # 3) server-side file name (rare; for testing on the host)
+    elif request.form.get("name"):
+        name = request.form["name"]
+        try:
+            with open(name, "rb") as f:
+                payload = json.load(f)
+        except Exception:
+            try:
+                with open(os.path.join("/mnt/data", name), "rb") as f:
+                    payload = json.load(f)
+            except Exception as e2:
+                return jsonify({"ok": False, "error": f"failed to read file: {e2}"}), 400
+
+    # 4) raw JSON body
+    else:
+        try:
+            payload = request.get_json(force=True, silent=False)
+        except Exception:
+            return jsonify({"ok": False, "error": "no JSON supplied"}), 400
+
+    try:
+        with engine.begin() as conn:
+            res = ingest_result_v2(
+                conn,
+                payload,
+                replace=replace or (mode == "hard"),
+                forced_uid=forced_uid,
+                src_hint=request.form.get("url"),
+            )
+            sid = res.get("session_id")
+            counts = conn.execute(sql_text("""
+                SELECT
+                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
+            """), {"sid": sid}).fetchone()
+
+        return jsonify({
+            "ok": True,
+            "session_uid": res.get("session_uid"),
+            "session_id":  sid,
+            "bronze_counts": {
+                "rallies":          counts[0],
+                "ball_bounces":     counts[1],
+                "ball_positions":   counts[2],
+                "player_positions": counts[3],
+                "swings":           counts[4],
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# (optional) shorter alias to the same page
+@app.get("/upload")
+def upload_shortcut():
+    if not _guard(): return _forbid()
+    return _render_upload_page()
+# ==============================================================================
 
 # ---------- OPS: SportAI JSON webhook -> RAW + BRONZE ----------
 @app.post("/ops/sportai-callback")
