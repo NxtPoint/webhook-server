@@ -11,9 +11,12 @@ from db_init import engine  # uses your existing engine/pool
 
 OPS_KEY = os.environ.get("OPS_KEY", "")
 
-ui_bp = Blueprint("ui", __name__)
-
-
+ui_bp = Blueprint(
+    "ui",
+    __name__,
+    template_folder="templates",  # looks in ./templates
+    static_folder="static"        # serves /upload/static/<file>
+)
 
 # --- small helper for ops auth (keeps behavior consistent with other ops endpoints) ---
 def _require_ops_key() -> bool:  # NEW
