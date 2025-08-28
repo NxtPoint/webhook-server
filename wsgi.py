@@ -1,4 +1,3 @@
-# wsgi.py
 import os
 
 try:
@@ -14,8 +13,7 @@ except Exception as e:
     @app.get("/")
     def _fallback_root():
         return jsonify({
-            "ok": False,
-            "fallback": True,
+            "ok": False, "fallback": True,
             "reason": "Failed to import upload_app.app",
             "error": _IMPORT_ERR,
         }), 500

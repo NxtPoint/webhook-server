@@ -100,7 +100,7 @@ if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter
         return _render_upload_html()
 
 # --- universal diagnostics (no auth) ---
-from flask import jsonify, request, Response
+from flask import jsonify, request, Response, send_from_directory
 import sys, os
 
 @app.get("/__alive")
@@ -125,13 +125,20 @@ def debug_static_check():
     fname = request.args.get("file") or "background-clean-male-serve.jpg"
     folder = os.path.join(app.root_path, "static", "upload")
     path = os.path.join(folder, fname)
-    return {
-        "ok": True,
-        "file": fname,
-        "folder": folder,
-        "path": path,
-        "exists": os.path.exists(path)
-        }
+    return {"ok": True, "file": fname, "folder": folder, "path": path, "exists": os.path.exists(path)}
+
+# manual static route (serves static/upload/* at /upload/static/*)
+@app.get("/upload/static/<path:filename>")
+def upload_static(filename):
+    base = os.path.join(app.root_path, "static", "upload")
+    return send_from_directory(base, filename)
+
+# guarantee /upload/ renders even if a blueprint didn’t mount
+if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter_rules()):
+    @app.get("/upload/")
+    def _upload_home_fallback():
+        return _render_upload_html()
+
     
 @app.get("/upload/test")
 def upload_test():
