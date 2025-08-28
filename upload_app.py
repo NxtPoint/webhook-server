@@ -1,17 +1,16 @@
 ﻿# upload_app.py
 import os, json, re, uuid, pathlib, hashlib
 from datetime import datetime, timezone, timedelta
-
+from flask import render_template_string
+from sqlalchemy import text
 import requests
-from flask import render_template, send_from_directory
+from flask import render_template
 from flask import (
     Flask, request, jsonify, Response, make_response, send_from_directory
 )
 from sqlalchemy import text as _sa_text
 from sqlalchemy.exc import IntegrityError
-
 from db_init import engine
-
 
 # --------------------------------------------------------------------------------------
 # Configuration (keeps your existing env names; no renames)
@@ -55,24 +54,6 @@ if not DATABASE_URL:
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
-
-# ====== DIAGNOSTIC & UI FALLBACK ROUTES (safe, read-only) ======
-from flask import jsonify, render_template_string
-from sqlalchemy import text
-
-@app.get("/ops/routes")
-def ops_routes():
-    """
-    List all registered routes so we can verify what's actually running in Render.
-    Protected with the same guard as other /ops endpoints.
-    """
-    if not _guard():
-        return _forbid()
-    routes = sorted(
-        {"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)}
-        for r in app.url_map.iter_rules()
-    )
-    return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
 @app.get("/upload/health")
 def _ui_health():
@@ -1098,7 +1079,6 @@ try:
 except Exception as e:
     app.logger.exception("Failed to mount UI blueprint: %s", e)
 
-@app.get("/upload/sessions")
 @app.get("/upload/index")
 def upload_legacy_alias():
     return _render_upload_html()
@@ -1820,7 +1800,7 @@ def ops_list_sessions():
         data = [dict(r) for r in rows]
     return jsonify({"ok": True, "rows": len(data), "data": data})
 
-@app.post("/ops/perf-indexes")
+@app.route("/ops/perf-indexes", methods=["GET", "POST"])
 def ops_perf_indexes():
     if not _guard(): return _forbid()
     ddl = [
@@ -1891,13 +1871,6 @@ def ops_repair_swings():
 
     return jsonify({"ok": True, "data": [dict(x) for x in summary]})
 
-# --- attach UI pages (upload page, sessions list, task polling, etc.) ---
-try:
-    from ui_app import register_ui  # this function will add /upload, /upload/sessions, ...
-    register_ui(app)
-    app.logger.info("UI routes registered")
-except Exception as e:
-    app.logger.exception("Failed to register UI routes: %s", e)
 
 # --------------------------------------------------------------------------------------
 # main
