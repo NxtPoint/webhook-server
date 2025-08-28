@@ -3,7 +3,11 @@ import os, json, hashlib, re
 from datetime import datetime, timezone, timedelta
 import uuid, pathlib, requests
 from flask import render_template, send_from_directory
-from flask import Flask, request, jsonify, Response
+from flask import (
+    Flask, request, jsonify, Response,
+    render_template, send_from_directory, make_response
+)
+import pathlib
 from sqlalchemy import create_engine, text
 sql_text = text  # compatibility alias for existing calls
 import sqlalchemy as sa
@@ -26,6 +30,8 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
 
 app = Flask(__name__)
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+
 
 # ---------------------- util ----------------------
 def _guard():
@@ -1682,8 +1688,59 @@ _TASKS_FAKE: dict[str, dict] = {}
 # static for the background image
 @app.get("/upload/static/<path:filename>")
 def upload_static(filename):
-    base = os.path.join(os.path.dirname(__file__), "static", "upload")
-    return send_from_directory(base, filename)
+    # serves files from static/upload/
+    return send_from_directory(BASE_DIR / "static" / "upload", filename, max_age=3600)
+
+@app.get("/upload/sessions")
+def upload_sessions():
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql_text("""
+                SELECT ds.session_uid,
+                       COALESCE(ds.meta->>'email','') AS email,
+                       (SELECT COUNT(*) FROM dim_rally            WHERE session_id = ds.session_id) AS rallies,
+                       (SELECT COUNT(*) FROM fact_swing           WHERE session_id = ds.session_id) AS swings,
+                       (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id = ds.session_id) AS ball_positions,
+                       (SELECT COUNT(*) FROM fact_player_position WHERE session_id = ds.session_id) AS player_positions
+                FROM dim_session ds
+                ORDER BY ds.session_id DESC
+                LIMIT 100
+            """)).mappings().all()
+
+        def tr(r):
+            return (f"<tr>"
+                    f"<td>{r['session_uid']}</td>"
+                    f"<td>{(r['email'] or '').replace('<','&lt;')}</td>"
+                    f"<td>{r['rallies']}</td>"
+                    f"<td>{r['swings']}</td>"
+                    f"<td>{r['ball_positions']}</td>"
+                    f"<td>{r['player_positions']}</td>"
+                    f"</tr>")
+
+        body = "\n".join(tr(r) for r in rows) or "<tr><td colspan='6'>No sessions yet</td></tr>"
+        html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>Uploaded Sessions</title>
+<style>
+  body{{font-family:system-ui,Arial;margin:24px}}
+  table{{border-collapse:collapse;width:100%}}
+  th,td{{border:1px solid #ddd;padding:8px;text-align:left}}
+  th{{background:#f6f6f6}}
+  a{{text-decoration:none}}
+</style></head>
+<body>
+  <h2>Uploaded / Analyzed Sessions</h2>
+  <p><a href="/upload">⬅ back to upload</a></p>
+  <table>
+    <thead><tr>
+      <th>session_uid</th><th>email</th><th>rallies</th><th>swings</th><th>ball_positions</th><th>player_positions</th>
+    </tr></thead>
+    <tbody>{body}</tbody>
+  </table>
+</body></html>"""
+        return make_response(html, 200)
+    except Exception as e:
+        # Render error text instead of a generic 500 page so it's debuggable
+        return make_response(f"<pre>Server error: {e}</pre>", 500)
 
 @app.get("/upload")
 def upload_form():
