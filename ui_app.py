@@ -68,90 +68,84 @@ def home():
         max_upload_mb=max_upload_mb,
     )
 
+import traceback
+from flask import Response
+
 @ui_bp.route("/sessions")
 def sessions():
-    sql = """
-        SELECT s.session_uid,
-               (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)         AS players,
-               (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)         AS rallies,
-               (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)         AS swings,
-               (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)          AS ball_bounces,
-               (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
-               (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
-               (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)         AS snapshots
-        FROM dim_session s
-        ORDER BY s.session_id DESC
-        LIMIT 200
-    """
-    rows, err = [], None
     try:
+        sql = """
+            SELECT s.session_uid,
+                   (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)         AS players,
+                   (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)         AS rallies,
+                   (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)         AS swings,
+                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)          AS ball_bounces,
+                   (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
+                   (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
+                   (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)         AS snapshots
+            FROM dim_session s
+            ORDER BY s.session_id DESC
+            LIMIT 200
+        """
         with engine.connect() as conn:
             rows = conn.execute(text(sql)).mappings().all()
-    except Exception as e:
-        err = str(e)
 
-    tpl = """
-    {% extends _BASE %}{% block body %}
-      <h2>Sessions</h2>
+        tpl = """
+        {% extends _BASE %}{% block body %}
+          <h2>Sessions</h2>
+          <div class="small">
+            UI prefix:
+            <span class="mono">{{ request.url_root.rstrip('/') }}{{ request.script_root }}/upload</span>
+          </div>
+          <div class="row small">
+            Global ops:
+            <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
+            <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
+            <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
+            <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Session UID</th><th>Players</th><th>Rallies</th><th>Swings</th>
+                <th>Bounces</th><th>Ball Pos</th><th>Player Pos</th><th>Snapshots</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for r in rows %}
+              <tr>
+                <td class="mono">{{ r.session_uid }}</td>
+                <td>{{ r.players }}</td>
+                <td>{{ r.rallies }}</td>
+                <td>{{ r.swings }}</td>
+                <td>{{ r.ball_bounces }}</td>
+                <td>{{ r.ball_positions }}</td>
+                <td>{{ r.player_positions }}</td>
+                <td>{{ r.snapshots }}</td>
+                <td>
+                  <a class="btn" target="_blank"
+                     href="/ops/reconcile?key={{ key }}&session_uid={{ r.session_uid }}">Reconcile</a>
+                  <a class="btn" target="_blank"
+                     href="/ops/link-swings-to-rallies?key={{ key }}&session_uid={{ r.session_uid }}">Link rallies</a>
+                  <a class="btn" target="_blank"
+                     href="/ops/repair-swings?key={{ key }}&session_uid={{ r.session_uid }}">Repair serves</a>
+                  <a class="btn" target="_blank"
+                     href="{{ url_for('ui.peek', session_uid=r.session_uid) }}">Peek</a>
+                  <a class="btn danger"
+                     href="{{ url_for('ui.delete_confirm', session_uid=r.session_uid) }}">Delete</a>
+                </td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        {% endblock %}
+        """
+        return render_template_string(tpl, _BASE=_BASE, rows=rows, key=OPS_KEY)
 
-      {% if err %}
-        <pre style="color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;padding:10px;border-radius:8px">
-          {{ err }}
-        </pre>
-        <p class="small">Tip: hit <a href="{{ url_for('ui.ui_health') }}">/upload/health</a> for a quick DB check.</p>
-      {% endif %}
-
-      <div class="small">
-        UI prefix (mounted via wsgi.py):
-        <span class="mono">{{ request.url_root.rstrip('/') }}{{ request.script_root }}/upload</span>
-      </div>
-
-      <div class="row small">
-        Global ops:
-        <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
-        <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
-        <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
-        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
-      </div>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Session UID</th><th>Players</th><th>Rallies</th><th>Swings</th>
-            <th>Bounces</th><th>Ball Pos</th><th>Player Pos</th><th>Snapshots</th><th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-        {% for r in rows %}
-          <tr>
-            <td class="mono">{{ r.session_uid }}</td>
-            <td>{{ r.players }}</td>
-            <td>{{ r.rallies }}</td>
-            <td>{{ r.swings }}</td>
-            <td>{{ r.ball_bounces }}</td>
-            <td>{{ r.ball_positions }}</td>
-            <td>{{ r.player_positions }}</td>
-            <td>{{ r.snapshots }}</td>
-            <td>
-              <a class="btn" target="_blank"
-                 href="/ops/reconcile?key={{ key }}&session_uid={{ r.session_uid }}">Reconcile</a>
-              <a class="btn" target="_blank"
-                 href="/ops/link-swings-to-rallies?key={{ key }}&session_uid={{ r.session_uid }}">Link rallies</a>
-              <a class="btn" target="_blank"
-                 href="/ops/repair-swings?key={{ key }}&session_uid={{ r.session_uid }}">Repair serves</a>
-              <a class="btn" target="_blank"
-                 href="{{ url_for('ui.peek', session_uid=r.session_uid) }}">Peek</a>
-              <a class="btn danger"
-                 href="{{ url_for('ui.delete_confirm', session_uid=r.session_uid) }}">Delete</a>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    {% endblock %}
-    """
-    return render_template_string(tpl, _BASE=_BASE, rows=rows, err=err, key=OPS_KEY)
-
+    except Exception:
+        tb = traceback.format_exc()
+        return Response("UI /upload/sessions failed:\n\n" + tb,
+                        mimetype="text/plain", status=500)
 
 @ui_bp.route("/peek/<session_uid>")
 def peek(session_uid):
@@ -262,6 +256,21 @@ def sql():
     {% endblock %}
     """
     return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY)
+
+@ui_bp.route("/sessions_raw")
+def sessions_raw():
+    try:
+        sql = """
+            SELECT session_uid
+            FROM dim_session
+            ORDER BY session_id DESC
+            LIMIT 10
+        """
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql)).mappings().all()
+        return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
+    except Exception:
+        return jsonify({"ok": False, "error": traceback.format_exc()}), 500
 
 @ui_bp.route("/health")
 def ui_health():
