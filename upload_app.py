@@ -99,6 +99,17 @@ if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter
     def _upload_home_fallback():
         return _render_upload_html()
 
+# --- universal diagnostics (no auth) ---
+from flask import jsonify, request, Response
+import sys, os
+
+@app.get("/__alive")
+def __alive():
+    return {
+        "ok": True,
+        "from": "upload_app.py",
+        "routes": len(list(app.url_map.iter_rules()))
+    }
 
 @app.get("/__routes")
 def __routes():
@@ -107,22 +118,21 @@ def __routes():
         methods = sorted(m for m in r.methods if m in {"GET","POST","PUT","DELETE","PATCH","OPTIONS"})
         rules.append({"rule": r.rule, "endpoint": r.endpoint, "methods": methods})
     rules.sort(key=lambda x: x["rule"])
-    return jsonify({"ok": True, "count": len(rules), "routes": rules})
+    return {"ok": True, "count": len(rules), "routes": rules}
 
 @app.get("/debug/static-check")
 def debug_static_check():
-    # ?file=background-clean-male-serve.jpg
     fname = request.args.get("file") or "background-clean-male-serve.jpg"
     folder = os.path.join(app.root_path, "static", "upload")
     path = os.path.join(folder, fname)
-    return jsonify({
+    return {
         "ok": True,
         "file": fname,
         "folder": folder,
         "path": path,
         "exists": os.path.exists(path)
-    })
-
+        }
+    
 @app.get("/upload/test")
 def upload_test():
     return Response("upload ok", mimetype="text/plain")

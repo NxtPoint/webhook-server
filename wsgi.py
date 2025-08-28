@@ -2,12 +2,10 @@
 import os
 
 try:
-    # your real app (routes live here)
     from upload_app import app as _real_app
     app = _real_app
     USING_FALLBACK = False
 except Exception as e:
-    # absolute fallback so you always have visibility
     from flask import Flask, jsonify
     app = Flask(__name__)
     USING_FALLBACK = True
@@ -22,14 +20,9 @@ except Exception as e:
             "error": _IMPORT_ERR,
         }), 500
 
-# universal probes (work in both real & fallback app)
 @app.get("/__alive")
 def __alive():
-    return {
-        "ok": True,
-        "fallback": USING_FALLBACK,
-        "routes": len(list(app.url_map.iter_rules())),
-    }
+    return {"ok": True, "fallback": USING_FALLBACK, "from": "wsgi.py", "routes": len(list(app.url_map.iter_rules()))}
 
 @app.get("/__routes")
 def __routes():
@@ -41,5 +34,4 @@ def __routes():
     return {"ok": True, "count": len(rules), "routes": rules}
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
