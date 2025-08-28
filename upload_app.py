@@ -56,12 +56,27 @@ if not DATABASE_URL:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
-# ------- UI fallbacks (safe; do not mutate data) -------
+# ====== DIAGNOSTIC & UI FALLBACK ROUTES (safe, read-only) ======
 from flask import jsonify, render_template_string
 from sqlalchemy import text
 
+@app.get("/ops/routes")
+def ops_routes():
+    """
+    List all registered routes so we can verify what's actually running in Render.
+    Protected with the same guard as other /ops endpoints.
+    """
+    if not _guard():
+        return _forbid()
+    routes = sorted(
+        {"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)}
+        for r in app.url_map.iter_rules()
+    )
+    return jsonify({"ok": True, "count": len(routes), "routes": routes})
+
 @app.get("/upload/health")
 def _ui_health():
+    """Read-only DB ping so the UI path is always alive, even if the UI blueprint fails to load."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -71,15 +86,19 @@ def _ui_health():
 
 @app.get("/upload/sessions")
 def _ui_sessions_proxy():
+    """
+    Fallback dispatcher for the Sessions page: tries the UI blueprint handler; if that
+    import fails you still get a readable error instead of a 404.
+    """
     try:
-        # reuse the real UI handler if import works
         from ui_app import sessions as _sessions
         return _sessions()
     except Exception as e:
-        # show a readable error if ui_app import fails at runtime
         return render_template_string(
             "<pre>UI /upload/sessions failed to dispatch:\n\n{{err}}</pre>", err=str(e)
         ), 500
+# ====== END DIAGNOSTICS ======
+
 
 # --------------------------------------------------------------------------------------
 # CORS / guard helpers
