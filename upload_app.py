@@ -1,15 +1,14 @@
 ﻿# upload_app.py
 import os, json, hashlib, re
 from datetime import datetime, timezone, timedelta
-
+import uuid, pathlib, requests
+from flask import render_template, send_from_directory
 from flask import Flask, request, jsonify, Response
-
 from sqlalchemy import create_engine, text
 sql_text = text  # compatibility alias for existing calls
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
-
 from db_init import engine
 
 # ---------------------- config ----------------------
@@ -1666,6 +1665,164 @@ def ops_repair_swings():
 
     return jsonify({"ok": True, "data": [dict(x) for x in summary]})
 
+# === Upload page (video -> Dropbox -> SportAI) =================================
+
+# Config knobs (envs are optional; page still renders)
+MAX_UPLOAD_MB        = int(os.environ.get("MAX_UPLOAD_MB", "200"))
+DBX_TOKEN            = os.environ.get("DROPBOX_ACCESS_TOKEN", "")   # App access token
+DBX_TARGET_FOLDER    = os.environ.get("DBX_TARGET_FOLDER", "/Incoming")
+SPORTAI_API_BASE     = os.environ.get("SPORTAI_API_BASE", "")       # e.g. https://api.sportai.example
+SPORTAI_TOKEN        = os.environ.get("SPORT_AI_TOKEN", "")
+SPORTAI_CREATE_PATH  = os.environ.get("SPORTAI_CREATE_PATH", "/v1/tasks")   # POST create
+SPORTAI_STATUS_PATH  = os.environ.get("SPORTAI_STATUS_PATH", "/v1/tasks/{task_id}")  # GET status
+
+# in-memory fallback when SPORTAI_* isn’t configured
+_TASKS_FAKE: dict[str, dict] = {}
+
+# static for the background image
+@app.get("/upload/static/<path:filename>")
+def upload_static(filename):
+    base = os.path.join(os.path.dirname(__file__), "static", "upload")
+    return send_from_directory(base, filename)
+
+@app.get("/upload")
+def upload_form():
+    return render_template(
+        "upload.html",
+        max_upload_mb=MAX_UPLOAD_MB,
+        target_folder=DBX_TARGET_FOLDER,
+        dropbox_ready=bool(DBX_TOKEN),
+        sportai_ready=bool(SPORTAI_TOKEN),
+    )
+
+def _dbx_upload_bytes(path_in_dbx: str, blob: bytes) -> dict:
+    """Upload bytes to Dropbox and return API JSON."""
+    h = {
+        "Authorization": f"Bearer {DBX_TOKEN}",
+        "Content-Type": "application/octet-stream",
+        "Dropbox-API-Arg": json.dumps({
+            "path": path_in_dbx,
+            "mode": "add",
+            "autorename": True,
+            "mute": False
+        })
+    }
+    r = requests.post("https://content.dropboxapi.com/2/files/upload", headers=h, data=blob, timeout=120)
+    r.raise_for_status()
+    return r.json()
+
+def _dbx_shared_link(path_in_dbx: str) -> str:
+    """Create a public link and return a direct-download (?dl=1) URL."""
+    h = {"Authorization": f"Bearer {DBX_TOKEN}", "Content-Type": "application/json"}
+    d = {"path": path_in_dbx, "settings": {"requested_visibility": "public"}}
+    r = requests.post("https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings", headers=h, json=d, timeout=60)
+    # If already exists, API returns conflict; try list_shared_links:
+    if r.status_code == 409:
+        rr = requests.post("https://api.dropboxapi.com/2/sharing/list_shared_links", headers=h, json={"path": path_in_dbx}, timeout=60)
+        rr.raise_for_status()
+        links = rr.json().get("links", [])
+        if not links:
+            raise RuntimeError("Dropbox: no shared link available")
+        url = links[0]["url"]
+    else:
+        r.raise_for_status()
+        url = r.json()["url"]
+    # force direct download
+    if url.endswith("?dl=0"):
+        url = url[:-1] + "1"
+    elif "dl=0" in url:
+        url = url.replace("dl=0", "dl=1")
+    elif "dl=" not in url:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}dl=1"
+    return url
+
+def _sportai_create_task(source_url: str, email: str, webhook_url: str) -> dict:
+    """Create a SportAI analysis task; returns API JSON."""
+    if not (SPORTAI_API_BASE and SPORTAI_TOKEN):
+        # demo mode: create a local completed task
+        task_id = "demo-" + uuid.uuid4().hex[:12]
+        _TASKS_FAKE[task_id] = {"task_status": "completed", "task_progress": 1.0}
+        return {"id": task_id, "status": "completed"}
+
+    url = SPORTAI_API_BASE.rstrip("/") + SPORTAI_CREATE_PATH
+    h = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
+    payload = {
+        "source_url": source_url,
+        "notify_email": email,
+        "webhook_url": webhook_url,   # SportAI should POST JSON to our /ops/sportai-callback
+    }
+    r = requests.post(url, headers=h, json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+def _sportai_task_status(task_id: str) -> dict:
+    if not (SPORTAI_API_BASE and SPORTAI_TOKEN):
+        return _TASKS_FAKE.get(task_id, {"task_status": "unknown", "task_progress": 0})
+    url = SPORTAI_API_BASE.rstrip("/") + SPORTAI_STATUS_PATH.format(task_id=task_id)
+    h = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+    r = requests.get(url, headers=h, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+@app.post("/upload")
+def upload_post():
+    """Accept email + video, upload to Dropbox, register task with SportAI, return task id for polling."""
+    if "video" not in request.files:
+        return jsonify({"ok": False, "error": "missing file field 'video'"}), 400
+    f = request.files["video"]
+    email = (request.form.get("email") or "").strip()
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    blob = f.read()
+    if len(blob) > MAX_UPLOAD_MB * 1024 * 1024:
+        return jsonify({"ok": False, "error": f"file exceeds {MAX_UPLOAD_MB}MB"}), 400
+
+    # 1) push to Dropbox (if token configured), else save locally
+    fname = f.filename or f"upload-{uuid.uuid4().hex}.mp4"
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", fname)
+    dbx_path = f"{DBX_TARGET_FOLDER.rstrip('/')}/{uuid.uuid4().hex[:8]}_{safe_name}"
+
+    dropbox_url = None
+    if DBX_TOKEN:
+        _dbx_upload_bytes(dbx_path, blob)
+        dropbox_url = _dbx_shared_link(dbx_path)
+    else:
+        # local fallback
+        updir = pathlib.Path("/mnt/data/uploads"); updir.mkdir(parents=True, exist_ok=True)
+        local_path = updir / safe_name
+        local_path.write_bytes(blob)
+        dropbox_url = f"file://{local_path}"
+
+    # 2) ask SportAI to process; set callback to our webhook
+    webhook_url = request.url_root.rstrip("/") + f"/ops/sportai-callback?key={OPS_KEY}&replace=1"
+    task_info = _sportai_create_task(dropbox_url, email, webhook_url)
+    task_id = task_info.get("id") or task_info.get("task_id") or "unknown"
+
+    return jsonify({"ok": True, "sportai_task_id": task_id, "task_id": task_id, "dropbox_url": dropbox_url})
+
+@app.get("/upload/task_status/<task_id>")
+def upload_task_status(task_id):
+    """Frontend polls here; we proxy SportAI status (or demo)."""
+    try:
+        info = _sportai_task_status(task_id)
+        # Normalize a bit for the page:
+        status = (info.get("status") or info.get("task_status") or "unknown").lower()
+        progress = info.get("progress") or info.get("task_progress") or 0
+        subtasks = info.get("subtasks") or info.get("subtask_progress")
+        total_sub = info.get("total_subtask_progress")
+
+        data = {
+            "task_status": status,
+            "task_progress": progress,
+            "subtask_progress": subtasks,
+            "total_subtask_progress": total_sub,
+        }
+        return jsonify({"ok": True, "data": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+# =====================================================================
 
 # ---------------------- main ----------------------
 if __name__ == "__main__":
