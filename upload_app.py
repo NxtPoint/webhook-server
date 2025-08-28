@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from db_init import engine
 
+
 # --------------------------------------------------------------------------------------
 # Configuration (keeps your existing env names; no renames)
 # --------------------------------------------------------------------------------------
@@ -51,7 +52,8 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
 
-app = Flask(__name__)
+
+app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
 # --------------------------------------------------------------------------------------
@@ -1043,10 +1045,15 @@ def _render_upload_html():
 </html>"""
         return Response(html, mimetype="text/html")
 
+# app already created like: app = Flask(__name__, template_folder="templates", static_folder="static")
 
-@app.get("/upload")
-def upload_page():
-    return _render_upload_html()
+try:
+    from ui_app import ui_bp
+    app.register_blueprint(ui_bp, url_prefix="/upload")
+    app.logger.info("UI blueprint mounted at /upload")
+except Exception as e:
+    app.logger.exception("Failed to mount UI blueprint: %s", e)
+
 
 @app.get("/upload/sessions")
 @app.get("/upload/index")
@@ -1830,6 +1837,14 @@ def ops_repair_swings():
         """), {"sid": session_id}).mappings().all()
 
     return jsonify({"ok": True, "data": [dict(x) for x in summary]})
+
+# --- attach UI pages (upload page, sessions list, task polling, etc.) ---
+try:
+    from ui_app import register_ui  # this function will add /upload, /upload/sessions, ...
+    register_ui(app)
+    app.logger.info("UI routes registered")
+except Exception as e:
+    app.logger.exception("Failed to register UI routes: %s", e)
 
 # --------------------------------------------------------------------------------------
 # main

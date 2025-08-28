@@ -5,7 +5,7 @@
   <title>Upload Match Video</title>
   <style>
     html, body { margin: 0; font-family: Arial, sans-serif;
-      background: url('/upload/static/background-clean-male-serve.jpg') no-repeat center center fixed;
+      background: url('{{ url_for("static", filename="upload/background-clean-male-serve.jpg") }}') no-repeat center center fixed;
       background-size: cover; color: #ffffff; }
     .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
     .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 520px; text-align: center; box-shadow: 0 0 20px #00ff80; }
