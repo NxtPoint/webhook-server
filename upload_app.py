@@ -73,6 +73,33 @@ def __whoami():
         "routes_count": len(list(app.url_map.iter_rules())),
     })
 
+@app.get("/debug/static-check")
+def debug_static_check():
+    # ?file=background-clean-male-serve.jpg
+    fname = request.args.get("file") or "background-clean-male-serve.jpg"
+    folder = os.path.join(app.root_path, "static", "upload")
+    path = os.path.join(folder, fname)
+    return jsonify({
+        "ok": True,
+        "file": fname,
+        "folder": folder,
+        "path": path,
+        "exists": os.path.exists(path)
+    })
+
+# keep your existing manual static route (works with or without the blueprint)
+@app.get("/upload/static/<path:filename>")
+def upload_static(filename):
+    base = os.path.join(app.root_path, "static", "upload")
+    return send_from_directory(base, filename)
+
+# ensure /upload/ always renders even if the blueprint didn’t mount
+if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter_rules()):
+    @app.get("/upload/")
+    def _upload_home_fallback():
+        return _render_upload_html()
+
+
 @app.get("/__routes")
 def __routes():
     rules = []
