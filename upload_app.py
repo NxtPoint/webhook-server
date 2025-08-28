@@ -56,6 +56,34 @@ if not DATABASE_URL:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
+# --- UI fallbacks (safe) ---
+# These endpoints let you reach the UI even if the blueprint failed to mount for any reason.
+# They do NOT modify data nor change any env logic.
+
+from flask import jsonify, render_template_string
+from sqlalchemy import text
+
+@app.get("/upload/health")
+def _ui_health():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/upload/sessions")
+def _ui_sessions_proxy():
+    # Import inside the function to avoid any import-order/circular issues at startup
+    try:
+        from ui_app import sessions as _sessions  # reuse the real UI view
+        return _sessions()
+    except Exception as e:
+        # If ui_app import failed, at least return a readable error
+        return render_template_string(
+            "<pre>UI /upload/sessions failed to dispatch:\n\n{{err}}</pre>", err=str(e)
+        ), 500
+
 # --------------------------------------------------------------------------------------
 # CORS / guard helpers
 # --------------------------------------------------------------------------------------
@@ -1053,7 +1081,6 @@ try:
     app.logger.info("UI blueprint mounted at /upload")
 except Exception as e:
     app.logger.exception("Failed to mount UI blueprint: %s", e)
-
 
 @app.get("/upload/sessions")
 @app.get("/upload/index")
