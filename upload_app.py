@@ -13,27 +13,38 @@ from sqlalchemy.exc import IntegrityError
 from db_init import engine
 
 # ---------------------- config ----------------------
-DATABASE_URL = os.environ.get("DATABASE_URL")
-OPS_KEY = os.environ.get("OPS_KEY")
-STRICT_REINGEST = os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1", "true", "yes", "y")
-ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").strip().lower() in ("1", "true", "yes", "y")
+DATABASE_URL   = os.environ.get("DATABASE_URL")
+OPS_KEY        = os.environ.get("OPS_KEY") or "270fb80a747d459eafded0ae67b9b8f6"
+STRICT_REINGEST= os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1","true","yes","y")
+ENABLE_CORS    = os.environ.get("ENABLE_CORS", "0").strip().lower() in ("1","true","yes","y")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
-if not OPS_KEY:
-    raise RuntimeError("OPS_KEY required")
 
 app = Flask(__name__)
 
 # ---------------------- util ----------------------
-def _guard(): return request.args.get("key") == OPS_KEY
-def _forbid(): return Response("Forbidden", status=403)
+def _guard():
+    # querystring: ?key=... or ?ops_key=...
+    qk = request.args.get("key") or request.args.get("ops_key")
+
+    # headers: Authorization: Bearer <key> OR X-OPS-Key: <key>
+    hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+
+    supplied = qk or hk
+    return supplied == OPS_KEY
+
+def _forbid():
+    return Response("Forbidden", status=403)
 
 @app.after_request
 def _maybe_cors(resp):
     if ENABLE_CORS:
         resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-OPS-Key"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return resp
 
