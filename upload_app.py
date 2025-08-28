@@ -684,10 +684,9 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
 
     # ---------- rallies (from payload if provided) ----------
     payload_rallies = payload.get("rallies") or []
-    has_payload_rallies = isinstance(payload_rallies, list) and len(payload_rallies) > 0
-    # loop inserting payload rallies...
+    had_payload_rallies = isinstance(payload_rallies, list) and len(payload_rallies) > 0
 
-
+    # ---------- rallies (from payload if provided) ----------
     for i, r in enumerate(payload_rallies, start=1):
         if isinstance(r, dict):
             start_s = _time_s(r.get("start_ts")) or _time_s(r.get("start"))
@@ -822,9 +821,11 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
     payload_rally_ct = len(payload.get("rallies") or [])
     if payload_rally_ct == 0:
         gap = float(os.environ.get("RALLY_GAP_S", "6.0"))
-        _ensure_rallies_from_swings(conn, session_id, gap_s=gap)
+    # === Build/link/normalize ===
+# Only build rallies from swings when the payload provided none:
+    if not had_payload_rallies:
+        _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
 
-    # Always link swings to whatever rallies exist (payload or derived)
     _link_swings_to_rallies(conn, session_id)
     _normalize_serve_flags(conn, session_id)
     _rebuild_ts_from_seconds(conn, session_id)
