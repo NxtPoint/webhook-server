@@ -18,6 +18,9 @@ OPS_KEY        = os.environ.get("OPS_KEY") or "270fb80a747d459eafded0ae67b9b8f6"
 STRICT_REINGEST= os.environ.get("STRICT_REINGEST", "0").strip().lower() in ("1","true","yes","y")
 ENABLE_CORS    = os.environ.get("ENABLE_CORS", "0").strip().lower() in ("1","true","yes","y")
 
+# Prefer payload rallies in BRONZE; only derive rallies from swings if payload has none
+PREFER_PAYLOAD_RALLIES = os.environ.get("PREFER_PAYLOAD_RALLIES", "1").strip().lower() in ("1", "true", "yes", "y")
+
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
 
@@ -124,7 +127,7 @@ def _quantize_time_to_fps(s, fps):
         return s
     return round(round(float(s) * float(fps)) / float(fps), 5)
 
-_INVALID_PUIDS = {"", "0", "none", "null", "nan"}
+_INVALID_PUIDS = {"", "none", "null", "nan"}
 def _valid_puid(p):
     if p is None: return False
     s = str(p).strip().lower()
@@ -680,7 +683,10 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
         uid_to_player_id[puid] = pid
 
     # ---------- rallies (from payload if provided) ----------
-    for i, r in enumerate(payload.get("rallies") or [], start=1):
+    payload_rallies = payload.get("rallies") or []
+    has_payload_rallies = isinstance(payload_rallies, list) and len(payload_rallies) > 0
+
+    for i, r in enumerate(payload_rallies, start=1):
         if isinstance(r, dict):
             start_s = _time_s(r.get("start_ts")) or _time_s(r.get("start"))
             end_s   = _time_s(r.get("end_ts"))   or _time_s(r.get("end"))
@@ -694,12 +700,12 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             VALUES (:sid, :n, :ss, :es, :sts, :ets)
             ON CONFLICT (session_id, rally_number)
             DO UPDATE SET
-              start_s = COALESCE(EXCLUDED.start_s, dim_rally.start_s),
-              end_s   = COALESCE(EXCLUDED.end_s, dim_rally.end_s),
-              start_ts= COALESCE(EXCLUDED.start_ts, dim_rally.start_ts),
-              end_ts  = COALESCE(EXCLUDED.end_ts, dim_rally.end_ts)
+            start_s = COALESCE(EXCLUDED.start_s, dim_rally.start_s),
+            end_s   = COALESCE(EXCLUDED.end_s, dim_rally.end_s),
+            start_ts= COALESCE(EXCLUDED.start_ts, dim_rally.start_ts),
+            end_ts  = COALESCE(EXCLUDED.end_ts, dim_rally.end_ts)
         """), {"sid": session_id, "n": i, "ss": start_s, "es": end_s,
-               "sts": seconds_to_ts(base_dt, start_s), "ets": seconds_to_ts(base_dt, end_s)})
+            "sts": seconds_to_ts(base_dt, start_s), "ets": seconds_to_ts(base_dt, end_s)})
 
     # helper to map a timestamp to rally
     def rally_id_for_ts(ts_s):
@@ -810,10 +816,14 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             pass
 
     # === Build/repair rallies, link, normalize serve, and align *_ts ===
-    _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
+    if not (PREFER_PAYLOAD_RALLIES and has_payload_rallies):
+        # Only derive rallies when payload didn't provide them
+        _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
+
     _link_swings_to_rallies(conn, session_id)
     _normalize_serve_flags(conn, session_id)
     _rebuild_ts_from_seconds(conn, session_id)
+
 
     return {"session_uid": session_uid, "session_id": session_id}
 
@@ -1423,30 +1433,53 @@ def ops_repair_swings():
     if not _guard(): return _forbid()
     session_uid = request.args.get("session_uid")
     with engine.begin() as conn:
-        if not session_uid:
-            return jsonify({"ok": False, "error": "session_uid required for targeted repair"}), 400
-        row = conn.execute(sql_text("SELECT session_id FROM dim_session WHERE session_uid = :u"),
-                           {"u": session_uid}).first()
-        if not row: return jsonify({"ok": False, "error": "unknown session_uid"}), 400
-        session_id = row[0]
+            if not session_uid:
+                return jsonify({"ok": False, "error": "session_uid required for targeted repair"}), 400
+    row = conn.execute(sql_text("SELECT session_id FROM dim_session WHERE session_uid = :u"),
+                       {"u": session_uid}).first()
+    if not row: return jsonify({"ok": False, "error": "unknown session_uid"}), 400
+    session_id = row[0]
 
+    # Inspect latest RAW to see if rallies exist
+    doc = conn.execute(sql_text("""
+        SELECT payload_json
+        FROM raw_result
+        WHERE session_id=:sid
+        ORDER BY created_at DESC
+        LIMIT 1
+    """), {"sid": session_id}).scalar()
+
+    has_payload_rallies = False
+    if isinstance(doc, str):
+        try:
+            doc = json.loads(doc)
+        except Exception:
+            doc = None
+    if isinstance(doc, dict):
+        r = doc.get("rallies")
+        has_payload_rallies = isinstance(r, list) and len(r) > 0
+
+    # Respect the same preference as ingest
+    if not (PREFER_PAYLOAD_RALLIES and has_payload_rallies):
         _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
-        _link_swings_to_rallies(conn, session_id)
-        _normalize_serve_flags(conn, session_id)
-        _rebuild_ts_from_seconds(conn, session_id)
 
-        summary = conn.execute(sql_text("""
-            SELECT ds.session_uid,
-                   COUNT(*) FILTER (WHERE fs.rally_id IS NOT NULL) AS swings_with_rally,
-                   SUM(CASE WHEN COALESCE(fs.serve, FALSE) THEN 1 ELSE 0 END) AS serve_swings,
-                   COUNT(DISTINCT fs.rally_id) AS rallies_linked
-            FROM fact_swing fs
-            JOIN dim_session ds ON ds.session_id = fs.session_id
-            WHERE fs.session_id = :sid
-            GROUP BY ds.session_uid
-        """), {"sid": session_id}).mappings().all()
+    _link_swings_to_rallies(conn, session_id)
+    _normalize_serve_flags(conn, session_id)
+    _rebuild_ts_from_seconds(conn, session_id)
+
+    summary = conn.execute(sql_text("""
+        SELECT ds.session_uid,
+               COUNT(*) FILTER (WHERE fs.rally_id IS NOT NULL) AS swings_with_rally,
+               SUM(CASE WHEN COALESCE(fs.serve, FALSE) THEN 1 ELSE 0 END) AS serve_swings,
+               COUNT(DISTINCT fs.rally_id) AS rallies_linked
+        FROM fact_swing fs
+        JOIN dim_session ds ON ds.session_id = fs.session_id
+        WHERE fs.session_id = :sid
+        GROUP BY ds.session_uid
+    """), {"sid": session_id}).mappings().all()
 
     return jsonify({"ok": True, "data": [dict(x) for x in summary]})
+
 
 # ---------------------- main ----------------------
 if __name__ == "__main__":
