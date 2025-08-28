@@ -1,29 +1,30 @@
 # ui_app.py
-import os
-from flask import Blueprint, render_template_string, request, redirect, url_for, jsonify  # NEW: jsonify
+import os, traceback
+from flask import (
+    Blueprint, render_template_string, request, redirect,
+    url_for, jsonify, Response, current_app
+)
 from sqlalchemy import text
 
 # --- DB / config ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required for UI")
-from db_init import engine  # uses your existing engine/pool
+
+# Reuse the existing engine the rest of the app uses
+from db_init import engine
 
 OPS_KEY = os.environ.get("OPS_KEY", "")
 
+# IMPORTANT: tell Flask where templates/static live
 ui_bp = Blueprint(
     "ui",
     __name__,
-    template_folder="templates",  # looks in ./templates
-    static_folder="static"        # serves /upload/static/<file>
+    template_folder="templates",   # <repo>/templates
+    static_folder="static",        # <repo>/static
 )
 
-# --- small helper for ops auth (keeps behavior consistent with other ops endpoints) ---
-def _require_ops_key() -> bool:  # NEW
-    key = request.args.get("key", "")
-    return bool(OPS_KEY) and key == OPS_KEY
-
-# ------------ templates ------------
+# ------------ base template ------------
 _BASE = """
 <!doctype html>
 <html lang="en">
@@ -56,14 +57,15 @@ _BASE = """
 </html>
 """
 
+# ---------- home = upload page ----------
 @ui_bp.route("/")
 def home():
     dropbox_ready = bool(os.environ.get("DROPBOX_ACCESS_TOKEN"))
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
     max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB", "200"))
+    # render our existing Jinja template
     return render_template_string(
-        # tiny wrapper that includes your template file
         "{% include 'upload.html' %}",
         dropbox_ready=dropbox_ready,
         sportai_ready=sportai_ready,
@@ -71,25 +73,23 @@ def home():
         max_upload_mb=max_upload_mb,
     )
 
-import traceback
-from flask import Response
-
+# ---------- sessions table (strong error logging) ----------
 @ui_bp.route("/sessions")
 def sessions():
+    sql = """
+        SELECT s.session_uid,
+               (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)           AS players,
+               (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)           AS rallies,
+               (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)           AS swings,
+               (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)            AS ball_bounces,
+               (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id)   AS ball_positions,
+               (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
+               (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)           AS snapshots
+        FROM dim_session s
+        ORDER BY s.session_id DESC
+        LIMIT 200
+    """
     try:
-        sql = """
-            SELECT s.session_uid,
-                   (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)         AS players,
-                   (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)         AS rallies,
-                   (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)         AS swings,
-                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)          AS ball_bounces,
-                   (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
-                   (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
-                   (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)         AS snapshots
-            FROM dim_session s
-            ORDER BY s.session_id DESC
-            LIMIT 200
-        """
         with engine.connect() as conn:
             rows = conn.execute(text(sql)).mappings().all()
 
@@ -147,12 +147,15 @@ def sessions():
 
     except Exception:
         tb = traceback.format_exc()
-        return Response("UI /upload/sessions failed:\n\n" + tb,
-                        mimetype="text/plain", status=500)
+        try:
+            current_app.logger.exception("UI /upload/sessions failed")
+        except Exception:
+            pass
+        return Response("UI /upload/sessions failed:\n\n" + tb, mimetype="text/plain", status=500)
 
+# ---------- peek ----------
 @ui_bp.route("/peek/<session_uid>")
 def peek(session_uid):
-    # tiny helper to eyeball the first few shots in the point log + swings
     q1 = text("""
         SELECT point_number, shot_number, swing_id, player_uid, serve, serve_type,
                shot_result, shot_description_depth, ball_hit_s
@@ -194,6 +197,7 @@ def peek(session_uid):
     """
     return render_template_string(tpl, _BASE=_BASE, uid=session_uid, pl=pl, sw=sw)
 
+# ---------- delete confirm ----------
 @ui_bp.route("/delete/<session_uid>")
 def delete_confirm(session_uid):
     tpl = """
@@ -209,6 +213,7 @@ def delete_confirm(session_uid):
     """
     return render_template_string(tpl, _BASE=_BASE, uid=session_uid, key=OPS_KEY)
 
+# ---------- SQL (read-only) ----------
 @ui_bp.route("/sql", methods=["GET", "POST"])
 def sql():
     default_q = request.values.get("q", "SELECT now() AT TIME ZONE 'utc' AS utc_now")
@@ -254,23 +259,22 @@ def sql():
         <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
         <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
         <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
-        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>  <!-- NEW -->
+        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
       </p>
     {% endblock %}
     """
     return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY)
 
+# ---------- small JSON probes ----------
 @ui_bp.route("/sessions_raw")
 def sessions_raw():
     try:
-        sql = """
-            SELECT session_uid
-            FROM dim_session
-            ORDER BY session_id DESC
-            LIMIT 10
-        """
         with engine.connect() as conn:
-            rows = conn.execute(text(sql)).mappings().all()
+            rows = conn.execute(text("""
+                SELECT session_uid FROM dim_session
+                ORDER BY session_id DESC
+                LIMIT 10
+            """)).mappings().all()
         return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
     except Exception:
         return jsonify({"ok": False, "error": traceback.format_exc()}), 500
@@ -282,28 +286,4 @@ def ui_health():
             conn.execute(text("SELECT 1"))
         return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-# ---------------------
-# NEW: server-side endpoint to build Power BI gold tables
-# ---------------------
-@ui_bp.route("/ops/build-gold", methods=["GET"])
-def ops_build_gold():
-    if not _require_ops_key():
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    ddl = [
-        "DROP TABLE IF EXISTS point_log_tbl;",
-        "CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;",
-        "DROP TABLE IF EXISTS point_summary_tbl;",
-        "CREATE TABLE point_summary_tbl AS SELECT * FROM vw_point_summary;",
-        "CREATE INDEX IF NOT EXISTS ix_pl_session ON point_log_tbl(session_uid, point_number, shot_number);",
-        "CREATE INDEX IF NOT EXISTS ix_ps_session ON point_summary_tbl(session_uid, point_number);",
-    ]
-    try:
-        with engine.begin() as conn:
-            for stmt in ddl:
-                conn.execute(text(stmt))
-        return jsonify({"ok": True, "built": ["point_log_tbl", "point_summary_tbl"]})
-    except Exception as e:
-        # Return the error to caller; logs can be added if you have a logger
         return jsonify({"ok": False, "error": str(e)}), 500
