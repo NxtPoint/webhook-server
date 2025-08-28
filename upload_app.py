@@ -1080,10 +1080,12 @@ except Exception as e:
     app.logger.exception("Failed to mount UI blueprint: %s", e)
 
 # ✅ Guarantee /upload/ always works (fallback to inline template)
+# after app.register_blueprint(ui_bp, url_prefix="/upload")
 if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter_rules()):
     @app.get("/upload/")
     def _upload_home_fallback():
         return _render_upload_html()
+
     
 @app.get("/upload/index")
 def upload_legacy_alias():
