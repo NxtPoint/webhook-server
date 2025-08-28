@@ -55,6 +55,42 @@ if not DATABASE_URL:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
+# upload_app.py  (add right after `app = Flask(...)`)
+import os, sys
+from flask import jsonify, request, send_from_directory
+
+@app.get("/__alive")
+def _ua_alive():
+    return {"ok": True, "from": "upload_app.py", "routes": len(list(app.url_map.iter_rules()))}
+
+@app.get("/__routes")
+def _ua_routes():
+    rules = []
+    for r in app.url_map.iter_rules():
+        methods = sorted(m for m in r.methods if m in {"GET","POST","PUT","DELETE","PATCH","OPTIONS"})
+        rules.append({"rule": r.rule, "endpoint": r.endpoint, "methods": methods})
+    rules.sort(key=lambda x: x["rule"])
+    return {"ok": True, "count": len(rules), "routes": rules}
+
+# Serve /upload/static/* from static/upload/*
+@app.get("/upload/static/<path:filename>")
+def upload_static(filename):
+    base = os.path.join(app.root_path, "static", "upload")
+    return send_from_directory(base, filename)
+
+# Always provide /upload/ even if blueprint fails later
+if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter_rules()):
+    @app.get("/upload/")
+    def _upload_home_fallback():
+        return _render_upload_html()
+
+# Log routes on first hit (helps in Render logs)
+@app.before_first_request
+def _log_all_routes_once():
+    app.logger.info("=== ROUTES LOADED (%d) ===", len(list(app.url_map.iter_rules())))
+    for r in app.url_map.iter_rules():
+        app.logger.info("ROUTE %s  endpoint=%s  methods=%s", r.rule, r.endpoint, sorted(r.methods))
+
 # --- DIAGNOSTICS (no auth) -----------------------------------------------
 from flask import jsonify, request, Response
 import sys
