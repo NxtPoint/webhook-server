@@ -56,10 +56,7 @@ if not DATABASE_URL:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
-# --- UI fallbacks (safe) ---
-# These endpoints let you reach the UI even if the blueprint failed to mount for any reason.
-# They do NOT modify data nor change any env logic.
-
+# ------- UI fallbacks (safe; do not mutate data) -------
 from flask import jsonify, render_template_string
 from sqlalchemy import text
 
@@ -74,12 +71,12 @@ def _ui_health():
 
 @app.get("/upload/sessions")
 def _ui_sessions_proxy():
-    # Import inside the function to avoid any import-order/circular issues at startup
     try:
-        from ui_app import sessions as _sessions  # reuse the real UI view
+        # reuse the real UI handler if import works
+        from ui_app import sessions as _sessions
         return _sessions()
     except Exception as e:
-        # If ui_app import failed, at least return a readable error
+        # show a readable error if ui_app import fails at runtime
         return render_template_string(
             "<pre>UI /upload/sessions failed to dispatch:\n\n{{err}}</pre>", err=str(e)
         ), 500
@@ -1325,6 +1322,16 @@ def ops_init_views():
         return jsonify({"ok": True, "message": "Views created/refreshed"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/ops/routes")
+def ops_routes():
+    if not _guard():  # same auth as other /ops endpoints
+        return _forbid()
+    routes = sorted(
+        {"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)}
+        for r in app.url_map.iter_rules()
+    )
+    return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
 @app.get("/ops/refresh-gold")
 def ops_refresh_gold():
