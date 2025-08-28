@@ -3,6 +3,7 @@ import os, json, re, uuid, pathlib, hashlib
 from datetime import datetime, timezone, timedelta
 
 import requests
+from flask import render_template, send_from_directory
 from flask import (
     Flask, request, jsonify, Response, make_response, send_from_directory
 )
@@ -883,14 +884,165 @@ async function poll(taskId){
 """
 
 def _render_upload_html():
-    from jinja2 import Template
-    html = Template(UPLOAD_HTML).render(
-        max_mb=MAX_UPLOAD_MB,
-        target_folder=DROPBOX_TARGET_FOLDER,
-        dropbox_ready=bool(DROPBOX_ACCESS_TOKEN),
-        sportai_ready=bool(SPORT_AI_TOKEN and (SPORTAI_CREATE_URL or SPORTAI_API_BASE)),
+    """
+    Render the upload UI. If templates/upload.html is missing or Jinja errors,
+    serve a safe inline HTML fallback so we never 500 on /upload pages.
+    """
+    dropbox_ready = bool(
+        os.environ.get("DROPBOX_ACCESS_TOKEN") or
+        os.environ.get("DROPBOX_TOKEN")
     )
-    return make_response(html, 200, {"Content-Type": "text/html; charset=utf-8"})
+    sportai_ready = bool(
+        os.environ.get("SPORT_AI_TOKEN") or
+        os.environ.get("SPORTAI_TOKEN")
+    )
+    target_folder = os.environ.get("DROPBOX_TARGET_FOLDER", "/uploads")
+    try:
+        max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB", "200"))
+    except Exception:
+        max_upload_mb = 200
+
+    # First try the real template: templates/upload.html
+    try:
+        return render_template(
+            "upload.html",
+            dropbox_ready=dropbox_ready,
+            sportai_ready=sportai_ready,
+            target_folder=target_folder,
+            max_upload_mb=max_upload_mb,
+        )
+    except Exception as _e:
+        # Fallback minimal inline page (works even if template/static files are missing)
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Upload Match Video</title>
+  <style>
+    html, body {{ margin:0; font-family:Arial,sans-serif; height:100%;
+      background:#0b1d12; color:#fff; }}
+    .overlay {{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }}
+    .container {{ width:100%; max-width:520px; background:rgba(0,128,0,.15); border:2px solid #00ff80;
+      border-radius:16px; padding:20px; box-shadow:0 0 20px #00ff80; }}
+    h2 {{ margin:0 0 12px; }}
+    .pill {{ display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80;
+      background:rgba(0,0,0,.2); font-size:.85rem; margin:6px 6px 12px 0; }}
+    .warn {{ color:#fca5a5; border-color:#fca5a5; }}
+    input[type="email"], input[type="file"] {{ width:100%; padding:12px; margin:10px 0;
+      border-radius:6px; border:none; font-size:1rem; }}
+    button {{ background:#00ff80; color:#000; padding:12px 20px; border:none; border-radius:6px;
+      font-size:1rem; cursor:pointer; }}
+    button:hover {{ background:#00cc66; }}
+    #status {{ background:rgba(255,255,255,.08); border:1px solid #00ff80; border-radius:10px;
+      padding:12px; margin-top:14px; white-space:pre-wrap; }}
+    .progress-bar {{ background:#ffffff40; border-radius:8px; margin-top:10px; height:12px; overflow:hidden; }}
+    .progress-bar-fill {{ height:100%; width:0%; background:#00ff80; transition:width .3s; }}
+  </style>
+</head>
+<body>
+  <div class="overlay">
+    <div class="container" data-max-mb="{max_upload_mb}">
+      <h2>🎾 Upload Match Video</h2>
+      {"<div class='pill warn'>Dropbox server credentials are not configured.</div>" if not dropbox_ready else ""}
+      {"<div class='pill warn'>SPORT_AI_TOKEN is not configured.</div>" if not sportai_ready else ""}
+      <div class="pill">Target folder: <strong>{target_folder}</strong></div>
+
+      <form id="uploadForm" enctype="multipart/form-data">
+        <input type="email" name="email" placeholder="Your email" required />
+        <input type="file" name="video" accept=".mp4,.mov" required />
+        <button type="submit">Upload to Our Dropbox & Analyze</button>
+      </form>
+
+      <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
+      <div id="status"></div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("uploadForm");
+    const statusText = document.getElementById("status");
+    const progressFill = document.getElementById("progressFill");
+    const MAX_MB = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
+    const MAX_BYTES = MAX_MB * 1024 * 1024;
+
+    function updateProgressBar(p) {{ progressFill.style.width = p + "%"; }}
+    function updateStatus(m) {{
+      statusText.textContent += (statusText.textContent ? "\\n" : "") + m;
+    }}
+    async function readJson(res) {{
+      const txt = await res.text();
+      try {{ return JSON.parse(txt); }} catch {{ return {{ _raw: txt }}; }}
+    }}
+
+    form.addEventListener("submit", async (e) => {{
+      e.preventDefault();
+      statusText.textContent = "🚀 Starting upload...";
+      updateProgressBar(5);
+
+      try {{
+        const fd = new FormData(form);
+        const f = form.querySelector('input[type="file"]').files[0];
+        if (!f) {{ updateStatus("❌ Please select a video file."); updateProgressBar(0); return; }}
+        if (f.size > MAX_BYTES) {{
+          updateStatus(`❌ File is ${{Math.round(f.size/1024/1024)}}MB > ${{MAX_MB}}MB (server limit).`);
+          updateProgressBar(0); return;
+        }}
+
+        const res = await fetch("/upload", {{ method: "POST", body: fd }});
+        const data = await readJson(res);
+        if (!res.ok || data?.error) {{
+          const msg = data?.error || `HTTP ${{res.status}} ${{res.statusText}}: ${{(data?._raw||"").slice(0,400)}}`;
+          updateStatus("❌ Upload Error: " + msg);
+          updateProgressBar(0);
+          return;
+        }}
+
+        const taskId = data?.task_id || data?.sportai_task_id;
+        if (!taskId) {{ updateStatus("❌ No task id returned."); return; }}
+
+        updateProgressBar(40);
+        updateStatus("✅ Uploaded to Dropbox and registered with SportAI...");
+        if (data.dropbox_url) updateStatus("📎 Source: " + data.dropbox_url);
+        updateStatus("📡 Waiting for analysis to complete...");
+
+        let attempts = 0, maxAttempts = 120, delay = 5000;
+        const timer = setInterval(async () => {{
+          attempts++;
+          try {{
+            const r = await fetch(`/upload/task_status/${{taskId}}`);
+            const dj = await readJson(r);
+            const status = dj?.data?.task_status || "unknown";
+            const progress = typeof dj?.data?.task_progress === "number" ? dj.data.task_progress : 0;
+            const pct = Math.max(0, Math.min(100, Math.round(progress*100)));
+            updateProgressBar(pct);
+
+            if (status === "completed") {{
+              updateProgressBar(100);
+              updateStatus("✅ Analysis complete! JSON downloaded & ingested.");
+              clearInterval(timer);
+            }} else if (status === "failed") {{
+              updateStatus("❌ Analysis failed.");
+              clearInterval(timer);
+            }} else if (attempts >= maxAttempts) {{
+              updateStatus("⚠️ Timeout. Try again later.");
+              clearInterval(timer);
+            }} else {{
+              updateStatus(`🔄 Status: ${{status}} (${{pct}}%)`);
+            }}
+          }} catch (err) {{
+            updateStatus("❌ Polling failed: " + String(err));
+            clearInterval(timer);
+          }}
+        }}, delay);
+      }} catch (err) {{
+        updateStatus("❌ Final step failed: " + String(err));
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+        return Response(html, mimetype="text/html")
+
 
 @app.get("/upload")
 def upload_page():
@@ -903,8 +1055,8 @@ def upload_legacy_alias():
 
 @app.get("/upload/static/<path:filename>")
 def upload_static(filename):
-    # optional background/image support if you add files under static/upload/
-    return send_from_directory(BASE_DIR / "static" / "upload", filename)
+    base = os.path.join(app.root_path, "static", "upload")
+    return send_from_directory(base, filename)
 
 def _dbx_upload_bytes(path_in_dbx: str, blob: bytes) -> dict:
     h = {
