@@ -13,6 +13,8 @@ OPS_KEY = os.environ.get("OPS_KEY", "")
 
 ui_bp = Blueprint("ui", __name__)
 
+
+
 # --- small helper for ops auth (keeps behavior consistent with other ops endpoints) ---
 def _require_ops_key() -> bool:  # NEW
     key = request.args.get("key", "")
@@ -68,26 +70,39 @@ def home():
 
 @ui_bp.route("/sessions")
 def sessions():
-    with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT s.session_uid,
-                   (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id) AS players,
-                   (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id) AS rallies,
-                   (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id) AS swings,
-                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id) AS ball_bounces,
-                   (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
-                   (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
-                   (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id) AS snapshots
-            FROM dim_session s
-            ORDER BY s.session_id DESC
-            LIMIT 200
-        """)).mappings().all()
+    sql = """
+        SELECT s.session_uid,
+               (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)         AS players,
+               (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)         AS rallies,
+               (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)         AS swings,
+               (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)          AS ball_bounces,
+               (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
+               (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
+               (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)         AS snapshots
+        FROM dim_session s
+        ORDER BY s.session_id DESC
+        LIMIT 200
+    """
+    rows, err = [], None
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql)).mappings().all()
+    except Exception as e:
+        err = str(e)
 
     tpl = """
     {% extends _BASE %}{% block body %}
       <h2>Sessions</h2>
+
+      {% if err %}
+        <pre style="color:#b91c1c;background:#fee2e2;border:1px solid #fecaca;padding:10px;border-radius:8px">
+          {{ err }}
+        </pre>
+        <p class="small">Tip: hit <a href="{{ url_for('ui.ui_health') }}">/upload/health</a> for a quick DB check.</p>
+      {% endif %}
+
       <div class="small">
-        UI prefix (mounted via wsgi.py): 
+        UI prefix (mounted via wsgi.py):
         <span class="mono">{{ request.url_root.rstrip('/') }}{{ request.script_root }}/upload</span>
       </div>
 
@@ -96,21 +111,14 @@ def sessions():
         <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
         <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
         <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
-        <a class="pill" href="?k/upload/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>  <!-- NEW -->
+        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
       </div>
 
       <table>
         <thead>
           <tr>
-            <th>Session UID</th>
-            <th>Players</th>
-            <th>Rallies</th>
-            <th>Swings</th>
-            <th>Bounces</th>
-            <th>Ball Pos</th>
-            <th>Player Pos</th>
-            <th>Snapshots</th>
-            <th>Actions</th>
+            <th>Session UID</th><th>Players</th><th>Rallies</th><th>Swings</th>
+            <th>Bounces</th><th>Ball Pos</th><th>Player Pos</th><th>Snapshots</th><th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -142,7 +150,8 @@ def sessions():
       </table>
     {% endblock %}
     """
-    return render_template_string(tpl, _BASE=_BASE, rows=rows, key=OPS_KEY)
+    return render_template_string(tpl, _BASE=_BASE, rows=rows, err=err, key=OPS_KEY)
+
 
 @ui_bp.route("/peek/<session_uid>")
 def peek(session_uid):
@@ -253,6 +262,15 @@ def sql():
     {% endblock %}
     """
     return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY)
+
+@ui_bp.route("/health")
+def ui_health():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ---------------------
 # NEW: server-side endpoint to build Power BI gold tables
