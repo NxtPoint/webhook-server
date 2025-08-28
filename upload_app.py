@@ -55,6 +55,51 @@ if not DATABASE_URL:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
+# --- DIAGNOSTICS (no auth) -----------------------------------------------
+from flask import jsonify, request, Response
+import sys
+
+@app.get("/__whoami")
+def __whoami():
+    static_folder = os.path.join(app.root_path, "static")
+    upload_static_folder = os.path.join(static_folder, "upload")
+    return jsonify({
+        "ok": True,
+        "app_file": __file__,
+        "root_path": app.root_path,
+        "static_folder": static_folder,
+        "upload_static_folder": upload_static_folder,
+        "python": sys.version.split()[0],
+        "routes_count": len(list(app.url_map.iter_rules())),
+    })
+
+@app.get("/__routes")
+def __routes():
+    rules = []
+    for r in app.url_map.iter_rules():
+        methods = sorted(m for m in r.methods if m in {"GET","POST","PUT","DELETE","PATCH","OPTIONS"})
+        rules.append({"rule": r.rule, "endpoint": r.endpoint, "methods": methods})
+    rules.sort(key=lambda x: x["rule"])
+    return jsonify({"ok": True, "count": len(rules), "routes": rules})
+
+@app.get("/debug/static-check")
+def debug_static_check():
+    # ?file=background-clean-male-serve.jpg
+    fname = request.args.get("file") or "background-clean-male-serve.jpg"
+    folder = os.path.join(app.root_path, "static", "upload")
+    path = os.path.join(folder, fname)
+    return jsonify({
+        "ok": True,
+        "file": fname,
+        "folder": folder,
+        "path": path,
+        "exists": os.path.exists(path)
+    })
+
+@app.get("/upload/test")
+def upload_test():
+    return Response("upload ok", mimetype="text/plain")
+
 @app.get("/upload/health")
 def _ui_health():
     """Read-only DB ping so the UI path is always alive, even if the UI blueprint fails to load."""
@@ -1085,7 +1130,6 @@ if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter
     @app.get("/upload/")
     def _upload_home_fallback():
         return _render_upload_html()
-
     
 @app.get("/upload/index")
 def upload_legacy_alias():
