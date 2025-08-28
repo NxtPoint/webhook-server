@@ -4,4 +4,4 @@ psycopg2-binary
 python-dotenv
 pandas
 requests
-gunicorn
+gunicorn==21.2.0
