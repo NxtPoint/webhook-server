@@ -818,14 +818,16 @@ def ingest_result_v2(conn, payload, replace=False, forced_uid=None, src_hint=Non
             pass
 
     # === Build/repair rallies, link, normalize serve, and align *_ts ===
-        if not (PREFER_PAYLOAD_RALLIES and has_payload_rallies):
-            _ensure_rallies_from_swings(conn, session_id, gap_s=6.0)
+    # Only derive rallies when the payload didn't provide any
+    payload_rally_ct = len(payload.get("rallies") or [])
+    if payload_rally_ct == 0:
+        gap = float(os.environ.get("RALLY_GAP_S", "6.0"))
+        _ensure_rallies_from_swings(conn, session_id, gap_s=gap)
 
-        _link_swings_to_rallies(conn, session_id)
-        _normalize_serve_flags(conn, session_id)
-        _rebuild_ts_from_seconds(conn, session_id)
-
-    return {"session_uid": session_uid, "session_id": session_id}
+    # Always link swings to whatever rallies exist (payload or derived)
+    _link_swings_to_rallies(conn, session_id)
+    _normalize_serve_flags(conn, session_id)
+    _rebuild_ts_from_seconds(conn, session_id)
 
 # --- Helper: map SportAI player IDs -> our dim_player.player_id for a session ---
 def _player_map(conn, session_id: int) -> dict:
