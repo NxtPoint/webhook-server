@@ -55,12 +55,13 @@ if not DATABASE_URL:
 app = Flask(__name__, template_folder="templates", static_folder="static")
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
-# upload_app.py  (add right after `app = Flask(...)`)
-import os, sys
+# ---- BEGIN: diagnostics, early registration ----
+import os
 from flask import jsonify, request, send_from_directory
 
 @app.get("/__alive")
 def _ua_alive():
+    # proves upload_app.py is actually serving
     return {"ok": True, "from": "upload_app.py", "routes": len(list(app.url_map.iter_rules()))}
 
 @app.get("/__routes")
@@ -78,11 +79,20 @@ def upload_static(filename):
     base = os.path.join(app.root_path, "static", "upload")
     return send_from_directory(base, filename)
 
-# Always provide /upload/ even if blueprint fails later
+# Always make /upload/ work even if a blueprint didn’t mount
 if not any(r.rule == "/upload/" and "GET" in r.methods for r in app.url_map.iter_rules()):
     @app.get("/upload/")
     def _upload_home_fallback():
         return _render_upload_html()
+
+# Dump routes at import time so they show in Render logs right away
+try:
+    app.logger.warning("=== ROUTES LOADED (%d) ===", len(list(app.url_map.iter_rules())))
+    for r in app.url_map.iter_rules():
+        app.logger.warning("ROUTE %s  endpoint=%s  methods=%s", r.rule, r.endpoint, sorted(r.methods))
+except Exception as _e:
+    app.logger.error("route dump failed: %s", _e)
+# ---- END: diagnostics ----
 
 # Log routes on first hit (helps in Render logs)
 @app.before_first_request
