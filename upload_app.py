@@ -17,10 +17,14 @@ DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads")
-SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").rstrip("/")
+SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").strip().rstrip("/")
 SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
 SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
-SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "")
+SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
+
+# Try the configured base first, then a safe fallback.
+ALT_SPORTAI_BASES = [SPORTAI_BASE, "https://sportai.app", "https://api.sportai.app"]
+ALT_SPORTAI_BASES = list(dict.fromkeys([b.strip().rstrip("/") for b in ALT_SPORTAI_BASES if b]))
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
 
@@ -108,15 +112,28 @@ def _to_direct_dropbox(url: str) -> str:
 def _sportai_submit(video_url: str, email: str | None = None) -> str:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
-    url = f"{SPORTAI_BASE}{SPORTAI_SUBMIT_PATH}"
+
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
     payload = {"video_url": video_url, "sport": "tennis"}
     if email: payload["email"] = email
-    r = requests.post(url, headers=headers, json=payload, timeout=60); r.raise_for_status()
-    j = r.json() or {}
-    tid = j.get("task_id") or j.get("id") or (j.get("data") or {}).get("task_id")
-    if not tid: raise RuntimeError(f"No task_id in response: {j}")
-    return str(tid)
+
+    last_err = None
+    for base in ALT_SPORTAI_BASES:
+        try:
+            url = f"{base}{SPORTAI_SUBMIT_PATH}"
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
+            r.raise_for_status()
+            j = r.json() or {}
+            tid = j.get("task_id") or j.get("id") or (j.get("data") or {}).get("task_id")
+            if not tid:
+                raise RuntimeError(f"No task_id in response: {j}")
+            return str(tid)
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(f"SportAI submit failed on all bases {ALT_SPORTAI_BASES}: {last_err}")
+
 
 def _sportai_status(task_id: str) -> dict:
     if not SPORTAI_TOKEN:
@@ -165,6 +182,19 @@ def ops_dropbox_auth_test():
         return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
     mode = "access_token" if DBX_ACCESS_TOKEN else "refresh_flow"
     return jsonify({"ok": True, "mode": mode, "access_token_last4": tok[-4:]})
+
+@app.get("/ops/net-test")
+def ops_net_test():
+    if not _guard(): return _forbid()
+    out = {}
+    for base in ALT_SPORTAI_BASES:
+        try:
+            u = f"{base}/"
+            r = requests.get(u, timeout=10)
+            out[base] = {"ok": r.ok, "code": r.status_code}
+        except Exception as e:
+            out[base] = {"ok": False, "error": str(e)}
+    return jsonify({"ok": True, "tests": out})
 
 
 @app.post("/upload/api/upload")
