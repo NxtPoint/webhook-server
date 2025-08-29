@@ -1,24 +1,21 @@
-﻿# upload_app.py  — NextPoint Upload/Ingester (restored)
-# -----------------------------------------------------
-import os, json, hashlib, re
+﻿# upload_app.py — NextPoint Upload/Ingester (restored & de-duped)
+# ---------------------------------------------------------------
+import os, json, time, re, hashlib
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, Iterable, Tuple
+from typing import Dict
 
 import requests
-from flask import (
-    Flask, request, jsonify, Response
-)
-
+from flask import Flask, request, jsonify, Response, render_template, send_from_directory
+from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
-import json, time
-import requests
-from werkzeug.utils import secure_filename
-from flask import request
 
-# single app (Render expects this)
+# Single Flask app (Render expects exactly one)
 app = Flask(__name__, template_folder="templates", static_folder="static")
-# ----- Dropbox config -----
+
+# =========================
+#   Dropbox configuration
+# =========================
 DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
@@ -46,7 +43,7 @@ def _dbx_access_token():
 def api_upload_to_dropbox():
     """
     Expects multipart/form-data:
-      - file: the video file
+      - file : the video file (required)
       - email: user email (optional)
     """
     f = request.files.get("file")
@@ -95,8 +92,9 @@ def api_upload_to_dropbox():
         "name": meta.get("name", clean),
     })
 
-
-# --- Config -------------------------------------------------------------
+# =========================
+#       App config
+# =========================
 DATABASE_URL     = os.environ.get("DATABASE_URL")
 OPS_KEY          = os.environ.get("OPS_KEY", "")
 STRICT_REINGEST  = os.environ.get("STRICT_REINGEST", "0").lower() in ("1","true","yes","y")
@@ -110,11 +108,12 @@ RALLY_GAP_S               = float(os.environ.get("RALLY_GAP_S", "6.0"))
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
 
-# Single source of engine
-from db_init import engine
+# One engine for everything
+from db_init import engine  # noqa: E402
 
-
-# --- Helpers ------------------------------------------------------------
+# =========================
+#       Helpers
+# =========================
 def _guard() -> bool:
     """Allow ?key=… or header X-OPS-Key / Bearer."""
     qk = request.args.get("key") or request.args.get("ops_key")
@@ -140,7 +139,6 @@ def _canonical_json(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 def _sha1_hex(s: str) -> str:
-    import hashlib
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 def _float(v):
@@ -181,8 +179,9 @@ def _quantize_time(s, fps):
     if fps: return _quantize_time_to_fps(s, fps)
     return round(float(s), 3)  # 1ms grid when fps unknown
 
-
-# --- Minimal service/health & route dump (Render) ----------------------
+# =========================
+#  Health + diagnostics
+# =========================
 @app.get("/upload/api/status")
 def upload_status():
     return jsonify({
@@ -215,10 +214,9 @@ def __routes_locked():
     if not _guard(): return _forbid()
     return __routes_open()
 
-
-# ----------------------------------------------------------------------
-#                          INGEST PIPELINE
-# ----------------------------------------------------------------------
+# =========================
+#        Ingest core
+# =========================
 def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
     if forced_uid:
         return str(forced_uid)
@@ -258,10 +256,9 @@ def _resolve_session_date(payload):
                 return None
     return None
 
-def _base_dt_for_session(dt): 
+def _base_dt_for_session(dt):
     return dt if dt else datetime(1970,1,1,tzinfo=timezone.utc)
 
-# swings normalization (as per your original)
 _SWING_TYPES   = {"swing","stroke","shot","hit","serve","forehand","backhand","volley","overhead","slice","drop","lob"}
 _SERVE_LABELS  = {"serve","first_serve","1st_serve","second_serve","2nd_serve"}
 
@@ -277,7 +274,7 @@ def _extract_ball_hit_from_events(events):
     return (None, None, None)
 
 def _normalize_swing_obj(obj):
-    if not isinstance(obj, dict): 
+    if not isinstance(obj, dict):
         return None
 
     suid   = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
@@ -402,17 +399,6 @@ def _insert_raw_result(conn, sid: int, payload: dict) -> None:
         INSERT INTO raw_result (session_id, payload_json, created_at)
         VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
     """), {"sid": sid, "p": json.dumps(payload)})
-
-def _fact_swing_ts_cols(conn):
-    rows = conn.execute(sql_text("""
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema='public' AND table_name='fact_swing'
-    """)).fetchall()
-    cols = {r[0] for r in rows}
-    ts_s     = 'ball_hit_s'  if 'ball_hit_s'  in cols else ('ts_s' if 'ts_s' in cols else None)
-    ts_abs   = 'ball_hit_ts' if 'ball_hit_ts' in cols else ('ts'   if 'ts'   in cols else None)
-    return ts_s, ts_abs
 
 def _ensure_rallies_from_swings(conn, session_id, gap_s=6.0):
     conn.execute(sql_text("""
@@ -797,7 +783,7 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
     for norm in _gather_all_swings(payload):
         pid = uid_to_player_id.get(str(norm.get("player_uid") or "")) if norm.get("player_uid") else None
         k = _seen_key(pid, norm)
-        if k in seen: 
+        if k in seen:
             continue
         seen.add(k)
 
@@ -834,10 +820,9 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
 
     return {"session_uid": session_uid, "session_id": session_id}
 
-
-# ----------------------------------------------------------------------
-#                          OPS ENDPOINTS
-# ----------------------------------------------------------------------
+# =========================
+#        OPS endpoints
+# =========================
 @app.get("/ops/db-ping")
 def db_ping():
     if not _guard(): return _forbid()
@@ -1010,7 +995,6 @@ def ops_inspect_raw():
     }
     return jsonify({"ok": True, "session_uid": session_uid, "summary": summary})
 
-# --- Backfill XY into Bronze from RAW (latest) ------------------------
 @app.get("/ops/backfill-xy")
 def ops_backfill_xy():
     if not _guard(): return _forbid()
@@ -1114,7 +1098,6 @@ def ops_backfill_xy():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# --- RAW vs BRONZE reconcile (counts) ---------------------------------
 @app.get("/ops/reconcile")
 def ops_reconcile():
     if not _guard(): return _forbid()
@@ -1226,9 +1209,9 @@ def ops_reconcile():
         }
     })
 
-# ----------------------------------------------------------------------
-#                Upload page (HTML) + SportAI webhook
-# ----------------------------------------------------------------------
+# =========================
+#   Upload page + webhook
+# =========================
 def _normalize_dropbox_url(u: str) -> str:
     try:
         from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
@@ -1394,11 +1377,19 @@ def ops_sportai_callback():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ----------------------------------------------------------------------
-# optional: mount your UI blueprint (sessions/SQL UI) if present
+# =========================
+#   Mount UI blueprint
+# =========================
 try:
-    from ui_app import ui_bp
+    from ui_app import ui_bp  # sessions/SQL UI, templates/upload.html, etc.
     app.register_blueprint(ui_bp, url_prefix="/upload")
     print("Mounted ui_bp at /upload")
 except Exception as e:
     print("ui_bp not mounted:", e)
+
+# Print routes at boot
+print("=== ROUTES ===")
+for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
+    meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
+    print(f"{r.rule:30s} -> {r.endpoint:24s} [{meth}]")
+print("================")
