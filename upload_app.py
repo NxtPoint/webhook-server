@@ -1,12 +1,12 @@
 ﻿import os, sys
 from flask import Flask, jsonify, request, Response
 
-# Single Flask app (do NOT create another one anywhere)
+# Single Flask app (do not create another anywhere)
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 BOOT_TAG = os.getenv("RENDER_GIT_COMMIT", "local")[:7]
 
-# --- Minimal root/health so Render can check liveness ---
+# ----- simple liveness -----
 @app.get("/")
 def root_ok():
     return "OK", 200
@@ -15,7 +15,7 @@ def root_ok():
 def healthz_ok():
     return "OK", 200
 
-# --- Quick ops guard (optional; only used by /ops/*) ---
+# ----- ops guard (for /ops/*) -----
 OPS_KEY = os.environ.get("OPS_KEY", "")
 def _guard_ok() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
@@ -26,7 +26,7 @@ def _guard_ok() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-# --- Route listing (open + locked) ---
+# ----- route listings -----
 @app.get("/__routes")
 def __routes_open():
     routes = []
@@ -42,7 +42,7 @@ def __routes_locked():
         return Response("Forbidden", 403)
     return __routes_open()
 
-# --- WhoAmI: proves which code file is serving right now ---
+# ----- signature + diagnostics -----
 @app.get("/__whoami")
 def __whoami():
     return jsonify({
@@ -53,18 +53,17 @@ def __whoami():
         "pid": os.getpid(),
         "python": sys.version.split()[0],
         "first_sys_path": sys.path[0],
-        "env_root_dir": os.environ.get("RENDER_ROOT_DIR", "<unset>"),
     })
 
-# (Optional) mount your UI blueprint later
-try:
-    from ui_app import ui_bp
-    app.register_blueprint(ui_bp, url_prefix="/upload")
-    print("Mounted ui_bp at /upload")
-except Exception as e:
-    print("ui_bp not mounted:", e)
+# If you have ui_app later, you can re-enable; for now keep off to avoid side effects
+# try:
+#     from ui_app import ui_bp
+#     app.register_blueprint(ui_bp, url_prefix="/upload")
+#     print("Mounted ui_bp at /upload")
+# except Exception as e:
+#     print("ui_bp not mounted:", e)
 
-# Dump routes at startup so you can see them in logs
+# Print routes at boot (unbuffered mode will ensure this shows in logs)
 print("=== ROUTES (startup) ===")
 for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     methods = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
