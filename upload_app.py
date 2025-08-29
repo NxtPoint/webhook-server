@@ -159,6 +159,14 @@ def api_upload_to_dropbox():
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
     meta = up.json()
 
+# accept trailing slash alias
+app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST"])
+
+# return a clear hint if someone hits it with GET (prevents 404 confusion)
+@app.get("/upload/api/upload")
+def api_upload_to_dropbox_get_hint():
+    return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
+
     # Create share link -> direct link
     try:
         share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
