@@ -1,8 +1,12 @@
 # wsgi.py
 import os
-from upload_app import app as backend_app
+from upload_app import app as backend_app          # the real Flask app
+from probes import install as install_probes       # <-- new
 
-# Mount the UI blueprint once (no-op if it's already mounted inside upload_app)
+# Force-install diagnostic routes on the exact app Render runs
+install_probes(backend_app)
+
+# Try to mount the UI blueprint if it isn't already
 try:
     from ui_app import ui_bp
     if 'ui' not in backend_app.blueprints:
@@ -10,21 +14,8 @@ try:
 except Exception:
     pass
 
-# ---- DIAGNOSTIC ROUTES (top-level, no prefix) ----
-@backend_app.get("/__alive")
-def __alive():
-    return {"ok": True, "pid": os.getpid()}
-
-@backend_app.get("/__routes")
-def __routes():
-    # return every known rule so you can verify registration over the network
-    rules = sorted(f"{r.rule} -> {','.join(sorted(r.methods - {'HEAD'}))}"
-                   for r in backend_app.url_map.iter_rules())
-    return {"count": len(rules), "rules": rules}
-
-# Expose as 'app' for gunicorn/render
+# Expose for Render / gunicorn
 app = backend_app
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
