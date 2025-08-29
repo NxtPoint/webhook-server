@@ -158,11 +158,39 @@ def api_upload_to_dropbox():
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
     meta = up.json()
+    # Create share link -> direct link
+    try:
+        share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
+        video_url = _to_direct_dropbox(share_url)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Dropbox shared link error: {e}"}), 502
 
-# accept trailing slash alias
+    # Submit to SportAI
+    try:
+        task_id = _sportai_submit(video_url, email=email)
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "stage": "sportai_submit",
+            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
+            "share_url": share_url,
+            "video_url": video_url,
+            "error": str(e),
+        }), 502
+
+    return jsonify({
+        "ok": True,
+        "task_id": task_id,
+        "share_url": share_url,
+        "video_url": video_url,
+        "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
+    })
+
+# accept trailing-slash and root-level alias
 app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST"])
+app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["POST"])
 
-# return a clear hint if someone hits it with GET (prevents 404 confusion)
+# helpful GET hint
 @app.get("/upload/api/upload")
 def api_upload_to_dropbox_get_hint():
     return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
