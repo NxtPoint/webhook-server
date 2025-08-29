@@ -177,6 +177,33 @@ def upload_status():
                     "sportai_ready": bool(SPORTAI_TOKEN),
                     "target_folder": DBX_FOLDER})
 
+@app.get("/ops/env")
+def ops_env():
+    if not _guard(): return _forbid()
+    return jsonify({
+        "ok": True,
+        "SPORT_AI_BASE": SPORTAI_BASE,
+        "SPORT_AI_SUBMIT_PATH": SPORTAI_SUBMIT_PATH,
+        "SPORT_AI_STATUS_PATH": SPORTAI_STATUS_PATH,
+        "has_TOKEN": bool(SPORTAI_TOKEN),
+    })
+
+@app.get("/ops/ping-sportai")
+def ops_ping_sportai():
+    if not _guard(): return _forbid()
+    base = SPORTAI_BASE
+    submit_url = f"{base.rstrip('/')}/{SPORTAI_SUBMIT_PATH.lstrip('/')}"
+    try:
+        # Any response (even 4xx) proves connectivity/DNS works
+        r = requests.post(submit_url, headers={
+            "Authorization": f"Bearer {SPORTAI_TOKEN}",
+            "Content-Type": "application/json",
+        }, json={"_ping": True}, timeout=10)
+        return jsonify({"ok": True, "url": submit_url, "status": r.status_code})
+    except Exception as e:
+        return jsonify({"ok": False, "url": submit_url, "error": str(e)}), 502
+
+
 @app.get("/ops/dropbox-auth-test")
 def ops_dropbox_auth_test():
     if not _guard(): return _forbid()
