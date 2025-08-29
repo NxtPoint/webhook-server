@@ -167,6 +167,7 @@ def api_upload_to_dropbox():
 # aliases (accept trailing slash and root-level)
 app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
 app.add_url_rule("/api/upload",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+app.add_url_rule("/upload/api", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
 
 # NEW: some front-ends post to /upload/api (no trailing /upload)
 app.add_url_rule("/upload/api",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
