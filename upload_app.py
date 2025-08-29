@@ -11,9 +11,90 @@ from flask import (
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
+import json, time
+import requests
+from werkzeug.utils import secure_filename
+from flask import request
 
 # single app (Render expects this)
 app = Flask(__name__, template_folder="templates", static_folder="static")
+# ----- Dropbox config -----
+DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
+DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
+DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
+DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/incoming")  # shown on the page
+
+def _dbx_access_token():
+    """Exchange refresh token -> short-lived access token."""
+    if not (DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH):
+        return None, "Missing Dropbox env vars (DROPBOX_APP_KEY/SECRET/REFRESH_TOKEN)."
+    r = requests.post(
+        "https://api.dropbox.com/oauth2/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": DBX_REFRESH,
+            "client_id": DBX_APP_KEY,
+            "client_secret": DBX_APP_SECRET,
+        },
+        timeout=30,
+    )
+    if r.ok:
+        return r.json().get("access_token"), None
+    return None, f"{r.status_code}: {r.text}"
+
+@app.post("/upload/api/upload")
+def api_upload_to_dropbox():
+    """
+    Expects multipart/form-data:
+      - file: the video file
+      - email: user email (optional)
+    """
+    f = request.files.get("file")
+    email = (request.form.get("email") or "").strip().lower()
+
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file provided."}), 400
+
+    token, err = _dbx_access_token()
+    if not token:
+        return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+
+    # Build Dropbox destination path
+    clean = secure_filename(f.filename)
+    ts = int(time.time())
+    dest_path = f"{DBX_FOLDER.rstrip('/')}/{ts}_{clean}"
+
+    # Upload to Dropbox content API
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Dropbox-API-Arg": json.dumps({
+            "path": dest_path,
+            "mode": "add",
+            "autorename": True,
+            "mute": False,
+        }),
+        "Content-Type": "application/octet-stream",
+    }
+    data = f.read()
+    up = requests.post(
+        "https://content.dropboxapi.com/2/files/upload",
+        headers=headers,
+        data=data,
+        timeout=600,
+    )
+
+    if not up.ok:
+        return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
+
+    meta = up.json()
+    return jsonify({
+        "ok": True,
+        "email": email,
+        "path": meta.get("path_display") or dest_path,
+        "size": meta.get("size"),
+        "name": meta.get("name", clean),
+    })
+
 
 # --- Config -------------------------------------------------------------
 DATABASE_URL     = os.environ.get("DATABASE_URL")
@@ -102,6 +183,15 @@ def _quantize_time(s, fps):
 
 
 # --- Minimal service/health & route dump (Render) ----------------------
+@app.get("/upload/api/status")
+def upload_status():
+    return jsonify({
+        "ok": True,
+        "dropbox_ready": bool(DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH),
+        "sportai_ready": bool(os.getenv("SPORT_AI_TOKEN")),
+        "target_folder": DBX_FOLDER,
+    })
+
 @app.get("/")
 def root_ok():
     return jsonify({"service": "NextPoint Upload/Ingester v3", "ok": True})
