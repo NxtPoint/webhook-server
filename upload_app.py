@@ -57,6 +57,10 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # upload_app.py
 # ...
 app = Flask(__name__, template_folder="templates", static_folder="static")
+@app.get("/__alive")
+def _alive():
+    # very light-weight check
+    return "OK", 200
 
 # --- DIAGNOSTIC + FALLBACK ROUTES (guaranteed to exist) ---
 from flask import jsonify
