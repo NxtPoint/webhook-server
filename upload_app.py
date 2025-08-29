@@ -282,14 +282,13 @@ def ops_sportai_dns():
 # -------------------------------------------------------
 # Upload API (also accepts direct JSON with video_url)
 # -------------------------------------------------------
-# Legacy /upload alias (accepts 'file' or legacy 'video'); no add_url_rule used.
-
+# Upload API (also accepts direct JSON with video_url)
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_dropbox():
     # support OPTIONS preflight
     if request.method == "OPTIONS":
         return ("", 204)
-    
+
     # 1) If JSON with video_url is provided, skip Dropbox and submit directly
     if request.is_json:
         body = request.get_json(silent=True) or {}
@@ -331,19 +330,52 @@ def api_upload_to_dropbox():
         video_url = _force_direct_dropbox(share_url)
         task_id = _sportai_submit(video_url, email=email)
     except Exception as e:
-        return jsonify({"ok": False,
-                        "error": f"Upload ok, SportAI submit failed: {e}",
-                        "upload": {"path": meta.get("path_display") or dest_path,
-                                   "size": meta.get("size"),
-                                   "name": meta.get("name", clean)}}), 502
+        return jsonify({
+            "ok": False,
+            "error": f"Upload ok, SportAI submit failed: {e}",
+            "upload": {"path": meta.get("path_display") or dest_path,
+                       "size": meta.get("size"),
+                       "name": meta.get("name", clean)}
+        }), 502
 
-    return jsonify({"ok": True,
-                    "task_id": task_id,
-                    "share_url": share_url,
-                    "video_url": video_url,
-                    "upload": {"path": meta.get("path_display") or dest_path,
-                               "size": meta.get("size"),
-                               "name": meta.get("name", clean)}})
+    return jsonify({
+        "ok": True,
+        "task_id": task_id,
+        "share_url": share_url,
+        "video_url": video_url,
+        "upload": {"path": meta.get("path_display") or dest_path,
+                   "size": meta.get("size"),
+                   "name": meta.get("name", clean)}
+    })
+
+
+# Legacy /upload alias (keeps old front-end working)
+@app.route("/upload", methods=["POST", "OPTIONS"])
+def upload_alias():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    return api_upload_to_dropbox()
+
+
+# Old front-end polls /upload/task_status/<task_id>
+@app.get("/upload/task_status/<task_id>")
+def task_status_legacy_path(task_id):
+    try:
+        return jsonify({"ok": True, **_sportai_status(task_id)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
+# Old front-end polls /upload/task_status?task_id=...
+@app.get("/upload/task_status")
+def task_status_legacy_qs():
+    task_id = request.args.get("task_id", "")
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        return jsonify({"ok": True, **_sportai_status(task_id)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 # -------------------------------------------------------
 # Task poll
