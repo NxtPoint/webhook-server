@@ -74,7 +74,9 @@ def home():
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
     max_upload_mb = int(os.environ.get("MAX_CONTENT_MB", os.environ.get("MAX_UPLOAD_MB", "150")))
-    return render_template_string("{% include 'upload.html' %}",
+
+    return render_template_string(
+        "{% include 'upload.html' %}",
         dropbox_ready=dropbox_ready,
         sportai_ready=sportai_ready,
         target_folder=target_folder,
