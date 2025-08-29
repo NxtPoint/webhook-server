@@ -1,99 +1,74 @@
 ﻿# upload_app.py
 import os
-from flask import Flask, jsonify, render_template, Response, request, send_from_directory
+from flask import Flask, jsonify, Response, render_template, send_from_directory, request
+
+BOOT_TAG = os.getenv("DEPLOY_TAG", "boot-"+os.getenv("RENDER_GIT_COMMIT", "local")[:7])
+print("=== BOOT upload_app minimal ===", BOOT_TAG)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# --------- config / guard ----------
-OPS_KEY = os.getenv("OPS_KEY", "")  # set in Render > Environment
+OPS_KEY = os.getenv("OPS_KEY", "")
 
 def _guard_ok() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
-    hk = request.headers.get("X-OPS-Key") or request.headers.get("Authorization", "").replace("Bearer ", "")
+    bearer = request.headers.get("Authorization", "")
+    if bearer.lower().startswith("bearer "):
+        bearer = bearer.split(" ", 1)[1].strip()
+    hk = request.headers.get("X-OPS-Key") or bearer
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-# --------- health & diagnostics ----------
+# Health (both spellings)
 @app.get("/_alive")
-@app.get("/__alive")   # alias so both work
+@app.get("/__alive")
 def alive():
-    return jsonify({"ok": True, "app": "upload_app", "routes": len(list(app.url_map.iter_rules()))})
+    return jsonify({"ok": True, "app": "upload_app", "tag": BOOT_TAG, "routes": len(list(app.url_map.iter_rules()))})
 
+# Open routes dump
 @app.get("/__routes")
 def routes_open():
-    routes = sorted(
-        {"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)}
-        for r in app.url_map.iter_rules()
-    )
+    routes = sorted({"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)} for r in app.url_map.iter_rules())
     return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
+# Locked routes dump
 @app.get("/ops/routes")
 def routes_locked():
     if not _guard_ok():
         return Response("Forbidden", 403)
-    routes = sorted(
-        {"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)}
-        for r in app.url_map.iter_rules()
-    )
+    routes = sorted({"rule": r.rule, "endpoint": r.endpoint, "methods": sorted(r.methods)} for r in app.url_map.iter_rules())
     return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
-# --------- UI: always serve /upload ----------
-INLINE_UPLOAD = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"/>
-<title>Upload Match Video</title>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<style>
-  html,body{margin:0;font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0b1220;color:#fff}
-  .overlay{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-  .card{max-width:560px;width:100%;background:rgba(34,197,94,.15);border:2px solid #22c55e;border-radius:16px;box-shadow:0 0 24px #22c55e}
-  .pad{padding:22px}
-  input[type=email],input[type=file]{width:100%;padding:12px;margin:10px 0;border-radius:10px;border:none;font-size:1rem}
-  button{background:#22c55e;color:#000;padding:12px 20px;border:none;border-radius:10px;font-size:1rem;cursor:pointer}
-  #status{margin-top:10px;white-space:pre-wrap}
-</style></head>
-<body>
-  <div class="overlay"><div class="card"><div class="pad">
-    <h2>🎾 Upload Match Video</h2>
-    <form id="f" enctype="multipart/form-data">
-      <input type="email" name="email" placeholder="Your email" required/>
-      <input type="file" name="video" accept=".mp4,.mov,.m4v" required/>
-      <button type="submit">Upload</button>
-    </form>
-    <div id="status"></div>
-  </div></div></div>
-  <script>
-    const f=document.getElementById('f'), s=document.getElementById('status');
-    f.addEventListener('submit', e => { e.preventDefault(); s.textContent="This is the UI shell. Upload API isn't wired yet."; });
-  </script>
-</body></html>"""
-
+# Always serve /upload (real template if present; otherwise fallback)
+INLINE_UPLOAD = """<!doctype html><meta charset="utf-8">
+<title>Upload</title><body style="font-family:sans-serif;background:#0b1220;color:#fff">
+<h2>🎾 Upload UI Shell</h2>
+<p>This is the inline fallback. If you place templates/upload.html it will render instead.</p>
+<form id="f"><input type="email" required placeholder="Email"><input type="file" required>
+<button>Upload</button></form><pre id="s"></pre>
+<script>document.getElementById('f').onsubmit=e=>{e.preventDefault();document.getElementById('s').textContent='Stub UI ok.'}</script>
+"""
 @app.get("/upload")
 @app.get("/upload/")
 def upload_page():
-    # Try real template first; fall back to inline shell.
     try:
         return render_template("upload.html")
     except Exception:
-        return Response(INLINE_UPLOAD, mimetype="text/html")
+        return INLINE_UPLOAD, 200, {"Content-Type":"text/html; charset=utf-8"}
 
-# Serve static assets placed in static/upload/*
+# Serve /upload/static/* from static/upload/*
 @app.get("/upload/static/<path:filename>")
 def upload_static(filename):
     base = os.path.join(app.root_path, "static", "upload")
     return send_from_directory(base, filename)
 
-# Legacy alias just in case
 @app.get("/")
 def root():
-    return jsonify({"service": "NextPoint Upload (minimal)", "ok": True, "see": ["/upload", "/__routes"]})
+    return jsonify({"service": "NextPoint Upload (minimal)", "ok": True, "see": ["/upload", "/__routes"], "tag": BOOT_TAG})
 
-# Optional: mount UI blueprint if it exists; otherwise the fallback above still works.
+# (Optional) mount UI blueprint if it exists—fallbacks above still work even if import fails
 try:
     from ui_app import ui_bp
     app.register_blueprint(ui_bp, url_prefix="/upload")
-    app.logger.info("Mounted ui_bp at /upload")
+    print("Mounted ui_bp at /upload")
 except Exception as e:
-    app.logger.warning("ui_bp not mounted: %s", e)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    print("ui_bp not mounted:", e)
