@@ -13,6 +13,22 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.url_map.strict_slashes = False
 
+import hashlib, inspect
+
+@app.get("/ops/code-hash")
+def ops_code_hash():
+    if not _guard(): return _forbid()
+    try:
+        with open(__file__, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()[:16]
+        # Find the upload alias definition in the currently running source
+        src = inspect.getsource(sys.modules[__name__])
+        idx = src.find("@app.route(\"/upload\", methods=[\"POST\", \"OPTIONS\"])")
+        snippet = src[max(0, idx-80): idx+200] if idx != -1 else "alias not found in source"
+        return jsonify({"ok": True, "file": __file__, "sha256_16": sha, "snippet": snippet})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # 150 MB is Dropbox /files/upload limit (bigger uses upload_session); you're uploading ~50 MB
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 1024 * 1024
 
