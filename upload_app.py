@@ -53,6 +53,40 @@ if not DATABASE_URL:
 
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+# upload_app.py
+# ...
+app = Flask(__name__, template_folder="templates", static_folder="static")
+
+# --- DIAGNOSTIC + FALLBACK ROUTES (guaranteed to exist) ---
+from flask import jsonify
+
+@app.get("/__alive")
+def __alive():
+    return jsonify(ok=True, where="upload_app.py")
+
+@app.get("/__routes")
+def __routes():
+    rules = []
+    for r in app.url_map.iter_rules():
+        methods = sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"})
+        rules.append({"rule": r.rule, "endpoint": r.endpoint, "methods": methods})
+    rules.sort(key=lambda x: x["rule"])
+    return jsonify(ok=True, count=len(rules), routes=rules)
+
+@app.get("/")
+def root():
+    # keep the original root JSON, but make it obvious where to go
+    return jsonify(service="NextPoint Upload/Ingester v3",
+                   status="ok",
+                   see=["/upload", "/__routes"])
+
+# If the UI blueprint fails for any reason, this guarantees the page still renders.
+@app.get("/upload")
+def upload_page_fallback():
+    return _render_upload_html()
+# ------------------------------------------------------------
+
 BASE_DIR = pathlib.Path(__file__).resolve().parent
 
 # ---- BEGIN: diagnostics, early registration ----
@@ -1213,6 +1247,15 @@ try:
     app.logger.info("UI blueprint mounted at /upload")
 except Exception as e:
     app.logger.exception("Failed to mount UI blueprint: %s", e)
+
+# after blueprint(s) are registered
+try:
+    print("=== ROUTE DUMP (startup) ===")
+    for r in app.url_map.iter_rules():
+        print(f"{r.rule} -> {r.endpoint} [{','.join(sorted(r.methods))}]")
+    print("=== END ROUTE DUMP ===")
+except Exception:
+    pass
 
 # ✅ Guarantee /upload/ always works (fallback to inline template)
 # after app.register_blueprint(ui_bp, url_prefix="/upload")
