@@ -100,7 +100,7 @@ def _trigger_ingest(result_url: str):
 DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
-DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/incoming")  # shown on the page
+DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads")  # shown on the page
 
 def _dbx_access_token():
     """Exchange refresh token -> short-lived access token."""
@@ -165,8 +165,12 @@ def api_upload_to_dropbox():
     })
 
 # aliases (accept trailing slash and root-level)
-app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["GET","POST"])
-app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["GET","POST"])
+app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+app.add_url_rule("/api/upload",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+
+# NEW: some front-ends post to /upload/api (no trailing /upload)
+app.add_url_rule("/upload/api",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+
 
 @app.route("/upload/api/upload", methods=["GET","POST"])
 def api_upload_to_dropbox():
