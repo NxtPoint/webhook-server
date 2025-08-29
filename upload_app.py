@@ -59,12 +59,16 @@ def _sportai_submit(video_url: str, email: str | None = None) -> str:
     payload = {"video_url": video_url, "sport": "tennis"}
     if email:
         payload["email"] = email
+
+    print(f"[SPORTAI] POST {url} | email={email} | video_url={video_url}")
     r = requests.post(url, headers=headers, json=payload, timeout=60)
-    r.raise_for_status()
+    if not r.ok:
+        raise RuntimeError(f"SportAI submit failed {r.status_code}: {r.text}")
     data = r.json() or {}
     tid = data.get("task_id") or data.get("id") or (data.get("data") or {}).get("task_id")
     if not tid:
         raise RuntimeError(f"No task_id in SportAI response: {data}")
+    print(f"[SPORTAI] Submitted OK, task_id={tid}")
     return str(tid)
 
 def _sportai_status(task_id: str) -> dict:
@@ -149,29 +153,48 @@ def api_upload_to_dropbox():
     up = requests.post("https://content.dropboxapi.com/2/files/upload", headers=headers, data=f.read(), timeout=600)
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
-    meta = up.json()
+        meta = up.json()
 
-    # share link -> direct -> SportAI
-    share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
-    video_url = _to_direct_dropbox(share_url)
-    task_id = _sportai_submit(video_url, email=email)
+    # share link -> direct
+    try:
+        share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
+        video_url = _to_direct_dropbox(share_url)
+    except Exception as e:
+        return jsonify({"ok": False, "stage": "share_link", "error": str(e),
+                        "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"),
+                                   "name": meta.get("name", clean)}}), 502
+
+    # submit to SportAI
+    try:
+        task_id = _sportai_submit(video_url, email=email)
+    except Exception as e:
+        # Return the upload details so you can still see them, and surface the reason SportAI failed
+        return jsonify({
+            "ok": False,
+            "stage": "sportai_submit",
+            "error": str(e),
+            "share_url": share_url,
+            "video_url": video_url,
+            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"),
+                       "name": meta.get("name", clean)}
+        }), 502
 
     return jsonify({
         "ok": True,
         "task_id": task_id,
         "share_url": share_url,
         "video_url": video_url,
-        "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
+        "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"),
+                   "name": meta.get("name", clean)},
     })
 
 # aliases (accept trailing slash and common alternate paths)
-app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
-app.add_url_rule("/api/upload",               view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
-app.add_url_rule("/upload/api",               view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
+app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+app.add_url_rule("/api/upload",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+app.add_url_rule("/upload/api",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
 
-# helpful GET hint (separate endpoint name!)
 @app.get("/upload/api/upload")
-def api_upload_to_dropbox_get_hint():
+def api_upload_get_hint():
     return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
 
 # catch-all (debug what the UI actually hits)
@@ -183,13 +206,6 @@ def api_upload_catchall(subpath):
         "you_hit": f"/upload/api/{subpath}",
         "known": ["/upload/api/upload", "/api/upload", "/upload/api"],
     }), 404
-
-# catch-all (debug what the UI actually hits)
-@app.route("/upload/api/<path:subpath>", methods=["GET","POST"])
-def api_upload_catchall(subpath):
-    return jsonify({"ok": False, "error": "Unknown /upload/api path",
-                    "you_hit": f"/upload/api/{subpath}",
-                    "known": ["/upload/api/upload"]}), 404
 
 
 # =========================
