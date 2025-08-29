@@ -120,18 +120,17 @@ def _dbx_access_token():
         return r.json().get("access_token"), None
     return None, f"{r.status_code}: {r.text}"
 
+# --- REPLACE your current /upload/api/upload handlers with this ---
+
+@app.before_request
+def _log_request_path():
+    print(f"[REQ] {request.method} {request.path}")
+
+
 @app.post("/upload/api/upload")
 def api_upload_to_dropbox():
-    """
-    Accepts multipart/form-data:
-      - file  : the video file (required)
-      - email : optional (sent to SportAI payload if provided)
-    Uploads to Dropbox, creates a shared link, converts to direct URL,
-    submits to SportAI, and returns the task_id.
-    """
     f = request.files.get("file")
     email = (request.form.get("email") or "").strip().lower()
-
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file provided."}), 400
 
@@ -139,44 +138,23 @@ def api_upload_to_dropbox():
     if not token:
         return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
 
-    # Upload to Dropbox
     clean = secure_filename(f.filename)
     ts = int(time.time())
     dest_path = f"{DBX_FOLDER.rstrip('/')}/{ts}_{clean}"
-
     headers = {
         "Authorization": f"Bearer {token}",
         "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
         "Content-Type": "application/octet-stream",
     }
-    up = requests.post(
-        "https://content.dropboxapi.com/2/files/upload",
-        headers=headers,
-        data=f.read(),
-        timeout=600,
-    )
+    up = requests.post("https://content.dropboxapi.com/2/files/upload", headers=headers, data=f.read(), timeout=600)
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
     meta = up.json()
-    # Create share link -> direct link
-    try:
-        share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
-        video_url = _to_direct_dropbox(share_url)
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Dropbox shared link error: {e}"}), 502
 
-    # Submit to SportAI
-    try:
-        task_id = _sportai_submit(video_url, email=email)
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "stage": "sportai_submit",
-            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
-            "share_url": share_url,
-            "video_url": video_url,
-            "error": str(e),
-        }), 502
+    # share link -> direct -> SportAI
+    share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
+    video_url = _to_direct_dropbox(share_url)
+    task_id = _sportai_submit(video_url, email=email)
 
     return jsonify({
         "ok": True,
@@ -186,7 +164,7 @@ def api_upload_to_dropbox():
         "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
     })
 
-# accept trailing-slash and root-level alias
+# aliases (accept trailing slash and root-level)
 app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST"])
 app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["POST"])
 
@@ -194,6 +172,13 @@ app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["POST"
 @app.get("/upload/api/upload")
 def api_upload_to_dropbox_get_hint():
     return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
+
+# catch-all (debug what the UI actually hits)
+@app.route("/upload/api/<path:subpath>", methods=["GET","POST"])
+def api_upload_catchall(subpath):
+    return jsonify({"ok": False, "error": "Unknown /upload/api path",
+                    "you_hit": f"/upload/api/{subpath}",
+                    "known": ["/upload/api/upload"]}), 404
 
     # Create share link -> direct link
     try:
@@ -259,6 +244,10 @@ def _guard() -> bool:
 
 def _forbid():
     return Response("Forbidden", 403)
+
+def _last4(s): 
+    return (s[-4:] if s else None)
+
 
 @app.after_request
 def _maybe_cors(resp):
@@ -357,6 +346,42 @@ def api_task_status():
         return jsonify({"ok": True, **st})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
+
+@app.get("/ops/env")
+def ops_env():
+    if not _guard(): return _forbid()
+    return jsonify({
+        "ok": True,
+        "database_url_present": bool(os.getenv("DATABASE_URL")),
+        "dropbox": {
+            "app_key_last4": _last4(os.getenv("DROPBOX_APP_KEY")),
+            "has_app_secret": bool(os.getenv("DROPBOX_APP_SECRET")),
+            "has_refresh_token": bool(os.getenv("DROPBOX_REFRESH_TOKEN")),
+            "target_folder": os.getenv("DROPBOX_UPLOAD_FOLDER", DBX_FOLDER),
+        },
+        "sportai": {
+            "token_last4": _last4(os.getenv("SPORT_AI_TOKEN")),
+            "base": os.getenv("SPORT_AI_BASE", SPORTAI_BASE),
+            "submit_path": os.getenv("SPORT_AI_SUBMIT_PATH", SPORTAI_SUBMIT_PATH),
+            "status_path": os.getenv("SPORT_AI_STATUS_PATH", SPORTAI_STATUS_PATH),
+        },
+        "ops": {
+            "has_ops_key": bool(os.getenv("OPS_KEY")),
+        },
+        "flags": {
+            "STRICT_REINGEST": STRICT_REINGEST,
+            "STRICT_BRONZE_RAW": STRICT_BRONZE_RAW,
+            "ENABLE_CORS": ENABLE_CORS,
+        }
+    })
+
+@app.get("/ops/dropbox-auth-test")
+def ops_dropbox_auth_test():
+    if not _guard(): return _forbid()
+    token, err = _dbx_access_token()
+    if not token:
+        return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+    return jsonify({"ok": True, "access_token_last4": _last4(token)})
 
 
 @app.post("/upload/webhook")  # configure this in SportAI console
