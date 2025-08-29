@@ -224,6 +224,21 @@ def api_task_status():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
+# add to upload_app.py
+import socket
+from urllib.parse import urlparse
+
+@app.get("/ops/sportai-dns")
+def ops_sportai_dns():
+    if not _guard(): return _forbid()
+    host = urlparse(SPORTAI_BASE).hostname
+    try:
+        ip = socket.gethostbyname(host)
+        return jsonify({"ok": True, "host": host, "ip": ip})
+    except Exception as e:
+        return jsonify({"ok": False, "host": host, "error": str(e)}), 500
+
+
 # SportAI → our callback (kept here per your request)
 @app.post("/ops/sportai-callback")
 def ops_sportai_callback():
