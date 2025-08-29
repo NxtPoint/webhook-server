@@ -65,6 +65,35 @@ def __routes_locked():
     routes.sort(key=lambda x: x["rule"])
     return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
+# ---- /ops/db-ping (safe, optional) ----
+@app.get("/ops/db-ping")
+def ops_db_ping():
+    if not _guard_ok():
+        return Response("Forbidden", 403)
+    try:
+        # Prefer DATABASE_URL if present, otherwise fall back to db_init.engine if available.
+        engine = None
+        db_url = os.getenv("DATABASE_URL", "")
+        if db_url:
+            from sqlalchemy import create_engine
+            engine = create_engine(db_url, pool_pre_ping=True, future=True)
+        else:
+            try:
+                from db_init import engine as ext_engine  # your existing engine
+                engine = ext_engine
+            except Exception:
+                engine = None
+
+        if engine is None:
+            return jsonify({"ok": False, "error": "No DATABASE_URL and no db_init.engine"}), 500
+
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            now_utc = conn.execute(text("SELECT now() AT TIME ZONE 'utc'")).scalar()
+        return jsonify({"ok": True, "now_utc": str(now_utc)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 # ---- (Optional) mount UI blueprint if present ----
 try:
     from ui_app import ui_bp  # may require DATABASE_URL
