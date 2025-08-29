@@ -188,18 +188,40 @@ def _sportai_submit(video_url: str, email: str | None = None) -> str:
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
 def _sportai_status(task_id: str) -> dict:
+    """Fetch status from SportAI and return both normalized fields and a UI-friendly data blob."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
+
     url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_STATUS_PATH.lstrip('/').format(task_id=task_id)}"
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+
     r = requests.get(url, headers=headers, timeout=30)
     r.raise_for_status()
     j = r.json() or {}
-    return {
-        "status": j.get("status") or (j.get("data") or {}).get("status"),
-        "result_url": j.get("result_url") or (j.get("data") or {}).get("result_url"),
+
+    # Prefer the documented shape { "data": {...} }, but tolerate flat responses
+    d = j.get("data") or j
+
+    status = d.get("status") or d.get("task_status")
+    out = {
+        # normalized (back-compat)
+        "status": status,
+        "result_url": d.get("result_url") or j.get("result_url"),
+
+        # UI-friendly mirror of SportAI docs
+        "data": {
+            "task_id": d.get("task_id"),
+            "video_url": d.get("video_url"),
+            "task_status": d.get("task_status") or d.get("status"),
+            "task_progress": d.get("task_progress") or d.get("progress"),
+            "total_subtask_progress": d.get("total_subtask_progress"),
+            "subtask_progress": d.get("subtask_progress") or {},
+        },
+
+        # raw passthrough (for debugging)
         "raw": j,
     }
+    return out
 
 # -------------------------------------------------------
 # Public endpoints
