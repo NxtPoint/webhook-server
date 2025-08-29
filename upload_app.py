@@ -343,8 +343,10 @@ def api_upload_to_dropbox():
                                "size": meta.get("size"),
                                "name": meta.get("name", clean)}})
 
-# Legacy alias (/upload)
-@app.add_url_rule("/upload", view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
+# Legacy alias: /upload → same handler (accepts 'file' or legacy 'video')
+@app.route("/upload", methods=["POST", "OPTIONS"])
+def upload_legacy():
+    return api_upload_to_dropbox()
 
 # -------------------------------------------------------
 # Task poll
