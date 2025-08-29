@@ -64,7 +64,7 @@ def _guard() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-def _forbid(): 
+def _forbid():
     return Response("Forbidden", 403)
 
 @app.after_request
@@ -282,7 +282,6 @@ def ops_sportai_dns():
 # -------------------------------------------------------
 # Upload API (also accepts direct JSON with video_url)
 # -------------------------------------------------------
-# Upload API (also accepts direct JSON with video_url)
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_dropbox():
     # support OPTIONS preflight
@@ -348,14 +347,12 @@ def api_upload_to_dropbox():
                    "name": meta.get("name", clean)}
     })
 
-
 # Legacy /upload alias (keeps old front-end working)
 @app.route("/upload", methods=["POST", "OPTIONS"])
 def upload_alias():
     if request.method == "OPTIONS":
         return ("", 204)
     return api_upload_to_dropbox()
-
 
 # Old front-end polls /upload/task_status/<task_id>
 @app.get("/upload/task_status/<task_id>")
@@ -364,7 +361,6 @@ def task_status_legacy_path(task_id):
         return jsonify({"ok": True, **_sportai_status(task_id)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
-
 
 # Old front-end polls /upload/task_status?task_id=...
 @app.get("/upload/task_status")
