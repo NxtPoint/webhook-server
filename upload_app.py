@@ -190,6 +190,16 @@ def upload_status():
         "sportai_ready": bool(os.getenv("SPORT_AI_TOKEN")),
         "target_folder": DBX_FOLDER,
     })
+@app.get("/upload/api/task-status")
+def api_task_status():
+    task_id = request.args.get("task_id")
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        st = _sportai_status(task_id)   # uses your helper defined above
+        return jsonify({"ok": True, **st})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 @app.get("/")
 def root_ok():
