@@ -1,31 +1,34 @@
 # ui_app.py
-import os
-import traceback
-import requests
-from flask import Blueprint, render_template_string, request, jsonify, Response, url_for
+import os, traceback
+from flask import Blueprint, render_template_string, request, url_for, jsonify, Response
 from sqlalchemy import text
-from db_init import engine  # uses the existing engine/pool
 
-# --- config
+# Try to prepare DB, but don't crash the import if missing
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL required for UI")
+engine = None
+db_error = None
+if DATABASE_URL:
+    try:
+        from db_init import engine as _engine
+        engine = _engine
+    except Exception as e:
+        db_error = f"db_init import failed: {e}"
+else:
+    db_error = "DATABASE_URL not set"
 
 OPS_KEY = os.environ.get("OPS_KEY", "")
 
-# IMPORTANT: tell Flask where to find our templates and static files
 ui_bp = Blueprint(
     "ui",
     __name__,
     template_folder="templates",
-    static_folder="static",
+    static_folder="static",    # provides /upload/static/<file>
 )
 
 def _require_ops_key() -> bool:
     key = request.args.get("key", "")
     return bool(OPS_KEY) and key == OPS_KEY
 
-# ---------- base template ----------
 _BASE = """
 <!doctype html>
 <html lang="en">
@@ -45,9 +48,6 @@ _BASE = """
     .small{color:#4a5568;font-size:12px}
     .row{margin:10px 0}
     .pill{display:inline-block;background:#edf2f7;border:1px solid #e2e8f0;border-radius:12px;padding:2px 8px;margin-left:6px;font-size:12px}
-    .ok{color:#0a0}
-    .warn{color:#aa0}
-    .bad{color:#a00}
   </style>
 </head>
 <body>
@@ -55,21 +55,21 @@ _BASE = """
   <div class="row">
     <a class="btn" href="{{ url_for('ui.sessions') }}">Sessions</a>
     <a class="btn" href="{{ url_for('ui.sql') }}">SQL</a>
-    <a class="btn" href="{{ url_for('ui.home') }}">Upload</a>
   </div>
+  {% if db_error %}
+    <p class="small" style="color:#c53030">DB not ready: {{ db_error }}</p>
+  {% endif %}
   {% block body %}{% endblock %}
 </body>
 </html>
 """
 
-# ---------- pages ----------
 @ui_bp.route("/")
 def home():
     dropbox_ready = bool(os.environ.get("DROPBOX_ACCESS_TOKEN"))
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
     max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB", "200"))
-    # Renders /templates/upload.html
     return render_template_string(
         "{% include 'upload.html' %}",
         dropbox_ready=dropbox_ready,
@@ -78,70 +78,45 @@ def home():
         max_upload_mb=max_upload_mb,
     )
 
-@ui_bp.post("/submit")
-def upload_submit():
-    """
-    Server-side bridge: takes a URL from the Upload form and calls /ops/ingest-file
-    with the server-side OPS_KEY so we don't expose the key in the browser.
-    """
-    video_url = (request.form.get("url") or "").strip()
-    replace = (request.form.get("replace") or "1").strip()
-    if not video_url:
-        return jsonify(ok=False, error="No URL provided"), 400
-
-    # Build an absolute URL to our own service
-    base = request.host_url.rstrip("/")
-    endpoint = f"{base}/ops/ingest-file"
-    try:
-        resp = requests.post(
-            endpoint,
-            params={"key": OPS_KEY, "url": video_url, "replace": replace},
-            timeout=180,
-        )
-        return (resp.text, resp.status_code, [("Content-Type", resp.headers.get("Content-Type", "application/json"))])
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)), 500
-
 @ui_bp.route("/sessions")
 def sessions():
+    if not engine:
+        return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
+                                      _BASE=_BASE, db_error=db_error), 503
     try:
         sql = """
             SELECT s.session_uid,
-                   (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)           AS players,
-                   (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)           AS rallies,
-                   (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)           AS swings,
-                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)            AS ball_bounces,
-                   (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id)   AS ball_positions,
+                   (SELECT COUNT(*) FROM dim_player dp WHERE dp.session_id=s.session_id)         AS players,
+                   (SELECT COUNT(*) FROM dim_rally  dr WHERE dr.session_id=s.session_id)         AS rallies,
+                   (SELECT COUNT(*) FROM fact_swing fs WHERE fs.session_id=s.session_id)         AS swings,
+                   (SELECT COUNT(*) FROM fact_bounce b WHERE b.session_id=s.session_id)          AS ball_bounces,
+                   (SELECT COUNT(*) FROM fact_ball_position bp WHERE bp.session_id=s.session_id) AS ball_positions,
                    (SELECT COUNT(*) FROM fact_player_position pp WHERE pp.session_id=s.session_id) AS player_positions,
-                   (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)           AS snapshots
+                   (SELECT COUNT(*) FROM raw_result rr WHERE rr.session_id=s.session_id)         AS snapshots
             FROM dim_session s
             ORDER BY s.session_id DESC
             LIMIT 200
         """
         with engine.connect() as conn:
             rows = conn.execute(text(sql)).mappings().all()
-
         tpl = """
         {% extends _BASE %}{% block body %}
           <h2>Sessions</h2>
-          <div class="small">
-            UI prefix:
-            <span class="mono">{{ request.url_root.rstrip('/') }}/upload</span>
+          <div class="small">UI prefix:
+            <span class="mono">{{ request.url_root.rstrip('/') }}{{ request.script_root }}/upload</span>
           </div>
           <div class="row small">
-            Quick ops:
+            Global ops:
             <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
             <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
             <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
-            <a class="pill" href="{{ url_for('ui.ops_build_gold') }}?key={{ key }}" target="_blank">/upload/ops/build-gold</a>
+            <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
           </div>
           <table>
-            <thead>
-              <tr>
-                <th>Session UID</th><th>Players</th><th>Rallies</th><th>Swings</th>
-                <th>Bounces</th><th>Ball Pos</th><th>Player Pos</th><th>Snapshots</th><th>Actions</th>
-              </tr>
-            </thead>
+            <thead><tr>
+              <th>Session UID</th><th>Players</th><th>Rallies</th><th>Swings</th>
+              <th>Bounces</th><th>Ball Pos</th><th>Player Pos</th><th>Snapshots</th><th>Actions</th>
+            </tr></thead>
             <tbody>
             {% for r in rows %}
               <tr>
@@ -157,10 +132,8 @@ def sessions():
                   <a class="btn" target="_blank"
                      href="/ops/reconcile?key={{ key }}&session_uid={{ r.session_uid }}">Reconcile</a>
                   <a class="btn" target="_blank"
-                     href="/ops/link-swings-to-rallies?key={{ key }}&session_uid={{ r.session_uid }}">Link rallies</a>
-                  <a class="btn" target="_blank"
                      href="/ops/repair-swings?key={{ key }}&session_uid={{ r.session_uid }}">Repair serves</a>
-                  <a class="btn"
+                  <a class="btn" target="_blank"
                      href="{{ url_for('ui.peek', session_uid=r.session_uid) }}">Peek</a>
                   <a class="btn danger"
                      href="{{ url_for('ui.delete_confirm', session_uid=r.session_uid) }}">Delete</a>
@@ -171,14 +144,15 @@ def sessions():
           </table>
         {% endblock %}
         """
-        return render_template_string(tpl, _BASE=_BASE, rows=rows, key=OPS_KEY)
+        return render_template_string(tpl, _BASE=_BASE, rows=rows, key=OPS_KEY, db_error=db_error)
     except Exception:
         tb = traceback.format_exc()
-        return Response("UI /upload/sessions failed:\n\n" + tb,
-                        mimetype="text/plain", status=500)
+        return Response("UI /upload/sessions failed:\n\n" + tb, mimetype="text/plain", status=500)
 
 @ui_bp.route("/peek/<session_uid>")
 def peek(session_uid):
+    if not engine:
+        return Response("DB not available", status=503)
     q1 = text("""
         SELECT point_number, shot_number, swing_id, player_uid, serve, serve_type,
                shot_result, shot_description_depth, ball_hit_s
@@ -197,28 +171,22 @@ def peek(session_uid):
     with engine.connect() as conn:
         pl = [dict(r) for r in conn.execute(q1, {"u": session_uid}).mappings().all()]
         sw = [dict(r) for r in conn.execute(q2, {"u": session_uid}).mappings().all()]
-
     tpl = """
     {% extends _BASE %}{% block body %}
       <h2>Peek: <span class="mono">{{ uid }}</span></h2>
       <h3>vw_point_log (first 20)</h3>
       <table>
         {% if pl %}<thead><tr>{% for k in pl[0].keys() %}<th>{{k}}</th>{% endfor %}</tr></thead>{% endif %}
-        <tbody>
-          {% for r in pl %}<tr>{% for v in r.values() %}<td class="mono">{{ v }}</td>{% endfor %}</tr>{% endfor %}
-        </tbody>
+        <tbody>{% for r in pl %}<tr>{% for v in r.values() %}<td class="mono">{{ v }}</td>{% endfor %}</tr>{% endfor %}</tbody>
       </table>
       <h3>vw_swing (first 12)</h3>
       <table>
         {% if sw %}<thead><tr>{% for k in sw[0].keys() %}<th>{{k}}</th>{% endfor %}</tr></thead>{% endif %}
-        <tbody>
-          {% for r in sw %}<tr>{% for v in r.values() %}<td class="mono">{{ v }}</td>{% endfor %}</tr>{% endfor %}
-        </tbody>
+        <tbody>{% for r in sw %}<tr>{% for v in r.values() %}<td class="mono">{{ v }}</td>{% endfor %}</tr>{% endfor %}</tbody>
       </table>
-      <p class="small">Helpful when checking rally links and serve flags.</p>
     {% endblock %}
     """
-    return render_template_string(tpl, _BASE=_BASE, uid=session_uid, pl=pl, sw=sw)
+    return render_template_string(tpl, _BASE=_BASE, uid=session_uid, pl=pl, sw=sw, db_error=db_error)
 
 @ui_bp.route("/delete/<session_uid>")
 def delete_confirm(session_uid):
@@ -230,13 +198,15 @@ def delete_confirm(session_uid):
         <a class="btn danger" href="/ops/delete-session?key={{ key }}&session_uid={{ uid }}">Yes, delete</a>
         <a class="btn" href="{{ url_for('ui.sessions') }}">Cancel</a>
       </p>
-      <p class="small">This calls the backend /ops/delete-session endpoint.</p>
     {% endblock %}
     """
-    return render_template_string(tpl, _BASE=_BASE, uid=session_uid, key=OPS_KEY)
+    return render_template_string(tpl, _BASE=_BASE, uid=session_uid, key=OPS_KEY, db_error=db_error)
 
 @ui_bp.route("/sql", methods=["GET", "POST"])
 def sql():
+    if not engine:
+        return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
+                                      _BASE=_BASE, db_error=db_error), 503
     default_q = request.values.get("q", "SELECT now() AT TIME ZONE 'utc' AS utc_now")
     result, error = None, None
     if request.method == "POST":
@@ -251,7 +221,6 @@ def sql():
             error = str(e)
             result = None
         default_q = q
-
     tpl = """
     {% extends _BASE %}{% block body %}
       <h2>SQL (read-only)</h2>
@@ -264,9 +233,7 @@ def sql():
         <div class="row small">Rows: {{ result|length }}</div>
         <table>
           {% if result|length > 0 %}
-          <thead><tr>
-            {% for k in result[0].keys() %}<th>{{ k }}</th>{% endfor %}
-          </tr></thead>
+          <thead><tr>{% for k in result[0].keys() %}<th>{{ k }}</th>{% endfor %}</tr></thead>
           {% endif %}
           <tbody>
           {% for r in result %}
@@ -280,21 +247,18 @@ def sql():
         <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
         <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
         <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
-        <a class="pill" href="{{ url_for('ui.ops_build_gold') }}?key={{ key }}" target="_blank">/upload/ops/build-gold</a>
+        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
       </p>
     {% endblock %}
     """
-    return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY)
+    return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY, db_error=db_error)
 
 @ui_bp.route("/sessions_raw")
 def sessions_raw():
+    if not engine:
+        return jsonify({"ok": False, "error": db_error}), 503
     try:
-        sql = """
-            SELECT session_uid
-            FROM dim_session
-            ORDER BY session_id DESC
-            LIMIT 10
-        """
+        sql = "SELECT session_uid FROM dim_session ORDER BY session_id DESC LIMIT 10"
         with engine.connect() as conn:
             rows = conn.execute(text(sql)).mappings().all()
         return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
@@ -303,6 +267,8 @@ def sessions_raw():
 
 @ui_bp.route("/health")
 def ui_health():
+    if not engine:
+        return jsonify({"ok": False, "error": db_error}), 503
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -314,6 +280,8 @@ def ui_health():
 def ops_build_gold():
     if not _require_ops_key():
         return jsonify({"ok": False, "error": "forbidden"}), 403
+    if not engine:
+        return jsonify({"ok": False, "error": db_error}), 503
     ddl = [
         "DROP TABLE IF EXISTS point_log_tbl;",
         "CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;",
@@ -329,9 +297,3 @@ def ops_build_gold():
         return jsonify({"ok": True, "built": ["point_log_tbl", "point_summary_tbl"]})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
-# ---------- blueprint-wide error handler ----------
-@ui_bp.app_errorhandler(Exception)
-def _ui_error(e):
-    tb = traceback.format_exc()
-    return Response("UI error:\n\n" + tb, mimetype="text/plain", status=500)
