@@ -180,35 +180,6 @@ def api_upload_catchall(subpath):
                     "you_hit": f"/upload/api/{subpath}",
                     "known": ["/upload/api/upload"]}), 404
 
-    # Create share link -> direct link
-    try:
-        share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
-        video_url = _to_direct_dropbox(share_url)
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Dropbox shared link error: {e}"}), 502
-
-    # Submit to SportAI
-    try:
-        task_id = _sportai_submit(video_url, email=email)
-    except Exception as e:
-        # still return successful upload details; frontend can show “uploaded but not submitted”
-        return jsonify({
-            "ok": False,
-            "stage": "sportai_submit",
-            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
-            "share_url": share_url,
-            "video_url": video_url,
-            "error": str(e),
-        }), 502
-
-    return jsonify({
-        "ok": True,
-        "task_id": task_id,
-        "share_url": share_url,
-        "video_url": video_url,
-        "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
-    })
-
 
 # =========================
 #       App config
