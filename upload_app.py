@@ -1,4 +1,4 @@
-﻿# upload_app.py — NextPoint Upload/Ingester (final)
+﻿# upload_app.py — NextPoint Upload/Ingester (final clean build)
 # ---------------------------------------------------------------
 import os, json, time, re, hashlib
 from datetime import datetime, timezone, timedelta
@@ -10,19 +10,17 @@ from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 
-# ------------------------------------------------------------------------------
-# Single Flask app
-# ------------------------------------------------------------------------------
+# Single Flask app (Render expects exactly one)
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.url_map.strict_slashes = False  # accept both /path and /path/
+app.url_map.strict_slashes = False  # accept /path and /path/
 
-# ------------------------------------------------------------------------------
-# Dropbox configuration
-# ------------------------------------------------------------------------------
+# =========================
+#   Dropbox configuration
+# =========================
 DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
-DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads")  # default
+DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads")  # default folder
 
 def _dbx_access_token():
     """Exchange refresh token -> short-lived access token."""
@@ -43,35 +41,30 @@ def _dbx_access_token():
     return None, f"{r.status_code}: {r.text}"
 
 def _dbx_create_or_fetch_shared_link(token: str, path: str) -> str:
-    """
-    Create a shared link (public viewer) or fetch an existing direct-only link.
-    """
+    """Create a shared link (public) for the given path, or return existing."""
     h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    # Try create first
+    # try create
     r = requests.post(
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
         headers=h,
         json={"path": path, "settings": {"audience": "public", "access": "viewer"}},
         timeout=30,
     )
-    if r.status_code == 409:
-        # Already has a link—list it
+    if r.status_code == 409:  # already exists -> list
         r = requests.post(
             "https://api.dropboxapi.com/2/sharing/list_shared_links",
-            headers=h,
-            json={"path": path, "direct_only": True},
-            timeout=30,
+            headers=h, json={"path": path, "direct_only": True}, timeout=30
         )
         r.raise_for_status()
         links = (r.json() or {}).get("links", [])
         if not links:
-            raise RuntimeError("No shared link available for uploaded file.")
+            raise RuntimeError("No Dropbox shared link available")
         return links[0]["url"]
     r.raise_for_status()
     return (r.json() or {})["url"]
 
 def _to_direct_dropbox(url: str) -> str:
-    """Convert a Dropbox share link to a direct-download URL (dl=1, dl.dropboxusercontent.com)."""
+    """Turn ?dl=0 link into direct dl=1 and switch to dl.dropboxusercontent.com."""
     try:
         from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
         p = urlparse(url)
@@ -82,16 +75,15 @@ def _to_direct_dropbox(url: str) -> str:
     except Exception:
         return url
 
-# ------------------------------------------------------------------------------
-# SportAI configuration
-# ------------------------------------------------------------------------------
+# =========================
+#   SportAI configuration
+# =========================
 SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").rstrip("/")
 SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
 SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
 SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "")
 
 def _sportai_submit(video_url: str, email: str | None = None) -> str:
-    """Submit a video to SportAI, return task_id."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     url = f"{SPORTAI_BASE}{SPORTAI_SUBMIT_PATH}"
@@ -108,7 +100,6 @@ def _sportai_submit(video_url: str, email: str | None = None) -> str:
     return str(tid)
 
 def _sportai_status(task_id: str) -> dict:
-    """Poll a SportAI task_id and return normalized status fields."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     path = SPORTAI_STATUS_PATH.format(task_id=task_id)
@@ -123,14 +114,14 @@ def _sportai_status(task_id: str) -> dict:
         "raw": j,
     }
 
-# ------------------------------------------------------------------------------
-# Upload endpoint (Dropbox -> SportAI)
-# ------------------------------------------------------------------------------
+# =========================
+#   Upload endpoint
+# =========================
 @app.post("/upload/api/upload")
 def api_upload_to_dropbox():
     """
-    multipart/form-data:
-      - file : video file (required)
+    Expects multipart/form-data:
+      - file : the video file (required)
       - email: user email (optional)
     """
     f = request.files.get("file")
@@ -143,15 +134,17 @@ def api_upload_to_dropbox():
     if not token:
         return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
 
-    # Destination path in Dropbox
+    # Build Dropbox destination path
     clean = secure_filename(f.filename)
     ts = int(time.time())
     dest_path = f"{DBX_FOLDER.rstrip('/')}/{ts}_{clean}"
 
-    # Upload to Dropbox Content API
+    # Upload to Dropbox content API
     headers = {
         "Authorization": f"Bearer {token}",
-        "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
+        "Dropbox-API-Arg": json.dumps({
+            "path": dest_path, "mode": "add", "autorename": True, "mute": False
+        }),
         "Content-Type": "application/octet-stream",
     }
     up = requests.post(
@@ -163,21 +156,18 @@ def api_upload_to_dropbox():
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
     meta = up.json()
-    path_lower = meta.get("path_lower") or dest_path
 
-    # Create/fetch shared link -> convert to direct -> submit to SportAI
+    # Share link -> convert to direct -> submit to SportAI
     try:
-        share_url = _dbx_create_or_fetch_shared_link(token, path_lower)
+        share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
         video_url = _to_direct_dropbox(share_url)
         task_id = _sportai_submit(video_url, email=email)
     except Exception as e:
-        # Return upload meta even if SportAI submit fails
+        # Still return upload info, but flag the SportAI error
         return jsonify({
             "ok": False,
-            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
-            "share_url": share_url if 'share_url' in locals() else None,
-            "video_url": video_url if 'video_url' in locals() else None,
-            "error": f"SportAI submit failed: {e}",
+            "error": f"Upload ok, SportAI submit failed: {e}",
+            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)}
         }), 502
 
     return jsonify({
@@ -188,18 +178,12 @@ def api_upload_to_dropbox():
         "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
     })
 
-# Accept common alternates / trailing slashes
-app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
-app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
-app.add_url_rule("/upload/api", view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
+# Helpful alias (optional)
+app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
 
-@app.get("/upload/api/upload")
-def api_upload_get_hint():
-    return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
-
-# ------------------------------------------------------------------------------
-# App / OPS config & helpers
-# ------------------------------------------------------------------------------
+# =========================
+#       App config
+# =========================
 DATABASE_URL     = os.environ.get("DATABASE_URL")
 OPS_KEY          = os.environ.get("OPS_KEY", "")
 STRICT_REINGEST  = os.environ.get("STRICT_REINGEST", "0").lower() in ("1","true","yes","y")
@@ -213,8 +197,12 @@ RALLY_GAP_S               = float(os.environ.get("RALLY_GAP_S", "6.0"))
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL required")
 
+# One engine for everything
 from db_init import engine  # noqa: E402
 
+# =========================
+#       Helpers
+# =========================
 def _guard() -> bool:
     """Allow ?key=… or header X-OPS-Key / Bearer."""
     qk = request.args.get("key") or request.args.get("ops_key")
@@ -227,9 +215,6 @@ def _guard() -> bool:
 
 def _forbid():
     return Response("Forbidden", 403)
-
-def _last4(s): 
-    return (s[-4:] if s else None)
 
 @app.after_request
 def _maybe_cors(resp):
@@ -283,9 +268,9 @@ def _quantize_time(s, fps):
     if fps: return _quantize_time_to_fps(s, fps)
     return round(float(s), 3)  # 1ms grid when fps unknown
 
-# ------------------------------------------------------------------------------
-# Health + diagnostics
-# ------------------------------------------------------------------------------
+# =========================
+#  Health + diagnostics
+# =========================
 @app.get("/upload/api/status")
 def upload_status():
     return jsonify({
@@ -294,6 +279,17 @@ def upload_status():
         "sportai_ready": bool(SPORTAI_TOKEN),
         "target_folder": DBX_FOLDER,
     })
+
+@app.get("/upload/api/task-status")
+def api_task_status():
+    task_id = request.args.get("task_id")
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        st = _sportai_status(task_id)
+        return jsonify({"ok": True, **st})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
 
 @app.get("/")
 def root_ok():
@@ -318,57 +314,9 @@ def __routes_locked():
     if not _guard(): return _forbid()
     return __routes_open()
 
-@app.get("/ops/env")
-def ops_env():
-    if not _guard(): return _forbid()
-    return jsonify({
-        "ok": True,
-        "database_url_present": bool(os.getenv("DATABASE_URL")),
-        "dropbox": {
-            "app_key_last4": _last4(os.getenv("DROPBOX_APP_KEY")),
-            "has_app_secret": bool(os.getenv("DROPBOX_APP_SECRET")),
-            "has_refresh_token": bool(os.getenv("DROPBOX_REFRESH_TOKEN")),
-            "target_folder": os.getenv("DROPBOX_UPLOAD_FOLDER", DBX_FOLDER),
-        },
-        "sportai": {
-            "token_last4": _last4(os.getenv("SPORT_AI_TOKEN")),
-            "base": os.getenv("SPORT_AI_BASE", SPORTAI_BASE),
-            "submit_path": os.getenv("SPORT_AI_SUBMIT_PATH", SPORTAI_SUBMIT_PATH),
-            "status_path": os.getenv("SPORT_AI_STATUS_PATH", SPORTAI_STATUS_PATH),
-        },
-        "ops": {"has_ops_key": bool(os.getenv("OPS_KEY"))},
-        "flags": {
-            "STRICT_REINGEST": STRICT_REINGEST,
-            "STRICT_BRONZE_RAW": STRICT_BRONZE_RAW,
-            "ENABLE_CORS": ENABLE_CORS,
-        }
-    })
-
-@app.get("/ops/dropbox-auth-test")
-def ops_dropbox_auth_test():
-    if not _guard(): return _forbid()
-    token, err = _dbx_access_token()
-    if not token:
-        return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
-    return jsonify({"ok": True, "access_token_last4": _last4(token)})
-
-# ------------------------------------------------------------------------------
-# SportAI task polling
-# ------------------------------------------------------------------------------
-@app.get("/upload/api/task-status")
-def api_task_status():
-    task_id = request.args.get("task_id")
-    if not task_id:
-        return jsonify({"ok": False, "error": "task_id required"}), 400
-    try:
-        st = _sportai_status(task_id)
-        return jsonify({"ok": True, **st})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 502
-
-# ------------------------------------------------------------------------------
-# Ingest core (unchanged from your working pipeline)
-# ------------------------------------------------------------------------------
+# =========================
+#        Ingest core
+# =========================
 def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
     if forced_uid:
         return str(forced_uid)
@@ -468,14 +416,10 @@ def _normalize_swing_obj(obj):
     if start_s is None and end_s is None and bh_s is None:
         return None
     meta = {k: v for k, v in obj.items() if k not in {
-        "id","uid","swing_uid",
-        "player_id","sportai_player_uid","player_uid","player",
-        "type","label","stroke_type","swing_type",
-        "start","start_s","start_ts","end","end_s","end_ts",
-        "timestamp","ts","time_s","t",
-        "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
-        "events","serve","serve_type","ball_speed",
-        "ball_player_distance","volley","is_in_rally",
+        "id","uid","swing_uid","player_id","sportai_player_uid","player_uid","player",
+        "type","label","stroke_type","swing_type","start","start_s","start_ts","end","end_s","end_ts",
+        "timestamp","ts","time_s","t","ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
+        "events","serve","serve_type","ball_speed","ball_player_distance","volley","is_in_rally",
         "confidence_swing_type","confidence","confidence_volley"
     }}
     return {
@@ -630,6 +574,7 @@ def _normalize_serve_flags(conn, session_id):
     """), {"sid": session_id})
 
 def _rebuild_ts_from_seconds(conn, session_id):
+    # Swings
     conn.execute(sql_text("""
         WITH z AS (
           SELECT :sid AS session_id,
@@ -646,6 +591,7 @@ def _rebuild_ts_from_seconds(conn, session_id):
           FROM z
          WHERE fs.session_id = z.session_id;
     """), {"sid": session_id})
+    # Bounces
     conn.execute(sql_text("""
         WITH z AS (
           SELECT :sid AS session_id,
@@ -658,6 +604,7 @@ def _rebuild_ts_from_seconds(conn, session_id):
           FROM z
          WHERE b.session_id = z.session_id;
     """), {"sid": session_id})
+    # Ball positions
     conn.execute(sql_text("""
         WITH z AS (
           SELECT :sid AS session_id,
@@ -670,6 +617,7 @@ def _rebuild_ts_from_seconds(conn, session_id):
           FROM z
          WHERE bp.session_id = z.session_id;
     """), {"sid": session_id})
+    # Player positions
     conn.execute(sql_text("""
         WITH z AS (
           SELECT :sid AS session_id,
@@ -706,8 +654,8 @@ def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
     """), {
         "sid": session_id, "pid": player_id, "suid": s.get("suid"),
         "ss": q_start, "es": q_end, "bhs": q_hit,
-        "sts": seconds_to_ts(_base_dt_for_session(None), q_start), "ets": seconds_to_ts(_base_dt_for_session(None), q_end),
-        "bh_ts": seconds_to_ts(_base_dt_for_session(None), q_hit),
+        "sts": seconds_to_ts(_base_dt_for_session(base_dt), q_start), "ets": seconds_to_ts(_base_dt_for_session(base_dt), q_end),
+        "bh_ts": seconds_to_ts(_base_dt_for_session(base_dt), q_hit),
         "bhx": s.get("ball_hit_x"), "bhy": s.get("ball_hit_y"),
         "bs": s.get("ball_speed"), "bpd": s.get("ball_player_distance"),
         "sw_type": s.get("swing_type"),
@@ -722,6 +670,7 @@ def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
     })
 
 def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hint=None):
+    # Session
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
     fps          = _resolve_fps(payload)
     session_date = _resolve_session_date(payload)
@@ -750,8 +699,10 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
         conn.execute(sql_text("DELETE FROM dim_rally            WHERE session_id=:sid"), {"sid": session_id})
         conn.execute(sql_text("DELETE FROM dim_player           WHERE session_id=:sid"), {"sid": session_id})
 
+    # RAW snapshot
     _insert_raw_result(conn, session_id, payload)
 
+    # Players
     players = payload.get("players") or []
     uid_to_player_id: Dict[str, int] = {}
     conn.execute(sql_text("ALTER TABLE IF EXISTS dim_player ADD COLUMN IF NOT EXISTS meta JSONB"))
@@ -764,6 +715,7 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
         age       = p.get("age")
         utr       = _float(p.get("utr"))
         metrics   = p.get("metrics") or {}
+
         covered_distance  = _float(p.get("covered_distance") or metrics.get("covered_distance"))
         fastest_sprint    = _float(p.get("fastest_sprint")   or metrics.get("fastest_sprint"))
         fastest_sprint_ts = _float(p.get("fastest_sprint_timestamp") or
@@ -771,14 +723,17 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
                                    metrics.get("fastest_sprint_timestamp") or
                                    metrics.get("fastest_sprint_timestamp_s"))
         activity_score    = _float(p.get("activity_score")   or metrics.get("activity_score"))
+
         swing_type_distribution = p.get("swing_type_distribution")
         location_heatmap        = p.get("location_heatmap") or p.get("heatmap")
+
         player_meta = {k: v for k, v in p.items() if k not in {
             "id","sportai_player_uid","uid","player_id",
             "full_name","name","handedness","age","utr",
             "metrics","statistics","stats",
             "swing_type_distribution","location_heatmap","heatmap"
         }}
+
         conn.execute(sql_text("""
             INSERT INTO dim_player (
                 session_id, sportai_player_uid, full_name, handedness, age, utr,
@@ -807,6 +762,7 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
             "lheat": json.dumps(location_heatmap) if location_heatmap is not None else None,
             "pmeta": json.dumps(player_meta) if player_meta else None
         })
+
         pid = conn.execute(sql_text("""
             SELECT player_id FROM dim_player
             WHERE session_id = :sid AND sportai_player_uid = :puid
@@ -871,7 +827,6 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
         hitter_uid = b.get("player_id") or b.get("sportai_player_uid")
         hitter_uid = str(hitter_uid) if hitter_uid is not None else None
         hitter_pid = uid_to_player_id.get(hitter_uid) if hitter_uid else None
-
         conn.execute(sql_text("""
             INSERT INTO fact_bounce (session_id, hitter_player_id, rally_id, bounce_s, bounce_ts, x, y, bounce_type)
             VALUES (:sid, :pid, :rid, :s, :ts, :x, :y, :bt)
@@ -909,9 +864,9 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
 
     for norm in _gather_all_swings(payload):
         pid = uid_to_player_id.get(str(norm.get("player_uid") or "")) if norm.get("player_uid") else None
-        k = _seen_key(pid, norm)
-        if k in seen:
-            continue
+        k = _seen_key(pid, norm);  
+        
+        if k in seen:  continue
         seen.add(k)
         s = {
             "suid": str(norm.get("suid")) if norm.get("suid") else None,
@@ -933,7 +888,6 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
             "meta": norm.get("meta"),
         }
         try:
-            # Note: base_dt used above for timestamps where needed
             _insert_swing(conn, session_id, pid, s, base_dt, fps)
         except IntegrityError:
             pass
@@ -947,15 +901,23 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
 
     return {"session_uid": session_uid, "session_id": session_id}
 
-# ------------------------------------------------------------------------------
-# OPS endpoints (db init/rollups/etc.)
-# ------------------------------------------------------------------------------
+# =========================
+#        OPS endpoints
+# =========================
 @app.get("/ops/db-ping")
 def db_ping():
     if not _guard(): return _forbid()
     with engine.connect() as conn:
         now = conn.execute(sql_text("SELECT now() AT TIME ZONE 'utc'")).scalar_one()
     return jsonify({"ok": True, "now_utc": str(now)})
+
+@app.get("/ops/dropbox-auth-test")
+def ops_dropbox_auth_test():
+    if not _guard(): return _forbid()
+    token, err = _dbx_access_token()
+    if not token:
+        return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+    return jsonify({"ok": True, "access_token_last4": token[-4:]})
 
 @app.get("/ops/init-db")
 def ops_init_db():
@@ -982,6 +944,7 @@ def ops_refresh_gold():
     if not _guard(): return _forbid()
     try:
         with engine.begin() as conn:
+            # point_log_tbl
             conn.execute(sql_text("""
                 DO $$ BEGIN
                   IF to_regclass('public.point_log_tbl') IS NULL THEN
@@ -995,6 +958,7 @@ def ops_refresh_gold():
                 CREATE INDEX IF NOT EXISTS ix_pl_sess_point_shot
                 ON point_log_tbl(session_uid, point_number, shot_number);
             """))
+            # point_summary_tbl
             conn.execute(sql_text("""
                 DO $$ BEGIN
                   IF to_regclass('public.point_summary_tbl') IS NULL THEN
@@ -1155,11 +1119,14 @@ def ops_backfill_xy():
 
                 inserted_bp = inserted_bb = inserted_pp = 0
 
+                # Ball positions
                 bp = doc.get("ball_positions") or doc.get("ballPositions")
                 if isinstance(bp, list):
                     rows = []
                     for itm in bp:
-                        ts_s = _float(itm.get("timestamp")); x = _float(itm.get("X")); y = _float(itm.get("Y"))
+                        ts_s = _float(itm.get("timestamp"))
+                        x    = _float(itm.get("X"))
+                        y    = _float(itm.get("Y"))
                         if ts_s is None or x is None or y is None: continue
                         rows.append({"sid": sid, "ts_s": ts_s, "x": x, "y": y})
                     if rows:
@@ -1169,6 +1136,7 @@ def ops_backfill_xy():
                         """), rows)
                         inserted_bp = len(rows)
 
+                # Ball bounces
                 id_map = {r["sportai_player_uid"]: r["player_id"] for r in
                           conn.execute(sql_text("SELECT sportai_player_uid, player_id FROM dim_player WHERE session_id=:sid"),
                                        {"sid": sid}).mappings()}
@@ -1184,8 +1152,7 @@ def ops_backfill_xy():
                         hitter = id_map.get(str(sportai_pid)) if sportai_pid is not None else None
                         btype = itm.get("type")
                         if x is None or y is None: continue
-                        rows.append({"sid": sid, "bounce_s": bounce_s, "x": x, "y": y,
-                                     "hitter": hitter, "btype": btype})
+                        rows.append({"sid": sid, "bounce_s": bounce_s, "x": x, "y": y, "hitter": hitter, "btype": btype})
                 if rows:
                     conn.execute(sql_text("""
                         INSERT INTO fact_bounce(session_id, bounce_s, x, y, hitter_player_id, bounce_type)
@@ -1193,6 +1160,7 @@ def ops_backfill_xy():
                     """), rows)
                     inserted_bb = len(rows)
 
+                # Player positions
                 pp = doc.get("player_positions") or doc.get("playerPositions") or {}
                 rows = []
                 if isinstance(pp, dict):
@@ -1254,6 +1222,7 @@ def ops_reconcile():
         except Exception as e:
             return jsonify({"ok": False, "error": f"invalid payload_json: {e}"}), 500
 
+        # RAW counters
         def _len_safe(x): return len(x) if isinstance(x, list) else 0
         players = payload.get("players") or []
         n_players_raw = len(players)
@@ -1301,6 +1270,7 @@ def ops_reconcile():
         else:
             n_pp_raw = n_pp_xy_raw = 0
 
+        # BRONZE counters
         n_players_dim = conn.execute(sql_text("SELECT COUNT(*) FROM dim_player WHERE session_id=:sid"), {"sid": sid}).scalar()
         n_swings      = conn.execute(sql_text("SELECT COUNT(*) FROM fact_swing WHERE session_id=:sid"), {"sid": sid}).scalar()
         n_rallies     = conn.execute(sql_text("SELECT COUNT(*) FROM dim_rally WHERE session_id=:sid"), {"sid": sid}).scalar()
@@ -1327,17 +1297,51 @@ def ops_reconcile():
         }
     })
 
-# ------------------------------------------------------------------------------
-# Mount UI blueprint (if present)
-# ------------------------------------------------------------------------------
-try:
-    from ui_app import ui_bp  # sessions/SQL UI, templates/upload.html, etc.
-    app.register_blueprint(ui_bp, url_prefix="/upload")
-    print("Mounted ui_bp at /upload")
-except Exception as e:
-    print("ui_bp not mounted:", e)
+# =========================
+#   SportAI callback (optional JSON ingest)
+# =========================
+@app.post("/ops/sportai-callback")
+def ops_sportai_callback():
+    if not _guard(): return _forbid()
+    try:
+        payload = request.get_json(force=True, silent=False)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Invalid JSON: {e}"}), 400
 
-# Print routes at boot
+    replace = (request.args.get("replace","1").strip().lower() in ("1","true","yes","y"))
+    payload_uid = (payload.get("session_uid") or payload.get("sessionId") or
+                   payload.get("session_id") or payload.get("uid") or payload.get("id"))
+    forced_uid = request.args.get("session_uid") or payload_uid
+
+    try:
+        with engine.begin() as conn:
+            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid)
+            sid = res.get("session_id")
+            counts = conn.execute(sql_text("""
+                SELECT
+                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
+            """), {"sid": sid}).fetchone()
+
+        return jsonify({
+            "ok": True,
+            "session_uid": res.get("session_uid"),
+            "session_id":  sid,
+            "bronze_counts": {
+                "rallies":          counts[0],
+                "ball_bounces":     counts[1],
+                "ball_positions":   counts[2],
+                "player_positions": counts[3],
+                "swings":           counts[4],
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# Print routes at boot (useful logs on Render)
 print("=== ROUTES ===")
 for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
