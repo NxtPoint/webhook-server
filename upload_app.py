@@ -113,26 +113,29 @@ def _sportai_submit(video_url: str, email: str | None = None) -> str:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
 
-    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
-    payload = {"video_url": video_url, "sport": "tennis"}
-    if email: payload["email"] = email
+    url = f"{SPORTAI_BASE}{SPORTAI_SUBMIT_PATH}"
+    headers = {
+        "Authorization": f"Bearer {SPORTAI_TOKEN}",
+        "Content-Type": "application/json",
+    }
 
-    last_err = None
-    for base in ALT_SPORTAI_BASES:
-        try:
-            url = f"{base}{SPORTAI_SUBMIT_PATH}"
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            r.raise_for_status()
-            j = r.json() or {}
-            tid = j.get("task_id") or j.get("id") or (j.get("data") or {}).get("task_id")
-            if not tid:
-                raise RuntimeError(f"No task_id in response: {j}")
-            return str(tid)
-        except requests.exceptions.RequestException as e:
-            last_err = e
-            continue
+    payload = {
+        "video_url": video_url,          # we still need to tell SportAI where the video is
+        "only_in_rally_data": False,     # from their example
+        "version": "stable",             # from their example
+    }
+    if email:
+        payload["email"] = email
 
-    raise RuntimeError(f"SportAI submit failed on all bases {ALT_SPORTAI_BASES}: {last_err}")
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    j = r.json() or {}
+
+    # tolerate slight response shape differences
+    task_id = j.get("task_id") or (j.get("data") or {}).get("task_id") or j.get("id")
+    if not task_id:
+        raise RuntimeError(f"No task_id in response: {j}")
+    return str(task_id)
 
 
 def _sportai_status(task_id: str) -> dict:
