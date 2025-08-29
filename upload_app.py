@@ -927,7 +927,7 @@ def _player_map(conn, session_id: int) -> dict:
 # --------------------------------------------------------------------------------------
 @app.get("/")
 def root():
-    return jsonify({"service": "NextPoint Upload/Ingester v3", "status": "ok"})
+    return {"service": "NextPoint Upload/Ingester v3", "status": "ok"}
 
 @app.get("/ops/db-ping")
 def db_ping():
