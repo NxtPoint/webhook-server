@@ -3,11 +3,8 @@ import os
 from flask import Flask, jsonify, request, Response
 
 BOOT_TAG = os.getenv("RENDER_GIT_COMMIT", "local")[:7]
-
-# IMPORTANT: only one Flask() in the whole file
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# ---- OPS key helper ----
 OPS_KEY = os.getenv("OPS_KEY", "")
 
 def _guard_ok() -> bool:
@@ -19,7 +16,6 @@ def _guard_ok() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-# ---- Health & root (keep trivial so Render can start) ----
 @app.get("/")
 def root_ok():
     return "OK", 200
@@ -28,7 +24,6 @@ def root_ok():
 def healthz_ok():
     return "OK", 200
 
-# ---- Small diagnostics (open) ----
 @app.get("/__whoami")
 def whoami():
     return jsonify({
@@ -50,15 +45,13 @@ def __routes():
     )
     return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
-# ---- Locked diagnostics ----
 @app.get("/ops/routes")
 def ops_routes():
     if not _guard_ok():
         return Response("Forbidden", 403)
-    # reuse the same payload as __routes
     return __routes()
 
-# ---- DB ping (kept; this already works for you) ----
+# optional DB ping (safe if db_init missing)
 try:
     from sqlalchemy import text
     from db_init import engine
@@ -76,17 +69,10 @@ def db_ping():
         now = conn.execute(text("SELECT now() AT TIME ZONE 'utc'")).scalar_one()
     return jsonify({"ok": True, "now_utc": str(now)})
 
-# ---- Optional UI blueprint (safe if missing) ----
+# Try to mount UI, but don't fail boot if missing
 try:
     from ui_app import ui_bp
     app.register_blueprint(ui_bp, url_prefix="/upload")
     print("Mounted ui_bp at /upload")
 except Exception as e:
     print("ui_bp not mounted:", e)
-
-# ---- One-time route dump to logs (so we can verify what is running) ----
-print("=== ROUTES (final) ===")
-for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
-    meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
-    print(f"{r.rule:28s} -> {r.endpoint:20s} [{meth}]")
-print("======================")
