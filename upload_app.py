@@ -17,13 +17,27 @@ DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads")
-
 SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").rstrip("/")
 SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
 SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
 SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "")
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
+
+# --- Back-compat with the older deploy that used a single access token + /upload + field 'video'
+DBX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN", "")
+
+def _dbx_get_token():
+    """Prefer legacy DROPBOX_ACCESS_TOKEN if present; otherwise mint from refresh token."""
+    if DBX_ACCESS_TOKEN:
+        return DBX_ACCESS_TOKEN, None
+    return _dbx_access_token()  # existing function
+
+# alias: accept old endpoint/field without breaking the new one
+def _api_upload_compat():
+    # Reuse the same handler; Flask will pass through to it
+    return api_upload_to_dropbox()
+app.add_url_rule("/upload", view_func=_api_upload_compat, methods=["POST", "OPTIONS"])
 
 # DB engine (used by callback)
 from db_init import engine  # noqa: E402
@@ -146,19 +160,24 @@ def upload_status():
 @app.get("/ops/dropbox-auth-test")
 def ops_dropbox_auth_test():
     if not _guard(): return _forbid()
-    tok, err = _dbx_access_token()
-    if not tok: return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
-    return jsonify({"ok": True, "access_token_last4": tok[-4:]})
+    tok, err = _dbx_get_token()
+    if not tok:
+        return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+    mode = "access_token" if DBX_ACCESS_TOKEN else "refresh_flow"
+    return jsonify({"ok": True, "mode": mode, "access_token_last4": tok[-4:]})
+
 
 @app.post("/upload/api/upload")
 def api_upload_to_dropbox():
-    f = request.files.get("file")
+    # accept both 'file' (new) and 'video' (old)
+    f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file provided."}), 400
 
-    tok, err = _dbx_access_token()
-    if not tok: return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+    tok, err = _dbx_get_token()  # was: _dbx_access_token()
+    if not tok:
+        return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
 
     clean = secure_filename(f.filename)
     dest_path = f"{DBX_FOLDER.rstrip('/')}/{int(time.time())}_{clean}"
@@ -168,15 +187,17 @@ def api_upload_to_dropbox():
         "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
         "Content-Type": "application/octet-stream",
     }
-    up = requests.post("https://content.dropboxapi.com/2/files/upload",
-                       headers=headers, data=f.read(), timeout=600)
+    up = requests.post("https://content.dropboxapi.com/2/files/upload", headers=headers, data=f.read(), timeout=600)
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
     meta = up.json()
 
+    # create a public link and force direct download (same outcome as the old app)
+    share_url = _dbx_create_or_fetch_shared_link(tok, meta.get("path_lower") or dest_path)
+    video_url = _to_direct_dropbox(share_url)
+
+    # be liberal in what we send to SportAI so both old/new backends are happy
     try:
-        share_url = _dbx_create_or_fetch_shared_link(tok, meta.get("path_lower") or dest_path)
-        video_url = _to_direct_dropbox(share_url)
         task_id = _sportai_submit(video_url, email=email)
     except Exception as e:
         return jsonify({"ok": False,
@@ -192,6 +213,7 @@ def api_upload_to_dropbox():
                     "upload": {"path": meta.get("path_display") or dest_path,
                                "size": meta.get("size"),
                                "name": meta.get("name", clean)}})
+
 
 @app.get("/upload/api/task-status")
 def api_task_status():
