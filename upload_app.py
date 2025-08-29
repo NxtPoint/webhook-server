@@ -282,12 +282,14 @@ def ops_sportai_dns():
 # -------------------------------------------------------
 # Upload API (also accepts direct JSON with video_url)
 # -------------------------------------------------------
+# Legacy /upload alias (accepts 'file' or legacy 'video'); no add_url_rule used.
+
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_dropbox():
     # support OPTIONS preflight
     if request.method == "OPTIONS":
         return ("", 204)
-
+    
     # 1) If JSON with video_url is provided, skip Dropbox and submit directly
     if request.is_json:
         body = request.get_json(silent=True) or {}
@@ -342,7 +344,6 @@ def api_upload_to_dropbox():
                     "upload": {"path": meta.get("path_display") or dest_path,
                                "size": meta.get("size"),
                                "name": meta.get("name", clean)}})
-
 
 # -------------------------------------------------------
 # Task poll
