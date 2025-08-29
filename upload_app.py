@@ -164,21 +164,25 @@ def api_upload_to_dropbox():
         "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
     })
 
-# aliases (accept trailing slash and root-level)
-app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
-app.add_url_rule("/api/upload",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
-app.add_url_rule("/upload/api", view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+# aliases (accept trailing slash and common alternate paths)
+app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
+app.add_url_rule("/api/upload",               view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
+app.add_url_rule("/upload/api",               view_func=api_upload_to_dropbox, methods=["POST", "OPTIONS"])
 
-# NEW: some front-ends post to /upload/api (no trailing /upload)
-app.add_url_rule("/upload/api",               view_func=api_upload_to_dropbox, methods=["POST","OPTIONS"])
+# helpful GET hint (separate endpoint name!)
+@app.get("/upload/api/upload")
+def api_upload_to_dropbox_get_hint():
+    return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
 
-
-@app.route("/upload/api/upload", methods=["GET","POST"])
-def api_upload_to_dropbox():
-    if request.method == "GET":
-        return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
-    # ... existing POST logic stays exactly the same ...
-
+# catch-all (debug what the UI actually hits)
+@app.route("/upload/api/<path:subpath>", methods=["GET", "POST"])
+def api_upload_catchall(subpath):
+    return jsonify({
+        "ok": False,
+        "error": "Unknown /upload/api path",
+        "you_hit": f"/upload/api/{subpath}",
+        "known": ["/upload/api/upload", "/api/upload", "/upload/api"],
+    }), 404
 
 # catch-all (debug what the UI actually hits)
 @app.route("/upload/api/<path:subpath>", methods=["GET","POST"])
