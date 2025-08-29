@@ -1,6 +1,1 @@
-Flask
-SQLAlchemy>=2.0
-psycopg2-binary
-python-dotenv
-pandas
-requests
+Flask==3.0.0

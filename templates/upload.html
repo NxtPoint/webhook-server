@@ -3,10 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <title>Upload Match Video</title>
-  <style>
-    html, body { margin: 0; font-family: Arial, sans-serif;
-      background: url('/upload/static/background-clean-male-serve.jpg') no-repeat center center fixed;
-      background-size: cover; color: #ffffff; }
+<style>
+  html, body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: url('{{ url_for("ui.static", filename="upload/background-clean-male-serve.jpg") }}');
+    background-size: cover;
+    color: #ffffff;
+  }
     .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
     .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 520px; text-align: center; box-shadow: 0 0 20px #00ff80; }
     h2 { font-size: 1.6rem; margin-bottom: 16px; }
@@ -71,7 +75,6 @@
       }
     }
 
-    // Read the response body ONCE; try JSON, fallback to raw text
     async function readJson(res){
       const txt = await res.text();
       try { return JSON.parse(txt); } catch { return { _raw: txt }; }
@@ -121,18 +124,15 @@
       const timer = setInterval(async () => {
         attempts++;
         try {
-          const res = await fetch(`/upload/task_status/${taskId}`);
+          const res = await fetch(`/upload/task_status/${encodeURIComponent(taskId)}`);
           const data = await readJson(res);
 
-          // We purposely don't abort on !res.ok; backend should always 200.
           const status = data?.data?.task_status || "unknown";
           const progress = (typeof data?.data?.task_progress === "number") ? data.data.task_progress : 0;
           const subtaskProgress = data?.data?.subtask_progress;
           const totalSubtaskProgress = data?.data?.total_subtask_progress;
 
           if (subtaskProgress) renderSubtasks(subtaskProgress);
-
-          // progress may be 0..1 (backend). Convert to % safely.
           const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
           updateProgressBar(pct);
 
