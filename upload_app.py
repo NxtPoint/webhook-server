@@ -1,12 +1,14 @@
 ﻿# upload_app.py
 import os
-from flask import Flask, jsonify, Response, request, send_from_directory
-
-# single Flask app instance
-app = Flask(__name__, template_folder="templates", static_folder="static")
+from flask import Flask, jsonify, request, Response
 
 BOOT_TAG = os.getenv("RENDER_GIT_COMMIT", "local")[:7]
-OPS_KEY  = os.environ.get("OPS_KEY", "")
+
+# IMPORTANT: only one Flask() in the whole file
+app = Flask(__name__, template_folder="templates", static_folder="static")
+
+# ---- OPS key helper ----
+OPS_KEY = os.getenv("OPS_KEY", "")
 
 def _guard_ok() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
@@ -17,71 +19,64 @@ def _guard_ok() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-# ---------- health & root ----------
+# ---- Health & root (keep trivial so Render can start) ----
 @app.get("/")
 def root_ok():
-    return jsonify(ok=True, service="NextPoint Upload API", tag=BOOT_TAG)
+    return "OK", 200
 
 @app.get("/healthz")
 def healthz_ok():
     return "OK", 200
 
+# ---- Small diagnostics (open) ----
 @app.get("/__whoami")
 def whoami():
-    return jsonify(
-        ok=True,
-        file=__file__,
-        cwd=os.getcwd(),
-        tag=BOOT_TAG,
-        routes=len(list(app.url_map.iter_rules())),
-    )
+    return jsonify({
+        "ok": True,
+        "service": "upload_app",
+        "tag": BOOT_TAG,
+        "routes": len(list(app.url_map.iter_rules()))
+    })
 
-# ---------- routes (open + locked) ----------
 @app.get("/__routes")
-def routes_open():
-    routes = [
+def __routes():
+    routes = sorted(
         {
             "rule": r.rule,
             "endpoint": r.endpoint,
-            "methods": sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"}),
+            "methods": sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"})
         }
         for r in app.url_map.iter_rules()
-    ]
-    routes.sort(key=lambda x: x["rule"])
-    return jsonify(ok=True, count=len(routes), routes=routes)
+    )
+    return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
+# ---- Locked diagnostics ----
 @app.get("/ops/routes")
-def routes_locked():
+def ops_routes():
     if not _guard_ok():
         return Response("Forbidden", 403)
-    # reuse same listing
-    routes = [
-        {
-            "rule": r.rule,
-            "endpoint": r.endpoint,
-            "methods": sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"}),
-        }
-        for r in app.url_map.iter_rules()
-    ]
-    routes.sort(key=lambda x: x["rule"])
-    return jsonify(ok=True, count=len(routes), routes=routes)
+    # reuse the same payload as __routes
+    return __routes()
 
-# ---------- DB ping (kept because you’re using it) ----------
+# ---- DB ping (kept; this already works for you) ----
 try:
     from sqlalchemy import text
     from db_init import engine
+    HAVE_DB = True
+except Exception:
+    HAVE_DB = False
 
-    @app.get("/ops/db-ping")
-    def db_ping():
-        if not _guard_ok():
-            return Response("Forbidden", 403)
-        with engine.connect() as conn:
-            now = conn.execute(text("SELECT now() AT TIME ZONE 'utc'")).scalar_one()
-        return jsonify(ok=True, now_utc=str(now))
-except Exception as e:
-    print("db_ping disabled (no DB available at import):", e)
+@app.get("/ops/db-ping")
+def db_ping():
+    if not _guard_ok():
+        return Response("Forbidden", 403)
+    if not HAVE_DB:
+        return jsonify({"ok": False, "error": "db not available in this build"}), 500
+    with engine.connect() as conn:
+        now = conn.execute(text("SELECT now() AT TIME ZONE 'utc'")).scalar_one()
+    return jsonify({"ok": True, "now_utc": str(now)})
 
-# ---------- /upload blueprint (optional) ----------
+# ---- Optional UI blueprint (safe if missing) ----
 try:
     from ui_app import ui_bp
     app.register_blueprint(ui_bp, url_prefix="/upload")
@@ -89,15 +84,9 @@ try:
 except Exception as e:
     print("ui_bp not mounted:", e)
 
-# serve /upload/static/* from static/upload/*
-@app.get("/upload/static/<path:filename>")
-def upload_static(filename):
-    base = os.path.join(app.root_path, "static", "upload")
-    return send_from_directory(base, filename)
-
-# Log routes once at startup (seen in Render logs)
-print("=== ROUTES (startup) ===")
+# ---- One-time route dump to logs (so we can verify what is running) ----
+print("=== ROUTES (final) ===")
 for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
-    methods = ",".join(sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"}))
-    print(f"{r.rule:28s} -> {r.endpoint:20s} [{methods}]")
-print("=== END ROUTES ===")
+    meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
+    print(f"{r.rule:28s} -> {r.endpoint:20s} [{meth}]")
+print("======================")
