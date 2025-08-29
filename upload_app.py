@@ -1,15 +1,17 @@
-﻿# upload_app.py
-import os
+﻿import os
 from flask import Flask, jsonify, request, Response
+from werkzeug.utils import secure_filename
 
-BOOT_TAG = os.getenv("DEPLOY_TAG", os.getenv("RENDER_GIT_COMMIT", "local")[:7])
+try:
+    from db_init import engine, db_now
+except Exception:
+    engine, db_now = None, None
 
-# Single Flask app (do NOT re-create app anywhere else)
+# ---- App ----
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# ---- OPS key guard ----
-OPS_KEY = os.environ.get("OPS_KEY", "")
-
+# ---- Env/ops helpers ----
+OPS_KEY = os.getenv("OPS_KEY", "")
 def _guard_ok() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
     bearer = request.headers.get("Authorization", "")
@@ -19,7 +21,18 @@ def _guard_ok() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-# ---- Health + root ----
+def _whoami():
+    return dict(
+        ok=True,
+        service="upload_app",
+        render_service=os.getenv("RENDER_SERVICE_ID") or os.getenv("RENDER_SERVICE", ""),
+        port=os.getenv("PORT", "10000"),
+        branch=os.getenv("RENDER_GIT_BRANCH", "unknown"),
+        commit=os.getenv("RENDER_GIT_COMMIT", "local"),
+        tag=(os.getenv("RENDER_GIT_COMMIT", "local")[:7]),
+    )
+
+# ---- Health & whoami ----
 @app.get("/")
 def root_ok():
     return "OK", 200
@@ -28,83 +41,63 @@ def root_ok():
 def healthz_ok():
     return "OK", 200
 
-# ---- Who am I (quick diagnostics) ----
 @app.get("/__whoami")
 def __whoami():
-    return jsonify({
-        "ok": True,
-        "service": "upload_app",
-        "tag": BOOT_TAG,
-        "port": os.getenv("PORT", "10000"),
-        "commit": os.getenv("RENDER_GIT_COMMIT", ""),
-        "branch": os.getenv("RENDER_GIT_BRANCH", ""),
-        "render_service": os.getenv("RENDER_SERVICE_ID", ""),
-    })
+    return jsonify(_whoami())
 
-# ---- Open routes dump ----
+# ---- Routes dump (open + locked) ----
 @app.get("/__routes")
 def __routes_open():
     routes = [
-        {"rule": r.rule, "endpoint": r.endpoint,
-         "methods": sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"})}
+        dict(rule=r.rule,
+             endpoint=r.endpoint,
+             methods=sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"}))
         for r in app.url_map.iter_rules()
     ]
     routes.sort(key=lambda x: x["rule"])
     return jsonify({"ok": True, "count": len(routes), "routes": routes})
 
-# ---- Locked routes dump (requires OPS_KEY) ----
 @app.get("/ops/routes")
 def __routes_locked():
     if not _guard_ok():
         return Response("Forbidden", 403)
-    routes = [
-        {"rule": r.rule, "endpoint": r.endpoint,
-         "methods": sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"})}
-        for r in app.url_map.iter_rules()
-    ]
-    routes.sort(key=lambda x: x["rule"])
-    return jsonify({"ok": True, "count": len(routes), "routes": routes})
+    return __routes_open()
 
-# ---- /ops/db-ping (safe, optional) ----
+# ---- /ops/db-ping ----
 @app.get("/ops/db-ping")
 def ops_db_ping():
     if not _guard_ok():
         return Response("Forbidden", 403)
     try:
-        # Prefer DATABASE_URL if present, otherwise fall back to db_init.engine if available.
-        engine = None
-        db_url = os.getenv("DATABASE_URL", "")
-        if db_url:
-            from sqlalchemy import create_engine
-            engine = create_engine(db_url, pool_pre_ping=True, future=True)
-        else:
-            try:
-                from db_init import engine as ext_engine  # your existing engine
-                engine = ext_engine
-            except Exception:
-                engine = None
-
-        if engine is None:
-            return jsonify({"ok": False, "error": "No DATABASE_URL and no db_init.engine"}), 500
-
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            now_utc = conn.execute(text("SELECT now() AT TIME ZONE 'utc'")).scalar()
-        return jsonify({"ok": True, "now_utc": str(now_utc)})
+        now = db_now()  # raises if DATABASE_URL not set
+        return jsonify({"ok": True, "now_utc": str(now)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ---- (Optional) mount UI blueprint if present ----
+# ---- Simple upload API (writes to /tmp/uploads) ----
+@app.post("/api/upload")
+def api_upload():
+    f = request.files.get("file")
+    email = request.form.get("email", "")
+    if not f:
+        return jsonify({"ok": False, "error": "file is required (form field 'file')"}), 400
+    os.makedirs("/tmp/uploads", exist_ok=True)
+    fname = secure_filename(f.filename) or "upload.bin"
+    path = os.path.join("/tmp/uploads", fname)
+    f.save(path)
+    return jsonify({"ok": True, "filename": fname, "path": path, "email": email})
+
+# ---- Mount UI blueprint (admin) at /upload ----
 try:
-    from ui_app import ui_bp  # may require DATABASE_URL
+    from ui_app import ui_bp
     app.register_blueprint(ui_bp, url_prefix="/upload")
     print("Mounted ui_bp at /upload")
 except Exception as e:
     print("ui_bp not mounted:", e)
 
-# One-time boot banner + route dump (appears in Render logs)
-print("=== BOOT upload_app ===", BOOT_TAG)
+# ---- Final route dump to logs at boot ----
+print("=== ROUTES (final) ===")
 for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
-    print(f"{r.rule:24s} -> {r.endpoint:20s} [{meth}]")
+    print(f"{r.rule:30s} -> {r.endpoint:20s} [{meth}]")
 print("=== END ROUTES ===")

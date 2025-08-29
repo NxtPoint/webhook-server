@@ -14,5 +14,5 @@ psycopg2-binary>=2.9
 requests>=2.31
 python-dotenv>=1.0
 
-# Proc server (optional but recommended if you later switch from python wsgi.py)
+# Optional app server (when you later switch from "python wsgi.py")
 gunicorn>=21.2
