@@ -10,8 +10,89 @@ from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 
-# Single Flask app (Render expects exactly one)
+# app already exists:
 app = Flask(__name__, template_folder="templates", static_folder="static")
+app.url_map.strict_slashes = False  # accept both /path and /path/
+
+# ---- SportAI configuration ----
+SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").rstrip("/")
+SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
+SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
+SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "")
+
+def _to_direct_dropbox(url: str) -> str:
+    try:
+        from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+        p = urlparse(url)
+        q = dict(parse_qsl(p.query, keep_blank_values=True))
+        q["dl"] = "1"
+        host = "dl.dropboxusercontent.com" if "dropbox.com" in p.netloc else p.netloc
+        return urlunparse((p.scheme, host, p.path, p.params, urlencode(q), p.fragment))
+    except Exception:
+        return url
+
+def _dbx_create_or_fetch_shared_link(token: str, path: str) -> str:
+    # try to create, else list
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    r = requests.post(
+        "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        headers=h, json={"path": path, "settings": {"audience": "public", "access": "viewer"}}, timeout=30
+    )
+    if r.status_code == 409:
+        r = requests.post(
+            "https://api.dropboxapi.com/2/sharing/list_shared_links",
+            headers=h, json={"path": path, "direct_only": True}, timeout=30
+        )
+        r.raise_for_status()
+        links = (r.json() or {}).get("links", [])
+        if not links:
+            raise RuntimeError("No shared link available")
+        return links[0]["url"]
+    r.raise_for_status()
+    return (r.json() or {})["url"]
+
+def _sportai_submit(video_url: str, email: str | None = None) -> str:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+    url = f"{SPORTAI_BASE}{SPORTAI_SUBMIT_PATH}"
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
+    payload = {"video_url": video_url, "sport": "tennis"}
+    if email:
+        payload["email"] = email
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json() or {}
+    tid = data.get("task_id") or data.get("id") or (data.get("data") or {}).get("task_id")
+    if not tid:
+        raise RuntimeError(f"No task_id in SportAI response: {data}")
+    return str(tid)
+
+def _sportai_status(task_id: str) -> dict:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+    path = SPORTAI_STATUS_PATH.format(task_id=task_id)
+    url = f"{SPORTAI_BASE}{path}"
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    j = r.json() or {}
+    return {
+        "status": j.get("status") or (j.get("data") or {}).get("status"),
+        "result_url": j.get("result_url") or (j.get("data") or {}).get("result_url"),
+        "raw": j,
+    }
+
+def _trigger_ingest(result_url: str):
+    if not OPS_KEY:
+        raise RuntimeError("OPS_KEY missing for ingest")
+    base = (request.host_url or "").rstrip("/")
+    from urllib.parse import urlencode
+    q = urlencode({"key": OPS_KEY, "url": result_url, "replace": 1})
+    ingest_url = f"{base}/ops/ingest-file?{q}"
+    r = requests.get(ingest_url, timeout=120)
+    r.raise_for_status()
+    return r.json()
+
 
 # =========================
 #   Dropbox configuration
@@ -42,9 +123,11 @@ def _dbx_access_token():
 @app.post("/upload/api/upload")
 def api_upload_to_dropbox():
     """
-    Expects multipart/form-data:
-      - file : the video file (required)
-      - email: user email (optional)
+    Accepts multipart/form-data:
+      - file  : the video file (required)
+      - email : optional (sent to SportAI payload if provided)
+    Uploads to Dropbox, creates a shared link, converts to direct URL,
+    submits to SportAI, and returns the task_id.
     """
     f = request.files.get("file")
     email = (request.form.get("email") or "").strip().lower()
@@ -56,41 +139,55 @@ def api_upload_to_dropbox():
     if not token:
         return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
 
-    # Build Dropbox destination path
+    # Upload to Dropbox
     clean = secure_filename(f.filename)
     ts = int(time.time())
     dest_path = f"{DBX_FOLDER.rstrip('/')}/{ts}_{clean}"
 
-    # Upload to Dropbox content API
     headers = {
         "Authorization": f"Bearer {token}",
-        "Dropbox-API-Arg": json.dumps({
-            "path": dest_path,
-            "mode": "add",
-            "autorename": True,
-            "mute": False,
-        }),
+        "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
         "Content-Type": "application/octet-stream",
     }
-    data = f.read()
     up = requests.post(
         "https://content.dropboxapi.com/2/files/upload",
         headers=headers,
-        data=data,
+        data=f.read(),
         timeout=600,
     )
-
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
-
     meta = up.json()
+
+    # Create share link -> direct link
+    try:
+        share_url = _dbx_create_or_fetch_shared_link(token, meta.get("path_lower") or dest_path)
+        video_url = _to_direct_dropbox(share_url)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Dropbox shared link error: {e}"}), 502
+
+    # Submit to SportAI
+    try:
+        task_id = _sportai_submit(video_url, email=email)
+    except Exception as e:
+        # still return successful upload details; frontend can show “uploaded but not submitted”
+        return jsonify({
+            "ok": False,
+            "stage": "sportai_submit",
+            "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
+            "share_url": share_url,
+            "video_url": video_url,
+            "error": str(e),
+        }), 502
+
     return jsonify({
         "ok": True,
-        "email": email,
-        "path": meta.get("path_display") or dest_path,
-        "size": meta.get("size"),
-        "name": meta.get("name", clean),
+        "task_id": task_id,
+        "share_url": share_url,
+        "video_url": video_url,
+        "upload": {"path": meta.get("path_display") or dest_path, "size": meta.get("size"), "name": meta.get("name", clean)},
     })
+
 
 # =========================
 #       App config
@@ -214,9 +311,41 @@ def __routes_locked():
     if not _guard(): return _forbid()
     return __routes_open()
 
+@app.get("/upload/api/task-status")
+def api_task_status():
+    task_id = request.args.get("task_id")
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        st = _sportai_status(task_id)
+        return jsonify({"ok": True, **st})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+
+@app.post("/upload/webhook")  # configure this in SportAI console
+def upload_webhook():
+    try:
+        payload = request.get_json(force=True, silent=False) or {}
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Invalid JSON: {e}"}), 400
+
+    result_url = payload.get("result_url") or (payload.get("data") or {}).get("result_url")
+    task_id = payload.get("task_id") or (payload.get("data") or {}).get("task_id")
+    if not result_url:
+        return jsonify({"ok": False, "error": "Missing result_url"}), 400
+
+    try:
+        ing = _trigger_ingest(result_url)  # uses /ops/ingest-file with OPS_KEY
+    except Exception as e:
+        return jsonify({"ok": False, "task_id": task_id, "error": f"ingest failed: {e}"}), 502
+
+    return jsonify({"ok": True, "task_id": task_id, "ingest": ing})
+
 # =========================
 #        Ingest core
 # =========================
+
 def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
     if forced_uid:
         return str(forced_uid)
