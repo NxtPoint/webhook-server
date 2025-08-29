@@ -165,13 +165,15 @@ def api_upload_to_dropbox():
     })
 
 # aliases (accept trailing slash and root-level)
-app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["POST"])
-app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["POST"])
+app.add_url_rule("/api/upload", view_func=api_upload_to_dropbox, methods=["GET","POST"])
+app.add_url_rule("/upload/api/upload/", view_func=api_upload_to_dropbox, methods=["GET","POST"])
 
-# helpful GET hint
-@app.get("/upload/api/upload")
-def api_upload_to_dropbox_get_hint():
-    return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
+@app.route("/upload/api/upload", methods=["GET","POST"])
+def api_upload_to_dropbox():
+    if request.method == "GET":
+        return jsonify({"ok": False, "error": "Use POST multipart/form-data with field 'file'"}), 405
+    # ... existing POST logic stays exactly the same ...
+
 
 # catch-all (debug what the UI actually hits)
 @app.route("/upload/api/<path:subpath>", methods=["GET","POST"])
