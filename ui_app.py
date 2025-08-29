@@ -66,12 +66,15 @@ _BASE = """
 
 @ui_bp.route("/")
 def home():
-    dropbox_ready = bool(os.environ.get("DROPBOX_ACCESS_TOKEN"))
+    # Correct “Dropbox ready” for either legacy token OR refresh flow
+    dropbox_ready = bool(
+        os.environ.get("DROPBOX_ACCESS_TOKEN") or
+        (os.environ.get("DROPBOX_APP_KEY") and os.environ.get("DROPBOX_APP_SECRET") and os.environ.get("DROPBOX_REFRESH_TOKEN"))
+    )
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
-    max_upload_mb = int(os.environ.get("MAX_UPLOAD_MB", "200"))
-    return render_template_string(
-        "{% include 'upload.html' %}",
+    max_upload_mb = int(os.environ.get("MAX_CONTENT_MB", os.environ.get("MAX_UPLOAD_MB", "150")))
+    return render_template_string("{% include 'upload.html' %}",
         dropbox_ready=dropbox_ready,
         sportai_ready=sportai_ready,
         target_folder=target_folder,
