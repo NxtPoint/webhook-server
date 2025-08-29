@@ -1,118 +1,159 @@
-<form id="uploadForm" enctype="multipart/form-data">
-  <input type="email" name="email" placeholder="Your email" required />
-  <input type="file" name="file" accept=".mp4,.mov,video/*" required />
-  <button type="submit">Upload to Our Dropbox & Analyze</button>
-</form>
-
-<script>
-  const form = document.getElementById("uploadForm");
-  const statusText = document.getElementById("status");
-  const subtasksEl = document.getElementById("subtasks");
-  const spinner = document.getElementById("spinner");
-  const progressFill = document.getElementById("progressFill");
-  const MAX_MB = parseInt(document.querySelector(".container").dataset.maxMb || "150", 10);
-  const MAX_BYTES = MAX_MB * 1024 * 1024;
-
-  function updateProgressBar(p){ progressFill.style.width = p + "%"; }
-  function updateStatus(m){ statusText.innerText += (statusText.innerText ? "\n" : "") + m; }
-  function renderSubtasks(obj){
-    if (!obj || typeof obj !== 'object') { subtasksEl.innerHTML = ""; return; }
-    try { subtasksEl.innerHTML = `<strong>Subtask progress:</strong><code>${JSON.stringify(obj, null, 2)}</code>`; }
-    catch { subtasksEl.innerHTML = ""; }
-  }
-
-  async function readJson(res){
-    const txt = await res.text();
-    try { return JSON.parse(txt); } catch { return { _raw: txt }; }
-  }
-
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    statusText.innerText = "🚀 Starting upload...";
-    subtasksEl.innerHTML = "";
-    updateProgressBar(5);
-    spinner.style.display = "block";
-
-    try {
-      const fd = new FormData(form);
-      const f = form.querySelector('input[type="file"]').files[0];
-      if (!f) { updateStatus("❌ Please select a video file."); spinner.style.display="none"; updateProgressBar(0); return; }
-      if (f.size > MAX_BYTES) {
-        updateStatus(`❌ File is ${Math.round(f.size/1024/1024)}MB > ${MAX_MB}MB (server limit). Try a smaller clip.`);
-        spinner.style.display="none"; updateProgressBar(0); return;
-      }
-
-      // POST to the legacy alias (/upload) which maps to /upload/api/upload
-      const res = await fetch("/upload/api/upload", { method: "POST", body: fd });
-      const data = await readJson(res);
-
-      if (!res.ok || data?.error) {
-        const msg = data?.error || `HTTP ${res.status} ${res.statusText}: ${(data?._raw||"").slice(0,400)}`;
-        updateStatus(`❌ Upload Error: ${msg}`); spinner.style.display="none"; updateProgressBar(0); return;
-      }
-
-      const taskId = data?.task_id || data?.sportai_task_id;
-      if (!taskId) { updateStatus("❌ No task id returned."); spinner.style.display="none"; return; }
-
-      updateProgressBar(40);
-      updateStatus("✅ Uploaded to our Dropbox and registered with SportAI...");
-      if (data.share_url) updateStatus(`📎 Dropbox share: ${data.share_url}`);
-      if (data.video_url) updateStatus(`🔗 Direct video link: ${data.video_url}`);
-      updateStatus("📡 Waiting for analysis to complete...");
-
-      poll(taskId);
-    } catch (err) {
-      updateStatus(`❌ Final step failed: ${String(err)}`);
-      spinner.style.display = "none";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Upload Match Video</title>
+  <style>
+    html, body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: url('{{ url_for("ui.static", filename="upload/background-clean-male-serve.jpg") }}');
+      background-size: cover;
+      color: #ffffff;
     }
-  });
+    .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
+    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 520px; text-align: center; box-shadow: 0 0 20px #00ff80; }
+    h2 { font-size: 1.6rem; margin-bottom: 16px; }
+    input[type="email"], input[type="file"] { width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem; }
+    button { background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
+    button:hover { background-color: #00cc66; }
+    #status { background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 15px; margin-top: 20px; font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80; }
+    .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out; }
+    .spinner { display: none; margin: 20px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin-top:8px; }
+    .warn { color:#fca5a5; }
+    #subtasks { margin-top: 8px; font-size: 0.9rem; opacity: .95; }
+    #subtasks code { display:block; background: rgba(0,0,0,.25); padding:8px; border-radius:8px; border:1px solid #00ff80; }
+  </style>
+</head>
+<body>
+  <div class="overlay">
+    <div class="container" data-max-mb="{{ max_upload_mb }}">
+      <h2>🎾 Upload Match Video</h2>
 
-  async function poll(taskId){
-    let attempts = 0, maxAttempts = 120, delay = 5000;
-    const timer = setInterval(async () => {
-      attempts++;
+      {% if not dropbox_ready %}
+        <div class="pill warn">Dropbox server credentials are not configured.</div>
+      {% endif %}
+      {% if not sportai_ready %}
+        <div class="pill warn">SPORT_AI_TOKEN is not configured.</div>
+      {% endif %}
+      <div class="pill">Target folder: <strong>{{ target_folder }}</strong></div>
+
+      <!-- NOTE: explicit action to /upload (no trailing slash), enctype required -->
+      <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
+        <input type="email" name="email" placeholder="Your email" required />
+        <input type="file" name="video" accept=".mp4,.mov" required />
+        <button type="submit">Upload to Our Dropbox & Analyze</button>
+      </form>
+
+      <div class="spinner" id="spinner"></div>
+      <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
+      <div id="status"></div>
+      <div id="subtasks"></div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("uploadForm");
+    const statusText = document.getElementById("status");
+    const subtasksEl = document.getElementById("subtasks");
+    const spinner = document.getElementById("spinner");
+    const progressFill = document.getElementById("progressFill");
+    const MAX_MB = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
+    const MAX_BYTES = MAX_MB * 1024 * 1024;
+
+    function updateProgressBar(p){ progressFill.style.width = p + "%"; }
+    function updateStatus(m){ statusText.innerText += (statusText.innerText ? "\n" : "") + m; }
+    function renderSubtasks(obj){
+      if (!obj || typeof obj !== 'object') { subtasksEl.innerHTML = ""; return; }
+      try { subtasksEl.innerHTML = `<strong>Subtask progress:</strong><code>${JSON.stringify(obj, null, 2)}</code>`; }
+      catch { subtasksEl.innerHTML = ""; }
+    }
+    async function readJson(res){ const txt = await res.text(); try { return JSON.parse(txt); } catch { return { _raw: txt }; } }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      statusText.innerText = "🚀 Starting upload...";
+      subtasksEl.innerHTML = "";
+      updateProgressBar(5);
+      spinner.style.display = "block";
+
       try {
-        // FIX: call the correct backend route
-        const res = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+        const fd = new FormData(form);
+        const f = form.querySelector('input[type="file"]').files[0];
+        if (!f) { updateStatus("❌ Please select a video file."); spinner.style.display="none"; updateProgressBar(0); return; }
+        if (f.size > MAX_BYTES) {
+          updateStatus(`❌ File is ${Math.round(f.size/1024/1024)}MB > ${MAX_MB}MB (server limit). Try a smaller clip.`);
+          spinner.style.display="none"; updateProgressBar(0); return;
+        }
+
+        // Explicitly post to /upload (no trailing slash)
+        const res = await fetch("/upload", { method: "POST", body: fd });
         const data = await readJson(res);
 
         if (!res.ok || data?.error) {
-          updateStatus(`❌ Poll error: ${data?.error || res.status}`);
-          clearInterval(timer); spinner.style.display="none"; return;
+          const msg = data?.error || `HTTP ${res.status} ${res.statusText}: ${(data?._raw||"").slice(0,400)}`;
+          updateStatus(`❌ Upload Error: ${msg}`); spinner.style.display="none"; updateProgressBar(0); return;
         }
 
-        // Backend returns: { ok, status, result_url, raw }
-        const status = data.status || (data.raw && data.raw.status) || "unknown";
-        const resultUrl = data.result_url || (data.raw && data.raw.result_url) || null;
+        const taskId = data?.task_id || data?.sportai_task_id;
+        if (!taskId) { updateStatus("❌ No task id returned."); spinner.style.display="none"; return; }
 
-        // Best-effort subtask/progress display if SportAI includes it
-        const raw = data.raw || {};
-        const pct = typeof raw.task_progress === "number" ? Math.round(raw.task_progress * 100) : (status === "completed" ? 100 : 0);
-        updateProgressBar(Math.max(0, Math.min(100, pct)));
-        renderSubtasks(raw.subtask_progress || raw.total_subtask_progress || null);
+        updateProgressBar(40);
+        updateStatus("✅ Uploaded to our Dropbox and registered with SportAI...");
+        if (data.share_url) updateStatus(`📎 Source: ${data.share_url}`);
+        updateStatus("📡 Waiting for analysis to complete...");
 
-        if (status === "completed") {
-          updateProgressBar(100);
-          updateStatus("✅ Analysis complete! (ingest follows via callback)");
-          if (resultUrl) updateStatus(`📄 Result JSON: ${resultUrl}`);
-          clearInterval(timer);
-          spinner.style.display = "none";
-        } else if (status === "failed") {
-          updateStatus("❌ Analysis failed. Please try another video.");
-          clearInterval(timer);
-          spinner.style.display = "none";
-        } else if (attempts >= maxAttempts) {
-          updateStatus("⚠️ Timeout. Try again later.");
-          clearInterval(timer);
-          spinner.style.display = "none";
-        } else {
-          updateStatus(`🔄 Status: ${status}${pct ? ` (${pct}%)` : ""}`);
-        }
+        poll(taskId);
       } catch (err) {
-        updateStatus(`❌ Polling failed: ${String(err)}`);
-        clearInterval(timer);
+        updateStatus(`❌ Final step failed: ${String(err)}`);
         spinner.style.display = "none";
       }
-    }, delay);
-  }
-</script>
+    });
+
+    async function poll(taskId){
+      let attempts = 0, maxAttempts = 120, delay = 5000;
+      const timer = setInterval(async () => {
+        attempts++;
+        try {
+          const res = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+          const data = await readJson(res);
+
+          const status = data?.status || data?.data?.task_status || "unknown";
+          const progress = (typeof data?.data?.task_progress === "number") ? data.data.task_progress : 0;
+          const subtaskProgress = data?.data?.subtask_progress;
+          const totalSubtaskProgress = data?.data?.total_subtask_progress;
+
+          if (subtaskProgress) renderSubtasks(subtaskProgress);
+          const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
+          updateProgressBar(pct);
+
+          if (status === "completed") {
+            updateProgressBar(100);
+            updateStatus("✅ Analysis complete! JSON downloaded and ingested.");
+            clearInterval(timer);
+            spinner.style.display = "none";
+          } else if (status === "failed") {
+            updateStatus("❌ Analysis failed. Please try another video.");
+            clearInterval(timer);
+            spinner.style.display = "none";
+          } else if (attempts >= maxAttempts) {
+            updateStatus("⚠️ Timeout. Try again later.");
+            clearInterval(timer);
+            spinner.style.display = "none";
+          } else {
+            const extra = (typeof totalSubtaskProgress === "number") ? ` | subtasks ${(totalSubtaskProgress*100).toFixed(1)}%` : "";
+            updateStatus(`🔄 Status: ${status} (${pct}%)${extra}`);
+          }
+        } catch (err) {
+          updateStatus(`❌ Polling failed: ${String(err)}`);
+          clearInterval(timer);
+          spinner.style.display = "none";
+        }
+      }, delay);
+    }
+  </script>
+</body>
+</html>
