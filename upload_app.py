@@ -1,5 +1,5 @@
 ﻿# upload_app.py — entrypoint (uploads + SportAI + status)
-import os, json, time, socket
+import os, json, time, socket,sys,inspect,hashlib
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from datetime import datetime, timezone
 
