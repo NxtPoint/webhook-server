@@ -16,3 +16,5 @@ python-dotenv>=1.0
 
 # Optional app server (when you later switch from "python wsgi.py")
 gunicorn>=21.2
+dropbox>=11.36.0
+python-dotenv>=1.0
