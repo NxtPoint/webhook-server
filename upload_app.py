@@ -61,18 +61,29 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 # --- DIAGNOSTIC + FALLBACK ROUTES (guaranteed to exist) ---
 from flask import jsonify
 
+# --- service health & route list ---
 @app.get("/__alive")
 def __alive():
-    return jsonify(ok=True, where="upload_app.py")
+    # simple JSON health that Render/you can hit
+    return jsonify({
+        "ok": True,
+        "service": "NextPoint Upload/Ingester v3",
+        "now_utc": datetime.utcnow().isoformat() + "Z"
+    })
 
 @app.get("/__routes")
 def __routes():
-    rules = []
-    for r in app.url_map.iter_rules():
-        methods = sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"})
-        rules.append({"rule": r.rule, "endpoint": r.endpoint, "methods": methods})
-    rules.sort(key=lambda x: x["rule"])
-    return jsonify(ok=True, count=len(rules), routes=rules)
+    # list all URL rules so we can verify what is actually mounted
+    routes = sorted(
+        {
+            "rule": r.rule,
+            "endpoint": r.endpoint,
+            "methods": sorted(m for m in r.methods if m in {"GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"})
+        }
+        for r in app.url_map.iter_rules()
+    )
+    return jsonify({"ok": True, "count": len(routes), "routes": routes})
+
 
 @app.get("/")
 def root():
