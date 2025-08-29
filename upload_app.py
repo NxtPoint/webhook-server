@@ -16,13 +16,13 @@ def healthz_ok():
 
 # Route list for verification
 @app.get("/__routes")
+@app.get("/__routes")
 def __routes():
-    routes = sorted(
+    return {"ok": True, "routes": [
         {"rule": r.rule, "endpoint": r.endpoint,
          "methods": sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"})}
         for r in app.url_map.iter_rules()
-    )
-    return jsonify(ok=True, count=len(routes), routes=routes)
+    ]}
 
 # …your other routes/blueprints below, but do NOT reassign `app = Flask(...)` again …
 try:
