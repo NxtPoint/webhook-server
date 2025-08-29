@@ -5,6 +5,31 @@ from flask import Flask, jsonify
 # IMPORTANT: only one Flask() in the whole file
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
+# --- OPS key + helper (if not present) ---
+OPS_KEY = os.environ.get("OPS_KEY", "")
+
+def _guard_ok():
+    qk = request.args.get("key") or request.args.get("ops_key")
+    bearer = request.headers.get("Authorization", "")
+    if bearer.lower().startswith("bearer "):
+        bearer = bearer.split(" ", 1)[1].strip()
+    hk = request.headers.get("X-OPS-Key") or bearer
+    supplied = qk or hk
+    return bool(OPS_KEY) and supplied == OPS_KEY
+
+# --- Routes dump (locked) ---
+@app.get("/ops/routes")
+def ops_routes():
+    if not _guard_ok():
+        return Response("Forbidden", 403)
+    routes = []
+    for r in app.url_map.iter_rules():
+        methods = sorted(m for m in r.methods if m not in {"HEAD", "OPTIONS"})
+        routes.append({"rule": r.rule, "endpoint": r.endpoint, "methods": methods})
+    routes.sort(key=lambda x: x["rule"])
+    return jsonify({"ok": True, "count": len(routes), "routes": routes})
+
+
 # Ultra-fast health + root. Keep them simple, no DB, no imports.
 @app.get("/")
 def root_ok():
