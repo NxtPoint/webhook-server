@@ -41,36 +41,14 @@ LEGACY_OBJECTS = [
     "vw_point_summary",
     "point_log_tbl",
     "point_summary_tbl",
+    # add any older aliases here if they show up in errors:
+    "vw_point_shot_log",
 ]
 
 def _drop_any(conn, name: str):
     conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
     conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
     conn.execute(text(f"DROP TABLE IF EXISTS {name} CASCADE;"))
-
-def _apply_views(engine):
-    """Drops & recreates all views listed in VIEW_NAMES."""
-    global VIEW_SQL_STMTS
-    VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
-
-    with engine.begin() as conn:
-        _ensure_raw_ingest(conn)
-        _preflight_or_raise(conn)
-
-        # 1) Proactively nuke legacy blockers (gold-era objects)
-        for obj in LEGACY_OBJECTS:
-            _drop_any(conn, obj)
-
-        # 2) DROP in reverse dependency order then CREATE in forward order
-        for name in reversed(VIEW_NAMES):
-            _drop_any(conn, name)
-        for name in VIEW_NAMES:
-            conn.execute(text(CREATE_STMTS[name]))
-
-# Back-compat exports
-init_views = _apply_views
-run_views  = _apply_views
-__all__ = ["init_views", "run_views", "VIEW_SQL_STMTS", "VIEW_NAMES", "CREATE_STMTS"]
 
 CREATE_STMTS = {
     # ---------------- SILVER (PURE passthrough + labels) ----------------
@@ -525,11 +503,6 @@ CREATE_STMTS = {
 }
 
 # ---------- helpers ----------
-def _drop_any(conn, name: str):
-    conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
-    conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
-    conn.execute(text(f"DROP TABLE IF EXISTS {name} CASCADE;"))
-
 def _table_exists(conn, t: str) -> bool:
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
@@ -611,7 +584,7 @@ def _preflight_or_raise(conn):
 
 # ---------- apply all views ----------
 def _apply_views(engine):
-    """Drops & recreates all views listed in VIEW_NAMES."""
+    """Drops legacy objects, then (re)creates all views listed in VIEW_NAMES."""
     global VIEW_SQL_STMTS
     VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
 
@@ -619,7 +592,11 @@ def _apply_views(engine):
         _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
 
-        # DROP in reverse dependency order then CREATE in forward order
+        # 1) Proactively drop legacy blockers (gold-era objects, old aliases)
+        for obj in LEGACY_OBJECTS:
+            _drop_any(conn, obj)
+
+        # 2) DROP in reverse dependency order then CREATE in forward order
         for name in reversed(VIEW_NAMES):
             _drop_any(conn, name)
         for name in VIEW_NAMES:
