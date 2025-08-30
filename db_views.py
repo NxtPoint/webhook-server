@@ -41,7 +41,6 @@ LEGACY_OBJECTS = [
     "vw_point_summary",
     "point_log_tbl",
     "point_summary_tbl",
-    # add any older aliases here if they show up in errors:
     "vw_point_shot_log",
 ]
 
@@ -78,7 +77,6 @@ def _drop_any(conn, name: str):
     elif kind == 'table':
         stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
-        # best-effort cleanup if we can’t detect the type
         stmts = [
             f'DROP VIEW IF EXISTS "{name}" CASCADE;',
             f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
@@ -204,7 +202,7 @@ CREATE_STMTS = {
     # ---------------- ORDERING (serve-driven points; rally is fallback) ----------------
     "vw_point_order_by_serve": """
     /* One row per swing with point/shot numbering.
-       We open a new point when we see a serve=True swing.
+       We open a new point when we see a serve indicator.
        If serve labels are missing, we fallback to rally segmentation. */
     CREATE OR REPLACE VIEW vw_point_order_by_serve AS
     WITH s AS (
@@ -221,14 +219,19 @@ CREATE_STMTS = {
     base AS (
       SELECT
         s.*,
-        /* mark begins strictly on serve=True */
-        CASE WHEN COALESCE(s.serve, FALSE) THEN 1 ELSE 0 END AS is_serve_begin
+        /* treat explicit serve OR any *overhead* swing as serve-begin */
+        CASE
+          WHEN COALESCE(s.serve, FALSE) THEN 1
+          WHEN s.swing_type IN ('_fh_overhead','fh_overhead','1h_overhead','2h_overhead')
+               OR s.swing_type ILIKE '%overhead%' THEN 1
+          ELSE 0
+        END AS is_serve_begin
       FROM s
     ),
     seq AS (
       SELECT
         b.*,
-        /* continuous point index within a session: +1 on every serve begin; if no serves exist, we still get 1 via max() later */
+        /* +1 on every serve begin (if no serves at all, we’ll fallback later) */
         CASE
           WHEN SUM(is_serve_begin) OVER (PARTITION BY b.session_id) = 0
             THEN 1
@@ -244,12 +247,11 @@ CREATE_STMTS = {
       FROM seq
     ),
     rally_fallback AS (
-      /* In case serves are absent for a session, align to dim_rally */
+      /* If serves are absent for a session, align to dim_rally */
       SELECT
         sh.*,
         dr.rally_number,
         COALESCE(sh.point_index,
-                 /* dense rally-based index per session */
                  DENSE_RANK() OVER (PARTITION BY sh.session_id ORDER BY dr.rally_number NULLS LAST, sh.point_ts0, sh.swing_id)
         ) AS point_number
       FROM shots sh
@@ -273,7 +275,7 @@ CREATE_STMTS = {
        - server/receiver per point
        - serving side (deuce/ad) from point index within game
        - point winner & error flags from the last shot in the point
-       - game boundaries when server changes or a game is won by rules
+       - game boundaries when server changes (first point is game 1)
        - score text (server-first) per point
        - serve bucket (1..8) and generic shot buckets (A..D) from bounce XY
     */
@@ -322,7 +324,7 @@ CREATE_STMTS = {
         LIMIT 1
       ) b ON TRUE
     ),
-    /* receiver for the point = first opponent present in the point (fallback to "other id seen in session") */
+    /* receiver guess = first opponent present after serve in the same point; fallback = other id in session */
     pp_receiver_guess AS (
       SELECT
         pf.session_id, pf.point_number,
@@ -341,7 +343,6 @@ CREATE_STMTS = {
         pf.session_id, pf.point_number,
         pf.server_id,
         COALESCE(rg.receiver_id_guess,
-                 /* fallback: any other player id present in session */
                  (SELECT MIN(dp.player_id)
                     FROM dim_player dp
                    WHERE dp.session_id = pf.session_id
@@ -371,7 +372,6 @@ CREATE_STMTS = {
         sb.bounce_type_raw AS last_bounce_type,
         CASE
           WHEN sb.bounce_type_raw IN ('out','net','long','wide') THEN
-            /* error by the last hitter -> opponent wins */
             CASE WHEN pl.last_hitter_id = n.server_id THEN n.receiver_id ELSE n.server_id END
           ELSE NULL
         END AS point_winner_id
@@ -381,13 +381,17 @@ CREATE_STMTS = {
       LEFT JOIN names n
              ON n.session_id = pl.session_id AND n.point_number = pl.point_number
     ),
-    /* game numbering: a game starts when server changes from previous point or at first point */
+    /* game numbering: first point is game 1; new game only when server changes */
     point_headers AS (
       SELECT
         n.*,
         po_first.first_hit_ts,
         LAG(n.server_id) OVER (PARTITION BY n.session_id ORDER BY n.point_number) AS prev_server_id,
-        CASE WHEN LAG(n.server_id) OVER (PARTITION BY n.session_id ORDER BY n.point_number) IS DISTINCT FROM n.server_id THEN 1 ELSE 0 END AS new_game_flag
+        CASE
+          WHEN LAG(n.server_id) OVER (PARTITION BY n.session_id ORDER BY n.point_number) IS NULL THEN 0
+          WHEN LAG(n.server_id) OVER (PARTITION BY n.session_id ORDER BY n.point_number) IS DISTINCT FROM n.server_id THEN 1
+          ELSE 0
+        END AS new_game_flag
       FROM names n
       LEFT JOIN pt_first po_first
         ON po_first.session_id = n.session_id AND po_first.point_number = n.point_number
@@ -478,40 +482,44 @@ CREATE_STMTS = {
       FROM pt_last pl
       LEFT JOIN s_bounce sb
         ON sb.session_id = pl.session_id AND sb.swing_id = pl.last_swing_id
+    ),
+    last_swing_row AS (
+      SELECT pl.session_id, pl.point_number, s.ball_speed AS last_ball_speed
+      FROM pt_last pl
+      JOIN po s ON s.session_id = pl.session_id AND s.swing_id = pl.last_swing_id
     )
     SELECT
+      /* ===== PASSTHROUGH (from Silver) ===== */
       po.session_uid,
       po.session_id,
-      po.rally_id,            /* still exposed for diagnostic parity */
+      po.rally_id,
       po.point_number         AS point_number,
       po.shot_number_in_point AS shot_number,
-
       po.swing_id,
       po.player_id,           po.player_name,         po.player_uid,
-
-      /* server/receiver context for the point */
-      st.game_number,
-      st.point_in_game,
-      CASE WHEN (st.point_in_game % 2) = 1 THEN 'deuce' ELSE 'ad' END AS serving_side,
-      st.server_id,   st.server_name,   st.server_uid,
-      st.receiver_id, st.receiver_name, st.receiver_uid,
-
       po.serve, po.serve_type,
-      po.swing_type AS swing_type_raw,
-
+      po.swing_type           AS swing_type_raw,
       po.ball_speed,
       po.ball_player_distance,
-
       po.start_s, po.end_s, po.ball_hit_s,
       po.start_ts, po.end_ts, po.ball_hit_ts,
-
-      /* bounce after this swing */
+      /* bounce after this swing (passthrough from s_bounce) */
       sb.bounce_id,
       sb.bounce_x AS ball_bounce_x,
       sb.bounce_y AS ball_bounce_y,
       sb.bounce_type_raw,
 
-      /* coarse shot buckets for any swing (A..D) via XY: deep/short × left/right */
+      /* ===== DERIVED FIELDS (edit here) ================================= */
+      /* game / point context */
+      st.game_number,
+      st.point_in_game,
+      CASE WHEN (st.point_in_game % 2) = 1 THEN 'deuce' ELSE 'ad' END AS serving_side,
+
+      /* server/receiver labels */
+      st.server_id,   st.server_name,   st.server_uid,
+      st.receiver_id, st.receiver_name, st.receiver_uid,
+
+      /* shot bucket from bounce XY (A..D) */
       CASE
         WHEN sb.bounce_x IS NULL OR sb.bounce_y IS NULL THEN NULL
         WHEN sb.bounce_y >= 0 AND sb.bounce_x < 0 THEN 'A'  /* deep-left  */
@@ -520,25 +528,20 @@ CREATE_STMTS = {
         ELSE 'D'                                             /* short-right */
       END AS shot_loc_bucket_ad,
 
-      /* point outcome at the point level */
+      /* point outcome + helpers */
       po2.point_winner_id,
       CASE
         WHEN po2.point_winner_id IS NULL THEN NULL
         WHEN po2.point_winner_id = st.server_id THEN st.server_name ELSE st.receiver_name
       END AS point_winner_name,
       lb.last_bounce_type AS point_end_bounce_type,
-      /* boolean helpers */
       CASE WHEN lb.last_bounce_type IN ('out','net','long','wide') THEN TRUE ELSE FALSE END AS is_error,
-      CASE
-        WHEN lb.last_bounce_type IN ('out','net','long','wide') THEN lb.last_bounce_type
-        ELSE NULL
-      END AS error_type,
+      CASE WHEN lsr.last_ball_speed IS NOT NULL THEN TRUE ELSE FALSE END AS inferred_in_by_speed,
 
-      /* game-score text at this point (server-first) */
+      /* score & serve placement */
       st.score_text AS score_server_first,
-
-      /* serve placement bucket for the point (based on the actual serve bounce) */
       sv.serve_bucket_1_8
+      /* ===== DERIVED FIELDS (edit above) ================================= */
 
     FROM po
     LEFT JOIN s_bounce sb
@@ -551,6 +554,8 @@ CREATE_STMTS = {
            ON lb.session_id = po.session_id AND lb.point_number = po.point_number
     LEFT JOIN serve_bucket sv
            ON sv.session_id = po.session_id AND sv.point_number = po.point_number
+    LEFT JOIN last_swing_row lsr
+           ON lsr.session_id = po.session_id AND lsr.point_number = po.point_number
     ORDER BY po.session_uid, po.point_number, po.shot_number_in_point, po.swing_id;
 """,
 }
