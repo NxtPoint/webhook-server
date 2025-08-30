@@ -107,6 +107,22 @@ def home():
         target_folder=target_folder,
         max_upload_mb=max_upload_mb,
     )
+@ui_bp.route("/diag")
+def ui_diag():
+    try:
+        import os, pathlib
+        here = pathlib.Path(__file__).resolve().parent
+        tpl = here / "templates" / "ui" / "upload.html"
+        exists = tpl.exists()
+        mtime = os.path.getmtime(tpl) if exists else None
+        return jsonify({
+            "ok": True,
+            "template_exists": bool(exists),
+            "template_path": str(tpl),
+            "template_mtime": mtime,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # -------------------------------------------------------------------
 # Admin: Sessions listing
