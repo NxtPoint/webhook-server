@@ -1,4 +1,5 @@
-# db_views.py — PURE silver from bronze; gold reads ONLY silver (no inference)
+# db_views.py — SILVER from BRONZE; GOLD reads only SILVER (no legacy aliases)
+
 from sqlalchemy import text
 from typing import List
 
@@ -29,7 +30,7 @@ VIEW_NAMES = [
     "vw_ball_position",
     "vw_player_position",
 
-    # GOLD (pure; reads only SILVER)
+    # GOLD (pure) — Power BI reads directly from vw_point_log
     "vw_shot_order_gold",   # rally-only ordering helper
     "vw_point_log",         # primary BI view
 ]
@@ -168,7 +169,7 @@ CREATE_STMTS = {
 
     "vw_point_log": """
     -- PURE GOLD: pass-through from SILVER; bounce chosen by time,
-    -- prefer same-rally when both rally_ids exist; otherwise time within session
+    -- same-rally when both rally_ids exist, otherwise session-time only
     CREATE OR REPLACE VIEW vw_point_log AS
     WITH s AS (
       SELECT * FROM vw_swing
@@ -363,6 +364,9 @@ def _apply_views(engine):
     with engine.begin() as conn:
         _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
+
+        # one-time cleanup of any legacy alias if it exists
+        _drop_any(conn, "vw_point_shot_log_gold")
 
         # DROP in reverse dependency order then CREATE in forward order
         for name in reversed(VIEW_NAMES):
