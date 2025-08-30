@@ -634,3 +634,29 @@ for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
     print(f"{r.rule:30s} -> {r.endpoint:24s} [{meth}]")
 print("================")
+
+@app.get("/upload/__which_app")
+def upload_which_app():
+    """App-level fallback diagnostic to locate templates/upload.html on disk."""
+    import os, json
+    try:
+        search = getattr(app.jinja_loader, "searchpath", [])
+    except Exception:
+        search = []
+    expected = os.path.join(os.path.dirname(__file__), "templates", "upload.html")
+    exists = os.path.exists(expected)
+    head = ""
+    if exists:
+        try:
+            with open(expected, "r", encoding="utf-8") as f:
+                head = f.read(600)
+        except Exception as e:
+            head = f"<read error: {e}>"
+    return jsonify({
+        "ok": True,
+        "module": __file__,
+        "searchpath": search,
+        "expected_template_path": expected,
+        "exists": exists,
+        "head": head,
+    })
