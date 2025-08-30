@@ -3,6 +3,7 @@ import os, json, re
 from datetime import datetime, timezone, timedelta
 from typing import Dict
 
+import requests  # NEW: used for SportAI fetches and result_url download
 from flask import Blueprint, request, jsonify, Response
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
@@ -10,9 +11,17 @@ from sqlalchemy.exc import IntegrityError
 from db_init import engine  # shared engine
 
 ingest_bp = Blueprint("ingest_bp", __name__)
+
 OPS_KEY = os.getenv("OPS_KEY", "")
 STRICT_BRONZE_RAW = os.environ.get("STRICT_BRONZE_RAW", "1").lower() in ("1","true","yes","y")
 RALLY_GAP_S       = float(os.environ.get("RALLY_GAP_S", "6.0"))
+
+# ---- SportAI integration config (server-side secret usage) ----
+SPORT_AI_BASE   = os.getenv("SPORT_AI_BASE", "https://api.sportai.com")
+SPORT_AI_TOKEN  = os.getenv("SPORT_AI_TOKEN", "")
+AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "1").lower() in ("1","true","yes","y")
+SPORTAI_WEBHOOK_SECRET  = os.getenv("SPORTAI_WEBHOOK_SECRET", "")  # optional
+
 
 def _guard() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
@@ -23,7 +32,9 @@ def _guard() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
-def _forbid(): return Response("Forbidden", 403)
+def _forbid(): 
+    return Response("Forbidden", 403)
+
 
 # ---------- small utils (trimmed for blueprint) ----------
 def _float(v):
@@ -66,9 +77,6 @@ def _base_dt_for_session(dt):
     return dt if dt else datetime(1970,1,1,tzinfo=timezone.utc)
 
 # ---------- ingest core (as in your working build) ----------
-# (all functions: _resolve_session_uid/_resolve_fps/_resolve_session_date/_normalize_swing_obj/etc.)
-# NOTE: these are identical to the previous final build; to save space here I keep only differences minimal.
-
 _SWING_TYPES   = {"swing","stroke","shot","hit","serve","forehand","backhand","volley","overhead","slice","drop","lob"}
 _SERVE_LABELS  = {"serve","first_serve","1st_serve","second_serve","2nd_serve"}
 
@@ -339,7 +347,6 @@ def _rebuild_ts_from_seconds(conn, session_id):
     """), {"sid": session_id})
 
 def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hint=None):
-    # (unchanged logic; same as your working build)
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
     fps          = _resolve_fps(payload)
     session_date = _resolve_session_date(payload)
@@ -539,7 +546,144 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
 
     return {"session_uid": session_uid, "session_id": session_id}
 
-# ---------- OPS endpoints (ingest / db ops) ----------
+
+# ---------- SportAI helpers & new endpoints ----------
+def _sportai_fetch_task(task_id: str) -> dict:
+    """
+    Server-side call to SportAI to fetch task status + (maybe) payload/result_url.
+    Returns dict: {status, result_url, data, raw}
+    """
+    if not SPORT_AI_TOKEN:
+        return {"status": "error", "error": "SPORT_AI_TOKEN not set"}
+    url = f"{SPORT_AI_BASE.rstrip('/')}/api/statistics/tennis/{task_id}"
+    r = requests.get(url, headers={"Authorization": f"Bearer {SPORT_AI_TOKEN}"}, timeout=60)
+    r.raise_for_status()
+    j = r.json()
+    d = j.get("data", j)
+    # Normalize fields
+    status = d.get("status") or d.get("task_status") or j.get("status") or "unknown"
+    result_url = d.get("result_url") or j.get("result_url")
+    return {"status": status, "result_url": result_url, "data": d, "raw": j}
+
+def _ingest_payload_and_counts(payload: dict, replace: bool, src_hint: str = None):
+    with engine.begin() as conn:
+        res = ingest_result_v2(conn, payload, replace=replace, forced_uid=None, src_hint=src_hint)
+        sid = res.get("session_id")
+        counts = conn.execute(sql_text("""
+            SELECT
+              (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
+              (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
+              (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
+              (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
+              (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
+        """), {"sid": sid}).fetchone()
+    return {
+        "session_uid": res.get("session_uid"),
+        "session_id": sid,
+        "bronze_counts": {
+            "rallies": counts[0], "ball_bounces": counts[1],
+            "ball_positions": counts[2], "player_positions": counts[3],
+            "swings": counts[4]
+        }
+    }
+
+@ingest_bp.get("/ops/task-status")
+def ops_task_status():
+    """Secure, normalized status check (server hits SportAI with secret)."""
+    if not _guard(): return _forbid()
+    task_id = request.args.get("task_id")
+    if not task_id:
+        return jsonify({"ok": False, "error": "missing task_id"}), 400
+    try:
+        info = _sportai_fetch_task(task_id)
+        # Heuristic: detect inline payload if result_url absent but looks like a result
+        has_inline_payload = isinstance(info.get("data"), dict) and any(
+            k in info["data"] for k in ("players","swings","ball_positions","player_positions","ball_bounces","rallies")
+        )
+        return jsonify({"ok": True, "status": info["status"], "result_url": info["result_url"], "has_inline_payload": has_inline_payload})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@ingest_bp.route("/ops/ingest-task", methods=["POST"])
+def ops_ingest_task():
+    """Given a SportAI task_id, fetch status -> download result JSON -> ingest raw+bronze."""
+    if not _guard(): return _forbid()
+    task_id = request.values.get("task_id")
+    replace = str(request.values.get("replace","1")).lower() in ("1","true","yes","y","on")
+    if not task_id:
+        return jsonify({"ok": False, "error": "missing task_id"}), 400
+    try:
+        info = _sportai_fetch_task(task_id)
+        status = (info.get("status") or "").lower()
+        # Get payload via result_url or inline
+        payload = None
+        src_hint = None
+        if info.get("result_url"):
+            src_hint = info["result_url"]
+            r = requests.get(info["result_url"], timeout=90)
+            r.raise_for_status()
+            payload = r.json()
+        elif isinstance(info.get("data"), dict) and any(k in info["data"] for k in ("players","swings","ball_positions","player_positions","ball_bounces","rallies")):
+            payload = info["data"]
+
+        if payload:
+            res = _ingest_payload_and_counts(payload, replace=replace, src_hint=src_hint)
+            return jsonify({"ok": True, "status": status or "completed", "result_url": info.get("result_url"), **res})
+        else:
+            return jsonify({"ok": True, "status": status or "pending", "result_url": info.get("result_url")})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@ingest_bp.post("/webhook/sportai")
+def sportai_webhook():
+    """
+    Optional webhook receiver. Configure SportAI to POST {task_id, status, result_url}.
+    If SPORTAI_WEBHOOK_SECRET is set, require it via ?secret=... or header X-Webhook-Secret.
+    """
+    secret = request.args.get("secret") or request.headers.get("X-Webhook-Secret")
+    if SPORTAI_WEBHOOK_SECRET and secret != SPORTAI_WEBHOOK_SECRET:
+        return _forbid()
+    data = request.get_json(silent=True) or {}
+    task_id    = data.get("task_id") or data.get("id")
+    status     = (data.get("status") or "").lower()
+    result_url = data.get("result_url")
+
+    if not task_id:
+        return jsonify({"ok": False, "error": "missing task_id"}), 400
+
+    # Only auto-ingest when complete and we have a URL (unless inline payload provided)
+    try:
+        payload = None
+        src_hint = None
+        if result_url:
+            src_hint = result_url
+            r = requests.get(result_url, timeout=90)
+            r.raise_for_status()
+            payload = r.json()
+        elif data.get("data") and isinstance(data["data"], dict):
+            payload = data["data"]
+
+        if AUTO_INGEST_ON_COMPLETE and (status in ("done","completed","finished","success","succeeded") or payload):
+            if not payload:
+                # last chance: server-side fetch by task_id
+                info = _sportai_fetch_task(task_id)
+                if info.get("result_url"):
+                    src_hint = info["result_url"]
+                    r = requests.get(info["result_url"], timeout=90)
+                    r.raise_for_status()
+                    payload = r.json()
+                elif isinstance(info.get("data"), dict):
+                    payload = info["data"]
+
+            if payload:
+                res = _ingest_payload_and_counts(payload, replace=True, src_hint=src_hint)
+                return jsonify({"ok": True, "ingested": True, "status": status or "completed", "result_url": result_url, **res})
+        return jsonify({"ok": True, "ingested": False, "status": status, "result_url": result_url})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------- existing OPS endpoints (unchanged) ----------
 @ingest_bp.get("/ops/db-ping")
 def db_ping():
     if not _guard(): return _forbid()
@@ -579,33 +723,18 @@ def ops_ingest_file():
                 p = urlparse(url); q = dict(parse_qsl(p.query, keep_blank_values=True)); q["dl"] = "1"
                 host = "dl.dropboxusercontent.com" if "dropbox.com" in p.netloc else p.netloc
                 url = urlunparse((p.scheme, host, p.path, p.params, urlencode(q), p.fragment))
-            import requests as _rq
-            r = _rq.get(url, timeout=90); r.raise_for_status(); payload = r.json()
+            r = requests.get(url, timeout=90); r.raise_for_status(); payload = r.json()
         except Exception as e: return jsonify({"ok": False, "error": f"failed to fetch URL: {e}"}), 400
     else:
         try: payload = request.get_json(force=True, silent=False)
         except Exception: return jsonify({"ok": False, "error": "no JSON supplied"}), 400
 
     try:
-        with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=request.form.get("url"))
-            sid = res.get("session_id")
-            counts = conn.execute(sql_text("""
-                SELECT
-                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
-            """), {"sid": sid}).fetchone()
-        return jsonify({"ok": True, "session_uid": res.get("session_uid"), "session_id": sid,
-                        "bronze_counts": {"rallies": counts[0], "ball_bounces": counts[1],
-                                          "ball_positions": counts[2], "player_positions": counts[3],
-                                          "swings": counts[4]}})
+        res = _ingest_payload_and_counts(payload, replace=replace, src_hint=request.form.get("url"))
+        return jsonify({"ok": True, **res})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# the remaining ops endpoints from your previous file:
 @ingest_bp.get("/ops/init-db")
 def ops_init_db():
     if not _guard(): return _forbid()
