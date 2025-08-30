@@ -12,359 +12,321 @@
       color: #ffffff;
     }
     .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 620px; text-align: center; box-shadow: 0 0 20px #00ff80; }
-    h2 { font-size: 1.6rem; margin-bottom: 16px; }
-    .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin: 0 6px 10px; }
-    .warn { color:#fca5a5; }
-
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
-    .grid .full { grid-column: 1 / -1; }
-
-    input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: none; font-size: 1rem; }
-    input[type="checkbox"]{ width:auto }
-    label { display:block; text-align:left; font-size:.9rem; margin:8px 0 4px; opacity:.9; }
-
-    .btnrow { display:flex; gap:8px; margin-top: 10px; flex-wrap:wrap; justify-content:center; }
-    button { background-color: #00ff80; color: #000; padding: 10px 14px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
-    button:hover { background-color: #00cc66; }
-    button[disabled] { opacity: .6; cursor: not-allowed; }
-    .btn-secondary { background: transparent; border:1px solid #00ff80; color:#00ff80; }
-    .btn-danger { background:#ff4d4d; color:#000; }
-
-    .meta { font-size:.85rem; opacity:.9; margin-top:6px; }
-    .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 12px; height: 12px; overflow: hidden; }
-    .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out, background-color .2s ease; }
-    .progress-bar-fill.active { background-color: #00ff80; }
-    .progress-bar-fill.ok     { background-color: #39ff14; }
-    .progress-bar-fill.fail   { background-color: #ff4d4d; }
-
-    #status { background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 15px; margin-top: 16px; font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80; }
-    .spinner { display: none; margin: 16px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 640px; text-align: center; box-shadow: 0 0 20px #00ff80; }
+    h2 { font-size: 1.6rem; margin-bottom: 12px; }
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin: 6px 0 14px; }
+    .warn { color:#fca5a5; border-color:#fca5a5 }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px }
+    .grid .col-2 { grid-column: span 2 }
+    label { display:block; font-size:.9rem; text-align:left; margin: 2px 0 4px; opacity:.9 }
+    input[type="text"], input[type="email"], input[type="file"], input[type="date"], input[type="time"] {
+      width: 100%; padding: 10px; border-radius: 6px; border: none; font-size: .95rem;
+    }
+    .btn { width: 100%; background-color: #00ff80; color: #000; padding: 12px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background .25s ease; }
+    .btn:hover { background-color: #00cc66; }
+    .btn.secondary { background: transparent; border:1px solid #00ff80; color:#00ff80 }
+    .btn.danger { background: transparent; border:1px solid #f87171; color:#f87171 }
+    .row { margin-top: 10px }
+    .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out; }
+    .spinner { display: none; margin: 14px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-    #subtasks { margin-top: 8px; font-size: 0.9rem; opacity: .95; text-align:left; }
-    #subtasks .row { display:flex; justify-content:space-between; border-bottom: 1px dashed rgba(255,255,255,.15); padding:4px 0; }
-    #subtasks .row:last-child { border-bottom: none; }
-    .muted { opacity:.85; }
-
-    .smallprint { font-size:.82rem; opacity:.9; margin-top:16px; text-align:left; }
-    a { color:#00ff80; }
+    #status, #checkBox {
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 10px; padding: 12px; margin-top: 12px; font-size: 0.95rem;
+      text-align: left; border: 1px solid #00ff80; white-space: pre-wrap;
+    }
+    #subtasks { margin-top: 8px; font-size: 0.9rem; opacity: .95; text-align:left }
+    #subtasks code { display:block; background: rgba(0,0,0,.25); padding:8px; border-radius:8px; border:1px solid #00ff80; }
+    .muted { opacity:.8; font-size:.85rem }
+    .terms { margin-top: 14px; text-align:left; font-size:.85rem; opacity:.95 }
+    a { color:#8cf5c0; text-decoration: none } a:hover{ text-decoration: underline }
+    .hidden { display:none }
   </style>
 </head>
 <body>
   <div class="overlay">
     <div class="container" data-max-mb="{{ max_upload_mb }}">
       <h2>🎾 Upload Match Video</h2>
-
       {% if not dropbox_ready %}<div class="pill warn">Dropbox server credentials are not configured.</div>{% endif %}
       {% if not sportai_ready %}<div class="pill warn">SPORT_AI_TOKEN is not configured.</div>{% endif %}
       <div class="pill">Target folder: <strong>{{ target_folder }}</strong></div>
 
-      <!-- Form -->
-      <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
-        <div class="grid">
-          <div class="full">
-            <label>Customer name (required)</label>
-            <input type="text" name="customer_name" id="customer_name" placeholder="Full name" required />
-          </div>
-          <div class="full">
-            <label>Email (required)</label>
-            <input type="email" name="email" id="email" placeholder="you@example.com" required />
-          </div>
-
-          <div>
-            <label>Match date</label>
-            <input type="date" name="match_date" id="match_date" />
-          </div>
-          <div>
-            <label>Start time (local)</label>
-            <input type="time" name="start_time" id="start_time" />
-          </div>
-
-          <div class="full">
-            <label>Venue / Location</label>
-            <input type="text" name="location" id="location" placeholder="Club or venue" />
-          </div>
-
-          <div>
-            <label>Player A (server near camera)</label>
-            <input type="text" name="player_a_name" id="player_a_name" placeholder="Player A" />
-          </div>
-          <div>
-            <label>Player B (receiver)</label>
-            <input type="text" name="player_b_name" id="player_b_name" placeholder="Player B" />
-          </div>
-
-          <div>
-            <label>Player A UTR</label>
-            <input type="text" name="player_a_utr" id="player_a_utr" placeholder="e.g. 8.52" />
-          </div>
-          <div>
-            <label>Player B UTR</label>
-            <input type="text" name="player_b_utr" id="player_b_utr" placeholder="e.g. 9.11" />
-          </div>
-
-          <div class="full">
-            <label>Match video file</label>
-            <input id="fileInput" type="file" name="video" accept=".mp4,.mov" required />
-            <div id="fileinfo" class="meta"></div>
-          </div>
-
-          <div class="full" style="text-align:left;margin-top:6px;">
-            <label><input type="checkbox" id="terms" name="terms_accepted" /> I agree to the Terms.</label>
-            <div class="smallprint">
-              • By uploading, you confirm you own the rights to the video and consent to automated analysis.<br/>
-              • Processing time depends on video length/quality (typ. 5–60 minutes). AI can make mistakes.<br/>
-              • For any queries, contact <a href="mailto:info@nextpointtennis.com">info@nextpointtennis.com</a>.
-            </div>
-          </div>
+      <!-- Step 0: metadata + file -->
+      <form id="metaForm" class="grid" enctype="multipart/form-data">
+        <div class="col-2">
+          <label>Customer name (required)</label>
+          <input type="text" name="customer_name" required placeholder="Full name" />
         </div>
 
-        <div class="btnrow">
-          <button type="button" id="checkBtn" class="btn-secondary">Video Readiness Check</button>
-          <button type="button" id="analyzeBtn" disabled>Start Analysis</button>
-          <button type="button" id="cancelBtn" class="btn-danger" style="display:none;">Cancel Analysis</button>
+        <div class="col-2">
+          <label>Email (required — used as your customer ID)</label>
+          <input type="email" name="email" required placeholder="you@example.com" />
+        </div>
+
+        <div class="col-2">
+          <label>Match video (MP4/MOV)</label>
+          <input type="file" name="video" accept=".mp4,.mov" required />
+        </div>
+
+        <div><label>Match date</label><input type="date" name="match_date"></div>
+        <div><label>Start time</label><input type="time" name="start_time" step="1"></div>
+        <div class="col-2"><label>Location</label><input type="text" name="location" placeholder="Club / Court"></div>
+
+        <div><label>Server (Player A) name</label><input type="text" name="player_a_name" placeholder="Player A"></div>
+        <div><label>Receiver (Player B) name</label><input type="text" name="player_b_name" placeholder="Player B"></div>
+        <div><label>Player A UTR</label><input type="text" name="player_a_utr" placeholder="e.g., 10.5"></div>
+        <div><label>Player B UTR</label><input type="text" name="player_b_utr" placeholder="e.g., 9.8"></div>
+
+        <div class="col-2 terms">
+          <label>
+            <input type="checkbox" id="terms" name="terms_accepted" required>
+            I accept that processing can take time; AI can be imperfect; and that
+            the video must meet minimum quality requirements. For questions, contact
+            <a href="mailto:info@nextpointtennis.com">info@nextpointtennis.com</a>.
+          </label>
+        </div>
+
+        <div class="col-2 row">
+          <button id="checkBtn" type="button" class="btn">✅ Check Video Readiness</button>
         </div>
       </form>
 
-      <div class="spinner" id="spinner" aria-hidden="true"></div>
-      <div class="progress-bar"><div class="progress-bar-fill active" id="progressFill"></div></div>
+      <!-- Results of readiness check -->
+      <div id="checkBox" class="hidden"></div>
 
+      <!-- Step 1: submit to SportAI once check passes -->
+      <div class="grid">
+        <div class="col-2 row">
+          <button id="uploadBtn" class="btn hidden">📤 Submit to SportAI & Start Analysis</button>
+        </div>
+        <div class="col-2 row">
+          <button id="cancelBtn" class="btn danger hidden" type="button">⛔ Cancel Task</button>
+        </div>
+      </div>
+
+      <!-- Progress + status -->
+      <div class="spinner" id="spinner"></div>
+      <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
       <div id="status"></div>
       <div id="subtasks"></div>
 
-      <div class="smallprint">
-        <strong>Tips for best results:</strong> fixed tripod, full court view, 1080p+, and steady lighting.
+      <div class="muted terms">
+        By submitting, you authorize NextPoint to process the video with SportAI. You’ll receive an email when analysis completes.
       </div>
     </div>
   </div>
 
   <script>
-    const form = document.getElementById("uploadForm");
-    const checkBtn = document.getElementById("checkBtn");
-    const analyzeBtn = document.getElementById("analyzeBtn");
-    const cancelBtn = document.getElementById("cancelBtn");
-    const terms = document.getElementById("terms");
-    const emailEl = document.getElementById("email");
-    const custEl = document.getElementById("customer_name");
-
-    const fileInput = document.getElementById("fileInput");
-    const fileInfo = document.getElementById("fileinfo");
-
-    const statusText = document.getElementById("status");
-    const subtasksEl = document.getElementById("subtasks");
-    const spinner = document.getElementById("spinner");
+    // ---- Elements
+    const metaForm     = document.getElementById("metaForm");
+    const checkBtn     = document.getElementById("checkBtn");
+    const uploadBtn    = document.getElementById("uploadBtn");
+    const cancelBtn    = document.getElementById("cancelBtn");
+    const checkBox     = document.getElementById("checkBox");
+    const statusBox    = document.getElementById("status");
+    const subtasksBox  = document.getElementById("subtasks");
+    const spinner      = document.getElementById("spinner");
     const progressFill = document.getElementById("progressFill");
 
-    const MAX_MB = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
+    const MAX_MB    = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
     const MAX_BYTES = MAX_MB * 1024 * 1024;
 
-    let lastChecked = null;   // {video_url, share_url, check}
-    let currentTaskId = null;
+    // ---- State
+    let lastTaskId    = null;
+    let checkedVideo  = null;  // direct URL from readiness check
+    let sharedLink    = null;  // Dropbox share URL (for reference)
+    let pollTimer     = null;
 
-    function updateProgressBar(p){ progressFill.style.width = p + "%"; }
-    function setBarState(state){ progressFill.classList.remove("active","ok","fail"); progressFill.classList.add(state); }
-    function updateStatus(m){ statusText.innerText += (statusText.innerText ? "\n" : "") + m; }
-    function resetStatus(){ statusText.innerText = ""; subtasksEl.innerHTML = ""; setBarState("active"); updateProgressBar(0); }
-    function msToClock(ms){ const s=Math.round(ms/1000); const mm=String(Math.floor(s/60)).padStart(2,"0"); const ss=String(s%60).padStart(2,"0"); return `${mm}:${ss}`; }
+    // ---- Helpers (UI)
+    const show   = (el) => el.classList.remove("hidden");
+    const hide   = (el) => el.classList.add("hidden");
+    const pct0   = (x) => (typeof x === "number" ? Math.max(0, Math.min(100, Math.round(x * 100))) : 0);
+    const setBar = (p) => { progressFill.style.width = `${p}%`; };
+    const addLine = (t) => { statusBox.textContent += (statusBox.textContent ? "\n" : "") + t; };
+    const clearStatus = () => { statusBox.textContent = ""; };
 
-    function renderSubtasks(obj){
-      if (!obj || typeof obj !== "object") { subtasksEl.innerHTML = ""; return; }
-      const rows = Object.entries(obj).map(([k,v]) => {
-        const pct = (typeof v === "number") ? Math.max(0, Math.min(100, Math.round(v*100))) : null;
-        const right = (pct === null) ? "" : `${pct}%`;
-        return `<div class="row"><span class="muted">${k.replace(/_/g," ")}</span><span>${right}</span></div>`;
-      }).join("");
-      subtasksEl.innerHTML = rows ? (`<div class="muted">Subtasks</div>${rows}`) : "";
-    }
-    function niceStatus(s){ if(!s)return"Unknown"; const map={pending:"Queued",processing:"Processing",completed:"Completed",failed:"Failed",cancelled:"Cancelled"}; return map[s.toLowerCase()]||s; }
-    async function readJson(res){ const txt = await res.text(); try { return JSON.parse(txt); } catch { return { _raw: txt }; } }
+    const renderSubtasks = (obj) => {
+      if (!obj || typeof obj !== "object") { subtasksBox.innerHTML = ""; return; }
+      const pretty = JSON.stringify(obj, null, 2);
+      subtasksBox.innerHTML = `<strong>Subtasks</strong><code>${pretty}</code>`;
+    };
 
-    function isCheckPass(check){
-      // Be liberal: look for pass-y signals
-      const d = check?.data || check || {};
-      if (typeof d.is_valid === "boolean") return d.is_valid;
-      if (typeof d.valid === "boolean") return d.valid;
-      if (Array.isArray(d.issues)) return d.issues.length === 0;
-      const st = (d.status || "").toString().toLowerCase();
-      return st === "ok" || st === "passed" || st === "valid";
-    }
-
-    fileInput.addEventListener("change", () => {
-      const f = fileInput.files[0];
-      fileInfo.textContent = f ? `Selected: ${f.name} — ${Math.round(f.size/1024/1024)} MB` : "";
-      lastChecked = null; analyzeBtn.disabled = true;
-    });
-
-    function canAnalyze(){
-      return !!lastChecked && terms.checked && !!emailEl.value && !!custEl.value;
-    }
-    terms.addEventListener("change", ()=> analyzeBtn.disabled = !canAnalyze());
-    emailEl.addEventListener("input", ()=> analyzeBtn.disabled = !canAnalyze());
-    custEl.addEventListener("input", ()=> analyzeBtn.disabled = !canAnalyze());
-
+    // ---- Readiness check (two ways):
+    //  We upload the chosen file to Dropbox (server-side), then call SportAI /videos/check.
     checkBtn.addEventListener("click", async () => {
-      resetStatus();
-      const f = fileInput.files[0];
-      if (!f) { updateStatus("❌ Please choose a video file first."); return; }
-      if (f.size > MAX_BYTES) { updateStatus(`❌ File is ${Math.round(f.size/1024/1024)}MB > ${MAX_MB}MB (server limit). Try a smaller clip.`); return; }
+      clearStatus();
+      setBar(0);
+      hide(uploadBtn);
+      hide(cancelBtn);
+      hide(checkBox);
+      spinner.style.display = "block";
 
       try {
-        spinner.style.display = "block";
-        updateStatus("🔍 Running video readiness check...");
-        const fd = new FormData();
-        fd.append("video", f);
-        const res = await fetch("/upload/api/check", { method: "POST", body: fd });
-        const data = await readJson(res);
-        spinner.style.display = "none";
-
-        if (!res.ok || data?.error) {
-          updateStatus(`❌ Check failed: ${data?.error || (data?._raw || (res.status + ' ' + res.statusText))}`);
-          lastChecked = null; analyzeBtn.disabled = true;
+        const fd = new FormData(metaForm);
+        const file = metaForm.querySelector('input[name="video"]').files[0];
+        if (!file) { spinner.style.display="none"; addLine("❌ Please choose a video file."); return; }
+        if (file.size > MAX_BYTES) {
+          spinner.style.display="none";
+          addLine(`❌ File is ${Math.round(file.size/1024/1024)}MB > ${MAX_MB}MB (server limit).`);
           return;
         }
 
-        lastChecked = { video_url: data.video_url, share_url: data.share_url, check: data.check };
-        const pass = isCheckPass(data.check);
-        if (pass) {
-          updateStatus("✅ Video is ready for analysis.");
-          analyzeBtn.disabled = !canAnalyze();
-        } else {
-          analyzeBtn.disabled = true;
-          updateStatus("⚠️ The video may not be compatible. Please review SportAI feedback:\n" + JSON.stringify(data.check, null, 2));
+        // Call our /upload/api/check endpoint (multipart). It uploads to Dropbox + calls SportAI /videos/check.
+        const res = await fetch("/upload/api/check", { method: "POST", body: fd });
+        const txt = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
+
+        if (!res.ok || !data?.ok) {
+          spinner.style.display = "none";
+          const msg = data?.error || (data?._raw || `HTTP ${res.status} ${res.statusText}`);
+          addLine(`❌ Readiness check failed: ${msg}`);
+          return;
         }
-      } catch (err) {
+
+        // Save returned URLs for the submit step
+        checkedVideo = data.video_url || null;
+        sharedLink   = data.share_url || null;
+
+        // Show a light summary from the check payload (structure varies across tenants)
+        const summary = (() => {
+          const c = data.check || {};
+          // try a few common things if present
+          const top = (c.data && (c.data.details || c.data.summary)) || c.summary || c.details || c;
+          return typeof top === "object" ? JSON.stringify(top, null, 2) : String(top);
+        })();
+
+        checkBox.innerHTML = `
+          <div><strong>✅ Video readiness check passed.</strong></div>
+          ${sharedLink ? `<div class="muted">Source: <a href="${sharedLink}" target="_blank" rel="noreferrer">${sharedLink}</a></div>` : ``}
+          <div style="margin-top:8px"><strong>Check result:</strong></div>
+          <pre style="white-space:pre-wrap">${summary}</pre>
+        `;
+        show(checkBox);
+        show(uploadBtn);
         spinner.style.display = "none";
-        updateStatus(`❌ Check request failed: ${String(err)}`);
-        lastChecked = null; analyzeBtn.disabled = true;
+        setBar(10);
+      } catch (e) {
+        spinner.style.display = "none";
+        addLine(`❌ Readiness check error: ${String(e)}`);
       }
     });
 
-    analyzeBtn.addEventListener("click", async () => {
-      resetStatus();
-      if (!lastChecked) { updateStatus("❌ Please run the Video Readiness Check first."); return; }
-      if (!terms.checked) { updateStatus("❌ Please accept the Terms before starting."); return; }
-      if (!emailEl.value || !custEl.value) { updateStatus("❌ Customer name and Email are required."); return; }
+    // ---- Submit to SportAI & start polling
+    uploadBtn.addEventListener("click", async () => {
+      if (!checkedVideo) { addLine("❌ Please run the readiness check first."); return; }
 
-      // Build metadata
-      const meta = {
-        customer_name: document.getElementById("customer_name").value.trim(),
-        match_date: document.getElementById("match_date").value,
-        start_time: document.getElementById("start_time").value,
-        location: document.getElementById("location").value.trim(),
-        player_a_name: document.getElementById("player_a_name").value.trim() || "Player A",
-        player_b_name: document.getElementById("player_b_name").value.trim() || "Player B",
-        player_a_utr: document.getElementById("player_a_utr").value.trim(),
-        player_b_utr: document.getElementById("player_b_utr").value.trim(),
-        terms_accepted: true,
-      };
+      clearStatus();
+      spinner.style.display = "block";
+      setBar(20);
+      addLine("📤 Submitting to SportAI…");
 
       try {
-        spinner.style.display = "block";
-        setBarState("active"); updateProgressBar(10);
-        updateStatus("🚀 Registering with SportAI...");
-
+        // Build metadata (the backend may forward into SportAI metadata and/or store for reporting)
+        const meta = {
+          customer_name: metaForm.customer_name.value.trim(),
+          match_date: metaForm.match_date.value,
+          start_time: metaForm.start_time.value,
+          location: metaForm.location.value.trim(),
+          player_a_name: metaForm.player_a_name.value.trim(),
+          player_b_name: metaForm.player_b_name.value.trim(),
+          player_a_utr: metaForm.player_a_utr.value.trim(),
+          player_b_utr: metaForm.player_b_utr.value.trim(),
+          terms_accepted: metaForm.terms_accepted.checked,
+        };
         const payload = {
-          video_url: lastChecked.video_url,
-          share_url: lastChecked.share_url,
-          email: document.getElementById("email").value.trim().toLowerCase(),
-          meta
+          video_url: checkedVideo,
+          email: metaForm.email.value.trim().toLowerCase(),
+          metadata: meta,   // harmless if server ignores; useful if it forwards/stores
         };
 
         const res = await fetch("/upload/api/upload", {
           method: "POST",
-          headers: {"Content-Type":"application/json"},
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
-        const data = await readJson(res);
+        const txt = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
 
-        if (!res.ok || data?.error) {
+        if (!res.ok || data?.error || !data?.task_id) {
           spinner.style.display = "none";
-          setBarState("fail"); updateProgressBar(0);
-          updateStatus(`❌ Could not start analysis: ${data?.error || (data?._raw || (res.status + ' ' + res.statusText))}`);
+          const msg = data?.error || (data?._raw || `HTTP ${res.status} ${res.statusText}`);
+          addLine(`❌ Submit failed: ${msg}`);
           return;
         }
 
-        currentTaskId = data.task_id;
-        updateProgressBar(40);
-        updateStatus("✅ Registered with SportAI. Waiting for analysis to complete...");
-        cancelBtn.style.display = "inline-block";
-        poll(currentTaskId);
-      } catch (err) {
+        lastTaskId = data.task_id;
+        addLine("✅ Submitted. Polling for status…");
+        show(cancelBtn);
+        setBar(30);
+        poll(lastTaskId);
+      } catch (e) {
         spinner.style.display = "none";
-        setBarState("fail"); updateStatus(`❌ Start failed: ${String(err)}`);
+        addLine(`❌ Submit error: ${String(e)}`);
       }
     });
 
+    // ---- Cancel current task
     cancelBtn.addEventListener("click", async () => {
-      if (!currentTaskId) return;
+      if (!lastTaskId) return;
       try {
         cancelBtn.disabled = true;
-        const res = await fetch(`/upload/api/cancel?task_id=${encodeURIComponent(currentTaskId)}`, {method:"POST"});
-        const data = await readJson(res);
+        const res = await fetch(`/upload/api/cancel?task_id=${encodeURIComponent(lastTaskId)}`, { method: "POST" });
+        const txt = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
         if (!res.ok || data?.error) {
-          cancelBtn.disabled = false;
-          updateStatus(`❌ Cancel failed: ${data?.error || (data?._raw || (res.status + ' ' + res.statusText))}`);
-          return;
+          addLine(`⚠️ Cancel failed: ${data?.error || data?._raw || res.status}`);
+        } else {
+          addLine("⛔ Task cancelled.");
+          if (pollTimer) clearInterval(pollTimer);
+          setBar(0);
         }
-        updateStatus("🛑 Cancel requested. The task may take a moment to halt.");
-      } catch (err) {
+      } finally {
         cancelBtn.disabled = false;
-        updateStatus(`❌ Cancel request failed: ${String(err)}`);
       }
     });
 
-    async function poll(taskId){
-      const t0 = Date.now();
-      let attempts = 0, maxAttempts = 120, delay = 5000;
-      const timer = setInterval(async () => {
+    // ---- Poll helper
+    function poll(taskId) {
+      if (pollTimer) clearInterval(pollTimer);
+      let attempts = 0, maxAttempts = 180, delay = 5000;
+      pollTimer = setInterval(async () => {
         attempts++;
         try {
-          const res = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
-          const payload = await readJson(res);
-          const data = payload?.data || payload || {};
-          const statusRaw = data.status || data.task_status || "unknown";
-          const prog01 = (typeof data.progress === "number") ? data.progress :
-                         (typeof data.task_progress === "number") ? data.task_progress : 0;
-          const sub01 = (typeof data.total_subtask_progress === "number") ? data.total_subtask_progress : null;
-          const subtasks = data.subtask_progress || null;
+          const res  = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+          const txt  = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
 
-          if (subtasks) renderSubtasks(subtasks);
+          const d    = data?.data || {};
+          const stat = d.task_status || data?.status || "unknown";
+          const p    = pct0(d.task_progress);
+          const subt = d.subtask_progress;
+          const totS = typeof d.total_subtask_progress === "number" ? pct0(d.total_subtask_progress) : null;
 
-          const pct = Math.max(0, Math.min(100, Math.round(prog01 * 100)));
-          updateProgressBar(pct);
-          const nice = niceStatus(statusRaw);
-          const elapsed = msToClock(Date.now() - t0);
+          setBar(p);
+          if (subt) renderSubtasks(subt);
 
-          if (String(statusRaw).toLowerCase() === "completed") {
-            setBarState("ok"); updateProgressBar(100);
-            updateStatus(`✅ Analysis complete! (${elapsed})`);
-            clearInterval(timer); spinner.style.display = "none"; cancelBtn.style.display="none";
-            currentTaskId = null;
-            return;
+          if (stat === "completed") {
+            setBar(100);
+            addLine("✅ Analysis complete! JSON downloaded and ingested.");
+            clearInterval(pollTimer);
+            spinner.style.display = "none";
+            hide(cancelBtn);
+          } else if (stat === "failed" || stat === "cancelled") {
+            addLine(`❌ ${stat.charAt(0).toUpperCase()+stat.slice(1)}.`);
+            clearInterval(pollTimer);
+            spinner.style.display = "none";
+            hide(cancelBtn);
+          } else if (attempts >= maxAttempts) {
+            addLine("⚠️ Timeout. Try again later.");
+            clearInterval(pollTimer);
+            spinner.style.display = "none";
+            hide(cancelBtn);
+          } else {
+            const extra = totS !== null ? ` | subtasks ${totS}%` : "";
+            addLine(`🔄 Status: ${stat} (${p}%)${extra}`);
           }
-          if (["failed","cancelled"].includes(String(statusRaw).toLowerCase())) {
-            setBarState("fail");
-            updateStatus(`❌ ${nice}. (${elapsed})`);
-            clearInterval(timer); spinner.style.display = "none"; cancelBtn.style.display="none";
-            currentTaskId = null;
-            return;
-          }
-          if (attempts >= maxAttempts) {
-            updateStatus(`⚠️ Timeout after ${elapsed}. Try again later.`);
-            spinner.style.display = "none"; cancelBtn.style.display="none";
-            clearInterval(timer); currentTaskId = null;
-            return;
-          }
-
-          const subPct = (sub01 === null ? null : Math.max(0, Math.min(100, Math.round(sub01 * 100))));
-          const extra = (subPct === null) ? "" : ` | subtasks ${subPct}%`;
-          updateStatus(`🔄 Status: ${nice} (${pct}%)${extra} — ${elapsed}`);
-        } catch (err) {
-          setBarState("fail");
-          updateStatus(`❌ Polling failed: ${String(err)}`);
-          spinner.style.display = "none"; cancelBtn.style.display="none";
-          clearInterval(timer); currentTaskId = null;
+        } catch (e) {
+          addLine(`❌ Polling failed: ${String(e)}`);
+          clearInterval(pollTimer);
+          spinner.style.display = "none";
+          hide(cancelBtn);
         }
       }, delay);
     }
