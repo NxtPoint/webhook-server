@@ -24,7 +24,7 @@ OPS_KEY = os.environ.get("OPS_KEY", "")
 ui_bp = Blueprint(
     "ui",
     __name__,
-    template_folder="templates/ui",   # <-- change from "templates"
+    template_folder="templates",   # <-- change from "templates"
     static_folder="static",
 )
 
