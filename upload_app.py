@@ -1,5 +1,5 @@
 ﻿# upload_app.py — entrypoint (uploads + SportAI + status)
-import os, json, time, socket,sys,inspect,hashlib
+import os, json, time, socket, sys, inspect, hashlib
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from datetime import datetime, timezone
 
@@ -13,15 +13,12 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.url_map.strict_slashes = False
 
-import hashlib, inspect
-
 @app.get("/ops/code-hash")
 def ops_code_hash():
     if not _guard(): return _forbid()
     try:
         with open(__file__, "rb") as f:
             sha = hashlib.sha256(f.read()).hexdigest()[:16]
-        # Find the upload alias definition in the currently running source
         src = inspect.getsource(sys.modules[__name__])
         idx = src.find("@app.route(\"/upload\", methods=[\"POST\", \"OPTIONS\"])")
         snippet = src[max(0, idx-80): idx+200] if idx != -1 else "alias not found in source"
@@ -29,7 +26,7 @@ def ops_code_hash():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# 150 MB is Dropbox /files/upload limit (bigger uses upload_session); you're uploading ~50 MB
+# 150 MB is Dropbox /files/upload limit (bigger uses upload_session)
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 1024 * 1024
 
 # -------------------------------------------------------
@@ -41,13 +38,24 @@ DBX_APP_KEY     = os.getenv("DROPBOX_APP_KEY", "")
 DBX_APP_SECRET  = os.getenv("DROPBOX_APP_SECRET", "")
 DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads").strip()
-# legacy (works too)
-DBX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN", "").strip()
+DBX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN", "").strip()  # legacy token (optional)
 
 SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").strip().rstrip("/")
 SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
 SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
 SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
+SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
+SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
+
+# Replace behavior (env-backed default; backward-compat aliases)
+DEFAULT_REPLACE_ON_INGEST = (
+    os.getenv("INGEST_REPLACE_EXISTING")
+    or os.getenv("DEFAULT_REPLACE_ON_INGEST")
+    or os.getenv("STRICT_REINGEST")
+    or "1"
+).strip().lower() in ("1","true","yes","y")
+
+AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "0").lower() in ("1","true","yes","y")
 
 # Fallbacks (first is env)
 SPORTAI_BASES = list(dict.fromkeys([
@@ -55,9 +63,18 @@ SPORTAI_BASES = list(dict.fromkeys([
     "https://api.sportai.app",
     "https://sportai.app",
 ]))
+
+# Submit can vary by tenant
 SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([
     SPORTAI_SUBMIT_PATH,
-    "/api/statistics/tennis",  # works on some tenants
+    "/api/statistics/tennis",  # common variant
+]))
+
+# Status can also vary by tenant → try both
+SPORTAI_STATUS_PATHS = list(dict.fromkeys([
+    SPORTAI_STATUS_PATH,
+    "/api/statistics/tennis/{task_id}",
+    "/api/statistics/{task_id}",
 ]))
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
@@ -122,7 +139,6 @@ def _dbx_create_or_fetch_shared_link(token: str, path: str) -> str:
         "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
         headers=h, json={"path": path, "settings": {"audience": "public", "access": "viewer"}}, timeout=30)
     if r.status_code == 409:
-        # link already exists
         r = requests.post(
             "https://api.dropboxapi.com/2/sharing/list_shared_links",
             headers=h, json={"path": path, "direct_only": True}, timeout=30)
@@ -144,36 +160,113 @@ def _force_direct_dropbox(url: str) -> str:
     except Exception:
         return url
 
+def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
+    """Persist submission context so we can link to task_id in reporting."""
+    if not engine:
+        return
+    try:
+        from sqlalchemy import text as sql_text
+        ddl = """
+        CREATE TABLE IF NOT EXISTS submission_context (
+          task_id        TEXT PRIMARY KEY,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email          TEXT,
+          customer_name  TEXT,
+          match_date     DATE,
+          start_time     TEXT,
+          location       TEXT,
+          player_a_name  TEXT,
+          player_b_name  TEXT,
+          player_a_utr   TEXT,
+          player_b_utr   TEXT,
+          video_url      TEXT,
+          share_url      TEXT,
+          raw_meta       JSONB
+        );
+        """
+        ins = """
+        INSERT INTO submission_context (
+          task_id, email, customer_name, match_date, start_time, location,
+          player_a_name, player_b_name, player_a_utr, player_b_utr,
+          video_url, share_url, raw_meta
+        ) VALUES (
+          :task_id, :email, :customer_name, :match_date, :start_time, :location,
+          :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
+          :video_url, :share_url, :raw_meta
+        )
+        ON CONFLICT (task_id) DO UPDATE SET
+          email=EXCLUDED.email,
+          customer_name=EXCLUDED.customer_name,
+          match_date=EXCLUDED.match_date,
+          start_time=EXCLUDED.start_time,
+          location=EXCLUDED.location,
+          player_a_name=EXCLUDED.player_a_name,
+          player_b_name=EXCLUDED.player_b_name,
+          player_a_utr=EXCLUDED.player_a_utr,
+          player_b_utr=EXCLUDED.player_b_utr,
+          video_url=EXCLUDED.video_url,
+          share_url=EXCLUDED.share_url,
+          raw_meta=EXCLUDED.raw_meta;
+        """
+        m = meta or {}
+        with engine.begin() as conn:
+            conn.execute(sql_text(ddl))
+            conn.execute(sql_text(ins), {
+                "task_id": task_id,
+                "email": email,
+                "customer_name": m.get("customer_name"),
+                "match_date": m.get("match_date"),
+                "start_time": m.get("start_time"),
+                "location": m.get("location"),
+                "player_a_name": m.get("player_a_name") or "Player A",
+                "player_b_name": m.get("player_b_name") or "Player B",
+                "player_a_utr": m.get("player_a_utr"),
+                "player_b_utr": m.get("player_b_utr"),
+                "video_url": video_url,
+                "share_url": share_url,
+                "raw_meta": json.dumps(m),
+            })
+    except Exception:
+        pass
+
+def _extract_meta_from_form(form) -> dict:
+    return {
+        "customer_name": (form.get("customer_name") or "").strip(),
+        "match_date": (form.get("match_date") or "").strip(),
+        "start_time": (form.get("start_time") or "").strip(),
+        "location": (form.get("location") or "").strip(),
+        "player_a_name": (form.get("player_a_name") or "").strip() or "Player A",
+        "player_b_name": (form.get("player_b_name") or "").strip() or "Player B",
+        "player_a_utr": (form.get("player_a_utr") or "").strip(),
+        "player_b_utr": (form.get("player_b_utr") or "").strip(),
+        "terms_accepted": (form.get("terms_accepted") in ("on","1","true","yes","y")),
+    }
+
 # ---------- SportAI ----------
 def _iter_submit_endpoints():
     for base in SPORTAI_BASES:
         for path in SPORTAI_SUBMIT_PATHS:
             yield f"{base.rstrip('/')}/{path.lstrip('/')}"
 
-def _sportai_submit(video_url: str, email: str | None = None) -> str:
+def _iter_status_endpoints(task_id: str):
+    for base in SPORTAI_BASES:
+        for path in SPORTAI_STATUS_PATHS:
+            yield f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
+
+def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None = None) -> str:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
 
-    headers = {
-        "Authorization": f"Bearer {SPORTAI_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    # union payload that fits both variants
-    payload = {
-        "video_url": video_url,
-        "only_in_rally_data": False,
-        "version": "stable",
-    }
-    if email:
-        payload["email"] = email
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
+    payload = {"video_url": video_url, "only_in_rally_data": False, "version": "stable"}
+    if email: payload["email"] = email
+    if meta:  payload["metadata"] = meta
 
     last_err = None
     for submit_url in _iter_submit_endpoints():
         try:
             r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
             if r.status_code >= 500:
-                # transient upstream?
                 last_err = f"{submit_url} -> {r.status_code}: {r.text}"
                 continue
             r.raise_for_status()
@@ -188,18 +281,62 @@ def _sportai_submit(video_url: str, email: str | None = None) -> str:
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
 def _sportai_status(task_id: str) -> dict:
+    """Fetch status from SportAI and return normalized fields plus raw blob."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
-    url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_STATUS_PATH.lstrip('/').format(task_id=task_id)}"
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
-    r = requests.get(url, headers=headers, timeout=30)
-    r.raise_for_status()
-    j = r.json() or {}
-    return {
-        "status": j.get("status") or (j.get("data") or {}).get("status"),
-        "result_url": j.get("result_url") or (j.get("data") or {}).get("result_url"),
+
+    last_err = None
+    j = None
+    for url in _iter_status_endpoints(task_id):
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+            if r.status_code >= 500:
+                last_err = f"{url} -> {r.status_code}: {r.text}"
+                continue
+            r.raise_for_status()
+            j = r.json() or {}
+            break
+        except Exception as e:
+            last_err = str(e)
+    if j is None:
+        raise RuntimeError(f"SportAI status failed: {last_err}")
+
+    d = j.get("data") or j
+    status = d.get("status") or d.get("task_status")
+    out = {
+        "status": status,
+        "result_url": d.get("result_url") or j.get("result_url"),
+        "data": {
+            "task_id": d.get("task_id"),
+            "video_url": d.get("video_url"),
+            "task_status": d.get("task_status") or d.get("status"),
+            "task_progress": d.get("task_progress") or d.get("progress"),
+            "total_subtask_progress": d.get("total_subtask_progress"),
+            "subtask_progress": d.get("subtask_progress") or {},
+        },
         "raw": j,
     }
+    return out
+
+def _sportai_check(video_url: str) -> dict:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+    url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CHECK_PATH.lstrip('/')}"
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
+    payload = {"video_urls": [video_url], "version": "latest"}
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json() or {}
+
+def _sportai_cancel(task_id: str) -> dict:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+    url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CANCEL_PATH.lstrip('/').format(task_id=task_id)}"
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+    r = requests.post(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json() or {}
 
 # -------------------------------------------------------
 # Public endpoints
@@ -243,9 +380,11 @@ def ops_env():
         "ok": True,
         "SPORT_AI_BASE": SPORTAI_BASE,
         "SPORT_AI_SUBMIT_PATHS": SPORTAI_SUBMIT_PATHS,
-        "SPORT_AI_STATUS_PATH": SPORTAI_STATUS_PATH,
+        "SPORT_AI_STATUS_PATHS": SPORTAI_STATUS_PATHS,
         "has_TOKEN": bool(SPORTAI_TOKEN),
         "DBX_MODE": "access_token" if DBX_ACCESS_TOKEN else "refresh_flow",
+        "DEFAULT_REPLACE_ON_INGEST": DEFAULT_REPLACE_ON_INGEST,
+        "AUTO_INGEST_ON_COMPLETE": AUTO_INGEST_ON_COMPLETE,
     })
 
 @app.get("/ops/ping-sportai")
@@ -300,7 +439,6 @@ def ops_sportai_dns():
 # -------------------------------------------------------
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_dropbox():
-    # support OPTIONS preflight
     if request.method == "OPTIONS":
         return ("", 204)
 
@@ -309,9 +447,11 @@ def api_upload_to_dropbox():
         body = request.get_json(silent=True) or {}
         video_url = (body.get("video_url") or body.get("share_url") or "").strip()
         email = (body.get("email") or "").strip().lower()
+        meta = body.get("meta") or body.get("metadata") or {}
         if video_url:
             try:
-                task_id = _sportai_submit(video_url, email=email)
+                task_id = _sportai_submit(video_url, email=email, meta=meta)
+                _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
                 return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
             except Exception as e:
                 return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
@@ -338,19 +478,22 @@ def api_upload_to_dropbox():
                        headers=headers, data=f.read(), timeout=600)
     if not up.ok:
         return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
-    meta = up.json()
+    meta_dbx = up.json()
 
     try:
-        share_url = _dbx_create_or_fetch_shared_link(tok, meta.get("path_lower") or dest_path)
+        share_url = _dbx_create_or_fetch_shared_link(tok, meta_dbx.get("path_lower") or dest_path)
         video_url = _force_direct_dropbox(share_url)
-        task_id = _sportai_submit(video_url, email=email)
+
+        meta = _extract_meta_from_form(request.form)
+        task_id = _sportai_submit(video_url, email=email, meta=meta)
+        _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
     except Exception as e:
         return jsonify({
             "ok": False,
             "error": f"Upload ok, SportAI submit failed: {e}",
-            "upload": {"path": meta.get("path_display") or dest_path,
-                       "size": meta.get("size"),
-                       "name": meta.get("name", clean)}
+            "upload": {"path": meta_dbx.get("path_display") or dest_path,
+                       "size": meta_dbx.get("size"),
+                       "name": meta_dbx.get("name", clean)}
         }), 502
 
     return jsonify({
@@ -358,9 +501,9 @@ def api_upload_to_dropbox():
         "task_id": task_id,
         "share_url": share_url,
         "video_url": video_url,
-        "upload": {"path": meta.get("path_display") or dest_path,
-                   "size": meta.get("size"),
-                   "name": meta.get("name", clean)}
+        "upload": {"path": meta_dbx.get("path_display") or dest_path,
+                   "size": meta_dbx.get("size"),
+                   "name": meta_dbx.get("name", clean)}
     })
 
 # Legacy /upload alias (keeps old front-end working)
@@ -390,7 +533,7 @@ def task_status_legacy_qs():
         return jsonify({"ok": False, "error": str(e)}), 502
 
 # -------------------------------------------------------
-# Task poll
+# Task poll (with optional one-time auto-ingest)
 # -------------------------------------------------------
 @app.get("/upload/api/task-status")
 def api_task_status():
@@ -398,31 +541,131 @@ def api_task_status():
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
     try:
-        return jsonify({"ok": True, **_sportai_status(tid)})
+        out = _sportai_status(tid)
+
+        if AUTO_INGEST_ON_COMPLETE:
+            status = (out.get("status") or "").lower()
+            result_url = out.get("result_url")
+            if status in ("completed","done","success","succeeded") and result_url:
+                from sqlalchemy import text as sql_text
+                with engine.begin() as conn:
+                    already = conn.execute(
+                        sql_text("SELECT session_id FROM submission_context WHERE task_id=:t AND session_id IS NOT NULL"),
+                        {"t": tid}
+                    ).scalar()
+                    if not already:
+                        r = requests.get(result_url, timeout=120); r.raise_for_status()
+                        payload = r.json()
+                        res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
+                        sid = res["session_id"]
+                        conn.execute(
+                            sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
+                            {"sid": sid, "t": tid}
+                        )
+                        conn.execute(sql_text("""
+                            UPDATE dim_session
+                               SET meta = COALESCE(meta, '{}'::jsonb)
+                                        || jsonb_build_object('task_id', :tid)
+                                        || jsonb_build_object(
+                                             'submission_context',
+                                             to_jsonb(sc) - 'task_id' - 'created_at' - 'session_id'
+                                           )
+                             FROM (
+                               SELECT email, customer_name, match_date, start_time, location,
+                                      player_a_name, player_b_name, player_a_utr, player_b_utr,
+                                      video_url, share_url
+                                 FROM submission_context
+                                WHERE task_id = :tid
+                                LIMIT 1
+                             ) sc
+                             WHERE dim_session.session_id = :sid
+                        """), {"sid": sid, "tid": tid})
+                        out["auto_ingested"] = True
+                        out["session_id"] = sid
+
+        return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
 # -------------------------------------------------------
 # SportAI → our callback → ingest
 # -------------------------------------------------------
+def _download_result_payload(task_id: str | None = None, result_url: str | None = None):
+    """Return (payload_dict, src_url)."""
+    if not (task_id or result_url):
+        return None, None
+    try:
+        if not result_url and task_id:
+            st = _sportai_status(task_id)
+            result_url = st.get("result_url")
+        if not result_url:
+            return None, None
+        r = requests.get(result_url, timeout=120)
+        r.raise_for_status()
+        return r.json(), result_url
+    except Exception:
+        return None, None
+
+def _attach_submission_context(conn, task_id: str, session_id: int, session_uid: str | None):
+    from sqlalchemy import text as sql_text
+    conn.execute(sql_text("""
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='submission_context' AND column_name='session_id'
+          ) THEN
+            ALTER TABLE submission_context ADD COLUMN session_id INT;
+          END IF;
+        END $$;
+    """))
+    row = conn.execute(sql_text("SELECT * FROM submission_context WHERE task_id=:t LIMIT 1"),
+                       {"t": task_id}).mappings().first()
+    if row:
+        conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
+                     {"sid": session_id, "t": task_id})
+        keep = ["email","customer_name","match_date","start_time","location",
+                "player_a_name","player_b_name","player_a_utr","player_b_utr",
+                "video_url","share_url"]
+        sc = {k: row[k] for k in keep if k in row and row[k] is not None}
+        conn.execute(sql_text("""
+            UPDATE dim_session
+               SET meta = COALESCE(meta, '{}'::jsonb)
+                        || jsonb_build_object('task_id', :task_id)
+                        || jsonb_build_object('submission_context', CAST(:sc AS JSONB))
+             WHERE session_id = :sid
+        """), {"sid": session_id, "task_id": task_id, "sc": json.dumps(sc)})
+
 @app.post("/ops/sportai-callback")
 def ops_sportai_callback():
     if not _guard(): return _forbid()
     try:
-        payload = request.get_json(force=True, silent=False)
+        body = request.get_json(force=True, silent=False) or {}
     except Exception as e:
         return jsonify({"ok": False, "error": f"Invalid JSON: {e}"}), 400
 
-    replace = (request.args.get("replace","1").strip().lower() in ("1","true","yes","y"))
-    payload_uid = (payload.get("session_uid") or payload.get("sessionId") or
-                   payload.get("session_id") or payload.get("uid") or payload.get("id"))
-    forced_uid = request.args.get("session_uid") or payload_uid
+    rep_arg = request.args.get("replace")
+    replace = DEFAULT_REPLACE_ON_INGEST if rep_arg is None else str(rep_arg).lower() in ("1","true","yes","y","on")
+    forced_uid = request.args.get("session_uid") or (
+        body.get("session_uid") or body.get("sessionId") or body.get("session_id") or body.get("uid") or body.get("id")
+    )
+    task_id    = body.get("task_id") or body.get("id")
+    result_url = body.get("result_url") or (body.get("data") or {}).get("result_url")
 
-    from sqlalchemy import text as sql_text  # local import
+    payload, src_hint = (None, None)
+    if isinstance(body, dict) and any(k in body for k in ("players","swings","ball_positions","player_positions","ball_bounces","rallies")):
+        payload, src_hint = body, "webhook:body"
+    if payload is None:
+        payload, src_hint = _download_result_payload(task_id=task_id, result_url=result_url)
+    if payload is None:
+        return jsonify({"ok": True, "ingested": False, "reason": "no payload/result_url yet", "task_id": task_id}), 200
+
+    from sqlalchemy import text as sql_text
     try:
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid)
+            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=src_hint)
             sid = res.get("session_id")
+            if task_id:
+                _attach_submission_context(conn, task_id=task_id, session_id=sid, session_uid=res.get("session_uid"))
             counts = conn.execute(sql_text("""
                 SELECT
                   (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
@@ -431,10 +674,10 @@ def ops_sportai_callback():
                   (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
             """), {"sid": sid}).fetchone()
-
-        return jsonify({"ok": True,
+        return jsonify({"ok": True, "ingested": True,
                         "session_uid": res.get("session_uid"),
                         "session_id":  sid,
+                        "task_id": task_id,
                         "bronze_counts": {"rallies": counts[0],
                                           "ball_bounces": counts[1],
                                           "ball_positions": counts[2],
@@ -459,3 +702,28 @@ for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
     print(f"{r.rule:30s} -> {r.endpoint:24s} [{meth}]")
 print("================")
+
+@app.get("/upload/__which_app")
+def upload_which_app():
+    """App-level fallback diagnostic to locate templates/upload.html on disk."""
+    try:
+        search = getattr(app.jinja_loader, "searchpath", [])
+    except Exception:
+        search = []
+    expected = os.path.join(os.path.dirname(__file__), "templates", "upload.html")
+    exists = os.path.exists(expected)
+    head = ""
+    if exists:
+        try:
+            with open(expected, "r", encoding="utf-8") as f:
+                head = f.read(600)
+        except Exception as e:
+            head = f"<read error: {e}>"
+    return jsonify({
+        "ok": True,
+        "module": __file__,
+        "searchpath": search,
+        "expected_template_path": expected,
+        "exists": exists,
+        "head": head,
+    })
