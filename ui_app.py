@@ -25,8 +25,8 @@ ui_bp = Blueprint(
     static_folder="static",    # provides /upload/static/<file>
 )
 
-@ui_app_bp.route("/__which")  # if your blueprint is named ui_bp, use that
-def __which():
+@ui_bp.route("/__which")
+def ui_which():
     import pathlib, time, json
     from flask import Response
 
@@ -42,9 +42,12 @@ def __which():
         st = tpl.stat()
         info["size"] = st.st_size
         info["mtime_utc"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(st.st_mtime))
-        info["head"] = tpl.read_text(errors="ignore")[:140]
-
+        try:
+            info["head"] = tpl.read_text(errors="ignore")[:140]
+        except Exception:
+            info["head"] = "<unable to read>"
     return Response(json.dumps(info, indent=2), mimetype="application/json")
+
 
 def _require_ops_key() -> bool:
     key = request.args.get("key", "")
