@@ -29,10 +29,9 @@ VIEW_NAMES = [
     "vw_ball_position",
     "vw_player_position",
 
-    # GOLD (pure)
-    "vw_shot_order_gold",       # rally-only ordering
-    "vw_point_log",             # primary BI gold view (pure)
-    "vw_point_shot_log_gold",   # alias -> vw_point_log (kept for compatibility)
+    # GOLD (pure; reads only SILVER)
+    "vw_shot_order_gold",   # rally-only ordering helper
+    "vw_point_log",         # primary BI view
 ]
 
 CREATE_STMTS = {
@@ -169,7 +168,7 @@ CREATE_STMTS = {
 
     "vw_point_log": """
     -- PURE GOLD: pass-through from SILVER; bounce chosen by time,
-    -- same-rally when both rally_ids exist, otherwise session-time only
+    -- prefer same-rally when both rally_ids exist; otherwise time within session
     CREATE OR REPLACE VIEW vw_point_log AS
     WITH s AS (
       SELECT * FROM vw_swing
@@ -192,9 +191,7 @@ CREATE_STMTS = {
         FROM vw_bounce b
         WHERE b.session_id = s2.session_id
           AND (
-                -- prefer same rally when both exist
                 (b.rally_id IS NOT NULL AND s2.rally_id IS NOT NULL AND b.rally_id = s2.rally_id)
-                -- otherwise allow time-only within session
              OR (b.rally_id IS NULL OR s2.rally_id IS NULL)
               )
           AND (
