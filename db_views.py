@@ -1,5 +1,4 @@
-# db_views.py — SILVER from BRONZE; GOLD reads only SILVER (no legacy aliases)
-
+# db_views.py — SILVER from BRONZE; GOLD reads only SILVER
 from sqlalchemy import text
 from typing import List
 
@@ -31,8 +30,11 @@ VIEW_NAMES = [
     "vw_player_position",
 
     # GOLD (pure) — Power BI reads directly from vw_point_log
-    "vw_shot_order_gold",   # rally-only ordering helper
-    "vw_point_log",         # primary BI view
+    "vw_shot_order_gold",
+    "vw_point_log",
+
+    # tiny compatibility alias (keeps /ops/init-views happy if anything still references it)
+    "vw_point_shot_log_gold",
 ]
 
 CREATE_STMTS = {
@@ -205,7 +207,6 @@ CREATE_STMTS = {
         LIMIT 1
       ) bx ON TRUE
     ),
-    -- PURE exact player XY at contact (may be NULL)
     pp_exact AS (
       SELECT s2.swing_id, p.x AS player_x_at_hit, p.y AS player_y_at_hit
       FROM s s2
@@ -268,6 +269,12 @@ CREATE_STMTS = {
     LEFT JOIN pp_exact ON pp_exact.swing_id = s.swing_id
     ORDER BY s.session_uid, point_number NULLS LAST, shot_number NULLS LAST, s.swing_id;
 """,
+
+    # ---------- compatibility alias (safe & tiny) ----------
+    "vw_point_shot_log_gold": """
+        CREATE OR REPLACE VIEW vw_point_shot_log_gold AS
+        SELECT * FROM vw_point_log;
+    """,
 }
 
 # ---------- helpers ----------
@@ -364,9 +371,6 @@ def _apply_views(engine):
     with engine.begin() as conn:
         _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
-
-        # one-time cleanup of any legacy alias if it exists
-        _drop_any(conn, "vw_point_shot_log_gold")
 
         # DROP in reverse dependency order then CREATE in forward order
         for name in reversed(VIEW_NAMES):
