@@ -24,9 +24,10 @@ OPS_KEY = os.environ.get("OPS_KEY", "")
 ui_bp = Blueprint(
     "ui",
     __name__,
-    template_folder="templates",   # expects templates/upload.html next to this file
-    static_folder="static",        # served at /upload/static/<file>
+    template_folder="templates/ui",   # <-- change from "templates"
+    static_folder="static",
 )
+
 
 TEMPLATE_NAME = "upload.html"
 
