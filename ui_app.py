@@ -24,6 +24,22 @@ ui_bp = Blueprint(
     template_folder="templates",
     static_folder="static",    # provides /upload/static/<file>
 )
+@ui_bp.route("/__which")
+def __which():
+    import pathlib, time, json
+    here = pathlib.Path(__file__).resolve().parent
+    tpl = here / "templates" / "upload.html"
+    info = {"ui_dir": str(here),
+            "template_path": str(tpl),
+            "exists": tpl.exists()}
+    if tpl.exists():
+        st = tpl.stat()
+        info["size"] = st.st_size
+        info["mtime_utc"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(st.st_mtime))
+        # return a tiny head of the file so we know which version Render has
+        head = tpl.read_text(errors="ignore")[:140]
+        info["head"] = head
+    return Response(json.dumps(info, indent=2), mimetype="application/json")
 
 def _require_ops_key() -> bool:
     key = request.args.get("key", "")
