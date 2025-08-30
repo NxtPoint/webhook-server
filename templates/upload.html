@@ -12,15 +12,27 @@
       color: #ffffff;
     }
     .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 520px; text-align: center; box-shadow: 0 0 20px #00ff80; }
+    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 620px; text-align: center; box-shadow: 0 0 20px #00ff80; }
     h2 { font-size: 1.6rem; margin-bottom: 16px; }
-    input[type="email"], input[type="file"] { width: 100%; padding: 12px; margin: 10px 0; border-radius: 6px; border: none; font-size: 1rem; }
-    button { background-color: #00ff80; color: #000; padding: 12px 20px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin: 0 6px 10px; }
+    .warn { color:#fca5a5; }
+
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .grid .full { grid-column: 1 / -1; }
+
+    input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: none; font-size: 1rem; }
+    input[type="checkbox"]{ width:auto }
+    label { display:block; text-align:left; font-size:.9rem; margin:8px 0 4px; opacity:.9; }
+
+    .btnrow { display:flex; gap:8px; margin-top: 10px; flex-wrap:wrap; justify-content:center; }
+    button { background-color: #00ff80; color: #000; padding: 10px 14px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: background 0.3s ease; }
     button:hover { background-color: #00cc66; }
     button[disabled] { opacity: .6; cursor: not-allowed; }
-    .meta { font-size:.85rem; opacity:.9; margin-bottom:6px; }
+    .btn-secondary { background: transparent; border:1px solid #00ff80; color:#00ff80; }
+    .btn-danger { background:#ff4d4d; color:#000; }
 
-    .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
+    .meta { font-size:.85rem; opacity:.9; margin-top:6px; }
+    .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 12px; height: 12px; overflow: hidden; }
     .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out, background-color .2s ease; }
     .progress-bar-fill.active { background-color: #00ff80; }
     .progress-bar-fill.ok     { background-color: #39ff14; }
@@ -30,15 +42,13 @@
     .spinner { display: none; margin: 16px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
-    .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin-top:8px; }
-    .warn { color:#fca5a5; }
-
     #subtasks { margin-top: 8px; font-size: 0.9rem; opacity: .95; text-align:left; }
     #subtasks .row { display:flex; justify-content:space-between; border-bottom: 1px dashed rgba(255,255,255,.15); padding:4px 0; }
     #subtasks .row:last-child { border-bottom: none; }
-    #fileinfo { font-size:.85rem; opacity:.9; margin-top:6px; }
-
     .muted { opacity:.85; }
+
+    .smallprint { font-size:.82rem; opacity:.9; margin-top:16px; text-align:left; }
+    a { color:#00ff80; }
   </style>
 </head>
 <body>
@@ -46,19 +56,75 @@
     <div class="container" data-max-mb="{{ max_upload_mb }}">
       <h2>🎾 Upload Match Video</h2>
 
-      {% if not dropbox_ready %}
-        <div class="pill warn">Dropbox server credentials are not configured.</div>
-      {% endif %}
-      {% if not sportai_ready %}
-        <div class="pill warn">SPORT_AI_TOKEN is not configured.</div>
-      {% endif %}
+      {% if not dropbox_ready %}<div class="pill warn">Dropbox server credentials are not configured.</div>{% endif %}
+      {% if not sportai_ready %}<div class="pill warn">SPORT_AI_TOKEN is not configured.</div>{% endif %}
       <div class="pill">Target folder: <strong>{{ target_folder }}</strong></div>
 
+      <!-- Form -->
       <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
-        <input type="email" name="email" placeholder="Your email" required />
-        <input id="fileInput" type="file" name="video" accept=".mp4,.mov" required />
-        <div id="fileinfo" class="meta"></div>
-        <button id="uploadBtn" type="submit" aria-busy="false">Upload to Our Dropbox & Analyze</button>
+        <div class="grid">
+          <div class="full">
+            <label>Customer name (required)</label>
+            <input type="text" name="customer_name" id="customer_name" placeholder="Full name" required />
+          </div>
+          <div class="full">
+            <label>Email (required)</label>
+            <input type="email" name="email" id="email" placeholder="you@example.com" required />
+          </div>
+
+          <div>
+            <label>Match date</label>
+            <input type="date" name="match_date" id="match_date" />
+          </div>
+          <div>
+            <label>Start time (local)</label>
+            <input type="time" name="start_time" id="start_time" />
+          </div>
+
+          <div class="full">
+            <label>Venue / Location</label>
+            <input type="text" name="location" id="location" placeholder="Club or venue" />
+          </div>
+
+          <div>
+            <label>Player A (server near camera)</label>
+            <input type="text" name="player_a_name" id="player_a_name" placeholder="Player A" />
+          </div>
+          <div>
+            <label>Player B (receiver)</label>
+            <input type="text" name="player_b_name" id="player_b_name" placeholder="Player B" />
+          </div>
+
+          <div>
+            <label>Player A UTR</label>
+            <input type="text" name="player_a_utr" id="player_a_utr" placeholder="e.g. 8.52" />
+          </div>
+          <div>
+            <label>Player B UTR</label>
+            <input type="text" name="player_b_utr" id="player_b_utr" placeholder="e.g. 9.11" />
+          </div>
+
+          <div class="full">
+            <label>Match video file</label>
+            <input id="fileInput" type="file" name="video" accept=".mp4,.mov" required />
+            <div id="fileinfo" class="meta"></div>
+          </div>
+
+          <div class="full" style="text-align:left;margin-top:6px;">
+            <label><input type="checkbox" id="terms" name="terms_accepted" /> I agree to the Terms.</label>
+            <div class="smallprint">
+              • By uploading, you confirm you own the rights to the video and consent to automated analysis.<br/>
+              • Processing time depends on video length/quality (typ. 5–60 minutes). AI can make mistakes.<br/>
+              • For any queries, contact <a href="mailto:info@nextpointtennis.com">info@nextpointtennis.com</a>.
+            </div>
+          </div>
+        </div>
+
+        <div class="btnrow">
+          <button type="button" id="checkBtn" class="btn-secondary">Video Readiness Check</button>
+          <button type="button" id="analyzeBtn" disabled>Start Analysis</button>
+          <button type="button" id="cancelBtn" class="btn-danger" style="display:none;">Cancel Analysis</button>
+        </div>
       </form>
 
       <div class="spinner" id="spinner" aria-hidden="true"></div>
@@ -66,14 +132,24 @@
 
       <div id="status"></div>
       <div id="subtasks"></div>
+
+      <div class="smallprint">
+        <strong>Tips for best results:</strong> fixed tripod, full court view, 1080p+, and steady lighting.
+      </div>
     </div>
   </div>
 
   <script>
     const form = document.getElementById("uploadForm");
+    const checkBtn = document.getElementById("checkBtn");
+    const analyzeBtn = document.getElementById("analyzeBtn");
+    const cancelBtn = document.getElementById("cancelBtn");
+    const terms = document.getElementById("terms");
+    const emailEl = document.getElementById("email");
+    const custEl = document.getElementById("customer_name");
+
     const fileInput = document.getElementById("fileInput");
     const fileInfo = document.getElementById("fileinfo");
-    const uploadBtn = document.getElementById("uploadBtn");
 
     const statusText = document.getElementById("status");
     const subtasksEl = document.getElementById("subtasks");
@@ -83,22 +159,15 @@
     const MAX_MB = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
     const MAX_BYTES = MAX_MB * 1024 * 1024;
 
+    let lastChecked = null;   // {video_url, share_url, check}
+    let currentTaskId = null;
+
     function updateProgressBar(p){ progressFill.style.width = p + "%"; }
     function setBarState(state){ progressFill.classList.remove("active","ok","fail"); progressFill.classList.add(state); }
     function updateStatus(m){ statusText.innerText += (statusText.innerText ? "\n" : "") + m; }
-    function resetStatus(){ statusText.innerText = ""; subtasksEl.innerHTML = ""; }
+    function resetStatus(){ statusText.innerText = ""; subtasksEl.innerHTML = ""; setBarState("active"); updateProgressBar(0); }
+    function msToClock(ms){ const s=Math.round(ms/1000); const mm=String(Math.floor(s/60)).padStart(2,"0"); const ss=String(s%60).padStart(2,"0"); return `${mm}:${ss}`; }
 
-    function niceStatus(s) {
-      if (!s) return "Unknown";
-      const map = { pending: "Queued", processing: "Processing", completed: "Completed", failed: "Failed" };
-      return map[s.toLowerCase()] || s.replace(/_/g, " ");
-    }
-    function msToClock(ms){
-      const sec = Math.round(ms/1000);
-      const mm = String(Math.floor(sec/60)).padStart(2,"0");
-      const ss = String(sec%60).padStart(2,"0");
-      return `${mm}:${ss}`;
-    }
     function renderSubtasks(obj){
       if (!obj || typeof obj !== "object") { subtasksEl.innerHTML = ""; return; }
       const rows = Object.entries(obj).map(([k,v]) => {
@@ -108,59 +177,140 @@
       }).join("");
       subtasksEl.innerHTML = rows ? (`<div class="muted">Subtasks</div>${rows}`) : "";
     }
+    function niceStatus(s){ if(!s)return"Unknown"; const map={pending:"Queued",processing:"Processing",completed:"Completed",failed:"Failed",cancelled:"Cancelled"}; return map[s.toLowerCase()]||s; }
     async function readJson(res){ const txt = await res.text(); try { return JSON.parse(txt); } catch { return { _raw: txt }; } }
+
+    function isCheckPass(check){
+      // Be liberal: look for pass-y signals
+      const d = check?.data || check || {};
+      if (typeof d.is_valid === "boolean") return d.is_valid;
+      if (typeof d.valid === "boolean") return d.valid;
+      if (Array.isArray(d.issues)) return d.issues.length === 0;
+      const st = (d.status || "").toString().toLowerCase();
+      return st === "ok" || st === "passed" || st === "valid";
+    }
 
     fileInput.addEventListener("change", () => {
       const f = fileInput.files[0];
       fileInfo.textContent = f ? `Selected: ${f.name} — ${Math.round(f.size/1024/1024)} MB` : "";
+      lastChecked = null; analyzeBtn.disabled = true;
     });
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      resetStatus();
+    function canAnalyze(){
+      return !!lastChecked && terms.checked && !!emailEl.value && !!custEl.value;
+    }
+    terms.addEventListener("change", ()=> analyzeBtn.disabled = !canAnalyze());
+    emailEl.addEventListener("input", ()=> analyzeBtn.disabled = !canAnalyze());
+    custEl.addEventListener("input", ()=> analyzeBtn.disabled = !canAnalyze());
 
+    checkBtn.addEventListener("click", async () => {
+      resetStatus();
       const f = fileInput.files[0];
-      if (!f) { updateStatus("❌ Please select a video file."); return; }
+      if (!f) { updateStatus("❌ Please choose a video file first."); return; }
       if (f.size > MAX_BYTES) { updateStatus(`❌ File is ${Math.round(f.size/1024/1024)}MB > ${MAX_MB}MB (server limit). Try a smaller clip.`); return; }
 
-      spinner.style.display = "block";
-      uploadBtn.disabled = true; uploadBtn.setAttribute("aria-busy","true");
-      setBarState("active"); updateProgressBar(5);
-      statusText.innerText = "🚀 Starting upload...";
+      try {
+        spinner.style.display = "block";
+        updateStatus("🔍 Running video readiness check...");
+        const fd = new FormData();
+        fd.append("video", f);
+        const res = await fetch("/upload/api/check", { method: "POST", body: fd });
+        const data = await readJson(res);
+        spinner.style.display = "none";
+
+        if (!res.ok || data?.error) {
+          updateStatus(`❌ Check failed: ${data?.error || (data?._raw || (res.status + ' ' + res.statusText))}`);
+          lastChecked = null; analyzeBtn.disabled = true;
+          return;
+        }
+
+        lastChecked = { video_url: data.video_url, share_url: data.share_url, check: data.check };
+        const pass = isCheckPass(data.check);
+        if (pass) {
+          updateStatus("✅ Video is ready for analysis.");
+          analyzeBtn.disabled = !canAnalyze();
+        } else {
+          analyzeBtn.disabled = true;
+          updateStatus("⚠️ The video may not be compatible. Please review SportAI feedback:\n" + JSON.stringify(data.check, null, 2));
+        }
+      } catch (err) {
+        spinner.style.display = "none";
+        updateStatus(`❌ Check request failed: ${String(err)}`);
+        lastChecked = null; analyzeBtn.disabled = true;
+      }
+    });
+
+    analyzeBtn.addEventListener("click", async () => {
+      resetStatus();
+      if (!lastChecked) { updateStatus("❌ Please run the Video Readiness Check first."); return; }
+      if (!terms.checked) { updateStatus("❌ Please accept the Terms before starting."); return; }
+      if (!emailEl.value || !custEl.value) { updateStatus("❌ Customer name and Email are required."); return; }
+
+      // Build metadata
+      const meta = {
+        customer_name: document.getElementById("customer_name").value.trim(),
+        match_date: document.getElementById("match_date").value,
+        start_time: document.getElementById("start_time").value,
+        location: document.getElementById("location").value.trim(),
+        player_a_name: document.getElementById("player_a_name").value.trim() || "Player A",
+        player_b_name: document.getElementById("player_b_name").value.trim() || "Player B",
+        player_a_utr: document.getElementById("player_a_utr").value.trim(),
+        player_b_utr: document.getElementById("player_b_utr").value.trim(),
+        terms_accepted: true,
+      };
 
       try {
-        const fd = new FormData(form);
-        const res = await fetch("/upload", { method: "POST", body: fd });
+        spinner.style.display = "block";
+        setBarState("active"); updateProgressBar(10);
+        updateStatus("🚀 Registering with SportAI...");
+
+        const payload = {
+          video_url: lastChecked.video_url,
+          share_url: lastChecked.share_url,
+          email: document.getElementById("email").value.trim().toLowerCase(),
+          meta
+        };
+
+        const res = await fetch("/upload/api/upload", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(payload)
+        });
         const data = await readJson(res);
 
         if (!res.ok || data?.error) {
-          const msg = data?.error || `HTTP ${res.status} ${res.statusText}: ${(data?._raw||"").slice(0,400)}`;
+          spinner.style.display = "none";
           setBarState("fail"); updateProgressBar(0);
-          updateStatus(`❌ Upload Error: ${msg}`);
-          spinner.style.display = "none";
-          uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
+          updateStatus(`❌ Could not start analysis: ${data?.error || (data?._raw || (res.status + ' ' + res.statusText))}`);
           return;
         }
 
-        const taskId = data?.task_id || data?.sportai_task_id;
-        if (!taskId) {
-          setBarState("fail"); updateStatus("❌ No task id returned.");
-          spinner.style.display = "none";
-          uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
-          return;
-        }
-
+        currentTaskId = data.task_id;
         updateProgressBar(40);
-        updateStatus("✅ Uploaded to our Dropbox and registered with SportAI...");
-        if (data.share_url) updateStatus(`📎 Source: ${data.share_url}`);
-        updateStatus("📡 Waiting for analysis to complete...");
-
-        poll(taskId);
+        updateStatus("✅ Registered with SportAI. Waiting for analysis to complete...");
+        cancelBtn.style.display = "inline-block";
+        poll(currentTaskId);
       } catch (err) {
-        setBarState("fail");
-        updateStatus(`❌ Final step failed: ${String(err)}`);
         spinner.style.display = "none";
-        uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
+        setBarState("fail"); updateStatus(`❌ Start failed: ${String(err)}`);
+      }
+    });
+
+    cancelBtn.addEventListener("click", async () => {
+      if (!currentTaskId) return;
+      try {
+        cancelBtn.disabled = true;
+        const res = await fetch(`/upload/api/cancel?task_id=${encodeURIComponent(currentTaskId)}`, {method:"POST"});
+        const data = await readJson(res);
+        if (!res.ok || data?.error) {
+          cancelBtn.disabled = false;
+          updateStatus(`❌ Cancel failed: ${data?.error || (data?._raw || (res.status + ' ' + res.statusText))}`);
+          return;
+        }
+        updateStatus("🛑 Cancel requested. The task may take a moment to halt.");
+      } catch (err) {
+        cancelBtn.disabled = false;
+        updateStatus(`❌ Cancel request failed: ${String(err)}`);
       }
     });
 
@@ -172,53 +322,49 @@
         try {
           const res = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
           const payload = await readJson(res);
-
           const data = payload?.data || payload || {};
           const statusRaw = data.status || data.task_status || "unknown";
-          const prog01     = (typeof data.progress === "number") ? data.progress :
-                             (typeof data.task_progress === "number") ? data.task_progress : 0;
-          const sub01      = (typeof data.total_subtask_progress === "number") ? data.total_subtask_progress : null;
-          const subtasks   = data.subtask_progress || null;
+          const prog01 = (typeof data.progress === "number") ? data.progress :
+                         (typeof data.task_progress === "number") ? data.task_progress : 0;
+          const sub01 = (typeof data.total_subtask_progress === "number") ? data.total_subtask_progress : null;
+          const subtasks = data.subtask_progress || null;
 
           if (subtasks) renderSubtasks(subtasks);
 
-          const pct   = Math.max(0, Math.min(100, Math.round(prog01 * 100)));
-          const subPct = (sub01 === null ? null : Math.max(0, Math.min(100, Math.round(sub01 * 100))));
+          const pct = Math.max(0, Math.min(100, Math.round(prog01 * 100)));
           updateProgressBar(pct);
-
           const nice = niceStatus(statusRaw);
           const elapsed = msToClock(Date.now() - t0);
 
           if (String(statusRaw).toLowerCase() === "completed") {
             setBarState("ok"); updateProgressBar(100);
             updateStatus(`✅ Analysis complete! (${elapsed})`);
-            clearInterval(timer); spinner.style.display = "none";
-            uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
+            clearInterval(timer); spinner.style.display = "none"; cancelBtn.style.display="none";
+            currentTaskId = null;
             return;
           }
-          if (String(statusRaw).toLowerCase() === "failed") {
+          if (["failed","cancelled"].includes(String(statusRaw).toLowerCase())) {
             setBarState("fail");
-            updateStatus(`❌ Analysis failed. (${elapsed}) Please try another video.`);
-            clearInterval(timer); spinner.style.display = "none";
-            uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
+            updateStatus(`❌ ${nice}. (${elapsed})`);
+            clearInterval(timer); spinner.style.display = "none"; cancelBtn.style.display="none";
+            currentTaskId = null;
             return;
           }
           if (attempts >= maxAttempts) {
             updateStatus(`⚠️ Timeout after ${elapsed}. Try again later.`);
-            spinner.style.display = "none";
-            uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
-            clearInterval(timer);
+            spinner.style.display = "none"; cancelBtn.style.display="none";
+            clearInterval(timer); currentTaskId = null;
             return;
           }
 
+          const subPct = (sub01 === null ? null : Math.max(0, Math.min(100, Math.round(sub01 * 100))));
           const extra = (subPct === null) ? "" : ` | subtasks ${subPct}%`;
           updateStatus(`🔄 Status: ${nice} (${pct}%)${extra} — ${elapsed}`);
         } catch (err) {
           setBarState("fail");
           updateStatus(`❌ Polling failed: ${String(err)}`);
-          spinner.style.display = "none";
-          uploadBtn.disabled = false; uploadBtn.setAttribute("aria-busy","false");
-          clearInterval(timer);
+          spinner.style.display = "none"; cancelBtn.style.display="none";
+          clearInterval(timer); currentTaskId = null;
         }
       }, delay);
     }
