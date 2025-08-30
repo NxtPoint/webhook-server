@@ -48,6 +48,8 @@ SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").stri
 SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
 SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
 SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
+SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
+SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
 
 # Fallbacks (first is env)
 SPORTAI_BASES = list(dict.fromkeys([
@@ -144,6 +146,90 @@ def _force_direct_dropbox(url: str) -> str:
     except Exception:
         return url
 
+def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
+    """Persist submission context so we can link to task_id in reporting."""
+    if not engine:
+        return  # DB not available; skip silently
+    try:
+        from sqlalchemy import text as sql_text
+        ddl = """
+        CREATE TABLE IF NOT EXISTS submission_context (
+          task_id        TEXT PRIMARY KEY,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email          TEXT,
+          customer_name  TEXT,
+          match_date     DATE,
+          start_time     TEXT,
+          location       TEXT,
+          player_a_name  TEXT,
+          player_b_name  TEXT,
+          player_a_utr   TEXT,
+          player_b_utr   TEXT,
+          video_url      TEXT,
+          share_url      TEXT,
+          raw_meta       JSONB
+        );
+        """
+        ins = """
+        INSERT INTO submission_context (
+          task_id, email, customer_name, match_date, start_time, location,
+          player_a_name, player_b_name, player_a_utr, player_b_utr,
+          video_url, share_url, raw_meta
+        ) VALUES (
+          :task_id, :email, :customer_name, :match_date, :start_time, :location,
+          :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
+          :video_url, :share_url, :raw_meta
+        )
+        ON CONFLICT (task_id) DO UPDATE SET
+          email=EXCLUDED.email,
+          customer_name=EXCLUDED.customer_name,
+          match_date=EXCLUDED.match_date,
+          start_time=EXCLUDED.start_time,
+          location=EXCLUDED.location,
+          player_a_name=EXCLUDED.player_a_name,
+          player_b_name=EXCLUDED.player_b_name,
+          player_a_utr=EXCLUDED.player_a_utr,
+          player_b_utr=EXCLUDED.player_b_utr,
+          video_url=EXCLUDED.video_url,
+          share_url=EXCLUDED.share_url,
+          raw_meta=EXCLUDED.raw_meta;
+        """
+        m = meta or {}
+        with engine.begin() as conn:
+            conn.execute(sql_text(ddl))
+            conn.execute(sql_text(ins), {
+                "task_id": task_id,
+                "email": email,
+                "customer_name": m.get("customer_name"),
+                "match_date": m.get("match_date"),
+                "start_time": m.get("start_time"),
+                "location": m.get("location"),
+                "player_a_name": m.get("player_a_name") or "Player A",
+                "player_b_name": m.get("player_b_name") or "Player B",
+                "player_a_utr": m.get("player_a_utr"),
+                "player_b_utr": m.get("player_b_utr"),
+                "video_url": video_url,
+                "share_url": share_url,
+                "raw_meta": json.dumps(m),
+            })
+    except Exception:
+        # Avoid breaking the flow on analytics writes
+        pass
+
+
+def _extract_meta_from_form(form) -> dict:
+    return {
+        "customer_name": (form.get("customer_name") or "").strip(),
+        "match_date": (form.get("match_date") or "").strip(),
+        "start_time": (form.get("start_time") or "").strip(),
+        "location": (form.get("location") or "").strip(),
+        "player_a_name": (form.get("player_a_name") or "").strip() or "Player A",
+        "player_b_name": (form.get("player_b_name") or "").strip() or "Player B",
+        "player_a_utr": (form.get("player_a_utr") or "").strip(),
+        "player_b_utr": (form.get("player_b_utr") or "").strip(),
+        "terms_accepted": (form.get("terms_accepted") in ("on","1","true","yes","y")),
+    }
+
 # ---------- SportAI ----------
 def _iter_submit_endpoints():
     for base in SPORTAI_BASES:
@@ -222,6 +308,25 @@ def _sportai_status(task_id: str) -> dict:
         "raw": j,
     }
     return out
+
+def _sportai_check(video_url: str) -> dict:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+    url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CHECK_PATH.lstrip('/')}"
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
+    payload = {"video_urls": [video_url], "version": "latest"}
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json() or {}
+
+def _sportai_cancel(task_id: str) -> dict:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+    url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CANCEL_PATH.lstrip('/').format(task_id=task_id)}"
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+    r = requests.post(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.json() or {}
 
 # -------------------------------------------------------
 # Public endpoints
@@ -384,6 +489,43 @@ def api_upload_to_dropbox():
                    "size": meta.get("size"),
                    "name": meta.get("name", clean)}
     })
+def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None = None) -> str:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+
+    headers = {
+        "Authorization": f"Bearer {SPORTAI_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "video_url": video_url,
+        "only_in_rally_data": False,
+        "version": "stable",
+    }
+    if email:
+        payload["email"] = email
+    if meta:
+        # Carry user metadata through; safe if backend ignores
+        payload["metadata"] = meta
+
+    last_err = None
+    for submit_url in _iter_submit_endpoints():
+        try:
+            r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
+            if r.status_code >= 500:
+                last_err = f"{submit_url} -> {r.status_code}: {r.text}"
+                continue
+            r.raise_for_status()
+            j = r.json() or {}
+            task_id = j.get("task_id") or (j.get("data") or {}).get("task_id") or j.get("id")
+            if not task_id:
+                raise RuntimeError(f"No task_id in response from {submit_url}: {j}")
+            return str(task_id)
+        except Exception as e:
+            last_err = str(e)
+
+    raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
 # Legacy /upload alias (keeps old front-end working)
 @app.route("/upload", methods=["POST", "OPTIONS"])
@@ -421,6 +563,62 @@ def api_task_status():
         return jsonify({"ok": False, "error": "task_id required"}), 400
     try:
         return jsonify({"ok": True, **_sportai_status(tid)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+@app.post("/upload/api/check")
+def api_check_video():
+    """
+    Accepts either JSON {video_url} or multipart file; for file we upload to Dropbox,
+    then call SportAI videos/check. Returns {ok, check, share_url?, video_url}.
+    """
+    try:
+        # JSON branch
+        if request.is_json:
+            j = request.get_json(silent=True) or {}
+            video_url = (j.get("video_url") or j.get("share_url") or "").strip()
+            if not video_url:
+                return jsonify({"ok": False, "error": "video_url required"}), 400
+            check = _sportai_check(video_url)
+            return jsonify({"ok": True, "check": check, "video_url": video_url})
+
+        # multipart branch
+        f = request.files.get("file") or request.files.get("video")
+        if not f or not f.filename:
+            return jsonify({"ok": False, "error": "No file provided."}), 400
+
+        tok, err = _dbx_get_token()
+        if not tok:
+            return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+
+        clean = secure_filename(f.filename)
+        dest_path = f"{DBX_FOLDER.rstrip('/')}/{int(time.time())}_{clean}"
+        headers = {
+            "Authorization": f"Bearer {tok}",
+            "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
+            "Content-Type": "application/octet-stream",
+        }
+        up = requests.post("https://content.dropboxapi.com/2/files/upload", headers=headers, data=f.read(), timeout=600)
+        if not up.ok:
+            return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
+        meta = up.json()
+        share_url = _dbx_create_or_fetch_shared_link(tok, meta.get("path_lower") or dest_path)
+        video_url = _force_direct_dropbox(share_url)
+
+        check = _sportai_check(video_url)
+        return jsonify({"ok": True, "check": check, "share_url": share_url, "video_url": video_url})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/upload/api/cancel")
+def api_cancel_task():
+    tid = request.args.get("task_id") or (request.get_json(silent=True) or {}).get("task_id") or request.form.get("task_id")
+    if not tid:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        resp = _sportai_cancel(tid)
+        return jsonify({"ok": True, "response": resp})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
