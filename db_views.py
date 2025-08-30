@@ -392,16 +392,19 @@ CREATE_STMTS = {
       LEFT JOIN pt_first po_first
         ON po_first.session_id = n.session_id AND po_first.point_number = n.point_number
     ),
-    game_seq AS (
+    /* compute game_number first (window-safe) */
+    game_numbered AS (
       SELECT
         ph.*,
-        1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number ROWS UNBOUNDED PRECEDING) AS game_number,
-        ROW_NUMBER() OVER (
-          PARTITION BY ph.session_id,
-                       (1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number ROWS UNBOUNDED PRECEDING))
-          ORDER BY ph.point_number
-        ) AS point_in_game
+        1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number ROWS UNBOUNDED PRECEDING) AS game_number
       FROM point_headers ph
+    ),
+    /* then compute point_in_game using the precomputed game_number (no nested windows) */
+    game_seq AS (
+      SELECT
+        gn.*,
+        ROW_NUMBER() OVER (PARTITION BY gn.session_id, gn.game_number ORDER BY gn.point_number) AS point_in_game
+      FROM game_numbered gn
     ),
     /* cumulative game score (server-first) */
     game_score AS (
@@ -489,7 +492,7 @@ CREATE_STMTS = {
       /* server/receiver context for the point */
       st.game_number,
       st.point_in_game,
-      CASE WHEN MOD(st.point_in_game,2)=1 THEN 'deuce' ELSE 'ad' END AS serving_side,
+      CASE WHEN (st.point_in_game % 2) = 1 THEN 'deuce' ELSE 'ad' END AS serving_side,
       st.server_id,   st.server_name,   st.server_uid,
       st.receiver_id, st.receiver_name, st.receiver_uid,
 
