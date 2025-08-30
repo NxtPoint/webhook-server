@@ -34,6 +34,44 @@ VIEW_NAMES = [
     "vw_point_log",             # enriched rows Power BI reads (kept name)
 ]
 
+# Legacy objects we want to drop if they still exist, to avoid 500s in init-views
+LEGACY_OBJECTS = [
+    "vw_point_shot_log_gold",
+    "vw_shot_order_gold",
+    "vw_point_summary",
+    "point_log_tbl",
+    "point_summary_tbl",
+]
+
+def _drop_any(conn, name: str):
+    conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
+    conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
+    conn.execute(text(f"DROP TABLE IF EXISTS {name} CASCADE;"))
+
+def _apply_views(engine):
+    """Drops & recreates all views listed in VIEW_NAMES."""
+    global VIEW_SQL_STMTS
+    VIEW_SQL_STMTS = [CREATE_STMTS[name] for name in VIEW_NAMES]
+
+    with engine.begin() as conn:
+        _ensure_raw_ingest(conn)
+        _preflight_or_raise(conn)
+
+        # 1) Proactively nuke legacy blockers (gold-era objects)
+        for obj in LEGACY_OBJECTS:
+            _drop_any(conn, obj)
+
+        # 2) DROP in reverse dependency order then CREATE in forward order
+        for name in reversed(VIEW_NAMES):
+            _drop_any(conn, name)
+        for name in VIEW_NAMES:
+            conn.execute(text(CREATE_STMTS[name]))
+
+# Back-compat exports
+init_views = _apply_views
+run_views  = _apply_views
+__all__ = ["init_views", "run_views", "VIEW_SQL_STMTS", "VIEW_NAMES", "CREATE_STMTS"]
+
 CREATE_STMTS = {
     # ---------------- SILVER (PURE passthrough + labels) ----------------
     "vw_swing": """
