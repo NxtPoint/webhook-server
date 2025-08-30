@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-ui-version="v3">
 <head>
   <meta charset="UTF-8" />
   <title>Upload Match Video</title>
@@ -11,325 +11,328 @@
       background-size: cover;
       color: #ffffff;
     }
-    .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
-    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 640px; text-align: center; box-shadow: 0 0 20px #00ff80; }
-    h2 { font-size: 1.6rem; margin-bottom: 12px; }
-    .pill { display:inline-block; padding:6px 10px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin: 6px 0 14px; }
-    .warn { color:#fca5a5; border-color:#fca5a5 }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:10px }
-    .grid .col-2 { grid-column: span 2 }
-    label { display:block; font-size:.9rem; text-align:left; margin: 2px 0 4px; opacity:.9 }
-    input[type="text"], input[type="email"], input[type="file"], input[type="date"], input[type="time"] {
-      width: 100%; padding: 10px; border-radius: 6px; border: none; font-size: .95rem;
-    }
-    .btn { width: 100%; background-color: #00ff80; color: #000; padding: 12px; border: none; border-radius: 6px; font-size: 1rem; cursor: pointer; transition: background .25s ease; }
-    .btn:hover { background-color: #00cc66; }
-    .btn.secondary { background: transparent; border:1px solid #00ff80; color:#00ff80 }
-    .btn.danger { background: transparent; border:1px solid #f87171; color:#f87171 }
-    .row { margin-top: 10px }
+    .overlay { background: rgba(0, 0, 0, 0.6); min-height: 100vh; display: flex; justify-content: center; align-items: start; padding: 24px; }
+    .container { background: rgba(0, 128, 0, 0.2); border: 2px solid #00ff80; border-radius: 15px; padding: 20px; width: 100%; max-width: 720px; text-align: left; box-shadow: 0 0 20px #00ff80; }
+    h2 { font-size: 1.6rem; margin: 0 0 12px 0; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .row-1 { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    label { font-size: .9rem; opacity: .95; }
+    input, select { width: 100%; padding: 10px; border-radius: 8px; border: none; font-size: 1rem; margin-top: 6px; }
+    input[type="checkbox"] { width: auto; margin-right: 8px; }
+    .btn { background-color: #00ff80; color: #000; padding: 12px 16px; border: none; border-radius: 10px; font-size: 1rem; cursor: pointer; transition: transform .05s ease, opacity .2s ease; }
+    .btn:hover { transform: translateY(-1px); }
+    .btn.secondary { background: transparent; border: 1px solid #00ff80; color: #fff; }
+    .btn[disabled] { opacity: .5; cursor: not-allowed; }
+    .stack { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
     .progress-bar { background-color: #ffffff40; border-radius: 8px; margin-top: 10px; height: 12px; overflow: hidden; }
     .progress-bar-fill { height: 100%; width: 0%; background-color: #00ff80; transition: width 0.3s ease-in-out; }
-    .spinner { display: none; margin: 14px auto; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; }
+    .spinner { display: none; margin: 20px 0; border: 6px solid #ccc; border-top: 6px solid #00ff80; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    #status, #checkBox {
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 10px; padding: 12px; margin-top: 12px; font-size: 0.95rem;
-      text-align: left; border: 1px solid #00ff80; white-space: pre-wrap;
-    }
-    #subtasks { margin-top: 8px; font-size: 0.9rem; opacity: .95; text-align:left }
+    #status { background: rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 12px; margin-top: 10px; font-size: 0.95rem; white-space: pre-wrap; text-align: left; border: 1px solid #00ff80; min-height: 60px; }
+    #subtasks { margin-top: 8px; font-size: 0.9rem; opacity: .95; }
     #subtasks code { display:block; background: rgba(0,0,0,.25); padding:8px; border-radius:8px; border:1px solid #00ff80; }
-    .muted { opacity:.8; font-size:.85rem }
-    .terms { margin-top: 14px; text-align:left; font-size:.85rem; opacity:.95 }
-    a { color:#8cf5c0; text-decoration: none } a:hover{ text-decoration: underline }
-    .hidden { display:none }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #00ff80; background: rgba(0,0,0,.2); font-size:.85rem; margin-top:8px; }
+    .warn { color:#fca5a5; }
+    .fineprint { opacity: .85; font-size: .85rem; margin-top: 10px; line-height: 1.4; }
+    .divider { height: 1px; background: #00ff80; opacity: .35; margin: 14px 0; }
   </style>
 </head>
 <body>
   <div class="overlay">
     <div class="container" data-max-mb="{{ max_upload_mb }}">
-      <h2>🎾 Upload Match Video</h2>
-      {% if not dropbox_ready %}<div class="pill warn">Dropbox server credentials are not configured.</div>{% endif %}
+      <h2>🎾 NextPoint — Upload Match Video</h2>
+
+      {% if not dropbox_ready %}<div class="pill warn">Dropbox credentials are not configured.</div>{% endif %}
       {% if not sportai_ready %}<div class="pill warn">SPORT_AI_TOKEN is not configured.</div>{% endif %}
       <div class="pill">Target folder: <strong>{{ target_folder }}</strong></div>
+      <div class="pill">UI: v3</div>
 
-      <!-- Step 0: metadata + file -->
-      <form id="metaForm" class="grid" enctype="multipart/form-data">
-        <div class="col-2">
-          <label>Customer name (required)</label>
-          <input type="text" name="customer_name" required placeholder="Full name" />
-        </div>
+      <!-- META -->
+      <div class="divider"></div>
+      <div class="row-1">
+        <label>Customer name (account contact) — required
+          <input type="text" id="customer_name" placeholder="e.g., Jane Smith" required />
+        </label>
+      </div>
+      <div class="row">
+        <label>Email (becomes your Customer ID) — required
+          <input type="email" id="email" placeholder="you@example.com" required />
+        </label>
+        <label>Match date (optional)
+          <input type="date" id="match_date" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Start time (optional)
+          <input type="time" id="start_time" />
+        </label>
+        <label>Location / Court (optional)
+          <input type="text" id="location" placeholder="e.g., Club ABC Court 2" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Player A (near camera, serves first) — default “Player A”
+          <input type="text" id="player_a_name" placeholder="First Last (optional)" />
+        </label>
+        <label>Player B (receiver) — default “Player B”
+          <input type="text" id="player_b_name" placeholder="First Last (optional)" />
+        </label>
+      </div>
+      <div class="row">
+        <label>Player A UTR (optional)
+          <input type="text" id="player_a_utr" placeholder="e.g., 7.41" />
+        </label>
+        <label>Player B UTR (optional)
+          <input type="text" id="player_b_utr" placeholder="e.g., 8.02" />
+        </label>
+      </div>
 
-        <div class="col-2">
-          <label>Email (required — used as your customer ID)</label>
-          <input type="email" name="email" required placeholder="you@example.com" />
-        </div>
+      <!-- VIDEO -->
+      <div class="divider"></div>
+      <div class="row-1">
+        <label>Match video file (.mp4 or .mov) — required
+          <input type="file" id="video" accept=".mp4,.mov" />
+        </label>
+      </div>
 
-        <div class="col-2">
-          <label>Match video (MP4/MOV)</label>
-          <input type="file" name="video" accept=".mp4,.mov" required />
-        </div>
-
-        <div><label>Match date</label><input type="date" name="match_date"></div>
-        <div><label>Start time</label><input type="time" name="start_time" step="1"></div>
-        <div class="col-2"><label>Location</label><input type="text" name="location" placeholder="Club / Court"></div>
-
-        <div><label>Server (Player A) name</label><input type="text" name="player_a_name" placeholder="Player A"></div>
-        <div><label>Receiver (Player B) name</label><input type="text" name="player_b_name" placeholder="Player B"></div>
-        <div><label>Player A UTR</label><input type="text" name="player_a_utr" placeholder="e.g., 10.5"></div>
-        <div><label>Player B UTR</label><input type="text" name="player_b_utr" placeholder="e.g., 9.8"></div>
-
-        <div class="col-2 terms">
-          <label>
-            <input type="checkbox" id="terms" name="terms_accepted" required>
-            I accept that processing can take time; AI can be imperfect; and that
-            the video must meet minimum quality requirements. For questions, contact
-            <a href="mailto:info@nextpointtennis.com">info@nextpointtennis.com</a>.
-          </label>
-        </div>
-
-        <div class="col-2 row">
-          <button id="checkBtn" type="button" class="btn">✅ Check Video Readiness</button>
-        </div>
-      </form>
-
-      <!-- Results of readiness check -->
-      <div id="checkBox" class="hidden"></div>
-
-      <!-- Step 1: submit to SportAI once check passes -->
-      <div class="grid">
-        <div class="col-2 row">
-          <button id="uploadBtn" class="btn hidden">📤 Submit to SportAI & Start Analysis</button>
-        </div>
-        <div class="col-2 row">
-          <button id="cancelBtn" class="btn danger hidden" type="button">⛔ Cancel Task</button>
+      <!-- TERMS -->
+      <div class="row-1">
+        <label><input type="checkbox" id="terms" /> I accept that processing takes time, AI can make mistakes, and I agree to the Terms & Conditions.</label>
+        <div class="fineprint">
+          For any queries contact <a href="mailto:info@nextpointtennis.com">info@nextpointtennis.com</a>.
         </div>
       </div>
 
-      <!-- Progress + status -->
+      <!-- ACTIONS -->
+      <div class="divider"></div>
+      <div class="stack">
+        <button class="btn secondary" id="btnCheck">Check video</button>
+        <button class="btn" id="btnUpload" disabled>Upload to SportAI</button>
+        <button class="btn secondary" id="btnCancel" disabled>Cancel task</button>
+      </div>
+
       <div class="spinner" id="spinner"></div>
       <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
       <div id="status"></div>
       <div id="subtasks"></div>
 
-      <div class="muted terms">
-        By submitting, you authorize NextPoint to process the video with SportAI. You’ll receive an email when analysis completes.
+      <div class="divider"></div>
+      <div class="fineprint">
+        Tip: Please run <b>Check video</b> first to avoid charges on incompatible videos.
       </div>
     </div>
   </div>
 
   <script>
-    // ---- Elements
-    const metaForm     = document.getElementById("metaForm");
-    const checkBtn     = document.getElementById("checkBtn");
-    const uploadBtn    = document.getElementById("uploadBtn");
-    const cancelBtn    = document.getElementById("cancelBtn");
-    const checkBox     = document.getElementById("checkBox");
-    const statusBox    = document.getElementById("status");
-    const subtasksBox  = document.getElementById("subtasks");
-    const spinner      = document.getElementById("spinner");
-    const progressFill = document.getElementById("progressFill");
-
-    const MAX_MB    = parseInt(document.querySelector(".container").dataset.maxMb || "200", 10);
+    const q = sel => document.querySelector(sel);
+    const statusBox = q('#status');
+    const subtasksBox = q('#subtasks');
+    const spinner = q('#spinner');
+    const fill = q('#progressFill');
+    const MAX_MB = parseInt(q('.container').dataset.maxMb || '150', 10);
     const MAX_BYTES = MAX_MB * 1024 * 1024;
 
-    // ---- State
-    let lastTaskId    = null;
-    let checkedVideo  = null;  // direct URL from readiness check
-    let sharedLink    = null;  // Dropbox share URL (for reference)
-    let pollTimer     = null;
+    // State
+    let lastShareUrl = null;
+    let lastVideoUrl = null;
+    let currentTaskId = null;
+    let pollTimer = null;
 
-    // ---- Helpers (UI)
-    const show   = (el) => el.classList.remove("hidden");
-    const hide   = (el) => el.classList.add("hidden");
-    const pct0   = (x) => (typeof x === "number" ? Math.max(0, Math.min(100, Math.round(x * 100))) : 0);
-    const setBar = (p) => { progressFill.style.width = `${p}%`; };
-    const addLine = (t) => { statusBox.textContent += (statusBox.textContent ? "\n" : "") + t; };
-    const clearStatus = () => { statusBox.textContent = ""; };
-
-    const renderSubtasks = (obj) => {
-      if (!obj || typeof obj !== "object") { subtasksBox.innerHTML = ""; return; }
-      const pretty = JSON.stringify(obj, null, 2);
-      subtasksBox.innerHTML = `<strong>Subtasks</strong><code>${pretty}</code>`;
+    // Helpers
+    const ui = {
+      clear() { statusBox.textContent = ''; subtasksBox.innerHTML = ''; ui.progress(0); },
+      say(m) { statusBox.textContent += (statusBox.textContent ? '\n' : '') + m; },
+      progress(pct) { fill.style.width = Math.max(0, Math.min(100, pct)) + '%'; },
+      spin(on) { spinner.style.display = on ? 'block' : 'none'; }
     };
 
-    // ---- Readiness check (two ways):
-    //  We upload the chosen file to Dropbox (server-side), then call SportAI /videos/check.
-    checkBtn.addEventListener("click", async () => {
-      clearStatus();
-      setBar(0);
-      hide(uploadBtn);
-      hide(cancelBtn);
-      hide(checkBox);
-      spinner.style.display = "block";
+    const fields = {
+      customer_name: () => q('#customer_name').value.trim(),
+      email:        () => q('#email').value.trim().toLowerCase(),
+      match_date:   () => q('#match_date').value.trim(),
+      start_time:   () => q('#start_time').value.trim(),
+      location:     () => q('#location').value.trim(),
+      player_a_name:() => q('#player_a_name').value.trim(),
+      player_b_name:() => q('#player_b_name').value.trim(),
+      player_a_utr: () => q('#player_a_utr').value.trim(),
+      player_b_utr: () => q('#player_b_utr').value.trim(),
+      terms_ok:     () => q('#terms').checked,
+    };
 
-      try {
-        const fd = new FormData(metaForm);
-        const file = metaForm.querySelector('input[name="video"]').files[0];
-        if (!file) { spinner.style.display="none"; addLine("❌ Please choose a video file."); return; }
-        if (file.size > MAX_BYTES) {
-          spinner.style.display="none";
-          addLine(`❌ File is ${Math.round(file.size/1024/1024)}MB > ${MAX_MB}MB (server limit).`);
-          return;
-        }
-
-        // Call our /upload/api/check endpoint (multipart). It uploads to Dropbox + calls SportAI /videos/check.
-        const res = await fetch("/upload/api/check", { method: "POST", body: fd });
-        const txt = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
-
-        if (!res.ok || !data?.ok) {
-          spinner.style.display = "none";
-          const msg = data?.error || (data?._raw || `HTTP ${res.status} ${res.statusText}`);
-          addLine(`❌ Readiness check failed: ${msg}`);
-          return;
-        }
-
-        // Save returned URLs for the submit step
-        checkedVideo = data.video_url || null;
-        sharedLink   = data.share_url || null;
-
-        // Show a light summary from the check payload (structure varies across tenants)
-        const summary = (() => {
-          const c = data.check || {};
-          // try a few common things if present
-          const top = (c.data && (c.data.details || c.data.summary)) || c.summary || c.details || c;
-          return typeof top === "object" ? JSON.stringify(top, null, 2) : String(top);
-        })();
-
-        checkBox.innerHTML = `
-          <div><strong>✅ Video readiness check passed.</strong></div>
-          ${sharedLink ? `<div class="muted">Source: <a href="${sharedLink}" target="_blank" rel="noreferrer">${sharedLink}</a></div>` : ``}
-          <div style="margin-top:8px"><strong>Check result:</strong></div>
-          <pre style="white-space:pre-wrap">${summary}</pre>
-        `;
-        show(checkBox);
-        show(uploadBtn);
-        spinner.style.display = "none";
-        setBar(10);
-      } catch (e) {
-        spinner.style.display = "none";
-        addLine(`❌ Readiness check error: ${String(e)}`);
+    function validateRequired() {
+      if (!fields.customer_name()) { ui.say('❌ Customer name is required.'); return false; }
+      if (!fields.email()) { ui.say('❌ Email is required.'); return false; }
+      if (!fields.terms_ok()) { ui.say('❌ You must accept the Terms & Conditions.'); return false; }
+      const f = q('#video').files[0];
+      if (!f) { ui.say('❌ Please choose a video file (.mp4 or .mov).'); return false; }
+      if (f.size > MAX_BYTES) {
+        ui.say(`❌ File is ${Math.round(f.size/1024/1024)}MB > ${MAX_MB}MB (server limit). Try a smaller clip.`);
+        return false;
       }
-    });
-
-    // ---- Submit to SportAI & start polling
-    uploadBtn.addEventListener("click", async () => {
-      if (!checkedVideo) { addLine("❌ Please run the readiness check first."); return; }
-
-      clearStatus();
-      spinner.style.display = "block";
-      setBar(20);
-      addLine("📤 Submitting to SportAI…");
-
-      try {
-        // Build metadata (the backend may forward into SportAI metadata and/or store for reporting)
-        const meta = {
-          customer_name: metaForm.customer_name.value.trim(),
-          match_date: metaForm.match_date.value,
-          start_time: metaForm.start_time.value,
-          location: metaForm.location.value.trim(),
-          player_a_name: metaForm.player_a_name.value.trim(),
-          player_b_name: metaForm.player_b_name.value.trim(),
-          player_a_utr: metaForm.player_a_utr.value.trim(),
-          player_b_utr: metaForm.player_b_utr.value.trim(),
-          terms_accepted: metaForm.terms_accepted.checked,
-        };
-        const payload = {
-          video_url: checkedVideo,
-          email: metaForm.email.value.trim().toLowerCase(),
-          metadata: meta,   // harmless if server ignores; useful if it forwards/stores
-        };
-
-        const res = await fetch("/upload/api/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        const txt = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
-
-        if (!res.ok || data?.error || !data?.task_id) {
-          spinner.style.display = "none";
-          const msg = data?.error || (data?._raw || `HTTP ${res.status} ${res.statusText}`);
-          addLine(`❌ Submit failed: ${msg}`);
-          return;
-        }
-
-        lastTaskId = data.task_id;
-        addLine("✅ Submitted. Polling for status…");
-        show(cancelBtn);
-        setBar(30);
-        poll(lastTaskId);
-      } catch (e) {
-        spinner.style.display = "none";
-        addLine(`❌ Submit error: ${String(e)}`);
-      }
-    });
-
-    // ---- Cancel current task
-    cancelBtn.addEventListener("click", async () => {
-      if (!lastTaskId) return;
-      try {
-        cancelBtn.disabled = true;
-        const res = await fetch(`/upload/api/cancel?task_id=${encodeURIComponent(lastTaskId)}`, { method: "POST" });
-        const txt = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
-        if (!res.ok || data?.error) {
-          addLine(`⚠️ Cancel failed: ${data?.error || data?._raw || res.status}`);
-        } else {
-          addLine("⛔ Task cancelled.");
-          if (pollTimer) clearInterval(pollTimer);
-          setBar(0);
-        }
-      } finally {
-        cancelBtn.disabled = false;
-      }
-    });
-
-    // ---- Poll helper
-    function poll(taskId) {
-      if (pollTimer) clearInterval(pollTimer);
-      let attempts = 0, maxAttempts = 180, delay = 5000;
-      pollTimer = setInterval(async () => {
-        attempts++;
-        try {
-          const res  = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
-          const txt  = await res.text(); let data; try { data = JSON.parse(txt); } catch { data = { _raw: txt }; }
-
-          const d    = data?.data || {};
-          const stat = d.task_status || data?.status || "unknown";
-          const p    = pct0(d.task_progress);
-          const subt = d.subtask_progress;
-          const totS = typeof d.total_subtask_progress === "number" ? pct0(d.total_subtask_progress) : null;
-
-          setBar(p);
-          if (subt) renderSubtasks(subt);
-
-          if (stat === "completed") {
-            setBar(100);
-            addLine("✅ Analysis complete! JSON downloaded and ingested.");
-            clearInterval(pollTimer);
-            spinner.style.display = "none";
-            hide(cancelBtn);
-          } else if (stat === "failed" || stat === "cancelled") {
-            addLine(`❌ ${stat.charAt(0).toUpperCase()+stat.slice(1)}.`);
-            clearInterval(pollTimer);
-            spinner.style.display = "none";
-            hide(cancelBtn);
-          } else if (attempts >= maxAttempts) {
-            addLine("⚠️ Timeout. Try again later.");
-            clearInterval(pollTimer);
-            spinner.style.display = "none";
-            hide(cancelBtn);
-          } else {
-            const extra = totS !== null ? ` | subtasks ${totS}%` : "";
-            addLine(`🔄 Status: ${stat} (${p}%)${extra}`);
-          }
-        } catch (e) {
-          addLine(`❌ Polling failed: ${String(e)}`);
-          clearInterval(pollTimer);
-          spinner.style.display = "none";
-          hide(cancelBtn);
-        }
-      }, delay);
+      return true;
     }
+
+    function metaPayload() {
+      return {
+        customer_name: fields.customer_name(),
+        match_date: fields.match_date(),
+        start_time: fields.start_time(),
+        location: fields.location(),
+        player_a_name: fields.player_a_name() || 'Player A',
+        player_b_name: fields.player_b_name() || 'Player B',
+        player_a_utr: fields.player_a_utr(),
+        player_b_utr: fields.player_b_utr()
+      };
+    }
+
+    function renderSubtasks(obj) {
+      if (!obj || typeof obj !== 'object') { subtasksBox.innerHTML = ''; return; }
+      try { subtasksBox.innerHTML = `<strong>Subtask progress:</strong><code>${JSON.stringify(obj, null, 2)}</code>`; }
+      catch { subtasksBox.innerHTML = ''; }
+    }
+
+    async function readJson(res) {
+      const txt = await res.text();
+      try { return JSON.parse(txt); } catch { return { _raw: txt }; }
+    }
+
+    // --- Check video ---
+    q('#btnCheck').addEventListener('click', async () => {
+      ui.clear(); ui.spin(true);
+      const f = q('#video').files[0];
+      if (!validateRequired()) { ui.spin(false); return; }
+
+      const fd = new FormData();
+      fd.append('file', f);
+
+      // NB: we only upload once we pass check
+      try {
+        const res = await fetch('/upload/api/check', { method: 'POST', body: fd });
+        const data = await readJson(res);
+
+        if (!res.ok || data?.error) {
+          ui.say(`❌ Check failed: ${data?.error || (res.status + ' ' + res.statusText)}`);
+          ui.spin(false);
+          q('#btnUpload').disabled = true;
+          return;
+        }
+        lastShareUrl = data.share_url || null;
+        lastVideoUrl = data.video_url || null;
+
+        ui.say('✅ Video check passed.');
+        if (lastShareUrl) ui.say(`📎 Source: ${lastShareUrl}`);
+        q('#btnUpload').disabled = false; // enable upload after passing check
+      } catch (e) {
+        ui.say(`❌ Check failed: ${String(e)}`);
+      } finally {
+        ui.spin(false);
+      }
+    });
+
+    // --- Upload & submit ---
+    q('#btnUpload').addEventListener('click', async () => {
+      ui.spin(true);
+      if (!validateRequired()) { ui.spin(false); return; }
+
+      const f = q('#video').files[0];
+      const fd = new FormData();
+      fd.append('video', f);
+      fd.append('email', fields.email());
+      // Pass metadata through (backend will ignore harmlessly if not used)
+      const meta = metaPayload();
+      Object.entries(meta).forEach(([k,v]) => fd.append(k, v));
+
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await readJson(res);
+
+        if (!res.ok || data?.error) {
+          ui.say(`❌ Upload error: ${data?.error || (res.status + ' ' + res.statusText)}`);
+          ui.spin(false); return;
+        }
+
+        currentTaskId = data.task_id || data.sportai_task_id;
+        if (!currentTaskId) {
+          ui.say('❌ No task id returned.');
+          ui.spin(false); return;
+        }
+
+        ui.say('✅ Uploaded & registered with SportAI. Starting analysis…');
+        if (data.share_url) ui.say(`📎 Source: ${data.share_url}`);
+
+        q('#btnCancel').disabled = false;
+        startPolling(currentTaskId);
+      } catch (e) {
+        ui.say(`❌ Upload exception: ${String(e)}`);
+        ui.spin(false);
+      }
+    });
+
+    // --- Cancel ---
+    q('#btnCancel').addEventListener('click', async () => {
+      if (!currentTaskId) { ui.say('No active task to cancel.'); return; }
+      try {
+        const res = await fetch(`/upload/api/cancel?task_id=${encodeURIComponent(currentTaskId)}`, { method: 'POST' });
+        const data = await readJson(res);
+        if (!res.ok || data?.error) {
+          ui.say(`❌ Cancel failed: ${data?.error || (res.status + ' ' + res.statusText)}`);
+          return;
+        }
+        ui.say('🛑 Task cancel requested.');
+      } catch (e) {
+        ui.say(`❌ Cancel exception: ${String(e)}`);
+      }
+    });
+
+    // --- Polling ---
+    async function tick(taskId) {
+      try {
+        const res = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+        const data = await readJson(res);
+
+        const d = data?.data || {};
+        const status = d.task_status || data?.status || 'unknown';
+        const progress = (typeof d.task_progress === 'number') ? d.task_progress : 0;
+        const totalSub = (typeof d.total_subtask_progress === 'number') ? d.total_subtask_progress : null;
+        const pct = Math.round(progress * 100);
+        ui.progress(pct);
+
+        if (d.subtask_progress) renderSubtasks(d.subtask_progress);
+
+        if (status === 'completed') {
+          ui.progress(100);
+          ui.say('✅ Analysis complete! JSON downloaded and ingested.');
+          stopPolling();
+          ui.spin(false);
+        } else if (status === 'failed') {
+          ui.say('❌ Analysis failed. Please try another video.');
+          stopPolling();
+          ui.spin(false);
+        } else {
+          const extra = (totalSub !== null) ? ` | subtasks ${Math.round(totalSub * 100)}%` : '';
+          ui.say(`🔄 Status: ${status} (${pct}%)${extra}`);
+        }
+      } catch (e) {
+        ui.say(`❌ Polling failed: ${String(e)}`);
+        stopPolling();
+        ui.spin(false);
+      }
+    }
+
+    function startPolling(taskId) {
+      stopPolling();
+      ui.progress(40);
+      ui.say('📡 Waiting for analysis to complete…');
+      pollTimer = setInterval(() => tick(taskId), 5000);
+    }
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      q('#btnCancel').disabled = true;
+    }
+
+    // Initial
+    ui.clear();
+    q('#btnUpload').disabled = true; // force check first
   </script>
 </body>
 </html>
