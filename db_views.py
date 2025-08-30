@@ -319,25 +319,37 @@ CREATE_STMTS = {
       ) b ON TRUE
     ),
         /* receiver for the point = first opponent present in the point (fallback to "other id seen in session") */
-    point_players AS (
-      SELECT
-        p.session_id,
-        p.point_number,
-        /* keep a check copy of server id from the first shot (serve) */
-        MIN(CASE WHEN p.shot_number_in_point = 1 AND p.serve THEN p.player_id END) AS server_id_chk,
-        /* receiver = any other player present after the serve */
-        MIN(CASE
-              WHEN p.shot_number_in_point > 1
-               AND p.player_id <> pf.server_id
-              THEN p.player_id
-            END) AS receiver_id_guess
-      FROM po p
-      /* get server_id per (session,point) from pt_first (the serve row) */
-      JOIN pt_first pf
-        ON pf.session_id  = p.session_id
-       AND pf.point_number = p.point_number
-      GROUP BY p.session_id, p.point_number
-    ),
+    /* receiver guess = smallest opponent id seen after serve in the same point */
+      pp_receiver_guess AS (
+        SELECT
+          pf.session_id, pf.point_number,
+          MIN(p.player_id) AS receiver_id_guess
+        FROM pt_first pf
+        LEFT JOIN po p
+          ON p.session_id = pf.session_id
+        AND p.point_number = pf.point_number
+        AND p.shot_number_in_point > 1
+        AND p.player_id IS NOT NULL
+        AND p.player_id <> pf.server_id
+        GROUP BY pf.session_id, pf.point_number
+      ),
+      server_receiver AS (
+        SELECT
+          pf.session_id, pf.point_number,
+          pf.server_id,
+          COALESCE(rg.receiver_id_guess,
+                  /* fallback: any other player id present in session */
+                  (SELECT MIN(dp.player_id)
+                      FROM dim_player dp
+                    WHERE dp.session_id = pf.session_id
+                      AND dp.player_id <> pf.server_id)
+          ) AS receiver_id
+        FROM pt_first pf
+        LEFT JOIN pp_receiver_guess rg
+          ON rg.session_id = pf.session_id
+        AND rg.point_number = pf.point_number
+      ),
+
 
     server_receiver AS (
       SELECT
