@@ -211,7 +211,11 @@ CREATE_STMTS = {
       SELECT
         v.*,
         /* robust ordering key */
-        COALESCE(v.ball_hit_ts, v.start_ts, make_timestamp(1970,1,1,0,0,0) + make_interval(secs => COALESCE(v.ball_hit_s, v.start_s, 0))) AS ord_ts
+        COALESCE(
+          v.ball_hit_ts,
+          v.start_ts,
+          (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
+        ) AS ord_ts
       FROM vw_swing v
     ),
     base AS (
@@ -318,50 +322,35 @@ CREATE_STMTS = {
         LIMIT 1
       ) b ON TRUE
     ),
-        /* receiver for the point = first opponent present in the point (fallback to "other id seen in session") */
-    /* receiver guess = smallest opponent id seen after serve in the same point */
-      pp_receiver_guess AS (
-        SELECT
-          pf.session_id, pf.point_number,
-          MIN(p.player_id) AS receiver_id_guess
-        FROM pt_first pf
-        LEFT JOIN po p
-          ON p.session_id = pf.session_id
-        AND p.point_number = pf.point_number
-        AND p.shot_number_in_point > 1
-        AND p.player_id IS NOT NULL
-        AND p.player_id <> pf.server_id
-        GROUP BY pf.session_id, pf.point_number
-      ),
-      server_receiver AS (
-        SELECT
-          pf.session_id, pf.point_number,
-          pf.server_id,
-          COALESCE(rg.receiver_id_guess,
-                  /* fallback: any other player id present in session */
-                  (SELECT MIN(dp.player_id)
-                      FROM dim_player dp
-                    WHERE dp.session_id = pf.session_id
-                      AND dp.player_id <> pf.server_id)
-          ) AS receiver_id
-        FROM pt_first pf
-        LEFT JOIN pp_receiver_guess rg
-          ON rg.session_id = pf.session_id
-        AND rg.point_number = pf.point_number
-      ),
-
-
+    /* receiver for the point = first opponent present in the point (fallback to "other id seen in session") */
+    pp_receiver_guess AS (
+      SELECT
+        pf.session_id, pf.point_number,
+        MIN(p.player_id) AS receiver_id_guess
+      FROM pt_first pf
+      LEFT JOIN po p
+        ON p.session_id = pf.session_id
+       AND p.point_number = pf.point_number
+       AND p.shot_number_in_point > 1
+       AND p.player_id IS NOT NULL
+       AND p.player_id <> pf.server_id
+      GROUP BY pf.session_id, pf.point_number
+    ),
     server_receiver AS (
       SELECT
         pf.session_id, pf.point_number,
         pf.server_id,
-        COALESCE(pp.receiver_id_guess,
+        COALESCE(rg.receiver_id_guess,
                  /* fallback: any other player id present in session */
-                 (SELECT MIN(dp.player_id) FROM dim_player dp WHERE dp.session_id = pf.session_id AND dp.player_id <> pf.server_id)
+                 (SELECT MIN(dp.player_id)
+                    FROM dim_player dp
+                   WHERE dp.session_id = pf.session_id
+                     AND dp.player_id <> pf.server_id)
         ) AS receiver_id
       FROM pt_first pf
-      LEFT JOIN point_players pp
-        ON pp.session_id = pf.session_id AND pp.point_number = pf.point_number
+      LEFT JOIN pp_receiver_guess rg
+        ON rg.session_id = pf.session_id
+       AND rg.point_number = pf.point_number
     ),
     names AS (
       SELECT
@@ -407,9 +396,11 @@ CREATE_STMTS = {
       SELECT
         ph.*,
         1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number ROWS UNBOUNDED PRECEDING) AS game_number,
-        ROW_NUMBER() OVER (PARTITION BY ph.session_id,
-                                     (1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number ROWS UNBOUNDED PRECEDING))
-                           ORDER BY ph.point_number) AS point_in_game
+        ROW_NUMBER() OVER (
+          PARTITION BY ph.session_id,
+                       (1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number ROWS UNBOUNDED PRECEDING))
+          ORDER BY ph.point_number
+        ) AS point_in_game
       FROM point_headers ph
     ),
     /* cumulative game score (server-first) */
@@ -463,20 +454,17 @@ CREATE_STMTS = {
     serve_bucket AS (
       SELECT
         sb.*,
-        /* naive 1..8 grid: 4 buckets across (x), 2 along (y). You can refine the cutoffs once we lock the coordinate system. */
+        /* naive 1..8 grid: 4 buckets across (x), 2 along (y) */
         CASE
           WHEN sb.bounce_x IS NULL OR sb.bounce_y IS NULL THEN NULL
           ELSE
-            (CASE
-               WHEN sb.bounce_y >= 0 THEN 1 ELSE 0
-             END) * 4
-            +
-            (CASE
-               WHEN sb.bounce_x < -0.5 THEN 1
-               WHEN sb.bounce_x <  0.0 THEN 2
-               WHEN sb.bounce_x <  0.5 THEN 3
-               ELSE 4
-             END)
+            (CASE WHEN sb.bounce_y >= 0 THEN 1 ELSE 0 END) * 4
+            + (CASE
+                 WHEN sb.bounce_x < -0.5 THEN 1
+                 WHEN sb.bounce_x <  0.0 THEN 2
+                 WHEN sb.bounce_x <  0.5 THEN 3
+                 ELSE 4
+               END)
         END AS serve_bucket_1_8
       FROM serve_bounce sb
     ),
