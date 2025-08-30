@@ -318,15 +318,27 @@ CREATE_STMTS = {
         LIMIT 1
       ) b ON TRUE
     ),
-    /* receiver for the point = first opponent present in the point (fallback to "other id seen in session") */
+        /* receiver for the point = first opponent present in the point (fallback to "other id seen in session") */
     point_players AS (
       SELECT
-        p.session_id, p.point_number,
-        MIN(CASE WHEN p.serve THEN p.player_id END) FILTER (WHERE p.shot_number_in_point = 1) AS server_id_chk,
-        MIN(p.player_id) FILTER (WHERE p.shot_number_in_point > 1 AND p.player_id <> MIN(CASE WHEN p.serve THEN p.player_id END) OVER (PARTITION BY p.session_id, p.point_number)) AS receiver_id_guess
+        p.session_id,
+        p.point_number,
+        /* keep a check copy of server id from the first shot (serve) */
+        MIN(CASE WHEN p.shot_number_in_point = 1 AND p.serve THEN p.player_id END) AS server_id_chk,
+        /* receiver = any other player present after the serve */
+        MIN(CASE
+              WHEN p.shot_number_in_point > 1
+               AND p.player_id <> pf.server_id
+              THEN p.player_id
+            END) AS receiver_id_guess
       FROM po p
+      /* get server_id per (session,point) from pt_first (the serve row) */
+      JOIN pt_first pf
+        ON pf.session_id  = p.session_id
+       AND pf.point_number = p.point_number
       GROUP BY p.session_id, p.point_number
     ),
+
     server_receiver AS (
       SELECT
         pf.session_id, pf.point_number,
