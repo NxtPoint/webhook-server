@@ -49,6 +49,7 @@ def ui_which():
     return Response(json.dumps(info, indent=2), mimetype="application/json")
 
 
+
 def _require_ops_key() -> bool:
     key = request.args.get("key", "")
     return bool(OPS_KEY) and key == OPS_KEY
