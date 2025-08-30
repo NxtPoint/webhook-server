@@ -22,7 +22,7 @@ OPS_KEY = os.environ.get("OPS_KEY", "")
 ui_bp = Blueprint(
     "ui",
     __name__,
-    template_folder="templates",  # looks in templates/ for upload.html
+    template_folder="templates",  # serves templates/upload.html
     static_folder="static",       # serves /upload/static/<file>
 )
 
@@ -66,7 +66,7 @@ _BASE = """
 </html>
 """
 
-# --------- PUBLIC: Upload page (render new templates/upload.html) ----------
+# --------- PUBLIC: Upload page ----------
 @ui_bp.get("/")
 def home():
     # Dropbox ready if either legacy token OR (app key/secret + refresh) are present
@@ -79,11 +79,10 @@ def home():
     # SportAI token name consistency
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
 
-    # Defaults align with upload_app.py
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/wix-uploads")
     max_upload_mb = int(os.environ.get("MAX_CONTENT_MB", os.environ.get("MAX_UPLOAD_MB", "150")))
 
-    # IMPORTANT: render the real template (no inline HTML), so you always see latest upload.html
+    # Render the real template (no inline include)
     return render_template(
         "upload.html",
         dropbox_ready=dropbox_ready,
@@ -96,10 +95,8 @@ def home():
 @ui_bp.route("/sessions")
 def sessions():
     if not engine:
-        return render_template_string(
-            "{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
-            _BASE=_BASE, db_error=db_error
-        ), 503
+        return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
+                                      _BASE=_BASE, db_error=db_error), 503
     try:
         sql = """
             SELECT s.session_uid,
@@ -225,10 +222,8 @@ def delete_confirm(session_uid):
 @ui_bp.route("/sql", methods=["GET", "POST"])
 def sql():
     if not engine:
-        return render_template_string(
-            "{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
-            _BASE=_BASE, db_error=db_error
-        ), 503
+        return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
+                                      _BASE=_BASE, db_error=db_error), 503
     default_q = request.values.get("q", "SELECT now() AT TIME ZONE 'utc' AS utc_now")
     result, error = None, None
     if request.method == "POST":
