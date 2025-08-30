@@ -1,21 +1,9 @@
 # ui_app.py
-import os
-import traceback
-
-from flask import (
-    Blueprint,
-    render_template,           # <- we render a real template file now
-    render_template_string,
-    request,
-    url_for,
-    jsonify,
-    Response,
-)
+import os, traceback
+from flask import Blueprint, render_template, render_template_string, request, url_for, jsonify, Response
 from sqlalchemy import text
 
-# -------------------------------------------------------------------
-# DB wiring (non-fatal if DATABASE_URL or db_init aren't available)
-# -------------------------------------------------------------------
+# Try to prepare DB, but don't crash the import if missing
 DATABASE_URL = os.environ.get("DATABASE_URL")
 engine = None
 db_error = None
@@ -33,17 +21,14 @@ OPS_KEY = os.environ.get("OPS_KEY", "")
 ui_bp = Blueprint(
     "ui",
     __name__,
-    template_folder="templates",  # project-level templates dir
-    static_folder="static",       # serves /upload/static/<file>
+    template_folder="templates",
+    static_folder="static",    # provides /upload/static/<file>
 )
 
 def _require_ops_key() -> bool:
     key = request.args.get("key", "")
     return bool(OPS_KEY) and key == OPS_KEY
 
-# -------------------------------------------------------------------
-# Shared base layout for simple admin pages rendered via string
-# -------------------------------------------------------------------
 _BASE = """
 <!doctype html>
 <html lang="en">
@@ -79,27 +64,18 @@ _BASE = """
 </html>
 """
 
-# -------------------------------------------------------------------
-# Public UI: Upload page (served at /upload/)
-# -------------------------------------------------------------------
 @ui_bp.route("/")
 def home():
-    """
-    Renders the front-end upload page template at templates/ui/upload.html.
-    """
+    # Correct “Dropbox ready” for either legacy token OR refresh flow
     dropbox_ready = bool(
-        os.environ.get("DROPBOX_ACCESS_TOKEN")
-        or (
-            os.environ.get("DROPBOX_APP_KEY")
-            and os.environ.get("DROPBOX_APP_SECRET")
-            and os.environ.get("DROPBOX_REFRESH_TOKEN")
-        )
+        os.environ.get("DROPBOX_ACCESS_TOKEN") or
+        (os.environ.get("DROPBOX_APP_KEY") and os.environ.get("DROPBOX_APP_SECRET") and os.environ.get("DROPBOX_REFRESH_TOKEN"))
     )
     sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
     target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
     max_upload_mb = int(os.environ.get("MAX_CONTENT_MB", os.environ.get("MAX_UPLOAD_MB", "150")))
 
-    # IMPORTANT: this now renders the file templates/ui/upload.html directly
+    # IMPORTANT: render the new template path under templates/ui/
     return render_template(
         "ui/upload.html",
         dropbox_ready=dropbox_ready,
@@ -107,34 +83,12 @@ def home():
         target_folder=target_folder,
         max_upload_mb=max_upload_mb,
     )
-@ui_bp.route("/diag")
-def ui_diag():
-    try:
-        import os, pathlib
-        here = pathlib.Path(__file__).resolve().parent
-        tpl = here / "templates" / "ui" / "upload.html"
-        exists = tpl.exists()
-        mtime = os.path.getmtime(tpl) if exists else None
-        return jsonify({
-            "ok": True,
-            "template_exists": bool(exists),
-            "template_path": str(tpl),
-            "template_mtime": mtime,
-        })
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
 
-# -------------------------------------------------------------------
-# Admin: Sessions listing
-# -------------------------------------------------------------------
 @ui_bp.route("/sessions")
 def sessions():
     if not engine:
-        return render_template_string(
-            "{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
-            _BASE=_BASE,
-            db_error=db_error,
-        ), 503
+        return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
+                                      _BASE=_BASE, db_error=db_error), 503
     try:
         sql = """
             SELECT s.session_uid,
@@ -201,9 +155,6 @@ def sessions():
         tb = traceback.format_exc()
         return Response("UI /upload/sessions failed:\n\n" + tb, mimetype="text/plain", status=500)
 
-# -------------------------------------------------------------------
-# Admin: Peek a session
-# -------------------------------------------------------------------
 @ui_bp.route("/peek/<session_uid>")
 def peek(session_uid):
     if not engine:
@@ -243,9 +194,6 @@ def peek(session_uid):
     """
     return render_template_string(tpl, _BASE=_BASE, uid=session_uid, pl=pl, sw=sw, db_error=db_error)
 
-# -------------------------------------------------------------------
-# Admin: Delete confirm
-# -------------------------------------------------------------------
 @ui_bp.route("/delete/<session_uid>")
 def delete_confirm(session_uid):
     tpl = """
@@ -260,18 +208,11 @@ def delete_confirm(session_uid):
     """
     return render_template_string(tpl, _BASE=_BASE, uid=session_uid, key=OPS_KEY, db_error=db_error)
 
-# -------------------------------------------------------------------
-# Admin: SQL (read-only)
-# -------------------------------------------------------------------
 @ui_bp.route("/sql", methods=["GET", "POST"])
 def sql():
     if not engine:
-        return render_template_string(
-            "{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
-            _BASE=_BASE,
-            db_error=db_error,
-        ), 503
-
+        return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
+                                      _BASE=_BASE, db_error=db_error), 503
     default_q = request.values.get("q", "SELECT now() AT TIME ZONE 'utc' AS utc_now")
     result, error = None, None
     if request.method == "POST":
@@ -286,7 +227,6 @@ def sql():
             error = str(e)
             result = None
         default_q = q
-
     tpl = """
     {% extends _BASE %}{% block body %}
       <h2>SQL (read-only)</h2>
@@ -317,19 +257,8 @@ def sql():
       </p>
     {% endblock %}
     """
-    return render_template_string(
-        tpl,
-        _BASE=_BASE,
-        default_q=default_q,
-        result=result,
-        error=error,
-        key=OPS_KEY,
-        db_error=db_error,
-    )
+    return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY, db_error=db_error)
 
-# -------------------------------------------------------------------
-# JSON helpers for debugging/automation
-# -------------------------------------------------------------------
 @ui_bp.route("/sessions_raw")
 def sessions_raw():
     if not engine:
@@ -353,16 +282,12 @@ def ui_health():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# -------------------------------------------------------------------
-# Admin: build gold tables
-# -------------------------------------------------------------------
 @ui_bp.route("/ops/build-gold", methods=["GET"])
 def ops_build_gold():
     if not _require_ops_key():
         return jsonify({"ok": False, "error": "forbidden"}), 403
     if not engine:
         return jsonify({"ok": False, "error": db_error}), 503
-
     ddl = [
         "DROP TABLE IF EXISTS point_log_tbl;",
         "CREATE TABLE point_log_tbl AS SELECT * FROM vw_point_log;",
