@@ -1,12 +1,9 @@
 # ui_app.py
-import os
-import time
-import pathlib
-import traceback
-from flask import Blueprint, render_template, render_template_string, request, url_for, jsonify, Response, make_response
+import os, traceback, json
+from flask import Blueprint, render_template_string, request, url_for, jsonify, Response
 from sqlalchemy import text
 
-# Try to prepare DB, but don't crash the import if missing
+# ----- DB wiring (non-fatal if not present) -----
 DATABASE_URL = os.environ.get("DATABASE_URL")
 engine = None
 db_error = None
@@ -21,73 +18,100 @@ else:
 
 OPS_KEY = os.environ.get("OPS_KEY", "")
 
+# IMPORTANT: point at the real templates folder that has upload.html
 ui_bp = Blueprint(
     "ui",
     __name__,
-    template_folder="templates",   # <-- change from "templates"
-    static_folder="static",
+    template_folder="templates",   # <- matches repo: templates/upload.html
+    static_folder="static",        # serves /upload/static/<file>
 )
 
+# Log once on import so we can see this loaded
+print(f"[ui_app] loaded. root={ui_bp.root_path} template_folder={ui_bp.template_folder}")
 
-TEMPLATE_NAME = "upload.html"
+# ---------------- Base layout used by admin pages ----------------
+_BASE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>NextPoint Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px;line-height:1.35}
+    a{color:#2b6cb0;text-decoration:none} a:hover{text-decoration:underline}
+    .btn{display:inline-block;border:1px solid #cbd5e0;padding:6px 10px;border-radius:8px;margin:2px 6px 2px 0}
+    .btn.danger{border-color:#f56565;color:#c53030}
+    table{border-collapse:collapse;width:100%;margin-top:16px}
+    th,td{border:1px solid #e2e8f0;padding:8px;text-align:left}
+    th{background:#f7fafc}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace}
+    .small{color:#4a5568;font-size:12px}
+    .row{margin:10px 0}
+    .pill{display:inline-block;background:#edf2f7;border:1px solid #e2e8f0;border-radius:12px;padding:2px 8px;margin-left:6px;font-size:12px}
+  </style>
+</head>
+<body>
+  <h1>NextPoint Admin</h1>
+  <div class="row">
+    <a class="btn" href="{{ url_for('ui.sessions') }}">Sessions</a>
+    <a class="btn" href="{{ url_for('ui.sql') }}">SQL</a>
+  </div>
+  {% if db_error %}
+    <p class="small" style="color:#c53030">DB not ready: {{ db_error }}</p>
+  {% endif %}
+  {% block body %}{% endblock %}
+</body>
+</html>
+"""
 
-def _require_ops_key() -> bool:
-    key = request.args.get("key", "")
-    return bool(OPS_KEY) and key == OPS_KEY
-
-def _template_path() -> pathlib.Path:
-    """Absolute path to the upload template the blueprint expects."""
-    here = pathlib.Path(__file__).resolve().parent
-    return here / "templates" / TEMPLATE_NAME
-
-@ui_bp.route("/__which")
-def ui_which():
-    """
-    Diagnostic: shows which upload.html Flask will render.
-    Use https://<host>/upload/__which
-    """
-    tpl = _template_path()
-    info = {
-        "expected_path": str(tpl),
-        "exists": tpl.exists(),
-    }
-    if tpl.exists():
-        st = tpl.stat()
-        info.update({
-            "size_bytes": st.st_size,
-            "mtime_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(st.st_mtime)),
-        })
-        try:
-            head = tpl.read_text(errors="ignore")[:200]
-        except Exception as e:
-            head = f"<unable to read: {e}>"
-        info["head_preview"] = head
-    return Response(jsonify(info).get_data(as_text=True), mimetype="application/json")
-
+# ---------------- Public upload UI ----------------
 @ui_bp.route("/")
 def home():
-    # Correct “Dropbox ready” for either legacy token OR refresh flow
     dropbox_ready = bool(
         os.environ.get("DROPBOX_ACCESS_TOKEN") or
-        (os.environ.get("DROPBOX_APP_KEY") and os.environ.get("DROPBOX_APP_SECRET") and os.environ.get("DROPBOX_REFRESH_TOKEN"))
+        (os.environ.get("DROPBOX_APP_KEY") and
+         os.environ.get("DROPBOX_APP_SECRET") and
+         os.environ.get("DROPBOX_REFRESH_TOKEN"))
     )
-    sportai_ready = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
-    target_folder = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
-    max_upload_mb = int(os.environ.get("MAX_CONTENT_MB", os.environ.get("MAX_UPLOAD_MB", "150")))
-
-    # Render the template directly (no include indirection)
-    html = render_template(
-        TEMPLATE_NAME,
+    sportai_ready  = bool(os.environ.get("SPORT_AI_TOKEN") or os.environ.get("SPORTAI_TOKEN"))
+    target_folder  = os.environ.get("DROPBOX_UPLOAD_FOLDER", "/incoming")
+    max_upload_mb  = int(os.environ.get("MAX_CONTENT_MB", os.environ.get("MAX_UPLOAD_MB", "150")))
+    # We include templates/upload.html so the file sits in the repo plainly.
+    return render_template_string(
+        "{% include 'upload.html' %}",
         dropbox_ready=dropbox_ready,
         sportai_ready=sportai_ready,
         target_folder=target_folder,
         max_upload_mb=max_upload_mb,
     )
-    # Attach a header so you can see which file the server used
-    resp = make_response(html)
-    resp.headers["X-Template-Path"] = str(_template_path())
-    return resp
 
+# ---------------- Diagnostics: prove which template Flask will use ----------------
+@ui_bp.route("/__which")
+def ui_which():
+    # Compute expected absolute path to templates/upload.html from the blueprint root
+    expected = os.path.join(ui_bp.root_path, ui_bp.template_folder or "", "upload.html")
+    exists = os.path.exists(expected)
+
+    head = ""
+    if exists:
+        try:
+            with open(expected, "r", encoding="utf-8") as f:
+                head = f.read(600)
+        except Exception as e:
+            head = f"<read error: {e}>"
+
+    return jsonify({
+        "ok": True,
+        "module_file": __file__,
+        "root_path": ui_bp.root_path,
+        "template_folder": ui_bp.template_folder,
+        "expected_template_path": expected,
+        "exists": exists,
+        "head": head,
+    })
+
+# ---------------- Admin / DB views ----------------
 @ui_bp.route("/sessions")
 def sessions():
     if not engine:
@@ -288,7 +312,7 @@ def ui_health():
 
 @ui_bp.route("/ops/build-gold", methods=["GET"])
 def ops_build_gold():
-    if not _require_ops_key():
+    if not (OPS_KEY and request.args.get("key") == OPS_KEY):
         return jsonify({"ok": False, "error": "forbidden"}), 403
     if not engine:
         return jsonify({"ok": False, "error": db_error}), 503
@@ -307,39 +331,3 @@ def ops_build_gold():
         return jsonify({"ok": True, "built": ["point_log_tbl", "point_summary_tbl"]})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
-# Base admin shell (unchanged)
-_BASE = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8"/>
-  <title>NextPoint Admin</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px;line-height:1.35}
-    a{color:#2b6cb0;text-decoration:none} a:hover{text-decoration:underline}
-    .btn{display:inline-block;border:1px solid #cbd5e0;padding:6px 10px;border-radius:8px;margin:2px 6px 2px 0}
-    .btn.danger{border-color:#f56565;color:#c53030}
-    table{border-collapse:collapse;width:100%;margin-top:16px}
-    th,td{border:1px solid #e2e8f0;padding:8px;text-align:left}
-    th{background:#f7fafc}
-    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace}
-    .small{color:#4a5568;font-size:12px}
-    .row{margin:10px 0}
-    .pill{display:inline-block;background:#edf2f7;border:1px solid #e2e8f0;border-radius:12px;padding:2px 8px;margin-left:6px;font-size:12px}
-  </style>
-</head>
-<body>
-  <h1>NextPoint Admin</h1>
-  <div class="row">
-    <a class="btn" href="{{ url_for('ui.sessions') }}">Sessions</a>
-    <a class="btn" href="{{ url_for('ui.sql') }}">SQL</a>
-  </div>
-  {% if db_error %}
-    <p class="small" style="color:#c53030">DB not ready: {{ db_error }}</p>
-  {% endif %}
-  {% block body %}{% endblock %}
-</body>
-</html>
-"""
