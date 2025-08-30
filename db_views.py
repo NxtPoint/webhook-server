@@ -46,9 +46,47 @@ LEGACY_OBJECTS = [
 ]
 
 def _drop_any(conn, name: str):
-    conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE;"))
-    conn.execute(text(f"DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE;"))
-    conn.execute(text(f"DROP TABLE IF EXISTS {name} CASCADE;"))
+    """
+    Drop any object named `name` in public schema, picking the right DROP
+    for its actual type to avoid WrongObjectType errors.
+    """
+    kind = conn.execute(text("""
+        SELECT CASE
+                 WHEN EXISTS (
+                    SELECT 1
+                    FROM information_schema.views
+                    WHERE table_schema='public' AND table_name=:n
+                 ) THEN 'view'
+                 WHEN EXISTS (
+                    SELECT 1
+                    FROM pg_matviews
+                    WHERE schemaname='public' AND matviewname=:n
+                 ) THEN 'mview'
+                 WHEN EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema='public' AND table_name=:n
+                 ) THEN 'table'
+                 ELSE NULL
+               END
+    """), {"n": name}).scalar()
+
+    if kind == 'view':
+        stmts = [f'DROP VIEW IF EXISTS "{name}" CASCADE;']
+    elif kind == 'mview':
+        stmts = [f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;']
+    elif kind == 'table':
+        stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
+    else:
+        # best-effort cleanup if we can’t detect the type
+        stmts = [
+            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
+        ]
+
+    for stmt in stmts:
+        conn.execute(text(stmt))
 
 CREATE_STMTS = {
     # ---------------- SILVER (PURE passthrough + labels) ----------------
