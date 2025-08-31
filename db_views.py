@@ -292,7 +292,7 @@ CREATE_STMTS = {
             AND COALESCE(sf.inside_serve_band, FALSE)
         ),
 
-        -- D7. Number serves into points & games
+        -- D7. Number serves into points & games (NO nested windows)
         serve_events_numbered AS (
           SELECT
             se.*,
@@ -318,18 +318,17 @@ CREATE_STMTS = {
                   ELSE 0
                 END
             ) OVER (PARTITION BY sen.session_id ORDER BY sen.ord_ts
-                    ROWS UNBOUNDED PRECEDING) AS game_number_d,
-            ROW_NUMBER() OVER (
-              PARTITION BY sen.session_id,
-                           SUM(CASE
-                                 WHEN sen.prev_server_uid IS NULL THEN 1
-                                 WHEN sen.server_uid     IS DISTINCT FROM sen.prev_server_uid THEN 1
-                                 ELSE 0
-                               END
-                           ) OVER (PARTITION BY sen.session_id ORDER BY sen.ord_ts ROWS UNBOUNDED PRECEDING)
-              ORDER BY sen.ord_ts
-            ) AS point_in_game_d
+                    ROWS UNBOUNDED PRECEDING) AS game_number_d
           FROM serve_events_numbered sen
+        ),
+        serve_points_ix AS (
+          SELECT
+            sp.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY sp.session_id, sp.game_number_d
+              ORDER BY sp.ord_ts
+            ) AS point_in_game_d
+          FROM serve_points sp
         ),
 
         -- D8. Assign each swing to the latest serve at/preceding it (its point)
@@ -345,7 +344,7 @@ CREATE_STMTS = {
           FROM swings s
           LEFT JOIN LATERAL (
             SELECT sp.*
-            FROM serve_points sp
+            FROM serve_points_ix sp
             WHERE sp.session_id = s.session_id
               AND sp.ord_ts <= s.ord_ts
             ORDER BY sp.ord_ts DESC
@@ -368,12 +367,12 @@ CREATE_STMTS = {
         first_serve_per_point AS (
           SELECT sp.session_id, sp.point_number_d,
                  MIN(sp.ord_ts) AS first_srv_ts
-          FROM serve_points sp
+          FROM serve_points_ix sp
           GROUP BY sp.session_id, sp.point_number_d
         ),
         first_srv_ids AS (
           SELECT sp.session_id, sp.point_number_d, sp.srv_swing_id
-          FROM serve_points sp
+          FROM serve_points_ix sp
           JOIN first_serve_per_point f
             ON f.session_id = sp.session_id
            AND f.point_number_d = sp.point_number_d
@@ -423,7 +422,7 @@ CREATE_STMTS = {
             ON sb.session_id = f.session_id AND sb.swing_id = f.srv_swing_id
         )
 
-        -- FINAL SELECT (exact agreed columns, minus server_behind_baseline_at_first_d)
+        -- FINAL SELECT (exact agreed columns)
         SELECT
           -- core ids
           sn.session_id,
