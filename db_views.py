@@ -4,6 +4,7 @@ from typing import List
 
 VIEW_SQL_STMTS: List[str] = []  # populated from VIEW_NAMES/CREATE_STMTS
 
+
 # -------- Bronze helper: make raw_ingest table if missing (safe to re-run) --------
 def _ensure_raw_ingest(conn):
     conn.execute(text("""
@@ -19,6 +20,7 @@ def _ensure_raw_ingest(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
+
 # -------- Views to build (order matters) --------
 # SILVER = strict pass-through from BRONZE (no edits; only *_d derived fields added)
 # GOLD   = reads only SILVER; all derivations are *_d and kept together
@@ -33,6 +35,7 @@ VIEW_NAMES = [
     "vw_point_log",
 ]
 
+
 # Legacy objects we want to drop if they still exist
 LEGACY_OBJECTS = [
     "vw_swing", "vw_bounce", "vw_ball_position", "vw_player_position",
@@ -41,6 +44,7 @@ LEGACY_OBJECTS = [
     "vw_point_summary", "point_log_tbl", "point_summary_tbl",
     "vw_point_shot_log",
 ]
+
 
 def _drop_any(conn, name: str):
     """
@@ -79,6 +83,7 @@ def _drop_any(conn, name: str):
         ]
     for stmt in stmts:
         conn.execute(text(stmt))
+
 
 CREATE_STMTS = {
     # ---------------- SILVER (PURE passthrough; add *_d only) ----------------
@@ -168,8 +173,10 @@ CREATE_STMTS = {
         WITH s AS (
           SELECT
             v.*,
-            COALESCE(v.ball_hit_ts, v.start_ts,
-                     (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
+            COALESCE(
+              v.ball_hit_ts,
+              v.start_ts,
+              (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
             ) AS ord_ts
           FROM vw_swing_silver v
         ),
@@ -178,7 +185,7 @@ CREATE_STMTS = {
             s.*,
             CASE
               WHEN COALESCE(s.serve, FALSE) THEN 1
-              WHEN s.swing_type ILIKE '%overhead%' THEN 1   -- current rule: overhead = serve-begin
+              WHEN s.swing_type ILIKE '%overhead%' THEN 1   -- temporary rule: overhead = serve-begin
               ELSE 0
             END AS is_serve_begin
           FROM s
@@ -240,10 +247,12 @@ CREATE_STMTS = {
         FROM rally_fallback;
     """,
 
-    # ---------------- GOLD (enriched) ----------------
+    # ---------------- GOLD (enriched; derived fields grouped & suffixed *_d) ----------------
     "vw_point_log": """
         CREATE OR REPLACE VIEW vw_point_log AS
-        WITH po AS ( SELECT * FROM vw_point_order_by_serve ),
+        WITH po AS (
+          SELECT * FROM vw_point_order_by_serve
+        ),
 
         pt_first AS (
           SELECT DISTINCT ON (session_id, point_number)
@@ -268,7 +277,7 @@ CREATE_STMTS = {
         ),
 
         -- bounce immediately after each swing
-        s_bounce AS (
+        swing_bounce AS (
           SELECT
             s.swing_id, s.session_id,
             b.bounce_id,
@@ -323,7 +332,6 @@ CREATE_STMTS = {
            AND rg.point_number = pf.point_number
         ),
 
-        -- names are attached only here
         names AS (
           SELECT
             sr.*,
@@ -368,7 +376,7 @@ CREATE_STMTS = {
             pf.session_id, pf.point_number,
             sb.bounce_x, sb.bounce_y, sb.bounce_type_raw
           FROM pt_first pf
-          LEFT JOIN s_bounce sb
+          LEFT JOIN swing_bounce sb
             ON sb.session_id = pf.session_id AND sb.swing_id = pf.first_swing_id
         ),
 
@@ -394,11 +402,12 @@ CREATE_STMTS = {
             sb.bounce_x AS last_bounce_x, sb.bounce_y AS last_bounce_y,
             sb.bounce_type_raw AS last_bounce_type
           FROM pt_last pl
-          LEFT JOIN s_bounce sb
+          LEFT JOIN swing_bounce sb
             ON sb.session_id = pl.session_id AND sb.swing_id = pl.last_swing_id
         )
 
         SELECT
+          -- always include these first
           po.session_uid_d,
           po.session_id,
           po.rally_id,
@@ -408,46 +417,63 @@ CREATE_STMTS = {
           po.swing_id,
           po.player_id,
 
-          -- ===== DERIVED FIELDS BLOCK (_d only) =====
-          gs.game_number,
-          gs.point_in_game,
-          CASE WHEN (gs.point_in_game % 2) = 1 THEN 'deuce' ELSE 'ad' END  AS serving_side_d,
-          (po.serve OR po.swing_type ILIKE '%overhead%')                   AS serve_d,
-          (COALESCE(po.ball_speed,0) = 0)                                  AS is_error_d,
-          lb.last_bounce_type                                              AS point_end_bounce_type_d,
-          sv.serve_bucket_1_8_d,
+          /* ===== DERIVED FIELDS BLOCK (_d only) ===== */
+          gs.game_number                         AS game_number_d,
+          gs.point_in_game                       AS point_in_game_d,
 
-          -- Non-derived bronze fields (passthrough)
-          po.swing_type AS swing_type_raw,
+          CASE WHEN (gs.point_in_game % 2) = 1
+               THEN 'deuce' ELSE 'ad'
+          END                                     AS serving_side_d,
+
+          /* treat explicit serve OR overhead as serve for now */
+          CASE
+            WHEN po.serve THEN TRUE
+            WHEN po.swing_type ILIKE '%overhead%' THEN TRUE
+            ELSE FALSE
+          END                                     AS serve_d,
+
+          /* fault/error detection from speed = 0 (safe rule for now) */
+          CASE WHEN COALESCE(po.ball_speed, 0) = 0
+               THEN TRUE ELSE FALSE
+          END                                     AS is_error_d,
+
+          lb.last_bounce_type                    AS point_end_bounce_type_d,
+
+          sv.serve_bucket_1_8_d                  AS serve_bucket_1_8_d,
+
+          /* optional helpers */
+          (CASE WHEN NOT po.serve AND po.swing_type ILIKE '%overhead%'
+                THEN TRUE ELSE FALSE END)         AS inferred_serve_by_type_d,
+          (CASE WHEN po.serve AND COALESCE(po.ball_speed,0)=0
+                THEN TRUE ELSE FALSE END)         AS fault_by_speed_d,
+
+          /* ---- passthrough (bronze -> silver; keep names intact) ---- */
+          po.swing_type                           AS swing_type_raw,
           po.ball_speed,
           po.ball_player_distance,
-          po.start_s, po.end_s, po.ball_hit_s,
+          po.start_s,  po.end_s,  po.ball_hit_s,
           po.start_ts, po.end_ts, po.ball_hit_ts,
 
-          -- Bounce after this swing (passthrough)
+          /* bounce immediately after this swing (passthrough) */
           sb.bounce_id,
-          sb.bounce_x AS ball_bounce_x,
-          sb.bounce_y AS ball_bounce_y,
-          sb.bounce_type_raw,
+          sb.bounce_x                             AS ball_bounce_x,
+          sb.bounce_y                             AS ball_bounce_y,
+          sb.bounce_type_raw                      AS bounce_type_raw,
 
-          -- Names and IDs for context (passthrough)
-          n.server_id,   n.server_name,   n.server_uid,
-          n.receiver_id, n.receiver_name, n.receiver_uid
+          /* names/ids for context (passthrough) */
+          n.server_id,    n.server_name,    n.server_uid,
+          n.receiver_id,  n.receiver_name,  n.receiver_uid
 
         FROM po
-        LEFT JOIN s_bounce sb
-               ON sb.session_id = po.session_id AND sb.swing_id = po.swing_id
-        LEFT JOIN game_seq gs
-               ON gs.session_id = po.session_id AND gs.point_number = po.point_number
-        LEFT JOIN last_bounce lb
-               ON lb.session_id = po.session_id AND lb.point_number = po.point_number
-        LEFT JOIN serve_bucket sv
-               ON sv.session_id = po.session_id AND sv.point_number = po.point_number
-        LEFT JOIN names n
-               ON n.session_id = po.session_id AND n.point_number = po.point_number
+        LEFT JOIN swing_bounce sb ON sb.session_id = po.session_id AND sb.swing_id     = po.swing_id
+        LEFT JOIN game_seq     gs ON gs.session_id = po.session_id AND gs.point_number = po.point_number
+        LEFT JOIN last_bounce  lb ON lb.session_id = po.session_id AND lb.point_number = po.point_number
+        LEFT JOIN serve_bucket sv ON sv.session_id = po.session_id AND sv.point_number = po.point_number
+        LEFT JOIN names         n ON n.session_id  = po.session_id AND n.point_number  = po.point_number
         ORDER BY po.session_uid_d, po.point_number, po.shot_number_in_point, po.swing_id;
     """,
 }
+
 
 # ---------- helpers ----------
 def _table_exists(conn, t: str) -> bool:
@@ -457,12 +483,14 @@ def _table_exists(conn, t: str) -> bool:
         LIMIT 1
     """), {"t": t}).first() is not None
 
+
 def _column_exists(conn, t: str, c: str) -> bool:
     return conn.execute(text("""
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='public' AND table_name=:t AND column_name=:c
         LIMIT 1
     """), {"t": t, "c": c}).first() is not None
+
 
 def _preflight_or_raise(conn):
     required_tables = [
@@ -524,10 +552,11 @@ def _preflight_or_raise(conn):
         ("fact_ball_position", "x"),
         ("fact_ball_position", "y"),
     ]
-    missing_cols = [(t,c) for (t,c) in checks if not _column_exists(conn, t, c)]
+    missing_cols = [(t, c) for (t, c) in checks if not _column_exists(conn, t, c)]
     if missing_cols:
-        msg = ", ".join([f"{t}.{c}" for (t,c) in missing_cols])
+        msg = ", ".join([f"{t}.{c}" for (t, c) in missing_cols])
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
+
 
 # ---------- apply all views ----------
 def _apply_views(engine):
@@ -548,6 +577,7 @@ def _apply_views(engine):
             _drop_any(conn, name)
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
+
 
 # Back-compat exports
 init_views = _apply_views
