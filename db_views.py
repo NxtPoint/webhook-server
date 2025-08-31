@@ -81,7 +81,7 @@ def _drop_any(conn, name: str):
 
 # ---------------- CREATE statements ----------------
 CREATE_STMTS = {
-    # ---- SILVER passthroughs (no edits; just labeling) ----
+    # ---- SILVER passthroughs (include point/shot for downstream) ----
     "vw_swing_silver": """
         CREATE OR REPLACE VIEW vw_swing_silver AS
         SELECT
@@ -89,6 +89,8 @@ CREATE_STMTS = {
           fs.swing_id,
           fs.player_id,
           fs.rally_id,
+          fs.point_number,             -- needed downstream
+          fs.shot_number_in_point,     -- needed downstream
           fs.start_s, fs.end_s, fs.ball_hit_s,
           fs.start_ts, fs.end_ts, fs.ball_hit_ts,
           fs.ball_hit_x, fs.ball_hit_y,
@@ -126,7 +128,8 @@ CREATE_STMTS = {
     """,
 
     # ---- SILVER point view = raw + derived (single place) ----
-    "vw_point_silver": f"""
+    # NOTE: fixed to reference columns that exist in sources; removed references to non-existing fields.
+    "vw_point_silver": """
         CREATE OR REPLACE VIEW vw_point_silver AS
         WITH
         /* ------------------------------------------------------------------ */
@@ -142,13 +145,15 @@ CREATE_STMTS = {
         ),
 
         /* ------------------------------------------------------------------ */
-        /* Base swings in point order (your existing logic moved here)         */
+        /* Base swings in point order (raw swings + an ordering timestamp)     */
         /* ------------------------------------------------------------------ */
         po AS (
           SELECT
             v.*,
-            COALESCE(v.ball_hit_ts, v.start_ts,
-                    (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
+            COALESCE(
+              v.ball_hit_ts,
+              v.start_ts,
+              (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
             ) AS ord_ts
           FROM vw_swing_silver v
         ),
@@ -183,10 +188,10 @@ CREATE_STMTS = {
           FROM pt_first pf
           LEFT JOIN po p
             ON p.session_id   = pf.session_id
-          AND p.point_number = pf.point_number
-          AND p.shot_number_in_point > 1
-          AND p.player_id IS NOT NULL
-          AND p.player_id <> pf.server_id
+           AND p.point_number = pf.point_number
+           AND p.shot_number_in_point > 1
+           AND p.player_id IS NOT NULL
+           AND p.player_id <> pf.server_id
           GROUP BY pf.session_id, pf.point_number
         ),
         server_receiver AS (
@@ -196,17 +201,17 @@ CREATE_STMTS = {
             COALESCE(
               rg.receiver_id_guess,
               (SELECT MIN(dp.player_id)
-                FROM dim_player dp
+                 FROM dim_player dp
                 WHERE dp.session_id = pf.session_id
                   AND dp.player_id <> pf.server_id)
             ) AS receiver_id
           FROM pt_first pf
           LEFT JOIN pp_receiver_guess rg
             ON rg.session_id  = pf.session_id
-          AND rg.point_number = pf.point_number
+           AND rg.point_number = pf.point_number
         ),
 
-        /* names for context (unchanged) */
+        /* names for context */
         names AS (
           SELECT
             sr.*,
@@ -248,7 +253,7 @@ CREATE_STMTS = {
           FROM game_numbered gn
         ),
 
-        /* bounce immediately after each swing (unchanged) */
+        /* bounce immediately after each swing */
         s_bounce AS (
           SELECT
             s.swing_id, s.session_id,
@@ -259,20 +264,20 @@ CREATE_STMTS = {
           FROM po s
           LEFT JOIN LATERAL (
             SELECT b.*
-            FROM vw_bounce_silver b
-            WHERE b.session_id = s.session_id
-              AND (
+              FROM vw_bounce_silver b
+             WHERE b.session_id = s.session_id
+               AND (
                     (b.bounce_ts IS NOT NULL AND s.ball_hit_ts IS NOT NULL AND b.bounce_ts >= s.ball_hit_ts)
-                OR ((b.bounce_ts IS NULL OR s.ball_hit_ts IS NULL)
-                    AND b.bounce_s IS NOT NULL AND s.ball_hit_s IS NOT NULL
-                    AND b.bounce_s >= s.ball_hit_s)
-                  )
-            ORDER BY COALESCE(b.bounce_ts, (TIMESTAMP 'epoch' + b.bounce_s * INTERVAL '1 second'))
-            LIMIT 1
+                 OR ((b.bounce_ts IS NULL OR s.ball_hit_ts IS NULL)
+                     AND b.bounce_s IS NOT NULL AND s.ball_hit_s IS NOT NULL
+                     AND b.bounce_s >= s.ball_hit_s)
+               )
+             ORDER BY COALESCE(b.bounce_ts, (TIMESTAMP 'epoch' + b.bounce_s * INTERVAL '1 second'))
+             LIMIT 1
           ) b ON TRUE
         ),
 
-        /* serve bucket (unchanged) */
+        /* serve bucket */
         serve_bounce AS (
           SELECT
             pf.session_id, pf.point_number,
@@ -287,17 +292,17 @@ CREATE_STMTS = {
             CASE
               WHEN sb.bounce_x IS NULL OR sb.bounce_y IS NULL THEN NULL
               ELSE (CASE WHEN sb.bounce_y >= 0 THEN 1 ELSE 0 END) * 4
-                + (CASE
-                      WHEN sb.bounce_x < -0.5 THEN 1
-                      WHEN sb.bounce_x <  0.0 THEN 2
-                      WHEN sb.bounce_x <  0.5 THEN 3
-                      ELSE 4
-                    END)
+                   + (CASE
+                        WHEN sb.bounce_x < -0.5 THEN 1
+                        WHEN sb.bounce_x <  0.0 THEN 2
+                        WHEN sb.bounce_x <  0.5 THEN 3
+                        ELSE 4
+                      END)
             END AS serve_bucket_1_8_d
           FROM serve_bounce sb
         ),
 
-        /* last bounce per point (unchanged passthrough) */
+        /* last bounce per point (passthrough) */
         last_bounce AS (
           SELECT
             pl.session_id, pl.point_number,
@@ -308,39 +313,25 @@ CREATE_STMTS = {
             ON sb.session_id = pl.session_id AND sb.swing_id = pl.last_swing_id
         ),
 
-        /* ------------------------------------------------------------------ */
-        /* server position at the first swing (court coordinates)              */
-        /* ------------------------------------------------------------------ */
+        /* server position at the first swing (court coordinates proxy = raw x/y) */
         pos_at_first AS (
           SELECT
             pf.session_id, pf.point_number,
-            -- nearest player_position row (by ts or s) for the server at first swing
-            COALESCE(pp.court_x, pp2.court_x) AS srv_x,
-            COALESCE(pp.court_y, pp2.court_y) AS srv_y
+            pp.x AS srv_x,
+            pp.y AS srv_y
           FROM pt_first pf
           LEFT JOIN LATERAL (
-            SELECT p.court_x, p.court_y
-            FROM fact_player_position p
-            WHERE p.session_id = pf.session_id
-              AND p.player_id  = pf.server_id
-              AND p.ts IS NOT NULL AND pf.first_hit_ts IS NOT NULL
-            ORDER BY ABS(EXTRACT(EPOCH FROM (p.ts - pf.first_hit_ts)))
-            LIMIT 1
+            SELECT p.x, p.y
+              FROM fact_player_position p
+             WHERE p.session_id = pf.session_id
+               AND p.player_id  = pf.server_id
+               AND p.ts_s IS NOT NULL AND pf.first_hit_s IS NOT NULL
+             ORDER BY ABS(p.ts_s - pf.first_hit_s)
+             LIMIT 1
           ) pp ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT p.court_x, p.court_y
-            FROM fact_player_position p
-            WHERE p.session_id = pf.session_id
-              AND p.player_id  = pf.server_id
-              AND p.ts IS NULL AND p.ts_s IS NOT NULL AND pf.first_hit_s IS NOT NULL
-            ORDER BY ABS((p.ts_s - pf.first_hit_s))
-            LIMIT 1
-          ) pp2 ON TRUE
         ),
 
-        /* ------------------------------------------------------------------ */
-        /* serving side and serve flag logic                                   */
-        /* ------------------------------------------------------------------ */
+        /* serving side and serve flag logic */
         serve_side AS (
           SELECT
             pf.session_id, pf.point_number,
@@ -355,11 +346,7 @@ CREATE_STMTS = {
             ON paf.session_id = pf.session_id AND paf.point_number = pf.point_number
         ),
         serve_flags AS (
-          /* For each swing row, mark it as a serve if:
-            - hitter = server for the point
-            - swing type includes 'overhead'
-            - pre-rally swing (is_in_rally = false)
-            - behind the relevant baseline (using first-serve Y as proxy with ±0.6m) */
+          /* Mark serve swings with conservative criteria */
           SELECT
             p.*,
             CASE
@@ -368,11 +355,11 @@ CREATE_STMTS = {
               WHEN COALESCE(p.is_in_rally, FALSE) THEN FALSE
               ELSE
                 CASE
-                  WHEN paf.srv_y IS NULL THEN TRUE  -- best effort
+                  WHEN paf.srv_y IS NULL THEN TRUE
                   WHEN paf.srv_y < (SELECT mid_y FROM const)
                     THEN (paf.srv_y <= (0.0 + (SELECT behind_eps FROM const)))
-                  ELSE       /* bottom half */
-                      (paf.srv_y >= ((SELECT court_l FROM const) - (SELECT behind_eps FROM const)))
+                  ELSE
+                    (paf.srv_y >= ((SELECT court_l FROM const) - (SELECT behind_eps FROM const)))
                 END
             END AS serve_d
           FROM po p
@@ -406,7 +393,7 @@ CREATE_STMTS = {
           (1 + gs.point_in_game_0)  AS point_in_game_d,
           ss.serving_side_d,
           sf.serve_d,
-          /* "server_behind_baseline_at_first_d" is intentionally removed */
+          /* "server_behind_baseline_at_first_d" intentionally removed */
           lb.last_bounce_type       AS point_end_bounce_type_d,
           sv.serve_bucket_1_8_d,
 
@@ -416,11 +403,11 @@ CREATE_STMTS = {
           sb.bounce_y               AS ball_bounce_y,
           sb.bounce_type            AS bounce_type_raw,
 
-          /* context (unchanged) */
+          /* context */
           n.server_id,    n.server_name,    n.server_uid,
           n.receiver_id,  n.receiver_name,  n.receiver_uid
 
-        FROM serve_flags sf        /* swings w/ improved serve_d */
+        FROM serve_flags sf
         JOIN po p
           ON p.session_id = sf.session_id AND p.swing_id = sf.swing_id
         LEFT JOIN s_bounce     sb ON sb.session_id = p.session_id AND sb.swing_id = p.swing_id
@@ -480,6 +467,8 @@ def _preflight_or_raise(conn):
         ("fact_swing", "ball_hit_y"),
         ("fact_swing", "ball_speed"),
         ("fact_swing", "swing_type"),
+        ("fact_swing", "point_number"),           # added: required downstream
+        ("fact_swing", "shot_number_in_point"),   # added: required downstream
         ("fact_bounce", "bounce_id"),
         ("fact_bounce", "x"),
         ("fact_bounce", "y"),
