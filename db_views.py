@@ -560,7 +560,7 @@ CREATE_STMTS = {
 """,
 }
 
-# ---------- helpers ----------
+# ---------- helpers to support upload ----------
 def _table_exists(conn, t: str) -> bool:
     return conn.execute(text("""
         SELECT 1 FROM information_schema.tables
