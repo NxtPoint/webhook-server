@@ -511,10 +511,12 @@ CREATE_STMTS = {
           sv.serve_bucket_1_8_d,
 
           /* ---- bounce after each swing (passthrough) ---- */
-          sb.bounce_id,
-          sb.bounce_x               AS ball_bounce_x,
-          sb.bounce_y               AS ball_bounce_y,
-          sb.bounce_type            AS bounce_type_raw,
+            /* ---- bounce after each swing (passthrough) ---- */
+            sb.bounce_id,
+            sb.bounce_x               AS ball_bounce_x,
+            sb.bounce_y               AS ball_bounce_y,
+            sb.bounce_type_raw        AS bounce_type_raw,
+
 
           /* ---- context ---- */
           n.server_id,    n.server_name,    n.server_uid,
