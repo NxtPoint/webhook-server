@@ -1,13 +1,4 @@
-# db_views.py — Bronze ➜ Silver (no edits to Bronze columns), Gold mirrors Silver,
-# with a fully isolated DERIVED FIELDS BLOCK.
-#
-# Rules:
-# - Silver always selects all Bronze columns unchanged.
-# - Any additional / derived / joined fields must be suffixed with (d) and quoted, e.g. "serve(d)".
-# - Gold = SELECT * FROM Silver (for now).
-#
-# Copy/paste the DERIVED FIELDS BLOCK (below in both places) wholesale when we tweak logic.
-
+# db_views.py — Silver passthrough + ordering + enriched point rows (derived fields block)
 from sqlalchemy import text
 from typing import List
 
@@ -29,40 +20,26 @@ def _ensure_raw_ingest(conn):
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
 # -------- Views to build (order matters) --------
+# SILVER = strict pass-through from BRONZE (no edits; only *_d derived fields added)
+# GOLD   = reads only SILVER; all derivations are *_d and kept together
 VIEW_NAMES = [
-    # SILVER (Bronze pass-through + extra "(d)" columns only)
+    # SILVER (pure)
     "vw_swing_silver",
-    "vw_ball_position_silver",
-    "vw_player_position_silver",
     "vw_bounce_silver",
+    "vw_ball_position_silver",
 
-    # Derived ordering + enriched rows (still Silver; adds only "(d)" columns)
-    "vw_point_order_silver",
-    "vw_point_log_silver",
-
-    # GOLD wrappers (mirror Silver for now)
-    "vw_swing_gold",
-    "vw_ball_position_gold",
-    "vw_player_position_gold",
-    "vw_bounce_gold",
-    "vw_point_order_gold",
-    "vw_point_log_gold",
-]
-
-# Legacy objects we want to drop if they still exist, to avoid mismatched types
-LEGACY_OBJECTS = [
-    "vw_point_shot_log_gold",
-    "vw_shot_order_gold",
-    "vw_point_summary",
-    "point_log_tbl",
-    "point_summary_tbl",
-    "vw_point_shot_log",
-    "vw_swing",
-    "vw_ball_position",
-    "vw_player_position",
-    "vw_bounce",
+    # Ordering and Gold
     "vw_point_order_by_serve",
     "vw_point_log",
+]
+
+# Legacy objects we want to drop if they still exist
+LEGACY_OBJECTS = [
+    "vw_swing", "vw_bounce", "vw_ball_position", "vw_player_position",
+    "vw_point_order_by_serve_old", "vw_point_log_gold",
+    "vw_point_shot_log_gold", "vw_shot_order_gold",
+    "vw_point_summary", "point_log_tbl", "point_summary_tbl",
+    "vw_point_shot_log",
 ]
 
 def _drop_any(conn, name: str):
@@ -73,18 +50,15 @@ def _drop_any(conn, name: str):
     kind = conn.execute(text("""
         SELECT CASE
                  WHEN EXISTS (
-                    SELECT 1
-                    FROM information_schema.views
+                    SELECT 1 FROM information_schema.views
                     WHERE table_schema='public' AND table_name=:n
                  ) THEN 'view'
                  WHEN EXISTS (
-                    SELECT 1
-                    FROM pg_matviews
+                    SELECT 1 FROM pg_matviews
                     WHERE schemaname='public' AND matviewname=:n
                  ) THEN 'mview'
                  WHEN EXISTS (
-                    SELECT 1
-                    FROM information_schema.tables
+                    SELECT 1 FROM information_schema.tables
                     WHERE table_schema='public' AND table_name=:n
                  ) THEN 'table'
                  ELSE NULL
@@ -98,69 +72,62 @@ def _drop_any(conn, name: str):
     elif kind == 'table':
         stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
-        # best-effort cleanup if we can’t detect the type
         stmts = [
             f'DROP VIEW IF EXISTS "{name}" CASCADE;',
             f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
             f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
-
     for stmt in stmts:
         conn.execute(text(stmt))
 
-# =============================================================================
-# ===========================  SILVER: BRONZE + (d)  ==========================
-# =============================================================================
 CREATE_STMTS = {
-
-    # fact_swing passthrough (+ session/player labels as "(d)")
+    # ---------------- SILVER (PURE passthrough; add *_d only) ----------------
     "vw_swing_silver": """
         CREATE OR REPLACE VIEW vw_swing_silver AS
         SELECT
-          fs.*,                                    -- all Bronze columns unchanged
-          ds.session_uid               AS "session_uid(d)",
-          dp.full_name                AS "player_name(d)",
-          dp.sportai_player_uid       AS "player_uid(d)"
+          fs.session_id,
+          fs.swing_id,
+          fs.player_id,
+          fs.rally_id,
+          fs.start_s, fs.end_s, fs.ball_hit_s,
+          fs.start_ts, fs.end_ts, fs.ball_hit_ts,
+          fs.ball_hit_x, fs.ball_hit_y,
+          fs.ball_speed,
+          fs.ball_player_distance,
+          fs.is_in_rally,
+          fs.serve,
+          fs.serve_type,
+          fs.swing_type,
+          fs.meta,
+          ds.session_uid AS session_uid_d       -- DERIVED (labelled)
         FROM fact_swing fs
-        LEFT JOIN dim_session ds ON ds.session_id = fs.session_id
-        LEFT JOIN dim_player  dp ON dp.session_id = fs.session_id AND dp.player_id = fs.player_id;
+        LEFT JOIN dim_session ds ON ds.session_id = fs.session_id;
     """,
 
-    # fact_ball_position passthrough (+ session label)
     "vw_ball_position_silver": """
         CREATE OR REPLACE VIEW vw_ball_position_silver AS
         SELECT
-          fbp.*,                                   -- Bronze columns unchanged
-          ds.session_uid               AS "session_uid(d)"
-        FROM fact_ball_position fbp
-        LEFT JOIN dim_session ds ON ds.session_id = fbp.session_id;
+          fbp.session_id,
+          fbp.ts_s,
+          fbp.ts,
+          fbp.x, fbp.y
+        FROM fact_ball_position fbp;
     """,
 
-    # fact_player_position passthrough (+ session + player labels)
-    "vw_player_position_silver": """
-        CREATE OR REPLACE VIEW vw_player_position_silver AS
-        SELECT
-          fpp.*,                                   -- Bronze columns unchanged
-          ds.session_uid               AS "session_uid(d)",
-          dp.full_name                AS "player_name(d)",
-          dp.sportai_player_uid       AS "player_uid(d)"
-        FROM fact_player_position fpp
-        LEFT JOIN dim_session ds ON ds.session_id = fpp.session_id
-        LEFT JOIN dim_player  dp ON dp.session_id = fpp.session_id AND dp.player_id = fpp.player_id;
-    """,
-
-    # fact_bounce passthrough (+ session + hitter labels + coalesced XY as "(d)")
     "vw_bounce_silver": """
         CREATE OR REPLACE VIEW vw_bounce_silver AS
         WITH src AS (
           SELECT
-            b.*,                                     -- Bronze columns unchanged
-            ds.session_uid             AS "session_uid(d)",
-            dp.full_name              AS "hitter_name(d)",
-            dp.sportai_player_uid     AS "hitter_player_uid(d)"
+            b.session_id,
+            b.bounce_id,
+            b.hitter_player_id,
+            b.rally_id,
+            b.bounce_s,
+            b.bounce_ts,
+            b.x AS x_raw,
+            b.y AS y_raw,
+            b.bounce_type
           FROM fact_bounce b
-          LEFT JOIN dim_session ds ON ds.session_id = b.session_id
-          LEFT JOIN dim_player  dp ON dp.session_id = b.session_id AND dp.player_id = b.hitter_player_id
         ),
         xy_at_bounce AS (
           SELECT
@@ -180,106 +147,134 @@ CREATE_STMTS = {
           ) bp ON TRUE
         )
         SELECT
-          s.*,
-          -- keep original x/y intact; add coalesced versions as "(d)"
-          COALESCE(s.x, xab.x_bp) AS "x_coalesced(d)",
-          COALESCE(s.y, xab.y_bp) AS "y_coalesced(d)"
+          s.session_id,
+          s.bounce_id,
+          s.hitter_player_id,
+          s.rally_id,
+          s.bounce_s,
+          s.bounce_ts,
+          COALESCE(s.x_raw, xab.x_bp) AS x,
+          COALESCE(s.y_raw, xab.y_bp) AS y,
+          s.bounce_type,
+          ds.session_uid AS session_uid_d       -- DERIVED (labelled)
         FROM src s
-        LEFT JOIN xy_at_bounce xab ON xab.bounce_id = s.bounce_id;
+        LEFT JOIN xy_at_bounce xab ON xab.bounce_id = s.bounce_id
+        LEFT JOIN dim_session ds    ON ds.session_id = s.session_id;
     """,
 
-    # =============================================================================
-    # =====================  DERIVED ORDERING (Silver; adds "(d)")  ===============
-    # =============================================================================
-    "vw_point_order_silver": """
-        /* One row per swing with point/shot numbering (derived) but keeps all Bronze swing fields intact. */
-        CREATE OR REPLACE VIEW vw_point_order_silver AS
+    # ---------------- ORDERING (serve-driven points; rally is fallback) ----------------
+    "vw_point_order_by_serve": """
+        CREATE OR REPLACE VIEW vw_point_order_by_serve AS
         WITH s AS (
           SELECT
-            v.*,  -- includes all Bronze columns + labels "(d)"
-            /* robust ordering key */
-            COALESCE(
-              v.ball_hit_ts,
-              v.start_ts,
-              (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
-            ) AS "ord_ts(d)",
-
-            /* treat overhead and explicit serve as serve-begin candidates */
-            (v.swing_type ILIKE '%overhead%') AS "is_overhead(d)",
-            CASE WHEN COALESCE(v.serve, FALSE) OR (v.swing_type ILIKE '%overhead%')
-                 THEN 1 ELSE 0 END AS "is_serve_begin(d)"
+            v.*,
+            COALESCE(v.ball_hit_ts, v.start_ts,
+                     (TIMESTAMP 'epoch' + COALESCE(v.ball_hit_s, v.start_s, 0) * INTERVAL '1 second')
+            ) AS ord_ts
           FROM vw_swing_silver v
         ),
-        seq AS (
+        base AS (
           SELECT
             s.*,
             CASE
-              WHEN SUM("is_serve_begin(d)") OVER (PARTITION BY s.session_id) = 0
-                THEN 1
-              ELSE 1 + SUM("is_serve_begin(d)") OVER (PARTITION BY s.session_id ORDER BY "ord_ts(d)", s.swing_id
-                                                     ROWS UNBOUNDED PRECEDING)
-            END AS "point_index(d)"
+              WHEN COALESCE(s.serve, FALSE) THEN 1
+              WHEN s.swing_type ILIKE '%overhead%' THEN 1   -- current rule: overhead = serve-begin
+              ELSE 0
+            END AS is_serve_begin
           FROM s
+        ),
+        seq AS (
+          SELECT
+            b.*,
+            CASE
+              WHEN SUM(is_serve_begin) OVER (PARTITION BY b.session_id) = 0 THEN 1
+              ELSE 1 + SUM(is_serve_begin) OVER (
+                     PARTITION BY b.session_id ORDER BY b.ord_ts, b.swing_id
+                     ROWS UNBOUNDED PRECEDING )
+            END AS point_index
+          FROM base b
         ),
         shots AS (
           SELECT
             seq.*,
-            ROW_NUMBER() OVER (PARTITION BY seq.session_id, "point_index(d)" ORDER BY "ord_ts(d)", seq.swing_id)
-              AS "shot_number_in_point(d)",
-            MIN("ord_ts(d)") OVER (PARTITION BY seq.session_id, "point_index(d)") AS "point_ts0(d)"
+            ROW_NUMBER() OVER (
+              PARTITION BY seq.session_id, seq.point_index
+              ORDER BY seq.ord_ts, seq.swing_id
+            ) AS shot_number_in_point,
+            MIN(seq.ord_ts) OVER (PARTITION BY seq.session_id, seq.point_index) AS point_ts0
           FROM seq
         ),
         rally_fallback AS (
           SELECT
             sh.*,
             dr.rally_number,
-            COALESCE("point_index(d)",
-                     DENSE_RANK() OVER (PARTITION BY sh.session_id
-                                        ORDER BY dr.rally_number NULLS LAST, "point_ts0(d)", sh.swing_id)
-            ) AS "point_number(d)"
+            COALESCE(
+              sh.point_index,
+              DENSE_RANK() OVER (
+                PARTITION BY sh.session_id
+                ORDER BY dr.rally_number NULLS LAST, sh.point_ts0, sh.swing_id
+              )
+            ) AS point_number
           FROM shots sh
           LEFT JOIN dim_rally dr
-            ON dr.session_id = sh.session_id AND sh.rally_id = dr.rally_id
+            ON dr.session_id = sh.session_id
+           AND sh.rally_id   = dr.rally_id
         )
-        SELECT * FROM rally_fallback;
+        SELECT
+          session_id,
+          session_uid_d,
+          swing_id,
+          player_id,
+          rally_id,
+          start_s, end_s, ball_hit_s,
+          start_ts, end_ts, ball_hit_ts,
+          ball_hit_x, ball_hit_y,
+          ball_speed,
+          ball_player_distance,
+          is_in_rally,
+          serve, serve_type,
+          swing_type,
+          meta,
+          point_number,
+          shot_number_in_point
+        FROM rally_fallback;
     """,
 
-    # =============================================================================
-    # ==================  ENRICHED POINT ROWS (Silver; adds "(d)")  ===============
-    # =============================================================================
-    "vw_point_log_silver": """
-        /* One row per swing with tennis-aware point & shot numbers + derived context.
-           We KEEP all swing Bronze fields; add only "(d)" columns for deriveds.
-        */
-        CREATE OR REPLACE VIEW vw_point_log_silver AS
-        WITH po AS (
-          SELECT * FROM vw_point_order_silver
-        ),
+    # ---------------- GOLD (enriched) ----------------
+    "vw_point_log": """
+        CREATE OR REPLACE VIEW vw_point_log AS
+        WITH po AS ( SELECT * FROM vw_point_order_by_serve ),
+
         pt_first AS (
-          SELECT DISTINCT ON (session_id, "point_number(d)")
-            session_id, "point_number(d)", swing_id AS first_swing_id,
-            player_id AS server_id, player_name AS "server_name(d)", "player_uid(d)" AS "server_uid(d)",
-            ball_hit_ts AS "first_hit_ts(d)", ball_hit_s AS "first_hit_s(d)"
+          SELECT DISTINCT ON (session_id, point_number)
+            session_id, point_number,
+            swing_id  AS first_swing_id,
+            player_id AS server_id,
+            ball_hit_ts AS first_hit_ts,
+            ball_hit_s  AS first_hit_s
           FROM po
-          ORDER BY session_id, "point_number(d)", "shot_number_in_point(d)"
+          ORDER BY session_id, point_number, shot_number_in_point
         ),
+
         pt_last AS (
-          SELECT DISTINCT ON (session_id, "point_number(d)")
-            session_id, "point_number(d)", swing_id AS last_swing_id,
-            player_id AS last_hitter_id, player_name AS "last_hitter_name(d)",
-            ball_hit_ts AS "last_hit_ts(d)", ball_hit_s AS "last_hit_s(d)"
+          SELECT DISTINCT ON (session_id, point_number)
+            session_id, point_number,
+            swing_id  AS last_swing_id,
+            player_id AS last_hitter_id,
+            ball_hit_ts AS last_hit_ts,
+            ball_hit_s  AS last_hit_s
           FROM po
-          ORDER BY session_id, "point_number(d)", "shot_number_in_point(d)" DESC
+          ORDER BY session_id, point_number, shot_number_in_point DESC
         ),
-        /* per-swing bounce just after hit */
+
+        -- bounce immediately after each swing
         s_bounce AS (
           SELECT
-            s.swing_id, s.session_id, s."point_number(d)", s."shot_number_in_point(d)",
+            s.swing_id, s.session_id,
             b.bounce_id,
             b.bounce_ts, b.bounce_s,
-            b."x_coalesced(d)" AS "ball_bounce_x(d)",
-            b."y_coalesced(d)" AS "ball_bounce_y(d)",
-            b.bounce_type     AS "bounce_type_raw(d)"
+            b.x AS bounce_x, b.y AS bounce_y,
+            b.bounce_type AS bounce_type_raw
           FROM po s
           LEFT JOIN LATERAL (
             SELECT b.*
@@ -296,292 +291,161 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        /* ======= DERIVED FIELDS BLOCK (copy/paste this block when we change logic) ======= */
-        -- BEGIN DERIVED FIELDS BLOCK
+        -- first opposing player id inside the point
         pp_receiver_guess AS (
-          SELECT pf.session_id, pf."point_number(d)",
-                 MIN(p.player_id) AS "receiver_id(d)"
+          SELECT
+            pf.session_id, pf.point_number,
+            MIN(p.player_id) AS receiver_id_guess
           FROM pt_first pf
           LEFT JOIN po p
-            ON p.session_id = pf.session_id
-           AND p."point_number(d)" = pf."point_number(d)"
-           AND p."shot_number_in_point(d)" > 1
+            ON p.session_id   = pf.session_id
+           AND p.point_number = pf.point_number
+           AND p.shot_number_in_point > 1
            AND p.player_id IS NOT NULL
            AND p.player_id <> pf.server_id
-          GROUP BY pf.session_id, pf."point_number(d)"
+          GROUP BY pf.session_id, pf.point_number
         ),
-        names AS (
+
+        server_receiver AS (
           SELECT
-            pf.session_id, pf."point_number(d)", pf.server_id,
-            COALESCE(rg."receiver_id(d)",
-                     (SELECT MIN(dp.player_id)
-                        FROM dim_player dp
-                       WHERE dp.session_id = pf.session_id
-                         AND dp.player_id <> pf.server_id)) AS "receiver_id(d)"
+            pf.session_id, pf.point_number,
+            pf.server_id,
+            COALESCE(
+              rg.receiver_id_guess,
+              (SELECT MIN(dp.player_id)
+                 FROM dim_player dp
+                WHERE dp.session_id = pf.session_id
+                  AND dp.player_id <> pf.server_id)
+            ) AS receiver_id
           FROM pt_first pf
           LEFT JOIN pp_receiver_guess rg
-            ON rg.session_id = pf.session_id AND rg."point_number(d)" = pf."point_number(d)"
+            ON rg.session_id  = pf.session_id
+           AND rg.point_number = pf.point_number
         ),
-        names_joined AS (
+
+        -- names are attached only here
+        names AS (
           SELECT
-            n.*,
-            dp1.full_name          AS "server_name(d)",
-            dp1.sportai_player_uid AS "server_uid(d)",
-            dp2.full_name          AS "receiver_name(d)",
-            dp2.sportai_player_uid AS "receiver_uid(d)"
-          FROM names n
-          LEFT JOIN dim_player dp1 ON dp1.session_id = n.session_id AND dp1.player_id = n.server_id
-          LEFT JOIN dim_player dp2 ON dp2.session_id = n.session_id AND dp2.player_id = n."receiver_id(d)"
+            sr.*,
+            dp1.full_name          AS server_name,
+            dp1.sportai_player_uid AS server_uid,
+            dp2.full_name          AS receiver_name,
+            dp2.sportai_player_uid AS receiver_uid
+          FROM server_receiver sr
+          LEFT JOIN dim_player dp1
+                 ON dp1.session_id = sr.session_id AND dp1.player_id = sr.server_id
+          LEFT JOIN dim_player dp2
+                 ON dp2.session_id = sr.session_id AND dp2.player_id = sr.receiver_id
         ),
-        point_outcome AS (
-          SELECT
-            pl.session_id, pl."point_number(d)",
-            sb."bounce_type_raw(d)" AS "point_end_bounce_type(d)",
-            CASE
-              WHEN sb."bounce_type_raw(d)" IN ('out','net','long','wide') THEN
-                CASE WHEN pl.last_hitter_id = nj.server_id THEN nj."receiver_id(d)" ELSE nj.server_id END
-              ELSE NULL
-            END AS "point_winner_id(d)"
-          FROM pt_last pl
-          LEFT JOIN s_bounce sb
-                 ON sb.session_id = pl.session_id AND sb.swing_id = pl.last_swing_id
-          LEFT JOIN names_joined nj
-                 ON nj.session_id = pl.session_id AND nj."point_number(d)" = pl."point_number(d)"
-        ),
+
+        -- game numbering: new game when server id changes
         point_headers AS (
           SELECT
-            nj.*,
-            pf."first_hit_ts(d)",
-            LAG(nj.server_id) OVER (PARTITION BY nj.session_id ORDER BY nj."point_number(d)") AS "prev_server_id(d)",
-            CASE WHEN LAG(nj.server_id) OVER (PARTITION BY nj.session_id ORDER BY nj."point_number(d)")
-                      IS DISTINCT FROM nj.server_id THEN 1 ELSE 0 END AS "new_game_flag(d)"
-          FROM names_joined nj
-          LEFT JOIN pt_first pf
-            ON pf.session_id = nj.session_id AND pf."point_number(d)" = nj."point_number(d)"
+            n.*,
+            LAG(n.server_id) OVER (PARTITION BY n.session_id ORDER BY n.point_number) AS prev_server_id,
+            CASE WHEN LAG(n.server_id) OVER (PARTITION BY n.session_id ORDER BY n.point_number)
+                      IS DISTINCT FROM n.server_id THEN 1 ELSE 0 END AS new_game_flag
+          FROM names n
         ),
+
         game_numbered AS (
           SELECT
             ph.*,
-            1 + SUM("new_game_flag(d)") OVER (PARTITION BY ph.session_id ORDER BY ph."point_number(d)"
-                                              ROWS UNBOUNDED PRECEDING) AS "game_number(d)"
+            1 + SUM(new_game_flag) OVER (PARTITION BY ph.session_id ORDER BY ph.point_number
+                                         ROWS UNBOUNDED PRECEDING) AS game_number
           FROM point_headers ph
         ),
+
         game_seq AS (
           SELECT
             gn.*,
-            ROW_NUMBER() OVER (PARTITION BY gn.session_id, "game_number(d)" ORDER BY gn."point_number(d)")
-              AS "point_in_game(d)"
+            ROW_NUMBER() OVER (PARTITION BY gn.session_id, gn.game_number ORDER BY gn.point_number) AS point_in_game
           FROM game_numbered gn
         ),
-        game_score AS (
-          SELECT
-            gs.session_id, gs."point_number(d)", gs."game_number(d)", gs."point_in_game(d)",
-            gs.server_id, gs."receiver_id(d)", gs."server_name(d)", gs."receiver_name(d)",
-            gs."server_uid(d)", gs."receiver_uid(d)", gs."first_hit_ts(d)",
-            po2."point_winner_id(d)",
-            SUM(CASE WHEN po2."point_winner_id(d)" = gs.server_id     THEN 1 ELSE 0 END)
-               OVER (PARTITION BY gs.session_id, gs."game_number(d)" ORDER BY gs."point_number(d)")
-                 AS "server_points_in_game(d)",
-            SUM(CASE WHEN po2."point_winner_id(d)" = gs."receiver_id(d)" THEN 1 ELSE 0 END)
-               OVER (PARTITION BY gs.session_id, gs."game_number(d)" ORDER BY gs."point_number(d)")
-                 AS "receiver_points_in_game(d)"
-          FROM game_seq gs
-          LEFT JOIN point_outcome po2
-            ON po2.session_id = gs.session_id AND po2."point_number(d)" = gs."point_number(d)"
-        ),
-        score_text AS (
-          SELECT
-            g.*,
-            CASE
-              WHEN GREATEST(COALESCE("server_points_in_game(d)",0), COALESCE("receiver_points_in_game(d)",0)) >= 4
-                   AND ABS(COALESCE("server_points_in_game(d)",0) - COALESCE("receiver_points_in_game(d)",0)) >= 2
-                THEN 'game'
-              WHEN COALESCE("server_points_in_game(d)",0) >= 3 AND COALESCE("receiver_points_in_game(d)",0) >= 3 THEN
-                CASE
-                  WHEN "server_points_in_game(d)" = "receiver_points_in_game(d)" THEN '40-40'
-                  WHEN "server_points_in_game(d)"  > "receiver_points_in_game(d)" THEN 'Ad-40'
-                  ELSE '40-Ad'
-                END
-              ELSE
-                concat(
-                  CASE COALESCE("server_points_in_game(d)",0)
-                    WHEN 0 THEN '0' WHEN 1 THEN '15' WHEN 2 THEN '30' ELSE '40' END,
-                  '-',
-                  CASE COALESCE("receiver_points_in_game(d)",0)
-                    WHEN 0 THEN '0' WHEN 1 THEN '15' WHEN 2 THEN '30' ELSE '40' END
-                )
-            END AS "score_server_first(d)"
-          FROM game_score g
-        ),
+
         serve_bounce AS (
           SELECT
-            pf.session_id, pf."point_number(d)",
-            sb."ball_bounce_x(d)", sb."ball_bounce_y(d)", sb."bounce_type_raw(d)"
+            pf.session_id, pf.point_number,
+            sb.bounce_x, sb.bounce_y, sb.bounce_type_raw
           FROM pt_first pf
           LEFT JOIN s_bounce sb
             ON sb.session_id = pf.session_id AND sb.swing_id = pf.first_swing_id
         ),
+
         serve_bucket AS (
           SELECT
             sb.*,
             CASE
-              WHEN sb."ball_bounce_x(d)" IS NULL OR sb."ball_bounce_y(d)" IS NULL THEN NULL
-              ELSE
-                (CASE WHEN sb."ball_bounce_y(d)" >= 0 THEN 1 ELSE 0 END) * 4
-                + (CASE
-                     WHEN sb."ball_bounce_x(d)" < -0.5 THEN 1
-                     WHEN sb."ball_bounce_x(d)" <  0.0 THEN 2
-                     WHEN sb."ball_bounce_x(d)" <  0.5 THEN 3
-                     ELSE 4
-                   END)
-            END AS "serve_bucket_1_8(d)"
+              WHEN sb.bounce_x IS NULL OR sb.bounce_y IS NULL THEN NULL
+              ELSE (CASE WHEN sb.bounce_y >= 0 THEN 1 ELSE 0 END) * 4
+                 + (CASE
+                      WHEN sb.bounce_x < -0.5 THEN 1
+                      WHEN sb.bounce_x <  0.0 THEN 2
+                      WHEN sb.bounce_x <  0.5 THEN 3
+                      ELSE 4
+                    END)
+            END AS serve_bucket_1_8_d
           FROM serve_bounce sb
         ),
-        /* serve-detection per swing */
-        per_swing_serve AS (
+
+        last_bounce AS (
           SELECT
-            po.*,
-            sb."ball_bounce_x(d)", sb."ball_bounce_y(d)", sb."bounce_type_raw(d)",
-
-            -- fault on an overhead (0 speed or fault bounce)
-            CASE
-              WHEN (po.swing_type ILIKE '%overhead%')
-                   AND (COALESCE(po.ball_speed,0)=0
-                        OR sb."bounce_type_raw(d)" IN ('out','net','long','wide'))
-                THEN 1 ELSE 0
-            END AS "serve_fault(d)",
-
-            -- derived serve flag: first overhead; or second overhead only if prev was a fault
-            CASE
-              WHEN (po.swing_type ILIKE '%overhead%') AND po."shot_number_in_point(d)" = 1
-                THEN TRUE
-              WHEN (po.swing_type ILIKE '%overhead%') AND po."shot_number_in_point(d)" = 2
-                   AND COALESCE(LAG(CASE
-                                      WHEN (po.swing_type ILIKE '%overhead%')
-                                           AND (COALESCE(po.ball_speed,0)=0
-                                                OR sb."bounce_type_raw(d)" IN ('out','net','long','wide'))
-                                        THEN 1 ELSE 0
-                                    END)
-                       OVER (PARTITION BY po.session_id, po."point_number(d)" ORDER BY po."shot_number_in_point(d)"),0) = 1
-                THEN TRUE
-              ELSE FALSE
-            END AS "serve(d)"
-          FROM po
+            pl.session_id, pl.point_number,
+            sb.bounce_x AS last_bounce_x, sb.bounce_y AS last_bounce_y,
+            sb.bounce_type_raw AS last_bounce_type
+          FROM pt_last pl
           LEFT JOIN s_bounce sb
-                 ON sb.session_id = po.session_id AND sb.swing_id = po.swing_id
+            ON sb.session_id = pl.session_id AND sb.swing_id = pl.last_swing_id
         )
-        -- END DERIVED FIELDS BLOCK
 
         SELECT
-          po."session_uid(d)",             -- label from swing silver
-          ps.session_id,
-          po.rally_id,                     -- Bronze diagnostic parity
-          po."point_number(d)" AS "point_number(d)",
-          po."shot_number_in_point(d)" AS "shot_number(d)",
+          po.session_uid_d,
+          po.session_id,
+          po.rally_id,
+          po.point_number,
+          po.shot_number_in_point AS shot_number,
 
           po.swing_id,
-          po.player_id, po.player_name, po."player_uid(d)",
+          po.player_id,
 
-          -- server/receiver/game context
-          st."game_number(d)",
-          st."point_in_game(d)",
-          CASE WHEN (st."point_in_game(d)" % 2) = 1 THEN 'deuce' ELSE 'ad' END AS "serving_side(d)",
-          st.server_id, st."server_name(d)", st."server_uid(d)",
-          st."receiver_id(d)", st."receiver_name(d)", st."receiver_uid(d)",
+          -- ===== DERIVED FIELDS BLOCK (_d only) =====
+          gs.game_number,
+          gs.point_in_game,
+          CASE WHEN (gs.point_in_game % 2) = 1 THEN 'deuce' ELSE 'ad' END  AS serving_side_d,
+          (po.serve OR po.swing_type ILIKE '%overhead%')                   AS serve_d,
+          (COALESCE(po.ball_speed,0) = 0)                                  AS is_error_d,
+          lb.last_bounce_type                                              AS point_end_bounce_type_d,
+          sv.serve_bucket_1_8_d,
 
-          -- derived serve flag
-          ps."serve(d)",
-          po.serve_type,          -- Bronze
-          po.swing_type AS swing_type,  -- Bronze
+          -- Non-derived bronze fields (passthrough)
+          po.swing_type AS swing_type_raw,
+          po.ball_speed,
+          po.ball_player_distance,
+          po.start_s, po.end_s, po.ball_hit_s,
+          po.start_ts, po.end_ts, po.ball_hit_ts,
 
-          po.ball_speed,          -- Bronze
-          po.ball_player_distance,-- Bronze
+          -- Bounce after this swing (passthrough)
+          sb.bounce_id,
+          sb.bounce_x AS ball_bounce_x,
+          sb.bounce_y AS ball_bounce_y,
+          sb.bounce_type_raw,
 
-          po.start_s, po.end_s, po.ball_hit_s,     -- Bronze
-          po.start_ts, po.end_ts, po.ball_hit_ts,  -- Bronze
+          -- Names and IDs for context (passthrough)
+          n.server_id,   n.server_name,   n.server_uid,
+          n.receiver_id, n.receiver_name, n.receiver_uid
 
-          -- bounce after this swing
-          ps."ball_bounce_x(d)",
-          ps."ball_bounce_y(d)",
-          ps."bounce_type_raw(d)",
-
-          -- coarse shot bucket
-          CASE
-            WHEN ps."ball_bounce_x(d)" IS NULL OR ps."ball_bounce_y(d)" IS NULL THEN NULL
-            WHEN ps."ball_bounce_y(d)" >= 0 AND ps."ball_bounce_x(d)" < 0  THEN 'A'
-            WHEN ps."ball_bounce_y(d)" >= 0 AND ps."ball_bounce_x(d)" >= 0 THEN 'B'
-            WHEN ps."ball_bounce_y(d)" <  0 AND ps."ball_bounce_x(d)" < 0  THEN 'C'
-            ELSE 'D'
-          END AS "shot_loc_bucket_ad(d)",
-
-          -- point outcome
-          po2."point_winner_id(d)",
-          CASE
-            WHEN po2."point_winner_id(d)" IS NULL THEN NULL
-            WHEN po2."point_winner_id(d)" = st.server_id THEN st."server_name(d)" ELSE st."receiver_name(d)"
-          END AS "point_winner_name(d)",
-          lb."point_end_bounce_type(d)",
-          CASE WHEN lb."point_end_bounce_type(d)" IN ('out','net','long','wide') THEN TRUE ELSE FALSE END AS "is_error(d)",
-          CASE
-            WHEN lb."point_end_bounce_type(d)" IN ('out','net','long','wide') THEN lb."point_end_bounce_type(d)"
-            ELSE NULL
-          END AS "error_type(d)",
-
-          -- score text (server-first)
-          st."score_server_first(d)",
-
-          -- serve placement bucket for the point
-          sv."serve_bucket_1_8(d)"
-
-        FROM per_swing_serve ps
-        JOIN po ON po.session_id = ps.session_id AND po.swing_id = ps.swing_id
-        LEFT JOIN score_text st
-               ON st.session_id = ps.session_id AND st."point_number(d)" = ps."point_number(d)"
-        LEFT JOIN point_outcome po2
-               ON po2.session_id = ps.session_id AND po2."point_number(d)" = ps."point_number(d)"
-        LEFT JOIN (
-          SELECT session_id, "point_number(d)", "point_end_bounce_type(d)"
-          FROM (
-            SELECT *, ROW_NUMBER() OVER (PARTITION BY session_id, "point_number(d)" ORDER BY "point_number(d)") rn
-            FROM point_outcome
-          ) q WHERE rn = 1
-        ) lb ON lb.session_id = ps.session_id AND lb."point_number(d)" = ps."point_number(d)"
+        FROM po
+        LEFT JOIN s_bounce sb
+               ON sb.session_id = po.session_id AND sb.swing_id = po.swing_id
+        LEFT JOIN game_seq gs
+               ON gs.session_id = po.session_id AND gs.point_number = po.point_number
+        LEFT JOIN last_bounce lb
+               ON lb.session_id = po.session_id AND lb.point_number = po.point_number
         LEFT JOIN serve_bucket sv
-               ON sv.session_id = ps.session_id AND sv."point_number(d)" = ps."point_number(d)"
-        ORDER BY po."session_uid(d)", ps."point_number(d)", ps."shot_number_in_point(d)", ps.swing_id;
-    """,
-
-    # =============================================================================
-    # =============================  GOLD (mirror)  ===============================
-    # =============================================================================
-    "vw_swing_gold": """
-        CREATE OR REPLACE VIEW vw_swing_gold AS
-        SELECT * FROM vw_swing_silver;
-    """,
-
-    "vw_ball_position_gold": """
-        CREATE OR REPLACE VIEW vw_ball_position_gold AS
-        SELECT * FROM vw_ball_position_silver;
-    """,
-
-    "vw_player_position_gold": """
-        CREATE OR REPLACE VIEW vw_player_position_gold AS
-        SELECT * FROM vw_player_position_silver;
-    """,
-
-    "vw_bounce_gold": """
-        CREATE OR REPLACE VIEW vw_bounce_gold AS
-        SELECT * FROM vw_bounce_silver;
-    """,
-
-    "vw_point_order_gold": """
-        CREATE OR REPLACE VIEW vw_point_order_gold AS
-        SELECT * FROM vw_point_order_silver;
-    """,
-
-    "vw_point_log_gold": """
-        CREATE OR REPLACE VIEW vw_point_log_gold AS
-        SELECT * FROM vw_point_log_silver;
+               ON sv.session_id = po.session_id AND sv.point_number = po.point_number
+        LEFT JOIN names n
+               ON n.session_id = po.session_id AND n.point_number = po.point_number
+        ORDER BY po.session_uid_d, po.point_number, po.shot_number_in_point, po.swing_id;
     """,
 }
 
@@ -609,6 +473,61 @@ def _preflight_or_raise(conn):
     missing = [t for t in required_tables if not _table_exists(conn, t)]
     if missing:
         raise RuntimeError(f"Missing base tables before creating views: {', '.join(missing)}")
+
+    checks = [
+        ("dim_session", "session_uid"),
+        ("dim_player", "full_name"),
+        ("dim_player", "sportai_player_uid"),
+        ("dim_rally", "rally_id"),
+        ("dim_rally", "rally_number"),
+
+        ("fact_swing", "swing_id"),
+        ("fact_swing", "session_id"),
+        ("fact_swing", "player_id"),
+        ("fact_swing", "rally_id"),
+        ("fact_swing", "start_s"),
+        ("fact_swing", "end_s"),
+        ("fact_swing", "ball_hit_s"),
+        ("fact_swing", "start_ts"),
+        ("fact_swing", "end_ts"),
+        ("fact_swing", "ball_hit_ts"),
+        ("fact_swing", "ball_hit_x"),
+        ("fact_swing", "ball_hit_y"),
+        ("fact_swing", "ball_speed"),
+        ("fact_swing", "ball_player_distance"),
+        ("fact_swing", "is_in_rally"),
+        ("fact_swing", "serve"),
+        ("fact_swing", "serve_type"),
+        ("fact_swing", "swing_type"),
+        ("fact_swing", "meta"),
+
+        ("fact_bounce", "bounce_id"),
+        ("fact_bounce", "session_id"),
+        ("fact_bounce", "hitter_player_id"),
+        ("fact_bounce", "rally_id"),
+        ("fact_bounce", "bounce_s"),
+        ("fact_bounce", "bounce_ts"),
+        ("fact_bounce", "x"),
+        ("fact_bounce", "y"),
+        ("fact_bounce", "bounce_type"),
+
+        ("fact_player_position", "session_id"),
+        ("fact_player_position", "player_id"),
+        ("fact_player_position", "ts_s"),
+        ("fact_player_position", "ts"),
+        ("fact_player_position", "x"),
+        ("fact_player_position", "y"),
+
+        ("fact_ball_position", "session_id"),
+        ("fact_ball_position", "ts_s"),
+        ("fact_ball_position", "ts"),
+        ("fact_ball_position", "x"),
+        ("fact_ball_position", "y"),
+    ]
+    missing_cols = [(t,c) for (t,c) in checks if not _column_exists(conn, t, c)]
+    if missing_cols:
+        msg = ", ".join([f"{t}.{c}" for (t,c) in missing_cols])
+        raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
 # ---------- apply all views ----------
 def _apply_views(engine):
