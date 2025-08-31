@@ -178,19 +178,20 @@ CREATE_STMTS = {
     # C3. Passthrough from bronze: bounces
     # -------------------------------------------------------------------------
     "vw_bounce_silver": """
-        CREATE OR REPLACE VIEW vw_bounce_silver AS
-        SELECT
-          b.session_id,
-          b.bounce_id,
-          b.hitter_player_id,
-          b.rally_id,
-          b.bounce_s,
-          b.bounce_ts,
-          b.x,
-          b.y,
-          b.bounce_type
-        FROM fact_bounce b;
-    """,
+      CREATE OR REPLACE VIEW vw_bounce_silver AS
+      SELECT
+        b.session_id,
+        b.bounce_id,
+        b.hitter_player_id,
+        b.rally_id,
+        b.bounce_s,
+        b.bounce_ts,
+        b.x,
+        b.y,
+        /* bronze has no bounce_type; expose a stable placeholder for Silver */
+        NULL::text AS bounce_type
+      FROM fact_bounce b;
+  """,
 
     # -------------------------------------------------------------------------
     # C4. Derived: vw_point_silver (bronze-only)
