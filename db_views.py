@@ -315,38 +315,53 @@ CREATE_STMTS = {
         ),
 
         -- D8. Shot number within point
+        -- D8. Shot number within point + next swing timing ---------------------------
         swings_numbered AS (
           SELECT
             sip.*,
             ROW_NUMBER() OVER (
               PARTITION BY sip.session_id, sip.point_number_d
               ORDER BY sip.ord_ts, sip.swing_id
-            ) AS shot_number_d
+            ) AS shot_number_d,
+            -- next swing timing (for “between hits” window)
+            LEAD(sip.ord_ts)       OVER (PARTITION BY sip.session_id ORDER BY sip.ord_ts, sip.swing_id) AS next_ord_ts,
+            LEAD(sip.ball_hit_ts)  OVER (PARTITION BY sip.session_id ORDER BY sip.ord_ts, sip.swing_id) AS next_ball_hit_ts,
+            LEAD(sip.ball_hit_s)   OVER (PARTITION BY sip.session_id ORDER BY sip.ord_ts, sip.swing_id) AS next_ball_hit_s
           FROM swings_in_point sip
         ),
 
+
         -- D9. Bounce after each swing
+        -- D9. First FLOOR bounce between this swing and the next swing --------------
         swing_bounce AS (
           SELECT
             sn.swing_id, sn.session_id, sn.point_number_d, sn.shot_number_d,
             b.bounce_id, b.bounce_ts, b.bounce_s,
-            b.x AS bounce_x, b.y AS bounce_y,
+            b.x AS bounce_x, b.y AS bounce_y_raw,                        -- raw (center-origin)
+            ((SELECT mid_y FROM const) + b.y) AS bounce_y,               -- normalized 0..23.77
             b.bounce_type AS bounce_type_raw
           FROM swings_numbered sn
           LEFT JOIN LATERAL (
             SELECT b.*
             FROM vw_bounce_silver b
             WHERE b.session_id = sn.session_id
+              AND b.bounce_type = 'floor'                                -- consider only ground bounces
               AND (
-                    (b.bounce_ts IS NOT NULL AND sn.ball_hit_ts IS NOT NULL AND b.bounce_ts >= sn.ball_hit_ts)
-                 OR ((b.bounce_ts IS NULL OR sn.ball_hit_ts IS NULL)
-                     AND b.bounce_s IS NOT NULL AND sn.ball_hit_s IS NOT NULL
-                     AND b.bounce_s >= sn.ball_hit_s)
+                    -- use timestamps when present: bounce strictly after this hit and strictly before next hit
+                    (b.bounce_ts IS NOT NULL AND sn.ball_hit_ts IS NOT NULL
+                      AND b.bounce_ts > sn.ball_hit_ts
+                      AND (sn.next_ball_hit_ts IS NULL OR b.bounce_ts < sn.next_ball_hit_ts))
+                OR -- fallback to seconds when timestamps missing
+                    ( (b.bounce_ts IS NULL OR sn.ball_hit_ts IS NULL)
+                      AND b.bounce_s IS NOT NULL AND sn.ball_hit_s IS NOT NULL
+                      AND b.bounce_s > sn.ball_hit_s
+                      AND (sn.next_ball_hit_s IS NULL OR b.bounce_s < sn.next_ball_hit_s))
                   )
             ORDER BY COALESCE(b.bounce_ts, (TIMESTAMP 'epoch' + b.bounce_s * INTERVAL '1 second'))
             LIMIT 1
           ) b ON TRUE
         ),
+
 
         -- D10. Serve bucket from FIRST serve's bounce
         first_serve_per_point AS (
@@ -365,11 +380,11 @@ CREATE_STMTS = {
         serve_bucket AS (
           SELECT
             f.session_id, f.point_number_d,
-            sb.bounce_x, sb.bounce_y,
+            sb.bounce_x, sb.bounce_y,     -- this now uses normalized bounce_y from swing_bounce
             CASE
               WHEN sb.bounce_x IS NULL OR sb.bounce_y IS NULL THEN NULL
               ELSE (CASE WHEN sb.bounce_y >= 0 THEN 1 ELSE 0 END) * 4
-                 + (CASE
+                + (CASE
                       WHEN sb.bounce_x < -0.5 THEN 1
                       WHEN sb.bounce_x <  0.0 THEN 2
                       WHEN sb.bounce_x <  0.5 THEN 3
