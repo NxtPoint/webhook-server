@@ -102,7 +102,7 @@ def _drop_any(conn, name: str):
                  ELSE NULL
                END
     """), {"n": name}).scalar()
-    stmts = []
+
     if kind == 'view':
         stmts = [f'DROP VIEW IF EXISTS "{name}" CASCADE;']
     elif kind == 'mview':
@@ -111,10 +111,11 @@ def _drop_any(conn, name: str):
         stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
         stmts = [
-            f'DROP VIEW IF EXISTS \"{name}\" CASCADE;",
-            f"DROP MATERIALIZED VIEW IF EXISTS \"{name}\" CASCADE;",
-            f"DROP TABLE IF EXISTS \"{name}\" CASCADE;",
+            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
+
     for stmt in stmts:
         conn.execute(text(stmt))
 
