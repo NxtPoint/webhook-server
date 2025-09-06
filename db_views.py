@@ -331,24 +331,26 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- S7. Per-swing window: [start, min(next_hit, +2.5s))
-        swing_windows AS (
-          SELECT
-            sn.*,
-            COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS start_ts_pref
-          FROM swings_numbered sn
-        ),
+        -- S7. Per-swing window
         swing_windows_cap AS (
           SELECT
             sw.*,
+            /* end without epsilon */
             LEAST(
               sw.start_ts_pref + INTERVAL '2.5 seconds',
               COALESCE(sw.next_ball_hit_ts, sw.start_ts_pref + INTERVAL '2.5 seconds')
-            ) AS end_ts_pref
+            ) AS end_ts_pref_raw,
+            /* add small epsilon to allow ties at next hit */
+            LEAST(
+              sw.start_ts_pref + INTERVAL '2.5 seconds',
+              COALESCE(sw.next_ball_hit_ts, sw.start_ts_pref + INTERVAL '2.5 seconds')
+            ) + INTERVAL '20 milliseconds' AS end_ts_pref,
+            /* tiny guard after contact to avoid misreading the contact as a bounce */
+            sw.start_ts_pref + INTERVAL '5 milliseconds' AS start_ts_guard
           FROM swing_windows sw
         ),
 
-        -- S8A. First FLOOR bounce in half-open window (exclude contact at t=start)
+        -- S8A. First FLOOR bounce in (start_guard, end_eps]
         swing_bounce_floor AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -361,14 +363,14 @@ CREATE_STMTS = {
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
               AND b.bounce_type = 'floor'
-              AND b.bounce_ts_pref >  swc.start_ts_pref
-              AND b.bounce_ts_pref <  swc.end_ts_pref
+              AND b.bounce_ts_pref >  swc.start_ts_guard
+              AND b.bounce_ts_pref <= swc.end_ts_pref
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
         ),
 
-        -- S8B. First ANY bounce in same half-open window (fallback; exclude t=start)
+        -- S8B. First ANY bounce in the same (start_guard, end_eps]
         swing_bounce_any AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -384,12 +386,13 @@ CREATE_STMTS = {
             SELECT b.*
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
-              AND b.bounce_ts_pref >  swc.start_ts_pref
-              AND b.bounce_ts_pref <  swc.end_ts_pref
+              AND b.bounce_ts_pref >  swc.start_ts_guard
+              AND b.bounce_ts_pref <= swc.end_ts_pref
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
-        ),
+        )
+,
 
         -- S8C. PRIMARY = FLOOR if present, else first ANY
         swing_bounce_primary AS (
