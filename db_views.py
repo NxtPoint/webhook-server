@@ -156,7 +156,7 @@ CREATE_STMTS = {
           fs.ball_hit_x, fs.ball_hit_y,
           fs.ball_speed,
           -- labels/raw
-          fs.serve, fs.erve_type AS serve_type, fs.swing_type, fs.is_in_rally,
+          fs.serve, fs.serve_type AS serve_type, fs.swing_type, fs.is_in_rally,
           fs.ball_player_distance,
           fs.meta,
           ds.session_uid AS session_uid_d
@@ -340,19 +340,16 @@ CREATE_STMTS = {
 
         -- S6. Shot number + next swing timing
         swings_numbered AS (
-          SELECT
-            sps.*,
-            ROW_NUMBER() OVER (
-              PARTITION BY sps.session_id, sps.point_number_d
-              ORDER BY sps.ord_ts, sps.swing_id
-            ) AS shot_number_d,
-            MAX(ROW_NUMBER() OVER (
-              PARTITION BY sps.session_id, sps.point_number_d
-              ORDER BY sps.ord_ts, sps.swing_id
-            )) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_in_point_d,
-            LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
-            LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s
-          FROM swings_with_serve sps
+        SELECT
+          sps.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY sps.session_id, sps.point_number_d
+            ORDER BY sps.ord_ts, sps.swing_id
+          ) AS shot_number_d,
+          COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_in_point_d,
+          LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
+          LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s
+        FROM swings_with_serve sps
         ),
 
         -- First non-serve shot number per point (NULL if point never starts)
