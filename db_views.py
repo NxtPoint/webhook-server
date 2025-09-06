@@ -1,12 +1,13 @@
 # db_views.py — Silver = passthrough + derived (from bronze), Gold = thin extract
 # ----------------------------------------------------------------------------------
-# NOTES
-# - SportAI sends coordinates in METERS. We do not autoscale; we treat x/y as meters.
-# - We attach ONE bounce to each swing:
-#   primary = first FLOOR bounce in (ball_hit+5ms, min(next_hit, ball_hit+2.5s)+20ms]
-#   fallback = first ANY bounce in the same half-open window
-# - Serve faults: within a point, every serve prior to the first non-serve swing is a fault.
-# - Terminal result: last swing of the point ⇒ winner if floor-in, else error.
+# - Coordinates are meters; no autoscale.
+# - One primary bounce per swing:
+#     primary = first FLOOR in (ball_hit+5ms, min(next_hit, ball_hit+2.5s)+20ms]
+#     fallback = first ANY bounce in the same window.
+# - Serve faults: within a point, every serve *before* the starting serve is a fault.
+#   If the point never starts (double fault), all serves are faults.
+# - Terminal result: last shot of the point: WINNER iff (floor-in AND ball_speed>0),
+#   otherwise ERROR. Winner id is computed accordingly.
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -155,7 +156,7 @@ CREATE_STMTS = {
           fs.ball_hit_x, fs.ball_hit_y,
           fs.ball_speed,
           -- labels/raw
-          fs.serve, fs.serve_type, fs.swing_type, fs.is_in_rally,
+          fs.serve, fs.erve_type AS serve_type, fs.swing_type, fs.is_in_rally,
           fs.ball_player_distance,
           fs.meta,
           ds.session_uid AS session_uid_d
@@ -324,7 +325,7 @@ CREATE_STMTS = {
           ) sp ON TRUE
         ),
 
-        -- S5b. Bring serve boolean onto swings
+        -- S5b. Bring serve boolean
         swings_with_serve AS (
           SELECT
             sip.*,
@@ -337,7 +338,7 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- S6. Shot number + next swing timing + last-in-point flag
+        -- S6. Shot number + next swing timing
         swings_numbered AS (
           SELECT
             sps.*,
@@ -345,7 +346,10 @@ CREATE_STMTS = {
               PARTITION BY sps.session_id, sps.point_number_d
               ORDER BY sps.ord_ts, sps.swing_id
             ) AS shot_number_d,
-            MAX(sps.swing_id) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_swing_id_in_point_d,
+            MAX(ROW_NUMBER() OVER (
+              PARTITION BY sps.session_id, sps.point_number_d
+              ORDER BY sps.ord_ts, sps.swing_id
+            )) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_in_point_d,
             LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
             LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s
           FROM swings_with_serve sps
@@ -360,27 +364,32 @@ CREATE_STMTS = {
           GROUP BY session_id, point_number_d
         ),
 
-        -- Index serves within each point
-        serve_swings_ix AS (
+        -- Starting serve: the last serve immediately before the first non-serve
+        point_starting_serve AS (
           SELECT
-            sn.session_id, sn.point_number_d, sn.swing_id,
-            ROW_NUMBER() OVER (PARTITION BY sn.session_id, sn.point_number_d
-                               ORDER BY sn.ord_ts, sn.swing_id) AS serve_attempt_ix_d
+            sn.session_id, sn.point_number_d,
+            MAX(sn.shot_number_d) AS start_serve_shot_d
           FROM swings_numbered sn
+          JOIN point_first_rally_shot pfrs
+            ON pfrs.session_id = sn.session_id
+           AND pfrs.point_number_d = sn.point_number_d
           WHERE sn.serve_d
+            AND pfrs.first_rally_shot_d IS NOT NULL
+            AND sn.shot_number_d < pfrs.first_rally_shot_d
+          GROUP BY sn.session_id, sn.point_number_d
         ),
 
-        -- Enrich with serve indices + first rally shot
+        -- Enrich with serve indices + markers
         swings_enriched AS (
           SELECT
             sn.*,
-            sxi.serve_attempt_ix_d,
-            pfrs.first_rally_shot_d
+            pfrs.first_rally_shot_d,
+            pss.start_serve_shot_d
           FROM swings_numbered sn
-          LEFT JOIN serve_swings_ix sxi
-            ON sxi.session_id = sn.session_id AND sxi.swing_id = sn.swing_id
           LEFT JOIN point_first_rally_shot pfrs
             ON pfrs.session_id = sn.session_id AND pfrs.point_number_d = sn.point_number_d
+          LEFT JOIN point_starting_serve pss
+            ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
         ),
 
         -- S7. Per-swing window with guards
@@ -464,8 +473,8 @@ CREATE_STMTS = {
                  ELSE NULL::text
             END AS primary_source_d,
             se.serve_d,
-            se.serve_attempt_ix_d,
             se.first_rally_shot_d,
+            se.start_serve_shot_d,
             se.player_id,
             se.game_number_d,
             se.point_in_game_d,
@@ -475,7 +484,8 @@ CREATE_STMTS = {
             se.ball_hit_x, se.ball_hit_y,
             se.ball_speed,
             se.swing_type AS swing_type_raw,
-            se.last_swing_id_in_point_d
+            se.shot_number_d,
+            se.last_shot_in_point_d
           FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=se.session_id AND f.swing_id=se.swing_id
@@ -515,8 +525,8 @@ CREATE_STMTS = {
           sbp.primary_source_d,
 
           sbp.serve_d,
-          sbp.serve_attempt_ix_d,
           sbp.first_rally_shot_d,
+          sbp.start_serve_shot_d,
 
           -- point / game context
           sbp.point_number_d,
@@ -524,8 +534,8 @@ CREATE_STMTS = {
           sbp.point_in_game_d,
           sbp.serving_side_d,
 
-          -- last-in-point
-          (sbp.swing_id = sbp.last_swing_id_in_point_d) AS is_last_in_point_d,
+          -- last-in-point: by last shot number in the point
+          (sbp.shot_number_d = sbp.last_shot_in_point_d) AS is_last_in_point_d,
 
           -- in/out for FLOOR bounces only
           CASE
@@ -534,52 +544,43 @@ CREATE_STMTS = {
                AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
           END AS bounce_in_doubles_d,
 
-          -- serve faults before point start
+          -- serve faults before the starting serve (starting serve is NOT a fault)
           CASE
             WHEN sbp.serve_d IS NOT TRUE THEN NULL
-            WHEN sbp.first_rally_shot_d IS NULL THEN TRUE                -- point never started (double fault)
-            WHEN vshot.shot_number_d <  sbp.first_rally_shot_d THEN TRUE -- pre-start serve
-            ELSE FALSE
+            WHEN sbp.first_rally_shot_d IS NULL THEN TRUE                   -- point never started → all serves are faults
+            WHEN sbp.start_serve_shot_d IS NULL THEN TRUE                    -- safety: treat as fault if we can't resolve start serve
+            WHEN sbp.shot_number_d < sbp.start_serve_shot_d THEN TRUE        -- pre-start serves
+            WHEN sbp.shot_number_d = sbp.start_serve_shot_d THEN FALSE       -- starting serve
+            ELSE NULL                                                        -- serves after rally start (shouldn't exist)
           END AS is_serve_fault_d,
 
-          -- terminal error classifier (only last swing in point)
+          -- terminal ERROR (per spec) only on last swing
           CASE
-            WHEN sbp.swing_id <> sbp.last_swing_id_in_point_d THEN NULL
-            WHEN sbp.bounce_id IS NULL THEN TRUE
-            WHEN sbp.bounce_type_raw = 'floor'
-                 AND (NOT (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-                           AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))) THEN TRUE
-            WHEN sbp.bounce_type_raw = 'floor' THEN FALSE
-            ELSE NULL
+            WHEN sbp.shot_number_d <> sbp.last_shot_in_point_d THEN NULL
+            ELSE CASE
+              WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE                -- no swing speed → treat as error
+              WHEN sbp.bounce_type_raw = 'floor'
+                   AND (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                        AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
+              ELSE TRUE
+            END
           END AS is_error_d,
 
-          -- point winner on last swing only
+          -- point winner on last swing only (error ⇒ opponent, else hitter)
           CASE
-            WHEN sbp.swing_id = sbp.last_swing_id_in_point_d THEN
+            WHEN sbp.shot_number_d = sbp.last_shot_in_point_d THEN
               CASE
                 WHEN (
                   CASE
-                    WHEN sbp.bounce_id IS NULL THEN TRUE
+                    WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE
                     WHEN sbp.bounce_type_raw = 'floor'
-                         AND (NOT (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-                                   AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))) THEN TRUE
-                    WHEN sbp.bounce_type_raw = 'floor' THEN FALSE
-                    ELSE NULL
+                         AND (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                              AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
+                    ELSE TRUE
                   END
                 ) IS TRUE
                 THEN (CASE WHEN sbp.player_id = pp.pmin THEN pp.pmax ELSE pp.pmin END)
-                WHEN (
-                  CASE
-                    WHEN sbp.bounce_id IS NULL THEN TRUE
-                    WHEN sbp.bounce_type_raw = 'floor'
-                         AND (NOT (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-                                   AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))) THEN TRUE
-                    WHEN sbp.bounce_type_raw = 'floor' THEN FALSE
-                    ELSE NULL
-                  END
-                ) IS FALSE
-                THEN sbp.player_id
-                ELSE NULL
+                ELSE sbp.player_id
               END
             ELSE NULL
           END AS point_winner_player_id_d,
@@ -590,8 +591,6 @@ CREATE_STMTS = {
         JOIN players_pair pp       ON pp.session_id = sbp.session_id
         LEFT JOIN bounce_explain be
                ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
-        LEFT JOIN swings_enriched vshot
-               ON vshot.session_id = sbp.session_id AND vshot.swing_id = sbp.swing_id
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_number_d, sbp.swing_id;
     """,
 
