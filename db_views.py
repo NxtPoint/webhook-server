@@ -6,8 +6,9 @@
 #     fallback = first ANY bounce in the same window.
 # - Serve faults: within a point, every serve *before* the starting serve is a fault.
 #   If the point never starts (double fault), all serves are faults.
-# - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND floor bounce is in);
+# - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND chosen-bounce coords are in-court);
 #   otherwise ERROR. Winner id is derived accordingly.
+# - Extra debug: bounce_in_doubles_d (floor-only), bounce_in_court_any_d (floor or any), terminal_basis_d
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -339,7 +340,7 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- S6. Per-point shot indices (rename to avoid ambiguity)
+        -- S6. Per-point shot indices (unambiguous)
         swings_numbered AS (
           SELECT
             sps.*,
@@ -533,12 +534,18 @@ CREATE_STMTS = {
           -- last-in-point: by shot index
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
-          -- in/out for FLOOR bounces only
+          -- in/out using FLOOR-only (original) and ANY (new)
           CASE
             WHEN sbp.bounce_id IS NULL OR sbp.bounce_type_raw <> 'floor' THEN NULL
             ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
                AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
           END AS bounce_in_doubles_d,
+
+          CASE
+            WHEN sbp.bounce_id IS NULL THEN NULL
+            ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+               AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
+          END AS bounce_in_court_any_d,
 
           -- serve faults before the starting serve (starting serve is NOT a fault)
           CASE
@@ -550,14 +557,26 @@ CREATE_STMTS = {
             ELSE NULL
           END AS is_serve_fault_d,
 
-          -- terminal ERROR (last shot only) per your rule
+          -- terminal basis (last shot only): helps debug winner/error
+          CASE
+            WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
+            ELSE CASE
+              WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN 'no_speed'
+              WHEN sbp.bounce_id IS NULL THEN 'no_bounce'
+              WHEN (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                    AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN 'in'
+              ELSE 'out'
+            END
+          END AS terminal_basis_d,
+
+          -- terminal ERROR (last shot only) using ANY-bounce in/out
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
             ELSE CASE
               WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE
-              WHEN sbp.bounce_type_raw = 'floor'
-                   AND (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-                        AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
+              WHEN sbp.bounce_id IS NULL THEN TRUE
+              WHEN (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                    AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
               ELSE TRUE
             END
           END AS is_error_d,
@@ -569,9 +588,9 @@ CREATE_STMTS = {
                 WHEN (
                   CASE
                     WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE
-                    WHEN sbp.bounce_type_raw = 'floor'
-                         AND (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-                              AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
+                    WHEN sbp.bounce_id IS NULL THEN TRUE
+                    WHEN (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                          AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
                     ELSE TRUE
                   END
                 ) IS TRUE
