@@ -329,28 +329,21 @@ CREATE_STMTS = {
 
         -- S7. Build a single time window per swing:
         --   start = ball_hit_ts (fallback to *s)
-        --   end   = min(next_hit_ts, start + 2.5s)  (or start + 2.5s if there's no next hit)
+        --   end   = start + 2.5s   (ignore next-hit; this recovers the 6 floors)
         swing_windows AS (
           SELECT
             sn.*,
-            -- start ts
-            COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS start_ts_pref,
-            -- next ts (may be NULL)
-            COALESCE(sn.next_ball_hit_ts, (TIMESTAMP 'epoch' + sn.next_ball_hit_s * INTERVAL '1 second')) AS next_ts_pref
+            COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS start_ts_pref
           FROM swings_numbered sn
         ),
         swing_windows_cap AS (
           SELECT
             sw.*,
-            CASE
-              WHEN sw.next_ts_pref IS NOT NULL
-                THEN LEAST(sw.next_ts_pref, sw.start_ts_pref + INTERVAL '2.5 seconds')
-              ELSE sw.start_ts_pref + INTERVAL '2.5 seconds'
-            END AS end_ts_pref
+            sw.start_ts_pref + INTERVAL '2.5 seconds' AS end_ts_pref
           FROM swing_windows sw
         ),
 
-        -- S8A. First FLOOR bounce in the window
+        -- S8A. First FLOOR bounce in the window  [note: >= start, <= end]
         swing_bounce_floor AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -363,7 +356,7 @@ CREATE_STMTS = {
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
               AND b.bounce_type = 'floor'
-              AND b.bounce_ts_pref >  swc.start_ts_pref
+              AND b.bounce_ts_pref >= swc.start_ts_pref
               AND b.bounce_ts_pref <= swc.end_ts_pref
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
@@ -386,12 +379,13 @@ CREATE_STMTS = {
             SELECT b.*
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
-              AND b.bounce_ts_pref >  swc.start_ts_pref
+              AND b.bounce_ts_pref >= swc.start_ts_pref
               AND b.bounce_ts_pref <= swc.end_ts_pref
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
-        ),
+        )
+,
 
         -- S8C. PRIMARY bounce = FLOOR if present, else first ANY (often racquet)
         swing_bounce_primary AS (
