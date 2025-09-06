@@ -3,11 +3,12 @@
 # NOTES
 # - SportAI sends coordinates in METERS. We do not autoscale; we treat x/y as meters.
 # - Serve bucket logic / winner / score NOT added here (we'll layer later).
-# - For transparency, we expose the FIRST FLOOR bounce per swing window and publish
-#   bounce_x_center_m / bounce_y_center_m / bounce_y_norm_m (meters + normalized Y).
-# - Debug views included:
+# - We attach ONE bounce to each swing:
+#   primary = first FLOOR bounce in [ball_hit, min(next_hit, ball_hit+2.5s))
+#   fallback = first ANY bounce in the same half-open window
+# - Debug views:
 #   * vw_bounce_stream_debug: per-swing window checks (floor-present? fallback used?)
-#   * vw_point_bounces_debug: per-session summary of floor/racquet/no-bounce counts
+#   * vw_point_bounces_debug: per-session summary incl. duplicate-bounce diagnostics
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -251,7 +252,7 @@ CREATE_STMTS = {
           SELECT
             se.*,
             LAG(se.serving_side_d) OVER (PARTITION BY se.session_id ORDER BY se.ord_ts, se.srv_swing_id) AS prev_side,
-            LAG(se.server_uid)     OVER (PARTITION BY se.session_id ORDER BY se.ord_ts, se.srv_swing_id) AS prev_server_uid
+            LAG(se.server_uid)     OVER (PARTITION BY se.session_id ORDER BY se.ord_ts, se.srv_swing_id)   AS prev_server_uid
           FROM serve_events se
         ),
         serve_points AS (
@@ -316,7 +317,7 @@ CREATE_STMTS = {
           ) sp ON TRUE
         ),
 
-        -- S6. Shot number within point + next swing timing (as before)
+        -- S6. Shot number within point + next swing timing
         swings_numbered AS (
           SELECT
             sip.*,
@@ -329,9 +330,9 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- S7. Build a single time window per swing:
+        -- S7. Per-swing window:
         --   start = ball_hit_ts (fallback to *s)
-        --   end   = start + 2.5s   (ignore next-hit; this recovers the 6 floors)
+        --   end   = min(next_ball_hit_ts, start + 2.5s)
         swing_windows AS (
           SELECT
             sn.*,
@@ -341,11 +342,14 @@ CREATE_STMTS = {
         swing_windows_cap AS (
           SELECT
             sw.*,
-            sw.start_ts_pref + INTERVAL '2.5 seconds' AS end_ts_pref
+            LEAST(
+              sw.start_ts_pref + INTERVAL '2.5 seconds',
+              COALESCE(sw.next_ball_hit_ts, sw.start_ts_pref + INTERVAL '2.5 seconds')
+            ) AS end_ts_pref
           FROM swing_windows sw
         ),
 
-        -- S8A. First FLOOR bounce in the window  [>= start, <= end]
+        -- S8A. First FLOOR bounce in half-open window [start, end)
         swing_bounce_floor AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -359,13 +363,13 @@ CREATE_STMTS = {
             WHERE b.session_id = swc.session_id
               AND b.bounce_type = 'floor'
               AND b.bounce_ts_pref >= swc.start_ts_pref
-              AND b.bounce_ts_pref <= swc.end_ts_pref
+              AND b.bounce_ts_pref <  swc.end_ts_pref   -- STRICT '<' to avoid cross-assign
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
         ),
 
-        -- S8B. First ANY bounce in the same window (fallback)
+        -- S8B. First ANY bounce in the same half-open window (fallback)
         swing_bounce_any AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -382,23 +386,23 @@ CREATE_STMTS = {
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
               AND b.bounce_ts_pref >= swc.start_ts_pref
-              AND b.bounce_ts_pref <= swc.end_ts_pref
+              AND b.bounce_ts_pref <  swc.end_ts_pref   -- STRICT '<'
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
         ),
 
-        -- S8C. PRIMARY bounce = FLOOR if present, else first ANY (often racquet)
+        -- S8C. PRIMARY bounce = FLOOR if present, else first ANY (often 'swing'/racquet)
         swing_bounce_primary AS (
           SELECT
             sn.session_id, sn.swing_id, sn.point_number_d, sn.shot_number_d,
-            COALESCE(f.bounce_id,         a.any_bounce_id)         AS bounce_id,
-            COALESCE(f.bounce_ts,         a.any_bounce_ts)         AS bounce_ts,
-            COALESCE(f.bounce_s,          a.any_bounce_s)          AS bounce_s,
-            COALESCE(f.bounce_x_center_m, a.any_bounce_x_center_m) AS bounce_x_center_m,
-            COALESCE(f.bounce_y_center_m, a.any_bounce_y_center_m) AS bounce_y_center_m,
-            COALESCE(f.bounce_y_norm_m,   a.any_bounce_y_norm_m)   AS bounce_y_norm_m,
-            COALESCE(f.bounce_type_raw,   a.any_bounce_type)       AS bounce_type_raw
+            COALESCE(f.bounce_id,         a.any_bounce_id)          AS bounce_id,
+            COALESCE(f.bounce_ts,         a.any_bounce_ts)          AS bounce_ts,
+            COALESCE(f.bounce_s,          a.any_bounce_s)           AS bounce_s,
+            COALESCE(f.bounce_x_center_m, a.any_bounce_x_center_m)  AS bounce_x_center_m,
+            COALESCE(f.bounce_y_center_m, a.any_bounce_y_center_m)  AS bounce_y_center_m,
+            COALESCE(f.bounce_y_norm_m,   a.any_bounce_y_norm_m)    AS bounce_y_norm_m,
+            COALESCE(f.bounce_type_raw,   a.any_bounce_type)        AS bounce_type_raw
           FROM swings_numbered sn
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=sn.session_id AND f.swing_id=sn.swing_id
@@ -416,7 +420,7 @@ CREATE_STMTS = {
             ON sbp.session_id=sn.session_id AND sbp.swing_id=sn.swing_id
         )
 
-        -- FINAL: primary bounce (floor or racquet) + serve flag & numbering
+        -- FINAL
         SELECT
           sn.session_id,
           sn.session_uid_d,
@@ -437,7 +441,6 @@ CREATE_STMTS = {
           sbp.bounce_y_center_m      AS bounce_y_center_m,
           sbp.bounce_y_norm_m        AS bounce_y_norm_m,
 
-          -- original serve flag (True/False)
           (EXISTS (
             SELECT 1 FROM serve_flags sf
             WHERE sf.session_id = sn.session_id
@@ -455,13 +458,23 @@ CREATE_STMTS = {
         LEFT JOIN swing_bounce_primary sbp
           ON sbp.session_id = sn.session_id AND sbp.swing_id = sn.swing_id
         LEFT JOIN bounce_explain be
-          ON be.session_id = sn.session_id AND be.swing_id = sn.swing_id;
+          ON be.session_id = sn.session_id AND be.swing_id = sn.swing_id
+        ORDER BY sn.session_id, sn.point_number_d, sn.shot_number_d, sn.swing_id;
     """,
 
     # ------------------------ DEBUG: per-swing window ------------------------
     "vw_bounce_stream_debug": """
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
-        WITH base AS (
+        WITH s AS (
+          SELECT
+            v.session_id, v.swing_id,
+            COALESCE(v.ball_hit_ts, (TIMESTAMP 'epoch' + v.ball_hit_s * INTERVAL '1 second')) AS start_ts_pref,
+            LEAD(COALESCE(v.ball_hit_ts, (TIMESTAMP 'epoch' + v.ball_hit_s * INTERVAL '1 second')))
+              OVER (PARTITION BY v.session_id ORDER BY
+                    COALESCE(v.ball_hit_ts, (TIMESTAMP 'epoch' + v.ball_hit_s * INTERVAL '1 second')), v.swing_id) AS next_hit_pref
+          FROM vw_swing_silver v
+        ),
+        base AS (
           SELECT
             vps.session_id,
             vps.session_uid_d,
@@ -474,13 +487,17 @@ CREATE_STMTS = {
             vps.ball_hit_s,
             vps.start_ts,
             vps.start_s,
-            -- window = [start, start+2.5s]
-            COALESCE(vps.ball_hit_ts, (TIMESTAMP 'epoch' + vps.ball_hit_s * INTERVAL '1 second')) AS start_ts_pref,
-            COALESCE(vps.ball_hit_ts, (TIMESTAMP 'epoch' + vps.ball_hit_s * INTERVAL '1 second')) + INTERVAL '2.5 seconds' AS end_ts_pref,
+            s.start_ts_pref,
+            LEAST(
+              s.start_ts_pref + INTERVAL '2.5 seconds',
+              COALESCE(s.next_hit_pref, s.start_ts_pref + INTERVAL '2.5 seconds')
+            ) AS end_ts_pref,
             vps.bounce_id           AS chosen_bounce_id,
             vps.bounce_type_raw     AS chosen_type,
             vps.bounce_s_d          AS chosen_bounce_s
           FROM vw_point_silver vps
+          JOIN s
+            ON s.session_id = vps.session_id AND s.swing_id = vps.swing_id
         ),
         any_in_window AS (
           SELECT
@@ -490,7 +507,9 @@ CREATE_STMTS = {
               FROM vw_bounce_silver bs
               WHERE bs.session_id = b.session_id
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    BETWEEN b.start_ts_pref AND b.end_ts_pref
+                    >= b.start_ts_pref
+                AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
+                    <  b.end_ts_pref
             ) AS had_any
           FROM base b
         ),
@@ -503,7 +522,9 @@ CREATE_STMTS = {
               WHERE bs.session_id = b.session_id
                 AND bs.bounce_type = 'floor'
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    BETWEEN b.start_ts_pref AND b.end_ts_pref
+                    >= b.start_ts_pref
+                AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
+                    <  b.end_ts_pref
             ) AS had_floor
           FROM base b
         )
@@ -540,12 +561,23 @@ CREATE_STMTS = {
         SELECT
           vps.session_id,
           vps.session_uid_d,
-          COUNT(*)                                   AS swings_total,
-          COUNT(*) FILTER (WHERE vps.bounce_id IS NOT NULL)                    AS swings_with_any_bounce,
-          COUNT(*) FILTER (WHERE vps.bounce_type_raw = 'floor')                AS swings_with_floor_primary,
+          COUNT(*)                                                        AS swings_total,
+          COUNT(*) FILTER (WHERE vps.bounce_id IS NOT NULL)               AS swings_with_any_bounce,
+          COUNT(*) FILTER (WHERE vps.bounce_type_raw = 'floor')           AS swings_with_floor_primary,
           COUNT(*) FILTER (WHERE vps.bounce_type_raw <> 'floor' AND vps.bounce_id IS NOT NULL)
-                                           AS swings_with_racquet_primary,
-          COUNT(*) FILTER (WHERE vps.bounce_id IS NULL)                        AS swings_with_no_bounce
+                                                                          AS swings_with_racquet_primary,
+          COUNT(*) FILTER (WHERE vps.bounce_id IS NULL)                   AS swings_with_no_bounce,
+          COUNT(DISTINCT vps.bounce_id) FILTER (WHERE vps.bounce_id IS NOT NULL)
+                                                                          AS distinct_bounce_ids,
+          COALESCE((
+            SELECT COUNT(*) FROM (
+              SELECT bounce_id
+              FROM vw_point_silver v2
+              WHERE v2.session_id = vps.session_id AND v2.bounce_id IS NOT NULL
+              GROUP BY bounce_id
+              HAVING COUNT(*) > 1
+            ) d
+          ),0)                                                           AS dup_bounce_ids
         FROM vw_point_silver vps
         GROUP BY vps.session_id, vps.session_uid_d;
     """,
