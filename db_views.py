@@ -213,7 +213,7 @@ CREATE_STMTS = {
           FROM vw_swing_silver v
         ),
 
-        -- S2. Serve detection (original: overhead + band) and serving side
+        -- S2. Serve detection (fh_overhead in serve band) + serving side
         serve_flags AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -247,12 +247,12 @@ CREATE_STMTS = {
           WHERE sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
         ),
 
-        -- S3. Original point/game numbering
+        -- S3. Point/game numbering
         serve_events_numbered AS (
           SELECT
             se.*,
             LAG(se.serving_side_d) OVER (PARTITION BY se.session_id ORDER BY se.ord_ts, se.srv_swing_id) AS prev_side,
-            LAG(se.server_uid)     OVER (PARTITION BY se.session_id ORDER BY se.ord_ts, se.srv_swing_id)   AS prev_server_uid
+            LAG(se.server_uid)     OVER (PARTITION BY se.session_id ORDER BY se.ord_ts, se.srv_swing_id) AS prev_server_uid
           FROM serve_events se
         ),
         serve_points AS (
@@ -283,7 +283,7 @@ CREATE_STMTS = {
           FROM serve_points sp
         ),
 
-        -- S4. Normalize bounces and compute a unified TS for comparisons
+        -- S4. Normalize bounces + unified TS
         bounces_norm AS (
           SELECT
             b.session_id,
@@ -317,7 +317,7 @@ CREATE_STMTS = {
           ) sp ON TRUE
         ),
 
-        -- S6. Shot number within point + next swing timing
+        -- S6. Shot number + next swing timing + last-in-point flag
         swings_numbered AS (
           SELECT
             sip.*,
@@ -325,14 +325,13 @@ CREATE_STMTS = {
               PARTITION BY sip.session_id, sip.point_number_d
               ORDER BY sip.ord_ts, sip.swing_id
             ) AS shot_number_d,
+            MAX(sip.swing_id) OVER (PARTITION BY sip.session_id, sip.point_number_d) AS last_swing_id_in_point_d,
             LEAD(sip.ball_hit_ts) OVER (PARTITION BY sip.session_id ORDER BY sip.ord_ts, sip.swing_id) AS next_ball_hit_ts,
             LEAD(sip.ball_hit_s)  OVER (PARTITION BY sip.session_id ORDER BY sip.ord_ts, sip.swing_id) AS next_ball_hit_s
           FROM swings_in_point sip
         ),
 
-        -- S7. Per-swing window:
-        --   start = ball_hit_ts (fallback to *s)
-        --   end   = min(next_ball_hit_ts, start + 2.5s)
+        -- S7. Per-swing window: [start, min(next_hit, +2.5s))
         swing_windows AS (
           SELECT
             sn.*,
@@ -349,7 +348,7 @@ CREATE_STMTS = {
           FROM swing_windows sw
         ),
 
-        -- S8A. First FLOOR bounce in half-open window [start, end)
+        -- S8A. First FLOOR bounce in half-open window (exclude contact at t=start)
         swing_bounce_floor AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -362,14 +361,14 @@ CREATE_STMTS = {
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
               AND b.bounce_type = 'floor'
-              AND b.bounce_ts_pref >= swc.start_ts_pref
-              AND b.bounce_ts_pref <  swc.end_ts_pref   -- STRICT '<' to avoid cross-assign
+              AND b.bounce_ts_pref >  swc.start_ts_pref
+              AND b.bounce_ts_pref <  swc.end_ts_pref
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
         ),
 
-        -- S8B. First ANY bounce in the same half-open window (fallback)
+        -- S8B. First ANY bounce in same half-open window (fallback; exclude t=start)
         swing_bounce_any AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
@@ -385,14 +384,14 @@ CREATE_STMTS = {
             SELECT b.*
             FROM bounces_norm b
             WHERE b.session_id = swc.session_id
-              AND b.bounce_ts_pref >= swc.start_ts_pref
-              AND b.bounce_ts_pref <  swc.end_ts_pref   -- STRICT '<'
+              AND b.bounce_ts_pref >  swc.start_ts_pref
+              AND b.bounce_ts_pref <  swc.end_ts_pref
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
         ),
 
-        -- S8C. PRIMARY bounce = FLOOR if present, else first ANY (often 'swing'/racquet)
+        -- S8C. PRIMARY = FLOOR if present, else first ANY
         swing_bounce_primary AS (
           SELECT
             sn.session_id, sn.swing_id, sn.point_number_d, sn.shot_number_d,
@@ -410,7 +409,7 @@ CREATE_STMTS = {
             ON a.session_id=sn.session_id AND a.swing_id=sn.swing_id
         ),
 
-        -- S9. Why-null only when there is no bounce at all
+        -- S9. Null-explain (no bounce at all)
         bounce_explain AS (
           SELECT
             sn.session_id, sn.swing_id,
@@ -441,17 +440,35 @@ CREATE_STMTS = {
           sbp.bounce_y_center_m      AS bounce_y_center_m,
           sbp.bounce_y_norm_m        AS bounce_y_norm_m,
 
-          (EXISTS (
+          -- serve flag (boolean)
+          ((EXISTS (
             SELECT 1 FROM serve_flags sf
             WHERE sf.session_id = sn.session_id
               AND sf.swing_id   = sn.swing_id
               AND sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
-          )) AS serve_d,
+          ))::boolean) AS serve_d,
 
           sn.point_number_d,
           sn.game_number_d,
           sn.point_in_game_d,
           sn.serving_side_d,
+
+          -- NEW: terminal + bounds + error
+          (sn.swing_id = sn.last_swing_id_in_point_d) AS is_last_in_point_d,
+          CASE
+            WHEN sbp.bounce_id IS NULL THEN NULL
+            ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+               AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
+          END AS bounce_in_doubles_d,
+          CASE
+            WHEN sn.swing_id <> sn.last_swing_id_in_point_d THEN NULL
+            WHEN sbp.bounce_id IS NULL THEN TRUE
+            WHEN sbp.bounce_type_raw = 'floor'
+                 AND (NOT (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                           AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))) THEN TRUE
+            WHEN sbp.bounce_type_raw = 'floor' THEN FALSE
+            ELSE NULL
+          END AS is_error_d,
 
           be.why_null
         FROM swings_numbered sn
@@ -507,7 +524,7 @@ CREATE_STMTS = {
               FROM vw_bounce_silver bs
               WHERE bs.session_id = b.session_id
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    >= b.start_ts_pref
+                    >  b.start_ts_pref
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
                     <  b.end_ts_pref
             ) AS had_any
@@ -522,7 +539,7 @@ CREATE_STMTS = {
               WHERE bs.session_id = b.session_id
                 AND bs.bounce_type = 'floor'
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    >= b.start_ts_pref
+                    >  b.start_ts_pref
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
                     <  b.end_ts_pref
             ) AS had_floor
