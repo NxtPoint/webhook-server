@@ -6,8 +6,8 @@
 #     fallback = first ANY bounce in the same window.
 # - Serve faults: within a point, every serve *before* the starting serve is a fault.
 #   If the point never starts (double fault), all serves are faults.
-# - Terminal result: last shot of the point: WINNER iff (floor-in AND ball_speed>0),
-#   otherwise ERROR. Winner id is computed accordingly.
+# - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND floor bounce is in);
+#   otherwise ERROR. Winner id is derived accordingly.
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -73,6 +73,8 @@ def _preflight_or_raise(conn):
         ("fact_swing", "ball_hit_x"),
         ("fact_swing", "ball_hit_y"),
         ("fact_swing", "ball_speed"),
+        ("fact_swing", "serve"),
+        ("fact_swing", "serve_type"),
         ("fact_swing", "swing_type"),
         ("fact_bounce", "bounce_id"),
         ("fact_bounce", "x"),
@@ -200,7 +202,6 @@ CREATE_STMTS = {
             0.50::numeric      AS serve_eps_m
         ),
 
-        -- Players in session (assume two)
         players_pair AS (
           SELECT session_id,
                  MIN(player_id) AS pmin,
@@ -255,7 +256,7 @@ CREATE_STMTS = {
           WHERE sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
         ),
 
-        -- S3. Point/game numbering (point increments when serving side alternates)
+        -- S3. Point/game numbering
         serve_events_numbered AS (
           SELECT
             se.*,
@@ -306,7 +307,7 @@ CREATE_STMTS = {
           FROM vw_bounce_silver b
         ),
 
-        -- S5. Attach swings to most recent serve (context)
+        -- S5. Attach swings to most recent serve
         swings_in_point AS (
           SELECT
             s.*,
@@ -325,7 +326,7 @@ CREATE_STMTS = {
           ) sp ON TRUE
         ),
 
-        -- S5b. Bring serve boolean
+        -- S5b. Mark serves
         swings_with_serve AS (
           SELECT
             sip.*,
@@ -338,58 +339,58 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- S6. Shot number + next swing timing
+        -- S6. Per-point shot indices (rename to avoid ambiguity)
         swings_numbered AS (
-        SELECT
-          sps.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY sps.session_id, sps.point_number_d
-            ORDER BY sps.ord_ts, sps.swing_id
-          ) AS shot_number_d,
-          COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_in_point_d,
-          LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
-          LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s
-        FROM swings_with_serve sps
+          SELECT
+            sps.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY sps.session_id, sps.point_number_d
+              ORDER BY sps.ord_ts, sps.swing_id
+            ) AS shot_ix,
+            COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_ix,
+            LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
+            LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s
+          FROM swings_with_serve sps
         ),
 
-        -- First non-serve shot number per point (NULL if point never starts)
-        point_first_rally_shot AS (
+        -- First non-serve shot index per point (NULL if point never starts)
+        point_first_rally AS (
           SELECT
             session_id, point_number_d,
-            MIN(shot_number_d) FILTER (WHERE NOT serve_d) AS first_rally_shot_d
+            MIN(shot_ix) FILTER (WHERE NOT serve_d) AS first_rally_shot_ix
           FROM swings_numbered
           GROUP BY session_id, point_number_d
         ),
 
-        -- Starting serve: the last serve immediately before the first non-serve
+        -- Starting serve = last serve immediately before first non-serve
         point_starting_serve AS (
           SELECT
             sn.session_id, sn.point_number_d,
-            MAX(sn.shot_number_d) AS start_serve_shot_d
+            MAX(sn.shot_ix) AS start_serve_shot_ix
           FROM swings_numbered sn
-          JOIN point_first_rally_shot pfrs
-            ON pfrs.session_id = sn.session_id
-           AND pfrs.point_number_d = sn.point_number_d
+          JOIN point_first_rally pfr
+            ON pfr.session_id = sn.session_id
+           AND pfr.point_number_d = sn.point_number_d
           WHERE sn.serve_d
-            AND pfrs.first_rally_shot_d IS NOT NULL
-            AND sn.shot_number_d < pfrs.first_rally_shot_d
+            AND pfr.first_rally_shot_ix IS NOT NULL
+            AND sn.shot_ix < pfr.first_rally_shot_ix
           GROUP BY sn.session_id, sn.point_number_d
         ),
 
-        -- Enrich with serve indices + markers
+        -- Enrich with point start markers
         swings_enriched AS (
           SELECT
             sn.*,
-            pfrs.first_rally_shot_d,
-            pss.start_serve_shot_d
+            pfr.first_rally_shot_ix,
+            pss.start_serve_shot_ix
           FROM swings_numbered sn
-          LEFT JOIN point_first_rally_shot pfrs
-            ON pfrs.session_id = sn.session_id AND pfrs.point_number_d = sn.point_number_d
+          LEFT JOIN point_first_rally pfr
+            ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
           LEFT JOIN point_starting_serve pss
             ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
         ),
 
-        -- S7. Per-swing window with guards
+        -- S7. Window with guards
         swing_windows AS (
           SELECT
             se.*,
@@ -411,10 +412,10 @@ CREATE_STMTS = {
           FROM swing_windows sw
         ),
 
-        -- S8A. First FLOOR bounce in (start_guard, end_eps]
+        -- S8A. First FLOOR in window
         swing_bounce_floor AS (
           SELECT
-            swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
+            swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_ix,
             b.bounce_id, b.bounce_ts, b.bounce_s,
             b.bounce_x_center_m, b.bounce_y_center_m, b.bounce_y_norm_m,
             b.bounce_type AS bounce_type_raw
@@ -431,10 +432,10 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        -- S8B. First ANY bounce in the same (start_guard, end_eps]
+        -- S8B. First ANY in window
         swing_bounce_any AS (
           SELECT
-            swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_number_d,
+            swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_ix,
             b.bounce_id   AS any_bounce_id,
             b.bounce_ts   AS any_bounce_ts,
             b.bounce_s    AS any_bounce_s,
@@ -454,10 +455,10 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        -- S8C. PRIMARY = FLOOR if present, else first ANY
+        -- S8C. Primary bounce
         swing_bounce_primary AS (
           SELECT
-            se.session_id, se.swing_id, se.point_number_d, se.shot_number_d,
+            se.session_id, se.swing_id, se.point_number_d, se.shot_ix, se.last_shot_ix,
             COALESCE(f.bounce_id,         a.any_bounce_id)          AS bounce_id,
             COALESCE(f.bounce_ts,         a.any_bounce_ts)          AS bounce_ts,
             COALESCE(f.bounce_s,          a.any_bounce_s)           AS bounce_s,
@@ -470,8 +471,8 @@ CREATE_STMTS = {
                  ELSE NULL::text
             END AS primary_source_d,
             se.serve_d,
-            se.first_rally_shot_d,
-            se.start_serve_shot_d,
+            se.first_rally_shot_ix,
+            se.start_serve_shot_ix,
             se.player_id,
             se.game_number_d,
             se.point_in_game_d,
@@ -480,9 +481,7 @@ CREATE_STMTS = {
             se.start_ts, se.end_ts, se.ball_hit_ts,
             se.ball_hit_x, se.ball_hit_y,
             se.ball_speed,
-            se.swing_type AS swing_type_raw,
-            se.shot_number_d,
-            se.last_shot_in_point_d
+            se.swing_type AS swing_type_raw
           FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=se.session_id AND f.swing_id=se.swing_id
@@ -490,7 +489,7 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        -- S9. Why-null only when there is no bounce at all
+        -- S9. Why-null
         bounce_explain AS (
           SELECT
             se.session_id, se.swing_id,
@@ -522,8 +521,8 @@ CREATE_STMTS = {
           sbp.primary_source_d,
 
           sbp.serve_d,
-          sbp.first_rally_shot_d,
-          sbp.start_serve_shot_d,
+          sbp.first_rally_shot_ix,
+          sbp.start_serve_shot_ix,
 
           -- point / game context
           sbp.point_number_d,
@@ -531,8 +530,8 @@ CREATE_STMTS = {
           sbp.point_in_game_d,
           sbp.serving_side_d,
 
-          -- last-in-point: by last shot number in the point
-          (sbp.shot_number_d = sbp.last_shot_in_point_d) AS is_last_in_point_d,
+          -- last-in-point: by shot index
+          (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
           -- in/out for FLOOR bounces only
           CASE
@@ -544,18 +543,18 @@ CREATE_STMTS = {
           -- serve faults before the starting serve (starting serve is NOT a fault)
           CASE
             WHEN sbp.serve_d IS NOT TRUE THEN NULL
-            WHEN sbp.first_rally_shot_d IS NULL THEN TRUE                   -- point never started → all serves are faults
-            WHEN sbp.start_serve_shot_d IS NULL THEN TRUE                    -- safety: treat as fault if we can't resolve start serve
-            WHEN sbp.shot_number_d < sbp.start_serve_shot_d THEN TRUE        -- pre-start serves
-            WHEN sbp.shot_number_d = sbp.start_serve_shot_d THEN FALSE       -- starting serve
-            ELSE NULL                                                        -- serves after rally start (shouldn't exist)
+            WHEN sbp.first_rally_shot_ix IS NULL THEN TRUE                    -- point never started → all serves fault
+            WHEN sbp.start_serve_shot_ix IS NULL THEN TRUE                     -- safety
+            WHEN sbp.shot_ix < sbp.start_serve_shot_ix THEN TRUE               -- pre-start serves
+            WHEN sbp.shot_ix = sbp.start_serve_shot_ix THEN FALSE              -- starting serve
+            ELSE NULL
           END AS is_serve_fault_d,
 
-          -- terminal ERROR (per spec) only on last swing
+          -- terminal ERROR (last shot only) per your rule
           CASE
-            WHEN sbp.shot_number_d <> sbp.last_shot_in_point_d THEN NULL
+            WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
             ELSE CASE
-              WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE                -- no swing speed → treat as error
+              WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE
               WHEN sbp.bounce_type_raw = 'floor'
                    AND (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
                         AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
@@ -563,9 +562,9 @@ CREATE_STMTS = {
             END
           END AS is_error_d,
 
-          -- point winner on last swing only (error ⇒ opponent, else hitter)
+          -- point winner on last shot only (error ⇒ opponent, else hitter)
           CASE
-            WHEN sbp.shot_number_d = sbp.last_shot_in_point_d THEN
+            WHEN sbp.shot_ix = sbp.last_shot_ix THEN
               CASE
                 WHEN (
                   CASE
@@ -588,7 +587,7 @@ CREATE_STMTS = {
         JOIN players_pair pp       ON pp.session_id = sbp.session_id
         LEFT JOIN bounce_explain be
                ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
-        ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_number_d, sbp.swing_id;
+        ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
     """,
 
     # ------------------------ DEBUG: per-swing window ------------------------
