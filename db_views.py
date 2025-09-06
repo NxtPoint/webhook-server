@@ -4,7 +4,7 @@
 # - SportAI sends coordinates in METERS. We do not autoscale; we treat x/y as meters.
 # - Serve bucket logic / winner / score NOT added here (we'll layer later).
 # - We attach ONE bounce to each swing:
-#   primary = first FLOOR bounce in [ball_hit, min(next_hit, ball_hit+2.5s))
+#   primary = first FLOOR bounce in (ball_hit+5ms, min(next_hit, ball_hit+2.5s)+20ms]
 #   fallback = first ANY bounce in the same half-open window
 # - Debug views:
 #   * vw_bounce_stream_debug: per-swing window checks (floor-present? fallback used?)
@@ -111,9 +111,9 @@ def _drop_any(conn, name: str):
         stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
         stmts = [
-            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
+            f'DROP VIEW IF EXISTS \"{name}\" CASCADE;",
+            f"DROP MATERIALIZED VIEW IF EXISTS \"{name}\" CASCADE;",
+            f"DROP TABLE IF EXISTS \"{name}\" CASCADE;",
         ]
     for stmt in stmts:
         conn.execute(text(stmt))
@@ -331,21 +331,27 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- S7. Per-swing window
+        -- S7. Per-swing window with guards:
+        --     start_guard = start + 5ms      (avoid counting contact as a bounce)
+        --     end_raw     = min(next_hit, start + 2.5s)
+        --     end_ts_pref = end_raw + 20ms   (include tie-at-next-hit bounces)
+        swing_windows AS (
+          SELECT
+            sn.*,
+            COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS start_ts_pref
+          FROM swings_numbered sn
+        ),
         swing_windows_cap AS (
           SELECT
             sw.*,
-            /* end without epsilon */
             LEAST(
               sw.start_ts_pref + INTERVAL '2.5 seconds',
               COALESCE(sw.next_ball_hit_ts, sw.start_ts_pref + INTERVAL '2.5 seconds')
             ) AS end_ts_pref_raw,
-            /* add small epsilon to allow ties at next hit */
             LEAST(
               sw.start_ts_pref + INTERVAL '2.5 seconds',
               COALESCE(sw.next_ball_hit_ts, sw.start_ts_pref + INTERVAL '2.5 seconds')
             ) + INTERVAL '20 milliseconds' AS end_ts_pref,
-            /* tiny guard after contact to avoid misreading the contact as a bounce */
             sw.start_ts_pref + INTERVAL '5 milliseconds' AS start_ts_guard
           FROM swing_windows sw
         ),
@@ -391,8 +397,7 @@ CREATE_STMTS = {
             ORDER BY b.bounce_ts_pref, b.bounce_id
             LIMIT 1
           ) b ON TRUE
-        )
-,
+        ),
 
         -- S8C. PRIMARY = FLOOR if present, else first ANY
         swing_bounce_primary AS (
@@ -404,7 +409,11 @@ CREATE_STMTS = {
             COALESCE(f.bounce_x_center_m, a.any_bounce_x_center_m)  AS bounce_x_center_m,
             COALESCE(f.bounce_y_center_m, a.any_bounce_y_center_m)  AS bounce_y_center_m,
             COALESCE(f.bounce_y_norm_m,   a.any_bounce_y_norm_m)    AS bounce_y_norm_m,
-            COALESCE(f.bounce_type_raw,   a.any_bounce_type)        AS bounce_type_raw
+            COALESCE(f.bounce_type_raw,   a.any_bounce_type)        AS bounce_type_raw,
+            CASE WHEN f.bounce_id IS NOT NULL THEN 'floor'::text
+                 WHEN a.any_bounce_id IS NOT NULL THEN 'any'::text
+                 ELSE NULL::text
+            END AS primary_source_d
           FROM swings_numbered sn
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=sn.session_id AND f.swing_id=sn.swing_id
@@ -412,7 +421,7 @@ CREATE_STMTS = {
             ON a.session_id=sn.session_id AND a.swing_id=sn.swing_id
         ),
 
-        -- S9. Null-explain (no bounce at all)
+        -- S9. Why-null only when there is no bounce at all
         bounce_explain AS (
           SELECT
             sn.session_id, sn.swing_id,
@@ -437,11 +446,13 @@ CREATE_STMTS = {
           sn.swing_type AS swing_type_raw,
 
           sbp.bounce_id,
+          sbp.bounce_ts             AS bounce_ts_d,
           sbp.bounce_type_raw,
-          sbp.bounce_s               AS bounce_s_d,
-          sbp.bounce_x_center_m      AS bounce_x_center_m,
-          sbp.bounce_y_center_m      AS bounce_y_center_m,
-          sbp.bounce_y_norm_m        AS bounce_y_norm_m,
+          sbp.bounce_s              AS bounce_s_d,
+          sbp.bounce_x_center_m     AS bounce_x_center_m,
+          sbp.bounce_y_center_m     AS bounce_y_center_m,
+          sbp.bounce_y_norm_m       AS bounce_y_norm_m,
+          sbp.primary_source_d,
 
           -- serve flag (boolean)
           ((EXISTS (
@@ -456,13 +467,28 @@ CREATE_STMTS = {
           sn.point_in_game_d,
           sn.serving_side_d,
 
-          -- NEW: terminal + bounds + error
+          -- last-in-point + in/out (only for FLOOR bounces)
           (sn.swing_id = sn.last_swing_id_in_point_d) AS is_last_in_point_d,
           CASE
-            WHEN sbp.bounce_id IS NULL THEN NULL
+            WHEN sbp.bounce_id IS NULL OR sbp.bounce_type_raw <> 'floor' THEN NULL
             ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
                AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
           END AS bounce_in_doubles_d,
+
+          -- tie-at-next-hit marker for ANY fallback near end_raw
+          CASE
+            WHEN sbp.primary_source_d = 'any' THEN
+              EXISTS (
+                SELECT 1
+                FROM swing_windows_cap swc2
+                WHERE swc2.session_id = sn.session_id
+                  AND swc2.swing_id   = sn.swing_id
+                  AND ABS(EXTRACT(EPOCH FROM (sbp.bounce_ts - swc2.end_ts_pref_raw))) <= 0.025
+              )
+            ELSE FALSE
+          END AS primary_tied_next_hit_d,
+
+          -- terminal error classifier (only last swing of point)
           CASE
             WHEN sn.swing_id <> sn.last_swing_id_in_point_d THEN NULL
             WHEN sbp.bounce_id IS NULL THEN TRUE
@@ -511,10 +537,15 @@ CREATE_STMTS = {
             LEAST(
               s.start_ts_pref + INTERVAL '2.5 seconds',
               COALESCE(s.next_hit_pref, s.start_ts_pref + INTERVAL '2.5 seconds')
-            ) AS end_ts_pref,
+            ) AS end_ts_pref_raw,
+            LEAST(
+              s.start_ts_pref + INTERVAL '2.5 seconds',
+              COALESCE(s.next_hit_pref, s.start_ts_pref + INTERVAL '2.5 seconds')
+            ) + INTERVAL '20 milliseconds' AS end_ts_pref,
+            s.start_ts_pref + INTERVAL '5 milliseconds' AS start_ts_guard,
             vps.bounce_id           AS chosen_bounce_id,
             vps.bounce_type_raw     AS chosen_type,
-            vps.bounce_s_d          AS chosen_bounce_s
+            vps.bounce_ts_d         AS chosen_bounce_ts
           FROM vw_point_silver vps
           JOIN s
             ON s.session_id = vps.session_id AND s.swing_id = vps.swing_id
@@ -527,9 +558,9 @@ CREATE_STMTS = {
               FROM vw_bounce_silver bs
               WHERE bs.session_id = b.session_id
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    >  b.start_ts_pref
+                    >  b.start_ts_guard
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    <  b.end_ts_pref
+                    <= b.end_ts_pref
             ) AS had_any
           FROM base b
         ),
@@ -542,9 +573,9 @@ CREATE_STMTS = {
               WHERE bs.session_id = b.session_id
                 AND bs.bounce_type = 'floor'
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    >  b.start_ts_pref
+                    >  b.start_ts_guard
                 AND COALESCE(bs.bounce_ts, (TIMESTAMP 'epoch' + bs.bounce_s * INTERVAL '1 second'))
-                    <  b.end_ts_pref
+                    <= b.end_ts_pref
             ) AS had_floor
           FROM base b
         )
@@ -557,7 +588,10 @@ CREATE_STMTS = {
           b.point_in_game_d,
           b.serve_d,
           b.start_ts_pref,
+          b.start_ts_guard,
+          b.end_ts_pref_raw,
           b.end_ts_pref,
+          (b.chosen_bounce_ts - b.end_ts_pref_raw) AS dt_chosen_to_end_raw,
           f.had_floor,
           a.had_any,
           b.chosen_bounce_id,
