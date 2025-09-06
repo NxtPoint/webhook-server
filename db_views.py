@@ -1,14 +1,11 @@
 # db_views.py — Silver = passthrough + derived (from bronze), Gold = thin extract
 # ----------------------------------------------------------------------------------
 # What changed (key fixes):
-# - Auto-detect bounce units per session (feet vs meters) with percentile-based heuristic
-# - Convert to meters when needed (feet * 0.3048), then normalize Y to 0..23.77 (court length)
-# - Use scaled/normalized bounce coords in vw_point_silver (so A–D and depth are correct)
-# - Add bounce plausibility flags (bounds checks) and keep raw vs scaled in debug
-# - Debug view vw_point_bounces_debug now excludes null-bounce rows (true coverage)
-#
-# Original rules preserved (serve/point/game; serve bucket only on serves; A–D only on non-serves;
-# first floor bounce per shot; player_at_hit from nearest fact_player_position)
+# - Auto-detect bounce units per session (feet vs meters) with percentile heuristic
+# - Convert to meters when needed (feet * 0.3048), then normalize Y to 0..23.77 m
+# - Use scaled/normalized bounce coords in vw_point_silver (for A–D and depth)
+# - Add bounce plausibility flags and two debug views
+# - Serve logic/point/game numbering preserved
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -158,7 +155,7 @@ CREATE_STMTS = {
           -- timing
           fs.start_s, fs.end_s, fs.ball_hit_s,
           fs.start_ts, fs.end_ts, fs.ball_hit_ts,
-          -- ball at contact (raw units; may be feet or meters depending on upstream)
+          -- ball at contact (raw units)
           fs.ball_hit_x, fs.ball_hit_y,
           fs.ball_speed,
           -- labels/raw
@@ -201,14 +198,14 @@ CREATE_STMTS = {
           SELECT
             10.97::numeric       AS court_w_m,
             23.77::numeric       AS court_l_m,
-            5.485::numeric       AS half_w_m,
+            10.97::numeric / 2   AS half_w_m,
             23.77::numeric / 2   AS mid_y_m,
             0.50::numeric        AS serve_eps_m,
             2.5::numeric         AS short_m,
             5.5::numeric         AS mid_m
         ),
 
-        -- UNIT DETECTION (per session): if 95th pct of |x| > 6.5 OR 95th pct of |y| > 12.5, treat as FEET -> scale 0.3048
+        -- detect units per session: if 95th pct of |x| > 6.5 OR |y| > 12.5, treat as feet
         bounce_unit AS (
           SELECT
             session_id,
@@ -223,7 +220,7 @@ CREATE_STMTS = {
           GROUP BY session_id
         ),
 
-        -- Base swings ordered
+        -- base swings
         swings AS (
           SELECT
             v.*,
@@ -235,7 +232,7 @@ CREATE_STMTS = {
           FROM vw_swing_silver v
         ),
 
-        -- Hitter UID
+        -- player uid
         hitter_uid AS (
           SELECT s.session_id, s.swing_id, dp.sportai_player_uid AS player_uid
           FROM swings s
@@ -243,7 +240,7 @@ CREATE_STMTS = {
             ON dp.session_id = s.session_id AND dp.player_id = s.player_id
         ),
 
-        -- Serve flags (original rule)
+        -- serve flags
         serve_flags AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -258,7 +255,7 @@ CREATE_STMTS = {
           FROM swings s
         ),
 
-        -- Serving side at contact (ball x/y at hit)
+        -- serve events + side
         serve_events AS (
           SELECT
             sf.session_id,
@@ -278,7 +275,6 @@ CREATE_STMTS = {
           WHERE sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
         ),
 
-        -- Points & Games numbering (original)
         serves_numbered AS (
           SELECT
             se.*,
@@ -312,7 +308,7 @@ CREATE_STMTS = {
           FROM serve_points sp
         ),
 
-        -- Normalize bounces (apply per-session unit scale, then normalize Y to 0..court_l_m)
+        -- normalize bounces to meters
         bounces_norm AS (
           SELECT
             b.session_id,
@@ -320,14 +316,14 @@ CREATE_STMTS = {
             b.bounce_ts,
             b.bounce_s,
             b.bounce_type,
-            (b.x * COALESCE(u.u_scale, 1.0)) AS x_m_center,                       -- center-origin meters
-            (b.y * COALESCE(u.u_scale, 1.0)) AS y_m_center,                       -- center-origin meters
-            ((SELECT mid_y_m FROM const) + (b.y * COALESCE(u.u_scale, 1.0))) AS y_m_norm_0_23_77  -- 0..23.77 m
+            (b.x * COALESCE(u.u_scale, 1.0)) AS x_m_center,
+            (b.y * COALESCE(u.u_scale, 1.0)) AS y_m_center,
+            ((SELECT mid_y_m FROM const) + (b.y * COALESCE(u.u_scale, 1.0))) AS y_m_norm
           FROM vw_bounce_silver b
           LEFT JOIN bounce_unit u USING (session_id)
         ),
 
-        -- First FLOOR bounce between swing and next swing (now using normalized meters)
+        -- attach swings to last serve
         swings_in_point AS (
           SELECT
             s.*,
@@ -347,6 +343,8 @@ CREATE_STMTS = {
             LIMIT 1
           ) sp ON TRUE
         ),
+
+        -- shot numbering + next hit time
         swings_numbered AS (
           SELECT
             sip.*,
@@ -358,13 +356,15 @@ CREATE_STMTS = {
             LEAD(sip.ball_hit_s)  OVER (PARTITION BY sip.session_id ORDER BY sip.ord_ts, sip.swing_id)  AS next_ball_hit_s
           FROM swings_in_point sip
         ),
+
+        -- first FLOOR bounce between this swing and the next
         swing_bounce_floor AS (
           SELECT
             sn.swing_id, sn.session_id, sn.point_number_d, sn.shot_number_d,
             b.bounce_id, b.bounce_ts, b.bounce_s,
-            b.x_m_center AS bounce_x_m_center,
-            b.y_m_norm_0_23_77 AS bounce_y_m_norm,
-            b.y_m_center AS bounce_y_m_center,
+            b.x_m_center AS bounce_x,
+            b.y_m_norm   AS bounce_y,
+            b.y_m_center AS bounce_y_center,
             b.bounce_type AS bounce_type_raw
           FROM swings_numbered sn
           JOIN LATERAL (
@@ -389,7 +389,7 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        -- First serve per point → serve bucket (still only on serves)
+        -- first serve per point → serve bucket
         first_serve_per_point AS (
           SELECT sp.session_id, sp.point_number_d, MIN(sp.ord_ts) AS first_srv_ts
           FROM serve_points_ix sp
@@ -406,16 +406,16 @@ CREATE_STMTS = {
         serve_bucket AS (
           SELECT
             f.session_id, f.point_number_d, f.serving_side_d,
-            sbf.bounce_x_m_center AS bounce_x_m_center,
-            sbf.bounce_y_m_norm   AS bounce_y_m_norm,
+            sbf.bounce_x AS bounce_x,
+            sbf.bounce_y AS bounce_y,
             CASE
-              WHEN sbf.bounce_x_m_center IS NULL OR sbf.bounce_y_m_norm IS NULL THEN NULL
+              WHEN sbf.bounce_x IS NULL OR sbf.bounce_y IS NULL THEN NULL
               ELSE
                 (CASE WHEN f.serving_side_d = 'ad' THEN 4 ELSE 0 END) +
                 (CASE
-                   WHEN sbf.bounce_x_m_center < -((SELECT court_w_m FROM const) / 4.0) THEN 1
-                   WHEN sbf.bounce_x_m_center <  0                                     THEN 2
-                   WHEN sbf.bounce_x_m_center <  ((SELECT court_w_m FROM const) / 4.0) THEN 3
+                   WHEN sbf.bounce_x < -((SELECT court_w_m FROM const) / 4.0) THEN 1
+                   WHEN sbf.bounce_x <  0                                     THEN 2
+                   WHEN sbf.bounce_x <  ((SELECT court_w_m FROM const) / 4.0) THEN 3
                    ELSE 4
                  END)
             END AS serve_bucket_1_8_d
@@ -425,7 +425,7 @@ CREATE_STMTS = {
            AND sbf.swing_id   = f.srv_swing_id
         ),
 
-        -- Player position nearest to hit
+        -- player position nearest to hit (use ts_s for robustness)
         player_at_hit AS (
           SELECT
             sn.session_id, sn.swing_id,
@@ -437,17 +437,8 @@ CREATE_STMTS = {
             FROM fact_player_position p
             WHERE p.session_id = sn.session_id
               AND p.player_id   = sn.player_id
-            ORDER BY
-              CASE
-                WHEN sn.ball_hit_ts IS NOT NULL AND p.ts IS NOT NULL
-                  THEN ABS(EXTRACT(EPOCH FROM (p.ts - sn.ball_hit_ts)))
-                ELSE 1e9
-              END,
-              CASE
-                WHEN sn.ball_hit_s IS NOT NULL AND p.ts_s IS NOT NULL
-                  THEN ABS(p.ts_s - sn.ball_hit_s)
-                ELSE 1e9
-              END
+              AND p.ts_s IS NOT NULL
+            ORDER BY ABS(p.ts_s - sn.ball_hit_s)
             LIMIT 1
           ) pp ON TRUE
         )
@@ -468,14 +459,12 @@ CREATE_STMTS = {
 
           sb.bounce_id,
           sb.bounce_type_raw,
-          sb.bounce_x_m_center AS bounce_x,          -- now meters, center-origin
-          sb.bounce_y_m_norm   AS bounce_y,          -- now meters, normalized 0..23.77
-
-          -- sanity: flag implausible coordinates (kept visible but easy to filter)
+          sb.bounce_x        AS bounce_x,          -- meters, center-origin
+          sb.bounce_y        AS bounce_y,          -- meters, normalized 0..23.77
           (CASE
              WHEN sb.bounce_id IS NULL THEN NULL
-             WHEN ABS(sb.bounce_x_m_center) <= (SELECT half_w_m FROM const) + 0.5
-                  AND sb.bounce_y_m_norm BETWEEN -0.5 AND (SELECT court_l_m FROM const) + 0.5
+             WHEN ABS(sb.bounce_x) <= (SELECT half_w_m FROM const) + 0.5
+                  AND sb.bounce_y BETWEEN -0.5 AND (SELECT court_l_m FROM const) + 0.5
              THEN TRUE ELSE FALSE
            END) AS bounce_xy_plausible_d,
 
@@ -487,7 +476,7 @@ CREATE_STMTS = {
           sn.game_number_d,
           sn.point_in_game_d,
 
-          -- serve flag (original rule)
+          -- serve flag
           (EXISTS (
             SELECT 1 FROM serve_flags sf
             WHERE sf.session_id = sn.session_id
@@ -498,7 +487,7 @@ CREATE_STMTS = {
 
           sn.serving_side_d,
 
-          -- counts within point
+          -- serve counts
           SUM(CASE WHEN (EXISTS (
                 SELECT 1 FROM serve_flags sf
                 WHERE sf.session_id = sn.session_id
@@ -519,17 +508,17 @@ CREATE_STMTS = {
             0
           ) AS fault_serves_in_point_d,
 
-          -- depth / rally location only for non-serves; use scaled/normalized bounce
+          -- depth / rally location for non-serves only
           CASE
             WHEN (EXISTS (
                 SELECT 1 FROM serve_flags sf
                 WHERE sf.session_id = sn.session_id AND sf.swing_id = sn.swing_id
                   AND sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
             )) THEN NULL
-            WHEN sb.bounce_y_m_norm IS NULL THEN NULL
+            WHEN sb.bounce_y IS NULL THEN NULL
             ELSE CASE
-              WHEN LEAST(sb.bounce_y_m_norm, (SELECT court_l_m FROM const) - sb.bounce_y_m_norm) < (SELECT short_m FROM const) THEN 'short'
-              WHEN LEAST(sb.bounce_y_m_norm, (SELECT court_l_m FROM const) - sb.bounce_y_m_norm) < (SELECT mid_m   FROM const) THEN 'mid'
+              WHEN LEAST(sb.bounce_y, (SELECT court_l_m FROM const) - sb.bounce_y) < (SELECT short_m FROM const) THEN 'short'
+              WHEN LEAST(sb.bounce_y, (SELECT court_l_m FROM const) - sb.bounce_y) < (SELECT mid_m   FROM const) THEN 'mid'
               ELSE 'long'
             END
           END AS shot_depth_d,
@@ -540,10 +529,10 @@ CREATE_STMTS = {
                 WHERE sf.session_id = sn.session_id AND sf.swing_id = sn.swing_id
                   AND sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
             )) THEN NULL
-            WHEN sb.bounce_x_m_center IS NULL THEN NULL
-            WHEN sb.bounce_x_m_center < -((SELECT court_w_m FROM const) / 4.0) THEN 'A'
-            WHEN sb.bounce_x_m_center <  0                                       THEN 'B'
-            WHEN sb.bounce_x_m_center <  ((SELECT court_w_m FROM const) / 4.0)   THEN 'C'
+            WHEN sb.bounce_x IS NULL THEN NULL
+            WHEN sb.bounce_x < -((SELECT court_w_m FROM const) / 4.0) THEN 'A'
+            WHEN sb.bounce_x <  0                                       THEN 'B'
+            WHEN sb.bounce_x <  ((SELECT court_w_m FROM const) / 4.0)   THEN 'C'
             ELSE 'D'
           END AS rally_location_d,
 
@@ -558,10 +547,12 @@ CREATE_STMTS = {
             ELSE NULL
           END AS serve_bucket_1_8_d,
 
+          -- error if speed zero (unchanged)
+          (COALESCE(sn.ball_speed, 0) = 0) AS is_error_d,
+
           NULL::int  AS point_winner_id_d,
           NULL::text AS score_str_d,
-          NULL::text AS error_type_d,
-          NULL::boolean AS is_error_d
+          NULL::text AS error_type_d
 
         FROM swings_numbered sn
         LEFT JOIN hitter_uid hu
@@ -614,6 +605,7 @@ CREATE_STMTS = {
           (b.x * COALESCE(u.u_scale,1.0)) AS x_m_center,
           (b.y * COALESCE(u.u_scale,1.0)) AS y_m_center,
           ((SELECT mid_y_m FROM const) + (b.y * COALESCE(u.u_scale,1.0))) AS y_m_norm,
+          ((SELECT mid_y_m FROM const) + (b.y * COALESCE(u.u_scale,1.0))) AS y_norm,  -- back-compat alias
           -- flags
           CASE WHEN b.bounce_type='floor' THEN 1 ELSE 0 END AS is_floor,
           CASE WHEN b.x IS NULL OR b.y IS NULL THEN 1 ELSE 0 END AS is_xy_null,
@@ -742,7 +734,7 @@ CREATE_STMTS = {
                  OR COALESCE(b.bounce_ts, (TIMESTAMP 'epoch' + b.bounce_s * INTERVAL '1 second')) <= sn.next_ball_hit_ts
                   )
           ) b ON TRUE
-          LEFT JOIN unit_scale u USING (session_id)
+          LEFT JOIN unit_scale u ON u.session_id = sn.session_id
         )
         SELECT * FROM bounces_in_window
         ORDER BY session_id, point_number_d, shot_number_d, bounce_rank_in_shot, bounce_id;
@@ -760,9 +752,11 @@ def _apply_views(engine):
         _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
 
+        # proactively drop blockers
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
 
+        # drop in reverse, create in forward order
         for name in reversed(VIEW_NAMES):
             _drop_any(conn, name)
         for name in VIEW_NAMES:
