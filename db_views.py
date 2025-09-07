@@ -1,5 +1,4 @@
-# Re-create the file (previous cell reset). We'll write and then output the path and line count.
-code = r'''# db_views.py — Silver = passthrough + derived (from bronze), Gold = thin extract
+# db_views.py — Silver = passthrough + derived (from bronze), Gold = thin extract
 # ----------------------------------------------------------------------------------
 # - Coordinates are meters; no autoscale.
 # - One primary bounce per swing:
@@ -338,7 +337,7 @@ CREATE_STMTS = {
           FROM swings s
           LEFT JOIN LATERAL (
             SELECT sp.* FROM serve_points_ix sp
-            WHERE sp.session_id = s.session_id AND sp.ord_ts <= s.ord_ts
+            WHERE sp.session_id = s.session_id AND s.ord_ts <= s.ord_ts
             ORDER BY sp.ord_ts DESC
             LIMIT 1
           ) sp ON TRUE
@@ -775,10 +774,3 @@ def _apply_views(engine):
 
 init_views = _apply_views
 run_views  = _apply_views
-'''
-path = '/mnt/data/db_views.py'
-with open(path, 'w', encoding='utf-8') as f:
-    f.write(code)
-
-line_count = len(code.splitlines())
-(path, line_count)
