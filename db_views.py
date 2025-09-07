@@ -8,12 +8,11 @@
 #   If the point never starts (double fault), all serves are faults.
 # - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND chosen-bounce coords are in-court);
 #   otherwise ERROR. Winner id is derived accordingly.
-# - Debug columns retained: bounce_in_doubles_d (floor-only), bounce_in_court_any_d (any), terminal_basis_d
 # - Robustness:
 #   • Opponent derived from the two most-active swing players (prevents stray ids like 215).
 #   • Far/near per hitter from avg contact-Y (for LONG logic).
 #   • Last-shot-only booleans: is_wide_last_d, is_long_last_d, out_axis_last_d.
-#   • Game winner & game counters populate only on the last point *by serve boundary*.
+#   • Game winner & counters only on the last point *by serve boundary*.
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -118,9 +117,9 @@ def _drop_any(conn, name: str):
         stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
         stmts = [
-            f'DROP VIEW IF EXISTS "{name}" CASCADE;",
-            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;",
-            f'DROP TABLE IF EXISTS "{name}" CASCADE;",
+            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
     for stmt in stmts:
         conn.execute(text(stmt))
@@ -960,6 +959,6 @@ def _apply_views(engine):
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
 
-# Back-compat
+# Back-compat aliases
 init_views = _apply_views
 run_views  = _apply_views
