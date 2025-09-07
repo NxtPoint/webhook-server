@@ -13,7 +13,7 @@
 #   • Far/near per hitter from raw ball_hit_y sign (0 at net; +to camera, −away).
 #   • Last-shot-only booleans: is_wide_last_d, is_long_last_d, out_axis_last_d.
 #   • Game winner & counters only on the last point *by serve boundary*.
-#   • NEW: serve_loc_18_d (1–8), placement_ad_d (A–D), play_d.
+#   • Serve location 1–8 (serve_loc_18_d), court placement A–D (placement_ad_d), play type (play_d).
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -785,77 +785,66 @@ CREATE_STMTS = {
             END
           END AS out_axis_last_d,
 
-          -- ===== NEW: Serve location 1–8 (valid starting serves only) =====
+          -- ===== Serve location 1–8 (valid starting serves only) =====
           CASE
             WHEN sbp.serve_d IS TRUE
              AND sbp.start_serve_shot_ix IS NOT NULL
              AND sbp.shot_ix = sbp.start_serve_shot_ix
-            THEN
-              -- compute target coords (bounce floor if present, else mirrored contact)
-              (
-                WITH coords AS (
-                  SELECT
-                    COALESCE(
-                      NULLIF(sbp.bounce_x_center_m, NULL),
-                      (SELECT court_w_m FROM const) - sbp.ball_hit_x
-                    ) AS sx,
-                    COALESCE(
-                      NULLIF(sbp.bounce_y_norm_m, NULL),
-                      (SELECT mid_y_m FROM const) - sbp.ball_hit_y
-                    ) AS sy
-                ),
-                flags AS (
-                  SELECT
-                    sx, sy,
-                    (sy < (SELECT mid_y_m FROM const)) AS is_far_end,
-                    CASE
-                      WHEN sy < (SELECT mid_y_m FROM const)
-                        THEN (sx < (SELECT half_w_m FROM const))      -- far: deuce = left half
-                      ELSE (sx > (SELECT half_w_m FROM const))         -- near: deuce = right half
-                    END AS is_deuce_box,
-                    -- x within the chosen half measured from sideline (0..half_w)
-                    CASE
-                      WHEN sx < (SELECT half_w_m FROM const) THEN sx
-                      ELSE (SELECT court_w_m FROM const) - sx
-                    END AS x_from_sideline,
-                    -- short vs deep split by service-box half-depth (3.20 m)
-                    CASE
-                      WHEN sy < (SELECT mid_y_m FROM const)
-                        THEN (sy > (SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)/2.0)
-                      ELSE (sy < (SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)/2.0)
-                    END AS is_short
-                  FROM coords
-                )
+            THEN (
+              WITH coords AS (
                 SELECT
+                  COALESCE(sbp.bounce_x_center_m,
+                           (SELECT court_w_m FROM const) - sbp.ball_hit_x) AS sx,
+                  COALESCE(sbp.bounce_y_norm_m,
+                           (SELECT mid_y_m FROM const) - sbp.ball_hit_y)     AS sy
+              ),
+              flags AS (
+                SELECT
+                  sx, sy,
+                  (sy < (SELECT mid_y_m FROM const)) AS is_far_end,
                   CASE
-                    WHEN is_deuce_box THEN
-                      CASE
-                        WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
-                        WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
-                        WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
-                        ELSE 4
-                      END
-                    ELSE
-                      4 + CASE
-                            WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
-                            WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
-                            WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
-                            ELSE 4
-                          END
-                  END
-                FROM flags
+                    WHEN sy < (SELECT mid_y_m FROM const)
+                      THEN (sx < (SELECT half_w_m FROM const))      -- far: deuce = left half
+                    ELSE (sx > (SELECT half_w_m FROM const))         -- near: deuce = right half
+                  END AS is_deuce_box,
+                  CASE
+                    WHEN sx < (SELECT half_w_m FROM const) THEN sx
+                    ELSE (SELECT court_w_m FROM const) - sx
+                  END AS x_from_sideline,
+                  CASE
+                    WHEN sy < (SELECT mid_y_m FROM const)
+                      THEN (sy > (SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)/2.0)
+                    ELSE (sy < (SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)/2.0)
+                  END AS is_short
+                FROM coords
               )
+              SELECT
+                CASE
+                  WHEN is_deuce_box THEN
+                    CASE
+                      WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
+                      WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
+                      WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
+                      ELSE 4
+                    END
+                  ELSE
+                    4 + CASE
+                          WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
+                          WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
+                          WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
+                          ELSE 4
+                        END
+                END
+              FROM flags
+            )
             ELSE NULL
           END AS serve_loc_18_d,
 
-          -- ===== NEW: Court placement A–D (any swing; bounce floor preferred) =====
+          -- ===== Court placement A–D (any swing; bounce floor preferred) =====
           (
             WITH pt AS (
-              SELECT
-                COALESCE(
-                  NULLIF(sbp.bounce_y_norm_m, NULL),
-                  (SELECT mid_y_m FROM const) + sbp.ball_hit_y
-                ) AS py
+              SELECT COALESCE(sbp.bounce_y_norm_m,
+                              (SELECT mid_y_m FROM const) + sbp.ball_hit_y) AS py
             ),
             band AS (
               SELECT
@@ -863,21 +852,20 @@ CREATE_STMTS = {
                 (py < (SELECT mid_y_m FROM const)) AS far_end,
                 CASE
                   WHEN py < (SELECT mid_y_m FROM const)
-                    THEN (py / (SELECT mid_y_m FROM const))                 -- far: 0..mid_y
+                    THEN (py / (SELECT mid_y_m FROM const))                                -- far: 0..mid_y
                   ELSE ((SELECT court_l_m FROM const) - py) / (SELECT mid_y_m FROM const)  -- near: reverse
                 END AS t
             )
-            SELECT
-              CASE
-                WHEN t < 0.25 THEN 'A'
-                WHEN t < 0.50 THEN 'B'
-                WHEN t < 0.75 THEN 'C'
-                ELSE 'D'
-              END
+            SELECT CASE
+              WHEN t < 0.25 THEN 'A'
+              WHEN t < 0.50 THEN 'B'
+              WHEN t < 0.75 THEN 'C'
+              ELSE 'D'
+            END
             FROM band
           ) AS placement_ad_d,
 
-          -- ===== NEW: Play type =====
+          -- ===== Play type =====
           CASE
             WHEN sbp.serve_d THEN 'serve'
             WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
@@ -885,7 +873,7 @@ CREATE_STMTS = {
             ELSE 'baseline'
           END AS play_d,
 
-          -- Scoring (only on last-shot rows). Winner/counters only when serve changes next.
+          -- Scoring (only on last-shot rows)
           gr.point_score_text_d,
           gr.is_game_end_d,
           gr.game_winner_player_id_d,
