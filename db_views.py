@@ -16,8 +16,8 @@
 #   • Serve location 1–8 (serve_loc_18_d), court placement A–D (placement_ad_d), play type (play_d).
 # ----------------------------------------------------------------------------------
 
-from sqlalchemy import text
 from typing import List
+from sqlalchemy import text
 
 __all__ = ["init_views", "run_views", "VIEW_SQL_STMTS", "VIEW_NAMES", "CREATE_STMTS"]
 VIEW_SQL_STMTS: List[str] = []
@@ -124,6 +124,19 @@ def _drop_any(conn, name: str):
         ]
     for stmt in stmts:
         conn.execute(text(stmt))
+
+def _exec_with_clear_errors(conn, name: str, sql: str):
+    """Execute SQL and raise a readable error that includes DB message + snippet."""
+    try:
+        conn.execute(text(sql))
+    except Exception as e:
+        dbmsg = ""
+        if hasattr(e, "orig"):
+            o = e.orig
+            dbmsg = getattr(getattr(o, "diag", None), "message_primary", "") or str(o)
+        lines = sql.strip().splitlines()
+        snippet = "\n".join([*lines[:12], "    ...", *lines[-12:]]) if len(lines) > 30 else "\n".join(lines)
+        raise RuntimeError(f"[init-views:{name}] {dbmsg or e.__class__.__name__}\n--- SQL snippet ---\n{snippet}\n")
 
 # ==================================================================================
 # View manifest
@@ -557,6 +570,120 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
+        /* NEW: Hardened serve 1–8 and A–D placement logic
+           - For serves: A–D must be NULL; bucket 1–4 (deuce) or 5–8 (ad)
+             Fallback order for X/Y: bounce → receiver contact (next opp) → server contact.
+           - For rally shots: use opponent contact (next opp) → bounce → hitter contact for A–D.
+           - Near/far normalization via player_orientation / ball_hit_y sign.
+        */
+        placement_core AS (
+          SELECT
+            sbp.session_id,
+            sbp.swing_id,
+
+            -- Determine if hitter is far-end (fallback to per-player orientation)
+            COALESCE(sbp.ball_hit_y < 0, pdir.is_far_side_d, FALSE) AS is_far_end,
+
+            -- Candidate X for serve lanes
+            COALESCE(
+              sbp.bounce_x_center_m,
+              CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END,
+              sbp.ball_hit_x
+            ) AS srv_x_raw,
+
+            -- Candidate Y for serve deuce/ad via existing serving_side_d (string), no need to derive from Y
+
+            -- Candidate XY for rally A–D
+            COALESCE(
+              CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END,
+              sbp.bounce_x_center_m,
+              sbp.ball_hit_x
+            ) AS rally_x_raw,
+            COALESCE(
+              CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN (SELECT mid_y_m FROM const) + sbp.next_ball_hit_y END,
+              sbp.bounce_y_norm_m,
+              (SELECT mid_y_m FROM const) + sbp.ball_hit_y
+            ) AS rally_y_raw,
+
+            sbp.serving_side_d
+          FROM swing_bounce_primary sbp
+          LEFT JOIN player_orientation pdir
+            ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
+        ),
+        placement_oriented AS (
+          SELECT
+            pc.*,
+            -- Flip axes if server/hitter is far so "left/right" and near/box logic are consistent
+            CASE WHEN pc.is_far_end THEN pc.srv_x_raw    ELSE pc.srv_x_raw    END AS srv_x,  -- X unaffected by near/far for lanes; handled by sideline choice below
+            CASE WHEN pc.is_far_end THEN pc.rally_x_raw  ELSE pc.rally_x_raw  END AS rx,
+            CASE WHEN pc.is_far_end THEN (SELECT court_l_m FROM const) - pc.rally_y_raw ELSE pc.rally_y_raw END AS ry
+          FROM placement_core pc
+        ),
+        placement_final AS (
+          SELECT
+            po.session_id,
+            po.swing_id,
+
+            /* Serve bucket 1..8 (NULL if not the starting serve swing) */
+            CASE
+              WHEN sbp.serve_d IS TRUE
+               AND sbp.start_serve_shot_ix IS NOT NULL
+               AND sbp.shot_ix = sbp.start_serve_shot_ix
+              THEN (
+                -- distance from the relevant sideline for that box (deuce/ad + near/far handled by which sideline we measure from)
+                WITH d AS (
+                  SELECT
+                    CASE
+                      -- FAR end
+                      WHEN po.is_far_end AND po.serving_side_d = 'deuce' THEN po.srv_x
+                      WHEN po.is_far_end AND po.serving_side_d <> 'deuce' THEN (SELECT court_w_m FROM const) - po.srv_x
+                      -- NEAR end
+                      WHEN NOT po.is_far_end AND po.serving_side_d = 'deuce' THEN (SELECT court_w_m FROM const) - po.srv_x
+                      ELSE po.srv_x
+                    END AS x_from_sideline
+                ),
+                lanes AS (
+                  SELECT
+                    LEAST(GREATEST(x_from_sideline, 0::numeric), (SELECT half_w_m FROM const))                   AS x_clamped,
+                    ((SELECT half_w_m FROM const) / 4.0)                                                         AS lane_w
+                  FROM d
+                ),
+                idx AS (
+                  SELECT (1 + FLOOR( LEAST(x_clamped, (SELECT half_w_m FROM const) - (SELECT eps_m FROM const)) / lane_w ))::int AS lane_1_4
+                  FROM lanes
+                )
+                SELECT CASE WHEN po.serving_side_d = 'deuce' THEN lane_1_4 ELSE 4 + lane_1_4 END FROM idx
+              )
+              ELSE NULL
+            END AS serve_bucket_1_8,
+
+            /* Rally A–D (NULL for serves by rule) */
+            CASE
+              WHEN sbp.serve_d THEN NULL
+              ELSE (
+                WITH t AS (
+                  SELECT
+                    po.ry AS py,
+                    CASE
+                      WHEN po.ry < (SELECT mid_y_m FROM const)  THEN po.ry / (SELECT mid_y_m FROM const)                               -- far half normalized
+                      ELSE ((SELECT court_l_m FROM const) - po.ry) / (SELECT mid_y_m FROM const)                                     -- near half reversed
+                    END AS frac
+                )
+                SELECT CASE
+                  WHEN frac < 0.25 THEN 'A'
+                  WHEN frac < 0.50 THEN 'B'
+                  WHEN frac < 0.75 THEN 'C'
+                  ELSE 'D'
+                END
+                FROM t
+              )
+            END AS rally_box_ad
+
+          FROM placement_oriented po
+          JOIN swing_bounce_primary sbp
+            ON sbp.session_id = po.session_id AND sbp.swing_id = po.swing_id
+        ),
+
         -- S8D. Per-point outcome (last-shot rows only) for scoring
         point_outcome AS (
           SELECT
@@ -816,103 +943,9 @@ CREATE_STMTS = {
             END
           END AS out_axis_last_d,
 
-          -- ===== Serve location 1–8 (valid starting serves only; X-only lanes with clamping and fallback to receiver X) =====
-          CASE
-            WHEN sbp.serve_d IS TRUE
-            AND sbp.start_serve_shot_ix IS NOT NULL
-            AND sbp.shot_ix = sbp.start_serve_shot_ix
-            THEN (
-              WITH xsrc AS (
-                SELECT
-                  -- prefer floor-bounce X; else receiver contact X (only if next hitter is opponent); else server contact X
-                  COALESCE(
-                    sbp.bounce_x_center_m,
-                    CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END,
-                    sbp.ball_hit_x
-                  ) AS sx
-              ),
-              orient AS (
-                SELECT
-                  sx,
-                  -- far if server's contact y is negative; fallback to player orientation if NULL
-                  COALESCE(sbp.ball_hit_y < 0, pdir.is_far_side_d, FALSE) AS is_far_end,
-                  (sbp.serving_side_d = 'deuce')                           AS is_deuce_box
-                FROM xsrc
-                LEFT JOIN player_orientation pdir
-                  ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
-              ),
-              lanes AS (
-                SELECT
-                  is_deuce_box,
-                  -- distance from the relevant SIDELINE for that box (clamped into [0, half_w])
-                  LEAST(
-                    GREATEST(
-                      CASE
-                        -- FAR end
-                        WHEN is_far_end AND is_deuce_box THEN sx                                       -- deuce: left sideline
-                        WHEN is_far_end AND NOT is_deuce_box THEN (SELECT court_w_m FROM const) - sx  -- ad: right sideline
-                        -- NEAR end
-                        WHEN NOT is_far_end AND is_deuce_box THEN (SELECT court_w_m FROM const) - sx   -- deuce: right sideline
-                        ELSE sx                                                                        -- ad: left sideline
-                      END,
-                      0::numeric
-                    ),
-                    (SELECT half_w_m FROM const)
-                  )                                             AS x_from_sideline_clamped,
-                  ((SELECT half_w_m FROM const) / 4.0)         AS lane_w
-              ),
-              lane_idx AS (
-                SELECT
-                  is_deuce_box,
-                  (1
-                    + FLOOR(
-                        (LEAST(x_from_sideline_clamped, (SELECT half_w_m FROM const) - (SELECT eps_m FROM const)))
-                        / lane_w
-                      )
-                  )::int AS lane_1_4
-                FROM lanes
-              )
-              SELECT CASE WHEN is_deuce_box THEN lane_1_4 ELSE 4 + lane_1_4 END
-              FROM lane_idx
-            )
-            ELSE NULL
-          END AS serve_loc_18_d,
-
-          -- ===== Court placement A–D =====
-          -- Rule: NULL for serves. Otherwise, use the RECEIVER'S contact Y if available,
-          --       else the bounce Y, else the hitter's contact Y; map to A/B/C/D by end.
-          CASE
-            WHEN sbp.serve_d THEN NULL
-            ELSE (
-              WITH ysrc AS (
-                SELECT
-                  COALESCE(
-                    CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id
-                        THEN (SELECT mid_y_m FROM const) + sbp.next_ball_hit_y END,
-                    sbp.bounce_y_norm_m,
-                    (SELECT mid_y_m FROM const) + sbp.ball_hit_y
-                  ) AS py
-              ),
-              band AS (
-                SELECT
-                  py,
-                  (py < (SELECT mid_y_m FROM const)) AS far_end,
-                  CASE
-                    WHEN py < (SELECT mid_y_m FROM const)
-                      THEN (py / (SELECT mid_y_m FROM const))                                -- far: 0..mid_y
-                    ELSE ((SELECT court_l_m FROM const) - py) / (SELECT mid_y_m FROM const)  -- near: reverse
-                  END AS t
-                FROM ysrc
-              )
-              SELECT CASE
-                WHEN t < 0.25 THEN 'A'
-                WHEN t < 0.50 THEN 'B'
-                WHEN t < 0.75 THEN 'C'
-                ELSE 'D'
-              END
-              FROM band
-            )
-          END AS placement_ad_d,
+          /* ===== Serve location 1–8 and A–D (hardened) ===== */
+          pf.serve_bucket_1_8 AS serve_loc_18_d,
+          pf.rally_box_ad     AS placement_ad_d,
 
           -- ===== Play type =====
           CASE
@@ -944,6 +977,8 @@ CREATE_STMTS = {
               AND gr.point_number_d = sbp.point_number_d
         LEFT JOIN bounce_explain be
               ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
+        LEFT JOIN placement_final pf
+              ON pf.session_id = sbp.session_id AND pf.swing_id = sbp.swing_id
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
     """,
 
@@ -1089,11 +1124,11 @@ def _apply_views(engine):
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
 
-        # drop in reverse, create in forward order
+        # drop in reverse, create in forward order (report exact failing view)
         for name in reversed(VIEW_NAMES):
             _drop_any(conn, name)
         for name in VIEW_NAMES:
-            conn.execute(text(CREATE_STMTS[name]))
+            _exec_with_clear_errors(conn, name, CREATE_STMTS[name])
 
 # Back-compat
 init_views = _apply_views
