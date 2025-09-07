@@ -808,7 +808,7 @@ CREATE_STMTS = {
             END
           END AS out_axis_last_d,
 
-          -- ===== Serve location 1–8 (valid starting serves only) =====
+          -- ===== Serve location 1–8 (valid starting serves only; X-only lanes with clamping) =====
           CASE
             WHEN sbp.serve_d IS TRUE
              AND sbp.start_serve_shot_ix IS NOT NULL
@@ -816,52 +816,61 @@ CREATE_STMTS = {
             THEN (
               WITH coords AS (
                 SELECT
-                  COALESCE(sbp.bounce_x_center_m,
-                           (SELECT court_w_m FROM const) - sbp.ball_hit_x) AS sx,
-                  COALESCE(sbp.bounce_y_norm_m,
-                           (SELECT mid_y_m FROM const) - sbp.ball_hit_y)     AS sy
+                  -- prefer floor-bounce X; fall back to contact X if needed
+                  COALESCE(sbp.bounce_x_center_m, sbp.ball_hit_x) AS sx,
+                  -- we still need Y only to know which end we're on (far/near)
+                  COALESCE(sbp.bounce_y_norm_m, (SELECT (SELECT mid_y_m FROM const) + sbp.ball_hit_y)) AS sy
               ),
-              flags AS (
+              box AS (
                 SELECT
                   sx, sy,
                   (sy < (SELECT mid_y_m FROM const)) AS is_far_end,
+                  -- decide which service box (deuce/ad) this serve is intended for
                   CASE
                     WHEN sy < (SELECT mid_y_m FROM const)
-                      THEN (sx < (SELECT half_w_m FROM const))      -- far: deuce = left half
-                    ELSE (sx > (SELECT half_w_m FROM const))         -- near: deuce = right half
-                  END AS is_deuce_box,
-                  CASE
-                    WHEN sx < (SELECT half_w_m FROM const) THEN sx
-                    ELSE (SELECT court_w_m FROM const) - sx
-                  END AS x_from_sideline,
-                  CASE
-                    WHEN sy < (SELECT mid_y_m FROM const)
-                      THEN (sy > (SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)/2.0)
-                    ELSE (sy < (SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)/2.0)
-                  END AS is_short
+                      THEN (sx < (SELECT half_w_m FROM const))       -- far end: deuce = left half
+                    ELSE (sx > (SELECT half_w_m FROM const))          -- near end: deuce = right half
+                  END AS is_deuce_box
                 FROM coords
+              ),
+              lanes AS (
+                SELECT
+                  is_deuce_box,
+                  -- distance from the relevant SIDELINE for that box (clamped into [0, half_w])
+                  LEAST(
+                    GREATEST(
+                      CASE
+                        -- FAR end
+                        WHEN is_far_end AND is_deuce_box THEN sx                              -- deuce: left sideline
+                        WHEN is_far_end AND NOT is_deuce_box THEN (SELECT court_w_m FROM const) - sx  -- ad: right sideline
+                        -- NEAR end
+                        WHEN NOT is_far_end AND is_deuce_box THEN (SELECT court_w_m FROM const) - sx   -- deuce: right sideline
+                        ELSE sx                                                                     -- ad: left sideline
+                      END,
+                      0::numeric
+                    ),
+                    (SELECT half_w_m FROM const)
+                  )                                                AS x_from_sideline_clamped,
+                  ((SELECT half_w_m FROM const) / 4.0)            AS lane_w
+                FROM box
+              ),
+              lane_idx AS (
+                SELECT
+                  is_deuce_box,
+                  -- map clamped distance to lanes 1..4 (use a tiny eps to keep the top edge in lane 4)
+                  (1
+                    + FLOOR( (LEAST(x_from_sideline_clamped,
+                                    (SELECT half_w_m FROM const) - 0.00001::numeric)
+                              ) / lane_w )
+                  )::int AS lane_1_4
+                FROM lanes
               )
-              SELECT
-                CASE
-                  WHEN is_deuce_box THEN
-                    CASE
-                      WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
-                      WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
-                      WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
-                      ELSE 4
-                    END
-                  ELSE
-                    4 + CASE
-                          WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
-                          WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
-                          WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
-                          ELSE 4
-                        END
-                END
-              FROM flags
+              SELECT CASE WHEN is_deuce_box THEN lane_1_4 ELSE 4 + lane_1_4 END
+              FROM lane_idx
             )
             ELSE NULL
           END AS serve_loc_18_d,
+
 
           -- ===== Court placement A–D (any swing; bounce floor preferred) =====
           (
