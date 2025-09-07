@@ -254,7 +254,28 @@ CREATE_STMTS = {
           WHERE s.ball_hit_y IS NOT NULL
           GROUP BY s.session_id, s.player_id
         ),
-
+        -- S1c. Serve candidates (fh_overhead inside serve band)
+        serve_candidates AS (
+          SELECT
+            s.session_id, s.swing_id, s.player_id, s.ord_ts,
+            s.ball_hit_x AS x_ref, s.ball_hit_y AS y_ref,
+            (lower(s.swing_type) IN ('fh_overhead','fh-overhead')) AS is_fh_overhead,
+            CASE
+              WHEN s.ball_hit_y IS NULL THEN NULL
+              ELSE (s.ball_hit_y <= (SELECT serve_eps_m FROM const)
+                OR  s.ball_hit_y >= (SELECT court_l_m FROM const) - (SELECT serve_eps_m FROM const))
+            END AS inside_serve_band
+          FROM swings s
+        ),
+        -- S1d. Dynamic centerline from actual serve contacts
+        serve_centerline AS (
+          SELECT
+            sc.session_id,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY sc.x_ref) AS center_x
+          FROM serve_candidates sc
+          WHERE sc.is_fh_overhead AND COALESCE(sc.inside_serve_band, FALSE)
+          GROUP BY sc.session_id
+        ),
         -- S2. Serve detection (fh_overhead in serve band) + serving side (from server's end)
         serve_flags AS (
           SELECT
@@ -269,8 +290,10 @@ CREATE_STMTS = {
             CASE
               WHEN s.ball_hit_y IS NULL OR s.ball_hit_x IS NULL THEN NULL
               WHEN s.ball_hit_y < (SELECT mid_y_m FROM const)
-                THEN CASE WHEN s.ball_hit_x < (SELECT half_w_m FROM const) THEN 'deuce' ELSE 'ad' END
-              ELSE CASE WHEN s.ball_hit_x > (SELECT half_w_m FROM const) THEN 'deuce' ELSE 'ad' END
+                THEN CASE WHEN s.ball_hit_x < (SELECT center_x FROM serve_centerline sc WHERE sc.session_id = s.session_id)
+                          THEN 'deuce' ELSE 'ad' END
+              ELSE CASE WHEN s.ball_hit_x > (SELECT center_x FROM serve_centerline sc WHERE sc.session_id = s.session_id)
+                        THEN 'deuce' ELSE 'ad' END
             END AS serving_side_d
           FROM swings s
         ),
