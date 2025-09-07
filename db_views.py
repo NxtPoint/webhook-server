@@ -201,9 +201,9 @@ CREATE_STMTS = {
         WITH
         const AS (
           SELECT
-            8.23::numeric      AS court_w_m,          -- singles width
+            10.97::numeric     AS court_w_m,
             23.77::numeric     AS court_l_m,
-            8.23::numeric/2    AS half_w_m,           -- singles half-width
+            10.97::numeric/2   AS half_w_m,
             23.77::numeric/2   AS mid_y_m,
             6.40::numeric      AS service_box_depth_m,
             0.50::numeric      AS serve_eps_m
@@ -216,10 +216,10 @@ CREATE_STMTS = {
           GROUP BY fs.session_id, fs.player_id
         ),
         swing_players_ranked AS (
-            SELECT sp.*,
-                   ROW_NUMBER() OVER (PARTITION BY sp.session_id
-                                      ORDER BY sp.n_sw DESC, sp.player_id) AS rn
-            FROM swing_players sp
+          SELECT sp.*,
+                 ROW_NUMBER() OVER (PARTITION BY sp.session_id
+                                    ORDER BY sp.n_sw DESC, sp.player_id) AS rn
+          FROM swing_players sp
         ),
         players_pair AS (
           SELECT
@@ -339,8 +339,7 @@ CREATE_STMTS = {
             b.bounce_type,
             b.x AS bounce_x_center_m,
             b.y AS bounce_y_center_m,
-            /* Singles: SportAI Y is already absolute 0..23.77 */
-            b.y AS bounce_y_norm_m,
+            ((SELECT mid_y_m FROM const) + b.y) AS bounce_y_norm_m,
             COALESCE(b.bounce_ts, (TIMESTAMP 'epoch' + b.bounce_s * INTERVAL '1 second')) AS bounce_ts_pref
           FROM vw_bounce_silver b
         ),
