@@ -27,7 +27,7 @@ VIEW_SQL_STMTS: List[str] = []
 # ==================================================================================
 
 def _ensure_raw_ingest(conn):
-    conn.execute(text("""
+    conn.execute(text(r'''
         CREATE TABLE IF NOT EXISTS raw_ingest (
           id           BIGSERIAL PRIMARY KEY,
           source       TEXT NOT NULL,
@@ -36,25 +36,25 @@ def _ensure_raw_ingest(conn):
           ingest_ts    TIMESTAMPTZ NOT NULL DEFAULT now(),
           payload      JSONB NOT NULL
         );
-    """))
+    '''))  # raw string so backslashes/quotes never break
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
 def _table_exists(conn, t: str) -> bool:
-    return conn.execute(text("""
+    return conn.execute(text(r'''
         SELECT 1
         FROM information_schema.tables
         WHERE table_schema='public' AND table_name=:t
         LIMIT 1
-    """), {"t": t}).first() is not None
+    '''), {"t": t}).first() is not None
 
 def _column_exists(conn, t: str, c: str) -> bool:
-    return conn.execute(text("""
+    return conn.execute(text(r'''
         SELECT 1
         FROM information_schema.columns
         WHERE table_schema='public' AND table_name=:t AND column_name=:c
         LIMIT 1
-    """), {"t": t, "c": c}).first() is not None
+    '''), {"t": t, "c": c}).first() is not None
 
 def _preflight_or_raise(conn):
     required_tables = [
@@ -98,7 +98,7 @@ def _preflight_or_raise(conn):
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
 def _drop_any(conn, name: str):
-    kind = conn.execute(text("""
+    kind = conn.execute(text(r'''
         SELECT CASE
                  WHEN EXISTS (SELECT 1 FROM information_schema.views
                               WHERE table_schema='public' AND table_name=:n) THEN 'view'
@@ -108,7 +108,7 @@ def _drop_any(conn, name: str):
                               WHERE table_schema='public' AND table_name=:n) THEN 'table'
                  ELSE NULL
                END
-    """), {"n": name}).scalar()
+    '''), {"n": name}).scalar()
 
     if kind == 'view':
         stmts = [f'DROP VIEW IF EXISTS "{name}" CASCADE;']
@@ -128,17 +128,16 @@ def _drop_any(conn, name: str):
 def _exec_with_clear_errors(conn, name: str, sql: str):
     try:
         conn.execute(text(sql))
-    except Exception as e:
+    except Exception as err:
         dbmsg = ""
-        if hasattr(e, "orig"):
-            o = e.orig
+        if hasattr(err, "orig"):
+            o = err.orig
             dbmsg = getattr(getattr(o, "diag", None), "message_primary", "") or str(o)
         lines = sql.strip().splitlines()
         snippet = "\n".join([*lines[:12], "    ...", *lines[-12:]]) if len(lines) > 30 else "\n".join(lines)
-        raise RuntimeError(f"[init-views:{name}] {dbmsg or e.__class__.__name__}\n--- SQL snippet ---\n{snippet}\n")
+        raise RuntimeError(f"[init-views:{name}] {dbmsg or err.__class__.__name__}\n--- SQL snippet ---\n{snippet}\n")
 
 # Auto-detect your player-side column and expose it as player_side_far_d (TRUE=far, FALSE=near)
-
 def _player_side_select_snippet(conn) -> str:
     for col in ["is_far_side", "is_far_side_d", "player_is_far", "is_far"]:
         if _column_exists(conn, "fact_swing", col):
@@ -177,7 +176,7 @@ LEGACY_OBJECTS = [
 # ==================================================================================
 
 CREATE_STMTS = {
-    "vw_swing_silver": """
+    "vw_swing_silver": r'''
         CREATE OR REPLACE VIEW vw_swing_silver AS
         SELECT
           fs.session_id,
@@ -195,15 +194,15 @@ CREATE_STMTS = {
           {PLAYER_SIDE_SELECT}
         FROM fact_swing fs
         LEFT JOIN dim_session ds USING (session_id);
-    """,
+    ''',
 
-    "vw_ball_position_silver": """
+    "vw_ball_position_silver": r'''
         CREATE OR REPLACE VIEW vw_ball_position_silver AS
         SELECT session_id, ts_s, ts, x, y
         FROM fact_ball_position;
-    """,
+    ''',
 
-    "vw_bounce_silver": """
+    "vw_bounce_silver": r'''
         CREATE OR REPLACE VIEW vw_bounce_silver AS
         SELECT
           b.session_id,
@@ -216,9 +215,9 @@ CREATE_STMTS = {
           b.y,
           b.bounce_type
         FROM fact_bounce b;
-    """,
+    ''',
 
-    "vw_point_silver": """
+    "vw_point_silver": r'''
         CREATE OR REPLACE VIEW vw_point_silver AS
         WITH
         const AS (
@@ -580,11 +579,11 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        /* ================== SERVE: X source with projection fallback ==================
+        /* ================== SERVE: X source with simple fallback (bounce -> returner X) ==================
            Primary X: floor-bounce X (only if the primary is a floor bounce).
-           Else: project server→receiver line to service-line Y on landing side; use that X.
-           Else: raw receiver X; else server X.
-           Lanes: measure distance from relevant sideline, clamp to [0, half_w], bucket 1–4; add 4 if ad.
+           Else:      returner’s contact X (next swing by opponent).
+           Else:      server contact X.
+           Lanes:     measure distance from correct sideline, clamp to [0, half_w], bucket 1–4; add 4 if ad.
         */
         serve_place_core AS (
           SELECT
@@ -594,47 +593,24 @@ CREATE_STMTS = {
             sbp.serve_d,
             sbp.start_serve_shot_ix,
             sbp.shot_ix,
-            -- is server on far end? (true = far, false = near)
-            COALESCE(sbp.ball_hit_y < 0, pdir.is_far_side_d, FALSE) AS is_far_end,
-            -- floor-bounce X only (ignore non-floor "any" bounces for serves)
+            -- identify server end using mid_y (true = far, false = near)
+            COALESCE(sbp.ball_hit_y > (SELECT mid_y_m FROM const), pdir.is_far_side_d, FALSE) AS is_far_end,
             CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS floor_x,
-            -- server contact
             sbp.ball_hit_x AS srv_x0,
-            sbp.ball_hit_y AS srv_y0,
-            -- receiver contact (only if next hitter is opponent)
-            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS rcv_x1,
-            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS rcv_y1
+            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS rcv_x1
           FROM swing_bounce_primary sbp
           LEFT JOIN player_orientation pdir
             ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
         ),
-        serve_place_proj AS (
-          SELECT
-            c.*,
-            -- landing service-line Y in raw (receiver side)
-            CASE WHEN c.is_far_end THEN (SELECT service_box_depth_m FROM const)
-                 ELSE - (SELECT service_box_depth_m FROM const)
-            END AS y_target_raw,
-            -- t parameter clamped to [0,1] for projection
-            CASE
-              WHEN c.rcv_y1 IS NULL OR c.srv_y0 IS NULL OR c.rcv_y1 = c.srv_y0 THEN NULL
-              ELSE LEAST(GREATEST(((CASE WHEN c.is_far_end THEN (SELECT service_box_depth_m FROM const)
-                                         ELSE - (SELECT service_box_depth_m FROM const) END) - c.srv_y0)
-                                   / NULLIF(c.rcv_y1 - c.srv_y0, 0), 0::numeric), 1::numeric)
-            END AS t_clamped
-          FROM serve_place_core c
-        ),
         serve_place_x AS (
           SELECT
-            p.*,
+            c.*,
             CASE
-              WHEN p.floor_x IS NOT NULL THEN p.floor_x
-              WHEN p.t_clamped IS NOT NULL AND p.rcv_x1 IS NOT NULL AND p.srv_x0 IS NOT NULL
-                THEN (p.srv_x0 + p.t_clamped * (p.rcv_x1 - p.srv_x0))        -- projected receiver X at service line
-              WHEN p.rcv_x1 IS NOT NULL THEN p.rcv_x1
-              ELSE p.srv_x0
+              WHEN c.floor_x IS NOT NULL THEN c.floor_x
+              WHEN c.rcv_x1  IS NOT NULL THEN c.rcv_x1
+              ELSE c.srv_x0
             END AS srv_x_resolved
-          FROM serve_place_proj p
+          FROM serve_place_core c
         ),
         serve_place_final AS (
           SELECT
@@ -647,12 +623,11 @@ CREATE_STMTS = {
               THEN (
                 WITH d AS (
                   SELECT
-                    -- distance from the correct sideline for this box (deuce/ad × near/far)
                     CASE
-                      -- FAR server
+                      -- FAR server: deuce measures from left, ad from right
                       WHEN x.is_far_end AND x.serving_side_d = 'deuce' THEN x.srv_x_resolved
                       WHEN x.is_far_end AND x.serving_side_d <> 'deuce' THEN (SELECT court_w_m FROM const) - x.srv_x_resolved
-                      -- NEAR server
+                      -- NEAR server: flip
                       WHEN NOT x.is_far_end AND x.serving_side_d = 'deuce' THEN (SELECT court_w_m FROM const) - x.srv_x_resolved
                       ELSE x.srv_x_resolved
                     END AS x_from_sideline
@@ -705,7 +680,7 @@ CREATE_STMTS = {
             ls.swing_id,
             COALESCE(ls.opp_x, ls.bx) AS x_src,
             COALESCE(ls.opp_is_far,
-                     CASE WHEN ls.by IS NOT NULL THEN (ls.by < (SELECT mid_y_m FROM const)) END
+                     CASE WHEN ls.by IS NOT NULL THEN (ls.by > (SELECT mid_y_m FROM const)) END
             ) AS is_far_landing
           FROM ad_landing_side ls
         ),
@@ -1021,9 +996,9 @@ CREATE_STMTS = {
         LEFT JOIN ad_label al
               ON al.session_id = sbp.session_id AND al.swing_id = sbp.swing_id
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
-    """,
+    ''',
 
-    "vw_bounce_stream_debug": """
+    "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
           SELECT
@@ -1121,9 +1096,9 @@ CREATE_STMTS = {
           ON f.session_id = b.session_id AND f.swing_id = b.swing_id
         LEFT JOIN any_in_window a
           ON a.session_id = b.session_id AND a.swing_id = b.swing_id;
-    """,
+    ''',
 
-    "vw_point_bounces_debug": """
+    "vw_point_bounces_debug": r'''
         CREATE OR REPLACE VIEW vw_point_bounces_debug AS
         SELECT
           vps.session_id,
@@ -1145,7 +1120,7 @@ CREATE_STMTS = {
             ) d),0)                                                       AS dup_bounce_ids
         FROM vw_point_silver vps
         GROUP BY vps.session_id, vps.session_uid_d;
-    """,
+    ''',
 }
 
 # ==================================================================================
