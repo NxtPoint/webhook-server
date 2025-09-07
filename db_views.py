@@ -9,11 +9,11 @@
 # - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND chosen-bounce coords are in-court);
 #   otherwise ERROR. Winner id is derived accordingly.
 # - Debug columns retained: bounce_in_doubles_d (floor-only), bounce_in_court_any_d (any), terminal_basis_d
-# - New:
-#   • Opponent derived from the two most-active swing players (no more 215).
+# - Robustness:
+#   • Opponent derived from the two most-active swing players (prevents stray ids like 215).
 #   • Far/near per hitter from avg contact-Y (for LONG logic).
 #   • Last-shot-only booleans: is_wide_last_d, is_long_last_d, out_axis_last_d.
-#   • Scoring with true deuce/advantage; game winner only on the game’s last point.
+#   • Game winner & game counters populate only on the last point *by serve boundary*.
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -118,9 +118,9 @@ def _drop_any(conn, name: str):
         stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
         stmts = [
-            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
+            f'DROP VIEW IF EXISTS "{name}" CASCADE;",
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;",
+            f'DROP TABLE IF EXISTS "{name}" CASCADE;",
         ]
     for stmt in stmts:
         conn.execute(text(stmt))
@@ -149,6 +149,7 @@ LEGACY_OBJECTS = [
 # ==================================================================================
 
 CREATE_STMTS = {
+    # ---------------------------- swings passthrough ----------------------------
     "vw_swing_silver": """
         CREATE OR REPLACE VIEW vw_swing_silver AS
         SELECT
@@ -156,10 +157,13 @@ CREATE_STMTS = {
           fs.swing_id,
           fs.player_id,
           fs.rally_id,
+          -- timing
           fs.start_s, fs.end_s, fs.ball_hit_s,
           fs.start_ts, fs.end_ts, fs.ball_hit_ts,
+          -- ball at contact
           fs.ball_hit_x, fs.ball_hit_y,
           fs.ball_speed,
+          -- labels/raw
           fs.serve, fs.serve_type AS serve_type, fs.swing_type, fs.is_in_rally,
           fs.ball_player_distance,
           fs.meta,
@@ -168,12 +172,14 @@ CREATE_STMTS = {
         LEFT JOIN dim_session ds USING (session_id);
     """,
 
+    # --------------------- ball position passthrough ---------------------
     "vw_ball_position_silver": """
         CREATE OR REPLACE VIEW vw_ball_position_silver AS
         SELECT session_id, ts_s, ts, x, y
         FROM fact_ball_position;
     """,
 
+    # -------------------------- bounce passthrough -----------------------
     "vw_bounce_silver": """
         CREATE OR REPLACE VIEW vw_bounce_silver AS
         SELECT
@@ -189,6 +195,7 @@ CREATE_STMTS = {
         FROM fact_bounce b;
     """,
 
+    # ----------------------------- point silver -----------------------------
     "vw_point_silver": """
         CREATE OR REPLACE VIEW vw_point_silver AS
         WITH
@@ -223,7 +230,7 @@ CREATE_STMTS = {
           GROUP BY r.session_id
         ),
 
-        /* Base swings (stable ordering key) */
+        -- S1. Base swings (original ordering)
         swings AS (
           SELECT
             v.*,
@@ -235,7 +242,7 @@ CREATE_STMTS = {
           FROM vw_swing_silver v
         ),
 
-        /* Per-player orientation: far/near by average contact-Y */
+        -- S1b. Infer per-player far/near (avg contact Y vs midline)
         player_orientation AS (
           SELECT
             s.session_id,
@@ -247,7 +254,7 @@ CREATE_STMTS = {
           GROUP BY s.session_id, s.player_id
         ),
 
-        /* Serve detection & serving side from contact location */
+        -- S2. Serve detection (fh_overhead in serve band) + serving side
         serve_flags AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -278,7 +285,7 @@ CREATE_STMTS = {
           WHERE sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
         ),
 
-        /* Point & game numbering driven by serve events */
+        -- S3. Point/game numbering
         serve_events_numbered AS (
           SELECT
             se.*,
@@ -314,7 +321,14 @@ CREATE_STMTS = {
           FROM serve_points sp
         ),
 
-        /* Normalize bounces */
+        /* 🔹 NEW: last point in each game by serve-boundary (just before server changes) */
+        game_last_point AS (
+          SELECT session_id, game_number_d, MAX(point_in_game_d) AS last_point_in_game_d
+          FROM serve_points_ix
+          GROUP BY session_id, game_number_d
+        ),
+
+        -- S4. Normalize bounces + unified TS
         bounces_norm AS (
           SELECT
             b.session_id,
@@ -329,7 +343,7 @@ CREATE_STMTS = {
           FROM vw_bounce_silver b
         ),
 
-        /* Attach each swing to most recent serve */
+        -- S5. Attach swings to most recent serve
         swings_in_point AS (
           SELECT
             s.*,
@@ -347,7 +361,7 @@ CREATE_STMTS = {
           ) sp ON TRUE
         ),
 
-        /* Mark serves */
+        -- S5b. Mark serves
         swings_with_serve AS (
           SELECT
             sip.*,
@@ -360,7 +374,7 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        /* Shot indices within each point */
+        -- S6. Per-point shot indices (unambiguous)
         swings_numbered AS (
           SELECT
             sps.*,
@@ -374,7 +388,7 @@ CREATE_STMTS = {
           FROM swings_with_serve sps
         ),
 
-        /* First non-serve shot (= rally start) per point */
+        -- First non-serve shot index per point (NULL if point never starts)
         point_first_rally AS (
           SELECT
             session_id, point_number_d,
@@ -383,7 +397,7 @@ CREATE_STMTS = {
           GROUP BY session_id, point_number_d
         ),
 
-        /* Starting serve = last serve before first non-serve */
+        -- Starting serve = last serve immediately before first non-serve
         point_starting_serve AS (
           SELECT
             sn.session_id, sn.point_number_d,
@@ -398,7 +412,7 @@ CREATE_STMTS = {
           GROUP BY sn.session_id, sn.point_number_d
         ),
 
-        /* Add markers */
+        -- Enrich with point start markers
         swings_enriched AS (
           SELECT
             sn.*,
@@ -411,7 +425,7 @@ CREATE_STMTS = {
             ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
         ),
 
-        /* Time windows for bounce selection */
+        -- S7. Window with guards
         swing_windows AS (
           SELECT
             se.*,
@@ -433,7 +447,7 @@ CREATE_STMTS = {
           FROM swing_windows sw
         ),
 
-        /* First FLOOR in window */
+        -- S8A. First FLOOR in window
         swing_bounce_floor AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_ix,
@@ -453,7 +467,7 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        /* First ANY in window */
+        -- S8B. First ANY in window
         swing_bounce_any AS (
           SELECT
             swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_ix,
@@ -476,7 +490,7 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        /* Primary chosen bounce (FLOOR preferred, else ANY) + bring swing context */
+        -- S8C. Primary bounce
         swing_bounce_primary AS (
           SELECT
             se.session_id, se.swing_id, se.point_number_d, se.shot_ix, se.last_shot_ix,
@@ -511,7 +525,7 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        /* Last-shot outcome for scoring */
+        -- S8D. Per-point outcome (last-shot rows only) for scoring
         point_outcome AS (
           SELECT
             sbp.session_id, sbp.point_number_d, sbp.game_number_d, sbp.point_in_game_d,
@@ -527,12 +541,18 @@ CREATE_STMTS = {
                     AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
               ELSE TRUE
             END AS is_error_last,
-            -- winner: error ⇒ opponent, else hitter (opponent filled below using players_pair)
+            -- winner: error ⇒ opponent, else hitter
             CASE
-              WHEN (COALESCE(sbp.ball_speed,0) <= 0 OR sbp.bounce_id IS NULL
-                    OR NOT (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-                            AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)))
-                THEN NULL
+              WHEN (
+                CASE
+                  WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE
+                  WHEN sbp.bounce_id IS NULL THEN TRUE
+                  WHEN (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
+                        AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
+                  ELSE TRUE
+                END
+              ) IS TRUE
+              THEN NULL  -- fill later using players_pair
               ELSE sbp.player_id
             END AS point_winner_if_in_d
           FROM swing_bounce_primary sbp
@@ -549,28 +569,43 @@ CREATE_STMTS = {
           JOIN players_pair pp ON pp.session_id = po.session_id
         ),
 
-        /* Per-game score accumulation (server-first) */
+        -- S9. Why-null (kept)
+        bounce_explain AS (
+          SELECT
+            se.session_id, se.swing_id,
+            CASE WHEN sbp.bounce_id IS NOT NULL THEN NULL ELSE 'no_bounce_in_window' END AS why_null
+          FROM swings_enriched se
+          LEFT JOIN swing_bounce_primary sbp
+            ON sbp.session_id=se.session_id AND sbp.swing_id=se.swing_id
+        ),
+
+        -- S10. Per-game scoring accumulation (server-first)
         points_accum AS (
           SELECT
             pow.*,
             SUM(CASE WHEN pow.point_winner_player_id_d = pow.server_id THEN 1 ELSE 0 END)
               OVER (PARTITION BY pow.session_id, pow.game_number_d
-                    ORDER BY pow.point_in_game_d) AS server_pts_cum,
+                    ORDER BY pow.point_in_game_d
+                    ROWS UNBOUNDED PRECEDING) AS server_pts_cum,
             SUM(CASE WHEN pow.point_winner_player_id_d <> pow.server_id THEN 1 ELSE 0 END)
               OVER (PARTITION BY pow.session_id, pow.game_number_d
-                    ORDER BY pow.point_in_game_d) AS recv_pts_cum
+                    ORDER BY pow.point_in_game_d
+                    ROWS UNBOUNDED PRECEDING) AS recv_pts_cum
           FROM point_outcome_winner pow
         ),
 
-        /* Score text + game winner only on game’s last point */
+        /* Scoring text; also enforce boundary-of-serve for game winner */
         points_scored AS (
           SELECT
             pa.*,
+            glp.last_point_in_game_d,
+            (pa.point_in_game_d = glp.last_point_in_game_d) AS is_last_point_by_serve,
+            -- classic deuce/adv rules:
             CASE
               WHEN pa.server_pts_cum >= 4 OR pa.recv_pts_cum >= 4 THEN
-                CASE WHEN ABS(pa.server_pts_cum - pa.recv_pts_cum) >= 2 THEN TRUE ELSE FALSE END
+                   CASE WHEN ABS(pa.server_pts_cum - pa.recv_pts_cum) >= 2 THEN TRUE ELSE FALSE END
               ELSE FALSE
-            END AS is_game_end_d,
+            END AS is_game_end_scoring,
             CASE
               WHEN pa.server_pts_cum >= 3 AND pa.recv_pts_cum >= 3 THEN
                 CASE
@@ -585,13 +620,17 @@ CREATE_STMTS = {
                 (CASE pa.recv_pts_cum   WHEN 0 THEN '0' WHEN 1 THEN '15' WHEN 2 THEN '30' ELSE '40' END)
             END AS point_score_text_d
           FROM points_accum pa
+          JOIN game_last_point glp
+            ON glp.session_id = pa.session_id AND glp.game_number_d = pa.game_number_d
         ),
 
         points_scored_winner AS (
           SELECT
             ps.*,
+            -- ✅ Only declare game end when scoring says so AND this is the last point before serve change
+            (ps.is_game_end_scoring AND ps.is_last_point_by_serve) AS is_game_end_d,
             CASE
-              WHEN ps.is_game_end_d THEN
+              WHEN (ps.is_game_end_scoring AND ps.is_last_point_by_serve) THEN
                 CASE
                   WHEN ps.server_pts_cum > ps.recv_pts_cum THEN ps.server_id
                   ELSE CASE WHEN ps.server_id = pp.p1 THEN pp.p2 ELSE pp.p1 END
@@ -606,23 +645,17 @@ CREATE_STMTS = {
           SELECT
             psw.*,
             SUM(CASE WHEN psw.is_game_end_d AND psw.game_winner_player_id_d = psw.server_id THEN 1 ELSE 0 END)
-              OVER (PARTITION BY psw.session_id ORDER BY psw.game_number_d, psw.point_in_game_d) AS games_server_after_d,
+              OVER (PARTITION BY psw.session_id
+                    ORDER BY psw.game_number_d, psw.point_in_game_d
+                    ROWS UNBOUNDED PRECEDING) AS games_server_after_d,
             SUM(CASE WHEN psw.is_game_end_d AND psw.game_winner_player_id_d <> psw.server_id THEN 1 ELSE 0 END)
-              OVER (PARTITION BY psw.session_id ORDER BY psw.game_number_d, psw.point_in_game_d) AS games_receiver_after_d
+              OVER (PARTITION BY psw.session_id
+                    ORDER BY psw.game_number_d, psw.point_in_game_d
+                    ROWS UNBOUNDED PRECEDING) AS games_receiver_after_d
           FROM points_scored_winner psw
-        ),
-
-        /* Why-null bounce (kept) */
-        bounce_explain AS (
-          SELECT
-            se.session_id, se.swing_id,
-            CASE WHEN sbp.bounce_id IS NOT NULL THEN NULL ELSE 'no_bounce_in_window' END AS why_null
-          FROM swings_enriched se
-          LEFT JOIN swing_bounce_primary sbp
-            ON sbp.session_id = se.session_id AND sbp.swing_id = se.swing_id
         )
 
-        /* FINAL SELECT */
+        -- FINAL
         SELECT
           sbp.session_id,
           vss.session_uid_d,
@@ -647,14 +680,17 @@ CREATE_STMTS = {
           sbp.first_rally_shot_ix,
           sbp.start_serve_shot_ix,
 
+          -- point / game context
           sbp.point_number_d,
           sbp.game_number_d,
           sbp.point_in_game_d,
           sbp.serving_side_d,
           sbp.server_id,
 
+          -- last-in-point: by shot index
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
+          -- in/out using FLOOR-only (original) and ANY (new)
           CASE
             WHEN sbp.bounce_id IS NULL OR sbp.bounce_type_raw <> 'floor' THEN NULL
             ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
@@ -667,15 +703,17 @@ CREATE_STMTS = {
                AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
           END AS bounce_in_court_any_d,
 
+          -- serve faults before the starting serve (starting serve is NOT a fault)
           CASE
             WHEN sbp.serve_d IS NOT TRUE THEN NULL
-            WHEN sbp.first_rally_shot_ix IS NULL THEN TRUE
-            WHEN sbp.start_serve_shot_ix IS NULL THEN TRUE
-            WHEN sbp.shot_ix < sbp.start_serve_shot_ix THEN TRUE
-            WHEN sbp.shot_ix = sbp.start_serve_shot_ix THEN FALSE
+            WHEN sbp.first_rally_shot_ix IS NULL THEN TRUE                    -- point never started → all serves fault
+            WHEN sbp.start_serve_shot_ix IS NULL THEN TRUE                     -- safety
+            WHEN sbp.shot_ix < sbp.start_serve_shot_ix THEN TRUE               -- pre-start serves
+            WHEN sbp.shot_ix = sbp.start_serve_shot_ix THEN FALSE              -- starting serve
             ELSE NULL
           END AS is_serve_fault_d,
 
+          -- terminal basis (last shot only): helps debug winner/error
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
             ELSE CASE
@@ -687,6 +725,7 @@ CREATE_STMTS = {
             END
           END AS terminal_basis_d,
 
+          -- terminal ERROR (last shot only) using ANY-bounce in/out
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
             ELSE CASE
@@ -698,7 +737,7 @@ CREATE_STMTS = {
             END
           END AS is_error_d,
 
-          /* Winner on last shot only (uses top-2 swing players for opponent) */
+          -- point winner on last shot only (error ⇒ opponent, else hitter)
           CASE
             WHEN sbp.shot_ix = sbp.last_shot_ix THEN
               CASE
@@ -717,10 +756,10 @@ CREATE_STMTS = {
             ELSE NULL
           END AS point_winner_player_id_d,
 
-          /* Orientation for LONG logic */
+          -- orientation for LONG logic
           pdir.is_far_side_d AS player_is_far_side_d,
 
-          /* Last-shot only: wide/long/both */
+          -- NEW: last-shot only classification for WIDE/LONG/BOTH
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
             ELSE (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
@@ -729,8 +768,8 @@ CREATE_STMTS = {
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
             ELSE CASE
-              WHEN pdir.is_far_side_d THEN (sbp.bounce_y_norm_m < 0)                             -- far hitter long
-              ELSE (sbp.bounce_y_norm_m > (SELECT court_l_m FROM const))                         -- near hitter long
+              WHEN pdir.is_far_side_d THEN (sbp.bounce_y_norm_m < 0)                    -- far hitter long
+              ELSE (sbp.bounce_y_norm_m > (SELECT court_l_m FROM const))                -- near hitter long
             END
           END AS is_long_last_d,
 
@@ -738,19 +777,17 @@ CREATE_STMTS = {
             WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
             ELSE CASE
               WHEN (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
-                   AND (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0
-                             ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
+                   AND (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0 ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
                 THEN 'both'
               WHEN (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
                 THEN 'wide'
-              WHEN (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0
-                         ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
+              WHEN (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0 ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
                 THEN 'long'
               ELSE NULL
             END
           END AS out_axis_last_d,
 
-          /* Scoring results (only filled on last shot rows) */
+          -- Scoring (only on last-shot rows). Winner/counters only when serve changes next.
           gr.point_score_text_d,
           gr.is_game_end_d,
           gr.game_winner_player_id_d,
@@ -775,6 +812,7 @@ CREATE_STMTS = {
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
     """,
 
+    # ------------------------ DEBUG: per-swing window ------------------------
     "vw_bounce_stream_debug": """
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
@@ -875,6 +913,7 @@ CREATE_STMTS = {
           ON a.session_id = b.session_id AND a.swing_id = b.swing_id;
     """,
 
+    # ------------------------ DEBUG: per-session summary ----------------------
     "vw_point_bounces_debug": """
         CREATE OR REPLACE VIEW vw_point_bounces_debug AS
         SELECT
@@ -921,6 +960,6 @@ def _apply_views(engine):
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
 
-# Back-compat aliases
+# Back-compat
 init_views = _apply_views
 run_views  = _apply_views
