@@ -8,11 +8,12 @@
 #   If the point never starts (double fault), all serves are faults.
 # - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND chosen-bounce coords are in-court);
 #   otherwise ERROR. Winner id is derived accordingly.
-# - Robustness:
-#   • Opponent derived from the two most-active swing players (prevents stray ids like 215).
-#   • Far/near per hitter from avg contact-Y (for LONG logic).
+# - Robustness & extras:
+#   • Opponent derived from the two most-active swing players (prevents stray ids).
+#   • Far/near per hitter from raw ball_hit_y sign (0 at net; +to camera, −away).
 #   • Last-shot-only booleans: is_wide_last_d, is_long_last_d, out_axis_last_d.
 #   • Game winner & counters only on the last point *by serve boundary*.
+#   • NEW: serve_loc_18_d (1–8), placement_ad_d (A–D), play_d.
 # ----------------------------------------------------------------------------------
 
 from sqlalchemy import text
@@ -204,6 +205,7 @@ CREATE_STMTS = {
             23.77::numeric     AS court_l_m,
             10.97::numeric/2   AS half_w_m,
             23.77::numeric/2   AS mid_y_m,
+            6.40::numeric      AS service_box_depth_m,
             0.50::numeric      AS serve_eps_m
         ),
 
@@ -241,19 +243,19 @@ CREATE_STMTS = {
           FROM vw_swing_silver v
         ),
 
-        -- S1b. Infer per-player far/near (avg contact Y vs midline)
+        -- S1b. Infer per-player far/near using raw sign (0 at net)
         player_orientation AS (
           SELECT
             s.session_id,
             s.player_id,
             AVG(s.ball_hit_y) AS avg_hit_y,
-            (AVG(s.ball_hit_y) > (SELECT mid_y_m FROM const)) AS is_far_side_d
+            (AVG(s.ball_hit_y) < 0) AS is_far_side_d
           FROM swings s
           WHERE s.ball_hit_y IS NOT NULL
           GROUP BY s.session_id, s.player_id
         ),
 
-        -- S2. Serve detection (fh_overhead in serve band) + serving side
+        -- S2. Serve detection (fh_overhead in serve band) + serving side (from server's end)
         serve_flags AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -320,7 +322,7 @@ CREATE_STMTS = {
           FROM serve_points sp
         ),
 
-        /* 🔹 NEW: last point in each game by serve-boundary (just before server changes) */
+        /* Last point in each game by serve-boundary */
         game_last_point AS (
           SELECT session_id, game_number_d, MAX(point_in_game_d) AS last_point_in_game_d
           FROM serve_points_ix
@@ -540,7 +542,6 @@ CREATE_STMTS = {
                     AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const)) THEN FALSE
               ELSE TRUE
             END AS is_error_last,
-            -- winner: error ⇒ opponent, else hitter
             CASE
               WHEN (
                 CASE
@@ -551,7 +552,7 @@ CREATE_STMTS = {
                   ELSE TRUE
                 END
               ) IS TRUE
-              THEN NULL  -- fill later using players_pair
+              THEN NULL
               ELSE sbp.player_id
             END AS point_winner_if_in_d
           FROM swing_bounce_primary sbp
@@ -568,7 +569,7 @@ CREATE_STMTS = {
           JOIN players_pair pp ON pp.session_id = po.session_id
         ),
 
-        -- S9. Why-null (kept)
+        -- S9. Why-null
         bounce_explain AS (
           SELECT
             se.session_id, se.swing_id,
@@ -593,13 +594,12 @@ CREATE_STMTS = {
           FROM point_outcome_winner pow
         ),
 
-        /* Scoring text; also enforce boundary-of-serve for game winner */
+        -- Scoring text; also enforce boundary-of-serve for game winner
         points_scored AS (
           SELECT
             pa.*,
             glp.last_point_in_game_d,
             (pa.point_in_game_d = glp.last_point_in_game_d) AS is_last_point_by_serve,
-            -- classic deuce/adv rules:
             CASE
               WHEN pa.server_pts_cum >= 4 OR pa.recv_pts_cum >= 4 THEN
                    CASE WHEN ABS(pa.server_pts_cum - pa.recv_pts_cum) >= 2 THEN TRUE ELSE FALSE END
@@ -626,7 +626,6 @@ CREATE_STMTS = {
         points_scored_winner AS (
           SELECT
             ps.*,
-            -- ✅ Only declare game end when scoring says so AND this is the last point before serve change
             (ps.is_game_end_scoring AND ps.is_last_point_by_serve) AS is_game_end_d,
             CASE
               WHEN (ps.is_game_end_scoring AND ps.is_last_point_by_serve) THEN
@@ -705,14 +704,14 @@ CREATE_STMTS = {
           -- serve faults before the starting serve (starting serve is NOT a fault)
           CASE
             WHEN sbp.serve_d IS NOT TRUE THEN NULL
-            WHEN sbp.first_rally_shot_ix IS NULL THEN TRUE                    -- point never started → all serves fault
-            WHEN sbp.start_serve_shot_ix IS NULL THEN TRUE                     -- safety
-            WHEN sbp.shot_ix < sbp.start_serve_shot_ix THEN TRUE               -- pre-start serves
-            WHEN sbp.shot_ix = sbp.start_serve_shot_ix THEN FALSE              -- starting serve
+            WHEN sbp.first_rally_shot_ix IS NULL THEN TRUE
+            WHEN sbp.start_serve_shot_ix IS NULL THEN TRUE
+            WHEN sbp.shot_ix < sbp.start_serve_shot_ix THEN TRUE
+            WHEN sbp.shot_ix = sbp.start_serve_shot_ix THEN FALSE
             ELSE NULL
           END AS is_serve_fault_d,
 
-          -- terminal basis (last shot only): helps debug winner/error
+          -- terminal basis (last shot only)
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
             ELSE CASE
@@ -758,7 +757,7 @@ CREATE_STMTS = {
           -- orientation for LONG logic
           pdir.is_far_side_d AS player_is_far_side_d,
 
-          -- NEW: last-shot only classification for WIDE/LONG/BOTH
+          -- last-shot only classification for WIDE/LONG/BOTH
           CASE
             WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
             ELSE (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
@@ -785,6 +784,106 @@ CREATE_STMTS = {
               ELSE NULL
             END
           END AS out_axis_last_d,
+
+          -- ===== NEW: Serve location 1–8 (valid starting serves only) =====
+          CASE
+            WHEN sbp.serve_d IS TRUE
+             AND sbp.start_serve_shot_ix IS NOT NULL
+             AND sbp.shot_ix = sbp.start_serve_shot_ix
+            THEN
+              -- compute target coords (bounce floor if present, else mirrored contact)
+              (
+                WITH coords AS (
+                  SELECT
+                    COALESCE(
+                      NULLIF(sbp.bounce_x_center_m, NULL),
+                      (SELECT court_w_m FROM const) - sbp.ball_hit_x
+                    ) AS sx,
+                    COALESCE(
+                      NULLIF(sbp.bounce_y_norm_m, NULL),
+                      (SELECT mid_y_m FROM const) - sbp.ball_hit_y
+                    ) AS sy
+                ),
+                flags AS (
+                  SELECT
+                    sx, sy,
+                    (sy < (SELECT mid_y_m FROM const)) AS is_far_end,
+                    CASE
+                      WHEN sy < (SELECT mid_y_m FROM const)
+                        THEN (sx < (SELECT half_w_m FROM const))      -- far: deuce = left half
+                      ELSE (sx > (SELECT half_w_m FROM const))         -- near: deuce = right half
+                    END AS is_deuce_box,
+                    -- x within the chosen half measured from sideline (0..half_w)
+                    CASE
+                      WHEN sx < (SELECT half_w_m FROM const) THEN sx
+                      ELSE (SELECT court_w_m FROM const) - sx
+                    END AS x_from_sideline,
+                    -- short vs deep split by service-box half-depth (3.20 m)
+                    CASE
+                      WHEN sy < (SELECT mid_y_m FROM const)
+                        THEN (sy > (SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)/2.0)
+                      ELSE (sy < (SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)/2.0)
+                    END AS is_short
+                  FROM coords
+                )
+                SELECT
+                  CASE
+                    WHEN is_deuce_box THEN
+                      CASE
+                        WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
+                        WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
+                        WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
+                        ELSE 4
+                      END
+                    ELSE
+                      4 + CASE
+                            WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND is_short THEN 1
+                            WHEN x_from_sideline < (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 2
+                            WHEN x_from_sideline >= (SELECT half_w_m FROM const)/2.0 AND NOT is_short THEN 3
+                            ELSE 4
+                          END
+                  END
+                FROM flags
+              )
+            ELSE NULL
+          END AS serve_loc_18_d,
+
+          -- ===== NEW: Court placement A–D (any swing; bounce floor preferred) =====
+          (
+            WITH pt AS (
+              SELECT
+                COALESCE(
+                  NULLIF(sbp.bounce_y_norm_m, NULL),
+                  (SELECT mid_y_m FROM const) + sbp.ball_hit_y
+                ) AS py
+            ),
+            band AS (
+              SELECT
+                py,
+                (py < (SELECT mid_y_m FROM const)) AS far_end,
+                CASE
+                  WHEN py < (SELECT mid_y_m FROM const)
+                    THEN (py / (SELECT mid_y_m FROM const))                 -- far: 0..mid_y
+                  ELSE ((SELECT court_l_m FROM const) - py) / (SELECT mid_y_m FROM const)  -- near: reverse
+                END AS t
+            )
+            SELECT
+              CASE
+                WHEN t < 0.25 THEN 'A'
+                WHEN t < 0.50 THEN 'B'
+                WHEN t < 0.75 THEN 'C'
+                ELSE 'D'
+              END
+            FROM band
+          ) AS placement_ad_d,
+
+          -- ===== NEW: Play type =====
+          CASE
+            WHEN sbp.serve_d THEN 'serve'
+            WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
+            WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
+            ELSE 'baseline'
+          END AS play_d,
 
           -- Scoring (only on last-shot rows). Winner/counters only when serve changes next.
           gr.point_score_text_d,
@@ -959,6 +1058,6 @@ def _apply_views(engine):
         for name in VIEW_NAMES:
             conn.execute(text(CREATE_STMTS[name]))
 
-# Back-compat aliases
+# Back-compat
 init_views = _apply_views
 run_views  = _apply_views
