@@ -201,12 +201,13 @@ CREATE_STMTS = {
         WITH
         const AS (
           SELECT
-            8.23::numeric     AS court_w_m,
-            23.77::numeric     AS court_l_m,
-            8.23::numeric/2   AS half_w_m,
-            23.77::numeric/2   AS mid_y_m,
-            6.40::numeric      AS service_box_depth_m,
-            0.50::numeric      AS serve_eps_m
+            8.23::numeric       AS court_w_m,          -- singles width
+            23.77::numeric      AS court_l_m,
+            8.23::numeric/2     AS half_w_m,
+            23.77::numeric/2    AS mid_y_m,
+            6.40::numeric       AS service_box_depth_m,
+            0.50::numeric       AS serve_eps_m,
+            0.00001::numeric    AS eps_m               -- tiny epsilon for bucket edges
         ),
 
         /* Two real players in the match = the two with most swings. */
@@ -217,7 +218,7 @@ CREATE_STMTS = {
         ),
         swing_players_ranked AS (
           SELECT sp.*,
-                 ROW_NUMBER() OVER (PARTITION BY sp.session_id
+                ROW_NUMBER() OVER (PARTITION BY sp.session_id
                                     ORDER BY sp.n_sw DESC, sp.player_id) AS rn
           FROM swing_players sp
         ),
@@ -243,7 +244,7 @@ CREATE_STMTS = {
           FROM vw_swing_silver v
         ),
 
-        -- S1b. Infer per-player far/near using raw sign (0 at net)
+        -- S1b. Infer per-player far/near using raw sign (0 at net; +towards camera, −away)
         player_orientation AS (
           SELECT
             s.session_id,
@@ -254,6 +255,7 @@ CREATE_STMTS = {
           WHERE s.ball_hit_y IS NOT NULL
           GROUP BY s.session_id, s.player_id
         ),
+
         -- S1c. Serve candidates (fh_overhead inside serve band)
         serve_candidates AS (
           SELECT
@@ -267,7 +269,8 @@ CREATE_STMTS = {
             END AS inside_serve_band
           FROM swings s
         ),
-        -- S1d. Dynamic centerline from actual serve contacts
+
+        -- S1d. Dynamic centerline from actual serve contacts (robust to X calibration drift)
         serve_centerline AS (
           SELECT
             sc.session_id,
@@ -276,7 +279,8 @@ CREATE_STMTS = {
           WHERE sc.is_fh_overhead AND COALESCE(sc.inside_serve_band, FALSE)
           GROUP BY sc.session_id
         ),
-        -- S2. Serve detection (fh_overhead in serve band) + serving side (from server's end)
+
+        -- S2. Serve detection (fh_overhead in band) + serving side (from dynamic centerline)
         serve_flags AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -408,7 +412,10 @@ CREATE_STMTS = {
             ) AS shot_ix,
             COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_ix,
             LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
-            LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s
+            LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s,
+            LEAD(sps.ball_hit_x)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_x,
+            LEAD(sps.ball_hit_y)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_y,
+            LEAD(sps.player_id)   OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_player_id
           FROM swings_with_serve sps
         ),
 
@@ -429,7 +436,7 @@ CREATE_STMTS = {
           FROM swings_numbered sn
           JOIN point_first_rally pfr
             ON pfr.session_id = sn.session_id
-           AND pfr.point_number_d = sn.point_number_d
+          AND pfr.point_number_d = sn.point_number_d
           WHERE sn.serve_d
             AND pfr.first_rally_shot_ix IS NOT NULL
             AND sn.shot_ix < pfr.first_rally_shot_ix
@@ -526,8 +533,8 @@ CREATE_STMTS = {
             COALESCE(f.bounce_y_norm_m,   a.any_bounce_y_norm_m)    AS bounce_y_norm_m,
             COALESCE(f.bounce_type_raw,   a.any_bounce_type)        AS bounce_type_raw,
             CASE WHEN f.bounce_id IS NOT NULL THEN 'floor'::text
-                 WHEN a.any_bounce_id IS NOT NULL THEN 'any'::text
-                 ELSE NULL::text
+                WHEN a.any_bounce_id IS NOT NULL THEN 'any'::text
+                ELSE NULL::text
             END AS primary_source_d,
             se.serve_d,
             se.first_rally_shot_ix,
@@ -541,7 +548,8 @@ CREATE_STMTS = {
             se.start_ts, se.end_ts, se.ball_hit_ts,
             se.ball_hit_x, se.ball_hit_y,
             se.ball_speed,
-            se.swing_type AS swing_type_raw
+            se.swing_type AS swing_type_raw,
+            se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id
           FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=se.session_id AND f.swing_id=se.swing_id
@@ -625,7 +633,7 @@ CREATE_STMTS = {
             (pa.point_in_game_d = glp.last_point_in_game_d) AS is_last_point_by_serve,
             CASE
               WHEN pa.server_pts_cum >= 4 OR pa.recv_pts_cum >= 4 THEN
-                   CASE WHEN ABS(pa.server_pts_cum - pa.recv_pts_cum) >= 2 THEN TRUE ELSE FALSE END
+                  CASE WHEN ABS(pa.server_pts_cum - pa.recv_pts_cum) >= 2 THEN TRUE ELSE FALSE END
               ELSE FALSE
             END AS is_game_end_scoring,
             CASE
@@ -715,13 +723,13 @@ CREATE_STMTS = {
           CASE
             WHEN sbp.bounce_id IS NULL OR sbp.bounce_type_raw <> 'floor' THEN NULL
             ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-               AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
+              AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
           END AS bounce_in_doubles_d,
 
           CASE
             WHEN sbp.bounce_id IS NULL THEN NULL
             ELSE (sbp.bounce_x_center_m BETWEEN 0 AND (SELECT court_w_m FROM const)
-               AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
+              AND sbp.bounce_y_norm_m BETWEEN 0 AND (SELECT court_l_m FROM const))
           END AS bounce_in_court_any_d,
 
           -- serve faults before the starting serve (starting serve is NOT a fault)
@@ -798,7 +806,7 @@ CREATE_STMTS = {
             WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
             ELSE CASE
               WHEN (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
-                   AND (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0 ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
+                  AND (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0 ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
                 THEN 'both'
               WHEN (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
                 THEN 'wide'
@@ -808,30 +816,30 @@ CREATE_STMTS = {
             END
           END AS out_axis_last_d,
 
-          -- ===== Serve location 1–8 (valid starting serves only; X-only lanes with clamping) =====
+          -- ===== Serve location 1–8 (valid starting serves only; X-only lanes with clamping and fallback to receiver X) =====
           CASE
             WHEN sbp.serve_d IS TRUE
-             AND sbp.start_serve_shot_ix IS NOT NULL
-             AND sbp.shot_ix = sbp.start_serve_shot_ix
+            AND sbp.start_serve_shot_ix IS NOT NULL
+            AND sbp.shot_ix = sbp.start_serve_shot_ix
             THEN (
-              WITH coords AS (
+              WITH xsrc AS (
                 SELECT
-                  -- prefer floor-bounce X; fall back to contact X if needed
-                  COALESCE(sbp.bounce_x_center_m, sbp.ball_hit_x) AS sx,
-                  -- we still need Y only to know which end we're on (far/near)
-                  COALESCE(sbp.bounce_y_norm_m, (SELECT (SELECT mid_y_m FROM const) + sbp.ball_hit_y)) AS sy
+                  -- prefer floor-bounce X; else receiver contact X (only if next hitter is opponent); else server contact X
+                  COALESCE(
+                    sbp.bounce_x_center_m,
+                    CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END,
+                    sbp.ball_hit_x
+                  ) AS sx
               ),
-              box AS (
+              orient AS (
                 SELECT
-                  sx, sy,
-                  (sy < (SELECT mid_y_m FROM const)) AS is_far_end,
-                  -- decide which service box (deuce/ad) this serve is intended for
-                  CASE
-                    WHEN sy < (SELECT mid_y_m FROM const)
-                      THEN (sx < (SELECT half_w_m FROM const))       -- far end: deuce = left half
-                    ELSE (sx > (SELECT half_w_m FROM const))          -- near end: deuce = right half
-                  END AS is_deuce_box
-                FROM coords
+                  sx,
+                  -- far if server's contact y is negative; fallback to player orientation if NULL
+                  COALESCE(sbp.ball_hit_y < 0, pdir.is_far_side_d, FALSE) AS is_far_end,
+                  (sbp.serving_side_d = 'deuce')                           AS is_deuce_box
+                FROM xsrc
+                LEFT JOIN player_orientation pdir
+                  ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
               ),
               lanes AS (
                 SELECT
@@ -841,27 +849,26 @@ CREATE_STMTS = {
                     GREATEST(
                       CASE
                         -- FAR end
-                        WHEN is_far_end AND is_deuce_box THEN sx                              -- deuce: left sideline
+                        WHEN is_far_end AND is_deuce_box THEN sx                                       -- deuce: left sideline
                         WHEN is_far_end AND NOT is_deuce_box THEN (SELECT court_w_m FROM const) - sx  -- ad: right sideline
                         -- NEAR end
                         WHEN NOT is_far_end AND is_deuce_box THEN (SELECT court_w_m FROM const) - sx   -- deuce: right sideline
-                        ELSE sx                                                                     -- ad: left sideline
+                        ELSE sx                                                                        -- ad: left sideline
                       END,
                       0::numeric
                     ),
                     (SELECT half_w_m FROM const)
-                  )                                                AS x_from_sideline_clamped,
-                  ((SELECT half_w_m FROM const) / 4.0)            AS lane_w
-                FROM box
+                  )                                             AS x_from_sideline_clamped,
+                  ((SELECT half_w_m FROM const) / 4.0)         AS lane_w
               ),
               lane_idx AS (
                 SELECT
                   is_deuce_box,
-                  -- map clamped distance to lanes 1..4 (use a tiny eps to keep the top edge in lane 4)
                   (1
-                    + FLOOR( (LEAST(x_from_sideline_clamped,
-                                    (SELECT half_w_m FROM const) - 0.00001::numeric)
-                              ) / lane_w )
+                    + FLOOR(
+                        (LEAST(x_from_sideline_clamped, (SELECT half_w_m FROM const) - (SELECT eps_m FROM const)))
+                        / lane_w
+                      )
                   )::int AS lane_1_4
                 FROM lanes
               )
@@ -871,32 +878,41 @@ CREATE_STMTS = {
             ELSE NULL
           END AS serve_loc_18_d,
 
-
-          -- ===== Court placement A–D (any swing; bounce floor preferred) =====
-          (
-            WITH pt AS (
-              SELECT COALESCE(sbp.bounce_y_norm_m,
-                              (SELECT mid_y_m FROM const) + sbp.ball_hit_y) AS py
-            ),
-            band AS (
-              SELECT
-                py,
-                (py < (SELECT mid_y_m FROM const)) AS far_end,
-                CASE
-                  WHEN py < (SELECT mid_y_m FROM const)
-                    THEN (py / (SELECT mid_y_m FROM const))                                -- far: 0..mid_y
-                  ELSE ((SELECT court_l_m FROM const) - py) / (SELECT mid_y_m FROM const)  -- near: reverse
-                END AS t
-              FROM pt
+          -- ===== Court placement A–D =====
+          -- Rule: NULL for serves. Otherwise, use the RECEIVER'S contact Y if available,
+          --       else the bounce Y, else the hitter's contact Y; map to A/B/C/D by end.
+          CASE
+            WHEN sbp.serve_d THEN NULL
+            ELSE (
+              WITH ysrc AS (
+                SELECT
+                  COALESCE(
+                    CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id
+                        THEN (SELECT mid_y_m FROM const) + sbp.next_ball_hit_y END,
+                    sbp.bounce_y_norm_m,
+                    (SELECT mid_y_m FROM const) + sbp.ball_hit_y
+                  ) AS py
+              ),
+              band AS (
+                SELECT
+                  py,
+                  (py < (SELECT mid_y_m FROM const)) AS far_end,
+                  CASE
+                    WHEN py < (SELECT mid_y_m FROM const)
+                      THEN (py / (SELECT mid_y_m FROM const))                                -- far: 0..mid_y
+                    ELSE ((SELECT court_l_m FROM const) - py) / (SELECT mid_y_m FROM const)  -- near: reverse
+                  END AS t
+                FROM ysrc
+              )
+              SELECT CASE
+                WHEN t < 0.25 THEN 'A'
+                WHEN t < 0.50 THEN 'B'
+                WHEN t < 0.75 THEN 'C'
+                ELSE 'D'
+              END
+              FROM band
             )
-            SELECT CASE
-              WHEN t < 0.25 THEN 'A'
-              WHEN t < 0.50 THEN 'B'
-              WHEN t < 0.75 THEN 'C'
-              ELSE 'D'
-            END
-            FROM band
-          ) AS placement_ad_d,
+          END AS placement_ad_d,
 
           -- ===== Play type =====
           CASE
@@ -922,12 +938,12 @@ CREATE_STMTS = {
         JOIN vw_swing_silver vss USING (session_id, swing_id)
         JOIN players_pair pp       ON pp.session_id = sbp.session_id
         LEFT JOIN player_orientation pdir
-               ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
+              ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
         LEFT JOIN games_running gr
-               ON gr.session_id = sbp.session_id
+              ON gr.session_id = sbp.session_id
               AND gr.point_number_d = sbp.point_number_d
         LEFT JOIN bounce_explain be
-               ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
+              ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
     """,
 
