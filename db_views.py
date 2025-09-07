@@ -201,9 +201,9 @@ CREATE_STMTS = {
         WITH
         const AS (
           SELECT
-            10.97::numeric     AS court_w_m,
+            8.23::numeric     AS court_w_m,
             23.77::numeric     AS court_l_m,
-            10.97::numeric/2   AS half_w_m,
+            8.23::numeric/2   AS half_w_m,
             23.77::numeric/2   AS mid_y_m,
             6.40::numeric      AS service_box_depth_m,
             0.50::numeric      AS serve_eps_m
