@@ -855,6 +855,7 @@ CREATE_STMTS = {
                     THEN (py / (SELECT mid_y_m FROM const))                                -- far: 0..mid_y
                   ELSE ((SELECT court_l_m FROM const) - py) / (SELECT mid_y_m FROM const)  -- near: reverse
                 END AS t
+              FROM pt
             )
             SELECT CASE
               WHEN t < 0.25 THEN 'A'
