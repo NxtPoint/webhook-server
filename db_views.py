@@ -582,7 +582,7 @@ CREATE_STMTS = {
         /* ================== SERVE: X source with 8-band mapping (bounce -> returner X -> server X) ==================
            Only the last valid serve in the point gets a bucket.
         */
-        serve_place_core AS (
+          serve_place_core AS (
           SELECT
             sbp.session_id,
             sbp.swing_id,
@@ -590,15 +590,19 @@ CREATE_STMTS = {
             sbp.serve_d,
             sbp.start_serve_shot_ix,
             sbp.shot_ix,
-            -- identify server end using mid_y (true = far, false = near)
-            COALESCE(sbp.ball_hit_y > (SELECT mid_y_m FROM const), pdir.is_far_side_d, FALSE) AS is_far_end,
+            -- far/near at CONTACT: your raw rule (far when y < 0), fallback to per-player orientation
+            COALESCE(sbp.ball_hit_y < 0, pdir.is_far_side_d, FALSE) AS is_far_end,
+            -- floor-bounce X only for serves (to avoid racquet/net)
             CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS floor_x,
+            -- server contact X
             sbp.ball_hit_x AS srv_x0,
+            -- receiver contact X (only if next hitter is opponent)
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS rcv_x1
           FROM swing_bounce_primary sbp
           LEFT JOIN player_orientation pdir
             ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
         ),
+
         serve_place_x AS (
           SELECT
             c.*,
@@ -664,21 +668,23 @@ CREATE_STMTS = {
         ),
 
         /* ================== NON-SERVE A–D: bounce-first X with landing-side mirror ================== */
-        ad_x_core AS (
+          ad_x_core AS (
           SELECT
             sbp.session_id,
             sbp.swing_id,
-            -- prefer bounce X when the chosen primary is a floor bounce
-            CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
-            sbp.bounce_y_norm_m   AS by,
-            -- opponent contact as secondary source
+            -- For placements use ANY bounce X if we saw a bounce (preferred)
+            sbp.bounce_x_center_m AS bx,
+            -- Use RAW bounce Y to infer landing side (far when < 0)
+            sbp.bounce_y_center_m AS by_raw,
+            -- Opponent contact as secondary source
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS opp_x,
-            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS opp_y,
-            -- hitter contact as last resort
+            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS opp_y_raw,
+            -- Hitter contact as last fallback
             sbp.ball_hit_x AS hit_x,
             sbp.serve_d
           FROM swing_bounce_primary sbp
         ),
+
         ad_landing_side AS (
           SELECT
             ax.*,
@@ -692,28 +698,32 @@ CREATE_STMTS = {
                 WHERE sbp2.session_id = ax.session_id AND sbp2.swing_id = ax.swing_id
               )
         ),
-        ad_x_final AS (
+            ad_x_final AS (
           SELECT
             ls.session_id,
             ls.swing_id,
-            -- X source priority: bounce (floor) -> opponent X -> hitter X
+            -- X source priority: bounce X -> opponent X -> hitter X
             COALESCE(ls.bx, ls.opp_x, ls.hit_x) AS x_src,
-            -- Landing side priority:
-            -- 1) if floor bounce present, decide from bounce Y
-            -- 2) else from opponent's side flag
-            -- 3) else from opponent Y position
+            -- Landing side: 1) bounce raw Y (<0 is far),
+            --               2) opponent side flag,
+            --               3) opponent raw Y (<0 is far)
             CASE
-              WHEN ls.bx IS NOT NULL AND ls.by IS NOT NULL
-                THEN (ls.by > (SELECT mid_y_m FROM const))         -- far if bounce_y_norm > mid
-              WHEN ls.opp_is_far IS NOT NULL
-                THEN ls.opp_is_far
-              WHEN ls.opp_y IS NOT NULL
-                THEN (ls.opp_y > (SELECT mid_y_m FROM const))
+              WHEN ls.by_raw IS NOT NULL THEN (ls.by_raw < 0)
+              WHEN opp.player_side_far_d IS NOT NULL THEN opp.player_side_far_d
+              WHEN ls.opp_y_raw IS NOT NULL THEN (ls.opp_y_raw < 0)
               ELSE NULL
             END AS is_far_landing
-          FROM ad_landing_side ls
+          FROM ad_x_core ls
+          LEFT JOIN vw_swing_silver opp
+            ON opp.session_id = ls.session_id
+           AND opp.swing_id   = (
+                SELECT sbp2.next_swing_id
+                FROM swing_bounce_primary sbp2
+                WHERE sbp2.session_id = ls.session_id AND sbp2.swing_id = ls.swing_id
+              )
         ),
-        ad_label AS (
+
+                ad_label AS (
           SELECT
             xf.session_id,
             xf.swing_id,
