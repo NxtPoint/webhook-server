@@ -723,7 +723,7 @@ CREATE_STMTS = {
               )
         ),
 
-                ad_label AS (
+          ad_label AS (
           SELECT
             xf.session_id,
             xf.swing_id,
@@ -736,7 +736,9 @@ CREATE_STMTS = {
                 ),
                 norm AS (
                   SELECT
-                    -- near/far mirror on the LANDING side
+                    -- Mirror X for the landing side:
+                    -- far  -> use x as-is
+                    -- near -> mirror around the full court width
                     CASE WHEN xf.is_far_landing THEN xf.x_src
                          ELSE (SELECT cw FROM params) - xf.x_src
                     END AS x_eff,
@@ -744,29 +746,41 @@ CREATE_STMTS = {
                 ),
                 idx4 AS (
                   SELECT
-                    -- bucket 1..4 across the full width (A..D)
-                    GREATEST(1,
+                    -- bucket 1..4 across the full width
+                    GREATEST(
+                      1,
                       LEAST(
                         4,
-                        (1 + FLOOR( LEAST(GREATEST(x_eff, 0::numeric),
-                                          (SELECT cw FROM params) - (SELECT eps FROM params)
-                                         ) / w4 )
-                        )::int
+                        (1 + FLOOR(
+                           LEAST(GREATEST(x_eff, 0::numeric),
+                                 (SELECT cw FROM params) - (SELECT eps FROM params)
+                           ) / w4
+                        ))::int
                       )
                     ) AS lane_1_4
                   FROM norm
+                ),
+                lane_near_far AS (
+                  SELECT
+                    -- *** NEW: invert labels for near side ***
+                    CASE
+                      WHEN xf.is_far_landing THEN lane_1_4
+                      ELSE 5 - lane_1_4
+                    END AS lane_final
+                  FROM idx4
                 )
-                SELECT CASE lane_1_4
+                SELECT CASE lane_final
                          WHEN 1 THEN 'A'
                          WHEN 2 THEN 'B'
                          WHEN 3 THEN 'C'
                          WHEN 4 THEN 'D'
                        END
-                FROM idx4
+                FROM lane_near_far
               )
             END AS rally_box_ad
           FROM ad_x_final xf
         ),
+
 
         -- Outcome on last shot only (scoring)
         point_outcome AS (
