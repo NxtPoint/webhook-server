@@ -688,60 +688,13 @@ CREATE_STMTS = {
         ),
 
         /* === SERVE A–D (starting serve only): mirror to receiver end, then 4-band, invert for NEAR === */
-        serve_ad_label AS (
-          SELECT
-            x.session_id,
-            x.swing_id,
-            CASE
-              WHEN x.serve_d IS TRUE
-               AND x.start_serve_shot_ix IS NOT NULL
-               AND x.shot_ix = x.start_serve_shot_ix
-              THEN (
-                WITH params AS (
-                  SELECT (SELECT court_w_m FROM const) AS cw,
-                         (SELECT eps_m    FROM const) AS eps
-                ),
-                -- receiver end is NOT server end
-                norm AS (
-                  SELECT
-                    CASE
-                      WHEN (NOT x.is_far_end) THEN (SELECT cw FROM params) - x.srv_x_resolved
-                      ELSE x.srv_x_resolved
-                    END AS x_eff,
-                    (SELECT (cw / 4.0) FROM params) AS w4,
-                    (NOT x.is_far_end) AS is_near_recv
-                ),
-                idx4 AS (
-                  SELECT
-                    GREATEST(1, LEAST(4,
-                      (1 + FLOOR(
-                         LEAST(GREATEST(x_eff, 0::numeric),
-                               (SELECT cw FROM params) - (SELECT eps FROM params)
-                         ) / w4
-                      ))::int)) AS lane_1_4,
-                    is_near_recv
-                  FROM norm
-                ),
-                lane_near_far AS (
-                  SELECT CASE WHEN is_near_recv THEN (5 - lane_1_4) ELSE lane_1_4 END AS lane_final
-                  FROM idx4
-                )
-                SELECT CASE lane_final WHEN 1 THEN 'A' WHEN 2 THEN 'B' WHEN 3 THEN 'C' WHEN 4 THEN 'D' END
-                FROM lane_near_far
-              )
-              ELSE NULL
-            END AS serve_box_ad
-          FROM serve_place_x x
-        ),
-
-        /* ================== RALLY A–D: X source + landing side from opponent end (no Y noise) ================== */
-          ad_x_core AS (
+        ad_x_core AS (
           SELECT
             sbp.session_id,
             sbp.swing_id,
             -- prefer bounce X if the chosen primary is a floor bounce
             CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
-            sbp.bounce_y_center_m AS by_raw,      -- raw Y (sign is reliable for floor)
+            sbp.bounce_y_center_m AS by_raw,      -- raw Y (reliable sign for floor)
             -- always take next hitter contact (even if same player)
             sbp.next_ball_hit_x AS nxt_x,
             sbp.next_ball_hit_y AS nxt_y,
@@ -750,6 +703,7 @@ CREATE_STMTS = {
             sbp.serve_d
           FROM swing_bounce_primary sbp
         ),
+
         ad_landing_side AS (
           SELECT
             ax.*,
@@ -759,20 +713,28 @@ CREATE_STMTS = {
             ON nxt.session_id = ax.session_id
            AND nxt.swing_id   = ax.next_swing_id
         ),
+
         ad_x_final AS (
           SELECT
-            c.session_id,
-            c.swing_id,
-            COALESCE(c.bx, c.opp_x, c.hit_x) AS x_src,
+            ls.session_id,
+            ls.swing_id,
+            -- X source priority: floor bounce → next contact → hitter
+            COALESCE(ls.bx, ls.nxt_x, ls.hit_x) AS x_src,
+            /* Landing side:
+               1) next hitter end if known
+               2) else floor-bounce Y sign
+               3) else next hitter Y sign
+            */
             CASE
-              WHEN c.player_id = c.server_id THEN pe.receiver_is_far_end_d
-              ELSE pe.server_is_far_end_d
+              WHEN ls.nxt_is_far IS NOT NULL      THEN ls.nxt_is_far
+              WHEN ls.bx IS NOT NULL
+                   AND ls.by_raw IS NOT NULL      THEN (ls.by_raw < 0)
+              WHEN ls.nxt_y IS NOT NULL           THEN (ls.nxt_y  < 0)
+              ELSE NULL
             END AS is_far_landing
-          FROM ad_x_core c
-          JOIN point_ends pe
-            ON pe.session_id     = c.session_id
-           AND pe.point_number_d = c.point_number_d
+          FROM ad_landing_side ls
         ),
+
         ad_label AS (
           SELECT
             xf.session_id,
@@ -784,33 +746,34 @@ CREATE_STMTS = {
                   SELECT (SELECT court_w_m FROM const) AS cw,
                          (SELECT eps_m    FROM const) AS eps
                 ),
-                norm AS (
-                  SELECT
-                    CASE WHEN xf.is_far_landing THEN xf.x_src
-                         ELSE (SELECT cw FROM params) - xf.x_src
-                    END AS x_eff,
-                    (SELECT (cw / 4.0) FROM params) AS w4
+                clamped AS (
+                  SELECT LEAST(GREATEST(xf.x_src, 0::numeric),
+                               (SELECT cw FROM params) - (SELECT eps FROM params)) AS x_eff,
+                         (SELECT (cw / 4.0) FROM params) AS w4
                 ),
                 idx4 AS (
-                  SELECT
-                    GREATEST(1, LEAST(4,
-                      (1 + FLOOR(
-                         LEAST(GREATEST(x_eff, 0::numeric),
-                               (SELECT cw FROM params) - (SELECT eps FROM params)
-                         ) / w4
-                      ))::int)) AS lane_1_4
-                  FROM norm
+                  SELECT (1 + FLOOR(x_eff / w4))::int AS lane_1_4 FROM clamped
                 ),
                 lane_near_far AS (
-                  SELECT CASE WHEN xf.is_far_landing THEN lane_1_4 ELSE 5 - lane_1_4 END AS lane_final
+                  SELECT
+                    CASE
+                      WHEN xf.is_far_landing THEN lane_1_4
+                      ELSE 5 - lane_1_4              -- invert for NEAR
+                    END AS lane_final
                   FROM idx4
                 )
-                SELECT CASE lane_final WHEN 1 THEN 'A' WHEN 2 THEN 'B' WHEN 3 THEN 'C' WHEN 4 THEN 'D' END
+                SELECT CASE lane_final
+                         WHEN 1 THEN 'A'
+                         WHEN 2 THEN 'B'
+                         WHEN 3 THEN 'C'
+                         WHEN 4 THEN 'D'
+                       END
                 FROM lane_near_far
               )
             END AS rally_box_ad
           FROM ad_x_final xf
         ),
+
 
         -- Outcome on last shot only (scoring)
         point_outcome AS (
@@ -1097,8 +1060,8 @@ CREATE_STMTS = {
               ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
         LEFT JOIN serve_place_final spf
               ON spf.session_id = sbp.session_id AND spf.swing_id = sbp.swing_id
-        LEFT JOIN serve_ad_label sal
-              ON sal.session_id = sbp.session_id AND sal.swing_id = sbp.swing_id
+        LEFT JOIN ad_label al
+              ON al.session_id  = sbp.session_id AND al.swing_id  = sbp.swing_id
         LEFT JOIN ad_label al
               ON al.session_id = sbp.session_id AND al.swing_id = sbp.swing_id
         LEFT JOIN point_ends pe
