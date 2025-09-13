@@ -612,37 +612,54 @@ CREATE_STMTS = {
             END AS srv_x_resolved
           FROM serve_place_core c
         ),
-        serve_place_final AS (
+          serve_place_final AS (
           SELECT
             x.session_id,
             x.swing_id,
             CASE
+              -- Only the last valid serve in the point (the serve that starts the rally)
               WHEN x.serve_d IS TRUE
                AND x.start_serve_shot_ix IS NOT NULL
                AND x.shot_ix = x.start_serve_shot_ix
               THEN (
-                WITH d AS (
+                WITH params AS (
+                  SELECT (SELECT court_w_m FROM const) AS cw,
+                         (SELECT eps_m    FROM const) AS eps
+                ),
+                norm AS (
+                  SELECT
+                    -- near/far mirror: far uses x as-is, near uses cw - x
+                    CASE WHEN x.is_far_end THEN x.srv_x_resolved
+                         ELSE (SELECT cw FROM params) - x.srv_x_resolved
+                    END AS x_eff,
+                    (SELECT (cw / 8.0) FROM params) AS w8
+                ),
+                idx8 AS (
+                  SELECT
+                    -- bucket 1..8 across the full width
+                    GREATEST(1,
+                      LEAST(
+                        8,
+                        (1 + FLOOR( LEAST(GREATEST(x_eff, 0::numeric),
+                                          (SELECT cw FROM params) - (SELECT eps FROM params)
+                                         ) / w8 )
+                        )::int
+                      )
+                    ) AS lane_1_8
+                  FROM norm
+                ),
+                sided AS (
                   SELECT
                     CASE
-                      -- FAR server: deuce measures from left, ad from right
-                      WHEN x.is_far_end AND x.serving_side_d = 'deuce' THEN x.srv_x_resolved
-                      WHEN x.is_far_end AND x.serving_side_d <> 'deuce' THEN (SELECT court_w_m FROM const) - x.srv_x_resolved
-                      -- NEAR server: flip
-                      WHEN NOT x.is_far_end AND x.serving_side_d = 'deuce' THEN (SELECT court_w_m FROM const) - x.srv_x_resolved
-                      ELSE x.srv_x_resolved
-                    END AS x_from_sideline
-                ),
-                lanes AS (
-                  SELECT
-                    LEAST(GREATEST(x_from_sideline, 0::numeric), (SELECT half_w_m FROM const)) AS x_clamped,
-                    ((SELECT half_w_m FROM const) / 4.0) AS lane_w
-                  FROM d
-                ),
-                idx AS (
-                  SELECT (1 + FLOOR( LEAST(x_clamped, (SELECT half_w_m FROM const) - (SELECT eps_m FROM const)) / lane_w ))::int AS lane_1_4
-                  FROM lanes
+                      -- deuce must be 1..4: fold 5..8 back by -4
+                      WHEN x.serving_side_d = 'deuce'
+                        THEN CASE WHEN lane_1_8 > 4 THEN lane_1_8 - 4 ELSE lane_1_8 END
+                      -- ad must be 5..8: fold 1..4 forward by +4
+                      ELSE CASE WHEN lane_1_8 < 5 THEN lane_1_8 + 4 ELSE lane_1_8 END
+                    END AS lane_1_8_sided
+                  FROM idx8
                 )
-                SELECT CASE WHEN x.serving_side_d = 'deuce' THEN lane_1_4 ELSE 4 + lane_1_4 END FROM idx
+                SELECT lane_1_8_sided FROM sided
               )
               ELSE NULL
             END AS serve_bucket_1_8
@@ -684,28 +701,46 @@ CREATE_STMTS = {
             ) AS is_far_landing
           FROM ad_landing_side ls
         ),
-        ad_label AS (
+          ad_label AS (
           SELECT
             xf.session_id,
             xf.swing_id,
             CASE
               WHEN xf.x_src IS NULL OR xf.is_far_landing IS NULL THEN NULL
               ELSE (
-                WITH norm AS (
+                WITH params AS (
+                  SELECT (SELECT court_w_m FROM const) AS cw,
+                         (SELECT eps_m    FROM const) AS eps
+                ),
+                norm AS (
                   SELECT
-                    LEAST(GREATEST(xf.x_src, 0::numeric), (SELECT court_w_m FROM const) - (SELECT eps_m FROM const)) AS x_clamped,
-                    (SELECT court_w_m FROM const) / 4.0 AS lane_w,
-                    xf.is_far_landing AS is_far
+                    -- near/far mirror on the LANDING side (opponent side)
+                    CASE WHEN xf.is_far_landing THEN xf.x_src
+                         ELSE (SELECT cw FROM params) - xf.x_src
+                    END AS x_eff,
+                    (SELECT (cw / 4.0) FROM params) AS w4
                 ),
-                idx AS (
-                  SELECT (1 + FLOOR(x_clamped / lane_w))::int AS lane_1_4, is_far FROM norm
-                ),
-                mapped AS (
-                  SELECT CASE WHEN is_far THEN lane_1_4 ELSE 5 - lane_1_4 END AS lane_from_left FROM idx
+                idx4 AS (
+                  SELECT
+                    -- bucket 1..4 across the full width (A..D)
+                    GREATEST(1,
+                      LEAST(
+                        4,
+                        (1 + FLOOR( LEAST(GREATEST(x_eff, 0::numeric),
+                                          (SELECT cw FROM params) - (SELECT eps FROM params)
+                                         ) / w4 )
+                        )::int
+                      )
+                    ) AS lane_1_4
+                  FROM norm
                 )
-                SELECT CASE lane_from_left
-                  WHEN 1 THEN 'A' WHEN 2 THEN 'B' WHEN 3 THEN 'C' WHEN 4 THEN 'D'
-                END FROM mapped
+                SELECT CASE lane_1_4
+                         WHEN 1 THEN 'A'
+                         WHEN 2 THEN 'B'
+                         WHEN 3 THEN 'C'
+                         WHEN 4 THEN 'D'
+                       END
+                FROM idx4
               )
             END AS rally_box_ad
           FROM ad_x_final xf
