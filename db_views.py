@@ -152,6 +152,40 @@ def _player_side_select_snippet(conn) -> str:
             ).format(c=col)
     return "NULL::boolean AS player_side_far_d"
 
+# ---- Helper: deterministic A–D mapper (mirror → clamp → divide by 4) ----
+PLACEMENT_AD_FN_SQL = r'''
+CREATE OR REPLACE FUNCTION placement_ad(
+  x_src          numeric,
+  landing_is_far boolean,
+  cw             numeric DEFAULT 8.23,
+  eps            numeric DEFAULT 0.00001
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+STRICT
+AS $$
+  WITH clamped AS (
+    SELECT LEAST(
+             GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
+                       0::numeric),
+             cw - eps
+           ) AS x_eff
+  ),
+  lane AS (
+    SELECT (1 + FLOOR(x_eff / (cw/4.0)))::int AS lane_1_4
+    FROM clamped
+  )
+  SELECT CASE lane_1_4
+           WHEN 1 THEN 'A'
+           WHEN 2 THEN 'B'
+           WHEN 3 THEN 'C'
+           WHEN 4 THEN 'D'
+         END
+  FROM lane;
+$$;
+'''
+
 # ==================================================================================
 # View manifest
 # ==================================================================================
@@ -476,7 +510,7 @@ CREATE_STMTS = {
             ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
         ),
 
-        /* === NEW: Ends per point from the starting-serve contact Y (>=20m ⇒ FAR) === */
+        /* Ends per point from the starting-serve contact Y (>=20m ⇒ FAR) */
         starting_serve_row AS (
           SELECT
             se.session_id,
@@ -608,9 +642,7 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        /* ================== SERVE: X source with 8-band mapping (bounce -> returner X -> server X) ==================
-           Only the last valid serve in the point gets a bucket. Near/far from point_ends (server end).
-        */
+        /* SERVE: X source with 8-band mapping (bounce -> returner X -> server X) */
         serve_place_core AS (
           SELECT
             sbp.session_id,
@@ -686,94 +718,6 @@ CREATE_STMTS = {
             END AS serve_bucket_1_8
           FROM serve_place_x x
         ),
-
-        /* === SERVE A–D (starting serve only): mirror to receiver end, then 4-band, invert for NEAR === */
-        ad_x_core AS (
-          SELECT
-            sbp.session_id,
-            sbp.swing_id,
-            -- prefer bounce X if the chosen primary is a floor bounce
-            CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
-            sbp.bounce_y_center_m AS by_raw,      -- raw Y (reliable sign for floor)
-            -- always take next hitter contact (even if same player)
-            sbp.next_ball_hit_x AS nxt_x,
-            sbp.next_ball_hit_y AS nxt_y,
-            sbp.ball_hit_x      AS hit_x,         -- last fallback
-            sbp.next_swing_id,
-            sbp.serve_d
-          FROM swing_bounce_primary sbp
-        ),
-
-        ad_landing_side AS (
-          SELECT
-            ax.*,
-            nxt.player_side_far_d AS nxt_is_far
-          FROM ad_x_core ax
-          LEFT JOIN vw_swing_silver nxt
-            ON nxt.session_id = ax.session_id
-           AND nxt.swing_id   = ax.next_swing_id
-        ),
-
-        ad_x_final AS (
-          SELECT
-            ls.session_id,
-            ls.swing_id,
-            -- X source priority: floor bounce → next contact → hitter
-            COALESCE(ls.bx, ls.nxt_x, ls.hit_x) AS x_src,
-            /* Landing side:
-               1) next hitter end if known
-               2) else floor-bounce Y sign
-               3) else next hitter Y sign
-            */
-            CASE
-              WHEN ls.nxt_is_far IS NOT NULL      THEN ls.nxt_is_far
-              WHEN ls.bx IS NOT NULL
-                   AND ls.by_raw IS NOT NULL      THEN (ls.by_raw < 0)
-              WHEN ls.nxt_y IS NOT NULL           THEN (ls.nxt_y  < 0)
-              ELSE NULL
-            END AS is_far_landing
-          FROM ad_landing_side ls
-        ),
-
-        ad_label AS (
-          SELECT
-            xf.session_id,
-            xf.swing_id,
-            CASE
-              WHEN xf.x_src IS NULL OR xf.is_far_landing IS NULL THEN NULL
-              ELSE (
-                WITH params AS (
-                  SELECT (SELECT court_w_m FROM const) AS cw,
-                         (SELECT eps_m    FROM const) AS eps
-                ),
-                clamped AS (
-                  SELECT LEAST(GREATEST(xf.x_src, 0::numeric),
-                               (SELECT cw FROM params) - (SELECT eps FROM params)) AS x_eff,
-                         (SELECT (cw / 4.0) FROM params) AS w4
-                ),
-                idx4 AS (
-                  SELECT (1 + FLOOR(x_eff / w4))::int AS lane_1_4 FROM clamped
-                ),
-                lane_near_far AS (
-                  SELECT
-                    CASE
-                      WHEN xf.is_far_landing THEN lane_1_4
-                      ELSE 5 - lane_1_4              -- invert for NEAR
-                    END AS lane_final
-                  FROM idx4
-                )
-                SELECT CASE lane_final
-                         WHEN 1 THEN 'A'
-                         WHEN 2 THEN 'B'
-                         WHEN 3 THEN 'C'
-                         WHEN 4 THEN 'D'
-                       END
-                FROM lane_near_far
-              )
-            END AS rally_box_ad
-          FROM ad_x_final xf
-        ),
-
 
         -- Outcome on last shot only (scoring)
         point_outcome AS (
@@ -931,7 +875,7 @@ CREATE_STMTS = {
 
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
-          /* per your request: REPLACED "bounce_in_doubles_d" with landing-side far/near flag */
+          /* Reused column: landing-side far/near flag (opposite end of hitter on that point) */
           CASE
             WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
               THEN pe.receiver_is_far_end_d
@@ -1025,9 +969,26 @@ CREATE_STMTS = {
             END
           END AS out_axis_last_d,
 
-          -- Serve lanes & A–D labels
+          -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
-          CASE WHEN sbp.serve_d THEN NULL ELSE al.rally_box_ad END AS placement_ad_d,
+
+          -- NEW: A–D only for non-serves, via deterministic function
+          CASE
+            WHEN sbp.serve_d THEN NULL
+            ELSE placement_ad(
+                   COALESCE(
+                     CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                     sbp.next_ball_hit_x,
+                     sbp.ball_hit_x
+                   ),
+                   CASE
+                     WHEN sbp.player_id = sbp.server_id THEN pe.receiver_is_far_end_d
+                     ELSE pe.server_is_far_end_d
+                   END,
+                   (SELECT court_w_m FROM const),
+                   (SELECT eps_m FROM const)
+                 )
+          END AS placement_ad_d,
 
           -- Play type
           CASE
@@ -1036,6 +997,7 @@ CREATE_STMTS = {
             WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
             ELSE 'baseline'
           END AS play_d,
+
           -- Scoring (last-shot rows)
           gr.point_score_text_d,
           gr.is_game_end_d,
@@ -1055,19 +1017,17 @@ CREATE_STMTS = {
               ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
         LEFT JOIN games_running gr
               ON gr.session_id = sbp.session_id
-            AND gr.point_number_d = sbp.point_number_d
+             AND gr.point_number_d = sbp.point_number_d
         LEFT JOIN bounce_explain be
               ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
         LEFT JOIN serve_place_final spf
               ON spf.session_id = sbp.session_id AND spf.swing_id = sbp.swing_id
-        LEFT JOIN ad_label al
-              ON al.session_id  = sbp.session_id AND al.swing_id  = sbp.swing_id
         LEFT JOIN point_ends pe
-              ON pe.session_id  = sbp.session_id
-            AND pe.point_number_d = sbp.point_number_d
-        ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
+              ON pe.session_id = sbp.session_id AND pe.point_number_d = sbp.point_number_d
+        ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
         ;
     ''',
+
     "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
@@ -1202,6 +1162,9 @@ def _apply_views(engine):
     with engine.begin() as conn:
         _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
+
+        # Create helper function used by vw_point_silver
+        conn.execute(text(PLACEMENT_AD_FN_SQL))
 
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
