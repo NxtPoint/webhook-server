@@ -735,17 +735,31 @@ CREATE_STMTS = {
         ),
 
         /* ================== RALLY A–D: X source + landing side from opponent end (no Y noise) ================== */
-        ad_x_core AS (
+          ad_x_core AS (
           SELECT
             sbp.session_id,
             sbp.swing_id,
+            -- prefer bounce X if the chosen primary is a floor bounce
             CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
-            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS opp_x,
-            sbp.ball_hit_x AS hit_x,
-            sbp.player_id,
-            sbp.server_id,
-            sbp.point_number_d
+            sbp.bounce_y_center_m AS by_raw,      -- raw Y (sign is reliable for floor)
+            -- always take next hitter contact (even if same player)
+            sbp.next_ball_hit_x AS nxt_x,
+            sbp.next_ball_hit_y AS nxt_y,
+            sbp.ball_hit_x      AS hit_x,         -- last fallback
+            sbp.next_swing_id,
+            sbp.serve_d
           FROM swing_bounce_primary sbp
+        ),
+        wing_bounce_primary sbp
+        ),
+          ad_landing_side AS (
+          SELECT
+            ax.*,
+            nxt.player_side_far_d AS nxt_is_far
+          FROM ad_x_core ax
+          LEFT JOIN vw_swing_silver nxt
+            ON nxt.session_id = ax.session_id
+           AND nxt.swing_id   = ax.next_swing_id
         ),
         ad_x_final AS (
           SELECT
@@ -1052,8 +1066,7 @@ CREATE_STMTS = {
 
           -- Serve lanes & A–D labels
           spf.serve_bucket_1_8 AS serve_loc_18_d,
-          COALESCE(sal.serve_box_ad, al.rally_box_ad) AS placement_ad_d,
-
+          CASE WHEN sbp.serve_d THEN NULL ELSE al.rally_box_ad END AS placement_ad_d,
           -- Play type
           CASE
             WHEN sbp.serve_d THEN 'serve'
