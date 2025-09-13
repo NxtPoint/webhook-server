@@ -153,12 +153,12 @@ def _player_side_select_snippet(conn) -> str:
     return "NULL::boolean AS player_side_far_d"
 
 # ---- Helper: deterministic A–D mapper (mirror → clamp → divide by 4) ----
-PLACEMENT_AD_FN_SQL = r'''
+PLACEMENT_AD_FN_SQL_NUMERIC = r'''
 CREATE OR REPLACE FUNCTION placement_ad(
   x_src          numeric,
   landing_is_far boolean,
-  cw             numeric DEFAULT 8.23,
-  eps            numeric DEFAULT 0.00001
+  cw             numeric,
+  eps            numeric
 )
 RETURNS text
 LANGUAGE sql
@@ -169,6 +169,39 @@ AS $$
     SELECT LEAST(
              GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
                        0::numeric),
+             cw - eps
+           ) AS x_eff
+  ),
+  lane AS (
+    SELECT (1 + FLOOR(x_eff / (cw/4.0)))::int AS lane_1_4
+    FROM clamped
+  )
+  SELECT CASE lane_1_4
+           WHEN 1 THEN 'A'
+           WHEN 2 THEN 'B'
+           WHEN 3 THEN 'C'
+           WHEN 4 THEN 'D'
+         END
+  FROM lane;
+$$;
+'''
+
+PLACEMENT_AD_FN_SQL_FLOAT8 = r'''
+CREATE OR REPLACE FUNCTION placement_ad(
+  x_src          double precision,
+  landing_is_far boolean,
+  cw             double precision,
+  eps            double precision
+)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+STRICT
+AS $$
+  WITH clamped AS (
+    SELECT LEAST(
+             GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
+                       0::double precision),
              cw - eps
            ) AS x_eff
   ),
@@ -976,18 +1009,18 @@ CREATE_STMTS = {
           CASE
             WHEN sbp.serve_d THEN NULL
             ELSE placement_ad(
-                   COALESCE(
-                     CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                     sbp.next_ball_hit_x,
-                     sbp.ball_hit_x
-                   ),
-                   CASE
-                     WHEN sbp.player_id = sbp.server_id THEN pe.receiver_is_far_end_d
-                     ELSE pe.server_is_far_end_d
-                   END,
-                   (SELECT court_w_m FROM const),
-                   (SELECT eps_m FROM const)
-                 )
+                  COALESCE(
+                    CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                    sbp.next_ball_hit_x,
+                    sbp.ball_hit_x
+                  )::numeric,                      -- <<< add this cast
+                  CASE
+                    WHEN sbp.player_id = sbp.server_id THEN pe.receiver_is_far_end_d
+                    ELSE pe.server_is_far_end_d
+                  END,
+                  (SELECT court_w_m FROM const),
+                  (SELECT eps_m FROM const)
+                )
           END AS placement_ad_d,
 
           -- Play type
@@ -1163,8 +1196,9 @@ def _apply_views(engine):
         _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
 
-        # Create helper function used by vw_point_silver
-        conn.execute(text(PLACEMENT_AD_FN_SQL))
+        # Create helper functions used by vw_point_silver (both overloads)
+        conn.execute(text(PLACEMENT_AD_FN_SQL_NUMERIC))
+        conn.execute(text(PLACEMENT_AD_FN_SQL_FLOAT8))
 
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
