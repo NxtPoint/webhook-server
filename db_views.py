@@ -672,11 +672,14 @@ CREATE_STMTS = {
           SELECT
             sbp.session_id,
             sbp.swing_id,
+            -- prefer bounce X if the chosen primary is a floor bounce
             CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
-            sbp.bounce_y_center_m AS by_raw,       -- NEW: raw bounce Y (far if < 0)
-            sbp.bounce_y_norm_m   AS by,
+            sbp.bounce_y_center_m AS by_raw,       -- RAW Y (far if < 0)
+            sbp.bounce_y_norm_m   AS by_norm,
+            -- opponent contact (only if next hitter is the opponent)
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS opp_x,
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS opp_y,
+            -- hitter contact as last fallback
             sbp.ball_hit_x AS hit_x,
             sbp.serve_d
           FROM swing_bounce_primary sbp
@@ -698,16 +701,17 @@ CREATE_STMTS = {
           SELECT
             ls.session_id,
             ls.swing_id,
+            -- X source priority: bounce X (floor) → opponent contact X → hitter contact X
             COALESCE(ls.bx, ls.opp_x, ls.hit_x) AS x_src,
-            /* Landing side: prefer raw bounce Y sign when we actually have a floor bounce,
-               else opponent-side flag, else opponent raw Y */
+            /* Landing side:
+               1) If we have a FLOOR bounce, decide from RAW Y sign (robust).
+               2) Else if we know opponent side, use it.
+               3) Else, fall back to opponent RAW Y sign.
+            */
             CASE
-              WHEN ls.bx IS NOT NULL AND ls.by_raw IS NOT NULL
-                THEN (ls.by_raw < 0)              -- FAR if raw Y < 0
-              WHEN ls.opp_is_far IS NOT NULL
-                THEN ls.opp_is_far
-              WHEN ls.opp_y IS NOT NULL
-                THEN (ls.opp_y < 0)
+              WHEN ls.bx IS NOT NULL AND ls.by_raw IS NOT NULL THEN (ls.by_raw < 0)
+              WHEN ls.opp_is_far IS NOT NULL                    THEN ls.opp_is_far
+              WHEN ls.opp_y IS NOT NULL                         THEN (ls.opp_y   < 0)
               ELSE NULL
             END AS is_far_landing
           FROM ad_landing_side ls
@@ -725,6 +729,7 @@ CREATE_STMTS = {
                 ),
                 norm AS (
                   SELECT
+                    -- mirror for NEAR so x_eff always measures from the receiver’s left sideline
                     CASE WHEN xf.is_far_landing THEN xf.x_src
                          ELSE (SELECT cw FROM params) - xf.x_src
                     END AS x_eff,
@@ -747,9 +752,10 @@ CREATE_STMTS = {
                 ),
                 lane_near_far AS (
                   SELECT
+                    -- invert labels for NEAR so A↔D and B↔C swap
                     CASE
                       WHEN xf.is_far_landing THEN lane_1_4
-                      ELSE 5 - lane_1_4           -- invert labels for near side
+                      ELSE 5 - lane_1_4
                     END AS lane_final
                   FROM idx4
                 )
@@ -764,8 +770,6 @@ CREATE_STMTS = {
             END AS rally_box_ad
           FROM ad_x_final xf
         ),
-
-
 
         -- Outcome on last shot only (scoring)
         point_outcome AS (
