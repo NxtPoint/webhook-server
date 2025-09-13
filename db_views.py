@@ -579,11 +579,8 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        /* ================== SERVE: X source with simple fallback (bounce -> returner X) ==================
-           Primary X: floor-bounce X (only if the primary is a floor bounce).
-           Else:      returner’s contact X (next swing by opponent).
-           Else:      server contact X.
-           Lanes:     measure distance from correct sideline, clamp to [0, half_w], bucket 1–4; add 4 if ad.
+        /* ================== SERVE: X source with 8-band mapping (bounce -> returner X -> server X) ==================
+           Only the last valid serve in the point gets a bucket.
         */
         serve_place_core AS (
           SELECT
@@ -612,7 +609,7 @@ CREATE_STMTS = {
             END AS srv_x_resolved
           FROM serve_place_core c
         ),
-          serve_place_final AS (
+        serve_place_final AS (
           SELECT
             x.session_id,
             x.swing_id,
@@ -666,15 +663,19 @@ CREATE_STMTS = {
           FROM serve_place_x x
         ),
 
-        /* ================== NON-SERVE A–D: X-axis target with landing-side flip ================== */
+        /* ================== NON-SERVE A–D: bounce-first X with landing-side mirror ================== */
         ad_x_core AS (
           SELECT
             sbp.session_id,
             sbp.swing_id,
+            -- prefer bounce X when the chosen primary is a floor bounce
+            CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
+            sbp.bounce_y_norm_m   AS by,
+            -- opponent contact as secondary source
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS opp_x,
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS opp_y,
-            sbp.bounce_x_center_m AS bx,
-            sbp.bounce_y_norm_m   AS by,
+            -- hitter contact as last resort
+            sbp.ball_hit_x AS hit_x,
             sbp.serve_d
           FROM swing_bounce_primary sbp
         ),
@@ -695,13 +696,24 @@ CREATE_STMTS = {
           SELECT
             ls.session_id,
             ls.swing_id,
-            COALESCE(ls.opp_x, ls.bx) AS x_src,
-            COALESCE(ls.opp_is_far,
-                     CASE WHEN ls.by IS NOT NULL THEN (ls.by > (SELECT mid_y_m FROM const)) END
-            ) AS is_far_landing
+            -- X source priority: bounce (floor) -> opponent X -> hitter X
+            COALESCE(ls.bx, ls.opp_x, ls.hit_x) AS x_src,
+            -- Landing side priority:
+            -- 1) if floor bounce present, decide from bounce Y
+            -- 2) else from opponent's side flag
+            -- 3) else from opponent Y position
+            CASE
+              WHEN ls.bx IS NOT NULL AND ls.by IS NOT NULL
+                THEN (ls.by > (SELECT mid_y_m FROM const))         -- far if bounce_y_norm > mid
+              WHEN ls.opp_is_far IS NOT NULL
+                THEN ls.opp_is_far
+              WHEN ls.opp_y IS NOT NULL
+                THEN (ls.opp_y > (SELECT mid_y_m FROM const))
+              ELSE NULL
+            END AS is_far_landing
           FROM ad_landing_side ls
         ),
-          ad_label AS (
+        ad_label AS (
           SELECT
             xf.session_id,
             xf.swing_id,
@@ -714,7 +726,7 @@ CREATE_STMTS = {
                 ),
                 norm AS (
                   SELECT
-                    -- near/far mirror on the LANDING side (opponent side)
+                    -- near/far mirror on the LANDING side
                     CASE WHEN xf.is_far_landing THEN xf.x_src
                          ELSE (SELECT cw FROM params) - xf.x_src
                     END AS x_eff,
