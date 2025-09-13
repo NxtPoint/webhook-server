@@ -36,7 +36,7 @@ def _ensure_raw_ingest(conn):
           ingest_ts    TIMESTAMPTZ NOT NULL DEFAULT now(),
           payload      JSONB NOT NULL
         );
-    '''))
+    '''))  # raw string so backslashes/quotes never break
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
@@ -119,7 +119,7 @@ def _drop_any(conn, name: str):
     else:
         stmts = [
             f'DROP VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;",
             f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
     for stmt in stmts:
@@ -603,8 +603,7 @@ CREATE_STMTS = {
             b.bounce_type AS bounce_type_raw
           FROM swing_windows_cap swc
           LEFT JOIN LATERAL (
-            SELECT b.*
-            FROM bounces_norm b
+            SELECT b.* FROM bounces_norm b
             WHERE b.session_id = swc.session_id
               AND b.bounce_type = 'floor'
               AND b.bounce_ts_pref >  swc.start_ts_guard
@@ -627,8 +626,7 @@ CREATE_STMTS = {
             b.bounce_type       AS any_bounce_type
           FROM swing_windows_cap swc
           LEFT JOIN LATERAL (
-            SELECT b.*
-            FROM bounces_norm b
+            SELECT b.* FROM bounces_norm b
             WHERE b.session_id = swc.session_id
               AND b.bounce_ts_pref >  swc.start_ts_guard
               AND b.bounce_ts_pref <= swc.end_ts_pref
@@ -684,7 +682,7 @@ CREATE_STMTS = {
             sbp.serve_d,
             sbp.start_serve_shot_ix,
             sbp.shot_ix,
-            pe.server_is_far_end_d AS is_far_end,   -- from starting-serve Y
+            pe.server_is_far_end_d AS is_far_end,
             CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS floor_x,
             sbp.ball_hit_x AS srv_x0,
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS rcv_x1
@@ -726,12 +724,12 @@ CREATE_STMTS = {
                 idx8 AS (
                   SELECT
                     GREATEST(1,
-                      LEAST(
-                        8,
-                        (1 + FLOOR( LEAST(GREATEST(x_eff, 0::numeric),
-                                          (SELECT cw FROM params) - (SELECT eps FROM params)
-                                         ) / w8 )
-                        )::int
+                      LEAST(8,
+                        (1 + FLOOR(
+                          LEAST(GREATEST(x_eff, 0::numeric),
+                                (SELECT cw FROM params) - (SELECT eps FROM params)
+                          ) / w8
+                        ))::int
                       )
                     ) AS lane_1_8
                   FROM norm
@@ -908,7 +906,7 @@ CREATE_STMTS = {
 
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
-          /* Landing-side far/near flag based on server/receiver ends (kept for continuity) */
+          /* Landing-side far/near flag (kept) */
           CASE
             WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
               THEN pe.receiver_is_far_end_d
@@ -1005,19 +1003,41 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D only for non-serves and never on the last shot
+          -- A–D for all non-serves.
+          -- Last shot: only if a floor-bounce X exists; otherwise NULL.
           CASE
-            WHEN sbp.serve_d OR sbp.shot_ix = sbp.last_shot_ix THEN NULL
-            ELSE placement_ad(
-                   COALESCE(
-                     CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                     sbp.next_ball_hit_x,
-                     sbp.ball_hit_x
-                   )::numeric,
-                   NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
-                   (SELECT court_w_m FROM const),
-                   (SELECT eps_m    FROM const)
-                 )
+            WHEN sbp.serve_d THEN NULL
+            ELSE
+              CASE
+                WHEN (
+                  CASE
+                    WHEN sbp.shot_ix = sbp.last_shot_ix
+                      THEN CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END
+                    ELSE COALESCE(
+                           CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                           sbp.next_ball_hit_x,
+                           sbp.ball_hit_x
+                         )
+                  END
+                ) IS NULL
+                THEN NULL
+                ELSE placement_ad(
+                       (
+                         CASE
+                           WHEN sbp.shot_ix = sbp.last_shot_ix
+                             THEN CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END
+                           ELSE COALESCE(
+                                  CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                                  sbp.next_ball_hit_x,
+                                  sbp.ball_hit_x
+                                )
+                         END
+                       )::numeric,
+                       NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
+                       (SELECT court_w_m FROM const),
+                       (SELECT eps_m    FROM const)
+                     )
+              END
           END AS placement_ad_d,
 
           -- Play type
