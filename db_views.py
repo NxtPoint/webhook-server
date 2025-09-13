@@ -125,6 +125,7 @@ def _drop_any(conn, name: str):
     for stmt in stmts:
         conn.execute(text(stmt))
 
+
 def _exec_with_clear_errors(conn, name: str, sql: str):
     try:
         conn.execute(text(sql))
@@ -1005,7 +1006,7 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- NEW: A–D only for non-serves, via deterministic function
+          -- A–D only for non-serves, X priority = floor → next → hitter; landing = opposite of hitter end
           CASE
             WHEN sbp.serve_d THEN NULL
             ELSE placement_ad(
@@ -1013,13 +1014,13 @@ CREATE_STMTS = {
                     CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
                     sbp.next_ball_hit_x,
                     sbp.ball_hit_x
-                  )::numeric,                      -- <<< add this cast
+                  )::numeric,
                   CASE
                     WHEN sbp.player_id = sbp.server_id THEN pe.receiver_is_far_end_d
                     ELSE pe.server_is_far_end_d
                   END,
                   (SELECT court_w_m FROM const),
-                  (SELECT eps_m FROM const)
+                  (SELECT eps_m   FROM const)
                 )
           END AS placement_ad_d,
 
