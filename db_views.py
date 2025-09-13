@@ -1036,7 +1036,6 @@ CREATE_STMTS = {
             WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
             ELSE 'baseline'
           END AS play_d,
-
           -- Scoring (last-shot rows)
           gr.point_score_text_d,
           gr.is_game_end_d,
@@ -1056,18 +1055,17 @@ CREATE_STMTS = {
               ON pdir.session_id = sbp.session_id AND pdir.player_id = sbp.player_id
         LEFT JOIN games_running gr
               ON gr.session_id = sbp.session_id
-              AND gr.point_number_d = sbp.point_number_d
+            AND gr.point_number_d = sbp.point_number_d
         LEFT JOIN bounce_explain be
               ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
         LEFT JOIN serve_place_final spf
               ON spf.session_id = sbp.session_id AND spf.swing_id = sbp.swing_id
         LEFT JOIN ad_label al
               ON al.session_id  = sbp.session_id AND al.swing_id  = sbp.swing_id
-        LEFT JOIN ad_label al
-              ON al.session_id = sbp.session_id AND al.swing_id = sbp.swing_id
         LEFT JOIN point_ends pe
-              ON pe.session_id = sbp.session_id AND pe.point_number_d = sbp.point_number_d
-        ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
+              ON pe.session_id  = sbp.session_id
+            AND pe.point_number_d = sbp.point_number_d
+        ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id;
         ;
     ''',
     "vw_bounce_stream_debug": r'''
