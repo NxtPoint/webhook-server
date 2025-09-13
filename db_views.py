@@ -672,19 +672,15 @@ CREATE_STMTS = {
           SELECT
             sbp.session_id,
             sbp.swing_id,
-            -- For placements use ANY bounce X if we saw a bounce (preferred)
-            sbp.bounce_x_center_m AS bx,
-            -- Use RAW bounce Y to infer landing side (far when < 0)
-            sbp.bounce_y_center_m AS by_raw,
-            -- Opponent contact as secondary source
+            CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END AS bx,
+            sbp.bounce_y_center_m AS by_raw,       -- NEW: raw bounce Y (far if < 0)
+            sbp.bounce_y_norm_m   AS by,
             CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_x END AS opp_x,
-            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS opp_y_raw,
-            -- Hitter contact as last fallback
+            CASE WHEN sbp.next_player_id IS DISTINCT FROM sbp.player_id THEN sbp.next_ball_hit_y END AS opp_y,
             sbp.ball_hit_x AS hit_x,
             sbp.serve_d
           FROM swing_bounce_primary sbp
         ),
-
         ad_landing_side AS (
           SELECT
             ax.*,
@@ -698,32 +694,25 @@ CREATE_STMTS = {
                 WHERE sbp2.session_id = ax.session_id AND sbp2.swing_id = ax.swing_id
               )
         ),
-            ad_x_final AS (
+        ad_x_final AS (
           SELECT
             ls.session_id,
             ls.swing_id,
-            -- X source priority: bounce X -> opponent X -> hitter X
             COALESCE(ls.bx, ls.opp_x, ls.hit_x) AS x_src,
-            -- Landing side: 1) bounce raw Y (<0 is far),
-            --               2) opponent side flag,
-            --               3) opponent raw Y (<0 is far)
+            /* Landing side: prefer raw bounce Y sign when we actually have a floor bounce,
+               else opponent-side flag, else opponent raw Y */
             CASE
-              WHEN ls.by_raw IS NOT NULL THEN (ls.by_raw < 0)
-              WHEN opp.player_side_far_d IS NOT NULL THEN opp.player_side_far_d
-              WHEN ls.opp_y_raw IS NOT NULL THEN (ls.opp_y_raw < 0)
+              WHEN ls.bx IS NOT NULL AND ls.by_raw IS NOT NULL
+                THEN (ls.by_raw < 0)              -- FAR if raw Y < 0
+              WHEN ls.opp_is_far IS NOT NULL
+                THEN ls.opp_is_far
+              WHEN ls.opp_y IS NOT NULL
+                THEN (ls.opp_y < 0)
               ELSE NULL
             END AS is_far_landing
-          FROM ad_x_core ls
-          LEFT JOIN vw_swing_silver opp
-            ON opp.session_id = ls.session_id
-           AND opp.swing_id   = (
-                SELECT sbp2.next_swing_id
-                FROM swing_bounce_primary sbp2
-                WHERE sbp2.session_id = ls.session_id AND sbp2.swing_id = ls.swing_id
-              )
+          FROM ad_landing_side ls
         ),
-
-          ad_label AS (
+        ad_label AS (
           SELECT
             xf.session_id,
             xf.swing_id,
@@ -736,9 +725,6 @@ CREATE_STMTS = {
                 ),
                 norm AS (
                   SELECT
-                    -- Mirror X for the landing side:
-                    -- far  -> use x as-is
-                    -- near -> mirror around the full court width
                     CASE WHEN xf.is_far_landing THEN xf.x_src
                          ELSE (SELECT cw FROM params) - xf.x_src
                     END AS x_eff,
@@ -746,7 +732,6 @@ CREATE_STMTS = {
                 ),
                 idx4 AS (
                   SELECT
-                    -- bucket 1..4 across the full width
                     GREATEST(
                       1,
                       LEAST(
@@ -762,10 +747,9 @@ CREATE_STMTS = {
                 ),
                 lane_near_far AS (
                   SELECT
-                    -- *** NEW: invert labels for near side ***
                     CASE
                       WHEN xf.is_far_landing THEN lane_1_4
-                      ELSE 5 - lane_1_4
+                      ELSE 5 - lane_1_4           -- invert labels for near side
                     END AS lane_final
                   FROM idx4
                 )
@@ -780,6 +764,7 @@ CREATE_STMTS = {
             END AS rally_box_ad
           FROM ad_x_final xf
         ),
+
 
 
         -- Outcome on last shot only (scoring)
