@@ -750,9 +750,7 @@ CREATE_STMTS = {
             sbp.serve_d
           FROM swing_bounce_primary sbp
         ),
-        wing_bounce_primary sbp
-        ),
-          ad_landing_side AS (
+        ad_landing_side AS (
           SELECT
             ax.*,
             nxt.player_side_far_d AS nxt_is_far
