@@ -1006,19 +1006,18 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D only for non-serves, X priority = floor → next → hitter; landing = opposite of hitter end
-          -- NEW: A–D only for non-serves and never on the last shot.
+          -- A–D only for non-serves and never on the last shot.
           CASE
             WHEN sbp.serve_d OR sbp.shot_ix = sbp.last_shot_ix THEN NULL
             ELSE placement_ad(
-                  /* X source: floor bounce → next hitter contact → hitter contact */
+                  /* X source: floor → next contact → hitter contact */
                   COALESCE(
                     CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
                     sbp.next_ball_hit_x,
                     sbp.ball_hit_x
                   )::numeric,
-                  /* Landing end = opposite of hitter's near/far */
-                  NOT sbp.player_side_far_d,
+                  /* landing side = opposite of hitter near/far, with safe fallback to Y sign */
+                  NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
                   (SELECT court_w_m FROM const),
                   (SELECT eps_m    FROM const)
                 )
