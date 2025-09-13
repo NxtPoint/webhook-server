@@ -1028,6 +1028,7 @@ CREATE_STMTS = {
           -- Serve lanes & A–D labels
           spf.serve_bucket_1_8 AS serve_loc_18_d,
           CASE WHEN sbp.serve_d THEN NULL ELSE al.rally_box_ad END AS placement_ad_d,
+
           -- Play type
           CASE
             WHEN sbp.serve_d THEN 'serve'
@@ -1069,7 +1070,6 @@ CREATE_STMTS = {
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
         ;
     ''',
-
     "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
