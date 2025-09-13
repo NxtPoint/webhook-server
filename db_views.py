@@ -36,7 +36,7 @@ def _ensure_raw_ingest(conn):
           ingest_ts    TIMESTAMPTZ NOT NULL DEFAULT now(),
           payload      JSONB NOT NULL
         );
-    '''))  # raw string so backslashes/quotes never break
+    '''))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
@@ -124,7 +124,6 @@ def _drop_any(conn, name: str):
         ]
     for stmt in stmts:
         conn.execute(text(stmt))
-
 
 def _exec_with_clear_errors(conn, name: str, sql: str):
     try:
@@ -375,18 +374,18 @@ CREATE_STMTS = {
             s.ball_hit_x AS x_ref, s.ball_hit_y AS y_ref,
             (lower(s.swing_type) IN ('fh_overhead','fh-overhead')) AS is_fh_overhead,
             CASE
-              WHEN s.ball_hit_y IS NULL THEN NULL
-              ELSE (s.ball_hit_y <= (SELECT serve_eps_m FROM const)
-                OR  s.ball_hit_y >= (SELECT court_l_m FROM const) - (SELECT serve_eps_m FROM const))
-            END AS inside_serve_band,
-            CASE
               WHEN s.ball_hit_y IS NULL OR s.ball_hit_x IS NULL THEN NULL
               WHEN s.ball_hit_y < (SELECT mid_y_m FROM const)
                 THEN CASE WHEN s.ball_hit_x < (SELECT center_x FROM serve_centerline sc WHERE sc.session_id = s.session_id)
                           THEN 'deuce' ELSE 'ad' END
               ELSE CASE WHEN s.ball_hit_x > (SELECT center_x FROM serve_centerline sc WHERE sc.session_id = s.session_id)
                         THEN 'deuce' ELSE 'ad' END
-            END AS serving_side_d
+            END AS serving_side_d,
+            CASE
+              WHEN s.ball_hit_y IS NULL THEN NULL
+              ELSE (s.ball_hit_y <= (SELECT serve_eps_m FROM const)
+                OR  s.ball_hit_y >= (SELECT court_l_m FROM const) - (SELECT serve_eps_m FROM const))
+            END AS inside_serve_band
           FROM swings s
         ),
 
@@ -909,7 +908,7 @@ CREATE_STMTS = {
 
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
-          /* Reused column: landing-side far/near flag (opposite end of hitter on that point) */
+          /* Landing-side far/near flag based on server/receiver ends (kept for continuity) */
           CASE
             WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
               THEN pe.receiver_is_far_end_d
@@ -1006,21 +1005,19 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D only for non-serves and never on the last shot.
+          -- A–D only for non-serves and never on the last shot
           CASE
             WHEN sbp.serve_d OR sbp.shot_ix = sbp.last_shot_ix THEN NULL
             ELSE placement_ad(
-                  /* X source: floor → next contact → hitter contact */
-                  COALESCE(
-                    CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                    sbp.next_ball_hit_x,
-                    sbp.ball_hit_x
-                  )::numeric,
-                  /* landing side = opposite of hitter near/far, with safe fallback to Y sign */
-                  NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
-                  (SELECT court_w_m FROM const),
-                  (SELECT eps_m    FROM const)
-                )
+                   COALESCE(
+                     CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                     sbp.next_ball_hit_x,
+                     sbp.ball_hit_x
+                   )::numeric,
+                   NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
+                   (SELECT court_w_m FROM const),
+                   (SELECT eps_m    FROM const)
+                 )
           END AS placement_ad_d,
 
           -- Play type
