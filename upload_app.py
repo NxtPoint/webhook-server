@@ -386,7 +386,22 @@ def _sportai_status(task_id: str) -> dict:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
     # Normalize structures
-    d = j.get("data") if isinstance(j, dict) and isinstance(j.get("data"), dict) else j
+    if isinstance(j, dict):
+        d = j.get("data") or j
+    else:
+        d = j
+
+    status = d.get("status") or d.get("task_status")
+
+    # Infer completion if there is a result_url but no explicit status
+    if not status and (d.get("result_url") or j.get("result_url")):
+        status = "completed"
+
+
+    # NEW: infer completion if result_url exists but no explicit status
+    inferred_done = (d.get("result_url") or j.get("result_url")) and not status
+    if inferred_done:
+        status = "completed"
 
     # Status / stage text
     status = (
@@ -418,14 +433,14 @@ def _sportai_status(task_id: str) -> dict:
 
     out = {
         "status": status,
-        "result_url": result_url,
+        "result_url": d.get("result_url") or j.get("result_url"),
         "data": {
-            "task_id": d.get("task_id") or j.get("task_id") or task_id,
-            "video_url": d.get("video_url") or j.get("video_url"),
-            "task_status": status,
-            "task_progress": progress,
-            "total_subtask_progress": d.get("total_subtask_progress") or j.get("total_subtask_progress"),
-            "subtask_progress": d.get("subtask_progress") or j.get("subtask_progress") or {},
+            "task_id": d.get("task_id"),
+            "video_url": d.get("video_url"),
+            "task_status": d.get("task_status") or d.get("status") or status,
+            "task_progress": d.get("task_progress") or d.get("progress"),
+            "total_subtask_progress": d.get("total_subtask_progress"),
+            "subtask_progress": d.get("subtask_progress") or {},
         },
         "raw": j,
     }
