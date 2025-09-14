@@ -89,6 +89,13 @@ from db_init import engine  # noqa: E402
 from ingest_app import ingest_bp, ingest_result_v2  # noqa: E402
 app.register_blueprint(ingest_bp, url_prefix="")    # mounts all /ops/* ingest routes
 
+# ---------- S3 config ----------
+AWS_REGION      = os.getenv("AWS_REGION", "").strip() or None
+S3_BUCKET       = os.getenv("S3_BUCKET", "").strip()
+S3_PREFIX       = (os.getenv("S3_PREFIX", "wix-uploads") or "wix-uploads").strip().strip("/")
+S3_GET_EXPIRES  = int(os.getenv("S3_GET_EXPIRES", "604800"))  # 7 days default
+
+
 # -------------------------------------------------------
 # Helpers
 # -------------------------------------------------------
@@ -111,6 +118,36 @@ def _maybe_cors(resp):
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-OPS-Key"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return resp
+
+# ---------- S3 helpers ----------
+def _s3_client():
+    try:
+        import boto3  # lazy import so boot works without it
+    except Exception as e:
+        raise RuntimeError(f"boto3 not installed: {e}")
+    return boto3.client("s3", region_name=AWS_REGION)
+
+def _s3_put_fileobj(fobj, key: str, content_type: str | None = None) -> dict:
+    """Upload file-like object to S3 key; returns {'bucket','key','size'}."""
+    cli = _s3_client()
+    extra = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    cli.upload_fileobj(fobj, S3_BUCKET, key, ExtraArgs=extra or None)
+    # size is only known from stream; use fobj.tell() if possible
+    try:
+        pos = fobj.tell()
+    except Exception:
+        pos = None
+    return {"bucket": S3_BUCKET, "key": key, "size": pos}
+
+def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
+    cli = _s3_client()
+    return cli.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": S3_BUCKET, "Key": key},
+        ExpiresIn=int(expires or S3_GET_EXPIRES),
+    )
 
 # ---------- Dropbox auth ----------
 def _dbx_access_token():
@@ -372,9 +409,13 @@ def __routes_locked():
 def upload_status():
     return jsonify({
         "ok": True,
+        "storage": "s3" if S3_BUCKET else "dropbox",
+        "s3_ready": bool(S3_BUCKET),
+        "s3_bucket": S3_BUCKET or None,
+        "s3_prefix": S3_PREFIX or None,
         "dropbox_ready": bool(DBX_ACCESS_TOKEN or (DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH)),
         "sportai_ready": bool(SPORTAI_TOKEN),
-        "target_folder": DBX_FOLDER,
+        "target_folder": f"s3://{S3_BUCKET}/{S3_PREFIX}" if S3_BUCKET else DBX_FOLDER,
     })
 
 @app.get("/ops/env")
@@ -460,19 +501,48 @@ def api_upload_to_dropbox():
             except Exception as e:
                 return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
-    # 2) Multipart upload (preferred)
+        # 2) Multipart upload (preferred)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file provided."}), 400
 
+    clean = secure_filename(f.filename)
+    ts = int(time.time())
+
+    # ======= S3 branch (preferred when configured) =======
+    if S3_BUCKET:
+        try:
+            key = f"{S3_PREFIX}/{ts}_{clean}"
+            # Ensure we read from start for accurate upload
+            try:
+                f.stream.seek(0)
+            except Exception:
+                pass
+            meta_up = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
+            share_url = _s3_presigned_get_url(key)  # presigned GET
+            video_url = share_url
+
+            meta = _extract_meta_from_form(request.form)
+            task_id = _sportai_submit(video_url, email=email, meta=meta)
+            _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
+
+            return jsonify({
+                "ok": True,
+                "task_id": task_id,
+                "share_url": share_url,
+                "video_url": video_url,
+                "upload": {"path": key, "size": meta_up.get("size"), "name": clean}
+            })
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"S3 upload/submit failed: {e}"}), 502
+
+    # ======= Dropbox branch (legacy fallback) =======
     tok, err = _dbx_get_token()
     if not tok:
         return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
 
-    clean = secure_filename(f.filename)
-    dest_path = f"{DBX_FOLDER.rstrip('/')}/{int(time.time())}_{clean}"
-
+    dest_path = f"{DBX_FOLDER.rstrip('/')}/{ts}_{clean}"
     headers = {
         "Authorization": f"Bearer {tok}",
         "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
@@ -509,6 +579,7 @@ def api_upload_to_dropbox():
                    "size": meta_dbx.get("size"),
                    "name": meta_dbx.get("name", clean)}
     })
+
 
 # Legacy /upload alias (keeps old front-end working)
 @app.route("/upload", methods=["POST", "OPTIONS"])
