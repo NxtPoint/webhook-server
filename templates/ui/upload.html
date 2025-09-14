@@ -323,81 +323,95 @@
     pollTimer = setTimeout(() => pollStatus(taskId), pollDelay);
   }
 
-  async function pollStatus(taskId){
-    if (!taskId) return;
-    try {
-      const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, { cache: 'no-store' });
-      const ct = (r.headers.get('content-type') || '').toLowerCase();
 
-      if (!ct.includes('application/json')) {
-        logLine(`status non-JSON (${r.status})`, 'err');
-        pollDelay = Math.min(pollDelay + 2000, 20000); // back off a bit
-        return schedule(taskId);
+    async function pollStatus(taskId){
+      if (!taskId) return;
+      clearTimeout(pollTimer);
+
+      try {
+        // add a bust-cache param; also tell fetch not to cache
+        const url = `/upload/api/task-status?task_id=${encodeURIComponent(taskId)}&t=${Date.now()}`;
+        const r = await fetch(url, { cache: 'no-store' });
+
+        // Try JSON first; if that fails, log a short HTML snippet and retry
+        let j;
+        try {
+          j = await r.json();
+        } catch (e) {
+          const txt = (await r.text()).slice(0, 160).replace(/\s+/g, ' ');
+          logLine(`status ${r.status} non-JSON: ${txt}`, 'err');
+          pollTimer = setTimeout(() => pollStatus(taskId), 3500);
+          return;
+        }
+
+        if (!j || j.ok === false) {
+          logLine(`status error ${r.status}: ${j?.error || 'server error'}`, 'err');
+          pollTimer = setTimeout(() => pollStatus(taskId), 3000);
+          return;
+        }
+
+        // stage + progress
+        const stage =
+          (j.status || (j.data && (j.data.task_status || j.data.status)) || '').toString();
+        const lc = stage.toLowerCase();
+        setStage(stage || 'processing');
+
+        // progress (SportAI often doesn't give a numeric; keep it graceful)
+        const p = Number(
+          (j.data && (j.data.task_progress ?? j.data.total_subtask_progress)) ?? 0
+        );
+        setProgress(isFinite(p) ? p : 0);
+
+        // subtask logs if any
+        const subtasks = (j.data && j.data.subtask_progress) || {};
+        for (const [k, v] of Object.entries(subtasks)) {
+          logLine(`${k}: ${v}%`);
+        }
+
+        // links
+        links.innerHTML = '';
+        if (j.result_url) {
+          const a = document.createElement('a');
+          a.href = j.result_url; a.textContent = 'Result JSON'; a.className='btn';
+          a.target = '_blank'; a.rel='noopener';
+          links.appendChild(a);
+        }
+        // always include raw status
+        const raw = document.createElement('a');
+        raw.href = `/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`;
+        raw.textContent = 'Raw status'; raw.className='btn'; raw.target='_blank'; raw.rel='noopener';
+        links.appendChild(raw);
+
+        // completion/ingest
+        const done = ['completed','done','success','succeeded'].includes(lc) || !!j.result_url;
+        const failed = ['failed','error','cancelled','canceled'].includes(lc);
+
+        if (j.auto_ingested) {
+          logLine(`ingested ✓ session ${j.session_id}`, 'ok');
+        }
+
+        if (done) {
+          setProgress(100);
+          setStage('completed');
+          logLine('analysis complete ✓', 'ok');
+          btn.disabled = false;
+          return;
+        }
+
+        if (failed) {
+          logLine(`analysis failed: ${stage || 'unknown'}`, 'err');
+          btn.disabled = false;
+          return;
+        }
+
+        // keep polling
+        pollTimer = setTimeout(() => pollStatus(taskId), 3000);
+
+      } catch (err) {
+        logLine(`status exception: ${err}`, 'err');
+        pollTimer = setTimeout(() => pollStatus(taskId), 4000);
       }
-
-      const j = await r.json();
-      if (!j.ok) {
-        logLine(`status error: ${j.error || r.status}`, 'err');
-        pollDelay = Math.min(pollDelay + 2000, 20000);
-        return schedule(taskId);
-      }
-
-      // good JSON – reset delay
-      pollDelay = 3000;
-
-      // Update links every time
-      links.innerHTML = '';
-      if (j.result_url) links.appendChild(linkify(j.result_url, 'Result JSON'));
-      links.appendChild(linkify(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, 'Raw status'));
-
-      // Stage + progress
-      const st = (j.status || j.data?.task_status || '').toString();
-      setStage(st || (j.result_url ? 'completed' : 'processing'));
-
-      const p = Number(j.data?.task_progress ?? j.total_subtask_progress ?? 0);
-      if (!Number.isNaN(p)) setProgress(p);
-
-      // Subtask logs (optional)
-      const subtasks = j.data?.subtask_progress || {};
-      for (const [k,v] of Object.entries(subtasks)) {
-        logLine(`${k}: ${v}%`);
-      }
-
-      // Completion logic:
-      const done = ['completed','done','success','succeeded'].includes(st.toLowerCase());
-      const failed = ['failed','error','cancelled','canceled'].includes(st.toLowerCase());
-
-      if (done) {
-        logLine('analysis complete ✓', 'ok');
-        setProgress(100);
-        btn.disabled = false;
-        return;
-      }
-
-      // If no explicit status but a result_url exists, treat as done.
-      if (j.result_url && !done) {
-        logLine('result URL available — marking complete ✓', 'ok');
-        setProgress(100);
-        setStage('completed');
-        btn.disabled = false;
-        return;
-      }
-
-      if (failed) {
-        logLine(`analysis failed: ${st}`, 'err');
-        btn.disabled = false;
-        return;
-      }
-
-      // keep polling
-      schedule(taskId);
-
-    } catch (err) {
-      logLine(`status exception: ${err}`, 'err');
-      pollDelay = Math.min(pollDelay + 2000, 20000);
-      schedule(taskId);
     }
-  }
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
