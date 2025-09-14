@@ -152,6 +152,43 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
         ExpiresIn=int(expires or S3_GET_EXPIRES),
     )
 
+# ---------- DB helpers ----------
+def _ensure_submission_context_schema(conn):
+    from sqlalchemy import text as sql_text
+    # Base table (same shape you already use)
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS submission_context (
+          task_id        TEXT PRIMARY KEY,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email          TEXT,
+          customer_name  TEXT,
+          match_date     DATE,
+          start_time     TEXT,
+          location       TEXT,
+          player_a_name  TEXT,
+          player_b_name  TEXT,
+          player_a_utr   TEXT,
+          player_b_utr   TEXT,
+          video_url      TEXT,
+          share_url      TEXT,
+          raw_meta       JSONB
+        );
+    """))
+    # Add session_id if it doesn't exist yet
+    conn.execute(sql_text("""
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema='public'
+               AND table_name='submission_context'
+               AND column_name='session_id'
+          ) THEN
+            ALTER TABLE submission_context ADD COLUMN session_id INT;
+          END IF;
+        END $$;
+    """))
+
+
 # ---------- Dropbox auth ----------
 def _dbx_access_token():
     if not (DBX_APP_KEY and DBX_APP_SECRET and DBX_REFRESH):
@@ -254,6 +291,7 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
         """
         m = meta or {}
         with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)  # <<< ADD THIS LINE
             conn.execute(sql_text(ddl))
             conn.execute(sql_text(ins), {
                 "task_id": task_id,
@@ -270,6 +308,7 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
                 "share_url": share_url,
                 "raw_meta": json.dumps(m),
             })
+
     except Exception:
         pass
 
@@ -680,10 +719,12 @@ def api_task_status():
             if status in ("completed","done","success","succeeded") and result_url:
                 from sqlalchemy import text as sql_text
                 with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
                     already = conn.execute(
                         sql_text("SELECT session_id FROM submission_context WHERE task_id=:t AND session_id IS NOT NULL"),
                         {"t": tid}
                     ).scalar()
+
                     if not already:
                         r = requests.get(result_url, timeout=120); r.raise_for_status()
                         payload = r.json()
