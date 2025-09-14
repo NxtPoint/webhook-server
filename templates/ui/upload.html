@@ -6,13 +6,10 @@
 <title>Upload & Submit • NextPoint</title>
 <style>
   :root{
-    /* Progress bar green (unchanged) */
-    --accent:#16A34A;        /* emerald-600 */
-    --accent-strong:#15803D;
-
-    /* NEW: exact green used on 0%/100% anchors (requested for buttons & checkbox) */
+    /* Primary green — used for 0%/100%, Upload button, checkbox, and progress bar */
     --brand:#0b5a37;
 
+    /* Secondary/utility */
     --accent-soft:#EAF6EF;
     --text:#111827;
     --muted:#6b7280;
@@ -20,8 +17,8 @@
     --field-border:#e5e7eb;
     --card-bg:rgba(255,255,255,0.92);
 
-    /* Move the form down (increase to show more face) */
-    --top-offset:200px;
+    /* Show more of the player's face */
+    --top-offset:240px;
   }
 
   html,body{height:100%;}
@@ -32,23 +29,24 @@
       linear-gradient(rgba(0,0,0,0.20), rgba(0,0,0,0.35)),
       url("{{ url_for('static', filename='upload/background-clean-male-serve.jpg') }}") center/cover fixed no-repeat;
   }
-  a{color:#065f46;text-decoration:none} a:hover{text-decoration:underline}
 
   .wrap{min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding-top:var(--top-offset);}
   .card{width:min(980px,92vw);background:var(--card-bg);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.15);backdrop-filter:blur(2px);padding:22px 22px 14px;margin:0 auto 90px;}
   h1{font-size:20px;margin:0 0 12px;font-weight:700;}
+
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;}
   .grid .full{grid-column:1/-1;}
+
   label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px;}
   input[type="text"],input[type="email"],input[type="date"],input[type="number"]{
     width:100%;box-sizing:border-box;background:var(--field-bg);
     border:1px solid var(--field-border);border-radius:10px;padding:10px 12px;font-size:14px;outline:none;color:var(--text);
   }
   input::placeholder{color:#b5b9bf;}
-  input:focus{border-color:#d1d5db;box-shadow:0 0 0 3px rgba(22,163,74,0.12);background:#fff;}
+  input:focus{border-color:#d1d5db;box-shadow:0 0 0 3px rgba(11,90,55,0.15);background:#fff;}
   input.done{background:#fff;border-color:#d1d5db;}
 
-  /* File input button uses brand green (your 0%/100% color) */
+  /* File input button — brand green */
   input[type="file"]{border:0;background:transparent;padding:0;}
   input[type="file"]::file-selector-button{
     margin-right:10px;border:0;border-radius:10px;background:var(--brand);color:#fff;
@@ -67,31 +65,34 @@
   .btn-row{display:flex;gap:10px}
   .divider{height:1px;background:#e5e7eb;margin:12px 0;}
 
-  /* STATUS ROW ------------------------------------------------------------- */
+  /* STATUS ROW: give Task ID more room, keep titles aligned and not bold */
   .status-row{
     display:grid;
-    grid-template-columns:1.3fr 0.9fr 1.8fr;
-    gap:14px;
-    /* bottom-align all three columns so their bottoms line up with the progress base */
-    align-items:end;
+    grid-template-columns: minmax(520px, 1.6fr) minmax(180px, 0.8fr) minmax(520px, 1.2fr);
+    gap:24px;
+    align-items:end; /* line up with progress base */
     margin-top:6px;
   }
-  .col{display:flex;flex-direction:column;justify-content:flex-end;min-height:54px;} /* match progress column height */
+  .col{display:flex;flex-direction:column;justify-content:flex-end;min-height:54px;}
   .col-title{
-    font-size:14px;font-weight:700;color:#0f172a;margin:0 0 6px 0;line-height:1;
-    font-family:inherit; /* ensure same font across all three */
+    font-size:14px;font-weight:400;color:#0f172a;margin:0 0 6px 0;line-height:1;font-family:inherit;
   }
-  .col-value{font-weight:700;word-break:break-all;}
+  .col-value{
+    font-weight:600;word-break:break-all;color:var(--brand);
+  }
   .mono{font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
 
-  /* Progress bar (unchanged behavior; just lives in the row) */
+  /* Progress bar — same green as Upload button */
   .bar-wrap{width:100%;}
   .bar{position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);}
-  .bar .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--accent);transition:width 400ms ease;}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--brand);transition:width 400ms ease;}
   .bar .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);pointer-events:none;}
-  .anchors{display:flex;justify-content:space-between;margin-top:6px;color:var(--brand);font-size:11px;font-weight:700;opacity:.9}
+  .anchors{display:flex;justify-content:space-between;margin-top:6px;color: var(--brand);font-size:11px;font-weight:700;opacity:.9}
 
-  .log{background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px;line-height:1.25;max-height:12.5em;overflow:auto;white-space:pre-wrap;}
+  /* Log box — white, ~10 lines */
+  .log{background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:10px;padding:10px;
+       font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+       font-size:12px;line-height:1.25;max-height:10.5em;overflow:auto;white-space:pre-wrap;}
 
   /* T&C accordion */
   details.tnc{margin:8px 0 4px;}
@@ -131,7 +132,7 @@
       </div>
       <div>
         <label>Match date (YYYY-MM-DD)</label>
-        <input type="date" name="match_date" placeholder="yyyy/mm/dd" />
+        <input type="date" id="match_date" name="match_date" placeholder="yyyy/mm/dd" />
       </div>
 
       <div>
@@ -163,7 +164,7 @@
         <label for="terms">I accept the terms</label>
       </div>
 
-      <!-- Restored T&C accordion -->
+      <!-- T&C accordion -->
       <div class="full">
         <details class="tnc">
           <summary>View Terms & Conditions</summary>
@@ -207,11 +208,7 @@
         </div>
       </div>
 
-      <div class="full" style="margin-top:8px;">
-        <a id="linkRaw" href="#" target="_blank" rel="noopener">Raw status</a>
-        &nbsp;•&nbsp;
-        <a id="linkResult" href="#" target="_blank" rel="noopener" style="display:none">Result JSON</a>
-      </div>
+      <!-- Links removed by request -->
 
       <div class="full">
         <div class="log" id="log"></div>
@@ -228,18 +225,23 @@
   const taskIdEl = document.getElementById('taskId');
   const barFill = document.getElementById('barFill');
   const pctInside = document.getElementById('pctInside');
-  const linkRaw = document.getElementById('linkRaw');
-  const linkRes = document.getElementById('linkResult');
   const submitBtn = document.getElementById('submitBtn');
   const checkBtn = document.getElementById('checkBtn');
   const cancelBtn = document.getElementById('cancelBtn');
   const terms = document.getElementById('terms');
 
+  // Default match date to today
+  document.addEventListener('DOMContentLoaded', () => {
+    const d = document.getElementById('match_date');
+    if (d && !d.value) {
+      try { d.value = new Date().toISOString().slice(0,10); } catch(e){}
+    }
+  });
+
   let pollTimer = null;
   let pseudo = makePseudoProgress();
   let checkedUrl = null;
   let checkedPassed = false;
-  let currentTaskId = null;
 
   function log(line){
     const ts = new Date().toLocaleTimeString();
@@ -264,16 +266,14 @@
       tick(){ if (p < 90){ p += Math.max(0.2, (90 - p) * 0.015); } return Math.min(90, Math.round(p)); }
     };
   }
+
   async function poll(tid){
     if (!tid) return;
     try{
       const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(tid)}`, {cache:'no-store'});
       const j = await r.json();
-      linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(tid)}`;
       const status = (j.status || '').toLowerCase() || (j.data && (j.data.task_status || j.data.status)) || 'processing';
       stageEl.textContent = status;
-
-      if (j.result_url){ linkRes.style.display = ''; linkRes.href = j.result_url; }
 
       const d = j.data || {};
       let prog = d.task_progress ?? d.progress ?? j.task_progress ?? j.progress ?? null;
@@ -308,7 +308,6 @@
     logBox.textContent = '';
     checkedUrl = null; checkedPassed = false;
     submitBtn.disabled = true;
-    linkRes.style.display = 'none';
     stageEl.textContent = 'waiting…';
     setProgress(0); pseudo.reset();
 
@@ -363,7 +362,6 @@
       if (!j.ok){ submitBtn.disabled = false; log(`submit error: ${j.error || 'failed'}`); return; }
 
       const tid = j.task_id;
-      linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(tid)}`;
       taskIdEl.textContent = tid || '—';
       cancelBtn.style.display = tid ? '' : 'none';
 
