@@ -6,11 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
 
   <style>
-    /* ===== Background + overlay ===== */
+    /* ===== Background + subtle overlay ===== */
     body::before{
       content:""; position:fixed; inset:0;
       background:
-        linear-gradient(to bottom, rgba(0,0,0,.45), rgba(0,0,0,.45)),
+        linear-gradient(to bottom, rgba(0,0,0,.38), rgba(0,0,0,.50)),
         url("{{ url_for('ui.static', filename='upload/background-clean-male-serve.jpg') }}")
         center / cover no-repeat;
       z-index:-1;
@@ -18,20 +18,19 @@
 
     /* ===== Theme ===== */
     :root{
-      --card-bg: rgba(255,255,255,.94);
+      --card-bg: rgba(255,255,255,.84); /* more transparent */
       --border: #e2e8f0;
-      --pill-bg: #edf2f7;
-      --pill-border: #e2e8f0;
-      --brand: #0b5cff;
-      --brand-text: #fff;
-      --maxw: 1100px;
+      --muted:  #6b7280;
+      --emph:   #111827;
+      --pill-bg:#edf2f7;
+      --maxw:   1100px;
     }
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
       margin:0; padding: clamp(16px, 2vw, 24px);
       font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-      color:#111827; line-height:1.45;
+      color:var(--emph); line-height:1.45;
     }
     .wrap{max-width: var(--maxw); margin:0 auto}
 
@@ -44,49 +43,45 @@
       box-shadow:0 10px 30px rgba(0,0,0,.18);
     }
 
-    .brand{
-      display:inline-block; background:var(--brand); color:var(--brand-text);
-      padding:10px 16px; border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.25);
-      font-weight:800; font-size:28px; letter-spacing:.2px; margin:0 0 16px 0;
-    }
-
-    .pills{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 16px}
-    .pill{
-      background:var(--pill-bg); border:1px solid var(--pill-border);
-      border-radius:12px; padding:2px 8px; font-size:12px;
-    }
-    code{background:#f7fafc; padding:2px 4px; border-radius:4px}
-
-    label{display:block; margin-top:10px}
-    input,button{
-      width:100%; padding:10px 12px; border:1px solid #cbd5e0; border-radius:8px;
-      font-size:14px; background:#fff;
-    }
-    input[type="file"]{padding:6px}
-    button{
-      margin-top:16px; cursor:pointer; background:#111827; color:#fff; border-color:#111827;
-      transition: filter .15s, transform .03s;
-    }
-    button:hover{filter:brightness(1.08)} button:active{transform:translateY(1px)}
-    button[disabled]{opacity:.6; cursor:not-allowed}
-
-    /* ===== Grid layout ===== */
+    /* ===== Form ===== */
     .form-grid{
       display:grid; gap:14px;
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .full{grid-column: 1 / -1}
 
-    /* 4-up players row */
+    /* top row: file + email */
+    .two{
+      display:grid; gap:14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    /* players row (4-up) */
     .players{
       display:grid; gap:14px;
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
+    label{display:block; margin-top:2px; font-size:14px}
+    .req::after{content:" *"; color:#dc2626; font-weight:700}
+    input,button{
+      width:100%; padding:10px 12px; border:1px solid #cbd5e0; border-radius:8px;
+      font-size:14px; background:#fff;
+    }
+    input[type="file"]{padding:6px}
+    input.is-default{color: var(--muted);} /* light-grey default value */
+
     .terms{display:flex; align-items:center; gap:10px; margin-top:6px; color:#2d3748}
     .terms input{width:auto}
 
-    /* ===== Status (inside same card) ===== */
+    button{
+      margin-top:6px; cursor:pointer; background:#111827; color:#fff; border-color:#111827;
+      transition: filter .15s, transform .03s;
+    }
+    button:hover{filter:brightness(1.08)} button:active{transform:translateY(1px)}
+    button[disabled]{opacity:.6; cursor:not-allowed}
+
+    /* ===== Status ===== */
     .section-title{margin:18px 0 6px; font-weight:700}
     .kv{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0}
     .kv .k{width:110px; color:#4b5563}
@@ -95,7 +90,7 @@
     .progress > div{height:100%; width:0%; background:#0ea5e9; transition:width .3s ease}
     .log{
       border:1px solid var(--border); border-radius:12px; padding:10px; background:#fff;
-      height: 240px; overflow:auto; font-size:12px;
+      height: 220px; overflow:auto; font-size:12px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     a.btn{display:inline-block; padding:6px 10px; border:1px solid #cbd5e0; border-radius:8px; text-decoration:none}
@@ -104,84 +99,109 @@
     @media (max-width: 980px){
       .players{grid-template-columns: repeat(2, minmax(0, 1fr))}
     }
-    @media (max-width: 620px){
+    @media (max-width: 680px){
       .form-grid{grid-template-columns: 1fr}
+      .two{grid-template-columns: 1fr}
       .players{grid-template-columns: 1fr}
     }
+
+    details{margin-top:10px}
+    details summary{cursor:pointer; user-select:none}
+    .small{font-size:12px; color:#374151}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
 
-      <!-- Header & pills INSIDE the card -->
-      <div class="brand">NextPoint Upload</div>
-      <div class="pills">
-        <span class="pill">Dropbox: {{ 'Ready' if dropbox_ready else 'Not ready' }}</span>
-        <span class="pill">SportAI: {{ 'Ready' if sportai_ready else 'Not ready' }}</span>
-        <span class="pill">Folder: <code>{{ target_folder }}</code></span>
-        <span class="pill">Max: {{ max_upload_mb }} MB</span>
-      </div>
-
       <!-- Form -->
       <form id="uploadForm" method="post" action="/upload/api/upload" enctype="multipart/form-data">
         <div class="form-grid">
 
-          <!-- full width rows -->
-          <div class="full">
-            <label>Video file (max {{ max_upload_mb }} MB)
+          <!-- top row: file + email (both required) -->
+          <div class="two full">
+            <div>
+              <label class="req">Video file (max {{ max_upload_mb }} MB)</label>
               <input type="file" name="file" accept="video/*" required />
-            </label>
+            </div>
+            <div>
+              <label class="req">Email</label>
+              <input type="email" name="email" placeholder="you@example.com" required />
+            </div>
+          </div>
+
+          <!-- Customer + Match date (defaults) -->
+          <div>
+            <label>Customer name</label>
+            <input id="customer_name" name="customer_name" />
+          </div>
+          <div>
+            <label>Match date (YYYY-MM-DD)</label>
+            <input id="match_date" name="match_date" type="date" />
+          </div>
+
+          <!-- Start time + Location -->
+          <div>
+            <label>Start time of first point (HH:MM:SS)</label>
+            <input id="start_time" name="start_time" type="time" step="1" />
+          </div>
+          <div>
+            <label>Location</label>
+            <input id="location" name="location" placeholder="Court / Venue (optional)" />
+          </div>
+
+          <!-- Players (4-up) -->
+          <div class="players full">
+            <div>
+              <label>Player A name</label>
+              <input id="player_a_name" name="player_a_name" />
+            </div>
+            <div>
+              <label>Player A UTR</label>
+              <input name="player_a_utr" placeholder="(optional)"/>
+            </div>
+            <div>
+              <label>Player B name</label>
+              <input id="player_b_name" name="player_b_name" />
+            </div>
+            <div>
+              <label>Player B UTR</label>
+              <input name="player_b_utr" placeholder="(optional)"/>
+            </div>
+          </div>
+
+          <!-- T&Cs -->
+          <div class="full terms">
+            <input type="checkbox" name="terms_accepted" required />
+            <span class="req" style="font-weight:normal">I accept the terms</span>
           </div>
 
           <div class="full">
-            <label>Email <!-- required -->
-              <input type="email" name="email" placeholder="you@example.com" required />
-            </label>
-          </div>
-
-          <!-- side-by-side rows -->
-          <div>
-            <label>Customer name
-              <input name="customer_name" />
-            </label>
-          </div>
-          <div>
-            <label>Match date (YYYY-MM-DD)
-              <input name="match_date" />
-            </label>
-          </div>
-
-          <div>
-            <label>Start time (HH:MM)
-              <input name="start_time" />
-            </label>
-          </div>
-          <div>
-            <label>Location
-              <input name="location" />
-            </label>
-          </div>
-
-          <!-- 4-column players row -->
-          <div class="players full">
-            <label>Player A name
-              <input name="player_a_name" />
-            </label>
-            <label>Player A UTR
-              <input name="player_a_utr" />
-            </label>
-            <label>Player B name
-              <input name="player_b_name" />
-            </label>
-            <label>Player B UTR
-              <input name="player_b_utr" />
-            </label>
-          </div>
-
-          <div class="full terms">
-            <input type="checkbox" name="terms_accepted" />
-            <span>I accept the terms</span>
+            <details>
+              <summary><strong>View Terms &amp; Conditions</strong></summary>
+              <div class="small">
+                <p><em>Last updated: {{ (namespace()|attr('now') if false) or '' }}</em></p>
+                <ol>
+                  <li><strong>Service &amp; Scope.</strong> You authorize NextPoint to upload the provided video to Dropbox (or similar storage) and submit it to SportAI for automated analysis. Output includes detected events, statistics and derived insights.</li>
+                  <li><strong>Your Content &amp; License.</strong> You retain ownership of your uploads. You grant us and our processors (e.g., Dropbox, SportAI) a worldwide, non-exclusive license to store, process, analyze, and create derived data solely to deliver the service and operate, improve, and secure it.</li>
+                  <li><strong>Data Privacy.</strong> We handle personal data per applicable laws. Content may be processed in other countries. We use reasonable administrative, technical, and physical safeguards but no method is 100% secure. Do not upload content you lack rights to share.</li>
+                  <li><strong>AI &amp; Accuracy Notice.</strong> Analysis is automated and may be incomplete, noisy, or wrong. Do not rely on it for safety-critical decisions. You are responsible for validating outputs before using or publishing them.</li>
+                  <li><strong>Acceptable Use.</strong> No illegal, infringing, harmful, harassing, discriminatory, or privacy-violating content. No attempts to attack, probe, or reverse engineer the service.</li>
+                  <li><strong>Third-Party Services.</strong> Storage and analysis use third-party providers. Their terms and privacy policies apply in addition to ours.</li>
+                  <li><strong>Retention &amp; Deletion.</strong> We may retain uploads and results for support, audit, product improvement, and legal obligations. You can request deletion; some metadata may persist for legitimate business purposes.</li>
+                  <li><strong>Payment &amp; Taxes.</strong> Where applicable, fees are due per your plan; all taxes and payment charges are your responsibility.</li>
+                  <li><strong>Availability.</strong> Service is offered “as is” without uptime guarantees; maintenance and provider outages may occur.</li>
+                  <li><strong>Warranty Disclaimer.</strong> To the fullest extent permitted by law, we disclaim all warranties (merchantability, fitness, non-infringement, accuracy, and non-interruption).</li>
+                  <li><strong>Limitation of Liability.</strong> We are not liable for indirect, incidental, special, consequential, exemplary, or punitive damages. Direct liability is limited to fees paid for the service in the 3 months before the claim.</li>
+                  <li><strong>Indemnity.</strong> You will indemnify and hold harmless NextPoint against claims arising from your content, use, or breach of these terms.</li>
+                  <li><strong>Age &amp; Consent.</strong> You confirm you have legal capacity and all needed permissions for any persons appearing in the video.</li>
+                  <li><strong>Changes.</strong> We may update these terms; continued use indicates acceptance.</li>
+                  <li><strong>Governing Law.</strong> Terms are governed by the laws of your primary business domicile; venue is your local courts unless otherwise mandated by applicable law.</li>
+                  <li><strong>Contact.</strong> For requests or questions, contact support at your onboarding channel or the email provided in your plan.</li>
+                </ol>
+                <p><em>This sample T&amp;C text is for product launch convenience and is not legal advice. Please have counsel review for your jurisdiction and use case.</em></p>
+              </div>
+            </details>
           </div>
 
           <div class="full">
@@ -214,6 +234,83 @@
   </div>
 
   <script>
+    // =============== Helpers for defaults ===============
+    const q = sel => document.querySelector(sel);
+    const byId = id => document.getElementById(id);
+
+    // mark/unmark default styling
+    function setDefault(el, value){
+      el.value = value;
+      el.classList.add('is-default');
+      el.dataset.defaultValue = value;
+    }
+    function clearDefaultOnEdit(el){
+      el.addEventListener('input', () => {
+        if (el.classList.contains('is-default') && el.value !== el.dataset.defaultValue){
+          el.classList.remove('is-default');
+        }
+      });
+      el.addEventListener('blur', () => {
+        // if user deletes everything, restore default
+        if (el.value.trim() === '' && el.dataset.defaultValue){
+          el.value = el.dataset.defaultValue;
+          el.classList.add('is-default');
+        }
+      });
+    }
+
+    // apply initial defaults
+    const matchDate = byId('match_date');
+    const startTime = byId('start_time');
+    const custName  = byId('customer_name');
+    const paName    = byId('player_a_name');
+    const pbName    = byId('player_b_name');
+
+    // Today for date
+    const today = new Date();
+    const iso = today.toISOString().slice(0,10);
+    setDefault(matchDate, iso);
+    clearDefaultOnEdit(matchDate);
+
+    // 00:00:00 for time
+    setDefault(startTime, "00:00:00");
+    clearDefaultOnEdit(startTime);
+
+    // Player names default
+    setDefault(paName, "Player A");
+    setDefault(pbName, "Player B");
+    clearDefaultOnEdit(paName);
+    clearDefaultOnEdit(pbName);
+
+    // Customer name from email local-part
+    const emailInput = document.querySelector('input[name="email"]');
+    function deriveNameFromEmail(v){
+      const m = String(v||'').trim().match(/^([^@]+)/);
+      if (!m) return null;
+      let base = m[1].replace(/[._-]+/g, ' ').trim();
+      // Title-case a bit
+      base = base.split(' ').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
+      return base || null;
+    }
+    // Set default from email if customer name untouched
+    emailInput.addEventListener('blur', () => {
+      if (!custName || !emailInput.value) return;
+      const proposed = deriveNameFromEmail(emailInput.value);
+      const untouched = custName.classList.contains('is-default') || custName.value.trim()==='' || custName.value===custName.dataset.defaultValue;
+      if (proposed && untouched){
+        setDefault(custName, proposed);
+        clearDefaultOnEdit(custName);
+      } else if (custName.value.trim()===''){
+        // ensure some default
+        setDefault(custName, "Customer");
+        clearDefaultOnEdit(custName);
+      }
+    });
+    // If no email typed, give a generic default now
+    setDefault(custName, "Customer");
+    clearDefaultOnEdit(custName);
+
+    // =============== Upload + Status logic ===============
     const form  = document.getElementById('uploadForm');
     const btn   = document.getElementById('submitBtn');
     const logEl = document.getElementById('log');
@@ -222,7 +319,6 @@
     const stage = document.getElementById('stage');
     const task  = document.getElementById('taskId');
     const links = document.getElementById('links');
-
     let pollTimer = null;
 
     function logLine(text, cls){
@@ -240,7 +336,7 @@
     function setStage(s){ stage.textContent = s || '—'; }
     function linkify(url, text){
       const a = document.createElement('a');
-      a.href = url; a.textContent = text || url; a.className = 'btn'; a.target = '_blank'; rel="noopener";
+      a.href = url; a.textContent = text || url; a.className = 'btn'; a.target = '_blank'; a.rel = "noopener";
       return a;
     }
 
@@ -249,6 +345,12 @@
       clearTimeout(pollTimer);
       try {
         const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('application/json')){
+          logLine(`status non-JSON (${r.status})`, 'err');
+          pollTimer = setTimeout(() => pollStatus(taskId), 4000);
+          return;
+        }
         const j = await r.json();
         if (!j.ok){
           logLine(`status error: ${j.error || r.status}`, 'err');
@@ -290,6 +392,13 @@
         const fd = new FormData(form);
         logLine('uploading to Dropbox…');
         const r = await fetch('/upload/api/upload', { method:'POST', body: fd });
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('application/json')){
+          const t = await r.text();
+          logLine(`upload error (non-JSON): ${t.slice(0,200)}…`, 'err');
+          btn.disabled = false;
+          return;
+        }
         const j = await r.json();
         if (!j.ok){ logLine(`upload failed: ${j.error || r.status}`, 'err'); btn.disabled = false; return; }
 
