@@ -8,6 +8,8 @@ from flask import Blueprint, request, jsonify, Response
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 
+import gzip, hashlib
+
 from db_init import engine  # shared engine
 
 ingest_bp = Blueprint("ingest_bp", __name__)
@@ -96,6 +98,66 @@ def _quantize_time(s, fps):
 def _base_dt_for_session(dt):
     return dt if dt else datetime(1970,1,1,tzinfo=timezone.utc)
 
+# ---------- RAW RESULT storage helpers (NEW) ----------
+def _ensure_raw_result_schema(conn):
+    # base table
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS raw_result (
+          id             BIGSERIAL PRIMARY KEY,
+          session_id     INT NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
+          payload_json   JSONB,
+          payload_gzip   BYTEA,
+          payload_sha256 TEXT,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    # add columns if they don't exist yet
+    conn.execute(sql_text("""
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='raw_result' AND column_name='payload_gzip'
+          ) THEN
+            ALTER TABLE raw_result ADD COLUMN payload_gzip BYTEA;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='raw_result' AND column_name='payload_sha256'
+          ) THEN
+            ALTER TABLE raw_result ADD COLUMN payload_sha256 TEXT;
+          END IF;
+        END $$;
+    """))
+
+def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int = 5_000_000):
+    """
+    Store the raw SportAI payload:
+      - If <= size_threshold (~5MB), keep JSONB (easy to inspect).
+      - If larger or JSONB insert fails, store GZIP-compressed bytes + SHA-256 and leave JSONB NULL.
+    """
+    _ensure_raw_result_schema(conn)
+
+    js = json.dumps(payload, separators=(",", ":"))
+    try_json = len(js) <= size_threshold
+
+    if try_json:
+        try:
+            conn.execute(sql_text("""
+                INSERT INTO raw_result (session_id, payload_json, created_at)
+                VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
+            """), {"sid": session_id, "p": js})
+            return
+        except Exception:
+            # fall through to gzip path if JSON insert trips any limits
+            pass
+
+    gz = gzip.compress(js.encode("utf-8"))
+    sha = hashlib.sha256(js.encode("utf-8")).hexdigest()
+    conn.execute(sql_text("""
+        INSERT INTO raw_result (session_id, payload_json, payload_gzip, payload_sha256, created_at)
+        VALUES (:sid, NULL, :gz, :sha, now() AT TIME ZONE 'utc')
+    """), {"sid": session_id, "gz": gz, "sha": sha})
+
 # ---------- ingest core (as in your working build) ----------
 _SWING_TYPES   = {"swing","stroke","shot","hit","serve","forehand","backhand","volley","overhead","slice","drop","lob"}
 _SERVE_LABELS  = {"serve","first_serve","1st_serve","second_serve","2nd_serve"}
@@ -113,8 +175,8 @@ def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
             fn = _os.path.splitext(_os.path.basename(src_hint))[0]
         except Exception: fn = None
     if fn: return str(fn)
-    import hashlib, json as _json
-    return f"sha1_{hashlib.sha1(_json.dumps(payload, sort_keys=True, separators=(',',':')).encode()).hexdigest()[:12]}"
+    import hashlib as _hl, json as _json
+    return f"sha1_{_hl.sha1(_json.dumps(payload, sort_keys=True, separators=(',',':')).encode()).hexdigest()[:12]}"
 
 def _resolve_fps(payload):
     meta = payload.get("meta") or payload.get("metadata") or {}
@@ -223,12 +285,6 @@ def _gather_all_swings(payload):
         for norm in _iter_candidate_swings_from_container(stats):
             if not norm.get("player_uid") and p_uid: norm["player_uid"] = p_uid
             yield norm
-
-def _insert_raw_result(conn, sid: int, payload: dict) -> None:
-    conn.execute(sql_text("""
-        INSERT INTO raw_result (session_id, payload_json, created_at)
-        VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
-    """), {"sid": sid, "p": json.dumps(payload)})
 
 def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
     q_start = _quantize_time(s.get("start_s"), fps)
@@ -390,7 +446,8 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
         for t in ("fact_ball_position","fact_player_position","fact_bounce","fact_swing","dim_rally","dim_player"):
             conn.execute(sql_text(f"DELETE FROM {t} WHERE session_id=:sid"), {"sid": session_id})
 
-    _insert_raw_result(conn, session_id, payload)
+    # NEW: resilient raw storage (JSONB if small, else GZIP)
+    _save_raw_result(conn, session_id, payload)
 
     # players
     players = payload.get("players") or []
@@ -911,14 +968,28 @@ def ops_inspect_raw():
     with engine.connect() as conn:
         sid = conn.execute(sql_text("SELECT session_id FROM dim_session WHERE session_uid=:u"), {"u": session_uid}).scalar()
         if not sid: return jsonify({"ok": False, "error": "unknown session_uid"}), 404
-        doc = conn.execute(sql_text("""
-            SELECT payload_json FROM raw_result
+        row = conn.execute(sql_text("""
+            SELECT payload_json, payload_gzip FROM raw_result
             WHERE session_id=:sid ORDER BY created_at DESC LIMIT 1
-        """), {"sid": sid}).scalar()
-    if doc is None: return jsonify({"ok": False, "error": "no raw_result for session"}), 404
-    if isinstance(doc, str):
-        try: doc = json.loads(doc)
-        except Exception: return jsonify({"ok": False, "error": "payload not JSON"}), 500
+        """), {"sid": sid}).first()
+    if not row: return jsonify({"ok": False, "error": "no raw_result for session"}), 404
+
+    doc = None
+    if row[0] is not None:
+        if isinstance(row[0], str):
+            try: doc = json.loads(row[0])
+            except Exception: return jsonify({"ok": False, "error": "payload_json not valid JSON"}), 500
+        else:
+            doc = row[0]
+    elif row[1] is not None:
+        try:
+            js = gzip.decompress(row[1]).decode("utf-8")
+            doc = json.loads(js)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"failed to read gzip: {e}"}), 500
+    else:
+        return jsonify({"ok": False, "error": "raw_result had neither JSON nor GZIP"}), 500
+
     bp = doc.get("ball_positions"); bb = doc.get("ball_bounces"); pp = doc.get("player_positions")
     summary = {"keys": sorted(doc.keys() if isinstance(doc, dict) else []),
                "ball_positions_len": (len(bp) if isinstance(bp, list) else None),
