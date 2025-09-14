@@ -121,12 +121,13 @@ def _drop_any(conn, name: str):
     elif kind == 'table':
         stmts = [f'DROP TABLE IF EXISTS "{qname}" CASCADE;']
     else:
-        # Try all three, safely quoted – no stray backslashes/quotes
         stmts = [
-            f'DROP VIEW IF EXISTS "{qname}" CASCADE;',
-            f'DROP MATERIALIZED VIEW IF EXISTS "{qname}" CASCADE;',
-            f'DROP TABLE IF EXISTS "{qname}" CASCADE;',
+            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
+            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
+
+
 
     for stmt in stmts:
         conn.execute(text(stmt))
@@ -1031,10 +1032,10 @@ CREATE_STMTS = {
                          AND sbp.bounce_x_center_m IS NOT NULL THEN
                       placement_ad(
                         sbp.bounce_x_center_m::numeric,
-                        /* landing end:
+                        /* landing end priority:
                            1) floor-bounce Y sign
-                           2) else next-hitter Y sign
-                           3) else opposite of hitter side
+                           2) next hitter Y sign
+                           3) opposite of hitter side
                         */
                         COALESCE(
                           CASE
@@ -1061,7 +1062,7 @@ CREATE_STMTS = {
                       sbp.next_ball_hit_x,
                       sbp.ball_hit_x
                     )::numeric,
-                    /* landing end: same robust priority as above */
+                    /* landing end: same robust priority */
                     COALESCE(
                       CASE
                         WHEN sbp.bounce_type_raw = 'floor'
@@ -1078,8 +1079,6 @@ CREATE_STMTS = {
                   )
               END
           END AS placement_ad_d,
-
-
 
           -- Play type
           CASE
