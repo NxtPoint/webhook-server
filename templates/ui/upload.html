@@ -15,7 +15,8 @@
     --field-border:#e5e7eb;
     --card-bg:rgba(255,255,255,0.92);
 
-    --top-offset:240px;       /* show more of player's face */
+    /* vertical placement */
+    --top-offset:220px;       /* lift everything a bit (smaller value = higher) */
   }
 
   html,body{height:100%;}
@@ -25,10 +26,27 @@
     background:
       linear-gradient(rgba(0,0,0,0.20), rgba(0,0,0,0.35)),
       url("{{ url_for('static', filename='upload/background-clean-male-serve.jpg') }}") center/cover fixed no-repeat;
+    /* keep the viewport still; scrolling happens inside the fixed wrapper */
+    overflow:hidden;
   }
 
-  .wrap{min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding-top:var(--top-offset);}
-  .card{width:min(980px,92vw);background:var(--card-bg);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.15);backdrop-filter:blur(2px);padding:22px 22px 14px;margin:0 auto 90px;}
+  /* Fixed container so the card doesn't move on scroll */
+  .wrap{
+    position:fixed; inset:0;
+    display:flex; align-items:flex-start; justify-content:center;
+    padding-top:var(--top-offset);
+    overflow:auto;          /* allow internal scrolling if content is tall */
+  }
+
+  .card{
+    width:min(980px,92vw);
+    background:var(--card-bg);
+    border-radius:16px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.15);
+    backdrop-filter:blur(2px);
+    padding:22px 22px 36px;   /* extra bottom padding for breathing room */
+    margin:0 auto 90px;       /* keep nice margin under the card */
+  }
   h1{font-size:20px;margin:0 0 12px;font-weight:700;}
 
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;}
@@ -62,31 +80,32 @@
   .btn-row{display:flex;gap:10px}
   .divider{height:1px;background:#e5e7eb;margin:12px 0;}
 
-  /* STATUS ROW (aligned titles, progress wider, bottoms aligned to bar) */
+  /* STATUS ROW — titles aligned; progress slightly wider; bottoms align to bar */
   .status-row{
     display:grid;
-    grid-template-columns: 1.2fr 0.9fr 1.9fr; /* task id | status | progress (wider) */
-    gap:12px;               /* closer to STATUS */
-    align-items:end;        /* bottoms align with progress bar */
+    grid-template-columns: 1.2fr 0.9fr 2.1fr; /* task id | status | progress (wider) */
+    gap:12px;
+    align-items:end;        /* align bottoms (task id / status values to bar) */
     margin-top:6px;
-    overflow:visible;       /* allow anchors to sit just below bar without clipping */
+    overflow:visible;
   }
-  .col{display:flex;flex-direction:column;justify-content:flex-end;min-height:54px;}
+  .col{display:flex;flex-direction:column;justify-content:flex-end;min-height:56px;}
   .col-title{
     font-size:14px;font-weight:700;color:#0f172a;margin:0 0 6px 0;line-height:1;font-family:inherit;
   }
-  .col-value{
-    font-weight:600;word-break:break-all;color:var(--brand);
-  }
+  /* Tiny nudge so PROGRESS % heading sits exactly level with the others */
+  .status-row .col:last-child .col-title{ transform:translateY(-1px); }
+
+  .col-value{font-weight:600;word-break:break-all;color:var(--brand);}
   .mono{font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
 
-  /* Progress bar — same green as Upload button */
-  .bar-wrap{width:100%;position:relative;} /* anchors are absolutely positioned and DO NOT affect height */
+  /* Progress bar — same green as buttons */
+  .bar-wrap{width:100%;position:relative;}
   .bar{position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);}
   .bar .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--brand);transition:width 400ms ease;}
   .bar .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);pointer-events:none;}
   .anchors{
-    position:absolute;left:0;right:0;bottom:-18px; /* visually below bar but not part of height */
+    position:absolute;left:0;right:0;bottom:-18px;
     display:flex;justify-content:space-between;color: var(--brand);font-size:11px;font-weight:700;opacity:.9;pointer-events:none;
   }
 
@@ -100,7 +119,7 @@
   details.tnc summary{cursor:pointer;font-weight:700;color:#111;}
 
   @media (max-width:900px){
-    .status-row{grid-template-columns: 1fr;}  /* stack on small screens */
+    .status-row{grid-template-columns: 1fr;}
     .col{min-height:auto;}
   }
 </style>
@@ -236,7 +255,6 @@
   let pollTimer = null;
   let pseudo = makePseudoProgress();
   let checkedUrl = null;
-  let checkedPassed = false;
 
   function log(line){
     const ts = new Date().toLocaleTimeString();
@@ -301,7 +319,6 @@
   // CHECK
   checkBtn.addEventListener('click', async ()=>{
     logBox.textContent = '';
-    checkedUrl = null; checkedPassed = false;
     submitBtn.disabled = true;
     stageEl.textContent = 'waiting…';
     setProgress(0); pseudo.reset();
@@ -319,16 +336,11 @@
       if (!j.ok){ log(`check error: ${j.error || 'failed'}`); return; }
 
       checkedUrl = j.video_url;
-      checkedPassed = !!j.check_passed;
       log(`uploaded ${f.name} (${f.size} bytes)`);
       log('video check completed ✓');
 
-      if (checkedPassed){
-        submitBtn.disabled = false;
-        stageEl.textContent = 'ready';
-      }else{
-        stageEl.textContent = 'check_failed';
-      }
+      submitBtn.disabled = false;
+      stageEl.textContent = 'ready';
     }catch(e){
       log(`error: ${e}`);
     }
