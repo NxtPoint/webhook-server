@@ -127,6 +127,7 @@ def _drop_any(conn, name: str):
             f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
 
+
     for stmt in stmts:
         conn.execute(text(stmt))
 
@@ -1017,40 +1018,16 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D for all non-serves.
-          -- Last shot: only if a floor-bounce X exists; otherwise NULL.
+          /* A–D: unchanged logic for non-last shots.
+             NEW: last shot only emits A–D if we have a floor-bounce X; else NULL. */
           CASE
             WHEN sbp.serve_d THEN NULL
-            ELSE
+            WHEN sbp.shot_ix = sbp.last_shot_ix THEN
               CASE
-                -- Decide landing end purely from point ends (same rule as AJ):
-                --   if hitter = server -> landing end = receiver end
-                --   else               -> landing end = server end
-                WHEN sbp.shot_ix = sbp.last_shot_ix THEN
-                  -- LAST SHOT: require floor-bounce X, else NULL
-                  CASE
-                    WHEN sbp.bounce_type_raw = 'floor'
-                         AND sbp.bounce_x_center_m IS NOT NULL THEN
-                      placement_ad(
-                        sbp.bounce_x_center_m::numeric,
-                        CASE
-                          WHEN sbp.player_id = sbp.server_id
-                            THEN pe.receiver_is_far_end_d
-                          ELSE pe.server_is_far_end_d
-                        END,
-                        (SELECT court_w_m FROM const),
-                        (SELECT eps_m    FROM const)
-                      )
-                    ELSE NULL
-                  END
-                ELSE
-                  -- NON-LAST SHOTS: X priority = floor → next-hit → current-hit
+                WHEN sbp.bounce_type_raw = 'floor'
+                     AND sbp.bounce_x_center_m IS NOT NULL THEN
                   placement_ad(
-                    COALESCE(
-                      CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                      sbp.next_ball_hit_x,
-                      sbp.ball_hit_x
-                    )::numeric,
+                    sbp.bounce_x_center_m::numeric,
                     CASE
                       WHEN sbp.player_id = sbp.server_id
                         THEN pe.receiver_is_far_end_d
@@ -1059,7 +1036,23 @@ CREATE_STMTS = {
                     (SELECT court_w_m FROM const),
                     (SELECT eps_m    FROM const)
                   )
+                ELSE NULL
               END
+            ELSE
+              placement_ad(
+                COALESCE(
+                  CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                  sbp.next_ball_hit_x,
+                  sbp.ball_hit_x
+                )::numeric,
+                CASE
+                  WHEN sbp.player_id = sbp.server_id
+                    THEN pe.receiver_is_far_end_d
+                  ELSE pe.server_is_far_end_d
+                END,
+                (SELECT court_w_m FROM const),
+                (SELECT eps_m    FROM const)
+              )
           END AS placement_ad_d,
 
 
