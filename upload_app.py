@@ -467,13 +467,41 @@ def _sportai_check(video_url: str) -> dict:
     return r.json() or {}
 
 def _sportai_cancel(task_id: str) -> dict:
+    """Try several bases/paths for cancel (tenants differ)."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
-    url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CANCEL_PATH.lstrip('/').format(task_id=task_id)}"
+
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
-    r = requests.post(url, headers=headers, timeout=30)
-    r.raise_for_status()
-    return r.json() or {}
+
+    cancel_paths = list(dict.fromkeys([
+        SPORTAI_CANCEL_PATH,
+        "/api/tasks/{task_id}/cancel",
+        "/api/statistics/{task_id}/cancel",
+        "/api/statistics/tennis/{task_id}/cancel",
+    ]))
+
+    last_err = None
+    for base in SPORTAI_BASES:
+        for path in cancel_paths:
+            url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
+            try:
+                # Some deployments expect a JSON body; send {} to be safe.
+                r = requests.post(url, headers=headers, json={}, timeout=30)
+                if r.status_code in (400, 404, 405):
+                    # keep trying other endpoints
+                    try:
+                        detail = r.json()
+                    except Exception:
+                        detail = r.text
+                    last_err = f"{url} -> {r.status_code}: {detail}"
+                    continue
+                r.raise_for_status()
+                return (r.json() or {})  # success
+            except Exception as e:
+                last_err = f"{url} -> {e}"
+
+    raise RuntimeError(f"SportAI cancel failed across endpoints: {last_err}")
+
 
 # -------------------------------------------------------
 # Public endpoints
