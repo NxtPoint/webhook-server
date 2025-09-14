@@ -6,10 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
 
   <style>
-    /* ===== Background image + soft overlay ===== */
+    /* ===== Background image + overlay ===== */
     body::before{
-      content:"";
-      position:fixed; inset:0;
+      content:""; position:fixed; inset:0;
       background:
         linear-gradient(to bottom, rgba(0,0,0,.45), rgba(0,0,0,.45)),
         url("{{ url_for('ui.static', filename='upload/background-clean-male-serve.jpg') }}")
@@ -21,161 +20,271 @@
     :root{
       --card-bg: rgba(255,255,255,.94);
       --border: #e2e8f0;
-      --muted: #4a5568;
       --pill-bg: #edf2f7;
       --pill-border: #e2e8f0;
       --brand: #0b5cff;
       --brand-text: #fff;
-      --maxw: 960px;
-      --safe-top: env(safe-area-inset-top, 0px);
-      --safe-side: env(safe-area-inset-left, 0px);
+      --maxw: 1100px;
     }
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
-      margin:0;
-      padding: clamp(16px, 2vw, 24px);
-      padding-top: calc(var(--safe-top) + 24px);
+      margin:0; padding: clamp(16px, 2vw, 24px);
       font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-      color:#111827;
-      line-height:1.45;
+      color:#111827; line-height:1.45;
     }
-    .wrap{
-      max-width: var(--maxw);
-      margin: 0 auto;
-    }
+    .wrap{max-width: var(--maxw); margin:0 auto}
+    .grid{display:grid; grid-template-columns: 1fr 1fr; gap:24px}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
 
-    /* ===== Brand bar ===== */
+    /* Brand */
     .brand{
-      display:inline-block;
-      background: var(--brand);
-      color: var(--brand-text);
-      padding: 10px 16px;
-      border-radius: 12px;
-      box-shadow: 0 8px 20px rgba(0,0,0,.25);
-      font-weight: 800;
-      font-size: 28px;
-      letter-spacing:.2px;
-      margin: 0 0 16px 0;            /* keep it clearly inside the frame */
+      display:inline-block; background:var(--brand); color:var(--brand-text);
+      padding:10px 16px; border-radius:12px; box-shadow:0 8px 20px rgba(0,0,0,.25);
+      font-weight:800; font-size:28px; letter-spacing:.2px; margin:0 0 16px 0;
     }
 
     /* Status pills */
     .row{margin:8px 0}
-    .pills{
-      display:flex; flex-wrap:wrap; gap:6px;
-    }
+    .pills{display:flex; flex-wrap:wrap; gap:6px}
     .pill{
-      background:var(--pill-bg);
-      border:1px solid var(--pill-border);
-      border-radius:12px;
-      padding:2px 8px;
-      font-size:12px;
+      background:var(--pill-bg); border:1px solid var(--pill-border);
+      border-radius:12px; padding:2px 8px; font-size:12px;
     }
     code{background:#f7fafc; padding:2px 4px; border-radius:4px}
 
     /* Card */
     .card{
-      margin-top: 8px;
-      background:var(--card-bg);
-      padding: clamp(16px, 2.5vw, 24px);
-      border:1px solid var(--border);
-      border-radius:16px;
+      background:var(--card-bg); padding: clamp(16px, 2.5vw, 24px);
+      border:1px solid var(--border); border-radius:16px;
       box-shadow:0 10px 30px rgba(0,0,0,.18);
-      max-width: 640px;
     }
 
     /* Form controls */
     label{display:block; margin-top:10px}
     input,button{
-      width:100%;
-      padding:10px 12px;
-      border:1px solid #cbd5e0;
-      border-radius:8px;
-      font-size:14px;
-      background:#fff;
+      width:100%; padding:10px 12px; border:1px solid #cbd5e0; border-radius:8px;
+      font-size:14px; background:#fff;
     }
     input[type="file"]{padding:6px}
-
     fieldset{
-      border:1px solid var(--border);
-      border-radius:12px;
-      padding:12px;
-      margin-top:16px;
+      border:1px solid var(--border); border-radius:12px; padding:12px; margin-top:16px;
       background:rgba(255,255,255,.6);
     }
     legend{padding:0 8px; color:#2d3748}
-
     .terms{display:flex; align-items:center; gap:10px; margin-top:12px; color:#2d3748}
     .terms input{width:auto}
-
     button{
-      margin-top:16px;
-      cursor:pointer;
-      background:#111827; color:#fff; border-color:#111827;
-      transition: filter .15s ease-in-out, transform .03s ease-in-out;
+      margin-top:16px; cursor:pointer; background:#111827; color:#fff; border-color:#111827;
+      transition: filter .15s, transform .03s;
     }
-    button:hover{filter:brightness(1.08)}
-    button:active{transform: translateY(1px)}
+    button:hover{filter:brightness(1.08)} button:active{transform:translateY(1px)}
+    button[disabled]{opacity:.6; cursor:not-allowed}
 
-    /* Center the form column while letting brand/pills breathe on wide screens */
-    .grid{
-      display:grid;
-      grid-template-columns: 1fr minmax(0, 640px) 1fr;
-      gap: 24px;
-      align-items:start;
+    /* Right column: progress + logs */
+    .status-card .row{margin:10px 0}
+    .mono{font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .muted{color:#4a5568}
+    .progress{
+      height:12px; background:#e5e7eb; border-radius:999px; overflow:hidden; border:1px solid #e2e8f0;
     }
-    .col{grid-column: 2}
-    @media (max-width: 860px){
-      .grid{grid-template-columns: 1fr}
-      .col{grid-column: 1}
+    .progress > div{
+      height:100%; width:0%; background:#0ea5e9; transition:width .3s ease; /* cyan */
     }
+    .log{
+      border:1px solid var(--border); border-radius:12px; padding:10px; background:#fff;
+      height: 260px; overflow:auto; font-size:12px;
+    }
+    .kv{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .kv .k{width:110px; color:#4b5563}
+    .kv .v{flex:1}
+    .ok{color:#047857} .warn{color:#b45309} .err{color:#b91c1c}
+    a.btn{display:inline-block; padding:6px 10px; border:1px solid #cbd5e0; border-radius:8px; text-decoration:none}
   </style>
 </head>
 <body>
   <div class="wrap">
+    <div class="brand">NextPoint Upload</div>
+
+    <div class="row pills">
+      <span class="pill">Dropbox: {{ 'Ready' if dropbox_ready else 'Not ready' }}</span>
+      <span class="pill">SportAI: {{ 'Ready' if sportai_ready else 'Not ready' }}</span>
+      <span class="pill">Folder: <code>{{ target_folder }}</code></span>
+      <span class="pill">Max: {{ max_upload_mb }} MB</span>
+    </div>
+
     <div class="grid">
-      <div class="col">
-        <div class="brand">NextPoint Upload</div>
+      <!-- Left: form -->
+      <div class="card">
+        <form id="uploadForm" method="post" action="/upload/api/upload" enctype="multipart/form-data">
+          <label>Video file (max {{ max_upload_mb }} MB)
+            <input type="file" name="file" accept="video/*" required />
+          </label>
 
-        <div class="row pills">
-          <span class="pill">Dropbox: {{ 'Ready' if dropbox_ready else 'Not ready' }}</span>
-          <span class="pill">SportAI: {{ 'Ready' if sportai_ready else 'Not ready' }}</span>
-          <span class="pill">Folder: <code>{{ target_folder }}</code></span>
-          <span class="pill">Max: {{ max_upload_mb }} MB</span>
+          <label>Email (optional)
+            <input type="email" name="email" placeholder="you@example.com" />
+          </label>
+
+          <fieldset>
+            <legend>Match details (optional)</legend>
+            <label>Customer name <input name="customer_name" /></label>
+            <label>Match date (YYYY-MM-DD) <input name="match_date" /></label>
+            <label>Start time (HH:MM) <input name="start_time" /></label>
+            <label>Location <input name="location" /></label>
+            <label>Player A name <input name="player_a_name" /></label>
+            <label>Player B name <input name="player_b_name" /></label>
+            <label>Player A UTR <input name="player_a_utr" /></label>
+            <label>Player B UTR <input name="player_b_utr" /></label>
+          </fieldset>
+
+          <label class="terms">
+            <input type="checkbox" name="terms_accepted" />
+            <span>I accept the terms</span>
+          </label>
+
+          <button id="submitBtn" type="submit">Upload to Dropbox &amp; Submit to SportAI</button>
+        </form>
+      </div>
+
+      <!-- Right: live status -->
+      <div class="card status-card">
+        <div class="row"><strong>Status</strong></div>
+
+        <div class="kv"><div class="k">Task ID</div><div class="v mono" id="taskId">—</div></div>
+        <div class="kv"><div class="k">Stage</div><div class="v" id="stage"><span class="muted">waiting…</span></div></div>
+        <div class="kv"><div class="k">Progress</div>
+          <div class="v">
+            <div class="progress"><div id="bar"></div></div>
+            <div class="muted" id="pct" style="margin-top:6px">0%</div>
+          </div>
+        </div>
+        <div class="row kv">
+          <div class="k">Links</div>
+          <div class="v" id="links"></div>
         </div>
 
-        <div class="card">
-          <form method="post" action="/upload/api/upload" enctype="multipart/form-data">
-            <label>Video file (max {{ max_upload_mb }} MB)
-              <input type="file" name="file" accept="video/*" required />
-            </label>
-
-            <label>Email (optional)
-              <input type="email" name="email" placeholder="you@example.com" />
-            </label>
-
-            <fieldset>
-              <legend>Match details (optional)</legend>
-              <label>Customer name <input name="customer_name" /></label>
-              <label>Match date (YYYY-MM-DD) <input name="match_date" /></label>
-              <label>Start time (HH:MM) <input name="start_time" /></label>
-              <label>Location <input name="location" /></label>
-              <label>Player A name <input name="player_a_name" /></label>
-              <label>Player B name <input name="player_b_name" /></label>
-              <label>Player A UTR <input name="player_a_utr" /></label>
-              <label>Player B UTR <input name="player_b_utr" /></label>
-            </fieldset>
-
-            <label class="terms">
-              <input type="checkbox" name="terms_accepted" />
-              <span>I accept the terms</span>
-            </label>
-
-            <button type="submit">Upload to Dropbox &amp; Submit to SportAI</button>
-          </form>
-        </div>
+        <div class="row"><strong>Log</strong></div>
+        <div class="log mono" id="log"></div>
       </div>
     </div>
   </div>
+
+  <script>
+    const form  = document.getElementById('uploadForm');
+    const btn   = document.getElementById('submitBtn');
+    const logEl = document.getElementById('log');
+    const bar   = document.getElementById('bar');
+    const pct   = document.getElementById('pct');
+    const stage = document.getElementById('stage');
+    const task  = document.getElementById('taskId');
+    const links = document.getElementById('links');
+
+    let pollTimer = null;
+
+    function logLine(text, cls){
+      const d = document.createElement('div');
+      if (cls) d.className = cls;
+      d.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+      logEl.appendChild(d);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setProgress(p){
+      const v = Math.max(0, Math.min(100, Math.round(p || 0)));
+      bar.style.width = v + '%';
+      pct.textContent = v + '%';
+    }
+
+    function setStage(s){ stage.textContent = s || '—'; }
+
+    function linkify(url, text){
+      const a = document.createElement('a');
+      a.href = url; a.textContent = text || url; a.className = 'btn'; a.target = '_blank'; rel="noopener";
+      return a;
+    }
+
+    async function pollStatus(taskId){
+      if (!taskId) return;
+      clearTimeout(pollTimer);
+      try {
+        const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+        const j = await r.json();
+        if (!j.ok){
+          logLine(`status error: ${j.error || r.status}`, 'err');
+          pollTimer = setTimeout(() => pollStatus(taskId), 3000);
+          return;
+        }
+        // Stage / progress
+        const st = (j.status || j.data?.task_status || '').toString();
+        setStage(st);
+        const p = Number(j.data?.task_progress ?? j.total_subtask_progress ?? 0);
+        setProgress(p);
+
+        // Subtasks (if any)
+        const subtasks = j.data?.subtask_progress || {};
+        for (const [k,v] of Object.entries(subtasks)){
+          logLine(`${k}: ${v}%`);
+        }
+
+        // Links (result/share) if present
+        links.innerHTML = '';
+        if (j.result_url){
+          links.appendChild(linkify(j.result_url, 'Result JSON'));
+        }
+        // keep a self link to raw status
+        links.appendChild(linkify(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, 'Raw status'));
+
+        // Terminal?
+        const done = ['completed','done','success','succeeded'].includes(st.toLowerCase());
+        const failed = ['failed','error','cancelled','canceled'].includes(st.toLowerCase());
+        if (done){
+          logLine('analysis complete ✓', 'ok');
+          setProgress(100);
+          btn.disabled = false;
+          return;
+        }
+        if (failed){
+          logLine(`analysis failed: ${st}`, 'err');
+          btn.disabled = false;
+          return;
+        }
+        pollTimer = setTimeout(() => pollStatus(taskId), 3000);
+      } catch(err){
+        logLine(`status exception: ${err}`, 'err');
+        pollTimer = setTimeout(() => pollStatus(taskId), 4000);
+      }
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      logEl.innerHTML = '';
+      links.innerHTML = '';
+      setProgress(0); setStage('uploading…'); task.textContent = '—';
+      try {
+        const fd = new FormData(form);
+        logLine('uploading to Dropbox…');
+        const r = await fetch('/upload/api/upload', { method:'POST', body: fd });
+        const j = await r.json();
+        if (!j.ok){
+          logLine(`upload failed: ${j.error || r.status}`, 'err');
+          btn.disabled = false;
+          return;
+        }
+        // Show IDs/links
+        task.textContent = j.task_id || '—';
+        links.appendChild(linkify(j.share_url, 'Dropbox share'));
+        if (j.video_url) links.appendChild(linkify(j.video_url, 'Direct video'));
+        logLine(`uploaded ${j.upload?.name} (${j.upload?.size || 0} bytes)`, 'ok');
+        logLine(`task ${j.task_id} submitted to SportAI…`);
+        setStage('queued');
+        setProgress(1);
+        pollStatus(j.task_id);
+      } catch(err){
+        logLine(`submit exception: ${err}`, 'err');
+        btn.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>
