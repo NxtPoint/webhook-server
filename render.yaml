@@ -5,14 +5,49 @@ services:
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "python upload_app.py"
+
     envVars:
+      # Render injects PORT; no hard-coded value needed
       - key: PORT
-        value: 10000
-      - key: DROPBOX_REFRESH_TOKEN
-        value: LzIbVz2RXwwAAAAAAAAAAR_ixZxMMTE7eABTIn6ooAhbcCwUlues78XWdEuRwmEZ
+        fromService: ${RENDER}
+        # (leaving this keeps PORT visible in /ops/env)
+
+      # ---- Dropbox (kept as fallback) ----
       - key: DROPBOX_APP_KEY
-        value: dybxtvkad43jct6
+        sync: false
       - key: DROPBOX_APP_SECRET
-        value: jev0a0q513eaidf
+        sync: false
+      - key: DROPBOX_REFRESH_TOKEN
+        sync: false
+      - key: DROPBOX_UPLOAD_FOLDER
+        value: "/wix-uploads"
+
+      # ---- SportAI ----
       - key: SPORT_AI_TOKEN
-        value: qA3X6Tg6Ac8Gixyqv7eQTz999zoXvgRDlFTryanrST
+        sync: false
+      - key: SPORT_AI_BASE
+        value: "https://api.sportai.app"
+
+      # ---- App behavior flags ----
+      - key: INGEST_REPLACE_EXISTING
+        value: "1"
+      - key: AUTO_INGEST_ON_COMPLETE
+        value: "1"
+
+      # ---- S3 (enable when ready) ----
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_PREFIX
+        value: "wix-uploads"
+      - key: AWS_REGION
+        value: "us-east-1"
+      - key: S3_GET_EXPIRES
+        value: "604800"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+      # ---- DB ----
+      - key: DATABASE_URL
+        sync: false
