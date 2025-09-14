@@ -108,6 +108,7 @@
     details{margin-top:10px}
     details summary{cursor:pointer; user-select:none}
     .small{font-size:12px; color:#374151}
+    .muted{color:var(--muted)}
   </style>
 </head>
 <body>
@@ -321,6 +322,8 @@
     const links = document.getElementById('links');
     let pollTimer = null;
 
+    const RAW_STATUS_BASE = '/upload/api/task-status';
+
     function logLine(text, cls){
       const d = document.createElement('div');
       if (cls) d.className = cls;
@@ -329,7 +332,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
     function setProgress(p){
-      const v = Math.max(0, Math.min(100, Math.round(p || 0)));
+      const v = Math.max(0, Math.min(100, Math.round(Number(p) || 0)));
       bar.style.width = v + '%';
       pct.textContent = v + '%';
     }
@@ -340,46 +343,86 @@
       return a;
     }
 
+    // Robust poller with tolerant parsing and gentle backoff
+    let pollDelayMs = 2000; // start at 2s
+    const MAX_DELAY = 15000;
+
     async function pollStatus(taskId){
       if (!taskId) return;
       clearTimeout(pollTimer);
       try {
-        const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`);
+        const url = `${RAW_STATUS_BASE}?task_id=${encodeURIComponent(taskId)}`;
+        const r = await fetch(url, { cache: 'no-store' });
         const ct = r.headers.get('content-type') || '';
         if (!ct.includes('application/json')){
           logLine(`status non-JSON (${r.status})`, 'err');
-          pollTimer = setTimeout(() => pollStatus(taskId), 4000);
+          pollDelayMs = Math.min(MAX_DELAY, pollDelayMs + 1000);
+          pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
           return;
         }
+
         const j = await r.json();
         if (!j.ok){
           logLine(`status error: ${j.error || r.status}`, 'err');
-          pollTimer = setTimeout(() => pollStatus(taskId), 3000);
+          pollDelayMs = Math.min(MAX_DELAY, pollDelayMs + 1000);
+          pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
           return;
         }
-        const st = (j.status || j.data?.task_status || '').toString();
-        setStage(st);
-        const p = Number(j.data?.task_progress ?? j.total_subtask_progress ?? 0);
-        setProgress(p);
 
+        // Normalize status
+        let st = (j.status || j.data?.task_status || '').toString().trim();
+        if (!st) {
+          const msg = String(j.raw?.message || j.message || '').toLowerCase();
+          if (msg.includes('still being processed')) st = 'processing';
+          else if (r.status === 404) st = 'pending';
+        }
+        setStage(st || 'processing');
+
+        // Normalize progress
+        const prog =
+          j.data?.task_progress ??
+          j.data?.progress ??
+          j.task_progress ??
+          j.progress ??
+          j.data?.total_subtask_progress ?? 0;
+        setProgress(prog);
+
+        // Subtasks (optional)
         const subtasks = j.data?.subtask_progress || {};
         for (const [k,v] of Object.entries(subtasks)){
           logLine(`${k}: ${v}%`);
         }
 
+        // Links
         links.innerHTML = '';
-        if (j.result_url){ links.appendChild(linkify(j.result_url, 'Result JSON')); }
-        links.appendChild(linkify(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, 'Raw status'));
+        const resultUrl = j.result_url || j.data?.result_url || j.url || j.data?.url;
+        if (resultUrl){ links.appendChild(linkify(resultUrl, 'Result JSON')); }
+        links.appendChild(linkify(url, 'Raw status'));
 
-        const done = ['completed','done','success','succeeded'].includes(st.toLowerCase());
-        const failed = ['failed','error','cancelled','canceled'].includes(st.toLowerCase());
-        if (done){ logLine('analysis complete ✓', 'ok'); setProgress(100); btn.disabled = false; return; }
-        if (failed){ logLine(`analysis failed: ${st}`, 'err'); btn.disabled = false; return; }
+        // Stop conditions
+        const s = (st || '').toLowerCase();
+        const done = /completed|success|succeeded|done/.test(s);
+        const failed = /failed|error|cancelled|canceled/.test(s);
 
-        pollTimer = setTimeout(() => pollStatus(taskId), 3000);
+        if (done){
+          logLine('analysis complete ✓', 'ok');
+          setProgress(100);
+          btn.disabled = false;
+          return;
+        }
+        if (failed){
+          logLine(`analysis failed: ${st || 'unknown'}`, 'err');
+          btn.disabled = false;
+          return;
+        }
+
+        // keep polling with gentle backoff
+        pollDelayMs = Math.min(MAX_DELAY, Math.round(pollDelayMs * 1.3));
+        pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
       } catch(err){
         logLine(`status exception: ${err}`, 'err');
-        pollTimer = setTimeout(() => pollStatus(taskId), 4000);
+        pollDelayMs = Math.min(MAX_DELAY, pollDelayMs + 1000);
+        pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
       }
     }
 
@@ -388,6 +431,8 @@
       btn.disabled = true;
       logEl.innerHTML = ''; links.innerHTML = '';
       setProgress(0); setStage('uploading…'); task.textContent = '—';
+      pollDelayMs = 2000; // reset backoff each submit
+
       try {
         const fd = new FormData(form);
         logLine('uploading to Dropbox…');
@@ -405,9 +450,11 @@
         task.textContent = j.task_id || '—';
         if (j.share_url) links.appendChild(linkify(j.share_url, 'Dropbox share'));
         if (j.video_url) links.appendChild(linkify(j.video_url, 'Direct video'));
+
         logLine(`uploaded ${j.upload?.name} (${j.upload?.size || 0} bytes)`, 'ok');
         logLine(`task ${j.task_id} submitted to SportAI…`);
         setStage('queued'); setProgress(1);
+
         pollStatus(j.task_id);
       } catch(err){
         logLine(`submit exception: ${err}`, 'err');
