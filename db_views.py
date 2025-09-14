@@ -98,7 +98,6 @@ def _preflight_or_raise(conn):
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
 def _drop_any(conn, name: str):
-    # Determine object kind
     kind = conn.execute(text(r'''
         SELECT CASE
                  WHEN EXISTS (SELECT 1 FROM information_schema.views
@@ -111,26 +110,20 @@ def _drop_any(conn, name: str):
                END
     '''), {"n": name}).scalar()
 
-    # Safely-quoted identifier (double quotes escaped as "")
-    qname = name.replace('"', '""')
-
     if kind == 'view':
-        stmts = [f'DROP VIEW IF EXISTS "{qname}" CASCADE;']
+        stmts = [f'DROP VIEW IF EXISTS "{name}" CASCADE;']
     elif kind == 'mview':
-        stmts = [f'DROP MATERIALIZED VIEW IF EXISTS "{qname}" CASCADE;']
+        stmts = [f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;']
     elif kind == 'table':
-        stmts = [f'DROP TABLE IF EXISTS "{qname}" CASCADE;']
+        stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
     else:
         stmts = [
             f'DROP VIEW IF EXISTS "{name}" CASCADE;',
             f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;',
             f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
-
-
     for stmt in stmts:
         conn.execute(text(stmt))
-
 
 def _exec_with_clear_errors(conn, name: str, sql: str):
     try:
@@ -160,9 +153,7 @@ def _player_side_select_snippet(conn) -> str:
     return "NULL::boolean AS player_side_far_d"
 
 # ---- Helper: deterministic A–D mapper (mirror → clamp → divide by 4) ----
-# Using dollar-quoting inside the SQL so inner quotes never break Python strings.
-
-PLACEMENT_AD_FN_SQL_NUMERIC = r"""
+PLACEMENT_AD_FN_SQL_NUMERIC = r'''
 CREATE OR REPLACE FUNCTION placement_ad(
   x_src          numeric,
   landing_is_far boolean,
@@ -173,13 +164,11 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 STRICT
-AS $FN$
+AS $$
   WITH clamped AS (
     SELECT LEAST(
-             GREATEST(
-               CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
-               0::numeric
-             ),
+             GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
+                       0::numeric),
              cw - eps
            ) AS x_eff
   ),
@@ -194,10 +183,10 @@ AS $FN$
            WHEN 4 THEN 'D'
          END
   FROM lane;
-$FN$;
-"""
+$$;
+'''
 
-PLACEMENT_AD_FN_SQL_FLOAT8 = r"""
+PLACEMENT_AD_FN_SQL_FLOAT8 = r'''
 CREATE OR REPLACE FUNCTION placement_ad(
   x_src          double precision,
   landing_is_far boolean,
@@ -208,13 +197,11 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 STRICT
-AS $FN$
+AS $$
   WITH clamped AS (
     SELECT LEAST(
-             GREATEST(
-               CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
-               0::double precision
-             ),
+             GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
+                       0::double precision),
              cw - eps
            ) AS x_eff
   ),
@@ -229,10 +216,8 @@ AS $FN$
            WHEN 4 THEN 'D'
          END
   FROM lane;
-$FN$;
-"""
-
-
+$$;
+'''
 
 # ==================================================================================
 # View manifest
@@ -1018,32 +1003,42 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D court placement
-          -- Revert to the previous mapping (bounce → next_hit → hit),
-          -- but if this is the last shot of the point and there is NO floor-bounce X, force NULL.
+          -- A–D for all non-serves.
+          -- Last shot: use the chosen bounce X if present (primary prefers FLOOR); otherwise NULL.
           CASE
             WHEN sbp.serve_d THEN NULL
-            WHEN sbp.shot_ix = sbp.last_shot_ix
-                 AND (sbp.bounce_type_raw IS DISTINCT FROM 'floor'
-                      OR sbp.bounce_x_center_m IS NULL)
-              THEN NULL
             ELSE
-              placement_ad(
-                COALESCE(
-                  CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                  sbp.next_ball_hit_x,
-                  sbp.ball_hit_x
-                )::numeric,
-                CASE
-                  WHEN sbp.player_id = sbp.server_id
-                    THEN pe.receiver_is_far_end_d
-                  ELSE pe.server_is_far_end_d
-                END,
-                (SELECT court_w_m FROM const),
-                (SELECT eps_m    FROM const)
-              )
+              CASE
+                WHEN (
+                  CASE
+                    WHEN sbp.shot_ix = sbp.last_shot_ix
+                      THEN sbp.bounce_x_center_m
+                    ELSE COALESCE(
+                           CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                           sbp.next_ball_hit_x,
+                           sbp.ball_hit_x
+                         )
+                  END
+                ) IS NULL
+                THEN NULL
+                ELSE placement_ad(
+                       (
+                         CASE
+                           WHEN sbp.shot_ix = sbp.last_shot_ix
+                             THEN sbp.bounce_x_center_m
+                           ELSE COALESCE(
+                                  CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                                  sbp.next_ball_hit_x,
+                                  sbp.ball_hit_x
+                                )
+                         END
+                       )::numeric,
+                       NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
+                       (SELECT court_w_m FROM const),
+                       (SELECT eps_m    FROM const)
+                     )
+              END
           END AS placement_ad_d,
-
 
           -- Play type
           CASE
@@ -1221,7 +1216,6 @@ def _apply_views(engine):
         # Create helper functions used by vw_point_silver (both overloads)
         conn.execute(text(PLACEMENT_AD_FN_SQL_NUMERIC))
         conn.execute(text(PLACEMENT_AD_FN_SQL_FLOAT8))
-
 
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
