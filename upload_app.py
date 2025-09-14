@@ -60,10 +60,9 @@ AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "0").lower() in (
 # Fallbacks (first is env)
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
-    "https://api.sportai.app",
-     "https://api.sportai.com",
-    "https://sportai.app",
+    "https://api.sportai.com",
 ]))
+
 
 # Submit can vary by tenant
 SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([
