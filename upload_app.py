@@ -350,7 +350,16 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
 def _sportai_status(task_id: str) -> dict:
-    """Fetch status from SportAI and return normalized fields plus raw blob."""
+    """
+    Fetch status from SportAI and return normalized fields plus the raw blob.
+
+    Normalization rules:
+    - Accept both {data:{...}} and flat {...}
+    - If status/task_status is missing but a 'message' says it's processing,
+      surface status='processing' and keep polling
+    - Result URL can appear under data.result_url, result_url, data.url, or url
+    - Progress can be task_progress / progress / total_subtask_progress; fallbacks to 0
+    """
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
@@ -363,26 +372,60 @@ def _sportai_status(task_id: str) -> dict:
             if r.status_code >= 500:
                 last_err = f"{url} -> {r.status_code}: {r.text}"
                 continue
+            # Some tenants return 404 while the job is still pre-materialized; treat as pending
+            if r.status_code == 404:
+                j = {"message": "Task not visible yet (404)."}
+                break
             r.raise_for_status()
             j = r.json() or {}
             break
         except Exception as e:
             last_err = str(e)
+
     if j is None:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
-    d = j.get("data") or j
-    status = d.get("status") or d.get("task_status")
+    # Normalize structures
+    d = j.get("data") if isinstance(j, dict) and isinstance(j.get("data"), dict) else j
+
+    # Status / stage text
+    status = (
+        d.get("status")
+        or d.get("task_status")
+        or j.get("status")
+        or j.get("task_status")
+        or ("processing" if "still being processed" in str(j).lower() else None)
+    )
+
+    # Result URL in varied places
+    result_url = (
+        d.get("result_url")
+        or d.get("url")
+        or j.get("result_url")
+        or j.get("url")
+    )
+
+    # Progress (safe fallbacks)
+    progress = (
+        d.get("task_progress")
+        or d.get("progress")
+        or j.get("task_progress")
+        or j.get("progress")
+        or d.get("total_subtask_progress")
+        or j.get("total_subtask_progress")
+        or 0
+    )
+
     out = {
         "status": status,
-        "result_url": d.get("result_url") or j.get("result_url"),
+        "result_url": result_url,
         "data": {
-            "task_id": d.get("task_id"),
-            "video_url": d.get("video_url"),
-            "task_status": d.get("task_status") or d.get("status"),
-            "task_progress": d.get("task_progress") or d.get("progress"),
-            "total_subtask_progress": d.get("total_subtask_progress"),
-            "subtask_progress": d.get("subtask_progress") or {},
+            "task_id": d.get("task_id") or j.get("task_id") or task_id,
+            "video_url": d.get("video_url") or j.get("video_url"),
+            "task_status": status,
+            "task_progress": progress,
+            "total_subtask_progress": d.get("total_subtask_progress") or j.get("total_subtask_progress"),
+            "subtask_progress": d.get("subtask_progress") or j.get("subtask_progress") or {},
         },
         "raw": j,
     }
