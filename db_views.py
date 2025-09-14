@@ -1020,8 +1020,6 @@ CREATE_STMTS = {
 
           -- A–D for all non-serves.
           -- Last shot: only if a floor-bounce X exists; otherwise NULL.
-                    -- A–D for all non-serves.
-          -- Last shot: only if a floor-bounce X exists; otherwise NULL.
           CASE
             WHEN sbp.serve_d THEN NULL
             ELSE
@@ -1033,16 +1031,21 @@ CREATE_STMTS = {
                          AND sbp.bounce_x_center_m IS NOT NULL THEN
                       placement_ad(
                         sbp.bounce_x_center_m::numeric,
-                        /* landing end = opposite end of hitter (robust via point_ends) */
+                        /* landing end:
+                           1) floor-bounce Y sign
+                           2) else next-hitter Y sign
+                           3) else opposite of hitter side
+                        */
                         COALESCE(
                           CASE
-                            WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
-                              THEN pe.receiver_is_far_end_d
-                            WHEN sbp.player_id = sbp.server_id
-                              THEN pe.receiver_is_far_end_d
-                            ELSE pe.server_is_far_end_d
+                            WHEN sbp.bounce_type_raw = 'floor'
+                                 AND sbp.bounce_y_center_m IS NOT NULL
+                              THEN (sbp.bounce_y_center_m < 0)
+                            WHEN sbp.next_ball_hit_y IS NOT NULL
+                              THEN (sbp.next_ball_hit_y < 0)
+                            ELSE (NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0))
                           END,
-                          NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0)
+                          TRUE
                         ),
                         (SELECT court_w_m FROM const),
                         (SELECT eps_m    FROM const)
@@ -1058,22 +1061,24 @@ CREATE_STMTS = {
                       sbp.next_ball_hit_x,
                       sbp.ball_hit_x
                     )::numeric,
-                    /* landing end = opposite end of hitter (robust via point_ends) */
+                    /* landing end: same robust priority as above */
                     COALESCE(
                       CASE
-                        WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
-                          THEN pe.receiver_is_far_end_d
-                        WHEN sbp.player_id = sbp.server_id
-                          THEN pe.receiver_is_far_end_d
-                        ELSE pe.server_is_far_end_d
+                        WHEN sbp.bounce_type_raw = 'floor'
+                             AND sbp.bounce_y_center_m IS NOT NULL
+                          THEN (sbp.bounce_y_center_m < 0)
+                        WHEN sbp.next_ball_hit_y IS NOT NULL
+                          THEN (sbp.next_ball_hit_y < 0)
+                        ELSE (NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0))
                       END,
-                      NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0)
+                      TRUE
                     ),
                     (SELECT court_w_m FROM const),
                     (SELECT eps_m    FROM const)
                   )
               END
           END AS placement_ad_d,
+
 
 
           -- Play type
