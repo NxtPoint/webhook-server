@@ -235,232 +235,205 @@
   </div>
 
   <script>
-    // =============== Helpers for defaults ===============
-    const q = sel => document.querySelector(sel);
-    const byId = id => document.getElementById(id);
+  // =============== Helpers for defaults ===============
+  const q = sel => document.querySelector(sel);
+  const byId = id => document.getElementById(id);
 
-    // mark/unmark default styling
-    function setDefault(el, value){
-      el.value = value;
-      el.classList.add('is-default');
-      el.dataset.defaultValue = value;
-    }
-    function clearDefaultOnEdit(el){
-      el.addEventListener('input', () => {
-        if (el.classList.contains('is-default') && el.value !== el.dataset.defaultValue){
-          el.classList.remove('is-default');
-        }
-      });
-      el.addEventListener('blur', () => {
-        // if user deletes everything, restore default
-        if (el.value.trim() === '' && el.dataset.defaultValue){
-          el.value = el.dataset.defaultValue;
-          el.classList.add('is-default');
-        }
-      });
-    }
-
-    // apply initial defaults
-    const matchDate = byId('match_date');
-    const startTime = byId('start_time');
-    const custName  = byId('customer_name');
-    const paName    = byId('player_a_name');
-    const pbName    = byId('player_b_name');
-
-    // Today for date
-    const today = new Date();
-    const iso = today.toISOString().slice(0,10);
-    setDefault(matchDate, iso);
-    clearDefaultOnEdit(matchDate);
-
-    // 00:00:00 for time
-    setDefault(startTime, "00:00:00");
-    clearDefaultOnEdit(startTime);
-
-    // Player names default
-    setDefault(paName, "Player A");
-    setDefault(pbName, "Player B");
-    clearDefaultOnEdit(paName);
-    clearDefaultOnEdit(pbName);
-
-    // Customer name from email local-part
-    const emailInput = document.querySelector('input[name="email"]');
-    function deriveNameFromEmail(v){
-      const m = String(v||'').trim().match(/^([^@]+)/);
-      if (!m) return null;
-      let base = m[1].replace(/[._-]+/g, ' ').trim();
-      // Title-case a bit
-      base = base.split(' ').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' ');
-      return base || null;
-    }
-    // Set default from email if customer name untouched
-    emailInput.addEventListener('blur', () => {
-      if (!custName || !emailInput.value) return;
-      const proposed = deriveNameFromEmail(emailInput.value);
-      const untouched = custName.classList.contains('is-default') || custName.value.trim()==='' || custName.value===custName.dataset.defaultValue;
-      if (proposed && untouched){
-        setDefault(custName, proposed);
-        clearDefaultOnEdit(custName);
-      } else if (custName.value.trim()===''){
-        // ensure some default
-        setDefault(custName, "Customer");
-        clearDefaultOnEdit(custName);
+  function setDefault(el, value){
+    el.value = value;
+    el.classList.add('is-default');
+    el.dataset.defaultValue = value;
+  }
+  function clearDefaultOnEdit(el){
+    el.addEventListener('input', () => {
+      if (el.classList.contains('is-default') && el.value !== el.dataset.defaultValue){
+        el.classList.remove('is-default');
       }
     });
-    // If no email typed, give a generic default now
-    setDefault(custName, "Customer");
-    clearDefaultOnEdit(custName);
-
-    // =============== Upload + Status logic ===============
-    const form  = document.getElementById('uploadForm');
-    const btn   = document.getElementById('submitBtn');
-    const logEl = document.getElementById('log');
-    const bar   = document.getElementById('bar');
-    const pct   = document.getElementById('pct');
-    const stage = document.getElementById('stage');
-    const task  = document.getElementById('taskId');
-    const links = document.getElementById('links');
-    let pollTimer = null;
-
-    const RAW_STATUS_BASE = '/upload/api/task-status';
-
-    function logLine(text, cls){
-      const d = document.createElement('div');
-      if (cls) d.className = cls;
-      d.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
-      logEl.appendChild(d);
-      logEl.scrollTop = logEl.scrollHeight;
-    }
-    function setProgress(p){
-      const v = Math.max(0, Math.min(100, Math.round(Number(p) || 0)));
-      bar.style.width = v + '%';
-      pct.textContent = v + '%';
-    }
-    function setStage(s){ stage.textContent = s || '—'; }
-    function linkify(url, text){
-      const a = document.createElement('a');
-      a.href = url; a.textContent = text || url; a.className = 'btn'; a.target = '_blank'; a.rel = "noopener";
-      return a;
-    }
-
-    // Robust poller with tolerant parsing and gentle backoff
-    let pollDelayMs = 2000; // start at 2s
-    const MAX_DELAY = 15000;
-
-    async function pollStatus(taskId){
-      if (!taskId) return;
-      clearTimeout(pollTimer);
-      try {
-        const url = `${RAW_STATUS_BASE}?task_id=${encodeURIComponent(taskId)}`;
-        const r = await fetch(url, { cache: 'no-store' });
-        const ct = r.headers.get('content-type') || '';
-        if (!ct.includes('application/json')){
-          logLine(`status non-JSON (${r.status})`, 'err');
-          pollDelayMs = Math.min(MAX_DELAY, pollDelayMs + 1000);
-          pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
-          return;
-        }
-
-        const j = await r.json();
-        if (!j.ok){
-          logLine(`status error: ${j.error || r.status}`, 'err');
-          pollDelayMs = Math.min(MAX_DELAY, pollDelayMs + 1000);
-          pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
-          return;
-        }
-
-        // Normalize status
-        let st = (j.status || j.data?.task_status || '').toString().trim();
-        if (!st) {
-          const msg = String(j.raw?.message || j.message || '').toLowerCase();
-          if (msg.includes('still being processed')) st = 'processing';
-          else if (r.status === 404) st = 'pending';
-        }
-        setStage(st || 'processing');
-
-        // Normalize progress
-        const prog =
-          j.data?.task_progress ??
-          j.data?.progress ??
-          j.task_progress ??
-          j.progress ??
-          j.data?.total_subtask_progress ?? 0;
-        setProgress(prog);
-
-        // Subtasks (optional)
-        const subtasks = j.data?.subtask_progress || {};
-        for (const [k,v] of Object.entries(subtasks)){
-          logLine(`${k}: ${v}%`);
-        }
-
-        // Links
-        links.innerHTML = '';
-        const resultUrl = j.result_url || j.data?.result_url || j.url || j.data?.url;
-        if (resultUrl){ links.appendChild(linkify(resultUrl, 'Result JSON')); }
-        links.appendChild(linkify(url, 'Raw status'));
-
-        // Stop conditions
-        const s = (st || '').toLowerCase();
-        const done = /completed|success|succeeded|done/.test(s);
-        const failed = /failed|error|cancelled|canceled/.test(s);
-
-        if (done){
-          logLine('analysis complete ✓', 'ok');
-          setProgress(100);
-          btn.disabled = false;
-          return;
-        }
-        if (failed){
-          logLine(`analysis failed: ${st || 'unknown'}`, 'err');
-          btn.disabled = false;
-          return;
-        }
-
-        // keep polling with gentle backoff
-        pollDelayMs = Math.min(MAX_DELAY, Math.round(pollDelayMs * 1.3));
-        pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
-      } catch(err){
-        logLine(`status exception: ${err}`, 'err');
-        pollDelayMs = Math.min(MAX_DELAY, pollDelayMs + 1000);
-        pollTimer = setTimeout(() => pollStatus(taskId), pollDelayMs);
+    el.addEventListener('blur', () => {
+      if (el.value.trim() === '' && el.dataset.defaultValue){
+        el.value = el.dataset.defaultValue;
+        el.classList.add('is-default');
       }
-    }
+    });
+  }
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      btn.disabled = true;
-      logEl.innerHTML = ''; links.innerHTML = '';
-      setProgress(0); setStage('uploading…'); task.textContent = '—';
-      pollDelayMs = 2000; // reset backoff each submit
+  const matchDate = byId('match_date');
+  const startTime = byId('start_time');
+  const custName  = byId('customer_name');
+  const paName    = byId('player_a_name');
+  const pbName    = byId('player_b_name');
 
-      try {
-        const fd = new FormData(form);
-        logLine('uploading to Dropbox…');
-        const r = await fetch('/upload/api/upload', { method:'POST', body: fd });
-        const ct = r.headers.get('content-type') || '';
-        if (!ct.includes('application/json')){
-          const t = await r.text();
-          logLine(`upload error (non-JSON): ${t.slice(0,200)}…`, 'err');
-          btn.disabled = false;
-          return;
-        }
-        const j = await r.json();
-        if (!j.ok){ logLine(`upload failed: ${j.error || r.status}`, 'err'); btn.disabled = false; return; }
+  const today = new Date();
+  const iso = today.toISOString().slice(0,10);
+  setDefault(matchDate, iso); clearDefaultOnEdit(matchDate);
+  setDefault(startTime, "00:00:00"); clearDefaultOnEdit(startTime);
+  setDefault(paName, "Player A"); clearDefaultOnEdit(paName);
+  setDefault(pbName, "Player B"); clearDefaultOnEdit(pbName);
 
-        task.textContent = j.task_id || '—';
-        if (j.share_url) links.appendChild(linkify(j.share_url, 'Dropbox share'));
-        if (j.video_url) links.appendChild(linkify(j.video_url, 'Direct video'));
+  const emailInput = document.querySelector('input[name="email"]');
+  function deriveNameFromEmail(v){
+    const m = String(v||'').trim().match(/^([^@]+)/);
+    if (!m) return null;
+    let base = m[1].replace(/[._-]+/g, ' ').trim();
+    base = base.split(' ').map(s => s.charAt(0).toUpperCase()+s.slice(1)).join(' ');
+    return base || null;
+  }
+  emailInput.addEventListener('blur', () => {
+    const proposed = deriveNameFromEmail(emailInput.value);
+    const untouched = custName.classList.contains('is-default') || !custName.value.trim() || custName.value===custName.dataset.defaultValue;
+    if (proposed && untouched){ setDefault(custName, proposed); clearDefaultOnEdit(custName); }
+    else if (!custName.value.trim()){ setDefault(custName, "Customer"); clearDefaultOnEdit(custName); }
+  });
+  setDefault(custName, "Customer"); clearDefaultOnEdit(custName);
 
-        logLine(`uploaded ${j.upload?.name} (${j.upload?.size || 0} bytes)`, 'ok');
-        logLine(`task ${j.task_id} submitted to SportAI…`);
-        setStage('queued'); setProgress(1);
+  // =============== Upload + Status logic ===============
+  const form  = document.getElementById('uploadForm');
+  const btn   = document.getElementById('submitBtn');
+  const logEl = document.getElementById('log');
+  const bar   = document.getElementById('bar');
+  const pct   = document.getElementById('pct');
+  const stage = document.getElementById('stage');
+  const task  = document.getElementById('taskId');
+  const links = document.getElementById('links');
 
-        pollStatus(j.task_id);
-      } catch(err){
-        logLine(`submit exception: ${err}`, 'err');
+  let pollTimer = null;
+  let pollDelay = 3000; // will back off on errors, reset on good responses
+
+  function logLine(text, cls){
+    const d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+    logEl.appendChild(d);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setProgress(p){
+    const v = Math.max(0, Math.min(100, Math.round(p || 0)));
+    bar.style.width = v + '%';
+    pct.textContent = v + '%';
+  }
+  function setStage(s){ stage.textContent = s || '—'; }
+  function linkify(url, text){
+    const a = document.createElement('a');
+    a.href = url; a.textContent = text || url; a.className = 'btn'; a.target = '_blank'; a.rel = "noopener";
+    return a;
+  }
+  function schedule(taskId){
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => pollStatus(taskId), pollDelay);
+  }
+
+  async function pollStatus(taskId){
+    if (!taskId) return;
+    try {
+      const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, { cache: 'no-store' });
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+
+      if (!ct.includes('application/json')) {
+        logLine(`status non-JSON (${r.status})`, 'err');
+        pollDelay = Math.min(pollDelay + 2000, 20000); // back off a bit
+        return schedule(taskId);
+      }
+
+      const j = await r.json();
+      if (!j.ok) {
+        logLine(`status error: ${j.error || r.status}`, 'err');
+        pollDelay = Math.min(pollDelay + 2000, 20000);
+        return schedule(taskId);
+      }
+
+      // good JSON – reset delay
+      pollDelay = 3000;
+
+      // Update links every time
+      links.innerHTML = '';
+      if (j.result_url) links.appendChild(linkify(j.result_url, 'Result JSON'));
+      links.appendChild(linkify(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, 'Raw status'));
+
+      // Stage + progress
+      const st = (j.status || j.data?.task_status || '').toString();
+      setStage(st || (j.result_url ? 'completed' : 'processing'));
+
+      const p = Number(j.data?.task_progress ?? j.total_subtask_progress ?? 0);
+      if (!Number.isNaN(p)) setProgress(p);
+
+      // Subtask logs (optional)
+      const subtasks = j.data?.subtask_progress || {};
+      for (const [k,v] of Object.entries(subtasks)) {
+        logLine(`${k}: ${v}%`);
+      }
+
+      // Completion logic:
+      const done = ['completed','done','success','succeeded'].includes(st.toLowerCase());
+      const failed = ['failed','error','cancelled','canceled'].includes(st.toLowerCase());
+
+      if (done) {
+        logLine('analysis complete ✓', 'ok');
+        setProgress(100);
         btn.disabled = false;
+        return;
       }
-    });
-  </script>
+
+      // If no explicit status but a result_url exists, treat as done.
+      if (j.result_url && !done) {
+        logLine('result URL available — marking complete ✓', 'ok');
+        setProgress(100);
+        setStage('completed');
+        btn.disabled = false;
+        return;
+      }
+
+      if (failed) {
+        logLine(`analysis failed: ${st}`, 'err');
+        btn.disabled = false;
+        return;
+      }
+
+      // keep polling
+      schedule(taskId);
+
+    } catch (err) {
+      logLine(`status exception: ${err}`, 'err');
+      pollDelay = Math.min(pollDelay + 2000, 20000);
+      schedule(taskId);
+    }
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    logEl.innerHTML = ''; links.innerHTML = '';
+    setProgress(0); setStage('uploading…'); task.textContent = '—';
+    pollDelay = 3000;
+
+    try {
+      const fd = new FormData(form);
+      logLine('uploading to Dropbox…');
+      const r = await fetch('/upload/api/upload', { method:'POST', body: fd });
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')){
+        const t = await r.text();
+        logLine(`upload error (non-JSON): ${t.slice(0,200)}…`, 'err');
+        btn.disabled = false;
+        return;
+      }
+      const j = await r.json();
+      if (!j.ok){ logLine(`upload failed: ${j.error || r.status}`, 'err'); btn.disabled = false; return; }
+
+      task.textContent = j.task_id || '—';
+      if (j.share_url) links.appendChild(linkify(j.share_url, 'Dropbox share'));
+      if (j.video_url) links.appendChild(linkify(j.video_url, 'Direct video'));
+      logLine(`uploaded ${j.upload?.name} (${j.upload?.size || 0} bytes)`, 'ok');
+      logLine(`task ${j.task_id} submitted to SportAI…`);
+      setStage('queued'); setProgress(1);
+
+      pollStatus(j.task_id);
+
+    } catch(err){
+      logLine(`submit exception: ${err}`, 'err');
+      btn.disabled = false;
+    }
+  });
+</script>
 </body>
 </html>
