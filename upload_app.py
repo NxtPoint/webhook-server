@@ -576,8 +576,99 @@ def ops_sportai_dns():
         return jsonify({"ok": False, "host": host, "error": str(e)}), 500
 
 # -------------------------------------------------------
+# New: Check video (upload -> presigned URL -> SportAI /videos/check) and Cancel task
+# -------------------------------------------------------
+@app.route("/upload/api/check-video", methods=["POST", "OPTIONS"])
+def api_check_video():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    def _passed(obj):
+        if isinstance(obj, dict):
+            if "ok" in obj:
+                return bool(obj["ok"])
+            if str(obj.get("status", "")).lower() in ("ok","success","passed","ready"):
+                return True
+            if obj.get("errors"):
+                return False
+        return True  # be optimistic if schema unknown
+
+    try:
+        # Case A: JSON with existing video_url
+        if request.is_json:
+            body = request.get_json(silent=True) or {}
+            video_url = (body.get("video_url") or body.get("share_url") or "").strip()
+            if not video_url:
+                return jsonify({"ok": False, "error": "video_url required"}), 400
+            chk = _sportai_check(video_url)
+            return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
+
+        # Case B: multipart upload a file → get URL → check
+        f = request.files.get("file") or request.files.get("video")
+        if not f or not f.filename:
+            return jsonify({"ok": False, "error": "No file provided."}), 400
+
+        clean = secure_filename(f.filename)
+        ts = int(time.time())
+
+        share_url = None
+        video_url = None
+
+        if S3_BUCKET:
+            try:
+                key = f"{S3_PREFIX}/{ts}_{clean}"
+                try:
+                    f.stream.seek(0)
+                except Exception:
+                    pass
+                _ = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
+                share_url = _s3_presigned_get_url(key)
+                video_url = share_url
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"S3 upload failed: {e}"}), 502
+        else:
+            tok, err = _dbx_get_token()
+            if not tok:
+                return jsonify({"ok": False, "error": f"Dropbox auth failed: {err}"}), 500
+            dest_path = f"{DBX_FOLDER.rstrip('/')}/{ts}_{clean}"
+            headers = {
+                "Authorization": f"Bearer {tok}",
+                "Dropbox-API-Arg": json.dumps({"path": dest_path, "mode": "add", "autorename": True, "mute": False}),
+                "Content-Type": "application/octet-stream",
+            }
+            up = requests.post("https://content.dropboxapi.com/2/files/upload",
+                               headers=headers, data=f.read(), timeout=600)
+            if not up.ok:
+                return jsonify({"ok": False, "error": f"Dropbox upload failed: {up.status_code} {up.text}"}), 502
+            meta_dbx = up.json()
+            try:
+                share_url = _dbx_create_or_fetch_shared_link(tok, meta_dbx.get("path_lower") or dest_path)
+                video_url = _force_direct_dropbox(share_url)
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"Dropbox link failed: {e}"}), 502
+
+        # Run SportAI /videos/check
+        chk = _sportai_check(video_url)
+        return jsonify({"ok": True, "video_url": video_url, "share_url": share_url, "check": chk, "check_passed": _passed(chk)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/upload/api/cancel-task")
+def api_cancel_task():
+    tid = request.values.get("task_id") or (request.get_json(silent=True) or {}).get("task_id")
+    if not tid:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        out = _sportai_cancel(str(tid))
+        return jsonify({"ok": True, "data": out})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+# -------------------------------------------------------
 # Upload API (also accepts direct JSON with video_url)
 # -------------------------------------------------------
+
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_dropbox():
     if request.method == "OPTIONS":
