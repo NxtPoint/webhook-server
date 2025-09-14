@@ -119,7 +119,7 @@ def _drop_any(conn, name: str):
     else:
         stmts = [
             f'DROP VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;",
+            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;"',
             f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
     for stmt in stmts:
@@ -153,7 +153,9 @@ def _player_side_select_snippet(conn) -> str:
     return "NULL::boolean AS player_side_far_d"
 
 # ---- Helper: deterministic A–D mapper (mirror → clamp → divide by 4) ----
-PLACEMENT_AD_FN_SQL_NUMERIC = r'''
+# Using dollar-quoting inside the SQL so inner quotes never break Python strings.
+
+PLACEMENT_AD_FN_SQL_NUMERIC = r"""
 CREATE OR REPLACE FUNCTION placement_ad(
   x_src          numeric,
   landing_is_far boolean,
@@ -164,11 +166,13 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 STRICT
-AS $$
+AS $FN$
   WITH clamped AS (
     SELECT LEAST(
-             GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
-                       0::numeric),
+             GREATEST(
+               CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
+               0::numeric
+             ),
              cw - eps
            ) AS x_eff
   ),
@@ -183,10 +187,10 @@ AS $$
            WHEN 4 THEN 'D'
          END
   FROM lane;
-$$;
-'''
+$FN$;
+"""
 
-PLACEMENT_AD_FN_SQL_FLOAT8 = r'''
+PLACEMENT_AD_FN_SQL_FLOAT8 = r"""
 CREATE OR REPLACE FUNCTION placement_ad(
   x_src          double precision,
   landing_is_far boolean,
@@ -197,11 +201,13 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 STRICT
-AS $$
+AS $FN$
   WITH clamped AS (
     SELECT LEAST(
-             GREATEST( CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
-                       0::double precision),
+             GREATEST(
+               CASE WHEN landing_is_far THEN x_src ELSE cw - x_src END,
+               0::double precision
+             ),
              cw - eps
            ) AS x_eff
   ),
@@ -216,8 +222,10 @@ AS $$
            WHEN 4 THEN 'D'
          END
   FROM lane;
-$$;
-'''
+$FN$;
+"""
+
+
 
 # ==================================================================================
 # View manifest
@@ -1005,40 +1013,61 @@ CREATE_STMTS = {
 
           -- A–D for all non-serves.
           -- Last shot: only if a floor-bounce X exists; otherwise NULL.
+                    -- A–D for all non-serves.
+          -- Last shot: only if a floor-bounce X exists; otherwise NULL.
           CASE
             WHEN sbp.serve_d THEN NULL
             ELSE
               CASE
-                WHEN (
+                -- LAST SHOT: require a floor bounce X
+                WHEN sbp.shot_ix = sbp.last_shot_ix THEN
                   CASE
-                    WHEN sbp.shot_ix = sbp.last_shot_ix
-                      THEN CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END
-                    ELSE COALESCE(
-                           CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                           sbp.next_ball_hit_x,
-                           sbp.ball_hit_x
-                         )
+                    WHEN sbp.bounce_type_raw = 'floor'
+                         AND sbp.bounce_x_center_m IS NOT NULL THEN
+                      placement_ad(
+                        sbp.bounce_x_center_m::numeric,
+                        /* landing end = opposite end of hitter (robust via point_ends) */
+                        COALESCE(
+                          CASE
+                            WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
+                              THEN pe.receiver_is_far_end_d
+                            WHEN sbp.player_id = sbp.server_id
+                              THEN pe.receiver_is_far_end_d
+                            ELSE pe.server_is_far_end_d
+                          END,
+                          NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0)
+                        ),
+                        (SELECT court_w_m FROM const),
+                        (SELECT eps_m    FROM const)
+                      )
+                    ELSE NULL
                   END
-                ) IS NULL
-                THEN NULL
-                ELSE placement_ad(
-                       (
-                         CASE
-                           WHEN sbp.shot_ix = sbp.last_shot_ix
-                             THEN CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END
-                           ELSE COALESCE(
-                                  CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                                  sbp.next_ball_hit_x,
-                                  sbp.ball_hit_x
-                                )
-                         END
-                       )::numeric,
-                       NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
-                       (SELECT court_w_m FROM const),
-                       (SELECT eps_m    FROM const)
-                     )
+
+                -- NON-LAST SHOTS: X priority = floor → next-hit → current-hit
+                ELSE
+                  placement_ad(
+                    COALESCE(
+                      CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                      sbp.next_ball_hit_x,
+                      sbp.ball_hit_x
+                    )::numeric,
+                    /* landing end = opposite end of hitter (robust via point_ends) */
+                    COALESCE(
+                      CASE
+                        WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
+                          THEN pe.receiver_is_far_end_d
+                        WHEN sbp.player_id = sbp.server_id
+                          THEN pe.receiver_is_far_end_d
+                        ELSE pe.server_is_far_end_d
+                      END,
+                      NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0)
+                    ),
+                    (SELECT court_w_m FROM const),
+                    (SELECT eps_m    FROM const)
+                  )
               END
           END AS placement_ad_d,
+
 
           -- Play type
           CASE
@@ -1216,6 +1245,7 @@ def _apply_views(engine):
         # Create helper functions used by vw_point_silver (both overloads)
         conn.execute(text(PLACEMENT_AD_FN_SQL_NUMERIC))
         conn.execute(text(PLACEMENT_AD_FN_SQL_FLOAT8))
+
 
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
