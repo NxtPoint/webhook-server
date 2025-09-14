@@ -127,8 +127,6 @@ def _drop_any(conn, name: str):
             f'DROP TABLE IF EXISTS "{name}" CASCADE;',
         ]
 
-
-
     for stmt in stmts:
         conn.execute(text(stmt))
 
@@ -1025,60 +1023,45 @@ CREATE_STMTS = {
             WHEN sbp.serve_d THEN NULL
             ELSE
               CASE
-                -- LAST SHOT: require a floor bounce X
+                -- Decide landing end purely from point ends (same rule as AJ):
+                --   if hitter = server -> landing end = receiver end
+                --   else               -> landing end = server end
                 WHEN sbp.shot_ix = sbp.last_shot_ix THEN
+                  -- LAST SHOT: require floor-bounce X, else NULL
                   CASE
                     WHEN sbp.bounce_type_raw = 'floor'
                          AND sbp.bounce_x_center_m IS NOT NULL THEN
                       placement_ad(
                         sbp.bounce_x_center_m::numeric,
-                        /* landing end priority:
-                           1) floor-bounce Y sign
-                           2) next hitter Y sign
-                           3) opposite of hitter side
-                        */
-                        COALESCE(
-                          CASE
-                            WHEN sbp.bounce_type_raw = 'floor'
-                                 AND sbp.bounce_y_center_m IS NOT NULL
-                              THEN (sbp.bounce_y_center_m < 0)
-                            WHEN sbp.next_ball_hit_y IS NOT NULL
-                              THEN (sbp.next_ball_hit_y < 0)
-                            ELSE (NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0))
-                          END,
-                          TRUE
-                        ),
+                        CASE
+                          WHEN sbp.player_id = sbp.server_id
+                            THEN pe.receiver_is_far_end_d
+                          ELSE pe.server_is_far_end_d
+                        END,
                         (SELECT court_w_m FROM const),
                         (SELECT eps_m    FROM const)
                       )
                     ELSE NULL
                   END
-
-                -- NON-LAST SHOTS: X priority = floor → next-hit → current-hit
                 ELSE
+                  -- NON-LAST SHOTS: X priority = floor → next-hit → current-hit
                   placement_ad(
                     COALESCE(
                       CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
                       sbp.next_ball_hit_x,
                       sbp.ball_hit_x
                     )::numeric,
-                    /* landing end: same robust priority */
-                    COALESCE(
-                      CASE
-                        WHEN sbp.bounce_type_raw = 'floor'
-                             AND sbp.bounce_y_center_m IS NOT NULL
-                          THEN (sbp.bounce_y_center_m < 0)
-                        WHEN sbp.next_ball_hit_y IS NOT NULL
-                          THEN (sbp.next_ball_hit_y < 0)
-                        ELSE (NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0))
-                      END,
-                      TRUE
-                    ),
+                    CASE
+                      WHEN sbp.player_id = sbp.server_id
+                        THEN pe.receiver_is_far_end_d
+                      ELSE pe.server_is_far_end_d
+                    END,
                     (SELECT court_w_m FROM const),
                     (SELECT eps_m    FROM const)
                   )
               END
           END AS placement_ad_d,
+
 
           -- Play type
           CASE
