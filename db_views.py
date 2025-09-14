@@ -98,6 +98,7 @@ def _preflight_or_raise(conn):
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
 def _drop_any(conn, name: str):
+    # Determine object kind
     kind = conn.execute(text(r'''
         SELECT CASE
                  WHEN EXISTS (SELECT 1 FROM information_schema.views
@@ -110,20 +111,26 @@ def _drop_any(conn, name: str):
                END
     '''), {"n": name}).scalar()
 
+    # Safely-quoted identifier (double quotes escaped as "")
+    qname = name.replace('"', '""')
+
     if kind == 'view':
-        stmts = [f'DROP VIEW IF EXISTS "{name}" CASCADE;']
+        stmts = [f'DROP VIEW IF EXISTS "{qname}" CASCADE;']
     elif kind == 'mview':
-        stmts = [f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;']
+        stmts = [f'DROP MATERIALIZED VIEW IF EXISTS "{qname}" CASCADE;']
     elif kind == 'table':
-        stmts = [f'DROP TABLE IF EXISTS "{name}" CASCADE;']
+        stmts = [f'DROP TABLE IF EXISTS "{qname}" CASCADE;']
     else:
+        # Try all three, safely quoted – no stray backslashes/quotes
         stmts = [
-            f'DROP VIEW IF EXISTS "{name}" CASCADE;',
-            f'DROP MATERIALIZED VIEW IF EXISTS "{name}" CASCADE;"',
-            f'DROP TABLE IF EXISTS "{name}" CASCADE;',
+            f'DROP VIEW IF EXISTS "{qname}" CASCADE;',
+            f'DROP MATERIALIZED VIEW IF EXISTS "{qname}" CASCADE;',
+            f'DROP TABLE IF EXISTS "{qname}" CASCADE;',
         ]
+
     for stmt in stmts:
         conn.execute(text(stmt))
+
 
 def _exec_with_clear_errors(conn, name: str, sql: str):
     try:
