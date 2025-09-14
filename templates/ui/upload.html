@@ -6,16 +6,24 @@
 <title>Upload & Submit • NextPoint</title>
 <style>
   :root{
+    /* Progress bar green (unchanged) */
     --accent:#16A34A;        /* emerald-600 */
-    --accent-strong:#15803D; /* emerald-700 */
+    --accent-strong:#15803D;
+
+    /* NEW: exact green used on 0%/100% anchors (requested for buttons & checkbox) */
+    --brand:#0b5a37;
+
     --accent-soft:#EAF6EF;
     --text:#111827;
     --muted:#6b7280;
     --field-bg:#f6f7f8;
     --field-border:#e5e7eb;
     --card-bg:rgba(255,255,255,0.92);
-    --top-offset:130px;
+
+    /* Move the form down (increase to show more face) */
+    --top-offset:200px;
   }
+
   html,body{height:100%;}
   body{
     margin:0;color:var(--text);
@@ -39,41 +47,62 @@
   input::placeholder{color:#b5b9bf;}
   input:focus{border-color:#d1d5db;box-shadow:0 0 0 3px rgba(22,163,74,0.12);background:#fff;}
   input.done{background:#fff;border-color:#d1d5db;}
-  /* File input button (no blue) */
+
+  /* File input button uses brand green (your 0%/100% color) */
   input[type="file"]{border:0;background:transparent;padding:0;}
   input[type="file"]::file-selector-button{
-    margin-right:10px;border:0;border-radius:10px;background:var(--accent);color:#fff;
+    margin-right:10px;border:0;border-radius:10px;background:var(--brand);color:#fff;
     padding:10px 12px;font-weight:700;cursor:pointer;
   }
-  input[type="file"]::file-selector-button:hover{background:var(--accent-strong);}
+  input[type="file"]::file-selector-button:hover{filter:brightness(.92);}
 
   .terms{display:flex;align-items:center;gap:8px;font-size:13px;color:#111;}
-  .terms input[type="checkbox"]{accent-color:var(--accent);}
+  .terms input[type="checkbox"]{accent-color:var(--brand);}
 
-  .btn{appearance:none;border:0;cursor:pointer;padding:12px 18px;border-radius:10px;font-weight:700;color:#fff;background:var(--accent);}
-  .btn:hover{background:var(--accent-strong);}
+  .btn{appearance:none;border:0;cursor:pointer;padding:12px 18px;border-radius:10px;font-weight:700;color:#fff;background:var(--brand);}
+  .btn:hover{filter:brightness(.92);}
   .btn[disabled]{opacity:.55;cursor:not-allowed;}
-  .btn-outline{background:transparent;color:var(--accent-strong);border:1.5px solid var(--accent-strong);border-radius:10px;}
+  .btn-outline{background:transparent;color:var(--brand);border:1.5px solid var(--brand);border-radius:10px;}
   .btn-outline:hover{background:var(--accent-soft);}
   .btn-row{display:flex;gap:10px}
   .divider{height:1px;background:#e5e7eb;margin:12px 0;}
 
-  /* NEW: Horizontal status row with headers */
-  .status-row{display:grid;grid-template-columns:1.3fr 0.9fr 1.8fr;gap:14px;align-items:end;margin-top:6px;}
-  .col-title{font-size:14px;font-weight:700;color:#0f172a;margin-bottom:6px;}
+  /* STATUS ROW ------------------------------------------------------------- */
+  .status-row{
+    display:grid;
+    grid-template-columns:1.3fr 0.9fr 1.8fr;
+    gap:14px;
+    /* bottom-align all three columns so their bottoms line up with the progress base */
+    align-items:end;
+    margin-top:6px;
+  }
+  .col{display:flex;flex-direction:column;justify-content:flex-end;min-height:54px;} /* match progress column height */
+  .col-title{
+    font-size:14px;font-weight:700;color:#0f172a;margin:0 0 6px 0;line-height:1;
+    font-family:inherit; /* ensure same font across all three */
+  }
   .col-value{font-weight:700;word-break:break-all;}
   .mono{font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
 
-  /* Progress bar (unchanged, just moved) */
+  /* Progress bar (unchanged behavior; just lives in the row) */
   .bar-wrap{width:100%;}
   .bar{position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);}
   .bar .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--accent);transition:width 400ms ease;}
   .bar .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);pointer-events:none;}
-  .anchors{display:flex;justify-content:space-between;margin-top:6px;color:#0b5a37;font-size:11px;font-weight:700;opacity:.75}
+  .anchors{display:flex;justify-content:space-between;margin-top:6px;color:var(--brand);font-size:11px;font-weight:700;opacity:.9}
 
   .log{background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px;line-height:1.25;max-height:12.5em;overflow:auto;white-space:pre-wrap;}
 
-  @media (max-width:780px){.grid{grid-template-columns:1fr;}.btn-row{flex-direction:column}.status-row{grid-template-columns:1fr;}}
+  /* T&C accordion */
+  details.tnc{margin:8px 0 4px;}
+  details.tnc summary{cursor:pointer;font-weight:700;color:#111;}
+
+  @media (max-width:780px){
+    .grid{grid-template-columns:1fr;}
+    .btn-row{flex-direction:column}
+    .status-row{grid-template-columns:1fr;}
+    .col{min-height:auto;}
+  }
 </style>
 </head>
 <body>
@@ -134,6 +163,19 @@
         <label for="terms">I accept the terms</label>
       </div>
 
+      <!-- Restored T&C accordion -->
+      <div class="full">
+        <details class="tnc">
+          <summary>View Terms & Conditions</summary>
+          <div style="font-size:12px;color:#374151;margin-top:6px;line-height:1.45">
+            <p><strong>Usage:</strong> By uploading you confirm you own the rights or have permission from the owner.</p>
+            <p><strong>Privacy:</strong> Videos may be processed by third-party analytics to generate statistics.</p>
+            <p><strong>Charges:</strong> Analysis may incur costs; invalid or corrupted uploads may be rejected.</p>
+            <p><strong>Support:</strong> Contact info@nextpointtennis.com for assistance.</p>
+          </div>
+        </details>
+      </div>
+
       <!-- Buttons -->
       <div class="full btn-row">
         <button type="button" class="btn-outline" id="checkBtn">Check Video</button>
@@ -143,7 +185,7 @@
 
       <div class="full divider"></div>
 
-      <!-- NEW: TASK ID / STATUS / PROGRESS % in one row -->
+      <!-- TASK ID / STATUS / PROGRESS % -->
       <div class="full status-row">
         <div class="col">
           <div class="col-title">TASK ID</div>
@@ -320,16 +362,16 @@
       const j = await r.json();
       if (!j.ok){ submitBtn.disabled = false; log(`submit error: ${j.error || 'failed'}`); return; }
 
-      currentTaskId = j.task_id;
-      taskIdEl.textContent = currentTaskId || '—';
-      linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(currentTaskId)}`;
-      cancelBtn.style.display = currentTaskId ? '' : 'none';
+      const tid = j.task_id;
+      linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(tid)}`;
+      taskIdEl.textContent = tid || '—';
+      cancelBtn.style.display = tid ? '' : 'none';
 
-      log(`task ${currentTaskId} submitted to Analytics Console…`);
+      log(`task ${tid} submitted to Analytics Console…`);
 
       clearInterval(pollTimer);
-      pollTimer = setInterval(()=>poll(currentTaskId), 2000);
-      poll(currentTaskId);
+      pollTimer = setInterval(()=>poll(tid), 2000);
+      poll(tid);
     }catch(e){
       submitBtn.disabled = false;
       log(`error: ${e}`);
@@ -338,13 +380,14 @@
 
   // CANCEL
   cancelBtn.addEventListener('click', async ()=>{
-    if (!currentTaskId){ return; }
+    const tid = taskIdEl.textContent.trim();
+    if (!tid || tid==='—') return;
     cancelBtn.disabled = true;
     try{
       const r = await fetch('/upload/api/cancel-task', {
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded'},
-        body: new URLSearchParams({ task_id: currentTaskId })
+        body: new URLSearchParams({ task_id: tid })
       });
       const j = await r.json();
       if (j.ok){
