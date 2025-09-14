@@ -61,6 +61,7 @@ AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "0").lower() in (
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
     "https://api.sportai.app",
+     "https://api.sportai.com",
     "https://sportai.app",
 ]))
 
@@ -70,11 +71,14 @@ SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([
     "/api/statistics/tennis",  # common variant
 ]))
 
-# Status can also vary by tenant → try both
+# Status can also vary by tenant → try all
 SPORTAI_STATUS_PATHS = list(dict.fromkeys([
     SPORTAI_STATUS_PATH,
-    "/api/statistics/tennis/{task_id}",
-    "/api/statistics/{task_id}",
+    "/api/statistics/tennis/{task_id}/status",  # <-- NEW exact match you sent
+    "/api/statistics/{task_id}/status",         # <-- generic /status
+    "/api/statistics/tennis/{task_id}",         # legacy
+    "/api/statistics/{task_id}",                # legacy
+    "/api/tasks/{task_id}",                     # generic tasks status
 ]))
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
