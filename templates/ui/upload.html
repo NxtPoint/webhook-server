@@ -22,12 +22,18 @@
       --border: #e2e8f0;
       --muted:  #6b7280;
       --emph:   #111827;
-      --pill-bg:#ecfdf5;           /* soft green 50 */
-      --accent:#22c55e;            /* emerald-500 */
-      --accent-700:#16a34a;        /* emerald-600 */
-      --accent-900:#166534;        /* emerald-800 */
+      --pill-bg:#edf2f7;
       --maxw:   1100px;
+
+      /* NEW: green accent family (to match the dashboard charts) */
+      --accent:      #16a34a;  /* green-600 */
+      --accent-700:  #15803d;
+      --accent-600:  #16a34a;
+      --accent-500:  #22c55e;
+      --accent-100:  #dcfce7;
+      --accent-50:   #ecfdf5;
     }
+
     *{box-sizing:border-box}
     html,body{height:100%}
     body{
@@ -37,7 +43,7 @@
     }
     .wrap{max-width: var(--maxw); margin:0 auto}
 
-    /* ===== Single card ===== */
+    /* ===== Card ===== */
     .card{
       background:var(--card-bg);
       padding: clamp(16px, 2.5vw, 24px);
@@ -46,95 +52,79 @@
       box-shadow:0 10px 30px rgba(0,0,0,.18);
     }
 
-    /* ===== Form ===== */
-    .form-grid{
-      display:grid; gap:14px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
+    /* ===== Form layout ===== */
+    .form-grid{ display:grid; gap:14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .full{grid-column: 1 / -1}
-
-    .two{
-      display:grid; gap:14px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .players{
-      display:grid; gap:14px;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-    }
+    .two{ display:grid; gap:14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .players{ display:grid; gap:14px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
     label{display:block; margin-top:2px; font-size:14px}
     .req::after{content:" *"; color:#dc2626; font-weight:700}
-
     input,button{
       width:100%; padding:10px 12px; border:1px solid #cbd5e0; border-radius:8px;
       font-size:14px; background:#fff;
     }
     input[type="file"]{padding:6px}
 
-    /* Default/propagated values get a subtle green look */
+    /* NEW: defaulted values show soft green fill instead of blue */
     input.is-default{
-      background: var(--pill-bg);
-      border-color:#86efac;     /* green-300 */
-      color:#064e3b;            /* green-900 */
+      background: var(--accent-50);
+      border-color: var(--accent-100);
+      color: var(--muted);
     }
 
     .terms{display:flex; align-items:center; gap:10px; margin-top:6px; color:#2d3748}
     .terms input{width:auto}
 
-    /* Buttons: green */
+    /* NEW: Accent button (green) */
     button{
       margin-top:6px; cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent);
       transition: filter .15s, transform .03s, background .15s;
     }
-    button:hover{filter:brightness(1.04); background:var(--accent-700)}
+    button:hover{filter:brightness(1.06)}
     button:active{transform:translateY(1px)}
     button[disabled]{opacity:.6; cursor:not-allowed}
 
     /* ===== Status ===== */
     .section-title{margin:18px 0 6px; font-weight:700}
 
-    /* One-line status row */
+    /* NEW: inline status row (Task ID • Stage • % ) */
     .status-row{
-      display:grid; gap:12px; align-items:center;
-      grid-template-columns: 2fr 1.2fr 3fr;
-      margin: 6px 0 12px;
+      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+      font-size:13px; color:#374151; margin-bottom:8px;
     }
-    .pill{display:inline-block; padding:6px 10px; border-radius:999px; background:var(--pill-bg); border:1px solid #a7f3d0; font-size:12px}
+    .chip{padding:4px 8px; border:1px solid var(--border); border-radius:999px; background:#fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}
+    .dot{width:6px; height:6px; background:#9ca3af; border-radius:50%}
 
-    .progress{height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden; border:1px solid #e2e8f0; position:relative}
-    .progress > div{height:100%; width:0%; background:var(--accent); transition:width .3s ease}
-
-    /* Indeterminate animation while we don't have numeric progress */
+    /* Slim progress bar + green + indeterminate animation */
+    .progress{ position:relative; height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden; border:1px solid #e2e8f0 }
+    .progress > div{height:100%; width:0%; background:var(--accent-500); transition:width .35s ease}
     .progress.indeterminate > div{
-      width:30%;
-      position:absolute; left:0;
-      animation: indet 1.2s infinite linear;
-      background:
-        repeating-linear-gradient(45deg, rgba(34,197,94,.9), rgba(34,197,94,.9) 10px, rgba(34,197,94,.6) 10px, rgba(34,197,94,.6) 20px);
+      position:absolute; left:0; width:30%;
+      animation: indet 1.5s ease-in-out infinite;
     }
-    @keyframes indet {
-      from { left:-35% } to { left:100% }
+    @keyframes indet{
+      0%{ transform: translateX(0%) }
+      50%{ transform: translateX(235%) }
+      100%{ transform: translateX(0%) }
     }
 
-    .muted{color: var(--muted)}
+    .kv{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0}
+    .kv .k{width:110px; color:#4b5563}
+    .kv .v{flex:1}
 
     .log{
       border:1px solid var(--border); border-radius:12px; padding:10px; background:#fff;
-      height: 150px; overflow:auto; font-size:12px;
+      height: 140px; /* NEW: ~10 lines */
+      overflow:auto; font-size:12px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 1.25;
     }
-    a.btn{display:inline-block; padding:6px 10px; border:1px solid var(--accent); border-radius:8px; text-decoration:none; color:var(--accent)}
-    a.btn:hover{background:var(--pill-bg)}
-
-    .next-steps{
-      margin-top:12px; padding:12px; border:1px dashed #a7f3d0; border-radius:12px; background:#f0fdf4; display:none;
-    }
+    a.btn{display:inline-block; padding:6px 10px; border:1px solid #cbd5e0; border-radius:8px; text-decoration:none}
 
     /* Responsive */
-    @media (max-width: 980px){
-      .players{grid-template-columns: repeat(2, minmax(0, 1fr))}
-      .status-row{grid-template-columns: 1fr}
-    }
+    @media (max-width: 980px){ .players{grid-template-columns: repeat(2, minmax(0, 1fr))} }
     @media (max-width: 680px){
       .form-grid{grid-template-columns: 1fr}
       .two{grid-template-columns: 1fr}
@@ -166,7 +156,7 @@
             </div>
           </div>
 
-          <!-- Customer + Match date (defaults) -->
+          <!-- Customer + Match date -->
           <div>
             <label>Customer name</label>
             <input id="customer_name" name="customer_name" />
@@ -218,41 +208,41 @@
               <div class="small">
                 <p><em>Last updated: {{ (namespace()|attr('now') if false) or '' }}</em></p>
                 <ol>
-                  <li><strong>Service &amp; Scope.</strong> You authorize NextPoint to upload the provided video to our file server and submit it to the Analytics Console for automated analysis. Output includes detected events, statistics and derived insights.</li>
-                  <!-- rest unchanged -->
+                  <li><strong>Service &amp; Scope.</strong> You authorize NextPoint to upload the provided video to our file server and submit it to the analytics console for automated analysis. Output includes detected events, statistics and derived insights.</li>
+                  <li><strong>Your Content &amp; License.</strong> You retain ownership of your uploads. You grant us and our processors a limited license to store and analyze the content solely to deliver and improve the service.</li>
+                  <li><strong>Data Privacy.</strong> …</li>
+                  <!-- (rest unchanged) -->
                 </ol>
-                <p><em>This sample T&amp;C text is for product launch convenience and is not legal advice. Please have counsel review for your jurisdiction and use case.</em></p>
               </div>
             </details>
           </div>
 
           <div class="full">
+            <!-- NEW label text -->
             <button id="submitBtn" type="submit">Upload and Submit</button>
           </div>
         </div>
       </form>
 
-      <!-- Status -->
+      <!-- Status (inline row + slim bar) -->
       <div class="section-title">Status</div>
 
       <div class="status-row">
-        <div><span class="muted">Task ID</span> <span class="pill" id="taskId" style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">—</span></div>
-        <div><span class="muted">Stage</span> <span class="pill" id="stage">waiting…</span></div>
-        <div>
-          <div class="progress" id="progress"><div id="bar"></div></div>
-          <div class="muted" id="pct" style="margin-top:6px">0%</div>
-        </div>
+        <span class="chip" id="taskId">—</span>
+        <span class="dot"></span>
+        <span class="chip" id="stage">waiting…</span>
+        <span class="dot"></span>
+        <span class="chip" id="pct">0%</span>
       </div>
+      <div class="progress" id="progress"><div id="bar"></div></div>
 
       <div class="kv">
-        <div class="muted" style="width:110px">Links</div>
+        <div class="k">Links</div>
         <div class="v" id="links"></div>
       </div>
 
       <div class="section-title">Log</div>
       <div class="log" id="log"></div>
-
-      <div class="next-steps" id="nextSteps"></div>
 
     </div>
   </div>
@@ -262,7 +252,6 @@
     const q = sel => document.querySelector(sel);
     const byId = id => document.getElementById(id);
 
-    // mark/unmark default styling
     function setDefault(el, value){
       el.value = value;
       el.classList.add('is-default');
@@ -282,7 +271,6 @@
       });
     }
 
-    // apply initial defaults
     const matchDate = byId('match_date');
     const startTime = byId('start_time');
     const custName  = byId('customer_name');
@@ -291,16 +279,10 @@
 
     const today = new Date();
     const iso = today.toISOString().slice(0,10);
-    setDefault(matchDate, iso);
-    clearDefaultOnEdit(matchDate);
-
-    setDefault(startTime, "00:00:00");
-    clearDefaultOnEdit(startTime);
-
-    setDefault(paName, "Player A");
-    setDefault(pbName, "Player B");
-    clearDefaultOnEdit(paName);
-    clearDefaultOnEdit(pbName);
+    setDefault(matchDate, iso);  clearDefaultOnEdit(matchDate);
+    setDefault(startTime, "00:00:00"); clearDefaultOnEdit(startTime);
+    setDefault(paName, "Player A");    clearDefaultOnEdit(paName);
+    setDefault(pbName, "Player B");    clearDefaultOnEdit(pbName);
 
     const emailInput = document.querySelector('input[name="email"]');
     function deriveNameFromEmail(v){
@@ -322,8 +304,7 @@
         clearDefaultOnEdit(custName);
       }
     });
-    setDefault(custName, "Customer");
-    clearDefaultOnEdit(custName);
+    setDefault(custName, "Customer"); clearDefaultOnEdit(custName);
 
     // =============== Upload + Status logic ===============
     const form  = document.getElementById('uploadForm');
@@ -334,8 +315,7 @@
     const stage = document.getElementById('stage');
     const task  = document.getElementById('taskId');
     const links = document.getElementById('links');
-    const progressEl = document.getElementById('progress');
-    const nextSteps = document.getElementById('nextSteps');
+    const prog  = document.getElementById('progress');
     let pollTimer = null;
 
     function logLine(text, cls){
@@ -346,37 +326,24 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
     function setProgress(p){
+      prog.classList.remove('indeterminate');
       const v = Math.max(0, Math.min(100, Math.round(p || 0)));
-      progressEl.classList.remove('indeterminate');
       bar.style.width = v + '%';
       pct.textContent = v + '%';
     }
-    function setIndeterminate(){
-      pct.textContent = '';
-      progressEl.classList.add('indeterminate');
+    function setIndeterminate(on=true){
+      if (on){
+        prog.classList.add('indeterminate');
+        pct.textContent = '…';
+      } else {
+        prog.classList.remove('indeterminate');
+      }
     }
     function setStage(s){ stage.textContent = s || '—'; }
     function linkify(url, text){
       const a = document.createElement('a');
       a.href = url; a.textContent = text || url; a.className = 'btn'; a.target = '_blank'; a.rel = "noopener";
       return a;
-    }
-    function showNextSteps(info){
-      const {session_id, result_url} = info || {};
-      nextSteps.style.display = 'block';
-      nextSteps.innerHTML = `
-        <strong>Next steps</strong><br>
-        <ul style="margin:6px 0 0 18px">
-          <li>Your analysis is ready in the <em>Analytics Console</em>.</li>
-          <li>${session_id ? `Session ID: <code>${session_id}</code>. ` : ''}If you use Power BI, refresh the dataset to pull the latest tables.</li>
-          ${result_url ? `<li><a class="btn" href="${result_url}" target="_blank" rel="noopener">Download result JSON</a></li>` : ''}
-        </ul>
-      `;
-    }
-
-    function isProcessingStatus(s){
-      s = (s||'').toLowerCase();
-      return ["queued","processing","running","pending","in_progress","in progress","submitted","uploading"].some(t => s.includes(t));
     }
 
     async function pollStatus(taskId){
@@ -397,38 +364,50 @@
           return;
         }
 
-        const st = (j.status || j.data?.task_status || '').toString();
-        setStage(st);
+        // Normalize like backend: status + progress
+        const d = (j.data && typeof j.data === 'object') ? j.data : {};
+        const st = String(j.status || d.task_status || d.status || '').toLowerCase();
+        const pRaw = (d.task_progress ?? d.progress ?? j.total_subtask_progress ?? 0);
+        const pNum = Number(pRaw);
 
-        // Prefer numeric progress if present; otherwise indeterminate while processing
-        let p = Number(j.data?.task_progress ?? j.total_subtask_progress ?? 0);
-        if ((!p || p <= 0) && isProcessingStatus(st)) {
-          setIndeterminate();
+        // Stage + progress UI
+        const stageText = st || (j.result_url ? 'completed' : 'processing');
+        setStage(stageText);
+
+        // If backend gives no progress while running, show indeterminate animation
+        if (!['completed','done','success','succeeded','failed','error','cancelled','canceled'].includes(stageText)
+            && (!pNum || Number.isNaN(pNum))) {
+          setIndeterminate(true);
         } else {
-          setProgress(p);
+          setIndeterminate(false);
+          setProgress(stageText.startsWith('comp') ? 100 : pNum);
         }
 
-        const subtasks = j.data?.subtask_progress || {};
-        for (const [k,v] of Object.entries(subtasks)){
-          logLine(`${k}: ${v}%`);
-        }
+        // Subtasks -> log
+        const subt = d.subtask_progress || {};
+        for (const [k,v] of Object.entries(subt)){ logLine(`${k}: ${v}%`); }
 
+        // Links
         links.innerHTML = '';
         if (j.result_url){ links.appendChild(linkify(j.result_url, 'Result JSON')); }
         links.appendChild(linkify(`/upload/api/task-status?task_id=${encodeURIComponent(taskId)}`, 'Raw status'));
 
-        const done = ['completed','done','success','succeeded'].includes(st.toLowerCase());
-        const failed = ['failed','error','cancelled','canceled'].includes(st.toLowerCase());
+        const done = ['completed','done','success','succeeded'].includes(stageText);
+        const failed = ['failed','error','cancelled','canceled'].includes(stageText);
+
         if (done){
-          logLine('analysis complete ✓', 'ok');
+          logLine('report ready ✓', 'ok');
           setProgress(100);
           btn.disabled = false;
-          showNextSteps({session_id: j.session_id, result_url: j.result_url});
           return;
         }
-        if (failed){ logLine(`analysis failed: ${st}`, 'err'); btn.disabled = false; return; }
+        if (failed){
+          logLine(`analysis failed: ${stageText}`, 'err');
+          btn.disabled = false;
+          return;
+        }
 
-        pollTimer = setTimeout(() => pollStatus(taskId), 2500);
+        pollTimer = setTimeout(() => pollStatus(taskId), 3000);
       } catch(err){
         logLine(`status exception: ${err}`, 'err');
         pollTimer = setTimeout(() => pollStatus(taskId), 4000);
@@ -438,9 +417,9 @@
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       btn.disabled = true;
-      nextSteps.style.display = 'none';
       logEl.innerHTML = ''; links.innerHTML = '';
       setProgress(0); setStage('uploading…'); task.textContent = '—';
+      setIndeterminate(true);
       try {
         const fd = new FormData(form);
         logLine('uploading to file server…');
@@ -461,7 +440,6 @@
         logLine(`uploaded ${j.upload?.name} (${j.upload?.size || 0} bytes)`, 'ok');
         logLine(`task ${j.task_id} submitted to Analytics Console…`);
         setStage('processing');
-        setIndeterminate();
         pollStatus(j.task_id);
       } catch(err){
         logLine(`submit exception: ${err}`, 'err');
