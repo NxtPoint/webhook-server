@@ -40,9 +40,10 @@ DBX_REFRESH     = os.getenv("DROPBOX_REFRESH_TOKEN", "")
 DBX_FOLDER      = os.getenv("DROPBOX_UPLOAD_FOLDER", "/wix-uploads").strip()
 DBX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN", "").strip()  # legacy token (optional)
 
-SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.app").strip().rstrip("/")
-SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics").strip()
-SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/{task_id}").strip()
+# ---------- SportAI config (updated) ----------
+SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.com").strip().rstrip("/")
+SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics/tennis").strip()
+SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/tennis/{task_id}/status").strip()
 SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
 SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
 SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
@@ -57,27 +58,28 @@ DEFAULT_REPLACE_ON_INGEST = (
 
 AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "0").lower() in ("1","true","yes","y")
 
-# Fallbacks (first is env)
+# Try both public hostnames
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
     "https://api.sportai.com",
+    "https://api.sportai.app",
 ]))
 
-
-# Submit can vary by tenant
+# Submit can vary by tenant — prefer tennis path, then generic
 SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([
     SPORTAI_SUBMIT_PATH,
-    "/api/statistics/tennis",  # common variant
+    "/api/statistics/tennis",
+    "/api/statistics",
 ]))
 
 # Status can also vary by tenant → try all
 SPORTAI_STATUS_PATHS = list(dict.fromkeys([
     SPORTAI_STATUS_PATH,
-    "/api/statistics/tennis/{task_id}/status",  # <-- NEW exact match you sent
-    "/api/statistics/{task_id}/status",         # <-- generic /status
-    "/api/statistics/tennis/{task_id}",         # legacy
-    "/api/statistics/{task_id}",                # legacy
-    "/api/tasks/{task_id}",                     # generic tasks status
+    "/api/statistics/tennis/{task_id}/status",
+    "/api/statistics/{task_id}/status",
+    "/api/statistics/tennis/{task_id}",
+    "/api/statistics/{task_id}",
+    "/api/tasks/{task_id}",
 ]))
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
@@ -93,7 +95,6 @@ AWS_REGION      = os.getenv("AWS_REGION", "").strip() or None
 S3_BUCKET       = os.getenv("S3_BUCKET", "").strip()
 S3_PREFIX       = (os.getenv("S3_PREFIX", "wix-uploads") or "wix-uploads").strip().strip("/")
 S3_GET_EXPIRES  = int(os.getenv("S3_GET_EXPIRES", "604800"))  # 7 days default
-
 
 # -------------------------------------------------------
 # Helpers
@@ -294,29 +295,57 @@ def _iter_status_endpoints(task_id: str):
             yield f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
 
 def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None = None) -> str:
+    """
+    Submit a video to SportAI. Different deployments expect slightly different JSON
+    shapes; we try a few safe variants until one succeeds (avoids 400/404/415/422).
+    """
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
 
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
-    payload = {"video_url": video_url, "only_in_rally_data": False, "version": "stable"}
-    if email: payload["email"] = email
-    if meta:  payload["metadata"] = meta
+
+    # Build a few payload variants (ordered from richest -> leanest)
+    base_min  = {"video_url": video_url, "version": "latest"}
+    base_arr  = {"video_urls": [video_url], "version": "latest"}         # some deployments use an array
+    with_email = {**base_min, **({"email": email} if email else {})}
+    with_meta  = {**with_email, **({"metadata": meta} if meta else {})}  # only if accepted by the API
+
+    payload_variants = [
+        with_meta,
+        with_email,
+        base_min,
+        base_arr,
+        {"url": video_url, "version": "latest"},  # very old schema
+    ]
 
     last_err = None
-    for submit_url in _iter_submit_endpoints():
-        try:
-            r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
-            if r.status_code >= 500:
-                last_err = f"{submit_url} -> {r.status_code}: {r.text}"
+
+    for submit_url in _iter_submit_endpoints():             # try each base/path
+        for payload in payload_variants:                    # try each payload shape
+            try:
+                r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
+
+                # “Wrong schema/path” class of errors -> try next payload/endpoint
+                if r.status_code in (400, 404, 405, 415, 422):
+                    last_err = f"{submit_url} -> {r.status_code}: {r.text}"
+                    continue
+
+                # Server hiccup -> move on to next endpoint
+                if r.status_code >= 500:
+                    last_err = f"{submit_url} -> {r.status_code}: {r.text}"
+                    break
+
+                r.raise_for_status()
+                j = r.json() if r.content else {}
+                task_id = j.get("task_id") or (j.get("data") or {}).get("task_id") or j.get("id")
+                if not task_id:
+                    last_err = f"{submit_url} -> no task_id in response: {j}"
+                    continue
+                return str(task_id)
+
+            except Exception as e:
+                last_err = f"{submit_url} with {list(payload.keys())} -> {e}"
                 continue
-            r.raise_for_status()
-            j = r.json() or {}
-            task_id = j.get("task_id") or (j.get("data") or {}).get("task_id") or j.get("id")
-            if not task_id:
-                raise RuntimeError(f"No task_id in response from {submit_url}: {j}")
-            return str(task_id)
-        except Exception as e:
-            last_err = str(e)
 
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
@@ -500,7 +529,7 @@ def api_upload_to_dropbox():
             except Exception as e:
                 return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
-        # 2) Multipart upload (preferred)
+    # 2) Multipart upload (preferred)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
     if not f or not f.filename:
@@ -578,7 +607,6 @@ def api_upload_to_dropbox():
                    "size": meta_dbx.get("size"),
                    "name": meta_dbx.get("name", clean)}
     })
-
 
 # Legacy /upload alias (keeps old front-end working)
 @app.route("/upload", methods=["POST", "OPTIONS"])
