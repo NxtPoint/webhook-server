@@ -1018,25 +1018,15 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D (reverted logic; only tweak: last shot requires a floor bounce X)
+          -- A–D court placement
+          -- Revert to the previous mapping (bounce → next_hit → hit),
+          -- but if this is the last shot of the point and there is NO floor-bounce X, force NULL.
           CASE
             WHEN sbp.serve_d THEN NULL
-            WHEN sbp.shot_ix = sbp.last_shot_ix THEN
-              CASE
-                WHEN sbp.bounce_type_raw = 'floor'
-                     AND sbp.bounce_x_center_m IS NOT NULL
-                  THEN placement_ad(
-                         sbp.bounce_x_center_m::numeric,
-                         CASE
-                           WHEN sbp.player_id = sbp.server_id
-                             THEN pe.receiver_is_far_end_d
-                           ELSE pe.server_is_far_end_d
-                         END,
-                         (SELECT court_w_m FROM const),
-                         (SELECT eps_m    FROM const)
-                       )
-                ELSE NULL
-              END
+            WHEN sbp.shot_ix = sbp.last_shot_ix
+                 AND (sbp.bounce_type_raw IS DISTINCT FROM 'floor'
+                      OR sbp.bounce_x_center_m IS NULL)
+              THEN NULL
             ELSE
               placement_ad(
                 COALESCE(
@@ -1053,6 +1043,7 @@ CREATE_STMTS = {
                 (SELECT eps_m    FROM const)
               )
           END AS placement_ad_d,
+
 
           -- Play type
           CASE
