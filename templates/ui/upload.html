@@ -6,10 +6,8 @@
 <title>Upload & Submit • NextPoint</title>
 <style>
   :root{
-    /* Primary green — used for 0%/100%, Upload button, checkbox, and progress bar */
-    --brand:#0b5a37;
+    --brand:#0b5a37;          /* primary green */
 
-    /* Secondary/utility */
     --accent-soft:#EAF6EF;
     --text:#111827;
     --muted:#6b7280;
@@ -17,8 +15,7 @@
     --field-border:#e5e7eb;
     --card-bg:rgba(255,255,255,0.92);
 
-    /* Show more of the player's face */
-    --top-offset:240px;
+    --top-offset:240px;       /* show more of player's face */
   }
 
   html,body{height:100%;}
@@ -65,17 +62,18 @@
   .btn-row{display:flex;gap:10px}
   .divider{height:1px;background:#e5e7eb;margin:12px 0;}
 
-  /* STATUS ROW: give Task ID more room, keep titles aligned and not bold */
+  /* STATUS ROW (aligned, bold titles, safe widths, no overflow) */
   .status-row{
     display:grid;
-    grid-template-columns: minmax(520px, 1.6fr) minmax(180px, 0.8fr) minmax(520px, 1.2fr);
-    gap:24px;
-    align-items:end; /* line up with progress base */
+    grid-template-columns: 1.25fr 0.75fr 1.0fr; /* task id | status | progress */
+    gap:20px;
+    align-items:end;            /* bottoms align with progress base */
     margin-top:6px;
+    overflow:hidden;            /* never bleed outside card */
   }
   .col{display:flex;flex-direction:column;justify-content:flex-end;min-height:54px;}
   .col-title{
-    font-size:14px;font-weight:400;color:#0f172a;margin:0 0 6px 0;line-height:1;font-family:inherit;
+    font-size:14px;font-weight:700;color:#0f172a;margin:0 0 6px 0;line-height:1;font-family:inherit;
   }
   .col-value{
     font-weight:600;word-break:break-all;color:var(--brand);
@@ -98,10 +96,8 @@
   details.tnc{margin:8px 0 4px;}
   details.tnc summary{cursor:pointer;font-weight:700;color:#111;}
 
-  @media (max-width:780px){
-    .grid{grid-template-columns:1fr;}
-    .btn-row{flex-direction:column}
-    .status-row{grid-template-columns:1fr;}
+  @media (max-width:900px){
+    .status-row{grid-template-columns: 1fr;}  /* stack on small screens */
     .col{min-height:auto;}
   }
 </style>
@@ -208,7 +204,7 @@
         </div>
       </div>
 
-      <!-- Links removed by request -->
+      <!-- Links intentionally removed -->
 
       <div class="full">
         <div class="log" id="log"></div>
