@@ -4,18 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Upload & Submit • NextPoint</title>
-
 <style>
   :root{
-    /* brand-ish green that matches the background charts */
-    --accent: #28C07B;         /* main */
-    --accent-strong: #1EA466;  /* hover/active */
-    --accent-soft: #E8F7F0;    /* chips/bg */
+    /* darker green to match the background graphs */
+    --accent: #16A34A;         /* emerald-600 */
+    --accent-strong: #15803D;  /* emerald-700 */
+    --accent-soft: #EAF6EF;
     --text: #111;
     --muted: #6b7280;
-    --field-bg: #f6f7f8;       /* inputs idle */
-    --field-border: #e5e7eb;   /* subtle borders */
+    --field-bg: #f6f7f8;
+    --field-border: #e5e7eb;
     --card-bg: rgba(255,255,255,0.92);
+    --top-offset: 110px; /* push card down to show more of player */
   }
 
   html,body{height:100%;}
@@ -24,210 +24,202 @@
     font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
     color:var(--text);
     background:
-      linear-gradient(rgba(0,0,0,0.2), rgba(0,0,0,0.35)),
+      linear-gradient(rgba(0,0,0,0.20), rgba(0,0,0,0.35)),
       url("{{ url_for('static', filename='upload/background-clean-male-serve.jpg') }}") center/cover fixed no-repeat;
   }
-
-  .wrap{
-    min-height:100%;
-    display:flex;
-    align-items:flex-start;
-    justify-content:center;
-  }
+  .wrap{min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding-top:var(--top-offset);}
   .card{
     width:min(980px, 92vw);
-    margin:28px auto 64px;
     background:var(--card-bg);
     border-radius:16px;
     box-shadow:0 10px 30px rgba(0,0,0,0.15);
     backdrop-filter: blur(2px);
-    padding:22px 22px 12px;
+    padding:22px 22px 14px;
+    margin:0 auto 90px;
   }
 
-  h1{font-size:20px;margin:0 0 12px 0;font-weight:700;}
-  .grid{
-    display:grid;
-    grid-template-columns: 1fr 1fr;
-    gap:12px 16px;
-  }
-  .grid .full{grid-column: 1 / -1;}
+  h1{font-size:20px;margin:0 0 12px;font-weight:700;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;}
+  .grid .full{grid-column:1/-1;}
 
   label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px;}
-  input[type="text"],
-  input[type="email"],
-  input[type="date"],
-  input[type="time"],
-  input[type="number"]{
-    width:100%;
-    box-sizing:border-box;
-    background:var(--field-bg);
-    border:1px solid var(--field-border);
-    border-radius:10px;
-    padding:10px 12px;
-    font-size:14px;
-    outline:none;
+  input[type="text"],input[type="email"],input[type="date"],
+  input[type="time"],input[type="number"]{
+    width:100%;box-sizing:border-box;background:var(--field-bg);
+    border:1px solid var(--field-border);border-radius:10px;
+    padding:10px 12px;font-size:14px;outline:none;color:var(--text);
   }
   input::placeholder{color:#b5b9bf;}
-
-  input:focus{
-    border-color:#d1d5db;
-    box-shadow:0 0 0 3px rgba(40,192,123,0.12);
-    background:#fff;
-  }
-
-  input.done{ background:#fff; border-color:#d1d5db; }
+  input:focus{border-color:#d1d5db;box-shadow:0 0 0 3px rgba(22,163,74,0.12);background:#fff;}
+  input.done{background:#fff;border-color:#d1d5db;}
+  .terms{display:flex;align-items:center;gap:8px;font-size:13px;color:#111;}
+  .terms input[type="checkbox"]{accent-color:var(--accent);}
 
   .btn{
-    appearance:none;border:0;cursor:pointer;
+    appearance:none;border:0;cursor:pointer;width:100%;
     padding:12px 18px;border-radius:10px;
     background:var(--accent);color:#fff;font-weight:700;
-    width:100%;
   }
-  .btn:hover{ background:var(--accent-strong); }
+  .btn:hover{background:var(--accent-strong);}
 
-  .bar{
-    height:10px;border-radius:9999px;background:#e5efe9;overflow:hidden;
+  .section-title{margin:12px 0 6px;font-weight:700;font-size:14px;color:#0f172a;}
+  .divider{height:1px;background:#e5e7eb;margin:12px 0;}
+
+  /* Compact chips with label ABOVE value */
+  .chip-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;}
+  .chip{
+    display:flex;flex-direction:column;gap:2px;
+    background:var(--accent-soft);padding:8px 10px;border-radius:10px;
+    min-width:220px;
   }
-  .bar > .fill{
-    height:100%;width:0%;
+  .chip small{font-size:11px;letter-spacing:.02em;text-transform:uppercase;color:#0b5a37;font-weight:800;opacity:.75;}
+  .chip .val{font-weight:700;color:#0b5a37;word-break:break-all;}
+
+  /* Progress block */
+  .progress-block{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:6px 0 6px;}
+  .progress-left{min-width:220px}
+  .progress-right{flex:1;min-width:260px;display:flex;align-items:center;gap:10px;}
+  .bar-wrap{flex:1;min-width:220px;}
+  .bar-label{font-size:11px;letter-spacing:.02em;text-transform:uppercase;color:#0b5a37;font-weight:800;margin-bottom:6px;}
+  .bar{
+    position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);
+  }
+  .bar .fill{
+    position:absolute;left:0;top:0;bottom:0;width:0%;
     background:var(--accent);
     transition:width 400ms ease;
   }
-
-  .section-title{margin:12px 0 6px;font-weight:700;font-size:14px;color:#0f172a;}
-  .chip-row{
-    display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  .bar .pct{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);
+    pointer-events:none;
   }
-  .chip{
-    display:inline-flex;align-items:center;gap:6px;
-    background:var(--accent-soft);
-    color:#0b5a37;
-    border-radius:9999px;
-    padding:6px 10px;
-    font-size:12px;font-weight:600;
-    white-space:nowrap;
-  }
-  .chip .label{opacity:0.65;font-weight:700;text-transform:uppercase;letter-spacing:.02em;font-size:11px;}
-  .status-line{
-    display:flex;align-items:center;gap:12px;margin:6px 0 10px;
-  }
-  .status-line .spacer{flex:1;min-width:120px}
-  .status-line .bar{height:8px;min-width:220px;max-width:420px;flex:0 1 38%}
+  .anchors{display:flex;justify-content:space-between;margin-top:6px;color:#0b5a37;font-size:11px;font-weight:700;opacity:.75}
 
-  .links a{font-size:12px;color:#0b5a37;text-decoration:underline;}
-
+  /* Log: white + ~10 lines */
   .log{
-    background:#0b1220;color:#cbd5e1;
+    background:#fff;color:#111;border:1px solid #e5e7eb;
     border-radius:10px;padding:10px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size:12px;line-height:1.25;
-    max-height:10.5em; /* ~10 lines */
-    overflow:auto; white-space:pre-wrap;
+    max-height:12.5em; /* ~10 lines @ 1.25 */
+    overflow:auto;white-space:pre-wrap;
   }
 
-  .terms{display:flex;align-items:center;gap:8px;font-size:13px;color:#111;}
-  .muted{color:var(--muted);font-size:12px;}
-
-  .divider{height:1px;background:#e5e7eb;margin:12px 0;}
-
   @media (max-width:780px){
-    .grid{ grid-template-columns: 1fr; }
-    .status-line{ flex-direction:column; align-items:flex-start; }
-    .status-line .bar{ width:100%; max-width:none; min-width:0; }
-    .btn{ margin-top:6px; }
+    .grid{grid-template-columns:1fr;}
+    .progress-right{min-width:0;}
   }
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card" id="card">
-      <h1>Upload & Submit</h1>
+<div class="wrap">
+  <div class="card" id="card">
+    <h1>Upload & Submit</h1>
 
-      <form id="form" enctype="multipart/form-data" class="grid">
-        <div class="full">
-          <label>Video file (max 150 MB)</label>
-          <input type="file" id="file" name="file" accept="video/*" required />
-        </div>
+    <form id="form" enctype="multipart/form-data" class="grid">
+      <div class="full">
+        <label>Video file (max 150 MB)</label>
+        <input type="file" id="file" name="file" accept="video/*" required />
+      </div>
 
-        <div>
-          <label>Customer name</label>
-          <input type="text" name="customer_name" placeholder="Customer" />
-        </div>
-        <div>
-          <label>Email *</label>
-          <input type="email" name="email" placeholder="you@example.com" required />
-        </div>
+      <div>
+        <label>Customer name</label>
+        <input type="text" name="customer_name" placeholder="Customer" />
+      </div>
+      <div>
+        <label>Email *</label>
+        <input type="email" name="email" placeholder="you@example.com" required />
+      </div>
 
-        <div>
-          <label>Start time of first point (HH:MM:SS)</label>
-          <input type="text" name="start_time" placeholder="00:00:00" />
-        </div>
-        <div>
-          <label>Match date (YYYY-MM-DD)</label>
-          <input type="date" name="match_date" />
-        </div>
+      <div>
+        <label>Start time of first point (HH:MM:SS)</label>
+        <input type="text" name="start_time" placeholder="00:00:00" />
+      </div>
+      <div>
+        <label>Match date (YYYY-MM-DD)</label>
+        <input type="date" name="match_date" placeholder="yyyy/mm/dd" />
+      </div>
 
-        <div>
-          <label>Location</label>
-          <input type="text" name="location" placeholder="Court / Venue (optional)" />
-        </div>
-        <div></div>
+      <div>
+        <label>Location</label>
+        <input type="text" name="location" placeholder="Court / Venue (optional)" />
+      </div>
+      <div></div>
 
-        <div>
-          <label>Player A name</label>
-          <input type="text" name="player_a_name" placeholder="Player A" />
-        </div>
-        <div>
-          <label>Player A UTR</label>
-          <input type="number" step="0.1" name="player_a_utr" placeholder="(optional)" />
-        </div>
+      <div>
+        <label>Player A name</label>
+        <input type="text" name="player_a_name" placeholder="Player A" />
+      </div>
+      <div>
+        <label>Player A UTR</label>
+        <input type="number" step="0.1" name="player_a_utr" placeholder="(optional)" />
+      </div>
 
-        <div>
-          <label>Player B name</label>
-          <input type="text" name="player_b_name" placeholder="Player B" />
-        </div>
-        <div>
-          <label>Player B UTR</label>
-          <input type="number" step="0.1" name="player_b_utr" placeholder="(optional)" />
-        </div>
+      <div>
+        <label>Player B name</label>
+        <input type="text" name="player_b_name" placeholder="Player B" />
+      </div>
+      <div>
+        <label>Player B UTR</label>
+        <input type="number" step="0.1" name="player_b_utr" placeholder="(optional)" />
+      </div>
 
-        <div class="full terms">
-          <input type="checkbox" id="terms" name="terms_accepted" />
-          <label for="terms">I accept the terms</label>
-        </div>
+      <div class="full terms">
+        <input type="checkbox" id="terms" name="terms_accepted" />
+        <label for="terms">I accept the terms</label>
+      </div>
 
-        <div class="full">
-          <button type="submit" class="btn" id="submitBtn">Upload and Submit</button>
-        </div>
+      <div class="full">
+        <button type="submit" class="btn" id="submitBtn">Upload and Submit</button>
+      </div>
 
-        <div class="full divider"></div>
+      <div class="full divider"></div>
 
-        <!-- STATUS -->
-        <div class="full">
-          <div class="section-title">Status</div>
+      <!-- STATUS -->
+      <div class="full">
+        <div class="section-title">Status</div>
 
-          <div class="status-line">
-            <div class="chip"><span class="label">Task Id</span><span id="taskId">–</span></div>
-            <div class="chip"><span class="label">Status</span><span id="stage">waiting…</span></div>
-            <div class="chip"><span class="label">Progress %</span><span id="pct">0%</span></div>
-            <div class="spacer"></div>
-            <div class="bar"><div class="fill" id="barFill" style="width:0%"></div></div>
+        <div class="chip-row">
+          <div class="chip">
+            <small>TASK ID</small>
+            <div class="val" id="taskId">—</div>
           </div>
-
-          <div class="links">
-            <a id="linkRaw" href="#" target="_blank" rel="noopener">Raw status</a>
-            &nbsp;•&nbsp;
-            <a id="linkResult" href="#" target="_blank" rel="noopener" style="display:none">Result JSON</a>
+          <div class="chip">
+            <small>STATUS</small>
+            <div class="val" id="stage">waiting…</div>
           </div>
         </div>
 
-        <div class="full">
-          <div class="section-title">Log</div>
-          <div class="log" id="log"></div>
+        <div class="progress-block">
+          <div class="progress-left"></div>
+          <div class="progress-right">
+            <div class="bar-wrap">
+              <div class="bar-label">PROGRESS %</div>
+              <div class="bar">
+                <div class="fill" id="barFill" style="width:0%"></div>
+                <div class="pct" id="pctInside">0%</div>
+              </div>
+              <div class="anchors"><span>0%</span><span>100%</span></div>
+            </div>
+          </div>
         </div>
-      </form>
-    </div>
+
+        <div class="muted">
+          <a id="linkRaw" href="#" target="_blank" rel="noopener">Raw status</a>
+          &nbsp;•&nbsp;
+          <a id="linkResult" href="#" target="_blank" rel="noopener" style="display:none">Result JSON</a>
+        </div>
+      </div>
+
+      <div class="full">
+        <div class="section-title">Log</div>
+        <div class="log" id="log"></div>
+      </div>
+    </form>
   </div>
+</div>
 
 <script>
 (function(){
@@ -235,15 +227,14 @@
   const logBox = document.getElementById('log');
   const stageEl = document.getElementById('stage');
   const taskIdEl = document.getElementById('taskId');
-  const pctEl   = document.getElementById('pct');
   const barFill = document.getElementById('barFill');
-  const card    = document.getElementById('card');
+  const pctInside = document.getElementById('pctInside');
   const linkRaw = document.getElementById('linkRaw');
   const linkRes = document.getElementById('linkResult');
   const submitBtn = document.getElementById('submitBtn');
+  const card = document.getElementById('card');
 
   let pollTimer = null;
-  let lastPct = 0;
   let pseudo = makePseudoProgress();
 
   function log(line){
@@ -251,56 +242,41 @@
     logBox.textContent += `${ts} ${line}\n`;
     logBox.scrollTop = logBox.scrollHeight;
   }
-
   function setProgress(p){
     if (p == null || Number.isNaN(p)) p = 0;
     p = Math.max(0, Math.min(100, Math.round(p)));
-    lastPct = p;
-    pctEl.textContent = p + '%';
+    pctInside.textContent = p + '%';
     barFill.style.width = p + '%';
   }
-
   function markDone(){
     stageEl.textContent = 'completed';
     setProgress(100);
     card.querySelectorAll('input').forEach(i => i.classList.add('done'));
     submitBtn.disabled = false;
   }
-
   function makePseudoProgress(){
-    // Smoothly creeps to 90% over ~2 minutes, then waits for completion hop to 100
     let p = 0;
     return {
       reset(){ p = 0; },
       tick(){
-        if (p < 90){
-          // ease out a touch
-          p += Math.max(0.2, (90 - p) * 0.015);
-        }
+        if (p < 90){ p += Math.max(0.2, (90 - p) * 0.015); }
         return Math.min(90, Math.round(p));
       }
     };
   }
-
   async function poll(tid){
     if (!tid) return;
     try{
       const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(tid)}`, {cache:'no-store'});
       const j = await r.json();
-      // Build raw link
       linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(tid)}`;
-      // Stage
       const status = (j.status || '').toLowerCase() || (j.data && (j.data.task_status || j.data.status)) || 'processing';
       stageEl.textContent = status;
-      // Result link
-      if (j.result_url){
-        linkRes.style.display = '';
-        linkRes.href = j.result_url;
-      }
-      // Progress (real if present; otherwise pseudo)
+
+      if (j.result_url){ linkRes.style.display = ''; linkRes.href = j.result_url; }
+
       let prog = null;
       const d = j.data || {};
-      // prefer explicit numbers if present
       prog = d.task_progress ?? d.progress ?? j.task_progress ?? j.progress ?? null;
       if (prog == null) prog = (status === 'completed') ? 100 : pseudo.tick();
       setProgress(prog);
@@ -310,10 +286,7 @@
         clearInterval(pollTimer); pollTimer = null;
         log('analysis complete ✓');
       }
-    }catch(e){
-      // keep polling; just log once in a while
-      log(`status error: ${e}`);
-    }
+    }catch(e){ log(`status error: ${e}`); }
   }
 
   form.addEventListener('submit', async (ev)=>{
@@ -327,21 +300,14 @@
 
     const fd = new FormData(form);
     const f = fd.get('file');
-    if (!f || !f.name){
-      submitBtn.disabled = false;
-      return;
-    }
+    if (!f || !f.name){ submitBtn.disabled = false; return; }
 
     log('uploading to file server…');
     try{
       const r = await fetch('/upload/api/upload', { method:'POST', body:fd });
       const j = await r.json();
 
-      if (!j.ok){
-        submitBtn.disabled = false;
-        log(`error: ${j.error || 'upload failed'}`);
-        return;
-      }
+      if (!j.ok){ submitBtn.disabled = false; log(`error: ${j.error || 'upload failed'}`); return; }
 
       log(`uploaded ${f.name} (${f.size} bytes)`);
       log(`task ${j.task_id} submitted to Analytics Console…`);
@@ -350,14 +316,10 @@
       stageEl.textContent = 'processing';
       linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(j.task_id)}`;
 
-      // start polling
       clearInterval(pollTimer);
       pollTimer = setInterval(()=>poll(j.task_id), 2000);
       poll(j.task_id);
-    }catch(e){
-      submitBtn.disabled = false;
-      log(`error: ${e}`);
-    }
+    }catch(e){ submitBtn.disabled = false; log(`error: ${e}`); }
   });
 })();
 </script>
