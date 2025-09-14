@@ -6,111 +6,64 @@
 <title>Upload & Submit • NextPoint</title>
 <style>
   :root{
-    /* darker green to match the background graphs */
-    --accent: #16A34A;         /* emerald-600 */
-    --accent-strong: #15803D;  /* emerald-700 */
-    --accent-soft: #EAF6EF;
-    --text: #111;
-    --muted: #6b7280;
-    --field-bg: #f6f7f8;
-    --field-border: #e5e7eb;
-    --card-bg: rgba(255,255,255,0.92);
-    --top-offset: 110px; /* push card down to show more of player */
+    --accent:#16A34A;        /* emerald-600 */
+    --accent-strong:#15803D; /* emerald-700 */
+    --accent-soft:#EAF6EF;
+    --text:#111;
+    --muted:#6b7280;
+    --field-bg:#f6f7f8;
+    --field-border:#e5e7eb;
+    --card-bg:rgba(255,255,255,0.92);
+    --top-offset:110px;
   }
-
   html,body{height:100%;}
   body{
-    margin:0;
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-    color:var(--text);
+    margin:0;color:var(--text);
+    font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji";
     background:
       linear-gradient(rgba(0,0,0,0.20), rgba(0,0,0,0.35)),
       url("{{ url_for('static', filename='upload/background-clean-male-serve.jpg') }}") center/cover fixed no-repeat;
   }
   .wrap{min-height:100%;display:flex;align-items:flex-start;justify-content:center;padding-top:var(--top-offset);}
-  .card{
-    width:min(980px, 92vw);
-    background:var(--card-bg);
-    border-radius:16px;
-    box-shadow:0 10px 30px rgba(0,0,0,0.15);
-    backdrop-filter: blur(2px);
-    padding:22px 22px 14px;
-    margin:0 auto 90px;
-  }
-
+  .card{width:min(980px,92vw);background:var(--card-bg);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.15);backdrop-filter:blur(2px);padding:22px 22px 14px;margin:0 auto 90px;}
   h1{font-size:20px;margin:0 0 12px;font-weight:700;}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;}
   .grid .full{grid-column:1/-1;}
-
   label{font-size:12px;color:var(--muted);display:block;margin-bottom:6px;}
-  input[type="text"],input[type="email"],input[type="date"],
-  input[type="time"],input[type="number"]{
-    width:100%;box-sizing:border-box;background:var(--field-bg);
-    border:1px solid var(--field-border);border-radius:10px;
-    padding:10px 12px;font-size:14px;outline:none;color:var(--text);
-  }
+  input[type="text"],input[type="email"],input[type="date"],input[type="number"]{width:100%;box-sizing:border-box;background:var(--field-bg);border:1px solid var(--field-border);border-radius:10px;padding:10px 12px;font-size:14px;outline:none;color:var(--text);}
   input::placeholder{color:#b5b9bf;}
   input:focus{border-color:#d1d5db;box-shadow:0 0 0 3px rgba(22,163,74,0.12);background:#fff;}
   input.done{background:#fff;border-color:#d1d5db;}
   .terms{display:flex;align-items:center;gap:8px;font-size:13px;color:#111;}
   .terms input[type="checkbox"]{accent-color:var(--accent);}
-
-  .btn{
-    appearance:none;border:0;cursor:pointer;width:100%;
-    padding:12px 18px;border-radius:10px;
-    background:var(--accent);color:#fff;font-weight:700;
-  }
+  .btn{appearance:none;border:0;cursor:pointer;padding:12px 18px;border-radius:10px;font-weight:700;color:#fff;background:var(--accent);}
   .btn:hover{background:var(--accent-strong);}
-
-  .section-title{margin:12px 0 6px;font-weight:700;font-size:14px;color:#0f172a;}
+  .btn[disabled]{opacity:.5;cursor:not-allowed;}
+  .btn-outline{background:transparent;color:var(--accent-strong);border:1.5px solid var(--accent-strong);}
+  .btn-outline:hover{background:var(--accent-soft);}
+  .btn-row{display:flex;gap:10px}
   .divider{height:1px;background:#e5e7eb;margin:12px 0;}
+  .section-title{margin:12px 0 6px;font-weight:700;font-size:14px;color:#0f172a;}
 
-  /* Compact chips with label ABOVE value */
   .chip-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;}
-  .chip{
-    display:flex;flex-direction:column;gap:2px;
-    background:var(--accent-soft);padding:8px 10px;border-radius:10px;
-    min-width:220px;
-  }
+  .chip{display:flex;flex-direction:column;gap:2px;background:var(--accent-soft);padding:8px 10px;border-radius:10px;min-width:220px;}
   .chip small{font-size:11px;letter-spacing:.02em;text-transform:uppercase;color:#0b5a37;font-weight:800;opacity:.75;}
   .chip .val{font-weight:700;color:#0b5a37;word-break:break-all;}
 
-  /* Progress block */
   .progress-block{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:6px 0 6px;}
-  .progress-left{min-width:220px}
   .progress-right{flex:1;min-width:260px;display:flex;align-items:center;gap:10px;}
   .bar-wrap{flex:1;min-width:220px;}
   .bar-label{font-size:11px;letter-spacing:.02em;text-transform:uppercase;color:#0b5a37;font-weight:800;margin-bottom:6px;}
-  .bar{
-    position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;
-    box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);
-  }
-  .bar .fill{
-    position:absolute;left:0;top:0;bottom:0;width:0%;
-    background:var(--accent);
-    transition:width 400ms ease;
-  }
-  .bar .pct{
-    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-    font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);
-    pointer-events:none;
-  }
+  .bar{position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);}
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--accent);transition:width 400ms ease;}
+  .bar .pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);pointer-events:none;}
   .anchors{display:flex;justify-content:space-between;margin-top:6px;color:#0b5a37;font-size:11px;font-weight:700;opacity:.75}
 
-  /* Log: white + ~10 lines */
-  .log{
-    background:#fff;color:#111;border:1px solid #e5e7eb;
-    border-radius:10px;padding:10px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-    font-size:12px;line-height:1.25;
-    max-height:12.5em; /* ~10 lines @ 1.25 */
-    overflow:auto;white-space:pre-wrap;
-  }
+  .log{background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px;line-height:1.25;max-height:12.5em;overflow:auto;white-space:pre-wrap;}
+  .muted a{color:#065f46;text-decoration:none}
+  .muted a:hover{text-decoration:underline}
 
-  @media (max-width:780px){
-    .grid{grid-template-columns:1fr;}
-    .progress-right{min-width:0;}
-  }
+  @media (max-width:780px){.grid{grid-template-columns:1fr;}.btn-row{flex-direction:column}}
 </style>
 </head>
 <body>
@@ -171,8 +124,11 @@
         <label for="terms">I accept the terms</label>
       </div>
 
-      <div class="full">
-        <button type="submit" class="btn" id="submitBtn">Upload and Submit</button>
+      <!-- Buttons -->
+      <div class="full btn-row">
+        <button type="button" class="btn-outline" id="checkBtn">Check Video</button>
+        <button type="button" class="btn" id="submitBtn" disabled>Upload and Submit</button>
+        <button type="button" class="btn-outline" id="cancelBtn" style="display:none">Cancel Task</button>
       </div>
 
       <div class="full divider"></div>
@@ -193,7 +149,6 @@
         </div>
 
         <div class="progress-block">
-          <div class="progress-left"></div>
           <div class="progress-right">
             <div class="bar-wrap">
               <div class="bar-label">PROGRESS %</div>
@@ -232,10 +187,15 @@
   const linkRaw = document.getElementById('linkRaw');
   const linkRes = document.getElementById('linkResult');
   const submitBtn = document.getElementById('submitBtn');
-  const card = document.getElementById('card');
+  const checkBtn = document.getElementById('checkBtn');
+  const cancelBtn = document.getElementById('cancelBtn');
+  const terms = document.getElementById('terms');
 
   let pollTimer = null;
   let pseudo = makePseudoProgress();
+  let checkedUrl = null;      // presigned GET we got at check step
+  let checkedPassed = false;  // result of /videos/check
+  let currentTaskId = null;
 
   function log(line){
     const ts = new Date().toLocaleTimeString();
@@ -251,17 +211,13 @@
   function markDone(){
     stageEl.textContent = 'completed';
     setProgress(100);
-    card.querySelectorAll('input').forEach(i => i.classList.add('done'));
     submitBtn.disabled = false;
   }
   function makePseudoProgress(){
     let p = 0;
     return {
       reset(){ p = 0; },
-      tick(){
-        if (p < 90){ p += Math.max(0.2, (90 - p) * 0.015); }
-        return Math.min(90, Math.round(p));
-      }
+      tick(){ if (p < 90){ p += Math.max(0.2, (90 - p) * 0.015); } return Math.min(90, Math.round(p)); }
     };
   }
   async function poll(tid){
@@ -289,37 +245,119 @@
     }catch(e){ log(`status error: ${e}`); }
   }
 
-  form.addEventListener('submit', async (ev)=>{
-    ev.preventDefault();
+  // Build meta like backend expects
+  function collectMeta(){
+    const fd = new FormData(form);
+    return {
+      customer_name: (fd.get('customer_name')||'').trim(),
+      match_date: (fd.get('match_date')||'').trim(),
+      start_time: (fd.get('start_time')||'').trim(),
+      location: (fd.get('location')||'').trim(),
+      player_a_name: (fd.get('player_a_name')||'').trim() || 'Player A',
+      player_b_name: (fd.get('player_b_name')||'').trim() || 'Player B',
+      player_a_utr: (fd.get('player_a_utr')||'').trim(),
+      player_b_utr: (fd.get('player_b_utr')||'').trim(),
+      terms_accepted: terms.checked ? '1' : '0',
+    };
+  }
+
+  // Step 1: CHECK (upload to storage + /videos/check)
+  checkBtn.addEventListener('click', async ()=>{
     logBox.textContent = '';
-    linkRes.style.display = 'none';
-    stageEl.textContent = 'processing';
-    setProgress(0);
-    pseudo.reset();
+    checkedUrl = null; checkedPassed = false;
     submitBtn.disabled = true;
+    linkRes.style.display = 'none';
+    stageEl.textContent = 'waiting…';
+    setProgress(0); pseudo.reset();
+
+    const f = document.getElementById('file').files[0];
+    if (!f){ log('error: no file selected'); return; }
+    if (!terms.checked){ log('please accept the terms first'); return; }
 
     const fd = new FormData(form);
-    const f = fd.get('file');
-    if (!f || !f.name){ submitBtn.disabled = false; return; }
 
     log('uploading to file server…');
     try{
-      const r = await fetch('/upload/api/upload', { method:'POST', body:fd });
+      const r = await fetch('/upload/api/check-video', { method:'POST', body:fd });
       const j = await r.json();
+      if (!j.ok){ log(`check error: ${j.error || 'failed'}`); return; }
 
-      if (!j.ok){ submitBtn.disabled = false; log(`error: ${j.error || 'upload failed'}`); return; }
-
+      checkedUrl = j.video_url;
+      checkedPassed = !!j.check_passed;
       log(`uploaded ${f.name} (${f.size} bytes)`);
-      log(`task ${j.task_id} submitted to Analytics Console…`);
+      log('video check completed' + (checkedPassed ? ' ✓' : ' (failed)'));
 
-      taskIdEl.textContent = j.task_id || '—';
-      stageEl.textContent = 'processing';
-      linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(j.task_id)}`;
+      if (checkedPassed){
+        submitBtn.disabled = false; // allow submit now
+        stageEl.textContent = 'ready';
+      }else{
+        stageEl.textContent = 'check_failed';
+      }
+    }catch(e){
+      log(`error: ${e}`);
+    }
+  });
+
+  // Step 2: SUBMIT (uses JSON submit with the checked URL)
+  submitBtn.addEventListener('click', async ()=>{
+    if (!checkedUrl){ log('please run Check Video first'); return; }
+    if (!terms.checked){ log('please accept the terms first'); return; }
+
+    submitBtn.disabled = true;
+    stageEl.textContent = 'processing';
+    setProgress(0); pseudo.reset();
+
+    const email = (new FormData(form).get('email')||'').trim().toLowerCase();
+    const meta = collectMeta();
+
+    log('submitting to Analytics Console…');
+    try{
+      const r = await fetch('/upload/api/upload', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ video_url: checkedUrl, email, meta })
+      });
+      const j = await r.json();
+      if (!j.ok){ submitBtn.disabled = false; log(`submit error: ${j.error || 'failed'}`); return; }
+
+      currentTaskId = j.task_id;
+      taskIdEl.textContent = currentTaskId || '—';
+      linkRaw.href = `/upload/task_status?task_id=${encodeURIComponent(currentTaskId)}`;
+      cancelBtn.style.display = currentTaskId ? '' : 'none';
+
+      log(`task ${currentTaskId} submitted to Analytics Console…`);
 
       clearInterval(pollTimer);
-      pollTimer = setInterval(()=>poll(j.task_id), 2000);
-      poll(j.task_id);
-    }catch(e){ submitBtn.disabled = false; log(`error: ${e}`); }
+      pollTimer = setInterval(()=>poll(currentTaskId), 2000);
+      poll(currentTaskId);
+    }catch(e){
+      submitBtn.disabled = false;
+      log(`error: ${e}`);
+    }
+  });
+
+  // Cancel task
+  cancelBtn.addEventListener('click', async ()=>{
+    if (!currentTaskId){ return; }
+    cancelBtn.disabled = true;
+    try{
+      const r = await fetch('/upload/api/cancel-task', {
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({ task_id: currentTaskId })
+      });
+      const j = await r.json();
+      if (j.ok){
+        log('task cancelled ✓');
+        stageEl.textContent = 'cancelled';
+      }else{
+        log(`cancel error: ${j.error || 'failed'}`);
+      }
+    }catch(e){
+      log(`cancel error: ${e}`);
+    }finally{
+      cancelBtn.disabled = false;
+    }
   });
 })();
 </script>
