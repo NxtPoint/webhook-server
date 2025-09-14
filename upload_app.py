@@ -113,11 +113,14 @@ def _forbid():
 
 @app.after_request
 def _maybe_cors(resp):
+    # never cache status/results (some edges/proxies can cache 502/HTML)
+    resp.headers["Cache-Control"] = "no-store"
     if ENABLE_CORS:
         resp.headers["Access-Control-Allow-Origin"]  = "*"
         resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-OPS-Key"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return resp
+
 
 # ---------- S3 helpers ----------
 def _s3_client():
@@ -385,59 +388,27 @@ def _sportai_status(task_id: str) -> dict:
     if j is None:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
-    # Normalize structures
-    if isinstance(j, dict):
-        d = j.get("data") or j
-    else:
-        d = j
+    # --- Normalize structures & stage ---
+    d = j.get("data") if isinstance(j, dict) and isinstance(j.get("data"), dict) else j
+    status = (d.get("status") or d.get("task_status") or "").strip()
 
-    status = d.get("status") or d.get("task_status")
+    # SportAI sometimes returns only a 'message' when still running
+    msg = (j.get("message") or "").lower()
+    if not status and "still being processed" in msg:
+        status = "processing"
 
-    # Infer completion if there is a result_url but no explicit status
-    if not status and (d.get("result_url") or j.get("result_url")):
+    result_url = d.get("result_url") or j.get("result_url")
+    # If a result_url exists, treat as completed even if status is blank
+    if result_url and status.lower() not in ("completed", "done", "success", "succeeded"):
         status = "completed"
-
-
-    # NEW: infer completion if result_url exists but no explicit status
-    inferred_done = (d.get("result_url") or j.get("result_url")) and not status
-    if inferred_done:
-        status = "completed"
-
-    # Status / stage text
-    status = (
-        d.get("status")
-        or d.get("task_status")
-        or j.get("status")
-        or j.get("task_status")
-        or ("processing" if "still being processed" in str(j).lower() else None)
-    )
-
-    # Result URL in varied places
-    result_url = (
-        d.get("result_url")
-        or d.get("url")
-        or j.get("result_url")
-        or j.get("url")
-    )
-
-    # Progress (safe fallbacks)
-    progress = (
-        d.get("task_progress")
-        or d.get("progress")
-        or j.get("task_progress")
-        or j.get("progress")
-        or d.get("total_subtask_progress")
-        or j.get("total_subtask_progress")
-        or 0
-    )
 
     out = {
-        "status": status,
-        "result_url": d.get("result_url") or j.get("result_url"),
+        "status": status or None,
+        "result_url": result_url,
         "data": {
             "task_id": d.get("task_id"),
             "video_url": d.get("video_url"),
-            "task_status": d.get("task_status") or d.get("status") or status,
+            "task_status": d.get("task_status") or d.get("status"),
             "task_progress": d.get("task_progress") or d.get("progress"),
             "total_subtask_progress": d.get("total_subtask_progress"),
             "subtask_progress": d.get("subtask_progress") or {},
