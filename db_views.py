@@ -1018,30 +1018,23 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-            /* A–D: unchanged for non-last shots.
-             Last shot: only emit A–D if we have a floor-bounce X; else NULL.
-             landing_is_far is the END the ball is going TO = opposite of hitter,
-             with a robust fallback if point_ends is missing. */
+          -- A–D (reverted logic; only tweak: last shot requires a floor bounce X)
           CASE
             WHEN sbp.serve_d THEN NULL
             WHEN sbp.shot_ix = sbp.last_shot_ix THEN
               CASE
                 WHEN sbp.bounce_type_raw = 'floor'
-                     AND sbp.bounce_x_center_m IS NOT NULL THEN
-                  placement_ad(
-                    sbp.bounce_x_center_m::numeric,
-                    COALESCE(
-                      CASE
-                        WHEN sbp.player_id = sbp.server_id
-                          THEN pe.receiver_is_far_end_d
-                        ELSE pe.server_is_far_end_d
-                      END,
-                      /* Fallback: opposite of hitter’s near/far */
-                      NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0)
-                    ),
-                    (SELECT court_w_m FROM const),
-                    (SELECT eps_m    FROM const)
-                  )
+                     AND sbp.bounce_x_center_m IS NOT NULL
+                  THEN placement_ad(
+                         sbp.bounce_x_center_m::numeric,
+                         CASE
+                           WHEN sbp.player_id = sbp.server_id
+                             THEN pe.receiver_is_far_end_d
+                           ELSE pe.server_is_far_end_d
+                         END,
+                         (SELECT court_w_m FROM const),
+                         (SELECT eps_m    FROM const)
+                       )
                 ELSE NULL
               END
             ELSE
@@ -1051,20 +1044,15 @@ CREATE_STMTS = {
                   sbp.next_ball_hit_x,
                   sbp.ball_hit_x
                 )::numeric,
-                COALESCE(
-                  CASE
-                    WHEN sbp.player_id = sbp.server_id
-                      THEN pe.receiver_is_far_end_d
-                    ELSE pe.server_is_far_end_d
-                  END,
-                  /* Fallback: opposite of hitter’s near/far */
-                  NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0)
-                ),
+                CASE
+                  WHEN sbp.player_id = sbp.server_id
+                    THEN pe.receiver_is_far_end_d
+                  ELSE pe.server_is_far_end_d
+                END,
                 (SELECT court_w_m FROM const),
                 (SELECT eps_m    FROM const)
               )
           END AS placement_ad_d,
-
 
           -- Play type
           CASE
