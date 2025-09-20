@@ -108,6 +108,74 @@ def _guard() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
+# --- Admin purge endpoint: delete sessions safely (uses _guard + engine) ---
+from sqlalchemy import text as sql_text  # <<< added so sql_text works globally
+from flask import request, jsonify
+
+@app.post("/ops/purge-sessions")
+def ops_purge_sessions():
+    if not _guard():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    mode = (data.get("mode") or "").lower()              # "keep_only" | "delete_list"
+    uids = data.get("session_uids") or []
+
+    if mode not in ("keep_only", "delete_list"):
+        return jsonify({"ok": False, "error": "mode must be keep_only or delete_list"}), 400
+    if not isinstance(uids, list) or not all(isinstance(x, str) and x for x in uids):
+        return jsonify({"ok": False, "error": "session_uids must be a non-empty list of strings"}), 400
+
+    with engine.begin() as conn:
+        if mode == "keep_only":
+            bad_ids = conn.execute(
+                sql_text("SELECT session_id FROM dim_session WHERE session_uid NOT IN :uids"),
+                {"uids": tuple(uids)}
+            ).scalars().all()
+        else:
+            bad_ids = conn.execute(
+                sql_text("SELECT session_id FROM dim_session WHERE session_uid IN :uids"),
+                {"uids": tuple(uids)}
+            ).scalars().all()
+
+        if not bad_ids:
+            return jsonify({"ok": True, "deleted": {}, "note": "nothing to delete"}), 200
+
+        # children → parents delete order
+        tables = [
+            "fact_ball_position",
+            "fact_player_position",
+            "fact_bounce",
+            "fact_swing",
+            "dim_rally",
+            "dim_player",
+            "team_session",
+            "highlight",
+            "bounce_heatmap",
+            "session_confidences",
+            "thumbnail",
+            "raw_result",
+        ]
+        counts = {}
+        for t in tables:
+            try:
+                res = conn.execute(
+                    sql_text(f"DELETE FROM {t} WHERE session_id = ANY(:ids)"),
+                    {"ids": bad_ids}
+                )
+                counts[t] = res.rowcount
+            except Exception as e:
+                # if a table doesn’t exist in your schema, note it and continue
+                counts[t] = f"skipped:{e.__class__.__name__}"
+
+        res = conn.execute(
+            sql_text("DELETE FROM dim_session WHERE session_id = ANY(:ids)"),
+            {"ids": bad_ids}
+        )
+        counts["dim_session"] = res.rowcount
+
+    return jsonify({"ok": True, "deleted": counts, "target_session_ids": bad_ids}), 200
+
 def _forbid():
     return Response("Forbidden", 403)
 
