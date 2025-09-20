@@ -638,30 +638,39 @@ CREATE_STMTS = {
         ),
 
         /* ---------- NEW: validity flags (singles) ---------- */
+        sbp_ts AS (
+          SELECT
+            sbp.*,
+            COALESCE(sbp.ball_hit_ts,
+                     (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts,
+            COALESCE(sbp.prev_ball_hit_ts,
+                     (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
+          FROM swing_bounce_primary sbp
+        ),
         swing_validity AS (
           SELECT
-            sbp.session_id, sbp.swing_id, sbp.point_number_d, sbp.shot_ix, sbp.last_shot_ix,
-            sbp.serve_d, sbp.first_rally_shot_ix, sbp.start_serve_shot_ix, sbp.ord_ts,
-            COALESCE(sbp.ball_hit_ts, (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts,
-            COALESCE(sbp.prev_ball_hit_ts, (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts,
+            s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
+            s.serve_d, s.first_rally_shot_ix, s.start_serve_shot_ix, s.ord_ts,
+            s.this_ts, s.prev_ts,
             CASE
-              WHEN sbp.point_number_d IS NULL THEN FALSE                                  -- before first serve
-              WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix THEN TRUE        -- starting serve
-              WHEN sbp.serve_d AND sbp.shot_ix < sbp.start_serve_shot_ix THEN FALSE       -- serve faults
-              WHEN sbp.first_rally_shot_ix IS NULL THEN FALSE                             -- point never started
-              WHEN sbp.shot_ix < sbp.first_rally_shot_ix THEN FALSE                       -- pre-rally swings
-              WHEN sbp.this_ts IS NOT NULL AND sbp.prev_ts IS NOT NULL
-                   AND (sbp.this_ts - sbp.prev_ts) <= INTERVAL '3 seconds' THEN TRUE      -- cadence ≤ 3s
-              WHEN sbp.shot_ix = sbp.last_shot_ix THEN TRUE                               -- always keep terminal
+              WHEN s.point_number_d IS NULL THEN FALSE                         -- before first serve
+              WHEN s.serve_d AND s.shot_ix = s.start_serve_shot_ix THEN TRUE   -- starting serve
+              WHEN s.serve_d AND s.shot_ix < s.start_serve_shot_ix THEN FALSE  -- serve faults
+              WHEN s.first_rally_shot_ix IS NULL THEN FALSE                    -- point never started
+              WHEN s.shot_ix < s.first_rally_shot_ix THEN FALSE                -- pre-rally swings
+              WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
+                   AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
+              WHEN s.shot_ix = s.last_shot_ix THEN TRUE                        -- always keep terminal
               ELSE FALSE
             END AS valid_swing_d
-          FROM swing_bounce_primary sbp
+          FROM sbp_ts s
         ),
         valid_numbered AS (
           SELECT
             v.*,
             SUM(CASE WHEN v.valid_swing_d THEN 1 ELSE 0 END)
-              OVER (PARTITION BY v.session_id, v.point_number_d ORDER BY v.ord_ts, v.swing_id
+              OVER (PARTITION BY v.session_id, v.point_number_d
+                    ORDER BY v.ord_ts, v.swing_id
                     ROWS UNBOUNDED PRECEDING) AS valid_shot_ix
           FROM swing_validity v
         ),
@@ -672,6 +681,7 @@ CREATE_STMTS = {
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
           FROM valid_numbered vn
         ),
+
 
         /* -------- Serve placement (unchanged) -------- */
         serve_place_core AS (
