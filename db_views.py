@@ -658,7 +658,7 @@ CREATE_STMTS = {
           - invalid before first serve (no point_number_d)
           - ALL serves are valid (faults/seconds included)
           - every other swing valid only if (this_ts - prev_ts) ≤ 3.0s
-        */
+        /* Base rule … */
         swing_validity AS (
           SELECT
             s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
@@ -668,7 +668,7 @@ CREATE_STMTS = {
               WHEN s.point_number_d IS NULL THEN FALSE
               WHEN s.serve_d THEN TRUE
               WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
-                  AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
+                  AND (s.this_ts - s.prev_ts) <= INTERVAL '5 seconds' THEN TRUE
               ELSE FALSE
             END AS valid_swing_d_base
           FROM sbp_ts s
@@ -720,14 +720,16 @@ CREATE_STMTS = {
 
         /* last valid shot index per point */
         valid_numbered_last AS (
-          SELECT
-            vn.*,
-            MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d)
-              OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
-          FROM valid_numbered vn
-        ),
-
-
+        SELECT
+          vn.*,
+          -- last valid (any swing, incl. serves)
+          MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d)
+            OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix,
+          -- last valid NON-serve (used for is_last_in_point_d)
+          MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d AND NOT vn.serve_d)
+            OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix_ns
+        FROM valid_numbered vn
+      ),
 
         /* -------- Serve placement (unchanged) -------- */
         serve_place_core AS (
@@ -959,7 +961,9 @@ CREATE_STMTS = {
           sbp.serving_side_d,
           sbp.server_id,
 
-          (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
+          -- last swing of the point under the 5s rule (non-serve only)
+          (vnl.valid_swing_final_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix_ns)
+            AS is_last_in_point_d,
 
           vnl.valid_swing_final_d AS valid_swing_d,
           (vnl.valid_swing_final_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_valid_in_point_d,
