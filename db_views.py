@@ -450,7 +450,7 @@ CREATE_STMTS = {
         ),
 
         -- Per-point shot indices plus prev-hit for validity
-          swings_numbered AS (
+        swings_numbered AS (
           SELECT
             sps.*,
             ROW_NUMBER() OVER (
@@ -459,7 +459,7 @@ CREATE_STMTS = {
             ) AS shot_ix,
             COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_ix,
 
-            -- NEW: previous hit time in point
+            -- previous hit time in point
             LAG(sps.ball_hit_ts) OVER (
               PARTITION BY sps.session_id, sps.point_number_d
               ORDER BY sps.ord_ts, sps.swing_id
@@ -478,6 +478,14 @@ CREATE_STMTS = {
           FROM swings_with_serve sps
         ),
 
+        -- First non-serve in the point
+        point_first_rally AS (
+          SELECT
+            session_id, point_number_d,
+            MIN(shot_ix) FILTER (WHERE NOT serve_d) AS first_rally_shot_ix
+          FROM swings_numbered
+          GROUP BY session_id, point_number_d
+        ),
 
         -- Starting serve = last serve before first non-serve
         point_starting_serve AS (
@@ -631,8 +639,7 @@ CREATE_STMTS = {
             se.prev_ball_hit_ts,
             se.prev_ball_hit_s,
             se.player_side_far_d,
-            se.ord_ts,
-            se.prev_ball_hit_ts, se.prev_ball_hit_s
+            se.ord_ts
           FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=se.session_id AND f.swing_id=se.swing_id
@@ -640,7 +647,7 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        /* ---------- NEW: validity flags (singles) ---------- */
+        /* ---------- VALIDITY (singles) ---------- */
         sbp_ts AS (
           SELECT
             sbp.*,
@@ -651,25 +658,16 @@ CREATE_STMTS = {
           FROM swing_bounce_primary sbp
         ),
         swing_validity AS (
-          /* Rules:
-             - anything before the first serve is invalid
-             - the starting serve of each point is valid
-             - serve faults (serves before the starting serve) are invalid
-             - point must start (have a first rally shot) or everything in it is invalid
-             - non-serve swings are valid only if they happen within 3.0s of the previous swing in the point
-               (filters “after-the-fact” swings)
-             - we do NOT auto-validate the final raw swing; instead we compute the last *valid* swing later
-          */
           SELECT
             s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
             s.serve_d, s.first_rally_shot_ix, s.start_serve_shot_ix, s.ord_ts,
             s.this_ts, s.prev_ts,
             CASE
-              WHEN s.point_number_d IS NULL THEN FALSE                       -- before first serve
-              WHEN s.serve_d AND s.shot_ix = s.start_serve_shot_ix THEN TRUE -- starting serve
-              WHEN s.serve_d AND s.shot_ix < s.start_serve_shot_ix THEN FALSE-- serve faults
-              WHEN s.first_rally_shot_ix IS NULL THEN FALSE                  -- point never started
-              WHEN s.shot_ix < s.first_rally_shot_ix THEN FALSE              -- pre-rally swings
+              WHEN s.point_number_d IS NULL THEN FALSE
+              WHEN s.serve_d AND s.shot_ix = s.start_serve_shot_ix THEN TRUE
+              WHEN s.serve_d AND s.shot_ix < s.start_serve_shot_ix THEN FALSE
+              WHEN s.first_rally_shot_ix IS NULL THEN FALSE
+              WHEN s.shot_ix < s.first_rally_shot_ix THEN FALSE
               WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
                    AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
               ELSE FALSE
@@ -692,7 +690,6 @@ CREATE_STMTS = {
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
           FROM valid_numbered vn
         ),
-
 
         /* -------- Serve placement (unchanged) -------- */
         serve_place_core AS (
@@ -771,7 +768,7 @@ CREATE_STMTS = {
           FROM serve_place_x x
         ),
 
-        -- Terminal outcome (last shot only)
+        -- Terminal outcome on the last *valid* swing
         point_outcome AS (
           SELECT
             sbp.session_id, sbp.point_number_d, sbp.game_number_d, sbp.point_in_game_d,
@@ -801,7 +798,9 @@ CREATE_STMTS = {
               ELSE sbp.player_id
             END AS point_winner_if_in_d
           FROM swing_bounce_primary sbp
-          WHERE sbp.shot_ix = sbp.last_shot_ix
+          JOIN valid_numbered_last vnl
+            ON vnl.session_id = sbp.session_id AND vnl.swing_id = sbp.swing_id
+          WHERE vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix
         ),
         point_outcome_winner AS (
           SELECT
@@ -924,12 +923,9 @@ CREATE_STMTS = {
           sbp.serving_side_d,
           sbp.server_id,
 
-          (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
-
-          -- NEW: validity exports
+          (sbp.shot_ix = sbp.last_shot_ix) AS is_last_raw_in_point_d, -- debug
           vnl.valid_swing_d,
-          (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_valid_in_point_d,
-
+          (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_in_point_d,
 
           CASE
             WHEN sbp.bounce_id IS NULL THEN NULL
@@ -947,7 +943,7 @@ CREATE_STMTS = {
           END AS is_serve_fault_d,
 
           CASE
-            WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
+            WHEN NOT (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) THEN NULL
             ELSE CASE
               WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN 'no_speed'
               WHEN sbp.bounce_id IS NULL THEN 'no_bounce'
@@ -958,7 +954,7 @@ CREATE_STMTS = {
           END AS terminal_basis_d,
 
           CASE
-            WHEN sbp.shot_ix <> sbp.last_shot_ix THEN NULL
+            WHEN NOT (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) THEN NULL
             ELSE CASE
               WHEN COALESCE(sbp.ball_speed, 0) <= 0 THEN TRUE
               WHEN sbp.bounce_id IS NULL THEN TRUE
@@ -969,7 +965,7 @@ CREATE_STMTS = {
           END AS is_error_d,
 
           CASE
-            WHEN sbp.shot_ix = sbp.last_shot_ix THEN
+            WHEN (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) THEN
               CASE
                 WHEN (
                   CASE
@@ -989,12 +985,12 @@ CREATE_STMTS = {
           pdir.is_far_side_d AS player_is_far_side_d,
 
           CASE
-            WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
+            WHEN NOT (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) OR sbp.bounce_id IS NULL THEN NULL
             ELSE (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
           END AS is_wide_last_d,
 
           CASE
-            WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
+            WHEN NOT (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) OR sbp.bounce_id IS NULL THEN NULL
             ELSE CASE
               WHEN pdir.is_far_side_d THEN (sbp.bounce_y_norm_m < 0)
               ELSE (sbp.bounce_y_norm_m > (SELECT court_l_m FROM const))
@@ -1002,7 +998,7 @@ CREATE_STMTS = {
           END AS is_long_last_d,
 
           CASE
-            WHEN sbp.shot_ix <> sbp.last_shot_ix OR sbp.bounce_id IS NULL THEN NULL
+            WHEN NOT (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) OR sbp.bounce_id IS NULL THEN NULL
             ELSE CASE
               WHEN (sbp.bounce_x_center_m < 0 OR sbp.bounce_x_center_m > (SELECT court_w_m FROM const))
                   AND (CASE WHEN pdir.is_far_side_d THEN sbp.bounce_y_norm_m < 0 ELSE sbp.bounce_y_norm_m > (SELECT court_l_m FROM const) END)
@@ -1025,7 +1021,7 @@ CREATE_STMTS = {
               CASE
                 WHEN (
                   CASE
-                    WHEN sbp.shot_ix = sbp.last_shot_ix
+                    WHEN (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix)
                       THEN sbp.bounce_x_center_m
                     ELSE COALESCE(
                            CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
@@ -1038,7 +1034,7 @@ CREATE_STMTS = {
                 ELSE placement_ad(
                        (
                          CASE
-                           WHEN sbp.shot_ix = sbp.last_shot_ix
+                           WHEN (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix)
                              THEN sbp.bounce_x_center_m
                            ELSE COALESCE(
                                   CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
@@ -1062,7 +1058,7 @@ CREATE_STMTS = {
             ELSE 'baseline'
           END AS play_d,
 
-          -- Scoring (last-shot rows)
+          -- Scoring (last-valid rows)
           gr.point_score_text_d,
           gr.is_game_end_d,
           gr.game_winner_player_id_d,
