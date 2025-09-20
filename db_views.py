@@ -920,7 +920,7 @@ CREATE_STMTS = {
                     ORDER BY psw.game_number_d, psw.point_in_game_d
                     ROWS UNBOUNDED PRECEDING) AS games_receiver_after_d
           FROM points_scored_winner psw
-        )
+        ),
 
         -- FINAL SELECT (singles; includes validity flags)
         SELECT
@@ -1191,7 +1191,7 @@ CREATE_STMTS = {
                     <= b.end_ts_pref
             ) AS had_floor
           FROM base b
-        )
+        ),
         SELECT
           b.session_id,
           b.session_uid_d,
