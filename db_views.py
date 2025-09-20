@@ -720,10 +720,9 @@ CREATE_STMTS = {
             MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d AND NOT vn.serve_d)
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix_ns
           FROM valid_numbered vn
-        )
+        ),  -- <<<<<<<<<<  KEEP THIS COMMA
 
-
-        /* -------- Serve placement (unchanged) -------- */
+        -- -------- Serve placement (unchanged) --------
         serve_place_core AS (
           SELECT
             sbp.session_id,
@@ -739,8 +738,9 @@ CREATE_STMTS = {
           FROM swing_bounce_primary sbp
           JOIN point_ends pe
             ON pe.session_id     = sbp.session_id
-           AND pe.point_number_d = sbp.point_number_d
-        ),
+          AND pe.point_number_d = sbp.point_number_d
+        )
+
         serve_place_x AS (
           SELECT
             c.*,
