@@ -555,9 +555,9 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        -- Primary bounce selection + carry context
+        -- Primary bounce choice (force one row per swing)
         swing_bounce_primary AS (
-          SELECT
+          SELECT DISTINCT ON (se.session_id, se.swing_id)
             se.session_id, se.swing_id, se.point_number_d, se.shot_ix, se.last_shot_ix,
             COALESCE(f.bounce_id,         a.any_bounce_id)          AS bounce_id,
             COALESCE(f.bounce_ts,         a.any_bounce_ts)          AS bounce_ts,
@@ -567,10 +567,12 @@ CREATE_STMTS = {
             COALESCE(f.bounce_y_norm_m,   a.any_bounce_y_norm_m)    AS bounce_y_norm_m,
             COALESCE(f.bounce_type_raw,   a.any_bounce_type)        AS bounce_type_raw,
             CASE WHEN f.bounce_id IS NOT NULL THEN 'floor'::text
-                 WHEN a.any_bounce_id IS NOT NULL THEN 'any'::text
-                 ELSE NULL::text
+                WHEN a.any_bounce_id IS NOT NULL THEN 'any'::text
+                ELSE NULL::text
             END AS primary_source_d,
             se.serve_d,
+            se.first_rally_shot_ix,
+            se.start_serve_shot_ix,
             se.player_id,
             se.server_id,
             se.game_number_d,
@@ -586,17 +588,16 @@ CREATE_STMTS = {
             se.prev_ball_hit_ts,
             se.prev_ball_hit_s,
             se.player_side_far_d,
-            se.ord_ts,
-            pix.start_serve_shot_ix,
-            pix.first_rally_shot_ix
-          FROM swings_numbered se
+            se.ord_ts
+          FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=se.session_id AND f.swing_id=se.swing_id
           LEFT JOIN swing_bounce_any a
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
-          LEFT JOIN point_ix pix
-            ON pix.session_id=se.session_id AND pix.point_number_d=se.point_number_d
+          -- If anything upstream accidentally fans out, keep exactly one row:
+          ORDER BY se.session_id, se.swing_id, se.shot_ix DESC
         ),
+
 
         -- Timestamps for validity
         sbp_ts AS (
