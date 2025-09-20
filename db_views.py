@@ -203,7 +203,6 @@ VIEW_NAMES = [
 ]
 
 CREATE_STMTS = {
-    # ------------------------------ SILVER: swings ------------------------------
     "vw_swing_silver": r'''
         CREATE OR REPLACE VIEW vw_swing_silver AS
         SELECT
@@ -224,14 +223,12 @@ CREATE_STMTS = {
         LEFT JOIN dim_session ds USING (session_id);
     ''',
 
-    # ------------------------------ SILVER: ball positions ------------------------------
     "vw_ball_position_silver": r'''
         CREATE OR REPLACE VIEW vw_ball_position_silver AS
         SELECT session_id, ts_s, ts, x, y
         FROM fact_ball_position;
     ''',
 
-    # ------------------------------ SILVER: bounces ------------------------------
     "vw_bounce_silver": r'''
         CREATE OR REPLACE VIEW vw_bounce_silver AS
         SELECT
@@ -251,6 +248,7 @@ CREATE_STMTS = {
     "vw_point_silver": r'''
 CREATE OR REPLACE VIEW vw_point_silver AS
 WITH
+-- constants
 const AS (
   SELECT
     8.23::numeric       AS court_w_m,
@@ -468,7 +466,7 @@ point_first_rally AS (
   GROUP BY session_id, point_number_d
 ),
 
--- starting serve of the point
+-- starting serve of the point = last serve before first rally
 point_starting_serve AS (
   SELECT
     sn.session_id, sn.point_number_d,
@@ -481,18 +479,28 @@ point_starting_serve AS (
   GROUP BY sn.session_id, sn.point_number_d
 ),
 
--- enrich swings
+-- NEW: first serve attempt of the point
+point_first_serve AS (
+  SELECT session_id, point_number_d, MIN(shot_ix) AS first_serve_shot_ix
+  FROM swings_numbered
+  WHERE serve_d
+  GROUP BY session_id, point_number_d
+),
+
+-- enrich swings with serve/rally markers
 swings_enriched AS (
   SELECT
     sn.*,
     pfr.first_rally_shot_ix,
-    pss.start_serve_shot_ix
+    pss.start_serve_shot_ix,
+    pfs.first_serve_shot_ix
   FROM swings_numbered sn
-  LEFT JOIN point_first_rally   pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
-  LEFT JOIN point_starting_serve pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
+  LEFT JOIN point_first_rally     pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
+  LEFT JOIN point_starting_serve  pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
+  LEFT JOIN point_first_serve     pfs ON pfs.session_id = sn.session_id AND pfs.point_number_d = sn.point_number_d
 ),
 
--- map bounces (windowed)
+-- time windows to map bounces
 swing_windows AS (
   SELECT
     se.*,
@@ -514,6 +522,7 @@ swing_windows_cap AS (
   FROM swing_windows sw
 ),
 
+-- first FLOOR bounce in window
 swing_bounce_floor AS (
   SELECT
     swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_ix,
@@ -532,6 +541,7 @@ swing_bounce_floor AS (
   ) b ON TRUE
 ),
 
+-- first ANY bounce in window
 swing_bounce_any AS (
   SELECT
     swc.swing_id, swc.session_id, swc.point_number_d, swc.shot_ix,
@@ -553,7 +563,7 @@ swing_bounce_any AS (
   ) b ON TRUE
 ),
 
--- PRIMARY bounce (dedupe to 1 row per swing)
+-- PRIMARY bounce choice (de-dup to 1 row per swing)
 swing_bounce_primary AS (
   SELECT DISTINCT ON (se.session_id, se.swing_id)
     se.session_id, se.swing_id, se.point_number_d, se.shot_ix, se.last_shot_ix,
@@ -588,18 +598,26 @@ swing_bounce_primary AS (
 /* ---------- VALIDITY (5s rule; cascade) ---------- */
 sn_ts AS (
   SELECT
-    sn.session_id, sn.swing_id, sn.point_number_d, sn.shot_ix,
-    sn.serve_d, sn.ord_ts,
-    COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS this_ts,
-    COALESCE(sn.prev_ball_hit_ts, (TIMESTAMP 'epoch' + sn.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
-  FROM swings_numbered sn
+    se.session_id, se.swing_id, se.point_number_d, se.shot_ix,
+    se.serve_d, se.ord_ts,
+    se.first_serve_shot_ix, se.start_serve_shot_ix,
+    COALESCE(se.ball_hit_ts, (TIMESTAMP 'epoch' + se.ball_hit_s * INTERVAL '1 second')) AS this_ts,
+    COALESCE(se.prev_ball_hit_ts, (TIMESTAMP 'epoch' + se.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
+  FROM swings_enriched se
 ),
 swing_validity AS (
   SELECT
     s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.serve_d, s.ord_ts,
+    s.first_serve_shot_ix, s.start_serve_shot_ix,
     CASE
-      WHEN s.point_number_d IS NULL THEN FALSE
-      WHEN s.serve_d THEN TRUE
+      WHEN s.point_number_d IS NULL THEN FALSE                                    -- before first serve boundary
+      WHEN s.serve_d THEN TRUE                                                    -- all serves valid
+      -- NEW: any non-serve between first and final (starting) serve is invalid
+      WHEN s.first_serve_shot_ix IS NOT NULL
+       AND s.start_serve_shot_ix IS NOT NULL
+       AND s.shot_ix > s.first_serve_shot_ix
+       AND s.shot_ix < s.start_serve_shot_ix THEN FALSE
+      -- rally-phase 5s rule
       WHEN s.prev_ts IS NULL THEN FALSE
       WHEN (s.this_ts - s.prev_ts) <= INTERVAL '5 seconds' THEN TRUE
       ELSE FALSE
@@ -609,10 +627,19 @@ swing_validity AS (
 valid_cascade AS (
   SELECT
     v.*,
-    SUM(CASE WHEN NOT v.serve_d AND v.valid_swing_d_base = FALSE THEN 1 ELSE 0 END)
-      OVER (PARTITION BY v.session_id, v.point_number_d
-            ORDER BY v.ord_ts, v.swing_id
-            ROWS UNBOUNDED PRECEDING) AS invalid_seen
+    SUM(
+      CASE
+        -- Start cascading only after the starting serve; early invalids do not cascade
+        WHEN NOT v.serve_d
+         AND v.valid_swing_d_base = FALSE
+         AND (v.start_serve_shot_ix IS NULL OR v.shot_ix >= v.start_serve_shot_ix)
+        THEN 1 ELSE 0
+      END
+    ) OVER (
+      PARTITION BY v.session_id, v.point_number_d
+      ORDER BY v.ord_ts, v.swing_id
+      ROWS UNBOUNDED PRECEDING
+    ) AS invalid_seen
   FROM swing_validity v
 ),
 valid_final AS (
@@ -793,7 +820,7 @@ bounce_explain AS (
     ON sbp.session_id=se.session_id AND sbp.swing_id=se.swing_id
 ),
 
--- running game score & game winner
+-- running game score & game winner (unchanged)
 points_accum AS (
   SELECT
     pow.*,
@@ -863,7 +890,7 @@ games_running AS (
   FROM points_scored_winner psw
 )
 
--- FINAL
+-- FINAL SELECT (singles; includes validity flags)
 SELECT
   sbp.session_id,
   vss.session_uid_d,
@@ -973,10 +1000,10 @@ SELECT
     END
   END AS out_axis_last_d,
 
-  -- Serve lanes (unchanged)
+  -- Serve lanes
   spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-  -- A–D for all non-serves
+  -- A–D placement for non-serves
   CASE
     WHEN sbp.serve_d THEN NULL
     ELSE
@@ -1050,7 +1077,6 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
 ;
     ''',
 
-    # ------------------------------ DEBUG: bounce stream ------------------------------
     "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
@@ -1151,7 +1177,6 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
           ON a.session_id = b.session_id AND a.swing_id = b.swing_id;
     ''',
 
-    # ------------------------------ DEBUG: per-session bounce stats ------------------------------
     "vw_point_bounces_debug": r'''
         CREATE OR REPLACE VIEW vw_point_bounces_debug AS
         SELECT
@@ -1160,9 +1185,11 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
           COUNT(*)                                                        AS swings_total,
           COUNT(*) FILTER (WHERE vps.bounce_id IS NOT NULL)               AS swings_with_any_bounce,
           COUNT(*) FILTER (WHERE vps.bounce_type_raw = 'floor')           AS swings_with_floor_primary,
-          COUNT(*) FILTER (WHERE vps.bounce_type_raw <> 'floor' AND vps.bounce_id IS NOT NULL) AS swings_with_racquet_primary,
+          COUNT(*) FILTER (WHERE vps.bounce_type_raw <> 'floor' AND vps.bounce_id IS NOT NULL)
+                                                                          AS swings_with_racquet_primary,
           COUNT(*) FILTER (WHERE vps.bounce_id IS NULL)                   AS swings_with_no_bounce,
-          COUNT(DISTINCT vps.bounce_id) FILTER (WHERE vps.bounce_id IS NOT NULL) AS distinct_bounce_ids,
+          COUNT(DISTINCT vps.bounce_id) FILTER (WHERE vps.bounce_id IS NOT NULL)
+                                                                          AS distinct_bounce_ids,
           COALESCE((SELECT COUNT(*) FROM (
               SELECT bounce_id
               FROM vw_point_silver v2
