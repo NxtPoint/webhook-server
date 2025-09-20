@@ -108,6 +108,54 @@ def _guard() -> bool:
     supplied = qk or hk
     return bool(OPS_KEY) and supplied == OPS_KEY
 
+# --- Simple SQL helpers (read-only SELECT/WITH only) ------------------------
+import re
+from sqlalchemy import text as sql_text
+
+def _sql_clean_one_select(q: str) -> str:
+    q = (q or "").strip()
+    # trim trailing semicolon/newlines
+    q = re.sub(r"\s*;\s*$", "", q)
+    # must start with SELECT or WITH (case-insensitive)
+    if not re.match(r"^(select|with)\b", q, flags=re.I):
+        raise ValueError("Only SELECT/CTE queries are allowed")
+    # block multiple statements
+    if ";" in q:
+        raise ValueError("Only a single SELECT/CTE statement is allowed")
+    return q
+
+def _sql_exec_to_json(q: str):
+    q = _sql_clean_one_select(q)
+    with engine.begin() as conn:
+        res = conn.execute(sql_text(q))
+        cols = list(res.keys())
+        rows = [dict(zip(cols, r)) for r in res.fetchall()]
+    return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
+
+# Existing /ops/sql stays as-is. Add two friendlier variants:
+
+@app.post("/ops/sqlx")
+def ops_sql_json():
+    """POST JSON: { "q": "SELECT ..." }  (strict read-only)"""
+    if not _guard(): return _forbid()
+    body = request.get_json(silent=True) or {}
+    try:
+        q = body.get("q", "")
+        return jsonify(_sql_exec_to_json(q))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+@app.get("/ops/sqlq")
+def ops_sql_qs():
+    """GET .../ops/sqlq?q=SELECT...  (strict read-only; for quick tests)"""
+    if not _guard(): return _forbid()
+    try:
+        q = request.args.get("q", "")
+        return jsonify(_sql_exec_to_json(q))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
 # --- Admin purge endpoint: delete sessions safely (uses _guard + engine) ---
 from sqlalchemy import text as sql_text  # <<< added so sql_text works globally
 from flask import request, jsonify
