@@ -649,31 +649,40 @@ CREATE_STMTS = {
         sbp_ts AS (
           SELECT
             sbp.*,
-            COALESCE(sbp.ball_hit_ts,
-                     (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts,
-            COALESCE(sbp.prev_ball_hit_ts,
-                     (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
+            COALESCE(
+              sbp.ball_hit_ts,
+              (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')
+            ) AS this_ts,
+            COALESCE(
+              sbp.prev_ball_hit_ts,
+              (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')
+            ) AS prev_ts
           FROM swing_bounce_primary sbp
         ),
+
+        /* validity per point:
+          - invalid before first serve (no point_number_d)
+          - first swing in point is valid
+          - last swing in point is valid
+          - otherwise valid only if delta_to_prev <= 3s
+        */
         swing_validity AS (
-          /* Rules:
-             - anything before the first serve is invalid (no point_number_d)
-             - first swing in each serve-defined point is valid
-             - otherwise, valid iff time since previous swing in that point <= 3 seconds
-           */
           SELECT
             s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
-            s.serve_d, s.first_rally_shot_ix, s.start_serve_shot_ix, s.ord_ts,
-            s.this_ts, s.prev_ts,
+            s.serve_d, s.first_rally_shot_ix, s.start_serve_shot_ix,
+            s.ord_ts, s.this_ts, s.prev_ts,
             CASE
-              WHEN s.point_number_d IS NULL THEN FALSE
-              WHEN s.shot_ix = 1 THEN TRUE
-              WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
-                   AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
+              WHEN s.point_number_d IS NULL                 THEN FALSE
+              WHEN s.shot_ix = 1                            THEN TRUE
+              WHEN s.shot_ix = s.last_shot_ix               THEN TRUE
+              WHEN s.this_ts IS NULL OR s.prev_ts IS NULL   THEN FALSE
+              WHEN (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
               ELSE FALSE
             END AS valid_swing_d
           FROM sbp_ts s
         ),
+
+        /* running index of valid swings inside the point */
         valid_numbered AS (
           SELECT
             v.*,
@@ -683,6 +692,8 @@ CREATE_STMTS = {
                     ROWS UNBOUNDED PRECEDING) AS valid_shot_ix
           FROM swing_validity v
         ),
+
+        /* last valid shot index (for exports like is_last_valid_in_point_d) */
         valid_numbered_last AS (
           SELECT
             vn.*,
@@ -690,6 +701,7 @@ CREATE_STMTS = {
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
           FROM valid_numbered vn
         ),
+
 
         /* -------- Serve placement (unchanged) -------- */
         serve_place_core AS (
