@@ -648,19 +648,27 @@ CREATE_STMTS = {
           FROM swing_bounce_primary sbp
         ),
         swing_validity AS (
+          /* Rules:
+             - anything before the first serve is invalid
+             - the starting serve of each point is valid
+             - serve faults (serves before the starting serve) are invalid
+             - point must start (have a first rally shot) or everything in it is invalid
+             - non-serve swings are valid only if they happen within 3.0s of the previous swing in the point
+               (filters “after-the-fact” swings)
+             - we do NOT auto-validate the final raw swing; instead we compute the last *valid* swing later
+          */
           SELECT
             s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
             s.serve_d, s.first_rally_shot_ix, s.start_serve_shot_ix, s.ord_ts,
             s.this_ts, s.prev_ts,
             CASE
-              WHEN s.point_number_d IS NULL THEN FALSE                         -- before first serve
-              WHEN s.serve_d AND s.shot_ix = s.start_serve_shot_ix THEN TRUE   -- starting serve
-              WHEN s.serve_d AND s.shot_ix < s.start_serve_shot_ix THEN FALSE  -- serve faults
-              WHEN s.first_rally_shot_ix IS NULL THEN FALSE                    -- point never started
-              WHEN s.shot_ix < s.first_rally_shot_ix THEN FALSE                -- pre-rally swings
+              WHEN s.point_number_d IS NULL THEN FALSE                       -- before first serve
+              WHEN s.serve_d AND s.shot_ix = s.start_serve_shot_ix THEN TRUE -- starting serve
+              WHEN s.serve_d AND s.shot_ix < s.start_serve_shot_ix THEN FALSE-- serve faults
+              WHEN s.first_rally_shot_ix IS NULL THEN FALSE                  -- point never started
+              WHEN s.shot_ix < s.first_rally_shot_ix THEN FALSE              -- pre-rally swings
               WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
                    AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
-              WHEN s.shot_ix = s.last_shot_ix THEN TRUE                        -- always keep terminal
               ELSE FALSE
             END AS valid_swing_d
           FROM sbp_ts s
