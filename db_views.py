@@ -487,7 +487,17 @@ CREATE_STMTS = {
           GROUP BY session_id, point_number_d
         ),
 
-        -- Starting serve = last serve before first non-serve
+        /* NEW: FIRST SERVE of each point (independent of rally) */
+        point_first_serve AS (
+          SELECT
+            session_id,
+            point_number_d,
+            MIN(shot_ix) FILTER (WHERE serve_d) AS first_serve_shot_ix
+          FROM swings_numbered
+          GROUP BY session_id, point_number_d
+        ),
+
+        -- Starting serve = last serve before first non-serve (kept for placement / faults)
         point_starting_serve AS (
           SELECT
             sn.session_id, sn.point_number_d,
@@ -506,12 +516,15 @@ CREATE_STMTS = {
           SELECT
             sn.*,
             pfr.first_rally_shot_ix,
-            pss.start_serve_shot_ix
+            pss.start_serve_shot_ix,
+            pfs.first_serve_shot_ix
           FROM swings_numbered sn
-          LEFT JOIN point_first_rally pfr
+          LEFT JOIN point_first_rally   pfr
             ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
           LEFT JOIN point_starting_serve pss
             ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
+          LEFT JOIN point_first_serve   pfs
+            ON pfs.session_id = sn.session_id AND pfs.point_number_d = sn.point_number_d
         ),
 
         -- Ends per point (kept for placement/out flags)
@@ -624,6 +637,7 @@ CREATE_STMTS = {
             se.serve_d,
             se.first_rally_shot_ix,
             se.start_serve_shot_ix,
+            se.first_serve_shot_ix,
             se.player_id,
             se.server_id,
             se.game_number_d,
@@ -649,21 +663,18 @@ CREATE_STMTS = {
 
         /* ---------- Validity flags (singles) ----------
            Rule:
-           - before first serve: FALSE
-           - starting serve of each point: TRUE
-           - serve faults (serves before starting serve): FALSE
-           - all later swings in the point are TRUE unless gap from previous swing in the same point > 3.0s
+           - first serve of each point: TRUE
+           - later swings: TRUE unless gap from previous swing > 3.0s
+           - before first serve (no point_number_d): FALSE
         */
         swing_validity AS (
           SELECT
             s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
-            s.serve_d, s.start_serve_shot_ix, s.ord_ts, s.this_ts, s.prev_ts,
+            s.serve_d, s.first_serve_shot_ix, s.ord_ts, s.this_ts, s.prev_ts,
             CASE
               WHEN s.point_number_d IS NULL THEN FALSE
-              WHEN s.serve_d AND s.shot_ix = s.start_serve_shot_ix THEN TRUE
-              WHEN s.serve_d AND s.shot_ix <  s.start_serve_shot_ix THEN FALSE
-              WHEN s.shot_ix >  s.start_serve_shot_ix
-                   AND s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
+              WHEN s.shot_ix = s.first_serve_shot_ix THEN TRUE
+              WHEN s.prev_ts IS NOT NULL AND s.this_ts IS NOT NULL
                    AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
               ELSE FALSE
             END AS valid_swing_d
@@ -909,6 +920,7 @@ CREATE_STMTS = {
           sbp.serve_d,
           pfr.first_rally_shot_ix,
           sbp.start_serve_shot_ix,
+          sbp.first_serve_shot_ix,
 
           sbp.point_number_d,
           sbp.game_number_d,
