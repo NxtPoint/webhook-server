@@ -1,4 +1,4 @@
-# db_views.py — Silver = passthrough + derived (from bronze), Gold = thin extract
+# db_views.py — Silver-only views (plus debug helpers)
 # ----------------------------------------------------------------------------------
 # - Coordinates are meters; no autoscale.
 # - One primary bounce per swing:
@@ -25,20 +25,6 @@ VIEW_SQL_STMTS: List[str] = []
 # ==================================================================================
 # Utilities
 # ==================================================================================
-
-def _ensure_raw_ingest(conn):
-    conn.execute(text(r'''
-        CREATE TABLE IF NOT EXISTS raw_ingest (
-          id           BIGSERIAL PRIMARY KEY,
-          source       TEXT NOT NULL,
-          doc_type     TEXT NOT NULL,
-          session_uid  TEXT NOT NULL,
-          ingest_ts    TIMESTAMPTZ NOT NULL DEFAULT now(),
-          payload      JSONB NOT NULL
-        );
-    '''))  # raw string so backslashes/quotes never break
-    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_session_uid ON raw_ingest(session_uid);"))
-    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_raw_ingest_doc_type    ON raw_ingest(doc_type);"))
 
 def _table_exists(conn, t: str) -> bool:
     return conn.execute(text(r'''
@@ -220,7 +206,7 @@ $$;
 '''
 
 # ==================================================================================
-# View manifest
+# View manifest (Silver only)
 # ==================================================================================
 
 VIEW_NAMES = [
@@ -232,6 +218,7 @@ VIEW_NAMES = [
     "vw_point_bounces_debug",
 ]
 
+# Drop any old/legacy names if they exist (safe cleanup; no Gold created)
 LEGACY_OBJECTS = [
     "vw_point_order_by_serve", "vw_point_log", "vw_point_log_gold",
     "vw_point_summary", "vw_point_shot_log", "vw_shot_order_gold",
@@ -239,7 +226,7 @@ LEGACY_OBJECTS = [
 ]
 
 # ==================================================================================
-# CREATE statements
+# CREATE statements (Silver)
 # ==================================================================================
 
 CREATE_STMTS = {
@@ -284,6 +271,7 @@ CREATE_STMTS = {
         FROM fact_bounce b;
     ''',
 
+    # --------------------------- Point/Swing Silver ---------------------------
     "vw_point_silver": r'''
         CREATE OR REPLACE VIEW vw_point_silver AS
         WITH
@@ -1078,6 +1066,7 @@ CREATE_STMTS = {
         ;
     ''',
 
+    # --------------------------- Debug helpers ---------------------------
     "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
@@ -1210,16 +1199,17 @@ CREATE_STMTS = {
 def _apply_views(engine):
     global VIEW_SQL_STMTS
     with engine.begin() as conn:
-        _ensure_raw_ingest(conn)
         _preflight_or_raise(conn)
 
         # Create helper functions used by vw_point_silver (both overloads)
         conn.execute(text(PLACEMENT_AD_FN_SQL_NUMERIC))
         conn.execute(text(PLACEMENT_AD_FN_SQL_FLOAT8))
 
+        # Clean stray legacy objects (no Gold created here)
         for obj in LEGACY_OBJECTS:
             _drop_any(conn, obj)
 
+        # Drop then create the Silver views
         for name in reversed(VIEW_NAMES):
             _drop_any(conn, name)
 
@@ -1231,6 +1221,6 @@ def _apply_views(engine):
             VIEW_SQL_STMTS.append(sql)
             _exec_with_clear_errors(conn, name, sql)
 
-# Back-compat
+# Back-compat function names
 init_views = _apply_views
 run_views  = _apply_views

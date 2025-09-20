@@ -334,6 +334,51 @@ def _ensure_unique_on_session_id(conn, table_name, index_name):
     if _table_exists(conn, table_name) and not _index_exists(conn, index_name):
         conn.execute(text(f"CREATE UNIQUE INDEX {index_name} ON {table_name}(session_id);"))
 
+# ---------------- Bronze passthrough views ----------------
+def _drop_view(conn, name: str):
+    conn.execute(text(f'DROP VIEW IF EXISTS "{name}" CASCADE;'))
+
+def _create_bronze_views(conn):
+    """
+    Keep Bronze 'out of the firing line':
+    - Simple passthroughs over base tables
+    - Idempotent, created at init time
+    - Silver/Gold can build on these later (optional). For now, Silver can keep
+      reading base tables directly (no behavior change).
+    """
+    bronze_sql = {
+        "vw_bronze_dim_session_base": """
+            CREATE OR REPLACE VIEW vw_bronze_dim_session_base AS
+            SELECT * FROM dim_session;
+        """,
+        "vw_bronze_swing_base": """
+            CREATE OR REPLACE VIEW vw_bronze_swing_base AS
+            SELECT * FROM fact_swing;
+        """,
+        "vw_bronze_bounce_base": """
+            CREATE OR REPLACE VIEW vw_bronze_bounce_base AS
+            SELECT * FROM fact_bounce;
+        """,
+        "vw_bronze_ball_position_base": """
+            CREATE OR REPLACE VIEW vw_bronze_ball_position_base AS
+            SELECT * FROM fact_ball_position;
+        """,
+        "vw_bronze_player_position_base": """
+            CREATE OR REPLACE VIEW vw_bronze_player_position_base AS
+            SELECT * FROM fact_player_position;
+        """,
+        "vw_bronze_raw_result_base": """
+            CREATE OR REPLACE VIEW vw_bronze_raw_result_base AS
+            SELECT raw_result_id, session_id, created_at, payload_json
+            FROM raw_result
+            ORDER BY session_id, created_at;
+        """,
+    }
+    # Drop & recreate (safe)
+    for name, sql in bronze_sql.items():
+        _drop_view(conn, name)
+        conn.execute(text(sql))
+
 # ---------------- Entrypoint ----------------
 def run_init(engine):
     with engine.begin() as conn:
@@ -355,6 +400,11 @@ def run_init(engine):
         _ensure_unique_on_session_id(conn, "bounce_heatmap", "uq_bounce_heatmap_session")
         _ensure_unique_on_session_id(conn, "session_confidences", "uq_session_confidences_session")
         _ensure_unique_on_session_id(conn, "thumbnail", "uq_thumbnail_session")
+
+        # ⬇️ Create Bronze views at init (no behavior change to Silver)
+        _create_bronze_views(conn)
+
+    # Keep the extra raw_result hardening you already had
     with engine.begin() as conn:
         conn.execute(text("""
             ALTER TABLE raw_result
