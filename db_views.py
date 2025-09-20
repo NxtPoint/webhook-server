@@ -649,21 +649,15 @@ CREATE_STMTS = {
         sbp_ts AS (
           SELECT
             sbp.*,
-            COALESCE(
-              sbp.ball_hit_ts,
-              (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')
-            ) AS this_ts,
-            COALESCE(
-              sbp.prev_ball_hit_ts,
-              (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')
-            ) AS prev_ts
+            COALESCE(sbp.ball_hit_ts, (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts,
+            COALESCE(sbp.prev_ball_hit_ts, (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
           FROM swing_bounce_primary sbp
         ),
 
-        /* Validity rules (singles):
+        /* Base rule:
           - invalid before first serve (no point_number_d)
           - ALL serves are valid (faults/seconds included)
-          - every other swing is valid only if (this_ts - prev_ts) ≤ 3.0s
+          - every other swing valid only if (this_ts - prev_ts) ≤ 3.0s
         */
         swing_validity AS (
           SELECT
@@ -676,30 +670,62 @@ CREATE_STMTS = {
               WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
                   AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
               ELSE FALSE
-            END AS valid_swing_d
+            END AS valid_swing_d_base
           FROM sbp_ts s
         ),
 
-        /* running index of valid swings inside each point */
-        valid_numbered AS (
+        /* Cascade the first invalid forward within the point */
+        valid_cascade AS (
           SELECT
             v.*,
-            SUM(CASE WHEN v.valid_swing_d THEN 1 ELSE 0 END)
-              OVER (PARTITION BY v.session_id, v.point_number_d
-                    ORDER BY v.ord_ts, v.swing_id
-                    ROWS UNBOUNDED PRECEDING) AS valid_shot_ix
+            SUM(
+              CASE
+                WHEN NOT v.serve_d AND v.valid_swing_d_base = FALSE THEN 1 ELSE 0
+              END
+            ) OVER (
+              PARTITION BY v.session_id, v.point_number_d
+              ORDER BY v.ord_ts, v.swing_id
+              ROWS UNBOUNDED PRECEDING
+            ) AS invalid_seen
           FROM swing_validity v
         ),
 
-        /* last valid swing index per point (export) */
+        /* Final validity:
+          - serves stay valid
+          - once invalid_seen>0, everything else in the point becomes FALSE
+        */
+        valid_final AS (
+          SELECT
+            vc.*,
+            CASE
+              WHEN vc.serve_d THEN TRUE
+              WHEN vc.invalid_seen > 0 THEN FALSE
+              ELSE vc.valid_swing_d_base
+            END AS valid_swing_final_d
+          FROM valid_cascade vc
+        ),
+
+        /* running index of valid swings (after cascade) */
+        valid_numbered AS (
+          SELECT
+            vf.*,
+            SUM(CASE WHEN vf.valid_swing_final_d THEN 1 ELSE 0 END)
+              OVER (
+                PARTITION BY vf.session_id, vf.point_number_d
+                ORDER BY vf.ord_ts, vf.swing_id
+                ROWS UNBOUNDED PRECEDING
+              ) AS valid_shot_ix
+          FROM valid_final vf
+        ),
+
+        /* last valid shot index per point */
         valid_numbered_last AS (
           SELECT
             vn.*,
-            MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_d)
+            MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d)
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
           FROM valid_numbered vn
         ),
-
 
 
 
@@ -935,9 +961,8 @@ CREATE_STMTS = {
 
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
-          -- NEW: validity exports
-          vnl.valid_swing_d,
-          (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_valid_in_point_d,
+          vnl.valid_swing_final_d AS valid_swing_d,
+          (vnl.valid_swing_final_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_valid_in_point_d,
 
           CASE
             WHEN sbp.bounce_id IS NULL THEN NULL
