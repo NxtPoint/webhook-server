@@ -248,7 +248,6 @@ CREATE_STMTS = {
     "vw_point_silver": r'''
 CREATE OR REPLACE VIEW vw_point_silver AS
 WITH
--- constants
 const AS (
   SELECT
     8.23::numeric       AS court_w_m,
@@ -466,7 +465,7 @@ point_first_rally AS (
   GROUP BY session_id, point_number_d
 ),
 
--- starting serve of the point = last serve before first rally
+-- starting serve of the point = last serve before that first rally (or only serve if rally never starts)
 point_starting_serve AS (
   SELECT
     sn.session_id, sn.point_number_d,
@@ -479,25 +478,26 @@ point_starting_serve AS (
   GROUP BY sn.session_id, sn.point_number_d
 ),
 
--- NEW: first serve attempt of the point
-point_first_serve AS (
-  SELECT session_id, point_number_d, MIN(shot_ix) AS first_serve_shot_ix
-  FROM swings_numbered
-  WHERE serve_d
-  GROUP BY session_id, point_number_d
+-- serves span in each point (for between-serves rule)
+point_serves_span AS (
+  SELECT
+    sn.session_id, sn.point_number_d,
+    MIN(sn.shot_ix) AS first_srv_ix,
+    MAX(sn.shot_ix) AS last_srv_ix
+  FROM swings_numbered sn
+  WHERE sn.serve_d
+  GROUP BY sn.session_id, sn.point_number_d
 ),
 
--- enrich swings with serve/rally markers
+-- enrich swings with rally/serve markers
 swings_enriched AS (
   SELECT
     sn.*,
     pfr.first_rally_shot_ix,
-    pss.start_serve_shot_ix,
-    pfs.first_serve_shot_ix
+    pss.start_serve_shot_ix
   FROM swings_numbered sn
-  LEFT JOIN point_first_rally     pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
-  LEFT JOIN point_starting_serve  pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
-  LEFT JOIN point_first_serve     pfs ON pfs.session_id = sn.session_id AND pfs.point_number_d = sn.point_number_d
+  LEFT JOIN point_first_rally    pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
+  LEFT JOIN point_starting_serve pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
 ),
 
 -- time windows to map bounces
@@ -595,29 +595,34 @@ swing_bounce_primary AS (
            se.shot_ix DESC
 ),
 
-/* ---------- VALIDITY (5s rule; cascade) ---------- */
+/* ---------- VALIDITY (5s rule; cascade + between-serves override) ---------- */
 sn_ts AS (
   SELECT
-    se.session_id, se.swing_id, se.point_number_d, se.shot_ix,
-    se.serve_d, se.ord_ts,
-    se.first_serve_shot_ix, se.start_serve_shot_ix,
-    COALESCE(se.ball_hit_ts, (TIMESTAMP 'epoch' + se.ball_hit_s * INTERVAL '1 second')) AS this_ts,
-    COALESCE(se.prev_ball_hit_ts, (TIMESTAMP 'epoch' + se.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
-  FROM swings_enriched se
+    sn.session_id, sn.swing_id, sn.point_number_d, sn.shot_ix,
+    sn.serve_d, sn.ord_ts,
+    COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS this_ts,
+    COALESCE(sn.prev_ball_hit_ts, (TIMESTAMP 'epoch' + sn.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts,
+    pspan.first_srv_ix, pspan.last_srv_ix,
+    CASE
+      WHEN NOT sn.serve_d
+       AND pspan.first_srv_ix IS NOT NULL
+       AND pspan.last_srv_ix IS NOT NULL
+       AND sn.shot_ix > pspan.first_srv_ix
+       AND sn.shot_ix < pspan.last_srv_ix
+      THEN TRUE
+      ELSE FALSE
+    END AS between_serves_d
+  FROM swings_numbered sn
+  LEFT JOIN point_serves_span pspan
+    ON pspan.session_id = sn.session_id AND pspan.point_number_d = sn.point_number_d
 ),
 swing_validity AS (
   SELECT
-    s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.serve_d, s.ord_ts,
-    s.first_serve_shot_ix, s.start_serve_shot_ix,
+    s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.serve_d, s.ord_ts, s.between_serves_d,
     CASE
-      WHEN s.point_number_d IS NULL THEN FALSE                                    -- before first serve boundary
-      WHEN s.serve_d THEN TRUE                                                    -- all serves valid
-      -- NEW: any non-serve between first and final (starting) serve is invalid
-      WHEN s.first_serve_shot_ix IS NOT NULL
-       AND s.start_serve_shot_ix IS NOT NULL
-       AND s.shot_ix > s.first_serve_shot_ix
-       AND s.shot_ix < s.start_serve_shot_ix THEN FALSE
-      -- rally-phase 5s rule
+      WHEN s.point_number_d IS NULL THEN FALSE
+      WHEN s.serve_d THEN TRUE
+      WHEN s.between_serves_d THEN FALSE
       WHEN s.prev_ts IS NULL THEN FALSE
       WHEN (s.this_ts - s.prev_ts) <= INTERVAL '5 seconds' THEN TRUE
       ELSE FALSE
@@ -627,19 +632,10 @@ swing_validity AS (
 valid_cascade AS (
   SELECT
     v.*,
-    SUM(
-      CASE
-        -- Start cascading only after the starting serve; early invalids do not cascade
-        WHEN NOT v.serve_d
-         AND v.valid_swing_d_base = FALSE
-         AND (v.start_serve_shot_ix IS NULL OR v.shot_ix >= v.start_serve_shot_ix)
-        THEN 1 ELSE 0
-      END
-    ) OVER (
-      PARTITION BY v.session_id, v.point_number_d
-      ORDER BY v.ord_ts, v.swing_id
-      ROWS UNBOUNDED PRECEDING
-    ) AS invalid_seen
+    SUM(CASE WHEN NOT v.serve_d AND v.valid_swing_d_base = FALSE THEN 1 ELSE 0 END)
+      OVER (PARTITION BY v.session_id, v.point_number_d
+            ORDER BY v.ord_ts, v.swing_id
+            ROWS UNBOUNDED PRECEDING) AS invalid_seen
   FROM swing_validity v
 ),
 valid_final AS (
@@ -768,7 +764,7 @@ serve_place_final AS (
   FROM serve_place_x x
 ),
 
--- Terminal outcome (last raw shot of the point)
+-- terminal outcome (raw last shot)
 point_outcome AS (
   SELECT
     sbp.session_id, sbp.point_number_d, sbp.game_number_d, sbp.point_in_game_d,
@@ -820,7 +816,7 @@ bounce_explain AS (
     ON sbp.session_id=se.session_id AND sbp.swing_id=se.swing_id
 ),
 
--- running game score & game winner (unchanged)
+-- running points/game (unchanged)
 points_accum AS (
   SELECT
     pow.*,
@@ -890,7 +886,7 @@ games_running AS (
   FROM points_scored_winner psw
 )
 
--- FINAL SELECT (singles; includes validity flags)
+-- FINAL
 SELECT
   sbp.session_id,
   vss.session_uid_d,
@@ -1000,7 +996,7 @@ SELECT
     END
   END AS out_axis_last_d,
 
-  -- Serve lanes
+  -- serve lanes unchanged
   spf.serve_bucket_1_8 AS serve_loc_18_d,
 
   -- A–D placement for non-serves
@@ -1013,33 +1009,33 @@ SELECT
             WHEN sbp.shot_ix = sbp.last_shot_ix
               THEN sbp.bounce_x_center_m
             ELSE COALESCE(
-                   CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                   sbp.next_ball_hit_x,
-                   sbp.ball_hit_x
-                 )
+                  CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                  sbp.next_ball_hit_x,
+                  sbp.ball_hit_x
+                )
           END
         ) IS NULL
         THEN NULL
         ELSE placement_ad(
-               (
-                 CASE
-                   WHEN sbp.shot_ix = sbp.last_shot_ix
-                     THEN sbp.bounce_x_center_m
-                   ELSE COALESCE(
-                          CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
-                          sbp.next_ball_hit_x,
-                          sbp.ball_hit_x
-                        )
-                 END
-               )::numeric,
-               NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
-               (SELECT court_w_m FROM const),
-               (SELECT eps_m    FROM const)
-             )
+              (
+                CASE
+                  WHEN sbp.shot_ix = sbp.last_shot_ix
+                    THEN sbp.bounce_x_center_m
+                  ELSE COALESCE(
+                         CASE WHEN sbp.bounce_type_raw = 'floor' THEN sbp.bounce_x_center_m END,
+                         sbp.next_ball_hit_x,
+                         sbp.ball_hit_x
+                       )
+                END
+              )::numeric,
+              NOT COALESCE(sbp.player_side_far_d, sbp.ball_hit_y < 0),
+              (SELECT court_w_m FROM const),
+              (SELECT eps_m    FROM const)
+            )
       END
   END AS placement_ad_d,
 
-  -- Play type
+  -- play type
   CASE
     WHEN sbp.serve_d THEN 'serve'
     WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
@@ -1047,7 +1043,7 @@ SELECT
     ELSE 'baseline'
   END AS play_d,
 
-  -- Scoring (last-shot rows)
+  -- scoring context
   gr.point_score_text_d,
   gr.is_game_end_d,
   gr.game_winner_player_id_d,
