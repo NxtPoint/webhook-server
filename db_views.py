@@ -739,7 +739,7 @@ CREATE_STMTS = {
           JOIN point_ends pe
             ON pe.session_id     = sbp.session_id
           AND pe.point_number_d = sbp.point_number_d
-        )
+        ),
 
         serve_place_x AS (
           SELECT
