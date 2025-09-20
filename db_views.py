@@ -661,32 +661,53 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
+        /* --- Normalize times to seconds, then compute gap within point --- */
+        sbp_time_norm AS (
+          SELECT
+            sbp.*,
+            COALESCE(sbp.ball_hit_s,
+                     EXTRACT(EPOCH FROM sbp.ball_hit_ts))        AS this_s_pref,
+            COALESCE(sbp.prev_ball_hit_s,
+                     EXTRACT(EPOCH FROM sbp.prev_ball_hit_ts))   AS prev_s_pref
+          FROM swing_bounce_primary sbp
+        ),
+        gap_calc AS (
+          SELECT
+            t.*,
+            CASE
+              WHEN t.prev_s_pref IS NOT NULL AND t.this_s_pref IS NOT NULL
+              THEN (t.this_s_pref - t.prev_s_pref)
+              ELSE NULL
+            END AS gap_s
+          FROM sbp_time_norm t
+        ),
+
         /* ---------- Validity flags (singles) ----------
-           Rule:
-           - first serve of each point: TRUE
-           - later swings: TRUE unless gap from previous swing > 3.0s
+           - first serve of each point: TRUE (in or out)
+           - last shot of point:        TRUE
+           - other swings:              TRUE iff gap_s ≤ 3.0 seconds
            - before first serve (no point_number_d): FALSE
         */
         swing_validity AS (
           SELECT
-            s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.last_shot_ix,
-            s.serve_d, s.first_serve_shot_ix, s.ord_ts, s.this_ts, s.prev_ts,
+            g.session_id, g.swing_id, g.point_number_d, g.shot_ix, g.last_shot_ix,
+            g.serve_d, g.first_rally_shot_ix, g.start_serve_shot_ix, g.ord_ts,
+            g.gap_s,
             CASE
-              WHEN s.point_number_d IS NULL THEN FALSE
-              WHEN s.shot_ix = s.first_serve_shot_ix THEN TRUE
-              WHEN s.prev_ts IS NOT NULL AND s.this_ts IS NOT NULL
-                   AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
+              WHEN g.point_number_d IS NULL           THEN FALSE
+              WHEN g.shot_ix = g.last_shot_ix         THEN TRUE
+              WHEN g.shot_ix = g.start_serve_shot_ix  THEN TRUE
+              WHEN g.gap_s IS NOT NULL AND g.gap_s <= 3.0 THEN TRUE
               ELSE FALSE
             END AS valid_swing_d
-          FROM swing_bounce_primary s
+          FROM gap_calc g
         ),
         valid_numbered AS (
           SELECT
             v.*,
             SUM(CASE WHEN v.valid_swing_d THEN 1 ELSE 0 END)
               OVER (PARTITION BY v.session_id, v.point_number_d
-                    ORDER BY v.ord_ts, v.swing_id
-                    ROWS UNBOUNDED PRECEDING) AS valid_shot_ix
+                    ORDER BY v.ord_ts, v.swing_id) AS valid_shot_ix
           FROM swing_validity v
         ),
         valid_numbered_last AS (
@@ -696,6 +717,7 @@ CREATE_STMTS = {
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
           FROM valid_numbered vn
         ),
+
 
         /* -------- Serve placement (unchanged) -------- */
         serve_place_core AS (
