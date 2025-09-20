@@ -555,7 +555,7 @@ CREATE_STMTS = {
           ) b ON TRUE
         ),
 
-        -- Primary bounce choice (force one row per swing)
+        -- PRIMARY bounce choice (de-dup swings; no logic change)
         swing_bounce_primary AS (
           SELECT DISTINCT ON (se.session_id, se.swing_id)
             se.session_id, se.swing_id, se.point_number_d, se.shot_ix, se.last_shot_ix,
@@ -570,34 +570,24 @@ CREATE_STMTS = {
                 WHEN a.any_bounce_id IS NOT NULL THEN 'any'::text
                 ELSE NULL::text
             END AS primary_source_d,
-            se.serve_d,
-            se.first_rally_shot_ix,
-            se.start_serve_shot_ix,
-            se.player_id,
-            se.server_id,
-            se.game_number_d,
-            se.point_in_game_d,
-            se.serving_side_d,
-            se.start_s, se.end_s, se.ball_hit_s,
-            se.start_ts, se.end_ts, se.ball_hit_ts,
-            se.ball_hit_x, se.ball_hit_y,
-            se.ball_speed,
-            se.swing_type AS swing_type_raw,
-            se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id,
-            se.next_swing_id,
-            se.prev_ball_hit_ts,
-            se.prev_ball_hit_s,
-            se.player_side_far_d,
-            se.ord_ts
+
+            se.serve_d, se.start_serve_shot_ix, se.player_id, se.server_id,
+            se.game_number_d, se.point_in_game_d, se.serving_side_d,
+            se.start_s, se.end_s, se.ball_hit_s, se.start_ts, se.end_ts, se.ball_hit_ts,
+            se.ball_hit_x, se.ball_hit_y, se.ball_speed, se.swing_type AS swing_type_raw,
+            se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id, se.next_swing_id,
+            se.prev_ball_hit_ts, se.prev_ball_hit_s, se.player_side_far_d, se.ord_ts
           FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
-            ON f.session_id=se.session_id AND f.swing_id=se.swing_id
+            ON f.session_id = se.session_id AND f.swing_id = se.swing_id
           LEFT JOIN swing_bounce_any a
-            ON a.session_id=se.session_id AND a.swing_id=se.swing_id
-          -- If anything upstream accidentally fans out, keep exactly one row:
-          ORDER BY se.session_id, se.swing_id, se.shot_ix DESC
+            ON a.session_id = se.session_id AND a.swing_id = se.swing_id
+          -- tie-break deterministically in case upstream data has duplicates
+          ORDER BY se.session_id, se.swing_id,
+                  -- prefer 'floor' over 'any' if both somehow show up
+                  (f.bounce_id IS NULL) ASC,
+                  se.shot_ix DESC
         ),
-
 
         -- Timestamps for validity
         sbp_ts AS (
