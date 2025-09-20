@@ -7,14 +7,12 @@
 <style>
   :root{
     --brand:#0b5a37;
-
     --accent-soft:#EAF6EF;
     --text:#111827;
     --muted:#6b7280;
     --field-bg:#f6f7f8;
     --field-border:#e5e7eb;
     --card-bg:rgba(255,255,255,0.92);
-
     --top-offset:220px;
   }
 
@@ -79,22 +77,19 @@
   /* STATUS ROW ------------------------------------------------------------- */
   .status-row{
     display:grid;
-    /* Wider TASK ID (left), progress middle, STATUS on the right */
+    /* TASK ID (left, wide) | PROGRESS (middle) | STATUS (right) */
     grid-template-columns: 2.4fr 1.8fr 0.9fr;
     gap:12px;
     align-items:start;
     margin:8px 0 22px;
   }
   .col{display:flex;flex-direction:column;}
-  .col-title{
-    font-size:14px;font-weight:700;color:#0f172a;margin:0 0 8px 0;line-height:1;
-  }
+  .col-title{font-size:14px;font-weight:700;color:#0f172a;margin:0 0 8px 0;line-height:1;}
   .col-value{font-weight:600;color:var(--brand);}
   .mono{font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
-  /* keep TASK ID on a single line; allow horizontal scroll if needed */
+  /* Keep TASK ID on one line; allow horizontal scroll if long */
   #taskId{white-space:nowrap; overflow-x:auto; overflow-y:hidden;}
 
-  /* Progress bar */
   .bar-wrap{width:100%;}
   .bar{
     position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;
@@ -246,6 +241,7 @@
   const cancelBtn = document.getElementById('cancelBtn');
   const terms = document.getElementById('terms');
 
+  // Default match date to today
   document.addEventListener('DOMContentLoaded', () => {
     const d = document.getElementById('match_date');
     if (d && !d.value) {
@@ -262,17 +258,20 @@
     logBox.textContent += `${ts} ${line}\n`;
     logBox.scrollTop = logBox.scrollHeight;
   }
+
   function setProgress(p){
     if (p == null || Number.isNaN(p)) p = 0;
     p = Math.max(0, Math.min(100, Math.round(p)));
     pctInside.textContent = p + '%';
     barFill.style.width = p + '%';
   }
+
   function markDone(){
     stageEl.textContent = 'completed';
     setProgress(100);
     submitBtn.disabled = false;
   }
+
   function makePseudoProgress(){
     let p = 0;
     return {
@@ -281,25 +280,47 @@
     };
   }
 
+  // Robust JSON fetch: Accept JSON, fall back to text if an edge returns HTML
+  async function fetchJsonSafe(url){
+    try{
+      const r = await fetch(url, {cache:'no-store', headers:{'Accept':'application/json'}});
+      const text = await r.text();
+      try{
+        const j = JSON.parse(text);
+        return { ok:true, status:r.status, json:j };
+      }catch(parseErr){
+        const snippet = (text || '').slice(0,120).replace(/\s+/g,' ');
+        return { ok:false, status:r.status, error:`HTTP ${r.status} ${r.statusText} — non-JSON: ${snippet}` };
+      }
+    }catch(e){
+      return { ok:false, status:0, error:String(e) };
+    }
+  }
+
   async function poll(tid){
     if (!tid) return;
-    try{
-      const r = await fetch(`/upload/api/task-status?task_id=${encodeURIComponent(tid)}`, {cache:'no-store'});
-      const j = await r.json();
-      const status = (j.status || '').toLowerCase() || (j.data && (j.data.task_status || j.data.status)) || 'processing';
-      stageEl.textContent = status;
+    const res = await fetchJsonSafe(`/upload/api/task-status?task_id=${encodeURIComponent(tid)}`);
+    if (!res.ok){
+      log(`status error: ${res.error}`);
+      // keep pseudo progress ticking; we'll try again on next interval
+      setProgress(pseudo.tick());
+      return;
+    }
+    const j = res.json;
 
-      const d = j.data || {};
-      let prog = d.task_progress ?? d.progress ?? j.task_progress ?? j.progress ?? null;
-      if (prog == null) prog = (status === 'completed') ? 100 : pseudo.tick();
-      setProgress(prog);
+    const status = (j.status || '').toLowerCase() || (j.data && (j.data.task_status || j.data.status)) || 'processing';
+    stageEl.textContent = status;
 
-      if (status === 'completed' || status === 'success' || status === 'succeeded' || prog >= 100){
-        markDone();
-        clearInterval(pollTimer); pollTimer = null;
-        log('analysis complete ✓');
-      }
-    }catch(e){ log(`status error: ${e}`); }
+    const d = j.data || {};
+    let prog = d.task_progress ?? d.progress ?? j.task_progress ?? j.progress ?? null;
+    if (prog == null) prog = (status === 'completed') ? 100 : pseudo.tick();
+    setProgress(prog);
+
+    if (status === 'completed' || status === 'success' || status === 'succeeded' || prog >= 100){
+      markDone();
+      clearInterval(pollTimer); pollTimer = null;
+      log('analysis complete ✓');
+    }
   }
 
   function collectMeta(){
