@@ -1,20 +1,6 @@
-# db_views.py — Silver-only views (plus debug helpers)
-# ----------------------------------------------------------------------------------
-# - Coordinates are meters; no autoscale.
-# - One primary bounce per swing:
-#     primary  = first FLOOR in (ball_hit+5ms, min(next_hit, ball_hit+2.5s)+20ms]
-#     fallback = first ANY bounce in the same window.
-# - Serve faults: within a point, every serve *before* the starting serve is a fault.
-#   If the point never starts (double fault), all serves are faults.
-# - Terminal result (last shot of point): WINNER iff (ball_speed>0 AND chosen-bounce coords are in-court);
-#   otherwise ERROR. Winner id is derived accordingly.
-# - Robustness & extras:
-#   • Opponent derived from the two most-active swing players (prevents stray ids).
-#   • Player side (near/far) exposed per swing via your fact_swing column.
-#   • Last-shot-only booleans: is_wide_last_d, is_long_last_d, out_axis_last_d.
-#   • Game winner & counters only on the last point *by serve boundary*.
-#   • Serve location 1–8 (serve_loc_18_d), court placement A–D (placement_ad_d), play type (play_d).
-# ----------------------------------------------------------------------------------
+# db_views.py — SILVER ONLY
+# Creates helper functions and the Silver views.
+# Exposes: init_views/run_views(engine)
 
 from typing import List
 from sqlalchemy import text
@@ -27,20 +13,20 @@ VIEW_SQL_STMTS: List[str] = []
 # ==================================================================================
 
 def _table_exists(conn, t: str) -> bool:
-    return conn.execute(text(r'''
+    return conn.execute(text(r"""
         SELECT 1
         FROM information_schema.tables
         WHERE table_schema='public' AND table_name=:t
         LIMIT 1
-    '''), {"t": t}).first() is not None
+    """), {"t": t}).first() is not None
 
 def _column_exists(conn, t: str, c: str) -> bool:
-    return conn.execute(text(r'''
+    return conn.execute(text(r"""
         SELECT 1
         FROM information_schema.columns
         WHERE table_schema='public' AND table_name=:t AND column_name=:c
         LIMIT 1
-    '''), {"t": t, "c": c}).first() is not None
+    """), {"t": t, "c": c}).first() is not None
 
 def _preflight_or_raise(conn):
     required_tables = [
@@ -54,7 +40,6 @@ def _preflight_or_raise(conn):
 
     checks = [
         ("dim_session", "session_uid"),
-        ("dim_player", "sportai_player_uid"),
         ("fact_swing", "swing_id"),
         ("fact_swing", "session_id"),
         ("fact_swing", "player_id"),
@@ -84,7 +69,7 @@ def _preflight_or_raise(conn):
         raise RuntimeError(f"Missing required columns before creating views: {msg}")
 
 def _drop_any(conn, name: str):
-    kind = conn.execute(text(r'''
+    kind = conn.execute(text(r"""
         SELECT CASE
                  WHEN EXISTS (SELECT 1 FROM information_schema.views
                               WHERE table_schema='public' AND table_name=:n) THEN 'view'
@@ -94,8 +79,7 @@ def _drop_any(conn, name: str):
                               WHERE table_schema='public' AND table_name=:n) THEN 'table'
                  ELSE NULL
                END
-    '''), {"n": name}).scalar()
-
+    """), {"n": name}).scalar()
     if kind == 'view':
         stmts = [f'DROP VIEW IF EXISTS "{name}" CASCADE;']
     elif kind == 'mview':
@@ -123,7 +107,7 @@ def _exec_with_clear_errors(conn, name: str, sql: str):
         snippet = "\n".join([*lines[:12], "    ...", *lines[-12:]]) if len(lines) > 30 else "\n".join(lines)
         raise RuntimeError(f"[init-views:{name}] {dbmsg or err.__class__.__name__}\n--- SQL snippet ---\n{snippet}\n")
 
-# Auto-detect your player-side column and expose it as player_side_far_d (TRUE=far, FALSE=near)
+# Auto-detect your player-side column and expose it as player_side_far_d
 def _player_side_select_snippet(conn) -> str:
     for col in ["is_far_side", "is_far_side_d", "player_is_far", "is_far"]:
         if _column_exists(conn, "fact_swing", col):
@@ -138,7 +122,7 @@ def _player_side_select_snippet(conn) -> str:
             ).format(c=col)
     return "NULL::boolean AS player_side_far_d"
 
-# ---- Helper: deterministic A–D mapper (mirror → clamp → divide by 4) ----
+# ---- Helper: A–D placement function (two overloads) ----
 PLACEMENT_AD_FN_SQL_NUMERIC = r'''
 CREATE OR REPLACE FUNCTION placement_ad(
   x_src          numeric,
@@ -206,7 +190,7 @@ $$;
 '''
 
 # ==================================================================================
-# View manifest (Silver only)
+# View manifest
 # ==================================================================================
 
 VIEW_NAMES = [
@@ -217,17 +201,6 @@ VIEW_NAMES = [
     "vw_bounce_stream_debug",
     "vw_point_bounces_debug",
 ]
-
-# Drop any old/legacy names if they exist (safe cleanup; no Gold created)
-LEGACY_OBJECTS = [
-    "vw_point_order_by_serve", "vw_point_log", "vw_point_log_gold",
-    "vw_point_summary", "vw_point_shot_log", "vw_shot_order_gold",
-    "point_log_tbl", "point_summary_tbl",
-]
-
-# ==================================================================================
-# CREATE statements (Silver)
-# ==================================================================================
 
 CREATE_STMTS = {
     "vw_swing_silver": r'''
@@ -271,7 +244,7 @@ CREATE_STMTS = {
         FROM fact_bounce b;
     ''',
 
-    # --------------------------- Point/Swing Silver ---------------------------
+    # ------------------------------ SILVER: point view ------------------------------
     "vw_point_silver": r'''
         CREATE OR REPLACE VIEW vw_point_silver AS
         WITH
@@ -286,7 +259,7 @@ CREATE_STMTS = {
             0.00001::numeric    AS eps_m
         ),
 
-        /* Two real players in the match = the two with most swings. */
+        /* two main players by swing volume */
         swing_players AS (
           SELECT fs.session_id, fs.player_id, COUNT(*) AS n_sw
           FROM fact_swing fs
@@ -308,7 +281,7 @@ CREATE_STMTS = {
           GROUP BY r.session_id
         ),
 
-        -- S1. Base swings (original ordering)
+        -- S1. Base swings (ordering)
         swings AS (
           SELECT
             v.*,
@@ -320,7 +293,7 @@ CREATE_STMTS = {
           FROM vw_swing_silver v
         ),
 
-        -- S1b. Per-player near/far using your side column if present (else Y sign fallback)
+        -- Player far/near (prefer your column; else y-sign fallback)
         player_orientation AS (
           SELECT
             s.session_id,
@@ -331,7 +304,7 @@ CREATE_STMTS = {
           GROUP BY s.session_id, s.player_id
         ),
 
-        -- S1c. Serve candidates (fh_overhead inside serve band)
+        -- Serve candidates (fh_overhead in serve band)
         serve_candidates AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -345,7 +318,7 @@ CREATE_STMTS = {
           FROM swings s
         ),
 
-        -- Dynamic centerline (median of serve contacts)
+        -- Dynamic serve centerline
         serve_centerline AS (
           SELECT
             sc.session_id,
@@ -355,7 +328,7 @@ CREATE_STMTS = {
           GROUP BY sc.session_id
         ),
 
-        -- Serve detection + side
+        -- Serve flags
         serve_flags AS (
           SELECT
             s.session_id, s.swing_id, s.player_id, s.ord_ts,
@@ -388,7 +361,7 @@ CREATE_STMTS = {
           WHERE sf.is_fh_overhead AND COALESCE(sf.inside_serve_band, FALSE)
         ),
 
-        -- S3. Point/game numbering
+        -- Numbering by serve boundaries
         serve_events_numbered AS (
           SELECT
             se.*,
@@ -424,14 +397,13 @@ CREATE_STMTS = {
           FROM serve_points sp
         ),
 
-        -- Game last point (by serve boundary)
         game_last_point AS (
           SELECT session_id, game_number_d, MAX(point_in_game_d) AS last_point_in_game_d
           FROM serve_points_ix
           GROUP BY session_id, game_number_d
         ),
 
-        -- Normalize bounces + unified TS
+        -- Normalize bounces + preferred TS
         bounces_norm AS (
           SELECT
             b.session_id,
@@ -464,7 +436,7 @@ CREATE_STMTS = {
           ) sp ON TRUE
         ),
 
-        -- Mark serves
+        -- Flag serves
         swings_with_serve AS (
           SELECT
             sip.*,
@@ -477,7 +449,7 @@ CREATE_STMTS = {
           FROM swings_in_point sip
         ),
 
-        -- Per-point shot indices
+        -- Per-point shot indices plus prev-hit for validity
         swings_numbered AS (
           SELECT
             sps.*,
@@ -491,7 +463,9 @@ CREATE_STMTS = {
             LEAD(sps.ball_hit_x)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_x,
             LEAD(sps.ball_hit_y)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_y,
             LEAD(sps.player_id)   OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_player_id,
-            LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id
+            LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id,
+            LAG(sps.ball_hit_ts)  OVER (PARTITION BY sps.session_id, sps.point_number_d ORDER BY sps.ord_ts, sps.swing_id) AS prev_ball_hit_ts,
+            LAG(sps.ball_hit_s)   OVER (PARTITION BY sps.session_id, sps.point_number_d ORDER BY sps.ord_ts, sps.swing_id) AS prev_ball_hit_s
           FROM swings_with_serve sps
         ),
 
@@ -531,7 +505,7 @@ CREATE_STMTS = {
             ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
         ),
 
-        /* Ends per point from the starting-serve contact Y (>=20m ⇒ FAR) */
+        -- Ends per point (keep for placement/out flags)
         starting_serve_row AS (
           SELECT
             se.session_id,
@@ -653,7 +627,9 @@ CREATE_STMTS = {
             se.swing_type AS swing_type_raw,
             se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id,
             se.next_swing_id,
-            se.player_side_far_d
+            se.player_side_far_d,
+            se.ord_ts,
+            se.prev_ball_hit_ts, se.prev_ball_hit_s
           FROM swings_enriched se
           LEFT JOIN swing_bounce_floor f
             ON f.session_id=se.session_id AND f.swing_id=se.swing_id
@@ -661,7 +637,43 @@ CREATE_STMTS = {
             ON a.session_id=se.session_id AND a.swing_id=se.swing_id
         ),
 
-        /* SERVE: X source with 8-band mapping (bounce -> returner X -> server X) */
+        /* ---------- NEW: validity flags (singles) ---------- */
+        swing_validity AS (
+          SELECT
+            sbp.session_id, sbp.swing_id, sbp.point_number_d, sbp.shot_ix, sbp.last_shot_ix,
+            sbp.serve_d, sbp.first_rally_shot_ix, sbp.start_serve_shot_ix, sbp.ord_ts,
+            COALESCE(sbp.ball_hit_ts, (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts,
+            COALESCE(sbp.prev_ball_hit_ts, (TIMESTAMP 'epoch' + sbp.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts,
+            CASE
+              WHEN sbp.point_number_d IS NULL THEN FALSE                                  -- before first serve
+              WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix THEN TRUE        -- starting serve
+              WHEN sbp.serve_d AND sbp.shot_ix < sbp.start_serve_shot_ix THEN FALSE       -- serve faults
+              WHEN sbp.first_rally_shot_ix IS NULL THEN FALSE                             -- point never started
+              WHEN sbp.shot_ix < sbp.first_rally_shot_ix THEN FALSE                       -- pre-rally swings
+              WHEN sbp.this_ts IS NOT NULL AND sbp.prev_ts IS NOT NULL
+                   AND (sbp.this_ts - sbp.prev_ts) <= INTERVAL '3 seconds' THEN TRUE      -- cadence ≤ 3s
+              WHEN sbp.shot_ix = sbp.last_shot_ix THEN TRUE                               -- always keep terminal
+              ELSE FALSE
+            END AS valid_swing_d
+          FROM swing_bounce_primary sbp
+        ),
+        valid_numbered AS (
+          SELECT
+            v.*,
+            SUM(CASE WHEN v.valid_swing_d THEN 1 ELSE 0 END)
+              OVER (PARTITION BY v.session_id, v.point_number_d ORDER BY v.ord_ts, v.swing_id
+                    ROWS UNBOUNDED PRECEDING) AS valid_shot_ix
+          FROM swing_validity v
+        ),
+        valid_numbered_last AS (
+          SELECT
+            vn.*,
+            MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_d)
+              OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
+          FROM valid_numbered vn
+        ),
+
+        /* -------- Serve placement (unchanged) -------- */
         serve_place_core AS (
           SELECT
             sbp.session_id,
@@ -738,7 +750,7 @@ CREATE_STMTS = {
           FROM serve_place_x x
         ),
 
-        -- Outcome on last shot only (scoring)
+        -- Terminal outcome (last shot only)
         point_outcome AS (
           SELECT
             sbp.session_id, sbp.point_number_d, sbp.game_number_d, sbp.point_in_game_d,
@@ -781,7 +793,6 @@ CREATE_STMTS = {
           JOIN players_pair pp ON pp.session_id = po.session_id
         ),
 
-        -- Why-null
         bounce_explain AS (
           SELECT
             se.session_id, se.swing_id,
@@ -791,7 +802,7 @@ CREATE_STMTS = {
             ON sbp.session_id=se.session_id AND sbp.swing_id=se.swing_id
         ),
 
-        -- Running game scores
+        -- Running game score & game winner (unchanged)
         points_accum AS (
           SELECT
             pow.*,
@@ -861,7 +872,7 @@ CREATE_STMTS = {
           FROM points_scored_winner psw
         )
 
-        -- FINAL
+        -- FINAL SELECT (singles; includes validity flags)
         SELECT
           sbp.session_id,
           vss.session_uid_d,
@@ -894,15 +905,9 @@ CREATE_STMTS = {
 
           (sbp.shot_ix = sbp.last_shot_ix) AS is_last_in_point_d,
 
-          /* Landing-side far/near flag (kept) */
-          CASE
-            WHEN sbp.serve_d AND sbp.shot_ix = sbp.start_serve_shot_ix
-              THEN pe.receiver_is_far_end_d
-            ELSE CASE
-              WHEN sbp.player_id = sbp.server_id THEN pe.receiver_is_far_end_d
-              ELSE pe.server_is_far_end_d
-            END
-          END AS bounce_in_doubles_d,
+          -- NEW: validity exports
+          vnl.valid_swing_d,
+          (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_valid_in_point_d,
 
           CASE
             WHEN sbp.bounce_id IS NULL THEN NULL
@@ -991,8 +996,7 @@ CREATE_STMTS = {
           -- Serve lanes (unchanged)
           spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-          -- A–D for all non-serves.
-          -- Last shot: use the chosen bounce X if present (primary prefers FLOOR); otherwise NULL.
+          -- A–D for all non-serves
           CASE
             WHEN sbp.serve_d THEN NULL
             ELSE
@@ -1060,13 +1064,12 @@ CREATE_STMTS = {
               ON be.session_id = sbp.session_id AND be.swing_id = sbp.swing_id
         LEFT JOIN serve_place_final spf
               ON spf.session_id = sbp.session_id AND spf.swing_id = sbp.swing_id
-        LEFT JOIN point_ends pe
-              ON pe.session_id = sbp.session_id AND pe.point_number_d = sbp.point_number_d
+        LEFT JOIN valid_numbered_last vnl
+              ON vnl.session_id = sbp.session_id AND vnl.swing_id = sbp.swing_id
         ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
         ;
     ''',
 
-    # --------------------------- Debug helpers ---------------------------
     "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
@@ -1201,15 +1204,11 @@ def _apply_views(engine):
     with engine.begin() as conn:
         _preflight_or_raise(conn)
 
-        # Create helper functions used by vw_point_silver (both overloads)
+        # helper functions for placement
         conn.execute(text(PLACEMENT_AD_FN_SQL_NUMERIC))
         conn.execute(text(PLACEMENT_AD_FN_SQL_FLOAT8))
 
-        # Clean stray legacy objects (no Gold created here)
-        for obj in LEGACY_OBJECTS:
-            _drop_any(conn, obj)
-
-        # Drop then create the Silver views
+        # drop then recreate in clean order
         for name in reversed(VIEW_NAMES):
             _drop_any(conn, name)
 
@@ -1221,6 +1220,6 @@ def _apply_views(engine):
             VIEW_SQL_STMTS.append(sql)
             _exec_with_clear_errors(conn, name, sql)
 
-# Back-compat function names
+# Back-compat names
 init_views = _apply_views
 run_views  = _apply_views
