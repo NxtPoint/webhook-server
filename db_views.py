@@ -450,7 +450,7 @@ CREATE_STMTS = {
         ),
 
         -- Per-point shot indices plus prev-hit for validity
-        swings_numbered AS (
+          swings_numbered AS (
           SELECT
             sps.*,
             ROW_NUMBER() OVER (
@@ -458,24 +458,24 @@ CREATE_STMTS = {
               ORDER BY sps.ord_ts, sps.swing_id
             ) AS shot_ix,
             COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_ix,
+
+            -- add these two:
+            LAG(sps.ball_hit_ts) OVER (
+              PARTITION BY sps.session_id, sps.point_number_d
+              ORDER BY sps.ord_ts, sps.swing_id
+            ) AS prev_ball_hit_ts,
+            LAG(sps.ball_hit_s)  OVER (
+              PARTITION BY sps.session_id, sps.point_number_d
+              ORDER BY sps.ord_ts, sps.swing_id
+            ) AS prev_ball_hit_s,
+
             LEAD(sps.ball_hit_ts) OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_ts,
             LEAD(sps.ball_hit_s)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_s,
             LEAD(sps.ball_hit_x)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_x,
             LEAD(sps.ball_hit_y)  OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_ball_hit_y,
             LEAD(sps.player_id)   OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_player_id,
-            LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id,
-            LAG(sps.ball_hit_ts)  OVER (PARTITION BY sps.session_id, sps.point_number_d ORDER BY sps.ord_ts, sps.swing_id) AS prev_ball_hit_ts,
-            LAG(sps.ball_hit_s)   OVER (PARTITION BY sps.session_id, sps.point_number_d ORDER BY sps.ord_ts, sps.swing_id) AS prev_ball_hit_s
+            LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id
           FROM swings_with_serve sps
-        ),
-
-        -- First non-serve in point
-        point_first_rally AS (
-          SELECT
-            session_id, point_number_d,
-            MIN(shot_ix) FILTER (WHERE NOT serve_d) AS first_rally_shot_ix
-          FROM swings_numbered
-          GROUP BY session_id, point_number_d
         ),
 
         -- Starting serve = last serve before first non-serve
@@ -926,6 +926,7 @@ CREATE_STMTS = {
           -- NEW: validity exports
           vnl.valid_swing_d,
           (vnl.valid_swing_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix) AS is_last_valid_in_point_d,
+
 
           CASE
             WHEN sbp.bounce_id IS NULL THEN NULL
