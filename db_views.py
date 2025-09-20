@@ -459,7 +459,7 @@ CREATE_STMTS = {
             ) AS shot_ix,
             COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_ix,
 
-            -- add these two:
+            -- NEW: previous hit time in point
             LAG(sps.ball_hit_ts) OVER (
               PARTITION BY sps.session_id, sps.point_number_d
               ORDER BY sps.ord_ts, sps.swing_id
@@ -477,6 +477,7 @@ CREATE_STMTS = {
             LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id
           FROM swings_with_serve sps
         ),
+
 
         -- Starting serve = last serve before first non-serve
         point_starting_serve AS (
@@ -627,6 +628,8 @@ CREATE_STMTS = {
             se.swing_type AS swing_type_raw,
             se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id,
             se.next_swing_id,
+            se.prev_ball_hit_ts,
+            se.prev_ball_hit_s,
             se.player_side_far_d,
             se.ord_ts,
             se.prev_ball_hit_ts, se.prev_ball_hit_s
