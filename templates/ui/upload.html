@@ -6,7 +6,7 @@
 <title>Upload & Submit • NextPoint</title>
 <style>
   :root{
-    --brand:#0b5a37;          /* primary green */
+    --brand:#0b5a37;
 
     --accent-soft:#EAF6EF;
     --text:#111827;
@@ -15,8 +15,7 @@
     --field-border:#e5e7eb;
     --card-bg:rgba(255,255,255,0.92);
 
-    /* vertical placement */
-    --top-offset:220px;       /* lift everything a bit (smaller value = higher) */
+    --top-offset:220px;
   }
 
   html,body{height:100%;}
@@ -26,16 +25,14 @@
     background:
       linear-gradient(rgba(0,0,0,0.20), rgba(0,0,0,0.35)),
       url("{{ url_for('static', filename='upload/background-clean-male-serve.jpg') }}") center/cover fixed no-repeat;
-    /* keep the viewport still; scrolling happens inside the fixed wrapper */
     overflow:hidden;
   }
 
-  /* Fixed container so the card doesn't move on scroll */
   .wrap{
     position:fixed; inset:0;
     display:flex; align-items:flex-start; justify-content:center;
     padding-top:var(--top-offset);
-    overflow:auto;          /* allow internal scrolling if content is tall */
+    overflow:auto;
   }
 
   .card{
@@ -44,8 +41,8 @@
     border-radius:16px;
     box-shadow:0 10px 30px rgba(0,0,0,0.15);
     backdrop-filter:blur(2px);
-    padding:22px 22px 36px;   /* extra bottom padding for breathing room */
-    margin:0 auto 90px;       /* keep nice margin under the card */
+    padding:22px 22px 36px;
+    margin:0 auto 90px;
   }
   h1{font-size:20px;margin:0 0 12px;font-weight:700;}
 
@@ -61,7 +58,6 @@
   input:focus{border-color:#d1d5db;box-shadow:0 0 0 3px rgba(11,90,55,0.15);background:#fff;}
   input.done{background:#fff;border-color:#d1d5db;}
 
-  /* File input button — brand green */
   input[type="file"]{border:0;background:transparent;padding:0;}
   input[type="file"]::file-selector-button{
     margin-right:10px;border:0;border-radius:10px;background:var(--brand);color:#fff;
@@ -81,74 +77,52 @@
   .divider{height:1px;background:#e5e7eb;margin:12px 0;}
 
   /* STATUS ROW ------------------------------------------------------------- */
-    .status-row{
-      display:grid;
-      grid-template-columns: 1.25fr 1fr 2.15fr; /* task id | status | progress (wider) */
-      gap:12px;
-      align-items:start;          /* top-align headings perfectly */
-      margin:8px 0 22px;          /* lift off the bottom box */
-    }
-    .col{
-      display:flex;
-      flex-direction:column;
-    }
-    .col-title{
-      font-size:14px;
-      font-weight:700;
-      color:#0f172a;
-      margin:0 0 8px 0;           /* same spacing for all three titles */
-      line-height:1;
-    }
-    .col-value{
-      font-weight:600;
-      word-break:break-all;
-      color:var(--brand);
-    }
+  .status-row{
+    display:grid;
+    /* Wider TASK ID (left), progress middle, STATUS on the right */
+    grid-template-columns: 2.4fr 1.8fr 0.9fr;
+    gap:12px;
+    align-items:start;
+    margin:8px 0 22px;
+  }
+  .col{display:flex;flex-direction:column;}
+  .col-title{
+    font-size:14px;font-weight:700;color:#0f172a;margin:0 0 8px 0;line-height:1;
+  }
+  .col-value{font-weight:600;color:var(--brand);}
+  .mono{font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
+  /* keep TASK ID on a single line; allow horizontal scroll if needed */
+  #taskId{white-space:nowrap; overflow-x:auto; overflow-y:hidden;}
 
-    /* Progress bar */
-    .bar-wrap{width:100%;}
-    .bar{
-      position:relative;
-      height:16px;
-      border-radius:9999px;
-      background:#e6efe8;
-      overflow:hidden;
-      box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);
-    }
-    .bar .fill{
-      position:absolute;left:0;top:0;bottom:0;
-      width:0%;
-      background:var(--brand);
-      transition:width 400ms ease;
-    }
-    .bar .pct{
-      position:absolute;inset:0;
-      display:flex;align-items:center;justify-content:center;
-      font-size:12px;font-weight:800;color:#fff;
-      text-shadow:0 1px 1px rgba(0,0,0,.25);
-      pointer-events:none;
-    }
-    /* Make anchors take up space so the row sits above the log nicely */
-    .anchors{
-      position:static;            /* was absolute; now participates in layout */
-      margin-top:6px;
-      display:flex;justify-content:space-between;
-      color:var(--brand);
-      font-size:11px;font-weight:700;opacity:.9;
-    }
+  /* Progress bar */
+  .bar-wrap{width:100%;}
+  .bar{
+    position:relative;height:16px;border-radius:9999px;background:#e6efe8;overflow:hidden;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,0.04);
+  }
+  .bar .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--brand);transition:width 400ms ease;}
+  .bar .pct{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:800;color:#fff;text-shadow:0 1px 1px rgba(0,0,0,.25);pointer-events:none;
+  }
+  .anchors{
+    position:static;margin-top:6px;display:flex;justify-content:space-between;
+    color:var(--brand);font-size:11px;font-weight:700;opacity:.9;
+  }
 
-  /* Log box — white, ~10 lines */
-  .log{background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:10px;padding:10px;
-       font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
-       font-size:12px;line-height:1.25;max-height:10.5em;overflow:auto;white-space:pre-wrap;}
+  .log{
+    background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:10px;padding:10px;
+    font-family:ui-monospace,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+    font-size:12px;line-height:1.25;max-height:10.5em;overflow:auto;white-space:pre-wrap;
+  }
 
-  /* T&C accordion */
   details.tnc{margin:8px 0 4px;}
   details.tnc summary{cursor:pointer;font-weight:700;color:#111;}
 
   @media (max-width:900px){
     .status-row{grid-template-columns: 1fr;}
     .col{min-height:auto;}
+    #taskId{overflow-x:auto;}
   }
 </style>
 </head>
@@ -230,15 +204,11 @@
 
       <div class="full divider"></div>
 
-      <!-- TASK ID / STATUS / PROGRESS % -->
+      <!-- TASK ID / PROGRESS / STATUS (status moved right) -->
       <div class="full status-row">
         <div class="col">
           <div class="col-title">TASK ID</div>
           <div class="col-value mono" id="taskId">—</div>
-        </div>
-        <div class="col">
-          <div class="col-title">STATUS</div>
-          <div class="col-value" id="stage">waiting…</div>
         </div>
         <div class="col">
           <div class="col-title">PROGRESS %</div>
@@ -249,6 +219,10 @@
             </div>
             <div class="anchors"><span>0%</span><span>100%</span></div>
           </div>
+        </div>
+        <div class="col">
+          <div class="col-title">STATUS</div>
+          <div class="col-value" id="stage">waiting…</div>
         </div>
       </div>
 
@@ -272,7 +246,6 @@
   const cancelBtn = document.getElementById('cancelBtn');
   const terms = document.getElementById('terms');
 
-  // Default match date to today
   document.addEventListener('DOMContentLoaded', () => {
     const d = document.getElementById('match_date');
     if (d && !d.value) {
