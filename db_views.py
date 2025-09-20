@@ -660,11 +660,10 @@ CREATE_STMTS = {
           FROM swing_bounce_primary sbp
         ),
 
-        /* Validity rules:
-          - invalid before the first serve (no point_number_d)
-          - ALL serves are valid (including faults/second serves)
-          - last swing in the point is valid
-          - otherwise valid only if (this_ts - prev_ts) ≤ 3.0s
+        /* Validity rules (singles):
+          - invalid before first serve (no point_number_d)
+          - ALL serves are valid (faults/seconds included)
+          - every other swing is valid only if (this_ts - prev_ts) ≤ 3.0s
         */
         swing_validity AS (
           SELECT
@@ -672,9 +671,8 @@ CREATE_STMTS = {
             s.serve_d, s.first_rally_shot_ix, s.start_serve_shot_ix,
             s.ord_ts, s.this_ts, s.prev_ts,
             CASE
-              WHEN s.point_number_d IS NULL                         THEN FALSE
-              WHEN s.serve_d                                        THEN TRUE
-              WHEN s.shot_ix = s.last_shot_ix                       THEN TRUE
+              WHEN s.point_number_d IS NULL THEN FALSE
+              WHEN s.serve_d THEN TRUE
               WHEN s.this_ts IS NOT NULL AND s.prev_ts IS NOT NULL
                   AND (s.this_ts - s.prev_ts) <= INTERVAL '3 seconds' THEN TRUE
               ELSE FALSE
@@ -701,6 +699,7 @@ CREATE_STMTS = {
               OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix
           FROM valid_numbered vn
         ),
+
 
 
 
