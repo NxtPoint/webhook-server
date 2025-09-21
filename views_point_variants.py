@@ -522,26 +522,30 @@ swing_bounce_primary AS (
     ),
 
     valid_final AS (
-    SELECT
-        vc.*,
-        CASE
-        WHEN vc.serve_d THEN TRUE
+        SELECT
+            vc.*,
+            CASE
+            WHEN vc.serve_d THEN TRUE
 
-        /* First rally swing must be within 2s of the last serve */
-        WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix
-            THEN (vc.prev_ts IS NOT NULL AND (vc.this_ts - vc.prev_ts) <= INTERVAL '2 seconds')
+            /* NEW: anything strictly between first serve and last serve-before-rally is invalid */
+            WHEN vc.between_serves_d THEN FALSE
 
-        /* After rally start, any hard invalid ends the point's validity */
-        WHEN vc.hard_invalid_seen > 0 THEN FALSE
+            /* First rally swing (receiver's first non-serve) must be ≤ 2s after the last serve */
+            WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix
+                THEN (vc.prev_ts IS NOT NULL AND (vc.this_ts - vc.prev_ts) <= INTERVAL '2 seconds')
 
-        /* Any soft kill (cluster/bounce) is invalid */
-        WHEN vc.soft_invalid_d THEN FALSE
+            /* After rally start, any hard invalid ends the rest of the point */
+            WHEN vc.hard_invalid_seen > 0 THEN FALSE
 
-        /* Otherwise follow timing rule */
-        ELSE vc.valid_time_rule_d
-        END AS valid_swing_final_d
-    FROM valid_cascade vc
-    ),
+            /* Soft kills (same-player ≤2s cluster winner-only, and bounce-id de-dupe) */
+            WHEN vc.soft_invalid_d THEN FALSE
+
+            /* Otherwise, timing rule decides (currently 4s) */
+            ELSE vc.valid_time_rule_d
+            END AS valid_swing_final_d
+        FROM valid_cascade vc
+        ),
+
 
     valid_numbered AS (
     SELECT
