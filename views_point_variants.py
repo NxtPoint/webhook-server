@@ -308,10 +308,21 @@ swing_bounce_primary AS (
 
     se.serve_d, se.first_rally_shot_ix, se.start_serve_shot_ix,
     se.player_id, se.prev_player_id, se.server_id, se.game_number_d, se.point_in_game_d, se.serving_side_d,
+
     se.start_s, se.end_s, se.ball_hit_s, se.start_ts, se.end_ts, se.ball_hit_ts,
     se.ball_hit_x, se.ball_hit_y, se.ball_speed, se.swing_type AS swing_type_raw,
-    se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id, se.next_swing_id,
-    se.prev_ball_hit_ts, se.prev_ball_hit_s, se.player_side_far_d, se.ord_ts
+
+    /* pass-throughs needed by AF scoring/cluster logic */
+    se.next_ball_hit_ts,          -- **added**
+    se.next_ball_hit_s,           -- **added** (handy for future/consistency)
+    se.next_ball_hit_x,
+    se.next_ball_hit_y,
+    se.next_player_id,
+    se.next_swing_id,
+
+    se.prev_ball_hit_ts, se.prev_ball_hit_s,
+    se.player_side_far_d,
+    se.ord_ts
   FROM swings_enriched se
   LEFT JOIN swing_bounce_floor f
     ON f.session_id = se.session_id AND f.swing_id = se.swing_id
