@@ -211,9 +211,12 @@ swings_numbered AS (
 point_first_rally AS (
   SELECT session_id, point_number_d, MIN(shot_ix) AS first_rally_shot_ix
   FROM swings_numbered
+  /* Rally starts only when the RECEIVER hits a non-serve */
   WHERE NOT serve_d
+    AND player_id IS DISTINCT FROM server_id
   GROUP BY session_id, point_number_d
 ),
+
 point_starting_serve AS (
   SELECT
     sn.session_id, sn.point_number_d,
@@ -380,7 +383,7 @@ swing_validity_base AS (
       WHEN s.point_number_d IS NULL THEN FALSE
       WHEN s.serve_d THEN TRUE
       WHEN s.prev_ts IS NULL THEN FALSE
-      WHEN (s.this_ts - s.prev_ts) <= INTERVAL '5 seconds' THEN TRUE
+      WHEN (s.this_ts - s.prev_ts) <= INTERVAL '4 seconds' THEN TRUE
       ELSE FALSE
     END AS valid_time_rule_d,
     CASE
@@ -388,7 +391,7 @@ swing_validity_base AS (
       WHEN s.serve_d THEN FALSE
       WHEN s.between_serves_d THEN TRUE
       WHEN s.prev_ts IS NULL THEN TRUE
-      WHEN (s.this_ts - s.prev_ts) > INTERVAL '5 seconds' THEN TRUE
+      WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
       ELSE FALSE
     END AS hard_invalid_d,
     FALSE::boolean AS soft_invalid_d
@@ -520,7 +523,7 @@ swing_validity_base AS (
       WHEN s.point_number_d IS NULL THEN FALSE
       WHEN s.serve_d THEN TRUE
       WHEN s.prev_ts IS NULL THEN FALSE
-      WHEN (s.this_ts - s.prev_ts) <= INTERVAL '5 seconds' THEN TRUE
+      WHEN (s.this_ts - s.prev_ts) <= INTERVAL '4 seconds' THEN TRUE
       ELSE FALSE
     END AS valid_time_rule_d,
     CASE
@@ -528,7 +531,7 @@ swing_validity_base AS (
       WHEN s.serve_d THEN FALSE
       WHEN s.between_serves_d THEN TRUE
       WHEN s.prev_ts IS NULL THEN TRUE
-      WHEN (s.this_ts - s.prev_ts) > INTERVAL '5 seconds' THEN TRUE
+      WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
       ELSE FALSE
     END AS hard_invalid_d,
     (s.cluster_kill_d OR s.alt_kill_d) AS soft_invalid_d
