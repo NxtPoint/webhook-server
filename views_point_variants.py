@@ -210,24 +210,34 @@ swings_numbered AS (
     LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id
   FROM swings_with_serve sps
 ),
-/* Rally starts only when the RECEIVER hits a non-serve */
-point_first_rally AS (
-  SELECT session_id, point_number_d, MIN(shot_ix) AS first_rally_shot_ix
-  FROM swings_numbered
-  WHERE NOT serve_d
-    AND player_id IS DISTINCT FROM server_id
-  GROUP BY session_id, point_number_d
+/* Compute serve bounds purely from serves in the point */
+serve_bounds_simple AS (
+  SELECT
+    sn.session_id,
+    sn.point_number_d,
+    MIN(sn.shot_ix) FILTER (WHERE sn.serve_d) AS first_serve_ix,
+    MAX(sn.shot_ix) FILTER (WHERE sn.serve_d) AS last_serve_ix_any
+  FROM swings_numbered sn
+  GROUP BY sn.session_id, sn.point_number_d
 ),
+/* Rally starts only when the RECEIVER hits a non-serve AFTER the last serve */
+point_first_rally AS (
+  SELECT sn.session_id, sn.point_number_d, MIN(sn.shot_ix) AS first_rally_shot_ix
+  FROM swings_numbered sn
+  JOIN serve_bounds_simple sb
+    ON sb.session_id = sn.session_id AND sb.point_number_d = sn.point_number_d
+  WHERE NOT sn.serve_d
+    AND sn.player_id IS DISTINCT FROM sn.server_id
+    AND (sb.last_serve_ix_any IS NULL OR sn.shot_ix > sb.last_serve_ix_any)
+  GROUP BY sn.session_id, sn.point_number_d
+),
+/* The serve that actually started play is the LAST serve before that rally */
 point_starting_serve AS (
   SELECT
-    sn.session_id, sn.point_number_d,
-    MAX(sn.shot_ix) AS start_serve_shot_ix
-  FROM swings_numbered sn
-  LEFT JOIN point_first_rally pfr
-    ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
-  WHERE sn.serve_d
-    AND (pfr.first_rally_shot_ix IS NULL OR sn.shot_ix < pfr.first_rally_shot_ix)
-  GROUP BY sn.session_id, sn.point_number_d
+    sb.session_id,
+    sb.point_number_d,
+    sb.last_serve_ix_any AS start_serve_shot_ix
+  FROM serve_bounds_simple sb
 ),
 swings_enriched AS (
   SELECT
@@ -238,6 +248,7 @@ swings_enriched AS (
   LEFT JOIN point_first_rally    pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
   LEFT JOIN point_starting_serve pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
 ),
+
 swing_windows AS (
   SELECT
     se.*,
@@ -342,12 +353,11 @@ swing_bounce_primary AS (
   SELECT
     se.session_id, se.point_number_d,
     MIN(se.shot_ix) FILTER (WHERE se.serve_d) AS first_serve_ix,
-    MAX(se.shot_ix) FILTER (
-      WHERE se.serve_d AND (se.first_rally_shot_ix IS NULL OR se.shot_ix < se.first_rally_shot_ix)
-    ) AS last_serve_before_rally_ix
+    MAX(se.start_serve_shot_ix)               AS last_serve_before_rally_ix
   FROM swing_bounce_primary se
   GROUP BY se.session_id, se.point_number_d
 ),
+
 between_serves AS (
   SELECT
     k.*,
@@ -850,6 +860,6 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
 ;
 '''
 
-    block = V1 if variant == "v1" else AF   # AF == V1 for now
+    block = V1 if variant == "v1" else AF = V1  # AF == V1 for now
     sql = CORE.replace("{TAG}", variant) + block + TAIL
     return sql
