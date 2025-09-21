@@ -941,24 +941,23 @@ SELECT
       END
   END AS placement_ad_d,
 
-    /* Play classification: serve/return unchanged, then side-aware net vs baseline */
+    /* Play classification: serve/return unchanged, then side-aware net vs baseline using ABSOLUTE Y */
         CASE
         WHEN sbp.serve_d THEN 'serve'
         WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
         WHEN sbp.ball_hit_y IS NULL THEN NULL
 
-        /* FAR side: net if distance from FAR baseline > (mid_y_m - 6.40) ≈ 5.48 m */
-        WHEN COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < 0)
-            AND ((SELECT mid_y_m FROM const) + sbp.ball_hit_y) >
-                ((SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)) THEN 'net'
+        /* FAR side: net if y > 5.48 (= mid_y_m - 6.40) */
+        WHEN COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < (SELECT mid_y_m FROM const))
+            AND sbp.ball_hit_y > ((SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)) THEN 'net'
 
-        /* NEAR side: net if distance from FAR baseline < (mid_y_m + 6.40) ≈ 18.28 m */
-        WHEN NOT COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < 0)
-            AND ((SELECT mid_y_m FROM const) + sbp.ball_hit_y) <
-                ((SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)) THEN 'net'
+        /* NEAR side: net if y < 18.28 (= mid_y_m + 6.40) */
+        WHEN NOT COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < (SELECT mid_y_m FROM const))
+            AND sbp.ball_hit_y < ((SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)) THEN 'net'
 
         ELSE 'baseline'
         END AS play_d,
+
 
   gr.point_score_text_d,
   gr.is_game_end_d,
