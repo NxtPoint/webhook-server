@@ -941,12 +941,37 @@ SELECT
       END
   END AS placement_ad_d,
 
-  CASE
+    CASE
     WHEN sbp.serve_d THEN 'serve'
     WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
+    WHEN sbp.ball_hit_y IS NULL THEN NULL
     WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
+    /* Anything deeper than the service line is exposed as 'baseline' here,
+        but see play_depth_d and is_behind_baseline_d for finer granularity. */
     ELSE 'baseline'
-  END AS play_d,
+    END AS play_d,
+
+    /* True if the strike is beyond the baseline on the hitter's side */
+    CASE
+    WHEN pdir.is_far_side_d IS NULL OR sbp.ball_hit_y IS NULL THEN NULL
+    WHEN pdir.is_far_side_d  AND sbp.ball_hit_y <  - (SELECT mid_y_m FROM const) THEN TRUE
+    WHEN NOT pdir.is_far_side_d AND sbp.ball_hit_y >    (SELECT mid_y_m FROM const) THEN TRUE
+    ELSE FALSE
+    END AS is_behind_baseline_d,
+
+    /* Rich depth label: net / mid / baseline_line / behind_baseline */
+    CASE
+    WHEN sbp.ball_hit_y IS NULL THEN NULL
+    WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
+    /* within eps of the baseline line */
+    WHEN ABS(ABS(sbp.ball_hit_y) - (SELECT mid_y_m FROM const)) <= (SELECT serve_eps_m FROM const) THEN 'baseline_line'
+    /* beyond the baseline (outside court) on hitter's side */
+    WHEN (pdir.is_far_side_d  AND sbp.ball_hit_y <  - (SELECT mid_y_m FROM const))
+        OR (NOT pdir.is_far_side_d AND sbp.ball_hit_y >    (SELECT mid_y_m FROM const)) THEN 'behind_baseline'
+    /* between service line and baseline */
+    ELSE 'mid'
+    END AS play_depth_d,
+
 
   gr.point_score_text_d,
   gr.is_game_end_d,
