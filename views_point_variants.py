@@ -210,7 +210,7 @@ swings_numbered AS (
     LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id
   FROM swings_with_serve sps
 ),
-/* Compute serve bounds purely from serves in the point */
+/* Serve bounds from serves in the point */
 serve_bounds_simple AS (
   SELECT
     sn.session_id,
@@ -220,7 +220,6 @@ serve_bounds_simple AS (
   FROM swings_numbered sn
   GROUP BY sn.session_id, sn.point_number_d
 ),
-/* Rally starts only when the RECEIVER hits a non-serve AFTER the last serve */
 point_first_rally AS (
   SELECT sn.session_id, sn.point_number_d, MIN(sn.shot_ix) AS first_rally_shot_ix
   FROM swings_numbered sn
@@ -231,7 +230,6 @@ point_first_rally AS (
     AND (sb.last_serve_ix_any IS NULL OR sn.shot_ix > sb.last_serve_ix_any)
   GROUP BY sn.session_id, sn.point_number_d
 ),
-/* The serve that actually started play is the LAST serve before that rally */
 point_starting_serve AS (
   SELECT
     sb.session_id,
@@ -239,6 +237,7 @@ point_starting_serve AS (
     sb.last_serve_ix_any AS start_serve_shot_ix
   FROM serve_bounds_simple sb
 ),
+
 swings_enriched AS (
   SELECT
     sn.*,
@@ -248,6 +247,7 @@ swings_enriched AS (
   LEFT JOIN point_first_rally    pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
   LEFT JOIN point_starting_serve pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
 ),
+
 
 swing_windows AS (
   SELECT
@@ -349,108 +349,144 @@ swing_bounce_primary AS (
     # ------------ Variant blocks (AF mirrors V1; no experimental heuristics) ---------
 
     V1 = r'''
-,serve_bounds AS (
-  SELECT
-    se.session_id, se.point_number_d,
-    MIN(se.shot_ix) FILTER (WHERE se.serve_d) AS first_serve_ix,
-    MAX(se.start_serve_shot_ix)               AS last_serve_before_rally_ix
-  FROM swing_bounce_primary se
-  GROUP BY se.session_id, se.point_number_d
-),
+    ,/* score + cluster de-dupe (keep only the better of same-player hits within 120ms) */
+    sbp_scored AS (
+    SELECT
+        sbp.*,
+        (CASE WHEN sbp.primary_source_d = 'floor' THEN 2 ELSE 0 END) +
+        (CASE WHEN sbp.bounce_id IS NOT NULL     THEN 1 ELSE 0 END) +
+        (CASE WHEN sbp.ball_speed IS NOT NULL    THEN 1 ELSE 0 END) +
+        (CASE WHEN sbp.next_ball_hit_ts IS NOT NULL THEN 1 ELSE 0 END) AS evidence_score,
+        COALESCE(sbp.ball_hit_ts, (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts
+    FROM swing_bounce_primary sbp
+    ),
+    cluster_flags AS (
+    SELECT
+        s.*,
+        (s.prev_player_id = s.player_id
+        AND s.prev_ball_hit_ts IS NOT NULL
+        AND (s.this_ts - s.prev_ball_hit_ts) <= INTERVAL '120 milliseconds'
+        AND NOT s.serve_d) AS cluster_prev,
+        (s.next_player_id = s.player_id
+        AND s.next_ball_hit_ts IS NOT NULL
+        AND (s.next_ball_hit_ts - s.this_ts) <= INTERVAL '120 milliseconds'
+        AND NOT s.serve_d) AS cluster_next,
+        LAG(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
+                                    ORDER BY s.ord_ts, s.swing_id) AS prev_score,
+        LEAD(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
+                                    ORDER BY s.ord_ts, s.swing_id) AS next_score
+    FROM sbp_scored s
+    ),
+    kills_soft AS (
+    SELECT
+        c.*,
+        ((c.cluster_prev AND c.prev_score IS NOT NULL AND c.evidence_score <  c.prev_score) OR
+        (c.cluster_next AND c.next_score IS NOT NULL AND c.evidence_score <= c.next_score)) AS cluster_kill_d
+    FROM cluster_flags c
+    ),
 
-between_serves AS (
-  SELECT
-    k.*,
-    sb.first_serve_ix,
-    sb.last_serve_before_rally_ix,
-    (NOT k.serve_d
-      AND sb.first_serve_ix IS NOT NULL
-      AND sb.last_serve_before_rally_ix IS NOT NULL
-      AND k.shot_ix > sb.first_serve_ix
-      AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d,
-    FALSE::boolean AS cluster_kill_d,
-    FALSE::boolean AS alt_kill_d,
-    COALESCE(k.ball_hit_ts, (TIMESTAMP 'epoch' + k.ball_hit_s * INTERVAL '1 second')) AS this_ts
-  FROM swing_bounce_primary k
-  LEFT JOIN serve_bounds sb
-    ON sb.session_id = k.session_id AND sb.point_number_d = k.point_number_d
-),
-sn_ts AS (
-  SELECT
-    b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
-    b.serve_d, b.ord_ts, b.first_rally_shot_ix,
-    b.cluster_kill_d, b.alt_kill_d, b.between_serves_d,
-    b.this_ts,
-    COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
-  FROM between_serves b
-),
-swing_validity_base AS (
-  SELECT
-    s.*,
-    CASE
-      WHEN s.point_number_d IS NULL THEN FALSE
-      WHEN s.serve_d THEN TRUE
-      WHEN s.prev_ts IS NULL THEN FALSE
-      WHEN (s.this_ts - s.prev_ts) <= INTERVAL '4 seconds' THEN TRUE
-      ELSE FALSE
-    END AS valid_time_rule_d,
-    CASE
-      WHEN s.point_number_d IS NULL THEN TRUE
-      WHEN s.serve_d THEN FALSE
-      WHEN s.between_serves_d THEN TRUE
-      WHEN s.prev_ts IS NULL THEN TRUE
-      WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
-      ELSE FALSE
-    END AS hard_invalid_d,
-    FALSE::boolean AS soft_invalid_d
-  FROM sn_ts s
-),
-valid_cascade AS (
-  SELECT
-    v.*,
-    SUM(CASE WHEN v.hard_invalid_d THEN 1 ELSE 0 END)
-      OVER (PARTITION BY v.session_id, v.point_number_d
-            ORDER BY v.ord_ts, v.swing_id
-            ROWS UNBOUNDED PRECEDING) AS hard_invalid_seen
-  FROM swing_validity_base v
-),
-valid_final AS (
-  SELECT
-    vc.*,
-    CASE
-      WHEN vc.serve_d THEN TRUE
-      /* First rally swing is valid even if earlier invalids exist */
-      WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix THEN TRUE
-      WHEN vc.hard_invalid_seen > 0 THEN FALSE
-      ELSE vc.valid_time_rule_d
-    END AS valid_swing_final_d
-  FROM valid_cascade vc
-),
-valid_numbered AS (
-  SELECT
-    vf.*,
-    SUM(CASE WHEN vf.valid_swing_final_d THEN 1 ELSE 0 END)
-      OVER (PARTITION BY vf.session_id, vf.point_number_d
-            ORDER BY vf.ord_ts, vf.swing_id
-            ROWS UNBOUNDED PRECEDING) AS valid_shot_ix,
-    CASE WHEN vf.serve_d THEN
-      SUM(CASE WHEN vf.serve_d THEN 1 ELSE 0 END)
+    /* serve bounds for between-serves (first serve → last serve before rally) */
+    serve_bounds AS (
+    SELECT
+        se.session_id, se.point_number_d,
+        MIN(se.shot_ix) FILTER (WHERE se.serve_d) AS first_serve_ix,
+        MAX(se.start_serve_shot_ix)               AS last_serve_before_rally_ix
+    FROM kills_soft se
+    GROUP BY se.session_id, se.point_number_d
+    ),
+    between_serves AS (
+    SELECT
+        k.*,
+        sb.first_serve_ix,
+        sb.last_serve_before_rally_ix,
+        (NOT k.serve_d
+        AND sb.first_serve_ix IS NOT NULL
+        AND sb.last_serve_before_rally_ix IS NOT NULL
+        AND k.shot_ix > sb.first_serve_ix
+        AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d
+    FROM kills_soft k
+    LEFT JOIN serve_bounds sb
+        ON sb.session_id = k.session_id AND sb.point_number_d = k.point_number_d
+    ),
+    sn_ts AS (
+    SELECT
+        b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
+        b.serve_d, b.ord_ts, b.first_rally_shot_ix,
+        b.cluster_kill_d, b.between_serves_d,
+        b.this_ts,
+        COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
+    FROM between_serves b
+    ),
+    swing_validity_base AS (
+    SELECT
+        s.*,
+        CASE
+        WHEN s.point_number_d IS NULL THEN FALSE
+        WHEN s.serve_d THEN TRUE
+        WHEN s.prev_ts IS NULL THEN FALSE
+        WHEN (s.this_ts - s.prev_ts) <= INTERVAL '4 seconds' THEN TRUE
+        ELSE FALSE
+        END AS valid_time_rule_d,
+        CASE
+        WHEN s.point_number_d IS NULL THEN TRUE
+        WHEN s.serve_d THEN FALSE
+        WHEN s.between_serves_d THEN TRUE
+        WHEN s.prev_ts IS NULL THEN TRUE
+        WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
+        ELSE FALSE
+        END AS hard_invalid_d,
+        /* soft invalid = duplicate shot kill */
+        s.cluster_kill_d AS soft_invalid_d
+    FROM sn_ts s
+    ),
+    valid_cascade AS (
+    SELECT
+        v.*,
+        SUM(CASE WHEN v.hard_invalid_d THEN 1 ELSE 0 END)
+        OVER (PARTITION BY v.session_id, v.point_number_d
+                ORDER BY v.ord_ts, v.swing_id
+                ROWS UNBOUNDED PRECEDING) AS hard_invalid_seen
+    FROM swing_validity_base v
+    ),
+    valid_final AS (
+    SELECT
+        vc.*,
+        CASE
+        WHEN vc.serve_d THEN TRUE
+        /* Return valid only if it occurs ≤ 4s after the last serve */
+        WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix
+            THEN (vc.prev_ts IS NOT NULL AND (vc.this_ts - vc.prev_ts) <= INTERVAL '4 seconds')
+        WHEN vc.hard_invalid_seen > 0 THEN FALSE
+        WHEN vc.soft_invalid_d THEN FALSE
+        ELSE vc.valid_time_rule_d
+        END AS valid_swing_final_d
+    FROM valid_cascade vc
+    ),
+    valid_numbered AS (
+    SELECT
+        vf.*,
+        SUM(CASE WHEN vf.valid_swing_final_d THEN 1 ELSE 0 END)
         OVER (PARTITION BY vf.session_id, vf.point_number_d
-              ORDER BY vf.ord_ts, vf.swing_id
-              ROWS UNBOUNDED PRECEDING)
-    END AS serve_try_ix_in_point
-  FROM valid_final vf
-),
-valid_numbered_last AS (
-  SELECT
-    vn.*,
-    MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d)
-      OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix,
-    MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d AND NOT vn.serve_d)
-      OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix_ns
-  FROM valid_numbered vn
-)
-'''
+                ORDER BY vf.ord_ts, vf.swing_id
+                ROWS UNBOUNDED PRECEDING) AS valid_shot_ix,
+        CASE WHEN vf.serve_d THEN
+        SUM(CASE WHEN vf.serve_d THEN 1 ELSE 0 END)
+            OVER (PARTITION BY vf.session_id, vf.point_number_d
+                ORDER BY vf.ord_ts, vf.swing_id
+                ROWS UNBOUNDED PRECEDING)
+        END AS serve_try_ix_in_point
+    FROM valid_final vf
+    ),
+    valid_numbered_last AS (
+    SELECT
+        vn.*,
+        MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d)
+        OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix,
+        MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d AND NOT vn.serve_d)
+        OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix_ns
+    FROM valid_numbered vn
+    )
+    '''
 
     # AF is currently identical to V1 (no enhancements)
     AF = V1
