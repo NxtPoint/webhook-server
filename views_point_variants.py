@@ -1,10 +1,12 @@
-# views_point_variants.py — point view variants (baseline v1, experimental af)
+# views_point_variants.py — point view variants (baseline v1; AF mirrors v1)
 
 def get_point_view_sql(variant: str) -> str:
     """
     Returns the full SQL for the requested point view variant.
     Builds the common core up to swing_bounce_primary, then plugs in
     variant-specific validity CTEs, then the shared serve/outcome/final select.
+
+    NOTE: For now, the 'af' variant is IDENTICAL to 'v1' (no experimental logic).
     """
     variant = (variant or "v1").lower()
     if variant not in ("v1", "af"):
@@ -208,15 +210,14 @@ swings_numbered AS (
     LEAD(sps.swing_id)    OVER (PARTITION BY sps.session_id ORDER BY sps.ord_ts, sps.swing_id) AS next_swing_id
   FROM swings_with_serve sps
 ),
+/* Rally starts only when the RECEIVER hits a non-serve */
 point_first_rally AS (
   SELECT session_id, point_number_d, MIN(shot_ix) AS first_rally_shot_ix
   FROM swings_numbered
-  /* Rally starts only when the RECEIVER hits a non-serve */
   WHERE NOT serve_d
     AND player_id IS DISTINCT FROM server_id
   GROUP BY session_id, point_number_d
 ),
-
 point_starting_serve AS (
   SELECT
     sn.session_id, sn.point_number_d,
@@ -315,14 +316,11 @@ swing_bounce_primary AS (
     se.start_s, se.end_s, se.ball_hit_s, se.start_ts, se.end_ts, se.ball_hit_ts,
     se.ball_hit_x, se.ball_hit_y, se.ball_speed, se.swing_type AS swing_type_raw,
 
-    /* pass-throughs needed by AF scoring/cluster logic */
-    se.next_ball_hit_ts,          -- **added**
-    se.next_ball_hit_s,           -- **added** (handy for future/consistency)
-    se.next_ball_hit_x,
-    se.next_ball_hit_y,
-    se.next_player_id,
-    se.next_swing_id,
+    /* kept for future use (not required by baseline) */
+    se.next_ball_hit_ts,
+    se.next_ball_hit_s,
 
+    se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id, se.next_swing_id,
     se.prev_ball_hit_ts, se.prev_ball_hit_s,
     se.player_side_far_d,
     se.ord_ts
@@ -337,7 +335,7 @@ swing_bounce_primary AS (
 )
 '''
 
-    # -------------------- Variant blocks: validity A/F vs baseline V1 ----------------
+    # ------------ Variant blocks (AF mirrors V1; no experimental heuristics) ---------
 
     V1 = r'''
 ,serve_bounds AS (
@@ -411,8 +409,9 @@ valid_final AS (
     vc.*,
     CASE
       WHEN vc.serve_d THEN TRUE
-      WHEN vc.hard_invalid_seen > 0 THEN FALSE
+      /* First rally swing is valid even if earlier invalids exist */
       WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix THEN TRUE
+      WHEN vc.hard_invalid_seen > 0 THEN FALSE
       ELSE vc.valid_time_rule_d
     END AS valid_swing_final_d
   FROM valid_cascade vc
@@ -443,146 +442,8 @@ valid_numbered_last AS (
 )
 '''
 
-    AF = r'''
-,sbp_scored AS (
-  SELECT
-    sbp.*,
-    (CASE WHEN sbp.primary_source_d = 'floor' THEN 2 ELSE 0 END) +
-    (CASE WHEN sbp.bounce_id IS NOT NULL     THEN 1 ELSE 0 END) +
-    (CASE WHEN sbp.ball_speed IS NOT NULL    THEN 1 ELSE 0 END) +
-    (CASE WHEN sbp.next_ball_hit_ts IS NOT NULL THEN 1 ELSE 0 END) AS evidence_score,
-    COALESCE(sbp.ball_hit_ts, (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts
-  FROM swing_bounce_primary sbp
-),
-cluster_flags AS (
-  SELECT
-    s.*,
-    (s.prev_player_id = s.player_id
-      AND s.prev_ball_hit_ts IS NOT NULL
-      AND (s.this_ts - s.prev_ball_hit_ts) <= INTERVAL '120 milliseconds'
-      AND NOT s.serve_d) AS cluster_prev,
-    (s.next_player_id = s.player_id
-      AND s.next_ball_hit_ts IS NOT NULL
-      AND (s.next_ball_hit_ts - s.this_ts) <= INTERVAL '120 milliseconds'
-      AND NOT s.serve_d) AS cluster_next,
-    LAG(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
-                                ORDER BY s.ord_ts, s.swing_id) AS prev_score,
-    LEAD(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
-                                 ORDER BY s.ord_ts, s.swing_id) AS next_score
-  FROM sbp_scored s
-),
-kills_soft AS (
-  SELECT
-    c.*,
-    ((c.cluster_prev AND c.prev_score IS NOT NULL AND c.evidence_score <  c.prev_score) OR
-     (c.cluster_next AND c.next_score IS NOT NULL AND c.evidence_score <= c.next_score)) AS cluster_kill_d,
-    (NOT c.serve_d
-     AND c.first_rally_shot_ix IS NOT NULL
-     AND c.shot_ix > c.first_rally_shot_ix
-     AND c.prev_player_id = c.player_id
-     AND NOT c.cluster_prev) AS alt_kill_d
-  FROM cluster_flags c
-),
-serve_bounds AS (
-  SELECT
-    se.session_id, se.point_number_d,
-    MIN(se.shot_ix) FILTER (WHERE se.serve_d) AS first_serve_ix,
-    MAX(se.shot_ix) FILTER (
-      WHERE se.serve_d AND (se.first_rally_shot_ix IS NULL OR se.shot_ix < se.first_rally_shot_ix)
-    ) AS last_serve_before_rally_ix
-  FROM kills_soft se
-  GROUP BY se.session_id, se.point_number_d
-),
-between_serves AS (
-  SELECT
-    k.*,
-    sb.first_serve_ix,
-    sb.last_serve_before_rally_ix,
-    (NOT k.serve_d
-      AND sb.first_serve_ix IS NOT NULL
-      AND sb.last_serve_before_rally_ix IS NOT NULL
-      AND k.shot_ix > sb.first_serve_ix
-      AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d
-  FROM kills_soft k
-  LEFT JOIN serve_bounds sb
-    ON sb.session_id = k.session_id AND sb.point_number_d = k.point_number_d
-),
-sn_ts AS (
-  SELECT
-    b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
-    b.serve_d, b.ord_ts, b.first_rally_shot_ix,
-    b.cluster_kill_d, b.alt_kill_d, b.between_serves_d,
-    b.this_ts,
-    COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
-  FROM between_serves b
-),
-swing_validity_base AS (
-  SELECT
-    s.*,
-    CASE
-      WHEN s.point_number_d IS NULL THEN FALSE
-      WHEN s.serve_d THEN TRUE
-      WHEN s.prev_ts IS NULL THEN FALSE
-      WHEN (s.this_ts - s.prev_ts) <= INTERVAL '4 seconds' THEN TRUE
-      ELSE FALSE
-    END AS valid_time_rule_d,
-    CASE
-      WHEN s.point_number_d IS NULL THEN TRUE
-      WHEN s.serve_d THEN FALSE
-      WHEN s.between_serves_d THEN TRUE
-      WHEN s.prev_ts IS NULL THEN TRUE
-      WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
-      ELSE FALSE
-    END AS hard_invalid_d,
-    (s.cluster_kill_d OR s.alt_kill_d) AS soft_invalid_d
-  FROM sn_ts s
-),
-valid_cascade AS (
-  SELECT
-    v.*,
-    SUM(CASE WHEN v.hard_invalid_d THEN 1 ELSE 0 END)
-      OVER (PARTITION BY v.session_id, v.point_number_d
-            ORDER BY v.ord_ts, v.swing_id
-            ROWS UNBOUNDED PRECEDING) AS hard_invalid_seen
-  FROM swing_validity_base v
-),
-valid_final AS (
-  SELECT
-    vc.*,
-    CASE
-      WHEN vc.serve_d THEN TRUE
-      WHEN vc.hard_invalid_seen > 0 THEN FALSE
-      WHEN vc.soft_invalid_d THEN FALSE
-      WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix THEN TRUE
-      ELSE vc.valid_time_rule_d
-    END AS valid_swing_final_d
-  FROM valid_cascade vc
-),
-valid_numbered AS (
-  SELECT
-    vf.*,
-    SUM(CASE WHEN vf.valid_swing_final_d THEN 1 ELSE 0 END)
-      OVER (PARTITION BY vf.session_id, vf.point_number_d
-            ORDER BY vf.ord_ts, vf.swing_id
-            ROWS UNBOUNDED PRECEDING) AS valid_shot_ix,
-    CASE WHEN vf.serve_d THEN
-      SUM(CASE WHEN vf.serve_d THEN 1 ELSE 0 END)
-        OVER (PARTITION BY vf.session_id, vf.point_number_d
-              ORDER BY vf.ord_ts, vf.swing_id
-              ROWS UNBOUNDED PRECEDING)
-    END AS serve_try_ix_in_point
-  FROM valid_final vf
-),
-valid_numbered_last AS (
-  SELECT
-    vn.*,
-    MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d)
-      OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix,
-    MAX(vn.valid_shot_ix) FILTER (WHERE vn.valid_swing_final_d AND NOT vn.serve_d)
-      OVER (PARTITION BY vn.session_id, vn.point_number_d) AS last_valid_shot_ix_ns
-  FROM valid_numbered vn
-)
-'''
+    # AF is currently identical to V1 (no enhancements)
+    AF = V1
 
     TAIL = r'''
 ,point_ends AS (
@@ -989,6 +850,6 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
 ;
 '''
 
-    block = V1 if variant == "v1" else AF
+    block = V1 if variant == "v1" else AF   # AF == V1 for now
     sql = CORE.replace("{TAG}", variant) + block + TAIL
     return sql
