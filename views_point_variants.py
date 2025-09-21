@@ -380,6 +380,8 @@ swing_bounce_primary AS (
     FROM sbp_scored s
     ),
 
+
+    /* soft kill 1: 2s same-player cluster — later wins on tie */
     kills_soft AS (
     SELECT
         c.*,
@@ -388,6 +390,7 @@ swing_bounce_primary AS (
         FALSE::boolean AS alt_kill_d
     FROM cluster_flags c
     ),
+
 
     /* serve bounds for between-serves (first serve → last serve before rally) */
     serve_bounds AS (
@@ -433,14 +436,16 @@ swing_bounce_primary AS (
     SELECT
         b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
         b.serve_d, b.ord_ts, b.first_rally_shot_ix,
-        b.cluster_kill_d, b.between_serves_d,
+        b.cluster_kill_d, b.alt_kill_d, b.bounce_kill_d, b.between_serves_d,
         b.this_ts,
         COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
     FROM between_serves b
     ),
+
     swing_validity_base AS (
     SELECT
         s.*,
+        /* base timing rule (4s) */
         CASE
         WHEN s.point_number_d IS NULL THEN FALSE
         WHEN s.serve_d THEN TRUE
@@ -448,41 +453,68 @@ swing_bounce_primary AS (
         WHEN (s.this_ts - s.prev_ts) <= INTERVAL '4 seconds' THEN TRUE
         ELSE FALSE
         END AS valid_time_rule_d,
+
+        /* row-level "hard invalid" reasons */
         CASE
         WHEN s.point_number_d IS NULL THEN TRUE
         WHEN s.serve_d THEN FALSE
-        WHEN s.between_serves_d THEN TRUE
+        WHEN s.between_serves_d THEN TRUE                 -- in-between serves
         WHEN s.prev_ts IS NULL THEN TRUE
-        WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
+        WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE   -- long gap
         ELSE FALSE
         END AS hard_invalid_d,
-        /* soft invalid = duplicate shot kill */
-        s.cluster_kill_d AS soft_invalid_d
+
+        /* soft invalid = any soft kills (cluster/bounce) */
+        (s.cluster_kill_d OR s.bounce_kill_d OR s.alt_kill_d) AS soft_invalid_d,
+
+        /* only count hard invalids that occur at/after rally start for cascades */
+        CASE
+        WHEN s.serve_d THEN FALSE
+        WHEN s.first_rally_shot_ix IS NULL THEN FALSE
+        WHEN s.shot_ix < s.first_rally_shot_ix THEN FALSE
+        ELSE
+            CASE
+            WHEN s.between_serves_d THEN FALSE
+            WHEN s.prev_ts IS NULL THEN TRUE
+            WHEN (s.this_ts - s.prev_ts) > INTERVAL '4 seconds' THEN TRUE
+            ELSE FALSE
+            END
+        END AS hard_invalid_post_rally_d
     FROM sn_ts s
     ),
+
     valid_cascade AS (
     SELECT
         v.*,
-        SUM(CASE WHEN v.hard_invalid_d THEN 1 ELSE 0 END)
+        SUM(CASE WHEN v.hard_invalid_post_rally_d THEN 1 ELSE 0 END)
         OVER (PARTITION BY v.session_id, v.point_number_d
                 ORDER BY v.ord_ts, v.swing_id
                 ROWS UNBOUNDED PRECEDING) AS hard_invalid_seen
     FROM swing_validity_base v
     ),
+
     valid_final AS (
     SELECT
         vc.*,
         CASE
         WHEN vc.serve_d THEN TRUE
-        /* Return valid only if it occurs ≤ 4s after the last serve */
+
+        /* First rally swing must be within 2s of the last serve */
         WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix
-            THEN (vc.prev_ts IS NOT NULL AND (vc.this_ts - vc.prev_ts) <= INTERVAL '4 seconds')
+            THEN (vc.prev_ts IS NOT NULL AND (vc.this_ts - vc.prev_ts) <= INTERVAL '2 seconds')
+
+        /* After rally start, any hard invalid ends the point's validity */
         WHEN vc.hard_invalid_seen > 0 THEN FALSE
+
+        /* Any soft kill (cluster/bounce) is invalid */
         WHEN vc.soft_invalid_d THEN FALSE
+
+        /* Otherwise follow timing rule */
         ELSE vc.valid_time_rule_d
         END AS valid_swing_final_d
     FROM valid_cascade vc
     ),
+
     valid_numbered AS (
     SELECT
         vf.*,
