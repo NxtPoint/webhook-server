@@ -381,9 +381,11 @@ swing_bounce_primary AS (
     SELECT
         c.*,
         ((c.cluster_prev AND c.prev_score IS NOT NULL AND c.evidence_score <  c.prev_score) OR
-        (c.cluster_next AND c.next_score IS NOT NULL AND c.evidence_score <= c.next_score)) AS cluster_kill_d
+        (c.cluster_next AND c.next_score IS NOT NULL AND c.evidence_score <= c.next_score)) AS cluster_kill_d,
+        FALSE::boolean AS alt_kill_d
     FROM cluster_flags c
     ),
+
 
     /* serve bounds for between-serves (first serve → last serve before rally) */
     serve_bounds AS (
@@ -403,15 +405,18 @@ swing_bounce_primary AS (
         k.serve_d,
         k.ord_ts,
         k.first_rally_shot_ix,
-        /* cluster flags are explicitly projected so TAIL can reference them */
+
+        /* carry cluster kill, harden alt_kill_d to FALSE here so TAIL can always select it */
         COALESCE(k.cluster_kill_d, FALSE) AS cluster_kill_d,
-        COALESCE(k.alt_kill_d,     FALSE) AS alt_kill_d,
-        /* between-serve window: strictly after first serve and strictly before last serve-before-rally */
+        FALSE::boolean                    AS alt_kill_d,
+
+        /* strictly between first serve and last serve-before-rally */
         (NOT k.serve_d
         AND sb.first_serve_ix IS NOT NULL
         AND sb.last_serve_before_rally_ix IS NOT NULL
         AND k.shot_ix > sb.first_serve_ix
         AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d,
+
         /* timestamps needed downstream */
         k.this_ts,
         k.prev_ball_hit_ts,
