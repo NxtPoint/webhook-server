@@ -363,13 +363,15 @@ swing_bounce_primary AS (
     cluster_flags AS (
     SELECT
         s.*,
+        /* same player hit within 2s BEFORE this swing (non-serve) */
         (s.prev_player_id = s.player_id
         AND s.prev_ball_hit_ts IS NOT NULL
-        AND (s.this_ts - s.prev_ball_hit_ts) <= INTERVAL '120 milliseconds'
+        AND (s.this_ts - s.prev_ball_hit_ts) <= INTERVAL '2 seconds'
         AND NOT s.serve_d) AS cluster_prev,
+        /* same player hit within 2s AFTER this swing (non-serve) */
         (s.next_player_id = s.player_id
         AND s.next_ball_hit_ts IS NOT NULL
-        AND (s.next_ball_hit_ts - s.this_ts) <= INTERVAL '120 milliseconds'
+        AND (s.next_ball_hit_ts - s.this_ts) <= INTERVAL '2 seconds'
         AND NOT s.serve_d) AS cluster_next,
         LAG(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
                                     ORDER BY s.ord_ts, s.swing_id) AS prev_score,
@@ -377,6 +379,7 @@ swing_bounce_primary AS (
                                     ORDER BY s.ord_ts, s.swing_id) AS next_score
     FROM sbp_scored s
     ),
+
     kills_soft AS (
     SELECT
         c.*,
@@ -385,7 +388,6 @@ swing_bounce_primary AS (
         FALSE::boolean AS alt_kill_d
     FROM cluster_flags c
     ),
-
 
     /* serve bounds for between-serves (first serve → last serve before rally) */
     serve_bounds AS (
