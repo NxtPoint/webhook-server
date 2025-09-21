@@ -942,14 +942,23 @@ SELECT
   END AS placement_ad_d,
 
     CASE
-    WHEN sbp.serve_d THEN 'serve'
-    WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
-    WHEN sbp.ball_hit_y IS NULL THEN NULL
-    WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
-    /* Anything deeper than the service line is exposed as 'baseline' here,
-        but see play_depth_d and is_behind_baseline_d for finer granularity. */
-    ELSE 'baseline'
-    END AS play_d,
+        WHEN sbp.serve_d THEN 'serve'
+        WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
+        WHEN sbp.ball_hit_y IS NULL THEN NULL
+
+        /* FAR side: net if distance from FAR baseline > 5.48m
+            (mid_y_m + ball_hit_y) is the absolute Y in [0, court_l_m] with 0 at FAR baseline */
+        WHEN COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < 0)
+            AND ((SELECT mid_y_m FROM const) + sbp.ball_hit_y) >
+                ((SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)) THEN 'net'
+
+        /* NEAR side: net if distance from FAR baseline < 18.28m (= mid_y_m + 6.40m) */
+        WHEN NOT COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < 0)
+            AND ((SELECT mid_y_m FROM const) + sbp.ball_hit_y) <
+                ((SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)) THEN 'net'
+
+        ELSE 'baseline'
+        END AS play_d,
 
     /* True if the strike is beyond the baseline on the hitter's side */
     CASE
