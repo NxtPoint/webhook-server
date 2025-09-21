@@ -941,46 +941,24 @@ SELECT
       END
   END AS placement_ad_d,
 
-    CASE
+    /* Play classification: serve/return unchanged, then side-aware net vs baseline */
+        CASE
         WHEN sbp.serve_d THEN 'serve'
         WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
         WHEN sbp.ball_hit_y IS NULL THEN NULL
 
-        /* FAR side: net if distance from FAR baseline > 5.48m
-            (mid_y_m + ball_hit_y) is the absolute Y in [0, court_l_m] with 0 at FAR baseline */
+        /* FAR side: net if distance from FAR baseline > (mid_y_m - 6.40) ≈ 5.48 m */
         WHEN COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < 0)
             AND ((SELECT mid_y_m FROM const) + sbp.ball_hit_y) >
                 ((SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)) THEN 'net'
 
-        /* NEAR side: net if distance from FAR baseline < 18.28m (= mid_y_m + 6.40m) */
+        /* NEAR side: net if distance from FAR baseline < (mid_y_m + 6.40) ≈ 18.28 m */
         WHEN NOT COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < 0)
             AND ((SELECT mid_y_m FROM const) + sbp.ball_hit_y) <
                 ((SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)) THEN 'net'
 
         ELSE 'baseline'
         END AS play_d,
-
-    /* True if the strike is beyond the baseline on the hitter's side */
-    CASE
-    WHEN pdir.is_far_side_d IS NULL OR sbp.ball_hit_y IS NULL THEN NULL
-    WHEN pdir.is_far_side_d  AND sbp.ball_hit_y <  - (SELECT mid_y_m FROM const) THEN TRUE
-    WHEN NOT pdir.is_far_side_d AND sbp.ball_hit_y >    (SELECT mid_y_m FROM const) THEN TRUE
-    ELSE FALSE
-    END AS is_behind_baseline_d,
-
-    /* Rich depth label: net / mid / baseline_line / behind_baseline */
-    CASE
-    WHEN sbp.ball_hit_y IS NULL THEN NULL
-    WHEN ABS(sbp.ball_hit_y) <= (SELECT service_box_depth_m FROM const) THEN 'net'
-    /* within eps of the baseline line */
-    WHEN ABS(ABS(sbp.ball_hit_y) - (SELECT mid_y_m FROM const)) <= (SELECT serve_eps_m FROM const) THEN 'baseline_line'
-    /* beyond the baseline (outside court) on hitter's side */
-    WHEN (pdir.is_far_side_d  AND sbp.ball_hit_y <  - (SELECT mid_y_m FROM const))
-        OR (NOT pdir.is_far_side_d AND sbp.ball_hit_y >    (SELECT mid_y_m FROM const)) THEN 'behind_baseline'
-    /* between service line and baseline */
-    ELSE 'mid'
-    END AS play_depth_d,
-
 
   gr.point_score_text_d,
   gr.is_game_end_d,
