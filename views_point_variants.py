@@ -390,7 +390,31 @@ swing_bounce_primary AS (
         FALSE::boolean AS alt_kill_d
     FROM cluster_flags c
     ),
-
+    /* soft kill 3: duplicate bounce_id — keep exactly one winner per (session_id, bounce_id) */
+    bounce_dupe_rank AS (
+    SELECT
+        k.session_id,
+        k.swing_id,
+        k.bounce_id,
+        ROW_NUMBER() OVER (
+        PARTITION BY k.session_id, k.bounce_id
+        ORDER BY
+            k.evidence_score DESC,
+            CASE WHEN k.primary_source_d='floor' THEN 0 ELSE 1 END,
+            k.shot_ix ASC,
+            k.swing_id ASC
+        ) AS rn
+    FROM kills_soft k
+    WHERE k.bounce_id IS NOT NULL
+    ),
+    kills_all AS (
+    SELECT
+        k.*,
+        (br.rn IS NOT NULL AND br.rn > 1) AS bounce_kill_d
+    FROM kills_soft k
+    LEFT JOIN bounce_dupe_rank br
+        ON br.session_id = k.session_id AND br.swing_id = k.swing_id
+    ),
 
     /* serve bounds for between-serves (first serve → last serve before rally) */
     serve_bounds AS (
@@ -398,9 +422,10 @@ swing_bounce_primary AS (
         se.session_id, se.point_number_d,
         MIN(se.shot_ix) FILTER (WHERE se.serve_d) AS first_serve_ix,
         MAX(se.start_serve_shot_ix)               AS last_serve_before_rally_ix
-    FROM kills_soft se
+    FROM kills_all se
     GROUP BY se.session_id, se.point_number_d
     ),
+
     between_serves AS (
     SELECT
         k.session_id,
@@ -411,9 +436,10 @@ swing_bounce_primary AS (
         k.ord_ts,
         k.first_rally_shot_ix,
 
-        /* carry cluster kill, harden alt_kill_d to FALSE here so TAIL can always select it */
+        /* expose soft-kill bits so TAIL can show them */
         COALESCE(k.cluster_kill_d, FALSE) AS cluster_kill_d,
-        FALSE::boolean                    AS alt_kill_d,
+        FALSE::boolean                    AS alt_kill_d,   -- keep disabled
+        COALESCE(k.bounce_kill_d, FALSE)  AS bounce_kill_d,
 
         /* strictly between first serve and last serve-before-rally */
         (NOT k.serve_d
@@ -426,11 +452,12 @@ swing_bounce_primary AS (
         k.this_ts,
         k.prev_ball_hit_ts,
         k.prev_ball_hit_s
-    FROM kills_soft k
+    FROM kills_all k
     LEFT JOIN serve_bounds sb
         ON sb.session_id = k.session_id
     AND sb.point_number_d = k.point_number_d
     ),
+
 
     sn_ts AS (
     SELECT
@@ -441,6 +468,7 @@ swing_bounce_primary AS (
         COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
     FROM between_serves b
     ),
+
 
     swing_validity_base AS (
     SELECT
