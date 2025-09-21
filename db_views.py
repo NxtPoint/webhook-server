@@ -203,6 +203,7 @@ VIEW_NAMES = [
 ]
 
 CREATE_STMTS = {
+    # ------------------------------ SILVER: swing view ------------------------------
     "vw_swing_silver": r'''
         CREATE OR REPLACE VIEW vw_swing_silver AS
         SELECT
@@ -216,7 +217,7 @@ CREATE_STMTS = {
           fs.ball_speed,
           fs.serve, fs.serve_type AS serve_type, fs.swing_type, fs.is_in_rally,
           fs.ball_player_distance,
-          fs.meta,
+          fs.meta AS swing_meta_json,
           ds.session_uid AS session_uid_d,
           {PLAYER_SIDE_SELECT}
         FROM fact_swing fs
@@ -234,7 +235,7 @@ CREATE_STMTS = {
         SELECT
           b.session_id,
           b.bounce_id,
-          b.hitter_player_id,
+          b.hitter_player_id AS bounce_hitter_id,
           b.rally_id,
           b.bounce_s,
           b.bounce_ts,
@@ -248,6 +249,7 @@ CREATE_STMTS = {
     "vw_point_silver": r'''
 CREATE OR REPLACE VIEW vw_point_silver AS
 WITH
+-- constants
 const AS (
   SELECT
     8.23::numeric       AS court_w_m,
@@ -441,6 +443,10 @@ swings_numbered AS (
                        ORDER BY sps.ord_ts, sps.swing_id) AS shot_ix,
     COUNT(*) OVER (PARTITION BY sps.session_id, sps.point_number_d) AS last_shot_ix,
 
+    LAG(sps.player_id) OVER (
+      PARTITION BY sps.session_id, sps.point_number_d
+      ORDER BY sps.ord_ts, sps.swing_id) AS prev_player_id,
+
     LAG(sps.ball_hit_ts) OVER (
       PARTITION BY sps.session_id, sps.point_number_d
       ORDER BY sps.ord_ts, sps.swing_id) AS prev_ball_hit_ts,
@@ -465,7 +471,7 @@ point_first_rally AS (
   GROUP BY session_id, point_number_d
 ),
 
--- starting serve of the point = last serve before that first rally (or only serve if rally never starts)
+-- starting serve of the point = last serve before that first rally (if any)
 point_starting_serve AS (
   SELECT
     sn.session_id, sn.point_number_d,
@@ -478,17 +484,6 @@ point_starting_serve AS (
   GROUP BY sn.session_id, sn.point_number_d
 ),
 
--- serves span in each point (used to isolate rally from serve phase)
-point_serves_span AS (
-  SELECT
-    sn.session_id, sn.point_number_d,
-    MIN(sn.shot_ix) AS first_srv_ix,
-    MAX(sn.shot_ix) AS last_srv_ix
-  FROM swings_numbered sn
-  WHERE sn.serve_d
-  GROUP BY sn.session_id, sn.point_number_d
-),
-
 -- enrich swings with rally/serve markers
 swings_enriched AS (
   SELECT
@@ -498,6 +493,19 @@ swings_enriched AS (
   FROM swings_numbered sn
   LEFT JOIN point_first_rally    pfr ON pfr.session_id = sn.session_id AND pfr.point_number_d = sn.point_number_d
   LEFT JOIN point_starting_serve pss ON pss.session_id = sn.session_id AND pss.point_number_d = sn.point_number_d
+),
+
+-- compute serve bounds to mark between-serves
+serve_bounds AS (
+  SELECT
+    se.session_id, se.point_number_d,
+    MIN(se.shot_ix) FILTER (WHERE se.serve_d) AS first_serve_ix,
+    MAX(se.shot_ix) FILTER (
+      WHERE se.serve_d
+        AND (se.first_rally_shot_ix IS NULL OR se.shot_ix < se.first_rally_shot_ix)
+    ) AS last_serve_before_rally_ix
+  FROM swings_enriched se
+  GROUP BY se.session_id, se.point_number_d
 ),
 
 -- time windows to map bounces
@@ -580,7 +588,7 @@ swing_bounce_primary AS (
     END AS primary_source_d,
 
     se.serve_d, se.first_rally_shot_ix, se.start_serve_shot_ix,
-    se.player_id, se.server_id, se.game_number_d, se.point_in_game_d, se.serving_side_d,
+    se.player_id, se.prev_player_id, se.server_id, se.game_number_d, se.point_in_game_d, se.serving_side_d,
     se.start_s, se.end_s, se.ball_hit_s, se.start_ts, se.end_ts, se.ball_hit_ts,
     se.ball_hit_x, se.ball_hit_y, se.ball_speed, se.swing_type AS swing_type_raw,
     se.next_ball_hit_x, se.next_ball_hit_y, se.next_player_id, se.next_swing_id,
@@ -595,78 +603,142 @@ swing_bounce_primary AS (
            se.shot_ix DESC
 ),
 
-/* ---------- VALIDITY (5s rule; cascade only AFTER final serve) ---------- */
+/* ---------- A/F additions: dedupe, alternation, between-serves ---------- */
+
+-- simple evidence score for duplicates (prefer floor bounce, any bounce, speed, has next hit)
+sbp_scored AS (
+  SELECT
+    sbp.*,
+    (CASE WHEN sbp.primary_source_d = 'floor' THEN 2 ELSE 0 END) +
+    (CASE WHEN sbp.bounce_id IS NOT NULL     THEN 1 ELSE 0 END) +
+    (CASE WHEN sbp.ball_speed IS NOT NULL    THEN 1 ELSE 0 END) +
+    (CASE WHEN sbp.next_ball_hit_ts IS NOT NULL THEN 1 ELSE 0 END)
+      AS evidence_score,
+    COALESCE(sbp.ball_hit_ts, (TIMESTAMP 'epoch' + sbp.ball_hit_s * INTERVAL '1 second')) AS this_ts
+  FROM swing_bounce_primary sbp
+),
+
+-- cluster window flags (same player within 120 ms)
+cluster_flags AS (
+  SELECT
+    s.*,
+    (s.prev_player_id = s.player_id
+      AND s.prev_ball_hit_ts IS NOT NULL
+      AND (s.this_ts - s.prev_ball_hit_ts) <= INTERVAL '120 milliseconds'
+      AND NOT s.serve_d) AS cluster_prev,
+    (s.next_player_id = s.player_id
+      AND s.next_ball_hit_ts IS NOT NULL
+      AND (s.next_ball_hit_ts - s.this_ts) <= INTERVAL '120 milliseconds'
+      AND NOT s.serve_d) AS cluster_next,
+    LAG(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
+                                ORDER BY s.ord_ts, s.swing_id) AS prev_score,
+    LEAD(s.evidence_score) OVER (PARTITION BY s.session_id, s.point_number_d
+                                 ORDER BY s.ord_ts, s.swing_id) AS next_score
+  FROM sbp_scored s
+),
+
+-- kills: drop weaker one inside a cluster (does not cascade)
+kills_soft AS (
+  SELECT
+    c.*,
+    -- weaker than previous OR not-stronger than next inside a tight cluster
+    ((c.cluster_prev AND c.prev_score IS NOT NULL AND c.evidence_score <  c.prev_score) OR
+     (c.cluster_next AND c.next_score IS NOT NULL AND c.evidence_score <= c.next_score)) AS cluster_kill_d,
+    -- alternation kill: same player twice after rally starts, not part of a cluster
+    (NOT c.serve_d
+     AND c.first_rally_shot_ix IS NOT NULL
+     AND c.shot_ix > c.first_rally_shot_ix
+     AND c.prev_player_id = c.player_id
+     AND NOT c.cluster_prev) AS alt_kill_d
+  FROM cluster_flags c
+),
+
+-- mark non-serves between first serve and final (pre-rally) serve
+between_serves AS (
+  SELECT
+    k.*,
+    sb.first_serve_ix,
+    sb.last_serve_before_rally_ix,
+    (NOT k.serve_d
+      AND sb.first_serve_ix IS NOT NULL
+      AND sb.last_serve_before_rally_ix IS NOT NULL
+      AND k.shot_ix > sb.first_serve_ix
+      AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d
+  FROM kills_soft k
+  LEFT JOIN serve_bounds sb
+    ON sb.session_id = k.session_id AND sb.point_number_d = k.point_number_d
+),
+
+/* ---------- VALIDITY (5s rule; hard/soft split; cascade) ---------- */
 sn_ts AS (
   SELECT
-    sn.session_id, sn.swing_id, sn.point_number_d, sn.shot_ix,
-    sn.serve_d, sn.ord_ts,
-    COALESCE(sn.ball_hit_ts, (TIMESTAMP 'epoch' + sn.ball_hit_s * INTERVAL '1 second')) AS this_ts,
-    COALESCE(sn.prev_ball_hit_ts, (TIMESTAMP 'epoch' + sn.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts,
-    pspan.first_srv_ix, pspan.last_srv_ix,
-    -- non-serve strictly between first and last serve (let/out exchanges)
-    CASE
-      WHEN NOT sn.serve_d
-       AND pspan.first_srv_ix IS NOT NULL
-       AND pspan.last_srv_ix  IS NOT NULL
-       AND sn.shot_ix > pspan.first_srv_ix
-       AND sn.shot_ix < pspan.last_srv_ix
-      THEN TRUE ELSE FALSE
-    END AS between_serves_d,
-    -- non-serve after the final serve = "rally zone"
-    CASE
-      WHEN NOT sn.serve_d
-       AND pspan.last_srv_ix IS NOT NULL
-       AND sn.shot_ix > pspan.last_srv_ix
-      THEN TRUE ELSE FALSE
-    END AS in_rally_after_final_serve_d
-  FROM swings_numbered sn
-  LEFT JOIN point_serves_span pspan
-    ON pspan.session_id = sn.session_id AND pspan.point_number_d = sn.point_number_d
+    b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
+    b.serve_d, b.ord_ts, b.first_rally_shot_ix,
+    b.cluster_kill_d, b.alt_kill_d, b.between_serves_d,
+    b.this_ts,
+    COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
+  FROM between_serves b
 ),
-swing_validity AS (
+swing_validity_base AS (
   SELECT
-    s.session_id, s.swing_id, s.point_number_d, s.shot_ix, s.serve_d, s.ord_ts,
-    s.between_serves_d, s.in_rally_after_final_serve_d,
+    s.*,
+    -- base time/window rule
     CASE
       WHEN s.point_number_d IS NULL THEN FALSE
       WHEN s.serve_d THEN TRUE
-      WHEN s.between_serves_d THEN FALSE                 -- forced invalid between serves
       WHEN s.prev_ts IS NULL THEN FALSE
       WHEN (s.this_ts - s.prev_ts) <= INTERVAL '5 seconds' THEN TRUE
       ELSE FALSE
-    END AS valid_swing_d_base
+    END AS valid_time_rule_d,
+    -- HARD invalid (cascades)
+    CASE
+      WHEN s.point_number_d IS NULL THEN TRUE
+      WHEN s.serve_d THEN FALSE
+      WHEN s.between_serves_d THEN TRUE
+      WHEN s.prev_ts IS NULL THEN TRUE
+      WHEN (s.this_ts - s.prev_ts) > INTERVAL '5 seconds' THEN TRUE
+      ELSE FALSE
+    END AS hard_invalid_d,
+    -- SOFT invalid (no cascade)
+    (s.cluster_kill_d OR s.alt_kill_d) AS soft_invalid_d
   FROM sn_ts s
 ),
 valid_cascade AS (
   SELECT
     v.*,
-    -- cascade the first invalid forward ONLY within the rally (after final serve)
-    SUM(CASE
-          WHEN v.in_rally_after_final_serve_d AND v.valid_swing_d_base = FALSE
-          THEN 1 ELSE 0
-        END)
+    SUM(CASE WHEN v.hard_invalid_d THEN 1 ELSE 0 END)
       OVER (PARTITION BY v.session_id, v.point_number_d
             ORDER BY v.ord_ts, v.swing_id
-            ROWS UNBOUNDED PRECEDING) AS invalid_seen
-  FROM swing_validity v
+            ROWS UNBOUNDED PRECEDING) AS hard_invalid_seen
+  FROM swing_validity_base v
 ),
 valid_final AS (
   SELECT
     vc.*,
     CASE
       WHEN vc.serve_d THEN TRUE
-      WHEN vc.invalid_seen > 0 THEN FALSE
-      ELSE vc.valid_swing_d_base
+      WHEN vc.hard_invalid_seen > 0 THEN FALSE
+      WHEN vc.soft_invalid_d THEN FALSE
+      WHEN vc.first_rally_shot_ix IS NOT NULL AND vc.shot_ix = vc.first_rally_shot_ix THEN TRUE
+      ELSE vc.valid_time_rule_d
     END AS valid_swing_final_d
   FROM valid_cascade vc
 ),
 valid_numbered AS (
   SELECT
     vf.*,
+    -- running count of valids inside a point
     SUM(CASE WHEN vf.valid_swing_final_d THEN 1 ELSE 0 END)
       OVER (PARTITION BY vf.session_id, vf.point_number_d
             ORDER BY vf.ord_ts, vf.swing_id
-            ROWS UNBOUNDED PRECEDING) AS valid_shot_ix
+            ROWS UNBOUNDED PRECEDING) AS valid_shot_ix,
+    -- serve try index in this point
+    CASE WHEN vf.serve_d THEN
+      SUM(CASE WHEN vf.serve_d THEN 1 ELSE 0 END)
+        OVER (PARTITION BY vf.session_id, vf.point_number_d
+              ORDER BY vf.ord_ts, vf.swing_id
+              ROWS UNBOUNDED PRECEDING)
+    END AS serve_try_ix_in_point
   FROM valid_final vf
 ),
 valid_numbered_last AS (
@@ -697,7 +769,7 @@ point_ends AS (
     SELECT
       se.session_id, se.point_number_d, se.server_id,
       se.ball_hit_y AS start_srv_y
-    FROM swings_enriched se
+    FROM swing_bounce_primary se
     WHERE se.shot_ix = se.start_serve_shot_ix
   ) ssr
   LEFT JOIN player_orientation pdir_s
@@ -776,7 +848,7 @@ serve_place_final AS (
   FROM serve_place_x x
 ),
 
--- Terminal outcome (last raw shot of the point)
+-- Terminal outcome (last raw swing in the point)
 point_outcome AS (
   SELECT
     sbp.session_id, sbp.point_number_d, sbp.game_number_d, sbp.point_in_game_d,
@@ -828,7 +900,7 @@ bounce_explain AS (
     ON sbp.session_id=se.session_id AND sbp.swing_id=se.swing_id
 ),
 
--- running game score & game winner (unchanged)
+-- running points/game (unchanged)
 points_accum AS (
   SELECT
     pow.*,
@@ -918,8 +990,11 @@ SELECT
   sbp.bounce_y_center_m     AS bounce_y_center_m,
   sbp.bounce_y_norm_m       AS bounce_y_norm_m,
   sbp.primary_source_d,
+  -- debug: who bronze thought hit the bounce
+  vbs.bounce_hitter_id,
 
   sbp.serve_d,
+  vnl.serve_try_ix_in_point,
   sbp.first_rally_shot_ix,
   sbp.start_serve_shot_ix,
 
@@ -928,6 +1003,11 @@ SELECT
   sbp.point_in_game_d,
   sbp.serving_side_d,
   sbp.server_id,
+
+  -- validity (A–F)
+  vb.between_serves_d,
+  vb.cluster_kill_d,
+  vb.alt_kill_d,
 
   -- last swing of the point under the 5s rule (non-serve only)
   (vnl.valid_swing_final_d AND vnl.valid_shot_ix = vnl.last_valid_shot_ix_ns) AS is_last_in_point_d,
@@ -1008,10 +1088,10 @@ SELECT
     END
   END AS out_axis_last_d,
 
-  -- Serve lanes (unchanged)
+  -- serve lanes unchanged
   spf.serve_bucket_1_8 AS serve_loc_18_d,
 
-  -- A–D for all non-serves
+  -- A–D placement for non-serves
   CASE
     WHEN sbp.serve_d THEN NULL
     ELSE
@@ -1047,7 +1127,7 @@ SELECT
       END
   END AS placement_ad_d,
 
-  -- Play type
+  -- play type
   CASE
     WHEN sbp.serve_d THEN 'serve'
     WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
@@ -1081,10 +1161,15 @@ LEFT JOIN serve_place_final spf
       ON spf.session_id = sbp.session_id AND spf.swing_id = sbp.swing_id
 LEFT JOIN valid_numbered_last vnl
       ON vnl.session_id = sbp.session_id AND vnl.swing_id = sbp.swing_id
+LEFT JOIN between_serves vb
+      ON vb.session_id = sbp.session_id AND vb.swing_id = sbp.swing_id
+LEFT JOIN vw_bounce_silver vbs
+      ON vbs.session_id = sbp.session_id AND vbs.bounce_id = sbp.bounce_id
 ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
 ;
     ''',
 
+    # ------------------------------ DEBUG: bounce stream ----------------------------
     "vw_bounce_stream_debug": r'''
         CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
         WITH s AS (
@@ -1185,12 +1270,18 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
           ON a.session_id = b.session_id AND a.swing_id = b.swing_id;
     ''',
 
+    # ------------------------------ DEBUG: session bounce stats --------------------
     "vw_point_bounces_debug": r'''
         CREATE OR REPLACE VIEW vw_point_bounces_debug AS
         SELECT
           vps.session_id,
           vps.session_uid_d,
           COUNT(*)                                                        AS swings_total,
+          COUNT(*) FILTER (WHERE vps.valid_swing_d)                        AS swings_valid,
+          COUNT(*) FILTER (WHERE vps.between_serves_d)                     AS swings_between_serves,
+          COUNT(*) FILTER (WHERE vps.cluster_kill_d)                       AS cluster_kills,
+          COUNT(*) FILTER (WHERE vps.alt_kill_d)                           AS alt_kills,
+
           COUNT(*) FILTER (WHERE vps.bounce_id IS NOT NULL)               AS swings_with_any_bounce,
           COUNT(*) FILTER (WHERE vps.bounce_type_raw = 'floor')           AS swings_with_floor_primary,
           COUNT(*) FILTER (WHERE vps.bounce_type_raw <> 'floor' AND vps.bounce_id IS NOT NULL)
