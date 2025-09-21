@@ -396,18 +396,32 @@ swing_bounce_primary AS (
     ),
     between_serves AS (
     SELECT
-        k.*,
-        sb.first_serve_ix,
-        sb.last_serve_before_rally_ix,
+        k.session_id,
+        k.swing_id,
+        k.point_number_d,
+        k.shot_ix,
+        k.serve_d,
+        k.ord_ts,
+        k.first_rally_shot_ix,
+        /* cluster flags are explicitly projected so TAIL can reference them */
+        COALESCE(k.cluster_kill_d, FALSE) AS cluster_kill_d,
+        COALESCE(k.alt_kill_d,     FALSE) AS alt_kill_d,
+        /* between-serve window: strictly after first serve and strictly before last serve-before-rally */
         (NOT k.serve_d
         AND sb.first_serve_ix IS NOT NULL
         AND sb.last_serve_before_rally_ix IS NOT NULL
         AND k.shot_ix > sb.first_serve_ix
-        AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d
+        AND k.shot_ix < sb.last_serve_before_rally_ix) AS between_serves_d,
+        /* timestamps needed downstream */
+        k.this_ts,
+        k.prev_ball_hit_ts,
+        k.prev_ball_hit_s
     FROM kills_soft k
     LEFT JOIN serve_bounds sb
-        ON sb.session_id = k.session_id AND sb.point_number_d = k.point_number_d
+        ON sb.session_id = k.session_id
+    AND sb.point_number_d = k.point_number_d
     ),
+
     sn_ts AS (
     SELECT
         b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
