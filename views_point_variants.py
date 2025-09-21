@@ -860,6 +860,6 @@ ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
 ;
 '''
 
-    block = V1 if variant == "v1" else AF = V1  # AF == V1 for now
+    block = V1 if variant == "v1" else AF # AF == V1 for now
     sql = CORE.replace("{TAG}", variant) + block + TAIL
     return sql
