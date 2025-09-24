@@ -1,16 +1,12 @@
-# views_point_variants.py — point view variants (baseline v1; AF mirrors v1)
+# views_point_variants.py — point view variant V1 only (AF removed)
 
-def get_point_view_sql(variant: str) -> str:
+def get_point_view_sql(_variant: str = "v1") -> str:
     """
-    Returns the full SQL for the requested point view variant.
-    Builds the common core up to swing_bounce_primary, then plugs in
-    variant-specific validity CTEs, then the shared serve/outcome/final select.
-
-    NOTE: For now, the 'af' variant is IDENTICAL to 'v1' (no experimental logic).
+    Returns the full SQL for the point view (V1 only).
+    Builds the common core up to swing_bounce_primary, adds V1 validity/dedupe rules,
+    then the shared serve/outcome/final select.
     """
-    variant = (variant or "v1").lower()
-    if variant not in ("v1", "af"):
-        variant = "v1"
+    TAG = "v1"
 
     CORE = r'''
 CREATE OR REPLACE VIEW vw_point_silver_{TAG} AS
@@ -346,10 +342,9 @@ swing_bounce_primary AS (
 )
 '''
 
-    # ------------ Variant blocks (AF mirrors V1; no experimental heuristics) ---------
-
+    # ---------------------- V1 validity / dedupe / timing rules ----------------------
     V1 = r'''
-    ,/* score + cluster de-dupe (keep only the better of same-player hits within 120ms) */
+    ,/* score + cluster de-dupe (keep only the better of same-player hits within 2s; tie -> later) */
     sbp_scored AS (
     SELECT
         sbp.*,
@@ -380,7 +375,6 @@ swing_bounce_primary AS (
     FROM sbp_scored s
     ),
 
-
     /* soft kill 1: 2s same-player cluster — later wins on tie */
     kills_soft AS (
     SELECT
@@ -390,6 +384,7 @@ swing_bounce_primary AS (
         FALSE::boolean AS alt_kill_d
     FROM cluster_flags c
     ),
+
     /* soft kill 3: duplicate bounce_id — keep exactly one winner per (session_id, bounce_id) */
     bounce_dupe_rank AS (
     SELECT
@@ -458,7 +453,6 @@ swing_bounce_primary AS (
     AND sb.point_number_d = k.point_number_d
     ),
 
-
     sn_ts AS (
     SELECT
         b.session_id, b.swing_id, b.point_number_d, b.shot_ix,
@@ -468,7 +462,6 @@ swing_bounce_primary AS (
         COALESCE(b.prev_ball_hit_ts, (TIMESTAMP 'epoch' + b.prev_ball_hit_s * INTERVAL '1 second')) AS prev_ts
     FROM between_serves b
     ),
-
 
     swing_validity_base AS (
     SELECT
@@ -546,7 +539,6 @@ swing_bounce_primary AS (
         FROM valid_cascade vc
         ),
 
-
     valid_numbered AS (
     SELECT
         vf.*,
@@ -572,9 +564,6 @@ swing_bounce_primary AS (
     FROM valid_numbered vn
     )
     '''
-
-    # AF is currently identical to V1 (no enhancements)
-    AF = V1
 
     TAIL = r'''
 ,point_ends AS (
@@ -941,23 +930,22 @@ SELECT
       END
   END AS placement_ad_d,
 
-    /* Play classification: serve/return unchanged, then side-aware net vs baseline using ABSOLUTE Y */
-        CASE
-        WHEN sbp.serve_d THEN 'serve'
-        WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
-        WHEN sbp.ball_hit_y IS NULL THEN NULL
+  /* Play classification (V1): serve/return unchanged, then side-aware net vs baseline using ABSOLUTE Y */
+  CASE
+    WHEN sbp.serve_d THEN 'serve'
+    WHEN sbp.shot_ix = sbp.first_rally_shot_ix THEN 'return'
+    WHEN sbp.ball_hit_y IS NULL THEN NULL
 
-        /* FAR side: net if y > 5.48 (= mid_y_m - 6.40) */
-        WHEN COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < (SELECT mid_y_m FROM const))
-            AND sbp.ball_hit_y > ((SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)) THEN 'net'
+    /* FAR side: net if y > 5.48 (= mid_y_m - 6.40) */
+    WHEN COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < (SELECT mid_y_m FROM const))
+         AND sbp.ball_hit_y > ((SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)) THEN 'net'
 
-        /* NEAR side: net if y < 18.28 (= mid_y_m + 6.40) */
-        WHEN NOT COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < (SELECT mid_y_m FROM const))
-            AND sbp.ball_hit_y < ((SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)) THEN 'net'
+    /* NEAR side: net if y < 18.28 (= mid_y_m + 6.40) */
+    WHEN NOT COALESCE(pdir.is_far_side_d, sbp.ball_hit_y < (SELECT mid_y_m FROM const))
+         AND sbp.ball_hit_y < ((SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)) THEN 'net'
 
-        ELSE 'baseline'
-        END AS play_d,
-
+    ELSE 'baseline'
+  END AS play_d,
 
   gr.point_score_text_d,
   gr.is_game_end_d,
@@ -991,7 +979,4 @@ LEFT JOIN vw_bounce_silver vbs
 ORDER BY sbp.session_id, sbp.point_number_d, sbp.shot_ix, sbp.swing_id
 ;
 '''
-
-    block = V1 if variant == "v1" else AF # AF == V1 for now
-    sql = CORE.replace("{TAG}", variant) + block + TAIL
-    return sql
+    return CORE.replace("{TAG}", TAG) + V1 + TAIL
