@@ -1,10 +1,10 @@
-# db_views.py — orchestrator + stable views + env switch
+# db_views.py — orchestrator + stable views (V1 only)
 # Exposes: init_views/run_views(engine)
 
 import os
 from typing import List
 from sqlalchemy import text
-from views_point_variants import get_point_view_sql
+from views_point_variants import get_point_view_sql  # still used to emit the V1 SQL
 
 __all__ = ["init_views", "run_views", "VIEW_SQL_STMTS", "VIEW_NAMES", "CREATE_STMTS"]
 VIEW_SQL_STMTS: List[str] = []
@@ -191,18 +191,15 @@ $$;
 '''
 
 # ==================================================================================
-# View manifest
+# View manifest (V1 only)
 # ==================================================================================
 
 VIEW_NAMES = [
     "vw_swing_silver",
     "vw_ball_position_silver",
     "vw_bounce_silver",
-    # variants + alias
-    "vw_point_silver_v1",
-    "vw_point_silver_af",
-    "vw_point_silver",
-    # debug
+    "vw_point_silver_core",   # full-fidelity V1
+    "vw_point_silver",        # dashboard-clean (drops unwanted cols)
     "vw_bounce_stream_debug",
     "vw_point_bounces_debug",
 ]
@@ -251,19 +248,16 @@ CREATE_STMTS = {
     ''',
 }
 
-# inject both variants
-CREATE_STMTS["vw_point_silver_v1"] = get_point_view_sql("v1")
-CREATE_STMTS["vw_point_silver_af"] = get_point_view_sql("af")
+# Inject the single V1 view as our "core". Rename any variant names to *_core just in case.
+_base_sql_v1 = get_point_view_sql("v1")
+_base_sql_v1 = (
+    _base_sql_v1
+      .replace("vw_point_silver_v1", "vw_point_silver_core")
+      .replace("vw_point_silver_af", "vw_point_silver_core")
+)
+CREATE_STMTS["vw_point_silver_core"] = _base_sql_v1
 
-# alias picks a variant by env var (default v1)
-_variant = os.environ.get("SPORT_AI_VPS_VARIANT", "v1").lower()
-_alias_target = "vw_point_silver_af" if _variant == "af" else "vw_point_silver_v1"
-CREATE_STMTS["vw_point_silver"] = f'''
-    CREATE OR REPLACE VIEW vw_point_silver AS
-    SELECT * FROM {_alias_target};
-'''
-
-# ------------------------------ DEBUG views (point to alias) ----------------------
+# ------------------------------ DEBUG views (read from CORE) ----------------------
 CREATE_STMTS["vw_bounce_stream_debug"] = r'''
     CREATE OR REPLACE VIEW vw_bounce_stream_debug AS
     WITH s AS (
@@ -301,7 +295,7 @@ CREATE_STMTS["vw_bounce_stream_debug"] = r'''
         vps.bounce_id           AS chosen_bounce_id,
         vps.bounce_type_raw     AS chosen_type,
         vps.bounce_ts_d         AS chosen_bounce_ts
-      FROM vw_point_silver vps
+      FROM vw_point_silver_core vps
       JOIN s
         ON s.session_id = vps.session_id AND s.swing_id = vps.swing_id
     ),
@@ -380,22 +374,47 @@ CREATE_STMTS["vw_point_bounces_debug"] = r'''
       COUNT(*) FILTER (WHERE vps.bounce_type_raw <> 'floor' AND vps.bounce_id IS NOT NULL)
                                                                       AS swings_with_racquet_primary,
       COUNT(*) FILTER (WHERE vps.bounce_id IS NULL)                   AS swings_with_no_bounce,
-      COUNT(DISTINCT vps.bounce_id) FILTER (WHERE vps.bounce_id IS NOT NULL)
-                                                                      AS distinct_bounce_ids,
       COALESCE((SELECT COUNT(*) FROM (
           SELECT bounce_id
-          FROM vw_point_silver v2
+          FROM vw_point_silver_core v2
           WHERE v2.session_id = vps.session_id AND v2.bounce_id IS NOT NULL
           GROUP BY bounce_id
           HAVING COUNT(*) > 1
         ) d),0)                                                       AS dup_bounce_ids
-    FROM vw_point_silver vps
+    FROM vw_point_silver_core vps
     GROUP BY vps.session_id, vps.session_uid_d;
 '''
 
 # ==================================================================================
 # Apply
 # ==================================================================================
+
+def _build_point_clean_view_sql(conn) -> str:
+    """
+    Build CREATE VIEW vw_point_silver selecting all columns from *_core
+    except dashboard-irrelevant ones.
+    """
+    drop_cols = {
+        "swing_id", "start_ts", "end_ts", "ball_hit_ts",
+        "bounce_id", "bounce_ts_d", "primary_source"
+    }
+    rows = conn.execute(text(r"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='vw_point_silver_core'
+        ORDER BY ordinal_position
+    """)).fetchall()
+    cols = [r[0] for r in rows]
+    keep = [c for c in cols if c not in drop_cols]
+    if not keep:
+        raise RuntimeError("vw_point_silver_core has no columns after exclusion filter.")
+    select_list = ",\n          ".join([f'"{c}"' for c in keep])
+    return f'''
+        CREATE OR REPLACE VIEW vw_point_silver AS
+        SELECT
+          {select_list}
+        FROM vw_point_silver_core;
+    '''
 
 def _apply_views(engine):
     global VIEW_SQL_STMTS
@@ -412,9 +431,12 @@ def _apply_views(engine):
 
         VIEW_SQL_STMTS = []
         for name in VIEW_NAMES:
-            sql = CREATE_STMTS[name]
-            if name == "vw_swing_silver":
-                sql = sql.replace("{PLAYER_SIDE_SELECT}", _player_side_select_snippet(conn))
+            if name == "vw_point_silver":
+                sql = _build_point_clean_view_sql(conn)
+            else:
+                sql = CREATE_STMTS[name]
+                if name == "vw_swing_silver":
+                    sql = sql.replace("{PLAYER_SIDE_SELECT}", _player_side_select_snippet(conn))
             VIEW_SQL_STMTS.append(sql)
             _exec_with_clear_errors(conn, name, sql)
 
