@@ -1,10 +1,10 @@
-FROM python:3.10-slim-bookworm
+﻿FROM python:3.10-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     LANG=C.UTF-8
 
-# OS deps (note the "\" line continuations)
+# OS deps
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -20,20 +20,17 @@ RUN pip install --no-cache-dir \
       gunicorn==22.0.0 \
       gevent==24.2.1
 
-# Non-root user
-RUN useradd -ms /bin/bash superset
-USER superset
+# Workdir & files
 WORKDIR /home/superset
-
-# Put config on PYTHONPATH and copy entrypoint
 RUN mkdir -p /home/superset/pythonpath /app
-ENV PYTHONPATH="/home/superset/pythonpath:"
-COPY --chown=superset:superset superset_config.py /home/superset/pythonpath/superset_config.py
-COPY --chown=superset:superset entrypoint.sh /app/entrypoint.sh
+COPY superset_config.py /home/superset/pythonpath/superset_config.py
+COPY entrypoint.sh /app/entrypoint.sh
 
-# Ensure entrypoint is executable at build time
-USER root
+# Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh
+
+# Create non-root, then chown files
+RUN useradd -ms /bin/bash superset && chown -R superset:superset /home/superset /app
 USER superset
 
 EXPOSE 8088

@@ -1,4 +1,4 @@
-import os
+﻿import os
 SECRET_KEY = os.getenv("SUPERSET_SECRET_KEY", "CHANGE_ME_IN_RENDER")
 SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")  # postgresql+psycopg2://...
 FEATURE_FLAGS = {
