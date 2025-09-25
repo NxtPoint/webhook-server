@@ -43,4 +43,12 @@ FEATURE_FLAGS = {
 }
 
 # (Optional) Mapbox key if you use maps
-MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
+MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")# ---- Disable DB event logging with a no-op logger (avoids writing to "logs" table)
+from superset.utils.log import AbstractEventLogger
+
+class _NoOpEventLogger(AbstractEventLogger):
+    def log(self, **kwargs):
+        # swallow all events
+        return
+
+EVENT_LOGGER = _NoOpEventLogger()
