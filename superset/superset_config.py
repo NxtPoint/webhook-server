@@ -52,3 +52,14 @@ class _NoOpEventLogger(AbstractEventLogger):
         return
 
 EVENT_LOGGER = _NoOpEventLogger()
+from superset.utils.log import AbstractEventLogger
+
+class _NoOpEventLogger(AbstractEventLogger):
+    def log(self, *args, **kwargs):
+        # swallow all events regardless of signature
+        return
+
+EVENT_LOGGER = _NoOpEventLogger()
+
+# Optional: skip welcome page to avoid touching logs during first visits
+DEFAULT_HOME_PAGE = "/dashboard/list/"
