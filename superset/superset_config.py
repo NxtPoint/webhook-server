@@ -192,3 +192,18 @@ HTTP_HEADERS = {
 SESSION_COOKIE_SAMESITE = "None"
 SESSION_COOKIE_SECURE = True
 # --- END EMBED OVERRIDE ---
+# ===== TEST OVERRIDE: allow ALL embedding (remove for production) =====
+# Disable Talisman so it doesn't inject SAMEORIGIN / CSP
+TALISMAN_ENABLED = False
+CONTENT_SECURITY_POLICY_WARNING = False
+
+# Remove any previously-set HTTP_HEADERS (CSP/XFO) so nothing blocks iframes
+try:
+    del HTTP_HEADERS  # if defined earlier
+except Exception:
+    pass
+
+# Cookies must be cross-site friendly if auth ever appears in an embed
+SESSION_COOKIE_SAMESITE = "None"
+SESSION_COOKIE_SECURE = True
+# =====================================================================
