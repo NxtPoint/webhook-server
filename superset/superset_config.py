@@ -1,37 +1,46 @@
 ﻿import os
+
 SECRET_KEY = os.getenv("SUPERSET_SECRET_KEY", "CHANGE_ME_IN_RENDER")
-SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")  # postgresql+psycopg2://...
-FEATURE_FLAGS = {
-    "EMBEDDED_SUPERSET": True,
-    "DASHBOARD_NATIVE_FILTERS": True,
-    "DASHBOARD_CROSS_FILTERS": True,
-}
-TALISMAN_ENABLED = False
-ALLOW_IFRAME = True
+SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+
+# 1) Force Alembic/SQLAlchemy to use the 'public' schema
+SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"options": "-csearch_path=public"}}
+
+# 2) Minimal CSP via Talisman (allow your Wix domains to embed)
 ALLOWED_FRAME_DOMAINS = [
     "https://*.wixsite.com",
     "https://*.editorx.io",
     "https://*.nextpointtennis.com",
     "https://nextpointtennis.com",
 ]
-ENABLE_CORS = True
-CORS_OPTIONS = {
-    "supports_credentials": True,
-    "allow_headers": ["*"],
-    "expose_headers": ["*"],
-    "resources": ["/*"],
-    "origins": [
-        "https://*.wixsite.com",
-        "https://*.editorx.io",
-        "https://*.nextpointtennis.com",
-        "https://nextpointtennis.com",
-    ],
+TALISMAN_ENABLED = True
+CSP = {
+    "default-src": ["'self'"],
+    "img-src": ["'self'", "data:", "blob:"],
+    "font-src": ["'self'", "data:"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "script-src": ["'self'", "'unsafe-eval'"],
+    "connect-src": ["'self'"],
+    "frame-ancestors": ["'self'"] + ALLOWED_FRAME_DOMAINS,
+    "object-src": ["'none'"],
 }
-MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")# Ensure migrations target the public schema
-SQLALCHEMY_ENGINE_OPTIONS = {
-    "connect_args": {
-        "options": "-csearch_path=public"
-    }
+TALISMAN_CONFIG = {
+    "content_security_policy": CSP,
+    "force_https": True,
+    "frame_options": None,
+    "session_cookie_secure": True,
 }
-# Ensure migrations use the public schema
-SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"options": "-csearch_path=public"}}
+CONTENT_SECURITY_POLICY_WARNING = False  # hide CSP warning now that we set one
+
+# 3) TEMP: turn off DB event logger so 'logs' table writes don't crash
+EVENT_LOGGER = None
+
+# Feature flags you wanted
+FEATURE_FLAGS = {
+    "EMBEDDED_SUPERSET": True,
+    "DASHBOARD_NATIVE_FILTERS": True,
+    "DASHBOARD_CROSS_FILTERS": True,
+}
+
+# (Optional) Mapbox key if you use maps
+MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
