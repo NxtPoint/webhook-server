@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -e
+echo "==================== START.SH EXECUTING ===================="
 
 PORT_TO_BIND="${PORT:-8088}"
 
-banner() { echo "==================== $* ===================="; }
-
-banner "RUNNING SUPERSET DB UPGRADE (with retries)"
+echo "==================== RUNNING SUPERSET DB UPGRADE (with retries) ===================="
 for i in 1 2 3 4 5; do
   if superset db upgrade; then
     echo "DB upgrade successful"
@@ -20,8 +19,7 @@ ensure_admin () {
   local EMAIL="$2"
   local PASSWORD="$3"
 
-  banner "UPSERT ADMIN USER: $USERNAME"
-  # Try to create; ignore error if exists
+  echo "==================== UPSERT ADMIN USER: $USERNAME ===================="
   superset fab create-admin \
     --username "$USERNAME" \
     --firstname Admin \
@@ -29,26 +27,19 @@ ensure_admin () {
     --email "$EMAIL" \
     --password "$PASSWORD" || true
 
-  # Always reset password + ensure active
   superset fab reset-password --username "$USERNAME" --password "$PASSWORD" || true
-
-  # Print user list (FAB 4 prints a table)
-  echo "Listing users after upsert for $USERNAME:"
-  superset fab list-users || superset fab users list || true
+  (superset fab list-users || superset fab users list || true) 2>/dev/null
 }
 
-# Preferred (from env) ? default values if env vars missing
 PREF_USER="${SUPERSET_ADMIN_USER:-NxtPoint}"
 PREF_EMAIL="${SUPERSET_ADMIN_EMAIL:-info@nextpointtennis.com}"
 PREF_PASS="${SUPERSET_ADMIN_PASSWORD:-ChangeMe123!}"
 
 ensure_admin "$PREF_USER" "$PREF_EMAIL" "$PREF_PASS"
-
-# Fallback admin
 ensure_admin "admin" "admin@nextpointtennis.com" "ChangeMe123!"
 
-banner "RUNNING SUPERSET INIT"
+echo "==================== superset init ===================="
 superset init || true
 
-banner "STARTING GUNICORN on $PORT_TO_BIND"
+echo "==================== starting gunicorn on $PORT_TO_BIND ===================="
 exec gunicorn -w 4 -k gevent --timeout 300 -b 0.0.0.0:"$PORT_TO_BIND" "superset.app:create_app()"
