@@ -33,3 +33,5 @@ SQLALCHEMY_ENGINE_OPTIONS = {
         "options": "-csearch_path=public"
     }
 }
+# Ensure migrations use the public schema
+SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"options": "-csearch_path=public"}}

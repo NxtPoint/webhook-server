@@ -13,20 +13,44 @@ for i in 1 2 3 4 5; do
   sleep 5
 done
 
-# Ensure admin user from env exists; if it exists, reset the password
+# --- Hard upsert of the admin user from environment vars ---
 if [ -n "$SUPERSET_ADMIN_USER" ] && [ -n "$SUPERSET_ADMIN_PASSWORD" ] && [ -n "$SUPERSET_ADMIN_EMAIL" ]; then
-  echo "==> Ensuring admin user $SUPERSET_ADMIN_USER"
-  superset fab create-admin \
-    --username "$SUPERSET_ADMIN_USER" \
-    --firstname Admin \
-    --lastname User \
-    --email "$SUPERSET_ADMIN_EMAIL" \
-    --password "$SUPERSET_ADMIN_PASSWORD" || true
-
-  # Reset password in case user already existed
-  superset fab reset-password \
-    --username "$SUPERSET_ADMIN_USER" \
-    --password "$SUPERSET_ADMIN_PASSWORD" || true
+  echo "==> Ensuring admin user $SUPERSET_ADMIN_USER via Superset SecurityManager"
+  python - <<'PY'
+import os
+from superset.app import create_app
+from flask_appbuilder.security.sqla.models import User
+app = create_app()
+username = os.environ["SUPERSET_ADMIN_USER"]
+email = os.environ["SUPERSET_ADMIN_EMAIL"]
+password = os.environ["SUPERSET_ADMIN_PASSWORD"]
+with app.app_context():
+    sm = app.appbuilder.sm
+    admin_role = sm.find_role("Admin")
+    user = sm.find_user(username=username)
+    if user is None:
+        # create
+        sm.add_user(
+            username=username,
+            first_name="Admin",
+            last_name="User",
+            email=email,
+            role=admin_role,
+            password=password,
+            # for FAB >=4 this kw is 'is_active', for older it's 'active'; handle both
+            is_active=True
+        )
+        print(f"[OK] Created user {username}")
+    else:
+        # ensure active, email, role, and reset password
+        user.active = True if hasattr(user, "active") else True
+        user.is_active = True if hasattr(user, "is_active") else True
+        user.email = email
+        if admin_role and admin_role not in user.roles:
+            user.roles = [admin_role]
+        sm.update_user(user, password=password)
+        print(f"[OK] Updated password/role for {username}")
+PY
 fi
 
 echo "==> Running superset init..."
