@@ -27,4 +27,9 @@ CORS_OPTIONS = {
         "https://nextpointtennis.com",
     ],
 }
-MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")
+MAPBOX_API_KEY = os.getenv("MAPBOX_API_KEY", "")# Ensure migrations target the public schema
+SQLALCHEMY_ENGINE_OPTIONS = {
+    "connect_args": {
+        "options": "-csearch_path=public"
+    }
+}
