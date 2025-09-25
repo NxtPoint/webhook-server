@@ -97,3 +97,43 @@ CONTENT_SECURITY_POLICY_WARNING = False
 
 # (Optional) make content readable without login (public view). Comment out if you want login.
 # PUBLIC_ROLE_LIKE = "Gamma"
+# -----------------------------
+# PUBLIC EMBED / READ-ONLY MODE
+# -----------------------------
+# WARNING: This makes dashboards readable to anyone with the URL.
+# Only enable for dashboards that contain NO confidential data.
+
+# Map unauthenticated users to the "Gamma" (read-only) role
+PUBLIC_ROLE_LIKE = "Gamma"
+
+# Enable CORS for embedding; restrict origins to your Wix domain(s)
+ENABLE_CORS = True
+CORS_OPTIONS = {
+    "supports_credentials": False,
+    "origins": [
+        "https://www.your-wix-site.com",
+        "https://your-site.wixsite.com"
+    ],
+}
+
+# Use Talisman / CSP to allow embedding only from specified domains
+TALISMAN_ENABLED = True
+TALISMAN_CONFIG = {
+    "content_security_policy": {
+        "default-src": ["'self'"],
+        "img-src": ["'self'", "data:", "blob:"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "script-src": ["'self'", "'unsafe-inline'"],
+        # explicitly allow wix domains to embed Superset via iframe
+        "frame-ancestors": [
+            "https://www.your-wix-site.com",
+            "https://your-site.wixsite.com",
+            "https://*.wix.com",
+            "https://*.wixsite.com"
+        ],
+    }
+}
+
+# Optional: set landing page to dashboards to avoid welcome page
+DEFAULT_HOME_PAGE = "/dashboard/list/"
+# -----------------------------
