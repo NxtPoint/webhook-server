@@ -14,13 +14,14 @@ RUN set -eux; \
         dos2unix \
     ; rm -rf /var/lib/apt/lists/*
 
-# Python deps (pinned; let Superset resolve Flask-Limiter)
+# Python deps (pin gunicorn; force Flask-Limiter to 3.x)
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
       apache-superset==3.1.0 \
       psycopg2-binary==2.9.9 \
       gunicorn==21.2.0 \
-      gevent==24.2.1
+      gevent==24.2.1 \
+      "Flask-Limiter>=3,<4"
 
 # Workdir & files
 WORKDIR /home/superset
@@ -33,7 +34,7 @@ RUN sed -i '1s/^\xEF\xBB\xBF//' /app/entrypoint.sh && \
     dos2unix /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
 
-# Create non-root, then chown files
+# Non-root user, fix ownership
 RUN useradd -ms /bin/bash superset && chown -R superset:superset /home/superset /app
 USER superset
 
