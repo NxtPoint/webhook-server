@@ -13,11 +13,12 @@ RUN set -eux; \
         libpq-dev libssl-dev libffi-dev \
     ; rm -rf /var/lib/apt/lists/*
 
-# Python deps (pinned)
-RUN pip install --no-cache-dir \
+# Python deps (pinned; gunicorn < 22 for Superset 3.1.0)
+RUN python -m pip install --upgrade pip && \
+    pip install --no-cache-dir \
       apache-superset==3.1.0 \
       psycopg2-binary==2.9.9 \
-      gunicorn==22.0.0 \
+      gunicorn==21.2.0 \
       gevent==24.2.1
 
 # Workdir & files
