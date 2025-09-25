@@ -12,36 +12,41 @@ for i in 1 2 3 4 5; do
   sleep 5
 done
 
-# Hard upsert admin from env
-if [ -n "$SUPERSET_ADMIN_USER" ] && [ -n "$SUPERSET_ADMIN_PASSWORD" ] && [ -n "$SUPERSET_ADMIN_EMAIL" ]; then
-  echo "==> Ensuring admin user $SUPERSET_ADMIN_USER"
-  python - <<'PY'
+# Upsert two admin users: your preferred (NxtPoint) and a fallback (admin/ChangeMe123!)
+echo "==> Ensuring admin users exist..."
+python - <<'PY'
 import os
 from superset.app import create_app
 app = create_app()
 with app.app_context():
     sm = app.appbuilder.sm
     admin_role = sm.find_role("Admin")
-    username = os.environ["SUPERSET_ADMIN_USER"]
-    email = os.environ["SUPERSET_ADMIN_EMAIL"]
-    password = os.environ["SUPERSET_ADMIN_PASSWORD"]
-    user = sm.find_user(username=username)
-    if user is None:
-        sm.add_user(username=username, first_name="Admin", last_name="User",
-                    email=email, role=admin_role, password=password, is_active=True)
-        print(f"[OK] Created user {username}")
-    else:
-        # ensure active, role, and reset password
-        try:
-            user.is_active = True
-        except Exception:
-            user.active = True
-        if admin_role and admin_role not in user.roles:
-            user.roles = [admin_role]
-        sm.update_user(user, password=password)
-        print(f"[OK] Updated user {username}")
+
+    def upsert(username, email, password):
+        user = sm.find_user(username=username)
+        if user is None:
+            sm.add_user(username=username, first_name="Admin", last_name="User",
+                        email=email, role=admin_role, password=password, is_active=True)
+            print(f"[OK] created {username}")
+        else:
+            try:
+                user.is_active = True
+            except Exception:
+                user.active = True
+            if admin_role and admin_role not in user.roles:
+                user.roles = [admin_role]
+            sm.update_user(user, password=password)
+            print(f"[OK] updated {username}")
+
+    # Preferred from env
+    u = os.environ.get("SUPERSET_ADMIN_USER") or "NxtPoint"
+    e = os.environ.get("SUPERSET_ADMIN_EMAIL") or "info@nextpointtennis.com"
+    p = os.environ.get("SUPERSET_ADMIN_PASSWORD") or "ChangeMe123!"
+    upsert(u, e, p)
+
+    # Fallback
+    upsert("admin", "admin@nextpointtennis.com", "ChangeMe123!")
 PY
-fi
 
 echo "==> superset init..."
 superset init || true
