@@ -33,4 +33,4 @@ echo "==================== superset init ===================="
 superset init || true
 
 echo "==================== starting gunicorn on $PORT_TO_BIND ===================="
-exec gunicorn -w 4 -k gevent --timeout 300 -b 0.0.0.0:"$PORT_TO_BIND" "superset.app:create_app()"
+exec gunicorn -w 2 --threads 4 --timeout 300 -b 0.0.0.0:"$PORT_TO_BIND" "superset.app:create_app()"
