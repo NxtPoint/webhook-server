@@ -18,23 +18,14 @@ ensure_admin () {
   local USERNAME="$1"
   local EMAIL="$2"
   local PASSWORD="$3"
-
   echo "==================== UPSERT ADMIN USER: $USERNAME ===================="
-  superset fab create-admin \
-    --username "$USERNAME" \
-    --firstname Admin \
-    --lastname User \
-    --email "$EMAIL" \
-    --password "$PASSWORD" || true
-
+  superset fab create-admin --username "$USERNAME" --firstname Admin --lastname User --email "$EMAIL" --password "$PASSWORD" || true
   superset fab reset-password --username "$USERNAME" --password "$PASSWORD" || true
   (superset fab list-users || superset fab users list || true) 2>/dev/null
 }
-
 PREF_USER="${SUPERSET_ADMIN_USER:-NxtPoint}"
-PREF_EMAIL="${SUPERSET_ADMIN_EMAIL:-info@nextpointtennis.com}"
+PREF_EMAIL="${SUPERSET_ADMIN_EMAIL:-nextpointtennis.com}"
 PREF_PASS="${SUPERSET_ADMIN_PASSWORD:-ChangeMe123!}"
-
 ensure_admin "$PREF_USER" "$PREF_EMAIL" "$PREF_PASS"
 ensure_admin "admin" "admin@nextpointtennis.com" "ChangeMe123!"
 
