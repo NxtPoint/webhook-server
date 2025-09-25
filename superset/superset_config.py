@@ -175,3 +175,20 @@ TALISMAN_CONFIG = {
 # Optional: skip welcome page and land on dashboards list after login
 DEFAULT_HOME_PAGE = "/dashboard/list/"
 # --- END TESTING SNIPPET ---
+# --- EMBED OVERRIDE FOR WIX (TEST) ---
+# Disable Talisman so it doesn't set SAMEORIGIN/XFO
+TALISMAN_ENABLED = False
+CONTENT_SECURITY_POLICY_WARNING = False
+
+# Send permissive headers for iframe embedding
+HTTP_HEADERS = {
+    # allow embedding anywhere (testing). For production, restrict or use guest tokens.
+    "X-Frame-Options": "ALLOWALL",
+    # allow Wix (and your own domain later) to embed via iframe
+    "Content-Security-Policy": "frame-ancestors https://*.wixsite.com https://*.wix.com https://www.your-wix-site.com;"
+}
+
+# If you keep auth later, cross-site cookies need these:
+SESSION_COOKIE_SAMESITE = "None"
+SESSION_COOKIE_SECURE = True
+# --- END EMBED OVERRIDE ---
