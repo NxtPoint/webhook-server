@@ -63,3 +63,37 @@ EVENT_LOGGER = _NoOpEventLogger()
 
 # Optional: skip welcome page to avoid touching logs during first visits
 DEFAULT_HOME_PAGE = "/dashboard/list/"
+# --- EMBEDDING FOR WIX (iframe) ---
+ENABLE_CORS = True
+CORS_OPTIONS = {
+    "supports_credentials": True,
+    "origins": [
+        "https://*.wixsite.com",
+        "https://*.editorx.io",
+        "https://*.wix.com",
+        "https://webhook-server-4nsr.onrender.com"  # this service itself
+    ],
+}
+
+# Use CSP to allow Wix to host the iframe
+TALISMAN_ENABLED = True
+TALISMAN_CONFIG = {
+    "content_security_policy": {
+        "default-src": ["'self'"],
+        "img-src": ["'self'", "data:", "blob:"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "script-src": ["'self'", "'unsafe-inline'"],
+        "frame-src": ["'self'"],
+        # <-- IMPORTANT: pages allowed to embed Superset
+        "frame-ancestors": [
+            "https://*.wixsite.com",
+            "https://*.editorx.io",
+            "https://*.wix.com"
+            # add your custom domain here later, e.g. "https://www.yourdomain.com"
+        ],
+    }
+}
+CONTENT_SECURITY_POLICY_WARNING = False
+
+# (Optional) make content readable without login (public view). Comment out if you want login.
+# PUBLIC_ROLE_LIKE = "Gamma"
