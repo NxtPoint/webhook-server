@@ -4,16 +4,16 @@
 #     SS_POINT_BASE="schema.table_or_view"
 #     SS_META_TABLE="schema.table"
 # - If not found, creates a pass-through with meta columns = NULL (no hard fail).
+#
+# NOTE: apply.py expects: make_sql(cur) -> str  (cur is a psycopg2 cursor)
 
 import os
-import psycopg2
 
-def _row(conn, sql, params=()):
-    with conn.cursor() as cur:
-        cur.execute(sql, params)
-        return cur.fetchone()
+def _row(cur, sql, params=()):
+    cur.execute(sql, params)
+    return cur.fetchone()
 
-def _find_point_base(db_url: str) -> tuple[str, str] | None:
+def _find_point_base(cur):
     override = os.getenv("SS_POINT_BASE")
     if override and "." in override:
         sch, name = override.split(".", 1)
@@ -40,26 +40,18 @@ def _find_point_base(db_url: str) -> tuple[str, str] | None:
       prio, table_schema
     limit 1;
     """
-    conn = psycopg2.connect(db_url)
-    try:
-        row = _row(conn, sql)
-        return (row[0], row[1]) if row else None
-    finally:
-        conn.close()
+    row = _row(cur, sql)
+    return (row[0], row[1]) if row else None
 
-def _base_has_task_id(db_url: str, schema: str, name: str) -> bool:
+def _base_has_task_id(cur, schema: str, name: str) -> bool:
     sql = """
     select 1
     from information_schema.columns
     where table_schema=%s and table_name=%s and column_name='task_id'
     """
-    conn = psycopg2.connect(db_url)
-    try:
-        return _row(conn, sql, (schema, name)) is not None
-    finally:
-        conn.close()
+    return _row(cur, sql, (schema, name)) is not None
 
-def _find_meta_table(db_url: str) -> tuple[str, str] | None:
+def _find_meta_table(cur):
     override = os.getenv("SS_META_TABLE")
     if override and "." in override:
         sch, tab = override.split(".", 1)
@@ -78,24 +70,20 @@ def _find_meta_table(db_url: str) -> tuple[str, str] | None:
     where table_schema=%s and table_name=%s and column_name in ('task_id','email')
     limit 1;
     """
-    conn = psycopg2.connect(db_url)
-    try:
-        for sch, tab in candidates:
-            if _row(conn, sql, (sch, tab)):
-                return sch, tab
-        return None
-    finally:
-        conn.close()
+    for sch, tab in candidates:
+        if _row(cur, sql, (sch, tab)):
+            return sch, tab
+    return None
 
-def render(db_url: str) -> str:
-    base = _find_point_base(db_url)
-    meta = _find_meta_table(db_url)
+def make_sql(cur):
+    base = _find_point_base(cur)
+    meta = _find_meta_table(cur)
 
-    sql = ["create schema if not exists ss_;"]
+    parts = ["create schema if not exists ss_;"]
 
     if not base:
-        # No base found—create an empty view shape (so downstream CREATE VIEWs still succeed)
-        sql.append("""
+        # No base found—create an empty view shape (deploy stays green)
+        parts.append("""
         create or replace view ss_.vw_point_enriched as
         select
           null::text as placeholder,
@@ -111,10 +99,10 @@ def render(db_url: str) -> str:
           null::boolean as accept_terms
         where false;
         """)
-        return "\n".join(sql)
+        return "\n".join(parts)
 
     base_schema, base_name = base
-    has_task = _base_has_task_id(db_url, base_schema, base_name)
+    has_task = _base_has_task_id(cur, base_schema, base_name)
 
     meta_cols = """
       m.customer_name,
@@ -131,7 +119,7 @@ def render(db_url: str) -> str:
 
     if meta and has_task:
         m_schema, m_table = meta
-        sql.append(f"""
+        parts.append(f"""
         create or replace view ss_.vw_point_enriched as
         select p.*, {meta_cols}
         from {base_schema}.{base_name} p
@@ -139,7 +127,7 @@ def render(db_url: str) -> str:
           on p.task_id = m.task_id;
         """)
     else:
-        sql.append(f"""
+        parts.append(f"""
         create or replace view ss_.vw_point_enriched as
         select
           p.*,
@@ -156,4 +144,4 @@ def render(db_url: str) -> str:
         from {base_schema}.{base_name} p;
         """)
 
-    return "\n".join(sql)
+    return "\n".join(parts)
