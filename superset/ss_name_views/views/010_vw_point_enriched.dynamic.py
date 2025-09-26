@@ -1,49 +1,126 @@
-# superset/ss_name_views/views/010_vw_point_enriched.dynamic.py
-import os
+# Build ss_.vw_point_enriched from vw_point_silver and attach front-end submission metadata.
+# - Finds vw_point_silver in the most likely schema (silver/public/any).
+# - Attempts to find a bronze meta table with task_id + email.
+# - Joins on task_id when both sides have it; otherwise leaves points as-is.
 
-SCHEMA = "ss_"
-BASE_SCHEMA = "silver"
-BASE_VIEW = "vw_point"
+import psycopg2
 
-# Optional bronze meta config (override via env if names differ)
-BRONZE_META_TABLE = os.getenv("BRONZE_META_TABLE", "bronze.frontend_meta")
-BRONZE_JOIN_KEY   = os.getenv("BRONZE_JOIN_KEY", "session_uid_d")  # or "session_id"
-BRONZE_COLS = {
-    "player_name":  "player_name",
-    "location":     "location",
-    "date_of_play": "date_of_play",
-    "utr":          "utr",
-}
+def _find_one(conn, sql, params=()):
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return cur.fetchone()
 
-def _exists(cur, schema_dot_name: str) -> bool:
-    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (schema_dot_name,))
-    return bool(cur.fetchone()[0])
-
-def _has_col(cur, schema: str, name: str, col: str) -> bool:
-    cur.execute("""SELECT 1 FROM information_schema.columns
-                   WHERE table_schema=%s AND table_name=%s AND column_name=%s""",
-                (schema, name, col))
-    return cur.fetchone() is not None
-
-def make_sql(cur):
-    # Always start from silver.vw_point
-    join_clause = ""
-    select_meta = ""
-
-    if "." in BRONZE_META_TABLE and _exists(cur, BRONZE_META_TABLE):
-        b_schema, b_table = BRONZE_META_TABLE.split(".")
-        if _has_col(cur, BASE_SCHEMA, BASE_VIEW, BRONZE_JOIN_KEY) and _has_col(cur, b_schema, b_table, BRONZE_JOIN_KEY):
-            join_clause = f"LEFT JOIN {BRONZE_META_TABLE} bm ON bm.{BRONZE_JOIN_KEY} = p.{BRONZE_JOIN_KEY}"
-            bits = []
-            for alias, col in BRONZE_COLS.items():
-                if _has_col(cur, b_schema, b_table, col):
-                    bits.append(f"bm.{col} AS {alias}")
-            if bits:
-                select_meta = ", " + ", ".join(bits)
-
-    return f"""
-    CREATE OR REPLACE VIEW {SCHEMA}.vw_point_enriched AS
-    SELECT p.*{select_meta}
-    FROM {BASE_SCHEMA}.{BASE_VIEW} p
-    {join_clause};
+def _find_point_base(db_url: str) -> tuple[str, str]:
+    sql = """
+    with c as (
+      select table_schema, table_name,
+             case when table_schema='silver' then 0
+                  when table_schema='public' then 1 else 2 end as prio
+      from information_schema.views
+      where table_name='vw_point_silver'
+    )
+    select table_schema, table_name
+    from c order by prio, table_schema limit 1;
     """
+    conn = psycopg2.connect(db_url)
+    try:
+        row = _find_one(conn, sql)
+        if not row:
+            raise RuntimeError("vw_point_silver not found; please create it.")
+        return row[0], row[1]
+    finally:
+        conn.close()
+
+def _base_has_task_id(conn, schema: str, view: str) -> bool:
+    sql = """
+    select 1
+    from information_schema.columns
+    where table_schema=%s and table_name=%s and column_name='task_id'
+    """
+    return _find_one(conn, sql, (schema, view)) is not None
+
+# candidate meta tables and the minimum columns we expect
+META_CANDIDATES = [
+    ("bronze", "frontend_submissions"),
+    ("bronze", "uploads_meta"),
+    ("bronze", "ingest_jobs"),
+    ("public", "frontend_submissions"),
+    ("public", "uploads_meta"),
+]
+
+def _find_meta_table(db_url: str) -> tuple[str, str] | None:
+    conn = psycopg2.connect(db_url)
+    try:
+        for sch, tab in META_CANDIDATES:
+            sql = """
+            select 1
+            from information_schema.columns
+            where table_schema=%s and table_name=%s and column_name in ('task_id','email')
+            group by 1
+            """
+            if _find_one(conn, sql, (sch, tab)):
+                return sch, tab
+        return None
+    finally:
+        conn.close()
+
+def render(db_url: str) -> str:
+    base_schema, base_view = _find_point_base(db_url)
+
+    # figure out join feasibility
+    conn = psycopg2.connect(db_url)
+    try:
+        base_has_task = _base_has_task_id(conn, base_schema, base_view)
+    finally:
+        conn.close()
+
+    meta = _find_meta_table(db_url)
+
+    # build SQL
+    sql = ["create schema if not exists ss_;"]
+
+    # Columns we’ll project from the meta table (add/rename here if needed)
+    meta_cols = """
+      m.customer_name,
+      m.email,
+      m.first_point_time,
+      m.match_date as match_date_meta,
+      m.location,
+      m.player_a_name,
+      m.player_a_utr,
+      m.player_b_name,
+      m.player_b_utr,
+      m.accept_terms
+    """
+
+    if meta and base_has_task:
+        meta_schema, meta_table = meta
+        sql.append(f"""
+        create or replace view ss_.vw_point_enriched as
+        select
+          p.*,
+          {meta_cols}
+        from {base_schema}.{base_view} p
+        left join {meta_schema}.{meta_table} m
+          on p.task_id = m.task_id;
+        """)
+    else:
+        # no usable meta join -> keep a pass-through view (safe fallback)
+        sql.append(f"""
+        create or replace view ss_.vw_point_enriched as
+        select
+          p.*,
+          null::text  as customer_name,
+          null::text  as email,
+          null::text  as first_point_time,
+          null::date  as match_date_meta,
+          null::text  as location,
+          null::text  as player_a_name,
+          null::numeric as player_a_utr,
+          null::text  as player_b_name,
+          null::numeric as player_b_utr,
+          null::boolean as accept_terms
+        from {base_schema}.{base_view} p;
+        """)
+
+    return "\n".join(sql)
