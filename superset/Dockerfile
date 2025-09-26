@@ -33,7 +33,6 @@ RUN mkdir -p /home/superset/pythonpath /app
 COPY superset_config.py /home/superset/pythonpath/superset_config.py
 COPY start.sh /app/start.sh
 
-# Normalize CRLF/BOM WITHOUT dos2unix; set exec bit; create non-root; fix ownership
 RUN sed -i '1s/^\xEF\xBB\xBF//' /app/start.sh \
  && sed -i 's/\r$//' /app/start.sh \
  && chmod +x /app/start.sh \
@@ -44,3 +43,4 @@ USER superset
 ENV SUPERSET_HOME=/home/superset PYTHONPATH=/home/superset/pythonpath
 EXPOSE 8088
 ENTRYPOINT ["/bin/bash", "/app/start.sh"]
+
