@@ -6,7 +6,7 @@ WITH roles AS (
     USING (session_uid_d, point_number_d)
 )
 SELECT
-  p.date_of_play:: date AS day,         -- may be NULL if bronze not present
+  COALESCE(p.match_date_meta::date, NULL::date) AS day,   -- may be NULL if bronze not present
   r.player_id,
   COUNT(*)                              AS points_played,
   SUM(r.won)                            AS points_won,
