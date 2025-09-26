@@ -1,11 +1,11 @@
-CREATE OR REPLACE VIEW ss_name.serve_faults_summary AS
+CREATE OR REPLACE VIEW ss_.serve_faults_summary AS
 WITH serves AS (
   SELECT
     session_uid_d, point_number_d, server_id,
     SUM(CASE WHEN serve_try_ix_in_point=1 AND serve_d THEN 1 ELSE 0 END) AS first_serve_attempts,
     SUM(CASE WHEN is_serve_fault_d AND serve_try_ix_in_point=1 THEN 1 ELSE 0 END) AS first_serve_faults,
     SUM(CASE WHEN is_serve_fault_d AND serve_try_ix_in_point=2 THEN 1 ELSE 0 END) AS second_serve_faults
-  FROM ss_name.vw_point_enriched
+  FROM ss_.vw_point_enriched
   GROUP BY session_uid_d, point_number_d, server_id
 )
 SELECT

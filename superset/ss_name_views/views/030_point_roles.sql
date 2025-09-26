@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW ss_name.point_roles AS
+CREATE OR REPLACE VIEW ss_.point_roles AS
 WITH players AS (
   SELECT
     session_uid_d,
@@ -6,7 +6,7 @@ WITH players AS (
     MAX(server_id) AS server_id,
     MAX(point_winner_player_id_d) AS winner_id,
     ARRAY_AGG(DISTINCT player_id) FILTER (WHERE player_id IS NOT NULL) AS players
-  FROM ss_name.vw_point_enriched
+  FROM ss_.vw_point_enriched
   GROUP BY session_uid_d, point_number_d
 ),
 expanded AS (

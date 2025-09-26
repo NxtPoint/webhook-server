@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW ss_name.score_state_summary AS
+CREATE OR REPLACE VIEW ss_.score_state_summary AS
 WITH pts AS (
   SELECT DISTINCT
     session_uid_d,
@@ -6,7 +6,7 @@ WITH pts AS (
     point_score_text_d,
     MAX(server_id) OVER (PARTITION BY session_uid_d, point_number_d) AS server_id,
     MAX(point_winner_player_id_d) OVER (PARTITION BY session_uid_d, point_number_d) AS winner_id
-  FROM ss_name.vw_point_enriched
+  FROM ss_.vw_point_enriched
 )
 SELECT
   server_id AS player_id,

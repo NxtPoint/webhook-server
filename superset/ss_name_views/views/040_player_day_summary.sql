@@ -1,8 +1,8 @@
-CREATE OR REPLACE VIEW ss_name.player_day_summary AS
+CREATE OR REPLACE VIEW ss_.player_day_summary AS
 WITH roles AS (
   SELECT pr.*, pa.serving_side_d
-  FROM ss_name.point_roles pr
-  JOIN ss_name.point_agg   pa
+  FROM ss_.point_roles pr
+  JOIN ss_.point_agg   pa
     USING (session_uid_d, point_number_d)
 )
 SELECT
@@ -14,7 +14,7 @@ SELECT
   AVG(CASE WHEN r.role='server'   THEN r.won::float END) AS srv_win_pct,
   AVG(CASE WHEN r.role='returner' THEN r.won::float END) AS rtn_win_pct
 FROM roles r
-LEFT JOIN ss_name.vw_point_enriched p
+LEFT JOIN ss_.vw_point_enriched p
   USING (session_uid_d, point_number_d)
 GROUP BY day, r.player_id
 ORDER BY day, r.player_id;

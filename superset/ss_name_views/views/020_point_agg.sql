@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW ss_name.point_agg AS
+CREATE OR REPLACE VIEW ss_.point_agg AS
 WITH base AS (
   SELECT
     session_uid_d,
@@ -13,7 +13,7 @@ WITH base AS (
     COUNT(*) FILTER (WHERE is_serve_fault_d AND serve_try_ix_in_point=1) AS first_serve_faults,
     COUNT(*) FILTER (WHERE is_serve_fault_d AND serve_try_ix_in_point=2) AS second_serve_faults,
     BOOL_OR(is_serve_fault_d AND serve_try_ix_in_point=2 AND COALESCE(is_last_in_point_d, TRUE)) AS double_fault
-  FROM ss_name.vw_point_enriched
+  FROM ss_.vw_point_enriched
   GROUP BY session_uid_d, session_id, point_number_d
 )
 SELECT *,

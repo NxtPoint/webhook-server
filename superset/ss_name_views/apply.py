@@ -2,7 +2,7 @@
 import os, glob, importlib.util
 import psycopg2
 
-SCHEMA = "ss_name"
+SCHEMA = "ss_"
 DB_URL = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
 if not DB_URL:
     raise SystemExit("[ss_name] Set SQLALCHEMY_DATABASE_URI or DATABASE_URL")

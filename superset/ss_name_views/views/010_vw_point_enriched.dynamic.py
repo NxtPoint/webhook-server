@@ -1,7 +1,7 @@
 # superset/ss_name_views/views/010_vw_point_enriched.dynamic.py
 import os
 
-SCHEMA = "ss_name"
+SCHEMA = "ss_"
 BASE_SCHEMA = "silver"
 BASE_VIEW = "vw_point"
 
