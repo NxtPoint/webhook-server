@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-import os, sys, glob, importlib.util
+# superset/ss_name_views/apply.py
+import os, sys, glob, re, importlib.util
 import psycopg2
 
-BASE_DIR = os.path.dirname(__file__)
-VIEWS_DIR = os.path.join(BASE_DIR, "views")
+SCHEMA = "ss_"
+VIEWS_DIR = os.path.join(os.path.dirname(__file__), "views")
 
-DB_URL = os.environ.get("SS_VIEWS_DB_URL") or os.environ.get("DATABASE_URL")
+raw = (
+    os.getenv("SS_VIEWS_DB_URL")
+    or os.getenv("DATA_DB_URL")
+    or os.getenv("DATABASE_URL")
+    or os.getenv("SQLALCHEMY_DATABASE_URI")
+)
+if not raw:
+    print("[ss_] ERROR: set SS_VIEWS_DB_URL or DATABASE_URL", flush=True); sys.exit(0)
+DB_URL = re.sub(r"^postgresql\+\w+://", "postgresql://", raw)
 
 def log(msg): print(msg, flush=True)
-
-def run_sql(cur, sql):
-    if sql and str(sql).strip():
-        cur.execute(sql)
 
 def load_module(path):
     spec = importlib.util.spec_from_file_location("dyn", path)
@@ -20,60 +25,67 @@ def load_module(path):
     return mod
 
 def call_dynamic(mod, cur, conn, db_url):
-    # Try common function names/signatures in order
-    for name in ("make_sql", "render", "build", "get_sql"):
+    # Preferred
+    if hasattr(mod, "make_sql"):
+        try:    return mod.make_sql(cur)
+        except TypeError: pass
+    # Fallbacks
+    for name in ("render", "build", "get_sql"):
         fn = getattr(mod, name, None)
         if callable(fn):
             for arg in (cur, conn, db_url, None):
-                try:
-                    return fn() if arg is None else fn(arg)
-                except TypeError:
-                    continue
-    # Or allow module-level SQL = "...";
-    sql_attr = getattr(mod, "SQL", None)
-    if isinstance(sql_attr, str):
-        return sql_attr
-    return None
+                try:    return fn() if arg is None else fn(arg)
+                except TypeError: continue
+    # Module-level constant
+    sql = getattr(mod, "SQL", None)
+    return sql if isinstance(sql, str) else None
+
+def run_sql(cur, sql, label):
+    if sql and sql.strip():
+        cur.execute(sql)
+        log(f"[{SCHEMA}] applied {label}")
+    else:
+        log(f"[{SCHEMA}] skipped {label}: empty SQL")
 
 def main():
-    if not DB_URL:
-        log("[ss_] WARNING: SS_VIEWS_DB_URL/DATABASE_URL not set; nothing to do.")
-        return 0
+    # connect
+    conn = None; last = None
+    for _ in range(15):
+        try:
+            conn = psycopg2.connect(DB_URL); break
+        except Exception as e:
+            last = e
+    if conn is None:
+        log(f"[ss_] cannot connect to DB: {last}"); return 0
 
-    py_dyn = sorted(glob.glob(os.path.join(VIEWS_DIR, "*.dynamic.py")))
-    sql_files = sorted(glob.glob(os.path.join(VIEWS_DIR, "*.sql")))
-
-    conn = psycopg2.connect(DB_URL)
     conn.autocommit = True
-    cur = conn.cursor()
+    with conn, conn.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};")
 
-    for path in py_dyn:
-        name = os.path.basename(path)
-        try:
-            mod = load_module(path)
-            sql = call_dynamic(mod, cur, conn, DB_URL)
-            if not sql:
-                log(f"[ss_] skipped {name}: no make_sql/render/get_sql/SQL found")
-                continue
-            run_sql(cur, sql)
-            log(f"[ss_] applied {name}")
-        except Exception as e:
-            log(f"[ss_] skipped {name}: {e.__class__.__name__}: {e}")
+        # dynamic files first
+        for path in sorted(glob.glob(os.path.join(VIEWS_DIR, "*.dynamic.py"))):
+            name = os.path.basename(path)
+            try:
+                mod = load_module(path)
+                sql = call_dynamic(mod, cur, conn, DB_URL)
+                if not sql:
+                    log(f"[{SCHEMA}] skipped {name}: no make_sql/render/get_sql/SQL found")
+                    continue
+                run_sql(cur, sql, name)
+            except Exception as e:
+                log(f"[{SCHEMA}] skipped {name}: {type(e).__name__}: {e}")
 
-    for path in sql_files:
-        name = os.path.basename(path)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                sql = f.read()
-            run_sql(cur, sql)
-            log(f"[ss_] applied {name}")
-        except Exception as e:
-            log(f"[ss_] skipped {name}: {e.__class__.__name__}: {e}")
+        # then plain .sql files
+        for path in sorted(glob.glob(os.path.join(VIEWS_DIR, "*.sql"))):
+            name = os.path.basename(path)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    sql = f.read()
+                run_sql(cur, sql, name)
+            except Exception as e:
+                log(f"[{SCHEMA}] skipped {name}: {type(e).__name__}: {e}")
 
-    cur.close()
-    conn.close()
-    log("[ss_] all view files applied")
-    return 0
+    log("[ss_] all view files applied"); return 0
 
 if __name__ == "__main__":
     sys.exit(main())
