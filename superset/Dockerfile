@@ -21,10 +21,11 @@ RUN set -eux; \
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
       apache-superset==3.1.0 \
+      flask-limiter==2.9.0 \
       psycopg2-binary==2.9.9 \
       gunicorn==21.2.0 \
       gevent==24.2.1
-      # remove: redis==5.0.8
+
 
 
 # ---- Files ----
