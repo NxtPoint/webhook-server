@@ -18,15 +18,14 @@ RUN set -eux; \
     ; rm -rf /var/lib/apt/lists/*
 
 # ---- Python deps ----
+# ---- Python deps ----
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
       apache-superset==3.1.0 \
-      flask-limiter==2.9.0 \
+      Flask-Limiter==3.7.0 \
       psycopg2-binary==2.9.9 \
       gunicorn==21.2.0 \
       gevent==24.2.1
-
-
 
 # ---- Files ----
 WORKDIR /home/superset
