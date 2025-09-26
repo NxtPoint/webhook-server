@@ -34,6 +34,7 @@ WORKDIR /home/superset
 RUN mkdir -p /home/superset/pythonpath /app
 COPY superset_config.py /home/superset/pythonpath/superset_config.py
 COPY start.sh /app/start.sh
+COPY ss_name_views /home/superset/ss_name_views
 
 RUN sed -i '1s/^\xEF\xBB\xBF//' /app/start.sh \
  && sed -i 's/\r$//' /app/start.sh \
