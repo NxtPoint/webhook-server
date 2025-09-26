@@ -3,35 +3,49 @@ set -euo pipefail
 
 echo "[start] Superset bootstrap starting..."
 
-# --- sanity: show key envs (mask secrets) ---
-echo "[env] SQLALCHEMY_DATABASE_URI present: $([[ -n "${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}" ]] && echo yes || echo no)"
-echo "[env] SUPERSET_SECRET_KEY present: $([[ -n "${SUPERSET_SECRET_KEY:-}" ]] && echo yes || echo no)"
-echo "[env] REDIS_URL present: $([[ -n "${REDIS_URL:-}" ]] && echo yes || echo no))"
-echo "[env] PYTHONPATH=$PYTHONPATH"
-echo "[env] SUPERSET_HOME=${SUPERSET_HOME:-}"
-
 # --- prefer SQLALCHEMY_DATABASE_URI over DATABASE_URL for Superset ---
 export SQLALCHEMY_DATABASE_URI="${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}"
+
+# --- sanity logs (mask secrets) ---
+echo "[env] SQLALCHEMY_DATABASE_URI present: $([[ -n "${SQLALCHEMY_DATABASE_URI:-}" ]] && echo yes || echo no)"
+echo "[env] SUPERSET_SECRET_KEY present: $([[ -n "${SUPERSET_SECRET_KEY:-}" ]] && echo yes || echo no)"
+echo "[env] REDIS_URL present: $([[ -n "${REDIS_URL:-}" ]] && echo yes || echo no))"
+echo "[env] RATELIMIT_STORAGE_URI present: $([[ -n "${RATELIMIT_STORAGE_URI:-}" ]] && echo yes || echo no))"
+echo "[env] PYTHONPATH=$PYTHONPATH"
 
 if [[ -z "${SQLALCHEMY_DATABASE_URI:-}" ]]; then
   echo "[fatal] No SQLALCHEMY_DATABASE_URI or DATABASE_URL set. Aborting."
   exit 3
 fi
 
-# --- wait for Postgres up to ~60s ---
+# --- wait for Postgres up to ~60s (normalize SQLAlchemy URI for psycopg2) ---
 python - <<'PY'
-import os, time, sys
+import os, time, sys, re, traceback
 import psycopg2
-uri = os.environ["SQLALCHEMY_DATABASE_URI"]
+
+raw = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ.get("DATABASE_URL") or ""
+print(f"[wait] raw DB url present: {bool(raw)}")
+
+# Convert "postgresql+psycopg2://..." -> "postgresql://"
+dsn = re.sub(r"^postgresql\+[a-z0-9_]+://", "postgresql://", raw, flags=re.I)
+print(f"[wait] connecting with psycopg2 DSN startswith: {dsn.split('?')[0][:60]}...")
+
+last_err = None
 for i in range(30):
     try:
-        psycopg2.connect(uri).close()
+        conn = psycopg2.connect(dsn)
+        conn.close()
         print("[ok] Postgres reachable")
         sys.exit(0)
     except Exception as e:
-        print(f"[wait] Postgres not ready yet: {e}")
+        last_err = e
+        print(f"[wait] attempt {i+1}/30: not ready yet: {e}")
         time.sleep(2)
-print("[fatal] Postgres not reachable after 60s"); sys.exit(3)
+
+print("[fatal] Postgres not reachable after 60s")
+if last_err:
+    traceback.print_exception(type(last_err), last_err, last_err.__traceback__)
+sys.exit(3)
 PY
 
 # --- upgrade DB & init (idempotent) ---
@@ -41,11 +55,12 @@ superset db upgrade
 echo "[init] superset init"
 superset init
 
-# --- optional: create admin if envs provided ---
-if [[ -n "${SUPERSET_ADMIN_USERNAME:-}" ]]; then
+# --- optional: create admin (accept USER or USERNAME) ---
+ADMIN_USER="${SUPERSET_ADMIN_USERNAME:-${SUPERSET_ADMIN_USER:-}}"
+if [[ -n "${ADMIN_USER}" ]]; then
   echo "[admin] ensuring admin user exists"
   superset fab create-admin \
-    --username "${SUPERSET_ADMIN_USERNAME}" \
+    --username "${ADMIN_USER}" \
     --firstname "${SUPERSET_ADMIN_FIRSTNAME:-Admin}" \
     --lastname  "${SUPERSET_ADMIN_LASTNAME:-User}" \
     --email     "${SUPERSET_ADMIN_EMAIL:-admin@example.com}" \
