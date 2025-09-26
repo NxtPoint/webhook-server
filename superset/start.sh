@@ -1,32 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "=== START.SH ==="
-PORT_TO_BIND="${PORT:-8088}"
+echo "[start] Superset bootstrap starting..."
 
-echo "== DB upgrade =="
-for i in 1 2 3 4 5; do
-  if superset db upgrade; then break; fi
-  echo "upgrade failed (attempt $i), sleeping 5s..." && sleep 5
-done
+# --- sanity: show key envs (mask secrets) ---
+echo "[env] SQLALCHEMY_DATABASE_URI present: $([[ -n "${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}" ]] && echo yes || echo no)"
+echo "[env] SUPERSET_SECRET_KEY present: $([[ -n "${SUPERSET_SECRET_KEY:-}" ]] && echo yes || echo no)"
+echo "[env] REDIS_URL present: $([[ -n "${REDIS_URL:-}" ]] && echo yes || echo no))"
+echo "[env] PYTHONPATH=$PYTHONPATH"
+echo "[env] SUPERSET_HOME=${SUPERSET_HOME:-}"
 
-ensure_admin () {
-  local USERNAME="$1"; local EMAIL="$2"; local PASSWORD="$3"
-  if ! superset fab list-users 2>/dev/null | grep -qiE "\\b${USERNAME}\\b"; then
-    echo "== creating admin user ${USERNAME} =="
-    superset fab create-admin --username "$USERNAME" --firstname Admin --lastname User \
-      --email "$EMAIL" --password "$PASSWORD" || true
-  else
-    echo "== admin ${USERNAME} already exists; leaving password unchanged =="
-  fi
-}
+# --- prefer SQLALCHEMY_DATABASE_URI over DATABASE_URL for Superset ---
+export SQLALCHEMY_DATABASE_URI="${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}"
 
-if [[ -n "${SUPERSET_ADMIN_USERNAME:-}" && -n "${SUPERSET_ADMIN_EMAIL:-}" && -n "${SUPERSET_ADMIN_PASSWORD:-}" ]]; then
-  ensure_admin "$SUPERSET_ADMIN_USERNAME" "$SUPERSET_ADMIN_EMAIL" "$SUPERSET_ADMIN_PASSWORD"
+if [[ -z "${SQLALCHEMY_DATABASE_URI:-}" ]]; then
+  echo "[fatal] No SQLALCHEMY_DATABASE_URI or DATABASE_URL set. Aborting."
+  exit 3
 fi
 
-echo "== superset init =="
-superset init || true
+# --- wait for Postgres up to ~60s ---
+python - <<'PY'
+import os, time, sys
+import psycopg2
+uri = os.environ["SQLALCHEMY_DATABASE_URI"]
+for i in range(30):
+    try:
+        psycopg2.connect(uri).close()
+        print("[ok] Postgres reachable")
+        sys.exit(0)
+    except Exception as e:
+        print(f"[wait] Postgres not ready yet: {e}")
+        time.sleep(2)
+print("[fatal] Postgres not reachable after 60s"); sys.exit(3)
+PY
 
-echo "== starting gunicorn on ${PORT_TO_BIND} =="
-exec gunicorn -w 4 -k gevent --timeout 300 -b 0.0.0.0:${PORT_TO_BIND} "superset.app:create_app()"
+# --- upgrade DB & init (idempotent) ---
+echo "[migrate] superset db upgrade"
+superset db upgrade
+
+echo "[init] superset init"
+superset init
+
+# --- optional: create admin if envs provided ---
+if [[ -n "${SUPERSET_ADMIN_USERNAME:-}" ]]; then
+  echo "[admin] ensuring admin user exists"
+  superset fab create-admin \
+    --username "${SUPERSET_ADMIN_USERNAME}" \
+    --firstname "${SUPERSET_ADMIN_FIRSTNAME:-Admin}" \
+    --lastname  "${SUPERSET_ADMIN_LASTNAME:-User}" \
+    --email     "${SUPERSET_ADMIN_EMAIL:-admin@example.com}" \
+    --password  "${SUPERSET_ADMIN_PASSWORD:-admin}" || true
+fi
+
+# --- run gunicorn ---
+echo "[run] gunicorn starting..."
+exec gunicorn \
+  -w "${GUNICORN_WORKERS:-3}" \
+  -k gevent \
+  --timeout "${GUNICORN_TIMEOUT:-120}" \
+  --bind 0.0.0.0:8088 \
+  "superset.app:create_app()"
