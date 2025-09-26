@@ -6,7 +6,13 @@ SCHEMA = "ss_"
 VIEWS_DIR = os.path.join(os.path.dirname(__file__), "views")
 
 # --- DB URL (normalize sqlalchemy-style) ---
-raw = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
+raw = (
+    os.getenv("SS_VIEWS_DB_URL")
+    or os.getenv("DATA_DB_URL")
+    or os.getenv("DATABASE_URL")
+    or os.getenv("SQLALCHEMY_DATABASE_URI")
+)
+
 if not raw:
     raise SystemExit("[ss_] Set SQLALCHEMY_DATABASE_URI or DATABASE_URL")
 
