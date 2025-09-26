@@ -1,7 +1,4 @@
-# Builds ss_.player_day_summary without assuming specific role column names.
-# It inspects ss_.vw_point_enriched and chooses expressions that exist.
-
-def make_sql(cur) -> str:
+﻿def make_sql(cur) -> str:
     cur.execute("""
         select column_name
         from information_schema.columns
@@ -21,7 +18,7 @@ def make_sql(cur) -> str:
     # email
     email_expr = "p.email" if has("email") else "NULL::text"
 
-    # player_name (prefer a single column if present, else fallback to A/B)
+    # player_name
     if has("player_name"):
         player_name_expr = "p.player_name"
     elif has("player_a_name") or has("player_b_name"):
@@ -31,10 +28,10 @@ def make_sql(cur) -> str:
     else:
         player_name_expr = "NULL::text"
 
-    # won flag (assume boolean if present; else treat as FALSE)
+    # won flag
     won_expr = "p.won" if has("won") else "FALSE"
 
-    # server/returner partition. Prefer 'role', else 'is_server', else zeros.
+    # server/returner split
     if has("role"):
         srv_pts  = "CASE WHEN p.role='server' THEN 1 ELSE 0 END"
         srv_wins = f"CASE WHEN p.role='server' AND {won_expr} THEN 1 ELSE 0 END"
@@ -46,14 +43,11 @@ def make_sql(cur) -> str:
         rtn_pts  = "CASE WHEN NOT p.is_server THEN 1 ELSE 0 END"
         rtn_wins = f"CASE WHEN NOT p.is_server AND {won_expr} THEN 1 ELSE 0 END"
     else:
-        # No way to split by role → return NULL pcts
-        srv_pts  = "0"
-        srv_wins = "0"
-        rtn_pts  = "0"
-        rtn_wins = "0"
+        srv_pts  = "0"; srv_wins = "0"; rtn_pts = "0"; rtn_wins = "0"
 
     sql = f"""
-    CREATE OR REPLACE VIEW ss_.player_day_summary AS
+    DROP VIEW IF EXISTS ss_.player_day_summary;
+    CREATE VIEW ss_.player_day_summary AS
     SELECT
       {day_expr}                                AS day,
       {player_name_expr}                        AS player_name,
