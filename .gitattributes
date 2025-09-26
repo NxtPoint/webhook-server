@@ -1,3 +1,2 @@
 ﻿*.sh text eol=lf
-start.sh text eol=lf
-entrypoint.sh text eol=lf
+superset/start.sh text eol=lf
