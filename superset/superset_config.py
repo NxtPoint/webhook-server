@@ -40,6 +40,11 @@ DATA_CACHE_CONFIG = {
     "CACHE_TYPE": "RedisCache",
     "CACHE_REDIS_URL": REDIS_URL,
 }
+# Rate limiting storage: use the same Redis
+RATELIMIT_STORAGE_URI = os.getenv("RATELIMIT_STORAGE_URI", REDIS_URL)
+# Optional tuning:
+RATELIMIT_ENABLED = True
+RATELIMIT_DEFAULT = "200 per minute"
 
 # -------------------- Security & embedding --------------------
 # TEMP public viewing (set env PUBLIC_ROLE_LIKE=Gamma only for testing; unset for prod)
@@ -74,7 +79,7 @@ FEATURE_FLAGS = {
     "EMBEDDED_SUPERSET": True,
     "DASHBOARD_NATIVE_FILTERS": True,
     "DASHBOARD_CROSS_FILTERS": True,
-    "ALERT_REPORTS": True,  # enables Celery-driven alerts/reports
+    "ALERT_REPORTS": False,  # enables Celery-driven alerts/reports
 }
 
 # Optional Mapbox
