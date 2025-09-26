@@ -5,6 +5,8 @@ echo "[start] Superset bootstrap starting..."
 
 # --- prefer SQLALCHEMY_DATABASE_URI over DATABASE_URL for Superset ---
 export SQLALCHEMY_DATABASE_URI="${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}"
+# Tell the CLI which Flask app to load
+export FLASK_APP="superset.app:create_app()"
 
 # --- sanity logs (mask secrets) ---
 echo "[env] SQLALCHEMY_DATABASE_URI present: $([[ -n "${SQLALCHEMY_DATABASE_URI:-}" ]] && echo yes || echo no)"
