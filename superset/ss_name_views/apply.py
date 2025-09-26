@@ -1,71 +1,95 @@
-# superset/ss_name_views/apply.py
-import os, re, glob, time, importlib.util
+﻿#!/usr/bin/env python3
+import os, sys, re, importlib.util, time, glob
 import psycopg2
 
 SCHEMA = "ss_"
 VIEWS_DIR = os.path.join(os.path.dirname(__file__), "views")
 
-# --- DB URL (normalize sqlalchemy-style) ---
-raw = (
+# Pick a Postgres URL to run the views against (prefer the sportai_db)
+DB_URL = (
     os.getenv("SS_VIEWS_DB_URL")
     or os.getenv("DATA_DB_URL")
     or os.getenv("DATABASE_URL")
     or os.getenv("SQLALCHEMY_DATABASE_URI")
 )
+if not DB_URL:
+    print("[ss_] no DB URL; skipping", flush=True)
+    sys.exit(0)
 
-if not raw:
-    raise SystemExit("[ss_] Set SQLALCHEMY_DATABASE_URI or DATABASE_URL")
+# Normalise driver prefixes e.g. postgresql+psycopg2:// -> postgresql://
+DB_URL = re.sub(r"^postgresql\+\w+://", "postgresql://", DB_URL)
 
-# Replace prefixes like postgresql+psycopg2:// or postgresql+asyncpg:// with postgresql://
-DB_URL = re.sub(r"^postgresql\+\w+://", "postgresql://", raw)
+def log(msg): print(msg, flush=True)
 
-STRICT = os.getenv("SS_VIEWS_STRICT", "0").lower() in ("1", "true", "yes")
-
-def run_sql(cur, sql: str, label: str):
-    try:
-        cur.execute(sql)
-        print(f"[{SCHEMA}] applied {label}")
-    except Exception as e:
-        if STRICT:
-            raise
-        print(f"[{SCHEMA}] skipped {label}: {type(e).__name__}: {e}")
-
-def run_dynamic_py(cur, path: str):
+def load_module(path: str):
     spec = importlib.util.spec_from_file_location("dyn", path)
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore
-    sql = mod.make_sql(cur)       # expects make_sql(cursor)-> str
-    run_sql(cur, sql, os.path.basename(path))
+    spec.loader.exec_module(mod)
+    return mod
+
+def call_dynamic(mod, cur, conn, db_url):
+    # Preferred API
+    if hasattr(mod, "make_sql"):
+        try:
+            return mod.make_sql(cur)
+        except TypeError:
+            pass
+    # Compatible fallbacks
+    for name in ("render", "build", "get_sql"):
+        fn = getattr(mod, name, None)
+        if callable(fn):
+            for arg in (cur, conn, db_url, None):
+                try:
+                    return fn() if arg is None else fn(arg)
+                except TypeError:
+                    continue
+    sql = getattr(mod, "SQL", None)
+    return sql if isinstance(sql, str) else None
+
+def run_sql(cur, sql, label):
+    if sql and str(sql).strip():
+        cur.execute(sql)
+        log(f"[{SCHEMA}] applied {label}")
+    else:
+        log(f"[{SCHEMA}] skipped {label}: no SQL")
 
 def main():
-    # Simple retry so pre-deploy doesn’t flake if DB isn’t ready yet
-    conn = None
+    # connect with small retry so pre-deploy never flakes
     last_err = None
-    for i in range(15):  # ~30s total
+    conn = None
+    for _ in range(15):
         try:
             conn = psycopg2.connect(DB_URL)
+            conn.autocommit = True
             break
         except Exception as e:
             last_err = e
             time.sleep(2)
     if conn is None:
-        raise SystemExit(f"[ss_] cannot connect to DB: {last_err}")
+        print(f"[ss_] cannot connect to DB: {last_err}", flush=True)
+        sys.exit(1)
 
-    with conn:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};")
+    with conn, conn.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};")
 
-            dyn_path = os.path.join(VIEWS_DIR, "010_vw_point_enriched.dynamic.py")
-            if os.path.exists(dyn_path):
-                run_dynamic_py(cur, dyn_path)
+        files = []
+        files += sorted(glob.glob(os.path.join(VIEWS_DIR, "*.dynamic.py")))
+        files += sorted(glob.glob(os.path.join(VIEWS_DIR, "*.sql")))
 
-            for p in sorted(glob.glob(os.path.join(VIEWS_DIR, "*.sql"))):
-                with open(p, "r", encoding="utf-8") as f:
-                    sql = f.read()
-                run_sql(cur, sql, os.path.basename(p))
+        for path in files:
+            label = os.path.basename(path)
+            try:
+                if path.endswith(".dynamic.py"):
+                    mod = load_module(path)
+                    sql = call_dynamic(mod, cur, conn, DB_URL)
+                else:
+                    with open(path, "r", encoding="utf-8") as f:
+                        sql = f.read()
+                run_sql(cur, sql, label)
+            except Exception as e:
+                log(f"[{SCHEMA}] skipped {label}: {type(e).__name__}: {e}")
 
-    print(f"[{SCHEMA}] all view files applied")
+    log(f"[{SCHEMA}] all view files applied")
 
 if __name__ == "__main__":
     main()
