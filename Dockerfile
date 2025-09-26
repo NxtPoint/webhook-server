@@ -1,17 +1,14 @@
-﻿# If you’re using apache/superset base:
-# FROM apache/superset:latest
-# If you’re using python base + pip install superset, keep your current base:
-FROM python:3.10-slim-bookworm
+﻿FROM python:3.10-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     LANG=C.UTF-8
 
-# Optional cache-buster so Render rebuilds fresh when needed
+# cache-buster so Render always rebuilds when you change the value
 ARG BUILD_REV=dev
 LABEL build_rev=${BUILD_REV}
 
-# OS deps (no dos2unix)
+# OS deps (no dos2unix here)
 USER root
 RUN set -eux; \
     apt-get update; \
@@ -21,7 +18,7 @@ RUN set -eux; \
         libpq-dev libssl-dev libffi-dev \
     ; rm -rf /var/lib/apt/lists/*
 
-# Python deps (keep your pins)
+# Python deps
 RUN python -m pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
       apache-superset==3.1.0 \
@@ -34,9 +31,11 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
 WORKDIR /home/superset
 RUN mkdir -p /home/superset/pythonpath /app
 COPY superset_config.py /home/superset/pythonpath/superset_config.py
+
+# If your script is start.sh use this; if it's entrypoint.sh, just swap the name
 COPY start.sh /app/start.sh
 
-# Normalize CRLF/BOM WITHOUT dos2unix; set exec bit; fix ownership
+# Normalize BOM/CRLF WITHOUT dos2unix; set exec bit; create non-root; fix ownership
 RUN sed -i '1s/^\xEF\xBB\xBF//' /app/start.sh \
  && sed -i 's/\r$//' /app/start.sh \
  && chmod +x /app/start.sh \
