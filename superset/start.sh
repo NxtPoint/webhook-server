@@ -57,23 +57,39 @@ superset db upgrade
 echo "[init] superset init"
 superset init
 
-# --- optional: create admin (accept USER or USERNAME) ---
+# --- optional: create admin only if missing ---
 ADMIN_USER="${SUPERSET_ADMIN_USERNAME:-${SUPERSET_ADMIN_USER:-}}"
 if [[ -n "${ADMIN_USER}" ]]; then
   echo "[admin] ensuring admin user exists"
-  superset fab create-admin \
-    --username "${ADMIN_USER}" \
-    --firstname "${SUPERSET_ADMIN_FIRSTNAME:-Admin}" \
-    --lastname  "${SUPERSET_ADMIN_LASTNAME:-User}" \
-    --email     "${SUPERSET_ADMIN_EMAIL:-admin@example.com}" \
-    --password  "${SUPERSET_ADMIN_PASSWORD:-admin}" || true
+  python - <<'PY'
+import os, sys
+from superset import app
+from superset.extensions import db
+from flask_appbuilder.security.sqla.models import User
+username = os.environ.get("SUPERSET_ADMIN_USERNAME") or os.environ.get("SUPERSET_ADMIN_USER")
+with app.app.app_context():
+    exists = db.session.query(User).filter_by(username=username).first()
+    print(f"[admin] user '{username}' exists:", bool(exists))
+    sys.exit(0 if exists else 1)
+PY
+  if [[ $? -ne 0 ]]; then
+    superset fab create-admin \
+      --username "${ADMIN_USER}" \
+      --firstname "${SUPERSET_ADMIN_FIRSTNAME:-Admin}" \
+      --lastname  "${SUPERSET_ADMIN_LASTNAME:-User}" \
+      --email     "${SUPERSET_ADMIN_EMAIL:-admin@example.com}" \
+      --password  "${SUPERSET_ADMIN_PASSWORD:-admin}" || true
+  fi
 fi
+
 
 # --- run gunicorn ---
 echo "[run] gunicorn starting..."
 exec gunicorn \
-  -w "${GUNICORN_WORKERS:-3}" \
+  -w "${GUNICORN_WORKERS:-1}" \
   -k gevent \
   --timeout "${GUNICORN_TIMEOUT:-120}" \
+  --max-requests "${GUNICORN_MAX_REQUESTS:-200}" \
+  --max-requests-jitter "${GUNICORN_MAX_REQUESTS_JITTER:-50}" \
   --bind 0.0.0.0:8088 \
   "superset.app:create_app()"
