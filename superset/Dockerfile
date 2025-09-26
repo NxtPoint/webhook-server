@@ -3,12 +3,13 @@
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     LANG=C.UTF-8
-ENV SUPERSET_HOME=/home/superset PYTHONPATH=/home/superset/pythonpath FLASK_APP="superset.app:create_app()"
+ENV SUPERSET_HOME=/home/superset \
+    PYTHONPATH=/home/superset/pythonpath \
+    FLASK_APP="superset.app:create_app()"
 
-# Cache-buster: bump this value any time to force a full rebuild on Render
 LABEL build_rev="2025-09-26a"
 
-# ---- OS deps (no dos2unix) ----
+# ---- OS deps ----
 USER root
 RUN set -eux; \
     apt-get update; \
@@ -28,23 +29,21 @@ RUN python -m pip install --upgrade pip setuptools wheel && \
       gunicorn==21.2.0 \
       gevent==24.2.1
 
-
 # ---- Files ----
 WORKDIR /home/superset
 RUN mkdir -p /home/superset/pythonpath /app
 
 COPY superset_config.py /home/superset/pythonpath/superset_config.py
 COPY start.sh           /app/start.sh
-
-# >>> add this <<<
 COPY ss_name_views      /home/superset/ss_name_views
 
- && chmod +x /app/start.sh \
- && useradd -ms /bin/bash superset \
- && chown -R superset:superset /home/superset /app
+# normalize line endings, set permissions, create user, fix ownership
+RUN sed -i '1s/^\xEF\xBB\xBF//' /app/start.sh && \
+    sed -i 's/\r$//' /app/start.sh && \
+    chmod +x /app/start.sh && \
+    useradd -ms /bin/bash superset && \
+    chown -R superset:superset /home/superset /app
 
 USER superset
-ENV SUPERSET_HOME=/home/superset PYTHONPATH=/home/superset/pythonpath
 EXPOSE 8088
 ENTRYPOINT ["/bin/bash", "/app/start.sh"]
-
