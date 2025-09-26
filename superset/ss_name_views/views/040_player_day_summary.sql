@@ -1,20 +1,17 @@
-CREATE OR REPLACE VIEW ss_.player_day_summary AS
-WITH roles AS (
-  SELECT pr.*, pa.serving_side_d
-  FROM ss_.point_roles pr
-  JOIN ss_.point_agg   pa
-    USING (session_uid_d, point_number_d)
-)
+DROP VIEW IF EXISTS ss_.player_day_summary;
+
+CREATE VIEW ss_.player_day_summary AS
 SELECT
-  COALESCE(p.match_date_meta::date, NULL::date) AS day,   -- may be NULL if bronze not present
-  r.player_id,
-  COUNT(*)                              AS points_played,
-  SUM(r.won)                            AS points_won,
-  AVG(r.won::float)                     AS win_pct,
-  AVG(CASE WHEN r.role='server'   THEN r.won::float END) AS srv_win_pct,
-  AVG(CASE WHEN r.role='returner' THEN r.won::float END) AS rtn_win_pct
-FROM roles r
-LEFT JOIN ss_.vw_point_enriched p
-  USING (session_uid_d, point_number_d)
-GROUP BY day, r.player_id
-ORDER BY day, r.player_id;
+  COALESCE(p.match_date_meta::date, CURRENT_DATE)            AS day,
+  /* pick a display name if present */
+  COALESCE(NULLIF(p.player_a_name, ''), NULLIF(p.player_b_name, '')) AS player_name,
+  p.email,                                                   -- keep original column name
+  COUNT(*)                                                   AS points_played,
+  /* server win% */
+  (SUM(CASE WHEN p.role = 'server'   AND p.won THEN 1 ELSE 0 END)::float
+   / NULLIF(SUM(CASE WHEN p.role = 'server'   THEN 1 ELSE 0 END), 0)) AS srv_win_pct,
+  /* returner win% */
+  (SUM(CASE WHEN p.role = 'returner' AND p.won THEN 1 ELSE 0 END)::float
+   / NULLIF(SUM(CASE WHEN p.role = 'returner' THEN 1 ELSE 0 END), 0)) AS rtn_win_pct
+FROM ss_.vw_point_enriched p
+GROUP BY 1,2,3;
