@@ -3,6 +3,7 @@
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     LANG=C.UTF-8
+ENV SUPERSET_HOME=/home/superset PYTHONPATH=/home/superset/pythonpath FLASK_APP="superset.app:create_app()"
 
 # Cache-buster: bump this value any time to force a full rebuild on Render
 LABEL build_rev="2025-09-26a"
