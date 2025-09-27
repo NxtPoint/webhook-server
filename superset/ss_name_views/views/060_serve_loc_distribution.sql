@@ -1,21 +1,21 @@
-CREATE OR REPLACE VIEW ss_.serve_faults_summary AS
-WITH serves AS (
-  SELECT
-    session_uid_d, point_number_d, server_id,
-    SUM(CASE WHEN serve_try_ix_in_point=1 AND serve_d THEN 1 ELSE 0 END) AS first_serve_attempts,
-    SUM(CASE WHEN is_serve_fault_d AND serve_try_ix_in_point=1 THEN 1 ELSE 0 END) AS first_serve_faults,
-    SUM(CASE WHEN is_serve_fault_d AND serve_try_ix_in_point=2 THEN 1 ELSE 0 END) AS second_serve_faults
-  FROM ss_.vw_point_enriched
-  GROUP BY session_uid_d, point_number_d, server_id
-)
-SELECT
-  server_id AS player_id,
-  SUM(first_serve_attempts) AS first_serve_attempts,
-  SUM(first_serve_faults)   AS first_serve_faults,
-  SUM(second_serve_faults)  AS second_serve_faults,
-  CASE WHEN SUM(first_serve_attempts)>0
-       THEN 1.0 - (SUM(first_serve_faults)::float / SUM(first_serve_attempts))
-       ELSE NULL END AS first_serve_in_pct,
-  SUM(CASE WHEN second_serve_faults>0 THEN 1 ELSE 0 END) AS points_with_df
-FROM serves
-GROUP BY server_id;
+-- ss_.serve_loc_distribution: distribution & effectiveness by 18-box grid
+create or replace view ss_.serve_loc_distribution as
+select
+  f.session_id,
+  f.player_id,
+  f.side,
+  f.serve_loc_18,
+
+  count(*)                                         as attempts,
+  sum(case when f.is_in=1 then 1 else 0 end)       as serves_in,
+  sum(case when f.is_unreturned=1 then 1 else 0 end) as unreturned,
+  sum(case when f.is_ace=1 then 1 else 0 end)      as aces,
+  avg(nullif(f.serve_speed,0))                     as avg_speed,
+
+  -- quality metrics
+  (sum(case when f.is_in=1 then 1 else 0 end)::numeric / nullif(count(*),0))       as in_pct,
+  (sum(case when f.point_won_by_server=1 and f.is_in=1 then 1 else 0 end)::numeric
+      / nullif(sum(case when f.is_in=1 then 1 else 0 end),0))                      as win_pct_when_in,
+  (sum(case when f.is_unreturned=1 then 1 else 0 end)::numeric / nullif(count(*),0)) as unret_pct
+from ss_.serve_facts f
+group by 1,2,3,4;
