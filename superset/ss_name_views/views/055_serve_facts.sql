@@ -1,4 +1,4 @@
--- ss_.serve_facts: canonical per-serve dataset
+-- ss_.serve_facts: canonical per-serve dataset (robust to text/boolean/int flags)
 create or replace view ss_.serve_facts as
 with base as (
   select
@@ -20,32 +20,45 @@ with base as (
       -- serve attributes
       p.serve_try_ix_in_point      as serve_try,          -- 1 or 2
       p.ball_speed                 as serve_speed,        -- (units from source)
-      p.serve_loc_18_d             as serve_loc_18,       -- 1..18 grid
-      case when coalesce(p.placement_ad_d,0)=1
-           then 'AD' else 'DEUCE'
-      end                          as side,
+      p.serve_loc_18_d             as serve_loc_18,
 
-      -- outcomes
-      case when coalesce(p.is_serve_fault_d,0)=1 then 1 else 0 end                  as is_fault,
-      case when coalesce(p.is_serve_fault_d,0)=1 then 0 else 1 end                  as is_in,
-      case when coalesce(p.is_serve_fault_d,0)=1
-                and p.serve_try_ix_in_point=2
-           then 1 else 0 end                                                        as is_double_fault,
+      -- SIDE: prefer serving_side_d; otherwise infer from placement_ad_d/text score
+      coalesce(
+        nullif(p.serving_side_d, ''),
+        case
+          when coalesce(p.placement_ad_d::text,'0') in ('1','t','true','TRUE','True','ad','AD')
+            then 'AD'
+          when coalesce(p.placement_ad_d::text,'') in ('deuce','DEUCE')
+            then 'DEUCE'
+          else null
+        end,
+        case when coalesce(p.point_score_text_d,'') ilike '%AD%' then 'AD' else 'DEUCE' end
+      )                           as side,
+
+      -- outcomes (normalize mixed types by casting to text first)
+      case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
+           then 1 else 0 end                                                   as is_fault,
+      case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
+           then 0 else 1 end                                                   as is_in,
+      case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
+                and p.serve_try_ix_in_point = 2
+           then 1 else 0 end                                                   as is_double_fault,
 
       -- “ace” = serve-in, no rally shot, server wins point
-      case when coalesce(p.is_serve_fault_d,0)=0
+      case when coalesce(p.is_serve_fault_d::text,'0') in ('0','f','false','FALSE','False','')
                 and p.first_rally_shot_ix is null
                 and p.point_winner_player_id_d = p.server_id
-           then 1 else 0 end                                                        as is_ace,
+           then 1 else 0 end                                                   as is_ace,
 
       -- unreturned (includes aces): in, no rally shot
-      case when coalesce(p.is_serve_fault_d,0)=0
+      case when coalesce(p.is_serve_fault_d::text,'0') in ('0','f','false','FALSE','False','')
                 and p.first_rally_shot_ix is null
-           then 1 else 0 end                                                        as is_unreturned,
+           then 1 else 0 end                                                   as is_unreturned,
 
-      case when p.point_winner_player_id_d = p.server_id then 1 else 0 end          as point_won_by_server
+      case when p.point_winner_player_id_d = p.server_id
+           then 1 else 0 end                                                   as point_won_by_server
 
   from ss_.vw_point_enriched p
-  where coalesce(p.serve_d,0)=1    -- keep only serve swings (both 1st & 2nd attempts)
+  where coalesce(p.serve_d::text,'0') in ('1','t','true','TRUE','True')   -- keep only serve swings
 )
 select * from base;
