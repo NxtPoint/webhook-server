@@ -19,21 +19,17 @@ with base as (
 
       -- serve attributes
       p.serve_try_ix_in_point      as serve_try,          -- 1 or 2
-      p.ball_speed                 as serve_speed,        -- (units from source)
+      p.ball_speed                 as serve_speed,        -- units from source
       p.serve_loc_18_d             as serve_loc_18,
 
-      -- SIDE: prefer serving_side_d; otherwise infer from placement_ad_d/text score
-      coalesce(
-        nullif(p.serving_side_d, ''),
-        case
-          when coalesce(p.placement_ad_d::text,'0') in ('1','t','true','TRUE','True','ad','AD')
-            then 'AD'
-          when coalesce(p.placement_ad_d::text,'') in ('deuce','DEUCE')
-            then 'DEUCE'
-          else null
-        end,
-        case when coalesce(p.point_score_text_d,'') ilike '%AD%' then 'AD' else 'DEUCE' end
-      )                           as side,
+      -- SIDE: prefer serving_side_d; else placement_ad_d; else infer from score text
+      case
+        when lower(coalesce(p.serving_side_d::text, '')) in ('ad','adv','advantage') then 'AD'
+        when lower(coalesce(p.serving_side_d::text, '')) = 'deuce' then 'DEUCE'
+        when lower(coalesce(p.placement_ad_d::text, '')) in ('1','t','true','ad','adv','advantage') then 'AD'
+        when lower(coalesce(p.point_score_text_d::text, '')) like '%ad%' then 'AD'
+        else 'DEUCE'
+      end                           as side,
 
       -- outcomes (normalize mixed types by casting to text first)
       case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
