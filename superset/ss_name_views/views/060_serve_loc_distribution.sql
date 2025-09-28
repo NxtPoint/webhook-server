@@ -1,21 +1,24 @@
--- ss_.serve_loc_distribution: distribution & effectiveness by 18-box grid
-create or replace view ss_.serve_loc_distribution as
-select
-  f.session_id,
-  f.player_id,
-  f.side,
-  f.serve_loc_18,
+CREATE SCHEMA IF NOT EXISTS ss_;
 
-  count(*)                                         as attempts,
-  sum(case when f.is_in=1 then 1 else 0 end)       as serves_in,
-  sum(case when f.is_unreturned=1 then 1 else 0 end) as unreturned,
-  sum(case when f.is_ace=1 then 1 else 0 end)      as aces,
-  avg(nullif(f.serve_speed,0))                     as avg_speed,
-
-  -- quality metrics
-  (sum(case when f.is_in=1 then 1 else 0 end)::numeric / nullif(count(*),0))       as in_pct,
-  (sum(case when f.point_won_by_server=1 and f.is_in=1 then 1 else 0 end)::numeric
-      / nullif(sum(case when f.is_in=1 then 1 else 0 end),0))                      as win_pct_when_in,
-  (sum(case when f.is_unreturned=1 then 1 else 0 end)::numeric / nullif(count(*),0)) as unret_pct
-from ss_.serve_facts f
-group by 1,2,3,4;
+-- Distribution of serve landing locations by side (deuce/ad) and attempt (1/2)
+CREATE OR REPLACE VIEW ss_.serve_loc_distribution AS
+WITH binned AS (
+  SELECT
+    f.player_id,
+    f.side,
+    f.serve_try,
+    -- bin to 0.5 grid; tweak if you prefer a different granularity
+    floor(f.serve_loc_x / 0.5) * 0.5 AS x_bin,
+    floor(f.serve_loc_y / 0.5) * 0.5 AS y_bin,
+    -- outcomes
+    COUNT(*)                                              AS attempts,
+    SUM(CASE WHEN f.is_ace          IS TRUE THEN 1 ELSE 0 END) AS aces,
+    SUM(CASE WHEN f.is_fault        IS TRUE THEN 1 ELSE 0 END) AS faults,
+    SUM(CASE WHEN f.is_double_fault IS TRUE THEN 1 ELSE 0 END) AS double_faults,
+    SUM(CASE WHEN f.serve_in        IS TRUE THEN 1 ELSE 0 END) AS serves_in
+  FROM ss_.serve_facts f
+  WHERE f.serve_loc_x IS NOT NULL
+    AND f.serve_loc_y IS NOT NULL
+  GROUP BY 1,2,3,4,5
+)
+SELECT * FROM binned;
