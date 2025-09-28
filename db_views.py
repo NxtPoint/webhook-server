@@ -390,11 +390,16 @@ CREATE_STMTS["vw_point_bounces_debug"] = r'''
 # ==================================================================================
 
 def _build_point_clean_view_sql(conn) -> str:
+    """
+    Build CREATE VIEW public.vw_point_silver from public.vw_point_silver_core,
+    drop dashboard-irrelevant columns, and append a canonical text task_id.
+    """
     drop_cols = {
         "swing_id", "start_ts", "end_ts", "ball_hit_ts",
         "bounce_id", "bounce_ts_d", "primary_source"
     }
 
+    # Read CORE columns (ordered)
     rows = conn.execute(text(r"""
         SELECT column_name
         FROM information_schema.columns
@@ -408,6 +413,7 @@ def _build_point_clean_view_sql(conn) -> str:
 
     select_items = [f'base."{c}" AS "{c}"' for c in keep]
 
+    # Append task_id if CORE doesn't already expose it
     has_task_id = any(c.lower() == "task_id" for c in cols)
     if not has_task_id:
         select_items.append(
