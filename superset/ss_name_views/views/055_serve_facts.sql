@@ -2,9 +2,7 @@ CREATE SCHEMA IF NOT EXISTS ss_;
 
 CREATE OR REPLACE VIEW ss_.serve_facts AS
 WITH src AS (
-  SELECT
-    p.*,
-    row_to_json(p) AS pjson
+  SELECT p.*, row_to_json(p) AS pjson
   FROM ss_.vw_point_enriched p
 ),
 parsed AS (
@@ -27,91 +25,70 @@ parsed AS (
       WHEN COALESCE(src.pjson->>'match_date','') ~ '^\d{4}[-/]\d{2}[-/]\d{2}$'
         THEN REPLACE(src.pjson->>'match_date','/','-')::date
       ELSE NULL
-    END                                                         AS match_date_meta,
+    END                                                           AS match_date_meta,
 
     -- Start timestamp with fallbacks
     COALESCE(
       NULLIF(src.pjson->>'start_ts','')::timestamptz,
       NULLIF(src.pjson->>'point_start_ts','')::timestamptz,
       src.submission_created_at
-    )                                                           AS start_ts,
+    )                                                             AS start_ts,
+
+    -- 🔹 New: set/game numbers (many possible field names)
+    COALESCE(
+      NULLIF(src.pjson->>'set_number','')::int,
+      NULLIF(src.pjson->>'set_no','')::int,
+      NULLIF(src.pjson->>'set','')::int,
+      NULLIF(src.pjson->>'setNumber','')::int
+    )                                                             AS set_number_d,
+    COALESCE(
+      NULLIF(src.pjson->>'game_number','')::int,
+      NULLIF(src.pjson->>'game_no','')::int,
+      NULLIF(src.pjson->>'game','')::int,
+      NULLIF(src.pjson->>'gameNumber','')::int,
+      NULLIF(src.pjson->>'point_game_number','')::int
+    )                                                             AS game_number_d,
 
     -- Serve attempt number (1/2)
     COALESCE(
       NULLIF(src.pjson->>'serve_try','')::int,
       NULLIF(src.pjson->>'serve_attempt','')::int
-    )                                                           AS serve_try,
+    )                                                             AS serve_try,
 
-    -- Booleans from flexible encodings
-    CASE
-      WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('t','true','1','y','yes')  THEN TRUE
-      WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('f','false','0','n','no')  THEN FALSE
-    END                                                         AS is_serve,
-    CASE
-      WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('t','true','1','y','yes')  THEN TRUE
-      WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('f','false','0','n','no')  THEN FALSE
-    END                                                         AS is_fault,
-    CASE
-      WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('t','true','1','y','yes') THEN TRUE
-      WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('f','false','0','n','no') THEN FALSE
-    END                                                         AS is_double_fault,
-    CASE
-      WHEN lower(coalesce(src.pjson->>'is_ace','')) IN ('t','true','1','y','yes')     THEN TRUE
-      WHEN lower(coalesce(src.pjson->>'is_ace','')) IN ('f','false','0','n','no')     THEN FALSE
-    END                                                         AS is_ace,
+    -- Booleans
+    CASE WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('t','true','1','y','yes')  THEN TRUE
+         WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('f','false','0','n','no')  THEN FALSE END AS is_serve,
+    CASE WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('t','true','1','y','yes')  THEN TRUE
+         WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('f','false','0','n','no')  THEN FALSE END AS is_fault,
+    CASE WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('t','true','1','y','yes') THEN TRUE
+         WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('f','false','0','n','no') THEN FALSE END AS is_double_fault,
+    CASE WHEN lower(coalesce(src.pjson->>'is_ace','')) IN ('t','true','1','y','yes')     THEN TRUE
+         WHEN lower(coalesce(src.pjson->>'is_ace','')) IN ('f','false','0','n','no')     THEN FALSE END AS is_ace,
 
     -- Convenience: served in (serve & not fault & not double-fault)
     CASE
-      WHEN (CASE
-              WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('t','true','1','y','yes') THEN TRUE
-              WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('f','false','0','n','no') THEN FALSE
-            END) IS TRUE
-       AND COALESCE(
-             (CASE
-                WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('t','true','1','y','yes') THEN TRUE
-                WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('f','false','0','n','no') THEN FALSE
-              END), FALSE) IS FALSE
-       AND COALESCE(
-             (CASE
-                WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('t','true','1','y','yes') THEN TRUE
-                WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('f','false','0','n','no') THEN FALSE
-              END), FALSE) IS FALSE
-      THEN TRUE ELSE FALSE
-    END                                                         AS serve_in,
+      WHEN (CASE WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('t','true','1','y','yes') THEN TRUE
+                 WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('f','false','0','n','no') THEN FALSE END) IS TRUE
+       AND COALESCE((CASE WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('t','true','1','y','yes') THEN TRUE
+                          WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('f','false','0','n','no') THEN FALSE END), FALSE) IS FALSE
+       AND COALESCE((CASE WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('t','true','1','y','yes') THEN TRUE
+                          WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('f','false','0','n','no') THEN FALSE END), FALSE) IS FALSE
+    THEN TRUE ELSE FALSE END                                         AS serve_in,
 
     -- Speed & impact location
-    COALESCE(
-      NULLIF(src.pjson->>'serve_speed','')::numeric,
-      NULLIF(src.pjson->>'ball_speed','')::numeric
-    )                                                           AS serve_speed,
-    COALESCE(
-      NULLIF(src.pjson->>'ball_hit_x','')::numeric,
-      NULLIF(src.pjson->>'ball_hit_location_x','')::numeric
-    )                                                           AS serve_loc_x,
-    COALESCE(
-      NULLIF(src.pjson->>'ball_hit_y','')::numeric,
-      NULLIF(src.pjson->>'ball_hit_location_y','')::numeric
-    )                                                           AS serve_loc_y,
+    COALESCE(NULLIF(src.pjson->>'serve_speed','')::numeric,
+             NULLIF(src.pjson->>'ball_speed','')::numeric)           AS serve_speed,
+    COALESCE(NULLIF(src.pjson->>'ball_hit_x','')::numeric,
+             NULLIF(src.pjson->>'ball_hit_location_x','')::numeric)  AS serve_loc_x,
+    COALESCE(NULLIF(src.pjson->>'ball_hit_y','')::numeric,
+             NULLIF(src.pjson->>'ball_hit_location_y','')::numeric)  AS serve_loc_y,
 
-    -- 🔹 New: robust serve side (deuce/ad) for downstream use
+    -- Side (deuce/ad)
     CASE
-      WHEN lower(coalesce(
-             src.pjson->>'side',
-             src.pjson->>'serve_side',
-             src.pjson->>'court_side',
-             src.pjson->>'service_side',
-             src.pjson->>'service_box'
-           )) IN ('deuce','right','r','d') THEN 'deuce'
-      WHEN lower(coalesce(
-             src.pjson->>'side',
-             src.pjson->>'serve_side',
-             src.pjson->>'court_side',
-             src.pjson->>'service_side',
-             src.pjson->>'service_box'
-           )) IN ('ad','left','l') THEN 'ad'
+      WHEN lower(coalesce(src.pjson->>'side',src.pjson->>'serve_side',src.pjson->>'court_side',src.pjson->>'service_side',src.pjson->>'service_box')) IN ('deuce','right','r','d') THEN 'deuce'
+      WHEN lower(coalesce(src.pjson->>'side',src.pjson->>'serve_side',src.pjson->>'court_side',src.pjson->>'service_side',src.pjson->>'service_box')) IN ('ad','left','l') THEN 'ad'
       ELSE NULL
-    END                                                         AS side
-
+    END                                                             AS side
   FROM src
 )
 SELECT *
