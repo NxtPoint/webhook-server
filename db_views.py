@@ -199,7 +199,7 @@ VIEW_NAMES = [
     "vw_ball_position_silver",
     "vw_bounce_silver",
     "vw_point_silver_core",   # full-fidelity V1
-    "vw_point_silver",        # dashboard-clean (drops unwanted cols)
+    "vw_point_silver",        # dashboard-clean (drops unwanted cols + appends task_id)
     "vw_bounce_stream_debug",
     "vw_point_bounces_debug",
 ]
@@ -396,7 +396,7 @@ def _build_point_clean_view_sql(conn) -> str:
     """
     drop_cols = {
         "swing_id", "start_ts", "end_ts", "ball_hit_ts",
-        "bounce_id", "bounce_ts_d", "primary_source"
+        "bounce_id", "bounce_ts_d", "primary_source", "primary_source_d"
     }
 
     # Read CORE columns (ordered)
@@ -411,6 +411,7 @@ def _build_point_clean_view_sql(conn) -> str:
     if not keep:
         raise RuntimeError("vw_point_silver_core has no columns after exclusion filter.")
 
+    # Always keep existing CORE columns first, in order
     select_items = [f'base."{c}" AS "{c}"' for c in keep]
 
     # Append task_id if CORE doesn't already expose it
@@ -418,12 +419,9 @@ def _build_point_clean_view_sql(conn) -> str:
     if not has_task_id:
         select_items.append(
             "COALESCE("
-            " NULLIF(base.\"task_id\"::text,''),"
-            " NULLIF(base.\"sportai_task_id\"::text,''),"
-            " NULLIF(base.\"job_id\"::text,''),"
-            " NULLIF((row_to_json(base)::jsonb ->> 'task_id'),''),"
-            " NULLIF((row_to_json(base)::jsonb ->> 'sportai_task_id'),''),"
-            " NULLIF((row_to_json(base)::jsonb ->> 'job_id'),'')"
+            " NULLIF((row_to_json(base)::jsonb ->> 'task_id')         ,''),"
+            " NULLIF((row_to_json(base)::jsonb ->> 'sportai_task_id'),'') ,"
+            " NULLIF((row_to_json(base)::jsonb ->> 'job_id')         ,'')"
             ")::text AS task_id"
         )
 
@@ -434,7 +432,6 @@ def _build_point_clean_view_sql(conn) -> str:
           {select_list}
         FROM public.vw_point_silver_core AS base;
     '''
-
 
 def _apply_views(engine):
     global VIEW_SQL_STMTS
@@ -459,6 +456,19 @@ def _apply_views(engine):
                     sql = sql.replace("{PLAYER_SIDE_SELECT}", _player_side_select_snippet(conn))
             VIEW_SQL_STMTS.append(sql)
             _exec_with_clear_errors(conn, name, sql)
+
+        # Build fingerprint you can query later
+        ver = (
+            os.getenv("RENDER_GIT_COMMIT")
+            or os.getenv("GIT_COMMIT")
+            or os.getenv("SOURCE_VERSION")
+            or "unknown"
+        )
+        conn.execute(text("COMMENT ON VIEW public.vw_point_silver IS :cmt"), {"cmt": f"built_by=db_views commit={ver}"})
+        conn.execute(text("""
+            CREATE OR REPLACE VIEW public.ops_build_fingerprint AS
+            SELECT now() AT TIME ZONE 'utc' AS built_at_utc, :ver::text AS commit_sha
+        """), {"ver": ver})
 
 # Back-compat names
 init_views = _apply_views
