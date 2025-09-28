@@ -1,9 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
-# 010: single source of truth (points exact + latest submission meta)
-# Join key = task_id
+# 010: transactional points (exact) + latest submission meta by task_id
 
 def make_sql(cur):
-    # Find the schema that contains vw_point_silver (public in this repo)
+    # Find schema that contains vw_point_silver
     cur.execute("""
         with cte as (
           select table_schema from information_schema.tables where table_name='vw_point_silver'
@@ -16,13 +15,13 @@ def make_sql(cur):
     if not row:
         raise RuntimeError("vw_point_silver not found")
     point_schema = row[0]
-    point_src = f'{point_schema}.vw_point_silver'
+    point_src = f"{point_schema}.vw_point_silver"
 
     return f"""
     CREATE SCHEMA IF NOT EXISTS ss_;
     DROP VIEW IF EXISTS ss_.vw_point_enriched CASCADE;
 
-    -- latest submission per task_id
+    CREATE VIEW ss_.vw_point_enriched AS
     WITH ctx_pre AS (
       SELECT
         sc.task_id,
@@ -67,10 +66,8 @@ def make_sql(cur):
       FROM ctx_pre cp
       WHERE cp.rn = 1
     )
-
-    CREATE VIEW ss_.vw_point_enriched AS
     SELECT
-      p.*,                                -- EXACT transactional columns (now includes task_id)
+      p.*,                                -- EXACT transactional columns from {point_src} (incl. task_id)
       c.submission_task_id,
       c.submission_created_at,
       c.submission_email,
