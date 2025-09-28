@@ -2,68 +2,58 @@
     return """
     CREATE SCHEMA IF NOT EXISTS ss_;
 
-    -- Build ss_.vw_point_enriched by joining vw_point_silver with the latest submission_context per session
-    CREATE OR REPLACE VIEW ss_.vw_point_enriched AS
-    WITH base AS (
+    -- Drop first to avoid column-rename conflicts on CREATE OR REPLACE
+    DROP VIEW IF EXISTS ss_.vw_point_enriched CASCADE;
+
+    -- Join vw_point_silver to latest submission_context per session
+    CREATE VIEW ss_.vw_point_enriched AS
+    WITH sc_base AS (
       SELECT
-        -- session_id may be a column OR only inside raw_meta
-        COALESCE(NULLIF(sc.session_id::text, ''),
-                 NULLIF((sc.raw_meta->>'session_id'), ''))                    AS session_id_txt,
-
-        -- task_id may be a column OR only inside raw_meta
-        COALESCE(NULLIF(sc.task_id::text, ''),
-                 NULLIF((sc.raw_meta->>'task_id'), ''))                       AS task_id_txt,
-
-        -- created_at may be a column OR only inside raw_meta
-        COALESCE(sc.created_at,
-                 NULLIF(sc.raw_meta->>'created_at','')::timestamptz)          AS created_at_ts,
-
-        sc.raw_meta::jsonb                                                   AS m
+        -- session_id may be a column or only inside raw_meta
+        COALESCE(NULLIF(sc.session_id::text,''), NULLIF(sc.raw_meta->>'session_id','')) AS session_id_txt,
+        COALESCE(NULLIF(sc.task_id::text,''),    NULLIF(sc.raw_meta->>'task_id',''))    AS task_id_txt,
+        COALESCE(sc.created_at, NULLIF(sc.raw_meta->>'created_at','')::timestamptz)     AS created_at_ts,
+        sc.raw_meta::jsonb AS m
       FROM public.submission_context sc
     ),
-    ctx_pre AS (
+    sc_latest AS (
       SELECT
         b.*,
-        CASE WHEN b.session_id_txt ~ '^[0-9]+$' THEN b.session_id_txt::bigint END AS session_id_bigint,
-        ROW_NUMBER() OVER (
-          PARTITION BY b.session_id_txt
-          ORDER BY b.created_at_ts DESC NULLS LAST
-        ) AS rn
-      FROM base b
+        ROW_NUMBER() OVER (PARTITION BY b.session_id_txt ORDER BY b.created_at_ts DESC NULLS LAST) AS rn
+      FROM sc_base b
       WHERE b.session_id_txt IS NOT NULL
     ),
     ctx AS (
       SELECT
-        cp.session_id_bigint                           AS session_id,
-        cp.task_id_txt                                 AS task_id,
-        cp.created_at_ts                               AS created_at,
+        sl.session_id_txt,
+        sl.task_id_txt      AS task_id,
+        sl.created_at_ts    AS created_at,
 
-        NULLIF(cp.m->>'email', '')                     AS email,
-        NULLIF(cp.m->>'customer_name', '')             AS customer_name,
-
-        -- store date under the meta name your downstream expects
-        CASE
-          WHEN COALESCE(cp.m->>'match_date','') ~ '^\d{4}[-/]\d{2}[-/]\d{2}$'
-            THEN REPLACE(cp.m->>'match_date','/','-')::date
-          ELSE NULL
-        END                                            AS match_date_meta,
+        NULLIF(sl.m->>'email','')           AS email,
+        NULLIF(sl.m->>'customer_name','')   AS customer_name,
 
         CASE
-          WHEN COALESCE(cp.m->>'start_time','') ~ '^\d{2}:\d{2}(:\d{2})?$'
-            THEN (cp.m->>'start_time')::time
+          WHEN COALESCE(sl.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+          THEN REPLACE(sl.m->>'match_date','/','-')::date
           ELSE NULL
-        END                                            AS start_time,
+        END                                 AS match_date_meta,
 
-        NULLIF(cp.m->>'location', '')                  AS location,
-        NULLIF(cp.m->>'player_a_name', '')             AS player_a_name,
-        NULLIF(cp.m->>'player_b_name', '')             AS player_b_name,
+        CASE
+          WHEN COALESCE(sl.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+          THEN (sl.m->>'start_time')::time
+          ELSE NULL
+        END                                 AS start_time,
 
-        CASE WHEN (cp.m->>'player_a_utr') ~ '^\d+(\\.\d+)?$'
-             THEN (cp.m->>'player_a_utr')::numeric END AS player_a_utr,
-        CASE WHEN (cp.m->>'player_b_utr') ~ '^\d+(\\.\d+)?$'
-             THEN (cp.m->>'player_b_utr')::numeric END AS player_b_utr
-      FROM ctx_pre cp
-      WHERE cp.rn = 1  -- latest submission per session
+        NULLIF(sl.m->>'location','')        AS location,
+        NULLIF(sl.m->>'player_a_name','')   AS player_a_name,
+        NULLIF(sl.m->>'player_b_name','')   AS player_b_name,
+
+        CASE WHEN (sl.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+             THEN (sl.m->>'player_a_utr')::numeric END AS player_a_utr,
+        CASE WHEN (sl.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+             THEN (sl.m->>'player_b_utr')::numeric END AS player_b_utr
+      FROM sc_latest sl
+      WHERE sl.rn = 1
     )
     SELECT
       p.*,
@@ -71,7 +61,7 @@
       c.created_at,
       c.email,
       c.customer_name,
-      c.match_date_meta,     -- keep this exact name for downstream expectations
+      c.match_date_meta,  -- keep expected downstream name
       c.start_time,
       c.location,
       c.player_a_name,
@@ -80,6 +70,5 @@
       c.player_b_utr
     FROM silver.vw_point_silver p
     LEFT JOIN ctx c
-      ON c.session_id =
-         CASE WHEN p.session_id::text ~ '^[0-9]+$' THEN p.session_id::bigint ELSE NULL END;
+      ON c.session_id_txt = p.session_id::text;
     """

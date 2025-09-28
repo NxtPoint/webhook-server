@@ -89,6 +89,11 @@ def main():
                 run_sql(cur, sql, label)
             except Exception as e:
                 log(f"[{SCHEMA}] skipped {label}: {type(e).__name__}: {e}")
+                # Clear any aborted-transaction state so next files still run
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
     log(f"[{SCHEMA}] all view files applied")
 
