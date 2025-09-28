@@ -73,6 +73,7 @@ def main():
         cur.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};")
 
         files = []
+        # Dynamic first (005_, 010_, …), then .sql (020_, 030_, …)
         files += sorted(glob.glob(os.path.join(VIEWS_DIR, "*.dynamic.py")))
         files += sorted(glob.glob(os.path.join(VIEWS_DIR, "*.sql")))
 
