@@ -1,60 +1,88 @@
--- ss_.serve_facts: canonical per-serve dataset (robust to text/boolean/int flags)
-create or replace view ss_.serve_facts as
-with base as (
-  select
-      p.session_id,
-      p.session_uid_d              as session_uid,
-      p.match_date_meta,
-      p.customer_name,
-      p.location,
+@'
+CREATE SCHEMA IF NOT EXISTS ss_;
+DROP VIEW IF EXISTS ss_.vw_point_enriched CASCADE;
 
-      -- who served this attempt
-      p.server_id                  as player_id,
-
-      -- ordering / bucketing within the match
-      p.game_number_d,
-      p.point_number_d,
-      p.point_in_game_d,
-      p.start_s,
-
-      -- serve attributes
-      p.serve_try_ix_in_point      as serve_try,          -- 1 or 2
-      p.ball_speed                 as serve_speed,        -- units from source
-      p.serve_loc_18_d             as serve_loc_18,
-
-      -- SIDE: prefer serving_side_d; else placement_ad_d; else infer from score text
-      case
-        when lower(coalesce(p.serving_side_d::text, '')) in ('ad','adv','advantage') then 'AD'
-        when lower(coalesce(p.serving_side_d::text, '')) = 'deuce' then 'DEUCE'
-        when lower(coalesce(p.placement_ad_d::text, '')) in ('1','t','true','ad','adv','advantage') then 'AD'
-        when lower(coalesce(p.point_score_text_d::text, '')) like '%ad%' then 'AD'
-        else 'DEUCE'
-      end                           as side,
-
-      -- outcomes (normalize mixed types by casting to text first)
-      case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
-           then 1 else 0 end                                                   as is_fault,
-      case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
-           then 0 else 1 end                                                   as is_in,
-      case when coalesce(p.is_serve_fault_d::text,'0') in ('1','t','true','TRUE','True')
-                and p.serve_try_ix_in_point = 2
-           then 1 else 0 end                                                   as is_double_fault,
-
-      -- “ace” = serve-in, no rally shot, server wins point
-      case when coalesce(p.is_serve_fault_d::text,'0') in ('0','f','false','FALSE','False','')
-                and p.first_rally_shot_ix is null
-                and p.point_winner_player_id_d = p.server_id
-           then 1 else 0 end                                                   as is_ace,
-
-      -- unreturned (includes aces): in, no rally shot
-      case when coalesce(p.is_serve_fault_d::text,'0') in ('0','f','false','FALSE','False','')
-                and p.first_rally_shot_ix is null
-           then 1 else 0 end                                                   as is_unreturned,
-
-      case when p.point_winner_player_id_d = p.server_id
-           then 1 else 0 end                                                   as point_won_by_server
-
-  from ss_.vw_point_enriched p
-  where coalesce(p.serve_d::text,'0') in ('1','t','true','TRUE','True')   -- keep only serve swings
+CREATE VIEW ss_.vw_point_enriched AS
+WITH sc_base AS (
+  SELECT
+    COALESCE(NULLIF(sc.session_id::text,''), NULLIF(sc.raw_meta->>'session_id',''))           AS session_id_txt,
+    COALESCE(NULLIF(sc.raw_meta->>'session_uid',''), NULLIF(sc.raw_meta->>'sessionUid',''))   AS session_uid_txt,
+    COALESCE(NULLIF(sc.task_id::text,''),    NULLIF(sc.raw_meta->>'task_id',''))              AS task_id_txt,
+    COALESCE(sc.created_at, NULLIF(sc.raw_meta->>'created_at','')::timestamptz)               AS created_at_ts,
+    sc.raw_meta::jsonb AS m
+  FROM public.submission_context sc
+),
+sc_latest AS (
+  SELECT
+    b.*,
+    COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,'')) AS group_key,
+    ROW_NUMBER() OVER (
+      PARTITION BY COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,''))
+      ORDER BY b.created_at_ts DESC NULLS LAST
+    ) AS rn
+  FROM sc_base b
+  WHERE COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,'')) IS NOT NULL
+),
+ctx AS (
+  SELECT
+    sl.session_id_txt,
+    sl.session_uid_txt,
+    sl.task_id_txt                                  AS submission_task_id,
+    sl.created_at_ts                                AS submission_created_at,
+    NULLIF(sl.m->>'email','')                       AS submission_email,
+    NULLIF(sl.m->>'customer_name','')               AS submission_customer_name,
+    CASE
+      WHEN COALESCE(sl.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+      THEN REPLACE(sl.m->>'match_date','/','-')::date
+      ELSE NULL
+    END                                             AS submission_match_date_meta,
+    CASE
+      WHEN COALESCE(sl.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+      THEN (sl.m->>'start_time')::time
+      ELSE NULL
+    END                                             AS submission_start_time,
+    NULLIF(sl.m->>'location','')                    AS submission_location,
+    NULLIF(sl.m->>'player_a_name','')               AS submission_player_a_name,
+    NULLIF(sl.m->>'player_b_name','')               AS submission_player_b_name,
+    CASE WHEN (sl.m->>'player_a_utr') ~ '^[0-9]+(\.[0-9]+)?$'
+         THEN (sl.m->>'player_a_utr')::numeric END  AS submission_player_a_utr,
+    CASE WHEN (sl.m->>'player_b_utr') ~ '^[0-9]+(\.[0-9]+)?$'
+         THEN (sl.m->>'player_b_utr')::numeric END  AS submission_player_b_utr
+  FROM sc_latest sl
+  WHERE sl.rn = 1
+),
+p0 AS (
+  SELECT p.*, row_to_json(p) AS pj
+  FROM silver.vw_point_silver p
 )
-select * from base;
+SELECT
+  p0.*,
+
+  -- submission_* fields (stable, collision-free)
+  c.submission_task_id,
+  c.submission_created_at,
+  c.submission_email,
+  c.submission_customer_name,
+  c.submission_match_date_meta,
+  c.submission_start_time,
+  c.submission_location,
+  c.submission_player_a_name,
+  c.submission_player_a_utr,
+  c.submission_player_b_name,
+  c.submission_player_b_utr,
+
+  -- 🔁 back-compat aliases for downstream SQLs like 055:
+  c.submission_match_date_meta AS match_date_meta,
+  c.submission_start_time      AS start_time
+
+FROM p0
+LEFT JOIN ctx c
+  ON (
+       (c.session_id_txt  IS NOT NULL AND c.session_id_txt  = p0.session_id::text)
+    OR (c.session_uid_txt IS NOT NULL AND c.session_uid_txt = COALESCE(p0.pj->>'session_uid', p0.pj->>'sessionUid'))
+    OR (c.submission_task_id IS NOT NULL AND c.submission_task_id = COALESCE(p0.pj->>'task_id', p0.pj->>'sportai_task_id', p0.pj->>'job_id'))
+  );
+'@ | Set-Content C:\tmp\010_view.sql -Encoding UTF8
+
+# Apply the patch
+curl.exe -X POST "https://api.nextpointtennis.com/ops/sql?key=<OPS_KEY>" --data-binary "@C:\tmp\010_view.sql"
