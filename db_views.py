@@ -390,16 +390,11 @@ CREATE_STMTS["vw_point_bounces_debug"] = r'''
 # ==================================================================================
 
 def _build_point_clean_view_sql(conn) -> str:
-    """
-    Build CREATE VIEW vw_point_silver selecting all columns from *_core
-    except dashboard-irrelevant ones, and APPEND a canonical task_id column.
-    """
     drop_cols = {
         "swing_id", "start_ts", "end_ts", "ball_hit_ts",
         "bounce_id", "bounce_ts_d", "primary_source"
     }
 
-    # Columns present on the CORE view (in order)
     rows = conn.execute(text(r"""
         SELECT column_name
         FROM information_schema.columns
@@ -407,34 +402,28 @@ def _build_point_clean_view_sql(conn) -> str:
         ORDER BY ordinal_position
     """)).fetchall()
     cols = [r[0] for r in rows]
-
-    # Keep all but the dropped ones
     keep = [c for c in cols if c not in drop_cols]
     if not keep:
         raise RuntimeError("vw_point_silver_core has no columns after exclusion filter.")
 
-    # Build SELECT list from CORE, aliasing CORE as "base"
     select_items = [f'base."{c}" AS "{c}"' for c in keep]
 
-    # If CORE already has task_id we don't add it again; else append a robust expression
     has_task_id = any(c.lower() == "task_id" for c in cols)
     if not has_task_id:
-        task_id_expr = (
+        select_items.append(
             "COALESCE("
             " NULLIF(base.\"task_id\"::text,''),"
             " NULLIF(base.\"sportai_task_id\"::text,''),"
             " NULLIF(base.\"job_id\"::text,''),"
-            " NULLIF((to_jsonb(base)->>'task_id'),''),"
-            " NULLIF((to_jsonb(base)->>'sportai_task_id'),''),"
-            " NULLIF((to_jsonb(base)->>'job_id'),'')"
+            " NULLIF((row_to_json(base)::jsonb ->> 'task_id'),''),"
+            " NULLIF((row_to_json(base)::jsonb ->> 'sportai_task_id'),''),"
+            " NULLIF((row_to_json(base)::jsonb ->> 'job_id'),'')"
             ")::text AS task_id"
         )
-        select_items.append(task_id_expr)
 
     select_list = ",\n          ".join(select_items)
-
     return f'''
-        CREATE OR REPLACE VIEW vw_point_silver AS
+        CREATE OR REPLACE VIEW public.vw_point_silver AS
         SELECT
           {select_list}
         FROM public.vw_point_silver_core AS base;
