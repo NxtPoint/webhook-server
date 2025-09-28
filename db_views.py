@@ -392,12 +392,14 @@ CREATE_STMTS["vw_point_bounces_debug"] = r'''
 def _build_point_clean_view_sql(conn) -> str:
     """
     Build CREATE VIEW vw_point_silver selecting all columns from *_core
-    except dashboard-irrelevant ones.
+    except dashboard-irrelevant ones, and APPEND a canonical task_id column.
     """
     drop_cols = {
         "swing_id", "start_ts", "end_ts", "ball_hit_ts",
         "bounce_id", "bounce_ts_d", "primary_source"
     }
+
+    # Columns present on the CORE view (in order)
     rows = conn.execute(text(r"""
         SELECT column_name
         FROM information_schema.columns
@@ -405,16 +407,41 @@ def _build_point_clean_view_sql(conn) -> str:
         ORDER BY ordinal_position
     """)).fetchall()
     cols = [r[0] for r in rows]
+
+    # Keep all but the dropped ones
     keep = [c for c in cols if c not in drop_cols]
     if not keep:
         raise RuntimeError("vw_point_silver_core has no columns after exclusion filter.")
-    select_list = ",\n          ".join([f'"{c}"' for c in keep])
+
+    # Build SELECT list: "col" AS "col"
+    select_items = [f'"{c}"' for c in keep]
+
+    # If CORE already has task_id, keep it as-is; otherwise append a robust expression
+    has_task_id = any(c.lower() == "task_id" for c in cols)
+    if not has_task_id:
+        # We SELECT from CORE with an alias "base", so we can coalesce from existing cols or row json
+        task_id_expr = (
+            "COALESCE("
+            " NULLIF(base.\"task_id\"::text,''),"
+            " NULLIF(base.\"sportai_task_id\"::text,''),"
+            " NULLIF(base.\"job_id\"::text,''),"
+            " NULLIF((to_jsonb(base)->>'task_id'),''),"
+            " NULLIF((to_jsonb(base)->>'sportai_task_id'),''),"
+            " NULLIF((to_jsonb(base)->>'job_id'),'')"
+            ")::text AS task_id"
+        )
+        select_items.append(task_id_expr)
+
+    select_list = ",\n          ".join(select_items)
+
+    # IMPORTANT: alias the CORE view as "base" so the to_jsonb(base) call is valid
     return f'''
         CREATE OR REPLACE VIEW vw_point_silver AS
         SELECT
           {select_list}
-        FROM vw_point_silver_core;
+        FROM public.vw_point_silver_core AS base;
     '''
+
 
 def _apply_views(engine):
     global VIEW_SQL_STMTS

@@ -1,94 +1,89 @@
-﻿def make_sql(cur):
-    return """
-    CREATE SCHEMA IF NOT EXISTS ss_;
+﻿# -*- coding: utf-8 -*-
+# 010: single source of truth (points exact + latest submission meta)
+# Join key = task_id
 
-    -- Drop first to avoid column-rename conflicts
+def make_sql(cur):
+    # Find the schema that contains vw_point_silver (public in this repo)
+    cur.execute("""
+        with cte as (
+          select table_schema from information_schema.tables where table_name='vw_point_silver'
+          union all
+          select table_schema from information_schema.views  where table_name='vw_point_silver'
+        )
+        select table_schema from cte limit 1;
+    """)
+    row = cur.fetchone()
+    if not row:
+        raise RuntimeError("vw_point_silver not found")
+    point_schema = row[0]
+    point_src = f'{point_schema}.vw_point_silver'
+
+    return f"""
+    CREATE SCHEMA IF NOT EXISTS ss_;
     DROP VIEW IF EXISTS ss_.vw_point_enriched CASCADE;
 
-    CREATE VIEW ss_.vw_point_enriched AS
-    WITH sc_base AS (
+    -- latest submission per task_id
+    WITH ctx_pre AS (
       SELECT
-        -- keys may exist as columns or only inside raw_meta
-        COALESCE(NULLIF(sc.session_id::text,''), NULLIF(sc.raw_meta->>'session_id',''))           AS session_id_txt,
-        COALESCE(NULLIF(sc.raw_meta->>'session_uid',''), NULLIF(sc.raw_meta->>'sessionUid',''))   AS session_uid_txt,
-        COALESCE(NULLIF(sc.task_id::text,''),    NULLIF(sc.raw_meta->>'task_id',''))              AS task_id_txt,
-        COALESCE(sc.created_at, NULLIF(sc.raw_meta->>'created_at','')::timestamptz)               AS created_at_ts,
-        sc.raw_meta::jsonb AS m
-      FROM public.submission_context sc
-    ),
-    sc_latest AS (
-      SELECT
-        b.*,
-        -- group by best-available key and keep the latest form per key
-        COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,'')) AS group_key,
+        sc.task_id,
+        sc.created_at,
+        sc.raw_meta::jsonb AS m,
         ROW_NUMBER() OVER (
-          PARTITION BY COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,''))
-          ORDER BY b.created_at_ts DESC NULLS LAST
+          PARTITION BY sc.task_id
+          ORDER BY sc.created_at DESC NULLS LAST
         ) AS rn
-      FROM sc_base b
-      WHERE COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,'')) IS NOT NULL
+      FROM public.submission_context sc
+      WHERE sc.task_id IS NOT NULL
     ),
     ctx AS (
       SELECT
-        sl.session_id_txt,
-        sl.session_uid_txt,
-        sl.task_id_txt                                  AS submission_task_id,
-        sl.created_at_ts                                AS submission_created_at,
-        NULLIF(sl.m->>'email','')                       AS submission_email,
-        NULLIF(sl.m->>'customer_name','')               AS submission_customer_name,
+        cp.task_id::text                                         AS submission_task_id,
+        cp.created_at                                            AS submission_created_at,
+        NULLIF(cp.m->>'email','')                                AS submission_email,
+        NULLIF(cp.m->>'customer_name','')                        AS submission_customer_name,
         CASE
-          WHEN COALESCE(sl.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
-            THEN REPLACE(sl.m->>'match_date','/','-')::date
+          WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{{4}}[-/][0-9]{{2}}[-/][0-9]{{2}}$'
+            THEN REPLACE(cp.m->>'match_date','/','-')::date
           ELSE NULL
-        END                                             AS submission_match_date_meta,
+        END                                                      AS submission_match_date,
         CASE
-          WHEN COALESCE(sl.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
-            THEN (sl.m->>'start_time')::time
+          WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{{2}}:[0-9]{{2}}(:[0-9]{{2}})?$'
+            THEN (cp.m->>'start_time')::time
           ELSE NULL
-        END                                             AS submission_start_time,
-        NULLIF(sl.m->>'location','')                    AS submission_location,
-        NULLIF(sl.m->>'player_a_name','')               AS submission_player_a_name,
-        NULLIF(sl.m->>'player_b_name','')               AS submission_player_b_name,
-        CASE WHEN (sl.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
-             THEN (sl.m->>'player_a_utr')::numeric END  AS submission_player_a_utr,
-        CASE WHEN (sl.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
-             THEN (sl.m->>'player_b_utr')::numeric END  AS submission_player_b_utr
-      FROM sc_latest sl
-      WHERE sl.rn = 1
+        END                                                      AS submission_start_time,
+        CASE
+          WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{{4}}[-/][0-9]{{2}}[-/][0-9]{{2}}$'
+           AND COALESCE(cp.m->>'start_time','') ~ '^[0-9]{{2}}:[0-9]{{2}}(:[0-9]{{2}})?$'
+            THEN (REPLACE(cp.m->>'match_date','/','-') || ' ' || (cp.m->>'start_time'))::timestamptz
+          ELSE NULL
+        END                                                      AS submission_first_point_ts,
+        NULLIF(cp.m->>'location','')                             AS submission_location,
+        NULLIF(cp.m->>'player_a_name','')                        AS submission_player_a_name,
+        NULLIF(cp.m->>'player_b_name','')                        AS submission_player_b_name,
+        CASE WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+             THEN (cp.m->>'player_a_utr')::numeric END           AS submission_player_a_utr,
+        CASE WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+             THEN (cp.m->>'player_b_utr')::numeric END           AS submission_player_b_utr
+      FROM ctx_pre cp
+      WHERE cp.rn = 1
     )
-    SELECT
-      p.*,
 
-      -- stable submission_* fields
+    CREATE VIEW ss_.vw_point_enriched AS
+    SELECT
+      p.*,                                -- EXACT transactional columns (now includes task_id)
       c.submission_task_id,
       c.submission_created_at,
       c.submission_email,
       c.submission_customer_name,
-      c.submission_match_date_meta,
+      c.submission_match_date,
       c.submission_start_time,
+      c.submission_first_point_ts,
       c.submission_location,
       c.submission_player_a_name,
       c.submission_player_a_utr,
       c.submission_player_b_name,
-      c.submission_player_b_utr,
-
-      -- back-compat aliases used by older Superset queries
-      c.submission_match_date_meta AS match_date_meta,
-      c.submission_start_time      AS start_time,
-      c.submission_customer_name   AS customer_name
-
-    FROM silver.vw_point_silver p
+      c.submission_player_b_utr
+    FROM {point_src} p
     LEFT JOIN ctx c
-      ON (
-           -- session_id (numeric/text)
-           (c.session_id_txt  IS NOT NULL AND c.session_id_txt  = p.session_id::text)
-           OR
-           -- session_uid (string)
-           (c.session_uid_txt IS NOT NULL AND c.session_uid_txt = COALESCE(row_to_json(p)->>'session_uid', row_to_json(p)->>'sessionUid'))
-           OR
-           -- task_id (various names on points)
-           (c.submission_task_id IS NOT NULL AND c.submission_task_id = COALESCE(row_to_json(p)->>'task_id',
-                                                                                 row_to_json(p)->>'sportai_task_id',
-                                                                                 row_to_json(p)->>'job_id'))
-         );
+      ON c.submission_task_id::text = p.task_id::text;
     """
