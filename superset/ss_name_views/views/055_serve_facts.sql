@@ -7,16 +7,16 @@ WITH src AS (
 ),
 parsed AS (
   SELECT
-    -- Stable IDs
+    -- stable ids
     COALESCE((src.pjson->>'session_id')::bigint, src.session_id) AS session_id,
     (src.pjson->>'player_id')::bigint                            AS player_id,
     (src.pjson->>'player_name')                                  AS player_name,
 
-    -- Task ids (point vs form)
+    -- task ids (point vs form)
     NULLIF(src.pjson->>'task_id','')                             AS task_id_point_side,
     src.submission_task_id                                       AS task_id_form_side,
 
-    -- Robust match_date_meta
+    -- match date (robust)
     CASE
       WHEN src.submission_match_date_meta IS NOT NULL
         THEN src.submission_match_date_meta
@@ -27,14 +27,14 @@ parsed AS (
       ELSE NULL
     END                                                           AS match_date_meta,
 
-    -- Start timestamp with fallbacks
+    -- start timestamp with fallbacks
     COALESCE(
       NULLIF(src.pjson->>'start_ts','')::timestamptz,
       NULLIF(src.pjson->>'point_start_ts','')::timestamptz,
       src.submission_created_at
     )                                                             AS start_ts,
 
-    -- 🔹 New: set/game numbers (many possible field names)
+    -- set/game numbers (flexible names)
     COALESCE(
       NULLIF(src.pjson->>'set_number','')::int,
       NULLIF(src.pjson->>'set_no','')::int,
@@ -49,13 +49,13 @@ parsed AS (
       NULLIF(src.pjson->>'point_game_number','')::int
     )                                                             AS game_number_d,
 
-    -- Serve attempt number (1/2)
+    -- serve attempt (1/2)
     COALESCE(
       NULLIF(src.pjson->>'serve_try','')::int,
       NULLIF(src.pjson->>'serve_attempt','')::int
     )                                                             AS serve_try,
 
-    -- Booleans
+    -- booleans
     CASE WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('t','true','1','y','yes')  THEN TRUE
          WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('f','false','0','n','no')  THEN FALSE END AS is_serve,
     CASE WHEN lower(coalesce(src.pjson->>'is_fault','')) IN ('t','true','1','y','yes')  THEN TRUE
@@ -65,7 +65,7 @@ parsed AS (
     CASE WHEN lower(coalesce(src.pjson->>'is_ace','')) IN ('t','true','1','y','yes')     THEN TRUE
          WHEN lower(coalesce(src.pjson->>'is_ace','')) IN ('f','false','0','n','no')     THEN FALSE END AS is_ace,
 
-    -- Convenience: served in (serve & not fault & not double-fault)
+    -- served in (serve & not fault & not double-fault)
     CASE
       WHEN (CASE WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('t','true','1','y','yes') THEN TRUE
                  WHEN lower(coalesce(src.pjson->>'is_serve','')) IN ('f','false','0','n','no') THEN FALSE END) IS TRUE
@@ -75,7 +75,7 @@ parsed AS (
                           WHEN lower(coalesce(src.pjson->>'is_double_fault','')) IN ('f','false','0','n','no') THEN FALSE END), FALSE) IS FALSE
     THEN TRUE ELSE FALSE END                                         AS serve_in,
 
-    -- Speed & impact location
+    -- speed & impact location
     COALESCE(NULLIF(src.pjson->>'serve_speed','')::numeric,
              NULLIF(src.pjson->>'ball_speed','')::numeric)           AS serve_speed,
     COALESCE(NULLIF(src.pjson->>'ball_hit_x','')::numeric,
@@ -83,7 +83,7 @@ parsed AS (
     COALESCE(NULLIF(src.pjson->>'ball_hit_y','')::numeric,
              NULLIF(src.pjson->>'ball_hit_location_y','')::numeric)  AS serve_loc_y,
 
-    -- Side (deuce/ad)
+    -- side (deuce/ad)
     CASE
       WHEN lower(coalesce(src.pjson->>'side',src.pjson->>'serve_side',src.pjson->>'court_side',src.pjson->>'service_side',src.pjson->>'service_box')) IN ('deuce','right','r','d') THEN 'deuce'
       WHEN lower(coalesce(src.pjson->>'side',src.pjson->>'serve_side',src.pjson->>'court_side',src.pjson->>'service_side',src.pjson->>'service_box')) IN ('ad','left','l') THEN 'ad'
@@ -91,6 +91,9 @@ parsed AS (
     END                                                             AS side
   FROM src
 )
-SELECT *
+-- expose everything + a back-compat alias for 066
+SELECT
+  parsed.*,
+  parsed.serve_in AS is_in
 FROM parsed
 WHERE is_serve IS TRUE;
