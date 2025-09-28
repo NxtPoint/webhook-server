@@ -413,13 +413,12 @@ def _build_point_clean_view_sql(conn) -> str:
     if not keep:
         raise RuntimeError("vw_point_silver_core has no columns after exclusion filter.")
 
-    # Build SELECT list: "col" AS "col"
-    select_items = [f'"{c}"' for c in keep]
+    # Build SELECT list from CORE, aliasing CORE as "base"
+    select_items = [f'base."{c}" AS "{c}"' for c in keep]
 
-    # If CORE already has task_id, keep it as-is; otherwise append a robust expression
+    # If CORE already has task_id we don't add it again; else append a robust expression
     has_task_id = any(c.lower() == "task_id" for c in cols)
     if not has_task_id:
-        # We SELECT from CORE with an alias "base", so we can coalesce from existing cols or row json
         task_id_expr = (
             "COALESCE("
             " NULLIF(base.\"task_id\"::text,''),"
@@ -434,7 +433,6 @@ def _build_point_clean_view_sql(conn) -> str:
 
     select_list = ",\n          ".join(select_items)
 
-    # IMPORTANT: alias the CORE view as "base" so the to_jsonb(base) call is valid
     return f'''
         CREATE OR REPLACE VIEW vw_point_silver AS
         SELECT
