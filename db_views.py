@@ -464,11 +464,20 @@ def _apply_views(engine):
             or os.getenv("SOURCE_VERSION")
             or "unknown"
         )
-        conn.execute(text("COMMENT ON VIEW public.vw_point_silver IS :cmt"), {"cmt": f"built_by=db_views commit={ver}"})
-        conn.execute(text("""
+
+        # 1) COMMENT works fine with a bind param
+        comment = f"built_by=db_views commit={ver}"
+        conn.execute(text("COMMENT ON VIEW public.vw_point_silver IS :c"), {"c": comment})
+
+        # 2) For CREATE VIEW, NO bind params allowed → use a safely-escaped literal
+        ver_lit = ver.replace("'", "''")
+        conn.execute(text(f"""
             CREATE OR REPLACE VIEW public.ops_build_fingerprint AS
-            SELECT now() AT TIME ZONE 'utc' AS built_at_utc, :ver::text AS commit_sha
-        """), {"ver": ver})
+            SELECT
+              now() AT TIME ZONE 'utc' AS built_at_utc,
+              '{ver_lit}'::text        AS commit_sha
+        """))
+
 
 # Back-compat names
 init_views = _apply_views
