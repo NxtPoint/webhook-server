@@ -2,30 +2,36 @@
     return """
     CREATE SCHEMA IF NOT EXISTS ss_;
 
-    -- Drop first to avoid column-rename conflicts on CREATE OR REPLACE
+    -- Drop first so we never hit column-rename conflicts
     DROP VIEW IF EXISTS ss_.vw_point_enriched CASCADE;
 
-    -- Join vw_point_silver to latest submission_context per session
-    CREATE VIEW ss_.vw_point_enriched AS
+    -- Build a robust context from submission_context
     WITH sc_base AS (
       SELECT
-        -- session_id may be a column or only inside raw_meta
-        COALESCE(NULLIF(sc.session_id::text,''), NULLIF(sc.raw_meta->>'session_id','')) AS session_id_txt,
-        COALESCE(NULLIF(sc.task_id::text,''),    NULLIF(sc.raw_meta->>'task_id',''))    AS task_id_txt,
-        COALESCE(sc.created_at, NULLIF(sc.raw_meta->>'created_at','')::timestamptz)     AS created_at_ts,
+        -- keys can live as columns OR inside raw_meta
+        COALESCE(NULLIF(sc.session_id::text,''), NULLIF(sc.raw_meta->>'session_id',''))      AS session_id_txt,
+        COALESCE(NULLIF(sc.raw_meta->>'session_uid',''), NULLIF(sc.raw_meta->>'sessionUid','')) AS session_uid_txt,
+        COALESCE(NULLIF(sc.task_id::text,''),    NULLIF(sc.raw_meta->>'task_id',''))          AS task_id_txt,
+        COALESCE(sc.created_at, NULLIF(sc.raw_meta->>'created_at','')::timestamptz)           AS created_at_ts,
         sc.raw_meta::jsonb AS m
       FROM public.submission_context sc
     ),
     sc_latest AS (
+      -- keep the latest submission per "group key" (prefer session_id, else session_uid, else task_id)
       SELECT
         b.*,
-        ROW_NUMBER() OVER (PARTITION BY b.session_id_txt ORDER BY b.created_at_ts DESC NULLS LAST) AS rn
+        COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,'')) AS group_key,
+        ROW_NUMBER() OVER (
+          PARTITION BY COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,''))
+          ORDER BY b.created_at_ts DESC NULLS LAST
+        ) AS rn
       FROM sc_base b
-      WHERE b.session_id_txt IS NOT NULL
+      WHERE COALESCE(NULLIF(b.session_id_txt,''), NULLIF(b.session_uid_txt,''), NULLIF(b.task_id_txt,'')) IS NOT NULL
     ),
     ctx AS (
       SELECT
         sl.session_id_txt,
+        sl.session_uid_txt,
         sl.task_id_txt      AS task_id,
         sl.created_at_ts    AS created_at,
 
@@ -54,21 +60,36 @@
              THEN (sl.m->>'player_b_utr')::numeric END AS player_b_utr
       FROM sc_latest sl
       WHERE sl.rn = 1
+    ),
+    -- Reflect p into JSON so we can safely read optional keys
+    p0 AS (
+      SELECT p.*, row_to_json(p) AS pj
+      FROM silver.vw_point_silver p
     )
+    CREATE VIEW ss_.vw_point_enriched AS
     SELECT
-      p.*,
+      p0.*,
       c.task_id,
       c.created_at,
       c.email,
       c.customer_name,
-      c.match_date_meta,  -- keep expected downstream name
+      c.match_date_meta,  -- keep name expected downstream
       c.start_time,
       c.location,
       c.player_a_name,
       c.player_a_utr,
       c.player_b_name,
       c.player_b_utr
-    FROM silver.vw_point_silver p
+    FROM p0
     LEFT JOIN ctx c
-      ON c.session_id_txt = p.session_id::text;
+      ON (
+           -- Match on session_id (numeric/text)
+           (c.session_id_txt IS NOT NULL AND c.session_id_txt = p0.session_id::text)
+           OR
+           -- Match on session_uid (string key)
+           (c.session_uid_txt IS NOT NULL AND c.session_uid_txt = COALESCE(p0.pj->>'session_uid', p0.pj->>'sessionUid'))
+           OR
+           -- Match on task_id (various names in p)
+           (c.task_id IS NOT NULL AND c.task_id = COALESCE(p0.pj->>'task_id', p0.pj->>'sportai_task_id', p0.pj->>'job_id'))
+         );
     """
