@@ -1,35 +1,29 @@
--- ss_.serve_time_trend
--- Per-game serve KPIs across a match timeline, built on ss_.serve_facts (no boolean/int issues)
+CREATE SCHEMA IF NOT EXISTS ss_;
 
-create or replace view ss_.serve_time_trend as
-with s as (select * from ss_.serve_facts)
-select
-    s.session_id,
+-- Time trend of serve outcomes (by day / player / attempt / side)
+CREATE OR REPLACE VIEW ss_.serve_time_trend AS
+WITH base AS (
+  SELECT
+    COALESCE(s.match_date_meta, s.start_ts::date) AS day,
     s.player_id,
-    min(s.match_date_meta)                                          as match_date_meta,
-    s.game_number_d                                                 as game_no,
-
-    count(*)                                          as total_serves,
-    count(*) filter (where s.serve_try=1)             as first_serves,
-    count(*) filter (where s.serve_try=2)             as second_serves,
-
-    (sum(s.is_in))::numeric / nullif(count(*),0)                     as in_pct_total,
-    (sum(s.is_in) filter (where s.serve_try=1))::numeric
-        / nullif(count(*) filter (where s.serve_try=1),0)            as first_in_pct,
-    (sum(s.is_in) filter (where s.serve_try=2))::numeric
-        / nullif(count(*) filter (where s.serve_try=2),0)            as second_in_pct,
-
-    (sum(s.point_won_by_server) filter (where s.serve_try=1 and s.is_in=1))::numeric
-        / nullif(sum(s.is_in) filter (where s.serve_try=1),0)        as first_win_pct_when_in,
-    (sum(s.point_won_by_server) filter (where s.serve_try=2 and s.is_in=1))::numeric
-        / nullif(sum(s.is_in) filter (where s.serve_try=2),0)        as second_win_pct_when_in,
-
-    (sum(s.is_double_fault))::numeric
-        / nullif(count(*) filter (where s.serve_try=2),0)            as df_rate,
-    (sum(s.is_ace))::numeric / nullif(count(*),0)                    as ace_rate,
-
-    avg(s.serve_speed) filter (where s.serve_try=1)                  as avg_first_speed,
-    avg(s.serve_speed) filter (where s.serve_try=2)                  as avg_second_speed
-
-from s
-group by s.session_id, s.player_id, s.game_number_d;
+    s.serve_try,
+    s.side,
+    s.is_in,
+    s.is_ace,
+    s.is_fault,
+    s.is_double_fault
+  FROM ss_.serve_facts s
+)
+SELECT
+  day,
+  player_id,
+  serve_try,
+  side,
+  COUNT(*)::bigint                                                AS attempts,
+  (COUNT(*) FILTER (WHERE is_in))::numeric          / NULLIF(COUNT(*),0) AS in_rate,
+  (COUNT(*) FILTER (WHERE is_ace))::numeric         / NULLIF(COUNT(*),0) AS ace_rate,
+  (COUNT(*) FILTER (WHERE is_fault))::numeric       / NULLIF(COUNT(*),0) AS fault_rate,
+  (COUNT(*) FILTER (WHERE is_double_fault))::numeric/ NULLIF(COUNT(*),0) AS double_fault_rate
+FROM base
+GROUP BY 1,2,3,4
+ORDER BY day DESC, player_id, serve_try, side;
