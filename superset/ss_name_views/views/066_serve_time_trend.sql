@@ -1,32 +1,30 @@
 CREATE SCHEMA IF NOT EXISTS ss_;
 
-CREATE OR REPLACE VIEW ss_.serve_time_trend AS
+DROP VIEW IF EXISTS ss_.serve_time_trend CASCADE;
+
+-- Time trend of serves (per day), sourced purely from 010 via ss_.serve_facts.
+-- We parse match_date if present (YYYY-MM-DD or YYYY/MM/DD). Rows without a valid
+-- match_date are excluded to keep the trend clean.
+
+CREATE VIEW ss_.serve_time_trend AS
 WITH base AS (
   SELECT
-    COALESCE(s.submission_match_date, s.start_ts::date) AS day,
-    s.submission_customer_name,
-    s.submission_task_id,
-    s.player_id,
-    s.serve_try,
-    s.side,
-    s.serve_in,
-    s.is_ace,
-    s.is_fault,
-    s.is_double_fault
+    s.*,
+    /* normalize match_date text -> date when it matches YYYY[-|/]MM[-|/]DD */
+    CASE
+      WHEN COALESCE(s.match_date, '') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+        THEN REPLACE(s.match_date, '/', '-')::date
+      ELSE NULL::date
+    END AS match_date_d
   FROM ss_.serve_facts s
 )
 SELECT
-  day,
-  submission_customer_name,
-  submission_task_id,
-  player_id,
-  serve_try,
-  side,
-  COUNT(*)::bigint                                           AS attempts,
-  (COUNT(*) FILTER (WHERE serve_in))::numeric / NULLIF(COUNT(*),0)          AS in_rate,
-  (COUNT(*) FILTER (WHERE is_ace))::numeric / NULLIF(COUNT(*),0)            AS ace_rate,
-  (COUNT(*) FILTER (WHERE is_fault))::numeric / NULLIF(COUNT(*),0)          AS fault_rate,
-  (COUNT(*) FILTER (WHERE is_double_fault))::numeric / NULLIF(COUNT(*),0)   AS double_fault_rate
-FROM base
-GROUP BY 1,2,3,4,5,6
-ORDER BY day DESC, submission_customer_name, submission_task_id, player_id, serve_try, side;
+  b.match_date_d                          AS d,
+  b.customer_name,
+  b.email,
+  COUNT(*)                                 AS n_serves,
+  SUM(CASE WHEN b.is_in THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*),0) AS in_pct
+FROM base b
+WHERE b.match_date_d IS NOT NULL
+GROUP BY b.match_date_d, b.customer_name, b.email
+ORDER BY b.match_date_d, b.customer_name, b.email;
