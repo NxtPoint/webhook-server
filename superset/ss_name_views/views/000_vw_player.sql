@@ -1,4 +1,4 @@
-﻿CREATE OR REPLACE VIEW ss_vw_player AS
+﻿CREATE OR REPLACE VIEW ss_.vw_player AS
 WITH ctx_pre AS (
   SELECT
     sc.task_id,
@@ -14,8 +14,8 @@ WITH ctx_pre AS (
     sc.player_b_utr,
     sc.share_url,
     sc.video_url,
-    sc.session_id           AS session_id_typed,
-    sc.raw_meta::jsonb      AS m,
+    sc.session_id AS session_id_typed,
+    sc.raw_meta::jsonb AS m,
     ROW_NUMBER() OVER (
       PARTITION BY sc.task_id
       ORDER BY sc.created_at DESC NULLS LAST
@@ -27,23 +27,23 @@ ctx_norm AS (
   SELECT
     cp.task_id,
     cp.created_at,
-    NULLIF(cp.email,'')                               AS email,
-    COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name',''))  AS customer_name,
+    NULLIF(cp.email,'') AS email,
+    COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name','')) AS customer_name,
     COALESCE(cp.match_date,
              CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
-                    THEN REPLACE(cp.m->>'match_date','/','-')::date END)      AS match_date,
+                  THEN REPLACE(cp.m->>'match_date','/','-')::date END) AS match_date,
     COALESCE(cp.start_time,
              CASE WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
-                    THEN (cp.m->>'start_time')::time END)                     AS start_time,
-    COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location',''))            AS location,
-    COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name',''))  AS player_a_name,
-    COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name',''))  AS player_b_name,
+                  THEN (cp.m->>'start_time')::time END) AS start_time,
+    COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location','')) AS location,
+    COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
+    COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
     COALESCE(cp.player_a_utr,
              CASE WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\.[0-9]+)?$'
-                  THEN (cp.m->>'player_a_utr')::numeric END)                  AS player_a_utr,
+                  THEN (cp.m->>'player_a_utr')::numeric END) AS player_a_utr,
     COALESCE(cp.player_b_utr,
              CASE WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\.[0-9]+)?$'
-                  THEN (cp.m->>'player_b_utr')::numeric END)                  AS player_b_utr,
+                  THEN (cp.m->>'player_b_utr')::numeric END) AS player_b_utr,
     cp.share_url,
     cp.video_url,
     cp.session_id_typed,
@@ -73,11 +73,11 @@ ctx_with_session AS (
     ON ds.session_uid = (c.task_id || '_statistics')
 )
 SELECT
-  cw.session_id_resolved         AS session_id,
-  'Player A'::text               AS player_label,
+  cw.session_id_resolved AS session_id,
+  'Player A'::text AS player_label,
   (cw.session_id_resolved::text || '|Player A') AS session_player_key,
-  cw.player_a_name               AS player_name,
-  cw.player_a_utr                AS player_utr,
+  cw.player_a_name AS player_name,
+  cw.player_a_utr AS player_utr,
   cw.task_id,
   cw.created_at,
   cw.email,
@@ -89,15 +89,13 @@ SELECT
   cw.video_url
 FROM ctx_with_session cw
 WHERE cw.session_id_resolved IS NOT NULL
-
 UNION ALL
-
 SELECT
-  cw.session_id_resolved         AS session_id,
-  'Player B'::text               AS player_label,
+  cw.session_id_resolved AS session_id,
+  'Player B'::text AS player_label,
   (cw.session_id_resolved::text || '|Player B') AS session_player_key,
-  cw.player_b_name               AS player_name,
-  cw.player_b_utr                AS player_utr,
+  cw.player_b_name AS player_name,
+  cw.player_b_utr AS player_utr,
   cw.task_id,
   cw.created_at,
   cw.email,
