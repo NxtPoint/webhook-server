@@ -35,9 +35,14 @@ def make_sql(cur):
         COALESCE(cp.match_date,
                  CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
                       THEN REPLACE(cp.m->>'match_date','/','-')::date END) AS match_date,
-        COALESCE(cp.start_time,
-                 CASE WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
-                      THEN (cp.m->>'start_time')::time END) AS start_time,
+        COALESCE(
+            (cp.start_time)::time,
+            CASE
+                WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+                THEN (cp.m->>'start_time')::time
+            END
+            ) AS start_time,
+
         COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location','')) AS location,
         COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
         COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
