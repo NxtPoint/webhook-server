@@ -1,5 +1,4 @@
-﻿-- ss_/views/000_vw_player.sql
-CREATE SCHEMA IF NOT EXISTS ss_;
+﻿CREATE SCHEMA IF NOT EXISTS ss_;
 
 CREATE OR REPLACE VIEW ss_.vw_player AS
 WITH ctx_pre AS (
@@ -27,13 +26,11 @@ WITH ctx_pre AS (
   WHERE sc.task_id IS NOT NULL
 ),
 ctx_norm AS (
-  /* Keep only the latest submission per task_id and coalesce fields from typed cols or raw_meta */
   SELECT
     cp.task_id,
     cp.created_at,
     NULLIF(cp.email,'')                               AS email,
     COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name',''))  AS customer_name,
-    /* date & time parsing with raw_meta fallback */
     COALESCE(cp.match_date,
              CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
                     THEN REPLACE(cp.m->>'match_date','/','-')::date END)      AS match_date,
@@ -57,7 +54,6 @@ ctx_norm AS (
   WHERE cp.rn = 1
 ),
 ctx_with_session AS (
-  /* Resolve session_id using the canonical join rule if typed session_id is missing */
   SELECT
     c.task_id,
     COALESCE(c.session_id_typed, ds.session_id) AS session_id_resolved,
@@ -79,7 +75,6 @@ ctx_with_session AS (
     ON ds.session_uid = (c.task_id || '_statistics')
 )
 SELECT
-  /* Player A row */
   cw.session_id_resolved         AS session_id,
   'Player A'::text               AS player_label,
   (cw.session_id_resolved::text || '|Player A') AS session_player_key,
@@ -100,7 +95,6 @@ WHERE cw.session_id_resolved IS NOT NULL
 UNION ALL
 
 SELECT
-  /* Player B row */
   cw.session_id_resolved         AS session_id,
   'Player B'::text               AS player_label,
   (cw.session_id_resolved::text || '|Player B') AS session_player_key,
