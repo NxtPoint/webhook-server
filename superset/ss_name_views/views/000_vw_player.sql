@@ -1,4 +1,4 @@
-﻿CREATE OR REPLACE VIEW ss_.vw_player AS
+﻿CREATE OR REPLACE VIEW ss_vw_player AS
 WITH ctx_pre AS (
   SELECT
     sc.task_id,
