@@ -2,9 +2,8 @@
 CREATE SCHEMA IF NOT EXISTS ss_;
 
 CREATE OR REPLACE VIEW ss_.vw_player AS
-WITH base AS (
+WITH ctx_pre AS (
   SELECT
-    sc.session_id,
     sc.task_id,
     sc.created_at,
     sc.email,
@@ -18,44 +17,103 @@ WITH base AS (
     sc.player_b_utr,
     sc.share_url,
     sc.video_url,
-    sc.raw_meta
+    sc.session_id           AS session_id_typed,
+    sc.raw_meta::jsonb      AS m,
+    ROW_NUMBER() OVER (
+      PARTITION BY sc.task_id
+      ORDER BY sc.created_at DESC NULLS LAST
+    ) AS rn
   FROM public.submission_context sc
-  WHERE sc.session_id IS NOT NULL
+  WHERE sc.task_id IS NOT NULL
+),
+ctx_norm AS (
+  /* Keep only the latest submission per task_id and coalesce fields from typed cols or raw_meta */
+  SELECT
+    cp.task_id,
+    cp.created_at,
+    NULLIF(cp.email,'')                               AS email,
+    COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name',''))  AS customer_name,
+    /* date & time parsing with raw_meta fallback */
+    COALESCE(cp.match_date,
+             CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+                    THEN REPLACE(cp.m->>'match_date','/','-')::date END)      AS match_date,
+    COALESCE(cp.start_time,
+             CASE WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+                    THEN (cp.m->>'start_time')::time END)                     AS start_time,
+    COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location',''))            AS location,
+    COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name',''))  AS player_a_name,
+    COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name',''))  AS player_b_name,
+    COALESCE(cp.player_a_utr,
+             CASE WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\.[0-9]+)?$'
+                  THEN (cp.m->>'player_a_utr')::numeric END)                  AS player_a_utr,
+    COALESCE(cp.player_b_utr,
+             CASE WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\.[0-9]+)?$'
+                  THEN (cp.m->>'player_b_utr')::numeric END)                  AS player_b_utr,
+    cp.share_url,
+    cp.video_url,
+    cp.session_id_typed,
+    cp.m
+  FROM ctx_pre cp
+  WHERE cp.rn = 1
+),
+ctx_with_session AS (
+  /* Resolve session_id using the canonical join rule if typed session_id is missing */
+  SELECT
+    c.task_id,
+    COALESCE(c.session_id_typed, ds.session_id) AS session_id_resolved,
+    c.created_at,
+    c.email,
+    c.customer_name,
+    c.match_date,
+    c.start_time,
+    c.location,
+    c.player_a_name,
+    c.player_b_name,
+    c.player_a_utr,
+    c.player_b_utr,
+    c.share_url,
+    c.video_url,
+    c.m
+  FROM ctx_norm c
+  LEFT JOIN public.dim_session ds
+    ON ds.session_uid = (c.task_id || '_statistics')
 )
--- Player A row
 SELECT
-  b.session_id,
-  'Player A'::text AS player_label,
-  (b.session_id::text || '|Player A') AS session_player_key,
-  b.player_a_name  AS player_name,
-  b.player_a_utr   AS player_utr,
-  b.task_id,
-  b.created_at,
-  b.email,
-  b.customer_name,
-  b.match_date,
-  b.start_time,
-  b.location,
-  b.share_url,
-  b.video_url,
-  b.raw_meta
-FROM base b
+  /* Player A row */
+  cw.session_id_resolved         AS session_id,
+  'Player A'::text               AS player_label,
+  (cw.session_id_resolved::text || '|Player A') AS session_player_key,
+  cw.player_a_name               AS player_name,
+  cw.player_a_utr                AS player_utr,
+  cw.task_id,
+  cw.created_at,
+  cw.email,
+  cw.customer_name,
+  cw.match_date,
+  cw.start_time,
+  cw.location,
+  cw.share_url,
+  cw.video_url
+FROM ctx_with_session cw
+WHERE cw.session_id_resolved IS NOT NULL
+
 UNION ALL
--- Player B row
+
 SELECT
-  b.session_id,
-  'Player B'::text AS player_label,
-  (b.session_id::text || '|Player B') AS session_player_key,
-  b.player_b_name  AS player_name,
-  b.player_b_utr   AS player_utr,
-  b.task_id,
-  b.created_at,
-  b.email,
-  b.customer_name,
-  b.match_date,
-  b.start_time,
-  b.location,
-  b.share_url,
-  b.video_url,
-  b.raw_meta
-FROM base b;
+  /* Player B row */
+  cw.session_id_resolved         AS session_id,
+  'Player B'::text               AS player_label,
+  (cw.session_id_resolved::text || '|Player B') AS session_player_key,
+  cw.player_b_name               AS player_name,
+  cw.player_b_utr                AS player_utr,
+  cw.task_id,
+  cw.created_at,
+  cw.email,
+  cw.customer_name,
+  cw.match_date,
+  cw.start_time,
+  cw.location,
+  cw.share_url,
+  cw.video_url
+FROM ctx_with_session cw
+WHERE cw.session_id_resolved IS NOT NULL;
