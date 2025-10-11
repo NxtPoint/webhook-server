@@ -1,4 +1,4 @@
-# 000: ss_.vw_player – normalized A/B submission data
+# 000: ss_.vw_player – normalized A/B submission data (dynamic)
 def make_sql(cur):
     return """
     CREATE OR REPLACE VIEW ss_.vw_player AS
@@ -44,10 +44,8 @@ def make_sql(cur):
 
         /* start_time: guard against empty strings in both typed and JSON */
         CASE
-          /* typed column present and looks like HH:MM[:SS] */
           WHEN COALESCE(NULLIF(cp.start_time::text,''),'') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
             THEN (cp.start_time::text)::time
-          /* fallback to JSON value if valid HH:MM[:SS] */
           WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
             THEN (cp.m->>'start_time')::time
           ELSE NULL
@@ -57,8 +55,7 @@ def make_sql(cur):
         COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
         COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
 
-        # 000_vw_player.dynamic.py  — inside ctx_norm SELECT list
-                /* UTRs: typed '' -> NULL, JSON cast only if numeric */
+        /* UTRs: typed '' -> NULL, JSON cast only if numeric */
         COALESCE(
           NULLIF(cp.player_a_utr::text, '')::numeric,
           CASE
@@ -74,8 +71,6 @@ def make_sql(cur):
               THEN (cp.m->>'player_b_utr')::numeric
           END
         ) AS player_b_utr,
-
-
 
         cp.share_url,
         cp.video_url,
@@ -106,6 +101,7 @@ def make_sql(cur):
         ON ds.session_uid = (c.task_id || '_statistics')
     )
     SELECT
+      'v4'::text AS _vw_version,
       cw.session_id_resolved AS session_id,
       'Player A'::text AS player_label,
       (cw.session_id_resolved::text || '|Player A') AS session_player_key,
@@ -124,6 +120,7 @@ def make_sql(cur):
     WHERE cw.session_id_resolved IS NOT NULL
     UNION ALL
     SELECT
+      'v4'::text AS _vw_version,
       cw.session_id_resolved AS session_id,
       'Player B'::text AS player_label,
       (cw.session_id_resolved::text || '|Player B') AS session_player_key,
