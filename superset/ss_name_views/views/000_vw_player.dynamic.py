@@ -46,12 +46,22 @@ def make_sql(cur):
         COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location','')) AS location,
         COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
         COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
-        COALESCE(cp.player_a_utr,
-                 CASE WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
-                      THEN (cp.m->>'player_a_utr')::numeric END) AS player_a_utr,
-        COALESCE(cp.player_b_utr,
-                 CASE WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
-                      THEN (cp.m->>'player_b_utr')::numeric END) AS player_b_utr,
+        COALESCE(
+            (cp.player_a_utr)::numeric,
+            CASE
+                WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+                THEN (cp.m->>'player_a_utr')::numeric
+            END
+            ) AS player_a_utr,
+
+        COALESCE(
+            (cp.player_b_utr)::numeric,
+            CASE
+                WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+                THEN (cp.m->>'player_b_utr')::numeric
+            END
+            ) AS player_b_utr,
+
         cp.share_url,
         cp.video_url,
         cp.session_id_typed,
