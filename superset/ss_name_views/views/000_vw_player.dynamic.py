@@ -1,4 +1,4 @@
-# 000: ss_.vw_player – normalized A/B submission data
+# 000: ss_.vw_player – normalized A/B submission data (type-safe)
 def make_sql(cur):
     return """
     CREATE OR REPLACE VIEW ss_.vw_player AS
@@ -8,8 +8,8 @@ def make_sql(cur):
         sc.created_at,
         sc.email,
         sc.customer_name,
-        sc.match_date,
-        sc.start_time,
+        sc.match_date,              -- may be text or date depending on source
+        sc.start_time,              -- may be text or time depending on source
         sc.location,
         sc.player_a_name,
         sc.player_b_name,
@@ -31,36 +31,43 @@ def make_sql(cur):
         cp.task_id,
         cp.created_at,
         NULLIF(cp.email,'') AS email,
+
         COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name','')) AS customer_name,
-        COALESCE(cp.match_date,
-                CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
-                      THEN REPLACE(cp.m->>'match_date','/','-')::date END) AS match_date,
-                CASE
-                    WHEN cp.start_time IS NOT NULL THEN cp.start_time::time
-                    WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
-                        AND cp.m->>'start_time' <> ''
-                        THEN (cp.m->>'start_time')::time
-                    ELSE NULL
-                    END AS start_time,
+
+        /* --- match_date: only cast when text matches YYYY-MM-DD or YYYY/MM/DD --- */
+        CASE
+          WHEN COALESCE( (cp.match_date)::text, '' ) ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+            THEN REPLACE( (cp.match_date)::text, '/', '-' )::date
+          WHEN COALESCE( cp.m->>'match_date', '' ) ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+            THEN REPLACE( cp.m->>'match_date', '/', '-' )::date
+          ELSE NULL
+        END AS match_date,
+
+        /* --- start_time: only cast when text matches HH:MM(:SS)? --- */
+        CASE
+          WHEN COALESCE( (cp.start_time)::text, '' ) ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+            THEN (cp.start_time)::time
+          WHEN COALESCE( cp.m->>'start_time', '' ) ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+            THEN (cp.m->>'start_time')::time
+          ELSE NULL
+        END AS start_time,
 
         COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location','')) AS location,
         COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
         COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
+
+        /* --- UTRs: explicitly numeric on both sides --- */
         COALESCE(
-            (cp.player_a_utr)::numeric,
-            CASE
-                WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
-                THEN (cp.m->>'player_a_utr')::numeric
-            END
-            ) AS player_a_utr,
+          (cp.player_a_utr)::numeric,
+          CASE WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+               THEN (cp.m->>'player_a_utr')::numeric END
+        ) AS player_a_utr,
 
         COALESCE(
-            (cp.player_b_utr)::numeric,
-            CASE
-                WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
-                THEN (cp.m->>'player_b_utr')::numeric
-            END
-            ) AS player_b_utr,
+          (cp.player_b_utr)::numeric,
+          CASE WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+               THEN (cp.m->>'player_b_utr')::numeric END
+        ) AS player_b_utr,
 
         cp.share_url,
         cp.video_url,
@@ -107,7 +114,9 @@ def make_sql(cur):
       cw.video_url
     FROM ctx_with_session cw
     WHERE cw.session_id_resolved IS NOT NULL
+
     UNION ALL
+
     SELECT
       cw.session_id_resolved AS session_id,
       'Player B'::text AS player_label,
