@@ -33,15 +33,15 @@ def make_sql(cur):
         NULLIF(cp.email,'') AS email,
         COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name','')) AS customer_name,
         COALESCE(cp.match_date,
-                 CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
+                CASE WHEN COALESCE(cp.m->>'match_date','') ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}$'
                       THEN REPLACE(cp.m->>'match_date','/','-')::date END) AS match_date,
-        COALESCE(
-            (cp.start_time)::time,
-            CASE
-                WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
-                THEN (cp.m->>'start_time')::time
-            END
-            ) AS start_time,
+                CASE
+                    WHEN cp.start_time IS NOT NULL THEN cp.start_time::time
+                    WHEN COALESCE(cp.m->>'start_time','') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
+                        AND cp.m->>'start_time' <> ''
+                        THEN (cp.m->>'start_time')::time
+                    ELSE NULL
+                    END AS start_time,
 
         COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location','')) AS location,
         COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
