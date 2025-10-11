@@ -1,4 +1,4 @@
-# 001: ss_.vw_point auto-detect source schema for vw_point_silver
+# 001: ss_.vw_point – pass-through from vw_point_silver + A/B label + join key (auto-detect source schema)
 def make_sql(cur):
     cur.execute("""
         with cte as (
@@ -14,6 +14,8 @@ def make_sql(cur):
     src = f"{row[0]}.vw_point_silver"
 
     return f"""
+    DROP VIEW IF EXISTS ss_.vw_point CASCADE;
+
     CREATE OR REPLACE VIEW ss_.vw_point AS
     SELECT
       p.*,
@@ -27,6 +29,7 @@ def make_sql(cur):
          WHEN p.player_id = MIN(p.player_id) OVER (PARTITION BY p.session_id)
            THEN 'Player A'::text
            ELSE 'Player B'::text
-       END) AS session_player_key
+       END) AS session_player_key,
+      'v1'::text AS _vw_version
     FROM {src} p;
     """
