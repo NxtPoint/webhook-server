@@ -1,6 +1,8 @@
-# 000: ss_.vw_player – normalized A/B submission data (dynamic)
+# 000: ss_.vw_player – normalized A/B submission data (dynamic, drop+create)
 def make_sql(cur):
     return """
+    DROP VIEW IF EXISTS ss_.vw_player CASCADE;
+
     CREATE OR REPLACE VIEW ss_.vw_player AS
     WITH ctx_pre AS (
       SELECT
@@ -32,8 +34,6 @@ def make_sql(cur):
         cp.created_at,
         NULLIF(cp.email,'') AS email,
         COALESCE(NULLIF(cp.customer_name,''), NULLIF(cp.m->>'customer_name','')) AS customer_name,
-
-        /* match_date: typed or JSON (yyyy-mm-dd / yyyy/mm/dd) */
         COALESCE(
           cp.match_date,
           CASE
@@ -41,8 +41,6 @@ def make_sql(cur):
               THEN REPLACE(cp.m->>'match_date','/','-')::date
           END
         ) AS match_date,
-
-        /* start_time: guard against empty strings in both typed and JSON */
         CASE
           WHEN COALESCE(NULLIF(cp.start_time::text,''),'') ~ '^[0-9]{2}:[0-9]{2}(:[0-9]{2})?$'
             THEN (cp.start_time::text)::time
@@ -50,12 +48,9 @@ def make_sql(cur):
             THEN (cp.m->>'start_time')::time
           ELSE NULL
         END AS start_time,
-
         COALESCE(NULLIF(cp.location,''), NULLIF(cp.m->>'location','')) AS location,
         COALESCE(NULLIF(cp.player_a_name,''), NULLIF(cp.m->>'player_a_name','')) AS player_a_name,
         COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
-
-        /* UTRs: typed '' -> NULL, JSON cast only if numeric */
         COALESCE(
           NULLIF(cp.player_a_utr::text, '')::numeric,
           CASE
@@ -63,7 +58,6 @@ def make_sql(cur):
               THEN (cp.m->>'player_a_utr')::numeric
           END
         ) AS player_a_utr,
-
         COALESCE(
           NULLIF(cp.player_b_utr::text, '')::numeric,
           CASE
@@ -71,7 +65,6 @@ def make_sql(cur):
               THEN (cp.m->>'player_b_utr')::numeric
           END
         ) AS player_b_utr,
-
         cp.share_url,
         cp.video_url,
         cp.session_id_typed,
@@ -101,7 +94,6 @@ def make_sql(cur):
         ON ds.session_uid = (c.task_id || '_statistics')
     )
     SELECT
-      'v4'::text AS _vw_version,
       cw.session_id_resolved AS session_id,
       'Player A'::text AS player_label,
       (cw.session_id_resolved::text || '|Player A') AS session_player_key,
@@ -115,12 +107,12 @@ def make_sql(cur):
       cw.start_time,
       cw.location,
       cw.share_url,
-      cw.video_url
+      cw.video_url,
+      'v5'::text AS _vw_version
     FROM ctx_with_session cw
     WHERE cw.session_id_resolved IS NOT NULL
     UNION ALL
     SELECT
-      'v4'::text AS _vw_version,
       cw.session_id_resolved AS session_id,
       'Player B'::text AS player_label,
       (cw.session_id_resolved::text || '|Player B') AS session_player_key,
@@ -134,7 +126,8 @@ def make_sql(cur):
       cw.start_time,
       cw.location,
       cw.share_url,
-      cw.video_url
+      cw.video_url,
+      'v5'::text AS _vw_version
     FROM ctx_with_session cw
     WHERE cw.session_id_resolved IS NOT NULL;
     """
