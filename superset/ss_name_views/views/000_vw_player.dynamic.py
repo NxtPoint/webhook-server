@@ -58,28 +58,23 @@ def make_sql(cur):
         COALESCE(NULLIF(cp.player_b_name,''), NULLIF(cp.m->>'player_b_name','')) AS player_b_name,
 
         # 000_vw_player.dynamic.py  — inside ctx_norm SELECT list
-        /* UTRs: validate typed and JSON, cast only when numeric */
+                /* UTRs: typed '' -> NULL, JSON cast only if numeric */
         COALESCE(
+          NULLIF(cp.player_a_utr::text, '')::numeric,
           CASE
-            WHEN COALESCE(NULLIF(cp.player_a_utr::text,''),'') ~ '^[0-9]+(\\.[0-9]+)?$'
-              THEN (cp.player_a_utr::text)::numeric
-          END,
-          CASE
-            WHEN (cp.m->>'player_a_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+            WHEN COALESCE(cp.m->>'player_a_utr','') ~ '^[0-9]+(\\.[0-9]+)?$'
               THEN (cp.m->>'player_a_utr')::numeric
           END
         ) AS player_a_utr,
 
         COALESCE(
+          NULLIF(cp.player_b_utr::text, '')::numeric,
           CASE
-            WHEN COALESCE(NULLIF(cp.player_b_utr::text,''),'') ~ '^[0-9]+(\\.[0-9]+)?$'
-              THEN (cp.player_b_utr::text)::numeric
-          END,
-          CASE
-            WHEN (cp.m->>'player_b_utr') ~ '^[0-9]+(\\.[0-9]+)?$'
+            WHEN COALESCE(cp.m->>'player_b_utr','') ~ '^[0-9]+(\\.[0-9]+)?$'
               THEN (cp.m->>'player_b_utr')::numeric
           END
         ) AS player_b_utr,
+
 
 
         cp.share_url,
