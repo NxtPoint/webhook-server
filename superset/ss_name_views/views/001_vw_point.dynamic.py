@@ -1,8 +1,15 @@
-# 001: ss_.vw_point – pass-through from vw_point_silver + A/B label + join key (auto-detect source schema)
+# 001: ss_.vw_point – BI-friendly point rows built from vw_point_silver
+# - auto-detect source schema
+# - denoise (valid_swing only)
+# - normalize A/B, names, swing types
+# - add win/server flags & join key
+# - materialized view + indexes, and a thin view for BI
+
 def make_sql(cur):
+    # locate vw_point_silver
     cur.execute("""
         with cte as (
-          select table_schema from information_schema.views where table_name='vw_point_silver'
+          select table_schema from information_schema.views  where table_name='vw_point_silver'
           union all
           select table_schema from information_schema.tables where table_name='vw_point_silver'
         )
@@ -14,22 +21,94 @@ def make_sql(cur):
     src = f"{row[0]}.vw_point_silver"
 
     return f"""
-    DROP VIEW IF EXISTS ss_.vw_point CASCADE;
+    -- Drop then (re)create materialized view
+    DROP MATERIALIZED VIEW IF EXISTS ss_.mv_point CASCADE;
 
+    CREATE MATERIALIZED VIEW ss_.mv_point AS
+    WITH base AS (
+      SELECT p.*
+      FROM {src} p
+      WHERE COALESCE(p.valid_swing_d, FALSE) = TRUE  -- denoise
+    ),
+    labeled AS (
+      SELECT
+        b.session_id,
+        b.session_uid_d,
+        b.player_id,
+
+        /* Player A/B within session (numeric-id ordering heuristic) */
+        CASE
+          WHEN b.player_id = MIN(b.player_id) OVER (PARTITION BY b.session_id) THEN 'Player A'
+          ELSE 'Player B'
+        END AS player_label,
+
+        /* server / winner flags */
+        (b.server_id = b.player_id)                 AS is_server,
+        (b.point_winner_player_id_d = b.player_id)  AS point_won,
+        (b.game_winner_player_id_d  = b.player_id)  AS game_won,
+
+        /* human swing type */
+        CASE lower(COALESCE(b.swing_type_raw,''))
+          WHEN 'fh'         THEN 'forehand'
+          WHEN 'bh'         THEN 'backhand'
+          WHEN 'serve'      THEN 'serve'
+          WHEN 'sv'         THEN 'serve-volley'
+          WHEN 'volley'     THEN 'volley'
+          WHEN 'oh'         THEN 'overhead'
+          WHEN 'fh_volley'  THEN 'forehand-volley'
+          WHEN 'bh_volley'  THEN 'backhand-volley'
+          ELSE 'unknown'
+        END AS swing_type,
+
+        /* serve try (friendly) */
+        CASE b.serve_try_ix_in_point WHEN 1 THEN 'first' WHEN 2 THEN 'second' ELSE NULL END AS serve_try,
+
+        /* keep some useful raw fields (rename for clarity) */
+        b.serve_try_ix_in_point,
+        b.first_rally_shot_ix,
+        b.start_serve_shot_ix,
+        b.point_number_d       AS point_number,
+        b.game_number_d        AS game_number,
+        b.point_in_game_d      AS point_in_game,
+        b.serving_side_d       AS serving_side,
+        b.is_serve_fault_d     AS is_serve_fault,
+        b.is_last_in_point_d,
+        b.is_last_valid_in_point_d,
+        b.terminal_basis_d,
+        b.play_d,
+        b.point_score_text_d   AS point_score_text,
+        b.game_score_text_after_d AS game_score_text_after,
+
+        /* join keys */
+        (b.session_id::text || '|' ||
+          CASE
+            WHEN b.player_id = MIN(b.player_id) OVER (PARTITION BY b.session_id) THEN 'Player A'
+            ELSE 'Player B'
+          END
+        ) AS session_player_key
+
+      FROM base b
+    ),
+    with_names AS (
+      SELECT
+        l.*,
+        pv.player_name,
+        pv.player_utr
+      FROM labeled l
+      LEFT JOIN ss_.vw_player pv
+        ON pv.session_player_key = l.session_player_key
+    )
+    SELECT * FROM with_names;
+
+    -- Helpful indexes for BI filters/joins
+    CREATE INDEX IF NOT EXISTS mv_point_session_id_idx       ON ss_.mv_point (session_id);
+    CREATE INDEX IF NOT EXISTS mv_point_sess_player_key_idx  ON ss_.mv_point (session_player_key);
+    CREATE INDEX IF NOT EXISTS mv_point_player_label_idx     ON ss_.mv_point (player_label);
+    CREATE INDEX IF NOT EXISTS mv_point_player_id_idx        ON ss_.mv_point (player_id);
+    CREATE INDEX IF NOT EXISTS mv_point_is_server_idx        ON ss_.mv_point (is_server);
+    CREATE INDEX IF NOT EXISTS mv_point_swing_type_idx       ON ss_.mv_point (swing_type);
+
+    -- Thin view for tools (Power BI prefers views)
     CREATE OR REPLACE VIEW ss_.vw_point AS
-    SELECT
-      p.*,
-      CASE
-        WHEN p.player_id = MIN(p.player_id) OVER (PARTITION BY p.session_id)
-          THEN 'Player A'::text
-          ELSE 'Player B'::text
-      END AS player_label,
-      (p.session_id::text || '|' ||
-       CASE
-         WHEN p.player_id = MIN(p.player_id) OVER (PARTITION BY p.session_id)
-           THEN 'Player A'::text
-           ELSE 'Player B'::text
-       END) AS session_player_key,
-      'v1'::text AS _vw_version
-    FROM {src} p;
+    SELECT * FROM ss_.mv_point;
     """
