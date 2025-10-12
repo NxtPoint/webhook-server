@@ -40,7 +40,7 @@ def make_sql(cur):
         MIN(b.player_id) OVER (PARTITION BY b.session_id) AS player_a_id,
         MAX(b.player_id) OVER (PARTITION BY b.session_id) AS player_b_id,
 
-        -- Hitter (this row)
+        -- Hitter label + join key
         CASE
           WHEN b.player_id = MIN(b.player_id) OVER (PARTITION BY b.session_id) THEN 'Player A'
           ELSE 'Player B'
@@ -53,11 +53,11 @@ def make_sql(cur):
           END
         ) AS session_player_key,
 
-        -- Server / Winner IDs (raw)
+        -- Server / Winner IDs
         b.server_id,
         b.point_winner_player_id_d AS winner_id,
 
-        -- Helper: server label and session key
+        -- Helper: server label/key
         CASE
           WHEN b.server_id IS NULL THEN NULL
           WHEN b.server_id = MIN(b.player_id) OVER (PARTITION BY b.session_id) THEN 'Player A'
@@ -74,7 +74,7 @@ def make_sql(cur):
           ELSE NULL
         END AS server_session_player_key,
 
-        -- Helper: winner label and session key
+        -- Helper: winner label/key
         CASE
           WHEN b.point_winner_player_id_d IS NULL THEN NULL
           WHEN b.point_winner_player_id_d = MIN(b.player_id) OVER (PARTITION BY b.session_id) THEN 'Player A'
@@ -111,11 +111,11 @@ def make_sql(cur):
           ELSE 'unknown'
         END AS swing_type,
 
-        -- Keep useful tracking for visuals
+        -- Tracking needed downstream
         b.ball_speed,
         b.serve_loc_18_d           AS serve_loc_18,
         b.serving_side_d           AS serving_side,
-        b.placement_ad_d           AS placement_ad,    -- A/B/C/D rally placement (requested)
+        b.placement_ad_d           AS placement_ad,    -- A/B/C/D rally placement
         b.serve_try_ix_in_point,
         b.first_rally_shot_ix,
         b.start_serve_shot_ix,
@@ -127,7 +127,7 @@ def make_sql(cur):
         b.point_score_text_d       AS point_score_text,
         b.game_score_text_after_d  AS game_score_text_after,
 
-        -- Terminal/flags (kept minimal)
+        -- Terminal/flags (minimal)
         b.is_serve_fault_d         AS is_serve_fault,
         b.is_last_in_point_d,
         b.is_last_valid_in_point_d,
@@ -137,12 +137,14 @@ def make_sql(cur):
       FROM base b
     )
     SELECT
-      -- Select only clean fact columns (no player metadata here)
+      -- fact columns (no player metadata here)
       session_id, session_uid_d, player_id,
       player_label, session_player_key,
       server_id, server_label, server_session_player_key,
       winner_id, winner_label, winner_session_player_key,
-      swing_type, serve_try,
+      swing_type,
+      /* compute serve_try here to avoid alias drift */
+      CASE serve_try_ix_in_point WHEN 1 THEN 'first' WHEN 2 THEN 'second' ELSE NULL END AS serve_try,
       ball_speed, serve_loc_18, serving_side, placement_ad,
       serve_try_ix_in_point, first_rally_shot_ix, start_serve_shot_ix,
       point_number, game_number, point_in_game,
