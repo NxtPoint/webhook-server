@@ -785,14 +785,16 @@ def ops_sportai_callback():
             if task_id:
                 _attach_submission_context(conn, task_id=task_id, session_id=sid, session_uid=res.get("session_uid"))
                 _set_status_cache(conn, task_id, "completed", result_url)
-            counts = conn.execute(sql_text("""
+                counts = conn.execute(sql_text("""
                 SELECT
                   (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
-            """), {"sid": sid}).fetchone()
+            """), {"sid": sid}).fetchone()           
+        with engine.begin() as conn: 
+                    conn.execute(sql_text("REFRESH MATERIALIZED VIEW CONCURRENTLY ss_.mv_point;"))
         return jsonify({"ok": True, "ingested": True,
                         "session_uid": res.get("session_uid"),
                         "session_id":  sid,
@@ -804,6 +806,8 @@ def ops_sportai_callback():
                                           "swings": counts[4]}})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+    
+
 
 # -------------------------------------------------------
 # UI blueprint (if present)
