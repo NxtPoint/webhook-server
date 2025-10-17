@@ -1,7 +1,7 @@
 ﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status)
 import os, json, time, socket, sys, inspect, hashlib, re
 from urllib.parse import urlparse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, request, jsonify, Response
@@ -38,6 +38,15 @@ def ops_code_hash():
 # -------------------------------------------------------
 OPS_KEY = os.getenv("OPS_KEY", "").strip()
 
+# ---------- Public base (for optional webhook) ----------
+BASE_URL = os.getenv("BASE_URL", "").strip().rstrip("/")
+
+def _webhook_url():
+    """Return signed webhook URL if BASE_URL & OPS_KEY are set; else None."""
+    if not BASE_URL or not OPS_KEY:
+        return None
+    return f"{BASE_URL}/ops/sportai-callback?key={OPS_KEY}"
+
 # ---------- SportAI config ----------
 SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.com").strip().rstrip("/")
 SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics/tennis").strip()
@@ -53,6 +62,7 @@ DEFAULT_REPLACE_ON_INGEST = (
     or "1"
 ).strip().lower() in ("1","true","yes","y")
 
+# Recommendation: keep this OFF; the worker/webhook handles ingest out-of-band.
 AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "0").lower() in ("1","true","yes","y")
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
 
@@ -80,7 +90,8 @@ app.register_blueprint(ingest_bp, url_prefix="")            # mounts /ops/* inge
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
 S3_BUCKET  = os.getenv("S3_BUCKET", "").strip() or None
-S3_PREFIX  = (os.getenv("S3_PREFIX", "wix-uploads") or "wix-uploads").strip().strip("/")
+# Clean default namespace (no more "wix-uploads" unless you set it explicitly)
+S3_PREFIX  = (os.getenv("S3_PREFIX", "incoming") or "incoming").strip().strip("/")
 S3_GET_EXPIRES = int(os.getenv("S3_GET_EXPIRES", "604800"))  # 7 days
 
 def _require_s3():
@@ -221,6 +232,13 @@ def _ensure_submission_context_schema(conn):
           session_id     INT
         );
     """))
+    # status cache (safe to rerun)
+    conn.execute(sql_text("""
+        ALTER TABLE submission_context
+        ADD COLUMN IF NOT EXISTS last_status     TEXT,
+        ADD COLUMN IF NOT EXISTS last_status_at  TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS last_result_url TEXT
+    """))
 
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
     if not engine: return
@@ -250,7 +268,7 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
                   player_b_utr=EXCLUDED.player_b_utr,
                   video_url=EXCLUDED.video_url,
                   share_url=EXCLUDED.share_url,
-                  raw_meta=EXCLUDED.raw_meta;
+                  raw_meta=EXCLUDED.raw_meta
             """), {
                 "task_id": task_id,
                 "email": email,
@@ -283,6 +301,23 @@ def _extract_meta_from_form(form) -> dict:
         "terms_accepted": (form.get("terms_accepted") in ("on","1","true","yes","y")),
     }
 
+def _get_status_cache(conn, task_id: str):
+    return conn.execute(sql_text("""
+        SELECT last_status, last_status_at, last_result_url
+          FROM submission_context
+         WHERE task_id = :t
+         LIMIT 1
+    """), {"t": task_id}).mappings().first()
+
+def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
+    conn.execute(sql_text("""
+        UPDATE submission_context
+           SET last_status     = :s,
+               last_status_at  = now(),
+               last_result_url = :r
+         WHERE task_id = :t
+    """), {"t": task_id, "s": status, "r": result_url})
+
 # ---------- SportAI ----------
 def _iter_submit_endpoints():
     for base in SPORTAI_BASES:
@@ -298,15 +333,22 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
+    hook = _webhook_url()
     base_min  = {"video_url": video_url, "version": "latest"}
+    if hook: base_min["webhook_url"] = hook
     base_arr  = {"video_urls": [video_url], "version": "latest"}
+    if hook: base_arr["webhook_url"] = hook
     with_email = {**base_min, **({"email": email} if email else {})}
     with_meta  = {**with_email, **({"metadata": meta} if meta else {})}
-    payload_variants = [with_meta, with_email, base_min, base_arr, {"url": video_url, "version": "latest"}]
+    payload_variants = [
+        with_meta, with_email, base_min, base_arr,
+        {"url": video_url, "version": "latest", **({"webhook_url": hook} if hook else {})}
+    ]
     last_err = None
     for submit_url in _iter_submit_endpoints():
         for payload in payload_variants:
             try:
+                app.logger.info("SportAI submit: url=%s hook=%s via=%s", video_url, hook, submit_url)
                 r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
                 if r.status_code in (400,404,405,415,422):
                     last_err = f"{submit_url} -> {r.status_code}: {r.text}"; continue
@@ -442,6 +484,8 @@ def ops_env():
         "AWS_REGION": AWS_REGION,
         "S3_BUCKET": S3_BUCKET,
         "S3_PREFIX": S3_PREFIX,
+        "BASE_URL": BASE_URL,
+        "webhook_url_if_enabled": _webhook_url(),
     })
 
 @app.get("/ops/ping-sportai")
@@ -537,7 +581,11 @@ def api_cancel_task():
     tid = request.values.get("task_id") or (request.get_json(silent=True) or {}).get("task_id")
     if not tid: return jsonify({"ok": False, "error": "task_id required"}), 400
     try:
-        out = _sportai_cancel(str(tid)); return jsonify({"ok": True, "data": out})
+        out = _sportai_cancel(str(tid))
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_status_cache(conn, tid, "canceled", None)
+        return jsonify({"ok": True, "data": out})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
@@ -557,11 +605,15 @@ def api_upload_to_s3():
             try:
                 task_id = _sportai_submit(video_url, email=email, meta=meta)
                 _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
+                # initialize cache so first poll returns quickly
+                with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
+                    _set_status_cache(conn, task_id, "queued", None)
                 return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
             except Exception as e:
                 return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
-    # Multipart path: browser → server → S3
+    # Multipart path: browser → server → S3 (fallback)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
     if not f or not f.filename: return jsonify({"ok": False, "error": "No file provided."}), 400
@@ -577,6 +629,9 @@ def api_upload_to_s3():
         meta = _extract_meta_from_form(request.form)
         task_id = _sportai_submit(video_url, email=email, meta=meta)
         _store_submission_context(task_id, email, meta, video_url, share_url=video_url)
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_status_cache(conn, task_id, "queued", None)
         return jsonify({
             "ok": True, "task_id": task_id, "share_url": video_url, "video_url": video_url,
             "upload": {"path": key, "size": meta_up.get("size"), "name": clean}
@@ -590,17 +645,41 @@ def upload_alias():
     if request.method == "OPTIONS": return ("", 204)
     return api_upload_to_s3()
 
-# ---------- Task poll (with optional one-time auto-ingest) ----------
+# ---------- Task poll (cached + throttled; optional auto-ingest) ----------
 @app.get("/upload/api/task-status")
 def api_task_status():
     tid = request.args.get("task_id")
-    if not tid: return jsonify({"ok": False, "error": "task_id required"}), 400
+    if not tid:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+
     try:
+        # Serve cached status if fresh (<= 6s)
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            row = _get_status_cache(conn, tid)
+            now = datetime.now(timezone.utc)
+            if row and row["last_status_at"]:
+                age = (now - row["last_status_at"]).total_seconds()
+                if age <= 6:
+                    return jsonify({
+                        "ok": True,
+                        "status": row["last_status"],
+                        "result_url": row["last_result_url"],
+                        "cached": True
+                    })
+
+        # Otherwise call SportAI once
         out = _sportai_status(tid)
+        status = (out.get("status") or "").lower()
+        result_url = out.get("result_url")
+
+        # Update cache
+        with engine.begin() as conn:
+            _set_status_cache(conn, tid, status, result_url)
+
+        # Optional: one-time ingest (recommended OFF; worker/webhook should do this)
         if AUTO_INGEST_ON_COMPLETE:
-            status = (out.get("status") or "").lower()
-            result_url = out.get("result_url")
-            if status in ("completed","done","success","succeeded") and result_url:
+            if status in ("completed", "done", "success", "succeeded") and result_url:
                 with engine.begin() as conn:
                     _ensure_submission_context_schema(conn)
                     already = conn.execute(
@@ -634,11 +713,13 @@ def api_task_status():
                         """), {"sid": sid, "tid": tid})
                         out["auto_ingested"] = True
                         out["session_id"] = sid
-        return jsonify({"ok": True, **out})
+
+        return jsonify({"ok": True, **out, "cached": False})
+
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
-# ---------- SportAI → our callback → ingest ----------
+# ---------- SportAI → our callback → ingest (optional if you enable webhook) ----------
 def _download_result_payload(task_id: str | None = None, result_url: str | None = None):
     if not (task_id or result_url): return None, None
     try:
@@ -671,11 +752,14 @@ def _attach_submission_context(conn, task_id: str, session_id: int, session_uid:
 
 @app.post("/ops/sportai-callback")
 def ops_sportai_callback():
+    # IMPORTANT: allow via ?key=... since SportAI won't send headers you control
     if not _guard(): return Response("Forbidden", 403)
+    app.logger.info("SportAI webhook hit: key-ok=%s", True)
     try:
         body = request.get_json(force=True, silent=False) or {}
     except Exception as e:
         return jsonify({"ok": False, "error": f"Invalid JSON: {e}"}), 400
+
     rep_arg = request.args.get("replace")
     replace = DEFAULT_REPLACE_ON_INGEST if rep_arg is None else str(rep_arg).lower() in ("1","true","yes","y","on")
     forced_uid = request.args.get("session_uid") or (
@@ -689,12 +773,18 @@ def ops_sportai_callback():
     if payload is None:
         payload, src_hint = _download_result_payload(task_id=task_id, result_url=result_url)
     if payload is None:
+        # update cache at least
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_status_cache(conn, task_id or "<unknown>", "processing", result_url)
         return jsonify({"ok": True, "ingested": False, "reason": "no payload/result_url yet", "task_id": task_id}), 200
     try:
         with engine.begin() as conn:
             res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=src_hint)
             sid = res.get("session_id")
-            if task_id: _attach_submission_context(conn, task_id=task_id, session_id=sid, session_uid=res.get("session_uid"))
+            if task_id:
+                _attach_submission_context(conn, task_id=task_id, session_id=sid, session_uid=res.get("session_uid"))
+                _set_status_cache(conn, task_id, "completed", result_url)
             counts = conn.execute(sql_text("""
                 SELECT
                   (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
