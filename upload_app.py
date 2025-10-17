@@ -793,8 +793,15 @@ def ops_sportai_callback():
                   (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
             """), {"sid": sid}).fetchone()           
-        with engine.begin() as conn: 
-                    conn.execute(sql_text("REFRESH MATERIALIZED VIEW CONCURRENTLY ss_.mv_point;"))
+        # Refresh ss_.mv_point after successful ingest
+        try:
+            with engine.begin() as conn:
+                conn.execute(sql_text("REFRESH MATERIALIZED VIEW CONCURRENTLY ss_.mv_point;"))
+        except Exception as e:
+            # fallback if concurrent refresh fails (e.g., lock or no unique index)
+            with engine.begin() as conn:
+                conn.execute(sql_text("REFRESH MATERIALIZED VIEW ss_.mv_point;"))
+            print(f"⚠️ Non-concurrent refresh used for ss_.mv_point due to: {e}")
         return jsonify({"ok": True, "ingested": True,
                         "session_uid": res.get("session_uid"),
                         "session_id":  sid,
