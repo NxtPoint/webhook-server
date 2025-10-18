@@ -1,5 +1,5 @@
 ﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status), webhook disabled, VIEW-only (no MV)
-import os, json, time, socket, sys, inspect, hashlib, re
+import os, json, time, socket, sys, inspect, hashlib, re, threading
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 
@@ -118,6 +118,70 @@ def _sql_exec_to_json(q: str):
         cols = list(res.keys())
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
+def _do_ingest(task_id: str, result_url: str):
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            # mark started
+            conn.execute(sql_text("""
+                UPDATE submission_context
+                   SET ingest_started_at = COALESCE(ingest_started_at, now()),
+                       ingest_error = NULL
+                 WHERE task_id = :t
+            """), {"t": task_id})
+
+        # fetch result and ingest
+        r = requests.get(result_url, timeout=600)   # allow long fetch
+        r.raise_for_status()
+        payload = r.json()
+
+        with engine.begin() as conn:
+            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
+            sid = res["session_id"]
+            conn.execute(sql_text("""
+                UPDATE submission_context
+                   SET session_id = :sid,
+                       ingest_finished_at = now(),
+                       ingest_error = NULL
+                 WHERE task_id = :t
+            """), {"sid": sid, "t": task_id})
+
+    except Exception as e:
+        # capture error but don't crash the process
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE submission_context
+                   SET ingest_error = :err,
+                       ingest_finished_at = now()
+                 WHERE task_id = :t
+            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+
+def _start_ingest_background(task_id: str, result_url: str) -> bool:
+    """Return True if we started a worker; False if already ingested/started."""
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        row = conn.execute(sql_text("""
+            SELECT session_id, ingest_started_at, ingest_finished_at
+              FROM submission_context
+             WHERE task_id = :t
+             LIMIT 1
+        """), {"t": task_id}).mappings().first()
+
+        if row and row.get("session_id"):
+            return False  # already done
+        if row and row.get("ingest_started_at") and not row.get("ingest_finished_at"):
+            return False  # already running
+
+        conn.execute(sql_text("""
+            UPDATE submission_context
+               SET ingest_started_at = now(),
+                   ingest_error = NULL
+             WHERE task_id = :t
+        """), {"t": task_id})
+
+    th = threading.Thread(target=_do_ingest, args=(task_id, result_url), daemon=True)
+    th.start()
+    return True
 
 @app.post("/ops/sqlx")
 def ops_sql_json():
@@ -207,26 +271,37 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
 def _ensure_submission_context_schema(conn):
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS submission_context (
-          task_id        TEXT PRIMARY KEY,
-          created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-          email          TEXT,
-          customer_name  TEXT,
-          match_date     DATE,
-          start_time     TEXT,
-          location       TEXT,
-          player_a_name  TEXT,
-          player_b_name  TEXT,
-          player_a_utr   TEXT,
-          player_b_utr   TEXT,
-          video_url      TEXT,
-          share_url      TEXT,
-          raw_meta       JSONB,
-          session_id     INT,
+          task_id         TEXT PRIMARY KEY,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email           TEXT,
+          customer_name   TEXT,
+          match_date      DATE,
+          start_time      TEXT,
+          location        TEXT,
+          player_a_name   TEXT,
+          player_b_name   TEXT,
+          player_a_utr    TEXT,
+          player_b_utr    TEXT,
+          video_url       TEXT,
+          share_url       TEXT,
+          raw_meta        JSONB,
+          session_id      INT,
           last_status     TEXT,
           last_status_at  TIMESTAMPTZ,
-          last_result_url TEXT
+          last_result_url TEXT,
+          ingest_started_at  TIMESTAMPTZ,
+          ingest_finished_at TIMESTAMPTZ,
+          ingest_error       TEXT
         );
     """))
+    # Make sure new columns exist in older DBs
+    for col, ddl in [
+        ("ingest_started_at",  "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ"),
+        ("ingest_finished_at", "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ"),
+        ("ingest_error",       "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT")
+    ]:
+        conn.execute(sql_text(ddl))
+
 
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
     if not engine: return
@@ -626,31 +701,41 @@ def api_task_status():
         result_url = out.get("result_url")
         terminal = bool(out.get("terminal"))
 
-        # Update cache for lightweight throttling/data hints
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, status, result_url)
+            sc = conn.execute(sql_text("""
+                SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
+                  FROM submission_context
+                 WHERE task_id = :t
+                 LIMIT 1
+            """), {"t": tid}).mappings().first() or {}
 
-        auto_ingested, auto_ingest_error, session_id = False, None, None
+        auto_ingested = False
+        auto_ingest_error = sc.get("ingest_error")
+        session_id = sc.get("session_id")
+        ingest_started   = sc.get("ingest_started_at") is not None
+        ingest_finished  = sc.get("ingest_finished_at") is not None
+        ingest_running   = ingest_started and not ingest_finished
 
-        if AUTO_INGEST_ON_COMPLETE and terminal and result_url:
-            try:
-                with engine.begin() as conn:
-                    already = conn.execute(
-                        sql_text("SELECT session_id FROM submission_context WHERE task_id=:t AND session_id IS NOT NULL"),
-                        {"t": tid}
-                    ).scalar()
-                    if not already:
-                        r = requests.get(result_url, timeout=300); r.raise_for_status()
-                        payload = r.json()
-                        res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
-                        session_id = res["session_id"]
-                        conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
-                                     {"sid": session_id, "t": tid})
-                        # no MV refresh; downstream views read source tables/views
-                        auto_ingested = True
-            except Exception as e:
-                auto_ingest_error = f"{e.__class__.__name__}: {e}"
+        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
+            started = _start_ingest_background(tid, result_url)
+            ingest_started = ingest_started or started
+
+        # if the worker finished and wrote session_id, reflect that as "auto_ingested"
+        if session_id and ingest_finished and not auto_ingest_error:
+            auto_ingested = True
+
+        return jsonify({
+            "ok": True, **out,
+            "session_id": session_id,
+            "auto_ingested": auto_ingested,
+            "auto_ingest_error": auto_ingest_error,
+            "ingest_started": ingest_started,
+            "ingest_running": ingest_running,
+            "ingest_finished": ingest_finished
+        })
+
 
         return jsonify({
             "ok": True, **out,
