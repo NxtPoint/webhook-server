@@ -12,7 +12,7 @@ from sqlalchemy import text as sql_text
 try:
     import boto3
 except Exception as e:
-        raise RuntimeError("boto3 is required. Add it to requirements.txt and redeploy.") from e
+    raise RuntimeError("boto3 is required. Add it to requirements.txt and redeploy.") from e
 
 # -------------------------------------------------------
 # Flask app
@@ -295,7 +295,6 @@ def _refresh_mv_point(conn):
     try:
         conn.execute(sql_text("REFRESH MATERIALIZED VIEW CONCURRENTLY ss_.mv_point;"))
     except Exception as e:
-        # fallback (non-concurrent) to guarantee refresh
         conn.execute(sql_text("REFRESH MATERIALIZED VIEW ss_.mv_point;"))
         print(f"⚠️ mv_point concurrent refresh failed; used non-concurrent. Reason: {e}")
 
@@ -384,7 +383,7 @@ def _sportai_status(task_id: str) -> dict:
     result_url = d.get("result_url") or j.get("result_url")
     terminal = status.lower() in ("completed","done","success","succeeded","failed","canceled")
 
-    # If result_url is present but status isn't terminal, treat as completed (SportAI often does this)
+    # If result_url is present but status isn't terminal, treat as completed
     if result_url and not terminal:
         status = "completed"
         terminal = True
@@ -396,6 +395,7 @@ def _sportai_status(task_id: str) -> dict:
         "status": status or None,
         "result_url": result_url,
         "progress_pct": progress_pct,
+        "progress": progress_pct,   # legacy alias for UI
         "terminal": terminal,
         "data": {
             "task_id": d.get("task_id"),
@@ -429,7 +429,7 @@ def _sportai_cancel(task_id: str) -> dict:
     last_err = None
     for base in SPORTAI_BASES:
         for path in cancel_paths:
-            url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
+            url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id={task_id})}"
             try:
                 r = requests.post(url, headers=headers, json={}, timeout=30)
                 if r.status_code in (400,404,405):
@@ -641,12 +641,14 @@ def api_task_status():
             if row and row["last_status_at"]:
                 age = (now - row["last_status_at"]).total_seconds()
                 if age <= 6:
+                    term = (row["last_status"] or "").lower() in ("completed","done","success","succeeded","failed","canceled")
                     return jsonify({
                         "ok": True,
                         "status": row["last_status"],
                         "result_url": row["last_result_url"],
-                        "progress_pct": (100 if (row["last_status"] or "").lower() in
-                                         ("completed","done","success","succeeded","failed","canceled") else None),
+                        "progress_pct": 100 if term else None,
+                        "progress": 100 if term else None,
+                        "terminal": term,
                         "cached": True
                     })
 
@@ -655,58 +657,94 @@ def api_task_status():
         status = (out.get("status") or "").lower()
         result_url = out.get("result_url")
         progress_pct = out.get("progress_pct")
-        terminal = out.get("terminal")
+        terminal = bool(out.get("terminal"))
 
         # Update cache
         with engine.begin() as conn:
             _set_status_cache(conn, tid, status, result_url)
 
         # Optional: one-time ingest + mv refresh
-        if AUTO_INGEST_ON_COMPLETE and terminal and result_url:
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                already = conn.execute(
-                    sql_text("SELECT session_id FROM submission_context WHERE task_id=:t AND session_id IS NOT NULL"),
-                    {"t": tid}
-                ).scalar()
-                if not already:
-                    r = requests.get(result_url, timeout=120); r.raise_for_status()
-                    payload = r.json()
-                    res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
-                    sid = res["session_id"]
-                    conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
-                                 {"sid": sid, "t": tid})
-                    # attach context into dim_session (same as before)
-                    conn.execute(sql_text("""
-                        UPDATE dim_session
-                           SET meta = COALESCE(meta, '{}'::jsonb)
-                                    || jsonb_build_object('task_id', :tid)
-                                    || jsonb_build_object(
-                                         'submission_context',
-                                         to_jsonb(sc) - 'task_id' - 'created_at' - 'session_id'
-                                       )
-                         FROM (
-                           SELECT email, customer_name, match_date, start_time, location,
-                                  player_a_name, player_b_name, player_a_utr, player_b_utr,
-                                  video_url, share_url
-                             FROM submission_context
-                            WHERE task_id = :tid
-                            LIMIT 1
-                         ) sc
-                         WHERE dim_session.session_id = :sid
-                    """), {"sid": sid, "tid": tid})
-                    # always refresh mv_point after ingest (robust)
-                    _refresh_mv_point(conn)
-                    out["auto_ingested"] = True
-                    out["session_id"] = sid
+        auto_ingested = False
+        auto_ingest_error = None
+        session_id = None
 
-        return jsonify({"ok": True, **out, "cached": False})
+        if AUTO_INGEST_ON_COMPLETE and terminal and result_url:
+            try:
+                with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
+                    already = conn.execute(
+                        sql_text("SELECT session_id FROM submission_context WHERE task_id=:t AND session_id IS NOT NULL"),
+                        {"t": tid}
+                    ).scalar()
+                    if not already:
+                        r = requests.get(result_url, timeout=300)   # generous timeout
+                        r.raise_for_status()
+                        payload = r.json()
+                        res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
+                        session_id = res["session_id"]
+                        conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
+                                     {"sid": session_id, "t": tid})
+                        # attach context into dim_session
+                        conn.execute(sql_text("""
+                            UPDATE dim_session
+                               SET meta = COALESCE(meta, '{}'::jsonb)
+                                        || jsonb_build_object('task_id', :tid)
+                                        || jsonb_build_object(
+                                             'submission_context',
+                                             to_jsonb(sc) - 'task_id' - 'created_at' - 'session_id'
+                                           )
+                             FROM (
+                               SELECT email, customer_name, match_date, start_time, location,
+                                      player_a_name, player_b_name, player_a_utr, player_b_utr,
+                                      video_url, share_url
+                                 FROM submission_context
+                                WHERE task_id = :tid
+                                LIMIT 1
+                             ) sc
+                             WHERE dim_session.session_id = :sid
+                        """), {"sid": session_id, "tid": tid})
+                        # always refresh mv_point after ingest (robust)
+                        _refresh_mv_point(conn)
+                        auto_ingested = True
+            except Exception as e:
+                auto_ingest_error = f"{e.__class__.__name__}: {e}"
+
+        return jsonify({
+            "ok": True, **out, "cached": False,
+            "auto_ingested": auto_ingested,
+            "auto_ingest_error": auto_ingest_error,
+            "session_id": session_id
+        })
 
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 502
+        # Never 502 the poller; return JSON so the UI stays stable
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
+
+# ---------- Manual ingest helper (auth) ----------
+@app.post("/ops/ingest-task")
+def ops_ingest_task():
+    if not _guard(): return Response("Forbidden", 403)
+    body = request.get_json(silent=True) or {}
+    tid = (body.get("task_id") or "").strip()
+    if not tid: return jsonify({"ok": False, "error": "task_id required"}), 400
+    try:
+        st = _sportai_status(tid)
+        result_url = st.get("result_url")
+        if not result_url:
+            return jsonify({"ok": False, "error": "result_url not available yet"}), 400
+        r = requests.get(result_url, timeout=300); r.raise_for_status()
+        payload = r.json()
+        with engine.begin() as conn:
+            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
+            sid = res["session_id"]
+            conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
+                         {"sid": sid, "t": tid})
+            _refresh_mv_point(conn)
+        return jsonify({"ok": True, "session_id": sid})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
 # ---------- SportAI → callback route (kept but effectively unused) ----------
-# NOTE: We keep this for future use; not used because we don't send webhook_url.
 @app.post("/ops/sportai-callback")
 def ops_sportai_callback():
     if not _guard(): return Response("Forbidden", 403)
@@ -715,24 +753,21 @@ def ops_sportai_callback():
     except Exception as e:
         return jsonify({"ok": False, "error": f"Invalid JSON: {e}"}), 400
 
-    # Prefer result_url if present, otherwise try to download using task_id
     forced_uid = request.args.get("session_uid") or (
         body.get("session_uid") or body.get("sessionId") or body.get("session_id") or body.get("uid") or body.get("id")
     )
     task_id    = body.get("task_id") or body.get("id")
     result_url = body.get("result_url") or (body.get("data") or {}).get("result_url")
 
-    # fetch payload
-    payload = None
+    payload = None; src_hint = None
     if isinstance(body, dict) and any(k in body for k in ("players","swings","ball_positions","player_positions","ball_bounces","rallies")):
         payload, src_hint = body, "webhook:body"
     else:
         try:
             if not result_url and task_id:
-                st = _sportai_status(task_id)
-                result_url = st.get("result_url")
+                st = _sportai_status(task_id); result_url = st.get("result_url")
             if result_url:
-                r = requests.get(result_url, timeout=120); r.raise_for_status()
+                r = requests.get(result_url, timeout=300); r.raise_for_status()
                 payload, src_hint = r.json(), (result_url or "webhook:get")
         except Exception:
             payload, src_hint = None, None
@@ -745,7 +780,6 @@ def ops_sportai_callback():
             res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, forced_uid=forced_uid, src_hint=src_hint)
             sid = res.get("session_id")
             if task_id:
-                # link + refresh mv
                 conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
                              {"sid": sid, "t": task_id})
                 _refresh_mv_point(conn)
