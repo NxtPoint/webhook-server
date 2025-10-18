@@ -1,4 +1,4 @@
-﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status), webhook disabled
+﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status), webhook disabled, VIEW-only (no MV)
 import os, json, time, socket, sys, inspect, hashlib, re
 from urllib.parse import urlparse
 from datetime import datetime, timezone
@@ -56,6 +56,9 @@ DEFAULT_REPLACE_ON_INGEST = (
 ).strip().lower() in ("1","true","yes","y")
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
 
+# Optional flag (default OFF). If ever set true, we’ll try to refresh ss_.mv_point.
+USE_MV_POINT = os.getenv("USE_MV_POINT", "0").lower() in ("1","true","yes","y")
+
 # Try both public hostnames
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
@@ -80,7 +83,6 @@ app.register_blueprint(ingest_bp, url_prefix="")            # mounts /ops/* inge
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
 S3_BUCKET  = os.getenv("S3_BUCKET", "").strip() or None
-# clean default folder name (previously “wix-uploads”)
 S3_PREFIX  = (os.getenv("S3_PREFIX", "incoming") or "incoming").strip().strip("/")
 S3_GET_EXPIRES = int(os.getenv("S3_GET_EXPIRES", "604800"))  # 7 days
 
@@ -290,14 +292,6 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
 
-# --- refresh materialized view (robust) ---
-def _refresh_mv_point(conn):
-    try:
-        conn.execute(sql_text("REFRESH MATERIALIZED VIEW CONCURRENTLY ss_.mv_point;"))
-    except Exception as e:
-        conn.execute(sql_text("REFRESH MATERIALIZED VIEW ss_.mv_point;"))
-        print(f"⚠️ mv_point concurrent refresh failed; used non-concurrent. Reason: {e}")
-
 # ---------- SportAI ----------
 def _iter_submit_endpoints():
     for base in SPORTAI_BASES:
@@ -310,7 +304,6 @@ def _iter_status_endpoints(task_id: str):
             yield f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
 
 def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None = None) -> str:
-    """Webhook is intentionally NOT used. We do not send webhook_url."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
@@ -319,8 +312,8 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
     base_arr  = {"video_urls": [video_url], "version": "latest"}
     with_email = {**base_min, **({"email": email} if email else {})}
     with_meta  = {**with_email, **({"metadata": meta} if meta else {})}
-
     payload_variants = [with_meta, with_email, base_min, base_arr, {"url": video_url, "version": "latest"}]
+
     last_err = None
     for submit_url in _iter_submit_endpoints():
         for payload in payload_variants:
@@ -342,7 +335,6 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
 def _sportai_status(task_id: str) -> dict:
-    """Return normalized status & progress aligned to SportAI."""
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
@@ -382,12 +374,8 @@ def _sportai_status(task_id: str) -> dict:
 
     result_url = d.get("result_url") or j.get("result_url")
     terminal = status.lower() in ("completed","done","success","succeeded","failed","canceled")
-
-    # If result_url is present but status isn't terminal, treat as completed
     if result_url and not terminal:
-        status = "completed"
-        terminal = True
-
+        status = "completed"; terminal = True
     if terminal and (progress_pct is None or progress_pct < 100):
         progress_pct = 100
 
@@ -395,7 +383,7 @@ def _sportai_status(task_id: str) -> dict:
         "status": status or None,
         "result_url": result_url,
         "progress_pct": progress_pct,
-        "progress": progress_pct,   # legacy alias for UI
+        "progress": progress_pct,
         "terminal": terminal,
         "data": {
             "task_id": d.get("task_id"),
@@ -429,7 +417,7 @@ def _sportai_cancel(task_id: str) -> dict:
     last_err = None
     for base in SPORTAI_BASES:
         for path in cancel_paths:
-            url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id={task_id})}"
+            url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
             try:
                 r = requests.post(url, headers=headers, json={}, timeout=30)
                 if r.status_code in (400,404,405):
@@ -490,6 +478,7 @@ def ops_env():
         "AWS_REGION": AWS_REGION,
         "S3_BUCKET": S3_BUCKET,
         "S3_PREFIX": S3_PREFIX,
+        "USE_MV_POINT": USE_MV_POINT,
     })
 
 # ---------- (Optional) presign to remove double hop ----------
@@ -558,7 +547,6 @@ def api_cancel_task():
         return jsonify({"ok": False, "error": str(e)}), 502
 
 def _extract_meta_from_form(form):
-    """Parse meta fields from the upload form safely."""
     return {
         "customer_name": form.get("customer_name") or form.get("CustomerName"),
         "match_date": form.get("match_date") or form.get("MatchDate"),
@@ -625,7 +613,7 @@ def upload_alias():
     if request.method == "OPTIONS": return ("", 204)
     return api_upload_to_s3()
 
-# ---------- Task poll (cached + throttled + normalized progress + auto-ingest) ----------
+# ---------- Task poll (normalized progress + auto-ingest; no MV refresh) ----------
 @app.get("/upload/api/task-status")
 def api_task_status():
     tid = request.args.get("task_id")
@@ -633,94 +621,49 @@ def api_task_status():
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
     try:
-        # Serve cached status if fresh (<= 6s)
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            row = _get_status_cache(conn, tid)
-            now = datetime.now(timezone.utc)
-            if row and row["last_status_at"]:
-                age = (now - row["last_status_at"]).total_seconds()
-                if age <= 6:
-                    term = (row["last_status"] or "").lower() in ("completed","done","success","succeeded","failed","canceled")
-                    return jsonify({
-                        "ok": True,
-                        "status": row["last_status"],
-                        "result_url": row["last_result_url"],
-                        "progress_pct": 100 if term else None,
-                        "progress": 100 if term else None,
-                        "terminal": term,
-                        "cached": True
-                    })
-
-        # Otherwise call SportAI once
         out = _sportai_status(tid)
         status = (out.get("status") or "").lower()
         result_url = out.get("result_url")
-        progress_pct = out.get("progress_pct")
         terminal = bool(out.get("terminal"))
 
-        # Update cache
+        # Update cache for lightweight throttling/data hints
         with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, status, result_url)
 
-        # Optional: one-time ingest + mv refresh
-        auto_ingested = False
-        auto_ingest_error = None
-        session_id = None
+        auto_ingested, auto_ingest_error, session_id = False, None, None
 
         if AUTO_INGEST_ON_COMPLETE and terminal and result_url:
             try:
                 with engine.begin() as conn:
-                    _ensure_submission_context_schema(conn)
                     already = conn.execute(
                         sql_text("SELECT session_id FROM submission_context WHERE task_id=:t AND session_id IS NOT NULL"),
                         {"t": tid}
                     ).scalar()
                     if not already:
-                        r = requests.get(result_url, timeout=300)   # generous timeout
-                        r.raise_for_status()
+                        r = requests.get(result_url, timeout=300); r.raise_for_status()
                         payload = r.json()
                         res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
                         session_id = res["session_id"]
                         conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
                                      {"sid": session_id, "t": tid})
-                        # attach context into dim_session
-                        conn.execute(sql_text("""
-                            UPDATE dim_session
-                               SET meta = COALESCE(meta, '{}'::jsonb)
-                                        || jsonb_build_object('task_id', :tid)
-                                        || jsonb_build_object(
-                                             'submission_context',
-                                             to_jsonb(sc) - 'task_id' - 'created_at' - 'session_id'
-                                           )
-                             FROM (
-                               SELECT email, customer_name, match_date, start_time, location,
-                                      player_a_name, player_b_name, player_a_utr, player_b_utr,
-                                      video_url, share_url
-                                 FROM submission_context
-                                WHERE task_id = :tid
-                                LIMIT 1
-                             ) sc
-                             WHERE dim_session.session_id = :sid
-                        """), {"sid": session_id, "tid": tid})
-                        # always refresh mv_point after ingest (robust)
-                        _refresh_mv_point(conn)
+                        # no MV refresh; downstream views read source tables/views
                         auto_ingested = True
             except Exception as e:
                 auto_ingest_error = f"{e.__class__.__name__}: {e}"
 
         return jsonify({
-            "ok": True, **out, "cached": False,
+            "ok": True, **out,
             "auto_ingested": auto_ingested,
             "auto_ingest_error": auto_ingest_error,
             "session_id": session_id
         })
 
     except Exception as e:
-        # Never 502 the poller; return JSON so the UI stays stable
+        # never break the poller
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
 
-# ---------- Manual ingest helper (auth) ----------
+# ---------- Manual ingest helper ----------
 @app.post("/ops/ingest-task")
 def ops_ingest_task():
     if not _guard(): return Response("Forbidden", 403)
@@ -739,12 +682,11 @@ def ops_ingest_task():
             sid = res["session_id"]
             conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
                          {"sid": sid, "t": tid})
-            _refresh_mv_point(conn)
         return jsonify({"ok": True, "session_id": sid})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
-# ---------- SportAI → callback route (kept but effectively unused) ----------
+# ---------- Webhook route kept (unused) ----------
 @app.post("/ops/sportai-callback")
 def ops_sportai_callback():
     if not _guard(): return Response("Forbidden", 403)
@@ -782,7 +724,6 @@ def ops_sportai_callback():
             if task_id:
                 conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
                              {"sid": sid, "t": task_id})
-                _refresh_mv_point(conn)
             counts = conn.execute(sql_text("""
                 SELECT
                   (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
