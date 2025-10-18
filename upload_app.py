@@ -557,6 +557,19 @@ def api_cancel_task():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
+def _extract_meta_from_form(form):
+    """Parse meta fields from the upload form safely."""
+    return {
+        "customer_name": form.get("customer_name") or form.get("CustomerName"),
+        "match_date": form.get("match_date") or form.get("MatchDate"),
+        "start_time": form.get("start_time") or form.get("StartTime"),
+        "location": form.get("location") or form.get("Location"),
+        "player_a_name": form.get("player_a_name") or form.get("PlayerAName"),
+        "player_b_name": form.get("player_b_name") or form.get("PlayerBName"),
+        "player_a_utr": form.get("player_a_utr") or form.get("PlayerAUTR"),
+        "player_b_utr": form.get("player_b_utr") or form.get("PlayerBUTR"),
+    }
+
 # ---------- Upload API (S3 only) ----------
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_s3():
