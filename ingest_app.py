@@ -207,55 +207,117 @@ def _extract_ball_hit_from_events(events):
     return (None, None, None)
 
 def _normalize_swing_obj(obj):
-    if not isinstance(obj, dict): return None
+    if not isinstance(obj, dict):
+        return None
+
+    # --- NEW: meta fields ---
+    rally_key_present      = 'rally' in obj
+    rally_val              = obj.get('rally', None) if rally_key_present else None
+    rally_is_json_null     = (rally_key_present and rally_val is None)
+    rally_text             = (None if rally_val is None else str(rally_val))
+
+    is_valid               = _bool(obj.get('valid'))
+
+    annotations            = obj.get('annotations') if isinstance(obj.get('annotations'), list) else None
+    annotations_count      = (len(annotations) if isinstance(annotations, list) else None)
+    ann0                   = (annotations[0] if annotations and len(annotations) > 0 and isinstance(annotations[0], dict) else None)
+    ann0_format            = (ann0.get('annotation_format') if isinstance(ann0, dict) else None)
+    ann0_tracking_id       = (ann0.get('tracking_id') if isinstance(ann0, dict) else None)
+    ann0_bbox              = (ann0.get('bbox') if isinstance(ann0, dict) else None)
+
+    ball_trajectory        = obj.get('ball_trajectory')
+    ball_impact_type       = obj.get('ball_impact_type')
+    ball_impact_location   = obj.get('ball_impact_location')
+    intercepting_player_id = obj.get('intercepting_player_id')
+
+    # --- everything below is your existing logic ---
     suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
     start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
-    end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
+    end_s = _time_s(obj.get("end_ts")) or _time_s(obj.get("end_s")) or _time_s(obj.get("end"))
     if start_s is None and end_s is None:
         only_ts = _time_s(obj.get("timestamp") or obj.get("ts") or obj.get("time_s") or obj.get("t"))
-        if only_ts is not None: start_s = end_s = only_ts
+        if only_ts is not None:
+            start_s = end_s = only_ts
+
     bh_s = _time_s(obj.get("ball_hit_timestamp") or obj.get("ball_hit_ts") or obj.get("ball_hit_s"))
     bhx = bhy = None
     if bh_s is None and isinstance(obj.get("ball_hit"), dict):
         bh_s = _time_s(obj["ball_hit"].get("timestamp"))
-        loc  = obj["ball_hit"].get("location") or {}
-        bhx  = _float(loc.get("x")); bhy = _float(loc.get("y"))
+        loc = obj["ball_hit"].get("location") or {}
+        bhx = _float(loc.get("x"))
+        bhy = _float(loc.get("y"))
     if bh_s is None:
         ev_bh_s, ev_bhx, ev_bhy = _extract_ball_hit_from_events(obj.get("events"))
-        bh_s = ev_bh_s;  bhx = bhx if bhx is not None else ev_bhx;  bhy = bhy if bhy is not None else ev_bhy
+        bh_s = ev_bh_s
+        bhx = bhx if bhx is not None else ev_bhx
+        bhy = bhy if bhy is not None else ev_bhy
+
     loc_any = obj.get("ball_hit_location")
     if (bhx is None or bhy is None) and isinstance(loc_any, dict):
-        bhx = _float(loc_any.get("x")); bhy = _float(loc_any.get("y"))
+        bhx = _float(loc_any.get("x"))
+        bhy = _float(loc_any.get("y"))
     if (bhx is None or bhy is None) and isinstance(loc_any, (list, tuple)) and len(loc_any) >= 2:
-        bhx = _float(loc_any[0]); bhy = _float(loc_any[1])
+        bhx = _float(loc_any[0])
+        bhy = _float(loc_any[1])
+
     swing_type = (str(obj.get("swing_type") or obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower()
-    serve = _bool(obj.get("serve")); serve_type = obj.get("serve_type")
+    serve = _bool(obj.get("serve"))
+    serve_type = obj.get("serve_type")
     if not serve and swing_type in _SERVE_LABELS:
         serve = True
-        if serve_type is None and swing_type != "serve": serve_type = swing_type
-    player_uid = (obj.get("player_id") or obj.get("sportai_player_uid") or obj.get("player_uid") or obj.get("player"))
-    if player_uid is not None: player_uid = str(player_uid)
+        if serve_type is None and swing_type != "serve":
+            serve_type = swing_type
+
+    player_uid = obj.get("player_id") or obj.get("sportai_player_uid") or obj.get("player_uid") or obj.get("player")
+    if player_uid is not None:
+        player_uid = str(player_uid)
+
     ball_speed = _float(obj.get("ball_speed"))
     ball_player_distance = _float(obj.get("ball_player_distance"))
-    volley = _bool(obj.get("volley")); is_in_rally = _bool(obj.get("is_in_rally"))
+    volley = _bool(obj.get("volley"))
+    is_in_rally = _bool(obj.get("is_in_rally"))
     confidence_swing_type = _float(obj.get("confidence_swing_type"))
-    confidence = _float(obj.get("confidence")); confidence_volley = _float(obj.get("confidence_volley"))
-    if start_s is None and end_s is None and bh_s is None: return None
-    meta = {k: v for k, v in obj.items() if k not in {
+    confidence = _float(obj.get("confidence"))
+    confidence_volley = _float(obj.get("confidence_volley"))
+
+    if start_s is None and end_s is None and bh_s is None:
+        return None
+
+    _strip = {
         "id","uid","swing_uid","player_id","sportai_player_uid","player_uid","player",
         "type","label","stroke_type","swing_type","start","start_s","start_ts","end","end_s","end_ts",
         "timestamp","ts","time_s","t","ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
         "events","serve","serve_type","ball_speed","ball_player_distance","volley","is_in_rally",
-        "confidence_swing_type","confidence","confidence_volley"}}
-    return {"suid": suid, "player_uid": player_uid,
-            "start_s": start_s, "end_s": end_s,
-            "ball_hit_s": bh_s, "ball_hit_x": bhx, "ball_hit_y": bhy,
-            "swing_type": swing_type, "volley": volley, "is_in_rally": is_in_rally,
-            "serve": serve, "serve_type": serve_type,
-            "confidence_swing_type": confidence_swing_type,
-            "confidence": confidence, "confidence_volley": confidence_volley,
-            "ball_speed": ball_speed, "ball_player_distance": ball_player_distance,
-            "meta": meta or None}
+        "confidence_swing_type","confidence","confidence_volley",
+        "rally","valid","annotations","ball_trajectory","ball_impact_type","ball_impact_location","intercepting_player_id"
+    }
+    meta = {k: v for k, v in obj.items() if k not in _strip}
+
+    return {
+        "suid": suid, "player_uid": player_uid,
+        "start_s": start_s, "end_s": end_s,
+        "ball_hit_s": bh_s, "ball_hit_x": bhx, "ball_hit_y": bhy,
+        "swing_type": swing_type, "volley": volley, "is_in_rally": is_in_rally,
+        "serve": serve, "serve_type": serve_type,
+        "confidence_swing_type": confidence_swing_type,
+        "confidence": confidence, "confidence_volley": confidence_volley,
+        "ball_speed": ball_speed, "ball_player_distance": ball_player_distance,
+        "rally_key_present": rally_key_present,
+        "rally_is_json_null": rally_is_json_null,
+        "rally_text": rally_text,
+        "is_valid": is_valid,
+        "annotations": annotations,
+        "annotations_count": annotations_count,
+        "ann0_format": ann0_format,
+        "ann0_tracking_id": ann0_tracking_id,
+        "ann0_bbox": ann0_bbox,
+        "ball_trajectory": ball_trajectory,
+        "ball_impact_type": ball_impact_type,
+        "ball_impact_location": ball_impact_location,
+        "intercepting_player_id": intercepting_player_id,
+        "meta": meta or None
+    }
+
 
 def _iter_candidate_swings_from_container(container):
     if not isinstance(container, dict): return
@@ -290,6 +352,7 @@ def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
     q_start = _quantize_time(s.get("start_s"), fps)
     q_end   = _quantize_time(s.get("end_s"), fps)
     q_hit   = _quantize_time(s.get("ball_hit_s"), fps)
+
     conn.execute(sql_text("""
         INSERT INTO fact_swing (
             session_id, player_id, sportai_swing_uid,
@@ -297,14 +360,23 @@ def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
             start_ts, end_ts, ball_hit_ts,
             ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
             swing_type, volley, is_in_rally, serve, serve_type,
-            confidence_swing_type, confidence, confidence_volley, meta
+            confidence_swing_type, confidence, confidence_volley,
+            -- NEW lifted meta fields ↓
+            rally_key_present, rally_is_json_null, rally_text, is_valid,
+            annotations, annotations_count, ann0_format, ann0_tracking_id, ann0_bbox,
+            ball_trajectory, ball_impact_type, ball_impact_location, intercepting_player_id,
+            meta
         ) VALUES (
             :sid, :pid, :suid,
             :ss, :es, :bhs,
             :sts, :ets, :bh_ts,
             :bhx, :bhy, :bs, :bpd,
             :sw_type, :vol, :inr, :srv, :srv_type,
-            :cst, :conf, :cv, CAST(:meta AS JSONB)
+            :cst, :conf, :cv,
+            :rkp, :rjn, :rtxt, :ival,
+            CAST(:ann AS JSONB), :annc, :ann0_fmt, :ann0_tid, CAST(:ann0_bbox AS JSONB),
+            CAST(:btraj AS JSONB), :bit, :bil, :ipid,
+            CAST(:meta AS JSONB)
         )
     """), {
         "sid": session_id, "pid": player_id, "suid": s.get("suid"),
@@ -312,15 +384,37 @@ def _insert_swing(conn, session_id, player_id, s, base_dt, fps):
         "sts": seconds_to_ts(_base_dt_for_session(None), q_start),
         "ets": seconds_to_ts(_base_dt_for_session(None), q_end),
         "bh_ts": seconds_to_ts(_base_dt_for_session(None), q_hit),
+
         "bhx": s.get("ball_hit_x"), "bhy": s.get("ball_hit_y"),
         "bs": s.get("ball_speed"), "bpd": s.get("ball_player_distance"),
+
         "sw_type": s.get("swing_type"),
         "vol": s.get("volley"), "inr": s.get("is_in_rally"),
         "srv": s.get("serve"), "srv_type": s.get("serve_type"),
+
         "cst": s.get("confidence_swing_type"), "conf": s.get("confidence"),
         "cv": s.get("confidence_volley"),
+
+        # NEW values
+        "rkp": s.get("rally_key_present"),
+        "rjn": s.get("rally_is_json_null"),
+        "rtxt": s.get("rally_text"),
+        "ival": s.get("is_valid"),
+
+        "ann": json.dumps(s.get("annotations")) if s.get("annotations") is not None else None,
+        "annc": s.get("annotations_count"),
+        "ann0_fmt": s.get("ann0_format"),
+        "ann0_tid": s.get("ann0_tracking_id"),
+        "ann0_bbox": json.dumps(s.get("ann0_bbox")) if s.get("ann0_bbox") is not None else None,
+
+        "btraj": json.dumps(s.get("ball_trajectory")) if s.get("ball_trajectory") is not None else None,
+        "bit": s.get("ball_impact_type"),
+        "bil": s.get("ball_impact_location"),
+        "ipid": s.get("intercepting_player_id"),
+
         "meta": json.dumps(s.get("meta")) if s.get("meta") else None
     })
+
 
 def _ensure_rallies_from_swings(conn, session_id, gap_s=6.0):
     conn.execute(sql_text("""
