@@ -787,7 +787,7 @@ SELECT
   sbp.start_ts, sbp.end_ts, sbp.ball_hit_ts,
   sbp.ball_hit_x, sbp.ball_hit_y,
   sbp.ball_speed,
-  vss.is_valid
+  vss.is_valid AS is_valid,
   sbp.swing_type_raw,
   sbp.bounce_id,
   sbp.bounce_ts             AS bounce_ts_d,
@@ -797,14 +797,11 @@ SELECT
   sbp.bounce_y_center_m     AS bounce_y_center_m,
   sbp.bounce_y_norm_m       AS bounce_y_norm_m,
   sbp.primary_source_d,
-
   vbs.bounce_hitter_id,
-
   sbp.serve_d,
   vnl.serve_try_ix_in_point,
   sbp.first_rally_shot_ix,
   sbp.start_serve_shot_ix,
-
   sbp.point_number_d,
   sbp.game_number_d,
   sbp.point_in_game_d,
