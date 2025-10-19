@@ -219,7 +219,7 @@ CREATE_STMTS = {
           fs.ball_speed,
           fs.serve, fs.serve_type AS serve_type, fs.swing_type, fs.is_in_rally,
           fs.ball_player_distance,
-          fs.is_valid
+          fs.is_valid AS is_valid,
           fs.meta AS swing_meta_json,
           ds.session_uid AS session_uid_d,
           {PLAYER_SIDE_SELECT}
