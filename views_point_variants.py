@@ -22,9 +22,9 @@ const AS (
     0.00001::numeric    AS eps_m
 ),
 swing_players AS (
-  SELECT fs.session_id, fs.player_id, COUNT(*) AS n_sw
+  SELECT fs.session_id, fs.player_id,  fs.is_valid, COUNT(*) AS n_sw
   FROM fact_swing fs
-  GROUP BY fs.session_id, fs.player_id
+  GROUP BY fs.session_id, fs.player_id,fs.is_valid
 ),
 swing_players_ranked AS (
   SELECT sp.*,
