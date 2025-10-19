@@ -29,5 +29,5 @@ PY
 echo "[views] building SQL views via db_views.py (golden rule)"
 python db_views.py
 
-echo "[run] starting app via python wsgi.py (unchanged behavior)"
+echo "[run] starting app via python wsgi.py (unchanged)"
 exec python wsgi.py
