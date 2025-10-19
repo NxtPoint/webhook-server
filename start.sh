@@ -3,14 +3,14 @@ set -euo pipefail
 
 echo "[start] webhook-server boot"
 
-# Ensure DATABASE_URL is available (fallback to SQLALCHEMY_DATABASE_URI if provided)
+# Ensure DATABASE_URL is available (fallback from SQLALCHEMY_DATABASE_URI if needed)
 export DATABASE_URL="${DATABASE_URL:-${SQLALCHEMY_DATABASE_URI:-}}"
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "[fatal] No DATABASE_URL (or SQLALCHEMY_DATABASE_URI) set. Aborting."
   exit 3
 fi
 
-# Wait for Postgres (handles postgresql+psycopg2:// etc.)
+# Wait for Postgres (normalizes postgresql+psycopg2:// to postgresql://)
 python - <<'PY'
 import os, re, time, sys
 import psycopg2
