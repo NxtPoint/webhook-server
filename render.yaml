@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "python upload_app.py"
+    startCommand: "python db_views.py && python upload_app.py"
 
     envVars:
       # Render injects PORT; no hard-coded value needed
