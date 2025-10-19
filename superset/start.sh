@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "[start] Superset bootstrap starting..."
 
-# --- prefer SQLALCHEMY_DATABASE_URI over DATABASE_URL for Superset ---
+# Prefer SQLALCHEMY_DATABASE_URI over DATABASE_URL for Superset itself
 export SQLALCHEMY_DATABASE_URI="${SQLALCHEMY_DATABASE_URI:-${DATABASE_URL:-}}"
 # Tell the CLI which Flask app to load
 export FLASK_APP="superset.app:create_app()"
@@ -11,9 +11,9 @@ export FLASK_APP="superset.app:create_app()"
 # --- sanity logs (mask secrets) ---
 echo "[env] SQLALCHEMY_DATABASE_URI present: $([[ -n "${SQLALCHEMY_DATABASE_URI:-}" ]] && echo yes || echo no)"
 echo "[env] SUPERSET_SECRET_KEY present: $([[ -n "${SUPERSET_SECRET_KEY:-}" ]] && echo yes || echo no)"
-echo "[env] REDIS_URL present: $([[ -n "${REDIS_URL:-}" ]] && echo yes || echo no))"
-echo "[env] RATELIMIT_STORAGE_URI present: $([[ -n "${RATELIMIT_STORAGE_URI:-}" ]] && echo yes || echo no))"
-echo "[env] PYTHONPATH=$PYTHONPATH"
+echo "[env] REDIS_URL present: $([[ -n "${REDIS_URL:-}" ]] && echo yes || echo no)"
+echo "[env] RATELIMIT_STORAGE_URI present: $([[ -n "${RATELIMIT_STORAGE_URI:-}" ]] && echo yes || echo no)"
+echo "[env] PYTHONPATH=${PYTHONPATH:-}"
 
 if [[ -z "${SQLALCHEMY_DATABASE_URI:-}" ]]; then
   echo "[fatal] No SQLALCHEMY_DATABASE_URI or DATABASE_URL set. Aborting."
@@ -49,6 +49,22 @@ if last_err:
     traceback.print_exception(type(last_err), last_err, last_err.__traceback__)
 sys.exit(3)
 PY
+
+# --- GOLDEN RULE: rebuild analytics views from Python before Superset starts ---
+# We run db_views.py against the same DB so Silver/Gold views are always up to date.
+export DATABASE_URL="${DATABASE_URL:-${SQLALCHEMY_DATABASE_URI:-}}"
+if [[ -f "/app/db_views.py" ]]; then
+  echo "[views] building SQL views via /app/db_views.py"
+  python /app/db_views.py
+else
+  # Fallback if your repo mounts under /app/superset/ and code root is one level up
+  if [[ -f "/app/superset/../db_views.py" ]]; then
+    echo "[views] building SQL views via /app/db_views.py (relative)"
+    python /app/superset/../db_views.py
+  else
+    echo "[warn] db_views.py not found — skipping view build"
+  fi
+fi
 
 # --- upgrade DB & init (idempotent) ---
 echo "[migrate] superset db upgrade"
