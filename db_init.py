@@ -217,6 +217,21 @@ DDL_MIGRATE = [
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve BOOLEAN;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve_type TEXT;",
     "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS meta JSONB;",
+    # fact_swing – meta extractions (idempotent)
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_key_present      BOOLEAN;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_is_json_null     BOOLEAN;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_text             TEXT;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS is_valid               BOOLEAN;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS annotations            JSONB;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS annotations_count      INTEGER;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ann0_format            TEXT;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ann0_tracking_id       BIGINT;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ann0_bbox              JSONB;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_trajectory        JSONB;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_type       TEXT;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_location   TEXT;",
+    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS intercepting_player_id BIGINT;",
+
 
     # fact_bounce
     "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INTEGER;",
