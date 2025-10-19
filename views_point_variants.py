@@ -787,8 +787,8 @@ SELECT
   sbp.start_ts, sbp.end_ts, sbp.ball_hit_ts,
   sbp.ball_hit_x, sbp.ball_hit_y,
   sbp.ball_speed,
+  vss.is_valid
   sbp.swing_type_raw,
-
   sbp.bounce_id,
   sbp.bounce_ts             AS bounce_ts_d,
   sbp.bounce_type_raw,
