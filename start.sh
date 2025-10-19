@@ -1,16 +1,16 @@
 ﻿#!/usr/bin/env bash
 set -euo pipefail
 
-echo "[start] webhook-server boot"
+echo "[start] booting webhook-server (preserve wsgi.py)"
 
-# Ensure DATABASE_URL is available (fallback from SQLALCHEMY_DATABASE_URI if needed)
+# Use the same DB as your app
 export DATABASE_URL="${DATABASE_URL:-${SQLALCHEMY_DATABASE_URI:-}}"
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "[fatal] No DATABASE_URL (or SQLALCHEMY_DATABASE_URI) set. Aborting."
+  echo "[fatal] No DATABASE_URL (or SQLALCHEMY_DATABASE_URI)."
   exit 3
 fi
 
-# Wait for Postgres (normalizes postgresql+psycopg2:// to postgresql://)
+# Wait for Postgres (handles postgresql+psycopg2://)
 python - <<'PY'
 import os, re, time, sys
 import psycopg2
@@ -19,11 +19,9 @@ dsn = re.sub(r"^postgresql\+[a-z0-9_]+://", "postgresql://", dsn, flags=re.I)
 for i in range(30):
     try:
         psycopg2.connect(dsn).close()
-        print("[ok] Postgres reachable")
-        break
+        print("[ok] Postgres reachable"); break
     except Exception as e:
-        print(f"[wait] attempt {i+1}/30: {e}")
-        time.sleep(2)
+        print(f"[wait] attempt {i+1}/30: {e}"); time.sleep(2)
 else:
     sys.exit("[fatal] Postgres not reachable")
 PY
@@ -31,5 +29,5 @@ PY
 echo "[views] building SQL views via db_views.py (golden rule)"
 python db_views.py
 
-echo "[run] gunicorn starting..."
-exec gunicorn wsgi:app --bind 0.0.0.0:${PORT:-8000} --workers ${GUNICORN_WORKERS:-2} --threads 8 --timeout 120
+echo "[run] starting app via python wsgi.py (unchanged behavior)"
+exec python wsgi.py
