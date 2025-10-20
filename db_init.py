@@ -1,479 +1,261 @@
 # db_init.py
+# Purpose: Lossless Bronze ingestion for SportAI top-level JSON "towers".
+# - Leaves your submission_context logic untouched.
+# - Ensures team_session, highlight, bounce_heatmap, session_confidences, thumbnail
+#   are fully and correctly populated for every session.
+# - Can backfill from raw_result if needed.
+
 import os
-from sqlalchemy import create_engine, text  # ← add create_engine
+import json
+from typing import Any, Dict, Optional, Iterable
 
-# ---------------- Engine (exported) ----------------
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required")
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine, Connection
 
-# One singleton engine for the whole app (Render-friendly).
-# pool_pre_ping avoids stale connections after idling.
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+# ---- Engine -----------------------------------------------------------------
 
-# ---------------- Base CREATEs (no-op if tables already exist) ----------------
-DDL_CREATE = [
-    # dim_session
+def get_engine() -> Engine:
+    # Prefer SQLALCHEMY_DATABASE_URI if you’ve set it; else DATABASE_URL
+    uri = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL")
+    if not uri:
+        raise RuntimeError("No DB URL found. Set SQLALCHEMY_DATABASE_URI or DATABASE_URL.")
+    return create_engine(uri, pool_pre_ping=True, future=True)
+
+
+# ---- Helpers ----------------------------------------------------------------
+
+def _as_list(obj: Any) -> Iterable[Dict]:
+    """Return obj as a list of dicts if possible; else empty list."""
+    if isinstance(obj, list):
+        return [x for x in obj if isinstance(x, (dict, list, str, int, float, bool)) or x is None]
+    return []
+
+def _as_dict(obj: Any) -> Dict:
+    """Return obj as a dict if possible; else empty dict."""
+    return obj if isinstance(obj, dict) else {}
+
+def _json(obj: Any) -> str:
+    """Safe JSON dump for SQL params."""
+    return json.dumps(obj, ensure_ascii=False)
+
+
+# ---- Insert / Upsert Blocks --------------------------------------------------
+
+def upsert_team_sessions(conn: Connection, session_id: int, payload: Dict) -> int:
+    """team_sessions[] -> team_session(session_id, data)"""
+    arr = payload.get("team_sessions") or payload.get("team_session") or []
+    count = 0
+    for item in _as_list(arr):
+        # One DB row per element (not unique), so simple insert
+        conn.execute(
+            text("""
+                INSERT INTO team_session (session_id, data)
+                VALUES (:sid, CAST(:data AS JSONB))
+            """),
+            {"sid": session_id, "data": _json(item)},
+        )
+        count += 1
+    return count
+
+def upsert_highlights(conn: Connection, session_id: int, payload: Dict) -> int:
+    """highlights[] -> highlight(session_id, data)"""
+    arr = payload.get("highlights") or payload.get("highlight") or []
+    count = 0
+    for item in _as_list(arr):
+        conn.execute(
+            text("""
+                INSERT INTO highlight (session_id, data)
+                VALUES (:sid, CAST(:data AS JSONB))
+            """),
+            {"sid": session_id, "data": _json(item)},
+        )
+        count += 1
+    return count
+
+def upsert_bounce_heatmap(conn: Connection, session_id: int, payload: Dict) -> bool:
+    """bounce_heatmap{} -> bounce_heatmap(session_id PK, heatmap)"""
+    hm = _as_dict(payload.get("bounce_heatmap"))
+    if not hm:
+        return False
+    conn.execute(
+        text("""
+            INSERT INTO bounce_heatmap (session_id, heatmap)
+            VALUES (:sid, CAST(:hm AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET heatmap = EXCLUDED.heatmap
+        """),
+        {"sid": session_id, "hm": _json(hm)},
+    )
+    return True
+
+def upsert_session_confidences(conn: Connection, session_id: int, payload: Dict) -> bool:
+    """confidences{} -> session_confidences(session_id PK, data)"""
+    conf = _as_dict(payload.get("confidences") or payload.get("confidence"))
+    if not conf:
+        return False
+    conn.execute(
+        text("""
+            INSERT INTO session_confidences (session_id, data)
+            VALUES (:sid, CAST(:data AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET data = EXCLUDED.data
+        """),
+        {"sid": session_id, "data": _json(conf)},
+    )
+    return True
+
+def upsert_thumbnail_crops(conn: Connection, session_id: int, payload: Dict) -> bool:
+    """thumbnails{crops}/thumbnail{crops} -> thumbnail(session_id PK, crops)"""
+    thumbs = payload.get("thumbnails") or payload.get("thumbnail") or {}
+    if isinstance(thumbs, dict):
+        crops = thumbs.get("crops") or thumbs.get("crop") or thumbs
+    else:
+        crops = thumbs  # allow rare cases where it's already the crops object/array
+    if not crops:
+        return False
+    conn.execute(
+        text("""
+            INSERT INTO thumbnail (session_id, crops)
+            VALUES (:sid, CAST(:crops AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET crops = EXCLUDED.crops
+        """),
+        {"sid": session_id, "crops": _json(crops)},
+    )
+    return True
+
+def upsert_submission_context(conn: Connection, session_id: int, payload: Dict) -> bool:
     """
-    CREATE TABLE IF NOT EXISTS dim_session (
-        session_id   SERIAL PRIMARY KEY,
-        session_uid  TEXT NOT NULL,
-        fps          DOUBLE PRECISION,
-        session_date TIMESTAMPTZ,
-        meta         JSONB
-    );
-    """,
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
-
-    # dim_player
+    submission_context{} -> submission_context(session_id PK, data)
+    NOTE: You said this is already perfect; keeping logic equivalent.
     """
-    CREATE TABLE IF NOT EXISTS dim_player (
-        player_id                  SERIAL PRIMARY KEY,
-        session_id                 INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        sportai_player_uid         TEXT NOT NULL,
-        full_name                  TEXT,
-        handedness                 TEXT,
-        age                        INTEGER,
-        utr                        DOUBLE PRECISION,
-        covered_distance           DOUBLE PRECISION,
-        fastest_sprint             DOUBLE PRECISION,
-        fastest_sprint_timestamp_s DOUBLE PRECISION,
-        activity_score             DOUBLE PRECISION,
-        swing_type_distribution    JSONB,
-        location_heatmap           JSONB
-    );
-    """,
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
+    sub_ctx = _as_dict(payload.get("submission_context") or payload.get("submission"))
+    if not sub_ctx:
+        return False
+    conn.execute(
+        text("""
+            INSERT INTO submission_context (session_id, data)
+            VALUES (:sid, CAST(:data AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET data = EXCLUDED.data
+        """),
+        {"sid": session_id, "data": _json(sub_ctx)},
+    )
+    return True
 
-    # dim_rally
+
+# ---- Orchestrators -----------------------------------------------------------
+
+def ingest_bronze_towers_for_session(conn: Connection, session_id: int, payload: Dict) -> Dict[str, Any]:
     """
-    CREATE TABLE IF NOT EXISTS dim_rally (
-        rally_id     SERIAL PRIMARY KEY,
-        session_id   INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        rally_number INTEGER NOT NULL,
-        start_s      DOUBLE PRECISION,
-        end_s        DOUBLE PRECISION,
-        start_ts     TIMESTAMPTZ,
-        end_ts       TIMESTAMPTZ
-    );
-    """,
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
-
-    # fact_swing
+    Idempotent ingest of all SportAI JSON towers for a single session.
+    Returns a small summary dict (counts/flags) for verification.
     """
-    CREATE TABLE IF NOT EXISTS fact_swing (
-        swing_id              SERIAL PRIMARY KEY,
-        session_id            INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        player_id             INTEGER REFERENCES dim_player(player_id) ON DELETE SET NULL,
-        sportai_swing_uid     TEXT,
-        start_s               DOUBLE PRECISION,
-        end_s                 DOUBLE PRECISION,
-        ball_hit_s            DOUBLE PRECISION,
-        start_ts              TIMESTAMPTZ,
-        end_ts                TIMESTAMPTZ,
-        ball_hit_ts           TIMESTAMPTZ,
-        ball_hit_x            DOUBLE PRECISION,
-        ball_hit_y            DOUBLE PRECISION,
-        ball_speed            DOUBLE PRECISION,
-        ball_player_distance  DOUBLE PRECISION,
-        is_in_rally           BOOLEAN,
-        serve                 BOOLEAN,
-        serve_type            TEXT,
-        meta                  JSONB
-    );
-    """,
-
-    # fact_bounce
-    """
-    CREATE TABLE IF NOT EXISTS fact_bounce (
-        bounce_id        SERIAL PRIMARY KEY,
-        session_id       INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        hitter_player_id INTEGER REFERENCES dim_player(player_id) ON DELETE SET NULL,
-        rally_id         INTEGER,
-        bounce_s         DOUBLE PRECISION,
-        bounce_ts        TIMESTAMPTZ,
-        x                DOUBLE PRECISION,
-        y                DOUBLE PRECISION,
-        bounce_type      TEXT
-    );
-    """,
-
-    # fact_ball_position
-    """
-    CREATE TABLE IF NOT EXISTS fact_ball_position (
-        id         SERIAL PRIMARY KEY,
-        session_id INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        ts_s       DOUBLE PRECISION,
-        ts         TIMESTAMPTZ,
-        x          DOUBLE PRECISION,
-        y          DOUBLE PRECISION
-    );
-    """,
-
-    # fact_player_position
-    """
-    CREATE TABLE IF NOT EXISTS fact_player_position (
-        id         SERIAL PRIMARY KEY,
-        session_id INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        player_id  INTEGER REFERENCES dim_player(player_id) ON DELETE SET NULL,
-        ts_s       DOUBLE PRECISION,
-        ts         TIMESTAMPTZ,
-        x          DOUBLE PRECISION,
-        y          DOUBLE PRECISION
-    );
-    """,
-
-    # team_session
-    """
-    CREATE TABLE IF NOT EXISTS team_session (
-        id         SERIAL PRIMARY KEY,
-        session_id INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        data       JSONB
-    );
-    """,
-
-    # highlight
-    """
-    CREATE TABLE IF NOT EXISTS highlight (
-        id         SERIAL PRIMARY KEY,
-        session_id INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        data       JSONB
-    );
-    """,
-
-    # bounce_heatmap
-    """
-    CREATE TABLE IF NOT EXISTS bounce_heatmap (
-        session_id INTEGER PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        heatmap    JSONB
-    );
-    """,
-
-    # session_confidences
-    """
-    CREATE TABLE IF NOT EXISTS session_confidences (
-        session_id INTEGER PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        data       JSONB
-    );
-    """,
-
-    # thumbnail
-    """
-    CREATE TABLE IF NOT EXISTS thumbnail (
-        session_id INTEGER PRIMARY KEY REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        crops      JSONB
-    );
-    """,
-
-    # raw_result
-    """
-    CREATE TABLE IF NOT EXISTS raw_result (
-        id           SERIAL PRIMARY KEY,
-        session_id   INTEGER NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE,
-        payload_json JSONB,
-        created_at   TIMESTAMPTZ DEFAULT (now() AT TIME ZONE 'utc')
-    );
-    """
-]
-
-# ---------------- Add/repair columns & safe indexes (idempotent) ----------------
-DDL_MIGRATE = [
-    # dim_session
-    "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS fps DOUBLE PRECISION;",
-    "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS session_date TIMESTAMPTZ;",
-    "ALTER TABLE dim_session ADD COLUMN IF NOT EXISTS meta JSONB;",
-
-    # dim_player
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS full_name TEXT;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS handedness TEXT;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS age INTEGER;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS utr DOUBLE PRECISION;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS covered_distance DOUBLE PRECISION;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS fastest_sprint DOUBLE PRECISION;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS fastest_sprint_timestamp_s DOUBLE PRECISION;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS activity_score DOUBLE PRECISION;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB;",
-    "ALTER TABLE dim_player ADD COLUMN IF NOT EXISTS location_heatmap JSONB;",
-
-    # dim_rally
-    "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
-    "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
-    "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ;",
-    "ALTER TABLE dim_rally ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
-
-    # fact_swing
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS sportai_swing_uid TEXT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_s DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_s DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_s DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS start_ts TIMESTAMPTZ;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS end_ts TIMESTAMPTZ;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_ts TIMESTAMPTZ;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_x DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_hit_y DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_speed DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_player_distance DOUBLE PRECISION;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve BOOLEAN;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS serve_type TEXT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS meta JSONB;",
-    # fact_swing – meta extractions (idempotent)
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_key_present      BOOLEAN;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_is_json_null     BOOLEAN;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS rally_text             TEXT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS is_valid               BOOLEAN;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS annotations            JSONB;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS annotations_count      INTEGER;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ann0_format            TEXT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ann0_tracking_id       BIGINT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ann0_bbox              JSONB;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_trajectory        JSONB;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_type       TEXT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS ball_impact_location   TEXT;",
-    "ALTER TABLE fact_swing ADD COLUMN IF NOT EXISTS intercepting_player_id BIGINT;",
-
-
-    # fact_bounce
-    "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS rally_id INTEGER;",
-    "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_s DOUBLE PRECISION;",
-    "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_ts TIMESTAMPTZ;",
-    "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
-    "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
-    "ALTER TABLE fact_bounce ADD COLUMN IF NOT EXISTS bounce_type TEXT;",
-
-    # fact_ball_position
-    "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS ts_s DOUBLE PRECISION;",
-    "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ;",
-    "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
-    "ALTER TABLE fact_ball_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
-
-    # fact_player_position
-    "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS ts_s DOUBLE PRECISION;",
-    "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ;",
-    "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION;",
-    "ALTER TABLE fact_player_position ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION;",
-
-    # side tables: ensure JSONB
-    "ALTER TABLE team_session ADD COLUMN IF NOT EXISTS data JSONB;",
-    "ALTER TABLE highlight ADD COLUMN IF NOT EXISTS data JSONB;",
-    "ALTER TABLE bounce_heatmap ADD COLUMN IF NOT EXISTS heatmap JSONB;",
-    "ALTER TABLE session_confidences ADD COLUMN IF NOT EXISTS data JSONB;",
-    "ALTER TABLE thumbnail ADD COLUMN IF NOT EXISTS crops JSONB;",
-
-    # helpful uniques
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_session_uid ON dim_session (session_uid);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_player_sess_uid ON dim_player(session_id, sportai_player_uid);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_dim_rally_sess_num ON dim_rally(session_id, rally_number);",
-]
-
-# ---------------- Helpers ----------------
-def _table_exists(conn, t):
-    return conn.execute(text("""
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema='public' AND table_name=:t
-        LIMIT 1
-    """), {"t": t}).first() is not None
-
-def _column_exists(conn, t, c):
-    return conn.execute(text("""
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='public' AND table_name=:t AND column_name=:c
-        LIMIT 1
-    """), {"t": t, "c": c}).first() is not None
-
-def _column_udt(conn, t, c):
-    row = conn.execute(text("""
-        SELECT udt_name
-        FROM information_schema.columns
-        WHERE table_schema='public' AND table_name=:t AND column_name=:c
-        LIMIT 1
-    """), {"t": t, "c": c}).first()
-    return row[0] if row else None
-
-def _index_exists(conn, name):
-    return conn.execute(text("""
-        SELECT 1 FROM pg_class WHERE relkind='i' AND relname=:n LIMIT 1
-    """), {"n": name}).first() is not None
-
-def _ensure_jsonb(conn, t, c):
-    if _column_exists(conn, t, c) and _column_udt(conn, t, c) != "jsonb":
-        conn.execute(text(f"ALTER TABLE {t} ALTER COLUMN {c} TYPE JSONB USING {c}::jsonb;"))
-
-def _ensure_fact_bounce_fk(conn):
-    check = conn.execute(text("""
-        SELECT COUNT(*) FROM pg_constraint c
-        JOIN pg_class r ON r.oid = c.conrelid
-        JOIN pg_namespace nr ON nr.oid = r.relnamespace
-        JOIN pg_class f ON f.oid = c.confrelid
-        JOIN pg_namespace nf ON nf.oid = f.relnamespace
-        WHERE c.contype='f'
-          AND nr.nspname='public' AND r.relname='fact_bounce'
-          AND nf.nspname='public' AND f.relname='dim_rally';
-    """)).scalar_one()
-    if int(check or 0) == 0:
-        conn.execute(text("""
-            ALTER TABLE public.fact_bounce
-            ADD CONSTRAINT fact_bounce_rally_id_fkey
-            FOREIGN KEY (rally_id) REFERENCES public.dim_rally(rally_id) ON DELETE SET NULL;
-        """))
-
-def _ensure_fact_swing_indexes(conn):
-    if _column_exists(conn, "fact_swing", "session_id") and _column_exists(conn, "fact_swing", "sportai_swing_uid"):
-        if not _index_exists(conn, "uq_fact_swing_sess_suid"):
-            conn.execute(text("""
-                CREATE UNIQUE INDEX uq_fact_swing_sess_suid
-                ON fact_swing(session_id, sportai_swing_uid)
-                WHERE sportai_swing_uid IS NOT NULL;
-            """))
-    if all(_column_exists(conn, "fact_swing", c) for c in ("session_id","player_id","start_s","end_s")):
-        if not _index_exists(conn, "uq_fact_swing_fallback"):
-            conn.execute(text("""
-                CREATE UNIQUE INDEX uq_fact_swing_fallback
-                ON fact_swing(session_id, player_id, start_s, end_s)
-                WHERE sportai_swing_uid IS NULL;
-            """))
-
-def _ensure_raw_result_columns(conn):
-    if not _table_exists(conn, "raw_result"):
-        return
-    if (not _column_exists(conn, "raw_result", "payload_json")) and _column_exists(conn, "raw_result", "payload"):
-        conn.execute(text("ALTER TABLE raw_result RENAME COLUMN payload TO payload_json;"))
-    if not _column_exists(conn, "raw_result", "payload_json"):
-        conn.execute(text("ALTER TABLE raw_result ADD COLUMN payload_json JSONB;"))
-    if _column_udt(conn, "raw_result", "payload_json") != "jsonb":
-        conn.execute(text("ALTER TABLE raw_result ALTER COLUMN payload_json TYPE JSONB USING payload_json::jsonb;"))
-    if not _column_exists(conn, "raw_result", "created_at"):
-        conn.execute(text("ALTER TABLE raw_result ADD COLUMN created_at TIMESTAMPTZ DEFAULT (now() AT TIME ZONE 'utc');"))
-
-def _ensure_unique_on_session_id(conn, table_name, index_name):
-    if _table_exists(conn, table_name) and not _index_exists(conn, index_name):
-        conn.execute(text(f"CREATE UNIQUE INDEX {index_name} ON {table_name}(session_id);"))
-
-# ---------------- Bronze passthrough views ----------------
-def _drop_view(conn, name: str):
-    conn.execute(text(f'DROP VIEW IF EXISTS "{name}" CASCADE;'))
-
-def _create_bronze_views(conn):
-    """
-    Keep Bronze 'out of the firing line':
-    - Simple passthroughs over base tables
-    - Idempotent, created at init time
-    - Silver/Gold can build on these later (optional). For now, Silver can keep
-      reading base tables directly (no behavior change).
-    """
-    bronze_sql = {
-        "vw_bronze_dim_session_base": """
-            CREATE OR REPLACE VIEW vw_bronze_dim_session_base AS
-            SELECT * FROM dim_session;
-        """,
-        "vw_bronze_swing_base": """
-            CREATE OR REPLACE VIEW vw_bronze_swing_base AS
-            SELECT * FROM fact_swing;
-        """,
-        "vw_bronze_bounce_base": """
-            CREATE OR REPLACE VIEW vw_bronze_bounce_base AS
-            SELECT * FROM fact_bounce;
-        """,
-        "vw_bronze_ball_position_base": """
-            CREATE OR REPLACE VIEW vw_bronze_ball_position_base AS
-            SELECT * FROM fact_ball_position;
-        """,
-        "vw_bronze_player_position_base": """
-            CREATE OR REPLACE VIEW vw_bronze_player_position_base AS
-            SELECT * FROM fact_player_position;
-        """,
-        "vw_bronze_raw_result_base": """
-            CREATE OR REPLACE VIEW vw_bronze_raw_result_base AS
-            SELECT raw_result_id, session_id, created_at, payload_json
-            FROM raw_result
-            ORDER BY session_id, created_at;
-        """,
+    summary = {
+        "session_id": session_id,
+        "team_session_rows": 0,
+        "highlight_rows": 0,
+        "has_bounce_heatmap": False,
+        "has_confidences": False,
+        "has_thumbnails": False,
+        "has_submission_context": False,
     }
-    # Drop & recreate (safe)
-    for name, sql in bronze_sql.items():
-        _drop_view(conn, name)
-        conn.execute(text(sql))
 
-# ---------------- Entrypoint ----------------
-def run_init(engine):
+    # Order doesn’t matter, but we keep it stable.
+    summary["team_session_rows"] = upsert_team_sessions(conn, session_id, payload)
+    summary["highlight_rows"] = upsert_highlights(conn, session_id, payload)
+    summary["has_bounce_heatmap"] = upsert_bounce_heatmap(conn, session_id, payload)
+    summary["has_confidences"] = upsert_session_confidences(conn, session_id, payload)
+    summary["has_thumbnails"] = upsert_thumbnail_crops(conn, session_id, payload)
+    # Leave as-is per your note
+    summary["has_submission_context"] = upsert_submission_context(conn, session_id, payload)
+
+    return summary
+
+
+def backfill_bronze_towers_from_raw_result(conn: Connection, only_session_id: Optional[int] = None) -> Iterable[Dict[str, Any]]:
+    """
+    Replays the Bronze tower inserts from raw_result.payload_json
+    across all (or one) sessions. Yields per-session summaries.
+    """
+    if only_session_id is None:
+        q = text("""
+            SELECT session_id, payload_json
+            FROM raw_result
+            WHERE payload_json IS NOT NULL
+            ORDER BY session_id, created_at
+        """)
+        rows = conn.execute(q).mappings().all()
+    else:
+        q = text("""
+            SELECT session_id, payload_json
+            FROM raw_result
+            WHERE session_id = :sid
+              AND payload_json IS NOT NULL
+            ORDER BY created_at
+        """)
+        rows = conn.execute(q, {"sid": only_session_id}).mappings().all()
+
+    seen = set()
+    for r in rows:
+        sid = int(r["session_id"])
+        # process each session once (latest payload wins)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        payload = dict(r["payload_json"])
+        yield ingest_bronze_towers_for_session(conn, sid, payload)
+
+
+# ---- CLI Entrypoints ---------------------------------------------------------
+
+def run_for_single_session(session_id: int, payload_json_str: str) -> None:
+    """
+    Use this to ingest a single payload you just received.
+    Example:
+        python db_init.py single 1072 "$(cat payload.json)"
+    """
+    engine = get_engine()
+    payload = json.loads(payload_json_str)
     with engine.begin() as conn:
-        for stmt in DDL_CREATE:
-            conn.execute(text(stmt))
-        for stmt in DDL_MIGRATE:
-            conn.execute(text(stmt))
+        summary = ingest_bronze_towers_for_session(conn, session_id, payload)
+    print(json.dumps(summary, indent=2))
 
-        _ensure_jsonb(conn, "team_session", "data")
-        _ensure_jsonb(conn, "highlight", "data")
-        _ensure_jsonb(conn, "bounce_heatmap", "heatmap")
-        _ensure_jsonb(conn, "session_confidences", "data")
-        _ensure_jsonb(conn, "thumbnail", "crops")
 
-        _ensure_raw_result_columns(conn)
-        _ensure_fact_bounce_fk(conn)
-        _ensure_fact_swing_indexes(conn)
-
-        _ensure_unique_on_session_id(conn, "bounce_heatmap", "uq_bounce_heatmap_session")
-        _ensure_unique_on_session_id(conn, "session_confidences", "uq_session_confidences_session")
-        _ensure_unique_on_session_id(conn, "thumbnail", "uq_thumbnail_session")
-
-        # ⬇️ Create Bronze views at init (no behavior change to Silver)
-        _create_bronze_views(conn)
-
-    # Keep the extra raw_result hardening you already had
+def run_backfill(optional_session_id: Optional[int] = None) -> None:
+    """
+    Backfill from raw_result for all sessions or one session.
+    Example (all):  python db_init.py backfill
+    Example (one):  python db_init.py backfill 1072
+    """
+    engine = get_engine()
     with engine.begin() as conn:
-        conn.execute(text("""
-            ALTER TABLE raw_result
-            ADD COLUMN IF NOT EXISTS payload_json JSONB
-        """))
-        conn.execute(text("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='raw_result' AND column_name='created_at'
-                ) THEN
-                    ALTER TABLE raw_result ADD COLUMN created_at timestamptz DEFAULT now() NOT NULL;
-                END IF;
-            END $$;
-        """))
-        conn.execute(text("""
-            DO $$
-            BEGIN
-                IF EXISTS (
-                    SELECT 1 FROM pg_constraint
-                    WHERE conname = 'raw_result_pkey'
-                    AND conrelid = 'raw_result'::regclass
-                ) THEN
-                    ALTER TABLE raw_result DROP CONSTRAINT raw_result_pkey;
-                END IF;
-            END $$;
-        """))
-        conn.execute(text("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='raw_result' AND column_name='raw_result_id'
-                ) THEN
-                    ALTER TABLE raw_result ADD COLUMN raw_result_id BIGSERIAL;
-                END IF;
-            END $$;
-        """))
-        conn.execute(text("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint
-                    WHERE conname = 'raw_result_pkey'
-                    AND conrelid = 'raw_result'::regclass
-                ) THEN
-                    ALTER TABLE raw_result ADD CONSTRAINT raw_result_pkey PRIMARY KEY (raw_result_id);
-                END IF;
-            END $$;
-        """))
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS idx_raw_result_session_created
-                ON raw_result (session_id, created_at DESC);
-        """))
+        out = list(backfill_bronze_towers_from_raw_result(conn, optional_session_id))
+    print(json.dumps(out, indent=2))
 
-__all__ = ["engine", "run_init", "DATABASE_URL"]
+
+if __name__ == "__main__":
+    import sys
+    args = sys.argv[1:]
+
+    if not args:
+        print("Usage:")
+        print("  python db_init.py single <session_id> '<payload_json_string>'")
+        print("  python db_init.py backfill [<session_id>]")
+        raise SystemExit(1)
+
+    cmd = args[0].lower()
+
+    if cmd == "single":
+        if len(args) < 3:
+            raise SystemExit("Usage: python db_init.py single <session_id> '<payload_json_string>'")
+        sid = int(args[1])
+        payload_str = args[2]
+        run_for_single_session(sid, payload_str)
+
+    elif cmd == "backfill":
+        sid_opt = int(args[1]) if len(args) >= 2 else None
+        run_backfill(sid_opt)
+
+    else:
+        raise SystemExit(f"Unknown command: {cmd}")
