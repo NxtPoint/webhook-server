@@ -104,6 +104,10 @@ def _detect_session_id(payload: Dict[str, Any]) -> Optional[int]:
 def health():
     return jsonify(ok=True, service=SERVICE_NAME, ts=datetime.now(timezone.utc).isoformat())
 
+@app.get("/")
+def root():
+    return jsonify(ok=True, service=SERVICE_NAME)
+
 # ------------------------------------------------------------------------------
 # Ingest path 1: direct JSON webhook from SportAI
 # ------------------------------------------------------------------------------
