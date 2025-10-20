@@ -26,6 +26,10 @@ from db_init import engine, ingest_all_for_session  # noqa: E402
 # ------------------------------------------------------------------------------
 app = Flask(__name__)
 
+# mount the admin UI
+from ui_app import ui_bp
+app.register_blueprint(ui_bp, url_prefix="/upload")
+
 # Optional: simple CORS (relaxed; tighten in prod as needed)
 try:
     from flask_cors import CORS
