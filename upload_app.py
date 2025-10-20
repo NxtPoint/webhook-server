@@ -59,6 +59,59 @@ def check_video():
         return jsonify(ok=ok, reasons=reasons, max_mb=max_mb)
     except Exception as e:
         return jsonify(ok=False, error=str(e)), 400
+# -----------------------------------------------------------
+# Video pre-check (used by the Upload & Submit page)
+# Accepts JSON or form: { fileName, sizeMB } (sizeMB optional)
+# Returns: { ok, reasons[], max_mb }
+# We expose multiple aliases to catch whatever the UI calls.
+# -----------------------------------------------------------
+def _parse_check_payload():
+    # Try JSON first
+    data = request.get_json(silent=True) or {}
+    # Fallback to form/query
+    if not data:
+        data = {
+            "fileName": request.values.get("fileName") or request.values.get("filename"),
+            "sizeMB": request.values.get("sizeMB") or request.values.get("fileSizeMB"),
+        }
+    name = (data.get("fileName") or "").strip()
+    size_mb_raw = data.get("sizeMB")
+    try:
+        size_mb = float(size_mb_raw) if size_mb_raw not in (None, "", "null") else 0.0
+    except Exception:
+        size_mb = 0.0
+    return name, size_mb
+
+def _check_logic():
+    name, size_mb = _parse_check_payload()
+    max_mb = int(os.getenv("MAX_CONTENT_MB", os.getenv("MAX_UPLOAD_MB", "150")))
+    allowed_ext = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
+    reasons = []
+    if not name:
+        reasons.append("Missing file name.")
+    elif not name.lower().endswith(allowed_ext):
+        reasons.append(f"Unsupported file type. Allowed: {', '.join(allowed_ext)}")
+    if size_mb and size_mb > max_mb:
+        reasons.append(f"File is larger than allowed limit of {max_mb} MB.")
+    ok = len(reasons) == 0
+    # helpful log while we stabilize front-end paths
+    app.logger.info("pre-check name=%s sizeMB=%s ok=%s reasons=%s", name, size_mb, ok, reasons)
+    return jsonify(ok=ok, reasons=reasons, max_mb=max_mb)
+
+@app.post("/check")
+@app.post("/check-video")
+@app.post("/api/check")
+@app.post("/api/check-video")
+@app.post("/upload/check")
+@app.post("/upload/check-video")
+@app.post("/upload/api/check")
+@app.post("/upload/api/check-video")
+def check_video():
+    try:
+        return _check_logic()
+    except Exception as e:
+        app.logger.exception("check endpoint failed")
+        return jsonify(ok=False, error=str(e)), 400
 
 # Optional: simple CORS (relaxed; tighten in prod as needed)
 try:
