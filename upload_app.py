@@ -30,6 +30,36 @@ app = Flask(__name__)
 from ui_app import ui_bp
 app.register_blueprint(ui_bp, url_prefix="/upload")
 
+# -----------------------------------------------------------
+# Video pre-check (used by the Upload & Submit page)
+# Accepts JSON like: { "fileName": "match.mp4", "sizeMB": 123.4 }
+# Returns: { ok: true/false, reasons: [], max_mb: 150 }
+# -----------------------------------------------------------
+@app.post("/check")
+@app.post("/upload/check")  # alias in case the page calls relative to /upload
+def check_video():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("fileName") or data.get("filename") or "").strip()
+        size_mb = float(data.get("sizeMB") or data.get("fileSizeMB") or 0)
+
+        max_mb = int(os.getenv("MAX_CONTENT_MB", os.getenv("MAX_UPLOAD_MB", "150")))
+        allowed_ext = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
+
+        reasons = []
+        if not name:
+            reasons.append("Missing file name.")
+        elif not name.lower().endswith(allowed_ext):
+            reasons.append(f"Unsupported file type. Allowed: {', '.join(allowed_ext)}")
+
+        if size_mb and size_mb > max_mb:
+            reasons.append(f"File is larger than allowed limit of {max_mb} MB.")
+
+        ok = len(reasons) == 0
+        return jsonify(ok=ok, reasons=reasons, max_mb=max_mb)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 400
+
 # Optional: simple CORS (relaxed; tighten in prod as needed)
 try:
     from flask_cors import CORS
