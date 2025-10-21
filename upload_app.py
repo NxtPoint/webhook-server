@@ -1,131 +1,57 @@
 ﻿# upload_app.py
-# Unified ingestion app for SportAI -> Postgres Bronze.
-# - Persists raw payloads in raw_result (payload_json) for replay/backfill
-# - Ingests *all* Bronze towers + dim/fact via db_init.ingest_all_for_session
-# - Handles direct JSON webhook and "fetch-by-URL" task flow
-# - Captures submission_context from your frontend
+# Unified upload + SportAI ingest + Bronze population (lossless) + admin UI.
+# - Keeps your upload flow (check -> presign -> submit -> poll) with S3 pre-signed uploads
+# - Adds raw payload storage (raw_result.payload_json)
+# - Calls db_init.ingest_all_for_session to populate Bronze towers + dim/fact
+# - Exposes / and /health for Render
+# - Mounts your UI blueprint at /upload
 
 import os
 import json
+import time
 import hashlib
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.engine import Connection
 
-# ---- our unified Bronze ingest + engine
-from db_init import engine, ingest_all_for_session  # noqa: E402
-
-# ------------------------------------------------------------------------------
-# App
-# ------------------------------------------------------------------------------
-app = Flask(__name__)
-
-# mount the admin UI
-from ui_app import ui_bp
-app.register_blueprint(ui_bp, url_prefix="/upload")
-
-# -----------------------------------------------------------
-# Video pre-check (used by the Upload & Submit page)
-# Accepts JSON like: { "fileName": "match.mp4", "sizeMB": 123.4 }
-# Returns: { ok: true/false, reasons: [], max_mb: 150 }
-# -----------------------------------------------------------
-@app.post("/check")
-@app.post("/upload/check")  # alias in case the page calls relative to /upload
-def check_video():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        name = (data.get("fileName") or data.get("filename") or "").strip()
-        size_mb = float(data.get("sizeMB") or data.get("fileSizeMB") or 0)
-
-        max_mb = int(os.getenv("MAX_CONTENT_MB", os.getenv("MAX_UPLOAD_MB", "150")))
-        allowed_ext = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
-
-        reasons = []
-        if not name:
-            reasons.append("Missing file name.")
-        elif not name.lower().endswith(allowed_ext):
-            reasons.append(f"Unsupported file type. Allowed: {', '.join(allowed_ext)}")
-
-        if size_mb and size_mb > max_mb:
-            reasons.append(f"File is larger than allowed limit of {max_mb} MB.")
-
-        ok = len(reasons) == 0
-        return jsonify(ok=ok, reasons=reasons, max_mb=max_mb)
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)), 400
-# -----------------------------------------------------------
-# Video pre-check (used by the Upload & Submit page)
-# Accepts JSON or form: { fileName, sizeMB } (sizeMB optional)
-# Returns: { ok, reasons[], max_mb }
-# We expose multiple aliases to catch whatever the UI calls.
-# -----------------------------------------------------------
-def _parse_check_payload():
-    # Try JSON first
-    data = request.get_json(silent=True) or {}
-    # Fallback to form/query
-    if not data:
-        data = {
-            "fileName": request.values.get("fileName") or request.values.get("filename"),
-            "sizeMB": request.values.get("sizeMB") or request.values.get("fileSizeMB"),
-        }
-    name = (data.get("fileName") or "").strip()
-    size_mb_raw = data.get("sizeMB")
-    try:
-        size_mb = float(size_mb_raw) if size_mb_raw not in (None, "", "null") else 0.0
-    except Exception:
-        size_mb = 0.0
-    return name, size_mb
-
-def _check_logic():
-    name, size_mb = _parse_check_payload()
-    max_mb = int(os.getenv("MAX_CONTENT_MB", os.getenv("MAX_UPLOAD_MB", "150")))
-    allowed_ext = (".mp4", ".mov", ".mkv", ".avi", ".m4v")
-    reasons = []
-    if not name:
-        reasons.append("Missing file name.")
-    elif not name.lower().endswith(allowed_ext):
-        reasons.append(f"Unsupported file type. Allowed: {', '.join(allowed_ext)}")
-    if size_mb and size_mb > max_mb:
-        reasons.append(f"File is larger than allowed limit of {max_mb} MB.")
-    ok = len(reasons) == 0
-    # helpful log while we stabilize front-end paths
-    app.logger.info("pre-check name=%s sizeMB=%s ok=%s reasons=%s", name, size_mb, ok, reasons)
-    return jsonify(ok=ok, reasons=reasons, max_mb=max_mb)
-
-@app.post("/check")
-@app.post("/check-video")
-@app.post("/api/check")
-@app.post("/api/check-video")
-@app.post("/upload/check")
-@app.post("/upload/check-video")
-@app.post("/upload/api/check")
-@app.post("/upload/api/check-video")
-def check_video():
-    try:
-        return _check_logic()
-    except Exception as e:
-        app.logger.exception("check endpoint failed")
-        return jsonify(ok=False, error=str(e)), 400
-
-# Optional: simple CORS (relaxed; tighten in prod as needed)
+# --- optional CORS (safe no-op if not installed)
 try:
-    from flask_cors import CORS
-    CORS(app, resources={r"/*": {"origins": "*"}})
+    from flask_cors import CORS  # type: ignore
+except Exception:  # pragma: no cover
+    CORS = None  # type: ignore
+
+# --- db + bronze ingest
+from db_init import engine, ingest_all_for_session
+
+# --- optional admin UI blueprint (your ui_app.py)
+try:
+    from ui_app import ui_bp
 except Exception:
-    pass
+    ui_bp = None  # type: ignore
+
+# --- optional boto3 for S3 pre-signing
+try:
+    import boto3  # type: ignore
+except Exception:  # pragma: no cover
+    boto3 = None  # type: ignore
+
+
+app = Flask(__name__)
+if CORS:
+    CORS(app, resources={r"/*": {"origins": "*"}})
 
 SERVICE_NAME = os.getenv("SERVICE_NAME", "sportai-api")
 DEFAULT_TIMEOUT = int(os.getenv("SPORTAI_HTTP_TIMEOUT", "600"))
 
-# ------------------------------------------------------------------------------
-# Helpers: raw_result persistence
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Helpers: raw_result persistence (so backfill always works)
+# ---------------------------------------------------------------------------
 def _ensure_raw_result_schema(conn: Connection) -> None:
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS raw_result (
@@ -153,7 +79,6 @@ def _store_raw_payload(
     doc_type: Optional[str] = None,
     source: Optional[str] = None,
 ) -> None:
-    """Persist raw JSON once per (session_id, doc_type) when available; use content hash to avoid dupes."""
     _ensure_raw_result_schema(conn)
     blob = json.dumps(payload_dict, ensure_ascii=False)
     sha  = hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -164,7 +89,6 @@ def _store_raw_payload(
     """), {"sid": session_id, "suid": session_uid, "dt": doc_type, "src": source, "payload": blob, "sha": sha})
 
 def _update_raw_result_session_id(conn: Connection, *, session_id: int, session_uid: Optional[str]) -> None:
-    """Attach numeric session_id to any previously-saved rows by uid."""
     if not session_uid:
         return
     conn.execute(sql_text("""
@@ -184,9 +108,9 @@ def _detect_session_id(payload: Dict[str, Any]) -> Optional[int]:
     except Exception:
         return None
 
-# ------------------------------------------------------------------------------
-# Health
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Health + root (Render readiness)
+# ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
     return jsonify(ok=True, service=SERVICE_NAME, ts=datetime.now(timezone.utc).isoformat())
@@ -195,91 +119,63 @@ def health():
 def root():
     return jsonify(ok=True, service=SERVICE_NAME)
 
-# ------------------------------------------------------------------------------
-# Ingest path 1: direct JSON webhook from SportAI
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SportAI: direct webhook (SportAI posts the final JSON here)
+# ---------------------------------------------------------------------------
 @app.post("/sportai/result")
 def sportai_result():
     """
-    SportAI posts the final JSON here.
-    We:
-      1) save raw to raw_result
-      2) ingest Bronze towers + dim/fact
-      3) link raw_result row to numeric session_id
+    SportAI -> POST final JSON to this endpoint.
+    We save the payload to raw_result, populate Bronze, and link raw row to session_id.
     """
     try:
         payload = request.get_json(force=True, silent=False)
         if not isinstance(payload, dict):
-            return jsonify(error="Invalid JSON; expected object"), 400
+            return jsonify(ok=False, error="Invalid JSON object"), 400
 
         suid = _detect_session_uid(payload)
         sid_hint = _detect_session_id(payload)
 
         with engine.begin() as conn:
-            _store_raw_payload(
-                conn,
-                payload_dict=payload,
-                session_id=sid_hint,
-                session_uid=suid,
-                doc_type="sportai.result",
-                source="webhook:/sportai/result",
-            )
+            _store_raw_payload(conn, payload_dict=payload, session_id=sid_hint, session_uid=suid,
+                               doc_type="sportai.result", source="webhook:/sportai/result")
             summary = _ingest_all(conn, payload)
-            # ensure linkage by uid after ingest
             _update_raw_result_session_id(conn, session_id=summary["session_id"], session_uid=suid)
 
-        return jsonify({"ok": True, "summary": summary})
+        return jsonify(ok=True, summary=summary)
     except HTTPException as he:
         raise he
     except Exception as e:
         app.logger.exception("sportai_result failed")
         return jsonify(ok=False, error=str(e)), 500
 
-# ------------------------------------------------------------------------------
-# Ingest path 2: fetch-by-URL (ops task) – we GET result_url, then ingest
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SportAI: ingest by result_url (ops/manual)
+# Body: { "result_url": "https://...", "submission_context": {...} }
+# ---------------------------------------------------------------------------
 @app.post("/ops/ingest-task")
 def ops_ingest_task():
-    """
-    Body:
-      {
-        "result_url": "https://.../result.json",
-        "task_id": "optional",
-        "submission_context": { ... }   # optional: save alongside
-      }
-    """
     try:
         data = request.get_json(force=True, silent=False) or {}
         result_url = data.get("result_url")
         if not result_url:
-            return jsonify(error="Missing result_url"), 400
+            return jsonify(ok=False, error="Missing result_url"), 400
 
-        # 1) fetch JSON from SportAI
         r = requests.get(result_url, timeout=DEFAULT_TIMEOUT)
         r.raise_for_status()
         payload = r.json()
         if not isinstance(payload, dict):
-            return jsonify(error="Fetched payload is not a JSON object"), 400
+            return jsonify(ok=False, error="Result is not a JSON object"), 400
 
         suid = _detect_session_uid(payload)
         sid_hint = _detect_session_id(payload)
-
-        # 2) optionally persist submission_context from caller
         submission_context = data.get("submission_context")
-        task_id = data.get("task_id")
 
         with engine.begin() as conn:
-            # save raw first
-            _store_raw_payload(
-                conn,
-                payload_dict=payload,
-                session_id=sid_hint,
-                session_uid=suid,
-                doc_type="sportai.result",
-                source=result_url,
-            )
+            _store_raw_payload(conn, payload_dict=payload, session_id=sid_hint, session_uid=suid,
+                               doc_type="sportai.result", source=result_url)
 
-            # save submission_context if present (you said this table is perfect)
+            # (optional) store submission_context you send alongside the task
             if isinstance(submission_context, dict) and submission_context:
                 conn.execute(sql_text("""
                     CREATE TABLE IF NOT EXISTS submission_context (
@@ -290,20 +186,15 @@ def ops_ingest_task():
                       ingest_error text
                     );
                 """))
-                # Allow pre-session save using a temp session_id of NULL; we key by session_id on upsert later.
                 conn.execute(sql_text("""
                     INSERT INTO submission_context (session_id, data)
                     VALUES (COALESCE(:sid, 0), CAST(:d AS jsonb))
                     ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
                 """), {"sid": sid_hint, "d": json.dumps(submission_context)})
 
-            # 3) Bronze ingest
             summary = _ingest_all(conn, payload)
-
-            # 4) Link raw_result rows by uid and stamp submission_context with final session_id
             _update_raw_result_session_id(conn, session_id=summary["session_id"], session_uid=suid)
 
-            # If we saved submission_context with a 0 sid, move it to real sid
             if isinstance(submission_context, dict) and submission_context:
                 conn.execute(sql_text("""
                     INSERT INTO submission_context (session_id, data, ingest_finished_at, ingest_error)
@@ -312,35 +203,27 @@ def ops_ingest_task():
                       SET data = EXCLUDED.data,
                           ingest_finished_at = now(),
                           ingest_error = NULL;
-                    -- clean any temp row
                 """), {"sid": summary["session_id"], "d": json.dumps(submission_context)})
                 conn.execute(sql_text("DELETE FROM submission_context WHERE session_id = 0"))
 
-        return jsonify({"ok": True, "summary": summary})
+        return jsonify(ok=True, summary=summary)
     except HTTPException as he:
         raise he
     except Exception as e:
         app.logger.exception("ops_ingest_task failed")
         return jsonify(ok=False, error=str(e)), 500
 
-# ------------------------------------------------------------------------------
-# Submission context (frontend form) – standalone
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Submission Context (standalone upsert if your UI posts it independently)
+# ---------------------------------------------------------------------------
 @app.post("/submission-context")
 def submission_context_upsert():
-    """
-    Body:
-      {
-        "session_id": 1234,              # optional at submit-time
-        "submission_context": { ... }    # required
-      }
-    """
     try:
         body = request.get_json(force=True, silent=False) or {}
         sid = body.get("session_id")
         sc  = body.get("submission_context")
         if not isinstance(sc, dict) or not sc:
-            return jsonify(error="submission_context must be a non-empty object"), 400
+            return jsonify(ok=False, error="submission_context must be an object"), 400
 
         with engine.begin() as conn:
             conn.execute(sql_text("""
@@ -353,7 +236,6 @@ def submission_context_upsert():
                 );
             """))
             if sid is None:
-                # stash under 0 until the ingest knows real session_id
                 conn.execute(sql_text("""
                     INSERT INTO submission_context (session_id, data)
                     VALUES (0, CAST(:d AS jsonb))
@@ -365,6 +247,7 @@ def submission_context_upsert():
                     VALUES (:sid, CAST(:d AS jsonb))
                     ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
                 """), {"sid": int(sid), "d": json.dumps(sc)})
+
         return jsonify(ok=True)
     except HTTPException as he:
         raise he
@@ -372,19 +255,189 @@ def submission_context_upsert():
         app.logger.exception("submission_context_upsert failed")
         return jsonify(ok=False, error=str(e)), 500
 
-# ------------------------------------------------------------------------------
-# Internal: call unified Bronze ingest and return a compact summary
-# ------------------------------------------------------------------------------
-def _ingest_all(conn: Connection, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Delegates to db_init.ingest_all_for_session, then returns a concise summary.
-    """
-    # The unified ingest decides/derives the final session_id.
-    # If none in payload, it will still populate based on data it maps.
-    temp_sid = _detect_session_id(payload) or -1  # hint only
-    summary = ingest_all_for_session(conn, temp_sid, payload)
+# ---------------------------------------------------------------------------
+# Upload API (frontend flow)
+#   1) /upload/api/check-video     -> quick validation
+#   2) /upload/api/presign         -> S3 pre-signed POST (or error if not configured)
+#   3) /upload/api/submit          -> create SportAI task from uploaded URL
+#   4) /upload/api/task-status     -> poll task; on complete, fetch JSON, store raw, ingest Bronze
+# ---------------------------------------------------------------------------
+def _allowed_ext() -> Tuple[str, ...]:
+    return (".mp4", ".mov", ".mkv", ".avi", ".m4v")
 
-    out = {
+def _max_upload_mb() -> int:
+    return int(os.getenv("MAX_CONTENT_MB", os.getenv("MAX_UPLOAD_MB", "150")))
+
+@app.post("/upload/api/check-video")
+@app.post("/api/check-video")  # alias
+def api_check_video():
+    try:
+        data = request.get_json(silent=True) or request.values
+        name = (data.get("fileName") or data.get("filename") or "").strip()
+        size = data.get("sizeMB") or data.get("fileSizeMB") or 0
+        try:
+            size = float(size)
+        except Exception:
+            size = 0.0
+
+        reasons = []
+        if not name:
+            reasons.append("Missing file name.")
+        elif not name.lower().endswith(_allowed_ext()):
+            reasons.append(f"Unsupported file type. Allowed: {', '.join(_allowed_ext())}")
+        if size and size > _max_upload_mb():
+            reasons.append(f"File is larger than allowed limit of {_max_upload_mb()} MB.")
+
+        return jsonify(ok=len(reasons) == 0, reasons=reasons, max_mb=_max_upload_mb())
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 400
+
+@app.post("/upload/api/presign")
+def api_presign():
+    """
+    Returns a pre-signed POST for S3 the frontend can use to upload the video file.
+    Body: { "fileName":"match.mp4" }
+    """
+    try:
+        if not boto3:
+            return jsonify(ok=False, error="boto3 not installed on server"), 500
+
+        data = request.get_json(force=True, silent=False) or {}
+        file_name = (data.get("fileName") or "").strip()
+        if not file_name:
+            return jsonify(ok=False, error="fileName required"), 400
+
+        bucket = os.getenv("UPLOAD_S3_BUCKET")
+        region = os.getenv("AWS_REGION", "us-east-1")
+        if not bucket:
+            return jsonify(ok=False, error="UPLOAD_S3_BUCKET not set"), 500
+
+        key_prefix = os.getenv("UPLOAD_S3_PREFIX", "incoming/")
+        key = f"{key_prefix.rstrip('/')}/{int(time.time())}_{file_name}"
+
+        s3 = boto3.client("s3", region_name=region)
+        fields = {"acl": "private"}
+        conditions = [["content-length-range", 0, _max_upload_mb() * 1024 * 1024]]
+
+        presigned = s3.generate_presigned_post(
+            Bucket=bucket,
+            Key=key,
+            Fields=fields,
+            Conditions=conditions,
+            ExpiresIn=3600,
+        )
+        # where the uploaded file will be accessible by your backend (not necessarily public)
+        video_url = f"s3://{bucket}/{key}"
+        return jsonify(ok=True, presigned=presigned, video_url=video_url)
+    except Exception as e:
+        app.logger.exception("api_presign failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+def _sportai_headers():
+    token = os.getenv("SPORTAI_TOKEN") or os.getenv("SPORT_AI_TOKEN")
+    if not token:
+        raise RuntimeError("SPORTAI_TOKEN not set")
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+def _sportai_base():
+    return os.getenv("SPORTAI_API_BASE", "https://api.sportai.example.com")
+
+@app.post("/upload/api/submit")
+def api_submit():
+    """
+    Body:
+      { "video_url":"https://...", "metadata":{...}, "submission_context":{...} }
+    Creates a SportAI job and returns a task_id (and optional result_url if immediate).
+    """
+    try:
+        body = request.get_json(force=True, silent=False) or {}
+        video_url = body.get("video_url")
+        metadata   = body.get("metadata") or {}
+        sub_ctx    = body.get("submission_context") or {}
+
+        if not video_url:
+            return jsonify(ok=False, error="video_url required"), 400
+
+        # Call SportAI to create a processing task
+        create_url = f"{_sportai_base().rstrip('/')}/v1/jobs"
+        resp = requests.post(create_url, headers=_sportai_headers(),
+                             json={"video_url": video_url, "metadata": metadata}, timeout=DEFAULT_TIMEOUT)
+        resp.raise_for_status()
+        job = resp.json()  # expected: {"task_id": "..."} or {"id": "..."}
+        task_id = job.get("task_id") or job.get("id")
+
+        # Optionally save submission context now (0 sid placeholder)
+        if isinstance(sub_ctx, dict) and sub_ctx:
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    CREATE TABLE IF NOT EXISTS submission_context (
+                      session_id int PRIMARY KEY,
+                      data jsonb,
+                      created_at timestamptz DEFAULT now(),
+                      ingest_finished_at timestamptz,
+                      ingest_error text
+                    );
+                """))
+                conn.execute(sql_text("""
+                    INSERT INTO submission_context (session_id, data)
+                    VALUES (0, CAST(:d AS jsonb))
+                    ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+                """), {"d": json.dumps(sub_ctx)})
+
+        return jsonify(ok=True, task_id=task_id)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        app.logger.exception("api_submit failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+@app.get("/upload/api/task-status")
+def api_task_status():
+    """
+    Query SportAI job status. If complete and a result_url exists,
+    fetch JSON, persist raw, and ingest Bronze immediately.
+    Query: ?task_id=xxx
+    """
+    try:
+        task_id = request.args.get("task_id")
+        if not task_id:
+            return jsonify(ok=False, error="task_id required"), 400
+
+        status_url = f"{_sportai_base().rstrip('/')}/v1/jobs/{task_id}"
+        r = requests.get(status_url, headers=_sportai_headers(), timeout=DEFAULT_TIMEOUT)
+        r.raise_for_status()
+        status = r.json()
+
+        # If job finished and we have a result_url, hydrate Bronze
+        result_url = status.get("result_url") or status.get("result") or status.get("links", {}).get("result")
+        if result_url:
+            rr = requests.get(result_url, timeout=DEFAULT_TIMEOUT)
+            rr.raise_for_status()
+            payload = rr.json()
+            if isinstance(payload, dict):
+                suid = _detect_session_uid(payload)
+                sid_hint = _detect_session_id(payload)
+                with engine.begin() as conn:
+                    _store_raw_payload(conn, payload_dict=payload, session_id=sid_hint, session_uid=suid,
+                                       doc_type="sportai.result", source=result_url)
+                    summary = _ingest_all(conn, payload)
+                    _update_raw_result_session_id(conn, session_id=summary["session_id"], session_uid=suid)
+                status["bronze_summary"] = summary  # helpful for UI
+
+        return jsonify(ok=True, status=status)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        app.logger.exception("api_task_status failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+# ---------------------------------------------------------------------------
+# Internal: call unified Bronze ingest and return compact summary
+# ---------------------------------------------------------------------------
+def _ingest_all(conn: Connection, payload: Dict[str, Any]) -> Dict[str, Any]:
+    sid = _detect_session_id(payload) or -1
+    summary = ingest_all_for_session(conn, sid, payload)
+    return {
         "session_id": summary.get("session_id"),
         "players": summary.get("players", 0),
         "rallies": summary.get("rallies", 0),
@@ -395,23 +448,19 @@ def _ingest_all(conn: Connection, payload: Dict[str, Any]) -> Dict[str, Any]:
         "team_sessions": summary.get("team_sessions", 0),
         "highlights": summary.get("highlights", 0),
     }
-    return out
 
-# ------------------------------------------------------------------------------
-# Error handling
-# ------------------------------------------------------------------------------
-@app.errorhandler(Exception)
-def handle_errors(e):
-    if isinstance(e, HTTPException):
-        code = e.code or 500
-        msg = getattr(e, "description", str(e))
-        return jsonify(ok=False, error=msg), code
-    app.logger.exception("Unhandled error")
-    return jsonify(ok=False, error=str(e)), 500
+# ---------------------------------------------------------------------------
+# Mount admin UI blueprint (your ui_app.py)
+# ---------------------------------------------------------------------------
+if ui_bp is not None:
+    try:
+        app.register_blueprint(ui_bp, url_prefix="/upload")
+    except Exception as e:
+        app.logger.warning("ui blueprint not mounted: %s", e)
 
-# ------------------------------------------------------------------------------
-# Local run
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Local run (Render uses wsgi.py with python wsgi.py)
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
