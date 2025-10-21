@@ -1,444 +1,520 @@
 ﻿# upload_app.py
+# End-to-end upload + SportAI + Bronze ingest (polling-based; no webhook required)
+# - Pre-check & post-upload check endpoints (S3 or HTTPS)
+# - S3 pre-signed upload
+# - Submit job to SportAI
+# - Poll job status; on completion, save raw JSON -> raw_result and build Bronze
+# - Health endpoints for Render
+# - Admin UI blueprint mounted at /upload (from ui_app.py)
+
 import os
-import io
 import json
 import time
-import uuid
-import queue
 import hashlib
-import logging
-import threading
-import tempfile
-import subprocess
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
-from flask import Flask, request, jsonify
-from werkzeug.utils import secure_filename
-
-import boto3
 import requests
+from flask import Flask, jsonify, request
+from werkzeug.exceptions import HTTPException
+from sqlalchemy import text as sql_text
+from sqlalchemy.engine import Connection
 
-from sqlalchemy import (
-    create_engine, MetaData, Table, Column, String, Text, DateTime, JSON, Integer
-)
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import sessionmaker
+# ---- Optional CORS (safe; editor warning is fine if not installed locally)
+try:
+    from flask_cors import CORS  # type: ignore
+except Exception:  # pragma: no cover
+    CORS = None  # type: ignore
 
-# ----------------------------
-# Config & Logging
-# ----------------------------
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-log = logging.getLogger("upload_app")
+# ---- DB + Bronze ingest
+from db_init import engine, ingest_all_for_session
 
-PORT = int(os.getenv("PORT", "8080"))
-POSTGRES_DSN = os.getenv("POSTGRES_DSN")
+# ---- Admin UI blueprint (your ui_app.py)
+try:
+    from ui_app import ui_bp
+except Exception:
+    ui_bp = None  # type: ignore
 
-AWS_REGION = os.getenv("AWS_REGION")
-S3_BUCKET = os.getenv("S3_BUCKET")
-S3_PREFIX = os.getenv("S3_PREFIX", "uploads/").strip("/")
+# ---- boto3 for S3 pre-sign & head checks
+try:
+    import boto3  # type: ignore
+except Exception:  # pragma: no cover
+    boto3 = None  # type: ignore
 
-SPORTAI_API_BASE = os.getenv("SPORTAI_API_BASE")
-SPORTAI_API_KEY = os.getenv("SPORTAI_API_KEY")
-
-QUALITY_MIN_WIDTH = int(os.getenv("QUALITY_MIN_WIDTH", "960"))
-QUALITY_MIN_HEIGHT = int(os.getenv("QUALITY_MIN_HEIGHT", "540"))
-QUALITY_MIN_FPS = int(os.getenv("QUALITY_MIN_FPS", "20"))
-QUALITY_MIN_DURATION_SEC = int(os.getenv("QUALITY_MIN_DURATION_SEC", "6"))
-
-RESULT_POLL_INTERVAL_SEC = int(os.getenv("RESULT_POLL_INTERVAL_SEC", "10"))
-RESULT_POLL_TIMEOUT_SEC = int(os.getenv("RESULT_POLL_TIMEOUT_SEC", "900"))  # 15 min
-
-REFRESH_SQL_FUNCTION = os.getenv("REFRESH_SQL_FUNCTION")  # e.g. "select refresh_nextpoint_views();"
-
-ALLOWED_EXTENSIONS = {"mp4", "mov", "m4v"}
-
-# ----------------------------
-# Flask
-# ----------------------------
+# ------------------------------------------------------------------------------
+# App setup
+# ------------------------------------------------------------------------------
 app = Flask(__name__)
+if CORS:
+    CORS(app, resources={r"/*": {"origins": "*"}})
 
-# ----------------------------
-# DB setup (SQLAlchemy Core)
-# ----------------------------
-engine = create_engine(POSTGRES_DSN, pool_pre_ping=True, future=True)
-Session = sessionmaker(bind=engine)
+SERVICE_NAME = os.getenv("SERVICE_NAME", "sportai-api")
+DEFAULT_TIMEOUT = int(os.getenv("SPORTAI_HTTP_TIMEOUT", "600"))
 
-meta = MetaData()
-
-# Job tracking table (api_jobs)
-api_jobs = Table(
-    "api_jobs", meta,
-    Column("job_id", String(36), primary_key=True),
-    Column("status", String(32), nullable=False, index=True),  # queued, processing, failed, done
-    Column("created_at", DateTime(timezone=True), nullable=False),
-    Column("updated_at", DateTime(timezone=True), nullable=False),
-    Column("input_sha256", String(64), nullable=False, index=True),
-    Column("original_filename", String(255), nullable=False),
-    Column("s3_key", String(512), nullable=True),
-    Column("error", Text, nullable=True),
-    Column("sportai_session_uid", String(64), nullable=True)
-)
-
-# Bronze/raw table for SportAI JSON
-sportai_raw = Table(
-    "sportai_raw", meta,
-    Column("id", String(36), primary_key=True),
-    Column("created_at", DateTime(timezone=True), nullable=False),
-    Column("session_uid", String(64), nullable=False, index=True),
-    Column("s3_video_key", String(512), nullable=False),
-    Column("sportai_request", JSONB, nullable=True),
-    Column("sportai_result", JSONB, nullable=True),
-)
-
-def ensure_tables():
-    with engine.begin() as conn:
-        meta.create_all(conn)
-        log.info("Ensured tables exist.")
-
-ensure_tables()
-
-# ----------------------------
-# S3
-# ----------------------------
-s3 = boto3.client("s3", region_name=AWS_REGION)
-
-def put_s3(file_path: str, key: str):
-    s3.upload_file(file_path, S3_BUCKET, key)
-    return f"s3://{S3_BUCKET}/{key}"
-
-# ----------------------------
-# Helpers: video quality, conversion, hashing
-# ----------------------------
-def file_sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-def run_ffprobe(path: str) -> dict:
-    """Return basic stream metadata using ffprobe (must be installed)."""
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate",
-        "-show_entries", "format=duration",
-        "-of", "json",
-        path
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {proc.stderr}")
-    return json.loads(proc.stdout)
-
-def parse_fps(avg_frame_rate: str) -> float:
-    if not avg_frame_rate or avg_frame_rate == "0/0":
-        return 0.0
-    if "/" in avg_frame_rate:
-        num, den = avg_frame_rate.split("/")
-        den = float(den) if float(den) != 0 else 1.0
-        return float(num) / den
-    return float(avg_frame_rate)
-
-def check_quality(path: str):
-    meta = run_ffprobe(path)
-    # Format
-    duration = float(meta.get("format", {}).get("duration", 0.0))
-    # Stream
-    streams = meta.get("streams", [])
-    if not streams:
-        raise ValueError("No video stream found.")
-    st0 = streams[0]
-    width = int(st0.get("width", 0))
-    height = int(st0.get("height", 0))
-    fps = parse_fps(st0.get("avg_frame_rate", "0/1"))
-
-    problems = []
-    if duration < QUALITY_MIN_DURATION_SEC:
-        problems.append(f"duration {duration:.2f}s < {QUALITY_MIN_DURATION_SEC}s")
-    if width < QUALITY_MIN_WIDTH or height < QUALITY_MIN_HEIGHT:
-        problems.append(f"resolution {width}x{height} < {QUALITY_MIN_WIDTH}x{QUALITY_MIN_HEIGHT}")
-    if fps < QUALITY_MIN_FPS:
-        problems.append(f"fps {fps:.1f} < {QUALITY_MIN_FPS}")
-
-    ok = len(problems) == 0
-    return ok, {
-        "duration_sec": duration,
-        "width": width,
-        "height": height,
-        "fps": fps,
-        "problems": problems
-    }
-
-def convert_to_mp4_if_needed(path: str, original_name: str) -> str:
-    ext = os.path.splitext(original_name.lower())[1].lstrip(".")
-    if ext in ("mp4",):
-        return path  # already mp4
-    # Convert with ffmpeg (H.264/AAC MP4)
-    out_path = path + ".mp4"
-    cmd = [
-        "ffmpeg", "-y", "-i", path,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-movflags", "+faststart",
-        out_path
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg convert failed: {proc.stderr}")
-    return out_path
-
-# ----------------------------
-# SportAI client (polling model)
-# ----------------------------
-def sportai_headers():
-    return {
-        "Authorization": f"Bearer {SPORTAI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-def sportai_submit(video_url: str) -> dict:
-    """Submit video for processing; returns JSON containing session_uid or job_id."""
-    url = f"{SPORTAI_API_BASE}/submit"
-    payload = {"video_url": video_url}
-    r = requests.post(url, headers=sportai_headers(), json=payload, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-def sportai_get_result(session_uid: str) -> dict:
-    """Poll results by session UID."""
-    url = f"{SPORTAI_API_BASE}/result/{session_uid}"
-    r = requests.get(url, headers=sportai_headers(), timeout=30)
-    if r.status_code == 404:
-        return {"status": "pending"}
-    r.raise_for_status()
-    return r.json()
-
-# ----------------------------
-# Background worker
-# ----------------------------
-job_queue: "queue.Queue[str]" = queue.Queue()
-
-def set_job_status(db, job_id: str, status: str, **fields):
-    now = datetime.now(timezone.utc)
-    update = {
-        "status": status,
-        "updated_at": now,
-        **fields
-    }
-    db.execute(
-        api_jobs.update().where(api_jobs.c.job_id == job_id).values(**update)
-    )
-
-def process_job(job_id: str):
-    """Long-running processing: quality -> convert -> s3 -> sportai -> poll -> store -> refresh."""
-    log.info(f"[worker] Start job {job_id}")
-    db = engine.begin()
-    try:
-        # Fetch job row
-        row = db.execute(
-            api_jobs.select().where(api_jobs.c.job_id == job_id)
-        ).mappings().first()
-        if not row:
-            log.error(f"Job {job_id} not found.")
-            return
-
-        # The upload temp file path is based on a deterministic staging path (by input hash)
-        input_hash = row["input_sha256"]
-        original_name = row["original_filename"]
-        staging_dir = os.path.join(tempfile.gettempdir(), "nextpoint_staging")
-        os.makedirs(staging_dir, exist_ok=True)
-        local_path = os.path.join(staging_dir, f"{input_hash}_{secure_filename(original_name)}")
-
-        if not os.path.exists(local_path):
-            # This can happen if tmp was cleaned; fail gracefully
-            msg = "Staged file missing; please re-upload."
-            log.error(msg)
-            set_job_status(db, job_id, "failed", error=msg)
-            return
-
-        set_job_status(db, job_id, "processing")
-
-        # 1) Quality check (pre-conversion for early fail)
-        ok, qmeta = check_quality(local_path)
-        if not ok:
-            msg = f"Quality check failed: {', '.join(qmeta['problems'])}"
-            set_job_status(db, job_id, "failed", error=msg)
-            log.warning(f"[{job_id}] {msg}")
-            return
-
-        # 2) Convert to MP4 if needed
-        mp4_path = convert_to_mp4_if_needed(local_path, original_name)
-
-        # 3) S3 upload
-        s3_key = f"{S3_PREFIX}/{input_hash}/{os.path.basename(mp4_path)}"
-        put_s3(mp4_path, s3_key)
-        set_job_status(db, job_id, "processing", s3_key=s3_key)
-
-        # 4) Submit to SportAI
-        s3_https = f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
-        submit_resp = sportai_submit(s3_https)
-        session_uid = submit_resp.get("session_uid") or submit_resp.get("job_id") or str(uuid.uuid4())
-        set_job_status(db, job_id, "processing", sportai_session_uid=session_uid)
-
-        # 5) Poll for result
-        start = time.time()
-        last_payload = None
-        while True:
-            if time.time() - start > RESULT_POLL_TIMEOUT_SEC:
-                raise TimeoutError("Timed out waiting for SportAI result.")
-
-            payload = sportai_get_result(session_uid)
-            last_payload = payload
-            status = (payload.get("status") or "").lower()
-            if status in ("done", "completed", "complete", "success"):
-                break
-            if status in ("failed", "error"):
-                raise RuntimeError(f"SportAI failed: {payload}")
-
-            time.sleep(RESULT_POLL_INTERVAL_SEC)
-
-        # 6) Persist raw JSON to bronze table
-        raw_id = str(uuid.uuid4())
-        db.execute(
-            sportai_raw.insert().values(
-                id=raw_id,
-                created_at=datetime.now(timezone.utc),
-                session_uid=session_uid,
-                s3_video_key=s3_key,
-                sportai_request=submit_resp,
-                sportai_result=last_payload
-            )
-        )
-
-        # 7) Optionally refresh downstream objects (views/materializations)
-        if REFRESH_SQL_FUNCTION:
-            try:
-                db.exec_driver_sql(REFRESH_SQL_FUNCTION)
-                log.info("Ran refresh function.")
-            except Exception as ex:
-                # Non-fatal: we still mark job done, but include a soft warning in error column
-                warn = f"Refresh function failed: {ex}"
-                set_job_status(db, job_id, "done", error=warn)
-                log.warning(f"[{job_id}] {warn}")
-                return
-
-        set_job_status(db, job_id, "done")
-        log.info(f"[worker] Done job {job_id}")
-
-    except Exception as e:
-        log.exception(f"[worker] Job {job_id} failed:")
-        set_job_status(db, job_id, "failed", error=str(e))
-    finally:
-        db.close()
-
-def worker_loop():
-    while True:
-        job_id = job_queue.get()
-        try:
-            process_job(job_id)
-        finally:
-            job_queue.task_done()
-
-# Start a single background worker thread
-threading.Thread(target=worker_loop, daemon=True).start()
-
-# ----------------------------
-# API routes
-# ----------------------------
+# ------------------------------------------------------------------------------
+# Health + root (Render readiness)
+# ------------------------------------------------------------------------------
 @app.get("/health")
 def health():
-    return jsonify({
-        "ok": True,
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "s3_bucket": S3_BUCKET,
-        "region": AWS_REGION
-    })
+    return jsonify(ok=True, service=SERVICE_NAME, ts=datetime.now(timezone.utc).isoformat())
 
-def allowed_file(fname: str) -> bool:
-    return "." in fname and fname.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+@app.get("/")
+def root():
+    return jsonify(ok=True, service=SERVICE_NAME)
 
-@app.post("/upload")
-def upload():
+# ------------------------------------------------------------------------------
+# Helpers: raw_result persistence (for reliable backfills & replays)
+# ------------------------------------------------------------------------------
+def _ensure_raw_result_schema(conn: Connection) -> None:
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS raw_result (
+          raw_result_id   BIGSERIAL PRIMARY KEY,
+          created_at      timestamptz NOT NULL DEFAULT now(),
+          session_id      int,
+          session_uid     text,
+          doc_type        text,
+          source          text,
+          payload_json    jsonb,
+          payload         jsonb,
+          payload_gzip    bytea,
+          payload_sha256  text
+        );
+    """))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS raw_result_session_id_idx ON raw_result(session_id)"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS raw_result_session_uid_idx ON raw_result(session_uid)"))
+
+def _detect_session_uid(payload: Dict[str, Any]) -> Optional[str]:
+    return payload.get("session_uid") or payload.get("sessionId") or payload.get("uid")
+
+def _detect_session_id(payload: Dict[str, Any]) -> Optional[int]:
+    sid = payload.get("session_id") or payload.get("sessionId")
+    try:
+        return int(sid) if sid is not None else None
+    except Exception:
+        return None
+
+def _store_raw_payload(
+    conn: Connection,
+    *,
+    payload_dict: Dict[str, Any],
+    session_id: Optional[int] = None,
+    session_uid: Optional[str] = None,
+    doc_type: str = "sportai.result",
+    source: Optional[str] = None,
+) -> None:
+    _ensure_raw_result_schema(conn)
+    blob = json.dumps(payload_dict, ensure_ascii=False)
+    sha  = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    conn.execute(sql_text("""
+        INSERT INTO raw_result (session_id, session_uid, doc_type, source, payload_json, payload_sha256)
+        VALUES (:sid, :suid, :dt, :src, CAST(:payload AS jsonb), :sha)
+        ON CONFLICT DO NOTHING
+    """), {"sid": session_id, "suid": session_uid, "dt": doc_type, "src": source, "payload": blob, "sha": sha})
+
+def _update_raw_result_session_id(conn: Connection, *, session_id: int, session_uid: Optional[str]) -> None:
+    if not session_uid:
+        return
+    conn.execute(sql_text("""
+        UPDATE raw_result
+           SET session_id = :sid
+         WHERE session_id IS NULL
+           AND session_uid = :suid
+    """), {"sid": session_id, "suid": session_uid})
+
+# ------------------------------------------------------------------------------
+# SportAI config helpers
+# ------------------------------------------------------------------------------
+def _sportai_headers():
+    token = os.getenv("SPORTAI_TOKEN") or os.getenv("SPORT_AI_TOKEN")
+    if not token:
+        raise RuntimeError("SPORTAI_TOKEN not set")
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+def _sportai_base():
+    # default is illustrative; set SPORTAI_API_BASE in env to your real base
+    return os.getenv("SPORTAI_API_BASE", "https://api.sportai.example.com")
+
+# ------------------------------------------------------------------------------
+# Pre-Upload check (filename/size/type) — extra aliases to match UI calls
+# ------------------------------------------------------------------------------
+def _allowed_ext() -> Tuple[str, ...]:
+    return (".mp4", ".mov", ".mkv", ".avi", ".m4v")
+
+def _max_upload_mb() -> int:
+    return int(os.getenv("MAX_CONTENT_MB", os.getenv("MAX_UPLOAD_MB", "150")))
+
+@app.post("/upload/api/check-video")
+@app.post("/api/check-video")
+@app.post("/upload/api/check")    # some builds call this
+@app.post("/upload/check")        # and some this
+def api_check_video():
+    try:
+        data = request.get_json(silent=True) or request.values
+        name = (data.get("fileName") or data.get("filename") or "").strip()
+        size = data.get("sizeMB") or data.get("fileSizeMB") or 0
+        try:
+            size = float(size)
+        except Exception:
+            size = 0.0
+
+        reasons = []
+        if not name:
+            reasons.append("Missing file name.")
+        elif not name.lower().endswith(_allowed_ext()):
+            reasons.append(f"Unsupported file type. Allowed: {', '.join(_allowed_ext())}")
+        if size and size > _max_upload_mb():
+            reasons.append(f"File is larger than allowed limit of {_max_upload_mb()} MB.")
+
+        ok = len(reasons) == 0
+        app.logger.info("pre-check filename=%s sizeMB=%s -> ok=%s reasons=%s", name, size, ok, reasons)
+        return jsonify(ok=ok, reasons=reasons, max_mb=_max_upload_mb())
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 400
+
+# ------------------------------------------------------------------------------
+# POST-Upload check (object exists: S3 or HTTPS)
+# ------------------------------------------------------------------------------
+def _parse_video_url():
+    data = request.get_json(silent=True) or request.values
+    return (data.get("video_url") or data.get("url") or "").strip()
+
+def _head_https(url: str):
+    try:
+        h = requests.head(url, timeout=15, allow_redirects=True)
+        if h.status_code >= 400 or not h.headers:
+            g = requests.get(url, timeout=15, stream=True)
+            g.raise_for_status()
+            return True, int(g.headers.get("Content-Length") or 0), g.headers.get("Content-Type") or ""
+        return True, int(h.headers.get("Content-Length") or 0), h.headers.get("Content-Type") or ""
+    except Exception as e:
+        return False, 0, f"{e}"
+
+def _parse_s3(url: str):
+    # s3://bucket/key
+    path = url[5:]
+    i = path.find("/")
+    if i <= 0:
+        raise ValueError("Invalid s3 url")
+    return path[:i], path[i+1:]
+
+@app.post("/upload/api/check-upload")
+@app.post("/api/check-upload")
+@app.post("/upload/api/check-after-upload")
+def api_check_upload():
+    try:
+        url = _parse_video_url()
+        if not url:
+            return jsonify(ok=False, reason="Missing video_url"), 400
+
+        if url.startswith("s3://"):
+            if not boto3:
+                return jsonify(ok=False, reason="Server missing boto3"), 500
+            region = os.getenv("AWS_REGION", "us-east-1")
+            bucket, key = _parse_s3(url)
+            s3 = boto3.client("s3", region_name=region)
+            try:
+                head = s3.head_object(Bucket=bucket, Key=key)
+                size = int(head.get("ContentLength") or 0)
+                ctype = head.get("ContentType") or ""
+                return jsonify(ok=True, size_bytes=size, content_type=ctype, storage="s3")
+            except Exception as e:
+                return jsonify(ok=False, reason=str(e), storage="s3"), 404
+
+        if url.startswith("http://") or url.startswith("https://"):
+            ok, size, meta = _head_https(url)
+            if ok:
+                return jsonify(ok=True, size_bytes=size, content_type=meta, storage="http")
+            return jsonify(ok=False, reason=meta, storage="http"), 404
+
+        return jsonify(ok=False, reason="Unsupported video_url scheme"), 400
+    except Exception as e:
+        app.logger.exception("check-upload failed")
+        return jsonify(ok=False, reason=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# S3 pre-sign (front-end uploads directly to S3)
+# ------------------------------------------------------------------------------
+@app.post("/upload/api/presign")
+def api_presign():
     """
-    Multipart form-data:
-      - file: the video file (.mp4/.mov)
-    Returns: { job_id }
-    Frontend should poll /status/<job_id> until status is 'done' or 'failed'.
+    Body: { "fileName":"match.mp4" }
+    Returns: { ok, presigned:{url,fields}, video_url:"s3://bucket/key" }
     """
-    if "file" not in request.files:
-        return jsonify({"error": "No file part"}), 400
+    try:
+        if not boto3:
+            return jsonify(ok=False, error="boto3 not installed on server"), 500
 
-    f = request.files["file"]
-    if f.filename == "":
-        return jsonify({"error": "No selected file"}), 400
+        data = request.get_json(force=True, silent=False) or {}
+        file_name = (data.get("fileName") or "").strip()
+        if not file_name:
+            return jsonify(ok=False, error="fileName required"), 400
 
-    if not allowed_file(f.filename):
-        return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
+        bucket = os.getenv("UPLOAD_S3_BUCKET")
+        region = os.getenv("AWS_REGION", "us-east-1")
+        if not bucket:
+            return jsonify(ok=False, error="UPLOAD_S3_BUCKET not set"), 500
 
-    # Save to a deterministic temp path (by hash) so duplicate uploads are idempotent
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        f.save(tmp.name)
-        tmp_path = tmp.name
+        key_prefix = os.getenv("UPLOAD_S3_PREFIX", "incoming/")
+        key = f"{key_prefix.rstrip('/')}/{int(time.time())}_{file_name}"
 
-    # Compute hash
-    h = file_sha256(tmp_path)
-    safe_name = secure_filename(f.filename)
+        s3 = boto3.client("s3", region_name=region)
+        fields = {"acl": "private"}
+        conditions = [["content-length-range", 0, _max_upload_mb() * 1024 * 1024]]
 
-    staging_dir = os.path.join(tempfile.gettempdir(), "nextpoint_staging")
-    os.makedirs(staging_dir, exist_ok=True)
-    staged_path = os.path.join(staging_dir, f"{h}_{safe_name}")
-    os.replace(tmp_path, staged_path)
-
-    # Create job
-    job_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    with engine.begin() as db:
-        db.execute(
-            api_jobs.insert().values(
-                job_id=job_id,
-                status="queued",
-                created_at=now,
-                updated_at=now,
-                input_sha256=h,
-                original_filename=f.filename,
-                s3_key=None,
-                error=None,
-                sportai_session_uid=None
-            )
+        presigned = s3.generate_presigned_post(
+            Bucket=bucket,
+            Key=key,
+            Fields=fields,
+            Conditions=conditions,
+            ExpiresIn=3600,
         )
+        video_url = f"s3://{bucket}/{key}"
+        return jsonify(ok=True, presigned=presigned, video_url=video_url)
+    except Exception as e:
+        app.logger.exception("api_presign failed")
+        return jsonify(ok=False, error=str(e)), 500
 
-    # Enqueue
-    job_queue.put(job_id)
+# ------------------------------------------------------------------------------
+# Submit to SportAI (create job)
+# ------------------------------------------------------------------------------
+@app.post("/upload/api/submit")
+def api_submit():
+    """
+    Body:
+      { "video_url":"s3://... or https://...", "metadata":{...}, "submission_context":{...} }
+    """
+    try:
+        body = request.get_json(force=True, silent=False) or {}
+        video_url = body.get("video_url")
+        metadata   = body.get("metadata") or {}
+        sub_ctx    = body.get("submission_context") or {}
 
-    return jsonify({"job_id": job_id})
+        if not video_url:
+            return jsonify(ok=False, error="video_url required"), 400
 
-@app.get("/status/<job_id>")
-def status(job_id):
-    with engine.begin() as db:
-        row = db.execute(
-            api_jobs.select().where(api_jobs.c.job_id == job_id)
-        ).mappings().first()
-        if not row:
-            return jsonify({"error": "job not found"}), 404
+        create_url = f"{_sportai_base().rstrip('/')}/v1/jobs"
+        resp = requests.post(create_url, headers=_sportai_headers(),
+                             json={"video_url": video_url, "metadata": metadata}, timeout=DEFAULT_TIMEOUT)
+        resp.raise_for_status()
+        job = resp.json()  # {"task_id": "..."} (or {"id":"..."})
+        task_id = job.get("task_id") or job.get("id")
 
-        data = {
-            "job_id": row["job_id"],
-            "status": row["status"],
-            "created_at": row["created_at"].isoformat(),
-            "updated_at": row["updated_at"].isoformat(),
-            "s3_key": row["s3_key"],
-            "sportai_session_uid": row["sportai_session_uid"],
-            "error": row["error"]
-        }
-        return jsonify(data)
+        # Optionally stash submission context (session_id unknown yet, use 0)
+        if isinstance(sub_ctx, dict) and sub_ctx:
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    CREATE TABLE IF NOT EXISTS submission_context (
+                      session_id int PRIMARY KEY,
+                      data jsonb,
+                      created_at timestamptz DEFAULT now(),
+                      ingest_finished_at timestamptz,
+                      ingest_error text
+                    );
+                """))
+                conn.execute(sql_text("""
+                    INSERT INTO submission_context (session_id, data)
+                    VALUES (0, CAST(:d AS jsonb))
+                    ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+                """), {"d": json.dumps(sub_ctx)})
 
-# ----------------------------
-# Main
-# ----------------------------
+        return jsonify(ok=True, task_id=task_id)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        app.logger.exception("api_submit failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# Poll status (NO webhook): when complete, fetch JSON, save raw, build Bronze
+# ------------------------------------------------------------------------------
+@app.get("/upload/api/task-status")
+def api_task_status():
+    """
+    Query: ?task_id=xxx
+    On completion (result_url available):
+      - download JSON
+      - save to raw_result
+      - ingest Bronze (all towers + dim/fact)
+    """
+    try:
+        task_id = request.args.get("task_id")
+        if not task_id:
+            return jsonify(ok=False, error="task_id required"), 400
+
+        status_url = f"{_sportai_base().rstrip('/')}/v1/jobs/{task_id}"
+        r = requests.get(status_url, headers=_sportai_headers(), timeout=DEFAULT_TIMEOUT)
+        r.raise_for_status()
+        status = r.json()
+
+        # If job finished and we have a result URL, hydrate Bronze immediately
+        result_url = status.get("result_url") or status.get("result") or status.get("links", {}).get("result")
+        if result_url:
+            rr = requests.get(result_url, timeout=DEFAULT_TIMEOUT)
+            rr.raise_for_status()
+            payload = rr.json()
+
+            if isinstance(payload, dict):
+                suid = _detect_session_uid(payload)
+                sid_hint = _detect_session_id(payload)
+                with engine.begin() as conn:
+                    _store_raw_payload(
+                        conn,
+                        payload_dict=payload,
+                        session_id=sid_hint,
+                        session_uid=suid,
+                        doc_type="sportai.result",
+                        source=result_url,
+                    )
+                    summary = ingest_all_for_session(conn, sid_hint or -1, payload)
+                    _update_raw_result_session_id(conn, session_id=summary["session_id"], session_uid=suid)
+                status["bronze_summary"] = summary  # helpful for the UI
+
+        return jsonify(ok=True, status=status)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        app.logger.exception("api_task_status failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# Manual ops: ingest a known result_url (no webhook)
+# ------------------------------------------------------------------------------
+@app.post("/ops/ingest-task")
+def ops_ingest_task():
+    try:
+        data = request.get_json(force=True, silent=False) or {}
+        result_url = data.get("result_url")
+        if not result_url:
+            return jsonify(ok=False, error="Missing result_url"), 400
+
+        r = requests.get(result_url, timeout=DEFAULT_TIMEOUT)
+        r.raise_for_status()
+        payload = r.json()
+        if not isinstance(payload, dict):
+            return jsonify(ok=False, error="Result is not a JSON object"), 400
+
+        suid = _detect_session_uid(payload)
+        sid_hint = _detect_session_id(payload)
+        submission_context = data.get("submission_context")
+
+        with engine.begin() as conn:
+            _store_raw_payload(
+                conn,
+                payload_dict=payload,
+                session_id=sid_hint,
+                session_uid=suid,
+                doc_type="sportai.result",
+                source=result_url,
+            )
+
+            if isinstance(submission_context, dict) and submission_context:
+                conn.execute(sql_text("""
+                    CREATE TABLE IF NOT EXISTS submission_context (
+                      session_id int PRIMARY KEY,
+                      data jsonb,
+                      created_at timestamptz DEFAULT now(),
+                      ingest_finished_at timestamptz,
+                      ingest_error text
+                    );
+                """))
+                conn.execute(sql_text("""
+                    INSERT INTO submission_context (session_id, data)
+                    VALUES (COALESCE(:sid, 0), CAST(:d AS jsonb))
+                    ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+                """), {"sid": sid_hint, "d": json.dumps(submission_context)})
+
+            summary = ingest_all_for_session(conn, sid_hint or -1, payload)
+            _update_raw_result_session_id(conn, session_id=summary["session_id"], session_uid=suid)
+
+            if isinstance(submission_context, dict) and submission_context:
+                conn.execute(sql_text("""
+                    INSERT INTO submission_context (session_id, data, ingest_finished_at, ingest_error)
+                    VALUES (:sid, CAST(:d AS jsonb), now(), NULL)
+                    ON CONFLICT (session_id) DO UPDATE
+                      SET data = EXCLUDED.data,
+                          ingest_finished_at = now(),
+                          ingest_error = NULL;
+                """), {"sid": summary["session_id"], "d": json.dumps(submission_context)})
+                conn.execute(sql_text("DELETE FROM submission_context WHERE session_id = 0"))
+
+        return jsonify(ok=True, summary=summary)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        app.logger.exception("ops_ingest_task failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# Standalone submission_context upsert (if your UI posts it independently)
+# ------------------------------------------------------------------------------
+@app.post("/submission-context")
+def submission_context_upsert():
+    try:
+        body = request.get_json(force=True, silent=False) or {}
+        sid = body.get("session_id")
+        sc  = body.get("submission_context")
+        if not isinstance(sc, dict) or not sc:
+            return jsonify(ok=False, error="submission_context must be an object"), 400
+
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                CREATE TABLE IF NOT EXISTS submission_context (
+                  session_id int PRIMARY KEY,
+                  data jsonb,
+                  created_at timestamptz DEFAULT now(),
+                  ingest_finished_at timestamptz,
+                  ingest_error text
+                );
+            """))
+            if sid is None:
+                conn.execute(sql_text("""
+                    INSERT INTO submission_context (session_id, data)
+                    VALUES (0, CAST(:d AS jsonb))
+                    ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+                """), {"d": json.dumps(sc)})
+            else:
+                conn.execute(sql_text("""
+                    INSERT INTO submission_context (session_id, data)
+                    VALUES (:sid, CAST(:d AS jsonb))
+                    ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+                """), {"sid": int(sid), "d": json.dumps(sc)})
+        return jsonify(ok=True)
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        app.logger.exception("submission_context_upsert failed")
+        return jsonify(ok=False, error=str(e)), 500
+
+# ------------------------------------------------------------------------------
+# Internal: compact wrapper around Bronze ingest (kept simple)
+# ------------------------------------------------------------------------------
+def _ingest_all(conn: Connection, payload: Dict[str, Any]) -> Dict[str, Any]:
+    sid = _detect_session_id(payload) or -1
+    summary = ingest_all_for_session(conn, sid, payload)
+    return {
+        "session_id": summary.get("session_id"),
+        "players": summary.get("players", 0),
+        "rallies": summary.get("rallies", 0),
+        "swings": summary.get("swings", 0),
+        "ball_bounces": summary.get("ball_bounces", 0),
+        "ball_positions": summary.get("ball_positions", 0),
+        "player_positions": summary.get("player_positions", 0),
+        "team_sessions": summary.get("team_sessions", 0),
+        "highlights": summary.get("highlights", 0),
+    }
+
+# ------------------------------------------------------------------------------
+# Mount /upload admin UI (from ui_app.py)
+# ------------------------------------------------------------------------------
+if ui_bp is not None:
+    try:
+        app.register_blueprint(ui_bp, url_prefix="/upload")
+    except Exception as e:
+        app.logger.warning("ui blueprint not mounted: %s", e)
+
+# ------------------------------------------------------------------------------
+# Local dev (Render uses wsgi.py -> app)
+# ------------------------------------------------------------------------------
 if __name__ == "__main__":
-    log.info("Starting upload_app...")
-    app.run(host="0.0.0.0", port=PORT)
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
