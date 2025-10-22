@@ -122,7 +122,7 @@ def _do_ingest(task_id: str, result_url: str):
     """
     After SportAI finishes: fetch JSON, store a permanent raw_result snapshot,
     then populate all Bronze towers via db_init.ingest_all_for_session.
-    Everything else in your flow stays exactly the same.
+    Ensures a real session_id exists even if the payload lacks one.
     """
     try:
         with engine.begin() as conn:
@@ -154,14 +154,26 @@ def _do_ingest(task_id: str, result_url: str):
                                doc_type="sportai.result",
                                source=result_url)
 
-            # 4) build Bronze (players/rallies/swings/bounces/positions/heatmap/highlights/confidences/thumbnail/team_session)
-            summary = ingest_all_for_session(conn, sid_hint or -1, payload)
-            sid = int(summary.get("session_id") or (sid_hint or -1))
+            # 3a) if no numeric session_id present, allocate one in dim_session now
+            if sid_hint is None:
+                new_uid = suid or str(uuid.uuid4())
+                row = conn.execute(sql_text("""
+                    INSERT INTO dim_session (session_uid)
+                    VALUES (:u)
+                    ON CONFLICT (session_uid) DO UPDATE SET session_uid = EXCLUDED.session_uid
+                    RETURNING session_id, session_uid
+                """), {"u": new_uid}).mappings().first()
+                sid_hint = int(row["session_id"])
+                suid     = row["session_uid"]
 
-            # link any prior raw_result rows that had only the uid
+            # 4) build Bronze (players/rallies/swings/bounces/positions/heatmap/highlights/confidences/thumbnail/team_session)
+            summary = ingest_all_for_session(conn, sid_hint, payload)
+            sid = int(summary.get("session_id") or sid_hint)
+
+            # 5) link any prior raw_result rows that had only the uid
             _update_raw_result_session_id(conn, session_id=sid, session_uid=suid)
 
-            # 5) mark finished
+            # 6) mark finished
             conn.execute(sql_text("""
                 UPDATE submission_context
                    SET session_id = :sid,
