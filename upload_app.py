@@ -76,8 +76,8 @@ SPORTAI_STATUS_PATHS = list(dict.fromkeys([
 ]))
 
 # ---------- DB engine / ingest blueprint ----------
-from db_init import engine                                  # noqa: E402
-from ingest_app import ingest_bp, ingest_result_v2          # noqa: E402
+from db_init import engine, ingest_all_for_session          # <-- add this
+from ingest_app import ingest_bp, ingest_result_v2          # keep import (used elsewhere)
 app.register_blueprint(ingest_bp, url_prefix="")            # mounts /ops/* ingest routes
 
 # ---------- S3 config (MANDATORY) ----------
@@ -119,10 +119,14 @@ def _sql_exec_to_json(q: str):
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
 def _do_ingest(task_id: str, result_url: str):
+    """
+    After SportAI finishes: fetch JSON, store a permanent raw_result snapshot,
+    then populate all Bronze towers via db_init.ingest_all_for_session.
+    Everything else in your flow stays exactly the same.
+    """
     try:
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
-            # mark started
             conn.execute(sql_text("""
                 UPDATE submission_context
                    SET ingest_started_at = COALESCE(ingest_started_at, now()),
@@ -130,14 +134,34 @@ def _do_ingest(task_id: str, result_url: str):
                  WHERE task_id = :t
             """), {"t": task_id})
 
-        # fetch result and ingest
-        r = requests.get(result_url, timeout=600)   # allow long fetch
+        # 1) fetch result JSON
+        r = requests.get(result_url, timeout=600)
         r.raise_for_status()
         payload = r.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Result JSON is not an object")
+
+        # 2) detect session ids from payload (uid + optional numeric id)
+        suid     = _detect_session_uid(payload)
+        sid_hint = _detect_session_id(payload)
 
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
-            sid = res["session_id"]
+            # 3) persist raw JSON for audit/replay
+            _store_raw_payload(conn,
+                               payload_dict=payload,
+                               session_id=sid_hint,
+                               session_uid=suid,
+                               doc_type="sportai.result",
+                               source=result_url)
+
+            # 4) build Bronze (players/rallies/swings/bounces/positions/heatmap/highlights/confidences/thumbnail/team_session)
+            summary = ingest_all_for_session(conn, sid_hint or -1, payload)
+            sid = int(summary.get("session_id") or (sid_hint or -1))
+
+            # link any prior raw_result rows that had only the uid
+            _update_raw_result_session_id(conn, session_id=sid, session_uid=suid)
+
+            # 5) mark finished
             conn.execute(sql_text("""
                 UPDATE submission_context
                    SET session_id = :sid,
@@ -147,7 +171,6 @@ def _do_ingest(task_id: str, result_url: str):
             """), {"sid": sid, "t": task_id})
 
     except Exception as e:
-        # capture error but don't crash the process
         with engine.begin() as conn:
             conn.execute(sql_text("""
                 UPDATE submission_context
@@ -155,6 +178,7 @@ def _do_ingest(task_id: str, result_url: str):
                        ingest_finished_at = now()
                  WHERE task_id = :t
             """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+
 
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """Return True if we started a worker; False if already ingested/started."""
@@ -365,6 +389,56 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
                last_result_url = :r
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
+
+# ---------- raw_result persistence (lossless snapshot for every session) ----------
+def _ensure_raw_result_schema(conn):
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS raw_result (
+          raw_result_id   BIGSERIAL PRIMARY KEY,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          session_id      INT,
+          session_uid     TEXT,
+          doc_type        TEXT,
+          source          TEXT,
+          payload_json    JSONB,
+          payload         JSONB,
+          payload_gzip    BYTEA,
+          payload_sha256  TEXT
+        );
+    """))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS raw_result_session_id_idx ON raw_result(session_id)"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS raw_result_session_uid_idx ON raw_result(session_uid)"))
+
+def _detect_session_uid(payload: dict):
+    return payload.get("session_uid") or payload.get("sessionId") or payload.get("uid")
+
+def _detect_session_id(payload: dict):
+    sid = payload.get("session_id") or payload.get("sessionId")
+    try:
+        return int(sid) if sid is not None else None
+    except Exception:
+        return None
+
+def _store_raw_payload(conn, *, payload_dict: dict, session_id=None, session_uid=None,
+                       doc_type="sportai.result", source=None):
+    blob = json.dumps(payload_dict, ensure_ascii=False)
+    sha  = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    _ensure_raw_result_schema(conn)
+    conn.execute(sql_text("""
+        INSERT INTO raw_result (session_id, session_uid, doc_type, source, payload_json, payload_sha256)
+        VALUES (:sid, :suid, :dt, :src, CAST(:payload AS jsonb), :sha)
+        ON CONFLICT DO NOTHING
+    """), {"sid": session_id, "suid": session_uid, "dt": doc_type, "src": source, "payload": blob, "sha": sha})
+
+def _update_raw_result_session_id(conn, *, session_id: int, session_uid):
+    if not session_uid:
+        return
+    conn.execute(sql_text("""
+        UPDATE raw_result
+           SET session_id = :sid
+         WHERE session_id IS NULL
+           AND session_uid = :suid
+    """), {"sid": session_id, "suid": session_uid})
 
 # ---------- SportAI ----------
 def _iter_submit_endpoints():
@@ -758,13 +832,25 @@ def ops_ingest_task():
         result_url = st.get("result_url")
         if not result_url:
             return jsonify({"ok": False, "error": "result_url not available yet"}), 400
+
         r = requests.get(result_url, timeout=300); r.raise_for_status()
         payload = r.json()
+        if not isinstance(payload, dict):
+            return jsonify({"ok": False, "error": "result JSON is not an object"}), 400
+
+        suid     = _detect_session_uid(payload)
+        sid_hint = _detect_session_id(payload)
+
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
-            sid = res["session_id"]
+            _store_raw_payload(conn, payload_dict=payload,
+                               session_id=sid_hint, session_uid=suid,
+                               doc_type="sportai.result", source=result_url)
+            summary = ingest_all_for_session(conn, sid_hint or -1, payload)
+            sid = int(summary.get("session_id") or (sid_hint or -1))
+            _update_raw_result_session_id(conn, session_id=sid, session_uid=suid)
             conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
                          {"sid": sid, "t": tid})
+
         return jsonify({"ok": True, "session_id": sid})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
@@ -863,5 +949,3 @@ def upload_which_app():
         "ok": True, "module": __file__, "searchpath": search,
         "expected_template_path": expected, "exists": exists, "head": head,
     })
-
-
