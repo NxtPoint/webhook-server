@@ -12,6 +12,180 @@ from db_init import engine  # reuse existing engine
 
 ingest_bronze = Blueprint("ingest_bronze", __name__)
 
+@ingest_bronze.get("/bronze/health")
+def bronze_health():
+    if not _guard():
+        return _forbid()
+    return jsonify({"ok": True, "service": "bronze", "status": "ready"})
+
+def _run_bronze_init(conn):
+    conn.execute(sql_text("""
+    DO $$ BEGIN
+      -- schema
+      IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='bronze') THEN
+        EXECUTE 'CREATE SCHEMA bronze';
+      END IF;
+
+      -- session
+      IF to_regclass('bronze.session') IS NULL THEN
+        CREATE TABLE bronze.session (
+          session_id   BIGSERIAL PRIMARY KEY,
+          session_uid  TEXT UNIQUE NOT NULL,
+          fps          NUMERIC,
+          session_date TIMESTAMPTZ,
+          meta         JSONB
+        );
+      END IF;
+
+      -- player
+      IF to_regclass('bronze.player') IS NULL THEN
+        CREATE TABLE bronze.player (
+          player_id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          sportai_player_uid TEXT NOT NULL,
+          full_name TEXT,
+          handedness TEXT,
+          age NUMERIC,
+          utr NUMERIC,
+          covered_distance NUMERIC,
+          fastest_sprint NUMERIC,
+          fastest_sprint_ts_s NUMERIC,
+          activity_score NUMERIC,
+          swing_type_distribution JSONB,
+          location_heatmap JSONB,
+          meta JSONB,
+          UNIQUE (session_id, sportai_player_uid)
+        );
+      END IF;
+
+      -- swing
+      IF to_regclass('bronze.swing') IS NULL THEN
+        CREATE TABLE bronze.swing (
+          swing_id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
+          sportai_swing_uid TEXT,
+          start_s NUMERIC, end_s NUMERIC, ball_hit_s NUMERIC,
+          start_ts TIMESTAMPTZ, end_ts TIMESTAMPTZ, ball_hit_ts TIMESTAMPTZ,
+          ball_hit_x NUMERIC, ball_hit_y NUMERIC,
+          ball_speed NUMERIC, ball_player_distance NUMERIC,
+          swing_type TEXT, volley BOOLEAN, is_in_rally BOOLEAN, serve BOOLEAN, serve_type TEXT,
+          meta JSONB
+        );
+      END IF;
+
+      -- ball_position
+      IF to_regclass('bronze.ball_position') IS NULL THEN
+        CREATE TABLE bronze.ball_position (
+          id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          ts_s NUMERIC, ts TIMESTAMPTZ, x NUMERIC, y NUMERIC
+        );
+      END IF;
+
+      -- player_position
+      IF to_regclass('bronze.player_position') IS NULL THEN
+        CREATE TABLE bronze.player_position (
+          id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          player_id INT NOT NULL REFERENCES bronze.player(player_id) ON DELETE CASCADE,
+          ts_s NUMERIC, ts TIMESTAMPTZ, x NUMERIC, y NUMERIC
+        );
+      END IF;
+
+      -- ball_bounce
+      IF to_regclass('bronze.ball_bounce') IS NULL THEN
+        CREATE TABLE bronze.ball_bounce (
+          id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          hitter_player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
+          bounce_s NUMERIC, bounce_ts TIMESTAMPTZ,
+          x NUMERIC, y NUMERIC,
+          bounce_type TEXT
+        );
+      END IF;
+
+      -- rally
+      IF to_regclass('bronze.rally') IS NULL THEN
+        CREATE TABLE bronze.rally (
+          rally_id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          rally_number INT NOT NULL,
+          start_s NUMERIC, end_s NUMERIC,
+          start_ts TIMESTAMPTZ, end_ts TIMESTAMPTZ,
+          UNIQUE (session_id, rally_number)
+        );
+      END IF;
+
+      -- JSONB towers
+      IF to_regclass('bronze.session_confidences') IS NULL THEN
+        CREATE TABLE bronze.session_confidences (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
+
+      IF to_regclass('bronze.thumbnail') IS NULL THEN
+        CREATE TABLE bronze.thumbnail (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
+
+      IF to_regclass('bronze.highlight') IS NULL THEN
+        CREATE TABLE bronze.highlight (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
+
+      IF to_regclass('bronze.team_session') IS NULL THEN
+        CREATE TABLE bronze.team_session (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
+
+      IF to_regclass('bronze.bounce_heatmap') IS NULL THEN
+        CREATE TABLE bronze.bounce_heatmap (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
+
+      -- raw_result snapshot
+      IF to_regclass('bronze.raw_result') IS NULL THEN
+        CREATE TABLE bronze.raw_result (
+          id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          payload_json JSONB,
+          payload_gzip BYTEA,
+          payload_sha256 TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      END IF;
+
+      -- unmatched
+      IF to_regclass('bronze.unmatched_field') IS NULL THEN
+        CREATE TABLE bronze.unmatched_field (
+          id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          json_path TEXT NOT NULL,
+          example_value JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      END IF;
+    END $$;"""))
+
+@ingest_bronze.post("/bronze/init")
+def bronze_init():
+    if not _guard():
+        return _forbid()
+    with engine.begin() as conn:
+        _run_bronze_init(conn)
+    return jsonify({"ok": True, "message": "bronze schema ready"})
+
+
 OPS_KEY = os.getenv("OPS_KEY", "")
 
 def _guard() -> bool:
@@ -31,89 +205,26 @@ def _forbid():
 import os
 from sqlalchemy import create_engine
 
-def bronze_rebuild(session_id: int, engine=None):
-    """
-    Rebuild Bronze for one session:
-      - load latest payload from raw_result
-      - call ingest_app.ingest_result_v2 (or ingest_result)
-      - pass a proper SQLAlchemy Connection (not the Engine)
-    """
-    import os, json, gzip, inspect
-    from sqlalchemy import create_engine, text as sql_text
-    import ingest_app as ia  # your real ingest module
-
-    # 1) choose function
-    fn = getattr(ia, "ingest_result_v2", None)
-    if not callable(fn):
-        fn = getattr(ia, "ingest_result", None)
-    if not callable(fn):
-        raise RuntimeError("No ingest_result_v2 or ingest_result found in ingest_app.py")
-
-    # 2) engine
-    engine = engine or create_engine(
-        os.environ.get("DATABASE_URL") or os.environ["SQLALCHEMY_DATABASE_URI"],
-        pool_pre_ping=True
-    )
-
-    # 3) load payload (read-only connection)
-    with engine.connect() as ro_conn:
-        row = ro_conn.execute(sql_text("""
-            SELECT payload_json, payload_gzip
-            FROM raw_result
-            WHERE session_id = :sid
-            ORDER BY created_at DESC
-            LIMIT 1
+def bronze_rebuild(session_id: int):
+    """Rebuild bronze for a session from its latest bronze.raw_result snapshot."""
+    with engine.begin() as conn:
+        _run_bronze_init(conn)
+        row = conn.execute(sql_text("""
+            SELECT s.session_uid,
+                   (SELECT payload_json FROM bronze.raw_result WHERE session_id=s.session_id ORDER BY created_at DESC LIMIT 1),
+                   (SELECT payload_gzip  FROM bronze.raw_result WHERE session_id=s.session_id ORDER BY created_at DESC LIMIT 1)
+            FROM bronze.session s WHERE s.session_id=:sid
         """), {"sid": session_id}).first()
         if not row:
-            raise RuntimeError(f"No raw_result found for session {session_id}")
-
-        pj, gz = row[0], row[1]
+            raise RuntimeError("unknown session_id")
+        forced_uid, pj, gz = row[0], row[1], row[2]
         if pj is not None:
             payload = pj if isinstance(pj, dict) else json.loads(pj)
         elif gz is not None:
             payload = json.loads(gzip.decompress(gz).decode("utf-8"))
         else:
-            raise RuntimeError(f"raw_result row missing payload for session {session_id}")
-
-    # 4) call ingest inside a WRITE transaction and pass a Connection
-    sig = inspect.signature(fn)
-    called = f"{ia.__name__}.{fn.__name__}{sig}"
-
-    # Values we can provide
-    base_vals = {
-        "payload": payload, "data": payload, "raw": payload, "raw_payload": payload, "result": payload,
-        "session_id": session_id, "sid": session_id, "session": session_id,
-        "src_hint": "bronze",
-        "forced_uid": None, "force_uid": None, "uid": None,
-        # we'll fill conn/connection below
-    }
-
-    with engine.begin() as conn:  # transactional Connection; auto-commit/rollback
-        candidates = dict(base_vals)
-        candidates.update({
-            "engine": engine,             # if function accepts engine
-            "db_engine": engine,
-            "conn": conn,                 # preferred
-            "connection": conn,
-            "db": conn,
-        })
-
-        # kwargs only for names function actually has
-        kwargs = {name: val for name, val in candidates.items() if name in sig.parameters}
-        try:
-            res = fn(**kwargs)
-        except TypeError:
-            # positional fallback
-            args = []
-            for pname, p in sig.parameters.items():
-                if pname in candidates:
-                    args.append(candidates[pname])
-                elif p.default is inspect._empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
-                    raise TypeError(f"Cannot satisfy required parameter '{pname}' for {called}")
-            res = fn(*args)
-
-    return {"ok": True, "session_id": session_id, "called": called, "result": res}
-
+            raise RuntimeError("no raw_result for session")
+        return ingest_bronze_strict(conn, payload, replace=True, forced_uid=forced_uid)
 
 # ---------- small utils ----------
 def _float(v):
@@ -356,7 +467,8 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                    "x": px, "y": py})
 
     # swings (root + players[*].swings)
-    def _emit_swing(obj, pid):
+    def _emit_swing(obj, pid): 
+        raw_obj = json.dumps(obj)
         start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
         end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
         if start_s is None and end_s is None:
@@ -376,34 +488,36 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
               start_s, end_s, ball_hit_s,
               start_ts, end_ts, ball_hit_ts,
               ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
-              swing_type, volley, is_in_rally, serve, serve_type, meta
-            ) VALUES (
-              :sid, :pid, :suid,
-              :ss, :es, :bhs,
-              :sts, :ets, :bhts,
-              :bhx, :bhy, :bs, :bpd,
-              :st, :vol, :inr, :srv, :srv_type, CAST(:meta AS JSONB)
+                swing_type, volley, is_in_rally, serve, serve_type, meta, raw
+                ) VALUES (
+                :sid, :pid, :suid,
+                :ss, :es, :bhs,
+                :sts, :ets, :bhts,
+                :bhx, :bhy, :bs, :bpd,
+                :st, :vol, :inr, :srv, :srv_type, CAST(:meta AS JSONB), CAST(:raw AS JSONB)
+                )
             )
         """), {
             "sid": session_id, "pid": pid, "suid": obj.get("id") or obj.get("swing_uid") or obj.get("uid"),
             "ss": start_s, "es": end_s, "bhs": bh_s,
-            "sts": seconds_to_ts(_base_dt_for_session(None), start_s),
-            "ets": seconds_to_ts(_base_dt_for_session(None), end_s),
-            "bhts": seconds_to_ts(_base_dt_for_session(None), bh_s),
+            "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
+            "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s),
+            "bhts": seconds_to_ts(_base_dt_for_session(session_date), bh_s),
             "bhx": _float(obj.get("ball_hit_location", {}).get("x")) if isinstance(obj.get("ball_hit_location"), dict) else bhx,
             "bhy": _float(obj.get("ball_hit_location", {}).get("y")) if isinstance(obj.get("ball_hit_location"), dict) else bhy,
             "bs": _float(obj.get("ball_speed")),
             "bpd": _float(obj.get("ball_player_distance")),
             "st": (str(obj.get("swing_type") or obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower(),
             "vol": _bool(obj.get("volley")), "inr": _bool(obj.get("is_in_rally")),
-            "srv": _bool(obj.get("serve")), "srv_type": obj.get("serve_type"),
+                "srv": _bool(obj.get("serve")), "srv_type": obj.get("serve_type"),
             "meta": json.dumps({k:v for k,v in obj.items() if k not in {
                 "id","uid","swing_uid","player_id","sportai_player_uid","player_uid",
                 "start","start_s","start_ts","end","end_s","end_ts","timestamp","ts","time_s","t",
                 "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
                 "type","label","stroke_type","swing_type","volley","is_in_rally","serve","serve_type",
                 "ball_speed","ball_player_distance"
-            }})
+            }}),
+            "raw": raw_obj
         })
 
     for s in (payload.get("swings") or []):
@@ -505,6 +619,7 @@ def bronze_ingest_file():
 @ingest_bronze.post("/bronze/reingest-from-raw")
 def bronze_reingest_from_raw():
     if not _guard(): return _forbid()
+
     data = request.get_json(silent=True) or request.form
     sid = int(data.get("session_id"))
     replace = str(data.get("replace","1")).lower() in ("1","true","yes","y","on")
