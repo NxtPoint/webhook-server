@@ -33,30 +33,53 @@ from sqlalchemy import create_engine
 
 def bronze_rebuild(session_id: int, engine=None):
     """
-    Standard entrypoint used by CLI/API to rebuild Bronze for a session.
-    Calls ingest_app.ingest_result_v2 with a flexible signature.
+    Rebuild Bronze for a single session by:
+      1) loading the latest raw payload for session_id from raw_result
+      2) invoking ingest_app.ingest_result_v2(payload, ...)
     """
-    import os
-    from sqlalchemy import create_engine
-    # NOTE: this import must work; ingest_app.py defines the real ingestion
+    import os, json, gzip
+    from sqlalchemy import create_engine, text as sql_text
     from ingest_app import ingest_result_v2
 
-    # Build engine if not provided
+    # 1) engine
     engine = engine or create_engine(
         os.environ.get("DATABASE_URL") or os.environ["SQLALCHEMY_DATABASE_URI"],
         pool_pre_ping=True
     )
 
-    # Try common signatures of your existing function
+    # 2) load latest payload for this session from raw_result
+    with engine.connect() as conn:
+        row = conn.execute(sql_text("""
+            SELECT payload_json, payload_gzip
+            FROM raw_result
+            WHERE session_id = :sid
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"sid": session_id}).first()
+
+        if not row:
+            raise RuntimeError(f"No raw_result found for session {session_id}")
+
+        payload_json, payload_gzip = row[0], row[1]
+        if payload_json is not None:
+            payload = payload_json if isinstance(payload_json, dict) else json.loads(payload_json)
+        elif payload_gzip is not None:
+            payload = json.loads(gzip.decompress(payload_gzip).decode("utf-8"))
+        else:
+            raise RuntimeError(f"raw_result had neither payload_json nor payload_gzip for session {session_id}")
+
+    # 3) call your real ingest (payload must be first arg)
+    # Try common call signatures in case your function differs slightly
     try:
-        result = ingest_result_v2(engine, session_id)
+        res = ingest_result_v2(payload, session_id=session_id, engine=engine)
     except TypeError:
         try:
-            result = ingest_result_v2(session_id=session_id, engine=engine)
+            res = ingest_result_v2(payload, engine=engine)
         except TypeError:
-            result = ingest_result_v2(session_id)
+            res = ingest_result_v2(payload)
 
-    return {"ok": True, "session_id": session_id, "result": result}
+    return {"ok": True, "session_id": session_id, "result": res}
+
 
 # ---------- small utils ----------
 def _float(v):
