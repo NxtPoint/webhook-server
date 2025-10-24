@@ -727,34 +727,43 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
     _rebuild_ts_from_seconds(conn, session_id)
 
     # --- OPTIONAL TOWERS (additive; only if present in payload) ---
-    try:
-        # Some providers use plural/singular or alternative keys.
-        # We read from the root payload and let the helpers pick what they need.
-        upsert_session_confidences(conn, session_id, payload)  # expects payload or payload['confidences']
-    except Exception as e:
-        _log.warning(f"[optional] confidences skipped: {e}")
+    # Use SAVEPOINTs so a failure in one optional writer doesn't abort the whole txn.
+    def _try_optional(label, fn, *args, **kwargs):
+        try:
+            # begin_nested() == SAVEPOINT; safe even if the helper raises
+            with conn.begin_nested():
+                fn(*args, **kwargs)
+        except Exception as e:
+            _log.warning(f"[optional] {label} skipped: {e}")
 
-    try:
-        upsert_thumbnail(conn, session_id, payload)  # expects payload or payload['thumbnails']
-    except Exception as e:
-        _log.warning(f"[optional] thumbnails skipped: {e}")
+    # Extract exactly what each helper expects
+    confidences     = payload.get("confidences")
+    thumbnails      = payload.get("thumbnails") or payload.get("thumbnail_crops")
+    highlights      = payload.get("highlights")
+    team_sessions   = payload.get("team_sessions")
+    bounce_heatmap  = payload.get("bounce_heatmap")
 
-    try:
-        insert_highlights(conn, session_id, payload)  # expects payload or payload['highlights']
-    except Exception as e:
-        _log.warning(f"[optional] highlights skipped: {e}")
+    # Only call the helper if the block exists (avoids pointless work)
+    if confidences is not None:
+        _try_optional("confidences",
+                      upsert_session_confidences, conn, session_id, confidences)
 
-    try:
-        insert_team_sessions(conn, session_id, payload)  # expects payload or payload['team_sessions']
-    except Exception as e:
-        _log.warning(f"[optional] team_sessions skipped: {e}")
+    if thumbnails is not None:
+        _try_optional("thumbnails",
+                      upsert_thumbnail, conn, session_id, thumbnails)
 
-    try:
-        upsert_bounce_heatmap(conn, session_id, payload)  # expects payload or payload['bounce_heatmap']
-    except Exception as e:
-        _log.warning(f"[optional] bounce_heatmap skipped: {e}")
+    if highlights is not None:
+        _try_optional("highlights",
+                      insert_highlights, conn, session_id, highlights)
 
-    return {"session_uid": session_uid, "session_id": session_id}
+    if team_sessions is not None:
+        _try_optional("team_sessions",
+                      insert_team_sessions, conn, session_id, team_sessions)
+
+    if bounce_heatmap is not None:
+        _try_optional("bounce_heatmap",
+                      upsert_bounce_heatmap, conn, session_id, bounce_heatmap)
+
 
 
 
