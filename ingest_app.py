@@ -740,15 +740,23 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
         except Exception as e:
             _log.warning(f"[optional] {label} skipped: {e}")
 
-    # 1) confidences + thumbnails → use your existing helpers (they worked)
+    # confidences
     confidences = payload.get("confidences")
-    thumbnails  = payload.get("thumbnails") or payload.get("thumbnail_crops")
-
     if confidences is not None:
-        _try("confidences", lambda: upsert_session_confidences(conn, session_id, confidences))
+        conn.execute(sql_text("""
+            INSERT INTO session_confidences (session_id, data)
+            VALUES (:sid, CAST(:j AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+        """), {"sid": session_id, "j": json.dumps(confidences)})
 
+    # thumbnail / thumbnail_crops
+    thumbnails = payload.get("thumbnails") or payload.get("thumbnail_crops")
     if thumbnails is not None:
-        _try("thumbnails",  lambda: upsert_thumbnail(conn, session_id, thumbnails))
+        conn.execute(sql_text("""
+            INSERT INTO thumbnail (session_id, data)
+            VALUES (:sid, CAST(:j AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+        """), {"sid": session_id, "j": json.dumps(thumbnails)})
 
     # 2) highlights, team_sessions, bounce_heatmap → do clean UPSERTs here
     highlights     = payload.get("highlights")
