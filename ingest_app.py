@@ -12,6 +12,17 @@ import gzip, hashlib
 
 from db_init import engine  # shared engine
 
+import logging
+_log = logging.getLogger("ingest")
+
+from db_init import (
+    upsert_session_confidences,
+    upsert_thumbnail,
+    insert_highlights,
+    insert_team_sessions,
+    upsert_bounce_heatmap,
+)
+
 ingest_bp = Blueprint("ingest_bp", __name__)
 
 OPS_KEY = os.getenv("OPS_KEY", "")
@@ -715,7 +726,36 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
     _normalize_serve_flags(conn, session_id)
     _rebuild_ts_from_seconds(conn, session_id)
 
+    # --- OPTIONAL TOWERS (additive; only if present in payload) ---
+    try:
+        # Some providers use plural/singular or alternative keys.
+        # We read from the root payload and let the helpers pick what they need.
+        upsert_session_confidences(conn, session_id, payload)  # expects payload or payload['confidences']
+    except Exception as e:
+        _log.warning(f"[optional] confidences skipped: {e}")
+
+    try:
+        upsert_thumbnail(conn, session_id, payload)  # expects payload or payload['thumbnails']
+    except Exception as e:
+        _log.warning(f"[optional] thumbnails skipped: {e}")
+
+    try:
+        insert_highlights(conn, session_id, payload)  # expects payload or payload['highlights']
+    except Exception as e:
+        _log.warning(f"[optional] highlights skipped: {e}")
+
+    try:
+        insert_team_sessions(conn, session_id, payload)  # expects payload or payload['team_sessions']
+    except Exception as e:
+        _log.warning(f"[optional] team_sessions skipped: {e}")
+
+    try:
+        upsert_bounce_heatmap(conn, session_id, payload)  # expects payload or payload['bounce_heatmap']
+    except Exception as e:
+        _log.warning(f"[optional] bounce_heatmap skipped: {e}")
+
     return {"session_uid": session_uid, "session_id": session_id}
+
 
 
 # ---------- SportAI helpers & new endpoints ----------
