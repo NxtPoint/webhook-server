@@ -727,36 +727,57 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
     _rebuild_ts_from_seconds(conn, session_id)
 
     # --- OPTIONAL TOWERS (additive; only if present in payload) ---
-    # Use SAVEPOINTs so a failure in one optional writer doesn't abort the whole txn.
-    def _try_optional(label, fn, *args, **kwargs):
+    from sqlalchemy import text as _t
+    import json as _json
+
+    def _jsonb(v):
+        return _json.dumps(v) if v is not None else None
+
+    def _try(label, fn):
         try:
             with conn.begin_nested():  # SAVEPOINT
-                fn(*args, **kwargs)
+                fn()
         except Exception as e:
             _log.warning(f"[optional] {label} skipped: {e}")
 
-    # Sub-objects (present in your payload keys)
-    confidences     = payload.get("confidences")
-    thumbnails      = payload.get("thumbnails") or payload.get("thumbnail_crops")
+    # 1) confidences + thumbnails → use your existing helpers (they worked)
+    confidences = payload.get("confidences")
+    thumbnails  = payload.get("thumbnails") or payload.get("thumbnail_crops")
 
-    # 1) These helpers expect the SUB-DATA directly (array/object) ✅
     if confidences is not None:
-        _try_optional("confidences",
-                      upsert_session_confidences, conn, session_id, confidences)
+        _try("confidences", lambda: upsert_session_confidences(conn, session_id, confidences))
 
     if thumbnails is not None:
-        _try_optional("thumbnails",
-                      upsert_thumbnail, conn, session_id, thumbnails)
+        _try("thumbnails",  lambda: upsert_thumbnail(conn, session_id, thumbnails))
 
-    # 2) These helpers expect the ROOT payload and internally .get('...') ✅
-    _try_optional("highlights",
-                  insert_highlights, conn, session_id, payload)
+    # 2) highlights, team_sessions, bounce_heatmap → do clean UPSERTs here
+    highlights     = payload.get("highlights")
+    team_sessions  = payload.get("team_sessions")
+    bounce_heatmap = payload.get("bounce_heatmap")
 
-    _try_optional("team_sessions",
-                  insert_team_sessions, conn, session_id, payload)
+    if highlights is not None:
+        _try("highlights", lambda: conn.execute(_t("""
+            INSERT INTO highlight (session_id, data)
+            VALUES (:sid, CAST(:j AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET data = EXCLUDED.data
+        """), {"sid": session_id, "j": _jsonb(highlights)}))
 
-    _try_optional("bounce_heatmap",
-                  upsert_bounce_heatmap, conn, session_id, payload)
+    if team_sessions is not None:
+        _try("team_sessions", lambda: conn.execute(_t("""
+            INSERT INTO team_session (session_id, data)
+            VALUES (:sid, CAST(:j AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET data = EXCLUDED.data
+        """), {"sid": session_id, "j": _jsonb(team_sessions)}))
+
+    if bounce_heatmap is not None:
+        _try("bounce_heatmap", lambda: conn.execute(_t("""
+            INSERT INTO bounce_heatmap (session_id, data)
+            VALUES (:sid, CAST(:j AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE
+              SET data = EXCLUDED.data
+        """), {"sid": session_id, "j": _jsonb(bounce_heatmap)}))
 
 
 
