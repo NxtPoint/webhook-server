@@ -1048,6 +1048,116 @@ def ops_refresh_gold():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@ingest_bp.post("/ops/reingest-session")
+def ops_reingest_session():
+    """Re-ingest a session from raw_result (default) or last result_url. Body/qs:
+       session_id=1174  method=raw|url  replace=1|0
+    """
+    if not _guard(): return _forbid()
+
+    sid = request.values.get("session_id", type=int)
+    method = (request.values.get("method") or "raw").strip().lower()
+    replace = str(request.values.get("replace", "1")).strip().lower() in ("1","true","yes","y","on")
+
+    if not sid:
+        return jsonify({"ok": False, "error": "missing session_id"}), 400
+
+    # helper: load payload from raw_result
+    def _load_raw_payload(conn, session_id: int):
+        row = conn.execute(sql_text("""
+            SELECT payload_json, payload_gzip
+            FROM raw_result
+            WHERE session_id=:sid
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"sid": session_id}).first()
+        if not row:
+            return None, "no raw_result for session"
+        pj, gz = row[0], row[1]
+        if pj is not None:
+            if isinstance(pj, dict):
+                return pj, None
+            try:
+                return json.loads(pj), None
+            except Exception as e:
+                return None, f"payload_json not valid JSON: {e}"
+        if gz is not None:
+            try:
+                import gzip as _gzip
+                js = _gzip.decompress(gz).decode("utf-8")
+                return json.loads(js), None
+            except Exception as e:
+                return None, f"failed to read gzip: {e}"
+        return None, "raw_result had neither JSON nor GZIP"
+
+    # method=raw (default): use stored raw_result (no network)
+    if method in ("raw", "r"):
+        with engine.begin() as conn:
+            payload, err = _load_raw_payload(conn, sid)
+            if err:
+                return jsonify({"ok": False, "error": err}), 404
+            res = ingest_result_v2(conn, payload, replace=replace, src_hint="raw://reingest")
+            counts = conn.execute(sql_text("""
+                SELECT
+                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
+            """), {"sid": sid}).fetchone()
+        return jsonify({
+            "ok": True, "method": "raw", "replace": bool(replace),
+            "session_uid": res.get("session_uid"), "session_id": sid,
+            "bronze_counts": {
+                "rallies": counts[0], "ball_bounces": counts[1],
+                "ball_positions": counts[2], "player_positions": counts[3],
+                "swings": counts[4]
+            }
+        })
+
+    # method=url: fetch last_result_url from submission_context and reingest
+    elif method in ("url", "u"):
+        from requests import get as _get
+        with engine.begin() as conn:
+            row = conn.execute(sql_text("""
+                SELECT last_result_url
+                FROM submission_context
+                WHERE session_id=:sid
+                ORDER BY created_at DESC
+                LIMIT 1
+            """), {"sid": sid}).first()
+            if not row or not row[0]:
+                return jsonify({"ok": False, "error": "no result_url found for session"}), 404
+            result_url = row[0]
+        # fetch payload outside txn
+        r = _get(result_url, timeout=90)
+        r.raise_for_status()
+        payload = r.json()
+
+        with engine.begin() as conn:
+            res = ingest_result_v2(conn, payload, replace=replace, src_hint=result_url)
+            counts = conn.execute(sql_text("""
+                SELECT
+                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
+            """), {"sid": sid}).fetchone()
+        return jsonify({
+            "ok": True, "method": "url", "replace": bool(replace),
+            "session_uid": res.get("session_uid"), "session_id": sid,
+            "result_url": result_url,
+            "bronze_counts": {
+                "rallies": counts[0], "ball_bounces": counts[1],
+                "ball_positions": counts[2], "player_positions": counts[3],
+                "swings": counts[4]
+            }
+        })
+
+    else:
+        return jsonify({"ok": False, "error": "method must be 'raw' or 'url'"}), 400
+
 @ingest_bp.get("/ops/db-counts")
 def ops_db_counts():
     if not _guard(): return _forbid()
