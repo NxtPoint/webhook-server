@@ -27,6 +27,21 @@ def _guard() -> bool:
 def _forbid():
     return Response("Forbidden", 403)
 
+# inside ingest_bronze.py
+import os
+from sqlalchemy import create_engine
+
+def bronze_rebuild(session_id: int, engine=None):
+    """Standard entrypoint used by CLI/API to rebuild Bronze for a session."""
+    engine = engine or create_engine(
+        os.environ.get("DATABASE_URL") or os.environ["SQLALCHEMY_DATABASE_URI"],
+        pool_pre_ping=True
+    )
+    # TODO: replace REAL_FUNC with your actual function name
+    # e.g., return refresh_bronze_for_session(engine=engine, session_id=session_id)
+    return REAL_FUNC(engine=engine, session_id=session_id)
+
+
 # ---------- small utils ----------
 def _float(v):
     try: return float(v)
