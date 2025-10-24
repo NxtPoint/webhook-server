@@ -758,7 +758,7 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
             ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
         """), {"sid": session_id, "j": json.dumps(thumbnails)})
 
-    # 2) highlights, team_sessions, bounce_heatmap → do clean UPSERTs here
+        # 2) highlights, team_sessions, bounce_heatmap → do clean UPSERTs here
     highlights     = payload.get("highlights")
     team_sessions  = payload.get("team_sessions")
     bounce_heatmap = payload.get("bounce_heatmap")
@@ -787,8 +787,8 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
               SET data = EXCLUDED.data
         """), {"sid": session_id, "j": _jsonb(bounce_heatmap)}))
 
-
-
+    # >>> ADD THIS RETURN (it was removed by accident; without it the transaction rolls back)
+    return {"session_uid": session_uid, "session_id": session_id}
 
 
 # ---------- SportAI helpers & new endpoints ----------
@@ -876,7 +876,10 @@ def _attach_submission_context(conn, task_id: str, session_id: int):
 def _ingest_payload_and_counts(payload: dict, replace: bool, src_hint: str = None, task_id: str = None):
     with engine.begin() as conn:
         res = ingest_result_v2(conn, payload, replace=replace, forced_uid=None, src_hint=src_hint)
+        if not res:
+            raise RuntimeError("ingest_result_v2 returned None (likely missing final return); nothing ingested.")
         sid = res.get("session_id")
+
 
         if task_id:
             _attach_submission_context(conn, task_id=task_id, session_id=sid)
