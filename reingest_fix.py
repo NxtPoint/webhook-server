@@ -1,110 +1,95 @@
+# reingest_fix_v2.py
 import os, json, gzip
 from sqlalchemy import create_engine, text
 
 engine = create_engine(os.environ["DATABASE_URL"])
 
-DDL = [
-# --- highlight ---
-"""
-CREATE TABLE IF NOT EXISTS highlight (
-  session_id INT NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE
-);
-""",
-"""
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name='highlight' AND column_name='data'
-  ) THEN
-    ALTER TABLE highlight ADD COLUMN data JSONB;
-  END IF;
-END $$;
-""",
-"""
-DO $$ BEGIN
-  -- make session_id unique so ON CONFLICT works
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes
-    WHERE tablename='highlight' AND indexname='highlight_session_id_key'
-  ) THEN
-    BEGIN
-      ALTER TABLE highlight ADD CONSTRAINT highlight_session_id_key UNIQUE (session_id);
-    EXCEPTION WHEN duplicate_table THEN
-      -- if a PK/unique already exists under another name, ignore
-      NULL;
-    END;
-  END IF;
-END $$;
-""",
-
-# --- team_session ---
-"""
-CREATE TABLE IF NOT EXISTS team_session (
-  session_id INT NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE
-);
-""",
-"""
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name='team_session' AND column_name='data'
-  ) THEN
-    ALTER TABLE team_session ADD COLUMN data JSONB;
-  END IF;
-END $$;
-""",
-"""
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes
-    WHERE tablename='team_session' AND indexname='team_session_session_id_key'
-  ) THEN
-    BEGIN
-      ALTER TABLE team_session ADD CONSTRAINT team_session_session_id_key UNIQUE (session_id);
-    EXCEPTION WHEN duplicate_table THEN
-      NULL;
-    END;
-  END IF;
-END $$;
-""",
-
-# --- bounce_heatmap ---
-"""
-CREATE TABLE IF NOT EXISTS bounce_heatmap (
-  session_id INT NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE
-);
-""",
-"""
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name='bounce_heatmap' AND column_name='data'
-  ) THEN
-    ALTER TABLE bounce_heatmap ADD COLUMN data JSONB;
-  END IF;
-END $$;
-""",
-"""
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes
-    WHERE tablename='bounce_heatmap' AND indexname='bounce_heatmap_session_id_key'
-  ) THEN
-    BEGIN
-      ALTER TABLE bounce_heatmap ADD CONSTRAINT bounce_heatmap_session_id_key UNIQUE (session_id);
-    EXCEPTION WHEN duplicate_table THEN
-      NULL;
-    END;
-  END IF;
-END $$;
-"""
+TABLES = [
+    # table_name, needs_data_col?
+    ("highlight", True),
+    ("team_session", True),
+    ("bounce_heatmap", True),
 ]
+
+def ensure_table(conn, tbl: str, needs_data: bool):
+    # Create table if missing (minimal schema)
+    conn.execute(text(f"""
+        CREATE TABLE IF NOT EXISTS {tbl} (
+          session_id INT NOT NULL REFERENCES dim_session(session_id) ON DELETE CASCADE
+        );
+    """))
+    # Add columns if missing
+    if needs_data:
+        conn.execute(text(f"""
+            DO $$ BEGIN
+              IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='{tbl}' AND column_name='data'
+              ) THEN
+                ALTER TABLE {tbl} ADD COLUMN data JSONB;
+              END IF;
+            END $$;
+        """))
+    conn.execute(text(f"""
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='{tbl}' AND column_name='id'
+          ) THEN
+            ALTER TABLE {tbl} ADD COLUMN id BIGSERIAL;
+          END IF;
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name='{tbl}' AND column_name='created_at'
+          ) THEN
+            ALTER TABLE {tbl} ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+          END IF;
+        END $$;
+    """))
+
+def dedupe(conn, tbl: str):
+    # Keep the newest row per session_id (by created_at desc, then id desc)
+    conn.execute(text(f"""
+        WITH ranked AS (
+          SELECT ctid
+               , ROW_NUMBER() OVER (
+                   PARTITION BY session_id
+                   ORDER BY created_at DESC NULLS LAST, id DESC NULLS LAST
+                 ) AS rn
+          FROM {tbl}
+        ),
+        d AS (SELECT ctid FROM ranked WHERE rn > 1)
+        DELETE FROM {tbl} t USING d
+        WHERE t.ctid = d.ctid;
+    """))
+
+def add_unique(conn, tbl: str):
+    # Add a unique constraint on session_id (if not already present)
+    conn.execute(text(f"""
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM   pg_indexes
+            WHERE  tablename = '{tbl}'
+            AND    indexname = '{tbl}_session_id_key'
+          ) THEN
+            BEGIN
+              ALTER TABLE {tbl} ADD CONSTRAINT {tbl}_session_id_key UNIQUE(session_id);
+            EXCEPTION WHEN duplicate_object THEN
+              -- Another unique already exists; ignore
+              NULL;
+            END;
+          END IF;
+        END $$;
+    """))
 
 def run_schema_fixes():
     with engine.begin() as conn:
-        for stmt in DDL:
-            conn.execute(text(stmt))
-    print("[Schema] Optional tables ensured + unique constraints added.")
+        for tbl, needs_data in TABLES:
+            ensure_table(conn, tbl, needs_data)
+            dedupe(conn, tbl)
+            add_unique(conn, tbl)
+    print("[Schema] Optional tables ensured, deduped, and unique constraints added.")
 
 def load_raw_payload(conn, session_id):
     row = conn.execute(text("""
@@ -121,7 +106,7 @@ def load_raw_payload(conn, session_id):
         return pj if isinstance(pj, dict) else json.loads(pj)
     if gz is not None:
         return json.loads(gzip.decompress(gz).decode("utf-8"))
-    raise RuntimeError("raw_result had neither JSON nor GZIP data")
+    raise RuntimeError("raw_result had neither JSON nor GZIP")
 
 def reingest(sid):
     from ingest_app import ingest_result_v2
@@ -137,7 +122,7 @@ def reingest(sid):
               (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
               (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
         """), {"sid": sid}).fetchone()
-    print("[Done] Bronze counts -> Rallies:", counts[0], "Bounces:", counts[1],
+    print("[Bronze] Rallies:", counts[0], "Bounces:", counts[1],
           "BallPos:", counts[2], "PlayerPos:", counts[3], "Swings:", counts[4])
 
 def check_optional_counts(sid):
@@ -150,16 +135,16 @@ def check_optional_counts(sid):
               (SELECT COUNT(*) FROM bounce_heatmap       WHERE session_id=:sid) AS heatmap,
               (SELECT COUNT(*) FROM team_session         WHERE session_id=:sid) AS team_sessions
         """), {"sid": sid}).first()
-    print("[Optional counts] confidences:", row[0],
+    print("[Optional] confidences:", row[0],
           "thumbnails:", row[1],
           "highlights:", row[2],
           "heatmap:", row[3],
           "team_sessions:", row[4])
 
-print("[Start] Applying schema fixes…")
-run_schema_fixes()
-sid = 1174
-print("[Start] Re-ingesting session", sid, "…")
-reingest(sid)
-check_optional_counts(sid)
-
+if __name__ == "__main__":
+    print("[Start] Applying schema fixes…")
+    run_schema_fixes()
+    sid = 1174
+    print("[Start] Re-ingesting session", sid, "…")
+    reingest(sid)
+    check_optional_counts(sid)
