@@ -496,7 +496,6 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                 :bhx, :bhy, :bs, :bpd,
                 :st, :vol, :inr, :srv, :srv_type, CAST(:meta AS JSONB), CAST(:raw AS JSONB)
                 )
-            )
         """), {
             "sid": session_id, "pid": pid, "suid": obj.get("id") or obj.get("swing_uid") or obj.get("uid"),
             "ss": start_s, "es": end_s, "bhs": bh_s,
