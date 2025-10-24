@@ -77,9 +77,9 @@ SPORTAI_STATUS_PATHS = list(dict.fromkeys([
 
 # ---------- DB engine / ingest blueprint ----------
 from db_init import engine                                  # noqa: E402
-from ingest_app import ingest_bp, ingest_result_v2          # noqa: E402
-app.register_blueprint(ingest_bp, url_prefix="")            # mounts /ops/* ingest routes
-from ingest_bronze import ingest_bronze                     # new bronze ingest
+from ingest_app import ingest_bp                             # noqa: E402
+app.register_blueprint(ingest_bp, url_prefix="")            # mounts /ops/* legacy ops routes
+from ingest_bronze import ingest_bronze, ingest_bronze_strict  # new bronze ingest
 app.register_blueprint(ingest_bronze, url_prefix="")        # mounts /bronze/* routes
 
 # ---------- S3 config (MANDATORY) ----------
@@ -138,7 +138,14 @@ def _do_ingest(task_id: str, result_url: str):
         payload = r.json()
 
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
+            # ingest into bronze (also snapshots into bronze.raw_result)
+            res = ingest_bronze_strict(
+                conn,
+                payload,
+                replace=DEFAULT_REPLACE_ON_INGEST,
+                forced_uid=None,
+                src_hint=result_url,
+            )
             sid = res["session_id"]
             conn.execute(sql_text("""
                 UPDATE submission_context
@@ -147,6 +154,7 @@ def _do_ingest(task_id: str, result_url: str):
                        ingest_error = NULL
                  WHERE task_id = :t
             """), {"sid": sid, "t": task_id})
+
 
     except Exception as e:
         # capture error but don't crash the process
@@ -763,11 +771,19 @@ def ops_ingest_task():
         r = requests.get(result_url, timeout=300); r.raise_for_status()
         payload = r.json()
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url)
+            res = ingest_bronze_strict(
+                conn,
+                payload,
+                replace=DEFAULT_REPLACE_ON_INGEST,
+                forced_uid=None,
+                src_hint=result_url,
+            )
             sid = res["session_id"]
-            conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
-                         {"sid": sid, "t": tid})
+            conn.execute(sql_text(
+                "UPDATE submission_context SET session_id=:sid WHERE task_id=:t"
+            ), {"sid": sid, "t": tid})
         return jsonify({"ok": True, "session_id": sid})
+
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
@@ -804,19 +820,27 @@ def ops_sportai_callback():
 
     try:
         with engine.begin() as conn:
-            res = ingest_result_v2(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, forced_uid=forced_uid, src_hint=src_hint)
+            res = ingest_bronze_strict(
+                conn,
+                payload,
+                replace=DEFAULT_REPLACE_ON_INGEST,
+                forced_uid=forced_uid,
+                src_hint=src_hint,
+            )
             sid = res.get("session_id")
             if task_id:
-                conn.execute(sql_text("UPDATE submission_context SET session_id=:sid WHERE task_id=:t"),
-                             {"sid": sid, "t": task_id})
+                conn.execute(sql_text(
+                    "UPDATE submission_context SET session_id=:sid WHERE task_id=:t"
+                ), {"sid": sid, "t": task_id})
             counts = conn.execute(sql_text("""
                 SELECT
-                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid)
+                  (SELECT COUNT(*) FROM bronze.rally           WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.ball_bounce     WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.ball_position   WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.player_position WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.swing           WHERE session_id=:sid)
             """), {"sid": sid}).fetchone()
+
         return jsonify({"ok": True, "ingested": True,
                         "session_uid": res.get("session_uid"),
                         "session_id":  sid,
