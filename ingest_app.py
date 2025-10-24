@@ -730,20 +730,16 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
     # Use SAVEPOINTs so a failure in one optional writer doesn't abort the whole txn.
     def _try_optional(label, fn, *args, **kwargs):
         try:
-            # begin_nested() == SAVEPOINT; safe even if the helper raises
-            with conn.begin_nested():
+            with conn.begin_nested():  # SAVEPOINT
                 fn(*args, **kwargs)
         except Exception as e:
             _log.warning(f"[optional] {label} skipped: {e}")
 
-    # Extract exactly what each helper expects
+    # Sub-objects (present in your payload keys)
     confidences     = payload.get("confidences")
     thumbnails      = payload.get("thumbnails") or payload.get("thumbnail_crops")
-    highlights      = payload.get("highlights")
-    team_sessions   = payload.get("team_sessions")
-    bounce_heatmap  = payload.get("bounce_heatmap")
 
-    # Only call the helper if the block exists (avoids pointless work)
+    # 1) These helpers expect the SUB-DATA directly (array/object) ✅
     if confidences is not None:
         _try_optional("confidences",
                       upsert_session_confidences, conn, session_id, confidences)
@@ -752,17 +748,16 @@ def ingest_result_v2(conn, payload: dict, replace=False, forced_uid=None, src_hi
         _try_optional("thumbnails",
                       upsert_thumbnail, conn, session_id, thumbnails)
 
-    if highlights is not None:
-        _try_optional("highlights",
-                      insert_highlights, conn, session_id, highlights)
+    # 2) These helpers expect the ROOT payload and internally .get('...') ✅
+    _try_optional("highlights",
+                  insert_highlights, conn, session_id, payload)
 
-    if team_sessions is not None:
-        _try_optional("team_sessions",
-                      insert_team_sessions, conn, session_id, team_sessions)
+    _try_optional("team_sessions",
+                  insert_team_sessions, conn, session_id, payload)
 
-    if bounce_heatmap is not None:
-        _try_optional("bounce_heatmap",
-                      upsert_bounce_heatmap, conn, session_id, bounce_heatmap)
+    _try_optional("bounce_heatmap",
+                  upsert_bounce_heatmap, conn, session_id, payload)
+
 
 
 
