@@ -33,21 +33,28 @@ from sqlalchemy import create_engine
 
 def bronze_rebuild(session_id: int, engine=None):
     """
-    Rebuild Bronze for a single session by:
-      1) loading the latest raw payload for session_id from raw_result
-      2) invoking ingest_app.ingest_result_v2(payload, ...)
+    Rebuild Bronze for one session, robust to different ingest_result_* signatures.
+    - Loads latest payload for session_id from raw_result
+    - Calls ingest_app.ingest_result_v2 (or ingest_result), mapping args by name
     """
-    import os, json, gzip
+    import os, json, gzip, inspect
     from sqlalchemy import create_engine, text as sql_text
-    from ingest_app import ingest_result_v2
+    import ingest_app as ia  # must be importable from current working dir
 
-    # 1) engine
+    # 1) Pick the ingest function
+    fn = getattr(ia, "ingest_result_v2", None)
+    if not callable(fn):
+        fn = getattr(ia, "ingest_result", None)
+    if not callable(fn):
+        raise RuntimeError("Could not find a callable ingest_result_v2 or ingest_result in ingest_app.py")
+
+    # 2) Get engine
     engine = engine or create_engine(
         os.environ.get("DATABASE_URL") or os.environ["SQLALCHEMY_DATABASE_URI"],
         pool_pre_ping=True
     )
 
-    # 2) load latest payload for this session from raw_result
+    # 3) Load latest payload for this session
     with engine.connect() as conn:
         row = conn.execute(sql_text("""
             SELECT payload_json, payload_gzip
@@ -68,18 +75,37 @@ def bronze_rebuild(session_id: int, engine=None):
         else:
             raise RuntimeError(f"raw_result had neither payload_json nor payload_gzip for session {session_id}")
 
-    # 3) call your real ingest (payload must be first arg)
-    # Try common call signatures in case your function differs slightly
+    # 4) Call the ingest function with smart parameter mapping
+    sig = inspect.signature(fn)
+    # Prepare values we can supply
+    candidates = {
+        # payload-like
+        "payload": payload, "data": payload, "raw": payload, "raw_payload": payload, "result": payload,
+        # engine/connection-like
+        "engine": engine, "conn": engine, "connection": engine, "db": engine, "db_engine": engine,
+        # session id
+        "session_id": session_id, "sid": session_id, "session": session_id,
+        # helpful extras (ignored if not accepted)
+        "src_hint": "bronze", "source": "bronze",
+        "forced_uid": None, "force_uid": None, "uid": None,
+    }
+
+    # Try kwargs first (only pass names the function actually has)
+    kwargs = {name: val for name, val in candidates.items() if name in sig.parameters}
     try:
-        res = ingest_result_v2(payload, session_id=session_id, engine=engine)
+        res = fn(**kwargs)
     except TypeError:
-        try:
-            res = ingest_result_v2(payload, engine=engine)
-        except TypeError:
-            res = ingest_result_v2(payload)
+        # Fallback to positional: fill in order with what we have, skipping missing optionals
+        args = []
+        for pname, p in sig.parameters.items():
+            if pname in candidates:
+                args.append(candidates[pname])
+            elif p.default is inspect._empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+                # Required param we can't satisfy → rethrow the original function signature for visibility
+                raise TypeError(f"Cannot satisfy required parameter '{pname}' for {fn.__name__}{sig}")
+        res = fn(*args)
 
-    return {"ok": True, "session_id": session_id, "result": res}
-
+    return {"ok": True, "session_id": session_id, "called": f"{ia.__name__}.{fn.__name__}{sig}", "result": res}
 
 # ---------- small utils ----------
 def _float(v):
