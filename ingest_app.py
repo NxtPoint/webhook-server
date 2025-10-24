@@ -1044,6 +1044,99 @@ def ops_ingest_file():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@ingest_bp.post("/ops/reingest-from-raw")
+def ops_reingest_from_raw():
+    """
+    Re-ingest a session FROM ITS SAVED raw_result, but keep the existing session_uid
+    (so we don't create 'reingest' sessions) and preserve submission_context linkage.
+
+    Params (form or JSON):
+      - session_id: the existing session_id to re-ingest
+      - replace:    1/0 (default: 1) -> purge bronze child tables first
+    """
+    if not _guard():
+        return _forbid()
+
+    data = request.get_json(silent=True) or request.form
+    try:
+        session_id = int(data.get("session_id"))
+    except Exception:
+        return jsonify({"ok": False, "error": "missing or invalid session_id"}), 400
+
+    rep_in = data.get("replace")
+    replace = DEFAULT_REPLACE_ON_INGEST if rep_in is None else str(rep_in).lower() in ("1","true","yes","y","on")
+
+    try:
+        with engine.begin() as conn:
+            # 1) get the existing UID so we don't create a new session
+            forced_uid = conn.execute(sql_text("""
+                SELECT session_uid FROM dim_session WHERE session_id=:sid
+            """), {"sid": session_id}).scalar()
+
+            if not forced_uid:
+                return jsonify({"ok": False, "error": "unknown session_id"}), 404
+
+            # 2) load raw payload snapshot for this session
+            row = conn.execute(sql_text("""
+                SELECT payload_json, payload_gzip
+                FROM raw_result
+                WHERE session_id=:sid
+                ORDER BY created_at DESC
+                LIMIT 1
+            """), {"sid": session_id}).first()
+            if not row:
+                return jsonify({"ok": False, "error": "no raw_result for session"}), 404
+
+            pj, pgz = row[0], row[1]
+            if pj is not None:
+                if isinstance(pj, dict):
+                    payload = pj
+                else:
+                    payload = json.loads(pj)
+            else:
+                payload = json.loads(gzip.decompress(pgz).decode("utf-8"))
+
+            # 3) run ingest, but force the same UID; this keeps the same session row
+            res = ingest_result_v2(conn, payload, replace=replace, forced_uid=forced_uid, src_hint=None)
+
+            # 4) counts to return
+            counts = conn.execute(sql_text("""
+                SELECT
+                  (SELECT COUNT(*) FROM dim_rally            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_bounce          WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_ball_position   WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_player_position WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM fact_swing           WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM session_confidences  WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM thumbnail            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM highlight            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM team_session         WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bounce_heatmap       WHERE session_id=:sid)
+            """), {"sid": session_id}).fetchone()
+
+        return jsonify({
+            "ok": True,
+            "session_id": session_id,
+            "session_uid": forced_uid,
+            "replace": replace,
+            "bronze_counts": {
+                "rallies": counts[0],
+                "ball_bounces": counts[1],
+                "ball_positions": counts[2],
+                "player_positions": counts[3],
+                "swings": counts[4],
+            },
+            "optional_counts": {
+                "confidences": counts[5],
+                "thumbnails":  counts[6],
+                "highlights":  counts[7],
+                "team_sessions": counts[8],
+                "heatmap": counts[9],
+            }
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @ingest_bp.get("/ops/init-db")
 def ops_init_db():
     if not _guard(): return _forbid()
