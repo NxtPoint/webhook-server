@@ -32,15 +32,31 @@ import os
 from sqlalchemy import create_engine
 
 def bronze_rebuild(session_id: int, engine=None):
-    """Standard entrypoint used by CLI/API to rebuild Bronze for a session."""
+    """
+    Standard entrypoint used by CLI/API to rebuild Bronze for a session.
+    Calls ingest_app.ingest_result_v2 with a flexible signature.
+    """
+    import os
+    from sqlalchemy import create_engine
+    # NOTE: this import must work; ingest_app.py defines the real ingestion
+    from ingest_app import ingest_result_v2
+
+    # Build engine if not provided
     engine = engine or create_engine(
         os.environ.get("DATABASE_URL") or os.environ["SQLALCHEMY_DATABASE_URI"],
         pool_pre_ping=True
     )
-    # TODO: replace REAL_FUNC with your actual function name
-    # e.g., return refresh_bronze_for_session(engine=engine, session_id=session_id)
-    return REAL_FUNC(engine=engine, session_id=session_id)
 
+    # Try common signatures of your existing function
+    try:
+        result = ingest_result_v2(engine, session_id)
+    except TypeError:
+        try:
+            result = ingest_result_v2(session_id=session_id, engine=engine)
+        except TypeError:
+            result = ingest_result_v2(session_id)
+
+    return {"ok": True, "session_id": session_id, "result": result}
 
 # ---------- small utils ----------
 def _float(v):
