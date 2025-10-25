@@ -393,16 +393,31 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                "x": bx, "y": by, "bt": btype})
 
-    # ball_positions
+    # --- ball_positions (tolerant key mapping like player_position)
     for p in (payload.get("ball_positions") or []):
         s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t"))
-        x = _float(p.get("x")); y = _float(p.get("y"))
+
+        # try common keys
+        bx = _float(p.get("x")); by = _float(p.get("y"))
+
+        # fallbacks: array or court_* or uppercase
+        if bx is None or by is None:
+            cp = p.get("court_pos") or p.get("court_position")
+            if isinstance(cp, (list, tuple)) and len(cp) >= 2:
+                bx, by = _float(cp[0]), _float(cp[1])
+        if bx is None: bx = _float(p.get("court_x", p.get("court_X", p.get("X"))))
+        if by is None: by = _float(p.get("court_y", p.get("court_Y", p.get("Y"))))
+
         conn.execute(sql_text("""
             INSERT INTO bronze.ball_position (session_id, ts_s, ts, x, y)
             VALUES (:sid, :ss, :ts, :x, :y)
-        """), {"sid": session_id, "ss": s,
-               "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
-               "x": x, "y": y})
+        """), {
+            "sid": session_id,
+            "ss": s,
+            "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
+            "x": bx, "y": by
+        })
+
 
     # player_positions
     for puid, arr in (payload.get("player_positions") or {}).items():
