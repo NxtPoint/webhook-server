@@ -284,6 +284,12 @@ def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int =
         INSERT INTO bronze.raw_result (session_id, payload_json, payload_gzip, payload_sha256, created_at)
         VALUES (:sid, NULL, :gz, :sha, now() AT TIME ZONE 'utc')
     """), {"sid": session_id, "gz": gz, "sha": sha})
+def _upsert_jsonb(conn, table: str, session_id: int, data):
+    conn.execute(sql_text(f"""
+        INSERT INTO bronze.{table} (session_id, data)
+        VALUES (:sid, CAST(:j AS JSONB))
+        ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+    """), {"sid": session_id, "j": json.dumps(data)})
 
 # -------------------------------------------------------
 # Ingest (pure extract)
@@ -531,6 +537,51 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         """), {"sid": session_id, "n": i, "ss": start_s, "es": end_s,
                "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
                "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s)})
+        
+    # -------- JSONB towers (robust key paths) --------
+    # confidences
+    confidences = (
+        payload.get("confidences")
+        or (payload.get("debug_data") or {}).get("confidences")
+    )
+    if confidences is not None:
+        _upsert_jsonb(conn, "session_confidences", session_id, confidences)
+
+    # thumbnails (some payloads call them thumbnail_crops)
+    thumbs = (
+        payload.get("thumbnails")
+        or payload.get("thumbnail_crops")
+        or (payload.get("debug_data") or {}).get("thumbnails")
+        or (payload.get("debug_data") or {}).get("thumbnail_crops")
+    )
+    if thumbs is not None:
+        _upsert_jsonb(conn, "thumbnail", session_id, thumbs)
+
+    # highlights
+    highlights = (
+        payload.get("highlights")
+        or (payload.get("debug_data") or {}).get("highlights")
+    )
+    if highlights is not None:
+        _upsert_jsonb(conn, "highlight", session_id, highlights)
+
+    # team_sessions
+    team_sessions = (
+        payload.get("team_sessions")
+        or (payload.get("debug_data") or {}).get("team_sessions")
+    )
+    if team_sessions is not None:
+        _upsert_jsonb(conn, "team_session", session_id, team_sessions)
+
+    # bounce_heatmap (common alternates)
+    bounce_heatmap = (
+        payload.get("bounce_heatmap")
+        or payload.get("bounce_heatmaps")
+        or (payload.get("debug_data") or {}).get("bounce_heatmap")
+        or (payload.get("heatmaps") or {}).get("bounce_heatmap")
+    )
+    if bounce_heatmap is not None:
+        _upsert_jsonb(conn, "bounce_heatmap", session_id, bounce_heatmap)
 
     # unmatched top-level keys (for visibility)
     known = {"players","swings","rallies","ball_bounces","ball_positions","player_positions",
