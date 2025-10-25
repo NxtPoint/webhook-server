@@ -470,7 +470,13 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         uid_to_player_id[puid] = pid
 
     # ball_bounces
-    for b in (payload.get("ball_bounces") or []):
+        source_bounces = (
+        payload.get("ball_bounces")
+        or payload.get("ball_bounce")
+        or payload.get("bounces")
+        or []
+    )
+    for b in source_bounces:
         # PURE JSON KEYS
         bid = (b.get("id") or b.get("bounce_id") or b.get("uid"))
         # Time
