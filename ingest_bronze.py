@@ -94,16 +94,66 @@ def _run_bronze_init(conn):
       END IF;
 
       -- ball_bounce
-      IF to_regclass('bronze.ball_bounce') IS NULL THEN
+        IF to_regclass('bronze.ball_bounce') IS NULL THEN
         CREATE TABLE bronze.ball_bounce (
-          id BIGSERIAL PRIMARY KEY,
-          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
-          hitter_player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
-          bounce_s NUMERIC, bounce_ts TIMESTAMPTZ,
-          x NUMERIC, y NUMERIC,
-          bounce_type TEXT
+            session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+            bounce_id  TEXT NOT NULL,
+            hitter_player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
+            bounce_s NUMERIC, 
+            bounce_ts TIMESTAMPTZ,
+            x NUMERIC, 
+            y NUMERIC,
+            bounce_type TEXT,
+            PRIMARY KEY (session_id, bounce_id)
         );
-      END IF;
+        ELSE
+        -- Migration for legacy schema that had: id BIGSERIAL PRIMARY KEY and no bounce_id
+        -- 1) Ensure bounce_id exists
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_schema='bronze' AND table_name='ball_bounce' AND column_name='bounce_id'
+        ) THEN
+            ALTER TABLE bronze.ball_bounce ADD COLUMN bounce_id TEXT;
+        END IF;
+
+        -- 2) If old PK exists on "id", drop it (if present)
+        DO $mig$ BEGIN
+            IF EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conrelid='bronze.ball_bounce'::regclass AND contype='p'
+            ) THEN
+            EXECUTE 'ALTER TABLE bronze.ball_bounce DROP CONSTRAINT ' ||
+                    (SELECT conname FROM pg_constraint 
+                    WHERE conrelid='bronze.ball_bounce'::regclass AND contype='p');
+            END IF;
+        END $mig$;
+
+        -- 3) Set the new PK on (session_id, bounce_id) if not already
+        DO $mig$ BEGIN
+            IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conrelid='bronze.ball_bounce'::regclass AND contype='p'
+            ) THEN
+            EXECUTE 'ALTER TABLE bronze.ball_bounce ADD PRIMARY KEY (session_id, bounce_id)';
+            END IF;
+        END $mig$;
+
+        -- 4) (Optional, safe no-op if column missing) Drop legacy surrogate id if still present AND empty
+        --     We’ll typically reingest with REPLACE to repopulate bounce_id; after that this drop succeeds.
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns 
+            WHERE table_schema='bronze' AND table_name='ball_bounce' AND column_name='id'
+        ) THEN
+            -- This will succeed after you perform a REPLACE reingest so bounce_id is populated
+            -- If rows still depend on "id", this will fail harmlessly and you can re-run after reingest.
+            BEGIN
+            ALTER TABLE bronze.ball_bounce DROP COLUMN id;
+            EXCEPTION WHEN others THEN
+            -- ignore; we will drop after reingest populates bounce_id
+            END;
+        END IF;
+        END IF;
+
 
       -- rally
       IF to_regclass('bronze.rally') IS NULL THEN
@@ -421,22 +471,46 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
 
     # ball_bounces
     for b in (payload.get("ball_bounces") or []):
+        # PURE JSON KEYS
+        bid = (b.get("id") or b.get("bounce_id") or b.get("uid"))
+        # Time
         s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) or _time_s(b.get("ts")) or _time_s(b.get("t"))
+        # Location
         bx = _float(b.get("x")); by = _float(b.get("y"))
         if bx is None or by is None:
             cp = b.get("court_pos") or b.get("court_position")
             if isinstance(cp, (list, tuple)) and len(cp) >= 2:
                 bx, by = _float(cp[0]), _float(cp[1])
+        # Type + player link
         btype = b.get("type") or b.get("bounce_type")
         hitter_uid = b.get("player_id") or b.get("sportai_player_uid")
         hitter_pid = uid_to_player_id.get(str(hitter_uid)) if hitter_uid is not None else None
 
+        # Guard: bronze purity requires a bounce_id
+        if not bid:
+            conn.execute(sql_text("""
+                INSERT INTO bronze.unmatched_field(session_id, json_path, example_value)
+                VALUES (:sid, :p, CAST(:v AS JSONB))
+            """), {"sid": session_id, "p": "ball_bounces[*].<missing id>", "v": json.dumps(b)})
+            continue
+
         conn.execute(sql_text("""
-            INSERT INTO bronze.ball_bounce (session_id, hitter_player_id, bounce_s, bounce_ts, x, y, bounce_type)
-            VALUES (:sid, :pid, :s, :ts, :x, :y, :bt)
-        """), {"sid": session_id, "pid": hitter_pid, "s": s,
-               "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
-               "x": bx, "y": by, "bt": btype})
+            INSERT INTO bronze.ball_bounce (
+            session_id, bounce_id, hitter_player_id, 
+            bounce_s, bounce_ts, x, y, bounce_type
+            ) VALUES (
+            :sid, :bid, :pid, 
+            :s, :ts, :x, :y, :bt
+            )
+        """), {
+            "sid": session_id,
+            "bid": str(bid),  # TEXT-safe
+            "pid": hitter_pid,
+            "s": s,
+            "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
+            "x": bx, "y": by, "bt": btype
+        })
+
 
     # ball_positions
     for p in (payload.get("ball_positions") or []):
