@@ -106,6 +106,13 @@ def _run_bronze_init(conn):
             bounce_type TEXT,
             PRIMARY KEY (session_id, bounce_id)
         );
+        -- Ensure bounce_id column exists for pure JSON field copy (nullable on bronze)
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='bronze' AND table_name='ball_bounce' AND column_name='bounce_id') THEN
+        -- already present
+        ELSE
+        ALTER TABLE bronze.ball_bounce ADD COLUMN bounce_id TEXT;
+        END IF;
         ELSE
         -- Migration for legacy schema that had: id BIGSERIAL PRIMARY KEY and no bounce_id
         -- 1) Ensure bounce_id exists
