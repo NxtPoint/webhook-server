@@ -514,62 +514,74 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             "raw": raw_obj
         })
     def _emit_player_swing(obj, pid, source_path, session_id, session_date):
-        raw_obj = json.dumps(obj)
-        # times
-        start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
-        end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
-        if start_s is None and end_s is None:
-            only_ts = _time_s(obj.get("timestamp") or obj.get("ts") or obj.get("time_s") or obj.get("t"))
-            if only_ts is not None:
-                start_s = end_s = only_ts
-        bh_s = _time_s(obj.get("ball_hit_timestamp") or obj.get("ball_hit_ts") or obj.get("ball_hit_s"))
-        bhx = bhy = None
-        if bh_s is None and isinstance(obj.get("ball_hit"), dict):
-            bh_s = _time_s(obj["ball_hit"].get("timestamp"))
-            loc = obj["ball_hit"].get("location") or {}
-            bhx = _float(loc.get("x")); bhy = _float(loc.get("y"))
+    # Direct JSON verbatim fields
+      start_obj = obj.get("start")    # {"timestamp": s, "frame_nr": n}
+      end_obj   = obj.get("end")
+      ball_hit  = obj.get("ball_hit")
 
-        conn.execute(sql_text("""
-            INSERT INTO bronze.player_swing (
-              session_id, player_id, sportai_swing_uid,
-              start_s, end_s, ball_hit_s,
-              start_ts, end_ts, ball_hit_ts,
-              ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
-              swing_type, volley, is_in_rally, serve, serve_type,
-              source_path, meta, raw
-            ) VALUES (
-              :sid, :pid, :suid,
-              :ss, :es, :bhs,
-              :sts, :ets, :bhts,
-              :bhx, :bhy, :bs, :bpd,
-              :st, :vol, :inr, :srv, :srv_type,
-              :src, CAST(:meta AS JSONB), CAST(:raw AS JSONB)
-            )
-        """), {
-            "sid": session_id, "pid": pid, "suid": obj.get("id") or obj.get("swing_uid") or obj.get("uid"),
-            "ss": start_s, "es": end_s, "bhs": bh_s,
-            "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
-            "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s),
-            "bhts": seconds_to_ts(_base_dt_for_session(session_date), bh_s),
-            "bhx": _float(obj.get("ball_hit_location", {}).get("x")) if isinstance(obj.get("ball_hit_location"), dict) else bhx,
-            "bhy": _float(obj.get("ball_hit_location", {}).get("y")) if isinstance(obj.get("ball_hit_location"), dict) else bhy,
-            "bs": _float(obj.get("ball_speed")),
-            "bpd": _float(obj.get("ball_player_distance")),
-            "st": (str(obj.get("swing_type") or obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower(),
-            "vol": (str(obj.get("volley")).lower() in ("1","true","t","yes","y")) if obj.get("volley") is not None else None,
-            "inr": (str(obj.get("is_in_rally")).lower() in ("1","true","t","yes","y")) if obj.get("is_in_rally") is not None else None,
-            "srv": (str(obj.get("serve")).lower() in ("1","true","t","yes","y")) if obj.get("serve") is not None else None,
-            "srv_type": obj.get("serve_type"),
-            "src": source_path,
-            "meta": json.dumps({k:v for k,v in obj.items() if k not in {
-                "id","uid","swing_uid","player_id","sportai_player_uid","player_uid",
-                "start","start_s","start_ts","end","end_s","end_ts","timestamp","ts","time_s","t",
-                "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
-                "type","label","stroke_type","swing_type","volley","is_in_rally","serve","serve_type",
-                "ball_speed","ball_player_distance"
-            }}),
-            "raw": raw_obj
-        })
+      # Arrays
+      rally_arr             = obj.get("rally") or None          # [start_s, end_s]
+      ball_hit_location_arr = obj.get("ball_hit_location") or None  # [x,y] in meters
+      ball_impact_location  = obj.get("ball_impact_location") or None
+      ball_trajectory_arr   = obj.get("ball_trajectory") or None
+      annotations_arr       = obj.get("annotations") or None
+
+      # Scalars
+      suid   = obj.get("id") or obj.get("swing_uid") or obj.get("uid")  # we won't store; only for dedupe in code
+      valid  = obj.get("valid")
+      serve  = obj.get("serve")
+      stype  = obj.get("swing_type")
+      volley = obj.get("volley")
+      inr    = obj.get("is_in_rally")
+      conf_st= obj.get("confidence_swing_type")
+      conf   = obj.get("confidence")
+      conf_v = obj.get("confidence_volley")
+      bpd    = obj.get("ball_player_distance")
+      bs     = obj.get("ball_speed")
+      impact_type = obj.get("ball_impact_type")
+      inter_pid   = obj.get("intercepting_player_id")
+
+      # Insert VERBATIM into bronze.player_swing
+      conn.execute(sql_text("""
+          INSERT INTO bronze.player_swing (
+              session_id, player_id,
+              start, "end", valid, serve, swing_type, volley, is_in_rally, rally,
+              ball_hit, confidence_swing_type, confidence, confidence_volley,
+              ball_hit_location, ball_player_distance, ball_speed,
+              ball_impact_location, ball_impact_type, intercepting_player_id,
+              ball_trajectory, annotations
+          ) VALUES (
+              :sid, :pid,
+              CAST(:start AS JSONB), CAST(:end AS JSONB), :valid, :serve, :stype, :volley, :inr, :rally,
+              CAST(:ball_hit AS JSONB), :conf_st, :conf, :conf_v,
+              :ball_hit_loc, :bpd, :bs,
+              :ball_impact_loc, :impact_type, :inter_pid,
+              CAST(:ball_traj AS JSONB), CAST(:ann AS JSONB)
+          )
+      """), {
+          "sid": session_id, "pid": pid,
+          "start": json.dumps(start_obj) if start_obj is not None else None,
+          "end":   json.dumps(end_obj)   if end_obj   is not None else None,
+          "valid": True if str(valid).lower() in ("1","true","t","yes","y") else (False if str(valid).lower() in ("0","false","f","no","n") else None),
+          "serve": True if str(serve).lower() in ("1","true","t","yes","y") else (False if str(serve).lower() in ("0","false","f","no","n") else None),
+          "stype": (stype or None),
+          "volley": True if str(volley).lower() in ("1","true","t","yes","y") else (False if str(volley).lower() in ("0","false","f","no","n") else None),
+          "inr": True if str(inr).lower() in ("1","true","t","yes","y") else (False if str(inr).lower() in ("0","false","f","no","n") else None),
+          "rally": rally_arr if isinstance(rally_arr, (list, tuple)) else None,
+          "ball_hit": json.dumps(ball_hit) if ball_hit is not None else None,
+          "conf_st": (float(conf_st) if conf_st is not None else None),
+          "conf":   (float(conf)   if conf   is not None else None),
+          "conf_v": (float(conf_v) if conf_v is not None else None),
+          "ball_hit_loc": (list(ball_hit_location_arr) if isinstance(ball_hit_location_arr, (list, tuple)) else None),
+          "bpd": (float(bpd) if bpd is not None else None),
+          "bs":  (float(bs)  if bs  is not None else None),
+          "ball_impact_loc": (list(ball_impact_location) if isinstance(ball_impact_location, (list, tuple)) else None),
+          "impact_type": impact_type,
+          "inter_pid": (int(inter_pid) if isinstance(inter_pid, (int, float, str)) and str(inter_pid).isdigit() else None),
+          "ball_traj": ball_trajectory_arr if isinstance(ball_trajectory_arr, (list, tuple, dict)) else None,
+          "ann": annotations_arr if isinstance(annotations_arr, (list, tuple, dict)) else None
+      })
+
 
     for s in (payload.get("swings") or []):
         suid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid")
@@ -644,7 +656,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             VALUES (:sid, CAST(:j AS JSONB))
             ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
         """), {"sid": session_id, "j": json.dumps(debug_data)})
-        
+
     # confidences
     confidences = (
         payload.get("confidences")
