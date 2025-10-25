@@ -98,6 +98,37 @@ def _resolve_session_date(payload):
             except Exception:
                 return None
     return None
+from datetime import date, time
+
+def _coerce_date(v):
+    if not v: return None
+    s = str(v).strip()
+    # accept "YYYY-MM-DD" or ISO datetime – keep date part
+    try: return datetime.fromisoformat(s.replace("Z","+00:00")).date()
+    except: 
+        try: return datetime.strptime(s, "%Y-%m-%d").date()
+        except: return None
+
+def _coerce_time(v):
+    if not v: return None
+    s = str(v).strip()
+    # accept "HH:MM" or "HH:MM:SS"
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try: return datetime.strptime(s, fmt).time()
+        except: pass
+    # sometimes seconds float like "239.44" (sec from midnight)
+    try:
+        sec = float(s)
+        hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60)
+        return time(hh, mm, ss)
+    except:
+        return None
+
+def _combine_dt(d: date|None, t: time|None):
+    if not d and not t: return None
+    if not d: d = date(1970,1,1)
+    if not t: t = time(0,0,0)
+    return datetime(d.year, d.month, d.day, t.hour, t.minute, t.second, tzinfo=timezone.utc)
 
 # -------------------------------------------------------
 # Schema init (simple, fixed)
@@ -237,11 +268,25 @@ def _run_bronze_init(conn):
           data JSONB
         );
       END IF;
-
-      IF to_regclass('bronze.session_confidences') IS NULL THEN
-        CREATE TABLE bronze.session_confidences (
+                         
+            -- submission_context (verbatim JSONB at session scope)
+      IF to_regclass('bronze.submission_context') IS NULL THEN
+        CREATE TABLE bronze.submission_context (
           session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
           data JSONB
+        );
+      END IF;
+
+      -- submission_context_flat (handy columns for BI)
+      IF to_regclass('bronze.submission_context_flat') IS NULL THEN
+        CREATE TABLE bronze.submission_context_flat (
+          session_id  INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          email       TEXT,
+          task_id     TEXT,
+          location    TEXT,
+          match_date  DATE,
+          start_time  TIME,
+          raw         JSONB
         );
       END IF;
 
@@ -342,7 +387,31 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
     # session
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
     fps          = _resolve_fps(payload)
+    # derive a real session_date (before session insert)
     session_date = _resolve_session_date(payload)
+
+    if not session_date and submission_ctx:
+        sc_mdate = _coerce_date(submission_ctx.get("match_date"))
+        sc_stime = _coerce_time(submission_ctx.get("start_time"))
+        if sc_mdate or sc_stime:
+            session_date = datetime.combine(
+                sc_mdate or date(1970,1,1),
+                sc_stime or time(0,0,0),
+                tzinfo=timezone.utc
+            )
+
+    # also consider team_sessions as a fallback, if present
+    team_sessions = payload.get("team_sessions") or (payload.get("debug_data") or {}).get("team_sessions") or []
+    if not session_date and team_sessions and isinstance(team_sessions, list):
+        ts0 = team_sessions[0] or {}
+        ts_date = _coerce_date(ts0.get("match_date"))
+        ts_time = _coerce_time(ts0.get("start_time"))
+        if ts_date or ts_time:
+            session_date = datetime.combine(
+                ts_date or date(1970,1,1),
+                ts_time or time(0,0,0),
+                tzinfo=timezone.utc
+            )
     meta         = payload.get("meta") or payload.get("metadata") or {}
 
     conn.execute(sql_text("""
@@ -661,14 +730,79 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
     if bounce_heatmap is not None:
         _upsert_jsonb(conn, "bounce_heatmap", session_id, bounce_heatmap)
 
+    # -------- Submission Context (extract + save) --------
     submission_ctx = (
         payload.get("submission_context")
         or payload.get("submission")
         or (payload.get("meta") or {}).get("submission_context")
         or (payload.get("debug_data") or {}).get("submission_context")
     )
+
+    # Always persist verbatim JSONB if present
     if submission_ctx is not None:
         _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
+
+    # Flatten for convenience
+    def _coerce_date(v):
+        if not v: return None
+        s = str(v).strip()
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except Exception:
+            try:
+                return datetime.strptime(s, "%Y-%m-%d").date()
+            except Exception:
+                return None
+
+    def _coerce_time(v):
+        if not v: return None
+        s = str(v).strip()
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                return datetime.strptime(s, fmt).time()
+            except Exception:
+                pass
+        try:
+            sec = float(s)
+            hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60)
+            return time(hh, mm, ss)
+        except Exception:
+            return None
+
+    if submission_ctx:
+        sc_email = submission_ctx.get("email")
+        sc_task  = submission_ctx.get("task_id")
+        sc_loc   = submission_ctx.get("location")
+        sc_mdate = _coerce_date(submission_ctx.get("match_date"))
+        sc_stime = _coerce_time(submission_ctx.get("start_time"))
+
+        conn.execute(sql_text("""
+            INSERT INTO bronze.submission_context_flat
+              (session_id, email, task_id, location, match_date, start_time, raw)
+            VALUES
+              (:sid, :email, :task, :loc, :mdate, :stime, CAST(:raw AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE SET
+              email      = EXCLUDED.email,
+              task_id    = EXCLUDED.task_id,
+              location   = EXCLUDED.location,
+              match_date = EXCLUDED.match_date,
+              start_time = EXCLUDED.start_time,
+              raw        = EXCLUDED.raw
+        """), {
+            "sid": session_id,
+            "email": sc_email, "task": sc_task, "loc": sc_loc,
+            "mdate": sc_mdate, "stime": sc_stime,
+            "raw": json.dumps(submission_ctx),
+        })
+
+
+    # Optional team_sessions (sometimes carries time info)
+    team_sessions = payload.get("team_sessions") or (payload.get("debug_data") or {}).get("team_sessions") or []
+
+    # Persist JSONB (verbatim)
+    if submission_ctx is not None:
+        _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
+
 
     # unmatched top-level keys
     known = {"players","swings","rallies","ball_bounces","ball_positions","player_positions",
