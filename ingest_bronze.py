@@ -294,6 +294,13 @@ def _upsert_jsonb(conn, table: str, session_id: int, data):
 # -------------------------------------------------------
 # Ingest (pure extract)
 # -------------------------------------------------------
+def _upsert_jsonb(conn, table: str, session_id: int, data):
+    conn.execute(sql_text(f"""
+        INSERT INTO bronze.{table} (session_id, data)
+        VALUES (:sid, CAST(:j AS JSONB))
+        ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+    """), {"sid": session_id, "j": json.dumps(data)})
+
 def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, src_hint=None):
     # session
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
@@ -315,7 +322,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
 
     if replace:
         for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
-                  "session_confidences","thumbnail","highlight","team_session","bounce_heatmap"):
+                  "session_confidences","thumbnail","highlight","submission_context","team_session","bounce_heatmap"):
             conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
 
     # raw save
@@ -582,11 +589,20 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
     )
     if bounce_heatmap is not None:
         _upsert_jsonb(conn, "bounce_heatmap", session_id, bounce_heatmap)
+    # submission_context (robust)
+        submission_ctx = (
+            payload.get("submission_context")
+            or payload.get("submission")               # seen in some dumps
+            or (payload.get("meta") or {}).get("submission_context")
+            or (payload.get("debug_data") or {}).get("submission_context")
+        )
+        if submission_ctx is not None:
+            _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
 
     # unmatched top-level keys (for visibility)
     known = {"players","swings","rallies","ball_bounces","ball_positions","player_positions",
              "confidences","thumbnails","thumbnail_crops","highlights","team_sessions","bounce_heatmap",
-             "meta","metadata","session_uid","video_uid","video_id","fps","frame_rate","frames_per_second",
+             "meta","metadata","session_uid","submission_context","submission","video_uid","video_id","fps","frame_rate","frames_per_second",
              "session_date","date","recorded_at","debug_data"}
     for k,v in (payload.items() if isinstance(payload, dict) else []):
         if k not in known:
