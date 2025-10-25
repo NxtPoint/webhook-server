@@ -739,3 +739,34 @@ def bronze_reingest_from_raw():
     return jsonify({"ok": True, **res, "bronze_counts": {
         "rallies": counts[0], "ball_bounces": counts[1], "ball_positions": counts[2], "player_positions": counts[3], "swings": counts[4]
     }})
+# ---------- debug endpoint ----------
+@ingest_bronze.get("/bronze/raw-dump")
+def bronze_raw_dump():
+    """View top-level keys of the stored RAW JSON (decompress if gzip)."""
+    if not _guard():
+        return _forbid()
+
+    sid = int(request.args.get("session_id"))
+    with engine.begin() as conn:
+        row = conn.execute(sql_text("""
+            SELECT payload_json, payload_gzip
+            FROM bronze.raw_result
+            WHERE session_id=:sid
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"sid": sid}).first()
+
+        if not row:
+            return jsonify({"ok": False, "error": "no raw_result"}), 404
+
+        pj, gz = row[0], row[1]
+        if pj is not None:
+            payload = pj if isinstance(pj, dict) else json.loads(pj)
+        elif gz is not None:
+            payload = json.loads(gzip.decompress(gz).decode("utf-8"))
+        else:
+            return jsonify({"ok": False, "error": "empty raw_result"}), 404
+
+        # Return only a summary to avoid flooding the console
+        keys = list(payload.keys())[:100]
+        return jsonify({"ok": True, "top_level_keys": keys, "count": len(keys)})
