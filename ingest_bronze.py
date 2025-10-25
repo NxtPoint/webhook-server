@@ -493,12 +493,13 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         hitter_pid = uid_to_player_id.get(str(hitter_uid)) if hitter_uid is not None else None
 
         # Guard: bronze purity requires a bounce_id
+        # Keep logging when missing a source id, but do NOT skip the insert
         if not bid:
             conn.execute(sql_text("""
                 INSERT INTO bronze.unmatched_field(session_id, json_path, example_value)
                 VALUES (:sid, :p, CAST(:v AS JSONB))
             """), {"sid": session_id, "p": "ball_bounces[*].<missing id>", "v": json.dumps(b)})
-            continue
+            # fall through: we'll insert with bounce_id = NULL
 
         conn.execute(sql_text("""
             INSERT INTO bronze.ball_bounce (
@@ -510,7 +511,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             )
         """), {
             "sid": session_id,
-            "bid": str(bid),  # TEXT-safe
+            "bid": str(bid) if bid is not None else None,
             "pid": hitter_pid,
             "s": s,
             "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
