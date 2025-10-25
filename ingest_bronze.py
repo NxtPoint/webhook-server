@@ -791,3 +791,19 @@ def bronze_raw_dump():
         # Return only a summary to avoid flooding the console
         keys = list(payload.keys())[:100]
         return jsonify({"ok": True, "top_level_keys": keys, "count": len(keys)})
+@ingest_bronze.get("/bronze/check-ball-bounce-schema")
+def check_ball_bounce_schema():
+    if not _guard(): return _forbid()
+    with engine.begin() as conn:
+        cols = conn.execute(sql_text("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema='bronze' AND table_name='ball_bounce'
+            ORDER BY ordinal_position
+        """)).fetchall()
+        return jsonify({
+            "ok": True,
+            "columns": [
+                {"name": c[0], "type": c[1], "nullable": c[2]} for c in cols
+            ]
+        })
