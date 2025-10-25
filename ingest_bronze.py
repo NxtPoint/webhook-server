@@ -714,39 +714,52 @@ def bronze_ingest_file():
 def bronze_reingest_from_raw():
     if not _guard(): return _forbid()
 
-    data = request.get_json(silent=True) or request.form
-    sid = int(data.get("session_id"))
-    replace = str(data.get("replace","1")).lower() in ("1","true","yes","y","on")
+    try:
+        data = request.get_json(silent=True) or request.form
+        sid = int(data.get("session_id"))
+        replace = str(data.get("replace","1")).lower() in ("1","true","yes","y","on")
 
-    with engine.begin() as conn:
-        row = conn.execute(sql_text("""
-            SELECT s.session_uid,
-                   (SELECT payload_json FROM bronze.raw_result WHERE session_id=s.session_id ORDER BY created_at DESC LIMIT 1),
-                   (SELECT payload_gzip  FROM bronze.raw_result WHERE session_id=s.session_id ORDER BY created_at DESC LIMIT 1)
-            FROM bronze.session s WHERE s.session_id=:sid
-        """), {"sid": sid}).first()
-        if not row: return jsonify({"ok": False, "error": "unknown session_id"}), 404
-        forced_uid, pj, gz = row[0], row[1], row[2]
-        if pj is not None:
-            payload = pj if isinstance(pj, dict) else json.loads(pj)
-        elif gz is not None:
-            payload = json.loads(gzip.decompress(gz).decode("utf-8"))
-        else:
-            return jsonify({"ok": False, "error": "no raw_result for session"}), 404
+        with engine.begin() as conn:
+            row = conn.execute(sql_text("""
+                SELECT s.session_uid,
+                       (SELECT payload_json FROM bronze.raw_result WHERE session_id=s.session_id ORDER BY created_at DESC LIMIT 1),
+                       (SELECT payload_gzip  FROM bronze.raw_result WHERE session_id=s.session_id ORDER BY created_at DESC LIMIT 1)
+                FROM bronze.session s WHERE s.session_id=:sid
+            """), {"sid": sid}).first()
 
-        res = ingest_bronze_strict(conn, payload, replace=replace, forced_uid=forced_uid)
-        counts = conn.execute(sql_text("""
-            SELECT
-              (SELECT COUNT(*) FROM bronze.rally            WHERE session_id=:sid),
-              (SELECT COUNT(*) FROM bronze.ball_bounce      WHERE session_id=:sid),
-              (SELECT COUNT(*) FROM bronze.ball_position    WHERE session_id=:sid),
-              (SELECT COUNT(*) FROM bronze.player_position  WHERE session_id=:sid),
-              (SELECT COUNT(*) FROM bronze.swing            WHERE session_id=:sid)
-        """), {"sid": sid}).fetchone()
+            if not row:
+                return jsonify({"ok": False, "error": "unknown session_id"}), 404
 
-    return jsonify({"ok": True, **res, "bronze_counts": {
-        "rallies": counts[0], "ball_bounces": counts[1], "ball_positions": counts[2], "player_positions": counts[3], "swings": counts[4]
-    }})
+            forced_uid, pj, gz = row[0], row[1], row[2]
+            if pj is not None:
+                payload = pj if isinstance(pj, dict) else json.loads(pj)
+            elif gz is not None:
+                payload = json.loads(gzip.decompress(gz).decode("utf-8"))
+            else:
+                return jsonify({"ok": False, "error": "no raw_result for session"}), 404
+
+            res = ingest_bronze_strict(conn, payload, replace=replace, forced_uid=forced_uid)
+            counts = conn.execute(sql_text("""
+                SELECT
+                  (SELECT COUNT(*) FROM bronze.rally            WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.ball_bounce      WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.ball_position    WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.player_position  WHERE session_id=:sid),
+                  (SELECT COUNT(*) FROM bronze.swing            WHERE session_id=:sid)
+            """), {"sid": sid}).fetchone()
+
+        return jsonify({"ok": True, **res, "bronze_counts": {
+            "rallies": counts[0], "ball_bounces": counts[1],
+            "ball_positions": counts[2], "player_positions": counts[3], "swings": counts[4]
+        }})
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        # Log to server logs for debugging
+        print("[/bronze/reingest-from-raw] ERROR:", err)
+        # Return JSON so curl|jq won’t choke
+        return jsonify({"ok": False, "error": str(e), "trace": err}), 500
+
 # ---------- debug endpoint ----------
 @ingest_bronze.get("/bronze/raw-dump")
 def bronze_raw_dump():
