@@ -578,8 +578,8 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
           "ball_impact_loc": (list(ball_impact_location) if isinstance(ball_impact_location, (list, tuple)) else None),
           "impact_type": impact_type,
           "inter_pid": (int(inter_pid) if isinstance(inter_pid, (int, float, str)) and str(inter_pid).isdigit() else None),
-          "ball_traj": ball_trajectory_arr if isinstance(ball_trajectory_arr, (list, tuple, dict)) else None,
-          "ann": annotations_arr if isinstance(annotations_arr, (list, tuple, dict)) else None
+          "ball_traj": json.dumps(ball_trajectory_arr) if isinstance(ball_trajectory_arr, (list, tuple, dict)) else None,
+          "ann":       json.dumps(annotations_arr)     if isinstance(annotations_arr,     (list, tuple, dict)) else None,
       })
 
 
