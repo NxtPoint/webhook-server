@@ -39,6 +39,13 @@ def _float(v):
         except Exception:
             return None
 
+def _boolish(v):
+    if v is None: return None
+    s = str(v).strip().lower()
+    if s in ("1","true","t","yes","y"): return True
+    if s in ("0","false","f","no","n"): return False
+    return None
+
 def _time_s(val):
     if val is None: return None
     if isinstance(val, (int, float, str)): return _float(val)
@@ -109,48 +116,75 @@ def _run_bronze_init(conn):
         CREATE TABLE bronze.session (
           session_id   BIGSERIAL PRIMARY KEY,
           session_uid  TEXT UNIQUE NOT NULL,
-          fps          NUMERIC,
+          fps          DOUBLE PRECISION,
           session_date TIMESTAMPTZ,
           meta         JSONB
         );
       END IF;
 
-      -- player
+      -- player  (SportAI-native fields only)
       IF to_regclass('bronze.player') IS NULL THEN
         CREATE TABLE bronze.player (
           player_id BIGSERIAL PRIMARY KEY,
           session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
           sportai_player_uid TEXT NOT NULL,
-          full_name TEXT,
-          handedness TEXT,
-          age NUMERIC,
-          utr NUMERIC,
-          covered_distance NUMERIC,
-          fastest_sprint NUMERIC,
-          fastest_sprint_ts_s NUMERIC,
-          activity_score NUMERIC,
+          covered_distance DOUBLE PRECISION,
+          fastest_sprint DOUBLE PRECISION,
+          fastest_sprint_ts_s DOUBLE PRECISION,
+          activity_score DOUBLE PRECISION,
+          swing_count INT,
           swing_type_distribution JSONB,
           location_heatmap JSONB,
-          meta JSONB,
           UNIQUE (session_id, sportai_player_uid)
         );
       END IF;
 
-      -- swing
+      -- swing (legacy/materialised metrics)
       IF to_regclass('bronze.swing') IS NULL THEN
         CREATE TABLE bronze.swing (
           swing_id BIGSERIAL PRIMARY KEY,
           session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
           player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
           sportai_swing_uid TEXT,
-          start_s NUMERIC, end_s NUMERIC, ball_hit_s NUMERIC,
+          start_s DOUBLE PRECISION, end_s DOUBLE PRECISION, ball_hit_s DOUBLE PRECISION,
           start_ts TIMESTAMPTZ, end_ts TIMESTAMPTZ, ball_hit_ts TIMESTAMPTZ,
-          ball_hit_x NUMERIC, ball_hit_y NUMERIC,
-          ball_speed NUMERIC, ball_player_distance NUMERIC,
+          ball_hit_x DOUBLE PRECISION, ball_hit_y DOUBLE PRECISION,
+          ball_speed DOUBLE PRECISION, ball_player_distance DOUBLE PRECISION,
           swing_type TEXT, volley BOOLEAN, is_in_rally BOOLEAN, serve BOOLEAN, serve_type TEXT,
           meta JSONB,
           raw JSONB
         );
+      END IF;
+
+      -- player_swing (verbatim Swings object, 1:1 with JSON)
+      IF to_regclass('bronze.player_swing') IS NULL THEN
+        CREATE TABLE bronze.player_swing (
+          swing_id BIGSERIAL PRIMARY KEY,
+          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
+          start JSONB,
+          "end" JSONB,
+          valid BOOLEAN,
+          serve BOOLEAN,
+          swing_type TEXT,
+          volley BOOLEAN,
+          is_in_rally BOOLEAN,
+          rally DOUBLE PRECISION[],
+          ball_hit JSONB,
+          confidence_swing_type DOUBLE PRECISION,
+          confidence DOUBLE PRECISION,
+          confidence_volley DOUBLE PRECISION,
+          ball_hit_location DOUBLE PRECISION[],   -- [x,y] m
+          ball_player_distance DOUBLE PRECISION,
+          ball_speed DOUBLE PRECISION,
+          ball_impact_location DOUBLE PRECISION[],-- [x,y] m (optional)
+          ball_impact_type TEXT,
+          intercepting_player_id INT,
+          ball_trajectory JSONB,
+          annotations JSONB
+        );
+        CREATE INDEX ON bronze.player_swing(session_id);
+        CREATE INDEX ON bronze.player_swing(player_id);
       END IF;
 
       -- ball_position
@@ -158,7 +192,7 @@ def _run_bronze_init(conn):
         CREATE TABLE bronze.ball_position (
           id BIGSERIAL PRIMARY KEY,
           session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
-          ts_s NUMERIC, ts TIMESTAMPTZ, x NUMERIC, y NUMERIC
+          ts_s DOUBLE PRECISION, ts TIMESTAMPTZ, x DOUBLE PRECISION, y DOUBLE PRECISION
         );
       END IF;
 
@@ -168,18 +202,18 @@ def _run_bronze_init(conn):
           id BIGSERIAL PRIMARY KEY,
           session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
           player_id INT NOT NULL REFERENCES bronze.player(player_id) ON DELETE CASCADE,
-          ts_s NUMERIC, ts TIMESTAMPTZ, x NUMERIC, y NUMERIC
+          ts_s DOUBLE PRECISION, ts TIMESTAMPTZ, x DOUBLE PRECISION, y DOUBLE PRECISION
         );
       END IF;
 
-      -- ball_bounce (kept simple; no bounce_id requirement)
+      -- ball_bounce
       IF to_regclass('bronze.ball_bounce') IS NULL THEN
         CREATE TABLE bronze.ball_bounce (
           id BIGSERIAL PRIMARY KEY,
           session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
           hitter_player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
-          bounce_s NUMERIC, bounce_ts TIMESTAMPTZ,
-          x NUMERIC, y NUMERIC,
+          bounce_s DOUBLE PRECISION, bounce_ts TIMESTAMPTZ,
+          x DOUBLE PRECISION, y DOUBLE PRECISION,
           bounce_type TEXT
         );
       END IF;
@@ -190,13 +224,13 @@ def _run_bronze_init(conn):
           rally_id BIGSERIAL PRIMARY KEY,
           session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
           rally_number INT NOT NULL,
-          start_s NUMERIC, end_s NUMERIC,
+          start_s DOUBLE PRECISION, end_s DOUBLE PRECISION,
           start_ts TIMESTAMPTZ, end_ts TIMESTAMPTZ,
           UNIQUE (session_id, rally_number)
         );
       END IF;
 
-      -- optional JSONB towers
+      -- JSONB towers
       IF to_regclass('bronze.submission_context') IS NULL THEN
         CREATE TABLE bronze.submission_context (
           session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
@@ -251,6 +285,14 @@ def _run_bronze_init(conn):
         );
       END IF;
 
+      -- debug_event (verbatim debug_data)
+      IF to_regclass('bronze.debug_event') IS NULL THEN
+        CREATE TABLE bronze.debug_event (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
+
       -- unmatched (debugging)
       IF to_regclass('bronze.unmatched_field') IS NULL THEN
         CREATE TABLE bronze.unmatched_field (
@@ -284,6 +326,8 @@ def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int =
         INSERT INTO bronze.raw_result (session_id, payload_json, payload_gzip, payload_sha256, created_at)
         VALUES (:sid, NULL, :gz, :sha, now() AT TIME ZONE 'utc')
     """), {"sid": session_id, "gz": gz, "sha": sha})
+
+# generic JSONB tower upsert
 def _upsert_jsonb(conn, table: str, session_id: int, data):
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (session_id, data)
@@ -294,13 +338,6 @@ def _upsert_jsonb(conn, table: str, session_id: int, data):
 # -------------------------------------------------------
 # Ingest (pure extract)
 # -------------------------------------------------------
-def _upsert_jsonb(conn, table: str, session_id: int, data):
-    conn.execute(sql_text(f"""
-        INSERT INTO bronze.{table} (session_id, data)
-        VALUES (:sid, CAST(:j AS JSONB))
-        ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
-    """), {"sid": session_id, "j": json.dumps(data)})
-
 def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, src_hint=None):
     # session
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
@@ -321,16 +358,15 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                               {"u": session_uid}).scalar_one()
 
     if replace:
-      for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
-                "session_confidences","thumbnail","highlight","team_session","bounce_heatmap",
-                "player_swing","thumbnail_crop","debug_event"):
-          conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
-
+        for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
+                  "session_confidences","thumbnail","highlight","team_session","bounce_heatmap",
+                  "player_swing","debug_event","submission_context"):
+            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
 
     # raw save
     _save_raw_result(conn, session_id, payload)
 
-    # players
+    # players (SportAI-native)
     uid_to_player_id: Dict[str, int] = {}
     for p in (payload.get("players") or []):
         puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
@@ -343,40 +379,31 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
 
         conn.execute(sql_text("""
             INSERT INTO bronze.player (
-              session_id, sportai_player_uid, full_name, handedness, age, utr,
+              session_id, sportai_player_uid,
               covered_distance, fastest_sprint, fastest_sprint_ts_s, activity_score,
-              swing_type_distribution, location_heatmap, meta
+              swing_count, swing_type_distribution, location_heatmap
             ) VALUES (
-              :sid, :puid, :nm, :hand, :age, :utr,
+              :sid, :puid,
               :cd, :fs, :fst, :ascore,
-              CAST(:dist AS JSONB), CAST(:lheat AS JSONB), CAST(:pmeta AS JSONB)
+              :scount, CAST(:dist AS JSONB), CAST(:lheat AS JSONB)
             )
             ON CONFLICT (session_id, sportai_player_uid) DO UPDATE SET
-              full_name = COALESCE(EXCLUDED.full_name, bronze.player.full_name),
-              handedness = COALESCE(EXCLUDED.handedness, bronze.player.handedness),
-              age = COALESCE(EXCLUDED.age, bronze.player.age),
-              utr = COALESCE(EXCLUDED.utr, bronze.player.utr),
               covered_distance = COALESCE(EXCLUDED.covered_distance, bronze.player.covered_distance),
               fastest_sprint = COALESCE(EXCLUDED.fastest_sprint, bronze.player.fastest_sprint),
               fastest_sprint_ts_s = COALESCE(EXCLUDED.fastest_sprint_ts_s, bronze.player.fastest_sprint_ts_s),
               activity_score = COALESCE(EXCLUDED.activity_score, bronze.player.activity_score),
+              swing_count = COALESCE(EXCLUDED.swing_count, bronze.player.swing_count),
               swing_type_distribution = COALESCE(EXCLUDED.swing_type_distribution, bronze.player.swing_type_distribution),
-              location_heatmap = COALESCE(EXCLUDED.location_heatmap, bronze.player.location_heatmap),
-              meta = COALESCE(EXCLUDED.meta, bronze.player.meta)
+              location_heatmap = COALESCE(EXCLUDED.location_heatmap, bronze.player.location_heatmap)
         """), {
             "sid": session_id, "puid": puid,
-            "nm": p.get("full_name") or p.get("name"),
-            "hand": p.get("handedness"),
-            "age": _float(p.get("age")), "utr": _float(p.get("utr")),
             "cd": _float(p.get("covered_distance") or (p.get("metrics") or {}).get("covered_distance")),
             "fs": _float(p.get("fastest_sprint") or (p.get("metrics") or {}).get("fastest_sprint")),
             "fst": _float(p.get("fastest_sprint_timestamp") or (p.get("metrics") or {}).get("fastest_sprint_timestamp_s")),
             "ascore": _float(p.get("activity_score") or (p.get("metrics") or {}).get("activity_score")),
+            "scount": int(_float(p.get("swing_count"))) if p.get("swing_count") is not None else None,
             "dist": json.dumps(p.get("swing_type_distribution")) if p.get("swing_type_distribution") is not None else None,
             "lheat": json.dumps(p.get("location_heatmap") or p.get("heatmap")) if (p.get("location_heatmap") or p.get("heatmap")) is not None else None,
-            "pmeta": json.dumps({k:v for k,v in p.items() if k not in {
-                "id","sportai_player_uid","uid","player_id","full_name","name","handedness","age","utr",
-                "metrics","statistics","stats","swing_type_distribution","location_heatmap","heatmap"}})
         })
 
         pid = conn.execute(sql_text("""
@@ -385,7 +412,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         uid_to_player_id[puid] = pid
 
     # ---------------------------
-    # ball_bounces  (DEDENTED – not inside players loop)
+    # ball_bounces
     # ---------------------------
     for b in (payload.get("ball_bounces") or []):
         s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) or _time_s(b.get("ts")) or _time_s(b.get("t"))
@@ -408,31 +435,22 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                "x": bx, "y": by, "bt": btype})
 
-    # --- ball_positions (tolerant key mapping like player_position)
+    # --- ball_positions
     for p in (payload.get("ball_positions") or []):
         s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t"))
-
-        # try common keys
         bx = _float(p.get("x")); by = _float(p.get("y"))
-
-        # fallbacks: array or court_* or uppercase
         if bx is None or by is None:
             cp = p.get("court_pos") or p.get("court_position")
             if isinstance(cp, (list, tuple)) and len(cp) >= 2:
                 bx, by = _float(cp[0]), _float(cp[1])
         if bx is None: bx = _float(p.get("court_x", p.get("court_X", p.get("X"))))
         if by is None: by = _float(p.get("court_y", p.get("court_Y", p.get("Y"))))
-
         conn.execute(sql_text("""
             INSERT INTO bronze.ball_position (session_id, ts_s, ts, x, y)
             VALUES (:sid, :ss, :ts, :x, :y)
-        """), {
-            "sid": session_id,
-            "ss": s,
-            "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
-            "x": bx, "y": by
-        })
-
+        """), {"sid": session_id, "ss": s,
+               "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
+               "x": bx, "y": by})
 
     # player_positions
     for puid, arr in (payload.get("player_positions") or {}).items():
@@ -458,8 +476,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                    "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                    "x": px, "y": py})
 
-    # (swings and rallies sections remain as you had — unchanged)
-    # swings (root + players[*].swings)
+    # ---------- SWING (legacy metrics) ----------
     def _emit_swing(obj, pid):
         raw_obj = json.dumps(obj)
         start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
@@ -500,9 +517,9 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             "bs": _float(obj.get("ball_speed")),
             "bpd": _float(obj.get("ball_player_distance")),
             "st": (str(obj.get("swing_type") or obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower(),
-            "vol": (str(obj.get("volley")).lower() in ("1","true","t","yes","y")) if obj.get("volley") is not None else None,
-            "inr": (str(obj.get("is_in_rally")).lower() in ("1","true","t","yes","y")) if obj.get("is_in_rally") is not None else None,
-            "srv": (str(obj.get("serve")).lower() in ("1","true","t","yes","y")) if obj.get("serve") is not None else None,
+            "vol": _boolish(obj.get("volley")),
+            "inr": _boolish(obj.get("is_in_rally")),
+            "srv": _boolish(obj.get("serve")),
             "srv_type": obj.get("serve_type"),
             "meta": json.dumps({k:v for k,v in obj.items() if k not in {
                 "id","uid","swing_uid","player_id","sportai_player_uid","player_uid",
@@ -513,36 +530,28 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             }}),
             "raw": raw_obj
         })
-    def _emit_player_swing(obj, pid, source_path, session_id, session_date):
-    # Direct JSON verbatim fields
-      start_obj = obj.get("start")    # {"timestamp": s, "frame_nr": n}
-      end_obj   = obj.get("end")
-      ball_hit  = obj.get("ball_hit")
 
-      # Arrays
-      rally_arr             = obj.get("rally") or None          # [start_s, end_s]
-      ball_hit_location_arr = obj.get("ball_hit_location") or None  # [x,y] in meters
-      ball_impact_location  = obj.get("ball_impact_location") or None
-      ball_trajectory_arr   = obj.get("ball_trajectory") or None
-      annotations_arr       = obj.get("annotations") or None
+    # ---------- PLAYER_SWING (verbatim + dedupe) ----------
+    seen = set()
+    def _swing_key(obj, pid):
+        suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
+        if suid:
+            return ("uid", str(suid))
+        return ("pt", pid, _time_s(obj.get("start") or obj.get("start_s") or obj.get("start_ts")),
+                      _time_s(obj.get("end")   or obj.get("end_s")   or obj.get("end_ts")))
 
-      # Scalars
-      suid   = obj.get("id") or obj.get("swing_uid") or obj.get("uid")  # we won't store; only for dedupe in code
-      valid  = obj.get("valid")
-      serve  = obj.get("serve")
-      stype  = obj.get("swing_type")
-      volley = obj.get("volley")
-      inr    = obj.get("is_in_rally")
-      conf_st= obj.get("confidence_swing_type")
-      conf   = obj.get("confidence")
-      conf_v = obj.get("confidence_volley")
-      bpd    = obj.get("ball_player_distance")
-      bs     = obj.get("ball_speed")
-      impact_type = obj.get("ball_impact_type")
-      inter_pid   = obj.get("intercepting_player_id")
+    def _emit_player_swing(obj, pid):
+        start_obj = obj.get("start")
+        end_obj   = obj.get("end")
+        ball_hit  = obj.get("ball_hit")
 
-      # Insert VERBATIM into bronze.player_swing
-      conn.execute(sql_text("""
+        rally_arr             = obj.get("rally") or None
+        ball_hit_location_arr = obj.get("ball_hit_location") or None
+        ball_impact_location  = obj.get("ball_impact_location") or None
+        ball_trajectory_arr   = obj.get("ball_trajectory") or None
+        annotations_arr       = obj.get("annotations") or None
+
+        conn.execute(sql_text("""
           INSERT INTO bronze.player_swing (
               session_id, player_id,
               start, "end", valid, serve, swing_type, volley, is_in_rally, rally,
@@ -558,53 +567,31 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
               :ball_impact_loc, :impact_type, :inter_pid,
               CAST(:ball_traj AS JSONB), CAST(:ann AS JSONB)
           )
-      """), {
-          "sid": session_id, "pid": pid,
-          "start": json.dumps(start_obj) if start_obj is not None else None,
-          "end":   json.dumps(end_obj)   if end_obj   is not None else None,
-          "valid": True if str(valid).lower() in ("1","true","t","yes","y") else (False if str(valid).lower() in ("0","false","f","no","n") else None),
-          "serve": True if str(serve).lower() in ("1","true","t","yes","y") else (False if str(serve).lower() in ("0","false","f","no","n") else None),
-          "stype": (stype or None),
-          "volley": True if str(volley).lower() in ("1","true","t","yes","y") else (False if str(volley).lower() in ("0","false","f","no","n") else None),
-          "inr": True if str(inr).lower() in ("1","true","t","yes","y") else (False if str(inr).lower() in ("0","false","f","no","n") else None),
-          "rally": rally_arr if isinstance(rally_arr, (list, tuple)) else None,
-          "ball_hit": json.dumps(ball_hit) if ball_hit is not None else None,
-          "conf_st": (float(conf_st) if conf_st is not None else None),
-          "conf":   (float(conf)   if conf   is not None else None),
-          "conf_v": (float(conf_v) if conf_v is not None else None),
-          "ball_hit_loc": (list(ball_hit_location_arr) if isinstance(ball_hit_location_arr, (list, tuple)) else None),
-          "bpd": (float(bpd) if bpd is not None else None),
-          "bs":  (float(bs)  if bs  is not None else None),
-          "ball_impact_loc": (list(ball_impact_location) if isinstance(ball_impact_location, (list, tuple)) else None),
-          "impact_type": impact_type,
-          "inter_pid": (int(inter_pid) if isinstance(inter_pid, (int, float, str)) and str(inter_pid).isdigit() else None),
-          "ball_traj": json.dumps(ball_trajectory_arr) if isinstance(ball_trajectory_arr, (list, tuple, dict)) else None,
-          "ann":       json.dumps(annotations_arr)     if isinstance(annotations_arr,     (list, tuple, dict)) else None,
-      })
+        """), {
+            "sid": session_id, "pid": pid,
+            "start": json.dumps(start_obj) if start_obj is not None else None,
+            "end":   json.dumps(end_obj)   if end_obj   is not None else None,
+            "valid": _boolish(obj.get("valid")),
+            "serve": _boolish(obj.get("serve")),
+            "stype": (obj.get("swing_type") or None),
+            "volley": _boolish(obj.get("volley")),
+            "inr": _boolish(obj.get("is_in_rally")),
+            "rally": list(rally_arr) if isinstance(rally_arr, (list, tuple)) else None,
+            "ball_hit": json.dumps(ball_hit) if ball_hit is not None else None,
+            "conf_st": _float(obj.get("confidence_swing_type")),
+            "conf":    _float(obj.get("confidence")),
+            "conf_v":  _float(obj.get("confidence_volley")),
+            "ball_hit_loc": list(ball_hit_location_arr) if isinstance(ball_hit_location_arr, (list, tuple)) else None,
+            "bpd": _float(obj.get("ball_player_distance")),
+            "bs":  _float(obj.get("ball_speed")),
+            "ball_impact_loc": list(ball_impact_location) if isinstance(ball_impact_location, (list, tuple)) else None,
+            "impact_type": obj.get("ball_impact_type"),
+            "inter_pid": int(obj.get("intercepting_player_id")) if str(obj.get("intercepting_player_id") or "").isdigit() else None,
+            "ball_traj": json.dumps(ball_trajectory_arr) if isinstance(ball_trajectory_arr, (list, tuple, dict)) else None,
+            "ann":       json.dumps(annotations_arr)     if isinstance(annotations_arr,     (list, tuple, dict)) else None,
+        })
 
-
-    for s in (payload.get("swings") or []):
-        suid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid")
-        pid = uid_to_player_id.get(str(suid)) if suid is not None else None
-        _emit_swing(s, pid)
-
-    for p in (payload.get("players") or []):
-        pid = uid_to_player_id.get(str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or ""))
-        for s in (p.get("swings") or []):
-            _emit_swing(s, pid)
-
-    # ---------- PLAYER_SWING (verbatim + dedupe) ----------
-    # Dedup across nested players[*].swings and root swings[]
-    seen = set()
-    def _swing_key(obj, pid):
-        suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
-        if suid:
-            return ("uid", str(suid))
-        # fallback: player + times
-        return ("pt", pid, _time_s(obj.get("start") or obj.get("start_s") or obj.get("start_ts")),
-                      _time_s(obj.get("end")   or obj.get("end_s")   or obj.get("end_ts")))
-
-    # 1) nested players[*].swings
+    # nested players[*].swings
     for p in (payload.get("players") or []):
         pid = uid_to_player_id.get(str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or ""))
         for s in (p.get("swings") or []):
@@ -612,9 +599,10 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             if k in seen: 
                 continue
             seen.add(k)
-            _emit_player_swing(s, pid, "players[*].swings", session_id, session_date)
+            _emit_player_swing(s, pid)
+            _emit_swing(s, pid)
 
-    # 2) root swings[]
+    # root swings[]
     for s in (payload.get("swings") or []):
         suid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid")
         pid = uid_to_player_id.get(str(suid)) if suid is not None else None
@@ -622,7 +610,8 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         if k in seen:
             continue
         seen.add(k)
-        _emit_player_swing(s, pid, "swings", session_id, session_date)
+        _emit_player_swing(s, pid)
+        _emit_swing(s, pid)
 
     # rallies
     payload_rallies = payload.get("rallies") or []
@@ -646,71 +635,42 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         """), {"sid": session_id, "n": i, "ss": start_s, "es": end_s,
                "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
                "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s)})
-        
-    # -------- JSONB towers (robust key paths) --------
-    # debug_data: verbatim JSONB at session
-    debug_data = payload.get("debug_data")
-    if debug_data is not None:
+
+    # -------- JSONB towers --------
+    if payload.get("debug_data") is not None:
         conn.execute(sql_text("""
             INSERT INTO bronze.debug_event (session_id, data)
             VALUES (:sid, CAST(:j AS JSONB))
             ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
-        """), {"sid": session_id, "j": json.dumps(debug_data)})
+        """), {"sid": session_id, "j": json.dumps(payload["debug_data"])})
 
-    # confidences
-    confidences = (
-        payload.get("confidences")
-        or (payload.get("debug_data") or {}).get("confidences")
-    )
-    if confidences is not None:
-        _upsert_jsonb(conn, "session_confidences", session_id, confidences)
+    if payload.get("confidences") is not None:
+        _upsert_jsonb(conn, "session_confidences", session_id, payload["confidences"])
 
-    # thumbnails (some payloads call them thumbnail_crops)
-    thumbs = (
-        payload.get("thumbnails")
-        or payload.get("thumbnail_crops")
-        or (payload.get("debug_data") or {}).get("thumbnails")
-        or (payload.get("debug_data") or {}).get("thumbnail_crops")
-    )
+    thumbs = payload.get("thumbnails") or payload.get("thumbnail_crops")
     if thumbs is not None:
         _upsert_jsonb(conn, "thumbnail", session_id, thumbs)
 
-    # highlights
-    highlights = (
-        payload.get("highlights")
-        or (payload.get("debug_data") or {}).get("highlights")
-    )
-    if highlights is not None:
-        _upsert_jsonb(conn, "highlight", session_id, highlights)
+    if payload.get("highlights") is not None:
+        _upsert_jsonb(conn, "highlight", session_id, payload["highlights"])
 
-    # team_sessions
-    team_sessions = (
-        payload.get("team_sessions")
-        or (payload.get("debug_data") or {}).get("team_sessions")
-    )
-    if team_sessions is not None:
-        _upsert_jsonb(conn, "team_session", session_id, team_sessions)
+    if payload.get("team_sessions") is not None:
+        _upsert_jsonb(conn, "team_session", session_id, payload["team_sessions"])
 
-    # bounce_heatmap (common alternates)
-    bounce_heatmap = (
-        payload.get("bounce_heatmap")
-        or payload.get("bounce_heatmaps")
-        or (payload.get("debug_data") or {}).get("bounce_heatmap")
-        or (payload.get("heatmaps") or {}).get("bounce_heatmap")
-    )
+    bounce_heatmap = payload.get("bounce_heatmap") or payload.get("bounce_heatmaps")
     if bounce_heatmap is not None:
         _upsert_jsonb(conn, "bounce_heatmap", session_id, bounce_heatmap)
-    # submission_context (robust)
-        submission_ctx = (
-            payload.get("submission_context")
-            or payload.get("submission")               # seen in some dumps
-            or (payload.get("meta") or {}).get("submission_context")
-            or (payload.get("debug_data") or {}).get("submission_context")
-        )
-        if submission_ctx is not None:
-            _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
 
-    # unmatched top-level keys (for visibility)
+    submission_ctx = (
+        payload.get("submission_context")
+        or payload.get("submission")
+        or (payload.get("meta") or {}).get("submission_context")
+        or (payload.get("debug_data") or {}).get("submission_context")
+    )
+    if submission_ctx is not None:
+        _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
+
+    # unmatched top-level keys
     known = {"players","swings","rallies","ball_bounces","ball_positions","player_positions",
              "confidences","thumbnails","thumbnail_crops","highlights","team_sessions","bounce_heatmap",
              "meta","metadata","session_uid","submission_context","submission","video_uid","video_id","fps","frame_rate","frames_per_second",
@@ -723,7 +683,6 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             """), {"sid": session_id, "p": k, "v": json.dumps(v)})
 
     return {"ok": True, "session_uid": session_uid, "session_id": session_id}
-    
 
 # -------------------------------------------------------
 # Endpoints
