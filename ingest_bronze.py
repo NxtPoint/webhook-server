@@ -116,6 +116,13 @@ def _run_bronze_init(conn):
           UNIQUE (session_id, rally_number)
         );
       END IF;
+                          
+      IF to_regclass('bronze.submission_context') IS NULL THEN
+        CREATE TABLE bronze.submission_context (
+          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
+          data JSONB
+        );
+      END IF;
 
       -- JSONB towers
       IF to_regclass('bronze.session_confidences') IS NULL THEN

@@ -133,6 +133,18 @@ def _do_ingest(task_id: str, result_url: str):
                        ingest_error = NULL
                  WHERE task_id = :t
             """), {"t": task_id})
+            # Mirror public.submission_context → bronze.submission_context (1 row per session)
+            conn.execute(sql_text("""
+                INSERT INTO bronze.submission_context (session_id, data)
+                SELECT
+                  sc.session_id,
+                  to_jsonb(sc.*)
+                    - 'ingest_error' - 'ingest_started_at' - 'ingest_finished_at'
+                    - 'last_status'  - 'last_status_at'    - 'last_result_url'
+                FROM submission_context sc
+                WHERE sc.task_id = :t AND sc.session_id = :sid
+                ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+            """), {"t": task_id, "sid": sid})
 
         # fetch result and ingest
         r = requests.get(result_url, timeout=600)   # allow long fetch
@@ -779,8 +791,17 @@ def ops_ingest_task():
             conn.execute(sql_text(
                 "UPDATE submission_context SET session_id=:sid WHERE task_id=:t"
             ), {"sid": sid, "t": tid})
-
-
+            conn.execute(sql_text("""
+                INSERT INTO bronze.submission_context (session_id, data)
+                SELECT
+                  sc.session_id,
+                  to_jsonb(sc.*)
+                    - 'ingest_error' - 'ingest_started_at' - 'ingest_finished_at'
+                    - 'last_status'  - 'last_status_at'    - 'last_result_url'
+                FROM submission_context sc
+                WHERE sc.task_id = :t AND sc.session_id = :sid
+                ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+            """), {"t": tid, "sid": sid})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
@@ -830,6 +851,19 @@ def ops_sportai_callback():
                 conn.execute(sql_text(
                     "UPDATE submission_context SET session_id=:sid WHERE task_id=:t"
                 ), {"sid": sid, "t": task_id})
+            if task_id:
+                conn.execute(sql_text("""
+                    INSERT INTO bronze.submission_context (session_id, data)
+                    SELECT
+                      sc.session_id,
+                      to_jsonb(sc.*)
+                        - 'ingest_error' - 'ingest_started_at' - 'ingest_finished_at'
+                        - 'last_status'  - 'last_status_at'    - 'last_result_url'
+                    FROM submission_context sc
+                    WHERE sc.task_id = :t AND sc.session_id = :sid
+                    ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+                """), {"t": task_id, "sid": sid})
+
             counts = conn.execute(sql_text("""
                 SELECT
                 (SELECT COUNT(*) FROM bronze.rally           WHERE session_id=:sid),
