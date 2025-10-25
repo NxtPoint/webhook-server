@@ -321,9 +321,11 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                               {"u": session_uid}).scalar_one()
 
     if replace:
-        for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
-                  "session_confidences","thumbnail","highlight","submission_context","team_session","bounce_heatmap"):
-            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
+      for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
+                "session_confidences","thumbnail","highlight","team_session","bounce_heatmap",
+                "player_swing","thumbnail_crop","debug_event"):
+          conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
+
 
     # raw save
     _save_raw_result(conn, session_id, payload)
@@ -511,6 +513,63 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             }}),
             "raw": raw_obj
         })
+    def _emit_player_swing(obj, pid, source_path, session_id, session_date):
+        raw_obj = json.dumps(obj)
+        # times
+        start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
+        end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
+        if start_s is None and end_s is None:
+            only_ts = _time_s(obj.get("timestamp") or obj.get("ts") or obj.get("time_s") or obj.get("t"))
+            if only_ts is not None:
+                start_s = end_s = only_ts
+        bh_s = _time_s(obj.get("ball_hit_timestamp") or obj.get("ball_hit_ts") or obj.get("ball_hit_s"))
+        bhx = bhy = None
+        if bh_s is None and isinstance(obj.get("ball_hit"), dict):
+            bh_s = _time_s(obj["ball_hit"].get("timestamp"))
+            loc = obj["ball_hit"].get("location") or {}
+            bhx = _float(loc.get("x")); bhy = _float(loc.get("y"))
+
+        conn.execute(sql_text("""
+            INSERT INTO bronze.player_swing (
+              session_id, player_id, sportai_swing_uid,
+              start_s, end_s, ball_hit_s,
+              start_ts, end_ts, ball_hit_ts,
+              ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
+              swing_type, volley, is_in_rally, serve, serve_type,
+              source_path, meta, raw
+            ) VALUES (
+              :sid, :pid, :suid,
+              :ss, :es, :bhs,
+              :sts, :ets, :bhts,
+              :bhx, :bhy, :bs, :bpd,
+              :st, :vol, :inr, :srv, :srv_type,
+              :src, CAST(:meta AS JSONB), CAST(:raw AS JSONB)
+            )
+        """), {
+            "sid": session_id, "pid": pid, "suid": obj.get("id") or obj.get("swing_uid") or obj.get("uid"),
+            "ss": start_s, "es": end_s, "bhs": bh_s,
+            "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
+            "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s),
+            "bhts": seconds_to_ts(_base_dt_for_session(session_date), bh_s),
+            "bhx": _float(obj.get("ball_hit_location", {}).get("x")) if isinstance(obj.get("ball_hit_location"), dict) else bhx,
+            "bhy": _float(obj.get("ball_hit_location", {}).get("y")) if isinstance(obj.get("ball_hit_location"), dict) else bhy,
+            "bs": _float(obj.get("ball_speed")),
+            "bpd": _float(obj.get("ball_player_distance")),
+            "st": (str(obj.get("swing_type") or obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower(),
+            "vol": (str(obj.get("volley")).lower() in ("1","true","t","yes","y")) if obj.get("volley") is not None else None,
+            "inr": (str(obj.get("is_in_rally")).lower() in ("1","true","t","yes","y")) if obj.get("is_in_rally") is not None else None,
+            "srv": (str(obj.get("serve")).lower() in ("1","true","t","yes","y")) if obj.get("serve") is not None else None,
+            "srv_type": obj.get("serve_type"),
+            "src": source_path,
+            "meta": json.dumps({k:v for k,v in obj.items() if k not in {
+                "id","uid","swing_uid","player_id","sportai_player_uid","player_uid",
+                "start","start_s","start_ts","end","end_s","end_ts","timestamp","ts","time_s","t",
+                "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
+                "type","label","stroke_type","swing_type","volley","is_in_rally","serve","serve_type",
+                "ball_speed","ball_player_distance"
+            }}),
+            "raw": raw_obj
+        })
 
     for s in (payload.get("swings") or []):
         suid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid")
@@ -521,6 +580,37 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         pid = uid_to_player_id.get(str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or ""))
         for s in (p.get("swings") or []):
             _emit_swing(s, pid)
+
+    # ---------- PLAYER_SWING (verbatim + dedupe) ----------
+    # Dedup across nested players[*].swings and root swings[]
+    seen = set()
+    def _swing_key(obj, pid):
+        suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
+        if suid:
+            return ("uid", str(suid))
+        # fallback: player + times
+        return ("pt", pid, _time_s(obj.get("start") or obj.get("start_s") or obj.get("start_ts")),
+                      _time_s(obj.get("end")   or obj.get("end_s")   or obj.get("end_ts")))
+
+    # 1) nested players[*].swings
+    for p in (payload.get("players") or []):
+        pid = uid_to_player_id.get(str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or ""))
+        for s in (p.get("swings") or []):
+            k = _swing_key(s, pid)
+            if k in seen: 
+                continue
+            seen.add(k)
+            _emit_player_swing(s, pid, "players[*].swings", session_id, session_date)
+
+    # 2) root swings[]
+    for s in (payload.get("swings") or []):
+        suid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid")
+        pid = uid_to_player_id.get(str(suid)) if suid is not None else None
+        k = _swing_key(s, pid)
+        if k in seen:
+            continue
+        seen.add(k)
+        _emit_player_swing(s, pid, "swings", session_id, session_date)
 
     # rallies
     payload_rallies = payload.get("rallies") or []
@@ -546,6 +636,15 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s)})
         
     # -------- JSONB towers (robust key paths) --------
+    # debug_data: verbatim JSONB at session
+    debug_data = payload.get("debug_data")
+    if debug_data is not None:
+        conn.execute(sql_text("""
+            INSERT INTO bronze.debug_event (session_id, data)
+            VALUES (:sid, CAST(:j AS JSONB))
+            ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+        """), {"sid": session_id, "j": json.dumps(debug_data)})
+        
     # confidences
     confidences = (
         payload.get("confidences")
@@ -612,6 +711,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             """), {"sid": session_id, "p": k, "v": json.dumps(v)})
 
     return {"ok": True, "session_uid": session_uid, "session_id": session_id}
+    
 
 # -------------------------------------------------------
 # Endpoints
