@@ -1,5 +1,4 @@
 ﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status), json file download for ingestion into bronze towers. 
-
 import os, json, time, socket, sys, inspect, hashlib, re, threading
 from urllib.parse import urlparse
 from datetime import datetime, timezone
@@ -84,7 +83,6 @@ app.register_blueprint(ingest_bp, url_prefix="")
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init
 app.register_blueprint(ingest_bronze, url_prefix="")
 
-
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
 S3_BUCKET  = os.getenv("S3_BUCKET", "").strip() or None
@@ -134,23 +132,18 @@ def _do_ingest(task_id: str, result_url: str):
                        ingest_error = NULL
                  WHERE task_id = :t
             """), {"t": task_id})
-            
             # Mirror public.submission_context → bronze.submission_context (1 row per session)
             conn.execute(sql_text("""
                 INSERT INTO bronze.submission_context (session_id, data)
                 SELECT
-                COALESCE(sc.session_id, s.session_id) AS session_id,
-                to_jsonb(sc)
+                  sc.session_id,
+                  to_jsonb(sc.*)
                     - 'ingest_error' - 'ingest_started_at' - 'ingest_finished_at'
                     - 'last_status'  - 'last_status_at'    - 'last_result_url'
                 FROM submission_context sc
-                LEFT JOIN bronze.submission s
-                ON s.task_id = sc.task_id
-                WHERE sc.task_id = :t
-                ON CONFLICT (session_id) DO UPDATE
-                SET data = EXCLUDED.data
-            """), {"t": task_id})
-
+                WHERE sc.task_id = :t AND sc.session_id = :sid
+                ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+            """), {"t": task_id, "sid": sid})
 
         # fetch result and ingest
         r = requests.get(result_url, timeout=600)   # allow long fetch
@@ -175,7 +168,6 @@ def _do_ingest(task_id: str, result_url: str):
                 WHERE task_id = :t
             """), {"sid": sid, "t": task_id})
         return jsonify({"ok": True, "session_id": sid})
-
 
     except Exception as e:
         # capture error but don't crash the process
@@ -878,7 +870,6 @@ def ops_sportai_callback():
                 (SELECT COUNT(*) FROM bronze.player_position WHERE session_id=:sid),
                 (SELECT COUNT(*) FROM bronze.swing           WHERE session_id=:sid)
             """), {"sid": sid}).fetchone()
-
 
         return jsonify({"ok": True, "ingested": True,
                         "session_uid": res.get("session_uid"),
