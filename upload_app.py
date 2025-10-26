@@ -134,18 +134,23 @@ def _do_ingest(task_id: str, result_url: str):
                        ingest_error = NULL
                  WHERE task_id = :t
             """), {"t": task_id})
+            
             # Mirror public.submission_context → bronze.submission_context (1 row per session)
             conn.execute(sql_text("""
                 INSERT INTO bronze.submission_context (session_id, data)
                 SELECT
-                  sc.session_id,
-                  to_jsonb(sc.*)
+                COALESCE(sc.session_id, s.session_id) AS session_id,
+                to_jsonb(sc)
                     - 'ingest_error' - 'ingest_started_at' - 'ingest_finished_at'
                     - 'last_status'  - 'last_status_at'    - 'last_result_url'
                 FROM submission_context sc
-                WHERE sc.task_id = :t AND sc.session_id = :sid
-                ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
-            """), {"t": task_id, "sid": sid})
+                LEFT JOIN bronze.submission s
+                ON s.task_id = sc.task_id
+                WHERE sc.task_id = :t
+                ON CONFLICT (session_id) DO UPDATE
+                SET data = EXCLUDED.data
+            """), {"t": task_id})
+
 
         # fetch result and ingest
         r = requests.get(result_url, timeout=600)   # allow long fetch
