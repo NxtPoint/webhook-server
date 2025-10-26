@@ -394,3 +394,65 @@ def http_bronze_reingest_from_raw():
             return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+# this is to run indivudaul files for testing only - potential code we can kill later
+@ingest_bronze.post("/bronze/reingest-by-task-id")
+def http_bronze_reingest_by_task_id():
+    """
+    Body: {"task_id":"<uuid>", "replace":true, "scan_limit":400}
+    Finds the raw_result row whose JSON (jsonb or gzip) contains the task_id,
+    then re-ingests that payload into bronze for its session_id.
+    """
+    if not _guard():
+        return _forbid()
+    body = request.get_json(silent=True) or {}
+    task_id = body.get("task_id")
+    replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
+    scan_limit = int(body.get("scan_limit") or 400)
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+
+    try:
+        with engine.begin() as conn:
+            _run_bronze_init(conn)
+
+            rows = conn.execute(sql_text("""
+                SELECT id, session_id, payload_json, payload_gzip, created_at
+                FROM bronze.raw_result
+                ORDER BY created_at DESC
+                LIMIT :lim
+            """), {"lim": scan_limit}).mappings().all()
+
+            match = None
+            for r in rows:
+                pj = r["payload_json"]
+                if pj is not None:
+                    s = pj if isinstance(pj, str) else json.dumps(pj, separators=(",",":"))
+                    if task_id in s:
+                        match = r
+                        break
+                pgz = r["payload_gzip"]
+                if pgz:
+                    try:
+                        txt = gzip.decompress(pgz).decode("utf-8", errors="ignore")
+                        if task_id in txt:
+                            match = r
+                            break
+                    except Exception:
+                        pass
+
+            if not match:
+                return jsonify({"ok": True, "reingested": False, "reason": "task_id not found in recent raw_result", "scanned": len(rows)})
+
+            # load payload
+            if match["payload_json"] is not None:
+                payload = match["payload_json"] if isinstance(match["payload_json"], dict) else json.loads(match["payload_json"])
+            elif match["payload_gzip"] is not None:
+                payload = json.loads(gzip.decompress(match["payload_gzip"]).decode("utf-8"))
+            else:
+                return jsonify({"ok": False, "error": "no payload_json or payload_gzip present for matched row"}), 500
+
+            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint="api:reingest-by-task-id")
+            return jsonify({"ok": True, "reingested": True, **out})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
