@@ -563,7 +563,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                    "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                    "x": px, "y": py})
 
-    # ---------- PLAYER_SWING (verbatim + dedupe) ----------
+    # ---------- PLAYER_SWING (verbatim + dedupe) ---------
     seen = set()
 
     def _swing_key(obj, pid):
