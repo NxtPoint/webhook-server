@@ -563,61 +563,6 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                    "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                    "x": px, "y": py})
 
-    # ---------- SWING (legacy metrics) ----------
-    def _emit_swing(obj, pid):
-        raw_obj = json.dumps(obj)
-        start_s = _time_s(obj.get("start_ts")) or _time_s(obj.get("start_s")) or _time_s(obj.get("start"))
-        end_s   = _time_s(obj.get("end_ts"))   or _time_s(obj.get("end_s"))   or _time_s(obj.get("end"))
-        if start_s is None and end_s is None:
-            only_ts = _time_s(obj.get("timestamp") or obj.get("ts") or obj.get("time_s") or obj.get("t"))
-            if only_ts is not None:
-                start_s = end_s = only_ts
-        bh_s = _time_s(obj.get("ball_hit_timestamp") or obj.get("ball_hit_ts") or obj.get("ball_hit_s"))
-        bhx = bhy = None
-        if bh_s is None and isinstance(obj.get("ball_hit"), dict):
-            bh_s = _time_s(obj["ball_hit"].get("timestamp"))
-            loc = obj["ball_hit"].get("location") or {}
-            bhx = _float(loc.get("x")); bhy = _float(loc.get("y"))
-
-        conn.execute(sql_text("""
-            INSERT INTO bronze.swings (
-              session_id, player_id, sportai_swing_uid,
-              start_s, end_s, ball_hit_s,
-              start_ts, end_ts, ball_hit_ts,
-              ball_hit_x, ball_hit_y, ball_speed, ball_player_distance,
-              swing_type, volley, is_in_rally, serve, serve_type, meta, raw
-            ) VALUES (
-              :sid, :pid, :suid,
-              :ss, :es, :bhs,
-              :sts, :ets, :bhts,
-              :bhx, :bhy, :bs, :bpd,
-              :st, :vol, :inr, :srv, :srv_type, CAST(:meta AS JSONB), CAST(:raw AS JSONB)
-            )
-        """), {
-            "sid": session_id, "pid": pid, "suid": obj.get("id") or obj.get("swing_uid") or obj.get("uid"),
-            "ss": start_s, "es": end_s, "bhs": bh_s,
-            "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
-            "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s),
-            "bhts": seconds_to_ts(_base_dt_for_session(session_date), bh_s),
-            "bhx": _float(obj.get("ball_hit_location", {}).get("x")) if isinstance(obj.get("ball_hit_location"), dict) else bhx,
-            "bhy": _float(obj.get("ball_hit_location", {}).get("y")) if isinstance(obj.get("ball_hit_location"), dict) else bhy,
-            "bs": _float(obj.get("ball_speed")),
-            "bpd": _float(obj.get("ball_player_distance")),
-            "st": (str(obj.get("swing_type") or obj.get("type") or obj.get("label") or obj.get("stroke_type") or "")).lower(),
-            "vol": _boolish(obj.get("volley")),
-            "inr": _boolish(obj.get("is_in_rally")),
-            "srv": _boolish(obj.get("serve")),
-            "srv_type": obj.get("serve_type"),
-            "meta": json.dumps({k:v for k,v in obj.items() if k not in {
-                "id","uid","swing_uid","player_id","sportai_player_uid","player_uid",
-                "start","start_s","start_ts","end","end_s","end_ts","timestamp","ts","time_s","t",
-                "ball_hit","ball_hit_timestamp","ball_hit_ts","ball_hit_s","ball_hit_location",
-                "type","label","stroke_type","swing_type","volley","is_in_rally","serve","serve_type",
-                "ball_speed","ball_player_distance"
-            }}),
-            "raw": raw_obj
-        })
-
     # ---------- PLAYER_SWING (verbatim + dedupe) ----------
     seen = set()
 
