@@ -124,12 +124,6 @@ def _coerce_time(v):
     except:
         return None
 
-def _combine_dt(d: date|None, t: time|None):
-    if not d and not t: return None
-    if not d: d = date(1970,1,1)
-    if not t: t = time(0,0,0)
-    return datetime(d.year, d.month, d.day, t.hour, t.minute, t.second, tzinfo=timezone.utc)
-
 # -------------------------------------------------------
 # Schema init (simple, fixed)
 # -------------------------------------------------------
@@ -262,14 +256,8 @@ def _run_bronze_init(conn):
       END IF;
 
       -- JSONB towers
-      IF to_regclass('bronze.submission_context') IS NULL THEN
-        CREATE TABLE bronze.submission_context (
-          session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
-          data JSONB
-        );
-      END IF;
-                         
-            -- submission_context (verbatim JSONB at session scope)
+                                                      
+      -- submission_context (verbatim JSONB at session scope)
       IF to_regclass('bronze.submission_context') IS NULL THEN
         CREATE TABLE bronze.submission_context (
           session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
@@ -360,7 +348,7 @@ def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int =
         try:
             conn.execute(sql_text("""
                 INSERT INTO bronze.raw_result (session_id, payload_json, created_at)
-                VALUES (:sid, CAST(:p AS JSONB), now() AT TIME ZONE 'utc')
+                VALUES (:sid, CAST(:p AS JSONB), timezone('utc', now()))
             """), {"sid": session_id, "p": js})
             return
         except Exception:
@@ -369,7 +357,7 @@ def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int =
     sha = hashlib.sha256(js.encode("utf-8")).hexdigest()
     conn.execute(sql_text("""
         INSERT INTO bronze.raw_result (session_id, payload_json, payload_gzip, payload_sha256, created_at)
-        VALUES (:sid, NULL, :gz, :sha, now() AT TIME ZONE 'utc')
+        VALUES (:sid, NULL, :gz, :sha, timezone('utc', now()))
     """), {"sid": session_id, "gz": gz, "sha": sha})
 
 # generic JSONB tower upsert
@@ -388,6 +376,15 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
     fps          = _resolve_fps(payload)
     # derive a real session_date (before session insert)
+    
+    # -------- Submission Context (extract + save) --------
+    submission_ctx = (
+        payload.get("submission_context")
+        or payload.get("submission")
+        or (payload.get("meta") or {}).get("submission_context")
+        or (payload.get("debug_data") or {}).get("submission_context")
+    )
+    
     session_date = _resolve_session_date(payload)
 
     if not session_date and submission_ctx:
@@ -428,9 +425,9 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
 
     if replace:
         for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
-                  "session_confidences","thumbnail","highlight","team_session","bounce_heatmap",
-                  "player_swing","debug_event","submission_context"):
-            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
+          "session_confidences","thumbnail","highlight","team_session","bounce_heatmap",
+          "player_swing","debug_event","submission_context","submission_context_flat"):
+          conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
 
     # raw save
     _save_raw_result(conn, session_id, payload)
@@ -730,13 +727,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
     if bounce_heatmap is not None:
         _upsert_jsonb(conn, "bounce_heatmap", session_id, bounce_heatmap)
 
-    # -------- Submission Context (extract + save) --------
-    submission_ctx = (
-        payload.get("submission_context")
-        or payload.get("submission")
-        or (payload.get("meta") or {}).get("submission_context")
-        or (payload.get("debug_data") or {}).get("submission_context")
-    )
+    
 
     # Always persist verbatim JSONB if present
     if submission_ctx is not None:
@@ -795,18 +786,9 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             "raw": json.dumps(submission_ctx),
         })
 
-
-    # Optional team_sessions (sometimes carries time info)
-    team_sessions = payload.get("team_sessions") or (payload.get("debug_data") or {}).get("team_sessions") or []
-
-    # Persist JSONB (verbatim)
-    if submission_ctx is not None:
-        _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
-
-
     # unmatched top-level keys
     known = {"players","swings","rallies","ball_bounces","ball_positions","player_positions",
-             "confidences","thumbnails","thumbnail_crops","highlights","team_sessions","bounce_heatmap",
+             "confidences","thumbnails","thumbnail_crops","highlights","team_sessions","bounce_heatmaps","bounce_heatmap"
              "meta","metadata","session_uid","submission_context","submission","video_uid","video_id","fps","frame_rate","frames_per_second",
              "session_date","date","recorded_at","debug_data"}
     for k,v in (payload.items() if isinstance(payload, dict) else []):
