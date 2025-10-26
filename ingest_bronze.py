@@ -81,14 +81,20 @@ def _run_bronze_init(conn) -> None:
 
       -- session (meta holder)
       IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables WHERE table_schema='bronze' AND table_name='session'
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema='bronze' AND table_name='session'
       ) THEN
-        EXECUTE 'CREATE TABLE bronze.session (session_id BIGINT PRIMARY KEY, meta JSONB, created_at TIMESTAMPTZ DEFAULT now())';
+        EXECUTE 'CREATE TABLE bronze.session (
+          session_id BIGINT PRIMARY KEY,
+          meta JSONB,
+          created_at TIMESTAMPTZ DEFAULT now()
+        )';
       END IF;
 
       -- raw_result
       IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables WHERE table_schema=''bronze'' AND table_name=''raw_result''
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema='bronze' AND table_name='raw_result'
       ) THEN
         EXECUTE 'CREATE TABLE bronze.raw_result (
           id BIGSERIAL PRIMARY KEY,
@@ -102,12 +108,33 @@ def _run_bronze_init(conn) -> None:
 
       -- submission_context
       IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables WHERE table_schema=''bronze'' AND table_name=''submission_context''
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema='bronze' AND table_name='submission_context'
       ) THEN
-        EXECUTE 'CREATE TABLE bronze.submission_context (session_id BIGINT PRIMARY KEY, data JSONB)';
+        EXECUTE 'CREATE TABLE bronze.submission_context (
+          session_id BIGINT PRIMARY KEY,
+          data JSONB
+        )';
       END IF;
     END$$;
     """))
+
+    for t in [
+        "player","player_swing","rally","ball_position","player_position","ball_bounce",
+        "session_confidences","thumbnail","highlight","team_session",
+        "bounce_heatmap","unmatched_field","debug_event"
+    ]:
+        conn.execute(sql_text(f"""
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema='bronze' AND table_name='{t}'
+          ) THEN
+            EXECUTE 'CREATE TABLE bronze.{t} (session_id BIGINT, data JSONB)';
+          END IF;
+        END$$;
+        """))
 
     # Create JSONB tables using a simple loop
     for t in BRONZE_JSON_TABLES:
