@@ -580,7 +580,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             bhx = _float(loc.get("x")); bhy = _float(loc.get("y"))
 
         conn.execute(sql_text("""
-            INSERT INTO bronze.swing (
+            INSERT INTO bronze.swings (
               session_id, player_id, sportai_swing_uid,
               start_s, end_s, ball_hit_s,
               start_ts, end_ts, ball_hit_ts,
