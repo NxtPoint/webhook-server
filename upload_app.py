@@ -1,4 +1,5 @@
-﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status), webhook disabled, VIEW-only (no MV)
+﻿# upload_app.py — S3-only entrypoint (uploads + SportAI + status), json file download for ingestion into bronze towers. 
+
 import os, json, time, socket, sys, inspect, hashlib, re, threading
 from urllib.parse import urlparse
 from datetime import datetime, timezone
