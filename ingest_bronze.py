@@ -450,8 +450,6 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             ).scalar()
             if exists:
                 conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
-
-
     # raw save
     _save_raw_result(conn, session_id, payload)
 
@@ -633,7 +631,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                 continue
             seen.add(k)
             _emit_player_swing(s, pid)
-            _emit_swing(s, pid)
+            
 
     # root swings[] (dedupe)
     for s in (payload.get("swings") or []):
@@ -644,7 +642,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             continue
         seen.add(k)
         _emit_player_swing(s, pid)
-        _emit_swing(s, pid)
+        
 
     # ---------- RALLIES ----------
     payload_rallies = payload.get("rallies") or []
