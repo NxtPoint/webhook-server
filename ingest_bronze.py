@@ -483,3 +483,26 @@ def http_bronze_reingest_by_task_id():
             return jsonify({"ok": True, "reingested": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+@ingest_bronze.post("/bronze/ingest-from-url")
+def http_bronze_ingest_from_url():
+    if not _guard():
+        return _forbid()
+    body = request.get_json(silent=True) or {}
+    url = body.get("result_url")
+    replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
+    task_id = body.get("task_id")
+    if not url:
+        return jsonify({"ok": False, "error": "result_url required"}), 400
+    try:
+        import requests, json, gzip
+        r = requests.get(url, timeout=120)
+        r.raise_for_status()
+        payload = r.json()
+        from sqlalchemy import text as sql_text  # if not already imported
+        with engine.begin() as conn:
+            _run_bronze_init(conn)
+            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint="api:ingest-from-url")
+        return jsonify({"ok": True, **out})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
