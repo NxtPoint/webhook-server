@@ -1,7 +1,11 @@
 # ingest_bronze.py — clean, stable ingest to bronze schema (pure JSON -> bronze)
-import os, json, gzip, hashlib
-from datetime import datetime, timezone, timedelta
-from typing import Dict
+
+import os
+import json
+import gzip
+import hashlib
+from datetime import datetime, timezone, timedelta, date, time
+from typing import Dict, Any, Iterable, Tuple, Optional
 
 import requests
 from flask import Blueprint, request, jsonify, Response
@@ -16,7 +20,7 @@ ingest_bronze = Blueprint("ingest_bronze", __name__)
 OPS_KEY = os.getenv("OPS_KEY", "")
 
 # -------------------------------------------------------
-# Auth / helpers
+# Helpers
 # -------------------------------------------------------
 def _guard() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
@@ -40,36 +44,47 @@ def _float(v):
             return None
 
 def _boolish(v):
-    if v is None: return None
+    if v is None:
+        return None
     s = str(v).strip().lower()
-    if s in ("1","true","t","yes","y"): return True
-    if s in ("0","false","f","no","n"): return False
+    if s in ("1", "true", "t", "yes", "y"):
+        return True
+    if s in ("0", "false", "f", "no", "n"):
+        return False
     return None
 
 def _time_s(val):
-    if val is None: return None
-    if isinstance(val, (int, float, str)): return _float(val)
+    """Extract seconds from common timestamp shapes."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float, str)):
+        return _float(val)
     if isinstance(val, dict):
-        for k in ("timestamp","timestamp_s","ts","time_s","t","seconds","s"):
-            if k in val: return _float(val[k])
+        for k in ("timestamp", "timestamp_s", "ts", "time_s", "t", "seconds", "s"):
+            if k in val:
+                return _float(val[k])
     return None
 
 def seconds_to_ts(base_dt: datetime, s):
-    if s is None: return None
+    if s is None:
+        return None
     try:
         return base_dt + timedelta(seconds=float(s))
     except Exception:
         return None
 
 def _base_dt_for_session(dt):
-    return dt if dt else datetime(1970,1,1,tzinfo=timezone.utc)
+    return dt if dt else datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
-    if forced_uid: return str(forced_uid)
+    if forced_uid:
+        return str(forced_uid)
     meta = payload.get("meta") or payload.get("metadata") or {}
-    for k in ("session_uid","video_uid","video_id"):
-        if payload.get(k): return str(payload[k])
-        if meta.get(k):    return str(meta[k])
+    for k in ("session_uid", "video_uid", "video_id"):
+        if payload.get(k):
+            return str(payload[k])
+        if meta.get(k):
+            return str(meta[k])
     fn = meta.get("file_name") or meta.get("filename")
     if not fn and src_hint:
         try:
@@ -77,55 +92,65 @@ def _resolve_session_uid(payload, forced_uid=None, src_hint=None):
             fn = _os.path.splitext(_os.path.basename(src_hint))[0]
         except Exception:
             fn = None
-    if fn: return str(fn)
+    if fn:
+        return str(fn)
     import hashlib as _hl, json as _json
     return f"sha1_{_hl.sha1(_json.dumps(payload, sort_keys=True, separators=(',',':')).encode()).hexdigest()[:12]}"
 
 def _resolve_fps(payload):
     meta = payload.get("meta") or payload.get("metadata") or {}
-    for k in ("fps","frame_rate","frames_per_second"):
-        if payload.get(k) is not None: return _float(payload[k])
-        if meta.get(k) is not None:    return _float(meta[k])
+    for k in ("fps", "frame_rate", "frames_per_second"):
+        if payload.get(k) is not None:
+            return _float(payload[k])
+        if meta.get(k) is not None:
+            return _float(meta[k])
     return None
 
 def _resolve_session_date(payload):
     meta = payload.get("meta") or payload.get("metadata") or {}
-    for k in ("session_date","date","recorded_at"):
+    for k in ("session_date", "date", "recorded_at"):
         raw = payload.get(k) if k in payload else meta.get(k)
         if raw:
             try:
-                return datetime.fromisoformat(str(raw).replace("Z","+00:00")).astimezone(timezone.utc)
+                return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(timezone.utc)
             except Exception:
                 return None
     return None
-from datetime import date, time
 
 def _coerce_date(v):
-    if not v: return None
+    if not v:
+        return None
     s = str(v).strip()
-    # accept "YYYY-MM-DD" or ISO datetime – keep date part
-    try: return datetime.fromisoformat(s.replace("Z","+00:00")).date()
-    except: 
-        try: return datetime.strptime(s, "%Y-%m-%d").date()
-        except: return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+    except Exception:
+        pass
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 def _coerce_time(v):
-    if not v: return None
+    if not v:
+        return None
     s = str(v).strip()
-    # accept "HH:MM" or "HH:MM:SS"
     for fmt in ("%H:%M:%S", "%H:%M"):
-        try: return datetime.strptime(s, fmt).time()
-        except: pass
-    # sometimes seconds float like "239.44" (sec from midnight)
+        try:
+            return datetime.strptime(s, fmt).time()
+        except Exception:
+            pass
+    # sometimes seconds float like "239.44"
     try:
         sec = float(s)
-        hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60)
+        hh = int(sec // 3600)
+        mm = int((sec % 3600) // 60)
+        ss = int(sec % 60)
         return time(hh, mm, ss)
-    except:
+    except Exception:
         return None
 
 # -------------------------------------------------------
-# Schema init (simple, fixed)
+# Schema init (idempotent)
 # -------------------------------------------------------
 def _run_bronze_init(conn):
     conn.execute(sql_text("""
@@ -147,7 +172,7 @@ def _run_bronze_init(conn):
         );
       END IF;
 
-      -- player  (SportAI-native fields only)
+      -- player (SportAI-native fields only)
       IF to_regclass('bronze.player') IS NULL THEN
         CREATE TABLE bronze.player (
           player_id BIGSERIAL PRIMARY KEY,
@@ -199,10 +224,10 @@ def _run_bronze_init(conn):
           confidence_swing_type DOUBLE PRECISION,
           confidence DOUBLE PRECISION,
           confidence_volley DOUBLE PRECISION,
-          ball_hit_location DOUBLE PRECISION[],   -- [x,y] m
+          ball_hit_location DOUBLE PRECISION[],
           ball_player_distance DOUBLE PRECISION,
           ball_speed DOUBLE PRECISION,
-          ball_impact_location DOUBLE PRECISION[],-- [x,y] m (optional)
+          ball_impact_location DOUBLE PRECISION[],
           ball_impact_type TEXT,
           intercepting_player_id INT,
           ball_trajectory JSONB,
@@ -255,9 +280,7 @@ def _run_bronze_init(conn):
         );
       END IF;
 
-      -- JSONB towers
-                                                      
-      -- submission_context (verbatim JSONB at session scope)
+      -- JSONB towers (verbatim)
       IF to_regclass('bronze.submission_context') IS NULL THEN
         CREATE TABLE bronze.submission_context (
           session_id INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
@@ -265,7 +288,7 @@ def _run_bronze_init(conn):
         );
       END IF;
 
-      -- submission_context_flat (handy columns for BI)
+      -- flattened submission context for convenience
       IF to_regclass('bronze.submission_context_flat') IS NULL THEN
         CREATE TABLE bronze.submission_context_flat (
           session_id  INT PRIMARY KEY REFERENCES bronze.session(session_id) ON DELETE CASCADE,
@@ -339,7 +362,7 @@ def _run_bronze_init(conn):
     END $$;"""))
 
 # -------------------------------------------------------
-# RAW snapshot saver
+# RAW snapshot saver + JSONB upsert helper
 # -------------------------------------------------------
 def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int = 5_000_000):
     js = json.dumps(payload, separators=(",", ":"))
@@ -348,7 +371,7 @@ def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int =
         try:
             conn.execute(sql_text("""
                 INSERT INTO bronze.raw_result (session_id, payload_json, created_at)
-                VALUES (:sid, CAST(:p AS JSONB), timezone('utc', now()))
+                VALUES (:sid, CAST(:p AS JSONB), now())
             """), {"sid": session_id, "p": js})
             return
         except Exception:
@@ -357,10 +380,9 @@ def _save_raw_result(conn, session_id: int, payload: dict, size_threshold: int =
     sha = hashlib.sha256(js.encode("utf-8")).hexdigest()
     conn.execute(sql_text("""
         INSERT INTO bronze.raw_result (session_id, payload_json, payload_gzip, payload_sha256, created_at)
-        VALUES (:sid, NULL, :gz, :sha, timezone('utc', now()))
+        VALUES (:sid, NULL, :gz, :sha, now())
     """), {"sid": session_id, "gz": gz, "sha": sha})
 
-# generic JSONB tower upsert
 def _upsert_jsonb(conn, table: str, session_id: int, data):
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (session_id, data)
@@ -372,45 +394,37 @@ def _upsert_jsonb(conn, table: str, session_id: int, data):
 # Ingest (pure extract)
 # -------------------------------------------------------
 def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, src_hint=None):
-    # session
+    # session identity + fps
     session_uid  = _resolve_session_uid(payload, forced_uid=forced_uid, src_hint=src_hint)
     fps          = _resolve_fps(payload)
-    # derive a real session_date (before session insert)
-    
-    # -------- Submission Context (extract + save) --------
+
+    # pull submission_ctx early so we can use it for session_date
     submission_ctx = (
         payload.get("submission_context")
         or payload.get("submission")
         or (payload.get("meta") or {}).get("submission_context")
         or (payload.get("debug_data") or {}).get("submission_context")
     )
-    
-    session_date = _resolve_session_date(payload)
 
+    # session_date priority: explicit -> submission_ctx -> team_sessions
+    session_date = _resolve_session_date(payload)
     if not session_date and submission_ctx:
         sc_mdate = _coerce_date(submission_ctx.get("match_date"))
         sc_stime = _coerce_time(submission_ctx.get("start_time"))
         if sc_mdate or sc_stime:
-            session_date = datetime.combine(
-                sc_mdate or date(1970,1,1),
-                sc_stime or time(0,0,0),
-                tzinfo=timezone.utc
-            )
+            session_date = datetime.combine(sc_mdate or date(1970, 1, 1), sc_stime or time(0, 0, 0), tzinfo=timezone.utc)
 
-    # also consider team_sessions as a fallback, if present
-    team_sessions = payload.get("team_sessions") or (payload.get("debug_data") or {}).get("team_sessions") or []
-    if not session_date and team_sessions and isinstance(team_sessions, list):
-        ts0 = team_sessions[0] or {}
+    ts_block = payload.get("team_sessions") or (payload.get("debug_data") or {}).get("team_sessions") or []
+    if not session_date and ts_block and isinstance(ts_block, list) and ts_block:
+        ts0 = ts_block[0] or {}
         ts_date = _coerce_date(ts0.get("match_date"))
         ts_time = _coerce_time(ts0.get("start_time"))
         if ts_date or ts_time:
-            session_date = datetime.combine(
-                ts_date or date(1970,1,1),
-                ts_time or time(0,0,0),
-                tzinfo=timezone.utc
-            )
-    meta         = payload.get("meta") or payload.get("metadata") or {}
+            session_date = datetime.combine(ts_date or date(1970, 1, 1), ts_time or time(0, 0, 0), tzinfo=timezone.utc)
 
+    meta = payload.get("meta") or payload.get("metadata") or {}
+
+    # insert session row
     conn.execute(sql_text("""
         INSERT INTO bronze.session (session_uid, fps, session_date, meta)
         VALUES (:u, :fps, :sdt, CAST(:m AS JSONB))
@@ -424,15 +438,17 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                               {"u": session_uid}).scalar_one()
 
     if replace:
-        for t in ("ball_position","player_position","ball_bounce","swing","rally","player",
-          "session_confidences","thumbnail","highlight","team_session","bounce_heatmap",
-          "player_swing","debug_event","submission_context","submission_context_flat"):
-          conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
+        for t in (
+            "ball_position", "player_position", "ball_bounce", "swing", "rally", "player",
+            "thumbnail", "highlight", "team_session", "bounce_heatmap",
+            "player_swing", "debug_event", "submission_context", "submission_context_flat"
+        ):
+            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
 
     # raw save
     _save_raw_result(conn, session_id, payload)
 
-    # players (SportAI-native)
+    # ---------- PLAYERS (SportAI-native) ----------
     uid_to_player_id: Dict[str, int] = {}
     for p in (payload.get("players") or []):
         puid = str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or "")
@@ -477,9 +493,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         """), {"sid": session_id, "puid": puid}).scalar_one()
         uid_to_player_id[puid] = pid
 
-    # ---------------------------
-    # ball_bounces
-    # ---------------------------
+    # ---------- BALL BOUNCES ----------
     for b in (payload.get("ball_bounces") or []):
         s  = _time_s(b.get("timestamp")) or _time_s(b.get("timestamp_s")) or _time_s(b.get("ts")) or _time_s(b.get("t"))
         bx = _float(b.get("x")); by = _float(b.get("y"))
@@ -501,7 +515,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                "x": bx, "y": by, "bt": btype})
 
-    # --- ball_positions
+    # ---------- BALL POSITIONS ----------
     for p in (payload.get("ball_positions") or []):
         s  = _time_s(p.get("timestamp")) or _time_s(p.get("timestamp_s")) or _time_s(p.get("ts")) or _time_s(p.get("t"))
         bx = _float(p.get("x")); by = _float(p.get("y"))
@@ -518,7 +532,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                "ts": seconds_to_ts(_base_dt_for_session(session_date), s),
                "x": bx, "y": by})
 
-    # player_positions
+    # ---------- PLAYER POSITIONS ----------
     for puid, arr in (payload.get("player_positions") or {}).items():
         pid = uid_to_player_id.get(str(puid))
         if not pid:
@@ -599,6 +613,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
 
     # ---------- PLAYER_SWING (verbatim + dedupe) ----------
     seen = set()
+
     def _swing_key(obj, pid):
         suid = obj.get("id") or obj.get("swing_uid") or obj.get("uid")
         if suid:
@@ -657,18 +672,18 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
             "ann":       json.dumps(annotations_arr)     if isinstance(annotations_arr,     (list, tuple, dict)) else None,
         })
 
-    # nested players[*].swings
+    # nested players[*].swings (authoritative)
     for p in (payload.get("players") or []):
         pid = uid_to_player_id.get(str(p.get("id") or p.get("sportai_player_uid") or p.get("uid") or p.get("player_id") or ""))
         for s in (p.get("swings") or []):
             k = _swing_key(s, pid)
-            if k in seen: 
+            if k in seen:
                 continue
             seen.add(k)
             _emit_player_swing(s, pid)
             _emit_swing(s, pid)
 
-    # root swings[]
+    # root swings[] (dedupe)
     for s in (payload.get("swings") or []):
         suid = s.get("player_id") or s.get("sportai_player_uid") or s.get("player_uid")
         pid = uid_to_player_id.get(str(suid)) if suid is not None else None
@@ -679,7 +694,7 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         _emit_player_swing(s, pid)
         _emit_swing(s, pid)
 
-    # rallies
+    # ---------- RALLIES ----------
     payload_rallies = payload.get("rallies") or []
     for i, r in enumerate(payload_rallies, start=1):
         if isinstance(r, dict):
@@ -702,13 +717,9 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                "sts": seconds_to_ts(_base_dt_for_session(session_date), start_s),
                "ets": seconds_to_ts(_base_dt_for_session(session_date), end_s)})
 
-    # -------- JSONB towers --------
+    # ---------- JSONB towers ----------
     if payload.get("debug_data") is not None:
-        conn.execute(sql_text("""
-            INSERT INTO bronze.debug_event (session_id, data)
-            VALUES (:sid, CAST(:j AS JSONB))
-            ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
-        """), {"sid": session_id, "j": json.dumps(payload["debug_data"])})
+        _upsert_jsonb(conn, "debug_event", session_id, payload["debug_data"])
 
     if payload.get("confidences") is not None:
         _upsert_jsonb(conn, "session_confidences", session_id, payload["confidences"])
@@ -727,40 +738,10 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
     if bounce_heatmap is not None:
         _upsert_jsonb(conn, "bounce_heatmap", session_id, bounce_heatmap)
 
-    
-
-    # Always persist verbatim JSONB if present
+    # Submission context (verbatim + flattened)
     if submission_ctx is not None:
         _upsert_jsonb(conn, "submission_context", session_id, submission_ctx)
 
-    # Flatten for convenience
-    def _coerce_date(v):
-        if not v: return None
-        s = str(v).strip()
-        try:
-            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
-        except Exception:
-            try:
-                return datetime.strptime(s, "%Y-%m-%d").date()
-            except Exception:
-                return None
-
-    def _coerce_time(v):
-        if not v: return None
-        s = str(v).strip()
-        for fmt in ("%H:%M:%S", "%H:%M"):
-            try:
-                return datetime.strptime(s, fmt).time()
-            except Exception:
-                pass
-        try:
-            sec = float(s)
-            hh = int(sec // 3600); mm = int((sec % 3600) // 60); ss = int(sec % 60)
-            return time(hh, mm, ss)
-        except Exception:
-            return None
-
-    if submission_ctx:
         sc_email = submission_ctx.get("email")
         sc_task  = submission_ctx.get("task_id")
         sc_loc   = submission_ctx.get("location")
@@ -787,11 +768,13 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
         })
 
     # unmatched top-level keys
-    known = {"players","swings","rallies","ball_bounces","ball_positions","player_positions",
-             "confidences","thumbnails","thumbnail_crops","highlights","team_sessions","bounce_heatmaps","bounce_heatmap"
-             "meta","metadata","session_uid","submission_context","submission","video_uid","video_id","fps","frame_rate","frames_per_second",
-             "session_date","date","recorded_at","debug_data"}
-    for k,v in (payload.items() if isinstance(payload, dict) else []):
+    known = {
+        "players","swings","rallies","ball_bounces","ball_positions","player_positions",
+        "confidences","thumbnails","thumbnail_crops","highlights","team_sessions","bounce_heatmap",
+        "meta","metadata","session_uid","submission_context","submission","video_uid","video_id","fps","frame_rate","frames_per_second",
+        "session_date","date","recorded_at","debug_data"
+    }
+    for k, v in (payload.items() if isinstance(payload, dict) else []):
         if k not in known:
             conn.execute(sql_text("""
               INSERT INTO bronze.unmatched_field(session_id, json_path, example_value)
