@@ -438,12 +438,19 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
                               {"u": session_uid}).scalar_one()
 
     if replace:
-        for t in (
-            "ball_position", "player_position", "ball_bounce", "swing", "rally", "player",
-            "thumbnail", "highlight", "team_session", "bounce_heatmap",
-            "player_swing", "debug_event", "submission_context", "submission_context_flat"
-        ):
-            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
+      tables = [
+          "ball_position", "player_position", "ball_bounce", "swing", "rally", "player",
+          "thumbnail", "highlight", "team_session", "bounce_heatmap",
+          "player_swing", "debug_event", "submission_context", "submission_context_flat"
+      ]
+      for t in tables:
+          exists = conn.execute(
+              sql_text("SELECT to_regclass(:t)"),
+              {"t": f"bronze.{t}"}
+          ).scalar()
+          if exists:
+              conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id=:sid"), {"sid": session_id})
+
 
     # raw save
     _save_raw_result(conn, session_id, payload)
