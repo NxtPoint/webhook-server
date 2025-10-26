@@ -189,23 +189,6 @@ def _run_bronze_init(conn):
         );
       END IF;
 
-      -- swing (legacy/materialised metrics)
-      IF to_regclass('bronze.swing') IS NULL THEN
-        CREATE TABLE bronze.swing (
-          swing_id BIGSERIAL PRIMARY KEY,
-          session_id INT NOT NULL REFERENCES bronze.session(session_id) ON DELETE CASCADE,
-          player_id INT REFERENCES bronze.player(player_id) ON DELETE SET NULL,
-          sportai_swing_uid TEXT,
-          start_s DOUBLE PRECISION, end_s DOUBLE PRECISION, ball_hit_s DOUBLE PRECISION,
-          start_ts TIMESTAMPTZ, end_ts TIMESTAMPTZ, ball_hit_ts TIMESTAMPTZ,
-          ball_hit_x DOUBLE PRECISION, ball_hit_y DOUBLE PRECISION,
-          ball_speed DOUBLE PRECISION, ball_player_distance DOUBLE PRECISION,
-          swing_type TEXT, volley BOOLEAN, is_in_rally BOOLEAN, serve BOOLEAN, serve_type TEXT,
-          meta JSONB,
-          raw JSONB
-        );
-      END IF;
-
       -- player_swing (verbatim Swings object, 1:1 with JSON)
       IF to_regclass('bronze.player_swing') IS NULL THEN
         CREATE TABLE bronze.player_swing (
@@ -771,10 +754,9 @@ def bronze_ingest_file():
               (SELECT COUNT(*) FROM bronze.ball_bounce      WHERE session_id=:sid),
               (SELECT COUNT(*) FROM bronze.ball_position    WHERE session_id=:sid),
               (SELECT COUNT(*) FROM bronze.player_position  WHERE session_id=:sid),
-              (SELECT COUNT(*) FROM bronze.swing            WHERE session_id=:sid)
-        """), {"sid": sid}).fetchone()
+              """), {"sid": sid}).fetchone()
     return jsonify({"ok": True, **res, "bronze_counts": {
-        "rallies": counts[0], "ball_bounces": counts[1], "ball_positions": counts[2], "player_positions": counts[3], "swings": counts[4]
+        "rallies": counts[0], "ball_bounces": counts[1], "ball_positions": counts[2], "player_positions": counts[3]
     }})
 
 @ingest_bronze.post("/bronze/reingest-from-raw")
@@ -811,8 +793,7 @@ def bronze_reingest_from_raw():
                   (SELECT COUNT(*) FROM bronze.ball_bounce      WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM bronze.ball_position    WHERE session_id=:sid),
                   (SELECT COUNT(*) FROM bronze.player_position  WHERE session_id=:sid),
-                  (SELECT COUNT(*) FROM bronze.swing            WHERE session_id=:sid)
-            """), {"sid": sid}).fetchone()
+                   """), {"sid": sid}).fetchone()
 
         return jsonify({"ok": True, **res, "bronze_counts": {
             "rallies": counts[0], "ball_bounces": counts[1],
