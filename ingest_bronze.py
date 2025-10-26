@@ -787,7 +787,8 @@ def ingest_bronze_strict(conn, payload: dict, replace=False, forced_uid=None, sr
               INSERT INTO bronze.unmatched_field(session_id, json_path, example_value)
               VALUES (:sid, :p, CAST(:v AS JSONB))
             """), {"sid": session_id, "p": k, "v": json.dumps(v)})
-
+    # inside ingest_bronze_strict(...)
+    sync_submission_context(session_id)
     return {"ok": True, "session_uid": session_uid, "session_id": session_id}
 
 # -------------------------------------------------------
@@ -905,3 +906,64 @@ def bronze_raw_dump():
             return jsonify({"ok": False, "error": "empty raw_result"}), 404
         keys = list(payload.keys())[:100]
         return jsonify({"ok": True, "top_level_keys": keys, "count": len(keys)})
+
+# --- add to ingest_bronze.py ---
+from sqlalchemy import text
+from db_init import engine
+
+def sync_submission_context(session_id: int) -> None:
+    """
+    Mirrors public.submission_context -> bronze.submission_context for the given session.
+    - Resolves session_id via public.sc.session_id OR bronze.submission.task_id -> session_id
+    - Upserts a single row per session_id with a stable JSON payload (volatile fields stripped)
+    - Idempotent and safe to call multiple times during the ingest
+    """
+    ensure_sql = text("""
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_namespace WHERE nspname = 'bronze'
+      ) THEN
+        EXECUTE 'CREATE SCHEMA bronze';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM   information_schema.tables
+        WHERE  table_schema = 'bronze'
+        AND    table_name   = 'submission_context'
+      ) THEN
+        EXECUTE '
+          CREATE TABLE bronze.submission_context (
+            session_id INT PRIMARY KEY,
+            data JSONB NOT NULL
+          )';
+      END IF;
+    END$$;
+    """)
+
+    upsert_sql = text("""
+    INSERT INTO bronze.submission_context (session_id, data)
+    SELECT
+      COALESCE(sc.session_id, s.session_id) AS session_id,
+      to_jsonb(sc)
+        - 'ingest_error'
+        - 'ingest_started_at'
+        - 'ingest_finished_at'
+        - 'last_status'
+        - 'last_status_at'
+        - 'last_result_url'
+    FROM public.submission_context sc
+    LEFT JOIN bronze.submission s
+      ON s.task_id = sc.task_id
+    WHERE COALESCE(sc.session_id, s.session_id) = :sid
+    ON CONFLICT (session_id) DO UPDATE
+    SET data = EXCLUDED.data;
+    """)
+
+    with engine.begin() as cx:
+        # lightweight safety: ensure target exists (no-op if already present)
+        cx.execute(ensure_sql)
+        # strictly session-scoped upsert
+        cx.execute(upsert_sql, {"sid": session_id})
+# --- end add ---
