@@ -76,12 +76,11 @@ SPORTAI_STATUS_PATHS = list(dict.fromkeys([
 ]))
 
 # ---------- DB engine / ingest blueprint ----------
-from db_init import engine                                  # noqa: E402
-from ingest_app import ingest_bp
-app.register_blueprint(ingest_bp, url_prefix="")
+from db_init import engine  # noqa: E402
 
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init
 app.register_blueprint(ingest_bronze, url_prefix="")
+
 
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
