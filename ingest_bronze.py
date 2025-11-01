@@ -71,6 +71,18 @@ def _extract_session_id(payload: Dict[str, Any]) -> Optional[int]:
             pass
     return None
 
+def _compute_session_uid(task_id: Optional[str], payload: Dict[str, Any]) -> str:
+    # prefer anything SportAI-like if present
+    for k in ("session_uid","sessionUid","sessionUID"):
+        v = (payload.get(k) or (payload.get("session") or {}).get(k) or (payload.get("metadata") or {}).get(k))
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+
+    # fallback: derive from task_id + payload hash (stable, readable)
+    tid = (task_id or "")[:8] or "nosrc"
+    ph = _sha256_str(json.dumps(payload, separators=(",",":"), ensure_ascii=False))[:10]
+    return f"{tid}-{ph}"
+
 
 # --------------------- Schema bootstrap ---------------------
 
@@ -287,12 +299,32 @@ def ingest_bronze_strict(conn, payload: Dict[str, Any], replace: bool = True,
     # ---- define & try-read session_id BEFORE using it ----
     session_id = _extract_session_id(payload)  # may return None
 
-    # allocate our own session_id if SportAI didn't provide one
+    # --- figure out if the DB has a NOT NULL session_uid column ---
+    cols = conn.execute(sql_text("""
+        SELECT column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name='session'
+    """)).mappings().all()
+    has_session_uid = any(c["column_name"] == "session_uid" for c in cols)
+    session_uid_required = any(c["column_name"] == "session_uid" and c["is_nullable"] == "NO" for c in cols)
+
+    # allocate our own session row if SportAI didn't provide an id
     if not session_id:
-        sid = conn.execute(sql_text(
-            "INSERT INTO bronze.session (meta) VALUES ('{}'::jsonb) RETURNING session_id"
-        )).scalar_one()
+        if session_uid_required:
+            uid = _compute_session_uid(task_id, payload)
+            sid = conn.execute(sql_text("""
+                INSERT INTO bronze.session (session_uid, meta)
+                VALUES (:uid, '{}'::jsonb)
+                RETURNING session_id
+            """), {"uid": uid}).scalar_one()
+        else:
+            sid = conn.execute(sql_text("""
+                INSERT INTO bronze.session (meta)
+                VALUES ('{}'::jsonb)
+                RETURNING session_id
+            """)).scalar_one()
         session_id = int(sid)
+
 
     # optional replace cleanup (by session_id)
     if replace:
@@ -490,3 +522,4 @@ def http_bronze_reingest_by_task_id():
             return jsonify({"ok": True, "reingested": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
