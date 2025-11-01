@@ -178,27 +178,65 @@ def _drop_fks_to_session(conn) -> None:
     Drop any foreign keys in bronze.* that reference bronze.session (legacy on session_id).
     We target the real referencing table via the catalog (no name guessing).
     """
+        # --- MIGRATE legacy bronze tables to (task_id TEXT, data JSONB) model + relax NOT NULL ---
     conn.execute(sql_text("""
     DO $$
     DECLARE
-      r record;
+      t text;
+      c record;
+      has_sid_pk boolean;
+      tables text[] := ARRAY[
+        'player','player_swing','rally','ball_position','ball_bounce',
+        'unmatched_field','debug_event','player_position',
+        'session_confidences','thumbnail','highlight','team_session',
+        'bounce_heatmap','submission_context'
+      ];
+      safe_keep_not_null text[] := ARRAY['id','created_at','task_id','data'];  -- never touch these
     BEGIN
-      FOR r IN
-        SELECT
-          n.nspname  AS ref_schema,
-          t.relname  AS ref_table,
-          c.conname  AS fk_name
-        FROM pg_constraint c
-        JOIN pg_class     t ON t.oid = c.conrelid           -- referencing table
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE c.contype = 'f'
-          AND c.confrelid = 'bronze.session'::regclass
-          AND n.nspname = 'bronze'
-      LOOP
-        EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', r.ref_schema, r.ref_table, r.fk_name);
+      FOREACH t IN ARRAY tables LOOP
+        -- Ensure core columns exist
+        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS task_id TEXT', t);
+        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS data JSONB', t);
+
+        -- session_id: drop NOT NULL only if not part of PK
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+           WHERE table_schema='bronze' AND table_name=t
+             AND column_name='session_id' AND is_nullable='NO'
+        ) THEN
+          SELECT EXISTS (
+            SELECT 1
+            FROM pg_attribute a
+            JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
+            JOIN pg_class cl ON cl.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = cl.relnamespace
+            WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p' AND a.attname='session_id'
+          ) INTO has_sid_pk;
+          IF NOT has_sid_pk THEN
+            EXECUTE format('ALTER TABLE bronze.%I ALTER COLUMN session_id DROP NOT NULL', t);
+          END IF;
+        END IF;
+
+        -- Relax any other legacy NOT NULLs (e.g., sportai_player_uid, angle, etc.)
+        FOR c IN
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema='bronze' AND table_name=t
+            AND is_nullable='NO'
+            AND column_name <> 'session_id'
+            AND NOT (column_name = ANY(safe_keep_not_null))
+        LOOP
+          EXECUTE format('ALTER TABLE bronze.%I ALTER COLUMN %I DROP NOT NULL', t, c.column_name);
+        END LOOP;
+
+        -- Singleton tables: unique on task_id
+        IF t IN ('player_position','session_confidences','thumbnail','highlight','team_session','bounce_heatmap','submission_context') THEN
+          EXECUTE format('CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_%I_task ON bronze.%I(task_id)', t, t);
+        END IF;
       END LOOP;
     END$$;
     """))
+
 
 def _ensure_session_pk_is_task_id(conn) -> None:
     """
