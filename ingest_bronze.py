@@ -84,6 +84,21 @@ def _compute_session_uid(task_id: Optional[str], payload: Dict[str, Any]) -> str
     tid = (task_id or "")[:8] or "nosrc"
     ph  = _sha256_str(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
     return f"{tid}-{ph}"
+import re  # (ensure this import exists at the top)
+
+def _derive_task_id(payload: dict | None, src_hint: str | None) -> str | None:
+    """Try payload.metadata.task_id, payload.task_id; else parse UUID from src_hint/result_url."""
+    p = payload or {}
+    md = (p.get("metadata") or {}) if isinstance(p, dict) else {}
+    tid = p.get("task_id") or md.get("task_id")
+    if isinstance(tid, str) and tid.strip():
+        return tid.strip()
+    if src_hint:
+        m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', str(src_hint), re.I)
+        if m:
+            return m.group(1)
+    return None
+
 
 # --------------------- Tables ---------------------
 # Many-rows-per-task tables (arrays)
@@ -298,10 +313,9 @@ def ingest_bronze_strict(
     task_id: Optional[str] = None
 ) -> Dict[str, Any]:
 
-    # task_id is canonical
+    # task_id is canonical (allow URL-derived fallback)
     if not task_id:
-        md = _as_dict(payload.get("metadata"))
-        task_id = payload.get("task_id") or md.get("task_id")
+        task_id = _derive_task_id(payload, src_hint)
     if not task_id:
         raise ValueError("task_id is required")
 
