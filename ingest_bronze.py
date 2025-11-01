@@ -175,19 +175,25 @@ def _run_bronze_init_conn(conn) -> None:
       END IF;
 
       -- 2) Drop any FKs in bronze.* that reference bronze.session(session_id)
-      FOR r IN
-        SELECT conname
-        FROM pg_constraint c
-        JOIN pg_class t  ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE c.contype='f'
-          AND n.nspname='bronze'
-          AND c.confrelid = 'bronze.session'::regclass
-      LOOP
-        EXECUTE 'ALTER TABLE bronze.' || quote_ident(split_part(r.conname, '_', 1)) || ' DROP CONSTRAINT ' || quote_ident(r.conname);
-        -- If above table name heuristic ever fails, do a generic drop: ALTER TABLE <owner table> DROP CONSTRAINT <conname>;
-        -- But most of your constraints were auto-named like <table>_session_id_fkey so split_part is OK.
-      END LOOP;
+      -- 2) Drop any FKs in bronze.* that reference bronze.session(session_id)
+    FOR r IN
+    SELECT
+        n.nspname  AS ref_schema,
+        t.relname  AS ref_table,
+        c.conname  AS fk_name
+    FROM pg_constraint c
+    JOIN pg_class     t ON t.oid = c.conrelid           -- referencing table
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE c.contype = 'f'
+        AND c.confrelid = 'bronze.session'::regclass      -- referenced = bronze.session
+        AND n.nspname = 'bronze'
+    LOOP
+    EXECUTE format(
+        'ALTER TABLE %I.%I DROP CONSTRAINT %I',
+        r.ref_schema, r.ref_table, r.fk_name
+    );
+    END LOOP;
+
 
       -- 3) Find current PRIMARY KEY on bronze.session
       SELECT c.conname
