@@ -158,6 +158,36 @@ def _run_bronze_init_conn(conn) -> None:
         );
     """))
 
+    # --- Relax legacy NOT NULLs on session_id, if present (old installs) ---
+    conn.execute(sql_text("""
+    DO $$
+    BEGIN
+      -- bronze.session.session_id nullable
+      IF EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema='bronze'
+           AND table_name='session'
+           AND column_name='session_id'
+           AND is_nullable='NO'
+      ) THEN
+        EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN session_id DROP NOT NULL';
+      END IF;
+
+      -- bronze.raw_result.session_id nullable (some very old schemas had this)
+      IF EXISTS (
+        SELECT 1
+          FROM information_schema.columns
+         WHERE table_schema='bronze'
+           AND table_name='raw_result'
+           AND column_name='session_id'
+           AND is_nullable='NO'
+      ) THEN
+        EXECUTE 'ALTER TABLE bronze.raw_result ALTER COLUMN session_id DROP NOT NULL';
+      END IF;
+    END$$;
+    """))
+
     # RAW snapshot table (task_id + JSONB/GZIP + sha)
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.raw_result (
@@ -187,6 +217,7 @@ def _run_bronze_init_conn(conn) -> None:
         _ensure_table_has_task_id(conn, t, singleton=False)
     for t in BRONZE_SINGLETON:
         _ensure_table_has_task_id(conn, t, singleton=True)
+
 
 def _run_bronze_init(conn=None) -> bool:
     """
