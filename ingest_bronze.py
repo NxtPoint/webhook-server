@@ -111,93 +111,66 @@ BRONZE_SINGLETON = [
 ALL_BRONZE = BRONZE_ARRAY + BRONZE_SINGLETON
 
 # --------------------- Init / DDL ---------------------
-def _ensure_table_has_task_id(conn, table: str, singleton: bool):
-    """
-    Ensure bronze.<table> exists as (task_id TEXT, data JSONB).
-    For singleton tables, ensure a UNIQUE index on task_id for ON CONFLICT.
-    """
+def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
+    # Ensure table exists with (task_id TEXT, data JSONB)
     conn.execute(sql_text(f"""
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema='bronze' AND table_name='{table}'
-      ) THEN
-        EXECUTE 'CREATE TABLE bronze.{table} (task_id TEXT, data JSONB)';
-      END IF;
-
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='bronze' AND table_name='{table}' AND column_name='task_id'
-      ) THEN
-        EXECUTE 'ALTER TABLE bronze.{table} ADD COLUMN task_id TEXT';
-      END IF;
-
-      {"IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='bronze' AND indexname=''ux_bronze_" + table + "_task'') THEN EXECUTE ''CREATE UNIQUE INDEX ux_bronze_" + table + "_task ON bronze." + table + " (task_id)''; END IF;" if singleton else ""}
-    END$$;
+        CREATE TABLE IF NOT EXISTS bronze.{table} (
+            task_id TEXT,
+            data    JSONB
+        );
     """))
+    # Ensure task_id column exists (idempotent)
+    conn.execute(sql_text(f"""
+        ALTER TABLE bronze.{table}
+        ADD COLUMN IF NOT EXISTS task_id TEXT;
+    """))
+    # For singletons ensure a unique index on task_id
+    if singleton:
+        conn.execute(sql_text(f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{table}_task
+            ON bronze.{table}(task_id);
+        """))
+
+
 
 def _run_bronze_init_conn(conn) -> None:
+    # Schema
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
+
+    # Session registry keyed by task_id
     conn.execute(sql_text("""
-    DO $$
-    BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='bronze') THEN
-        EXECUTE 'CREATE SCHEMA bronze';
-      END IF;
-
-      -- session registry keyed by task_id
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema='bronze' AND table_name='session'
-      ) THEN
-        EXECUTE 'CREATE TABLE bronze.session (
-          task_id     TEXT PRIMARY KEY,
-          session_uid TEXT,
-          session_id  BIGINT,
-          meta        JSONB,
-          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )';
-      END IF;
-
-      -- raw_result lives in bronze schema in this continuity build
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema='bronze' AND table_name='raw_result'
-      ) THEN
-        EXECUTE $Q$
-          CREATE TABLE bronze.raw_result (
-            id             BIGSERIAL PRIMARY KEY,
-            task_id        TEXT NOT NULL,
-            payload_json   JSONB,
-            payload_gzip   BYTEA,
-            payload_sha256 TEXT,
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-          )
-        $Q$;
-      END IF;
-
-      -- Relax legacy NOT NULL on session_id if present
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='bronze' AND table_name='raw_result' AND column_name='session_id' AND is_nullable='NO'
-      ) THEN
-        EXECUTE 'ALTER TABLE bronze.raw_result ALTER COLUMN session_id DROP NOT NULL';
-      END IF;
-    END$$;
+        CREATE TABLE IF NOT EXISTS bronze.session (
+            task_id     TEXT PRIMARY KEY,
+            session_uid TEXT,
+            session_id  BIGINT,
+            meta        JSONB,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
     """))
 
+    # RAW snapshot table (task_id + JSONB/GZIP + sha)
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.raw_result (
+            id              BIGSERIAL PRIMARY KEY,
+            task_id         TEXT NOT NULL,
+            payload_json    JSONB,
+            payload_gzip    BYTEA,
+            payload_sha256  TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+
+    # Ensure towers
     for t in BRONZE_ARRAY:
         _ensure_table_has_task_id(conn, t, singleton=False)
     for t in BRONZE_SINGLETON:
         _ensure_table_has_task_id(conn, t, singleton=True)
 
-# Back-compat no-arg shim used by upload_app.py
-# Calls the connection-based initializer above
-
 def _run_bronze_init() -> bool:
     with engine.begin() as conn:
         _run_bronze_init_conn(conn)
     return True
+
 
 # --------------------- Raw persistence ----------------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> None:
