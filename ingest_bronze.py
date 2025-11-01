@@ -180,7 +180,7 @@ def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: in
         try:
             conn.execute(sql_text("""
                 INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
-                VALUES (:tid, :j::jsonb, :sha)
+                VALUES (:tid, :j::JSONB, :sha)
             """), {"tid": task_id, "j": js, "sha": sha})
             return
         except Exception:
@@ -221,17 +221,17 @@ def _attach_submission_context(conn, task_id: Optional[str]) -> None:
     # upsert task-scoped copy
     conn.execute(sql_text("""
         INSERT INTO bronze.submission_context (task_id, data)
-        VALUES (:tid, :j::jsonb)
+        VALUES (:tid, :j::JSONB)
         ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
     """), {"tid": task_id, "j": json.dumps(sc)})
 
     # mirror a lean copy into bronze.session.meta
     conn.execute(sql_text("""
         INSERT INTO bronze.session (task_id, meta)
-        VALUES (:tid, jsonb_build_object('submission_context', :j::jsonb))
+        VALUES (:tid, JSONB_build_object('submission_context', :j::JSONB))
         ON CONFLICT (task_id) DO UPDATE
-        SET meta = COALESCE(bronze.session.meta, '{}'::jsonb)
-                 || jsonb_build_object('submission_context', :j::jsonb)
+        SET meta = COALESCE(bronze.session.meta, '{}'::JSONB)
+                 || JSONB_build_object('submission_context', :j::JSONB)
     """), {"tid": task_id, "j": json.dumps(sc)})
 
 # --------------------- JSONB inserts ------------------------
@@ -242,7 +242,7 @@ def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
     # Fast path: executemany with static SQL
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (task_id, data)
-        VALUES (:tid, :j::jsonb)
+        VALUES (:tid, :j::JSONB)
     """), values)
     return len(values)
 
@@ -250,7 +250,7 @@ def _upsert_single(conn, table: str, task_id: str, obj) -> int:
     if obj is None: return 0
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (task_id, data)
-        VALUES (:tid, :j::jsonb)
+        VALUES (:tid, :j::JSONB)
         ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
     """), {"tid": task_id, "j": json.dumps(obj)})
     return 1
@@ -265,11 +265,11 @@ def _ensure_session_row(conn, task_id: str, payload: Dict[str, Any]) -> None:
     }
     conn.execute(sql_text("""
         INSERT INTO bronze.session (task_id, session_uid, session_id, meta)
-        VALUES (:tid, :uid, :sid, :meta::jsonb)
+        VALUES (:tid, :uid, :sid, :meta::JSONB)
         ON CONFLICT (task_id) DO UPDATE SET
           session_uid = COALESCE(bronze.session.session_uid, :uid),
           session_id  = COALESCE(bronze.session.session_id,  :sid),
-          meta        = COALESCE(bronze.session.meta, '{}'::jsonb) || :meta::jsonb
+          meta        = COALESCE(bronze.session.meta, '{}'::JSONB) || :meta::JSONB
     """), {"tid": task_id, "uid": session_uid, "sid": session_id, "meta": json.dumps(meta_patch)})
 
 # --------------------- Ingestion core -----------------------
