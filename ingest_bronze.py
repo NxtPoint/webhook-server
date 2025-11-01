@@ -1,14 +1,13 @@
 # ingest_bronze.py — Task-ID canonical bronze (continuity-safe, Nov 2025)
-# Matches your previous drop's API and table shapes, with fixes:
-#  - task_id is canonical (TEXT) — no session_id required
-#  - bronze.raw_result stores JSONB (small) or GZIP (large) + sha256
-#  - submission_context mirrored into bronze.submission_context and bronze.session.meta
-#  - player_swing exploded WITHOUT mutating original swing objects
-#  - Back-compat shims: _run_bronze_init() (no-arg) and alias routes kept
+# - task_id is canonical (TEXT) — no session_id required
+# - bronze.raw_result stores JSONB (small) or GZIP (large) + sha256
+# - submission_context mirrored into bronze.submission_context and bronze.session.meta
+# - player_swing exploded WITHOUT mutating original swing objects
+# - Back-compat shims: _run_bronze_init() (no-arg) and routes keep prior API surface
 
-import os, json, gzip, hashlib
+import os, json, gzip, hashlib, re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Iterable, List
+from typing import Any, Dict, Optional, List
 
 import requests
 from flask import Blueprint, request, jsonify, Response
@@ -84,9 +83,8 @@ def _compute_session_uid(task_id: Optional[str], payload: Dict[str, Any]) -> str
     tid = (task_id or "")[:8] or "nosrc"
     ph  = _sha256_str(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
     return f"{tid}-{ph}"
-import re  # (ensure this import exists at the top)
 
-def _derive_task_id(payload: dict | None, src_hint: str | None) -> str | None:
+def _derive_task_id(payload: dict | None, src_hint: str | None) -> Optional[str]:
     """Try payload.metadata.task_id, payload.task_id; else parse UUID from src_hint/result_url."""
     p = payload or {}
     md = (p.get("metadata") or {}) if isinstance(p, dict) else {}
@@ -98,7 +96,6 @@ def _derive_task_id(payload: dict | None, src_hint: str | None) -> str | None:
         if m:
             return m.group(1)
     return None
-
 
 # --------------------- Tables ---------------------
 # Many-rows-per-task tables (arrays)
@@ -114,32 +111,26 @@ BRONZE_ARRAY = [
 
 # One-row-per-task tables (singletons) -> need a unique index on task_id
 BRONZE_SINGLETON = [
-    "player_position",        # we store the original dict as-is
+    "player_position",        # original dict as-is
     "session_confidences",
     "thumbnail",
     "highlight",
     "team_session",
     "bounce_heatmap",
-    "submission_context",     # ensure exists here as well
+    "submission_context",     # mirror table lives in bronze too
 ]
 
 ALL_BRONZE = BRONZE_ARRAY + BRONZE_SINGLETON
 
 # --------------------- Init / DDL ---------------------
 def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
-    # submission_context table compatible with both writers
-    conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS bronze.submission_context (
-            task_id    TEXT UNIQUE,
-            session_id BIGINT UNIQUE,
-            data       JSONB
+    # Create table if missing
+    conn.execute(sql_text(f"""
+        CREATE TABLE IF NOT EXISTS bronze.{table} (
+            task_id TEXT,
+            data    JSONB
         );
     """))
-    # make sure both columns exist on older DBs
-    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS task_id    TEXT;"))
-    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id BIGINT;"))
-    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS data       JSONB;"))
-
     # Ensure task_id column exists (idempotent)
     conn.execute(sql_text(f"""
         ALTER TABLE bronze.{table}
@@ -151,8 +142,6 @@ def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{table}_task
             ON bronze.{table}(task_id);
         """))
-
-
 
 def _run_bronze_init_conn(conn) -> None:
     # Schema
@@ -181,6 +170,18 @@ def _run_bronze_init_conn(conn) -> None:
         );
     """))
 
+    # submission_context table compatible with both writers (task_id or session_id keyed)
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.submission_context (
+            task_id    TEXT UNIQUE,
+            session_id BIGINT UNIQUE,
+            data       JSONB
+        );
+    """))
+    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS task_id    TEXT;"))
+    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id BIGINT;"))
+    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS data       JSONB;"))
+
     # Ensure towers
     for t in BRONZE_ARRAY:
         _ensure_table_has_task_id(conn, t, singleton=False)
@@ -196,11 +197,10 @@ def _run_bronze_init(conn=None) -> bool:
     if conn is not None:
         _run_bronze_init_conn(conn)
         return True
-    from db_init import engine
-    with engine.begin() as _c:
+    from db_init import engine as _engine
+    with _engine.begin() as _c:
         _run_bronze_init_conn(_c)
     return True
-
 
 # --------------------- Raw persistence ----------------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> None:
@@ -210,10 +210,11 @@ def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: in
         try:
             conn.execute(sql_text("""
                 INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
-                VALUES (:tid, :j::JSONB, :sha)
+                VALUES (:tid, CAST(:j AS JSONB), :sha)
             """), {"tid": task_id, "j": js, "sha": sha})
             return
         except Exception:
+            # fall back to gzip if JSONB insert tripped (e.g., oversized TOAST edge cases)
             pass
     gz = _gzip_bytes(js)
     conn.execute(sql_text("""
@@ -251,17 +252,17 @@ def _attach_submission_context(conn, task_id: Optional[str]) -> None:
     # upsert task-scoped copy
     conn.execute(sql_text("""
         INSERT INTO bronze.submission_context (task_id, data)
-        VALUES (:tid, :j::JSONB)
+        VALUES (:tid, CAST(:j AS JSONB))
         ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
     """), {"tid": task_id, "j": json.dumps(sc)})
 
     # mirror a lean copy into bronze.session.meta
     conn.execute(sql_text("""
         INSERT INTO bronze.session (task_id, meta)
-        VALUES (:tid, JSONB_build_object('submission_context', :j::JSONB))
+        VALUES (:tid, jsonb_build_object('submission_context', CAST(:j AS JSONB)))
         ON CONFLICT (task_id) DO UPDATE
-        SET meta = COALESCE(bronze.session.meta, '{}'::JSONB)
-                 || JSONB_build_object('submission_context', :j::JSONB)
+        SET meta = COALESCE(bronze.session.meta, '{}'::jsonb)
+                 || jsonb_build_object('submission_context', CAST(:j AS JSONB))
     """), {"tid": task_id, "j": json.dumps(sc)})
 
 # --------------------- JSONB inserts ------------------------
@@ -269,10 +270,9 @@ def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
     if not arr: return 0
     values = [{"tid": task_id, "j": json.dumps(x)} for x in arr if isinstance(x, dict)]
     if not values: return 0
-    # Fast path: executemany with static SQL
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (task_id, data)
-        VALUES (:tid, :j::JSONB)
+        VALUES (:tid, CAST(:j AS JSONB))
     """), values)
     return len(values)
 
@@ -280,7 +280,7 @@ def _upsert_single(conn, table: str, task_id: str, obj) -> int:
     if obj is None: return 0
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (task_id, data)
-        VALUES (:tid, :j::JSONB)
+        VALUES (:tid, CAST(:j AS JSONB))
         ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
     """), {"tid": task_id, "j": json.dumps(obj)})
     return 1
@@ -295,15 +295,14 @@ def _ensure_session_row(conn, task_id: str, payload: Dict[str, Any]) -> None:
     }
     conn.execute(sql_text("""
         INSERT INTO bronze.session (task_id, session_uid, session_id, meta)
-        VALUES (:tid, :uid, :sid, :meta::JSONB)
+        VALUES (:tid, :uid, :sid, CAST(:meta AS JSONB))
         ON CONFLICT (task_id) DO UPDATE SET
           session_uid = COALESCE(bronze.session.session_uid, :uid),
           session_id  = COALESCE(bronze.session.session_id,  :sid),
-          meta        = COALESCE(bronze.session.meta, '{}'::JSONB) || :meta::JSONB
+          meta        = COALESCE(bronze.session.meta, '{}'::jsonb) || CAST(:meta AS JSONB)
     """), {"tid": task_id, "uid": session_uid, "sid": session_id, "meta": json.dumps(meta_patch)})
 
 # --------------------- Ingestion core -----------------------
-
 def ingest_bronze_strict(
     conn,
     payload: Dict[str, Any],
@@ -365,27 +364,27 @@ def ingest_bronze_strict(
     counts["player_swing"] = _insert_json_array(conn, "player_swing", task_id, swing_rows)
 
     # bulk arrays
-    counts["rally"]          = _insert_json_array(conn, "rally", task_id, rallies)
-    counts["ball_position"]  = _insert_json_array(conn, "ball_position", task_id, ball_positions)
-    counts["ball_bounce"]    = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
-    counts["debug_event"]    = _insert_json_array(conn, "debug_event", task_id, _as_list(debug_events))
-    counts["unmatched_field"]= _insert_json_array(conn, "unmatched_field", task_id, _as_list(unmatched))
+    counts["rally"]           = _insert_json_array(conn, "rally", task_id, rallies)
+    counts["ball_position"]   = _insert_json_array(conn, "ball_position", task_id, ball_positions)
+    counts["ball_bounce"]     = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
+    counts["debug_event"]     = _insert_json_array(conn, "debug_event", task_id, _as_list(debug_events))
+    counts["unmatched_field"] = _insert_json_array(conn, "unmatched_field", task_id, _as_list(unmatched))
 
     # player_positions: store original dict as-is (one row)
-    counts["player_position"]    = _upsert_single(conn, "player_position", task_id, payload.get("player_positions"))
+    counts["player_position"] = _upsert_single(conn, "player_position", task_id, payload.get("player_positions"))
 
     # singletons
-    counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
-    counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
-    counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
-    counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
-    counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
+    counts["session_confidences"] = _upsert_single(conn, "session_confidences", task_id, confidences)
+    counts["thumbnail"]           = _upsert_single(conn, "thumbnail", task_id, thumbnails)
+    counts["highlight"]           = _upsert_single(conn, "highlight", task_id, highlights)
+    counts["team_session"]        = _upsert_single(conn, "team_session", task_id, team_sessions)
+    counts["bounce_heatmap"]      = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
 
-        # link submission_context if available
+    # link submission_context if available
     _attach_submission_context(conn, task_id=task_id)
 
-    # >>> ADD these two lines <<<
-    sid = _extract_session_id(payload)          # may be None if SportAI omitted it
+    # return essentials expected by upload_app callers
+    sid = _extract_session_id(payload)          # may be None
     uid = _compute_session_uid(task_id, payload)
 
     return {"task_id": task_id, "session_id": sid, "session_uid": uid, "counts": counts}
@@ -431,7 +430,8 @@ def http_bronze_ingest_from_url():
         payload = r.json()
         with engine.begin() as conn:
             _run_bronze_init_conn(conn)
-            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint="api:ingest-from-url")
+            # src_hint must be the URL so _derive_task_id can parse UUID if needed
+            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint=url)
         return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
@@ -519,5 +519,4 @@ def http_bronze_reingest_by_task_id():
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
 # Back-compat alias: some older code imported this name directly
-# It points to the same blueprint
 ingest_bronze_strict_blueprint = ingest_bronze
