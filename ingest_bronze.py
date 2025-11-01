@@ -112,13 +112,19 @@ ALL_BRONZE = BRONZE_ARRAY + BRONZE_SINGLETON
 
 # --------------------- Init / DDL ---------------------
 def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
-    # Ensure table exists with (task_id TEXT, data JSONB)
-    conn.execute(sql_text(f"""
-        CREATE TABLE IF NOT EXISTS bronze.{table} (
-            task_id TEXT,
-            data    JSONB
+    # submission_context table compatible with both writers
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.submission_context (
+            task_id    TEXT UNIQUE,
+            session_id BIGINT UNIQUE,
+            data       JSONB
         );
     """))
+    # make sure both columns exist on older DBs
+    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS task_id    TEXT;"))
+    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id BIGINT;"))
+    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS data       JSONB;"))
+
     # Ensure task_id column exists (idempotent)
     conn.execute(sql_text(f"""
         ALTER TABLE bronze.{table}
@@ -361,10 +367,14 @@ def ingest_bronze_strict(
     counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
     counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
 
-    # link submission_context if available
+        # link submission_context if available
     _attach_submission_context(conn, task_id=task_id)
 
-    return {"task_id": task_id, "counts": counts}
+    # >>> ADD these two lines <<<
+    sid = _extract_session_id(payload)          # may be None if SportAI omitted it
+    uid = _compute_session_uid(task_id, payload)
+
+    return {"task_id": task_id, "session_id": sid, "session_uid": uid, "counts": counts}
 
 # -------------------------- Routes --------------------------
 @ingest_bronze.get("/bronze/init")
