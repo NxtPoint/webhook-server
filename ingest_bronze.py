@@ -133,7 +133,7 @@ def _ensure_table_has_task_id(conn, table: str, singleton: bool):
         EXECUTE 'ALTER TABLE bronze.{table} ADD COLUMN task_id TEXT';
       END IF;
 
-      {"IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=''bronze'' AND indexname=''ux_bronze_" + table + "_task'') THEN EXECUTE ''CREATE UNIQUE INDEX ux_bronze_" + table + "_task ON bronze." + table + " (task_id)''; END IF;" if singleton else ""}
+      {"IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='bronze' AND indexname=''ux_bronze_" + table + "_task'') THEN EXECUTE ''CREATE UNIQUE INDEX ux_bronze_" + table + "_task ON bronze." + table + " (task_id)''; END IF;" if singleton else ""}
     END$$;
     """))
 
@@ -162,7 +162,7 @@ def _run_bronze_init_conn(conn) -> None:
       -- raw_result lives in bronze schema in this continuity build
       IF NOT EXISTS (
         SELECT 1 FROM information_schema.tables
-        WHERE table_schema=''bronze'' AND table_name=''raw_result''
+        WHERE table_schema='bronze' AND table_name='raw_result'
       ) THEN
         EXECUTE $Q$
           CREATE TABLE bronze.raw_result (
@@ -179,7 +179,7 @@ def _run_bronze_init_conn(conn) -> None:
       -- Relax legacy NOT NULL on session_id if present
       IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_schema=''bronze'' AND table_name=''raw_result'' AND column_name=''session_id'' AND is_nullable=''NO''
+        WHERE table_schema='bronze' AND table_name='raw_result' AND column_name='session_id' AND is_nullable='NO'
       ) THEN
         EXECUTE 'ALTER TABLE bronze.raw_result ALTER COLUMN session_id DROP NOT NULL';
       END IF;
