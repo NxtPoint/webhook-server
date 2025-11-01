@@ -166,9 +166,18 @@ def _run_bronze_init_conn(conn) -> None:
     for t in BRONZE_SINGLETON:
         _ensure_table_has_task_id(conn, t, singleton=True)
 
-def _run_bronze_init() -> bool:
-    with engine.begin() as conn:
+def _run_bronze_init(conn=None) -> bool:
+    """
+    Back-compat shim:
+      - If called as _run_bronze_init(conn): use that connection
+      - If called with no args: open a transaction and run init
+    """
+    if conn is not None:
         _run_bronze_init_conn(conn)
+        return True
+    from db_init import engine
+    with engine.begin() as _c:
+        _run_bronze_init_conn(_c)
     return True
 
 
