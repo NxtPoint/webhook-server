@@ -1,11 +1,15 @@
-# ingest_bronze.py — Task-ID canonical bronze (continuity-safe, Nov 2025)
-# - task_id is canonical (TEXT) — no session_id required
-# - bronze.raw_result stores JSONB (small) or GZIP (large) + sha256
-# - submission_context mirrored into bronze.submission_context and bronze.session.meta
-# - player_swing exploded WITHOUT mutating original swing objects
-# - Back-compat shims: _run_bronze_init() (no-arg) and routes keep prior API surface
+# ingest_bronze.py — RAW-first, then bronze towers (simple JSONB form)
+# Contract:
+#   - RAW is *always* written & committed before bronze mapping.
+#   - Bronze towers expect tables shaped as: (task_id TEXT, data JSONB, created_at TIMESTAMPTZ DEFAULT now()).
+#   - If a tower table doesn't fit that simple shape, that tower is skipped (others continue).
+# Endpoints:
+#   GET  /bronze/init                 -> ensure bronze.raw_result exists (no other DDL)
+#   POST /bronze/ingest-from-url      -> fetch JSON, save RAW, map to bronze towers
+#   POST /bronze/ingest-json          -> accept payload inline, save RAW, map to bronze towers
+#   POST /bronze/reingest-from-raw    -> reload from last RAW row for a task_id
 
-import os, json, gzip, hashlib, re
+import os, json, gzip, hashlib
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
@@ -15,479 +19,124 @@ from sqlalchemy import text as sql_text
 
 from db_init import engine
 
+# ---------- Blueprint / Auth ----------
 ingest_bronze = Blueprint("ingest_bronze", __name__)
 OPS_KEY = os.getenv("OPS_KEY", "").strip()
 
-# -------------------------- Auth --------------------------
 def _guard() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
     hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
     auth = request.headers.get("Authorization", "")
-    if auth and auth.lower().startswith("bearer "):
+    if auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
     supplied = qk or hk
-    # If OPS_KEY unset (local), allow through; else require match
     return (not OPS_KEY) or supplied == OPS_KEY
 
-def _forbid():
-    return Response("Forbidden", 403)
+def _forbid(): return Response("Forbidden", 403)
 
-# ------------------------ Utilities ------------------------
+# ---------- Small utils ----------
 def _require_json() -> Dict[str, Any]:
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         raise ValueError("JSON body required")
     return body
 
-def _sha256_str(s: str) -> str:
+def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 def _gzip_bytes(s: str) -> bytes:
     return gzip.compress(s.encode("utf-8"))
 
 def _as_list(v) -> List[Any]:
-    if v is None: return []
-    return v if isinstance(v, list) else []
-
-def _as_dict(v) -> Dict[str, Any]:
-    return v if isinstance(v, dict) else {}
-
-def _extract_session_id(payload: Dict[str, Any]) -> Optional[int]:
-    """Try to read SportAI's numeric session id; return None if absent."""
-    cand = [
-        payload.get("session_id"),
-        (payload.get("session") or {}).get("id"),
-        (payload.get("session") or {}).get("session_id"),
-        (payload.get("metadata") or {}).get("session_id"),
-        payload.get("sessionId"),
-        (payload.get("data") or {}).get("session_id"),
-    ]
-    for c in cand:
-        if c is None:
-            continue
-        try:
-            sid = int(str(c))
-            if sid > 0:
-                return sid
-        except Exception:
-            pass
-    return None
-
-def _compute_session_uid(task_id: Optional[str], payload: Dict[str, Any]) -> str:
-    # Prefer explicit UID if present anywhere
-    for k in ("session_uid", "sessionUid", "sessionUID"):
-        v = payload.get(k) or (payload.get("session") or {}).get(k) or (payload.get("metadata") or {}).get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    # Deterministic fallback: <tid8>-<payloadhash10>
-    tid = (task_id or "")[:8] or "nosrc"
-    ph  = _sha256_str(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
-    return f"{tid}-{ph}"
+    if isinstance(v, list): return v
+    return []
 
 def _derive_task_id(payload: dict | None, src_hint: str | None) -> Optional[str]:
-    """Try payload.metadata.task_id, payload.task_id; else parse UUID from src_hint/result_url."""
+    import re
     p = payload or {}
-    md = (p.get("metadata") or {}) if isinstance(p, dict) else {}
+    md = p.get("metadata") or {}
     tid = p.get("task_id") or md.get("task_id")
     if isinstance(tid, str) and tid.strip():
         return tid.strip()
     if src_hint:
         m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', str(src_hint), re.I)
-        if m:
-            return m.group(1)
+        if m: return m.group(1)
     return None
 
-# --------------------- Tables ---------------------
-# Many-rows-per-task tables (arrays)
-BRONZE_ARRAY = [
-    "player",
-    "player_swing",
-    "rally",
-    "ball_position",
-    "ball_bounce",
-    "unmatched_field",
-    "debug_event",
-]
-
-# One-row-per-task tables (singletons) -> need a unique index on task_id
-BRONZE_SINGLETON = [
-    "player_position",        # original dict as-is
-    "session_confidences",
-    "thumbnail",
-    "highlight",
-    "team_session",
-    "bounce_heatmap",
-    "submission_context",     # mirror table lives in bronze too
-]
-
-ALL_BRONZE = BRONZE_ARRAY + BRONZE_SINGLETON
-
-# --------------------- Init / DDL ---------------------
-def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
-    # Create table if missing
-    conn.execute(sql_text(f"""
-        CREATE TABLE IF NOT EXISTS bronze.{table} (
-            task_id TEXT,
-            data    JSONB
-        );
-    """))
-    # Ensure task_id column exists (idempotent)
-    conn.execute(sql_text(f"""
-        ALTER TABLE bronze.{table}
-        ADD COLUMN IF NOT EXISTS task_id TEXT;
-    """))
-    # For singletons ensure a unique index on task_id
-    if singleton:
-        conn.execute(sql_text(f"""
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{table}_task
-            ON bronze.{table}(task_id);
+# ---------- Minimal DDL (RAW only) ----------
+def _ensure_raw_table():
+    with engine.begin() as conn:
+        conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
+        conn.execute(sql_text("""
+            CREATE TABLE IF NOT EXISTS bronze.raw_result (
+                id              BIGSERIAL PRIMARY KEY,
+                task_id         TEXT NOT NULL,
+                payload_json    JSONB,
+                payload_gzip    BYTEA,
+                payload_sha256  TEXT,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
         """))
+        conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_task ON bronze.raw_result(task_id);"))
 
-def _run_bronze_init_conn(conn) -> None:
-    # Schema
-    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
-
-    # Session registry keyed by task_id
-    conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS bronze.session (
-            task_id     TEXT PRIMARY KEY,
-            session_uid TEXT,
-            session_id  BIGINT,
-            meta        JSONB,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-    """))
-
-# --------------------- Init / DDL ---------------------
-def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
-    # Ensure table exists (arrays/singletons will be created lazily via ingest if already present)
-    conn.execute(sql_text(f"CREATE TABLE IF NOT EXISTS bronze.{table} (task_id TEXT, data JSONB);"))
-
-    # Ensure task_id column exists
-    conn.execute(sql_text(f"ALTER TABLE bronze.{table} ADD COLUMN IF NOT EXISTS task_id TEXT;"))
-
-    # Unique(task_id) for singletons
-    if singleton:
-        conn.execute(sql_text(f"""
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{table}_task
-            ON bronze.{table}(task_id);
-        """))
-
-def _drop_fks_to_session(conn) -> None:
-    """
-    Drop any foreign keys in bronze.* that reference bronze.session (legacy on session_id).
-    We target the real referencing table via the catalog (no name guessing).
-    """
-        # --- MIGRATE legacy bronze tables to (task_id TEXT, data JSONB) model + relax NOT NULL ---
-    conn.execute(sql_text("""
-    DO $$
-    DECLARE
-      t text;
-      c record;
-      has_sid_pk boolean;
-      tables text[] := ARRAY[
-        'player','player_swing','rally','ball_position','ball_bounce',
-        'unmatched_field','debug_event','player_position',
-        'session_confidences','thumbnail','highlight','team_session',
-        'bounce_heatmap','submission_context'
-      ];
-      safe_keep_not_null text[] := ARRAY['id','created_at','task_id','data'];  -- never touch these
-    BEGIN
-      FOREACH t IN ARRAY tables LOOP
-        -- Ensure core columns exist
-        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS task_id TEXT', t);
-        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS data JSONB', t);
-
-        -- session_id: drop NOT NULL only if not part of PK
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-           WHERE table_schema='bronze' AND table_name=t
-             AND column_name='session_id' AND is_nullable='NO'
-        ) THEN
-          SELECT EXISTS (
-            SELECT 1
-            FROM pg_attribute a
-            JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
-            JOIN pg_class cl ON cl.oid = c.conrelid
-            JOIN pg_namespace n ON n.oid = cl.relnamespace
-            WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p' AND a.attname='session_id'
-          ) INTO has_sid_pk;
-          IF NOT has_sid_pk THEN
-            EXECUTE format('ALTER TABLE bronze.%I ALTER COLUMN session_id DROP NOT NULL', t);
-          END IF;
-        END IF;
-
-        -- Relax any other legacy NOT NULLs (e.g., sportai_player_uid, angle, etc.)
-        FOR c IN
-          SELECT column_name
-          FROM information_schema.columns
-          WHERE table_schema='bronze' AND table_name=t
-            AND is_nullable='NO'
-            AND column_name <> 'session_id'
-            AND NOT (column_name = ANY(safe_keep_not_null))
-        LOOP
-          EXECUTE format('ALTER TABLE bronze.%I ALTER COLUMN %I DROP NOT NULL', t, c.column_name);
-        END LOOP;
-
-        -- Singleton tables: unique on task_id
-        IF t IN ('player_position','session_confidences','thumbnail','highlight','team_session','bounce_heatmap','submission_context') THEN
-          EXECUTE format('CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_%I_task ON bronze.%I(task_id)', t, t);
-        END IF;
-      END LOOP;
-    END$$;
-    """))
-
-
-def _ensure_session_pk_is_task_id(conn) -> None:
-    """
-    Make bronze.session use PRIMARY KEY(task_id) and allow NULL session_id,
-    with a partial unique index on session_id when present.
-    """
-    conn.execute(sql_text("""
-    DO $$
-    DECLARE
-      pk_name     text;
-      has_sid_pk  boolean;
-    BEGIN
-      -- Ensure columns exist
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='bronze' AND table_name='session' AND column_name='task_id'
-      ) THEN
-        EXECUTE 'ALTER TABLE bronze.session ADD COLUMN task_id TEXT';
-      END IF;
-      IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='bronze' AND table_name='session' AND column_name='meta'
-      ) THEN
-        EXECUTE 'ALTER TABLE bronze.session ADD COLUMN meta JSONB';
-      END IF;
-
-      -- current PK name
-      SELECT c.conname
-        INTO pk_name
-      FROM pg_constraint c
-      JOIN pg_class t ON t.oid = c.conrelid
-      JOIN pg_namespace n ON n.oid = t.relnamespace
-      WHERE n.nspname='bronze' AND t.relname='session' AND c.contype='p'
-      LIMIT 1;
-
-      -- Does current PK include session_id?
-      SELECT EXISTS (
-        SELECT 1
-        FROM pg_attribute a
-        JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
-        JOIN pg_class t ON t.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = t.relnamespace
-        WHERE n.nspname='bronze' AND t.relname='session' AND c.contype='p' AND a.attname='session_id'
-      ) INTO has_sid_pk;
-
-      IF has_sid_pk THEN
-        -- Switch PK to task_id
-        EXECUTE 'ALTER TABLE bronze.session DROP CONSTRAINT ' || quote_ident(pk_name);
-        EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN task_id SET NOT NULL';
-        EXECUTE 'ALTER TABLE bronze.session ADD PRIMARY KEY (task_id)';
-      ELSIF pk_name IS NULL THEN
-        -- No PK: set task_id as PK
-        EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN task_id SET NOT NULL';
-        EXECUTE 'ALTER TABLE bronze.session ADD PRIMARY KEY (task_id)';
-      END IF;
-
-      -- partial unique on session_id when present
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_indexes
-        WHERE schemaname='bronze' AND indexname='ux_bronze_session_sid_nn'
-      ) THEN
-        EXECUTE 'CREATE UNIQUE INDEX ux_bronze_session_sid_nn ON bronze.session(session_id) WHERE session_id IS NOT NULL';
-      END IF;
-
-      -- relax NOT NULL on session_id, if still present
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='bronze' AND table_name='session'
-          AND column_name='session_id' AND is_nullable='NO'
-      ) THEN
-        EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN session_id DROP NOT NULL';
-      END IF;
-    END$$;
-    """))
-
-def _relax_child_tables_and_fix_pks(conn) -> None:
-    """
-    For each bronze child table:
-      - Ensure task_id exists
-      - If session_id is part of the PK, replace that PK with a surrogate id BIGSERIAL PK
-      - Then relax NOT NULL on session_id (if any)
-      - Keep/ensure UNIQUE(task_id) on singletons
-    """
-
-        # --- MIGRATE legacy bronze tables to (task_id TEXT, data JSONB) model ---
-    conn.execute(sql_text("""
-    DO $$
-    DECLARE
-      r record;
-      has_sid_pk boolean;
-    BEGIN
-      -- tables we manage
-      FOR r IN
-        SELECT unnest(ARRAY[
-          'player','player_swing','rally','ball_position','ball_bounce',
-          'unmatched_field','debug_event','player_position',
-          'session_confidences','thumbnail','highlight','team_session',
-          'bounce_heatmap','submission_context'
-        ]) AS table_name
-      LOOP
-        -- Ensure task_id + data columns exist
-        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS task_id TEXT', r.table_name);
-        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS data JSONB', r.table_name);
-
-        -- If session_id exists AND is NOT NULL AND NOT part of this table's primary key -> drop NOT NULL
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-           WHERE table_schema='bronze' AND table_name=r.table_name
-             AND column_name='session_id' AND is_nullable='NO'
-        ) THEN
-          SELECT EXISTS (
-            SELECT 1
-            FROM pg_attribute a
-            JOIN pg_constraint c
-              ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
-            JOIN pg_class t ON t.oid = c.conrelid
-            JOIN pg_namespace n ON n.oid = t.relnamespace
-            WHERE n.nspname='bronze' AND t.relname=r.table_name
-              AND c.contype='p' AND a.attname='session_id'
-          ) INTO has_sid_pk;
-
-          IF NOT has_sid_pk THEN
-            EXECUTE format('ALTER TABLE bronze.%I ALTER COLUMN session_id DROP NOT NULL', r.table_name);
-          END IF;
-        END IF;
-      END LOOP;
-    END$$;
-    """))
-
-def _run_bronze_init_conn(conn) -> None:
-    # Schema
-    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
-
-    # Core tables
-    conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS bronze.session (
-            task_id     TEXT PRIMARY KEY,
-            session_uid TEXT,
-            session_id  BIGINT,
-            meta        JSONB,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-    """))
-
-    conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS bronze.raw_result (
-            id              BIGSERIAL PRIMARY KEY,
-            task_id         TEXT NOT NULL,
-            payload_json    JSONB,
-            payload_gzip    BYTEA,
-            payload_sha256  TEXT,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-    """))
-
-    # submission_context tower (task_id & session_id both supported)
-    conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS bronze.submission_context (
-            task_id    TEXT UNIQUE,
-            session_id BIGINT UNIQUE,
-            data       JSONB
-        );
-    """))
-
-    # Ensure towers exist & have task_id
-    for t in BRONZE_ARRAY:
-        _ensure_table_has_task_id(conn, t, singleton=False)
-    for t in BRONZE_SINGLETON:
-        _ensure_table_has_task_id(conn, t, singleton=True)
-
-    # ---- Legacy migrations (idempotent) ----
-    _drop_fks_to_session(conn)
-    _ensure_session_pk_is_task_id(conn)
-    _relax_child_tables_and_fix_pks(conn)
-
-def _run_bronze_init(conn=None) -> bool:
-    if conn is not None:
-        _run_bronze_init_conn(conn)
-        return True
-    from db_init import engine
-    with engine.begin() as _c:
-        _run_bronze_init_conn(_c)
-    return True
-
-# --------------------- Raw persistence ----------------------
-def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> None:
+# ---------- RAW persistence (committed separately) ----------
+def _persist_raw_committed(task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> Dict[str, Any]:
     js = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    sha = _sha256_str(js)
-    if len(js) <= size_threshold:
-        try:
-            conn.execute(sql_text("""
-                INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
-                VALUES (:tid, CAST(:j AS JSONB), :sha)
-            """), {"tid": task_id, "j": js, "sha": sha})
-            return
-        except Exception:
-            # fall back to gzip if JSONB insert tripped (e.g., oversized TOAST edge cases)
-            pass
-    gz = _gzip_bytes(js)
-    conn.execute(sql_text("""
-        INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256)
-        VALUES (:tid, :gz, :sha)
-    """), {"tid": task_id, "gz": gz, "sha": sha})
+    sha = _sha256(js)
+    with engine.begin() as c:
+        if len(js) <= size_threshold:
+            # Prefer JSONB column (smaller, queryable)
+            try:
+                c.execute(sql_text("""
+                    INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
+                    VALUES (:tid, CAST(:j AS JSONB), :sha)
+                """), {"tid": task_id, "j": js, "sha": sha})
+                return {"sha": sha, "stored": "json"}
+            except Exception:
+                pass  # fallback to gzip
+        gz = _gzip_bytes(js)
+        c.execute(sql_text("""
+            INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256)
+            VALUES (:tid, :gz, :sha)
+        """), {"tid": task_id, "gz": gz, "sha": sha})
+        return {"sha": sha, "stored": "gzip"}
 
-# --------------------- Submission context -------------------
-def _attach_submission_context(conn, task_id: Optional[str]) -> None:
-    if not task_id:
-        return
-    exists = conn.execute(sql_text(
-        "SELECT to_regclass('public.submission_context') IS NOT NULL"
-    )).scalar_one()
-    if not exists:
-        return
+# ---------- Bronze mapping helpers (JSONB towers only) ----------
+# We *assume* bronze.<tower>(task_id TEXT, data JSONB, created_at TIMESTAMPTZ default now()).
+# If the table has a different shape (e.g., legacy NOT NULL columns), we skip it gracefully.
 
-    keep = [
-        "email","customer_name","match_date","start_time","location",
-        "player_a_name","player_b_name","player_a_utr","player_b_utr",
-        "video_url","share_url","task_id"
-    ]
+_TARRAY = {
+    "player": "players",
+    "player_swing": None,          # derived from players[*].swings/strokes
+    "rally": "rallies",
+    "ball_position": "ball_positions",
+    "ball_bounce": "ball_bounces",
+    "unmatched_field": ["unmatched", "unmatched_fields"],
+    "debug_event": ["debug_events", "events_debug"],
+}
+
+_TSINGLE = {
+    "player_position": "player_positions",     # original dict
+    "session_confidences": "confidences",
+    "thumbnail": ["thumbnails", "thumbnail_crops"],
+    "highlight": "highlights",
+    "team_session": "team_sessions",
+    "bounce_heatmap": "bounce_heatmap",
+    "submission_context": None,               # optional (from public.submission_context), skipped here
+}
+
+def _table_accepts_jsonb(conn, table: str) -> bool:
     row = conn.execute(sql_text("""
-        SELECT * FROM public.submission_context
-         WHERE task_id = :tid
-         LIMIT 1
-    """), {"tid": task_id}).mappings().first()
+        SELECT COUNT(*) = 2
+        FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name=:t AND column_name IN ('task_id','data')
+    """), {"t": table}).scalar()
+    return bool(row)
 
-    sc = {"task_id": task_id}
-    if row:
-        for k in keep:
-            if k in row and row[k] is not None:
-                sc[k] = row[k]
-
-    # upsert task-scoped copy
-    conn.execute(sql_text("""
-        INSERT INTO bronze.submission_context (task_id, data)
-        VALUES (:tid, CAST(:j AS JSONB))
-        ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
-    """), {"tid": task_id, "j": json.dumps(sc)})
-
-    # mirror a lean copy into bronze.session.meta
-    conn.execute(sql_text("""
-        INSERT INTO bronze.session (task_id, meta)
-        VALUES (:tid, jsonb_build_object('submission_context', CAST(:j AS JSONB)))
-        ON CONFLICT (task_id) DO UPDATE
-        SET meta = COALESCE(bronze.session.meta, '{}'::jsonb)
-                 || jsonb_build_object('submission_context', CAST(:j AS JSONB))
-    """), {"tid": task_id, "j": json.dumps(sc)})
-
-# --------------------- JSONB inserts ------------------------
-def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
-    if not arr: return 0
-    values = [{"tid": task_id, "j": json.dumps(x)} for x in arr if isinstance(x, dict)]
+def _insert_many_jsonb(conn, table: str, task_id: str, items: List[Dict[str, Any]]) -> int:
+    if not items: return 0
+    if not _table_accepts_jsonb(conn, table): return 0
+    values = [{"tid": task_id, "j": json.dumps(x)} for x in items if isinstance(x, dict)]
     if not values: return 0
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (task_id, data)
@@ -495,126 +144,75 @@ def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
     """), values)
     return len(values)
 
-def _upsert_single(conn, table: str, task_id: str, obj) -> int:
-    if obj is None: return 0
+def _insert_one_jsonb(conn, table: str, task_id: str, obj: Dict[str, Any]) -> int:
+    if not isinstance(obj, dict): return 0
+    if not _table_accepts_jsonb(conn, table): return 0
     conn.execute(sql_text(f"""
         INSERT INTO bronze.{table} (task_id, data)
         VALUES (:tid, CAST(:j AS JSONB))
-        ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
+        ON CONFLICT DO NOTHING
     """), {"tid": task_id, "j": json.dumps(obj)})
     return 1
 
-def _ensure_session_row(conn, task_id: str, payload: Dict[str, Any]) -> None:
-    """Ensure bronze.session has a row for task_id and attach basic meta/ids."""
-    session_id = _extract_session_id(payload)  # optional
-    session_uid = _compute_session_uid(task_id, payload)
-    meta_patch = {
-        "ingest_at": datetime.now(timezone.utc).isoformat(),
-        "keys": list(payload.keys())[:50]
-    }
-    conn.execute(sql_text("""
-        INSERT INTO bronze.session (task_id, session_uid, session_id, meta)
-        VALUES (:tid, :uid, :sid, CAST(:meta AS JSONB))
-        ON CONFLICT (task_id) DO UPDATE SET
-          session_uid = COALESCE(bronze.session.session_uid, :uid),
-          session_id  = COALESCE(bronze.session.session_id,  :sid),
-          meta        = COALESCE(bronze.session.meta, '{}'::jsonb) || CAST(:meta AS JSONB)
-    """), {"tid": task_id, "uid": session_uid, "sid": session_id, "meta": json.dumps(meta_patch)})
-
-# --------------------- Ingestion core -----------------------
-def ingest_bronze_strict(
-    conn,
-    payload: Dict[str, Any],
-    replace: bool = True,
-    forced_uid: Optional[str] = None,   # kept for API parity; unused
-    src_hint: Optional[str] = None,
-    task_id: Optional[str] = None
-) -> Dict[str, Any]:
-
-    # task_id is canonical (allow URL-derived fallback)
-    if not task_id:
-        task_id = _derive_task_id(payload, src_hint)
-    if not task_id:
-        raise ValueError("task_id is required")
-
-    # Idempotent cleanup by task_id
-    if replace:
-        for t in ALL_BRONZE:
-            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id = :tid"), {"tid": task_id})
-
-    # Persist raw snapshot
-    _persist_raw(conn, task_id, payload)
-
-    # Ensure/patch bronze.session (stores derived session_uid + optional session_id and meta)
-    _ensure_session_row(conn, task_id, payload)
-
-    # ---- Map JSON → bronze towers (no mutation of original objects) ----
-    players         = _as_list(payload.get("players"))
-    rallies         = _as_list(payload.get("rallies"))
-    ball_positions  = _as_list(payload.get("ball_positions"))
-    ball_bounces    = _as_list(payload.get("ball_bounces"))
-    confidences     = payload.get("confidences")
-    thumbnails      = payload.get("thumbnails") or payload.get("thumbnail_crops")
-    highlights      = payload.get("highlights")
-    team_sessions   = payload.get("team_sessions")
-    bounce_heatmap  = payload.get("bounce_heatmap")
-    unmatched       = payload.get("unmatched") or payload.get("unmatched_fields")
-    debug_events    = payload.get("debug_events") or payload.get("events_debug")
-
-    counts: Dict[str, int] = {}
-
-    # players
-    counts["player"] = _insert_json_array(conn, "player", task_id, players)
-
-    # player_swing: collect nested arrays without adding any fields
-    swing_rows = []
-    for p in players:
-        if not isinstance(p, dict):
-            continue
+def _collect_swings(players: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for p in players or []:
+        if not isinstance(p, dict): continue
         for key in ("swings", "strokes", "swing_events"):
             for s in _as_list(p.get(key)):
-                if isinstance(s, dict):
-                    swing_rows.append(s)
-        stats = _as_dict(p.get("statistics") or p.get("stats"))
-        for key in ("swings", "strokes", "swing_events"):
-            for s in _as_list(stats.get(key)):
-                if isinstance(s, dict):
-                    swing_rows.append(s)
-    counts["player_swing"] = _insert_json_array(conn, "player_swing", task_id, swing_rows)
+                if isinstance(s, dict): out.append(s)
+        stats = p.get("statistics") or p.get("stats") or {}
+        if isinstance(stats, dict):
+            for key in ("swings", "strokes", "swing_events"):
+                for s in _as_list(stats.get(key)):
+                    if isinstance(s, dict): out.append(s)
+    return out
 
-    # bulk arrays
-    counts["rally"]           = _insert_json_array(conn, "rally", task_id, rallies)
-    counts["ball_position"]   = _insert_json_array(conn, "ball_position", task_id, ball_positions)
-    counts["ball_bounce"]     = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
-    counts["debug_event"]     = _insert_json_array(conn, "debug_event", task_id, _as_list(debug_events))
-    counts["unmatched_field"] = _insert_json_array(conn, "unmatched_field", task_id, _as_list(unmatched))
+# ---------- Core ingest (payload already loaded) ----------
+def _ingest_payload(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    counts: Dict[str, int] = {}
 
-    # player_positions: store original dict as-is (one row)
-    counts["player_position"] = _upsert_single(conn, "player_position", task_id, payload.get("player_positions"))
+    # ARRAY towers
+    players = payload.get("players") or []
+    counts["player"] = 0
+    with engine.begin() as conn:
+        counts["player"] = _insert_many_jsonb(conn, "player", task_id, players)
 
-    # singletons
-    counts["session_confidences"] = _upsert_single(conn, "session_confidences", task_id, confidences)
-    counts["thumbnail"]           = _upsert_single(conn, "thumbnail", task_id, thumbnails)
-    counts["highlight"]           = _upsert_single(conn, "highlight", task_id, highlights)
-    counts["team_session"]        = _upsert_single(conn, "team_session", task_id, team_sessions)
-    counts["bounce_heatmap"]      = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
+        swings = _collect_swings(players)
+        counts["player_swing"] = _insert_many_jsonb(conn, "player_swing", task_id, swings)
 
-    # link submission_context if available
-    _attach_submission_context(conn, task_id=task_id)
+        for table, key in _TARRAY.items():
+            if table in ("player", "player_swing"):  # already handled
+                continue
+            keys = key if isinstance(key, list) else [key]
+            src = None
+            for k in (keys or []):
+                if k and isinstance(payload.get(k), list):
+                    src = payload.get(k); break
+            if src is not None:
+                counts[table] = _insert_many_jsonb(conn, table, task_id, src)
+            else:
+                counts[table] = 0
 
-    # return essentials expected by upload_app callers
-    sid = _extract_session_id(payload)          # may be None
-    uid = _compute_session_uid(task_id, payload)
+        # SINGLETON towers
+        for table, key in _TSINGLE.items():
+            if key is None:
+                continue  # submission_context handled by your upload_app writer; skip here
+            keys = key if isinstance(key, list) else [key]
+            obj = None
+            for k in keys:
+                v = payload.get(k)
+                if isinstance(v, dict): obj = v; break
+            counts[table] = _insert_one_jsonb(conn, table, task_id, obj) if obj else 0
 
-    return {"task_id": task_id, "session_id": sid, "session_uid": uid, "counts": counts}
+    return {"task_id": task_id, "counts": counts}
 
-# -------------------------- Routes --------------------------
+# ---------- HTTP Routes ----------
 @ingest_bronze.get("/bronze/init")
 def http_bronze_init():
     if not _guard(): return _forbid()
     try:
-        with engine.begin() as conn:
-            _run_bronze_init_conn(conn)
+        _ensure_raw_table()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
@@ -623,119 +221,68 @@ def http_bronze_init():
 def http_bronze_ingest_json():
     if not _guard(): return _forbid()
     try:
+        _ensure_raw_table()
         body = _require_json()
-        payload = body.get("payload") or body  # accepts raw payload or {"payload": {...}}
-        replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
-        task_id = body.get("task_id")
-        with engine.begin() as conn:
-            _run_bronze_init_conn(conn)
-            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint="api:ingest-json")
-        return jsonify({"ok": True, **out})
+        payload = body.get("payload") or body
+        task_id = body.get("task_id") or _derive_task_id(payload, "api:ingest-json")
+        if not task_id: return jsonify({"ok": False, "error": "task_id required"}), 400
+
+        raw_info = _persist_raw_committed(task_id, payload)
+        out = _ingest_payload(task_id, payload)
+        return jsonify({"ok": True, "raw": raw_info, **out})
     except Exception as e:
+        # RAW is already safe; report the mapping failure
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 400
 
 @ingest_bronze.post("/bronze/ingest-from-url")
 def http_bronze_ingest_from_url():
     if not _guard(): return _forbid()
-    body = request.get_json(silent=True) or {}
-    url = body.get("result_url")
-    replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
-    task_id = body.get("task_id")
-    if not url:
-        return jsonify({"ok": False, "error": "result_url required"}), 400
     try:
+        _ensure_raw_table()
+        body = request.get_json(silent=True) or {}
+        url  = (body.get("result_url") or "").strip()
+        if not url: return jsonify({"ok": False, "error": "result_url required"}), 400
+
         r = requests.get(url, timeout=300)
         r.raise_for_status()
         payload = r.json()
-        with engine.begin() as conn:
-            _run_bronze_init_conn(conn)
-            # src_hint must be the URL so _derive_task_id can parse UUID if needed
-            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint=url)
-        return jsonify({"ok": True, **out})
+        task_id = body.get("task_id") or _derive_task_id(payload, url)
+        if not task_id: return jsonify({"ok": False, "error": "task_id required"}), 400
+
+        raw_info = _persist_raw_committed(task_id, payload)
+        out = _ingest_payload(task_id, payload)
+        return jsonify({"ok": True, "raw": raw_info, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
 @ingest_bronze.post("/bronze/reingest-from-raw")
 def http_bronze_reingest_from_raw():
     if not _guard(): return _forbid()
-    body = request.get_json(silent=True) or {}
-    task_id = body.get("task_id")
-    if not task_id:
-        return jsonify({"ok": False, "error": "task_id required"}), 400
-    replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
     try:
+        _ensure_raw_table()
+        body = request.get_json(silent=True) or {}
+        task_id = (body.get("task_id") or "").strip()
+        if not task_id: return jsonify({"ok": False, "error": "task_id required"}), 400
+
         with engine.begin() as conn:
-            _run_bronze_init_conn(conn)
             row = conn.execute(sql_text("""
                 SELECT payload_json, payload_gzip
                   FROM bronze.raw_result
-                 WHERE task_id = :tid
-              ORDER BY created_at DESC
+                 WHERE task_id=:tid
+              ORDER BY id DESC
                  LIMIT 1
             """), {"tid": task_id}).mappings().first()
-            if not row:
-                return jsonify({"ok": False, "error": f"no raw_result for task_id={task_id}"}), 404
-            if row["payload_json"] is not None:
-                payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
-            elif row["payload_gzip"] is not None:
-                payload = json.loads(gzip.decompress(row["payload_gzip"]).decode("utf-8"))
-            else:
-                return jsonify({"ok": False, "error": "no payload_json or payload_gzip present"}), 500
+        if not row:
+            return jsonify({"ok": False, "error": f"no raw_result for task_id={task_id}"}), 404
 
-            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint="api:reingest-from-raw")
-            return jsonify({"ok": True, **out})
+        if row["payload_json"] is not None:
+            payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
+        elif row["payload_gzip"] is not None:
+            payload = json.loads(gzip.decompress(row["payload_gzip"]).decode("utf-8"))
+        else:
+            return jsonify({"ok": False, "error": "empty RAW row (no json or gzip)"}), 500
+
+        out = _ingest_payload(task_id, payload)
+        return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
-
-@ingest_bronze.post("/bronze/reingest-by-task-id")
-def http_bronze_reingest_by_task_id():
-    if not _guard(): return _forbid()
-    body = request.get_json(silent=True) or {}
-    task_id = body.get("task_id")
-    replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
-    scan_limit = int(body.get("scan_limit") or 400)
-    if not task_id:
-        return jsonify({"ok": False, "error": "task_id required"}), 400
-    try:
-        with engine.begin() as conn:
-            _run_bronze_init_conn(conn)
-            rows = conn.execute(sql_text("""
-                SELECT id, task_id, payload_json, payload_gzip, created_at
-                  FROM bronze.raw_result
-              ORDER BY created_at DESC
-                 LIMIT :lim
-            """), {"lim": scan_limit}).mappings().all()
-
-            match = None
-            for r in rows:
-                pj = r["payload_json"]
-                if pj is not None:
-                    s = pj if isinstance(pj, str) else json.dumps(pj, separators=(",", ":"))
-                    if task_id in s:
-                        match = r; break
-                pgz = r["payload_gzip"]
-                if pgz:
-                    try:
-                        txt = gzip.decompress(pgz).decode("utf-8", errors="ignore")
-                        if task_id in txt:
-                            match = r; break
-                    except Exception:
-                        pass
-
-            if not match:
-                return jsonify({"ok": True, "reingested": False, "reason": "task_id not found in recent raw_result", "scanned": len(rows)})
-
-            if match["payload_json"] is not None:
-                payload = match["payload_json"] if isinstance(match["payload_json"], dict) else json.loads(match["payload_json"])
-            elif match["payload_gzip"] is not None:
-                payload = json.loads(gzip.decompress(match["payload_gzip"]).decode("utf-8"))
-            else:
-                return jsonify({"ok": False, "error": "no payload_json or payload_gzip present for matched row"}), 500
-
-            out = ingest_bronze_strict(conn, payload, replace=replace, task_id=task_id, src_hint="api:reingest-by-task-id")
-            return jsonify({"ok": True, "reingested": True, **out})
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
-
-# Back-compat alias: some older code imported this name directly
-ingest_bronze_strict_blueprint = ingest_bronze
