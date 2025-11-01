@@ -158,35 +158,82 @@ def _run_bronze_init_conn(conn) -> None:
         );
     """))
 
-    # --- Relax legacy NOT NULLs on session_id, if present (old installs) ---
+    # --- Migrate legacy PK(session_id) -> PK(task_id) and relax NOT NULLs ---
     conn.execute(sql_text("""
     DO $$
+    DECLARE
+      pk_name text;
+      has_sid_pk boolean;
     BEGIN
-      -- bronze.session.session_id nullable
+      -- Ensure task_id column exists for truly old installs
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name='session' AND column_name='task_id'
+      ) THEN
+        EXECUTE 'ALTER TABLE bronze.session ADD COLUMN task_id TEXT';
+      END IF;
+
+      -- Find current PRIMARY KEY on bronze.session
+      SELECT c.conname
+        INTO pk_name
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'bronze' AND t.relname = 'session' AND c.contype = 'p'
+      LIMIT 1;
+
+      -- Does the PK include session_id?
+      SELECT EXISTS (
+        SELECT 1
+        FROM pg_attribute a
+        JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname='bronze' AND t.relname='session' AND c.contype='p' AND a.attname='session_id'
+      ) INTO has_sid_pk;
+
+      -- If PK includes session_id, switch PK to task_id
+      IF has_sid_pk THEN
+        -- Drop existing PK
+        EXECUTE 'ALTER TABLE bronze.session DROP CONSTRAINT ' || quote_ident(pk_name);
+        -- Make task_id NOT NULL and the new PK
+        EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN task_id SET NOT NULL';
+        EXECUTE 'ALTER TABLE bronze.session ADD PRIMARY KEY (task_id)';
+        -- Keep session_id unique when present (but allow NULLs)
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes
+          WHERE schemaname='bronze' AND indexname='ux_bronze_session_sid_nn'
+        ) THEN
+          EXECUTE 'CREATE UNIQUE INDEX ux_bronze_session_sid_nn ON bronze.session(session_id) WHERE session_id IS NOT NULL';
+        END IF;
+      ELSIF pk_name IS NULL THEN
+        -- No PK at all: add PK(task_id)
+        EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN task_id SET NOT NULL';
+        EXECUTE 'ALTER TABLE bronze.session ADD PRIMARY KEY (task_id)';
+      END IF;
+
+      -- Now it’s safe to allow NULLs for session_id (if still NOT NULL)
       IF EXISTS (
         SELECT 1
-          FROM information_schema.columns
-         WHERE table_schema='bronze'
-           AND table_name='session'
-           AND column_name='session_id'
-           AND is_nullable='NO'
+        FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name='session'
+          AND column_name='session_id' AND is_nullable='NO'
       ) THEN
         EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN session_id DROP NOT NULL';
       END IF;
 
-      -- bronze.raw_result.session_id nullable (some very old schemas had this)
+      -- Very old schemas: raw_result.session_id also needs to be nullable
       IF EXISTS (
         SELECT 1
-          FROM information_schema.columns
-         WHERE table_schema='bronze'
-           AND table_name='raw_result'
-           AND column_name='session_id'
-           AND is_nullable='NO'
+        FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name='raw_result'
+          AND column_name='session_id' AND is_nullable='NO'
       ) THEN
         EXECUTE 'ALTER TABLE bronze.raw_result ALTER COLUMN session_id DROP NOT NULL';
       END IF;
     END$$;
     """))
+
 
     # RAW snapshot table (task_id + JSONB/GZIP + sha)
     conn.execute(sql_text("""
