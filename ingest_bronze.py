@@ -365,6 +365,22 @@ def _ensure_object_table(tower: str) -> None:
         ))
 
 # ----------------------------
+# Back-compat shims (for older upload_app.py imports)
+# ----------------------------
+# Some older code expects these names. Keep them as no-ops/aliases.
+
+def _run_bronze_init() -> bool:
+    """Back-compat: initialize schemas/tables programmatically.
+    Older code calls this at boot. Returns True on success."""
+    with engine.begin() as cx:
+        cx.execute(sql_text(SCHEMA_SQL))
+    return True
+
+# Older deployments imported a "strict" blueprint; alias to the current one.
+ingest_bronze_strict = ingest_bronze
+
+
+# ----------------------------
 # Routes
 # ----------------------------
 
