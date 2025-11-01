@@ -283,112 +283,48 @@ def _relax_child_tables_and_fix_pks(conn) -> None:
       - Keep/ensure UNIQUE(task_id) on singletons
     """
 
+        # --- MIGRATE legacy bronze tables to (task_id TEXT, data JSONB) model ---
     conn.execute(sql_text("""
     DO $$
     DECLARE
-      t text;
-      pk_name text;
-      sid_in_pk boolean;
+      r record;
+      has_sid_pk boolean;
     BEGIN
-      -- Arrays
-      FOREACH t IN ARRAY ARRAY[
-        'player','player_swing','rally','ball_position','ball_bounce','unmatched_field','debug_event'
-      ]
+      -- tables we manage
+      FOR r IN
+        SELECT unnest(ARRAY[
+          'player','player_swing','rally','ball_position','ball_bounce',
+          'unmatched_field','debug_event','player_position',
+          'session_confidences','thumbnail','highlight','team_session',
+          'bounce_heatmap','submission_context'
+        ]) AS table_name
       LOOP
-        -- Ensure task_id
-        EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS task_id TEXT';
+        -- Ensure task_id + data columns exist
+        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS task_id TEXT', r.table_name);
+        EXECUTE format('ALTER TABLE bronze.%I ADD COLUMN IF NOT EXISTS data JSONB', r.table_name);
 
-        -- If session_id is part of PK, replace PK with surrogate id
-        SELECT c.conname
-          INTO pk_name
-        FROM pg_constraint c
-        JOIN pg_class cl ON cl.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = cl.relnamespace
-        WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p'
-        LIMIT 1;
-
-        SELECT EXISTS (
-          SELECT 1
-          FROM pg_attribute a
-          JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
-          JOIN pg_class cl ON cl.oid = c.conrelid
-          JOIN pg_namespace n ON n.oid = cl.relnamespace
-          WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p' AND a.attname='session_id'
-        ) INTO sid_in_pk;
-
-        IF sid_in_pk THEN
-          -- add surrogate PK column
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS id BIGSERIAL';
-          -- swap PK
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' DROP CONSTRAINT '||quote_ident(pk_name);
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD PRIMARY KEY (id)';
-          -- helpful index for session_id joins
-          EXECUTE 'CREATE INDEX IF NOT EXISTS ix_'||quote_ident(t)||'_session_id ON bronze.'||quote_ident(t)||'(session_id)';
-        END IF;
-
-        -- drop NOT NULL on legacy session_id if still present
+        -- If session_id exists AND is NOT NULL AND NOT part of this table's primary key -> drop NOT NULL
         IF EXISTS (
           SELECT 1 FROM information_schema.columns
-          WHERE table_schema='bronze' AND table_name=t
-            AND column_name='session_id' AND is_nullable='NO'
+           WHERE table_schema='bronze' AND table_name=r.table_name
+             AND column_name='session_id' AND is_nullable='NO'
         ) THEN
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ALTER COLUMN session_id DROP NOT NULL';
+          SELECT EXISTS (
+            SELECT 1
+            FROM pg_attribute a
+            JOIN pg_constraint c
+              ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname='bronze' AND t.relname=r.table_name
+              AND c.contype='p' AND a.attname='session_id'
+          ) INTO has_sid_pk;
+
+          IF NOT has_sid_pk THEN
+            EXECUTE format('ALTER TABLE bronze.%I ALTER COLUMN session_id DROP NOT NULL', r.table_name);
+          END IF;
         END IF;
       END LOOP;
-
-      -- Singletons
-      FOREACH t IN ARRAY ARRAY[
-        'player_position','session_confidences','thumbnail','highlight','team_session','bounce_heatmap','submission_context'
-      ]
-      LOOP
-        -- Ensure task_id
-        EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS task_id TEXT';
-
-        -- If session_id is part of PK, replace with surrogate id PK
-        SELECT c.conname
-          INTO pk_name
-        FROM pg_constraint c
-        JOIN pg_class cl ON cl.oid = c.conrelid
-        JOIN pg_namespace n ON n.oid = cl.relnamespace
-        WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p'
-        LIMIT 1;
-
-        SELECT EXISTS (
-          SELECT 1
-          FROM pg_attribute a
-          JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
-          JOIN pg_class cl ON cl.oid = c.conrelid
-          JOIN pg_namespace n ON n.oid = cl.relnamespace
-          WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p' AND a.attname='session_id'
-        ) INTO sid_in_pk;
-
-        IF sid_in_pk THEN
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS id BIGSERIAL';
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' DROP CONSTRAINT '||quote_ident(pk_name);
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD PRIMARY KEY (id)';
-        END IF;
-
-        -- Relax NOT NULL on session_id if present
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_schema='bronze' AND table_name=t
-            AND column_name='session_id' AND is_nullable='NO'
-        ) THEN
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ALTER COLUMN session_id DROP NOT NULL';
-        END IF;
-
-        -- Ensure UNIQUE(task_id) for singletons
-        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_'||quote_ident(t)||'_task ON bronze.'||quote_ident(t)||'(task_id)';
-      END LOOP;
-
-      -- Very old schemas may have raw_result.session_id NOT NULL: relax it
-      IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema='bronze' AND table_name='raw_result'
-          AND column_name='session_id' AND is_nullable='NO'
-      ) THEN
-        EXECUTE 'ALTER TABLE bronze.raw_result ALTER COLUMN session_id DROP NOT NULL';
-      END IF;
     END$$;
     """))
 
