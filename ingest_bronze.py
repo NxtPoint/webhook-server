@@ -282,13 +282,6 @@ def _relax_child_tables_and_fix_pks(conn) -> None:
       - Then relax NOT NULL on session_id (if any)
       - Keep/ensure UNIQUE(task_id) on singletons
     """
-    # These are your known bronze tables
-    tables_array = ARRAY[
-      'player','player_swing','rally','ball_position','ball_bounce','unmatched_field','debug_event'
-    ];
-    tables_singleton = ARRAY[
-      'player_position','session_confidences','thumbnail','highlight','team_session','bounce_heatmap','submission_context'
-    ];
 
     conn.execute(sql_text("""
     DO $$
@@ -453,7 +446,6 @@ def _run_bronze_init(conn=None) -> bool:
     with engine.begin() as _c:
         _run_bronze_init_conn(_c)
     return True
-
 
 # --------------------- Raw persistence ----------------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> None:
