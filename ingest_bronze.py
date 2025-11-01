@@ -48,6 +48,30 @@ def _as_list(v) -> Iterable:
 def _as_dict(v) -> Dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
+    from typing import Optional, Dict, Any
+
+def _extract_session_id(payload: Dict[str, Any]) -> Optional[int]:
+    """Try to read SportAI's session id from common locations. Return int or None."""
+    cand = [
+        payload.get("session_id"),
+        (payload.get("session") or {}).get("id"),
+        (payload.get("session") or {}).get("session_id"),
+        (payload.get("metadata") or {}).get("session_id"),
+        payload.get("sessionId"),
+        (payload.get("data") or {}).get("session_id"),
+    ]
+    for c in cand:
+        if c is None:
+            continue
+        try:
+            sid = int(str(c))
+            if sid > 0:
+                return sid
+        except Exception:
+            pass
+    return None
+
+
 # --------------------- Schema bootstrap ---------------------
 
 # Tables that hold many JSON objects per task
@@ -148,26 +172,24 @@ def _run_bronze_init(conn) -> None:
         _ensure_table_has_task_id(conn, t)
 
 # --------------------- Raw persistence ----------------------
-def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> None:
-    """
-    Store raw payload: JSONB if small, else gzip+sha256 (JSONB stays NULL to save space).
-    """
+def _persist_raw(conn, session_id: int, payload: Dict[str, Any], task_id: Optional[str], size_threshold: int = 5_000_000) -> None:
     js = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     sha = _sha256_str(js)
     if len(js) <= size_threshold:
         try:
             conn.execute(sql_text("""
-                INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
-                VALUES (:tid, :j::jsonb, :sha)
-            """), {"tid": task_id, "j": js, "sha": sha})
+                INSERT INTO bronze.raw_result (session_id, task_id, payload_json, payload_sha256)
+                VALUES (:sid, :tid, :j::jsonb, :sha)
+            """), {"sid": session_id, "tid": task_id, "j": js, "sha": sha})
             return
         except Exception:
             pass
     gz = _gzip_bytes_str(js)
     conn.execute(sql_text("""
-        INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256)
-        VALUES (:tid, :gz, :sha)
-    """), {"tid": task_id, "gz": gz, "sha": sha})
+        INSERT INTO bronze.raw_result (session_id, task_id, payload_gzip, payload_sha256)
+        VALUES (:sid, :tid, :gz, :sha)
+    """), {"sid": session_id, "tid": task_id, "gz": gz, "sha": sha})
+
 
 # --------------------- Submission context -------------------
 def _attach_submission_context(conn, task_id: Optional[str]) -> None:
@@ -215,79 +237,74 @@ def _attach_submission_context(conn, task_id: Optional[str]) -> None:
     """), {"tid": task_id, "j": json.dumps(sc)})
 
 # --------------------- JSONB inserts ------------------------
-def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
-    """Insert a list of JSON objects into bronze.<table>(task_id, data)."""
+def _insert_json_array(conn, table: str, session_id: int, arr) -> int:
     if not arr: return 0
-    values = [{"tid": task_id, "j": json.dumps(x)} for x in arr if isinstance(x, dict)]
+    values = [{"sid": session_id, "j": json.dumps(x)} for x in arr if isinstance(x, dict)]
     if not values: return 0
     conn.execute(sql_text(f"""
-        INSERT INTO bronze.{table} (task_id, data)
-        SELECT :tid, :j::jsonb
+        INSERT INTO bronze.{table} (session_id, data)
+        SELECT :sid, :j::jsonb
     """), values)
     return len(values)
 
-def _upsert_single(conn, table: str, task_id: str, obj) -> int:
-    """Upsert a single JSONB object into a UNIQUE(task_id) table."""
+def _upsert_single(conn, table: str, session_id: int, obj) -> int:
     if obj is None: return 0
-    # ensure unique constraint on task_id for singleton tables (create if missing)
     conn.execute(sql_text(f"""
-        DO $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_indexes
-            WHERE schemaname='bronze' AND indexname='ux_{table}_task_id'
-          ) THEN
-            EXECUTE 'CREATE UNIQUE INDEX ux_{table}_task_id ON bronze.{table}(task_id)';
-          END IF;
-        END$$;
-    """))
-    conn.execute(sql_text(f"""
-        INSERT INTO bronze.{table} (task_id, data)
-        VALUES (:tid, :j::jsonb)
-        ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
-    """), {"tid": task_id, "j": json.dumps(obj)})
+        INSERT INTO bronze.{table} (session_id, data)
+        VALUES (:sid, :j::jsonb)
+        ON CONFLICT (session_id) DO UPDATE SET data = EXCLUDED.data
+    """), {"sid": session_id, "j": json.dumps(obj)})
     return 1
 
-def _ensure_bronze_session(conn, task_id: str, payload: Dict[str, Any]) -> None:
+
+def _ensure_bronze_session(conn, session_id: int, payload: Dict[str, Any]) -> None:
     meta = {
         "ingest_at": datetime.now(timezone.utc).isoformat(),
         "keys": list(payload.keys())[:50]
     }
     conn.execute(sql_text("""
-        INSERT INTO bronze.session (task_id, meta)
-        VALUES (:tid, :meta::jsonb)
-        ON CONFLICT (task_id) DO UPDATE
+        INSERT INTO bronze.session (session_id, meta)
+        VALUES (:sid, :meta::jsonb)
+        ON CONFLICT (session_id) DO UPDATE
         SET meta = COALESCE(bronze.session.meta, '{}'::jsonb) || :meta::jsonb
-    """), {"tid": task_id, "meta": json.dumps(meta)})
+    """), {"sid": session_id, "meta": json.dumps(meta)})
+
 
 # --------------------- Ingestion core -----------------------
-def ingest_bronze_strict(
-    conn,
-    payload: Dict[str, Any],
-    replace: bool = True,
-    forced_uid: Optional[str] = None,  # kept for API parity; unused here
-    src_hint: Optional[str] = None,
-    task_id: Optional[str] = None
-) -> Dict[str, Any]:
+def ingest_bronze_strict(conn, payload: Dict[str, Any], replace: bool = True,
+                         forced_uid: Optional[str] = None, src_hint: Optional[str] = None,
+                         task_id: Optional[str] = None) -> Dict[str, Any]:
+
+    # task_id fallback if caller omitted it
     if not task_id:
-        # Try read from payload if caller forgot to pass it
         task_id = (
-            (payload.get("task_id"))
+            payload.get("task_id")
             or (_as_dict(payload.get("metadata")).get("task_id") if isinstance(payload.get("metadata"), dict) else None)
         )
     if not task_id:
         raise ValueError("task_id is required")
 
-    # 0) optional replace cleanup
+    # ---- define & try-read session_id BEFORE using it ----
+    session_id = _extract_session_id(payload)  # may return None
+
+    # allocate our own session_id if SportAI didn't provide one
+    if not session_id:
+        sid = conn.execute(sql_text(
+            "INSERT INTO bronze.session (meta) VALUES ('{}'::jsonb) RETURNING session_id"
+        )).scalar_one()
+        session_id = int(sid)
+
+    # optional replace cleanup (by session_id)
     if replace:
         for t in ALL_BRONZE_TABLES + ["submission_context"]:
-            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id = :tid"), {"tid": task_id})
+            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE session_id = :sid"), {"sid": session_id})
 
-    # 1) persist raw payload
-    _persist_raw(conn, task_id, payload)
+    # 1) persist raw payload (note: function name has leading underscore)
+    _persist_raw(conn, session_id, payload, task_id)
 
-    # 2) ensure bronze.session exists
-    _ensure_bronze_session(conn, task_id, payload)
+    # 2) ensure bronze.session meta exists (pass session_id, not task_id)
+    _ensure_bronze_session(conn, session_id, payload)
+
 
     # 3) map JSON → bronze tables (bronze remains pristine)
     players = _as_list(payload.get("players"))
