@@ -158,44 +158,74 @@ def _run_bronze_init_conn(conn) -> None:
         );
     """))
 
-    # --- Migrate legacy FKs/PK(session_id) -> PK(task_id) and relax NOT NULLs ---
+# --------------------- Init / DDL ---------------------
+def _ensure_table_has_task_id(conn, table: str, singleton: bool) -> None:
+    # Ensure table exists (arrays/singletons will be created lazily via ingest if already present)
+    conn.execute(sql_text(f"CREATE TABLE IF NOT EXISTS bronze.{table} (task_id TEXT, data JSONB);"))
+
+    # Ensure task_id column exists
+    conn.execute(sql_text(f"ALTER TABLE bronze.{table} ADD COLUMN IF NOT EXISTS task_id TEXT;"))
+
+    # Unique(task_id) for singletons
+    if singleton:
+        conn.execute(sql_text(f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{table}_task
+            ON bronze.{table}(task_id);
+        """))
+
+def _drop_fks_to_session(conn) -> None:
+    """
+    Drop any foreign keys in bronze.* that reference bronze.session (legacy on session_id).
+    We target the real referencing table via the catalog (no name guessing).
+    """
     conn.execute(sql_text("""
     DO $$
     DECLARE
-      pk_name text;
-      has_sid_pk boolean;
       r record;
     BEGIN
-      -- 1) Ensure task_id column exists on bronze.session
+      FOR r IN
+        SELECT
+          n.nspname  AS ref_schema,
+          t.relname  AS ref_table,
+          c.conname  AS fk_name
+        FROM pg_constraint c
+        JOIN pg_class     t ON t.oid = c.conrelid           -- referencing table
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE c.contype = 'f'
+          AND c.confrelid = 'bronze.session'::regclass
+          AND n.nspname = 'bronze'
+      LOOP
+        EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', r.ref_schema, r.ref_table, r.fk_name);
+      END LOOP;
+    END$$;
+    """))
+
+def _ensure_session_pk_is_task_id(conn) -> None:
+    """
+    Make bronze.session use PRIMARY KEY(task_id) and allow NULL session_id,
+    with a partial unique index on session_id when present.
+    """
+    conn.execute(sql_text("""
+    DO $$
+    DECLARE
+      pk_name     text;
+      has_sid_pk  boolean;
+    BEGIN
+      -- Ensure columns exist
       IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='bronze' AND table_name='session' AND column_name='task_id'
       ) THEN
         EXECUTE 'ALTER TABLE bronze.session ADD COLUMN task_id TEXT';
       END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name='session' AND column_name='meta'
+      ) THEN
+        EXECUTE 'ALTER TABLE bronze.session ADD COLUMN meta JSONB';
+      END IF;
 
-      -- 2) Drop any FKs in bronze.* that reference bronze.session(session_id)
-      -- 2) Drop any FKs in bronze.* that reference bronze.session(session_id)
-    FOR r IN
-    SELECT
-        n.nspname  AS ref_schema,
-        t.relname  AS ref_table,
-        c.conname  AS fk_name
-    FROM pg_constraint c
-    JOIN pg_class     t ON t.oid = c.conrelid           -- referencing table
-    JOIN pg_namespace n ON n.oid = t.relnamespace
-    WHERE c.contype = 'f'
-        AND c.confrelid = 'bronze.session'::regclass      -- referenced = bronze.session
-        AND n.nspname = 'bronze'
-    LOOP
-    EXECUTE format(
-        'ALTER TABLE %I.%I DROP CONSTRAINT %I',
-        r.ref_schema, r.ref_table, r.fk_name
-    );
-    END LOOP;
-
-
-      -- 3) Find current PRIMARY KEY on bronze.session
+      -- current PK name
       SELECT c.conname
         INTO pk_name
       FROM pg_constraint c
@@ -204,7 +234,7 @@ def _run_bronze_init_conn(conn) -> None:
       WHERE n.nspname='bronze' AND t.relname='session' AND c.contype='p'
       LIMIT 1;
 
-      -- Does the PK include session_id?
+      -- Does current PK include session_id?
       SELECT EXISTS (
         SELECT 1
         FROM pg_attribute a
@@ -214,74 +244,176 @@ def _run_bronze_init_conn(conn) -> None:
         WHERE n.nspname='bronze' AND t.relname='session' AND c.contype='p' AND a.attname='session_id'
       ) INTO has_sid_pk;
 
-      -- 4) If PK includes session_id, switch PK to task_id
       IF has_sid_pk THEN
+        -- Switch PK to task_id
         EXECUTE 'ALTER TABLE bronze.session DROP CONSTRAINT ' || quote_ident(pk_name);
         EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN task_id SET NOT NULL';
         EXECUTE 'ALTER TABLE bronze.session ADD PRIMARY KEY (task_id)';
-
-        -- Keep session_id unique when present (but allow NULLs)
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_indexes
-          WHERE schemaname='bronze' AND indexname='ux_bronze_session_sid_nn'
-        ) THEN
-          EXECUTE 'CREATE UNIQUE INDEX ux_bronze_session_sid_nn ON bronze.session(session_id) WHERE session_id IS NOT NULL';
-        END IF;
       ELSIF pk_name IS NULL THEN
-        -- No PK at all: add PK(task_id)
+        -- No PK: set task_id as PK
         EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN task_id SET NOT NULL';
         EXECUTE 'ALTER TABLE bronze.session ADD PRIMARY KEY (task_id)';
       END IF;
 
-      -- 5) Allow NULLs for session_id if still NOT NULL
+      -- partial unique on session_id when present
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_indexes
+        WHERE schemaname='bronze' AND indexname='ux_bronze_session_sid_nn'
+      ) THEN
+        EXECUTE 'CREATE UNIQUE INDEX ux_bronze_session_sid_nn ON bronze.session(session_id) WHERE session_id IS NOT NULL';
+      END IF;
+
+      -- relax NOT NULL on session_id, if still present
       IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
+        SELECT 1 FROM information_schema.columns
         WHERE table_schema='bronze' AND table_name='session'
           AND column_name='session_id' AND is_nullable='NO'
       ) THEN
         EXECUTE 'ALTER TABLE bronze.session ALTER COLUMN session_id DROP NOT NULL';
       END IF;
+    END$$;
+    """))
 
-      -- 6) Very old schemas: raw_result.session_id also needs to be nullable
+def _relax_child_tables_and_fix_pks(conn) -> None:
+    """
+    For each bronze child table:
+      - Ensure task_id exists
+      - If session_id is part of the PK, replace that PK with a surrogate id BIGSERIAL PK
+      - Then relax NOT NULL on session_id (if any)
+      - Keep/ensure UNIQUE(task_id) on singletons
+    """
+    # These are your known bronze tables
+    tables_array = ARRAY[
+      'player','player_swing','rally','ball_position','ball_bounce','unmatched_field','debug_event'
+    ];
+    tables_singleton = ARRAY[
+      'player_position','session_confidences','thumbnail','highlight','team_session','bounce_heatmap','submission_context'
+    ];
+
+    conn.execute(sql_text("""
+    DO $$
+    DECLARE
+      t text;
+      pk_name text;
+      sid_in_pk boolean;
+    BEGIN
+      -- Arrays
+      FOREACH t IN ARRAY ARRAY[
+        'player','player_swing','rally','ball_position','ball_bounce','unmatched_field','debug_event'
+      ]
+      LOOP
+        -- Ensure task_id
+        EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS task_id TEXT';
+
+        -- If session_id is part of PK, replace PK with surrogate id
+        SELECT c.conname
+          INTO pk_name
+        FROM pg_constraint c
+        JOIN pg_class cl ON cl.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = cl.relnamespace
+        WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p'
+        LIMIT 1;
+
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_attribute a
+          JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
+          JOIN pg_class cl ON cl.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = cl.relnamespace
+          WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p' AND a.attname='session_id'
+        ) INTO sid_in_pk;
+
+        IF sid_in_pk THEN
+          -- add surrogate PK column
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS id BIGSERIAL';
+          -- swap PK
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' DROP CONSTRAINT '||quote_ident(pk_name);
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD PRIMARY KEY (id)';
+          -- helpful index for session_id joins
+          EXECUTE 'CREATE INDEX IF NOT EXISTS ix_'||quote_ident(t)||'_session_id ON bronze.'||quote_ident(t)||'(session_id)';
+        END IF;
+
+        -- drop NOT NULL on legacy session_id if still present
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='bronze' AND table_name=t
+            AND column_name='session_id' AND is_nullable='NO'
+        ) THEN
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ALTER COLUMN session_id DROP NOT NULL';
+        END IF;
+      END LOOP;
+
+      -- Singletons
+      FOREACH t IN ARRAY ARRAY[
+        'player_position','session_confidences','thumbnail','highlight','team_session','bounce_heatmap','submission_context'
+      ]
+      LOOP
+        -- Ensure task_id
+        EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS task_id TEXT';
+
+        -- If session_id is part of PK, replace with surrogate id PK
+        SELECT c.conname
+          INTO pk_name
+        FROM pg_constraint c
+        JOIN pg_class cl ON cl.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = cl.relnamespace
+        WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p'
+        LIMIT 1;
+
+        SELECT EXISTS (
+          SELECT 1
+          FROM pg_attribute a
+          JOIN pg_constraint c ON c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)
+          JOIN pg_class cl ON cl.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = cl.relnamespace
+          WHERE n.nspname='bronze' AND cl.relname=t AND c.contype='p' AND a.attname='session_id'
+        ) INTO sid_in_pk;
+
+        IF sid_in_pk THEN
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD COLUMN IF NOT EXISTS id BIGSERIAL';
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' DROP CONSTRAINT '||quote_ident(pk_name);
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ADD PRIMARY KEY (id)';
+        END IF;
+
+        -- Relax NOT NULL on session_id if present
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema='bronze' AND table_name=t
+            AND column_name='session_id' AND is_nullable='NO'
+        ) THEN
+          EXECUTE 'ALTER TABLE bronze.'||quote_ident(t)||' ALTER COLUMN session_id DROP NOT NULL';
+        END IF;
+
+        -- Ensure UNIQUE(task_id) for singletons
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_'||quote_ident(t)||'_task ON bronze.'||quote_ident(t)||'(task_id)';
+      END LOOP;
+
+      -- Very old schemas may have raw_result.session_id NOT NULL: relax it
       IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
+        SELECT 1 FROM information_schema.columns
         WHERE table_schema='bronze' AND table_name='raw_result'
           AND column_name='session_id' AND is_nullable='NO'
       ) THEN
         EXECUTE 'ALTER TABLE bronze.raw_result ALTER COLUMN session_id DROP NOT NULL';
       END IF;
-
-      -- 7) Child tables: ensure they have task_id column and no NOT NULL on session_id
-      PERFORM 1;  -- no-op; left for clarity
-      FOR r IN
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema='bronze'
-          AND table_name IN (
-            'player','player_swing','rally','ball_position','ball_bounce',
-            'unmatched_field','debug_event','player_position',
-            'session_confidences','thumbnail','highlight','team_session',
-            'bounce_heatmap','submission_context'
-          )
-      LOOP
-        EXECUTE 'ALTER TABLE bronze.'||quote_ident(r.table_name)||' ADD COLUMN IF NOT EXISTS task_id TEXT';
-        -- If legacy NOT NULL on session_id, drop it so inserts by task_id succeed
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-           WHERE table_schema='bronze' AND table_name=r.table_name
-             AND column_name='session_id' AND is_nullable='NO'
-        ) THEN
-          EXECUTE 'ALTER TABLE bronze.'||quote_ident(r.table_name)||' ALTER COLUMN session_id DROP NOT NULL';
-        END IF;
-      END LOOP;
     END$$;
     """))
 
+def _run_bronze_init_conn(conn) -> None:
+    # Schema
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
 
+    # Core tables
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.session (
+            task_id     TEXT PRIMARY KEY,
+            session_uid TEXT,
+            session_id  BIGINT,
+            meta        JSONB,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
 
-    # RAW snapshot table (task_id + JSONB/GZIP + sha)
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.raw_result (
             id              BIGSERIAL PRIMARY KEY,
@@ -293,7 +425,7 @@ def _run_bronze_init_conn(conn) -> None:
         );
     """))
 
-    # submission_context table compatible with both writers (task_id or session_id keyed)
+    # submission_context tower (task_id & session_id both supported)
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.submission_context (
             task_id    TEXT UNIQUE,
@@ -301,30 +433,27 @@ def _run_bronze_init_conn(conn) -> None:
             data       JSONB
         );
     """))
-    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS task_id    TEXT;"))
-    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id BIGINT;"))
-    conn.execute(sql_text("ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS data       JSONB;"))
 
-    # Ensure towers
+    # Ensure towers exist & have task_id
     for t in BRONZE_ARRAY:
         _ensure_table_has_task_id(conn, t, singleton=False)
     for t in BRONZE_SINGLETON:
         _ensure_table_has_task_id(conn, t, singleton=True)
 
+    # ---- Legacy migrations (idempotent) ----
+    _drop_fks_to_session(conn)
+    _ensure_session_pk_is_task_id(conn)
+    _relax_child_tables_and_fix_pks(conn)
 
 def _run_bronze_init(conn=None) -> bool:
-    """
-    Back-compat shim:
-      - If called as _run_bronze_init(conn): use that connection
-      - If called with no args: open a transaction and run init
-    """
     if conn is not None:
         _run_bronze_init_conn(conn)
         return True
-    from db_init import engine as _engine
-    with _engine.begin() as _c:
+    from db_init import engine
+    with engine.begin() as _c:
         _run_bronze_init_conn(_c)
     return True
+
 
 # --------------------- Raw persistence ----------------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000) -> None:
