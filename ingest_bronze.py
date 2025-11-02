@@ -83,6 +83,96 @@ def _first_list(p: Dict[str, Any], *keys: str) -> list:
                 return v
     return []
 
+# ---------------- jsonb sweeper--------------------------
+def _pg_cast_for(data_type: str) -> str:
+    dt = (data_type or "").lower()
+    if dt in ("text", "character varying", "character", "citext"):
+        return "::text"
+    if dt in ("integer", "int4"):
+        return "::integer"
+    if dt in ("bigint", "int8"):
+        return "::bigint"
+    if dt in ("smallint", "int2"):
+        return "::smallint"
+    if dt in ("real", "float4"):
+        return "::real"
+    if dt in ("double precision", "float8"):
+        return "::double precision"
+    if dt.startswith("numeric"):
+        return "::numeric"
+    if dt in ("boolean",):
+        return "::boolean"
+    if dt in ("uuid",):
+        return "::uuid"
+    if dt in ("date",):
+        return "::date"
+    if dt in ("timestamp with time zone", "timestamptz"):
+        return "::timestamptz"
+    if dt in ("timestamp without time zone", "timestamp"):
+        return "::timestamp"
+    if dt in ("jsonb", "json"):
+        return "::jsonb"
+    # default: try text
+    return "::text"
+
+
+def _sweep_json_into_columns(conn, table: str, where_sql: str, where_params: dict) -> int:
+    """
+    For bronze.<table>, copy values from JSONB 'data' into existing typed columns (if NULL),
+    then remove those keys from 'data'. Returns number of rows updated.
+    - We never overwrite non-NULL typed columns.
+    - We cast based on information_schema column types.
+    - Keys absent or empty strings remain NULL.
+    """
+    cols = conn.execute(sql_text("""
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema='bronze'
+          AND table_name=:t
+          AND column_name NOT IN ('id','created_at','data')
+    """), {"t": table}).mappings().all()
+
+    # Select only “target” columns that are not task_id-like and not JSON holder
+    targets = []
+    for c in cols:
+        name = c["column_name"]
+        if name in ("task_id",):  # PK/UK we don’t populate from data
+            continue
+        targets.append((name, c["data_type"]))
+
+    if not targets:
+        return 0
+
+    set_parts = []
+    params = dict(where_params or {})
+    # Build SET clauses like: col = COALESCE(col, NULLIF(data->>'col','')::type)
+    for i, (col, dt) in enumerate(targets):
+        cast = _pg_cast_for(dt)
+        if cast == "::jsonb":
+            # For jsonb columns, take data->col (not ->>)
+            expr = f"CASE WHEN data ? :k{i} THEN (data->:k{i}){cast} END"
+        else:
+            expr = f"NULLIF(data->>:k{i}, ''){cast}"
+        set_parts.append(f"{col} = COALESCE({col}, {expr})")
+        params[f"k{i}"] = col
+
+    # Build “strip keys” expression: (((data - 'k1') - 'k2') - 'k3') …
+    strip_expr = "data"
+    for i, (col, _) in enumerate(targets):
+        strip_expr = f"({strip_expr} - :s{i})"
+        params[f"s{i}"] = col
+
+    # Set data to NULL if empty after stripping
+    set_data = f"data = CASE WHEN {strip_expr} = '{{}}'::jsonb THEN NULL ELSE {strip_expr} END"
+
+    sql = f"""
+        UPDATE bronze.{table}
+        SET {", ".join(set_parts + [set_data])}
+        WHERE {where_sql} AND data IS NOT NULL
+    """
+    res = conn.execute(sql_text(sql), params)
+    return res.rowcount or 0
+
 # ---------------- init / DDL (idempotent) ----------------
 def _run_bronze_init_conn(conn):
     """Create or verify bronze schema + tables (requires open connection)."""
@@ -288,6 +378,9 @@ def ingest_bronze_strict(
         sc_row = None
     if sc_row:
         counts["submission_context"] = _upsert_single(conn, "submission_context", task_id, sc_row)
+        # Auto-sweep JSON → typed columns for any columns already present on the table
+        _sweep_json_into_columns(conn, "submission_context", "task_id = :tid", {"tid": task_id})
+
     else:
         counts["submission_context"] = 0
 
