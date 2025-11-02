@@ -1,170 +1,182 @@
-# ingest_bronze.py — RAW→BRONZE (task_id only, no session_id), Nov 2025
-# Endpoints kept: /bronze/init, /bronze/ingest-json, /bronze/ingest-from-url, /bronze/reingest-from-raw
-# Writes to schema "bronze_task" to avoid legacy constraints. Flip SCHEMA="bronze" once legacy is retired.
+# ingest_bronze.py — clean, task_id-only bronze ingest (Nov 2025)
+# Flow:
+#   1) /bronze/ingest-from-url: fetch SportAI JSON, persist RAW (jsonb or gzip), then fan out to bronze towers
+#   2) /bronze/ingest-json: same but payload posted directly
+#   3) /bronze/reingest-from-raw: reload from last RAW snapshot by task_id
+# Schema contract:
+#   - schema: bronze
+#   - tables: raw_result, session (+ arrays/singletons with columns id, task_id, data, created_at)
 
 import os, json, gzip, hashlib, re
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, List
+
+import requests
 from flask import Blueprint, request, jsonify, Response
 from sqlalchemy import text as sql_text
-import requests
 
-from db_init import engine  # reuse your engine
+from db_init import engine
 
+SCHEMA = "bronze"
+OPS_KEY = os.getenv("OPS_KEY", "").strip()
 ingest_bronze = Blueprint("ingest_bronze", __name__)
 
-OPS_KEY = os.getenv("OPS_KEY", "").strip()
-SCHEMA = os.getenv("BRONZE_SCHEMA", "bronze_task")  # <- change to "bronze" when ready
-RAW_TABLE = "raw_result"
-
-# Towers (exact JSON headers)
-ARRAY_TOWERS = [
-    "player",
-    "player_swing",
-    "rally",
-    "ball_position",
-    "ball_bounce",
-    "unmatched_field",
-    "debug_event",
-]
-SINGLETON_TOWERS = [
-    "player_position",
-    "session_confidences",
-    "thumbnail",
-    "highlight",
-    "team_session",
-    "bounce_heatmap",
-    "submission_context",
-]
-ALL_TOWERS = ARRAY_TOWERS + SINGLETON_TOWERS
-
-# ---------------- auth ----------------
+# ------------------- auth -------------------
 def _guard() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
     hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
     auth = request.headers.get("Authorization", "")
-    if auth.lower().startswith("bearer "):
+    if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
     supplied = qk or hk
     return (not OPS_KEY) or supplied == OPS_KEY
 
 def _forbid(): return Response("Forbidden", 403)
 
-# -------------- utils -----------------
+# ---------------- utils ----------------
 def _require_json() -> Dict[str, Any]:
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         raise ValueError("JSON body required")
     return body
 
-def _sha(s: str) -> str:
-    import hashlib
+def _sha256(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
-def _as_list(v) -> List[Dict[str, Any]]:
-    if isinstance(v, list):
-        return [x for x in v if isinstance(x, dict)]
-    return []
+def _gzip_bytes(s: str) -> bytes:
+    return gzip.compress(s.encode("utf-8"))
+
+def _as_list(v) -> List[Any]:
+    if v is None: return []
+    return v if isinstance(v, list) else []
 
 def _as_dict(v) -> Dict[str, Any]:
     return v if isinstance(v, dict) else {}
 
-def _derive_task_id(payload: Dict[str, Any], src_hint: Optional[str]) -> Optional[str]:
-    md = _as_dict(payload.get("metadata"))
-    for t in (payload.get("task_id"), md.get("task_id")):
-        if isinstance(t, str) and t.strip():
-            return t.strip()
+def _derive_task_id(payload: dict | None, src_hint: str | None) -> Optional[str]:
+    p = payload or {}
+    md = _as_dict(p.get("metadata"))
+    tid = p.get("task_id") or md.get("task_id")
+    if isinstance(tid, str) and tid.strip():
+        return tid.strip()
     if src_hint:
         m = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', str(src_hint), re.I)
         if m: return m.group(1)
     return None
 
-# -------------- DDL (idempotent) --------------
-DDL_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS {s};
-"""
+def _compute_session_uid(task_id: str, payload: Dict[str, Any]) -> str:
+    # stable but not critical; helps identify a run in bronze.session
+    ph = _sha256(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
+    return f"{task_id[:8]}-{ph}"
 
-DDL_RAW = """
-CREATE TABLE IF NOT EXISTS {s}.{raw} (
-  id              BIGSERIAL PRIMARY KEY,
-  task_id         TEXT NOT NULL,
-  payload_json    JSONB,
-  payload_gzip    BYTEA,
-  payload_sha256  TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS ix_{s}_{raw}_task ON {s}.{raw}(task_id);
-CREATE INDEX IF NOT EXISTS ix_{s}_{raw}_created ON {s}.{raw}(created_at DESC);
-"""
+# --------------- init / DDL (idempotent) ---------------
+def _run_bronze_init():
+    with engine.begin() as conn:
+        conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
+        # RAW
+        conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.raw_result (
+          id             BIGSERIAL PRIMARY KEY,
+          task_id        TEXT NOT NULL,
+          payload_json   JSONB,
+          payload_gzip   BYTEA,
+          payload_sha256 TEXT,
+          created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+        );"""))
+        conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_result_task ON bronze.raw_result(task_id)"))
+        # session
+        conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.session (
+          task_id     TEXT PRIMARY KEY,
+          session_uid TEXT,
+          meta        JSONB,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );"""))
+        # arrays
+        for t in ["player","player_swing","rally","ball_position","ball_bounce",
+                  "unmatched_field","debug_event"]:
+            conn.execute(sql_text(f"""
+            CREATE TABLE IF NOT EXISTS bronze.{t} (
+              id         BIGSERIAL PRIMARY KEY,
+              task_id    TEXT NOT NULL,
+              data       JSONB,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );"""))
+            conn.execute(sql_text(f"CREATE INDEX IF NOT EXISTS ix_bronze_{t}_task ON bronze.{t}(task_id)"))
+        # singletons
+        for t in ["player_position","session_confidences","thumbnail","highlight",
+                  "team_session","bounce_heatmap","submission_context"]:
+            conn.execute(sql_text(f"""
+            CREATE TABLE IF NOT EXISTS bronze.{t} (
+              id         BIGSERIAL PRIMARY KEY,
+              task_id    TEXT NOT NULL,
+              data       JSONB,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );"""))
+            conn.execute(sql_text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{t}_task ON bronze.{t}(task_id)"))
 
-DDL_ARRAY = """
-CREATE TABLE IF NOT EXISTS {s}.{t} (
-  id         BIGSERIAL PRIMARY KEY,
-  task_id    TEXT NOT NULL,
-  data       JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS ix_{s}_{t}_task ON {s}.{t}(task_id);
-"""
-
-DDL_SINGLETON = """
-CREATE TABLE IF NOT EXISTS {s}.{t} (
-  id         BIGSERIAL PRIMARY KEY,
-  task_id    TEXT NOT NULL UNIQUE,
-  data       JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
-def _run_bronze_init(conn=None) -> bool:
-    if conn is None:
-        with engine.begin() as c:
-            return _run_bronze_init(c)
-    conn.execute(sql_text(DDL_SCHEMA.format(s=SCHEMA)))
-    conn.execute(sql_text(DDL_RAW.format(s=SCHEMA, raw=RAW_TABLE)))
-    for t in ARRAY_TOWERS:
-        conn.execute(sql_text(DDL_ARRAY.format(s=SCHEMA, t=t)))
-    for t in SINGLETON_TOWERS:
-        conn.execute(sql_text(DDL_SINGLETON.format(s=SCHEMA, t=t)))
-    return True
-
-# -------------- RAW persist --------------
-def _persist_raw(conn, task_id: str, payload: Dict[str, Any]) -> None:
-    txt = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-    sha = _sha(txt)
-    if len(txt) <= 5_000_000:
-        conn.execute(sql_text(f"""
-            INSERT INTO {SCHEMA}.{RAW_TABLE} (task_id, payload_json, payload_sha256)
+# --------------- raw persistence ---------------
+def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
+    s = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    sha = _sha256(s)
+    if len(s) <= size_threshold:
+        conn.execute(sql_text("""
+            INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
             VALUES (:tid, CAST(:j AS JSONB), :sha)
-        """), {"tid": task_id, "j": txt, "sha": sha})
+        """), {"tid": task_id, "j": s, "sha": sha})
     else:
-        gz = gzip.compress(txt.encode("utf-8"))
-        conn.execute(sql_text(f"""
-            INSERT INTO {SCHEMA}.{RAW_TABLE} (task_id, payload_gzip, payload_sha256)
+        conn.execute(sql_text("""
+            INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256)
             VALUES (:tid, :gz, :sha)
-        """), {"tid": task_id, "gz": gz, "sha": sha})
+        """), {"tid": task_id, "gz": _gzip_bytes(s), "sha": sha})
 
-# -------------- Bronze transpose --------------
-def _insert_array(conn, table: str, task_id: str, arr) -> int:
-    rows = [{"tid": task_id, "j": json.dumps(x, separators=(",", ":"), ensure_ascii=False)}
-            for x in _as_list(arr)]
+# --------------- fan-out helpers ---------------
+def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
+    if not arr: return 0
+    rows = [{"tid": task_id, "j": json.dumps(x)} for x in arr if isinstance(x, dict)]
     if not rows: return 0
     conn.execute(sql_text(f"""
-        INSERT INTO {SCHEMA}.{table} (task_id, data)
+        INSERT INTO bronze.{table} (task_id, data)
         VALUES (:tid, CAST(:j AS JSONB))
     """), rows)
     return len(rows)
 
-def _upsert_singleton(conn, table: str, task_id: str, obj) -> int:
-    if not isinstance(obj, (dict, list)):  # allow dict or list for singletons if SportAI uses arrays
-        return 0
+def _upsert_single(conn, table: str, task_id: str, obj) -> int:
+    if obj is None: return 0
     conn.execute(sql_text(f"""
-        INSERT INTO {SCHEMA}.{table} (task_id, data)
+        INSERT INTO bronze.{table} (task_id, data)
         VALUES (:tid, CAST(:j AS JSONB))
         ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
-    """), {"tid": task_id, "j": json.dumps(obj, separators=(",", ":"), ensure_ascii=False)})
+    """), {"tid": task_id, "j": json.dumps(obj)})
     return 1
 
-def _transpose_bronze(conn, task_id: str, payload: Dict[str, Any]) -> Dict[str, int]:
+def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):
+    meta_patch = {"ingest_at": datetime.now(timezone.utc).isoformat(),
+                  "keys": list(payload.keys())[:50]}
+    conn.execute(sql_text("""
+        INSERT INTO bronze.session (task_id, session_uid, meta)
+        VALUES (:tid, :uid, CAST(:meta AS JSONB))
+        ON CONFLICT (task_id) DO UPDATE SET
+          session_uid = COALESCE(bronze.session.session_uid, :uid),
+          meta        = COALESCE(bronze.session.meta, '{}'::jsonb) || CAST(:meta AS JSONB)
+    """), {"tid": task_id, "uid": _compute_session_uid(task_id, payload), "meta": json.dumps(meta_patch)})
+
+# --------------- core ingest ---------------
+def ingest_bronze_strict(conn, payload: Dict[str, Any], task_id: Optional[str], replace: bool) -> Dict[str, Any]:
+    if not task_id:
+        task_id = _derive_task_id(payload, None)
+    if not task_id:
+        raise ValueError("task_id is required")
+
+    if replace:
+        for t in ["player","player_swing","rally","ball_position","ball_bounce",
+                  "unmatched_field","debug_event","player_position","session_confidences",
+                  "thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
+            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id=:tid"), {"tid": task_id})
+
+    _persist_raw(conn, task_id, payload)
+    _ensure_session(conn, task_id, payload)
+
     players         = _as_list(payload.get("players"))
     rallies         = _as_list(payload.get("rallies"))
     ball_positions  = _as_list(payload.get("ball_positions"))
@@ -176,66 +188,62 @@ def _transpose_bronze(conn, task_id: str, payload: Dict[str, Any]) -> Dict[str, 
     bounce_heatmap  = payload.get("bounce_heatmap")
     unmatched       = payload.get("unmatched") or payload.get("unmatched_fields")
     debug_events    = payload.get("debug_events") or payload.get("events_debug")
-    player_positions= payload.get("player_positions")
 
-    # player_swing: flatten nested swings/strokes without mutating
-    swing_rows: List[Dict[str, Any]] = []
+    # player_swing without mutating original
+    swing_rows = []
     for p in players:
-        for key in ("swings", "strokes", "swing_events"):
-            swing_rows.extend(_as_list(p.get(key)))
+        if not isinstance(p, dict): continue
+        for k in ("swings","strokes","swing_events"):
+            for s in _as_list(p.get(k)):
+                if isinstance(s, dict):
+                    swing_rows.append(s)
         stats = _as_dict(p.get("statistics") or p.get("stats"))
-        for key in ("swings", "strokes", "swing_events"):
-            swing_rows.extend(_as_list(stats.get(key)))
+        for k in ("swings","strokes","swing_events"):
+            for s in _as_list(stats.get(k)):
+                if isinstance(s, dict):
+                    swing_rows.append(s)
 
     counts = {}
-    counts["player"]           = _insert_array(conn, "player", task_id, players)
-    counts["player_swing"]     = _insert_array(conn, "player_swing", task_id, swing_rows)
-    counts["rally"]            = _insert_array(conn, "rally", task_id, rallies)
-    counts["ball_position"]    = _insert_array(conn, "ball_position", task_id, ball_positions)
-    counts["ball_bounce"]      = _insert_array(conn, "ball_bounce", task_id, ball_bounces)
-    counts["unmatched_field"]  = _insert_array(conn, "unmatched_field", task_id, unmatched)
-    counts["debug_event"]      = _insert_array(conn, "debug_event", task_id, debug_events)
+    counts["player"]             = _insert_json_array(conn, "player", task_id, players)
+    counts["player_swing"]       = _insert_json_array(conn, "player_swing", task_id, swing_rows)
+    counts["rally"]              = _insert_json_array(conn, "rally", task_id, rallies)
+    counts["ball_position"]      = _insert_json_array(conn, "ball_position", task_id, ball_positions)
+    counts["ball_bounce"]        = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
+    counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events)
+    counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched)
 
-    counts["player_position"]      = _upsert_singleton(conn, "player_position", task_id, player_positions)
-    counts["session_confidences"]  = _upsert_singleton(conn, "session_confidences", task_id, confidences)
-    counts["thumbnail"]            = _upsert_singleton(conn, "thumbnail", task_id, thumbnails)
-    counts["highlight"]            = _upsert_singleton(conn, "highlight", task_id, highlights)
-    counts["team_session"]         = _upsert_singleton(conn, "team_session", task_id, team_sessions)
-    counts["bounce_heatmap"]       = _upsert_singleton(conn, "bounce_heatmap", task_id, bounce_heatmap)
+    counts["player_position"]    = _upsert_single(conn, "player_position", task_id, payload.get("player_positions"))
+    counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
+    counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
+    counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
+    counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
+    counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
 
-    # mirror submission_context if upstream provided it (or leave empty)
-    sub_ctx = _as_dict(payload.get("submission_context") or {})
-    _upsert_singleton(conn, "submission_context", task_id, sub_ctx)
+    # submission_context mirror (optional: if you keep a public.submission_context)
+    sc_row = None
+    try:
+        sc_row = conn.execute(sql_text("""
+            SELECT row_to_json(t) AS j
+            FROM public.submission_context t
+            WHERE task_id=:tid
+            LIMIT 1
+        """), {"tid": task_id}).scalar()
+    except Exception:
+        sc_row = None
+    if sc_row:
+        counts["submission_context"] = _upsert_single(conn, "submission_context", task_id, sc_row)
+    else:
+        counts["submission_context"] = 0
 
-    return counts
+    return {"task_id": task_id, "counts": counts}
 
-# -------------- core --------------
-def ingest_bronze_strict(conn, payload: Dict[str, Any], replace: bool = True,
-                         src_hint: Optional[str] = None, task_id: Optional[str] = None, **_):
-    task_id = task_id or _derive_task_id(payload, src_hint)
-    if not task_id:
-        raise ValueError("task_id is required")
-
-    # raw first (always)
-    _persist_raw(conn, task_id, payload)
-
-    # optional replace
-    if replace:
-        for t in ALL_TOWERS:
-            conn.execute(sql_text(f"DELETE FROM {SCHEMA}.{t} WHERE task_id = :tid"), {"tid": task_id})
-
-    # transpose
-    counts = _transpose_bronze(conn, task_id, payload)
-    return {"ok": True, "task_id": task_id, "counts": counts}
-
-# -------------- routes --------------
+# ------------------ routes ------------------
 @ingest_bronze.get("/bronze/init")
 def http_bronze_init():
     if not _guard(): return _forbid()
     try:
-        with engine.begin() as c:
-            _run_bronze_init(c)
-        return jsonify({"ok": True, "schema": SCHEMA})
+        _run_bronze_init()
+        return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
@@ -247,10 +255,10 @@ def http_bronze_ingest_json():
         payload = body.get("payload") or body
         replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
         task_id = body.get("task_id")
-        with engine.begin() as c:
-            _run_bronze_init(c)
-            out = ingest_bronze_strict(c, payload, replace=replace, task_id=task_id, src_hint="api:ingest-json")
-        return jsonify(out)
+        with engine.begin() as conn:
+            _run_bronze_init()
+            out = ingest_bronze_strict(conn, payload, task_id=task_id, replace=replace)
+        return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 400
 
@@ -267,10 +275,13 @@ def http_bronze_ingest_from_url():
         r = requests.get(url, timeout=300)
         r.raise_for_status()
         payload = r.json()
-        with engine.begin() as c:
-            _run_bronze_init(c)
-            out = ingest_bronze_strict(c, payload, replace=replace, task_id=task_id, src_hint=url)
-        return jsonify(out)
+        # derive task_id if not provided
+        if not task_id:
+            task_id = _derive_task_id(payload, url)
+        with engine.begin() as conn:
+            _run_bronze_init()
+            out = ingest_bronze_strict(conn, payload, task_id=task_id, replace=replace)
+        return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
@@ -283,27 +294,27 @@ def http_bronze_reingest_from_raw():
         return jsonify({"ok": False, "error": "task_id required"}), 400
     replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
     try:
-        with engine.begin() as c:
-            _run_bronze_init(c)
-            row = c.execute(sql_text(f"""
+        with engine.begin() as conn:
+            _run_bronze_init()
+            row = conn.execute(sql_text("""
                 SELECT payload_json, payload_gzip
-                  FROM {SCHEMA}.{RAW_TABLE}
-                 WHERE task_id = :tid
-              ORDER BY created_at DESC
+                  FROM bronze.raw_result
+                 WHERE task_id=:tid
+              ORDER BY id DESC
                  LIMIT 1
             """), {"tid": task_id}).mappings().first()
             if not row:
-                return jsonify({"ok": False, "error": f"no RAW for task_id={task_id}"}), 404
+                return jsonify({"ok": False, "error": f"no raw_result for task_id={task_id}"}), 404
             if row["payload_json"] is not None:
                 payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
             elif row["payload_gzip"] is not None:
                 payload = json.loads(gzip.decompress(row["payload_gzip"]).decode("utf-8"))
             else:
-                return jsonify({"ok": False, "error": "RAW row had no JSON"}), 500
-            out = ingest_bronze_strict(c, payload, replace=replace, task_id=task_id, src_hint="reingest-from-raw")
-            return jsonify(out)
+                return jsonify({"ok": False, "error": "no payload_json or payload_gzip present"}), 500
+            out = ingest_bronze_strict(conn, payload, task_id=task_id, replace=replace)
+        return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
-# Back-compat alias if anything imports this name elsewhere
+# Provide the blueprint symbol and function names upload_app imports
 ingest_bronze_strict_blueprint = ingest_bronze
