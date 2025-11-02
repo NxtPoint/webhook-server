@@ -195,7 +195,15 @@ def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):
     """), {"tid": task_id, "uid": _compute_session_uid(task_id, payload), "meta": json.dumps(meta_patch)})
 
 # --------------- core ingest ---------------
-def ingest_bronze_strict(conn, payload: Dict[str, Any], task_id: Optional[str], replace: bool) -> Dict[str, Any]:
+def ingest_bronze_strict(
+    conn,
+    payload: Dict[str, Any],
+    replace: bool = True,
+    forced_uid: Optional[str] = None,   # accepted for API parity; unused
+    src_hint: Optional[str] = None,
+    task_id: Optional[str] = None,
+    **_                                       # swallow any extra kwargs
+) -> Dict[str, Any]:
     if not task_id:
         task_id = _derive_task_id(payload, None)
     if not task_id:
