@@ -69,6 +69,13 @@ def _compute_session_uid(task_id: str, payload: Dict[str, Any]) -> str:
     ph = _sha256(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
     return f"{task_id[:8]}-{ph}"
 
+def _first_list(payload: dict, *candidates: str) -> list:
+    for k in candidates:
+        v = payload.get(k)
+        if isinstance(v, list) and v:
+            return v
+    return []
+
 # --------------- init / DDL (idempotent) ---------------
 def _run_bronze_init():
     with engine.begin() as conn:
@@ -178,7 +185,7 @@ def ingest_bronze_strict(conn, payload: Dict[str, Any], task_id: Optional[str], 
     _ensure_session(conn, task_id, payload)
 
     players         = _as_list(payload.get("players"))
-    rallies         = _as_list(payload.get("rallies"))
+    rallies         = _as_list(payload.get("rallies", "rally_events","rally","rally_segments"))
     ball_positions  = _as_list(payload.get("ball_positions"))
     ball_bounces    = _as_list(payload.get("ball_bounces"))
     confidences     = payload.get("confidences")
