@@ -157,7 +157,9 @@ def _do_ingest(task_id: str, result_url: str):
                 replace=DEFAULT_REPLACE_ON_INGEST,
                 forced_uid=None,
                 src_hint=result_url,
+                task_id=task_id,        # ✅ pass through so bronze knows which task this belongs to
             )
+
             sid = res["session_id"]
             conn.execute(sql_text("""
                 UPDATE submission_context

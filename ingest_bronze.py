@@ -135,11 +135,6 @@ def _run_bronze_init_conn(conn):
         """))
 
 def _run_bronze_init(conn=None):
-    """
-    Backward-compatible shim:
-      - If called as _run_bronze_init(conn): reuse that connection
-      - If called with no args: open its own transaction
-    """
     from db_init import engine
     if conn is not None:
         _run_bronze_init_conn(conn)
@@ -147,6 +142,7 @@ def _run_bronze_init(conn=None):
         with engine.begin() as c:
             _run_bronze_init_conn(c)
     return True
+
 
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
@@ -199,11 +195,12 @@ def ingest_bronze_strict(
     conn,
     payload: Dict[str, Any],
     replace: bool = True,
-    forced_uid: Optional[str] = None,   # accepted for API parity; unused
+    forced_uid: Optional[str] = None,
     src_hint: Optional[str] = None,
     task_id: Optional[str] = None,
-    **_                                       # swallow any extra kwargs
+    **_,
 ) -> Dict[str, Any]:
+
     if not task_id:
         task_id = _derive_task_id(payload, None)
     if not task_id:
