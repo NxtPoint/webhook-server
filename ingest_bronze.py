@@ -84,51 +84,69 @@ def _first_list(p: Dict[str, Any], *keys: str) -> list:
     return []
 
 
-# --------------- init / DDL (idempotent) ---------------
-def _run_bronze_init():
-    with engine.begin() as conn:
-        conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
-        # RAW
-        conn.execute(sql_text("""
+# ---------------- init / DDL (idempotent) ----------------
+def _run_bronze_init_conn(conn):
+    """Create or verify bronze schema + tables (requires open connection)."""
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
+
+    # RAW
+    conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.raw_result (
-          id             BIGSERIAL PRIMARY KEY,
-          task_id        TEXT NOT NULL,
-          payload_json   JSONB,
-          payload_gzip   BYTEA,
-          payload_sha256 TEXT,
-          created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        );"""))
-        conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_result_task ON bronze.raw_result(task_id)"))
-        # session
-        conn.execute(sql_text("""
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            payload_json JSONB,
+            payload_gzip BYTEA,
+            payload_sha256 TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_result_task ON bronze.raw_result(task_id)"))
+
+    # SESSION
+    conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.session (
-          task_id     TEXT PRIMARY KEY,
-          session_uid TEXT,
-          meta        JSONB,
-          created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        );"""))
-        # arrays
-        for t in ["player","player_swing","rally","ball_position","ball_bounce",
-                  "unmatched_field","debug_event"]:
-            conn.execute(sql_text(f"""
+            task_id TEXT PRIMARY KEY,
+            session_uid TEXT,
+            meta JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+
+    # ARRAYS
+    for t in ["player","player_swing","rally","ball_position","ball_bounce","unmatched_field","debug_event"]:
+        conn.execute(sql_text(f"""
             CREATE TABLE IF NOT EXISTS bronze.{t} (
-              id         BIGSERIAL PRIMARY KEY,
-              task_id    TEXT NOT NULL,
-              data       JSONB,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );"""))
-            conn.execute(sql_text(f"CREATE INDEX IF NOT EXISTS ix_bronze_{t}_task ON bronze.{t}(task_id)"))
-        # singletons
-        for t in ["player_position","session_confidences","thumbnail","highlight",
-                  "team_session","bounce_heatmap","submission_context"]:
-            conn.execute(sql_text(f"""
+                id BIGSERIAL PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                data JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """))
+        conn.execute(sql_text(f"CREATE INDEX IF NOT EXISTS ix_bronze_{t}_task ON bronze.{t}(task_id)"))
+
+    # SINGLETONS
+    for t in ["player_position","session_confidences","thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
+        conn.execute(sql_text(f"""
             CREATE TABLE IF NOT EXISTS bronze.{t} (
-              id         BIGSERIAL PRIMARY KEY,
-              task_id    TEXT NOT NULL,
-              data       JSONB,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );"""))
-            conn.execute(sql_text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_bronze_{t}_task ON bronze.{t}(task_id)"))
+                task_id TEXT PRIMARY KEY,
+                data JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """))
+
+def _run_bronze_init(conn=None):
+    """
+    Backward-compatible shim:
+      - If called as _run_bronze_init(conn): reuse that connection
+      - If called with no args: open its own transaction
+    """
+    from db_init import engine
+    if conn is not None:
+        _run_bronze_init_conn(conn)
+    else:
+        with engine.begin() as c:
+            _run_bronze_init_conn(c)
+    return True
 
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
