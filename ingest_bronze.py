@@ -202,7 +202,8 @@ def _run_bronze_init_conn(conn):
     """))
 
     # ARRAYS
-    for t in ["player","player_swing","rally","ball_position","ball_bounce","unmatched_field","debug_event"]:
+    for t in ["player","player_swing","rally","ball_position","ball_bounce",
+          "unmatched_field","debug_event","player_position"]:
         conn.execute(sql_text(f"""
             CREATE TABLE IF NOT EXISTS bronze.{t} (
                 id BIGSERIAL PRIMARY KEY,
@@ -214,7 +215,7 @@ def _run_bronze_init_conn(conn):
         conn.execute(sql_text(f"CREATE INDEX IF NOT EXISTS ix_bronze_{t}_task ON bronze.{t}(task_id)"))
 
     # SINGLETONS
-    for t in ["player_position","session_confidences","thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
+    for t in ["session_confidences","thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
         conn.execute(sql_text(f"""
             CREATE TABLE IF NOT EXISTS bronze.{t} (
                 task_id TEXT PRIMARY KEY,
@@ -367,9 +368,7 @@ def ingest_bronze_strict(
     # handle player_positions: each item may be wrapped in dicts by player_id
     player_positions_raw = payload.get("player_positions")
     player_positions_flat = []
-
     if isinstance(player_positions_raw, dict):
-        # flatten dict of arrays { "30": [ {...}, {...} ] }
         for v in player_positions_raw.values():
             if isinstance(v, list):
                 player_positions_flat.extend(v)
@@ -377,7 +376,7 @@ def ingest_bronze_strict(
         player_positions_flat = player_positions_raw
 
     counts["player_position"] = _insert_json_array(conn, "player_position", task_id, player_positions_flat)
-   
+
     # submission_context mirror (optional: if you keep a public.submission_context)
     sc_row = None
     try:
