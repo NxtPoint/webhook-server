@@ -10,11 +10,9 @@
 import os, json, gzip, hashlib, re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
-
 import requests
 from flask import Blueprint, request, jsonify, Response
 from sqlalchemy import text as sql_text
-
 from db_init import engine
 
 SCHEMA = "bronze"
@@ -69,20 +67,21 @@ def _compute_session_uid(task_id: str, payload: Dict[str, Any]) -> str:
     ph = _sha256(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))[:10]
     return f"{task_id[:8]}-{ph}"
 
-def _first_list(payload: dict, *candidates: str) -> list:
-    for k in candidates:
-        v = payload.get(k)
-        if isinstance(v, list) and v:
-            return v
-    return []
-
 def _first_list(p: Dict[str, Any], *keys: str) -> list:
+    """Return the first list found under any of the candidate keys (top-level or under .statistics)."""
+    if not isinstance(p, dict):
+        return []
     for k in keys:
         v = p.get(k)
         if isinstance(v, list):
             return v
+    stats = p.get("statistics")
+    if isinstance(stats, dict):
+        for k in keys:
+            v = stats.get(k)
+            if isinstance(v, list):
+                return v
     return []
-
 
 # ---------------- init / DDL (idempotent) ----------------
 def _run_bronze_init_conn(conn):
@@ -217,6 +216,9 @@ def ingest_bronze_strict(
 
     players         = _as_list(payload.get("players"))
     rallies = _first_list(payload, "rallies", "rally_events", "rally", "rally_segments")
+    # If somehow still empty, try a couple of legacy/spelling variants:
+    if not rallies:
+        rallies = _first_list(payload, "Rallies", "RALLY", "rallies_list")
     ball_positions  = _as_list(payload.get("ball_positions"))
     ball_bounces    = _as_list(payload.get("ball_bounces"))
     confidences     = payload.get("confidences")
@@ -249,7 +251,6 @@ def ingest_bronze_strict(
     counts["ball_bounce"]        = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
     counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events)
     counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched)
-
     counts["player_position"]    = _upsert_single(conn, "player_position", task_id, payload.get("player_positions"))
     counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
     counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
