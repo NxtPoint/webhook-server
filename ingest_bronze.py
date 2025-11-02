@@ -358,13 +358,26 @@ def ingest_bronze_strict(
     counts["ball_bounce"]        = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
     counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events)
     counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched)
-    counts["player_position"]    = _upsert_single(conn, "player_position", task_id, payload.get("player_positions"))
     counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
     counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
     counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
     counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
     counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
+   
+    # handle player_positions: each item may be wrapped in dicts by player_id
+    player_positions_raw = payload.get("player_positions")
+    player_positions_flat = []
 
+    if isinstance(player_positions_raw, dict):
+        # flatten dict of arrays { "30": [ {...}, {...} ] }
+        for v in player_positions_raw.values():
+            if isinstance(v, list):
+                player_positions_flat.extend(v)
+    elif isinstance(player_positions_raw, list):
+        player_positions_flat = player_positions_raw
+
+    counts["player_position"] = _insert_json_array(conn, "player_position", task_id, player_positions_flat)
+   
     # submission_context mirror (optional: if you keep a public.submission_context)
     sc_row = None
     try:
