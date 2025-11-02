@@ -215,10 +215,6 @@ def ingest_bronze_strict(
     _ensure_session(conn, task_id, payload)
 
     players         = _as_list(payload.get("players"))
-    rallies = _first_list(payload, "rallies", "rally_events", "rally", "rally_segments")
-    # If somehow still empty, try a couple of legacy/spelling variants:
-    if not rallies:
-        rallies = _first_list(payload, "Rallies", "RALLY", "rallies_list")
     ball_positions  = _as_list(payload.get("ball_positions"))
     ball_bounces    = _as_list(payload.get("ball_bounces"))
     confidences     = payload.get("confidences")
@@ -228,6 +224,27 @@ def ingest_bronze_strict(
     bounce_heatmap  = payload.get("bounce_heatmap")
     unmatched       = payload.get("unmatched") or payload.get("unmatched_fields")
     debug_events    = payload.get("debug_events") or payload.get("events_debug")
+    # Robust rally extraction: accept list OR dict wrapper, and fall back to .statistics.*
+    _rally_candidates = [
+        payload.get("rallies"),
+        payload.get("rally_events"),
+        payload.get("rally"),
+        payload.get("rally_segments"),
+        (payload.get("statistics") or {}).get("rallies"),
+    ]
+
+    _r = next((v for v in _rally_candidates if isinstance(v, (list, dict))), None)
+
+    if isinstance(_r, dict):
+        # common wrappers: { "rallies": [...] } or { "items": [...] } or { "data": [...] }
+        _r = _r.get("rallies") or _r.get("items") or _r.get("data") or []
+
+    # Normalize to array of dicts (if entries are scalars, wrap them)
+    rallies = []
+    if isinstance(_r, list):
+        for x in _r:
+            rallies.append(x if isinstance(x, dict) else {"value": x})
+
 
     # player_swing without mutating original
     swing_rows = []
