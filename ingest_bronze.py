@@ -76,6 +76,14 @@ def _first_list(payload: dict, *candidates: str) -> list:
             return v
     return []
 
+def _first_list(p: Dict[str, Any], *keys: str) -> list:
+    for k in keys:
+        v = p.get(k)
+        if isinstance(v, list):
+            return v
+    return []
+
+
 # --------------- init / DDL (idempotent) ---------------
 def _run_bronze_init():
     with engine.begin() as conn:
@@ -185,7 +193,7 @@ def ingest_bronze_strict(conn, payload: Dict[str, Any], task_id: Optional[str], 
     _ensure_session(conn, task_id, payload)
 
     players         = _as_list(payload.get("players"))
-    rallies         = _as_list(payload.get("rallies", "rally_events","rally","rally_segments"))
+    rallies = _first_list(payload, "rallies", "rally_events", "rally", "rally_segments")
     ball_positions  = _as_list(payload.get("ball_positions"))
     ball_bounces    = _as_list(payload.get("ball_bounces"))
     confidences     = payload.get("confidences")
