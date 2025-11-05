@@ -427,35 +427,23 @@ def _apply_transforms_and_strip(conn, task_id: str):
                 GENERATED ALWAYS AS ((data->>'timestamp')::double precision) STORED;
     """))
 
-    # ---- ball_bounce (regular columns; safe to strip) ----
+     # ---- ball_bounce (GENERATED ALWAYS — derive from JSON; do not update or strip)
     conn.execute(sql_text("""
         ALTER TABLE bronze.ball_bounce
-          ADD COLUMN IF NOT EXISTS type TEXT,
-          ADD COLUMN IF NOT EXISTS frame_nr INT,
-          ADD COLUMN IF NOT EXISTS player_id INT,
-          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS court_pos JSONB,
-          ADD COLUMN IF NOT EXISTS image_pos JSONB;
+            ADD COLUMN IF NOT EXISTS type TEXT
+                GENERATED ALWAYS AS ((data->>'type')) STORED,
+            ADD COLUMN IF NOT EXISTS frame_nr INT
+                GENERATED ALWAYS AS (NULLIF(data->>'frame_nr','')::int) STORED,
+            ADD COLUMN IF NOT EXISTS player_id INT
+                GENERATED ALWAYS AS (NULLIF(data->>'player_id','')::int) STORED,
+            ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION
+                GENERATED ALWAYS AS (NULLIF(data->>'timestamp','')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS court_pos JSONB
+                GENERATED ALWAYS AS (data->'court_pos') STORED,
+            ADD COLUMN IF NOT EXISTS image_pos JSONB
+                GENERATED ALWAYS AS (data->'image_pos') STORED;
+    """))
 
-        UPDATE bronze.ball_bounce
-           SET type = COALESCE(type, data->>'type'),
-               frame_nr = COALESCE(frame_nr, NULLIF(data->>'frame_nr','')::int),
-               player_id = COALESCE(player_id, NULLIF(data->>'player_id','')::int),
-               timestamp = COALESCE(timestamp, NULLIF(data->>'timestamp','')::double precision),
-               court_pos = COALESCE(court_pos, data->'court_pos'),
-               image_pos = COALESCE(image_pos, data->'image_pos')
-         WHERE task_id = :tid AND data IS NOT NULL;
-    """), {"tid": task_id})
-
-    conn.execute(sql_text("""
-        UPDATE bronze.ball_bounce
-           SET data = NULLIF(
-                 COALESCE(data, '{}'::jsonb)
-                   - 'type' - 'frame_nr' - 'player_id' - 'timestamp' - 'court_pos' - 'image_pos',
-                 '{}'::jsonb
-               )
-         WHERE task_id = :tid;
-    """), {"tid": task_id})
 
     # ---- player (flat stats; swings moved to player_swing) ----
     conn.execute(sql_text("""
