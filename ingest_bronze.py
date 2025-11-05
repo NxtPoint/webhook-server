@@ -398,9 +398,9 @@ def _apply_transforms_and_strip(conn, task_id: str):
     conn.execute(sql_text("""
         -- create columns if not exist
         ALTER TABLE bronze.ball_position
-          ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION;
+            ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'X')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'Y')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'timestamp')::double precision) STORED;
 
         -- populate columns
         UPDATE bronze.ball_position
