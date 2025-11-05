@@ -390,64 +390,44 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
 
 def _apply_transforms_and_strip(conn, task_id: str):
     """
-    Populate flattened columns from data, then strip mapped keys so data only contains leftovers (or NULL).
-    Keep this minimal & table-local; add keys only when you truly need them downstream.
+    Populate/derive flattened columns from data (where appropriate) and, for non-generated tables,
+    strip mapped keys so data only contains leftovers.
+    IMPORTANT:
+      - For tables that use GENERATED ALWAYS columns (ball_position, player_position), DO NOT UPDATE those columns
+        and DO NOT strip the JSON keys they depend on. Postgres computes them from data.
+      - For ball_bounce / player / player_swing / rally / submission_context, we keep your current
+        flatten-and-strip approach.
     """
 
-    # ---- ball_position (X,Y,timestamp -> x,y,timestamp)
+    # ---- ball_position (GENERATED ALWAYS) ----
+    # Derive from JSON automatically; never update or strip mapped keys.
     conn.execute(sql_text("""
-        -- create columns if not exist
         ALTER TABLE bronze.ball_position
-            ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'X')::double precision) STORED,
-            ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'Y')::double precision) STORED,
-            ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'timestamp')::double precision) STORED;
+            ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'X')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'Y')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'timestamp')::double precision) STORED;
+    """))
 
-        -- populate columns
-        UPDATE bronze.ball_position
-           SET x = COALESCE(x, (data->>'X')::double precision),
-               y = COALESCE(y, (data->>'Y')::double precision),
-               timestamp = COALESCE(timestamp, (data->>'timestamp')::double precision)
-         WHERE task_id = :tid AND data IS NOT NULL;
-    """), {"tid": task_id})
-
-    conn.execute(sql_text("""
-        -- strip mapped keys, set data=NULL if empty
-        UPDATE bronze.ball_position
-           SET data = NULLIF(
-                 COALESCE(data, '{}'::jsonb) - 'X' - 'Y' - 'timestamp',
-                 '{}'::jsonb
-               )
-         WHERE task_id = :tid;
-    """), {"tid": task_id})
-
-    # ---- player_position (X,Y,court_X,court_Y,timestamp)
+    # ---- player_position (GENERATED ALWAYS) ----
+    # Derive from JSON automatically; never update or strip mapped keys.
     conn.execute(sql_text("""
         ALTER TABLE bronze.player_position
-          ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS court_y DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION;
+            ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'X')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'Y')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'court_X')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS court_y DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'court_Y')::double precision) STORED,
+            ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION
+                GENERATED ALWAYS AS ((data->>'timestamp')::double precision) STORED;
+    """))
 
-        UPDATE bronze.player_position
-           SET x = COALESCE(x, (data->>'X')::double precision),
-               y = COALESCE(y, (data->>'Y')::double precision),
-               court_x = COALESCE(court_x, (data->>'court_X')::double precision),
-               court_y = COALESCE(court_y, (data->>'court_Y')::double precision),
-               timestamp = COALESCE(timestamp, (data->>'timestamp')::double precision)
-         WHERE task_id = :tid AND data IS NOT NULL;
-    """), {"tid": task_id})
-
-    conn.execute(sql_text("""
-        UPDATE bronze.player_position
-           SET data = NULLIF(
-                 COALESCE(data, '{}'::jsonb) - 'X' - 'Y' - 'court_X' - 'court_Y' - 'timestamp',
-                 '{}'::jsonb
-               )
-         WHERE task_id = :tid;
-    """), {"tid": task_id})
-
-    # ---- ball_bounce (type, frame_nr, player_id, timestamp, court_pos, image_pos)
+    # ---- ball_bounce (regular columns; safe to strip) ----
     conn.execute(sql_text("""
         ALTER TABLE bronze.ball_bounce
           ADD COLUMN IF NOT EXISTS type TEXT,
@@ -470,13 +450,14 @@ def _apply_transforms_and_strip(conn, task_id: str):
     conn.execute(sql_text("""
         UPDATE bronze.ball_bounce
            SET data = NULLIF(
-                 COALESCE(data, '{}'::jsonb) - 'type' - 'frame_nr' - 'player_id' - 'timestamp' - 'court_pos' - 'image_pos',
+                 COALESCE(data, '{}'::jsonb)
+                   - 'type' - 'frame_nr' - 'player_id' - 'timestamp' - 'court_pos' - 'image_pos',
                  '{}'::jsonb
                )
          WHERE task_id = :tid;
     """), {"tid": task_id})
 
-    # ---- player (flat stats; swings moved to player_swing)
+    # ---- player (flat stats; swings moved to player_swing) ----
     conn.execute(sql_text("""
         ALTER TABLE bronze.player
           ADD COLUMN IF NOT EXISTS player_id INT,
@@ -507,13 +488,13 @@ def _apply_transforms_and_strip(conn, task_id: str):
                    - 'player_id' - 'activity_score' - 'covered_distance'
                    - 'fastest_sprint' - 'fastest_sprint_timestamp'
                    - 'location_heatmap' - 'swing_count' - 'swing_type_distribution'
-                   - 'swings' - 'strokes' - 'swing_events', -- explicitly drop nested swings present in some payloads
+                   - 'swings' - 'strokes' - 'swing_events',
                  '{}'::jsonb
                )
          WHERE task_id = :tid;
     """), {"tid": task_id})
 
-    # ---- player_swing (wide but we keep annotations/rally as JSONB)
+    # ---- player_swing (wide; keep several nested JSONB as-is) ----
     conn.execute(sql_text("""
         ALTER TABLE bronze.player_swing
           ADD COLUMN IF NOT EXISTS player_id INT,
@@ -579,7 +560,7 @@ def _apply_transforms_and_strip(conn, task_id: str):
          WHERE task_id = :tid;
     """), {"tid": task_id})
 
-    # ---- rally (minimal facts; keep payload variability in data if needed)
+    # ---- rally (minimal facts)
     conn.execute(sql_text("""
         ALTER TABLE bronze.rally
           ADD COLUMN IF NOT EXISTS rally_id TEXT,
@@ -587,7 +568,6 @@ def _apply_transforms_and_strip(conn, task_id: str):
           ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION;
 
-        -- If your structure is { "value": { "id":..., "start":..., "end":... } }
         UPDATE bronze.rally
            SET rally_id = COALESCE(rally_id, data->'value'->>'id'),
                start_ts = COALESCE(start_ts, NULLIF(data->'value'->>'start','')::double precision),
@@ -600,7 +580,6 @@ def _apply_transforms_and_strip(conn, task_id: str):
     """), {"tid": task_id})
 
     conn.execute(sql_text("""
-        -- If you mapped everything you care about from 'value', strip it wholly; else keep it.
         UPDATE bronze.rally
            SET data = NULLIF(
                  COALESCE(data, '{}'::jsonb) - 'value',
@@ -609,7 +588,7 @@ def _apply_transforms_and_strip(conn, task_id: str):
          WHERE task_id = :tid;
     """), {"tid": task_id})
 
-    # ---- submission_context (only if you flattened columns for it)
+    # ---- submission_context
     conn.execute(sql_text("""
         ALTER TABLE bronze.submission_context
           ADD COLUMN IF NOT EXISTS email TEXT,
@@ -652,13 +631,12 @@ def _apply_transforms_and_strip(conn, task_id: str):
          WHERE task_id = :tid;
     """), {"tid": task_id})
 
-    # ---- performance-friendly indexes (idempotent)
+    # ---- indexes (idempotent)
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_position_task_ts  ON bronze.ball_position (task_id, timestamp)"))
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_player_position_task_ts ON bronze.player_position (task_id, timestamp)"))
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_player_swing_task_pid ON bronze.player_swing (task_id, player_id)"))
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_bounce_task_ts   ON bronze.ball_bounce (task_id, timestamp)"))
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_rally_task_start       ON bronze.rally (task_id, start_ts)"))
-
 
 # --------------- core ingest ---------------
 def ingest_bronze_strict(
@@ -744,9 +722,6 @@ def ingest_bronze_strict(
     counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
     counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
     counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
-   
-     # After fan-out inserts, transpose columns and strip mapped keys (single source of truth = here)
-    _apply_transforms_and_strip(conn, task_id)
 
     # handle player_positions: each item may be wrapped in dicts by player_id
     player_positions_raw = payload.get("player_positions")
@@ -759,6 +734,9 @@ def ingest_bronze_strict(
         player_positions_flat = player_positions_raw
 
     counts["player_position"] = _insert_json_array(conn, "player_position", task_id, player_positions_flat)
+
+    # After all fan-out inserts, apply transforms (this will add/generated cols, indexes, etc.)
+    _apply_transforms_and_strip(conn, task_id)
 
     # submission_context mirror (optional: if you keep a public.submission_context)
     sc_row = None
