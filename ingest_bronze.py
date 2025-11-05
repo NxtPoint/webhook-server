@@ -388,6 +388,48 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
     """), rows)
     return len(rows)
 
+def _strip_json_keys_chunked(conn, table: str, task_id: str, keys: list[str], batch: int = 5000) -> int:
+    """
+    Strip a list of keys from bronze.<table>.data in small batches to avoid long-running updates.
+    Returns total rows updated.
+    """
+    if not keys:
+        return 0
+
+    # Build the strip expression: (((COALESCE(data,'{}') - 'k1') - 'k2') - 'k3') ...
+    def _strip_expr():
+        expr = "COALESCE(t.data, '{}'::jsonb)"
+        for i in range(len(keys)):
+            expr += f" - :k{i}"
+        return expr
+
+    total = 0
+    # Batch by id to keep each UPDATE small
+    while True:
+        params = {"tid": task_id}
+        for i, k in enumerate(keys):
+            params[f"k{i}"] = k
+
+        sql = f"""
+            WITH todo AS (
+                SELECT id
+                  FROM bronze.{table}
+                 WHERE task_id = :tid
+                   AND data IS NOT NULL
+                 LIMIT {batch}
+            )
+            UPDATE bronze.{table} AS t
+               SET data = NULLIF({_strip_expr()}, '{{}}'::jsonb)
+              FROM todo
+             WHERE t.id = todo.id
+        """
+        res = conn.execute(sql_text(sql), params)
+        n = res.rowcount or 0
+        total += n
+        if n == 0:
+            break
+    return total
+
 def _apply_transforms_and_strip(conn, task_id: str):
     """
     Populate/derive flattened columns from data (where appropriate) and, for non-generated tables,
@@ -469,18 +511,19 @@ def _apply_transforms_and_strip(conn, task_id: str):
          WHERE task_id = :tid AND data IS NOT NULL;
     """), {"tid": task_id})
 
-    conn.execute(sql_text("""
-        UPDATE bronze.player
-           SET data = NULLIF(
-                 COALESCE(data, '{}'::jsonb)
-                   - 'player_id' - 'activity_score' - 'covered_distance'
-                   - 'fastest_sprint' - 'fastest_sprint_timestamp'
-                   - 'location_heatmap' - 'swing_count' - 'swing_type_distribution'
-                   - 'swings' - 'strokes' - 'swing_events',
-                 '{}'::jsonb
-               )
-         WHERE task_id = :tid;
-    """), {"tid": task_id})
+    _strip_json_keys_chunked(
+        conn,
+        table="player",
+        task_id=task_id,
+        keys=[
+            "player_id", "activity_score", "covered_distance",
+            "fastest_sprint", "fastest_sprint_timestamp",
+            "location_heatmap", "swing_count", "swing_type_distribution",
+            "swings", "strokes", "swing_events",
+        ],
+        batch=4000,  # tweak if needed
+    )
+
 
     # ---- player_swing (wide; keep several nested JSONB as-is) ----
     conn.execute(sql_text("""
