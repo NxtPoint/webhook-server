@@ -201,9 +201,9 @@ def _run_bronze_init_conn(conn):
         );
     """))
 
-    # ARRAYS
+    # ARRAYS (note: player_position is now an array table)
     for t in ["player","player_swing","rally","ball_position","ball_bounce",
-          "unmatched_field","debug_event","player_position"]:
+            "unmatched_field","debug_event","player_position"]:
         conn.execute(sql_text(f"""
             CREATE TABLE IF NOT EXISTS bronze.{t} (
                 id BIGSERIAL PRIMARY KEY,
@@ -223,6 +223,7 @@ def _run_bronze_init_conn(conn):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """))
+
 
 def _run_bronze_init(conn=None):
     from db_init import engine
@@ -387,6 +388,277 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
     """), rows)
     return len(rows)
 
+def _apply_transforms_and_strip(conn, task_id: str):
+    """
+    Populate flattened columns from data, then strip mapped keys so data only contains leftovers (or NULL).
+    Keep this minimal & table-local; add keys only when you truly need them downstream.
+    """
+
+    # ---- ball_position (X,Y,timestamp -> x,y,timestamp)
+    conn.execute(sql_text("""
+        -- create columns if not exist
+        ALTER TABLE bronze.ball_position
+          ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION;
+
+        -- populate columns
+        UPDATE bronze.ball_position
+           SET x = COALESCE(x, (data->>'X')::double precision),
+               y = COALESCE(y, (data->>'Y')::double precision),
+               timestamp = COALESCE(timestamp, (data->>'timestamp')::double precision)
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        -- strip mapped keys, set data=NULL if empty
+        UPDATE bronze.ball_position
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb) - 'X' - 'Y' - 'timestamp',
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- player_position (X,Y,court_X,court_Y,timestamp)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.player_position
+          ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_y DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION;
+
+        UPDATE bronze.player_position
+           SET x = COALESCE(x, (data->>'X')::double precision),
+               y = COALESCE(y, (data->>'Y')::double precision),
+               court_x = COALESCE(court_x, (data->>'court_X')::double precision),
+               court_y = COALESCE(court_y, (data->>'court_Y')::double precision),
+               timestamp = COALESCE(timestamp, (data->>'timestamp')::double precision)
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        UPDATE bronze.player_position
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb) - 'X' - 'Y' - 'court_X' - 'court_Y' - 'timestamp',
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- ball_bounce (type, frame_nr, player_id, timestamp, court_pos, image_pos)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.ball_bounce
+          ADD COLUMN IF NOT EXISTS type TEXT,
+          ADD COLUMN IF NOT EXISTS frame_nr INT,
+          ADD COLUMN IF NOT EXISTS player_id INT,
+          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_pos JSONB,
+          ADD COLUMN IF NOT EXISTS image_pos JSONB;
+
+        UPDATE bronze.ball_bounce
+           SET type = COALESCE(type, data->>'type'),
+               frame_nr = COALESCE(frame_nr, NULLIF(data->>'frame_nr','')::int),
+               player_id = COALESCE(player_id, NULLIF(data->>'player_id','')::int),
+               timestamp = COALESCE(timestamp, NULLIF(data->>'timestamp','')::double precision),
+               court_pos = COALESCE(court_pos, data->'court_pos'),
+               image_pos = COALESCE(image_pos, data->'image_pos')
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        UPDATE bronze.ball_bounce
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb) - 'type' - 'frame_nr' - 'player_id' - 'timestamp' - 'court_pos' - 'image_pos',
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- player (flat stats; swings moved to player_swing)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.player
+          ADD COLUMN IF NOT EXISTS player_id INT,
+          ADD COLUMN IF NOT EXISTS activity_score DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS covered_distance DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS fastest_sprint DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS fastest_sprint_timestamp DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS location_heatmap JSONB,
+          ADD COLUMN IF NOT EXISTS swing_count INT,
+          ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB;
+
+        UPDATE bronze.player
+           SET player_id = COALESCE(player_id, NULLIF(data->>'player_id','')::int),
+               activity_score = COALESCE(activity_score, NULLIF(data->>'activity_score','')::double precision),
+               covered_distance = COALESCE(covered_distance, NULLIF(data->>'covered_distance','')::double precision),
+               fastest_sprint = COALESCE(fastest_sprint, NULLIF(data->>'fastest_sprint','')::double precision),
+               fastest_sprint_timestamp = COALESCE(fastest_sprint_timestamp, NULLIF(data->>'fastest_sprint_timestamp','')::double precision),
+               location_heatmap = COALESCE(location_heatmap, data->'location_heatmap'),
+               swing_count = COALESCE(swing_count, NULLIF(data->>'swing_count','')::int),
+               swing_type_distribution = COALESCE(swing_type_distribution, data->'swing_type_distribution')
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        UPDATE bronze.player
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb)
+                   - 'player_id' - 'activity_score' - 'covered_distance'
+                   - 'fastest_sprint' - 'fastest_sprint_timestamp'
+                   - 'location_heatmap' - 'swing_count' - 'swing_type_distribution'
+                   - 'swings' - 'strokes' - 'swing_events', -- explicitly drop nested swings present in some payloads
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- player_swing (wide but we keep annotations/rally as JSONB)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.player_swing
+          ADD COLUMN IF NOT EXISTS player_id INT,
+          ADD COLUMN IF NOT EXISTS valid BOOLEAN,
+          ADD COLUMN IF NOT EXISTS serve BOOLEAN,
+          ADD COLUMN IF NOT EXISTS swing_type TEXT,
+          ADD COLUMN IF NOT EXISTS volley BOOLEAN,
+          ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN,
+          ADD COLUMN IF NOT EXISTS start JSONB,
+          ADD COLUMN IF NOT EXISTS "end" JSONB,
+          ADD COLUMN IF NOT EXISTS ball_hit JSONB,
+          ADD COLUMN IF NOT EXISTS ball_hit_location JSONB,
+          ADD COLUMN IF NOT EXISTS ball_player_distance DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_speed DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_impact_location JSONB,
+          ADD COLUMN IF NOT EXISTS ball_impact_type TEXT,
+          ADD COLUMN IF NOT EXISTS ball_trajectory JSONB,
+          ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS confidence_swing_type DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS confidence_volley DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS intercepting_player_id INT,
+          ADD COLUMN IF NOT EXISTS rally JSONB,
+          ADD COLUMN IF NOT EXISTS annotations JSONB;
+
+        UPDATE bronze.player_swing
+           SET player_id = COALESCE(player_id, NULLIF(data->>'player_id','')::int),
+               valid = COALESCE(valid, (data->>'valid')::boolean),
+               serve = COALESCE(serve, (data->>'serve')::boolean),
+               swing_type = COALESCE(swing_type, data->>'swing_type'),
+               volley = COALESCE(volley, (data->>'volley')::boolean),
+               is_in_rally = COALESCE(is_in_rally, (data->>'is_in_rally')::boolean),
+               start = COALESCE(start, data->'start'),
+               "end" = COALESCE("end", data->'end'),
+               ball_hit = COALESCE(ball_hit, data->'ball_hit'),
+               ball_hit_location = COALESCE(ball_hit_location, data->'ball_hit_location'),
+               ball_player_distance = COALESCE(ball_player_distance, NULLIF(data->>'ball_player_distance','')::double precision),
+               ball_speed = COALESCE(ball_speed, NULLIF(data->>'ball_speed','')::double precision),
+               ball_impact_location = COALESCE(ball_impact_location, data->'ball_impact_location'),
+               ball_impact_type = COALESCE(ball_impact_type, data->>'ball_impact_type'),
+               ball_trajectory = COALESCE(ball_trajectory, data->'ball_trajectory'),
+               confidence = COALESCE(confidence, NULLIF(data->>'confidence','')::double precision),
+               confidence_swing_type = COALESCE(confidence_swing_type, NULLIF(data->>'confidence_swing_type','')::double precision),
+               confidence_volley = COALESCE(confidence_volley, NULLIF(data->>'confidence_volley','')::double precision),
+               intercepting_player_id = COALESCE(intercepting_player_id, NULLIF(data->>'intercepting_player_id','')::int),
+               rally = COALESCE(rally, data->'rally'),
+               annotations = COALESCE(annotations, data->'annotations')
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        UPDATE bronze.player_swing
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb)
+                 - 'start' - 'end' - 'player_id' - 'valid' - 'serve' - 'swing_type' - 'volley'
+                 - 'is_in_rally' - 'rally'
+                 - 'ball_hit' - 'ball_hit_location' - 'ball_player_distance' - 'ball_speed'
+                 - 'ball_impact_location' - 'ball_impact_type' - 'ball_trajectory'
+                 - 'confidence' - 'confidence_swing_type' - 'confidence_volley'
+                 - 'intercepting_player_id'
+                 - 'annotations',
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- rally (minimal facts; keep payload variability in data if needed)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.rally
+          ADD COLUMN IF NOT EXISTS rally_id TEXT,
+          ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION;
+
+        -- If your structure is { "value": { "id":..., "start":..., "end":... } }
+        UPDATE bronze.rally
+           SET rally_id = COALESCE(rally_id, data->'value'->>'id'),
+               start_ts = COALESCE(start_ts, NULLIF(data->'value'->>'start','')::double precision),
+               end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>'end','')::double precision),
+               len_s    = COALESCE(len_s, CASE
+                          WHEN (data->'value'->>'start') IS NOT NULL AND (data->'value'->>'end') IS NOT NULL
+                          THEN (data->'value'->>'end')::double precision - (data->'value'->>'start')::double precision
+                          ELSE NULL END)
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        -- If you mapped everything you care about from 'value', strip it wholly; else keep it.
+        UPDATE bronze.rally
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb) - 'value',
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- submission_context (only if you flattened columns for it)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.submission_context
+          ADD COLUMN IF NOT EXISTS email TEXT,
+          ADD COLUMN IF NOT EXISTS location TEXT,
+          ADD COLUMN IF NOT EXISTS video_url TEXT,
+          ADD COLUMN IF NOT EXISTS share_url TEXT,
+          ADD COLUMN IF NOT EXISTS match_date DATE,
+          ADD COLUMN IF NOT EXISTS start_time TEXT,
+          ADD COLUMN IF NOT EXISTS player_a_name TEXT,
+          ADD COLUMN IF NOT EXISTS player_b_name TEXT,
+          ADD COLUMN IF NOT EXISTS player_a_utr TEXT,
+          ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
+          ADD COLUMN IF NOT EXISTS customer_name TEXT;
+
+        UPDATE bronze.submission_context
+           SET email = COALESCE(email, data->>'email'),
+               location = COALESCE(location, data->>'location'),
+               video_url = COALESCE(video_url, data->>'video_url'),
+               share_url = COALESCE(share_url, data->>'share_url'),
+               match_date = COALESCE(match_date, NULLIF(data->>'match_date','')::date),
+               start_time = COALESCE(start_time, data->>'start_time'),
+               player_a_name = COALESCE(player_a_name, data->>'player_a_name'),
+               player_b_name = COALESCE(player_b_name, data->>'player_b_name'),
+               player_a_utr  = COALESCE(player_a_utr, data->>'player_a_utr'),
+               player_b_utr  = COALESCE(player_b_utr, data->>'player_b_utr'),
+               customer_name = COALESCE(customer_name, data->>'customer_name')
+         WHERE task_id = :tid AND data IS NOT NULL;
+    """), {"tid": task_id})
+
+    conn.execute(sql_text("""
+        UPDATE bronze.submission_context
+           SET data = NULLIF(
+                 COALESCE(data, '{}'::jsonb)
+                 - 'email' - 'task_id' - 'location' - 'raw_meta' - 'share_url' - 'video_url'
+                 - 'created_at' - 'match_date' - 'session_id' - 'start_time'
+                 - 'player_a_utr' - 'player_b_utr' - 'customer_name'
+                 - 'player_a_name' - 'player_b_name',
+                 '{}'::jsonb
+               )
+         WHERE task_id = :tid;
+    """), {"tid": task_id})
+
+    # ---- performance-friendly indexes (idempotent)
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_position_task_ts  ON bronze.ball_position (task_id, timestamp)"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_player_position_task_ts ON bronze.player_position (task_id, timestamp)"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_player_swing_task_pid ON bronze.player_swing (task_id, player_id)"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_bounce_task_ts   ON bronze.ball_bounce (task_id, timestamp)"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_rally_task_start       ON bronze.rally (task_id, start_ts)"))
+
 
 # --------------- core ingest ---------------
 def ingest_bronze_strict(
@@ -473,6 +745,9 @@ def ingest_bronze_strict(
     counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
     counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
    
+     # After fan-out inserts, transpose columns and strip mapped keys (single source of truth = here)
+    _apply_transforms_and_strip(conn, task_id)
+
     # handle player_positions: each item may be wrapped in dicts by player_id
     player_positions_raw = payload.get("player_positions")
     player_positions_flat = []
