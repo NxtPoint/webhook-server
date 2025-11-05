@@ -280,6 +280,114 @@ def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):
           meta        = COALESCE(bronze.session.meta, '{}'::jsonb) || CAST(:meta AS JSONB)
     """), {"tid": task_id, "uid": _compute_session_uid(task_id, payload), "meta": json.dumps(meta_patch)})
 
+def _as_float(x):
+    try:
+        if x is None: return None
+        return float(x)
+    except Exception:
+        return None
+
+def _as_int(x):
+    try:
+        if x is None: return None
+        return int(x)
+    except Exception:
+        return None
+
+def _insert_players(conn, task_id: str, players: list) -> int:
+    if not players: return 0
+    rows = []
+    for p in players:
+        if not isinstance(p, dict): 
+            continue
+        rows.append({
+            "tid": task_id,
+            "j": json.dumps(p),
+            "player_id": _as_int(p.get("player_id")),
+            "activity_score": _as_float(p.get("activity_score")),
+            "covered_distance": _as_float(p.get("covered_distance")),
+            "fastest_sprint": _as_float(p.get("fastest_sprint")),
+            "fastest_sprint_timestamp": _as_float(p.get("fastest_sprint_timestamp")),
+            "swing_count": _as_int(p.get("swing_count")),
+            "swing_type_distribution": json.dumps(p.get("swing_type_distribution")) if p.get("swing_type_distribution") is not None else None,
+            "location_heatmap": json.dumps(p.get("location_heatmap")) if p.get("location_heatmap") is not None else None,
+        })
+    if not rows: return 0
+
+    conn.execute(sql_text("""
+        INSERT INTO bronze.player (
+            task_id, data,
+            player_id, activity_score, covered_distance, fastest_sprint, fastest_sprint_timestamp,
+            swing_count, swing_type_distribution, location_heatmap
+        ) VALUES (
+            :tid, CAST(:j AS JSONB),
+            :player_id, :activity_score, :covered_distance, :fastest_sprint, :fastest_sprint_timestamp,
+            :swing_count, CAST(:swing_type_distribution AS JSONB), CAST(:location_heatmap AS JSONB)
+        )
+    """), rows)
+    return len(rows)
+
+def _insert_player_swings(conn, task_id: str, swings: list) -> int:
+    if not swings: return 0
+    rows = []
+    for s in swings:
+        if not isinstance(s, dict):
+            continue
+        start = s.get("start") or {}
+        end   = s.get("end")   or {}
+        rows.append({
+            "tid": task_id,
+            "j": json.dumps(s),
+            "start_ts": _as_float(start.get("timestamp")),
+            "start_frame": _as_int(start.get("frame_nr")),
+            "end_ts": _as_float(end.get("timestamp")),
+            "end_frame": _as_int(end.get("frame_nr")),
+            "player_id": _as_int(s.get("player_id")),
+            "valid": bool(s.get("valid")) if s.get("valid") is not None else None,
+            "serve": bool(s.get("serve")) if s.get("serve") is not None else None,
+            "swing_type": (s.get("swing_type") or None),
+            "volley": bool(s.get("volley")) if s.get("volley") is not None else None,
+            "is_in_rally": bool(s.get("is_in_rally")) if s.get("is_in_rally") is not None else None,
+            "rally": json.dumps(s.get("rally")) if s.get("rally") is not None else None,
+            "ball_hit": json.dumps(s.get("ball_hit")) if s.get("ball_hit") is not None else None,
+            "confidence_swing_type": _as_float(s.get("confidence_swing_type")),
+            "confidence": _as_float(s.get("confidence")),
+            "confidence_volley": _as_float(s.get("confidence_volley")),
+            "ball_hit_location": json.dumps(s.get("ball_hit_location")) if s.get("ball_hit_location") is not None else None,
+            "ball_player_distance": _as_float(s.get("ball_player_distance")),
+            "ball_speed": _as_float(s.get("ball_speed")),
+            "ball_impact_location": json.dumps(s.get("ball_impact_location")) if s.get("ball_impact_location") is not None else None,
+            "ball_impact_type": (s.get("ball_impact_type") or None),
+            "intercepting_player_id": _as_int(s.get("intercepting_player_id")),
+            "ball_trajectory": json.dumps(s.get("ball_trajectory")) if s.get("ball_trajectory") is not None else None,
+            "annotations": json.dumps(s.get("annotations")) if s.get("annotations") is not None else None,
+        })
+    if not rows: return 0
+
+    conn.execute(sql_text("""
+        INSERT INTO bronze.player_swing (
+            task_id, data,
+            start_ts, start_frame, end_ts, end_frame,
+            player_id, valid, serve, swing_type, volley, is_in_rally,
+            rally, ball_hit,
+            confidence_swing_type, confidence, confidence_volley,
+            ball_hit_location, ball_player_distance, ball_speed,
+            ball_impact_location, ball_impact_type, intercepting_player_id,
+            ball_trajectory, annotations
+        ) VALUES (
+            :tid, CAST(:j AS JSONB),
+            :start_ts, :start_frame, :end_ts, :end_frame,
+            :player_id, :valid, :serve, :swing_type, :volley, :is_in_rally,
+            CAST(:rally AS JSONB), CAST(:ball_hit AS JSONB),
+            :confidence_swing_type, :confidence, :confidence_volley,
+            CAST(:ball_hit_location AS JSONB), :ball_player_distance, :ball_speed,
+            CAST(:ball_impact_location AS JSONB), :ball_impact_type, :intercepting_player_id,
+            CAST(:ball_trajectory AS JSONB), CAST(:annotations AS JSONB)
+        )
+    """), rows)
+    return len(rows)
+
+
 # --------------- core ingest ---------------
 def ingest_bronze_strict(
     conn,
@@ -352,8 +460,8 @@ def ingest_bronze_strict(
                     swing_rows.append(s)
 
     counts = {}
-    counts["player"]             = _insert_json_array(conn, "player", task_id, players)
-    counts["player_swing"]       = _insert_json_array(conn, "player_swing", task_id, swing_rows)
+    counts["player"]       = _insert_players(conn, task_id, players)
+    counts["player_swing"] = _insert_player_swings(conn, task_id, swing_rows)
     counts["rally"]              = _insert_json_array(conn, "rally", task_id, rallies)
     counts["ball_position"]      = _insert_json_array(conn, "ball_position", task_id, ball_positions)
     counts["ball_bounce"]        = _insert_json_array(conn, "ball_bounce", task_id, ball_bounces)
