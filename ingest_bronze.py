@@ -646,57 +646,74 @@ def _upsert_submission_context_from_public(conn, task_id: str) -> int:
     return 1
 
 def _post_ingest_transforms(conn, task_id: str):
-    # ---- RALLY: add columns (idempotent)
+    # ---- rally: flatten & strip (handles multiple shapes) ----
     conn.execute(sql_text("""
         ALTER TABLE bronze.rally
-          ADD COLUMN IF NOT EXISTS rally_id TEXT,
-          ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION
+        ADD COLUMN IF NOT EXISTS rally_id TEXT,
+        ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION
     """))
 
-    # Shape A: { "id":..., "start":..., "end":... }
+    # A) Top-level shape: { "id":..., "start":..., "end":... }
     conn.execute(sql_text("""
         UPDATE bronze.rally
-           SET rally_id = COALESCE(rally_id, data->>'id'),
-               start_ts = COALESCE(start_ts, NULLIF(data->>'start','')::double precision),
-               end_ts   = COALESCE(end_ts,   NULLIF(data->>'end','')::double precision)
-         WHERE task_id = :tid
-           AND data IS NOT NULL
+        SET rally_id = COALESCE(rally_id, NULLIF(data->>'id','')),
+            start_ts = COALESCE(start_ts, NULLIF(data->>'start','')::double precision),
+            end_ts   = COALESCE(end_ts,   NULLIF(data->>'end','')::double precision)
+        WHERE task_id = :tid
+        AND data IS NOT NULL
+        AND (data ? 'start' OR data ? 'end' OR data ? 'id')
     """), {"tid": task_id})
 
-    # Shape B: { "value": { "id":..., "start":..., "end":... } }
+    # B) Wrapped object: { "value": { "id":..., "start":..., "end":... } }
     conn.execute(sql_text("""
         UPDATE bronze.rally
-           SET rally_id = COALESCE(rally_id, data->'value'->>'id'),
-               start_ts = COALESCE(start_ts, NULLIF(data->'value'->>'start','')::double precision),
-               end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>'end','')::double precision)
-         WHERE task_id = :tid
-           AND data IS NOT NULL
-           AND data ? 'value'
+        SET rally_id = COALESCE(rally_id, NULLIF(data->'value'->>'id','')),
+            start_ts = COALESCE(start_ts, NULLIF(data->'value'->>'start','')::double precision),
+            end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>'end','')::double precision)
+        WHERE task_id = :tid
+        AND data IS NOT NULL
+        AND jsonb_typeof(data->'value') = 'object'
     """), {"tid": task_id})
 
-    # If we have both times, compute len_s
+    # C) Wrapped array: { "value": [start, end] } or { "value": [start, end, id] }
     conn.execute(sql_text("""
         UPDATE bronze.rally
-           SET len_s = COALESCE(len_s,
-                                 CASE WHEN start_ts IS NOT NULL AND end_ts IS NOT NULL
-                                      THEN end_ts - start_ts END)
-         WHERE task_id = :tid
+        SET start_ts = COALESCE(start_ts, NULLIF(data->'value'->>0,'')::double precision),
+            end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>1,'')::double precision),
+            rally_id = COALESCE(rally_id, NULLIF(data->'value'->>2,''))
+        WHERE task_id = :tid
+        AND data IS NOT NULL
+        AND jsonb_typeof(data->'value') = 'array'
     """), {"tid": task_id})
 
-    # Strip ONLY when at least one mapped column is present
+    # Compute len_s from start/end
     conn.execute(sql_text("""
-        UPDATE bronze.rally AS r
-           SET data = NULLIF(
-                  CASE
-                    WHEN r.data ? 'value'
-                      THEN (COALESCE(r.data,'{}'::jsonb) - 'value')
-                    ELSE (COALESCE(r.data,'{}'::jsonb) - 'id' - 'start' - 'end')
-                  END, '{}'::jsonb)
-         WHERE r.task_id = :tid
-           AND (r.rally_id IS NOT NULL OR r.start_ts IS NOT NULL OR r.end_ts IS NOT NULL)
+        UPDATE bronze.rally
+        SET len_s = COALESCE(len_s,
+                    CASE WHEN start_ts IS NOT NULL AND end_ts IS NOT NULL
+                        THEN end_ts - start_ts END)
+        WHERE task_id = :tid
     """), {"tid": task_id})
+
+    # Strip mapped keys; set data=NULL if empty
+    conn.execute(sql_text("""
+        UPDATE bronze.rally
+        SET data = NULLIF(
+                CASE
+                WHEN data ? 'value' THEN
+                    CASE
+                    WHEN jsonb_typeof(data->'value')='object' THEN (COALESCE(data,'{}'::jsonb) - 'value')
+                    WHEN jsonb_typeof(data->'value')='array'  THEN '{}'::jsonb
+                    ELSE (COALESCE(data,'{}'::jsonb) - 'value')
+                    END
+                ELSE (COALESCE(data,'{}'::jsonb) - 'id' - 'start' - 'end')
+                END,
+                '{}'::jsonb)
+        WHERE task_id = :tid
+    """), {"tid": task_id})
+
 
     # ---- SUBMISSION CONTEXT: add columns (idempotent)
     conn.execute(sql_text("""
