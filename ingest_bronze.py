@@ -568,7 +568,9 @@ def _insert_rallies(conn, task_id: str, payload: dict) -> int:
     if isinstance(r, list):
         for x in r:
             out.append(x if isinstance(x, dict) else {"value": x})
-    if not out: return 0
+    if not out:
+        return 0
+
     rows = [{"tid": task_id, "j": json.dumps(x, ensure_ascii=False)} for x in out]
     conn.execute(sql_text("""
         INSERT INTO bronze.rally (task_id, data)
@@ -743,26 +745,21 @@ def _post_ingest_transforms(conn, task_id: str):
 
     # Strip only if something was actually flattened
     conn.execute(sql_text("""
-        UPDATE bronze.submission_context AS s
-           SET data = NULLIF(
-                 COALESCE(s.data,'{}'::jsonb)
+    UPDATE bronze.submission_context AS s
+       SET data = NULLIF(
+             (
+                 jsonb_strip_nulls(COALESCE(s.data, '{}'::jsonb))
                  - 'email' - 'task_id' - 'location' - 'raw_meta' - 'share_url' - 'video_url'
                  - 'created_at' - 'match_date' - 'session_id' - 'start_time'
                  - 'player_a_utr' - 'player_b_utr' - 'customer_name'
                  - 'player_a_name' - 'player_b_name'
                  - 'last_status' - 'ingest_error' - 'last_status_at'
-                 - 'last_result_url' - 'ingest_started_at' - 'ingest_finished_at',
-                 '{}'::jsonb)
-         WHERE s.task_id = :tid
-           AND (s.email IS NOT NULL OR s.location IS NOT NULL OR s.video_url IS NOT NULL
-                OR s.share_url IS NOT NULL OR s.match_date IS NOT NULL OR s.start_time IS NOT NULL
-                OR s.player_a_name IS NOT NULL OR s.player_b_name IS NOT NULL
-                OR s.player_a_utr IS NOT NULL OR s.player_b_utr IS NOT NULL
-                OR s.customer_name IS NOT NULL
-                OR s.last_status IS NOT NULL OR s.last_status_at IS NOT NULL
-                OR s.last_result_url IS NOT NULL OR s.ingest_started_at IS NOT NULL
-                OR s.ingest_finished_at IS NOT NULL)
-    """), {"tid": task_id})
+                 - 'last_result_url' - 'ingest_started_at' - 'ingest_finished_at'
+             ),
+             '{}'::jsonb
+         )
+     WHERE s.task_id = :tid
+"""), {"tid": task_id})
 
 # --------------- core ingest ---------------
 def ingest_bronze_strict(
