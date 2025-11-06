@@ -644,7 +644,7 @@ def _upsert_submission_context_from_public(conn, task_id: str) -> int:
     return 1
 
 def _post_ingest_transforms(conn, task_id: str):
-    # ---- rally: flatten & strip ----
+    # ---- RALLY: add columns (idempotent)
     conn.execute(sql_text("""
         ALTER TABLE bronze.rally
           ADD COLUMN IF NOT EXISTS rally_id TEXT,
@@ -653,48 +653,50 @@ def _post_ingest_transforms(conn, task_id: str):
           ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION
     """))
 
-    # Shape 1: {id,start,end}
+    # Shape A: { "id":..., "start":..., "end":... }
     conn.execute(sql_text("""
         UPDATE bronze.rally
            SET rally_id = COALESCE(rally_id, data->>'id'),
                start_ts = COALESCE(start_ts, NULLIF(data->>'start','')::double precision),
-               end_ts   = COALESCE(end_ts,   NULLIF(data->>'end','')::double precision),
-               len_s    = COALESCE(len_s, CASE
-                             WHEN NULLIF(data->>'start','') IS NOT NULL AND NULLIF(data->>'end','') IS NOT NULL
-                             THEN (data->>'end')::double precision - (data->>'start')::double precision
-                             ELSE NULL END)
+               end_ts   = COALESCE(end_ts,   NULLIF(data->>'end','')::double precision)
          WHERE task_id = :tid
            AND data IS NOT NULL
-           AND (data ? 'start' OR data ? 'end' OR data ? 'id')
     """), {"tid": task_id})
 
-    # Shape 2: {value:{id,start,end}}
+    # Shape B: { "value": { "id":..., "start":..., "end":... } }
     conn.execute(sql_text("""
         UPDATE bronze.rally
            SET rally_id = COALESCE(rally_id, data->'value'->>'id'),
                start_ts = COALESCE(start_ts, NULLIF(data->'value'->>'start','')::double precision),
-               end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>'end','')::double precision),
-               len_s    = COALESCE(len_s, CASE
-                             WHEN NULLIF(data->'value'->>'start','') IS NOT NULL AND NULLIF(data->'value'->>'end','') IS NOT NULL
-                             THEN (data->'value'->>'end')::double precision - (data->'value'->>'start')::double precision
-                             ELSE NULL END)
+               end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>'end','')::double precision)
          WHERE task_id = :tid
            AND data IS NOT NULL
            AND data ? 'value'
     """), {"tid": task_id})
 
-    # Strip the mapped keys; if empty JSON remains, set data NULL
+    # If we have both times, compute len_s
     conn.execute(sql_text("""
         UPDATE bronze.rally
-           SET data = NULLIF(
-                 CASE
-                   WHEN data ? 'value' THEN (COALESCE(data,'{}'::jsonb) - 'value')
-                   ELSE (COALESCE(data,'{}'::jsonb) - 'id' - 'start' - 'end')
-                 END, '{}'::jsonb)
+           SET len_s = COALESCE(len_s,
+                                 CASE WHEN start_ts IS NOT NULL AND end_ts IS NOT NULL
+                                      THEN end_ts - start_ts END)
          WHERE task_id = :tid
     """), {"tid": task_id})
 
-    # ---- submission_context: flatten & strip ----
+    # Strip ONLY when at least one mapped column is present
+    conn.execute(sql_text("""
+        UPDATE bronze.rally AS r
+           SET data = NULLIF(
+                  CASE
+                    WHEN r.data ? 'value'
+                      THEN (COALESCE(r.data,'{}'::jsonb) - 'value')
+                    ELSE (COALESCE(r.data,'{}'::jsonb) - 'id' - 'start' - 'end')
+                  END, '{}'::jsonb)
+         WHERE r.task_id = :tid
+           AND (r.rally_id IS NOT NULL OR r.start_ts IS NOT NULL OR r.end_ts IS NOT NULL)
+    """), {"tid": task_id})
+
+    # ---- SUBMISSION CONTEXT: add columns (idempotent)
     conn.execute(sql_text("""
         ALTER TABLE bronze.submission_context
           ADD COLUMN IF NOT EXISTS email TEXT,
@@ -707,37 +709,60 @@ def _post_ingest_transforms(conn, task_id: str):
           ADD COLUMN IF NOT EXISTS player_b_name TEXT,
           ADD COLUMN IF NOT EXISTS player_a_utr TEXT,
           ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
-          ADD COLUMN IF NOT EXISTS customer_name TEXT
+          ADD COLUMN IF NOT EXISTS customer_name TEXT,
+          ADD COLUMN IF NOT EXISTS last_status TEXT,
+          ADD COLUMN IF NOT EXISTS ingest_error JSONB,
+          ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS last_result_url TEXT,
+          ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ
     """))
 
+    # Flatten all known keys (including the runtime/status set you pasted)
     conn.execute(sql_text("""
         UPDATE bronze.submission_context
-           SET email = COALESCE(email, data->>'email'),
-               location = COALESCE(location, data->>'location'),
-               video_url = COALESCE(video_url, data->>'video_url'),
-               share_url = COALESCE(share_url, data->>'share_url'),
-               match_date = COALESCE(match_date, NULLIF(data->>'match_date','')::date),
-               start_time = COALESCE(start_time, data->>'start_time'),
-               player_a_name = COALESCE(player_a_name, data->>'player_a_name'),
-               player_b_name = COALESCE(player_b_name, data->>'player_b_name'),
-               player_a_utr  = COALESCE(player_a_utr, data->>'player_a_utr'),
-               player_b_utr  = COALESCE(player_b_utr, data->>'player_b_utr'),
-               customer_name = COALESCE(customer_name, data->>'customer_name')
+           SET email              = COALESCE(email,              data->>'email'),
+               location           = COALESCE(location,           data->>'location'),
+               video_url          = COALESCE(video_url,          data->>'video_url'),
+               share_url          = COALESCE(share_url,          data->>'share_url'),
+               match_date         = COALESCE(match_date,         NULLIF(data->>'match_date','')::date),
+               start_time         = COALESCE(start_time,         data->>'start_time'),
+               player_a_name      = COALESCE(player_a_name,      data->>'player_a_name'),
+               player_b_name      = COALESCE(player_b_name,      data->>'player_b_name'),
+               player_a_utr       = COALESCE(player_a_utr,       data->>'player_a_utr'),
+               player_b_utr       = COALESCE(player_b_utr,       data->>'player_b_utr'),
+               customer_name      = COALESCE(customer_name,      data->>'customer_name'),
+               last_status        = COALESCE(last_status,        data->>'last_status'),
+               ingest_error       = COALESCE(ingest_error,       data->'ingest_error'),
+               last_status_at     = COALESCE(last_status_at,     NULLIF(data->>'last_status_at','')::timestamptz),
+               last_result_url    = COALESCE(last_result_url,    data->>'last_result_url'),
+               ingest_started_at  = COALESCE(ingest_started_at,  NULLIF(data->>'ingest_started_at','')::timestamptz),
+               ingest_finished_at = COALESCE(ingest_finished_at, NULLIF(data->>'ingest_finished_at','')::timestamptz)
          WHERE task_id = :tid AND data IS NOT NULL
     """), {"tid": task_id})
 
+    # Strip only if something was actually flattened
     conn.execute(sql_text("""
-        UPDATE bronze.submission_context
+        UPDATE bronze.submission_context AS s
            SET data = NULLIF(
-                 COALESCE(data,'{}'::jsonb)
+                 COALESCE(s.data,'{}'::jsonb)
                  - 'email' - 'task_id' - 'location' - 'raw_meta' - 'share_url' - 'video_url'
                  - 'created_at' - 'match_date' - 'session_id' - 'start_time'
                  - 'player_a_utr' - 'player_b_utr' - 'customer_name'
-                 - 'player_a_name' - 'player_b_name',
+                 - 'player_a_name' - 'player_b_name'
+                 - 'last_status' - 'ingest_error' - 'last_status_at'
+                 - 'last_result_url' - 'ingest_started_at' - 'ingest_finished_at',
                  '{}'::jsonb)
-         WHERE task_id = :tid
+         WHERE s.task_id = :tid
+           AND (s.email IS NOT NULL OR s.location IS NOT NULL OR s.video_url IS NOT NULL
+                OR s.share_url IS NOT NULL OR s.match_date IS NOT NULL OR s.start_time IS NOT NULL
+                OR s.player_a_name IS NOT NULL OR s.player_b_name IS NOT NULL
+                OR s.player_a_utr IS NOT NULL OR s.player_b_utr IS NOT NULL
+                OR s.customer_name IS NOT NULL
+                OR s.last_status IS NOT NULL OR s.last_status_at IS NOT NULL
+                OR s.last_result_url IS NOT NULL OR s.ingest_started_at IS NOT NULL
+                OR s.ingest_finished_at IS NOT NULL)
     """), {"tid": task_id})
-
 
 # --------------- core ingest ---------------
 def ingest_bronze_strict(
