@@ -102,9 +102,6 @@ def _clean_data(obj: dict | None, drop_keys: list[str]) -> dict | None:
     return d if d else None
 
 def _generated_cols(conn, table: str, cols: list[str]) -> set[str]:
-    """
-    Return the subset of `cols` that are GENERATED ALWAYS on bronze.<table>.
-    """
     if not cols:
         return set()
     rows = conn.execute(sql_text("""
@@ -112,9 +109,14 @@ def _generated_cols(conn, table: str, cols: list[str]) -> set[str]:
           FROM information_schema.columns
          WHERE table_schema='bronze'
            AND table_name=:t
-           AND column_name = ANY(:cols)
-    """), {"t": table, "cols": cols}).mappings().all()
-    return {r["column_name"] for r in rows if (r.get("is_generated") or "").upper() == "ALWAYS"}
+    """), {"t": table}).mappings().all()
+    target = set(cols)
+    return {
+        r["column_name"]
+        for r in rows
+        if r["column_name"] in target and (r.get("is_generated") or "").upper() == "ALWAYS"
+    }
+
 
 # ---------------- init / DDL (idempotent) ----------------
 def _run_bronze_init_conn(conn):
@@ -167,13 +169,14 @@ def _run_bronze_init_conn(conn):
         """))
 
     # typed columns (idempotent) — keep DDL tiny; inserts will populate values
-    # ball_position: generated columns (never update manually)
+    # ball_position: plain columns so we can strip JSON keys
     conn.execute(sql_text("""
         ALTER TABLE bronze.ball_position
-            ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'X')::double precision) STORED,
-            ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'Y')::double precision) STORED,
-            ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION GENERATED ALWAYS AS ((data->>'timestamp')::double precision) STORED
+        ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS "timestamp" DOUBLE PRECISION
     """))
+
 
     # player_position: real columns (we insert values)
     conn.execute(sql_text("""
@@ -236,6 +239,7 @@ def _run_bronze_init_conn(conn):
     """))
 
     # submission_context: flatten common fields
+        # ---- submission_context: flatten new runtime fields & strip ----
     conn.execute(sql_text("""
         ALTER TABLE bronze.submission_context
           ADD COLUMN IF NOT EXISTS email TEXT,
@@ -248,7 +252,14 @@ def _run_bronze_init_conn(conn):
           ADD COLUMN IF NOT EXISTS player_b_name TEXT,
           ADD COLUMN IF NOT EXISTS player_a_utr TEXT,
           ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
-          ADD COLUMN IF NOT EXISTS customer_name TEXT
+          ADD COLUMN IF NOT EXISTS customer_name TEXT,
+          -- NEW runtime/status fields
+          ADD COLUMN IF NOT EXISTS last_status TEXT,
+          ADD COLUMN IF NOT EXISTS ingest_error JSONB,
+          ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS last_result_url TEXT,
+          ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ
     """))
 
     # indexes
@@ -281,11 +292,6 @@ def _run_bronze_init_conn(conn):
       ADD COLUMN IF NOT EXISTS image_y double precision
         GENERATED ALWAYS AS ((image_pos->>1)::double precision) STORED;
     """))
-
-    # hot-path indexes (no-ops if they exist)
-    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_position_task_ts ON bronze.ball_position (task_id, \"timestamp\")"))
-    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_bounce_task_ts   ON bronze.ball_bounce   (task_id, \"timestamp\")"))
-
 
 def _run_bronze_init(conn=None):
     if conn is not None:
@@ -425,18 +431,29 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
     return len(rows)
 
 def _insert_ball_positions(conn, task_id: str, items: list) -> int:
-    if not items: return 0
+    if not items:
+        return 0
     rows = []
+    drop = ["X", "Y", "timestamp"]
     for b in items:
         if not isinstance(b, dict):
             continue
-        rows.append({"tid": task_id, "j": json.dumps(b)})  # keep full object
-    if not rows: return 0
+        j_clean = {k: v for k, v in b.items() if k not in drop} or None
+        rows.append({
+            "tid": task_id,
+            "j": json.dumps(j_clean) if j_clean is not None else None,
+            "x":  _as_float(b.get("X")),
+            "y":  _as_float(b.get("Y")),
+            "ts": _as_float(b.get("timestamp")),
+        })
+    if not rows:
+        return 0
     conn.execute(sql_text("""
-        INSERT INTO bronze.ball_position (task_id, data)
-        VALUES (:tid, CAST(:j AS JSONB))
+        INSERT INTO bronze.ball_position (task_id, data, x, y, "timestamp")
+        VALUES (:tid, CAST(:j AS JSONB), :x, :y, :ts)
     """), rows)
     return len(rows)
+
 
 def _insert_player_positions(conn, task_id: str, items: list) -> int:
     """
