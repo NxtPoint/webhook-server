@@ -396,14 +396,11 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
 
 def _insert_ball_positions(conn, task_id: str, items: list) -> int:
     if not items: return 0
-    # ball_position has generated columns (x,y,timestamp) depending on data->>'X','Y','timestamp'.
-    # To support both schemas, we ALWAYS keep source keys in data.
     rows = []
     for b in items:
         if not isinstance(b, dict):
             continue
-        # DO NOT drop "X","Y","timestamp" — keep full object so generated cols compute
-        rows.append({"tid": task_id, "j": json.dumps(b)})
+        rows.append({"tid": task_id, "j": json.dumps(b)})  # keep full object
     if not rows: return 0
     conn.execute(sql_text("""
         INSERT INTO bronze.ball_position (task_id, data)
@@ -411,30 +408,58 @@ def _insert_ball_positions(conn, task_id: str, items: list) -> int:
     """), rows)
     return len(rows)
 
-
 def _insert_player_positions(conn, task_id: str, items: list) -> int:
-    if not items: return 0
+    """
+    Insert player_position rows. If any of (x,y,court_x,court_y,timestamp) are
+    GENERATED ALWAYS on the table, we must NOT set those columns explicitly and
+    must keep the source keys inside `data` so the generated columns compute.
+    """
+    if not items:
+        return 0
+
+    target_cols = ["x", "y", "court_x", "court_y", "timestamp"]
+    gen = _generated_cols(conn, "player_position", target_cols)
+
     rows = []
-    drop = ["X","Y","court_X","court_Y","timestamp"]
+    if gen:
+        # At least one target is generated: keep full JSON, only insert (task_id, data)
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            # Keep keys like "X","Y","court_X","court_Y","timestamp" in data
+            rows.append({"tid": task_id, "j": json.dumps(it)})
+        if not rows:
+            return 0
+        conn.execute(sql_text("""
+            INSERT INTO bronze.player_position (task_id, data)
+            VALUES (:tid, CAST(:j AS JSONB))
+        """), rows)
+        return len(rows)
+
+    # No generated columns: insert typed columns and keep only leftovers in data
+    rows = []
+    drop = ["X", "Y", "court_X", "court_Y", "timestamp"]
     for it in items:
-        if not isinstance(it, dict): 
+        if not isinstance(it, dict):
             continue
-        j_clean = _clean_data(it, drop)
+        j_clean = {k: v for k, v in it.items() if k not in drop} or None
         rows.append({
             "tid": task_id,
             "j": json.dumps(j_clean) if j_clean is not None else None,
-            "x": _as_float(it.get("X")),
-            "y": _as_float(it.get("Y")),
-            "cx": _as_float(it.get("court_X")),
-            "cy": _as_float(it.get("court_Y")),
-            "ts": _as_float(it.get("timestamp")),
+            "x":  it.get("X"),
+            "y":  it.get("Y"),
+            "cx": it.get("court_X"),
+            "cy": it.get("court_Y"),
+            "ts": it.get("timestamp"),
         })
-    if not rows: return 0
+    if not rows:
+        return 0
     conn.execute(sql_text("""
         INSERT INTO bronze.player_position (task_id, data, x, y, court_x, court_y, timestamp)
         VALUES (:tid, CAST(:j AS JSONB), :x, :y, :cx, :cy, :ts)
     """), rows)
     return len(rows)
+
 
 def _insert_ball_bounces(conn, task_id: str, items: list) -> int:
     if not items: return 0
