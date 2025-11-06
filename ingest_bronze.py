@@ -569,7 +569,7 @@ def _insert_rallies(conn, task_id: str, payload: dict) -> int:
         for x in r:
             out.append(x if isinstance(x, dict) else {"value": x})
     if not out: return 0
-    rows = [{"tid": task_id, "j": json.dumps(x)} for x in out]
+    rows = [{"tid": task_id, "j": json.dumps(x, ensure_ascii=False)} for x in out]
     conn.execute(sql_text("""
         INSERT INTO bronze.rally (task_id, data)
         VALUES (:tid, CAST(:j AS JSONB))
