@@ -257,6 +257,36 @@ def _run_bronze_init_conn(conn):
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_player_swing_task_pid ON bronze.player_swing (task_id, player_id)"))
     conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_bounce_task_ts   ON bronze.ball_bounce (task_id, timestamp)"))
 
+    # ---- shape guards (idempotent) -----------------------------------------
+    # ball_position: generated scalars from JSON
+    conn.execute(sql_text("""
+    ALTER TABLE bronze.ball_position
+      ADD COLUMN IF NOT EXISTS x double precision
+        GENERATED ALWAYS AS (NULLIF(data->>'X','')::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS y double precision
+        GENERATED ALWAYS AS (NULLIF(data->>'Y','')::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS "timestamp" double precision
+        GENERATED ALWAYS AS (NULLIF(data->>'timestamp','')::double precision) STORED;
+    """))
+
+    # ball_bounce: scalar views of array coords (keep JSON, add easy-to-query scalars)
+    conn.execute(sql_text("""
+    ALTER TABLE bronze.ball_bounce
+      ADD COLUMN IF NOT EXISTS court_x double precision
+        GENERATED ALWAYS AS ((court_pos->>0)::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS court_y double precision
+        GENERATED ALWAYS AS ((court_pos->>1)::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS image_x double precision
+        GENERATED ALWAYS AS ((image_pos->>0)::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS image_y double precision
+        GENERATED ALWAYS AS ((image_pos->>1)::double precision) STORED;
+    """))
+
+    # hot-path indexes (no-ops if they exist)
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_position_task_ts ON bronze.ball_position (task_id, \"timestamp\")"))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_ball_bounce_task_ts   ON bronze.ball_bounce   (task_id, \"timestamp\")"))
+
+
 def _run_bronze_init(conn=None):
     if conn is not None:
         _run_bronze_init_conn(conn)
