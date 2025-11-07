@@ -292,6 +292,35 @@ def _run_bronze_init_conn(conn):
       ADD COLUMN IF NOT EXISTS image_y double precision
         GENERATED ALWAYS AS ((image_pos->>1)::double precision) STORED;
     """))
+    
+    # raw snapshot store
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.raw_result (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            payload_json JSONB,
+            payload_gzip BYTEA,
+            payload_sha256 TEXT,
+            -- NEW: header/meta for chunked storage
+            payload_len INTEGER,
+            chunked BOOLEAN NOT NULL DEFAULT FALSE,
+            chunk_count INTEGER,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_result_task ON bronze.raw_result(task_id)"))
+
+    # NEW: chunk table for very large gzips
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.raw_result_chunk (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            part_nr INTEGER NOT NULL,
+            data BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    conn.execute(sql_text("CREATE UNIQUE INDEX IF NOT EXISTS ix_bronze_raw_chunk_task_part ON bronze.raw_result_chunk(task_id, part_nr)"))
 
 def _run_bronze_init(conn=None):
     if conn is not None:
@@ -301,20 +330,50 @@ def _run_bronze_init(conn=None):
             _run_bronze_init_conn(c)
     return True
 
+
+
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
+    # Prevent long payload writes from timing out through proxies
+    conn.execute(sql_text("SET LOCAL statement_timeout = '0'"))
+
     s = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     sha = _sha256(s)
+
     if len(s) <= size_threshold:
         conn.execute(sql_text("""
-            INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
-            VALUES (:tid, CAST(:j AS JSONB), :sha)
-        """), {"tid": task_id, "j": s, "sha": sha})
-    else:
+            INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256, payload_len, chunked, chunk_count)
+            VALUES (:tid, CAST(:j AS JSONB), :sha, :plen, FALSE, NULL)
+        """), {"tid": task_id, "j": s, "sha": sha, "plen": len(s)})
+        return
+
+    # compress and chunk when big
+    gz = _gzip_bytes(s)
+    CHUNK = 1_000_000  # 1 MB pieces
+    if len(gz) <= CHUNK * 4:
+        # still small enough: single BYTEA write
         conn.execute(sql_text("""
-            INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256)
-            VALUES (:tid, :gz, :sha)
-        """), {"tid": task_id, "gz": _gzip_bytes(s), "sha": sha})
+            INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256, payload_len, chunked, chunk_count)
+            VALUES (:tid, :gz, :sha, :plen, FALSE, NULL)
+        """), {"tid": task_id, "gz": gz, "sha": sha, "plen": len(gz)})
+        return
+
+    # chunked path
+    parts = [gz[i:i+CHUNK] for i in range(0, len(gz), CHUNK)]
+    conn.execute(sql_text("""
+        INSERT INTO bronze.raw_result (task_id, payload_sha256, payload_len, chunked, chunk_count)
+        VALUES (:tid, :sha, :plen, TRUE, :pc)
+    """), {"tid": task_id, "sha": sha, "plen": len(gz), "pc": len(parts)})
+
+    # clear any old chunks for this task_id (idempotent reingests)
+    conn.execute(sql_text("DELETE FROM bronze.raw_result_chunk WHERE task_id=:tid"), {"tid": task_id})
+
+    rows = [{"tid": task_id, "n": i, "b": p} for i, p in enumerate(parts)]
+    conn.execute(sql_text("""
+        INSERT INTO bronze.raw_result_chunk (task_id, part_nr, data)
+        VALUES (:tid, :n, :b)
+    """), rows)
+
 
 # --------------- fan-out helpers (all flatten-on-insert) ---------------
 def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):
@@ -929,25 +988,44 @@ def http_bronze_reingest_from_raw():
     try:
         with engine.begin() as conn:
             _run_bronze_init()
+
             row = conn.execute(sql_text("""
-                SELECT payload_json, payload_gzip
-                  FROM bronze.raw_result
-                 WHERE task_id=:tid
-              ORDER BY id DESC
-                 LIMIT 1
+                SELECT payload_json, payload_gzip, chunked, chunk_count
+                FROM bronze.raw_result
+                WHERE task_id=:tid
+            ORDER BY id DESC
+                LIMIT 1
             """), {"tid": task_id}).mappings().first()
+
             if not row:
                 return jsonify({"ok": False, "error": f"no raw_result for task_id={task_id}"}), 404
+
             if row["payload_json"] is not None:
                 payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
             elif row["payload_gzip"] is not None:
                 payload = json.loads(gzip.decompress(row["payload_gzip"]).decode("utf-8"))
+            elif row.get("chunked"):
+                parts = conn.execute(sql_text("""
+                    SELECT part_nr, data
+                    FROM bronze.raw_result_chunk
+                    WHERE task_id=:tid
+                ORDER BY part_nr
+                """), {"tid": task_id}).fetchall()
+                if not parts:
+                    return jsonify({"ok": False, "error": "raw_result is chunked but no chunks found"}), 500
+                buf = bytearray()
+                for part_nr, data in parts:
+                    buf.extend(data)
+                payload = json.loads(gzip.decompress(bytes(buf)).decode("utf-8"))
             else:
                 return jsonify({"ok": False, "error": "no payload_json or payload_gzip present"}), 500
+
             out = ingest_bronze_strict(conn, payload, task_id=task_id, replace=replace)
+
         return jsonify({"ok": True, **out})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
 
 # alias for your shell template
 @ingest_bronze.post("/bronze/reingest-by-task-id")
