@@ -334,46 +334,18 @@ def _run_bronze_init(conn=None):
 
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
-    # Prevent long payload writes from timing out through proxies
-    conn.execute(sql_text("SET LOCAL statement_timeout = '0'"))
-
     s = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     sha = _sha256(s)
-
     if len(s) <= size_threshold:
         conn.execute(sql_text("""
-            INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256, payload_len, chunked, chunk_count)
-            VALUES (:tid, CAST(:j AS JSONB), :sha, :plen, FALSE, NULL)
-        """), {"tid": task_id, "j": s, "sha": sha, "plen": len(s)})
-        return
-
-    # compress and chunk when big
-    gz = _gzip_bytes(s)
-    CHUNK = 1_000_000  # 1 MB pieces
-    if len(gz) <= CHUNK * 4:
-        # still small enough: single BYTEA write
+            INSERT INTO bronze.raw_result (task_id, payload_json, payload_sha256)
+            VALUES (:tid, CAST(:j AS JSONB), :sha)
+        """), {"tid": task_id, "j": s, "sha": sha})
+    else:
         conn.execute(sql_text("""
-            INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256, payload_len, chunked, chunk_count)
-            VALUES (:tid, :gz, :sha, :plen, FALSE, NULL)
-        """), {"tid": task_id, "gz": gz, "sha": sha, "plen": len(gz)})
-        return
-
-    # chunked path
-    parts = [gz[i:i+CHUNK] for i in range(0, len(gz), CHUNK)]
-    conn.execute(sql_text("""
-        INSERT INTO bronze.raw_result (task_id, payload_sha256, payload_len, chunked, chunk_count)
-        VALUES (:tid, :sha, :plen, TRUE, :pc)
-    """), {"tid": task_id, "sha": sha, "plen": len(gz), "pc": len(parts)})
-
-    # clear any old chunks for this task_id (idempotent reingests)
-    conn.execute(sql_text("DELETE FROM bronze.raw_result_chunk WHERE task_id=:tid"), {"tid": task_id})
-
-    rows = [{"tid": task_id, "n": i, "b": p} for i, p in enumerate(parts)]
-    conn.execute(sql_text("""
-        INSERT INTO bronze.raw_result_chunk (task_id, part_nr, data)
-        VALUES (:tid, :n, :b)
-    """), rows)
-
+            INSERT INTO bronze.raw_result (task_id, payload_gzip, payload_sha256)
+            VALUES (:tid, :gz, :sha)
+        """), {"tid": task_id, "gz": _gzip_bytes(s), "sha": sha})
 
 # --------------- fan-out helpers (all flatten-on-insert) ---------------
 def _ensure_session(conn, task_id: str, payload: Dict[str, Any]):
