@@ -292,7 +292,7 @@ def _run_bronze_init_conn(conn):
       ADD COLUMN IF NOT EXISTS image_y double precision
         GENERATED ALWAYS AS ((image_pos->>1)::double precision) STORED;
     """))
-    
+
     # raw snapshot store
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.raw_result (
@@ -990,7 +990,7 @@ def http_bronze_reingest_from_raw():
             _run_bronze_init()
 
             row = conn.execute(sql_text("""
-                SELECT payload_json, payload_gzip, chunked, chunk_count
+                SELECT payload_json, payload_gzip
                 FROM bronze.raw_result
                 WHERE task_id=:tid
             ORDER BY id DESC
@@ -1004,19 +1004,6 @@ def http_bronze_reingest_from_raw():
                 payload = row["payload_json"] if isinstance(row["payload_json"], dict) else json.loads(row["payload_json"])
             elif row["payload_gzip"] is not None:
                 payload = json.loads(gzip.decompress(row["payload_gzip"]).decode("utf-8"))
-            elif row.get("chunked"):
-                parts = conn.execute(sql_text("""
-                    SELECT part_nr, data
-                    FROM bronze.raw_result_chunk
-                    WHERE task_id=:tid
-                ORDER BY part_nr
-                """), {"tid": task_id}).fetchall()
-                if not parts:
-                    return jsonify({"ok": False, "error": "raw_result is chunked but no chunks found"}), 500
-                buf = bytearray()
-                for part_nr, data in parts:
-                    buf.extend(data)
-                payload = json.loads(gzip.decompress(bytes(buf)).decode("utf-8"))
             else:
                 return jsonify({"ok": False, "error": "no payload_json or payload_gzip present"}), 500
 
