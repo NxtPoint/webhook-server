@@ -32,8 +32,8 @@ PHASE1_COLS = OrderedDict({
     "task_id":              "uuid",
     "swing_id":             "bigint",
     "created_at":           "timestamptz",
-    "start_ts":             "double precision",
-    "end_ts":               "double precision",
+    "start_s":              "double precision",  # seconds
+    "end_s":                "double precision",  # seconds
     "player_id":            "text",
     "valid":                "boolean",
     "serve":                "boolean",
@@ -44,11 +44,11 @@ PHASE1_COLS = OrderedDict({
     "ball_speed":           "double precision",
     "ball_impact_type":     "text",
     "rally":                "integer",
-    "ball_hit":             "double precision",
-    "ball_hit_x":           "double precision",   # ← new
-    "ball_hit_y":           "double precision",   # ← new
-    "ball_hit_location":    "jsonb"
+    "ball_hit_s":           "double precision",  # seconds
+    "ball_hit_x":           "double precision",
+    "ball_hit_y":           "double precision"
 })
+
 
 
 # Phase 2 — player info (add schema columns here; loader to be added later)
@@ -101,47 +101,49 @@ def _colref(name: str) -> str:
     n = name.lower()
     return 's."end"' if n == "end" else f"s.{n}"
 
-def _sec_expr(cols: Dict[str, str], name: str) -> str:
-    """
-    Returns a DOUBLE PRECISION number representing seconds.
-    Handles:
-      - direct numeric
-      - JSON object with numeric key 'timestamp'
-      - JSON number
-    """
+def _ts_from_any(cols: Dict[str, str], name: str) -> str:
+    """Return TIMESTAMPTZ from a column that might be ts, numeric seconds, or JSON with 'timestamp'."""
     n = name.lower()
     if n not in cols:
-        return "NULL::double precision"
+        return "NULL::timestamptz"
     dt = cols[n]
-
-    # Handle JSON or JSONB case
+    if "timestamp" in dt:
+        return _colref(n)
+    if any(k in dt for k in ("double","real","numeric","integer")):
+        return f"(TIMESTAMP 'epoch' + {_colref(n)} * INTERVAL '1 second')"
     if "json" in dt:
         return f"""(
           CASE
             WHEN jsonb_typeof({_colref(n)}::jsonb)='object'
              AND ({_colref(n)}::jsonb ? 'timestamp')
              AND jsonb_typeof(({_colref(n)}::jsonb)->'timestamp')='number'
-            THEN (({_colref(n)}::jsonb)->>'timestamp')::double precision
+              THEN (TIMESTAMP 'epoch' + (({_colref(n)}::jsonb)->>'timestamp')::double precision * INTERVAL '1 second')
             WHEN jsonb_typeof({_colref(n)}::jsonb)='number'
-            THEN ({_colref(n)}::text)::double precision
-            ELSE NULL::double precision
+              THEN (TIMESTAMP 'epoch' + ({_colref(n)}::text)::double precision * INTERVAL '1 second')
+            ELSE NULL::timestamptz
           END)"""
-    # Direct numeric
-    if any(k in dt for k in ("double", "real", "numeric", "integer")):
-        return _colref(n)
-    return "NULL::double precision"
-
-
-    # fallback seconds column
-    if fb in cols:
-        dt = cols[fb]
-        if any(k in dt for k in ("double","real","numeric","integer")):
-            return f"(TIMESTAMP 'epoch' + {_colref(fb)} * INTERVAL '1 second')"
-        if "json" in dt:
-            return _json_obj_seconds(_colref(fb))
-
     return "NULL::timestamptz"
 
+def _sec_expr(cols: Dict[str, str], name: str) -> str:
+    """Return DOUBLE PRECISION seconds (supports numeric or JSON with 'timestamp')."""
+    n = name.lower()
+    if n not in cols:
+        return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(
+          CASE
+            WHEN jsonb_typeof({_colref(n)}::jsonb)='object'
+             AND ({_colref(n)}::jsonb ? 'timestamp')
+             AND jsonb_typeof(({_colref(n)}::jsonb)->'timestamp')='number'
+              THEN (({_colref(n)}::jsonb)->>'timestamp')::double precision
+            WHEN jsonb_typeof({_colref(n)}::jsonb)='number'
+              THEN ({_colref(n)}::text)::double precision
+            ELSE NULL::double precision
+          END)"""
+    if any(k in dt for k in ("double","real","numeric","integer")):
+        return _colref(n)
+    return "NULL::double precision"
 
 def _jsonb(cols: Dict[str, str], name: str) -> str:
     return f"{_colref(name)}::jsonb" if name.lower() in cols else "NULL::jsonb"
@@ -229,21 +231,18 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 # --------------------------------- Phase 1 loader ---------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
-    """
-    Section 1 only: import exact fields from bronze.player_swing (or bronze.swing),
-    filter valid=TRUE, and populate swing_id + ball_hit_x/ball_hit_y.
-    """
     src, bcols = _bronze_src(conn)
 
-    created_at = _sec_expr(bcols, "created_at", "created_at")
-    start_s    = _sec_expr(bcols, "start_ts")
-    end_s      = _sec_expr(bcols, "end_ts")
-    ball_hit_s = _sec_expr(bcols, "ball_hit")
-    swing_id   = _swing_id_expr(bcols)
+    created_at = _ts_from_any(bcols, "created_at")
 
-    # ✅ define these in Python, not inside the SQL body
-    bhx = _ball_hit_x_expr(bcols)
-    bhy = _ball_hit_y_expr(bcols)
+    # Prefer *_ts JSON, fall back to simple names if present
+    start_s    = f"COALESCE({_sec_expr(bcols,'start_ts')}, {_sec_expr(bcols,'start')})"
+    end_s      = f"COALESCE({_sec_expr(bcols,'end_ts')}, {_sec_expr(bcols,'end')})"
+    ball_hit_s = f"COALESCE({_sec_expr(bcols,'ball_hit')}, {_sec_expr(bcols,'ball_hit_s')})"
+
+    swing_id   = _swing_id_expr(bcols)
+    bhx        = _ball_hit_x_expr(bcols)
+    bhy        = _ball_hit_y_expr(bcols)
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
