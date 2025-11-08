@@ -586,14 +586,40 @@ serve_numbered AS (
 points_games AS (
   SELECT
     sn.*,
-    SUM(CASE WHEN sn.prev_side IS NULL THEN 1
-             WHEN sn.serving_side IS DISTINCT FROM sn.prev_side THEN 1
-             ELSE 0 END)
-      OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS point_number,
-    SUM(CASE WHEN sn.prev_server IS NULL THEN 1
-             WHEN sn.server_id IS DISTINCT FROM sn.prev_server THEN 1
-             ELSE 0 END)
-      OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS game_number
+
+    /* POINT NUMBER:
+       Increment on first serve, or when the same server flips side (ad<->deuce),
+       or when the server changes (new game).
+       Note: sn.* are SERVE rows only (we derived them from serve_sided).
+    */
+    SUM(
+      CASE
+        WHEN LAG(sn.ord_ts) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) IS NULL
+          THEN 1
+        WHEN sn.server_id IS DISTINCT FROM
+             LAG(sn.server_id) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id)
+          THEN 1
+        WHEN sn.serving_side IS DISTINCT FROM
+             LAG(sn.serving_side) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id)
+          THEN 1
+        ELSE 0
+      END
+    ) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS point_number,
+
+    /* GAME NUMBER:
+       Increment when the server changes.
+    */
+    SUM(
+      CASE
+        WHEN LAG(sn.server_id) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) IS NULL
+          THEN 1
+        WHEN sn.server_id IS DISTINCT FROM
+             LAG(sn.server_id) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id)
+          THEN 1
+        ELSE 0
+      END
+    ) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS game_number
+
   FROM serve_numbered sn
 ),
 point_index AS (
