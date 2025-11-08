@@ -21,6 +21,7 @@ CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};
 DDL_CREATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   -- Identity
+  task_id                UUID               NOT NULL,    -- SportAI or /silver/build task identifier
   session_id              INTEGER            NOT NULL,
   session_uid             TEXT,
   swing_id                BIGINT             NOT NULL,
