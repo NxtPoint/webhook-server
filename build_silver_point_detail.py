@@ -347,24 +347,29 @@ if __name__ == "__main__":
     print(out)
 
 #=========================================================================================================================================================
-# --- Phase 2.1: Derived fields (task_id-only)
-# Computes: serve_d, serving_side, server_id, point_number, game_number, point_in_game,
-# shot_ix, serve_try_ix_in_point, first_rally_shot_ix, play_d.
-# No bounce/outcome yet (Phase 2.2).
+# build_silver_phase2.py
+# Phase 2.1 — Derived fields into silver.point_detail (task_id-only)
+# Computes: serve_d, serving_side, server_id, point_number, game_number,
+# point_in_game, shot_ix, serve_try_ix_in_point, first_rally_shot_ix, play_d.
+# NOTE: Requires Phase 1.2 rows already present for the task_id.
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from db_init import engine  # same engine you use for Phase 1.2
 
-COURT_W = 8.23      # m
-COURT_L = 23.77     # m
+SILVER_SCHEMA = "silver"
+TABLE = "point_detail"
+
+# Court constants (meters). We keep these here so they’re easy to tune later.
+COURT_W = 8.23
+COURT_L = 23.77
 HALF_W  = COURT_W / 2.0
 MID_Y   = COURT_L / 2.0
-SRV_BOX = 6.40      # service box depth (m)
-SERVE_EPS_M = 0.50  # within 0.5m of baselines => serve band
+SRV_BOX = 6.40
+SERVE_EPS_M = 0.50  # near baseline tolerance for serve band
 
 # Ensure derived columns exist on silver.point_detail
 ALTERS_PHASE_21 = [
-    # identity already exists
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS serve_d boolean;",
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS serving_side text;",
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS server_id text;",
@@ -377,9 +382,12 @@ ALTERS_PHASE_21 = [
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS play_d text;"
 ]
 
+def _exec(conn: Connection, sql: str, params=None):
+    conn.execute(text(sql), params or {})
+
 def ensure_phase21_columns(conn: Connection) -> None:
     for ddl in ALTERS_PHASE_21:
-        conn.execute(text(ddl))
+        _exec(conn, ddl)
 
 SQL_PHASE21_DERIVATIONS = f"""
 WITH const AS (
@@ -391,7 +399,6 @@ WITH const AS (
     {SRV_BOX}::numeric  AS service_box_depth_m,
     {SERVE_EPS_M}::numeric AS serve_eps_m
 ),
--- 1) Base rows for this task, with an ordering timestamp
 base AS (
   SELECT
     pd.*,
@@ -399,15 +406,11 @@ base AS (
   FROM {SILVER_SCHEMA}.{TABLE} pd
   WHERE pd.task_id = :task_id
 ),
--- 2) Candidate serves: prefer explicit bronze 'serve'; else infer by swing_type+position
 serve_candidates AS (
   SELECT
-    b.task_id, b.swing_id, b.player_id, b.ord_ts, b.ball_hit_x, b.ball_hit_y,
-    -- explicit flag if Bronze provided 'serve'
+    b.task_id, b.swing_id, b.player_id, b.ord_ts, b.ball_hit_x, b.ball_hit_y, b.swing_type, b.serve,
     COALESCE(b.serve, FALSE) AS serve_flag_bronze,
-    -- fallback by swing_type
     (lower(b.swing_type) IN ('fh_overhead','fh-overhead','overhead','serve')) AS is_overhead_like,
-    -- inside serve band (near baselines)
     CASE
       WHEN b.ball_hit_y IS NULL THEN NULL
       ELSE (b.ball_hit_y <= (SELECT serve_eps_m FROM const)
@@ -415,7 +418,6 @@ serve_candidates AS (
     END AS inside_serve_band
   FROM base b
 ),
--- 3) Effective serve flag
 serve_events AS (
   SELECT
     s.task_id,
@@ -423,13 +425,10 @@ serve_events AS (
     s.player_id AS server_id,
     s.ord_ts,
     s.ball_hit_x, s.ball_hit_y,
-    /* A swing is a serve if: explicit bronze says true
-       OR swing looks overhead-like AND inside serve band. */
     (s.serve_flag_bronze
      OR (s.is_overhead_like AND COALESCE(s.inside_serve_band, FALSE))) AS is_serve
   FROM serve_candidates s
 ),
--- 4) Estimate center line x from serve hits (median of serve x in serve bands)
 serve_centerline AS (
   SELECT
     se.task_id,
@@ -438,7 +437,6 @@ serve_centerline AS (
   WHERE se.is_serve AND se.ball_hit_x IS NOT NULL
   GROUP BY se.task_id
 ),
--- 5) Serving side (ad/deuce) for each serve swing
 serve_sided AS (
   SELECT
     se.*,
@@ -452,7 +450,6 @@ serve_sided AS (
     END AS serving_side
   FROM serve_events se
 ),
--- 6) Number serves to points & games (task-level)
 serve_numbered AS (
   SELECT
     ss.*,
@@ -463,12 +460,10 @@ serve_numbered AS (
 points_games AS (
   SELECT
     sn.*,
-    -- point increments when serving side flips (tennis alternates side each point)
     SUM(CASE WHEN sn.prev_side IS NULL THEN 1
              WHEN sn.serving_side IS DISTINCT FROM sn.prev_side THEN 1
              ELSE 0 END)
       OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS point_number,
-    -- game increments when server changes
     SUM(CASE WHEN sn.prev_server IS NULL THEN 1
              WHEN sn.server_id IS DISTINCT FROM sn.prev_server THEN 1
              ELSE 0 END)
@@ -483,7 +478,6 @@ point_index AS (
       + 1 AS point_in_game
   FROM points_games pg
 ),
--- 7) Attach each swing to the most recent serve (point context)
 swing_in_point AS (
   SELECT
     b.*,
@@ -502,14 +496,12 @@ swing_in_point AS (
     LIMIT 1
   ) pg ON TRUE
 ),
--- 8) Per-point sequencing + serve try count
 swing_numbered AS (
   SELECT
     sip.*,
     ROW_NUMBER() OVER (PARTITION BY sip.task_id, sip.point_number
                        ORDER BY sip.ord_ts, sip.swing_id) AS shot_ix,
     COUNT(*)    OVER (PARTITION BY sip.task_id, sip.point_number) AS last_shot_ix,
-    -- explicit serve boolean (bronze) OR inferred
     (COALESCE(sip.serve, FALSE) OR
      (lower(sip.swing_type) IN ('fh_overhead','fh-overhead','overhead','serve')
       AND sip.ball_hit_y IS NOT NULL
@@ -530,7 +522,6 @@ serve_try AS (
     END AS serve_try_ix_in_point
   FROM swing_numbered sn
 ),
--- 9) First rally shot = first non-serve by receiver after start serve
 first_rally AS (
   SELECT
     st.task_id, st.point_number,
@@ -541,7 +532,6 @@ first_rally AS (
   FROM serve_try st
   GROUP BY st.task_id, st.point_number
 ),
--- 10) Basic play classification (no bounce yet)
 play_class AS (
   SELECT
     st.*,
@@ -550,7 +540,6 @@ play_class AS (
       WHEN st.serve_d THEN 'serve'
       WHEN st.shot_ix = fr.first_rally_shot_ix THEN 'return'
       WHEN st.ball_hit_y IS NULL THEN NULL
-      /* FAR side: net if y > mid_y - service_box_depth; NEAR: net if y < mid_y + service_box_depth */
       WHEN st.ball_hit_y < (SELECT mid_y_m FROM const)
            THEN CASE WHEN st.ball_hit_y > (SELECT mid_y_m FROM const) - (SELECT service_box_depth_m FROM const)
                      THEN 'net' ELSE 'baseline' END
@@ -571,8 +560,11 @@ FROM play_class p
 """
 
 def compute_phase21(conn: Connection, task_id: str) -> int:
-    # materialize into a temp table then upsert back to silver.point_detail
-    conn.execute(text("CREATE TEMP TABLE _pd_p21 AS " + SQL_PHASE21_DERIVATIONS), {"task_id": task_id})
+    # 1) Ensure columns present
+    ensure_phase21_columns(conn)
+    # 2) Stage derivations in temp table
+    _exec(conn, "CREATE TEMP TABLE _pd_p21 AS " + SQL_PHASE21_DERIVATIONS, {"task_id": task_id})
+    # 3) Update back into silver.point_detail
     res = conn.execute(text(f"""
         UPDATE {SILVER_SCHEMA}.{TABLE} t
         SET
@@ -589,28 +581,20 @@ def compute_phase21(conn: Connection, task_id: str) -> int:
         FROM _pd_p21 s
         WHERE t.task_id = s.task_id AND t.swing_id = s.swing_id
     """))
-    conn.execute(text("DROP TABLE IF EXISTS _pd_p21;"))
+    _exec(conn, "DROP TABLE IF EXISTS _pd_p21;")
     return res.rowcount or 0
 
-# Extend your existing build function to include Phase 2.1
-def build_point_detail_phase2(task_id: str, replace: bool=False) -> dict:
+def build_phase2(task_id: str) -> dict:
     if not task_id:
         raise ValueError("task_id is required")
     with engine.begin() as conn:
-        ensure_schema_and_table(conn)     # from Phase 1.2
-        ensure_phase21_columns(conn)
-        # Phase 1.2 base rows must exist already for this task_id
-        # (if you want, you can call insert_base here if needed)
         affected = compute_phase21(conn, task_id)
     return {"ok": True, "task_id": task_id, "phase": "2.1", "rows_updated": affected}
 
-# Optional CLI entry
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="Phase 2.1 — derive serve/point sequencing for a task")
-    p.add_argument("--task-id", required=False)
-    p.add_argument("--replace", action="store_true")
+    p = argparse.ArgumentParser(description="Phase 2.1 — derive serve/point sequencing (task_id-only)")
+    p.add_argument("--task-id", required=True)
     args = p.parse_args()
-    if args.task_id:
-        out = build_point_detail_phase2(task_id=args.task_id, replace=args.replace)
-        print(out)
+    out = build_phase2(task_id=args.task_id)
+    print(out)
