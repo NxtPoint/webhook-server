@@ -1,23 +1,22 @@
-# build_silver_point_detail.py — Phase 1 (Section 1 only)
-# - Pull EXACTLY the listed fields from bronze.player_swing
-# - Filter to valid = TRUE (strict)
-# - No extra columns, no heuristics, no joins
-# - Idempotent per task_id; supports --replace
+# build_silver_phase1.py
+# Phase 1 — Section 1 ONLY (player_swing) → silver.point_detail
+# - Import ONLY the columns specified by the spec.
+# - Filter: valid = TRUE (strict).
+# - No joins, no heuristics, no derived fields.
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
-from db_init import engine  # your existing SQLAlchemy Engine
+from db_init import engine
 
 SILVER_SCHEMA = "silver"
-TABLE = "point_detail"  # keeps the familiar name, but now it's Section-1-only
+TABLE = "point_detail"  # per your naming, with only the Section 1 columns
 
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
 
-# EXACT columns per your spec (order preserved)
 DDL_CREATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
-  task_id               UUID               NOT NULL,
+  task_id               UUID,
   created_at            TIMESTAMPTZ,
   start_ts              TIMESTAMPTZ,
   end_ts                TIMESTAMPTZ,
@@ -36,20 +35,23 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
 );
 """
 
-# Practical indexes for reading later (don’t add new columns)
 DDL_INDEXES = [
-    f"CREATE INDEX IF NOT EXISTS ix_pd_task      ON {SILVER_SCHEMA}.{TABLE}(task_id);",
-    f"CREATE INDEX IF NOT EXISTS ix_pd_player    ON {SILVER_SCHEMA}.{TABLE}(task_id, player_id);",
-    f"CREATE INDEX IF NOT EXISTS ix_pd_time      ON {SILVER_SCHEMA}.{TABLE}(task_id, start_ts);",
+    f"CREATE INDEX IF NOT EXISTS ix_pd_task          ON {SILVER_SCHEMA}.{TABLE}(task_id);",
+    f"CREATE INDEX IF NOT EXISTS ix_pd_start_ts      ON {SILVER_SCHEMA}.{TABLE}(start_ts);",
+    f"CREATE INDEX IF NOT EXISTS ix_pd_ball_hit      ON {SILVER_SCHEMA}.{TABLE}(ball_hit);",
 ]
 
-# --- helpers (safe casting from bronze types) --------------------------------
+# --------------------- helpers ---------------------
+
+def _exec(conn: Connection, sql: str, params: Optional[dict] = None) -> None:
+    conn.execute(text(sql), params or {})
 
 def _table_exists(conn: Connection, schema: str, name: str) -> bool:
-    return bool(conn.execute(text("""
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema=:s AND table_name=:t
-    """), {"s": schema, "t": name}).fetchone())
+    return bool(conn.execute(
+        text("""SELECT 1 FROM information_schema.tables
+                WHERE table_schema=:s AND table_name=:t"""),
+        {"s": schema, "t": name}
+    ).fetchone())
 
 def _columns_types(conn: Connection, schema: str, name: str) -> Dict[str, str]:
     rows = conn.execute(text("""
@@ -59,18 +61,29 @@ def _columns_types(conn: Connection, schema: str, name: str) -> Dict[str, str]:
     """), {"s": schema, "t": name}).fetchall()
     return {r[0].lower(): r[1].lower() for r in rows}
 
+def _bronze_source_table(conn: Connection) -> Tuple[str, Dict[str, str]]:
+    # Spec says player_swing; fallback to swing if needed.
+    if _table_exists(conn, "bronze", "player_swing"):
+        return "bronze.player_swing s", _columns_types(conn, "bronze", "player_swing")
+    if _table_exists(conn, "bronze", "swing"):
+        return "bronze.swing s", _columns_types(conn, "bronze", "swing")
+    raise RuntimeError("Bronze source not found: expected bronze.player_swing (or bronze.swing).")
+
 def _colref(name: str) -> str:
     n = name.lower()
-    return f's."end"' if n == "end" else f"s.{n}"
+    return 's."end"' if n == "end" else f"s.{n}"
 
 def _ts_expr(cols: Dict[str, str], col_ts: str, fb_seconds: str) -> str:
-    """Return timestamptz from a native ts column OR from a seconds float/json fallback."""
+    """
+    Return an expression that yields TIMESTAMPTZ for a given timestamp column.
+    If Bronze stored seconds instead, convert epoch seconds → timestamptz.
+    """
     c = col_ts.lower(); fb = fb_seconds.lower()
     if c in cols:
         dt = cols[c]
         if "timestamp" in dt:
             return _colref(c)
-        if any(k in dt for k in ("double","real","numeric","integer")):
+        if any(k in dt for k in ("double", "real", "numeric", "integer")):
             return f"(TIMESTAMP 'epoch' + {_colref(c)} * INTERVAL '1 second')"
         if "json" in dt:
             return f"""(
@@ -79,7 +92,7 @@ def _ts_expr(cols: Dict[str, str], col_ts: str, fb_seconds: str) -> str:
                    ELSE NULL::timestamptz END)"""
     if fb in cols:
         dt = cols[fb]
-        if any(k in dt for k in ("double","real","numeric","integer")):
+        if any(k in dt for k in ("double", "real", "numeric", "integer")):
             return f"(TIMESTAMP 'epoch' + {_colref(fb)} * INTERVAL '1 second')"
         if "json" in dt:
             return f"""(
@@ -88,11 +101,8 @@ def _ts_expr(cols: Dict[str, str], col_ts: str, fb_seconds: str) -> str:
                    ELSE NULL::timestamptz END)"""
     return "NULL::timestamptz"
 
-def _bool_expr(cols: Dict[str, str], name: str) -> str:
-    return _colref(name) if name.lower() in cols else "NULL::boolean"
-
-def _text_expr(cols: Dict[str, str], name: str) -> str:
-    return _colref(name) if name.lower() in cols else "NULL::text"
+def _jsonb_expr(cols: Dict[str, str], name: str) -> str:
+    return f"{_colref(name)}::jsonb" if name.lower() in cols else "NULL::jsonb"
 
 def _num_expr(cols: Dict[str, str], name: str) -> str:
     n = name.lower()
@@ -112,103 +122,99 @@ def _int_expr(cols: Dict[str, str], name: str) -> str:
         return "NULL::int"
     dt = cols[n]
     if "json" in dt:
-        # allow { "index": <num> } objects too
+        # rally may arrive as number or object with {index: N}
         return f"""(
           CASE WHEN jsonb_typeof({_colref(n)})='number'
-               THEN ({_colref(n)}::text)::int
-               ELSE
-                 CASE
-                   WHEN jsonb_typeof({_colref(n)})='object'
-                        AND ({_colref(n)} ? 'index')
-                        AND jsonb_typeof({_colref(n)}->'index')='number'
-                   THEN ({_colref(n)}->>'index')::int
-                   ELSE NULL::int
-                 END
+                 THEN ({_colref(n)}::text)::int
+               WHEN jsonb_typeof({_colref(n)})='object'
+                 AND ({_colref(n)} ? 'index')
+                 AND jsonb_typeof({_colref(n)}->'index')='number'
+                 THEN ({_colref(n)}->>'index')::int
+               ELSE NULL::int
           END)"""
     return _colref(n)
 
-def _jsonb_expr(cols: Dict[str, str], name: str) -> str:
-    return f"{_colref(name)}::jsonb" if name.lower() in cols else "NULL::jsonb"
+def _bool_expr(cols: Dict[str, str], name: str) -> str:
+    return _colref(name) if name.lower() in cols else "NULL::boolean"
 
-def _exec(conn: Connection, sql: str, params: Optional[dict] = None) -> None:
-    conn.execute(text(sql), params or {})
+def _text_expr(cols: Dict[str, str], name: str) -> str:
+    return _colref(name) if name.lower() in cols else "NULL::text"
 
-# --- core DDL -----------------------------------------------------------------
+# --------------------- DDL & load ---------------------
 
 def ensure_schema_and_table(conn: Connection) -> None:
     _exec(conn, DDL_CREATE_SCHEMA)
-    # Drop/recreate if table exists with different shape (we're rebuilding clean)
+    # Hard reset to guarantee only the specified columns exist
     if _table_exists(conn, SILVER_SCHEMA, TABLE):
-        # simple: drop and recreate to ensure exact shape
         _exec(conn, f"DROP TABLE {SILVER_SCHEMA}.{TABLE} CASCADE;")
     _exec(conn, DDL_CREATE_TABLE)
     for ddl in DDL_INDEXES:
         _exec(conn, ddl)
 
-# --- insert from bronze.player_swing (Section 1 only) -------------------------
+def delete_for_task(conn: Connection, task_id: str) -> None:
+    _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id = :tid;", {"tid": task_id})
 
-def insert_from_bronze(conn: Connection, task_id: str) -> int:
-    schema, name = "bronze", "player_swing"
-    if not _table_exists(conn, schema, name):
-        raise RuntimeError("bronze.player_swing not found")
+def insert_phase1(conn: Connection, task_id: str) -> int:
+    src, cols = _bronze_source_table(conn)
 
-    cols = _columns_types(conn, schema, name)
-    src = f"{schema}.{name} s"
+    created_at_expr = _ts_expr(cols, "created_at", "created_at")  # pass through / convert if needed
+    start_ts_expr   = _ts_expr(cols, "start_ts", "start")
+    end_ts_expr     = _ts_expr(cols, "end_ts",   "end")
+    ball_hit_expr   = _ts_expr(cols, "ball_hit", "ball_hit_s")
+    rally_expr      = _int_expr(cols, "rally")
 
-    created_at_expr = _ts_expr(cols, "created_at", "created_at_s")
-    start_ts_expr   = _ts_expr(cols, "start_ts",   "start")
-    end_ts_expr     = _ts_expr(cols, "end_ts",     "end")
-    ball_hit_expr   = _ts_expr(cols, "ball_hit",   "ball_hit_s")
+    # ball_hit_location as JSON array/object
+    ball_hit_loc_expr = _jsonb_expr(cols, "ball_hit_location")
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
-      task_id, created_at, start_ts, end_ts, player_id, valid, serve, swing_type, volley,
-      is_in_rally, ball_player_distance, ball_speed, ball_impact_type, rally, ball_hit, ball_hit_location
+      task_id, created_at, start_ts, end_ts, player_id, valid, serve, swing_type,
+      volley, is_in_rally, ball_player_distance, ball_speed, ball_impact_type,
+      rally, ball_hit, ball_hit_location
     )
     SELECT
-      s.task_id,
-      {created_at_expr}                      AS created_at,
-      {start_ts_expr}                        AS start_ts,
-      {end_ts_expr}                          AS end_ts,
-      {_text_expr(cols, "player_id")}        AS player_id,
-      {_bool_expr(cols, "valid")}            AS valid,
-      {_bool_expr(cols, "serve")}            AS serve,
-      {_text_expr(cols, "swing_type")}       AS swing_type,
-      {_bool_expr(cols, "volley")}           AS volley,
-      {_bool_expr(cols, "is_in_rally")}      AS is_in_rally,
-      {_num_expr(cols, "ball_player_distance")} AS ball_player_distance,
-      {_num_expr(cols, "ball_speed")}        AS ball_speed,
-      {_text_expr(cols, "ball_impact_type")} AS ball_impact_type,
-      {_int_expr(cols, "rally")}             AS rally,
-      {ball_hit_expr}                        AS ball_hit,
-      {_jsonb_expr(cols, "ball_hit_location")} AS ball_hit_location
+      {_text_expr(cols, "task_id")}::uuid,
+      {created_at_expr},
+      {start_ts_expr},
+      {end_ts_expr},
+      {_text_expr(cols, "player_id")},
+      {_bool_expr(cols, "valid")},
+      {_bool_expr(cols, "serve")},
+      {_text_expr(cols, "swing_type")},
+      {_bool_expr(cols, "volley")},
+      {_bool_expr(cols, "is_in_rally")},
+      {_num_expr(cols, "ball_player_distance")},
+      {_num_expr(cols, "ball_speed")},
+      {_text_expr(cols, "ball_impact_type")},
+      {rally_expr},
+      {ball_hit_expr},
+      {ball_hit_loc_expr}
     FROM {src}
-    WHERE s.task_id = :task_id
-      AND s.valid IS TRUE
+    WHERE {_text_expr(cols, "task_id")}::uuid = :task_id
+      AND COALESCE({_bool_expr(cols, "valid")}, FALSE) IS TRUE;
     """
     res = conn.execute(text(sql), {"task_id": task_id})
-    return res.rowcount or 0
+    return res.rowcount if res.rowcount is not None else 0
 
-def delete_task(conn: Connection, task_id: str) -> None:
-    _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
-
-def build_point_detail(task_id: str, replace: bool=False) -> dict:
+def build_phase1(task_id: str, replace: bool = False) -> dict:
     if not task_id:
         raise ValueError("task_id is required")
     with engine.begin() as conn:
-        ensure_schema_and_table(conn)
-        if replace:
-            delete_task(conn, task_id)
-        written = insert_from_bronze(conn, task_id)
-    return {"ok": True, "task_id": task_id, "replaced": replace, "rows_written": written}
-
-# --- CLI ----------------------------------------------------------------------
+        ensure_schema_and_table(conn) if replace else _exec(conn, DDL_CREATE_SCHEMA) or None
+        if replace and _table_exists(conn, SILVER_SCHEMA, TABLE):
+            delete_for_task(conn, task_id)
+        elif not _table_exists(conn, SILVER_SCHEMA, TABLE):
+            _exec(conn, DDL_CREATE_TABLE)
+            for ddl in DDL_INDEXES:
+                _exec(conn, ddl)
+        rows = insert_phase1(conn, task_id)
+    return {"ok": True, "task_id": task_id, "replaced": replace, "rows_written": rows}
 
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Phase 1 — Section 1 only (bronze.player_swing → silver.point_detail)")
-    p.add_argument("--task-id", required=True)
-    p.add_argument("--replace", action="store_true")
+    p.add_argument("--task-id", required=True, help="Task ID (UUID) to load")
+    p.add_argument("--replace", action="store_true", help="Delete existing rows for task_id before insert")
     args = p.parse_args()
-    out = build_point_detail(task_id=args.task_id, replace=args.replace)
+    out = build_phase1(task_id=args.task_id, replace=args.replace)
     print(out)
