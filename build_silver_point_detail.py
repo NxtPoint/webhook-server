@@ -478,9 +478,16 @@ point_index AS (
       + 1 AS point_in_game
   FROM points_games pg
 ),
+-- ✅ Changed: explicit column list to avoid duplicate names from b.* and pg.*
 swing_in_point AS (
   SELECT
-    b.*,
+    b.task_id,
+    b.swing_id,
+    b.player_id,
+    b.serve,
+    b.swing_type,
+    b.ball_hit_y,
+    b.ord_ts,
     pg.server_id,
     pg.serving_side,
     pg.point_number,
@@ -558,6 +565,7 @@ SELECT
   p.play_d
 FROM play_class p
 """
+
 
 def compute_phase21(conn: Connection, task_id: str) -> int:
     # 1) Ensure columns present
