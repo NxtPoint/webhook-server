@@ -347,20 +347,13 @@ if __name__ == "__main__":
     print(out)
 
 #=========================================================================================================================================================
-# build_silver_phase2.py
-# Phase 2.1 — Derived fields into silver.point_detail (task_id-only)
-# Computes: serve_d, serving_side, server_id, point_number, game_number,
-# point_in_game, shot_ix, serve_try_ix_in_point, first_rally_shot_ix, play_d.
-# NOTE: Requires Phase 1.2 rows already present for the task_id.
+# Phase 2 — exclusions (2.0) + derived sequencing (2.1)
+# Keep constants local to Phase 2 for easy tuning
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
-from db_init import engine  # same engine you use for Phase 1.2
 
-SILVER_SCHEMA = "silver"
-TABLE = "point_detail"
-
-# Court constants (meters). We keep these here so they’re easy to tune later.
+# Court constants (meters)
 COURT_W = 8.23
 COURT_L = 23.77
 HALF_W  = COURT_W / 2.0
@@ -368,7 +361,142 @@ MID_Y   = COURT_L / 2.0
 SRV_BOX = 6.40
 SERVE_EPS_M = 0.50  # near baseline tolerance for serve band
 
-# Ensure derived columns exist on silver.point_detail
+# ---------- 2.0 EXCLUSIONS LAYER ----------
+EXCLUDE_ALTERS = [
+    f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS exclude boolean DEFAULT FALSE;",
+    f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS exclude_reason text;"
+]
+
+def ensure_exclude_columns(conn: Connection) -> None:
+    for ddl in EXCLUDE_ALTERS:
+        _exec(conn, ddl)
+
+SQL_EXCLUSIONS = f"""
+WITH base AS (
+  SELECT
+    pd.task_id, pd.swing_id, pd.player_id, pd.serve, pd.swing_type,
+    pd.ball_hit, pd.start_ts,
+    COALESCE(pd.ball_hit, pd.start_ts) AS ord_ts,
+    pd.ball_hit_x, pd.ball_hit_y,
+    COALESCE(pd.confidence, 0.0) + COALESCE(pd.confidence_swing_type, 0.0) AS conf_sum
+  FROM {SILVER_SCHEMA}.{TABLE} pd
+  WHERE pd.task_id = :task_id
+),
+serve_band AS (
+  SELECT
+    b.*,
+    (lower(b.swing_type) IN ('fh_overhead','fh-overhead','overhead','serve')) AS is_overhead_like,
+    CASE
+      WHEN b.ball_hit_y IS NULL THEN NULL
+      ELSE (b.ball_hit_y <= {SERVE_EPS_M} OR b.ball_hit_y >= {COURT_L} - {SERVE_EPS_M})
+    END AS inside_serve_band
+  FROM base b
+),
+serves AS (
+  SELECT
+    sb.*,
+    (COALESCE(sb.serve, FALSE) OR (sb.is_overhead_like AND COALESCE(sb.inside_serve_band, FALSE))) AS is_serve
+  FROM serve_band sb
+),
+first_serve AS (
+  SELECT task_id, MIN(ord_ts) AS first_serve_ts
+  FROM serves
+  WHERE is_serve
+  GROUP BY task_id
+),
+serve_seq AS (
+  SELECT
+    s.*,
+    LAG(s.ord_ts) OVER (PARTITION BY s.task_id ORDER BY s.ord_ts, s.swing_id) AS prev_serve_ts
+  FROM serves s
+  WHERE s.is_serve
+),
+serve_points AS (
+  SELECT
+    ss.*,
+    ROW_NUMBER() OVER (PARTITION BY ss.task_id ORDER BY ss.ord_ts, ss.swing_id) AS serve_ix_global
+  FROM serve_seq ss
+),
+point_serve_windows AS (
+  SELECT
+    sp1.task_id,
+    sp1.ord_ts AS try1_ts,
+    LEAD(sp1.ord_ts) OVER (PARTITION BY sp1.task_id ORDER BY sp1.ord_ts, sp1.swing_id) AS next_serve_ts,
+    sp1.swing_id AS try1_swing_id
+  FROM serve_points sp1
+),
+r1_before_game_start AS (
+  SELECT b.task_id, b.swing_id
+  FROM base b
+  JOIN first_serve fs ON fs.task_id = b.task_id
+  WHERE b.ord_ts < fs.first_serve_ts
+),
+r2_between_serves AS (
+  SELECT b.task_id, b.swing_id
+  FROM base b
+  JOIN point_serve_windows w ON w.task_id = b.task_id
+  WHERE b.ord_ts > w.try1_ts
+    AND w.next_serve_ts IS NOT NULL
+    AND b.ord_ts < w.next_serve_ts
+    AND NOT EXISTS (
+      SELECT 1 FROM serves sv
+      WHERE sv.task_id = b.task_id AND sv.swing_id = b.swing_id AND sv.is_serve
+    )
+),
+dup_groups AS (
+  SELECT
+    b.*,
+    date_trunc('millisecond', b.ord_ts) AS ord_ms,
+    ROW_NUMBER() OVER (
+      PARTITION BY b.task_id, b.player_id, COALESCE(lower(b.swing_type), ''), date_trunc('millisecond', b.ord_ts)
+      ORDER BY b.conf_sum DESC,
+               (CASE WHEN b.ball_hit_x IS NOT NULL AND b.ball_hit_y IS NOT NULL THEN 0 ELSE 1 END),
+               b.swing_id DESC
+    ) AS rnk
+  FROM base b
+),
+r3_dupes AS (
+  SELECT task_id, swing_id
+  FROM dup_groups
+  WHERE rnk > 1
+),
+marks AS (
+  SELECT task_id, swing_id, TRUE AS ex, 'before_game_start'::text AS reason FROM r1_before_game_start
+  UNION ALL
+  SELECT task_id, swing_id, TRUE, 'between_first_and_second_serve' FROM r2_between_serves
+  UNION ALL
+  SELECT task_id, swing_id, TRUE, 'duplicate_swing' FROM r3_dupes
+)
+SELECT
+  b.task_id, b.swing_id,
+  COALESCE(m.ex, FALSE) AS exclude,
+  m.reason AS exclude_reason
+FROM base b
+LEFT JOIN marks m
+  ON m.task_id = b.task_id AND m.swing_id = b.swing_id
+"""
+
+def compute_exclusions(conn: Connection, task_id: str) -> int:
+    ensure_exclude_columns(conn)
+    _exec(conn, "DROP TABLE IF EXISTS _pd_excl;")
+    _exec(conn, "CREATE TEMP TABLE _pd_excl AS " + SQL_EXCLUSIONS, {"task_id": task_id})
+    res = conn.execute(text(f"""
+        UPDATE {SILVER_SCHEMA}.{TABLE} t
+        SET exclude = s.exclude,
+            exclude_reason = s.exclude_reason
+        FROM _pd_excl s
+        WHERE t.task_id = s.task_id AND t.swing_id = s.swing_id
+    """))
+    # Set numbering to zero for before_game_start
+    _exec(conn, f"""
+        UPDATE {SILVER_SCHEMA}.{TABLE}
+        SET point_number = 0, game_number = 0, point_in_game = 0
+        WHERE task_id = :task_id AND exclude IS TRUE AND exclude_reason = 'before_game_start'
+    """, {"task_id": task_id})
+    _exec(conn, "DROP TABLE IF EXISTS _pd_excl;")
+    return res.rowcount or 0
+
+# ---------- 2.1 DERIVED SEQUENCING ----------
 ALTERS_PHASE_21 = [
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS serve_d boolean;",
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS serving_side text;",
@@ -381,9 +509,6 @@ ALTERS_PHASE_21 = [
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS first_rally_shot_ix integer;",
     f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN IF NOT EXISTS play_d text;"
 ]
-
-def _exec(conn: Connection, sql: str, params=None):
-    conn.execute(text(sql), params or {})
 
 def ensure_phase21_columns(conn: Connection) -> None:
     for ddl in ALTERS_PHASE_21:
@@ -405,6 +530,7 @@ base AS (
     COALESCE(pd.ball_hit, pd.start_ts) AS ord_ts
   FROM {SILVER_SCHEMA}.{TABLE} pd
   WHERE pd.task_id = :task_id
+    AND COALESCE(pd.exclude, FALSE) = FALSE   -- ignore excluded rows
 ),
 serve_candidates AS (
   SELECT
@@ -478,7 +604,6 @@ point_index AS (
       + 1 AS point_in_game
   FROM points_games pg
 ),
--- ✅ Changed: explicit column list to avoid duplicate names from b.* and pg.*
 swing_in_point AS (
   SELECT
     b.task_id,
@@ -566,13 +691,9 @@ SELECT
 FROM play_class p
 """
 
-
 def compute_phase21(conn: Connection, task_id: str) -> int:
-    # 1) Ensure columns present
     ensure_phase21_columns(conn)
-    # 2) Stage derivations in temp table
     _exec(conn, "CREATE TEMP TABLE _pd_p21 AS " + SQL_PHASE21_DERIVATIONS, {"task_id": task_id})
-    # 3) Update back into silver.point_detail
     res = conn.execute(text(f"""
         UPDATE {SILVER_SCHEMA}.{TABLE} t
         SET
@@ -596,12 +717,15 @@ def build_phase2(task_id: str) -> dict:
     if not task_id:
         raise ValueError("task_id is required")
     with engine.begin() as conn:
-        affected = compute_phase21(conn, task_id)
-    return {"ok": True, "task_id": task_id, "phase": "2.1", "rows_updated": affected}
+        # 2.0 exclusions first
+        ex = compute_exclusions(conn, task_id)
+        # 2.1 sequencing on the filtered set
+        upd = compute_phase21(conn, task_id)
+    return {"ok": True, "task_id": task_id, "phase": "2.0+2.1", "rows_exclusion_marked": ex, "rows_updated": upd}
 
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="Phase 2.1 — derive serve/point sequencing (task_id-only)")
+    p = argparse.ArgumentParser(description="Phase 2 — exclusions + serve/point sequencing (task_id-only)")
     p.add_argument("--task-id", required=True)
     args = p.parse_args()
     out = build_phase2(task_id=args.task_id)
