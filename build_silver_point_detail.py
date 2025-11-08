@@ -590,15 +590,32 @@ serve_seq AS (
 -- First-serve of point:
 --   1) If server changed -> start new game & new point
 --   2) Else if same server but side changed (ad<->deuce) -> new point
+-- First-serve sequencing with clean, non-nested windows
 serve_points_only AS (
   SELECT
     s.task_id, s.swing_id, s.server_id, s.serving_side, s.ord_ts,
-    CASE
-      WHEN s.prev_server IS DISTINCT FROM s.server_id THEN TRUE
-      WHEN s.prev_side_same_server IS DISTINCT FROM s.serving_side THEN TRUE
-      ELSE FALSE
-    END AS is_point_start
+    /* side/server deltas from prior serve event */
+    CASE WHEN s.prev_server IS DISTINCT FROM s.server_id THEN TRUE
+         WHEN s.prev_side_same_server IS DISTINCT FROM s.serving_side THEN TRUE
+         ELSE FALSE END AS is_point_start,
+    /* game bump only when server changes */
+    CASE WHEN s.prev_server IS DISTINCT FROM s.server_id THEN 1 ELSE 0 END AS game_bump
   FROM serve_seq s
+),
+-- Keep only first-serve events (point-starts)
+point_starts AS (
+  SELECT *
+  FROM serve_points_only
+  WHERE is_point_start
+),
+-- Number points; games = cumulative sum of game_bump + 1
+point_numbered AS (
+  SELECT
+    ps.*,
+    ROW_NUMBER() OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id) AS point_number,
+    (SUM(ps.game_bump) OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id
+       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) + 1) AS game_number
+  FROM point_starts ps
 ),
 -- Keep only first-serve events (point starts)
 point_starts AS (
