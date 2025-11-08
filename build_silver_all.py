@@ -1,5 +1,5 @@
 # build_silver_all.py — single-file version - RESTING ONLY - DELETE LATER
-from build_silver_point_detail import build_point_detail, build_point_detail_phase2
+from build_silver_point_detail import build_point_detail, build_phase2
 
 if __name__ == "__main__":
     import argparse
@@ -13,7 +13,7 @@ if __name__ == "__main__":
     print(out1)
 
     print("🔹 Phase 2 — Derived logic (serve, side, sequencing, play_d)")
-    out2 = build_point_detail_phase2(task_id=args.task_id)
+    out2 = build_phase2(task_id=args.task_id)
     print(out2)
 
     print("✅ Full Silver refresh complete.")
