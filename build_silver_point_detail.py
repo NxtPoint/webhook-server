@@ -1,12 +1,4 @@
-# build_silver_point_detail.py
-# Phase 1 (FIELDS ONLY, task_id-only)
-# - Copy raw swing fields from Bronze into silver.point_detail
-# - NO business logic, NO sequencing, NO bounce matching
-# - Auto-detects Bronze source table (player_swing or swing) and each column's type
-# - Converts seconds->timestamptz when needed
-# - Safely converts JSON numeric fields (e.g., start/end if stored as json/jsonb)
-# - PK = (task_id, swing_id)
-
+# build_silver_point_detail.py — Phase 1.1 (fields-only, task_id-only, exclude invalid, drop annotations)
 from typing import Optional, List, Dict, Tuple
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -16,7 +8,6 @@ SILVER_SCHEMA = "silver"
 TABLE = "point_detail"
 PK = "(task_id, swing_id)"
 
-# ---------- DDL ----------
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
 
 DDL_CREATE_TABLE = f"""
@@ -42,7 +33,6 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   ball_impact_type          TEXT,
   intercepting_player_id    TEXT,
 
-  -- rally: prefer integer; keep raw JSON separately if source is json/jsonb
   rally                     INTEGER,
   rally_json                JSONB,
 
@@ -50,13 +40,14 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   ball_hit_location         JSONB,
   ball_impact_location      JSONB,
   ball_trajectory           JSONB,
+
+  -- annotations intentionally not populated in Phase 1.1 (kept for optional future use)
   annotations               JSONB,
 
-  -- raw seconds (some sources store as numeric or json)
   start                     DOUBLE PRECISION,
   "end"                     DOUBLE PRECISION,
 
-  -- Phase 2 placeholders (stay NULL here)
+  -- Phase 2 placeholders
   bounce_id                 BIGINT,
   bounce_ts                 TIMESTAMPTZ,
   bounce_s                  DOUBLE PRECISION,
@@ -83,23 +74,21 @@ DDL_INDEXES = [
     f"CREATE INDEX IF NOT EXISTS ix_point_detail_time_hit    ON {SILVER_SCHEMA}.{TABLE} (task_id, ball_hit);",
 ]
 
-# ---------- Helpers ----------
 def _exec(conn: Connection, sql: str, params: Optional[dict] = None) -> None:
     conn.execute(text(sql), params or {})
 
 def _table_exists(conn: Connection, schema: str, name: str) -> bool:
     row = conn.execute(text("""
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = :s AND table_name = :t
+        SELECT 1 FROM information_schema.tables
+         WHERE table_schema=:s AND table_name=:t
     """), {"s": schema, "t": name}).fetchone()
     return bool(row)
 
 def _columns_types(conn: Connection, schema: str, name: str) -> Dict[str, str]:
     rows = conn.execute(text("""
         SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = :s AND table_name = :t
+          FROM information_schema.columns
+         WHERE table_schema=:s AND table_name=:t
     """), {"s": schema, "t": name}).fetchall()
     return {r[0].lower(): r[1].lower() for r in rows}
 
@@ -113,104 +102,67 @@ def _bronze_source_table(conn: Connection) -> Tuple[str, str, Dict[str, str]]:
     raise RuntimeError("Neither bronze.player_swing nor bronze.swing exists")
 
 def _colref(name: str) -> str:
-    """Return a safe table column reference s.<col>, quoting if reserved (e.g., end)."""
     n = name.lower()
-    if n in {"end"}:
-        return 's."end"'
-    return f"s.{n}"
+    return 's."end"' if n == "end" else f"s.{n}"
 
-def _ts_expr(cols: Dict[str, str], col_ts: str, fallback_seconds: str) -> str:
-    """
-    Build a timestamptz expression:
-      - If col_ts exists and is timestamptz => use it
-      - If col_ts exists and is numeric => epoch + seconds
-      - Else if fallback_seconds exists and is numeric/json-number => epoch + seconds
-      - Else NULL
-    """
-    col_ts_l = col_ts.lower()
-    fb_l = fallback_seconds.lower()
-    if col_ts_l in cols:
-        dt = cols[col_ts_l]
+def _ts_expr(cols: Dict[str, str], col_ts: str, fb_seconds: str) -> str:
+    c = col_ts.lower(); fb = fb_seconds.lower()
+    if c in cols:
+        dt = cols[c]
         if "timestamp" in dt:
-            return _colref(col_ts_l)
-        if any(k in dt for k in ("double", "real", "numeric", "integer")):
-            return f"(TIMESTAMP 'epoch' + {_colref(col_ts_l)} * INTERVAL '1 second')"
-        if "json" in dt:
-            # Use only when JSON is a number
-            return f"""(
-                CASE
-                  WHEN jsonb_typeof({_colref(col_ts_l)})='number'
-                    THEN (TIMESTAMP 'epoch' + ({_colref(col_ts_l)}::text)::double precision * INTERVAL '1 second')
-                  ELSE NULL::timestamptz
-                END
-            )"""
-    if fb_l in cols:
-        dt = cols[fb_l]
-        if any(k in dt for k in ("double", "real", "numeric", "integer")):
-            return f"(TIMESTAMP 'epoch' + {_colref(fb_l)} * INTERVAL '1 second')"
+            return _colref(c)
+        if any(k in dt for k in ("double","real","numeric","integer")):
+            return f"(TIMESTAMP 'epoch' + {_colref(c)} * INTERVAL '1 second')"
         if "json" in dt:
             return f"""(
-                CASE
-                  WHEN jsonb_typeof({_colref(fb_l)})='number'
-                    THEN (TIMESTAMP 'epoch' + ({_colref(fb_l)}::text)::double precision * INTERVAL '1 second')
-                  ELSE NULL::timestamptz
-                END
-            )"""
+              CASE WHEN jsonb_typeof({_colref(c)})='number'
+                   THEN (TIMESTAMP 'epoch' + ({_colref(c)}::text)::double precision * INTERVAL '1 second')
+                   ELSE NULL::timestamptz END)"""
+    if fb in cols:
+        dt = cols[fb]
+        if any(k in dt for k in ("double","real","numeric","integer")):
+            return f"(TIMESTAMP 'epoch' + {_colref(fb)} * INTERVAL '1 second')"
+        if "json" in dt:
+            return f"""(
+              CASE WHEN jsonb_typeof({_colref(fb)})='number'
+                   THEN (TIMESTAMP 'epoch' + ({_colref(fb)}::text)::double precision * INTERVAL '1 second')
+                   ELSE NULL::timestamptz END)"""
     return "NULL::timestamptz"
 
 def _jsonb_expr(cols: Dict[str, str], name: str) -> str:
     n = name.lower()
-    if n in cols:
-        return f"{_colref(n)}::jsonb"
-    return "NULL::jsonb"
+    return f"{_colref(n)}::jsonb" if n in cols else "NULL::jsonb"
 
 def _num_expr(cols: Dict[str, str], name: str) -> str:
-    """Return numeric expression; if source is json/jsonb, extract number only; else NULL."""
     n = name.lower()
-    if n not in cols:
-        return "NULL::double precision"
+    if n not in cols: return "NULL::double precision"
     dt = cols[n]
     if "json" in dt:
         return f"""(
-            CASE
-              WHEN jsonb_typeof({_colref(n)})='number'
-                THEN ({_colref(n)}::text)::double precision
-              ELSE NULL::double precision
-            END
-        )"""
+          CASE WHEN jsonb_typeof({_colref(n)})='number'
+               THEN ({_colref(n)}::text)::double precision
+               ELSE NULL::double precision END)"""
     return _colref(n)
 
 def _int_expr(cols: Dict[str, str], name: str) -> str:
-    """Return integer expression; supports json number -> int."""
     n = name.lower()
-    if n not in cols:
-        return "NULL::int"
+    if n not in cols: return "NULL::int"
     dt = cols[n]
     if "json" in dt:
         return f"""(
-            CASE
-              WHEN jsonb_typeof({_colref(n)})='number'
-                THEN ({_colref(n)}::text)::int
-              ELSE NULL::int
-            END
-        )"""
+          CASE WHEN jsonb_typeof({_colref(n)})='number'
+               THEN ({_colref(n)}::text)::int
+               ELSE NULL::int END)"""
     return _colref(n)
 
 def _bool_expr(cols: Dict[str, str], name: str) -> str:
-    n = name.lower()
-    if n in cols:
-        return _colref(n)
-    return "NULL::boolean"
+    return _colref(name) if name.lower() in cols else "NULL::boolean"
 
 def _text_expr(cols: Dict[str, str], name: str) -> str:
-    n = name.lower()
-    if n in cols:
-        return _colref(n)
-    return "NULL::text"
+    return _colref(name) if name.lower() in cols else "NULL::text"
 
 def ensure_schema_and_table(conn: Connection) -> None:
     _exec(conn, DDL_CREATE_SCHEMA)
-    # auto-heal shape (must have task_id,swing_id; must NOT have legacy session_id/session_uid)
     if _table_exists(conn, SILVER_SCHEMA, TABLE):
         colset = set(_columns_types(conn, SILVER_SCHEMA, TABLE).keys())
         if "task_id" not in colset or "swing_id" not in colset or ("session_id" in colset or "session_uid" in colset):
@@ -228,8 +180,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
     end_ts_expr   = _ts_expr(cols, "end_ts",   "end")
     ball_hit_expr = _ts_expr(cols, "ball_hit", "ball_hit_s")
 
-    # rally handling: if JSON/JSONB -> rally=NULL::int, rally_json=raw; else rally=int and rally_json=NULL
-    rally_is_json = "rally" in cols and ("json" in cols["rally"])
+    rally_is_json   = "rally" in cols and ("json" in cols["rally"])
     rally_int_expr  = "NULL::int" if rally_is_json else _int_expr(cols, "rally")
     rally_json_expr = f"{_colref('rally')}::jsonb" if rally_is_json else "NULL::jsonb"
 
@@ -273,7 +224,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
       {_jsonb_expr(cols, "ball_hit_location")},
       {_jsonb_expr(cols, "ball_impact_location")},
       {_jsonb_expr(cols, "ball_trajectory")},
-      {_jsonb_expr(cols, "annotations")},
+      NULL::jsonb,  -- annotations intentionally excluded in Phase 1.1
       {_num_expr(cols, "start")},
       {_num_expr(cols, "end")},
 
@@ -283,6 +234,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
       NULL::text, NULL::text, NULL::int, NULL::int, NULL::int, NULL::int
     FROM {source_ref}
     WHERE s.task_id = :task_id
+      AND COALESCE(s.valid, TRUE) IS TRUE
     ON CONFLICT {PK} DO UPDATE SET
       player_id                 = EXCLUDED.player_id,
       start_ts                  = EXCLUDED.start_ts,
@@ -307,7 +259,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
       ball_hit_location         = EXCLUDED.ball_hit_location,
       ball_impact_location      = EXCLUDED.ball_impact_location,
       ball_trajectory           = EXCLUDED.ball_trajectory,
-      annotations               = EXCLUDED.annotations,
+      annotations               = NULL,  -- remain unpopulated
       start                     = EXCLUDED.start,
       "end"                     = EXCLUDED."end",
       bounce_id                 = EXCLUDED.bounce_id,
@@ -327,9 +279,9 @@ def insert_base(conn: Connection, task_id: str) -> int:
     return res.rowcount if res.rowcount is not None else 0
 
 def delete_for_task(conn: Connection, task_id: str) -> None:
-    _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id = :tid;", {"tid": task_id})
+    _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid;", {"tid": task_id})
 
-def build_point_detail(task_id: str, replace: bool = False) -> dict:
+def build_point_detail(task_id: str, replace: bool=False) -> dict:
     if not task_id:
         raise ValueError("task_id is required")
     with engine.begin() as conn:
@@ -339,10 +291,9 @@ def build_point_detail(task_id: str, replace: bool = False) -> dict:
         affected = insert_base(conn, task_id)
     return {"ok": True, "task_id": task_id, "replaced": replace, "rows_written": affected}
 
-# ---------- CLI ----------
 if __name__ == "__main__":
     import argparse
-    p = argparse.ArgumentParser(description="Build silver.point_detail (Phase 1 — fields only, task_id-only)")
+    p = argparse.ArgumentParser(description="Build silver.point_detail (Phase 1.1 — fields only, valid=true, task_id-only)")
     p.add_argument("--task-id", required=True)
     p.add_argument("--replace", action="store_true")
     args = p.parse_args()
