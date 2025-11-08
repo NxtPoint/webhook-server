@@ -44,10 +44,10 @@ PHASE1_COLS = OrderedDict({
     "ball_speed":           "double precision",
     "ball_impact_type":     "text",
     "rally":                "integer",
-    "ball_hit":             "timestamptz",      # timestamp already exposed
-    "ball_hit_x":           "double precision", # <-- NEW
-    "ball_hit_y":           "double precision", # <-- NEW
-    "ball_hit_location":    "jsonb"             # keep raw JSON too (handy for QA)
+    "ball_hit":             "timestamptz",
+    "ball_hit_x":           "double precision",   # ← new
+    "ball_hit_y":           "double precision",   # ← new
+    "ball_hit_location":    "jsonb"
 })
 
 
@@ -164,7 +164,6 @@ def _swing_id_expr(cols: Dict[str, str]) -> str:
     raise RuntimeError("Bronze swing identifier not found (need column 'id' or 'swing_id').")
 
 def _xy_from_json_array(colref: str, index: int) -> str:
-    # index 0 => x, 1 => y
     return f"""(
       CASE
         WHEN {colref} IS NOT NULL
@@ -175,7 +174,6 @@ def _xy_from_json_array(colref: str, index: int) -> str:
       END)"""
 
 def _ball_hit_x_expr(cols: Dict[str, str]) -> str:
-    # Prefer native numeric columns if they exist, else flatten from ball_hit_location
     if "ball_hit_x" in cols and "json" not in cols["ball_hit_x"]:
         return _num(cols, "ball_hit_x")
     return _xy_from_json_array(_colref("ball_hit_location"), 0)
@@ -212,8 +210,8 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
-    Section 1 only: import *exact* fields from bronze.player_swing (or bronze.swing),
-    filter valid=TRUE, and populate swing_id.
+    Section 1 only: import exact fields from bronze.player_swing (or bronze.swing),
+    filter valid=TRUE, and populate swing_id + ball_hit_x/ball_hit_y.
     """
     src, bcols = _bronze_src(conn)
 
@@ -223,11 +221,15 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     ball_hit   = _ts_expr(bcols, "ball_hit", "ball_hit_s")
     swing_id   = _swing_id_expr(bcols)
 
+    # ✅ define these in Python, not inside the SQL body
+    bhx = _ball_hit_x_expr(bcols)
+    bhy = _ball_hit_y_expr(bcols)
+
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, created_at, start_ts, end_ts, player_id, valid, serve, swing_type,
       volley, is_in_rally, ball_player_distance, ball_speed, ball_impact_type,
-      rally, ball_hit, ball_hit_location
+      rally, ball_hit, ball_hit_x, ball_hit_y, ball_hit_location
     )
     SELECT
       {_text(bcols, "task_id")}::uuid,
@@ -246,8 +248,8 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       {_text(bcols, "ball_impact_type")},
       {_int(bcols, "rally")},
       {ball_hit},
-      bhx = _ball_hit_x_expr(bcols)
-      bhy = _ball_hit_y_expr(bcols)
+      {bhx},  -- X
+      {bhy},  -- Y
       {_jsonb(bcols, "ball_hit_location")}
     FROM {src}
     WHERE {_text(bcols, "task_id")}::uuid = :task_id
