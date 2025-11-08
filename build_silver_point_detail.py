@@ -28,7 +28,7 @@ TABLE = "point_detail"
 # ------------------------------- Phase specs (schema only) -------------------------------
 
 # Phase 1 — Section 1 (exactly from your sheet; plus swing_id to satisfy NOT NULL in your DB)
-PHASE1_COLS: TOrderedDict[str, str] = OrderedDict({
+PHASE1_COLS = OrderedDict({
     "task_id":              "uuid",
     "swing_id":             "bigint",
     "created_at":           "timestamptz",
@@ -44,9 +44,12 @@ PHASE1_COLS: TOrderedDict[str, str] = OrderedDict({
     "ball_speed":           "double precision",
     "ball_impact_type":     "text",
     "rally":                "integer",
-    "ball_hit":             "timestamptz",
-    "ball_hit_location":    "jsonb",
+    "ball_hit":             "timestamptz",      # timestamp already exposed
+    "ball_hit_x":           "double precision", # <-- NEW
+    "ball_hit_y":           "double precision", # <-- NEW
+    "ball_hit_location":    "jsonb"             # keep raw JSON too (handy for QA)
 })
+
 
 # Phase 2 — player info (add schema columns here; loader to be added later)
 PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
@@ -160,6 +163,29 @@ def _swing_id_expr(cols: Dict[str, str]) -> str:
         return _int(cols, "swing_id")
     raise RuntimeError("Bronze swing identifier not found (need column 'id' or 'swing_id').")
 
+def _xy_from_json_array(colref: str, index: int) -> str:
+    # index 0 => x, 1 => y
+    return f"""(
+      CASE
+        WHEN {colref} IS NOT NULL
+         AND jsonb_typeof({colref}::jsonb)='array'
+         AND jsonb_array_length({colref}::jsonb) > {index}
+        THEN ({colref}::jsonb->>{index})::double precision
+        ELSE NULL::double precision
+      END)"""
+
+def _ball_hit_x_expr(cols: Dict[str, str]) -> str:
+    # Prefer native numeric columns if they exist, else flatten from ball_hit_location
+    if "ball_hit_x" in cols and "json" not in cols["ball_hit_x"]:
+        return _num(cols, "ball_hit_x")
+    return _xy_from_json_array(_colref("ball_hit_location"), 0)
+
+def _ball_hit_y_expr(cols: Dict[str, str]) -> str:
+    if "ball_hit_y" in cols and "json" not in cols["ball_hit_y"]:
+        return _num(cols, "ball_hit_y")
+    return _xy_from_json_array(_colref("ball_hit_location"), 1)
+
+
 # --------------------------------- schema ensure ---------------------------------
 
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
@@ -220,6 +246,8 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       {_text(bcols, "ball_impact_type")},
       {_int(bcols, "rally")},
       {ball_hit},
+      bhx = _ball_hit_x_expr(bcols)
+      bhy = _ball_hit_y_expr(bcols)
       {_jsonb(bcols, "ball_hit_location")}
     FROM {src}
     WHERE {_text(bcols, "task_id")}::uuid = :task_id
