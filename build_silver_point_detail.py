@@ -524,7 +524,7 @@ WITH const AS (
     {SRV_BOX}::numeric  AS service_box_depth_m,
     {SERVE_EPS_M}::numeric AS serve_eps_m
 ),
--- Only non-excluded rows
+-- Non-excluded rows only
 base AS (
   SELECT
     pd.*,
@@ -533,7 +533,7 @@ base AS (
   WHERE pd.task_id = :task_id
     AND COALESCE(pd.exclude, FALSE) = FALSE
 ),
--- Detect serves: bronze flag preferred; fallback to overhead-like inside serve band
+-- Serve detection: bronze flag preferred; fallback to overhead-like in serve band
 serve_candidates AS (
   SELECT
     b.task_id, b.swing_id, b.player_id, b.ord_ts,
@@ -556,7 +556,6 @@ serve_events AS (
     ) AS is_serve
   FROM serve_candidates s
 ),
--- Assign serving side from actual serve contact x/y
 serve_centerline AS (
   SELECT
     se.task_id,
@@ -578,7 +577,7 @@ serve_sided AS (
     END AS serving_side
   FROM serve_events se
 ),
--- Only serve rows (ordered)
+-- Serve-only stream with prev server/side windows
 serve_seq AS (
   SELECT
     ss.*,
@@ -587,62 +586,36 @@ serve_seq AS (
   FROM serve_sided ss
   WHERE ss.is_serve
 ),
--- First-serve of point:
---   1) If server changed -> start new game & new point
---   2) Else if same server but side changed (ad<->deuce) -> new point
--- First-serve sequencing with clean, non-nested windows
+-- First-serve points logic (no nested windows)
 serve_points_only AS (
   SELECT
     s.task_id, s.swing_id, s.server_id, s.serving_side, s.ord_ts,
-    /* side/server deltas from prior serve event */
-    CASE WHEN s.prev_server IS DISTINCT FROM s.server_id THEN TRUE
-         WHEN s.prev_side_same_server IS DISTINCT FROM s.serving_side THEN TRUE
-         ELSE FALSE END AS is_point_start,
-    /* game bump only when server changes */
+    CASE
+      WHEN s.prev_server IS DISTINCT FROM s.server_id THEN TRUE
+      WHEN s.prev_side_same_server IS DISTINCT FROM s.serving_side THEN TRUE
+      ELSE FALSE
+    END AS is_point_start,
     CASE WHEN s.prev_server IS DISTINCT FROM s.server_id THEN 1 ELSE 0 END AS game_bump
   FROM serve_seq s
 ),
--- Keep only first-serve events (point-starts)
-point_starts AS (
-  SELECT *
-  FROM serve_points_only
-  WHERE is_point_start
+-- Keep only first-serve events (point starts) — renamed to avoid alias clashes
+point_starts_ps AS (
+  SELECT * FROM serve_points_only WHERE is_point_start
 ),
--- Number points; games = cumulative sum of game_bump + 1
+-- Number points; games = cumulative sum of server-change bumps + 1
 point_numbered AS (
   SELECT
     ps.*,
     ROW_NUMBER() OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id) AS point_number,
     (SUM(ps.game_bump) OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id
        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) + 1) AS game_number
-  FROM point_starts ps
+  FROM point_starts_ps ps
 ),
--- Keep only first-serve events (point starts)
-point_starts AS (
-  SELECT *
-  FROM serve_points_only
-  WHERE is_point_start
-),
--- Number points across the task by point-starts
-point_numbered AS (
-  SELECT
-    ps.*,
-    ROW_NUMBER() OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id) AS point_number,
-    -- Game bumps when server changes at a point start
-    (COALESCE(
-       SUM(CASE
-             WHEN ps.server_id IS DISTINCT FROM LAG(ps.server_id) OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id)
-             THEN 1 ELSE 0 END)
-       OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id
-             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0) + 1
-    ) AS game_number
-  FROM point_starts ps
-),
--- For all serve events, attach their point_number (by the latest point-start <= serve time)
+-- Attach point_number to each serve (for serve_try indexing)
 serve_with_point AS (
   SELECT
     sv.task_id, sv.swing_id, sv.server_id, sv.serving_side, sv.ord_ts,
-    ps.point_number, ps.game_number
+    pn.point_number, pn.game_number
   FROM serve_seq sv
   LEFT JOIN LATERAL (
     SELECT pn.*
@@ -651,9 +624,8 @@ serve_with_point AS (
       AND pn.ord_ts <= sv.ord_ts
     ORDER BY pn.ord_ts DESC, pn.swing_id DESC
     LIMIT 1
-  ) ps ON TRUE
+  ) pn ON TRUE
 ),
--- Serve try index within each point (1 = first serve, 2 = second serve, ...; typically <=2)
 serve_try AS (
   SELECT
     swp.*,
@@ -663,7 +635,7 @@ serve_try AS (
     ) AS serve_try_ix_in_point
   FROM serve_with_point swp
 ),
--- point_in_game = local numbering inside each game
+-- Local point count within each game
 points_games AS (
   SELECT
     pn.*,
@@ -672,7 +644,7 @@ points_games AS (
       + 1 AS point_in_game
   FROM point_numbered pn
 ),
--- Map each swing to its point/game context by the most recent point-start before it
+-- Map every swing to the most recent point start (first serve) at/preceding its time
 swing_in_point AS (
   SELECT
     b.task_id,
@@ -716,7 +688,7 @@ swing_numbered AS (
     ) AS serve_d
   FROM swing_in_point sip
 ),
--- Classify play role
+-- First rally shot index (receiver’s first legal contact)
 first_rally AS (
   SELECT
     st.task_id, st.point_number,
@@ -727,6 +699,7 @@ first_rally AS (
   FROM swing_numbered st
   GROUP BY st.task_id, st.point_number
 ),
+-- Play role classification
 play_class AS (
   SELECT
     st.*,
@@ -743,14 +716,13 @@ play_class AS (
     END AS play_d
   FROM swing_numbered st
   LEFT JOIN first_rally fr
-    ON fr.task_id = st.task_id AND fr.point_number = st.point_number
+    ON fr.task_id = st.task_id AND st.point_number = fr.point_number
 )
 SELECT
   p.task_id, p.swing_id,
   p.serve_d, p.serving_side, p.server_id,
   p.point_number, p.game_number, p.point_in_game,
   p.shot_ix,
-  -- Join in serve_try_ix_in_point from serve_try (NULL for non-serve swings)
   (SELECT st.serve_try_ix_in_point
      FROM serve_try st
      WHERE st.task_id = p.task_id
@@ -761,6 +733,7 @@ SELECT
   p.play_d
 FROM play_class p
 """
+
 
 def compute_phase21(conn: Connection, task_id: str) -> int:
     ensure_phase21_columns(conn)
