@@ -4,7 +4,7 @@
 # - NO business logic, NO sequencing, NO bounce matching
 # - Auto-detects Bronze source table (player_swing or swing) and each column's type
 # - Converts seconds->timestamptz when needed
-# - rally: if numeric -> INT; if JSON -> NULL (int) + keep raw in rally_json
+# - Safely converts JSON numeric fields (e.g., start/end if stored as json/jsonb)
 # - PK = (task_id, swing_id)
 
 from typing import Optional, List, Dict, Tuple
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   ball_impact_type          TEXT,
   intercepting_player_id    TEXT,
 
-  -- rally handling: prefer integer; keep raw JSON separately if needed
+  -- rally: prefer integer; keep raw JSON separately if source is json/jsonb
   rally                     INTEGER,
   rally_json                JSONB,
 
@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   ball_impact_location      JSONB,
   ball_trajectory           JSONB,
   annotations               JSONB,
+
+  -- raw seconds (some sources store as numeric or json)
   start                     DOUBLE PRECISION,
   "end"                     DOUBLE PRECISION,
 
@@ -110,49 +112,100 @@ def _bronze_source_table(conn: Connection) -> Tuple[str, str, Dict[str, str]]:
         return ("bronze", "swing", cols)
     raise RuntimeError("Neither bronze.player_swing nor bronze.swing exists")
 
+def _colref(name: str) -> str:
+    """Return a safe table column reference s.<col>, quoting if reserved (e.g., end)."""
+    n = name.lower()
+    if n in {"end"}:
+        return 's."end"'
+    return f"s.{n}"
+
 def _ts_expr(cols: Dict[str, str], col_ts: str, fallback_seconds: str) -> str:
+    """
+    Build a timestamptz expression:
+      - If col_ts exists and is timestamptz => use it
+      - If col_ts exists and is numeric => epoch + seconds
+      - Else if fallback_seconds exists and is numeric/json-number => epoch + seconds
+      - Else NULL
+    """
     col_ts_l = col_ts.lower()
     fb_l = fallback_seconds.lower()
     if col_ts_l in cols:
         dt = cols[col_ts_l]
         if "timestamp" in dt:
-            return f"s.{col_ts_l}"
-        if "double" in dt or "real" in dt or "numeric" in dt or "integer" in dt:
-            return f"(TIMESTAMP 'epoch' + s.{col_ts_l} * INTERVAL '1 second')"
+            return _colref(col_ts_l)
+        if any(k in dt for k in ("double", "real", "numeric", "integer")):
+            return f"(TIMESTAMP 'epoch' + {_colref(col_ts_l)} * INTERVAL '1 second')"
+        if "json" in dt:
+            # Use only when JSON is a number
+            return f"""(
+                CASE
+                  WHEN jsonb_typeof({_colref(col_ts_l)})='number'
+                    THEN (TIMESTAMP 'epoch' + ({_colref(col_ts_l)}::text)::double precision * INTERVAL '1 second')
+                  ELSE NULL::timestamptz
+                END
+            )"""
     if fb_l in cols:
         dt = cols[fb_l]
-        if "double" in dt or "real" in dt or "numeric" in dt or "integer" in dt:
-            return f"(TIMESTAMP 'epoch' + s.{fb_l} * INTERVAL '1 second')"
+        if any(k in dt for k in ("double", "real", "numeric", "integer")):
+            return f"(TIMESTAMP 'epoch' + {_colref(fb_l)} * INTERVAL '1 second')"
+        if "json" in dt:
+            return f"""(
+                CASE
+                  WHEN jsonb_typeof({_colref(fb_l)})='number'
+                    THEN (TIMESTAMP 'epoch' + ({_colref(fb_l)}::text)::double precision * INTERVAL '1 second')
+                  ELSE NULL::timestamptz
+                END
+            )"""
     return "NULL::timestamptz"
 
 def _jsonb_expr(cols: Dict[str, str], name: str) -> str:
     n = name.lower()
     if n in cols:
-        return f"s.{n}::jsonb"
+        return f"{_colref(n)}::jsonb"
     return "NULL::jsonb"
 
 def _num_expr(cols: Dict[str, str], name: str) -> str:
+    """Return numeric expression; if source is json/jsonb, extract number only; else NULL."""
     n = name.lower()
-    if n in cols:
-        return f"s.{n}"
-    return "NULL::double precision"
+    if n not in cols:
+        return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(
+            CASE
+              WHEN jsonb_typeof({_colref(n)})='number'
+                THEN ({_colref(n)}::text)::double precision
+              ELSE NULL::double precision
+            END
+        )"""
+    return _colref(n)
 
 def _int_expr(cols: Dict[str, str], name: str) -> str:
+    """Return integer expression; supports json number -> int."""
     n = name.lower()
-    if n in cols:
-        return f"s.{n}"
-    return "NULL::int"
+    if n not in cols:
+        return "NULL::int"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(
+            CASE
+              WHEN jsonb_typeof({_colref(n)})='number'
+                THEN ({_colref(n)}::text)::int
+              ELSE NULL::int
+            END
+        )"""
+    return _colref(n)
 
 def _bool_expr(cols: Dict[str, str], name: str) -> str:
     n = name.lower()
     if n in cols:
-        return f"s.{n}"
+        return _colref(n)
     return "NULL::boolean"
 
 def _text_expr(cols: Dict[str, str], name: str) -> str:
     n = name.lower()
     if n in cols:
-        return f"s.{n}"
+        return _colref(n)
     return "NULL::text"
 
 def ensure_schema_and_table(conn: Connection) -> None:
@@ -178,7 +231,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
     # rally handling: if JSON/JSONB -> rally=NULL::int, rally_json=raw; else rally=int and rally_json=NULL
     rally_is_json = "rally" in cols and ("json" in cols["rally"])
     rally_int_expr  = "NULL::int" if rally_is_json else _int_expr(cols, "rally")
-    rally_json_expr = "s.rally::jsonb" if rally_is_json else "NULL::jsonb"
+    rally_json_expr = f"{_colref('rally')}::jsonb" if rally_is_json else "NULL::jsonb"
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
