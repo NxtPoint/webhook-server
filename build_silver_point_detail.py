@@ -1,9 +1,10 @@
 # build_silver_point_detail.py
-# Phase 1 (FIELDS ONLY, task_id-only):
+# Phase 1 (FIELDS ONLY, task_id-only)
 # - Copy raw swing fields from Bronze into silver.point_detail
-# - NO business logic, NO bounce matching, NO sequencing
+# - NO business logic, NO sequencing, NO bounce matching
 # - Auto-detects Bronze source table (player_swing or swing) and each column's type
 # - Converts seconds->timestamptz when needed
+# - rally: if numeric -> INT; if JSON -> NULL (int) + keep raw in rally_json
 # - PK = (task_id, swing_id)
 
 from typing import Optional, List, Dict, Tuple
@@ -40,7 +41,11 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   ball_speed                DOUBLE PRECISION,
   ball_impact_type          TEXT,
   intercepting_player_id    TEXT,
+
+  -- rally handling: prefer integer; keep raw JSON separately if needed
   rally                     INTEGER,
+  rally_json                JSONB,
+
   ball_hit                  TIMESTAMPTZ,
   ball_hit_location         JSONB,
   ball_impact_location      JSONB,
@@ -106,18 +111,11 @@ def _bronze_source_table(conn: Connection) -> Tuple[str, str, Dict[str, str]]:
     raise RuntimeError("Neither bronze.player_swing nor bronze.swing exists")
 
 def _ts_expr(cols: Dict[str, str], col_ts: str, fallback_seconds: str) -> str:
-    """
-    Build a timestamptz expression:
-      - If col_ts exists and is timestamptz => use it
-      - If col_ts exists and is numeric (double/real) => epoch + seconds
-      - Else if fallback_seconds exists and is numeric => epoch + seconds
-      - Else NULL::timestamptz
-    """
     col_ts_l = col_ts.lower()
     fb_l = fallback_seconds.lower()
     if col_ts_l in cols:
         dt = cols[col_ts_l]
-        if "timestamp" in dt:  # timestamp with/without time zone
+        if "timestamp" in dt:
             return f"s.{col_ts_l}"
         if "double" in dt or "real" in dt or "numeric" in dt or "integer" in dt:
             return f"(TIMESTAMP 'epoch' + s.{col_ts_l} * INTERVAL '1 second')"
@@ -130,8 +128,6 @@ def _ts_expr(cols: Dict[str, str], col_ts: str, fallback_seconds: str) -> str:
 def _jsonb_expr(cols: Dict[str, str], name: str) -> str:
     n = name.lower()
     if n in cols:
-        dt = cols[n]
-        # Cast to jsonb uniformly; if already json/jsonb, ::jsonb is safe
         return f"s.{n}::jsonb"
     return "NULL::jsonb"
 
@@ -174,14 +170,16 @@ def insert_base(conn: Connection, task_id: str) -> int:
     schema, name, cols = _bronze_source_table(conn)
     source_ref = f"{schema}.{name} s"
 
-    # Build expressions per detected types/presence
     swing_id_expr = "s.id" if "id" in cols else "NULL::bigint"
+    start_ts_expr = _ts_expr(cols, "start_ts", "start")
+    end_ts_expr   = _ts_expr(cols, "end_ts",   "end")
+    ball_hit_expr = _ts_expr(cols, "ball_hit", "ball_hit_s")
 
-    start_ts_expr   = _ts_expr(cols, "start_ts", "start")
-    end_ts_expr     = _ts_expr(cols, "end_ts",   "end")
-    ball_hit_expr   = _ts_expr(cols, "ball_hit", "ball_hit_s")  # if seconds alt exists
+    # rally handling: if JSON/JSONB -> rally=NULL::int, rally_json=raw; else rally=int and rally_json=NULL
+    rally_is_json = "rally" in cols and ("json" in cols["rally"])
+    rally_int_expr  = "NULL::int" if rally_is_json else _int_expr(cols, "rally")
+    rally_json_expr = "s.rally::jsonb" if rally_is_json else "NULL::jsonb"
 
-    # Final INSERT ... SELECT with dynamic expressions
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id,
@@ -189,7 +187,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
       valid, serve, swing_type, volley, is_in_rally,
       confidence_swing_type, confidence, confidence_volley,
       ball_player_distance, ball_speed, ball_impact_type,
-      intercepting_player_id, rally, ball_hit,
+      intercepting_player_id, rally, rally_json, ball_hit,
       ball_hit_location, ball_impact_location, ball_trajectory, annotations,
       start, "end",
       bounce_id, bounce_ts, bounce_s, bounce_type, court_x, court_y,
@@ -216,7 +214,8 @@ def insert_base(conn: Connection, task_id: str) -> int:
       {_num_expr(cols, "ball_speed")},
       {_text_expr(cols, "ball_impact_type")},
       {_text_expr(cols, "intercepting_player_id")},
-      {_int_expr(cols, "rally")},
+      {rally_int_expr},
+      {rally_json_expr},
       {ball_hit_expr},
       {_jsonb_expr(cols, "ball_hit_location")},
       {_jsonb_expr(cols, "ball_impact_location")},
@@ -250,6 +249,7 @@ def insert_base(conn: Connection, task_id: str) -> int:
       ball_impact_type          = EXCLUDED.ball_impact_type,
       intercepting_player_id    = EXCLUDED.intercepting_player_id,
       rally                     = EXCLUDED.rally,
+      rally_json                = EXCLUDED.rally_json,
       ball_hit                  = EXCLUDED.ball_hit,
       ball_hit_location         = EXCLUDED.ball_hit_location,
       ball_impact_location      = EXCLUDED.ball_impact_location,
