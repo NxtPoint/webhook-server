@@ -1,32 +1,26 @@
 # build_silver_point_detail.py
-# Phase 1 (FIELDS ONLY): pull raw swing-level fields from Bronze for a given task_id.
-# - NO business logic: no bounce association, no timing windows, no sequencing.
-# - Leaves placeholders (bounce/serve/scoring) as NULL for Phase 2 to compute.
-# - Primary key: (task_id, swing_id)  -- task-scoped rows.
+# Phase 1 (FIELDS ONLY): copy raw swing fields from Bronze for a given task_id.
+# - No logic, no bounce matching, no sequencing.
+# - task_id is the ONLY key. PK = (task_id, swing_id).
 
 from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
-from db_init import engine  # reuse existing engine
+from db_init import engine
 
 SILVER_SCHEMA = "silver"
 TABLE = "point_detail"
 PK = "(task_id, swing_id)"
 
-DDL_CREATE_SCHEMA = f"""
-CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};
-"""
+DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
 
 DDL_CREATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
-  -- Identity (task-scoped)
   task_id                 UUID               NOT NULL,
   swing_id                BIGINT             NOT NULL,
 
-  -- Optional session-ish metadata (if present on dim_session for this task)
+  -- Optional metadata placeholders
   session_uid             TEXT,
-
-  -- Position in rally (only if Bronze provides on fact_swing; else stays NULL)
   rally_index             INTEGER,
 
   -- Who & when (timestamps)
@@ -40,13 +34,13 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
   end_s                   DOUBLE PRECISION,
   ball_hit_s              DOUBLE PRECISION,
 
-  -- Ball at hit (used later for serve/location etc.)
+  -- Ball at hit (raw)
   ball_hit_x              DOUBLE PRECISION,
   ball_hit_y              DOUBLE PRECISION,
   ball_speed              DOUBLE PRECISION,
   swing_type_raw          TEXT,
 
-  -- Placeholders for later logic (kept NULL in Phase 1)
+  -- Placeholders for Phase 2 (remain NULL here)
   bounce_id               BIGINT,
   bounce_ts               TIMESTAMPTZ,
   bounce_s                DOUBLE PRECISION,
@@ -74,13 +68,12 @@ CREATE TABLE IF NOT EXISTS {SILVER_SCHEMA}.{TABLE} (
 """
 
 DDL_INDEXES = [
-    f"CREATE INDEX IF NOT EXISTS ix_point_detail_task      ON {SILVER_SCHEMA}.{TABLE} (task_id);",
-    f"CREATE INDEX IF NOT EXISTS ix_point_detail_player    ON {SILVER_SCHEMA}.{TABLE} (task_id, player_id);",
-    f"CREATE INDEX IF NOT EXISTS ix_point_detail_time      ON {SILVER_SCHEMA}.{TABLE} (task_id, ball_hit_ts);",
+    f"CREATE INDEX IF NOT EXISTS ix_point_detail_task   ON {SILVER_SCHEMA}.{TABLE} (task_id);",
+    f"CREATE INDEX IF NOT EXISTS ix_point_detail_player ON {SILVER_SCHEMA}.{TABLE} (task_id, player_id);",
+    f"CREATE INDEX IF NOT EXISTS ix_point_detail_time   ON {SILVER_SCHEMA}.{TABLE} (task_id, ball_hit_ts);",
 ]
 
-# Phase 1 INSERT: strictly raw fields from Bronze.fact_swing (+ optional dim_session.session_uid)
-# No lateral joins, no time windows, no bounce association.
+# FIELDS ONLY: pull from bronze.swing (no joins; all placeholders stay NULL)
 INSERT_SELECT_BASE = f"""
 INSERT INTO {SILVER_SCHEMA}.{TABLE} (
   task_id, swing_id, session_uid, rally_index,
@@ -94,45 +87,33 @@ INSERT INTO {SILVER_SCHEMA}.{TABLE} (
   src_swing_meta, src_bounce_meta
 )
 SELECT
-  :task_id                  AS task_id,
-  fs.swing_id,
-  ds.session_uid,           -- may be NULL if not present for this task
-  fs.rally_index,           -- may be NULL if not present
-  fs.player_id,
-  fs.start_ts,
-  fs.end_ts,
-  fs.ball_hit_ts,
-  fs.start_s,
-  fs.end_s,
-  fs.ball_hit_s,
-  fs.ball_hit_x,
-  fs.ball_hit_y,
-  fs.ball_speed,
-  fs.swing_type            AS swing_type_raw,
+  :task_id                                      AS task_id,
+  s.swing_id,
+  NULL::text                                    AS session_uid,
+  s.rally_index,
+  s.player_id,
+  s.start_ts,
+  s.end_ts,
+  s.ball_hit_ts,
+  s.start_s,
+  s.end_s,
+  s.ball_hit_s,
+  s.ball_hit_x,
+  s.ball_hit_y,
+  s.ball_speed,
+  s.swing_type                                  AS swing_type_raw,
 
-  NULL::bigint    AS bounce_id,
-  NULL::timestamptz AS bounce_ts,
-  NULL::double precision AS bounce_s,
-  NULL::text      AS bounce_type_raw,
-  NULL::double precision AS bounce_x_center_m,
-  NULL::double precision AS bounce_y_center_m,
-  NULL::double precision AS bounce_y_norm_m,
+  NULL::bigint, NULL::timestamptz, NULL::double precision, NULL::text,
+  NULL::double precision, NULL::double precision, NULL::double precision,
 
-  fs.is_valid,             -- if Bronze populated it; else NULL
-  NULL::text      AS server_id,
-  NULL::text      AS serving_side_raw,
+  s.is_valid,
+  NULL::text, NULL::text,
 
-  NULL::int       AS shot_ix,
-  NULL::int       AS point_number,
-  NULL::int       AS game_number,
-  NULL::int       AS point_in_game,
+  NULL::int, NULL::int, NULL::int, NULL::int,
 
-  NULL::jsonb     AS src_swing_meta,
-  NULL::jsonb     AS src_bounce_meta
-FROM bronze.fact_swing fs
-LEFT JOIN bronze.dim_session ds
-  ON ds.task_id = fs.task_id
-WHERE fs.task_id = :task_id
+  NULL::jsonb, NULL::jsonb
+FROM bronze.swing s
+WHERE s.task_id = :task_id
 ON CONFLICT {PK} DO UPDATE SET
   session_uid       = EXCLUDED.session_uid,
   rally_index       = EXCLUDED.rally_index,
@@ -147,7 +128,6 @@ ON CONFLICT {PK} DO UPDATE SET
   ball_hit_y        = EXCLUDED.ball_hit_y,
   ball_speed        = EXCLUDED.ball_speed,
   swing_type_raw    = EXCLUDED.swing_type_raw,
-  -- bounce_* remain managed by Phase 2 (stay NULL here)
   is_valid          = EXCLUDED.is_valid,
   server_id         = EXCLUDED.server_id,
   serving_side_raw  = EXCLUDED.serving_side_raw,
@@ -164,24 +144,34 @@ def _exec(conn: Connection, sql: str, params: Optional[dict] = None) -> None:
 
 def ensure_schema_and_table(conn: Connection) -> None:
     _exec(conn, DDL_CREATE_SCHEMA)
+
+    # auto-heal: if table exists but missing task_id (or has legacy session_id), drop & recreate
+    tbl = conn.execute(text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema=:s AND table_name=:t
+    """), {"s": SILVER_SCHEMA, "t": TABLE}).fetchone()
+    if tbl:
+        cols = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema=:s AND table_name=:t
+        """), {"s": SILVER_SCHEMA, "t": TABLE}).scalars().all()
+        cols = {c.lower() for c in cols}
+        if "task_id" not in cols or "session_id" in cols:
+            _exec(conn, f"DROP TABLE {SILVER_SCHEMA}.{TABLE} CASCADE;")
+
     _exec(conn, DDL_CREATE_TABLE)
     for ddl in DDL_INDEXES:
         _exec(conn, ddl)
 
 def delete_for_task(conn: Connection, task_id: str) -> None:
-    _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id = :tid;", {"tid": task_id})
+    _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid;", {"tid": task_id})
 
 def insert_base(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(INSERT_SELECT_BASE), {"task_id": task_id})
     return res.rowcount if res.rowcount is not None else 0
 
 def build_point_detail(task_id: str, replace: bool = False) -> dict:
-    """
-    Phase 1 builder (FIELDS ONLY, task_id-only):
-      - Creates silver.point_detail and indexes if needed
-      - Optionally deletes existing rows for task_id
-      - Inserts raw swing-level fields from Bronze for task_id
-    """
     if not task_id:
         raise ValueError("task_id is required")
     with engine.begin() as conn:
@@ -191,13 +181,11 @@ def build_point_detail(task_id: str, replace: bool = False) -> dict:
         affected = insert_base(conn, task_id)
     return {"ok": True, "task_id": task_id, "replaced": replace, "rows_written": affected}
 
-# CLI:
-#   python build_silver_point_detail.py --task-id <uuid> [--replace]
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser(description="Build silver.point_detail (Phase 1 — fields only, task_id-only)")
-    p.add_argument("--task-id", required=True, help="Task UUID to build (required)")
-    p.add_argument("--replace", action="store_true", help="Delete existing rows for this task_id before insert")
+    p.add_argument("--task-id", required=True)
+    p.add_argument("--replace", action="store_true")
     args = p.parse_args()
     out = build_point_detail(task_id=args.task_id, replace=args.replace)
     print(out)
