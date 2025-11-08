@@ -102,26 +102,51 @@ def _colref(name: str) -> str:
     return 's."end"' if n == "end" else f"s.{n}"
 
 def _ts_expr(cols: Dict[str, str], ts_col: str, fb_seconds: str) -> str:
-    """Yield TIMESTAMPTZ from a ts column or from seconds fallback."""
+    """
+    Return TIMESTAMPTZ for a column that may be:
+      - a real timestamptz
+      - a numeric 'seconds since epoch'
+      - a JSON object with a numeric key 'timestamp'
+      - (fallback) another numeric seconds column name (fb_seconds)
+    """
     c, fb = ts_col.lower(), fb_seconds.lower()
+
+    def _json_obj_seconds(colref: str) -> str:
+        # prefer object['timestamp'] if present and numeric
+        return f"""(
+          CASE
+            WHEN jsonb_typeof({colref}::jsonb)='object'
+             AND ({colref}::jsonb ? 'timestamp')
+             AND jsonb_typeof(({colref}::jsonb)->'timestamp')='number'
+            THEN (TIMESTAMP 'epoch'
+                 + (({colref}::jsonb)->>'timestamp')::double precision * INTERVAL '1 second')
+            WHEN jsonb_typeof({colref}::jsonb)='number'
+            THEN (TIMESTAMP 'epoch' + ({colref}::text)::double precision * INTERVAL '1 second')
+            ELSE NULL::timestamptz
+          END)"""
+
     if c in cols:
         dt = cols[c]
-        if "timestamp" in dt:  return _colref(c)
-        if any(k in dt for k in ("double","real","numeric","integer")):
+        # already a timestamp
+        if "timestamp" in dt:
+            return _colref(c)
+        # numeric seconds
+        if any(k in dt for k in ("double", "real", "numeric", "integer")):
             return f"(TIMESTAMP 'epoch' + {_colref(c)} * INTERVAL '1 second')"
+        # json / jsonb: handle object{'timestamp': <seconds>} or bare number
         if "json" in dt:
-            return f"""(CASE WHEN jsonb_typeof({_colref(c)})='number'
-                       THEN (TIMESTAMP 'epoch' + ({_colref(c)}::text)::double precision * INTERVAL '1 second')
-                       ELSE NULL::timestamptz END)"""
+            return _json_obj_seconds(_colref(c))
+
+    # fallback seconds column
     if fb in cols:
         dt = cols[fb]
         if any(k in dt for k in ("double","real","numeric","integer")):
             return f"(TIMESTAMP 'epoch' + {_colref(fb)} * INTERVAL '1 second')"
         if "json" in dt:
-            return f"""(CASE WHEN jsonb_typeof({_colref(fb)})='number'
-                       THEN (TIMESTAMP 'epoch' + ({_colref(fb)}::text)::double precision * INTERVAL '1 second')
-                       ELSE NULL::timestamptz END)"""
+            return _json_obj_seconds(_colref(fb))
+
     return "NULL::timestamptz"
+
 
 def _jsonb(cols: Dict[str, str], name: str) -> str:
     return f"{_colref(name)}::jsonb" if name.lower() in cols else "NULL::jsonb"
