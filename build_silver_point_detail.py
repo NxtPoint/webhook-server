@@ -1,9 +1,22 @@
 # build_silver_point_detail.py
-# Unified runner for Silver point_detail — additive phases, no rewrites
-# Phase 1: import ONLY the Section 1 columns from bronze.player_swing (valid=TRUE)
-# Phases 2–5: schema added incrementally; loaders can be filled later.
+# Silver point_detail — additive, phase-by-phase builder (single entrypoint)
+# Phase 1: Bronze -> Silver (Section 1 only; valid=TRUE), including swing_id
+# Phase 2: (schema only for now)
+# Phase 3: (schema only for now)
+# Phase 4: (schema only for now)
+# Phase 5: (schema only for now)
+#
+# Design:
+# - Phases are additive. We NEVER drop prior columns.
+# - Each phase owns its columns and writes only those columns.
+# - Phase 1 loads rows for a given task_id from bronze.player_swing (or bronze.swing fallback).
+# - Orchestrator lets you run a single phase or the whole stack.
+#
+# Usage:
+#   python build_silver_point_detail.py --task-id <UUID> --replace --phase all
+#   python build_silver_point_detail.py --task-id <UUID> --replace --phase 1
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, OrderedDict as TOrderedDict
 from collections import OrderedDict
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -14,9 +27,10 @@ TABLE = "point_detail"
 
 # ------------------------------- Phase specs (schema only) -------------------------------
 
-# Phase 1 — Section 1 (exactly from your sheet)
-PHASE1_COLS = OrderedDict({
+# Phase 1 — Section 1 (exactly from your sheet; plus swing_id to satisfy NOT NULL in your DB)
+PHASE1_COLS: TOrderedDict[str, str] = OrderedDict({
     "task_id":              "uuid",
+    "swing_id":             "bigint",
     "created_at":           "timestamptz",
     "start_ts":             "timestamptz",
     "end_ts":               "timestamptz",
@@ -34,23 +48,23 @@ PHASE1_COLS = OrderedDict({
     "ball_hit_location":    "jsonb",
 })
 
-# Phase 2 — player info (additive columns; loader TBD)
-PHASE2_COLS = OrderedDict({
-    # fill as needed later, e.g. "player_hand": "text",
+# Phase 2 — player info (add schema columns here; loader to be added later)
+PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
+    # e.g. "player_handedness": "text",
 })
 
-# Phase 3 — bounce fields (additive columns; loader TBD)
-PHASE3_COLS = OrderedDict({
-    # e.g. "bounce_id": "bigint", "bounce_ts": "timestamptz", ...
+# Phase 3 — ball_bounce join (add schema columns here; loader to be added later)
+PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
+    # e.g. "bounce_id": "bigint", "bounce_ts": "timestamptz", "bounce_x_m": "double precision", "bounce_y_m": "double precision",
 })
 
-# Phase 4 — serve/point logic (derived; additive columns; updater TBD)
-PHASE4_COLS = OrderedDict({
-    # e.g. "server_id":"text","serving_side":"text","point_number":"integer","game_number":"integer",
+# Phase 4 — serve/point logic (derived; updater later)
+PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({
+    # e.g. "server_id":"text","serving_side":"text","point_number":"integer","game_number":"integer","point_in_game":"integer","shot_ix":"integer",
 })
 
-# Phase 5 — locations (derived; additive columns; updater TBD)
-PHASE5_COLS = OrderedDict({
+# Phase 5 — serve/rally locations (derived; updater later)
+PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({
     # e.g. "play_d":"text","serve_try_ix_in_point":"integer","first_rally_shot_ix":"integer",
 })
 
@@ -85,6 +99,7 @@ def _colref(name: str) -> str:
     return 's."end"' if n == "end" else f"s.{n}"
 
 def _ts_expr(cols: Dict[str, str], ts_col: str, fb_seconds: str) -> str:
+    """Yield TIMESTAMPTZ from a ts column or from seconds fallback."""
     c, fb = ts_col.lower(), fb_seconds.lower()
     if c in cols:
         dt = cols[c]
@@ -137,6 +152,14 @@ def _bool(cols: Dict[str, str], name: str) -> str:
 def _text(cols: Dict[str, str], name: str) -> str:
     return _colref(name) if name.lower() in cols else "NULL::text"
 
+def _swing_id_expr(cols: Dict[str, str]) -> str:
+    """Return an expression for swing_id from Bronze, raising if missing."""
+    if "id" in cols:
+        return _int(cols, "id")
+    if "swing_id" in cols:
+        return _int(cols, "swing_id")
+    raise RuntimeError("Bronze swing identifier not found (need column 'id' or 'swing_id').")
+
 # --------------------------------- schema ensure ---------------------------------
 
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
@@ -144,12 +167,14 @@ DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
 def ensure_table_exists(conn: Connection):
     _exec(conn, DDL_CREATE_SCHEMA)
     if not _table_exists(conn, SILVER_SCHEMA, TABLE):
-        # Create with phase 1 columns only
+        # Create with Phase 1 columns only (no NOT NULLs to keep ingestion flexible)
         cols_sql = ",\n  ".join([f"{k} {v}" for k, v in PHASE1_COLS.items()])
         _exec(conn, f"CREATE TABLE {SILVER_SCHEMA}.{TABLE} (\n  {cols_sql}\n);")
-        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task ON {SILVER_SCHEMA}.{TABLE}(task_id);")
-        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_start ON {SILVER_SCHEMA}.{TABLE}(start_ts);")
-        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_hit   ON {SILVER_SCHEMA}.{TABLE}(ball_hit);")
+        # Core indexes
+        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task       ON {SILVER_SCHEMA}.{TABLE}(task_id);")
+        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task_swing ON {SILVER_SCHEMA}.{TABLE}(task_id, swing_id);")
+        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_start      ON {SILVER_SCHEMA}.{TABLE}(start_ts);")
+        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_hit        ON {SILVER_SCHEMA}.{TABLE}(ball_hit);")
 
 def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
     existing = _columns_types(conn, SILVER_SCHEMA, TABLE)
@@ -160,21 +185,27 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 # --------------------------------- Phase 1 loader ---------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
+    """
+    Section 1 only: import *exact* fields from bronze.player_swing (or bronze.swing),
+    filter valid=TRUE, and populate swing_id.
+    """
     src, bcols = _bronze_src(conn)
 
     created_at = _ts_expr(bcols, "created_at", "created_at")
     start_ts   = _ts_expr(bcols, "start_ts", "start")
     end_ts     = _ts_expr(bcols, "end_ts",   "end")
     ball_hit   = _ts_expr(bcols, "ball_hit", "ball_hit_s")
+    swing_id   = _swing_id_expr(bcols)
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
-      task_id, created_at, start_ts, end_ts, player_id, valid, serve, swing_type,
+      task_id, swing_id, created_at, start_ts, end_ts, player_id, valid, serve, swing_type,
       volley, is_in_rally, ball_player_distance, ball_speed, ball_impact_type,
       rally, ball_hit, ball_hit_location
     )
     SELECT
       {_text(bcols, "task_id")}::uuid,
+      {swing_id},
       {created_at},
       {start_ts},
       {end_ts},
@@ -207,24 +238,31 @@ def phase5_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE5_COLS
 # --------------------------------- Orchestrator ---------------------------------
 
 def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dict:
+    """
+    Orchestrate the build. Always ensures schema for all phases up to `phase`.
+    Phase 1 loads rows (replace deletes rows for this task_id first).
+    Later phases currently only ensure columns (ready for their loaders).
+    """
     if not task_id:
         raise ValueError("task_id is required")
-    out: Dict = {"ok": True, "task_id": task_id}
+    out: Dict = {"ok": True, "task_id": task_id, "phase": phase}
 
     with engine.begin() as conn:
+        # Always have the table
         ensure_table_exists(conn)
-        # Always ensure schema up to selected phase (additive, no drops)
+        # Ensure schema up to selected phase (additive, no drops)
         ensure_phase_columns(conn, PHASE1_COLS)
         if phase in ("all","2","3","4","5"): phase2_add_schema(conn)
         if phase in ("all","3","4","5"):     phase3_add_schema(conn)
         if phase in ("all","4","5"):         phase4_add_schema(conn)
         if phase in ("all","5"):             phase5_add_schema(conn)
 
+        # Phase 1 load
         if phase in ("all","1"):
             if replace:
                 _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
             out["phase1_rows"] = phase1_load(conn, task_id)
-        # Stubs for later loaders:
+        # Stubs for next phases (fill in later with loaders/updaters)
         if phase in ("all","2"):
             out["phase2"] = "schema-ready"
         if phase in ("all","3"):
@@ -233,15 +271,16 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
             out["phase4"] = "schema-ready"
         if phase in ("all","5"):
             out["phase5"] = "schema-ready"
+
     return out
 
 # --------------------------------- CLI ---------------------------------
 
 if __name__ == "__main__":
     import argparse, json
-    p = argparse.ArgumentParser(description="Silver point_detail — additive phases runner")
-    p.add_argument("--task-id", required=True)
-    p.add_argument("--phase", choices=["1","2","3","4","5","all"], default="all")
-    p.add_argument("--replace", action="store_true")
+    p = argparse.ArgumentParser(description="Silver point_detail — additive phases, single entrypoint")
+    p.add_argument("--task-id", required=True, help="task UUID")
+    p.add_argument("--phase", choices=["1","2","3","4","5","all"], default="all", help="which phase(s) to run")
+    p.add_argument("--replace", action="store_true", help="delete existing rows for this task_id before Phase 1 load")
     args = p.parse_args()
     print(json.dumps(build_silver(task_id=args.task_id, phase=args.phase, replace=args.replace)))
