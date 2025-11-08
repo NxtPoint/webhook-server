@@ -524,24 +524,20 @@ WITH const AS (
     {SRV_BOX}::numeric  AS service_box_depth_m,
     {SERVE_EPS_M}::numeric AS serve_eps_m
 ),
+-- Only non-excluded rows
 base AS (
   SELECT
     pd.*,
     COALESCE(pd.ball_hit, pd.start_ts) AS ord_ts
   FROM {SILVER_SCHEMA}.{TABLE} pd
   WHERE pd.task_id = :task_id
-    AND COALESCE(pd.exclude, FALSE) = FALSE   -- ignore excluded rows
+    AND COALESCE(pd.exclude, FALSE) = FALSE
 ),
+-- Detect serves: bronze flag preferred; fallback to overhead-like inside serve band
 serve_candidates AS (
   SELECT
-    b.task_id, b.swing_id, b.player_id, b.ord_ts, b.ball_hit_x, b.ball_hit_y, b.swing_type, b.serve,
-    COALESCE(b.serve, FALSE) AS serve_flag_bronze,
-    (lower(b.swing_type) IN ('fh_overhead','fh-overhead','overhead','serve')) AS is_overhead_like,
-    CASE
-      WHEN b.ball_hit_y IS NULL THEN NULL
-      ELSE (b.ball_hit_y <= (SELECT serve_eps_m FROM const)
-            OR  b.ball_hit_y >= (SELECT court_l_m FROM const) - (SELECT serve_eps_m FROM const))
-    END AS inside_serve_band
+    b.task_id, b.swing_id, b.player_id, b.ord_ts,
+    b.ball_hit_x, b.ball_hit_y, b.swing_type, b.serve
   FROM base b
 ),
 serve_events AS (
@@ -551,10 +547,16 @@ serve_events AS (
     s.player_id AS server_id,
     s.ord_ts,
     s.ball_hit_x, s.ball_hit_y,
-    (s.serve_flag_bronze
-     OR (s.is_overhead_like AND COALESCE(s.inside_serve_band, FALSE))) AS is_serve
+    (COALESCE(s.serve, FALSE)
+     OR (lower(s.swing_type) IN ('fh_overhead','fh-overhead','overhead','serve')
+         AND s.ball_hit_y IS NOT NULL
+         AND (s.ball_hit_y <= (SELECT serve_eps_m FROM const)
+              OR s.ball_hit_y >= (SELECT court_l_m FROM const) - (SELECT serve_eps_m FROM const))
+     )
+    ) AS is_serve
   FROM serve_candidates s
 ),
+-- Assign serving side from actual serve contact x/y
 serve_centerline AS (
   SELECT
     se.task_id,
@@ -576,60 +578,84 @@ serve_sided AS (
     END AS serving_side
   FROM serve_events se
 ),
-serve_numbered AS (
+-- Only serve rows (ordered)
+serve_seq AS (
   SELECT
     ss.*,
-    LAG(ss.serving_side) OVER (PARTITION BY ss.task_id ORDER BY ss.ord_ts, ss.swing_id) AS prev_side,
-    LAG(ss.server_id)    OVER (PARTITION BY ss.task_id ORDER BY ss.ord_ts, ss.swing_id) AS prev_server
+    LAG(ss.server_id)    OVER (PARTITION BY ss.task_id ORDER BY ss.ord_ts, ss.swing_id) AS prev_server,
+    LAG(ss.serving_side) OVER (PARTITION BY ss.task_id, ss.server_id ORDER BY ss.ord_ts, ss.swing_id) AS prev_side_same_server
   FROM serve_sided ss
+  WHERE ss.is_serve
 ),
+-- First-serve of point:
+--   1) If server changed -> start new game & new point
+--   2) Else if same server but side changed (ad<->deuce) -> new point
+serve_points_only AS (
+  SELECT
+    s.task_id, s.swing_id, s.server_id, s.serving_side, s.ord_ts,
+    CASE
+      WHEN s.prev_server IS DISTINCT FROM s.server_id THEN TRUE
+      WHEN s.prev_side_same_server IS DISTINCT FROM s.serving_side THEN TRUE
+      ELSE FALSE
+    END AS is_point_start
+  FROM serve_seq s
+),
+-- Keep only first-serve events (point starts)
+point_starts AS (
+  SELECT *
+  FROM serve_points_only
+  WHERE is_point_start
+),
+-- Number points across the task by point-starts
+point_numbered AS (
+  SELECT
+    ps.*,
+    ROW_NUMBER() OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id) AS point_number,
+    -- Game bumps when server changes at a point start
+    (COALESCE(
+       SUM(CASE
+             WHEN ps.server_id IS DISTINCT FROM LAG(ps.server_id) OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id)
+             THEN 1 ELSE 0 END)
+       OVER (PARTITION BY ps.task_id ORDER BY ps.ord_ts, ps.swing_id
+             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0) + 1
+    ) AS game_number
+  FROM point_starts ps
+),
+-- For all serve events, attach their point_number (by the latest point-start <= serve time)
+serve_with_point AS (
+  SELECT
+    sv.task_id, sv.swing_id, sv.server_id, sv.serving_side, sv.ord_ts,
+    ps.point_number, ps.game_number
+  FROM serve_seq sv
+  LEFT JOIN LATERAL (
+    SELECT pn.*
+    FROM point_numbered pn
+    WHERE pn.task_id = sv.task_id
+      AND pn.ord_ts <= sv.ord_ts
+    ORDER BY pn.ord_ts DESC, pn.swing_id DESC
+    LIMIT 1
+  ) ps ON TRUE
+),
+-- Serve try index within each point (1 = first serve, 2 = second serve, ...; typically <=2)
+serve_try AS (
+  SELECT
+    swp.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY swp.task_id, swp.point_number
+      ORDER BY swp.ord_ts, swp.swing_id
+    ) AS serve_try_ix_in_point
+  FROM serve_with_point swp
+),
+-- point_in_game = local numbering inside each game
 points_games AS (
   SELECT
-    sn.*,
-
-    /* POINT NUMBER:
-       Increment on first serve, or when the same server flips side (ad<->deuce),
-       or when the server changes (new game).
-       Note: sn.* are SERVE rows only (we derived them from serve_sided).
-    */
-    SUM(
-      CASE
-        WHEN LAG(sn.ord_ts) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) IS NULL
-          THEN 1
-        WHEN sn.server_id IS DISTINCT FROM
-             LAG(sn.server_id) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id)
-          THEN 1
-        WHEN sn.serving_side IS DISTINCT FROM
-             LAG(sn.serving_side) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id)
-          THEN 1
-        ELSE 0
-      END
-    ) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS point_number,
-
-    /* GAME NUMBER:
-       Increment when the server changes.
-    */
-    SUM(
-      CASE
-        WHEN LAG(sn.server_id) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) IS NULL
-          THEN 1
-        WHEN sn.server_id IS DISTINCT FROM
-             LAG(sn.server_id) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id)
-          THEN 1
-        ELSE 0
-      END
-    ) OVER (PARTITION BY sn.task_id ORDER BY sn.ord_ts, sn.swing_id) AS game_number
-
-  FROM serve_numbered sn
-),
-point_index AS (
-  SELECT
-    pg.*,
-    pg.point_number
-      - MIN(pg.point_number) OVER (PARTITION BY pg.task_id, pg.game_number)
+    pn.*,
+    pn.point_number
+      - MIN(pn.point_number) OVER (PARTITION BY pn.task_id, pn.game_number)
       + 1 AS point_in_game
-  FROM points_games pg
+  FROM point_numbered pn
 ),
+-- Map each swing to its point/game context by the most recent point-start before it
 swing_in_point AS (
   SELECT
     b.task_id,
@@ -639,27 +665,31 @@ swing_in_point AS (
     b.swing_type,
     b.ball_hit_y,
     b.ord_ts,
-    pg.server_id,
-    pg.serving_side,
-    pg.point_number,
-    pg.game_number,
-    pg.point_in_game
+    ctx.server_id,
+    ctx.serving_side,
+    ctx.point_number,
+    ctx.game_number,
+    ctx.point_in_game
   FROM base b
   LEFT JOIN LATERAL (
-    SELECT pg.*
-    FROM point_index pg
+    SELECT
+      pg.task_id, pg.point_number, pg.game_number, pg.point_in_game,
+      pn.server_id, pn.serving_side, pn.ord_ts, pn.swing_id
+    FROM points_games pg
+    JOIN point_numbered pn
+      ON pn.task_id = pg.task_id AND pn.point_number = pg.point_number
     WHERE pg.task_id = b.task_id
-      AND pg.ord_ts <= b.ord_ts
-    ORDER BY pg.ord_ts DESC, pg.swing_id DESC
+      AND pn.ord_ts <= b.ord_ts
+    ORDER BY pn.ord_ts DESC, pn.swing_id DESC
     LIMIT 1
-  ) pg ON TRUE
+  ) ctx ON TRUE
 ),
+-- Shot index per point + serve detector
 swing_numbered AS (
   SELECT
     sip.*,
     ROW_NUMBER() OVER (PARTITION BY sip.task_id, sip.point_number
                        ORDER BY sip.ord_ts, sip.swing_id) AS shot_ix,
-    COUNT(*)    OVER (PARTITION BY sip.task_id, sip.point_number) AS last_shot_ix,
     (COALESCE(sip.serve, FALSE) OR
      (lower(sip.swing_type) IN ('fh_overhead','fh-overhead','overhead','serve')
       AND sip.ball_hit_y IS NOT NULL
@@ -669,17 +699,7 @@ swing_numbered AS (
     ) AS serve_d
   FROM swing_in_point sip
 ),
-serve_try AS (
-  SELECT
-    sn.*,
-    CASE WHEN sn.serve_d THEN
-      SUM(CASE WHEN sn.serve_d THEN 1 ELSE 0 END)
-        OVER (PARTITION BY sn.task_id, sn.point_number
-              ORDER BY sn.ord_ts, sn.swing_id
-              ROWS UNBOUNDED PRECEDING)
-    END AS serve_try_ix_in_point
-  FROM swing_numbered sn
-),
+-- Classify play role
 first_rally AS (
   SELECT
     st.task_id, st.point_number,
@@ -687,7 +707,7 @@ first_rally AS (
       WHERE NOT st.serve_d
         AND st.player_id IS DISTINCT FROM st.server_id
     ) AS first_rally_shot_ix
-  FROM serve_try st
+  FROM swing_numbered st
   GROUP BY st.task_id, st.point_number
 ),
 play_class AS (
@@ -704,7 +724,7 @@ play_class AS (
       ELSE CASE WHEN st.ball_hit_y < (SELECT mid_y_m FROM const) + (SELECT service_box_depth_m FROM const)
                 THEN 'net' ELSE 'baseline' END
     END AS play_d
-  FROM serve_try st
+  FROM swing_numbered st
   LEFT JOIN first_rally fr
     ON fr.task_id = st.task_id AND fr.point_number = st.point_number
 )
@@ -712,7 +732,15 @@ SELECT
   p.task_id, p.swing_id,
   p.serve_d, p.serving_side, p.server_id,
   p.point_number, p.game_number, p.point_in_game,
-  p.shot_ix, p.serve_try_ix_in_point, p.first_rally_shot_ix,
+  p.shot_ix,
+  -- Join in serve_try_ix_in_point from serve_try (NULL for non-serve swings)
+  (SELECT st.serve_try_ix_in_point
+     FROM serve_try st
+     WHERE st.task_id = p.task_id
+       AND st.swing_id = p.swing_id) AS serve_try_ix_in_point,
+  (SELECT fr.first_rally_shot_ix
+     FROM first_rally fr
+     WHERE fr.task_id = p.task_id AND fr.point_number = p.point_number) AS first_rally_shot_ix,
   p.play_d
 FROM play_class p
 """
