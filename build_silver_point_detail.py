@@ -614,7 +614,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.swing_id = s.swing_id;
     """
-    # Pass B: within each rally, compute the initial-side serve block and assign try_ix/DF/winner
+
+    # Pass B: compute try index / double fault / service winner for rows already marked serve_d=TRUE
     sql_b = f"""
     WITH base AS (
       SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s, p.serve_side_d
@@ -707,10 +708,10 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.swing_id = r.swing_id;
     """
-    with conn.begin():
-        conn.execute(text(sql_a), {"tid": task_id})
-        res = conn.execute(text(sql_b), {"tid": task_id})
-        return res.rowcount or 0
+
+    conn.execute(text(sql_a), {"tid": task_id})
+    res = conn.execute(text(sql_b), {"tid": task_id})
+    return res.rowcount or 0
 
 # --------------------------------- Phase 2–5 (schema only now) ---------------------------------
 
