@@ -128,57 +128,15 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 
 # ------------------------------- PHASE 1 — loader (pure 1:1) -------------------------------
 
+# ---------- PHASE 1 (pure 1:1 from bronze.player_swing; safe JSON extraction) ----------
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
-    PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
-    - Supports BOTH schemas:
-        • ball_hit_location_x / ball_hit_location_y (numeric columns), OR
-        • ball_hit_location (JSON/JSONB array [x, y])
-    - Copies bronze.id -> silver.swing_id
-    - Reads ball_hit_s from ball_hit->'timestamp' if present, else NULL
+    PHASE 1 — Exact copy from bronze.player_swing (valid=TRUE).
+    Notes:
+      - ball_hit_location is a JSON array [x, y] → extract with ->> 0/1 then cast
+      - ball_hit is a JSON object with "timestamp" (number) → extract with ->> 'timestamp' then cast
+      - Nothing else is derived. swing_id = bronze.id (verbatim)
     """
-    bcols = _columns_types(conn, "bronze", "player_swing")
-    has   = lambda c: c in bcols
-
-    # swing_id: exact copy from bronze.id (your canonical)
-    swing_id_expr = "s.id::bigint"
-
-    # ball_hit_x
-    if has("ball_hit_location_x") and "json" not in bcols["ball_hit_location_x"]:
-        bhx = "s.ball_hit_location_x::double precision"
-    elif has("ball_hit_location"):
-        bhx = """
-        CASE
-          WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array'
-               AND jsonb_array_length(s.ball_hit_location::jsonb) > 0
-          THEN (s.ball_hit_location::jsonb->>0)::double precision
-          ELSE NULL::double precision
-        END
-        """
-    else:
-        bhx = "NULL::double precision"
-
-    # ball_hit_y
-    if has("ball_hit_location_y") and "json" not in bcols["ball_hit_location_y"]:
-        bhy = "s.ball_hit_location_y::double precision"
-    elif has("ball_hit_location"):
-        bhy = """
-        CASE
-          WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array'
-               AND jsonb_array_length(s.ball_hit_location::jsonb) > 1
-          THEN (s.ball_hit_location::jsonb->>1)::double precision
-          ELSE NULL::double precision
-        END
-        """
-    else:
-        bhy = "NULL::double precision"
-
-    # ball_hit_s from ball_hit JSON -> 'timestamp' (fallback NULL)
-    if has("ball_hit"):
-        ball_hit_s = "(s.ball_hit->>'timestamp')::double precision"
-    else:
-        ball_hit_s = "NULL::double precision"
-
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, player_id,
@@ -188,23 +146,54 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       start_s, end_s, ball_hit_s
     )
     SELECT
-      s.task_id::uuid                          AS task_id,
-      {swing_id_expr}                          AS swing_id,
-      s.player_id                              AS player_id,
-      s.valid                                  AS valid,
-      s.serve                                  AS serve,
-      s.swing_type                             AS swing_type,
-      s.volley                                 AS volley,
-      s.is_in_rally                            AS is_in_rally,
-      s.ball_player_distance::double precision AS ball_player_distance,
-      s.ball_speed::double precision           AS ball_speed,
-      NULL::text                               AS ball_impact_type,
-      s.rally::int                             AS rally,
-      {bhx}                                    AS ball_hit_x,
-      {bhy}                                    AS ball_hit_y,
-      s.start_ts::double precision             AS start_s,
-      s.end_ts::double precision               AS end_s,
-      {ball_hit_s}                             AS ball_hit_s
+      s.task_id::uuid                                        AS task_id,
+      s.id::bigint                                           AS swing_id,         -- exact copy
+      s.player_id                                            AS player_id,
+      s.valid                                                AS valid,
+      s.serve                                                AS serve,
+      s.swing_type                                           AS swing_type,
+      s.volley                                               AS volley,
+      s.is_in_rally                                          AS is_in_rally,
+      s.ball_player_distance::double precision               AS ball_player_distance,
+      s.ball_speed::double precision                         AS ball_speed,
+      NULL::text                                             AS ball_impact_type,
+      s.rally::int                                           AS rally,
+
+      /* ball_hit_x */
+      COALESCE(
+        NULLIF(s.ball_hit_location_x::text, '')::double precision,
+        CASE
+          WHEN s.ball_hit_location IS NOT NULL
+           AND jsonb_typeof(s.ball_hit_location::jsonb) = 'array'
+           AND jsonb_array_length(s.ball_hit_location::jsonb) > 0
+          THEN (s.ball_hit_location::jsonb ->> 0)::double precision
+          ELSE NULL
+        END
+      ) AS ball_hit_x,
+
+      /* ball_hit_y */
+      COALESCE(
+        NULLIF(s.ball_hit_location_y::text, '')::double precision,
+        CASE
+          WHEN s.ball_hit_location IS NOT NULL
+           AND jsonb_typeof(s.ball_hit_location::jsonb) = 'array'
+           AND jsonb_array_length(s.ball_hit_location::jsonb) > 1
+          THEN (s.ball_hit_location::jsonb ->> 1)::double precision
+          ELSE NULL
+        END
+      ) AS ball_hit_y,
+
+      /* seconds fields */
+      s.start_ts::double precision                           AS start_s,
+      s.end_ts::double precision                             AS end_s,
+      CASE
+        WHEN s.ball_hit IS NOT NULL
+         AND jsonb_typeof(s.ball_hit::jsonb) = 'object'
+         AND (s.ball_hit::jsonb ? 'timestamp')
+         AND jsonb_typeof(s.ball_hit::jsonb->'timestamp') = 'number'
+        THEN (s.ball_hit::jsonb ->> 'timestamp')::double precision
+        ELSE NULL::double precision
+      END                                                    AS ball_hit_s
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) IS TRUE;
