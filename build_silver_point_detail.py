@@ -244,27 +244,95 @@ def _bounce_time_expr(bcols: Dict[str, str]) -> str:
     return "NULL::double precision"
 
 def _bounce_x_expr(bcols: Dict[str, str]) -> str:
-    # Prefer explicit court-space X first
+    """
+    Returns a COALESCE(...) string that tries multiple sources for bounce X:
+      1) direct numeric columns: court_x, x, bounce_x, x_center(_m), x_m, x_pos
+      2) array columns: court_pos[0], location[0], pos[0]
+      3) JSON object columns ('data' or 'bounce'): court_x (number) or court_pos[0]
+    """
+    exprs = []
+
+    # 1) Direct numeric columns
     for cand in ("court_x", "x", "bounce_x", "x_center", "x_center_m", "x_m", "x_pos"):
         if cand in bcols and "json" not in bcols[cand]:
-            return _num_b(bcols, cand)
-    # Array fields
+            exprs.append(_num_b(bcols, cand))
+
+    # 2) Arrays stored as columns
     for arr in ("court_pos", "location", "pos"):
         if arr in bcols:
-            return _xy_from_json_array_b(_colref_b(arr), 0)
-    return "NULL::double precision"
+            exprs.append(_xy_from_json_array_b(_colref_b(arr), 0))
+
+    # 3) JSON object columns (common: 'data', sometimes 'bounce')
+    for jcol in ("data", "bounce"):
+        if jcol in bcols and "json" in bcols[jcol]:
+            # court_x as number
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_x')='number'
+                 THEN ({_colref_b(jcol)}::jsonb->>'court_x')::double precision
+                 ELSE NULL::double precision
+               END)""".strip())
+            # court_pos array [x,y]
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_pos')='array'
+                      AND jsonb_array_length({_colref_b(jcol)}::jsonb->'court_pos')>0
+                 THEN (({_colref_b(jcol)}::jsonb->'court_pos')->>0)::double precision
+                 ELSE NULL::double precision
+               END)""".strip())
+
+    if not exprs:
+        return "NULL::double precision"
+
+    return "COALESCE(" + ", ".join(exprs) + ", NULL::double precision)"
+
 
 def _bounce_y_expr(bcols: Dict[str, str]) -> str:
-    # Prefer explicit court-space Y first
+    """
+    Returns a COALESCE(...) string that tries multiple sources for bounce Y:
+      1) direct numeric columns: court_y, y, bounce_y, y_center(_m), y_m, y_pos
+      2) array columns: court_pos[1], location[1], pos[1]
+      3) JSON object columns ('data' or 'bounce'): court_y (number) or court_pos[1]
+    """
+    exprs = []
+
+    # 1) Direct numeric columns
     for cand in ("court_y", "y", "bounce_y", "y_center", "y_center_m", "y_m", "y_pos"):
         if cand in bcols and "json" not in bcols[cand]:
-            return _num_b(bcols, cand)
-    # Array fields
+            exprs.append(_num_b(bcols, cand))
+
+    # 2) Arrays stored as columns
     for arr in ("court_pos", "location", "pos"):
         if arr in bcols:
-            return _xy_from_json_array_b(_colref_b(arr), 1)
-    return "NULL::double precision"
+            exprs.append(_xy_from_json_array_b(_colref_b(arr), 1))
 
+    # 3) JSON object columns (common: 'data', sometimes 'bounce')
+    for jcol in ("data", "bounce"):
+        if jcol in bcols and "json" in bcols[jcol]:
+            # court_y as number
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_y')='number'
+                 THEN ({_colref_b(jcol)}::jsonb->>'court_y')::double precision
+                 ELSE NULL::double precision
+               END)""".strip())
+            # court_pos array [x,y]
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_pos')='array'
+                      AND jsonb_array_length({_colref_b(jcol)}::jsonb->'court_pos')>1
+                 THEN (({_colref_b(jcol)}::jsonb->'court_pos')->>1)::double precision
+                 ELSE NULL::double precision
+               END)""".strip())
+
+    if not exprs:
+        return "NULL::double precision"
+
+    return "COALESCE(" + ", ".join(exprs) + ", NULL::double precision)"
 
 def _bounce_type_expr(bcols: Dict[str, str]) -> str:
     for cand in ("bounce_type", "type"):
