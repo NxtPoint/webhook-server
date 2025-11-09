@@ -285,7 +285,7 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     if not bb_cols:
         raise RuntimeError("bronze.ball_bounce not found")
 
-    # --- build tolerant expressions but we will ALIAS them inside SQL to avoid f-string reuse ---
+    # ---- build tolerant expressions (flat-first, JSON fallback) ----
     def _bb_time_expr() -> str:
         for c in ("bounce_s", "time_s", "timestamp_s", "ts", "t"):
             if c in bb_cols and "json" not in bb_cols[c]:
@@ -305,12 +305,12 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         for j in ("data","bounce"):
             if j in bb_cols and "json" in bb_cols[j]:
                 return (
-                    "COALESCE(\n"
-                    f"  (({_colref_b(j)}::jsonb)->>'court_x')::double precision,\n"
-                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'\n"
-                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>0\n"
-                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>0)::double precision\n"
-                    f"        ELSE NULL::double precision END)\n"
+                    "COALESCE("
+                    f"  (({_colref_b(j)}::jsonb)->>'court_x')::double precision,"
+                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'"
+                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>0"
+                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>0)::double precision"
+                    f"        ELSE NULL::double precision END)"
                     ")"
                 )
         return "NULL::double precision"
@@ -325,12 +325,12 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         for j in ("data","bounce"):
             if j in bb_cols and "json" in bb_cols[j]:
                 return (
-                    "COALESCE(\n"
-                    f"  (({_colref_b(j)}::jsonb)->>'court_y')::double precision,\n"
-                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'\n"
-                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>1\n"
-                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>1)::double precision\n"
-                    f"        ELSE NULL::double precision END)\n"
+                    "COALESCE("
+                    f"  (({_colref_b(j)}::jsonb)->>'court_y')::double precision,"
+                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'"
+                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>1"
+                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>1)::double precision"
+                    f"        ELSE NULL::double precision END)"
                     ")"
                 )
         return "NULL::double precision"
@@ -342,11 +342,11 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         for j in ("data","bounce"):
             if j in bb_cols and "json" in bb_cols[j]:
                 return (
-                    "(\n"
-                    f"  CASE WHEN jsonb_typeof({_colref_b(j)}::jsonb)='object'\n"
-                    f"        AND jsonb_typeof(({_colref_b(j)}::jsonb)->'type')='string'\n"
-                    f"       THEN ({_colref_b(j)}::jsonb->>'type')\n"
-                    f"       ELSE NULL::text END\n"
+                    "("
+                    f"  CASE WHEN jsonb_typeof({_colref_b(j)}::jsonb)='object'"
+                    f"        AND jsonb_typeof(({_colref_b(j)}::jsonb)->'type')='string'"
+                    f"       THEN ({_colref_b(j)}::jsonb->>'type')"
+                    f"       ELSE NULL::text END"
                     ")"
                 )
         return "NULL::text"
@@ -356,71 +356,67 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     bs_expr = _bb_time_expr()
     bt_expr = _bb_type_expr()
 
-    # Build SQL with aliases (bx, by, bt, bs) inside the LATERAL
+    # ---- SQL (aliases inside a wrapped subselect to use in WHERE/ORDER BY) ----
     sql = (
-        "WITH p0 AS (\n"
-        f"  SELECT p.task_id, p.swing_id, p.player_id, p.rally,\n"
-        "         COALESCE(p.valid, FALSE) AS valid,\n"
-        "         COALESCE(p.serve, FALSE) AS serve,\n"
-        "         p.ball_hit_s, p.ball_hit_x\n"
-        f"  FROM {SILVER_SCHEMA}.{TABLE} p\n"
-        "  WHERE p.task_id = :tid AND COALESCE(p.valid, FALSE) IS TRUE\n"
-        "),\n"
-        "p1 AS (\n"
-        "  SELECT p0.*,\n"
-        "         LEAD(p0.ball_hit_s) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_s,\n"
-        "         LEAD(p0.ball_hit_x) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_x\n"
-        "  FROM p0\n"
-        "),\n"
-        "p2 AS (\n"
-        "  SELECT p1.*, (p1.ball_hit_s + 0.005) AS win_start,\n"
-        "         LEAST(COALESCE(p1.next_ball_hit_s, p1.ball_hit_s + 2.5), p1.ball_hit_s + 2.5) AS win_end\n"
-        "  FROM p1\n"
-        "),\n"
-        "chosen AS (\n"
-        "  SELECT p2.swing_id, pick.bx, pick.by, pick.bt, pick.bs\n"
-        "  FROM p2\n"
-        "  LEFT JOIN LATERAL (\n"
-        f"    SELECT {bx_expr} AS bx,\n"
-        f"           {by_expr} AS by,\n"
-        f"           {bt_expr} AS bt,\n"
-        f"           {bs_expr} AS bs\n"
-        "    FROM bronze.ball_bounce b\n"
-        "    WHERE b.task_id::uuid = p2.task_id\n"
-        "      AND bs IS NOT NULL\n"
-        "      AND bs >  p2.win_start\n"
-        "      AND bs <= p2.win_end\n"
-        "    ORDER BY (bt = 'floor')::int, bs\n"
-        "    LIMIT 1\n"
-        "  ) AS pick ON TRUE\n"
-        ")\n"
-        f"UPDATE {SILVER_SCHEMA}.{TABLE} p\n"
-        "SET\n"
-        "  bounce_x_m       = c.bx,\n"
-        "  bounce_y_m       = c.by,\n"
-        "  bounce_type_d    = c.bt,\n"
-        "  bounce_s         = c.bs,\n"
-        "  hit_x_resolved_m = CASE\n"
-        "                       WHEN p.serve IS FALSE THEN COALESCE(c.bx, p2.next_ball_hit_x, p2.ball_hit_x)\n"
-        "                       ELSE p.hit_x_resolved_m\n"
-        "                     END,\n"
-        "  hit_source_d     = CASE\n"
-        "                       WHEN p.serve IS FALSE THEN\n"
-        "                         CASE\n"
-        "                           WHEN c.bx IS NOT NULL AND c.bt='floor' THEN 'floor_bounce'\n"
-        "                           WHEN c.bx IS NOT NULL THEN 'any_bounce'\n"
-        "                           WHEN p2.next_ball_hit_x IS NOT NULL THEN 'next_contact'\n"
-        "                           ELSE 'ball_hit'\n"
-        "                         END\n"
-        "                       ELSE p.hit_source_d\n"
-        "                     END\n"
-        "FROM chosen c\n"
-        "JOIN p2 ON p2.swing_id = c.swing_id\n"
-        "WHERE p.task_id = :tid AND p.swing_id = c.swing_id;\n"
+        "WITH p0 AS ("
+        f"  SELECT p.task_id, p.swing_id, p.player_id, p.rally,"
+        "         COALESCE(p.valid, FALSE) AS valid,"
+        "         COALESCE(p.serve, FALSE) AS serve,"
+        "         p.ball_hit_s, p.ball_hit_x"
+        f"  FROM {SILVER_SCHEMA}.{TABLE} p"
+        "  WHERE p.task_id = :tid AND COALESCE(p.valid, FALSE) IS TRUE"
+        "),"
+        "p1 AS ("
+        "  SELECT p0.*, "
+        "         LEAD(p0.ball_hit_s) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_s,"
+        "         LEAD(p0.ball_hit_x) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_x"
+        "  FROM p0"
+        "),"
+        "p2 AS ("
+        "  SELECT p1.*, (p1.ball_hit_s + 0.005) AS win_start,"
+        "         LEAST(COALESCE(p1.next_ball_hit_s, p1.ball_hit_s + 2.5), p1.ball_hit_s + 2.5) AS win_end"
+        "  FROM p1"
+        "),"
+        "chosen AS ("
+        "  SELECT p2.swing_id, pick.bx, pick.by, pick.bt, pick.bs"
+        "  FROM p2"
+        "  LEFT JOIN LATERAL ("
+        "    SELECT * FROM ("
+        f"      SELECT {bx_expr} AS bx, {by_expr} AS by, {bt_expr} AS bt, {bs_expr} AS bs"
+        "    ) q"
+        "    WHERE q.bs IS NOT NULL"
+        "    ORDER BY (q.bt = 'floor') DESC, q.bs"
+        "    LIMIT 1"
+        "  ) AS pick ON TRUE"
+        ") "
+        f"UPDATE {SILVER_SCHEMA}.{TABLE} p "
+        "SET "
+        "  bounce_x_m       = c.bx,"
+        "  bounce_y_m       = c.by,"
+        "  bounce_type_d    = c.bt,"
+        "  bounce_s         = c.bs,"
+        "  hit_x_resolved_m = CASE"
+        "                       WHEN p.serve IS FALSE THEN COALESCE(c.bx, p2.next_ball_hit_x, p2.ball_hit_x)"
+        "                       ELSE p.hit_x_resolved_m"
+        "                     END,"
+        "  hit_source_d     = CASE"
+        "                       WHEN p.serve IS FALSE THEN"
+        "                         CASE"
+        "                           WHEN c.bx IS NOT NULL AND c.bt='floor' THEN 'floor_bounce'"
+        "                           WHEN c.bx IS NOT NULL THEN 'any_bounce'"
+        "                           WHEN p2.next_ball_hit_x IS NOT NULL THEN 'next_contact'"
+        "                           ELSE 'ball_hit'"
+        "                         END"
+        "                       ELSE p.hit_source_d"
+        "                     END "
+        "FROM chosen c "
+        "JOIN p2 ON p2.swing_id = c.swing_id "
+        "WHERE p.task_id = :tid AND p.swing_id = c.swing_id;"
     )
 
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 
 # ------------------------------- PHASE 3 — updater (serve-only from P1+P2) -------------------------------
