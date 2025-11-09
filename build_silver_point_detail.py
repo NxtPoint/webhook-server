@@ -52,12 +52,13 @@ PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
 
 # Phase 3 — serve-only (derived detector, side, try index, DF, service winner)
 PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
-    "serve_d":                 "boolean",          # our detector
-    "server_id":               "text",             # player_id of server
-    "serve_side_d":            "text",             # 'deuce' | 'ad'
-    "serve_try_ix_in_point":   "integer",          # 1 | 2 | NULL (DF uses flag below)
-    "double_fault_d":          "boolean",          # TRUE on last serve in side-seq when >2 and no side flip
-    "service_winner_d":        "boolean"           # TRUE if decisive serve (1/2) and no opponent swing after
+    "serve_d":                 "boolean",
+    "server_id":               "text",
+    "serve_side_d":            "text",
+    "serve_try_ix_in_point":   "integer",
+    "double_fault_d":          "boolean",
+    "service_winner_d":        "boolean",
+    "server_end_d":            "text"      # 'near' | 'far' (serve contact end)
 })
 
 
@@ -721,9 +722,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       serve_d               = TRUE,
       server_id             = f.player_id,
       serve_side_d          = f.serve_side_d,
+      server_end_d          = CASE
+                                WHEN p.ball_hit_y >= 1.0 THEN 'far'
+                                WHEN p.ball_hit_y <= -1.0 THEN 'near'
+                                ELSE NULL
+                              END,
       serve_try_ix_in_point = f.serve_try_ix_in_point,
       double_fault_d        = f.double_fault_d,
       service_winner_d      = f.service_winner_d
+
     FROM final f
     WHERE p.task_id = :tid
       AND p.swing_id= f.swing_id;  -- <-- swing_id match only (drop rally match)
