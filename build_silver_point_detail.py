@@ -113,12 +113,11 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
     Uses bronze.id as swing_id.
     Supports either:
-      - ball_hit_location_x / ball_hit_location_y  (preferred if present), or
-      - ball_hit_location (array/json)             (fallback).
+      - ball_hit_location_x / ball_hit_location_y, or
+      - ball_hit_location (array/json) as fallback.
     """
     bcols = _columns_types(conn, "bronze", "player_swing")
 
-    # Hard requirements that must exist
     must_have = {
         "task_id","start_ts","end_ts","player_id","valid","serve","swing_type","volley",
         "is_in_rally","ball_player_distance","ball_speed","rally","ball_hit","id"
@@ -127,12 +126,11 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     if missing:
         raise RuntimeError(f"bronze.player_swing missing columns: {missing}")
 
-    # X/Y expressions – support either split columns or an array/json column
+    # X/Y expressions: split columns first, else array/json fallback
     if "ball_hit_location_x" in bcols and "ball_hit_location_y" in bcols:
         bhx_expr = "s.ball_hit_location_x::double precision"
         bhy_expr = "s.ball_hit_location_y::double precision"
     elif "ball_hit_location" in bcols:
-        # Parse array/json: [x, y]
         bhx_expr = """
           CASE
             WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array' AND jsonb_array_length(s.ball_hit_location::jsonb)>0
@@ -154,6 +152,18 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     else:
         raise RuntimeError("bronze.player_swing missing ball_hit_location[_x/_y] columns")
 
+    # SAFE rally cast: only cast to int if the text looks like an integer
+    rally_expr = "CASE WHEN (s.rally)::text ~ '^-?\\d+$' THEN (s.rally)::int ELSE NULL::int END"
+
+    # ball_hit_s: prefer JSON object with 'timestamp', else try numeric/text
+    ball_hit_s_expr = """
+      COALESCE(
+        (CASE WHEN jsonb_typeof(s.ball_hit::jsonb)='object' AND (s.ball_hit::jsonb ? 'timestamp')
+              THEN (s.ball_hit::jsonb->>'timestamp')::double precision END),
+        NULLIF(s.ball_hit::text, '')::double precision
+      )
+    """.strip()
+
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, player_id,
@@ -164,7 +174,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     )
     SELECT
       s.task_id::uuid                         AS task_id,
-      s.id                                    AS swing_id,           -- exact bronze id
+      s.id                                    AS swing_id,           -- bronze id (exact)
       s.player_id                             AS player_id,
       s.valid                                 AS valid,
       s.serve                                 AS serve,
@@ -173,19 +183,20 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       s.is_in_rally                           AS is_in_rally,
       s.ball_player_distance::double precision AS ball_player_distance,
       s.ball_speed::double precision           AS ball_speed,
-      NULL::text                              AS ball_impact_type,   -- not present in bronze.player_swing
-      s.rally::int                            AS rally,
+      NULL::text                              AS ball_impact_type,   -- not in player_swing
+      {rally_expr}                            AS rally,
       {bhx_expr}                              AS ball_hit_x,
       {bhy_expr}                              AS ball_hit_y,
       s.start_ts::double precision            AS start_s,
       s.end_ts::double precision              AS end_s,
-      (s.ball_hit->>'timestamp')::double precision AS ball_hit_s
+      {ball_hit_s_expr}                       AS ball_hit_s
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) IS TRUE;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # --------------------------------- Phase 2 helpers (ball_bounce parsing) ---------------------------------
 
