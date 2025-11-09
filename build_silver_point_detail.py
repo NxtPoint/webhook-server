@@ -300,12 +300,23 @@ def phase1_load(conn: Connection, task_id: str) -> int:
 # - Phase 2 is additive and only updates the new Phase-2 columns for the chosen task_id.
 # ------------------------------------------------------------------------------------------
 def phase2_update(conn: Connection, task_id: str) -> int:
-    bb_src, bcols = _bb_src(conn)
-    bounce_s   = _bounce_time_expr(bcols)
-    bounce_x   = _bounce_x_expr(bcols)
-    bounce_typ = _bounce_type_expr(bcols)
+    """
+    Phase 2 — classic placement logic (time-windowed bounce, no task_id dependency on ball_bounce)
 
-    # Build an UPDATE using CTEs: compute next contacts & windowed bounce per swing
+    For each NON-SERVE swing in silver.point_detail (valid=TRUE):
+      1) Window: [ball_hit_s + 0.005,  min(next_ball_hit_s, ball_hit_s + 2.5)]
+      2) Pick FIRST bounce in that window, preferring floor (ORDER BY floor first, then time)
+      3) Resolve X (non-terminal):
+           floor_bounce_x -> any_bounce_x -> next_contact_x -> own ball_hit_x
+         (terminal handling remains the same in practice since we still take earliest window bounce;
+          if none exists, we fall back to next_contact/own hit.)
+      4) hit_source_d ∈ { floor_bounce | any_bounce | next_contact | ball_hit }
+    """
+    bb_src, bcols = _bb_src(conn)
+    bounce_s   = _bounce_time_expr(bcols)   # e.g., numeric seconds from bounce row
+    bounce_x   = _bounce_x_expr(bcols)      # numeric x
+    bounce_typ = _bounce_type_expr(bcols)   # text, expects 'floor' when available
+
     sql = f"""
     WITH p0 AS (
       SELECT
@@ -327,61 +338,48 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     p2 AS (
       SELECT
         p1.*,
-        -- Window bounds
         (p1.ball_hit_s + 0.005) AS win_start,
         LEAST(COALESCE(p1.next_ball_hit_s, p1.ball_hit_s + 2.5), p1.ball_hit_s + 2.5) AS win_end
       FROM p1
     ),
-    bb AS (
-      SELECT
-        {_text(bcols,'task_id')}::uuid AS task_id,
-        {bounce_s} AS bounce_s,
-        {bounce_x} AS bounce_x,
-        {bounce_typ} AS bounce_type
-      FROM {bb_src}
-      WHERE {_text(bcols,'task_id')}::uuid = :tid
-    ),
     chosen AS (
-      -- For each swing, pick the first bounce in the window, preferring floor
       SELECT
         p2.swing_id,
-        b.bounce_x,
-        b.bounce_type,
-        ROW_NUMBER() OVER (
-          PARTITION BY p2.swing_id
-          ORDER BY
-            CASE WHEN b.bounce_type = 'floor' THEN 0 ELSE 1 END,
-            b.bounce_s
-        ) AS rn
+        pick.bounce_x,
+        pick.bounce_type
       FROM p2
-      LEFT JOIN bb b
-        ON b.bounce_s > p2.win_start
-       AND b.bounce_s <= p2.win_end
-    ),
-    pick AS (
-      SELECT
-        c.swing_id,
-        c.bounce_x,
-        c.bounce_type
-      FROM chosen c
-      WHERE c.rn = 1
+      LEFT JOIN LATERAL (
+        SELECT
+          {bounce_x}   AS bounce_x,
+          {bounce_typ} AS bounce_type,
+          {bounce_s}   AS bounce_s
+        FROM {bb_src}
+        WHERE {bounce_s} IS NOT NULL
+          AND {bounce_x} IS NOT NULL
+          AND {bounce_s} >  p2.win_start
+          AND {bounce_s} <= p2.win_end
+        ORDER BY
+          CASE WHEN {bounce_typ} = 'floor' THEN 0 ELSE 1 END,
+          {bounce_s}
+        LIMIT 1
+      ) AS pick ON TRUE
     ),
     resolved AS (
       SELECT
         p2.swing_id,
         COALESCE(
-          pick.bounce_x,
+          chosen.bounce_x,
           p2.next_ball_hit_x,
           p2.ball_hit_x
         ) AS hit_x_resolved_m,
         CASE
-          WHEN pick.bounce_x IS NOT NULL AND pick.bounce_type = 'floor' THEN 'floor_bounce'
-          WHEN pick.bounce_x IS NOT NULL THEN 'any_bounce'
+          WHEN chosen.bounce_x IS NOT NULL AND chosen.bounce_type = 'floor' THEN 'floor_bounce'
+          WHEN chosen.bounce_x IS NOT NULL THEN 'any_bounce'
           WHEN p2.next_ball_hit_x IS NOT NULL THEN 'next_contact'
           ELSE 'ball_hit'
         END AS hit_source_d
       FROM p2
-      LEFT JOIN pick ON pick.swing_id = p2.swing_id
+      LEFT JOIN chosen ON chosen.swing_id = p2.swing_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
@@ -392,8 +390,8 @@ def phase2_update(conn: Connection, task_id: str) -> int:
       AND p.swing_id = r.swing_id;
     """
     res = conn.execute(text(sql), {"tid": task_id})
-    # rowcount can be None depending on driver; recompute from affected swings instead if needed
     return res.rowcount or 0
+
 
 
 # --------------------------------- Phase 2–5 (schema only now) ---------------------------------
