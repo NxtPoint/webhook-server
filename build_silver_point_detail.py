@@ -169,9 +169,14 @@ def _xy_from_json_array(colref: str, index: int) -> str:
         WHEN {colref} IS NOT NULL
          AND jsonb_typeof({colref}::jsonb)='array'
          AND jsonb_array_length({colref}::jsonb) > {index}
-        THEN ({colref}::jsonb->>{index})::double precision
+        THEN (({colref})::jsonb->>{index})::double precision
+        WHEN {colref} IS NOT NULL
+         AND left({colref},1)='['
+        THEN (jsonb_extract_path_text({colref}::jsonb, '{index}'))::double precision
         ELSE NULL::double precision
-      END)"""
+      END
+    )"""
+
 
 def _ball_hit_x_expr(cols: Dict[str, str]) -> str:
     if "ball_hit_x" in cols and "json" not in cols["ball_hit_x"]:
@@ -386,9 +391,30 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     bhx      = _ball_hit_x_expr(bcols)
     bhy      = _ball_hit_y_expr(bcols)
 
-    start_s    = f"COALESCE({_sec(bcols,'start_ts')}, {_sec(bcols,'start')})"
-    end_s      = f"COALESCE({_sec(bcols,'end_ts')},   {_sec(bcols,'end')})"
-    ball_hit_s = f"COALESCE({_sec(bcols,'ball_hit')}, {_sec(bcols,'ball_hit_s')})"
+    start_s = f"""
+      COALESCE(
+        ({_colref('start')}->>'timestamp')::double precision,
+        {_sec(bcols, 'start_ts')},
+        {_sec(bcols, 'start')}
+      )
+    """
+
+    end_s = f"""
+      COALESCE(
+        ({_colref('end')}->>'timestamp')::double precision,
+        {_sec(bcols, 'end_ts')},
+        {_sec(bcols, 'end')}
+      )
+    """
+
+    ball_hit_s = f"""
+      COALESCE(
+        ({_colref('ball_hit')}->>'timestamp')::double precision,
+        {_sec(bcols, 'ball_hit')},
+        {_sec(bcols, 'ball_hit_s')}
+      )
+    """
+
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
