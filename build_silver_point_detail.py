@@ -155,7 +155,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     )
     SELECT
       s.task_id::uuid                         AS task_id,
-      {swing_id_expr}                         AS swing_id,
+      s.id                                    AS swing_id,      -- ← exact copy from bronze.id
       s.player_id                             AS player_id,
       s.valid                                 AS valid,
       s.serve                                 AS serve,
