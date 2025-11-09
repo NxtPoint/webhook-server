@@ -36,7 +36,15 @@ PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
 })
 
 # Phases 3–5: no columns yet (stub only)
-PHASE3_COLS = OrderedDict({})
+PHASE3_COLS = OrderedDict({
+    "serve_d":               "boolean",
+    "server_id":             "text",
+    "serve_side_d":          "text",
+    "serve_try_ix_in_point": "integer",
+    "server_end_d":          "text"
+})
+
+
 PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({})
 PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({})
 
@@ -174,6 +182,70 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
+# ------------------------------- PHASE 3 — serve dataset (5 exact) -------------------------------
+Y_NEAR_MIN = 23.0  # y > 23 → near
+Y_FAR_MAX  = 1.0   # y < 1  → far
+X_SIDE_ABS = 4.0   # |x| threshold
+
+def phase3_update(conn: Connection, task_id: str) -> int:
+    sql = (
+        "WITH base AS ("
+        "  SELECT p.id, p.task_id, p.player_id, p.swing_type, p.ball_hit, p.ball_hit_location,"
+        "         CASE"
+        "           WHEN p.ball_hit_location IS NOT NULL AND p.ball_hit_location::text LIKE '[%'"
+        "           THEN (p.ball_hit_location::jsonb->>1)::double precision"
+        "           ELSE NULL::double precision"
+        "         END AS y,"
+        "         CASE"
+        "           WHEN p.ball_hit_location IS NOT NULL AND p.ball_hit_location::text LIKE '[%'"
+        "           THEN (p.ball_hit_location::jsonb->>0)::double precision"
+        "           ELSE NULL::double precision"
+        "         END AS x,"
+        "         CASE"
+        "           WHEN p.ball_hit IS NOT NULL AND p.ball_hit::text LIKE '{%' AND p.ball_hit::text LIKE '%\"timestamp\"%'"
+        "           THEN (p.ball_hit::jsonb->>'timestamp')::double precision"
+        "           ELSE NULL::double precision"
+        "         END AS t"
+        f"  FROM {SILVER_SCHEMA}.{TABLE} p"
+        "  WHERE p.task_id = :tid"
+        "), "
+        "marks AS ("
+        "  SELECT b.*, "
+        "         (lower(coalesce(b.swing_type,'')) LIKE '%overhead%' AND (b.y > {near} OR b.y < {far})) AS is_serve,"
+        "         CASE WHEN b.y > {near} THEN 'near'"
+        "              WHEN b.y < {far}  THEN 'far'"
+        "              ELSE NULL END AS server_end_d,"
+        "         CASE "
+        "           WHEN b.y > {near} THEN (CASE WHEN b.x >= {absx} THEN 'ad' ELSE 'deuce' END)"
+        "           WHEN b.y < {far}  THEN (CASE WHEN b.x <= -{absx} THEN 'deuce' ELSE 'ad' END)"
+        "           ELSE NULL END AS serve_side_d"
+        "  FROM base b"
+        "), "
+        "serves AS ("
+        "  SELECT m.*,"
+        "         CASE WHEN m.is_serve THEN m.player_id ELSE NULL END AS server_id"
+        "  FROM marks m"
+        "), "
+        "ordered AS ("
+        "  SELECT s.*, "
+        "         COUNT(*) FILTER (WHERE s.is_serve) OVER (PARTITION BY s.task_id ORDER BY s.t, s.id"
+        "         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS serve_seq_cnt"
+        "  FROM serves s"
+        ") "
+        f"UPDATE {SILVER_SCHEMA}.{TABLE} p "
+        "SET "
+        "  serve_d               = o.is_serve,"
+        "  server_id             = CASE WHEN o.is_serve THEN o.server_id ELSE p.server_id END,"
+        "  server_end_d          = CASE WHEN o.is_serve THEN o.server_end_d ELSE p.server_end_d END,"
+        "  serve_side_d          = CASE WHEN o.is_serve THEN o.serve_side_d ELSE p.serve_side_d END,"
+        "  serve_try_ix_in_point = CASE WHEN o.is_serve THEN NULLIF(o.serve_seq_cnt,0)::int ELSE p.serve_try_ix_in_point END "
+        "FROM ordered o "
+        "WHERE p.task_id = :tid "
+        "  AND p.id = o.id;"
+    ).format(near=Y_NEAR_MIN, far=Y_FAR_MAX, absx=X_SIDE_ABS)
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
 def phase3_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE3_COLS)
@@ -203,7 +275,7 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
             out["phase2_rows_updated"] = phase2_update(conn, task_id)
 
         if phase in ("all","3"):
-            out["phase3"] = "schema-ready"  # stub only
+          out["phase3_rows_updated"] = phase3_update(conn, task_id)
 
         if phase in ("all","4"): out["phase4"] = "schema-ready"
         if phase in ("all","5"): out["phase5"] = "schema-ready"
