@@ -677,6 +677,13 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM resolve_try r
       WHERE r.serve_try_ix_in_point IN (1,2)
     ),
+    decisive_ts AS (
+      SELECT d.*, p1.ball_hit_s AS serve_t
+      FROM decisive d
+      JOIN {SILVER_SCHEMA}.{TABLE} p1
+        ON p1.task_id = d.task_id
+       AND p1.swing_id = d.swing_id
+    ),
     opp_after AS (
       SELECT
         d.task_id, d.rally, d.swing_id,
@@ -685,15 +692,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           FROM {SILVER_SCHEMA}.{TABLE} b2
           WHERE b2.task_id = d.task_id
             AND b2.rally   = d.rally
-            AND b2.ball_hit_s > (SELECT b1.ball_hit_s FROM {SILVER_SCHEMA}.{TABLE} b1 WHERE b1.swing_id = d.swing_id)
+            AND b2.ball_hit_s > d.serve_t
             AND b2.player_id <> d.player_id
         ) AS opponent_after
-      FROM decisive d
+      FROM decisive_ts d
     ),
     winners AS (
       SELECT d.task_id, d.rally, d.swing_id,
              CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END AS service_winner_d
-      FROM decisive d
+      FROM decisive_ts d
       LEFT JOIN opp_after o
         ON o.task_id=d.task_id AND o.rally=d.rally AND o.swing_id=d.swing_id
     )
@@ -708,6 +715,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.swing_id = r.swing_id;
     """
+
 
     conn.execute(text(sql_a), {"tid": task_id})
     res = conn.execute(text(sql_b), {"tid": task_id})
