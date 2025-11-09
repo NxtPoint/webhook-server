@@ -1,9 +1,10 @@
 # build_silver_point_detail.py
 # Silver point_detail — additive, phase-by-phase builder (single entrypoint)
 #
-# Phase 1: Verbatim pull from Bronze (player_swing) with two guarded JSON expansions.
-# Phase 2: Verbatim pull from Bronze (ball_bounce) choosing first bounce in a tight window.
-# Phase 3: Serve logic derived ONLY from Phase 1+2 columns.
+# Phase 1: Verbatim pull (17 cols) from bronze.player_swing with 2 JSON extractions,
+#          using SAFE guards that never cast unless text looks like JSON.
+# Phase 2: Verbatim pull (+6 cols = 23 total) from bronze.ball_bounce for first bounce in window.
+# Phase 3: Serve logic (near if y>23, far if y<1; side threshold |x|>=4), derived ONLY from P1+P2.
 #
 # P1 columns (17):
 #   task_id, swing_id, player_id, valid, serve, swing_type, volley, is_in_rally,
@@ -100,13 +101,14 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
         if col.lower() not in existing:
             _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
 
-# ------------------------------- PHASE 1 — strict verbatim (2 guarded JSON extractions) -------------------------------
+# ------------------------------- PHASE 1 — strict, safe JSON guards -------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
-    STRICT pull from bronze.player_swing with two guarded JSON extractions:
-    - ball_hit_x / ball_hit_y from ball_hit_location array indices [0],[1]
-    - ball_hit_s from ball_hit object's 'timestamp' number
+    STRICT pull from bronze.player_swing with guarded JSON extractions:
+    - ball_hit_x / ball_hit_y from ball_hit_location [x,y] if text looks like a JSON array
+    - ball_hit_s from ball_hit->'timestamp' if text looks like a JSON object containing "timestamp"
+    No casts happen unless the text check passes (prevents invalid JSON cast errors).
     """
     sql = (
         f"INSERT INTO {SILVER_SCHEMA}.{TABLE} ("
@@ -131,15 +133,13 @@ def phase1_load(conn: Connection, task_id: str) -> int:
         "  s.rally::int                                      AS rally,"
         "  CASE"
         "    WHEN s.ball_hit_location IS NOT NULL"
-        "     AND jsonb_typeof(s.ball_hit_location::jsonb) = 'array'"
-        "     AND jsonb_array_length(s.ball_hit_location::jsonb) > 0"
+        "     AND s.ball_hit_location::text LIKE '[%'"
         "    THEN (s.ball_hit_location::jsonb ->> 0)::double precision"
         "    ELSE NULL::double precision"
         "  END                                               AS ball_hit_x,"
         "  CASE"
         "    WHEN s.ball_hit_location IS NOT NULL"
-        "     AND jsonb_typeof(s.ball_hit_location::jsonb) = 'array'"
-        "     AND jsonb_array_length(s.ball_hit_location::jsonb) > 1"
+        "     AND s.ball_hit_location::text LIKE '[%'"
         "    THEN (s.ball_hit_location::jsonb ->> 1)::double precision"
         "    ELSE NULL::double precision"
         "  END                                               AS ball_hit_y,"
@@ -147,11 +147,10 @@ def phase1_load(conn: Connection, task_id: str) -> int:
         "  s.end_ts::double precision                        AS end_s,"
         "  CASE"
         "    WHEN s.ball_hit IS NOT NULL"
-        "     AND jsonb_typeof(s.ball_hit::jsonb) = 'object'"
-        "     AND (s.ball_hit::jsonb ? 'timestamp')"
-        "     AND jsonb_typeof((s.ball_hit::jsonb)->'timestamp') = 'number'"
-        "  THEN (s.ball_hit::jsonb ->> 'timestamp')::double precision"
-        "  ELSE NULL::double precision"
+        "     AND s.ball_hit::text LIKE '{%'"
+        "     AND s.ball_hit::text LIKE '%\"timestamp\"%'"
+        "    THEN (s.ball_hit::jsonb ->> 'timestamp')::double precision"
+        "    ELSE NULL::double precision"
         "  END                                               AS ball_hit_s "
         "FROM bronze.player_swing s "
         "WHERE s.task_id::uuid = :tid "
@@ -160,11 +159,11 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ------------------------------- PHASE 2 — strict verbatim (first bounce in window) -------------------------------
+# ------------------------------- PHASE 2 — strict, first bounce in window -------------------------------
 
 def phase2_update(conn: Connection, task_id: str) -> int:
     """
-    STRICT MODE: assumes bronze.ball_bounce has flat columns:
+    Assumes bronze.ball_bounce has flat columns:
       task_id, bounce_s (double), court_x (double), court_y (double), bounce_type (text)
     Window: (ball_hit_s + 0.005, min(next_ball_hit_s, ball_hit_s + 2.5)]
     For NON-SERVE swings:
@@ -241,7 +240,7 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ------------------------------- PHASE 3 — serve logic (near if y>23, far if y<1) -------------------------------
+# ------------------------------- PHASE 3 — serve logic -------------------------------
 
 Y_NEAR_MIN = 23.0   # y > 23 → near
 Y_FAR_MAX  = 1.0    # y < 1  → far
