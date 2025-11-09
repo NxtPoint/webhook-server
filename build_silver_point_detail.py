@@ -33,6 +33,9 @@ PHASE1_COLS = OrderedDict({
     "rally":                "integer",
     "ball_hit_x":           "double precision",
     "ball_hit_y":           "double precision",
+    "start_s":              "double precision",   # ← add
+    "end_s":                "double precision",   # ← add
+    "ball_hit_s":           "double precision"    # ← add
 })
 
 # Phase 2 — player info (schema only for now)
@@ -84,6 +87,26 @@ def _bronze_src(conn: Connection) -> Tuple[str, Dict[str, str]]:
 def _colref(name: str) -> str:
     n = name.lower()
     return 's."end"' if n == "end" else f"s.{n}"
+
+def _sec(cols: Dict[str, str], name: str) -> str:
+    n = name.lower()
+    if n not in cols:
+        return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(
+          CASE
+            WHEN jsonb_typeof({_colref(n)}::jsonb)='object'
+                 AND ({_colref(n)}::jsonb ? 'timestamp')
+                 AND jsonb_typeof(({_colref(n)}::jsonb)->'timestamp')='number'
+              THEN (({_colref(n)}::jsonb)->>'timestamp')::double precision
+            WHEN jsonb_typeof({_colref(n)}::jsonb)='number'
+              THEN ({_colref(n)}::text)::double precision
+            ELSE NULL::double precision
+          END)"""
+    if any(k in dt for k in ("double","real","numeric","integer")):
+        return _colref(n)
+    return "NULL::double precision"
 
 def _jsonb(cols: Dict[str, str], name: str) -> str:
     return f"{_colref(name)}::jsonb" if name.lower() in cols else "NULL::jsonb"
@@ -175,12 +198,17 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     bhx      = _ball_hit_x_expr(bcols)
     bhy      = _ball_hit_y_expr(bcols)
 
+    start_s    = f"COALESCE({_sec(bcols,'start_ts')}, {_sec(bcols,'start')})"
+    end_s      = f"COALESCE({_sec(bcols,'end_ts')},   {_sec(bcols,'end')})"
+    ball_hit_s = f"COALESCE({_sec(bcols,'ball_hit')}, {_sec(bcols,'ball_hit_s')})"
+
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, player_id,
       valid, serve, swing_type, volley, is_in_rally,
       ball_player_distance, ball_speed, ball_impact_type,
-      rally, ball_hit_x, ball_hit_y
+      rally, ball_hit_x, ball_hit_y,
+      start_s, end_s, ball_hit_s
     )
     SELECT
       {_text(bcols, "task_id")}::uuid,
@@ -196,11 +224,15 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       {_text(bcols, "ball_impact_type")},
       {_int(bcols, "rally")},
       {bhx},
-      {bhy}
+      {bhy},
+      {start_s},
+      {end_s},
+      {ball_hit_s}
     FROM {src}
     WHERE {_text(bcols, "task_id")}::uuid = :task_id
       AND COALESCE({_bool(bcols, "valid")}, FALSE) IS TRUE;
     """
+
     res = conn.execute(text(sql), {"task_id": task_id})
     return res.rowcount or 0
 
