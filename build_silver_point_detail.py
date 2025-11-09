@@ -593,85 +593,58 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
         AND COALESCE(p.valid, FALSE) IS TRUE
     ),
-    -- near/far by player (sign of median Y across the task)
-    orient AS (
-      SELECT
-        b.player_id,
-        CASE
-          WHEN percentile_cont(0.5) WITHIN GROUP (ORDER BY b.ball_hit_y) > 0 THEN 1
-          WHEN percentile_cont(0.5) WITHIN GROUP (ORDER BY b.ball_hit_y) < 0 THEN -1
-          ELSE 0
-        END AS player_far_sign
-      FROM base b
-      GROUP BY b.player_id
-    ),
-    -- derive serve_d per swing (our detector)
-        -- derive serve_d per swing (our detector: fh_overhead + at/behind baseline, sign-agnostic)
+    -- Serve detection: your rule (case-insensitive) + at/behind baseline (sign-agnostic)
     serve_det AS (
       SELECT
         b.*,
         CASE
-          WHEN b.swing_type = 'fh_overhead'
+          WHEN lower(b.swing_type) LIKE 'fh_over%%'
            AND ABS(b.ball_hit_y) >= {BASELINE_Y_M - BASELINE_EPS_M}
-          THEN TRUE ELSE FALSE END AS serve_d_raw
+          THEN TRUE ELSE FALSE END AS serve_d
       FROM base b
     ),
-
-    -- assign side for serve rows (deuce/ad) using contact X; resolve near-center with previous side per server/rally
-    serve_rows AS (
+    -- Side: never NULL. If within epsilon of center, bias by sign (>=0 = ad, else deuce)
+    serve_side AS (
       SELECT
-        s.task_id, s.rally, s.swing_id, s.player_id, s.ball_hit_s,
-        s.serve_d_raw AS serve_d,
+        s.*,
         CASE
-          WHEN s.serve_d_raw IS TRUE THEN
+          WHEN s.serve_d IS TRUE THEN
             CASE
               WHEN s.ball_hit_x < -{CENTER_EPS_M} THEN 'deuce'
               WHEN s.ball_hit_x >  {CENTER_EPS_M} THEN 'ad'
-              ELSE NULL  -- to be filled by carry-forward below
+              ELSE CASE WHEN s.ball_hit_x >= 0 THEN 'ad' ELSE 'deuce' END
             END
           ELSE NULL
-        END AS serve_side0
+        END AS serve_side_d
       FROM serve_det s
-      WHERE s.serve_d_raw IS TRUE
+      WHERE s.serve_d IS TRUE
     ),
-    -- carry-forward side within (task_id, rally, player) when near-center (NULL)
-    side_ff AS (
-      SELECT
-        sr.*,
-        COALESCE(
-          sr.serve_side0,
-          LAG(sr.serve_side0) OVER (PARTITION BY sr.task_id, sr.rally, sr.player_id ORDER BY sr.ball_hit_s, sr.swing_id)
-        ) AS serve_side_d
-      FROM serve_rows sr
+    -- First serve in rally defines the initial side we analyze
+    rally_first AS (
+      SELECT DISTINCT ON (task_id, rally)
+        task_id, rally, serve_side_d AS init_side, ball_hit_s AS init_t
+      FROM serve_side
+      ORDER BY task_id, rally, ball_hit_s, swing_id
     ),
-    -- find the time of first serve on the OPPOSITE side in the same rally (side flip marker)
+    -- Time of first serve on the opposite side (if any)
     first_opposite AS (
       SELECT
         s1.task_id, s1.rally,
         MIN(s2.ball_hit_s) AS first_opposite_t
-      FROM side_ff s1
-      JOIN side_ff s2
+      FROM serve_side s1
+      JOIN serve_side s2
         ON s1.task_id = s2.task_id
        AND s1.rally   = s2.rally
-       AND s2.serve_side_d IS NOT NULL
-       AND s1.serve_side_d IS NOT NULL
        AND s2.serve_side_d <> s1.serve_side_d
       GROUP BY s1.task_id, s1.rally
     ),
-    -- Identify the initial side of the rally (side of the first serve in that rally)
-    rally_first AS (
-      SELECT DISTINCT ON (s.task_id, s.rally)
-        s.task_id, s.rally, s.serve_side_d AS init_side, s.ball_hit_s AS init_t
-      FROM side_ff s
-      ORDER BY s.task_id, s.rally, s.ball_hit_s, s.swing_id
-    ),
-    -- block: all serves in the rally that are on the initial side and occur before the first opposite-side serve (if any)
+    -- All serves on the initial side, before the opposite side appears (or until rally ends)
     block AS (
       SELECT
         s.task_id, s.rally, s.swing_id, s.player_id, s.ball_hit_s, s.serve_side_d,
         ROW_NUMBER() OVER (PARTITION BY s.task_id, s.rally ORDER BY s.ball_hit_s, s.swing_id) AS rn_in_block,
         COUNT(*)    OVER (PARTITION BY s.task_id, s.rally) AS cnt_in_block
-      FROM side_ff s
+      FROM serve_side s
       JOIN rally_first rf
         ON rf.task_id = s.task_id AND rf.rally = s.rally AND s.serve_side_d = rf.init_side
       LEFT JOIN first_opposite fo
@@ -679,7 +652,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE s.ball_hit_s >= rf.init_t
         AND (fo.first_opposite_t IS NULL OR s.ball_hit_s < fo.first_opposite_t)
     ),
-    -- decide try index and DF per block
+    -- Decide 1st/2nd and Double Fault for the block
     resolve_try AS (
       SELECT
         b.task_id, b.rally, b.swing_id, b.player_id, b.serve_side_d,
@@ -700,7 +673,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS double_fault_d
       FROM block b
     ),
-    -- find opponent swing existence after decisive serve for service_winner
     decisive AS (
       SELECT r.*
       FROM resolve_try r
@@ -727,13 +699,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       LEFT JOIN opp_after o
         ON o.task_id = d.task_id AND o.rally = d.rally AND o.swing_id = d.swing_id
     ),
-    -- union of all serve rows to be written (both block and out-of-block serves)
     all_serves AS (
       SELECT
         s.task_id, s.rally, s.swing_id, s.player_id, s.serve_side_d
-      FROM side_ff s
+      FROM serve_side s
     ),
-    final as (
+    final AS (
       SELECT
         a.task_id, a.rally, a.swing_id, a.player_id, a.serve_side_d,
         COALESCE(rt.serve_try_ix_in_point, NULL) AS serve_try_ix_in_point,
@@ -755,10 +726,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       service_winner_d      = f.service_winner_d
     FROM final f
     WHERE p.task_id = :tid
-      AND p.rally   = f.rally
-      AND p.swing_id= f.swing_id;
-
-    -- For non-serve rows, ensure serve_* are NULL/FALSE as appropriate (no destructive changes to Phase 1/2)
+      AND p.swing_id= f.swing_id;  -- <-- swing_id match only (drop rally match)
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
