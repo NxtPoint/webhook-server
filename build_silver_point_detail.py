@@ -285,7 +285,7 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     if not bb_cols:
         raise RuntimeError("bronze.ball_bounce not found")
 
-    # ---- build tolerant expressions (flat-first, JSON fallback) ----
+    # ---- tolerant expressions (flat-first, JSON fallback) ----
     def _bb_time_expr() -> str:
         for c in ("bounce_s", "time_s", "timestamp_s", "ts", "t"):
             if c in bb_cols and "json" not in bb_cols[c]:
@@ -356,7 +356,6 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     bs_expr = _bb_time_expr()
     bt_expr = _bb_type_expr()
 
-    # ---- SQL (aliases inside a wrapped subselect to use in WHERE/ORDER BY) ----
     sql = (
         "WITH p0 AS ("
         f"  SELECT p.task_id, p.swing_id, p.player_id, p.rally,"
@@ -385,7 +384,9 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         f"      SELECT {bx_expr} AS bx, {by_expr} AS by, {bt_expr} AS bt, {bs_expr} AS bs"
         "    ) q"
         "    WHERE q.bs IS NOT NULL"
-        "    ORDER BY (q.bt = 'floor') DESC, q.bs"
+        "      AND q.bs >  p2.win_start"
+        "      AND q.bs <= p2.win_end"
+        "    ORDER BY COALESCE(q.bt = 'floor', FALSE) DESC, q.bs"
         "    LIMIT 1"
         "  ) AS pick ON TRUE"
         ") "
@@ -416,7 +417,6 @@ def phase2_update(conn: Connection, task_id: str) -> int:
 
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 
 # ------------------------------- PHASE 3 — updater (serve-only from P1+P2) -------------------------------
