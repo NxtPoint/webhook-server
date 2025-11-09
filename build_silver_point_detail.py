@@ -137,11 +137,14 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
-    PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE).
-    Column mapping locked to the provided bronze schema:
-      task_id, start_ts, end_ts, player_id, valid, serve, swing_type, volley, is_in_rally,
-      ball_player_distance, ball_speed, rally, ball_hit(JSON), ball_hit_location_x, ball_hit_location_y
+    PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
+    No derived/surrogate IDs. swing_id is copied if present, else NULL.
     """
+    bcols = _columns_types(conn, "bronze", "player_swing")
+    has = lambda c: c in bcols
+
+    swing_id_expr = "s.swing_id" if has("swing_id") else "NULL::bigint"
+
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, player_id,
@@ -152,21 +155,21 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     )
     SELECT
       s.task_id::uuid                         AS task_id,
-      s.id                                    AS swing_id,          -- assumed primary key column in bronze.player_swing
-      s.player_id                              AS player_id,
-      s.valid                                  AS valid,
-      s.serve                                  AS serve,
-      s.swing_type                              AS swing_type,
-      s.volley                                 AS volley,
-      s.is_in_rally                             AS is_in_rally,
-      s.ball_player_distance::double precision  AS ball_player_distance,
-      s.ball_speed::double precision            AS ball_speed,
-      NULL::text                                AS ball_impact_type, -- not in your bronze list; keep NULL to preserve Phase-1 columns
-      s.rally::int                              AS rally,
-      s.ball_hit_location_x::double precision   AS ball_hit_x,
-      s.ball_hit_location_y::double precision   AS ball_hit_y,
-      s.start_ts::double precision              AS start_s,
-      s.end_ts::double precision                AS end_s,
+      {swing_id_expr}                         AS swing_id,
+      s.player_id                             AS player_id,
+      s.valid                                 AS valid,
+      s.serve                                 AS serve,
+      s.swing_type                            AS swing_type,
+      s.volley                                AS volley,
+      s.is_in_rally                           AS is_in_rally,
+      s.ball_player_distance::double precision AS ball_player_distance,
+      s.ball_speed::double precision           AS ball_speed,
+      NULL::text                              AS ball_impact_type,
+      s.rally::int                            AS rally,
+      s.ball_hit_location_x::double precision AS ball_hit_x,
+      s.ball_hit_location_y::double precision AS ball_hit_y,
+      s.start_ts::double precision            AS start_s,
+      s.end_ts::double precision              AS end_s,
       (s.ball_hit->>'timestamp')::double precision AS ball_hit_s
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
@@ -174,6 +177,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # --------------------------------- Phase 2 updater (pure bounce + helpers) ---------------------------------
 
