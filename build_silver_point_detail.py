@@ -203,218 +203,132 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
-    Phase 1 — exact Bronze copy (player_swing preferred) with two safe exceptions:
-      - ball_hit_s: prefer flat seconds; else JSON object {"timestamp": number}; else numeric JSON
-      - ball_hit_x/y: prefer flat *_x/*_y; else from JSON array [x, y]
-    Everything else: direct copy (or NULL if missing).
+    STRICT MODE: assumes bronze.player_swing has these columns:
+      task_id, id, player_id, valid, serve, swing_type, volley, is_in_rally,
+      ball_player_distance, ball_speed, ball_impact_type, rally,
+      ball_hit_location (jsonb array [x,y]),
+      start_ts, end_ts,
+      ball_hit (jsonb object with {'timestamp': <number>})
     """
-    src, cols = _ps_src(conn)
-
-    task_id_expr = f"{_colref_s('task_id')}::uuid" if "task_id" in cols else ":tid::uuid"
-    swing_id     = f"{_colref_s('id')}::bigint"    if "id" in cols else "NULL::bigint"
-
-    player_id    = _text_copy_ps(cols, "player_id")
-    valid        = _bool_copy_ps(cols, "valid")
-    serve        = _bool_copy_ps(cols, "serve")
-    volley       = _bool_copy_ps(cols, "volley")
-    is_in_rally  = _bool_copy_ps(cols, "is_in_rally")
-    swing_type   = _text_copy_ps(cols, "swing_type")
-    ball_imp     = _text_copy_ps(cols, "ball_impact_type")
-    rally        = _int_from_text_digits_ps(cols, "rally")
-
-    # Prefer flat *_x/*_y; else array
-    if "ball_hit_location_x" in cols and not _is_json(cols["ball_hit_location_x"]):
-        ball_hit_x = f"NULLIF({_colref_s('ball_hit_location_x')}::text,'')::double precision"
-    elif "ball_hit_location" in cols and _is_json(cols["ball_hit_location"]):
-        ball_hit_x = _xy_from_json_array(_colref_s("ball_hit_location"), 0)
-    else:
-        ball_hit_x = "NULL::double precision"
-
-    if "ball_hit_location_y" in cols and not _is_json(cols["ball_hit_location_y"]):
-        ball_hit_y = f"NULLIF({_colref_s('ball_hit_location_y')}::text,'')::double precision"
-    elif "ball_hit_location" in cols and _is_json(cols["ball_hit_location"]):
-        ball_hit_y = _xy_from_json_array(_colref_s("ball_hit_location"), 1)
-    else:
-        ball_hit_y = "NULL::double precision"
-
-    # Seconds: prefer flat start_ts/end_ts; else alternates; ball_hit from JSON object.timestamp if needed
-    start_s = _sec_pref_flat_then_json_ps(cols, "start_ts", "start", "begin", "t_start")
-    end_s   = _sec_pref_flat_then_json_ps(cols, "end_ts",   "end",   "t_end", "finish")
-    ball_s  = _sec_pref_flat_then_json_ps(cols, "ball_hit")  # covers object.timestamp and numeric JSON
-
-    ball_player_distance = _num_pref_flat_then_json_ps(cols, "ball_player_distance")
-    ball_speed           = _num_pref_flat_then_json_ps(cols, "ball_speed")
-
-    sql = (
-        f"INSERT INTO {SILVER_SCHEMA}.{TABLE} (\n"
-        "  task_id, swing_id, player_id,\n"
-        "  valid, serve, swing_type, volley, is_in_rally,\n"
-        "  ball_player_distance, ball_speed, ball_impact_type,\n"
-        "  rally, ball_hit_x, ball_hit_y,\n"
-        "  start_s, end_s, ball_hit_s\n"
-        ")\n"
-        "SELECT\n"
-        f"  {task_id_expr} AS task_id,\n"
-        f"  {swing_id}     AS swing_id,\n"
-        f"  {player_id}    AS player_id,\n"
-        f"  {valid}        AS valid,\n"
-        f"  {serve}        AS serve,\n"
-        f"  {swing_type}   AS swing_type,\n"
-        f"  {volley}       AS volley,\n"
-        f"  {is_in_rally}  AS is_in_rally,\n"
-        f"  {ball_player_distance} AS ball_player_distance,\n"
-        f"  {ball_speed}   AS ball_speed,\n"
-        f"  {ball_imp}     AS ball_impact_type,\n"
-        f"  {rally}        AS rally,\n"
-        f"  {ball_hit_x}   AS ball_hit_x,\n"
-        f"  {ball_hit_y}   AS ball_hit_y,\n"
-        f"  {start_s}      AS start_s,\n"
-        f"  {end_s}        AS end_s,\n"
-        f"  {ball_s}       AS ball_hit_s\n"
-        f"FROM {src}\n"
-        f"WHERE {task_id_expr} = :tid\n"
-        f"  AND COALESCE({valid}, FALSE) IS TRUE;\n"
+    sql = f"""
+    INSERT INTO {SILVER_SCHEMA}.{TABLE} (
+      task_id, swing_id, player_id,
+      valid, serve, swing_type, volley, is_in_rally,
+      ball_player_distance, ball_speed, ball_impact_type,
+      rally, ball_hit_x, ball_hit_y,
+      start_s, end_s, ball_hit_s
     )
+    SELECT
+      s.task_id::uuid                     AS task_id,
+      s.id::bigint                        AS swing_id,
+      s.player_id                         AS player_id,
+      s.valid                             AS valid,
+      s.serve                             AS serve,
+      s.swing_type                        AS swing_type,
+      s.volley                            AS volley,
+      s.is_in_rally                       AS is_in_rally,
+      s.ball_player_distance::double precision AS ball_player_distance,
+      s.ball_speed::double precision      AS ball_speed,
+      s.ball_impact_type                  AS ball_impact_type,
+      s.rally::int                        AS rally,
+      (s.ball_hit_location::jsonb ->> 0)::double precision AS ball_hit_x,
+      (s.ball_hit_location::jsonb ->> 1)::double precision AS ball_hit_y,
+      s.start_ts::double precision        AS start_s,
+      s.end_ts::double precision          AS end_s,
+      (s.ball_hit::jsonb ->> 'timestamp')::double precision AS ball_hit_s
+    FROM bronze.player_swing s
+    WHERE s.task_id::uuid = :tid
+      AND COALESCE(s.valid, FALSE) = TRUE;
+    """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- PHASE 2 — updater (verbatim bounce + helpers) -------------------------------
 
 def phase2_update(conn: Connection, task_id: str) -> int:
-    bb_cols = _columns_types(conn, "bronze", "ball_bounce")
-    if not bb_cols:
-        raise RuntimeError("bronze.ball_bounce not found")
-
-    # ---- tolerant expressions (flat-first, JSON fallback) ----
-    def _bb_time_expr() -> str:
-        for c in ("bounce_s", "time_s", "timestamp_s", "ts", "t"):
-            if c in bb_cols and "json" not in bb_cols[c]:
-                return _colref_b(c)
-        for c in ("timestamp", "data", "bounce"):
-            if c in bb_cols and "json" in bb_cols[c]:
-                return f"COALESCE({_safe_json_obj_ts(_colref_b(c))}, {_safe_json_number(_colref_b(c))})"
-        return "NULL::double precision"
-
-    def _bb_xy_x_expr() -> str:
-        for c in ("court_x","x","x_m","x_center","x_center_m","x_pos","bounce_x"):
-            if c in bb_cols and "json" not in bb_cols[c]:
-                return _colref_b(c)
-        for arr in ("court_pos","location","pos"):
-            if arr in bb_cols and "json" in bb_cols[arr]:
-                return _xy_from_json_array(_colref_b(arr), 0)
-        for j in ("data","bounce"):
-            if j in bb_cols and "json" in bb_cols[j]:
-                return (
-                    "COALESCE("
-                    f"  (({_colref_b(j)}::jsonb)->>'court_x')::double precision,"
-                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'"
-                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>0"
-                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>0)::double precision"
-                    f"        ELSE NULL::double precision END)"
-                    ")"
-                )
-        return "NULL::double precision"
-
-    def _bb_xy_y_expr() -> str:
-        for c in ("court_y","y","y_m","y_center","y_center_m","y_pos","bounce_y"):
-            if c in bb_cols and "json" not in bb_cols[c]:
-                return _colref_b(c)
-        for arr in ("court_pos","location","pos"):
-            if arr in bb_cols and "json" in bb_cols[arr]:
-                return _xy_from_json_array(_colref_b(arr), 1)
-        for j in ("data","bounce"):
-            if j in bb_cols and "json" in bb_cols[j]:
-                return (
-                    "COALESCE("
-                    f"  (({_colref_b(j)}::jsonb)->>'court_y')::double precision,"
-                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'"
-                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>1"
-                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>1)::double precision"
-                    f"        ELSE NULL::double precision END)"
-                    ")"
-                )
-        return "NULL::double precision"
-
-    def _bb_type_expr() -> str:
-        for c in ("bounce_type","type"):
-            if c in bb_cols and "json" not in bb_cols[c]:
-                return _colref_b(c)
-        for j in ("data","bounce"):
-            if j in bb_cols and "json" in bb_cols[j]:
-                return (
-                    "("
-                    f"  CASE WHEN jsonb_typeof({_colref_b(j)}::jsonb)='object'"
-                    f"        AND jsonb_typeof(({_colref_b(j)}::jsonb)->'type')='string'"
-                    f"       THEN ({_colref_b(j)}::jsonb->>'type')"
-                    f"       ELSE NULL::text END"
-                    ")"
-                )
-        return "NULL::text"
-
-    bx_expr = _bb_xy_x_expr()
-    by_expr = _bb_xy_y_expr()
-    bs_expr = _bb_time_expr()
-    bt_expr = _bb_type_expr()
-
-    sql = (
-        "WITH p0 AS ("
-        f"  SELECT p.task_id, p.swing_id, p.player_id, p.rally,"
-        "         COALESCE(p.valid, FALSE) AS valid,"
-        "         COALESCE(p.serve, FALSE) AS serve,"
-        "         p.ball_hit_s, p.ball_hit_x"
-        f"  FROM {SILVER_SCHEMA}.{TABLE} p"
-        "  WHERE p.task_id = :tid AND COALESCE(p.valid, FALSE) IS TRUE"
-        "),"
-        "p1 AS ("
-        "  SELECT p0.*, "
-        "         LEAD(p0.ball_hit_s) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_s,"
-        "         LEAD(p0.ball_hit_x) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_x"
-        "  FROM p0"
-        "),"
-        "p2 AS ("
-        "  SELECT p1.*, (p1.ball_hit_s + 0.005) AS win_start,"
-        "         LEAST(COALESCE(p1.next_ball_hit_s, p1.ball_hit_s + 2.5), p1.ball_hit_s + 2.5) AS win_end"
-        "  FROM p1"
-        "),"
-        "chosen AS ("
-        "  SELECT p2.swing_id, pick.bx, pick.by, pick.bt, pick.bs"
-        "  FROM p2"
-        "  LEFT JOIN LATERAL ("
-        "    SELECT * FROM ("
-        f"      SELECT {bx_expr} AS bx, {by_expr} AS by, {bt_expr} AS bt, {bs_expr} AS bs"
-        "    ) q"
-        "    WHERE q.bs IS NOT NULL"
-        "      AND q.bs >  p2.win_start"
-        "      AND q.bs <= p2.win_end"
-        "    ORDER BY COALESCE(q.bt = 'floor', FALSE) DESC, q.bs"
-        "    LIMIT 1"
-        "  ) AS pick ON TRUE"
-        ") "
-        f"UPDATE {SILVER_SCHEMA}.{TABLE} p "
-        "SET "
-        "  bounce_x_m       = c.bx,"
-        "  bounce_y_m       = c.by,"
-        "  bounce_type_d    = c.bt,"
-        "  bounce_s         = c.bs,"
-        "  hit_x_resolved_m = CASE"
-        "                       WHEN p.serve IS FALSE THEN COALESCE(c.bx, p2.next_ball_hit_x, p2.ball_hit_x)"
-        "                       ELSE p.hit_x_resolved_m"
-        "                     END,"
-        "  hit_source_d     = CASE"
-        "                       WHEN p.serve IS FALSE THEN"
-        "                         CASE"
-        "                           WHEN c.bx IS NOT NULL AND c.bt='floor' THEN 'floor_bounce'"
-        "                           WHEN c.bx IS NOT NULL THEN 'any_bounce'"
-        "                           WHEN p2.next_ball_hit_x IS NOT NULL THEN 'next_contact'"
-        "                           ELSE 'ball_hit'"
-        "                         END"
-        "                       ELSE p.hit_source_d"
-        "                     END "
-        "FROM chosen c "
-        "JOIN p2 ON p2.swing_id = c.swing_id "
-        "WHERE p.task_id = :tid AND p.swing_id = c.swing_id;"
+    """
+    STRICT MODE: assumes bronze.ball_bounce has flat columns:
+      task_id, bounce_s (double), court_x (double), court_y (double), bounce_type (text)
+    Window: (ball_hit_s + 0.005, min(next_ball_hit_s, ball_hit_s + 2.5)]
+    For NON-SERVE swings:
+      hit_x_resolved_m = COALESCE(bounce_x, next_ball_hit_x, ball_hit_x)
+      hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
+    """
+    sql = f"""
+    WITH p AS (
+      SELECT
+        p.task_id, p.swing_id, p.player_id, p.rally,
+        COALESCE(p.valid, FALSE) AS valid,
+        COALESCE(p.serve, FALSE) AS serve,
+        p.ball_hit_s, p.ball_hit_x
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid AND COALESCE(p.valid, FALSE) = TRUE
+    ),
+    p_lead AS (
+      SELECT
+        p.*,
+        LEAD(p.ball_hit_s) OVER (
+          PARTITION BY p.task_id, p.rally
+          ORDER BY p.ball_hit_s, p.swing_id
+        ) AS next_ball_hit_s,
+        LEAD(p.ball_hit_x) OVER (
+          PARTITION BY p.task_id, p.rally
+          ORDER BY p.ball_hit_s, p.swing_id
+        ) AS next_ball_hit_x
+      FROM p
+    ),
+    p_win AS (
+      SELECT
+        p_lead.*,
+        (p_lead.ball_hit_s + 0.005) AS win_start,
+        LEAST(COALESCE(p_lead.next_ball_hit_s, p_lead.ball_hit_s + 2.5), p_lead.ball_hit_s + 2.5) AS win_end
+      FROM p_lead
+    ),
+    chosen AS (
+      SELECT
+        w.swing_id,
+        b.court_x AS bounce_x,
+        b.court_y AS bounce_y,
+        b.bounce_type,
+        b.bounce_s
+      FROM p_win w
+      LEFT JOIN LATERAL (
+        SELECT court_x, court_y, bounce_type, bounce_s
+        FROM bronze.ball_bounce b
+        WHERE b.task_id::uuid = w.task_id
+          AND b.bounce_s IS NOT NULL
+          AND b.bounce_s >  w.win_start
+          AND b.bounce_s <= w.win_end
+        ORDER BY (bounce_type = 'floor') DESC, bounce_s
+        LIMIT 1
+      ) b ON TRUE
     )
-
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      bounce_x_m       = c.bounce_x,
+      bounce_y_m       = c.bounce_y,
+      bounce_type_d    = c.bounce_type,
+      bounce_s         = c.bounce_s,
+      hit_x_resolved_m = CASE
+                           WHEN p.serve = FALSE THEN COALESCE(c.bounce_x, w.next_ball_hit_x, w.ball_hit_x)
+                           ELSE p.hit_x_resolved_m
+                         END,
+      hit_source_d     = CASE
+                           WHEN p.serve = FALSE THEN
+                             CASE
+                               WHEN c.bounce_x IS NOT NULL AND c.bounce_type = 'floor' THEN 'floor_bounce'
+                               WHEN c.bounce_x IS NOT NULL THEN 'any_bounce'
+                               WHEN w.next_ball_hit_x IS NOT NULL THEN 'next_contact'
+                               ELSE 'ball_hit'
+                             END
+                           ELSE p.hit_source_d
+                         END
+    FROM chosen c
+    JOIN p_win w ON w.swing_id = c.swing_id
+    WHERE p.task_id = :tid
+      AND p.swing_id = c.swing_id;
+    """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
