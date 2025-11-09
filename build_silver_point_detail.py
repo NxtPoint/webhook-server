@@ -38,13 +38,16 @@ PHASE1_COLS = OrderedDict({
     "ball_hit_s":           "double precision"    # ← add
 })
 
-# Phase 2 — ball-hit location (classic resolution) + chosen bounce coords for all swings
+# Phase 2 — classic hit resolution + chosen bounce coords/details (additive)
 PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
-    "hit_x_resolved_m": "double precision",  # final resolved X (meters), non-serve shots
+    "hit_x_resolved_m": "double precision",  # non-serve resolved X
     "hit_source_d":     "text",              # floor_bounce | any_bounce | next_contact | ball_hit
-    "bounce_x_m":       "double precision",  # chosen bounce X (meters), for ANY swing
-    "bounce_y_m":       "double precision"   # chosen bounce Y (meters), for ANY swing
+    "bounce_x_m":       "double precision",  # chosen bounce X (any swing)
+    "bounce_y_m":       "double precision",  # chosen bounce Y (any swing)
+    "bounce_type_d":    "text",              # 'floor', 'swing', etc. from bronze
+    "bounce_s":         "double precision"   # chosen bounce timestamp (seconds)
 })
+
 
 
 # Phase 3 — ball_bounce join (schema only for now)
@@ -241,26 +244,27 @@ def _bounce_time_expr(bcols: Dict[str, str]) -> str:
     return "NULL::double precision"
 
 def _bounce_x_expr(bcols: Dict[str, str]) -> str:
-    # Common numeric x columns
-    for cand in ("x", "bounce_x", "x_center", "x_center_m", "x_m", "x_pos"):
+    # Prefer explicit court-space X first
+    for cand in ("court_x", "x", "bounce_x", "x_center", "x_center_m", "x_m", "x_pos"):
         if cand in bcols and "json" not in bcols[cand]:
             return _num_b(bcols, cand)
-    # Array field like location:[x,y]
-    if "location" in bcols:
-        return _xy_from_json_array_b(_colref_b("location"), 0)
-    # Fallback: NULL
+    # Array fields
+    for arr in ("court_pos", "location", "pos"):
+        if arr in bcols:
+            return _xy_from_json_array_b(_colref_b(arr), 0)
     return "NULL::double precision"
 
 def _bounce_y_expr(bcols: Dict[str, str]) -> str:
-    # Common numeric y columns
-    for cand in ("y", "bounce_y", "y_center", "y_center_m", "y_m", "y_pos"):
+    # Prefer explicit court-space Y first
+    for cand in ("court_y", "y", "bounce_y", "y_center", "y_center_m", "y_m", "y_pos"):
         if cand in bcols and "json" not in bcols[cand]:
             return _num_b(bcols, cand)
-    # Array field like location:[x,y]
-    if "location" in bcols:
-        return _xy_from_json_array_b(_colref_b("location"), 1)
-    # Fallback: NULL
+    # Array fields
+    for arr in ("court_pos", "location", "pos"):
+        if arr in bcols:
+            return _xy_from_json_array_b(_colref_b(arr), 1)
     return "NULL::double precision"
+
 
 def _bounce_type_expr(bcols: Dict[str, str]) -> str:
     for cand in ("bounce_type", "type"):
@@ -373,15 +377,14 @@ def phase1_load(conn: Connection, task_id: str) -> int:
 
 def phase2_update(conn: Connection, task_id: str) -> int:
     """
-    PHASE 2 — Classic placement + expose chosen bounce coords
+    PHASE 2 — Classic placement + expose chosen bounce coords/type/time.
 
-    For EACH valid swing in silver.point_detail (serves included for bounce coords):
-      - Build window: [ball_hit_s + 0.005, min(next_ball_hit_s, ball_hit_s + 2.5)]
-      - Choose FIRST bounce in window (floor preferred, then earliest)
-      - Write:
-          bounce_x_m, bounce_y_m  (for ALL swings)
-      - For NON-SERVES only:
-          hit_x_resolved_m = bounce_x (if any) → next_contact_x → own ball_hit_x
+    Window per swing: [ball_hit_s+0.005, min(next_ball_hit_s, ball_hit_s+2.5)]
+    Pick first bounce in window (prefer floor).
+    Write:
+      - bounce_x_m, bounce_y_m, bounce_type_d, bounce_s for ALL swings.
+      - For NON-SERVES:
+          hit_x_resolved_m = bounce_x -> next_contact_x -> ball_hit_x
           hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
     """
     bb_src, bcols = _bb_src(conn)
@@ -420,7 +423,8 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         p2.swing_id,
         pick.bounce_x,
         pick.bounce_y,
-        pick.bounce_type
+        pick.bounce_type,
+        pick.bounce_s
       FROM p2
       LEFT JOIN LATERAL (
         SELECT
@@ -430,7 +434,6 @@ def phase2_update(conn: Connection, task_id: str) -> int:
           {bounce_s}   AS bounce_s
         FROM {bb_src}
         WHERE {bounce_s} IS NOT NULL
-          AND {bounce_x} IS NOT NULL
           AND {bounce_s} >  p2.win_start
           AND {bounce_s} <= p2.win_end
         ORDER BY
@@ -447,17 +450,17 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         p2.ball_hit_x,
         chosen.bounce_x,
         chosen.bounce_y,
-        chosen.bounce_type
+        chosen.bounce_type,
+        chosen.bounce_s
       FROM p2
       LEFT JOIN chosen ON chosen.swing_id = p2.swing_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      -- bounce coords for ALL swings (may be NULL if no bounce in window)
-      bounce_x_m = r.bounce_x,
-      bounce_y_m = r.bounce_y,
-
-      -- resolved X only for NON-SERVES (leave existing values for serves)
+      bounce_x_m    = r.bounce_x,
+      bounce_y_m    = r.bounce_y,
+      bounce_type_d = r.bounce_type,
+      bounce_s      = r.bounce_s,
       hit_x_resolved_m = CASE
         WHEN p.serve IS FALSE THEN COALESCE(r.bounce_x, r.next_ball_hit_x, r.ball_hit_x)
         ELSE p.hit_x_resolved_m
@@ -478,6 +481,7 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # --------------------------------- Phase 2–5 (schema only now) ---------------------------------
 
