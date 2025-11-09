@@ -584,95 +584,92 @@ def phase2_update(conn: Connection, task_id: str) -> int:
 #   service_winner_d: TRUE on the decisive serve (try_ix in (1,2)) if there is no later opponent swing in the rally.
 # ------------------------------------------------------------------------------------------
 def phase3_update(conn: Connection, task_id: str) -> int:
-    sql = f"""
-    WITH base AS (
-      SELECT
-        p.task_id, p.rally, p.swing_id, p.player_id, p.swing_type,
-        p.ball_hit_s, p.ball_hit_x, p.ball_hit_y,
-        COALESCE(p.valid, FALSE) AS valid
+    # Pass A: mark serves + side + server + server_end directly (no rally logic yet)
+    sql_a = f"""
+    WITH serves AS (
+      SELECT p.swing_id,
+             p.player_id,
+             CASE
+               WHEN p.ball_hit_x < -{CENTER_EPS_M} THEN 'deuce'
+               WHEN p.ball_hit_x >  {CENTER_EPS_M} THEN 'ad'
+               ELSE CASE WHEN p.ball_hit_x >= 0 THEN 'ad' ELSE 'deuce' END
+             END AS serve_side_d
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND COALESCE(p.valid, FALSE) IS TRUE
+        AND lower(coalesce(p.swing_type,'')) LIKE '%overhead%'
+        AND ABS(p.ball_hit_y) >= {BASELINE_Y_M - BASELINE_EPS_M}
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      serve_d      = TRUE,
+      server_id    = s.player_id,
+      serve_side_d = s.serve_side_d,
+      server_end_d = CASE
+                       WHEN p.ball_hit_y >= 1.0 THEN 'far'
+                       WHEN p.ball_hit_y <= -1.0 THEN 'near'
+                       ELSE NULL
+                     END
+    FROM serves s
+    WHERE p.task_id = :tid
+      AND p.swing_id = s.swing_id;
+    """
+    # Pass B: within each rally, compute the initial-side serve block and assign try_ix/DF/winner
+    sql_b = f"""
+    WITH base AS (
+      SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s, p.serve_side_d
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND COALESCE(p.valid, FALSE) IS TRUE
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
     ),
-    -- Serve detection: your rule (case-insensitive) + at/behind baseline (sign-agnostic)
-    serve_det AS (
-      SELECT
-        b.*,
-        CASE
-          WHEN lower(b.swing_type) LIKE 'fh_over%%'
-           AND ABS(b.ball_hit_y) >= {BASELINE_Y_M - BASELINE_EPS_M}
-          THEN TRUE ELSE FALSE END AS serve_d
-      FROM base b
-    ),
-    -- Side: never NULL. If within epsilon of center, bias by sign (>=0 = ad, else deuce)
-    serve_side AS (
-      SELECT
-        s.*,
-        CASE
-          WHEN s.serve_d IS TRUE THEN
-            CASE
-              WHEN s.ball_hit_x < -{CENTER_EPS_M} THEN 'deuce'
-              WHEN s.ball_hit_x >  {CENTER_EPS_M} THEN 'ad'
-              ELSE CASE WHEN s.ball_hit_x >= 0 THEN 'ad' ELSE 'deuce' END
-            END
-          ELSE NULL
-        END AS serve_side_d
-      FROM serve_det s
-      WHERE s.serve_d IS TRUE
-    ),
-    -- First serve in rally defines the initial side we analyze
     rally_first AS (
       SELECT DISTINCT ON (task_id, rally)
         task_id, rally, serve_side_d AS init_side, ball_hit_s AS init_t
-      FROM serve_side
+      FROM base
       ORDER BY task_id, rally, ball_hit_s, swing_id
     ),
-    -- Time of first serve on the opposite side (if any)
     first_opposite AS (
       SELECT
-        s1.task_id, s1.rally,
-        MIN(s2.ball_hit_s) AS first_opposite_t
-      FROM serve_side s1
-      JOIN serve_side s2
-        ON s1.task_id = s2.task_id
-       AND s1.rally   = s2.rally
-       AND s2.serve_side_d <> s1.serve_side_d
-      GROUP BY s1.task_id, s1.rally
+        b1.task_id, b1.rally,
+        MIN(b2.ball_hit_s) AS first_opposite_t
+      FROM base b1
+      JOIN base b2
+        ON b1.task_id=b2.task_id AND b1.rally=b2.rally
+       AND b2.serve_side_d <> b1.serve_side_d
+      GROUP BY b1.task_id, b1.rally
     ),
-    -- All serves on the initial side, before the opposite side appears (or until rally ends)
     block AS (
       SELECT
-        s.task_id, s.rally, s.swing_id, s.player_id, s.ball_hit_s, s.serve_side_d,
-        ROW_NUMBER() OVER (PARTITION BY s.task_id, s.rally ORDER BY s.ball_hit_s, s.swing_id) AS rn_in_block,
-        COUNT(*)    OVER (PARTITION BY s.task_id, s.rally) AS cnt_in_block
-      FROM serve_side s
+        b.task_id, b.rally, b.swing_id, b.player_id, b.ball_hit_s,
+        ROW_NUMBER() OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS rn_in_block,
+        COUNT(*)    OVER (PARTITION BY b.task_id, b.rally) AS cnt_in_block
+      FROM base b
       JOIN rally_first rf
-        ON rf.task_id = s.task_id AND rf.rally = s.rally AND s.serve_side_d = rf.init_side
+        ON rf.task_id=b.task_id AND rf.rally=b.rally AND b.serve_side_d=rf.init_side
       LEFT JOIN first_opposite fo
-        ON fo.task_id = s.task_id AND fo.rally = s.rally
-      WHERE s.ball_hit_s >= rf.init_t
-        AND (fo.first_opposite_t IS NULL OR s.ball_hit_s < fo.first_opposite_t)
+        ON fo.task_id=b.task_id AND fo.rally=b.rally
+      WHERE b.ball_hit_s >= rf.init_t
+        AND (fo.first_opposite_t IS NULL OR b.ball_hit_s < fo.first_opposite_t)
     ),
-    -- Decide 1st/2nd and Double Fault for the block
     resolve_try AS (
       SELECT
-        b.task_id, b.rally, b.swing_id, b.player_id, b.serve_side_d,
+        blk.task_id, blk.rally, blk.swing_id,
         CASE
-          WHEN b.cnt_in_block = 1 THEN 1
-          WHEN b.cnt_in_block = 2 AND b.rn_in_block = 2 THEN 2
+          WHEN blk.cnt_in_block = 1 THEN 1
+          WHEN blk.cnt_in_block = 2 AND blk.rn_in_block = 2 THEN 2
           ELSE NULL
         END AS serve_try_ix_in_point,
         CASE
-          WHEN b.cnt_in_block > 2
-           AND b.rn_in_block = b.cnt_in_block
+          WHEN blk.cnt_in_block > 2
+           AND blk.rn_in_block = blk.cnt_in_block
            AND NOT EXISTS (
                 SELECT 1 FROM first_opposite fo
-                WHERE fo.task_id = b.task_id AND fo.rally = b.rally
+                WHERE fo.task_id = blk.task_id AND fo.rally = blk.rally
            )
-          THEN TRUE
-          ELSE FALSE
+          THEN TRUE ELSE FALSE
         END AS double_fault_d
-      FROM block b
+      FROM block blk
     ),
     decisive AS (
       SELECT r.*
@@ -684,59 +681,36 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         d.task_id, d.rally, d.swing_id,
         EXISTS (
           SELECT 1
-          FROM base b2
+          FROM {SILVER_SCHEMA}.{TABLE} b2
           WHERE b2.task_id = d.task_id
             AND b2.rally   = d.rally
-            AND b2.ball_hit_s > (SELECT b1.ball_hit_s FROM base b1 WHERE b1.swing_id = d.swing_id)
+            AND b2.ball_hit_s > (SELECT b1.ball_hit_s FROM {SILVER_SCHEMA}.{TABLE} b1 WHERE b1.swing_id = d.swing_id)
             AND b2.player_id <> d.player_id
         ) AS opponent_after
       FROM decisive d
     ),
     winners AS (
-      SELECT
-        d.task_id, d.rally, d.swing_id,
-        CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END AS service_winner_d
+      SELECT d.task_id, d.rally, d.swing_id,
+             CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END AS service_winner_d
       FROM decisive d
       LEFT JOIN opp_after o
-        ON o.task_id = d.task_id AND o.rally = d.rally AND o.swing_id = d.swing_id
-    ),
-    all_serves AS (
-      SELECT
-        s.task_id, s.rally, s.swing_id, s.player_id, s.serve_side_d
-      FROM serve_side s
-    ),
-    final AS (
-      SELECT
-        a.task_id, a.rally, a.swing_id, a.player_id, a.serve_side_d,
-        COALESCE(rt.serve_try_ix_in_point, NULL) AS serve_try_ix_in_point,
-        COALESCE(rt.double_fault_d, FALSE)        AS double_fault_d,
-        COALESCE(w.service_winner_d, NULL)        AS service_winner_d
-      FROM all_serves a
-      LEFT JOIN resolve_try rt
-        ON rt.task_id=a.task_id AND rt.rally=a.rally AND rt.swing_id=a.swing_id
-      LEFT JOIN winners w
-        ON w.task_id=a.task_id AND w.rally=a.rally AND w.swing_id=a.swing_id
+        ON o.task_id=d.task_id AND o.rally=d.rally AND o.swing_id=d.swing_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      serve_d               = TRUE,
-      server_id             = f.player_id,
-      serve_side_d          = f.serve_side_d,
-      server_end_d          = CASE
-                                WHEN p.ball_hit_y >= 1.0 THEN 'far'
-                                WHEN p.ball_hit_y <= -1.0 THEN 'near'
-                                ELSE NULL
-                              END,
-      serve_try_ix_in_point = f.serve_try_ix_in_point,
-      double_fault_d        = f.double_fault_d,
-      service_winner_d      = f.service_winner_d
-
-    FROM final f
+      serve_try_ix_in_point = r.serve_try_ix_in_point,
+      double_fault_d        = r.double_fault_d,
+      service_winner_d      = w.service_winner_d
+    FROM resolve_try r
+    LEFT JOIN winners w
+      ON w.task_id=r.task_id AND w.rally=r.rally AND w.swing_id=r.swing_id
     WHERE p.task_id = :tid
-      AND p.swing_id= f.swing_id;  -- <-- swing_id match only (drop rally match)
+      AND p.swing_id = r.swing_id;
     """
-    res = conn.execute(text(sql), {"tid": task_id})
-    return res.rowcount or 0
+    with conn.begin():
+        conn.execute(text(sql_a), {"tid": task_id})
+        res = conn.execute(text(sql_b), {"tid": task_id})
+        return res.rowcount or 0
 
 # --------------------------------- Phase 2–5 (schema only now) ---------------------------------
 
