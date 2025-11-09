@@ -1,16 +1,7 @@
 # build_silver_point_detail.py
 # Silver point_detail — additive, phase-by-phase builder (single entrypoint)
 # Phase 1: Bronze -> Silver (Section 1 only; valid=TRUE), including swing_id
-# Phase 2: (schema only for now)
-# Phase 3: (schema only for now)
-# Phase 4: (schema only for now)
-# Phase 5: (schema only for now)
-#
-# Design:
-# - Phases are additive. We NEVER drop prior columns.
-# - Each phase owns its columns and writes only those columns.
-# - Phase 1 loads rows for a given task_id from bronze.player_swing (or bronze.swing fallback).
-# - Orchestrator lets you run a single phase or the whole stack.
+# Phase 2–5: schema placeholders (loaders/derivers added later)
 #
 # Usage:
 #   python build_silver_point_detail.py --task-id <UUID> --replace --phase all
@@ -26,14 +17,10 @@ SILVER_SCHEMA = "silver"
 TABLE = "point_detail"
 
 # ------------------------------- Phase specs (schema only) -------------------------------
-
-# Phase 1 — Section 1 (exactly from your sheet; plus swing_id to satisfy NOT NULL in your DB)
+# Phase 1 — Section 1 (exactly from your sheet; plus swing_id)
 PHASE1_COLS = OrderedDict({
     "task_id":              "uuid",
     "swing_id":             "bigint",
-    "created_at":           "timestamptz",
-    "start_s":              "double precision",  # seconds
-    "end_s":                "double precision",  # seconds
     "player_id":            "text",
     "valid":                "boolean",
     "serve":                "boolean",
@@ -44,29 +31,26 @@ PHASE1_COLS = OrderedDict({
     "ball_speed":           "double precision",
     "ball_impact_type":     "text",
     "rally":                "integer",
-    "ball_hit_s":           "double precision",  # seconds
     "ball_hit_x":           "double precision",
-    "ball_hit_y":           "double precision"
+    "ball_hit_y":           "double precision",
 })
 
-
-
-# Phase 2 — player info (add schema columns here; loader to be added later)
+# Phase 2 — player info (schema only for now)
 PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     # e.g. "player_handedness": "text",
 })
 
-# Phase 3 — ball_bounce join (add schema columns here; loader to be added later)
+# Phase 3 — ball_bounce join (schema only for now)
 PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
     # e.g. "bounce_id": "bigint", "bounce_ts": "timestamptz", "bounce_x_m": "double precision", "bounce_y_m": "double precision",
 })
 
-# Phase 4 — serve/point logic (derived; updater later)
+# Phase 4 — serve/point logic (schema only for now)
 PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({
     # e.g. "server_id":"text","serving_side":"text","point_number":"integer","game_number":"integer","point_in_game":"integer","shot_ix":"integer",
 })
 
-# Phase 5 — serve/rally locations (derived; updater later)
+# Phase 5 — serve/rally locations (schema only for now)
 PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({
     # e.g. "play_d":"text","serve_try_ix_in_point":"integer","first_rally_shot_ix":"integer",
 })
@@ -100,50 +84,6 @@ def _bronze_src(conn: Connection) -> Tuple[str, Dict[str, str]]:
 def _colref(name: str) -> str:
     n = name.lower()
     return 's."end"' if n == "end" else f"s.{n}"
-
-def _ts_from_any(cols: Dict[str, str], name: str) -> str:
-    """Return TIMESTAMPTZ from a column that might be ts, numeric seconds, or JSON with 'timestamp'."""
-    n = name.lower()
-    if n not in cols:
-        return "NULL::timestamptz"
-    dt = cols[n]
-    if "timestamp" in dt:
-        return _colref(n)
-    if any(k in dt for k in ("double","real","numeric","integer")):
-        return f"(TIMESTAMP 'epoch' + {_colref(n)} * INTERVAL '1 second')"
-    if "json" in dt:
-        return f"""(
-          CASE
-            WHEN jsonb_typeof({_colref(n)}::jsonb)='object'
-             AND ({_colref(n)}::jsonb ? 'timestamp')
-             AND jsonb_typeof(({_colref(n)}::jsonb)->'timestamp')='number'
-              THEN (TIMESTAMP 'epoch' + (({_colref(n)}::jsonb)->>'timestamp')::double precision * INTERVAL '1 second')
-            WHEN jsonb_typeof({_colref(n)}::jsonb)='number'
-              THEN (TIMESTAMP 'epoch' + ({_colref(n)}::text)::double precision * INTERVAL '1 second')
-            ELSE NULL::timestamptz
-          END)"""
-    return "NULL::timestamptz"
-
-def _sec_expr(cols: Dict[str, str], name: str) -> str:
-    """Return DOUBLE PRECISION seconds (supports numeric or JSON with 'timestamp')."""
-    n = name.lower()
-    if n not in cols:
-        return "NULL::double precision"
-    dt = cols[n]
-    if "json" in dt:
-        return f"""(
-          CASE
-            WHEN jsonb_typeof({_colref(n)}::jsonb)='object'
-             AND ({_colref(n)}::jsonb ? 'timestamp')
-             AND jsonb_typeof(({_colref(n)}::jsonb)->'timestamp')='number'
-              THEN (({_colref(n)}::jsonb)->>'timestamp')::double precision
-            WHEN jsonb_typeof({_colref(n)}::jsonb)='number'
-              THEN ({_colref(n)}::text)::double precision
-            ELSE NULL::double precision
-          END)"""
-    if any(k in dt for k in ("double","real","numeric","integer")):
-        return _colref(n)
-    return "NULL::double precision"
 
 def _jsonb(cols: Dict[str, str], name: str) -> str:
     return f"{_colref(name)}::jsonb" if name.lower() in cols else "NULL::jsonb"
@@ -205,7 +145,6 @@ def _ball_hit_y_expr(cols: Dict[str, str]) -> str:
         return _num(cols, "ball_hit_y")
     return _xy_from_json_array(_colref("ball_hit_location"), 1)
 
-
 # --------------------------------- schema ensure ---------------------------------
 
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
@@ -213,14 +152,11 @@ DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
 def ensure_table_exists(conn: Connection):
     _exec(conn, DDL_CREATE_SCHEMA)
     if not _table_exists(conn, SILVER_SCHEMA, TABLE):
-        # Create with Phase 1 columns only (no NOT NULLs to keep ingestion flexible)
         cols_sql = ",\n  ".join([f"{k} {v}" for k, v in PHASE1_COLS.items()])
         _exec(conn, f"CREATE TABLE {SILVER_SCHEMA}.{TABLE} (\n  {cols_sql}\n);")
-        # Core indexes
+        # Core indexes (no time-based indexes since those columns were dropped)
         _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task       ON {SILVER_SCHEMA}.{TABLE}(task_id);")
         _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task_swing ON {SILVER_SCHEMA}.{TABLE}(task_id, swing_id);")
-        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_start      ON {SILVER_SCHEMA}.{TABLE}(start_ts);")
-        _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_hit        ON {SILVER_SCHEMA}.{TABLE}(ball_hit);")
 
 def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
     existing = _columns_types(conn, SILVER_SCHEMA, TABLE)
@@ -231,33 +167,24 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 # --------------------------------- Phase 1 loader ---------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
+    """
+    Import exactly the Section 1 fields from Bronze (valid=TRUE only).
+    """
     src, bcols = _bronze_src(conn)
-
-    created_at = _ts_from_any(bcols, "created_at")
-
-    # Prefer *_ts JSON, fall back to simple names if present
-    start_s    = f"COALESCE({_sec_expr(bcols,'start_ts')}, {_sec_expr(bcols,'start')})"
-    end_s      = f"COALESCE({_sec_expr(bcols,'end_ts')}, {_sec_expr(bcols,'end')})"
-    ball_hit_s = f"COALESCE({_sec_expr(bcols,'ball_hit')}, {_sec_expr(bcols,'ball_hit_s')})"
-
-    swing_id   = _swing_id_expr(bcols)
-    bhx        = _ball_hit_x_expr(bcols)
-    bhy        = _ball_hit_y_expr(bcols)
+    swing_id = _swing_id_expr(bcols)
+    bhx      = _ball_hit_x_expr(bcols)
+    bhy      = _ball_hit_y_expr(bcols)
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
-      task_id, swing_id, created_at,
-      start_s, end_s, player_id, valid,
-      serve, swing_type, volley, is_in_rally,
+      task_id, swing_id, player_id,
+      valid, serve, swing_type, volley, is_in_rally,
       ball_player_distance, ball_speed, ball_impact_type,
-      rally, ball_hit_s, ball_hit_x, ball_hit_y
+      rally, ball_hit_x, ball_hit_y
     )
     SELECT
       {_text(bcols, "task_id")}::uuid,
       {swing_id},
-      {created_at},
-      {start_s},
-      {end_s},
       {_text(bcols, "player_id")},
       {_bool(bcols, "valid")},
       {_bool(bcols, "serve")},
@@ -268,7 +195,6 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       {_num(bcols, "ball_speed")},
       {_text(bcols, "ball_impact_type")},
       {_int(bcols, "rally")},
-      {ball_hit_s},
       {bhx},
       {bhy}
     FROM {src}
@@ -298,7 +224,7 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
     out: Dict = {"ok": True, "task_id": task_id, "phase": phase}
 
     with engine.begin() as conn:
-        # Always have the table
+        # Ensure table exists
         ensure_table_exists(conn)
         # Ensure schema up to selected phase (additive, no drops)
         ensure_phase_columns(conn, PHASE1_COLS)
@@ -312,6 +238,7 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
             if replace:
                 _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
             out["phase1_rows"] = phase1_load(conn, task_id)
+
         # Stubs for next phases (fill in later with loaders/updaters)
         if phase in ("all","2"):
             out["phase2"] = "schema-ready"
