@@ -1,26 +1,33 @@
 # build_silver_point_detail.py
 # Silver point_detail — additive, phase-by-phase builder (single entrypoint)
 #
-# PHASE 1  (BRONZE → SILVER copy; exact 1:1)
-#   Source: bronze.player_swing
-#   Copy columns exactly (valid=TRUE only):
-#     task_id, start_ts, end_ts, player_id, valid, serve, swing_type, volley, is_in_rally,
-#     ball_player_distance, ball_speed, rally,
-#     ball_hit -> 'timestamp' (as ball_hit_s),
-#     ball_hit_location_x (as ball_hit_x), ball_hit_location_y (as ball_hit_y),
-#     id -> swing_id   (stable per-swing key from Bronze)
+# PHASE 1  (BRONZE → SILVER copy; 1:1):
+#   • Source: bronze.player_swing
+#   • Exact field copy for Section-1 columns (valid=TRUE only)
+#   • ball_hit_x / ball_hit_y:
+#       - use ball_hit_location_x / ball_hit_location_y if present
+#       - else parse ball_hit_location array/json [x,y]
+#   • ball_hit_s:
+#       - prefer JSON 'timestamp' from ball_hit object
+#       - else numeric/text cast (safe)
+#   • rally:
+#       - cast to int only if text looks like an integer
 #
-# PHASE 2  (Bounces; pure Bronze pull + minimal placement helpers)
-#   Source: bronze.ball_bounce
-#   For each swing: choose the FIRST bounce strictly AFTER ball_hit_s and
-#   BEFORE min(next_ball_hit_s, ball_hit_s + 2.5).
-#   Write:
-#     bounce_x_m, bounce_y_m, bounce_type_d, bounce_s
-#   And classic helpers for NON-SERVES:
-#     hit_x_resolved_m = bounce_x -> next_contact_x -> ball_hit_x
-#     hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
+# PHASE 2  (BRONZE → SILVER bounces; minimal placement helpers):
+#   • Source: bronze.ball_bounce
+#   • For every swing (incl. serves):
+#       - find FIRST bounce strictly after ball_hit_s within window:
+#           start = ball_hit_s + 0.005
+#           end   = LEAST(next_ball_hit_s, ball_hit_s + 2.5)
+#         (if no next_ball_hit_s, cap at ball_hit_s + 2.5)
+#       - prefer bounce_type = 'floor' in ties; else earliest
+#       - write: bounce_x_m, bounce_y_m, bounce_type_d, bounce_s
+#   • For NON-SERVE swings only:
+#       - hit_x_resolved_m = bounce_x → next_contact_x → ball_hit_x
+#       - hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
+#   • All comparisons are type-safe against json/arrays.
 #
-# PHASES 3–5: schema placeholders only (not executed).
+# PHASES 3–5: schema placeholders (no logic in this file right now).
 #
 # Usage:
 #   python build_silver_point_detail.py --task-id <UUID> --replace --phase 1
@@ -36,10 +43,12 @@ from db_init import engine
 SILVER_SCHEMA = "silver"
 TABLE = "point_detail"
 
-# ------------------------------- Phase specs (schema only) -------------------------------
+# ------------------------------- Column specs -------------------------------
+
+# Phase 1 — Section 1 (exactly from your sheet; swing_id = bronze.id)
 PHASE1_COLS = OrderedDict({
     "task_id":              "uuid",
-    "swing_id":             "bigint",              # bronze.id
+    "swing_id":             "bigint",
     "player_id":            "text",
     "valid":                "boolean",
     "serve":                "boolean",
@@ -48,15 +57,16 @@ PHASE1_COLS = OrderedDict({
     "is_in_rally":          "boolean",
     "ball_player_distance": "double precision",
     "ball_speed":           "double precision",
-    "ball_impact_type":     "text",                # not in bronze.player_swing -> NULL
+    "ball_impact_type":     "text",              # not in bronze; stays NULL
     "rally":                "integer",
-    "ball_hit_x":           "double precision",    # bronze.ball_hit_location_x
-    "ball_hit_y":           "double precision",    # bronze.ball_hit_location_y
-    "start_s":              "double precision",    # bronze.start_ts
-    "end_s":                "double precision",    # bronze.end_ts
-    "ball_hit_s":           "double precision"     # bronze.ball_hit -> 'timestamp'
+    "ball_hit_x":           "double precision",
+    "ball_hit_y":           "double precision",
+    "start_s":              "double precision",
+    "end_s":                "double precision",
+    "ball_hit_s":           "double precision"
 })
 
+# Phase 2 — bounce + minimal placement helpers (additive)
 PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     "hit_x_resolved_m": "double precision",
     "hit_source_d":     "text",              # floor_bounce | any_bounce | next_contact | ball_hit
@@ -66,10 +76,26 @@ PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     "bounce_s":         "double precision"
 })
 
-# Placeholders — schema only (no execution)
-PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({})
-PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({})
-PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({})
+# Phase 3 — serve-only (placeholder)
+PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
+    "serve_d":                 "boolean",
+    "server_id":               "text",
+    "serve_side_d":            "text",
+    "serve_try_ix_in_point":   "integer",
+    "double_fault_d":          "boolean",
+    "service_winner_d":        "boolean",
+    "server_end_d":            "text"      # 'near' | 'far'
+})
+
+# Phase 4 — placeholder
+PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({
+})
+
+# Phase 5 — placeholder
+PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({
+})
+
+PHASE_COLSETS = [PHASE1_COLS, PHASE2_COLS, PHASE3_COLS, PHASE4_COLS, PHASE5_COLS]
 
 # --------------------------------- helpers ---------------------------------
 
@@ -88,7 +114,7 @@ def _columns_types(conn: Connection, schema: str, name: str) -> Dict[str, str]:
     rows = conn.execute(text(q), {"s": schema, "t": name}).fetchall()
     return {r[0].lower(): r[1].lower() for r in rows}
 
-# --------------------------------- schema ensure ---------------------------------
+# ------------------------------- schema ensure -------------------------------
 
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
 
@@ -106,18 +132,17 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
         if col.lower() not in existing:
             _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
 
-# --------------------------------- Phase 1 loader (pure bronze copy) ---------------------------------
+# ------------------------------- PHASE 1 — loader (pure 1:1 from bronze) -------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
     PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
-    Uses bronze.id as swing_id.
-    Supports either:
-      - ball_hit_location_x / ball_hit_location_y, or
-      - ball_hit_location (array/json) as fallback.
+    Uses bronze.id as swing_id. Supports either:
+      • ball_hit_location_x / ball_hit_location_y
+      • ball_hit_location (array/json) fallback → [0],[1]
+    Rally is cast to int only if text is integer-like.
     """
     bcols = _columns_types(conn, "bronze", "player_swing")
-
     must_have = {
         "task_id","start_ts","end_ts","player_id","valid","serve","swing_type","volley",
         "is_in_rally","ball_player_distance","ball_speed","rally","ball_hit","id"
@@ -126,7 +151,6 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     if missing:
         raise RuntimeError(f"bronze.player_swing missing columns: {missing}")
 
-    # X/Y expressions: split columns first, else array/json fallback
     if "ball_hit_location_x" in bcols and "ball_hit_location_y" in bcols:
         bhx_expr = "s.ball_hit_location_x::double precision"
         bhy_expr = "s.ball_hit_location_y::double precision"
@@ -152,14 +176,14 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     else:
         raise RuntimeError("bronze.player_swing missing ball_hit_location[_x/_y] columns")
 
-    # SAFE rally cast: only cast to int if the text looks like an integer
     rally_expr = "CASE WHEN (s.rally)::text ~ '^-?\\d+$' THEN (s.rally)::int ELSE NULL::int END"
 
-    # ball_hit_s: prefer JSON object with 'timestamp', else try numeric/text
     ball_hit_s_expr = """
       COALESCE(
-        (CASE WHEN jsonb_typeof(s.ball_hit::jsonb)='object' AND (s.ball_hit::jsonb ? 'timestamp')
-              THEN (s.ball_hit::jsonb->>'timestamp')::double precision END),
+        (CASE
+           WHEN jsonb_typeof(s.ball_hit::jsonb)='object' AND (s.ball_hit::jsonb ? 'timestamp')
+           THEN (s.ball_hit::jsonb->>'timestamp')::double precision
+         END),
         NULLIF(s.ball_hit::text, '')::double precision
       )
     """.strip()
@@ -173,23 +197,23 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       start_s, end_s, ball_hit_s
     )
     SELECT
-      s.task_id::uuid                         AS task_id,
-      s.id                                    AS swing_id,           -- bronze id (exact)
-      s.player_id                             AS player_id,
-      s.valid                                 AS valid,
-      s.serve                                 AS serve,
-      s.swing_type                            AS swing_type,
-      s.volley                                AS volley,
-      s.is_in_rally                           AS is_in_rally,
+      s.task_id::uuid                          AS task_id,
+      s.id                                     AS swing_id,        -- exact bronze id
+      s.player_id                              AS player_id,
+      s.valid                                  AS valid,
+      s.serve                                  AS serve,
+      s.swing_type                             AS swing_type,
+      s.volley                                 AS volley,
+      s.is_in_rally                            AS is_in_rally,
       s.ball_player_distance::double precision AS ball_player_distance,
       s.ball_speed::double precision           AS ball_speed,
-      NULL::text                              AS ball_impact_type,   -- not in player_swing
-      {rally_expr}                            AS rally,
-      {bhx_expr}                              AS ball_hit_x,
-      {bhy_expr}                              AS ball_hit_y,
-      s.start_ts::double precision            AS start_s,
-      s.end_ts::double precision              AS end_s,
-      {ball_hit_s_expr}                       AS ball_hit_s
+      NULL::text                               AS ball_impact_type,  -- not present in player_swing
+      {rally_expr}                             AS rally,
+      {bhx_expr}                               AS ball_hit_x,
+      {bhy_expr}                               AS ball_hit_y,
+      s.start_ts::double precision             AS start_s,
+      s.end_ts::double precision               AS end_s,
+      {ball_hit_s_expr}                        AS ball_hit_s
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) IS TRUE;
@@ -197,9 +221,9 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
+# ------------------------------- PHASE 2 — updater (pure bounce + helpers) -------------------------------
 
-# --------------------------------- Phase 2 helpers (ball_bounce parsing) ---------------------------------
-
+# Helpers that reference alias `b` (bronze.ball_bounce)
 def _colref_b(name: str) -> str:
     n = name.lower()
     return f'b."end"' if n == "end" else f"b.{n}"
@@ -248,21 +272,33 @@ def _xy_from_json_array_b(colref: str, index: int) -> str:
       END)"""
 
 def _bronze_cols(conn: Connection, name: str) -> dict:
-    q = """SELECT column_name, data_type
-           FROM information_schema.columns
-           WHERE table_schema='bronze' AND table_name=:t"""
-    rows = conn.execute(text(q), {"t": name}).fetchall()
+    rows = conn.execute(text("""
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name=:t
+    """), {"t": name}).fetchall()
     return {r[0].lower(): r[1].lower() for r in rows}
 
-def _bb_src(conn: Connection) -> Tuple[str, dict]:
+def _bb_src(conn: Connection):
     if _table_exists(conn, "bronze", "ball_bounce"):
         return "bronze.ball_bounce b", _bronze_cols(conn, "ball_bounce")
-    raise RuntimeError("bronze.ball_bounce not found.")
+    raise RuntimeError("Bronze ball_bounce not found.")
 
 def _bounce_time_expr(bcols: dict) -> str:
+    # search common time fields; treat json/object safely
     for cand in ("timestamp","ts","time_s","bounce_s","t"):
         if cand in bcols:
             return _sec_b(bcols, cand)
+    # some feeds pack into 'data' object
+    if "data" in bcols and "json" in bcols["data"]:
+        return f"""
+          (CASE
+             WHEN jsonb_typeof({_colref_b('data')}::jsonb)='object'
+                  AND jsonb_typeof(({_colref_b('data')}::jsonb)->'timestamp')='number'
+               THEN (({_colref_b('data')}::jsonb)->>'timestamp')::double precision
+             ELSE NULL::double precision
+           END)
+        """.strip()
     return "NULL::double precision"
 
 def _bounce_x_expr(bcols: dict) -> str:
@@ -323,13 +359,23 @@ def _bounce_type_expr(bcols: dict) -> str:
     for cand in ("bounce_type","type"):
         if cand in bcols:
             return _text_b(bcols, cand)
+    # sometimes inside 'data'
+    if "data" in bcols and "json" in bcols["data"]:
+        return f"""
+          (CASE
+             WHEN jsonb_typeof({_colref_b('data')}::jsonb)='object'
+                  AND jsonb_typeof(({_colref_b('data')}::jsonb)->'type')='string'
+               THEN ({_colref_b('data')}::jsonb->>'type')
+             ELSE NULL::text
+           END)
+        """.strip()
     return "NULL::text"
-
-# --------------------------------- Phase 2 updater ---------------------------------
 
 def phase2_update(conn: Connection, task_id: str) -> int:
     """
-    PHASE 2 — Bounce selection + classic hit resolution (additive, idempotent per task).
+    PHASE 2 — Bounce selection + classic hit resolution (additive, idempotent per task)
+    Inputs: silver.point_detail (Phase 1) + bronze.ball_bounce
+    NOTE: all joins are type-safe (uuid/text) and all json/array fields guarded.
     """
     bb_src, bcols = _bb_src(conn)
     bounce_s   = _bounce_time_expr(bcols)
@@ -383,7 +429,9 @@ def phase2_update(conn: Connection, task_id: str) -> int:
           {bounce_typ} AS bounce_type,
           {bounce_s}   AS bounce_s
         FROM {bb_src}
-        WHERE b.task_id = p2.task_id
+        WHERE
+          -- keep inside same task; cast both sides to text to avoid uuid/text mismatch
+          (b.task_id)::text = (p2.task_id)::text
           AND {bounce_s} IS NOT NULL
           AND {bounce_s} >  p2.win_start
           AND {bounce_s} <= p2.win_end
@@ -433,19 +481,20 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# --------------------------------- Phase 2–5 (schema only now) ---------------------------------
+# ------------------------------- Phase 2–5 (schema only now) -------------------------------
 
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
 def phase3_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE3_COLS)
 def phase4_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE4_COLS)
 def phase5_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE5_COLS)
 
-# --------------------------------- Orchestrator ---------------------------------
+# ------------------------------- Orchestrator -------------------------------
 
 def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dict:
     """
-    Orchestrate the build. Ensures schema; Phase 1 loads rows (optional replace);
-    Phase 2 updates bounces; Phases 3–5 are schema-only (no execution).
+    Orchestrate the build. Ensures schema for all phases up to `phase`.
+    Phase 1 loads rows (replace deletes rows for this task_id first).
+    Later phases update only their own columns.
     """
     if not task_id:
         raise ValueError("task_id is required")
@@ -469,15 +518,14 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         if phase in ("all","2"):
             out["phase2_rows_updated"] = phase2_update(conn, task_id)
 
-        # Note: Phases 3–5 intentionally not executed
-        if phase in ("all","2"): out["phase2"] = "done-schema"
-        if phase in ("all","3"): out["phase3"] = "schema-only"
-        if phase in ("all","4"): out["phase4"] = "schema-only"
-        if phase in ("all","5"): out["phase5"] = "schema-only"
+        # Stubs only
+        if phase in ("all","3"): out["phase3"] = "schema-ready"
+        if phase in ("all","4"): out["phase4"] = "schema-ready"
+        if phase in ("all","5"): out["phase5"] = "schema-ready"
 
     return out
 
-# --------------------------------- CLI ---------------------------------
+# ------------------------------- CLI -------------------------------
 
 if __name__ == "__main__":
     import argparse, json
