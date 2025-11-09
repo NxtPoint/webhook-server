@@ -181,16 +181,157 @@ def phase1_load(conn: Connection, task_id: str) -> int:
 
 # --------------------------------- Phase 2 updater (pure bounce + helpers) ---------------------------------
 
+# --------------------------------- Phase 2 Helpers ---------------------------------
+# These parse numeric / JSON / array values from bronze.ball_bounce (“b” alias)
+
+def _colref_b(name: str) -> str:
+    n = name.lower()
+    return f'b."end"' if n == "end" else f"b.{n}"
+
+def _sec_b(cols: dict, name: str) -> str:
+    n = name.lower()
+    if n not in cols:
+        return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(
+          CASE
+            WHEN jsonb_typeof({_colref_b(n)}::jsonb)='object'
+                 AND ({_colref_b(n)}::jsonb ? 'timestamp')
+                 AND jsonb_typeof(({_colref_b(n)}::jsonb)->'timestamp')='number'
+              THEN (({_colref_b(n)}::jsonb)->>'timestamp')::double precision
+            WHEN jsonb_typeof({_colref_b(n)}::jsonb)='number'
+              THEN ({_colref_b(n)}::text)::double precision
+            ELSE NULL::double precision
+          END)"""
+    if any(k in dt for k in ("double","real","numeric","integer")):
+        return _colref_b(n)
+    return "NULL::double precision"
+
+def _num_b(cols: dict, name: str) -> str:
+    n = name.lower()
+    if n not in cols: return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(CASE WHEN jsonb_typeof({_colref_b(n)})='number'
+                   THEN ({_colref_b(n)}::text)::double precision
+                   ELSE NULL::double precision END)"""
+    return _colref_b(n)
+
+def _text_b(cols: dict, name: str) -> str:
+    return _colref_b(name) if name.lower() in cols else "NULL::text"
+
+def _xy_from_json_array_b(colref: str, index: int) -> str:
+    return f"""(
+      CASE
+        WHEN {colref} IS NOT NULL
+         AND jsonb_typeof({colref}::jsonb)='array'
+         AND jsonb_array_length({colref}::jsonb) > {index}
+        THEN ({colref}::jsonb->>{index})::double precision
+        ELSE NULL::double precision
+      END)"""
+
+def _bronze_cols(conn: Connection, name: str) -> dict:
+    q = """SELECT column_name, data_type
+           FROM information_schema.columns
+           WHERE table_schema='bronze' AND table_name=:t"""
+    rows = conn.execute(text(q), {"t": name}).fetchall()
+    return {r[0].lower(): r[1].lower() for r in rows}
+
+def _bb_src(conn: Connection):
+    if _table_exists(conn, "bronze", "ball_bounce"):
+        return "bronze.ball_bounce b", _bronze_cols(conn, "ball_bounce")
+    raise RuntimeError("Bronze ball_bounce not found.")
+
+def _bounce_time_expr(bcols: dict) -> str:
+    for cand in ("timestamp","ts","time_s","bounce_s","t"):
+        if cand in bcols:
+            return _sec_b(bcols, cand)
+    return "NULL::double precision"
+
+def _bounce_x_expr(bcols: dict) -> str:
+    exprs = []
+    for cand in ("court_x","x","bounce_x","x_center","x_m","x_pos"):
+        if cand in bcols and "json" not in bcols[cand]:
+            exprs.append(_num_b(bcols, cand))
+    for arr in ("court_pos","location","pos"):
+        if arr in bcols:
+            exprs.append(_xy_from_json_array_b(_colref_b(arr), 0))
+    for jcol in ("data","bounce"):
+        if jcol in bcols and "json" in bcols[jcol]:
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_x')='number'
+                 THEN ({_colref_b(jcol)}::jsonb->>'court_x')::double precision
+                 ELSE NULL::double precision
+               END)""")
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_pos')='array'
+                      AND jsonb_array_length({_colref_b(jcol)}::jsonb->'court_pos')>0
+                 THEN (({_colref_b(jcol)}::jsonb->'court_pos')->>0)::double precision
+                 ELSE NULL::double precision
+               END)""")
+    return "COALESCE(" + ", ".join(exprs) + ", NULL::double precision)" if exprs else "NULL::double precision"
+
+def _bounce_y_expr(bcols: dict) -> str:
+    exprs = []
+    for cand in ("court_y","y","bounce_y","y_center","y_m","y_pos"):
+        if cand in bcols and "json" not in bcols[cand]:
+            exprs.append(_num_b(bcols, cand))
+    for arr in ("court_pos","location","pos"):
+        if arr in bcols:
+            exprs.append(_xy_from_json_array_b(_colref_b(arr), 1))
+    for jcol in ("data","bounce"):
+        if jcol in bcols and "json" in bcols[jcol]:
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_y')='number'
+                 THEN ({_colref_b(jcol)}::jsonb->>'court_y')::double precision
+                 ELSE NULL::double precision
+               END)""")
+            exprs.append(f"""
+              (CASE
+                 WHEN jsonb_typeof({_colref_b(jcol)}::jsonb)='object'
+                      AND jsonb_typeof({_colref_b(jcol)}::jsonb->'court_pos')='array'
+                      AND jsonb_array_length({_colref_b(jcol)}::jsonb->'court_pos')>1
+                 THEN (({_colref_b(jcol)}::jsonb->'court_pos')->>1)::double precision
+                 ELSE NULL::double precision
+               END)""")
+    return "COALESCE(" + ", ".join(exprs) + ", NULL::double precision)" if exprs else "NULL::double precision"
+
+def _bounce_type_expr(bcols: dict) -> str:
+    for cand in ("bounce_type","type"):
+        if cand in bcols:
+            return _text_b(bcols, cand)
+    return "NULL::text"
+
 def phase2_update(conn: Connection, task_id: str) -> int:
     """
-    PHASE 2 — Pure bounces from bronze + minimal placement helpers.
+    PHASE 2 — Bounce selection + classic hit resolution (additive, idempotent per task)
+    Inputs: silver.point_detail (Phase 1)
+            bronze.ball_bounce
 
-    For each swing p:
-      Window: [p.ball_hit_s + 0.005, min(next_ball_hit_s, p.ball_hit_s + 2.5)]
-      Choose first bounce in window (strictly > hit), preferring type='floor'.
-      Write bounce_x_m, bounce_y_m, bounce_type_d, bounce_s.
-      For non-serves: resolve hit_x_resolved_m + hit_source_d.
+    Rule summary
+    ------------
+    • Per swing, define window: [ball_hit_s + 0.005s, min(next_ball_hit_s, ball_hit_s + 2.5s)].
+    • Choose the FIRST bounce within that window, preferring 'floor' over other types:
+        ORDER BY (bounce_type='floor') ASC, bounce_s ASC
+    • Write bounce coords/time/type for ALL swings (serves too): bounce_x_m, bounce_y_m, bounce_s, bounce_type_d
+    • For NON-SERVE swings only:
+        hit_x_resolved_m := bounce_x  → next_contact_x → own ball_hit_x
+        hit_source_d     := floor_bounce | any_bounce | next_contact | ball_hit
+    • Everything scoped to SAME task_id.
     """
+    bb_src, bcols = _bb_src(conn)
+    bounce_s   = _bounce_time_expr(bcols)
+    bounce_x   = _bounce_x_expr(bcols)
+    bounce_y   = _bounce_y_expr(bcols)
+    bounce_typ = _bounce_type_expr(bcols)
+
     sql = f"""
     WITH p0 AS (
       SELECT
@@ -205,8 +346,14 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     p1 AS (
       SELECT
         p0.*,
-        LEAD(p0.ball_hit_s) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_s,
-        LEAD(p0.ball_hit_x) OVER (PARTITION BY p0.task_id, p0.rally ORDER BY p0.ball_hit_s, p0.swing_id) AS next_ball_hit_x
+        LEAD(p0.ball_hit_s) OVER (
+          PARTITION BY p0.task_id, p0.rally
+          ORDER BY p0.ball_hit_s, p0.swing_id
+        ) AS next_ball_hit_s,
+        LEAD(p0.ball_hit_x) OVER (
+          PARTITION BY p0.task_id, p0.rally
+          ORDER BY p0.ball_hit_s, p0.swing_id
+        ) AS next_ball_hit_x
       FROM p0
     ),
     p2 AS (
@@ -216,25 +363,30 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         LEAST(COALESCE(p1.next_ball_hit_s, p1.ball_hit_s + 2.5), p1.ball_hit_s + 2.5) AS win_end
       FROM p1
     ),
-    pick AS (
+    chosen AS (
       SELECT
         p2.swing_id,
-        b.timestamp AS bounce_s,
-        b.type      AS bounce_type,
-        b.court_x   AS bounce_x,
-        b.court_y   AS bounce_y
+        pick.bounce_x,
+        pick.bounce_y,
+        pick.bounce_type,
+        pick.bounce_s
       FROM p2
       LEFT JOIN LATERAL (
-        SELECT b.*
-        FROM bronze.ball_bounce b
-        WHERE b.task_id::uuid = p2.task_id
-          AND b.player_id     = p2.player_id
-          AND b.rally         = p2.rally
-          AND b.timestamp     > p2.win_start
-          AND b.timestamp     <= p2.win_end
-        ORDER BY CASE WHEN b.type = 'floor' THEN 0 ELSE 1 END, b.timestamp
+        SELECT
+          {bounce_x}   AS bounce_x,
+          {bounce_y}   AS bounce_y,
+          {bounce_typ} AS bounce_type,
+          {bounce_s}   AS bounce_s
+        FROM {bb_src}
+        WHERE {bounce_s} IS NOT NULL
+          AND b.task_id = p2.task_id         -- keep within task
+          AND {bounce_s} >  p2.win_start
+          AND {bounce_s} <= p2.win_end
+        ORDER BY
+          CASE WHEN {bounce_typ} = 'floor' THEN 0 ELSE 1 END,
+          {bounce_s}
         LIMIT 1
-      ) b ON TRUE
+      ) AS pick ON TRUE
     ),
     resolved AS (
       SELECT
@@ -242,12 +394,12 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         p2.serve,
         p2.next_ball_hit_x,
         p2.ball_hit_x,
-        pick.bounce_x,
-        pick.bounce_y,
-        pick.bounce_type,
-        pick.bounce_s
+        chosen.bounce_x,
+        chosen.bounce_y,
+        chosen.bounce_type,
+        chosen.bounce_s
       FROM p2
-      LEFT JOIN pick ON pick.swing_id = p2.swing_id
+      LEFT JOIN chosen ON chosen.swing_id = p2.swing_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
@@ -279,25 +431,35 @@ def phase2_update(conn: Connection, task_id: str) -> int:
 # --------------------------------- Phase 3 updater (serve logic) ---------------------------------
 
 # Court constants (meters) & tolerances
-BASELINE_Y_M   = 11.885      # distance from net to baseline
-CENTER_EPS_M   = 0.15        # small epsilon around center line
-BASELINE_EPS_M = 0.25        # tolerance for "at/behind baseline"
+# Court constants & tolerances
+BASELINE_Y_M = 11.885         # baseline distance (m) from net
+CENTER_EPS_M = 0.15           # ±X tolerance to disambiguate deuce/ad near middle
+BASELINE_EPS_M = 0.25         # tolerance for "at/behind baseline"
 
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    PHASE 3 — Serve detection + side + try index + double fault + service winner.
-    Uses ONLY Phase-1/2 fields.
+    PHASE 3 — Serve-only features (derived) using only Phase-1/2 data
+
+    Fields written:
+      • serve_d (bool)         : our detector — fh_overhead AND |ball_hit_y| >= baseline - eps
+      • server_id (text)       : player_id of serve row
+      • serve_side_d (text)    : 'deuce'|'ad' from server contact X (normalized around center)
+      • serve_try_ix_in_point  : 1|2 (first/second serve in). We only mark the decisive serve.
+      • double_fault_d (bool)  : TRUE on last serve if >2 serves on initial side without side flip and rally ends there.
+      • service_winner_d (bool): decisive serve where no opponent swing follows in the rally
+      • server_end_d (text)    : 'near'|'far' by sign of ball_hit_y (near<0, far>0)
     """
-    # Pass A: detect serves, set side, server_id, server_end_d
+    # Pass A: mark serves + side + server end
     sql_a = f"""
     WITH serves AS (
-      SELECT p.swing_id,
-             p.player_id,
-             CASE
-               WHEN p.ball_hit_x < -{CENTER_EPS_M} THEN 'deuce'
-               WHEN p.ball_hit_x >  {CENTER_EPS_M} THEN 'ad'
-               ELSE CASE WHEN p.ball_hit_x >= 0 THEN 'ad' ELSE 'deuce' END
-             END AS serve_side_d
+      SELECT
+        p.swing_id,
+        p.player_id,
+        CASE
+          WHEN p.ball_hit_x < -{CENTER_EPS_M} THEN 'deuce'
+          WHEN p.ball_hit_x >  {CENTER_EPS_M} THEN 'ad'
+          ELSE CASE WHEN p.ball_hit_x >= 0 THEN 'ad' ELSE 'deuce' END
+        END AS serve_side_d
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND COALESCE(p.valid, FALSE) IS TRUE
@@ -310,7 +472,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       server_id    = s.player_id,
       serve_side_d = s.serve_side_d,
       server_end_d = CASE
-                       WHEN p.ball_hit_y >=  1.0 THEN 'far'
+                       WHEN p.ball_hit_y >= 1.0 THEN 'far'
                        WHEN p.ball_hit_y <= -1.0 THEN 'near'
                        ELSE NULL
                      END
@@ -319,7 +481,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       AND p.swing_id = s.swing_id;
     """
 
-    # Pass B: contiguous-segment logic for try index, double fault, service winner
+    # Pass B: assign try index (1/2), double fault, and service winner
     sql_b = f"""
     WITH base AS (
       SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s, p.serve_side_d
@@ -328,97 +490,97 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND COALESCE(p.valid, FALSE) IS TRUE
         AND COALESCE(p.serve_d, FALSE) IS TRUE
     ),
-    ordered AS (
-      SELECT
-        b.*,
-        ROW_NUMBER() OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS rn,
-        LAG(b.serve_side_d) OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS prev_side
+    rally_min AS (
+      SELECT task_id, rally, MIN(ball_hit_s) AS init_t
+      FROM base GROUP BY task_id, rally
+    ),
+    rally_first AS (
+      SELECT b.task_id, b.rally, b.serve_side_d AS init_side, b.ball_hit_s AS init_t
       FROM base b
+      JOIN rally_min m
+        ON m.task_id=b.task_id AND m.rally=b.rally AND b.ball_hit_s=m.init_t
     ),
-    seg_mark AS (
+    first_opposite AS (
+      SELECT b1.task_id, b1.rally, MIN(b2.ball_hit_s) AS first_opposite_t
+      FROM base b1
+      JOIN base b2
+        ON b1.task_id=b2.task_id AND b1.rally=b2.rally
+       AND b2.serve_side_d <> b1.serve_side_d
+      GROUP BY b1.task_id, b1.rally
+    ),
+    block AS (
       SELECT
-        o.*,
-        CASE WHEN o.prev_side IS DISTINCT FROM o.serve_side_d THEN 1 ELSE 0 END AS is_new_seg
-      FROM ordered o
+        b.task_id, b.rally, b.swing_id, b.player_id, b.ball_hit_s,
+        ROW_NUMBER() OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS rn_in_block,
+        COUNT(*)    OVER (PARTITION BY b.task_id, b.rally) AS cnt_in_block
+      FROM base b
+      JOIN rally_first rf
+        ON rf.task_id=b.task_id AND rf.rally=b.rally AND b.serve_side_d=rf.init_side
+      LEFT JOIN first_opposite fo
+        ON fo.task_id=b.task_id AND fo.rally=b.rally
+      WHERE b.ball_hit_s >= rf.init_t
+        AND (fo.first_opposite_t IS NULL OR b.ball_hit_s < fo.first_opposite_t)
     ),
-    segmented AS (
+    resolve_try AS (
       SELECT
-        s.*,
-        SUM(is_new_seg) OVER (PARTITION BY s.task_id, s.rally ORDER BY s.rn ROWS UNBOUNDED PRECEDING) AS seg_id
-      FROM seg_mark s
-    ),
-    seg_stats AS (
-      SELECT task_id, rally, seg_id, COUNT(*) AS cnt_in_seg
-      FROM segmented
-      GROUP BY task_id, rally, seg_id
-    ),
-    seg_next AS (
-      SELECT s.*,
-             EXISTS (
-               SELECT 1 FROM seg_stats n
-               WHERE n.task_id=s.task_id AND n.rally=s.rally AND n.seg_id=s.seg_id+1
-             ) AS has_next_seg
-      FROM seg_stats s
-    ),
-    seg_rows AS (
-      SELECT
-        g.*,
-        ROW_NUMBER() OVER (PARTITION BY g.task_id, g.rally, g.seg_id ORDER BY g.ball_hit_s, g.swing_id) AS rn_in_seg,
-        COUNT(*)    OVER (PARTITION BY g.task_id, g.rally, g.seg_id)                                     AS cnt_in_seg
-      FROM segmented g
-    ),
-    resolve AS (
-      SELECT
-        r.task_id, r.rally, r.seg_id, r.swing_id, r.player_id, r.ball_hit_s,
+        blk.task_id, blk.rally, blk.swing_id,
         CASE
-          WHEN n.has_next_seg IS TRUE THEN
-            CASE
-              WHEN r.cnt_in_seg = 1 THEN 1
-              WHEN r.cnt_in_seg >= 2 AND r.rn_in_seg = r.cnt_in_seg THEN 2
-              ELSE NULL
-            END
-          ELSE
-            CASE
-              WHEN r.cnt_in_seg IN (1,2) AND r.rn_in_seg = r.cnt_in_seg THEN r.cnt_in_seg
-              ELSE NULL
-            END
+          WHEN blk.cnt_in_block = 1 THEN 1
+          WHEN blk.cnt_in_block = 2 AND blk.rn_in_block = 2 THEN 2
+          ELSE NULL
         END AS serve_try_ix_in_point,
         CASE
-          WHEN n.has_next_seg IS FALSE AND r.cnt_in_seg > 2 AND r.rn_in_seg = r.cnt_in_seg THEN TRUE
-          ELSE FALSE
+          WHEN blk.cnt_in_block > 2
+           AND blk.rn_in_block = blk.cnt_in_block
+           AND NOT EXISTS (
+                SELECT 1 FROM first_opposite fo
+                WHERE fo.task_id = blk.task_id AND fo.rally = blk.rally
+           )
+          THEN TRUE ELSE FALSE
         END AS double_fault_d
-      FROM seg_rows r
-      JOIN seg_next n
-        ON n.task_id=r.task_id AND n.rally=r.rally AND n.seg_id=r.seg_id
+      FROM block blk
     ),
     decisive AS (
-      SELECT task_id, rally, swing_id, player_id, ball_hit_s
-      FROM resolve
-      WHERE serve_try_ix_in_point IN (1,2)
+      SELECT r.task_id, r.rally, r.swing_id
+      FROM resolve_try r
+      WHERE r.serve_try_ix_in_point IN (1,2)
+    ),
+    decisive_ts AS (
+      SELECT d.task_id, d.rally, d.swing_id, p1.player_id, p1.ball_hit_s AS serve_t
+      FROM decisive d
+      JOIN {SILVER_SCHEMA}.{TABLE} p1
+        ON p1.task_id=d.task_id AND p1.swing_id=d.swing_id
+    ),
+    opp_after AS (
+      SELECT
+        d.task_id, d.rally, d.swing_id,
+        EXISTS (
+          SELECT 1 FROM {SILVER_SCHEMA}.{TABLE} b2
+          WHERE b2.task_id=d.task_id
+            AND b2.rally=d.rally
+            AND b2.ball_hit_s > d.serve_t
+            AND b2.player_id <> d.player_id
+        ) AS opponent_after
+      FROM decisive_ts d
     ),
     winners AS (
       SELECT d.task_id, d.rally, d.swing_id,
-             NOT EXISTS (
-               SELECT 1 FROM {SILVER_SCHEMA}.{TABLE} b2
-               WHERE b2.task_id = d.task_id
-                 AND b2.rally   = d.rally
-                 AND b2.ball_hit_s > d.ball_hit_s
-                 AND b2.player_id <> d.player_id
-             ) AS service_winner_d
-      FROM decisive d
+             (CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END) AS service_winner_d
+      FROM decisive_ts d
+      LEFT JOIN opp_after o
+        ON o.task_id=d.task_id AND o.rally=d.rally AND o.swing_id=d.swing_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_try_ix_in_point = r.serve_try_ix_in_point,
       double_fault_d        = r.double_fault_d,
       service_winner_d      = w.service_winner_d
-    FROM resolve r
+    FROM resolve_try r
     LEFT JOIN winners w
       ON w.task_id=r.task_id AND w.rally=r.rally AND w.swing_id=r.swing_id
     WHERE p.task_id = :tid
       AND p.swing_id = r.swing_id;
     """
-
     conn.execute(text(sql_a), {"tid": task_id})
     res = conn.execute(text(sql_b), {"tid": task_id})
     return res.rowcount or 0
