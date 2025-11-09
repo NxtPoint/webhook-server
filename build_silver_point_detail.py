@@ -77,15 +77,16 @@ PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     "bounce_s":         "double precision"
 })
 
-PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
-    "serve_d":                 "boolean",
-    "server_id":               "text",
-    "serve_side_d":            "text",
-    "serve_try_ix_in_point":   "integer",
-    "double_fault_d":          "boolean",
-    "service_winner_d":        "boolean",
-    "server_end_d":            "text"
+PHASE3_COLS = OrderedDict({
+    "serve_d":               "boolean",
+    "server_id":             "text",
+    "serve_side_d":          "text",
+    "serve_try_ix_in_point": "integer",
+    "double_fault_d":        "boolean",
+    "service_winner_d":      "boolean",
+    "server_end_d":          "text"
 })
+
 
 PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({})
 PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({})
@@ -130,22 +131,53 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
     PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
-    Uses these bronze columns verbatim (your list):
-      task_id, start_ts, end_ts, player_id, valid, serve, swing_type, volley,
-      is_in_rally, ball_player_distance, ball_speed, ball_impact_type, rally,
-      ball_hit (json with 'timestamp'), ball_hit_location_x, ball_hit_location_y
+    - Supports BOTH schemas:
+        • ball_hit_location_x / ball_hit_location_y (numeric columns), OR
+        • ball_hit_location (JSON/JSONB array [x, y])
+    - Copies bronze.id -> silver.swing_id
+    - Reads ball_hit_s from ball_hit->'timestamp' if present, else NULL
     """
-    # Guard that required bronze columns exist
-    need = [
-        "task_id", "start_ts", "end_ts", "player_id", "valid", "serve",
-        "swing_type", "volley", "is_in_rally", "ball_player_distance",
-        "ball_speed", "ball_impact_type", "rally", "ball_hit",
-        "ball_hit_location_x", "ball_hit_location_y", "id"
-    ]
-    cols = _columns_types(conn, "bronze", "player_swing")
-    missing = [c for c in need if c not in cols]
-    if missing:
-        raise RuntimeError(f"bronze.player_swing missing columns: {missing}")
+    bcols = _columns_types(conn, "bronze", "player_swing")
+    has   = lambda c: c in bcols
+
+    # swing_id: exact copy from bronze.id (your canonical)
+    swing_id_expr = "s.id::bigint"
+
+    # ball_hit_x
+    if has("ball_hit_location_x") and "json" not in bcols["ball_hit_location_x"]:
+        bhx = "s.ball_hit_location_x::double precision"
+    elif has("ball_hit_location"):
+        bhx = """
+        CASE
+          WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array'
+               AND jsonb_array_length(s.ball_hit_location::jsonb) > 0
+          THEN (s.ball_hit_location::jsonb->>0)::double precision
+          ELSE NULL::double precision
+        END
+        """
+    else:
+        bhx = "NULL::double precision"
+
+    # ball_hit_y
+    if has("ball_hit_location_y") and "json" not in bcols["ball_hit_location_y"]:
+        bhy = "s.ball_hit_location_y::double precision"
+    elif has("ball_hit_location"):
+        bhy = """
+        CASE
+          WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array'
+               AND jsonb_array_length(s.ball_hit_location::jsonb) > 1
+          THEN (s.ball_hit_location::jsonb->>1)::double precision
+          ELSE NULL::double precision
+        END
+        """
+    else:
+        bhy = "NULL::double precision"
+
+    # ball_hit_s from ball_hit JSON -> 'timestamp' (fallback NULL)
+    if has("ball_hit"):
+        ball_hit_s = "(s.ball_hit->>'timestamp')::double precision"
+    else:
+        ball_hit_s = "NULL::double precision"
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
@@ -156,29 +188,30 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       start_s, end_s, ball_hit_s
     )
     SELECT
-      s.task_id::uuid                         AS task_id,
-      s.id                                    AS swing_id,            -- exact copy of bronze.id
-      s.player_id                             AS player_id,
-      s.valid                                 AS valid,
-      s.serve                                 AS serve,
-      s.swing_type                            AS swing_type,
-      s.volley                                AS volley,
-      s.is_in_rally                           AS is_in_rally,
+      s.task_id::uuid                          AS task_id,
+      {swing_id_expr}                          AS swing_id,
+      s.player_id                              AS player_id,
+      s.valid                                  AS valid,
+      s.serve                                  AS serve,
+      s.swing_type                             AS swing_type,
+      s.volley                                 AS volley,
+      s.is_in_rally                            AS is_in_rally,
       s.ball_player_distance::double precision AS ball_player_distance,
       s.ball_speed::double precision           AS ball_speed,
-      s.ball_impact_type                      AS ball_impact_type,
-      s.rally::integer                        AS rally,
-      s.ball_hit_location_x::double precision AS ball_hit_x,
-      s.ball_hit_location_y::double precision AS ball_hit_y,
-      s.start_ts::double precision            AS start_s,
-      s.end_ts::double precision              AS end_s,
-      (s.ball_hit->>'timestamp')::double precision AS ball_hit_s
+      NULL::text                               AS ball_impact_type,
+      s.rally::int                             AS rally,
+      {bhx}                                    AS ball_hit_x,
+      {bhy}                                    AS ball_hit_y,
+      s.start_ts::double precision             AS start_s,
+      s.end_ts::double precision               AS end_s,
+      {ball_hit_s}                             AS ball_hit_s
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) IS TRUE;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- PHASE 2 — updater (bounces + helpers) -------------------------------
 
@@ -452,138 +485,146 @@ Y_FAR_MIN  = 23.0    # y >= 23.0 → far end
 X_SIDE_ABS = 4.0     # x threshold to classify ad/deuce given end
 
 def phase3_update(conn: Connection, task_id: str) -> int:
-    # Pass A: mark serves + end + side + server
-    sql_a = f"""
-    WITH serves AS (
-      SELECT
-        p.swing_id,
-        p.player_id,
-        CASE
-          WHEN p.ball_hit_y <= {Y_NEAR_MAX} THEN 'near'
-          WHEN p.ball_hit_y >= {Y_FAR_MIN}  THEN 'far'
-          ELSE NULL
-        END AS server_end_d,
-        p.ball_hit_x
-      FROM {SILVER_SCHEMA}.{TABLE} p
-      WHERE p.task_id = :tid
-        AND COALESCE(p.valid, FALSE) IS TRUE
-        AND lower(coalesce(p.swing_type,'')) LIKE '%overhead%'
-        AND (p.ball_hit_y <= {Y_NEAR_MAX} OR p.ball_hit_y >= {Y_FAR_MIN})
-    )
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET
-      serve_d      = TRUE,
-      server_id    = s.player_id,
-      server_end_d = s.server_end_d,
-      serve_side_d = CASE
-                       WHEN s.server_end_d = 'near' THEN
-                         CASE WHEN s.ball_hit_x >= {X_SIDE_ABS} THEN 'ad' ELSE 'deuce' END
-                       WHEN s.server_end_d = 'far' THEN
-                         CASE WHEN s.ball_hit_x <= -{X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END
-                       ELSE NULL
-                     END
-    FROM serves s
-    WHERE p.task_id = :tid
-      AND p.swing_id = s.swing_id;
     """
-
-    # Pass B: try index, double fault, service winner
-    sql_b = f"""
-    WITH base AS (
-      SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s, p.serve_side_d
+    Phase 3 — Serve-only fields using Phase 1/2 data only (sheet-spec):
+      serve_d: fh_overhead AND (ball_hit_y < 1 OR ball_hit_y > 23)
+      server_end_d: CASE ball_hit_y < 1 → 'far' ELSE 'near'
+      serve_side_d: near:  x>4 → deuce else ad ;  far: x<4 → deuce else ad
+      serve_try_ix_in_point:
+          cnt=1 → 1
+          cnt>=2 → 2
+          cnt>2 AND no opponent swing after last serve → double_fault_d=TRUE, try_ix=NULL
+      service_winner_d: decisive serve (1/2, not DF) AND no opponent swing after that serve
+    """
+    sql = f"""
+    -- Pass A: mark serves + server_end + side + server_id
+    WITH serves_a AS (
+      SELECT
+        p.task_id, p.rally, p.swing_id, p.player_id,
+        p.ball_hit_s, p.ball_hit_x, p.ball_hit_y,
+        CASE WHEN lower(coalesce(p.swing_type,'')) LIKE '%overhead%'
+               AND (p.ball_hit_y < 1 OR p.ball_hit_y > 23)
+             THEN TRUE ELSE FALSE END AS is_serve,
+        CASE WHEN p.ball_hit_y < 1 THEN 'far' ELSE 'near' END AS server_end_d,
+        CASE
+          WHEN p.ball_hit_y < 1 THEN  -- far
+            CASE WHEN p.ball_hit_x < 4 THEN 'deuce' ELSE 'ad' END
+          ELSE                         -- near
+            CASE WHEN p.ball_hit_x > 4 THEN 'deuce' ELSE 'ad' END
+        END AS serve_side_d
       FROM {SILVER_SCHEMA}.{TABLE} p
-      WHERE p.task_id = :tid
-        AND COALESCE(p.valid, FALSE)   IS TRUE
-        AND COALESCE(p.serve_d, FALSE) IS TRUE
+      WHERE p.task_id = :tid AND COALESCE(p.valid, FALSE) IS TRUE
     ),
-    rally_min AS (
-      SELECT task_id, rally, MIN(ball_hit_s) AS init_t
-      FROM base GROUP BY task_id, rally
+    apply_a AS (
+      UPDATE {SILVER_SCHEMA}.{TABLE} p
+      SET
+        serve_d      = s.is_serve,
+        server_id    = CASE WHEN s.is_serve THEN s.player_id ELSE p.server_id END,
+        server_end_d = CASE WHEN s.is_serve THEN s.server_end_d ELSE p.server_end_d END,
+        serve_side_d = CASE WHEN s.is_serve THEN s.serve_side_d ELSE p.serve_side_d END
+      FROM serves_a s
+      WHERE p.task_id = s.task_id AND p.swing_id = s.swing_id
+      RETURNING 1
     ),
-    rally_first AS (
-      SELECT b.task_id, b.rally, b.serve_side_d AS init_side, b.ball_hit_s AS init_t
-      FROM base b JOIN rally_min m
-        ON m.task_id=b.task_id AND m.rally=b.rally AND b.ball_hit_s=m.init_t
+
+    -- Pass B: restrict to rows detected as serves
+    base AS (
+      SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid AND COALESCE(p.serve_d, FALSE) IS TRUE
     ),
-    first_opposite AS (
-      SELECT b1.task_id, b1.rally, MIN(b2.ball_hit_s) AS first_opposite_t
-      FROM base b1 JOIN base b2
-        ON b1.task_id=b2.task_id AND b1.rally=b2.rally AND b2.serve_side_d <> b1.serve_side_d
-      GROUP BY b1.task_id, b1.rally
+
+    -- Count serves in each rally & find last-serve time
+    rally_counts AS (
+      SELECT
+        task_id, rally,
+        COUNT(*) AS serve_cnt,
+        MAX(ball_hit_s) AS last_serve_t
+      FROM base
+      GROUP BY task_id, rally
     ),
-    block AS (
+
+    -- For decisive try (1 or 2): choose by serve_cnt; for >2 we will decide DF later
+    try_assign AS (
       SELECT
         b.task_id, b.rally, b.swing_id, b.player_id, b.ball_hit_s,
-        ROW_NUMBER() OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS rn_in_block,
-        COUNT(*)    OVER (PARTITION BY b.task_id, b.rally) AS cnt_in_block
-      FROM base b
-      JOIN rally_first rf
-        ON rf.task_id=b.task_id AND rf.rally=b.rally AND b.serve_side_d=rf.init_side
-      LEFT JOIN first_opposite fo
-        ON fo.task_id=b.task_id AND fo.rally=b.rally
-      WHERE b.ball_hit_s >= rf.init_t
-        AND (fo.first_opposite_t IS NULL OR b.ball_hit_s < fo.first_opposite_t)
-    ),
-    resolve_try AS (
-      SELECT
-        blk.task_id, blk.rally, blk.swing_id,
+        rc.serve_cnt,
         CASE
-          WHEN blk.cnt_in_block = 1 THEN 1
-          WHEN blk.cnt_in_block = 2 AND blk.rn_in_block = 2 THEN 2
+          WHEN rc.serve_cnt = 1 THEN 1
+          WHEN rc.serve_cnt >= 2 THEN 2
           ELSE NULL
-        END AS serve_try_ix_in_point,
-        CASE
-          WHEN blk.cnt_in_block > 2 AND blk.rn_in_block = blk.cnt_in_block
-          THEN TRUE ELSE FALSE
-        END AS double_fault_d
-      FROM block blk
+        END AS try_ix,
+        rc.last_serve_t
+      FROM base b
+      JOIN rally_counts rc USING (task_id, rally)
     ),
-    decisive AS (
-      SELECT r.task_id, r.rally, r.swing_id
-      FROM resolve_try r
-      WHERE r.serve_try_ix_in_point IN (1,2)
-    ),
-    decisive_ts AS (
-      SELECT d.task_id, d.rally, d.swing_id, p1.player_id, p1.ball_hit_s AS serve_t
-      FROM decisive d
-      JOIN {SILVER_SCHEMA}.{TABLE} p1
-        ON p1.task_id = d.task_id AND p1.swing_id = d.swing_id
-    ),
-    opp_after AS (
+
+    -- Check if any opponent swing occurred after the last serve in each rally
+    opp_after_last AS (
       SELECT
-        d.task_id, d.rally, d.swing_id,
+        rc.task_id, rc.rally,
         EXISTS (
           SELECT 1
-          FROM {SILVER_SCHEMA}.{TABLE} b2
-          WHERE b2.task_id=d.task_id
-            AND b2.rally=d.rally
-            AND b2.ball_hit_s > d.serve_t
-            AND b2.player_id <> d.player_id
-        ) AS opponent_after
-      FROM decisive_ts d
+          FROM {SILVER_SCHEMA}.{TABLE} q
+          WHERE q.task_id = rc.task_id
+            AND q.rally   = rc.rally
+            AND q.ball_hit_s > rc.last_serve_t
+            AND q.player_id <> (
+              SELECT player_id FROM base b2
+              WHERE b2.task_id = rc.task_id AND b2.rally = rc.rally
+              ORDER BY b2.ball_hit_s ASC LIMIT 1
+            )
+        ) AS opponent_after_last
+      FROM rally_counts rc
     ),
+
+    -- Double fault rule: >2 serves AND no opponent swing after last serve
+    df_flags AS (
+      SELECT
+        ta.task_id, ta.rally, ta.swing_id,
+        CASE
+          WHEN ta.serve_cnt > 2 AND o.opponent_after_last = FALSE THEN TRUE
+          ELSE FALSE
+        END AS is_df,
+        CASE
+          WHEN ta.serve_cnt > 2 AND o.opponent_after_last = FALSE THEN NULL
+          ELSE ta.try_ix
+        END AS final_try_ix
+      FROM try_assign ta
+      JOIN opp_after_last o USING (task_id, rally)
+    ),
+
+    -- Decide service winner only for decisive (try 1/2, not DF):
     winners AS (
-      SELECT d.task_id, d.rally, d.swing_id,
-             (CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END) AS service_winner_d
-      FROM decisive_ts d
-      LEFT JOIN opp_after o
-        ON o.task_id=d.task_id AND o.rally=d.rally AND o.swing_id=d.swing_id
+      SELECT
+        ta.task_id, ta.rally, ta.swing_id,
+        CASE
+          WHEN df.is_df IS TRUE THEN FALSE
+          ELSE NOT EXISTS (
+                 SELECT 1 FROM {SILVER_SCHEMA}.{TABLE} q
+                 WHERE q.task_id = ta.task_id
+                   AND q.rally   = ta.rally
+                   AND q.ball_hit_s > ta.ball_hit_s
+                   AND q.player_id <> ta.player_id
+               )
+        END AS service_winner_d
+      FROM try_assign ta
+      JOIN df_flags   df USING (task_id, rally, swing_id)
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      serve_try_ix_in_point = r.serve_try_ix_in_point,
-      double_fault_d        = r.double_fault_d,
+      serve_try_ix_in_point = df.final_try_ix,
+      double_fault_d        = df.is_df,
       service_winner_d      = w.service_winner_d
-    FROM resolve_try r
-    LEFT JOIN winners w
-      ON w.task_id=r.task_id AND w.rally=r.rally AND w.swing_id=r.swing_id
+    FROM df_flags df
+    JOIN winners  w USING (task_id, rally, swing_id)
     WHERE p.task_id = :tid
-      AND p.swing_id = r.swing_id;
+      AND p.swing_id = df.swing_id;
     """
-
-    conn.execute(text(sql_a), {"tid": task_id})
-    res = conn.execute(text(sql_b), {"tid": task_id})
+    res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- Phase 2–5 (schema only) -------------------------------
 
