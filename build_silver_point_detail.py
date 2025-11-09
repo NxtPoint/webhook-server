@@ -285,63 +285,62 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     if not bb_cols:
         raise RuntimeError("bronze.ball_bounce not found")
 
+    # --- build tolerant expressions but we will ALIAS them inside SQL to avoid f-string reuse ---
     def _bb_time_expr() -> str:
-        # Prefer flat seconds columns first
         for c in ("bounce_s", "time_s", "timestamp_s", "ts", "t"):
-            if c in bb_cols and not _is_json(bb_cols[c]):
+            if c in bb_cols and "json" not in bb_cols[c]:
                 return _colref_b(c)
-        # JSON object with {"timestamp": number} OR numeric JSON inside common containers
         for c in ("timestamp", "data", "bounce"):
-            if c in bb_cols and _is_json(bb_cols[c]):
+            if c in bb_cols and "json" in bb_cols[c]:
                 return f"COALESCE({_safe_json_obj_ts(_colref_b(c))}, {_safe_json_number(_colref_b(c))})"
         return "NULL::double precision"
 
-    def _bb_xy_expr(which: int) -> str:
-        # which 0=x, 1=y ; prefer flat first
-        flatx = ("court_x","x","x_m","x_center","x_center_m","x_pos","bounce_x")
-        flaty = ("court_y","y","y_m","y_center","y_center_m","y_pos","bounce_y")
-        if which == 0:
-            for c in flatx:
-                if c in bb_cols and not _is_json(bb_cols[c]): return _colref_b(c)
-        else:
-            for c in flaty:
-                if c in bb_cols and not _is_json(bb_cols[c]): return _colref_b(c)
-        # JSON arrays in simple array columns
+    def _bb_xy_x_expr() -> str:
+        for c in ("court_x","x","x_m","x_center","x_center_m","x_pos","bounce_x"):
+            if c in bb_cols and "json" not in bb_cols[c]:
+                return _colref_b(c)
         for arr in ("court_pos","location","pos"):
-            if arr in bb_cols and _is_json(bb_cols[arr]):
-                return _xy_from_json_array(_colref_b(arr), which)
-        # JSON objects with fields court_x/court_y or nested array court_pos
+            if arr in bb_cols and "json" in bb_cols[arr]:
+                return _xy_from_json_array(_colref_b(arr), 0)
         for j in ("data","bounce"):
-            if j in bb_cols and _is_json(bb_cols[j]):
-                # try object scalar first, then nested array court_pos
-                if which == 0:
-                    return (
-                        "COALESCE(\n"
-                        f"  (({_colref_b(j)}::jsonb)->>'court_x')::double precision,\n"
-                        f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'\n"
-                        f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>0\n"
-                        f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>0)::double precision\n"
-                        f"        ELSE NULL::double precision END)\n"
-                        ")"
-                    )
-                else:
-                    return (
-                        "COALESCE(\n"
-                        f"  (({_colref_b(j)}::jsonb)->>'court_y')::double precision,\n"
-                        f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'\n"
-                        f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>1\n"
-                        f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>1)::double precision\n"
-                        f"        ELSE NULL::double precision END)\n"
-                        ")"
-                    )
+            if j in bb_cols and "json" in bb_cols[j]:
+                return (
+                    "COALESCE(\n"
+                    f"  (({_colref_b(j)}::jsonb)->>'court_x')::double precision,\n"
+                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'\n"
+                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>0\n"
+                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>0)::double precision\n"
+                    f"        ELSE NULL::double precision END)\n"
+                    ")"
+                )
+        return "NULL::double precision"
+
+    def _bb_xy_y_expr() -> str:
+        for c in ("court_y","y","y_m","y_center","y_center_m","y_pos","bounce_y"):
+            if c in bb_cols and "json" not in bb_cols[c]:
+                return _colref_b(c)
+        for arr in ("court_pos","location","pos"):
+            if arr in bb_cols and "json" in bb_cols[arr]:
+                return _xy_from_json_array(_colref_b(arr), 1)
+        for j in ("data","bounce"):
+            if j in bb_cols and "json" in bb_cols[j]:
+                return (
+                    "COALESCE(\n"
+                    f"  (({_colref_b(j)}::jsonb)->>'court_y')::double precision,\n"
+                    f"  (CASE WHEN jsonb_typeof(({_colref_b(j)}::jsonb)->'court_pos')='array'\n"
+                    f"        AND jsonb_array_length(({_colref_b(j)}::jsonb)->'court_pos')>1\n"
+                    f"        THEN (({_colref_b(j)}::jsonb)->'court_pos'->>1)::double precision\n"
+                    f"        ELSE NULL::double precision END)\n"
+                    ")"
+                )
         return "NULL::double precision"
 
     def _bb_type_expr() -> str:
         for c in ("bounce_type","type"):
-            if c in bb_cols and not _is_json(bb_cols[c]):
+            if c in bb_cols and "json" not in bb_cols[c]:
                 return _colref_b(c)
         for j in ("data","bounce"):
-            if j in bb_cols and _is_json(bb_cols[j]):
+            if j in bb_cols and "json" in bb_cols[j]:
                 return (
                     "(\n"
                     f"  CASE WHEN jsonb_typeof({_colref_b(j)}::jsonb)='object'\n"
@@ -352,11 +351,12 @@ def phase2_update(conn: Connection, task_id: str) -> int:
                 )
         return "NULL::text"
 
-    bounce_s = _bb_time_expr()
-    bounce_x = _bb_xy_expr(0)
-    bounce_y = _bb_xy_expr(1)
-    bounce_t = _bb_type_expr()
+    bx_expr = _bb_xy_x_expr()
+    by_expr = _bb_xy_y_expr()
+    bs_expr = _bb_time_expr()
+    bt_expr = _bb_type_expr()
 
+    # Build SQL with aliases (bx, by, bt, bs) inside the LATERAL
     sql = (
         "WITH p0 AS (\n"
         f"  SELECT p.task_id, p.swing_id, p.player_id, p.rally,\n"
@@ -378,54 +378,50 @@ def phase2_update(conn: Connection, task_id: str) -> int:
         "  FROM p1\n"
         "),\n"
         "chosen AS (\n"
-        "  SELECT p2.swing_id, pick.bounce_x, pick.bounce_y, pick.bounce_type, pick.bounce_s\n"
+        "  SELECT p2.swing_id, pick.bx, pick.by, pick.bt, pick.bs\n"
         "  FROM p2\n"
         "  LEFT JOIN LATERAL (\n"
-        f"    SELECT {bounce_x}   AS bounce_x,\n"
-        f"           {bounce_y}   AS bounce_y,\n"
-        f"           {bounce_t}   AS bounce_type,\n"
-        f"           {bounce_s}   AS bounce_s\n"
+        f"    SELECT {bx_expr} AS bx,\n"
+        f"           {by_expr} AS by,\n"
+        f"           {bt_expr} AS bt,\n"
+        f"           {bs_expr} AS bs\n"
         "    FROM bronze.ball_bounce b\n"
         "    WHERE b.task_id::uuid = p2.task_id\n"
-        f"      AND {bounce_s} IS NOT NULL\n"
-        f"      AND {bounce_s} >  p2.win_start\n"
-        f"      AND {bounce_s} <= p2.win_end\n"
-        "    ORDER BY CASE WHEN "
-        f"{bounce_t} = 'floor' THEN 0 ELSE 1 END, "
-        f"{bounce_s}\n"
+        "      AND bs IS NOT NULL\n"
+        "      AND bs >  p2.win_start\n"
+        "      AND bs <= p2.win_end\n"
+        "    ORDER BY (bt = 'floor')::int, bs\n"
         "    LIMIT 1\n"
         "  ) AS pick ON TRUE\n"
-        "),\n"
-        "resolved AS (\n"
-        "  SELECT p2.swing_id, p2.serve, p2.next_ball_hit_x, p2.ball_hit_x,\n"
-        "         chosen.bounce_x, chosen.bounce_y, chosen.bounce_type, chosen.bounce_s\n"
-        "  FROM p2 LEFT JOIN chosen ON chosen.swing_id = p2.swing_id\n"
         ")\n"
         f"UPDATE {SILVER_SCHEMA}.{TABLE} p\n"
         "SET\n"
-        "  bounce_x_m       = r.bounce_x,\n"
-        "  bounce_y_m       = r.bounce_y,\n"
-        "  bounce_type_d    = r.bounce_type,\n"
-        "  bounce_s         = r.bounce_s,\n"
+        "  bounce_x_m       = c.bx,\n"
+        "  bounce_y_m       = c.by,\n"
+        "  bounce_type_d    = c.bt,\n"
+        "  bounce_s         = c.bs,\n"
         "  hit_x_resolved_m = CASE\n"
-        "                       WHEN p.serve IS FALSE THEN COALESCE(r.bounce_x, r.next_ball_hit_x, r.ball_hit_x)\n"
+        "                       WHEN p.serve IS FALSE THEN COALESCE(c.bx, p2.next_ball_hit_x, p2.ball_hit_x)\n"
         "                       ELSE p.hit_x_resolved_m\n"
         "                     END,\n"
         "  hit_source_d     = CASE\n"
         "                       WHEN p.serve IS FALSE THEN\n"
         "                         CASE\n"
-        "                           WHEN r.bounce_x IS NOT NULL AND r.bounce_type='floor' THEN 'floor_bounce'\n"
-        "                           WHEN r.bounce_x IS NOT NULL THEN 'any_bounce'\n"
-        "                           WHEN r.next_ball_hit_x IS NOT NULL THEN 'next_contact'\n"
+        "                           WHEN c.bx IS NOT NULL AND c.bt='floor' THEN 'floor_bounce'\n"
+        "                           WHEN c.bx IS NOT NULL THEN 'any_bounce'\n"
+        "                           WHEN p2.next_ball_hit_x IS NOT NULL THEN 'next_contact'\n"
         "                           ELSE 'ball_hit'\n"
         "                         END\n"
         "                       ELSE p.hit_source_d\n"
         "                     END\n"
-        "FROM resolved r\n"
-        "WHERE p.task_id = :tid AND p.swing_id = r.swing_id;\n"
+        "FROM chosen c\n"
+        "JOIN p2 ON p2.swing_id = c.swing_id\n"
+        "WHERE p.task_id = :tid AND p.swing_id = c.swing_id;\n"
     )
+
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- PHASE 3 — updater (serve-only from P1+P2) -------------------------------
 
