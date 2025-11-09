@@ -138,56 +138,10 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
     PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE).
-    Dynamic to tolerate minor column-name variants in bronze.
+    Column mapping locked to the provided bronze schema:
+      task_id, start_ts, end_ts, player_id, valid, serve, swing_type, volley, is_in_rally,
+      ball_player_distance, ball_speed, rally, ball_hit(JSON), ball_hit_location_x, ball_hit_location_y
     """
-    # discover bronze columns
-    bcols = _columns_types(conn, "bronze", "player_swing")
-    def has(col: str) -> bool: return col in bcols
-
-    # exact field refs with safe fallbacks (NULL if truly missing)
-    task_id_expr   = "s.task_id::uuid" if has("task_id") else "NULL::uuid"
-    swing_id_expr  = "s.id"            if has("id")      else ("s.swing_id" if has("swing_id") else "NULL::bigint")
-    player_id_expr = "s.player_id"     if has("player_id") else "NULL::text"
-    valid_expr     = "s.valid"         if has("valid")     else "FALSE"
-    serve_expr     = "s.serve"         if has("serve")     else "NULL::boolean"
-    swing_type_expr= "s.swing_type"    if has("swing_type")else "NULL::text"
-    volley_expr    = "s.volley"        if has("volley")    else "NULL::boolean"
-    in_rally_expr  = "s.is_in_rally"   if has("is_in_rally") else "NULL::boolean"
-    bpd_expr       = "s.ball_player_distance::double precision" if has("ball_player_distance") else "NULL::double precision"
-    bs_expr        = "s.ball_speed::double precision"           if has("ball_speed")            else "NULL::double precision"
-    impact_expr    = "s.ball_impact_type" if has("ball_impact_type") else "NULL::text"
-    rally_expr     = "s.rally::int"       if has("rally")            else "NULL::int"
-
-    # ball_hit_location can be ball_hit_location OR ball_hit_loc; treat as JSON array [x,y]
-    if has("ball_hit_location"):
-        bhl = "s.ball_hit_location::jsonb"
-    elif has("ball_hit_loc"):
-        bhl = "s.ball_hit_loc::jsonb"
-    else:
-        bhl = None
-    bhx_expr = f"({bhl}->>0)::double precision" if bhl else "NULL::double precision"
-    bhy_expr = f"({bhl}->>1)::double precision" if bhl else "NULL::double precision"
-
-    # timestamps may be JSON objects with {"timestamp": <num>} OR flat numeric *_ts columns
-    def ts_from_json(col: str) -> str:
-        return f"(s.{col}->>'timestamp')::double precision"
-
-    start_expr = (
-        ts_from_json("start") if has("start")
-        else "s.start_ts::double precision" if has("start_ts")
-        else "NULL::double precision"
-    )
-    end_expr = (
-        ts_from_json("end") if has("end")
-        else "s.end_ts::double precision" if has("end_ts")
-        else "NULL::double precision"
-    )
-    ball_hit_s_expr = (
-        ts_from_json("ball_hit") if has("ball_hit")
-        else "s.ball_hit_ts::double precision" if has("ball_hit_ts")
-        else "NULL::double precision"
-    )
-
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, player_id,
@@ -197,30 +151,29 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       start_s, end_s, ball_hit_s
     )
     SELECT
-      {task_id_expr},
-      {swing_id_expr},
-      {player_id_expr},
-      {valid_expr},
-      {serve_expr},
-      {swing_type_expr},
-      {volley_expr},
-      {in_rally_expr},
-      {bpd_expr},
-      {bs_expr},
-      {impact_expr},
-      {rally_expr},
-      {bhx_expr},
-      {bhy_expr},
-      {start_expr},
-      {end_expr},
-      {ball_hit_s_expr}
+      s.task_id::uuid                         AS task_id,
+      s.id                                    AS swing_id,          -- assumed primary key column in bronze.player_swing
+      s.player_id                              AS player_id,
+      s.valid                                  AS valid,
+      s.serve                                  AS serve,
+      s.swing_type                              AS swing_type,
+      s.volley                                 AS volley,
+      s.is_in_rally                             AS is_in_rally,
+      s.ball_player_distance::double precision  AS ball_player_distance,
+      s.ball_speed::double precision            AS ball_speed,
+      NULL::text                                AS ball_impact_type, -- not in your bronze list; keep NULL to preserve Phase-1 columns
+      s.rally::int                              AS rally,
+      s.ball_hit_location_x::double precision   AS ball_hit_x,
+      s.ball_hit_location_y::double precision   AS ball_hit_y,
+      s.start_ts::double precision              AS start_s,
+      s.end_ts::double precision                AS end_s,
+      (s.ball_hit->>'timestamp')::double precision AS ball_hit_s
     FROM bronze.player_swing s
-    WHERE ({task_id_expr}) = :tid::uuid
-      AND COALESCE({valid_expr}, FALSE) IS TRUE;
+    WHERE s.task_id::uuid = :tid
+      AND COALESCE(s.valid, FALSE) IS TRUE;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 # --------------------------------- Phase 2 updater (pure bounce + helpers) ---------------------------------
 
