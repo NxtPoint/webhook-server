@@ -606,21 +606,17 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       GROUP BY b.player_id
     ),
     -- derive serve_d per swing (our detector)
+        -- derive serve_d per swing (our detector: fh_overhead + at/behind baseline, sign-agnostic)
     serve_det AS (
       SELECT
         b.*,
-        o.player_far_sign,
         CASE
           WHEN b.swing_type = 'fh_overhead'
-           AND (
-                 (o.player_far_sign =  1 AND b.ball_hit_y >= {BASELINE_Y_M - BASELINE_EPS_M})
-              OR (o.player_far_sign = -1 AND b.ball_hit_y <= {-BASELINE_Y_M + BASELINE_EPS_M})
-              OR (o.player_far_sign =  0 AND ABS(b.ball_hit_y) >= {BASELINE_Y_M - BASELINE_EPS_M})
-               )
+           AND ABS(b.ball_hit_y) >= {BASELINE_Y_M - BASELINE_EPS_M}
           THEN TRUE ELSE FALSE END AS serve_d_raw
       FROM base b
-      LEFT JOIN orient o ON o.player_id = b.player_id
     ),
+
     -- assign side for serve rows (deuce/ad) using contact X; resolve near-center with previous side per server/rally
     serve_rows AS (
       SELECT
