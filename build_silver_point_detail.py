@@ -4,34 +4,37 @@
 # PHASE 1  (BRONZE → SILVER copy; 1:1):
 #   • Source: bronze.player_swing
 #   • Exact field copy for Section-1 columns (valid=TRUE only)
-#   • ball_hit_x / ball_hit_y:
-#       - use ball_hit_location_x / ball_hit_location_y if present
-#       - else parse ball_hit_location array/json [x,y]
-#   • ball_hit_s:
-#       - prefer JSON 'timestamp' from ball_hit object
-#       - else numeric/text cast (safe)
-#   • rally:
-#       - cast to int only if text looks like an integer
+#   • ball_hit_x / ball_hit_y from ball_hit_location_x/y OR parsed from ball_hit_location [x,y]
+#   • ball_hit_s from ball_hit.timestamp (json), else numeric/text cast
+#   • rally cast to int when integer-like
 #
 # PHASE 2  (BRONZE → SILVER bounces; minimal placement helpers):
 #   • Source: bronze.ball_bounce
-#   • For every swing (incl. serves):
-#       - find FIRST bounce strictly after ball_hit_s within window:
-#           start = ball_hit_s + 0.005
-#           end   = LEAST(next_ball_hit_s, ball_hit_s + 2.5)
-#         (if no next_ball_hit_s, cap at ball_hit_s + 2.5)
-#       - prefer bounce_type = 'floor' in ties; else earliest
-#       - write: bounce_x_m, bounce_y_m, bounce_type_d, bounce_s
-#   • For NON-SERVE swings only:
-#       - hit_x_resolved_m = bounce_x → next_contact_x → ball_hit_x
-#       - hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
-#   • All comparisons are type-safe against json/arrays.
+#   • For each swing: pick FIRST bounce strictly after ball_hit_s within window
+#       window = [ball_hit_s+0.005, min(next_ball_hit_s, ball_hit_s+2.5)]
+#     Prefer bounce_type='floor' in ties
+#   • Write: bounce_x_m, bounce_y_m, bounce_type_d, bounce_s
+#   • For NON-SERVES: hit_x_resolved_m and hit_source_d (floor_bounce | any_bounce | next_contact | ball_hit)
 #
-# PHASES 3–5: schema placeholders (no logic in this file right now).
+# PHASE 3  (Serve only — derived from Phase 1/2 data; your thresholds):
+#   • serve_d: swing_type LIKE '%overhead%' AND (ball_hit_y <= 1.0 OR ball_hit_y >= 23.0)
+#   • server_end_d: near if y <= 1.0, far if y >= 23.0
+#   • serve_side_d:
+#       - if near: x >= 4.0 → 'ad' else 'deuce'
+#       - if  far: x <= -4.0 → 'deuce' else 'ad'
+#   • serve_try_ix_in_point / double_fault_d / service_winner_d:
+#       - consider contiguous serves on the initial side (before side flips)
+#       - cnt=1 → mark 1 on that row
+#       - cnt=2 → mark 2 on the second
+#       - cnt>2 → mark double_fault_d=TRUE on the last (try_ix=NULL)
+#       - service_winner_d TRUE on decisive serve (try_ix in (1,2)) if no later opponent swing
+#
+# PHASES 4–5: schema placeholders.
 #
 # Usage:
 #   python build_silver_point_detail.py --task-id <UUID> --replace --phase 1
 #   python build_silver_point_detail.py --task-id <UUID> --phase 2
+#   python build_silver_point_detail.py --task-id <UUID> --phase 3
 #   python build_silver_point_detail.py --task-id <UUID> --replace --phase all
 
 from typing import Dict, Optional, Tuple, OrderedDict as TOrderedDict
@@ -45,7 +48,6 @@ TABLE = "point_detail"
 
 # ------------------------------- Column specs -------------------------------
 
-# Phase 1 — Section 1 (exactly from your sheet; swing_id = bronze.id)
 PHASE1_COLS = OrderedDict({
     "task_id":              "uuid",
     "swing_id":             "bigint",
@@ -57,7 +59,7 @@ PHASE1_COLS = OrderedDict({
     "is_in_rally":          "boolean",
     "ball_player_distance": "double precision",
     "ball_speed":           "double precision",
-    "ball_impact_type":     "text",              # not in bronze; stays NULL
+    "ball_impact_type":     "text",
     "rally":                "integer",
     "ball_hit_x":           "double precision",
     "ball_hit_y":           "double precision",
@@ -66,17 +68,15 @@ PHASE1_COLS = OrderedDict({
     "ball_hit_s":           "double precision"
 })
 
-# Phase 2 — bounce + minimal placement helpers (additive)
 PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     "hit_x_resolved_m": "double precision",
-    "hit_source_d":     "text",              # floor_bounce | any_bounce | next_contact | ball_hit
+    "hit_source_d":     "text",
     "bounce_x_m":       "double precision",
     "bounce_y_m":       "double precision",
     "bounce_type_d":    "text",
     "bounce_s":         "double precision"
 })
 
-# Phase 3 — serve-only (placeholder)
 PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
     "serve_d":                 "boolean",
     "server_id":               "text",
@@ -84,18 +84,11 @@ PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
     "serve_try_ix_in_point":   "integer",
     "double_fault_d":          "boolean",
     "service_winner_d":        "boolean",
-    "server_end_d":            "text"      # 'near' | 'far'
+    "server_end_d":            "text"
 })
 
-# Phase 4 — placeholder
-PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({
-})
-
-# Phase 5 — placeholder
-PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({
-})
-
-PHASE_COLSETS = [PHASE1_COLS, PHASE2_COLS, PHASE3_COLS, PHASE4_COLS, PHASE5_COLS]
+PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({})
+PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({})
 
 # --------------------------------- helpers ---------------------------------
 
@@ -132,16 +125,9 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
         if col.lower() not in existing:
             _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
 
-# ------------------------------- PHASE 1 — loader (pure 1:1 from bronze) -------------------------------
+# ------------------------------- PHASE 1 — loader (pure 1:1) -------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
-    """
-    PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
-    Uses bronze.id as swing_id. Supports either:
-      • ball_hit_location_x / ball_hit_location_y
-      • ball_hit_location (array/json) fallback → [0],[1]
-    Rally is cast to int only if text is integer-like.
-    """
     bcols = _columns_types(conn, "bronze", "player_swing")
     must_have = {
         "task_id","start_ts","end_ts","player_id","valid","serve","swing_type","volley",
@@ -177,7 +163,6 @@ def phase1_load(conn: Connection, task_id: str) -> int:
         raise RuntimeError("bronze.player_swing missing ball_hit_location[_x/_y] columns")
 
     rally_expr = "CASE WHEN (s.rally)::text ~ '^-?\\d+$' THEN (s.rally)::int ELSE NULL::int END"
-
     ball_hit_s_expr = """
       COALESCE(
         (CASE
@@ -198,7 +183,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     )
     SELECT
       s.task_id::uuid                          AS task_id,
-      s.id                                     AS swing_id,        -- exact bronze id
+      s.id                                     AS swing_id,
       s.player_id                              AS player_id,
       s.valid                                  AS valid,
       s.serve                                  AS serve,
@@ -207,7 +192,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       s.is_in_rally                            AS is_in_rally,
       s.ball_player_distance::double precision AS ball_player_distance,
       s.ball_speed::double precision           AS ball_speed,
-      NULL::text                               AS ball_impact_type,  -- not present in player_swing
+      NULL::text                               AS ball_impact_type,
       {rally_expr}                             AS rally,
       {bhx_expr}                               AS ball_hit_x,
       {bhy_expr}                               AS ball_hit_y,
@@ -221,9 +206,8 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ------------------------------- PHASE 2 — updater (pure bounce + helpers) -------------------------------
+# ------------------------------- PHASE 2 — updater (bounces + helpers) -------------------------------
 
-# Helpers that reference alias `b` (bronze.ball_bounce)
 def _colref_b(name: str) -> str:
     n = name.lower()
     return f'b."end"' if n == "end" else f"b.{n}"
@@ -285,11 +269,9 @@ def _bb_src(conn: Connection):
     raise RuntimeError("Bronze ball_bounce not found.")
 
 def _bounce_time_expr(bcols: dict) -> str:
-    # search common time fields; treat json/object safely
     for cand in ("timestamp","ts","time_s","bounce_s","t"):
         if cand in bcols:
             return _sec_b(bcols, cand)
-    # some feeds pack into 'data' object
     if "data" in bcols and "json" in bcols["data"]:
         return f"""
           (CASE
@@ -359,7 +341,6 @@ def _bounce_type_expr(bcols: dict) -> str:
     for cand in ("bounce_type","type"):
         if cand in bcols:
             return _text_b(bcols, cand)
-    # sometimes inside 'data'
     if "data" in bcols and "json" in bcols["data"]:
         return f"""
           (CASE
@@ -372,11 +353,6 @@ def _bounce_type_expr(bcols: dict) -> str:
     return "NULL::text"
 
 def phase2_update(conn: Connection, task_id: str) -> int:
-    """
-    PHASE 2 — Bounce selection + classic hit resolution (additive, idempotent per task)
-    Inputs: silver.point_detail (Phase 1) + bronze.ball_bounce
-    NOTE: all joins are type-safe (uuid/text) and all json/array fields guarded.
-    """
     bb_src, bcols = _bb_src(conn)
     bounce_s   = _bounce_time_expr(bcols)
     bounce_x   = _bounce_x_expr(bcols)
@@ -430,7 +406,6 @@ def phase2_update(conn: Connection, task_id: str) -> int:
           {bounce_s}   AS bounce_s
         FROM {bb_src}
         WHERE
-          -- keep inside same task; cast both sides to text to avoid uuid/text mismatch
           (b.task_id)::text = (p2.task_id)::text
           AND {bounce_s} IS NOT NULL
           AND {bounce_s} >  p2.win_start
@@ -481,7 +456,148 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ------------------------------- Phase 2–5 (schema only now) -------------------------------
+# ------------------------------- PHASE 3 — updater (serve-only) -------------------------------
+
+# Your thresholds:
+Y_NEAR_MAX = 1.0     # y <= 1.0 → near end
+Y_FAR_MIN  = 23.0    # y >= 23.0 → far end
+X_SIDE_ABS = 4.0     # x threshold to classify ad/deuce given end
+
+def phase3_update(conn: Connection, task_id: str) -> int:
+    # Pass A: mark serves + end + side + server
+    sql_a = f"""
+    WITH serves AS (
+      SELECT
+        p.swing_id,
+        p.player_id,
+        CASE
+          WHEN p.ball_hit_y <= {Y_NEAR_MAX} THEN 'near'
+          WHEN p.ball_hit_y >= {Y_FAR_MIN}  THEN 'far'
+          ELSE NULL
+        END AS server_end_d,
+        p.ball_hit_x
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND COALESCE(p.valid, FALSE) IS TRUE
+        AND lower(coalesce(p.swing_type,'')) LIKE '%overhead%'
+        AND (p.ball_hit_y <= {Y_NEAR_MAX} OR p.ball_hit_y >= {Y_FAR_MIN})
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      serve_d      = TRUE,
+      server_id    = s.player_id,
+      server_end_d = s.server_end_d,
+      serve_side_d = CASE
+                       WHEN s.server_end_d = 'near' THEN
+                         CASE WHEN s.ball_hit_x >= {X_SIDE_ABS} THEN 'ad' ELSE 'deuce' END
+                       WHEN s.server_end_d = 'far' THEN
+                         CASE WHEN s.ball_hit_x <= -{X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END
+                       ELSE NULL
+                     END
+    FROM serves s
+    WHERE p.task_id = :tid
+      AND p.swing_id = s.swing_id;
+    """
+
+    # Pass B: try index, double fault, service winner
+    sql_b = f"""
+    WITH base AS (
+      SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s, p.serve_side_d
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND COALESCE(p.valid, FALSE)   IS TRUE
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
+    ),
+    rally_min AS (
+      SELECT task_id, rally, MIN(ball_hit_s) AS init_t
+      FROM base GROUP BY task_id, rally
+    ),
+    rally_first AS (
+      SELECT b.task_id, b.rally, b.serve_side_d AS init_side, b.ball_hit_s AS init_t
+      FROM base b JOIN rally_min m
+        ON m.task_id=b.task_id AND m.rally=b.rally AND b.ball_hit_s=m.init_t
+    ),
+    first_opposite AS (
+      SELECT b1.task_id, b1.rally, MIN(b2.ball_hit_s) AS first_opposite_t
+      FROM base b1 JOIN base b2
+        ON b1.task_id=b2.task_id AND b1.rally=b2.rally AND b2.serve_side_d <> b1.serve_side_d
+      GROUP BY b1.task_id, b1.rally
+    ),
+    block AS (
+      SELECT
+        b.task_id, b.rally, b.swing_id, b.player_id, b.ball_hit_s,
+        ROW_NUMBER() OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS rn_in_block,
+        COUNT(*)    OVER (PARTITION BY b.task_id, b.rally) AS cnt_in_block
+      FROM base b
+      JOIN rally_first rf
+        ON rf.task_id=b.task_id AND rf.rally=b.rally AND b.serve_side_d=rf.init_side
+      LEFT JOIN first_opposite fo
+        ON fo.task_id=b.task_id AND fo.rally=b.rally
+      WHERE b.ball_hit_s >= rf.init_t
+        AND (fo.first_opposite_t IS NULL OR b.ball_hit_s < fo.first_opposite_t)
+    ),
+    resolve_try AS (
+      SELECT
+        blk.task_id, blk.rally, blk.swing_id,
+        CASE
+          WHEN blk.cnt_in_block = 1 THEN 1
+          WHEN blk.cnt_in_block = 2 AND blk.rn_in_block = 2 THEN 2
+          ELSE NULL
+        END AS serve_try_ix_in_point,
+        CASE
+          WHEN blk.cnt_in_block > 2 AND blk.rn_in_block = blk.cnt_in_block
+          THEN TRUE ELSE FALSE
+        END AS double_fault_d
+      FROM block blk
+    ),
+    decisive AS (
+      SELECT r.task_id, r.rally, r.swing_id
+      FROM resolve_try r
+      WHERE r.serve_try_ix_in_point IN (1,2)
+    ),
+    decisive_ts AS (
+      SELECT d.task_id, d.rally, d.swing_id, p1.player_id, p1.ball_hit_s AS serve_t
+      FROM decisive d
+      JOIN {SILVER_SCHEMA}.{TABLE} p1
+        ON p1.task_id = d.task_id AND p1.swing_id = d.swing_id
+    ),
+    opp_after AS (
+      SELECT
+        d.task_id, d.rally, d.swing_id,
+        EXISTS (
+          SELECT 1
+          FROM {SILVER_SCHEMA}.{TABLE} b2
+          WHERE b2.task_id=d.task_id
+            AND b2.rally=d.rally
+            AND b2.ball_hit_s > d.serve_t
+            AND b2.player_id <> d.player_id
+        ) AS opponent_after
+      FROM decisive_ts d
+    ),
+    winners AS (
+      SELECT d.task_id, d.rally, d.swing_id,
+             (CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END) AS service_winner_d
+      FROM decisive_ts d
+      LEFT JOIN opp_after o
+        ON o.task_id=d.task_id AND o.rally=d.rally AND o.swing_id=d.swing_id
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      serve_try_ix_in_point = r.serve_try_ix_in_point,
+      double_fault_d        = r.double_fault_d,
+      service_winner_d      = w.service_winner_d
+    FROM resolve_try r
+    LEFT JOIN winners w
+      ON w.task_id=r.task_id AND w.rally=r.rally AND w.swing_id=r.swing_id
+    WHERE p.task_id = :tid
+      AND p.swing_id = r.swing_id;
+    """
+
+    conn.execute(text(sql_a), {"tid": task_id})
+    res = conn.execute(text(sql_b), {"tid": task_id})
+    return res.rowcount or 0
+
+# ------------------------------- Phase 2–5 (schema only) -------------------------------
 
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
 def phase3_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE3_COLS)
@@ -491,11 +607,6 @@ def phase5_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE5_COLS
 # ------------------------------- Orchestrator -------------------------------
 
 def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dict:
-    """
-    Orchestrate the build. Ensures schema for all phases up to `phase`.
-    Phase 1 loads rows (replace deletes rows for this task_id first).
-    Later phases update only their own columns.
-    """
     if not task_id:
         raise ValueError("task_id is required")
     out: Dict = {"ok": True, "task_id": task_id, "phase": phase}
@@ -508,18 +619,17 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         if phase in ("all","4","5"):         phase4_add_schema(conn)
         if phase in ("all","5"):             phase5_add_schema(conn)
 
-        # Phase 1 (copy)
         if phase in ("all","1"):
             if replace:
                 _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
             out["phase1_rows"] = phase1_load(conn, task_id)
 
-        # Phase 2 (bounces + helpers)
         if phase in ("all","2"):
             out["phase2_rows_updated"] = phase2_update(conn, task_id)
 
-        # Stubs only
-        if phase in ("all","3"): out["phase3"] = "schema-ready"
+        if phase in ("all","3"):
+            out["phase3_rows_updated"] = phase3_update(conn, task_id)
+
         if phase in ("all","4"): out["phase4"] = "schema-ready"
         if phase in ("all","5"): out["phase5"] = "schema-ready"
 
