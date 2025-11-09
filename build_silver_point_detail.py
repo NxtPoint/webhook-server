@@ -128,50 +128,24 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 # ------------------------------- PHASE 1 — loader (pure 1:1) -------------------------------
 
 def phase1_load(conn: Connection, task_id: str) -> int:
-    bcols = _columns_types(conn, "bronze", "player_swing")
-    must_have = {
-        "task_id","start_ts","end_ts","player_id","valid","serve","swing_type","volley",
-        "is_in_rally","ball_player_distance","ball_speed","rally","ball_hit","id"
-    }
-    missing = [c for c in must_have if c not in bcols]
+    """
+    PHASE 1 — Exact 1:1 copy from bronze.player_swing (valid=TRUE only).
+    Uses these bronze columns verbatim (your list):
+      task_id, start_ts, end_ts, player_id, valid, serve, swing_type, volley,
+      is_in_rally, ball_player_distance, ball_speed, ball_impact_type, rally,
+      ball_hit (json with 'timestamp'), ball_hit_location_x, ball_hit_location_y
+    """
+    # Guard that required bronze columns exist
+    need = [
+        "task_id", "start_ts", "end_ts", "player_id", "valid", "serve",
+        "swing_type", "volley", "is_in_rally", "ball_player_distance",
+        "ball_speed", "ball_impact_type", "rally", "ball_hit",
+        "ball_hit_location_x", "ball_hit_location_y", "id"
+    ]
+    cols = _columns_types(conn, "bronze", "player_swing")
+    missing = [c for c in need if c not in cols]
     if missing:
         raise RuntimeError(f"bronze.player_swing missing columns: {missing}")
-
-    if "ball_hit_location_x" in bcols and "ball_hit_location_y" in bcols:
-        bhx_expr = "s.ball_hit_location_x::double precision"
-        bhy_expr = "s.ball_hit_location_y::double precision"
-    elif "ball_hit_location" in bcols:
-        bhx_expr = """
-          CASE
-            WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array' AND jsonb_array_length(s.ball_hit_location::jsonb)>0
-              THEN (s.ball_hit_location::jsonb->>0)::double precision
-            WHEN left(s.ball_hit_location::text,1)='['
-              THEN (jsonb_extract_path_text(s.ball_hit_location::jsonb,'0'))::double precision
-            ELSE NULL::double precision
-          END
-        """.strip()
-        bhy_expr = """
-          CASE
-            WHEN jsonb_typeof(s.ball_hit_location::jsonb)='array' AND jsonb_array_length(s.ball_hit_location::jsonb)>1
-              THEN (s.ball_hit_location::jsonb->>1)::double precision
-            WHEN left(s.ball_hit_location::text,1)='['
-              THEN (jsonb_extract_path_text(s.ball_hit_location::jsonb,'1'))::double precision
-            ELSE NULL::double precision
-          END
-        """.strip()
-    else:
-        raise RuntimeError("bronze.player_swing missing ball_hit_location[_x/_y] columns")
-
-    rally_expr = "CASE WHEN (s.rally)::text ~ '^-?\\d+$' THEN (s.rally)::int ELSE NULL::int END"
-    ball_hit_s_expr = """
-      COALESCE(
-        (CASE
-           WHEN jsonb_typeof(s.ball_hit::jsonb)='object' AND (s.ball_hit::jsonb ? 'timestamp')
-           THEN (s.ball_hit::jsonb->>'timestamp')::double precision
-         END),
-        NULLIF(s.ball_hit::text, '')::double precision
-      )
-    """.strip()
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
@@ -182,23 +156,23 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       start_s, end_s, ball_hit_s
     )
     SELECT
-      s.task_id::uuid                          AS task_id,
-      s.id                                     AS swing_id,
-      s.player_id                              AS player_id,
-      s.valid                                  AS valid,
-      s.serve                                  AS serve,
-      s.swing_type                             AS swing_type,
-      s.volley                                 AS volley,
-      s.is_in_rally                            AS is_in_rally,
+      s.task_id::uuid                         AS task_id,
+      s.id                                    AS swing_id,            -- exact copy of bronze.id
+      s.player_id                             AS player_id,
+      s.valid                                 AS valid,
+      s.serve                                 AS serve,
+      s.swing_type                            AS swing_type,
+      s.volley                                AS volley,
+      s.is_in_rally                           AS is_in_rally,
       s.ball_player_distance::double precision AS ball_player_distance,
       s.ball_speed::double precision           AS ball_speed,
-      NULL::text                               AS ball_impact_type,
-      {rally_expr}                             AS rally,
-      {bhx_expr}                               AS ball_hit_x,
-      {bhy_expr}                               AS ball_hit_y,
-      s.start_ts::double precision             AS start_s,
-      s.end_ts::double precision               AS end_s,
-      {ball_hit_s_expr}                        AS ball_hit_s
+      s.ball_impact_type                      AS ball_impact_type,
+      s.rally::integer                        AS rally,
+      s.ball_hit_location_x::double precision AS ball_hit_x,
+      s.ball_hit_location_y::double precision AS ball_hit_y,
+      s.start_ts::double precision            AS start_s,
+      s.end_ts::double precision              AS end_s,
+      (s.ball_hit->>'timestamp')::double precision AS ball_hit_s
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) IS TRUE;
@@ -353,11 +327,25 @@ def _bounce_type_expr(bcols: dict) -> str:
     return "NULL::text"
 
 def phase2_update(conn: Connection, task_id: str) -> int:
-    bb_src, bcols = _bb_src(conn)
-    bounce_s   = _bounce_time_expr(bcols)
-    bounce_x   = _bounce_x_expr(bcols)
-    bounce_y   = _bounce_y_expr(bcols)
-    bounce_typ = _bounce_type_expr(bcols)
+    """
+    PHASE 2 — For each swing, choose the FIRST bounce strictly AFTER ball_hit_s,
+    bounded to [ball_hit_s+0.005, min(next_ball_hit_s, ball_hit_s+2.5)].
+    Write: bounce_x_m, bounce_y_m, bounce_type_d, bounce_s for ALL swings.
+    For NON-SERVES only, also write hit_x_resolved_m and hit_source_d.
+    """
+    # Bronze ball_bounce columns we can rely on:
+    #   task_id, timestamp (json->'timestamp') OR bounce_s,
+    #   court_x / court_y OR data->court_pos / data->court_x / data->court_y,
+    #   bounce_type (or type)
+    bb_cols = _columns_types(conn, "bronze", "ball_bounce")
+    if not bb_cols:
+        raise RuntimeError("bronze.ball_bounce not found")
+
+    # Build time/x/y/type expressions tolerant to schema variants
+    bounce_s   = _bounce_time_expr(bb_cols)
+    bounce_x   = _bounce_x_expr(bb_cols)
+    bounce_y   = _bounce_y_expr(bb_cols)
+    bounce_typ = _bounce_type_expr(bb_cols)
 
     sql = f"""
     WITH p0 AS (
@@ -404,9 +392,8 @@ def phase2_update(conn: Connection, task_id: str) -> int:
           {bounce_y}   AS bounce_y,
           {bounce_typ} AS bounce_type,
           {bounce_s}   AS bounce_s
-        FROM {bb_src}
-        WHERE
-          (b.task_id)::text = (p2.task_id)::text
+        FROM bronze.ball_bounce b
+        WHERE b.task_id::uuid = p2.task_id
           AND {bounce_s} IS NOT NULL
           AND {bounce_s} >  p2.win_start
           AND {bounce_s} <= p2.win_end
@@ -455,6 +442,7 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- PHASE 3 — updater (serve-only) -------------------------------
 
