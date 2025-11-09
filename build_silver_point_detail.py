@@ -38,11 +38,14 @@ PHASE1_COLS = OrderedDict({
     "ball_hit_s":           "double precision"    # ← add
 })
 
-# Phase 2 — ball-hit location (classic resolution)
+# Phase 2 — ball-hit location (classic resolution) + chosen bounce coords for all swings
 PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     "hit_x_resolved_m": "double precision",  # final resolved X (meters), non-serve shots
-    "hit_source_d":     "text"               # floor_bounce | any_bounce | next_contact | ball_hit
+    "hit_source_d":     "text",              # floor_bounce | any_bounce | next_contact | ball_hit
+    "bounce_x_m":       "double precision",  # chosen bounce X (meters), for ANY swing
+    "bounce_y_m":       "double precision"   # chosen bounce Y (meters), for ANY swing
 })
+
 
 # Phase 3 — ball_bounce join (schema only for now)
 PHASE3_COLS: TOrderedDict[str, str] = OrderedDict({
@@ -248,6 +251,17 @@ def _bounce_x_expr(bcols: Dict[str, str]) -> str:
     # Fallback: NULL
     return "NULL::double precision"
 
+def _bounce_y_expr(bcols: Dict[str, str]) -> str:
+    # Common numeric y columns
+    for cand in ("y", "bounce_y", "y_center", "y_center_m", "y_m", "y_pos"):
+        if cand in bcols and "json" not in bcols[cand]:
+            return _num_b(bcols, cand)
+    # Array field like location:[x,y]
+    if "location" in bcols:
+        return _xy_from_json_array_b(_colref_b("location"), 1)
+    # Fallback: NULL
+    return "NULL::double precision"
+
 def _bounce_type_expr(bcols: Dict[str, str]) -> str:
     for cand in ("bounce_type", "type"):
         if cand in bcols:
@@ -341,35 +355,51 @@ def phase1_load(conn: Connection, task_id: str) -> int:
 # - We do NOT compute serve location zones here (that arrives in Phases 4–5).
 # - Placement bucketing and far/near mirroring are deferred to a later phase.
 # - Phase 2 is additive and only updates the new Phase-2 columns for the chosen task_id.
+
 # ------------------------------------------------------------------------------------------
+# PHASE 2 — Ball-Hit Location (Classic) + Bounce Coordinates
+#
+# Window per swing: [ball_hit_s+0.005, min(next_ball_hit_s, ball_hit_s+2.5)]
+# Choose first bounce in window, preferring floor (floor-first, then earliest).
+#
+# Writes:
+#   - bounce_x_m, bounce_y_m for ALL swings (including serves).
+#   - For NON-SERVES only:
+#       hit_x_resolved_m = bounce_x → next_contact_x → ball_hit_x
+#       hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
+#
+# Additive, idempotent per task_id. Phase-1 data never overwritten.
+# ------------------------------------------------------------------------------------------
+
 def phase2_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 2 — classic placement logic (time-windowed bounce, no task_id dependency on ball_bounce)
+    PHASE 2 — Classic placement + expose chosen bounce coords
 
-    For each NON-SERVE swing in silver.point_detail (valid=TRUE):
-      1) Window: [ball_hit_s + 0.005,  min(next_ball_hit_s, ball_hit_s + 2.5)]
-      2) Pick FIRST bounce in that window, preferring floor (ORDER BY floor first, then time)
-      3) Resolve X (non-terminal):
-           floor_bounce_x -> any_bounce_x -> next_contact_x -> own ball_hit_x
-         (terminal handling remains the same in practice since we still take earliest window bounce;
-          if none exists, we fall back to next_contact/own hit.)
-      4) hit_source_d ∈ { floor_bounce | any_bounce | next_contact | ball_hit }
+    For EACH valid swing in silver.point_detail (serves included for bounce coords):
+      - Build window: [ball_hit_s + 0.005, min(next_ball_hit_s, ball_hit_s + 2.5)]
+      - Choose FIRST bounce in window (floor preferred, then earliest)
+      - Write:
+          bounce_x_m, bounce_y_m  (for ALL swings)
+      - For NON-SERVES only:
+          hit_x_resolved_m = bounce_x (if any) → next_contact_x → own ball_hit_x
+          hit_source_d     = floor_bounce | any_bounce | next_contact | ball_hit
     """
     bb_src, bcols = _bb_src(conn)
-    bounce_s   = _bounce_time_expr(bcols)   # e.g., numeric seconds from bounce row
-    bounce_x   = _bounce_x_expr(bcols)      # numeric x
-    bounce_typ = _bounce_type_expr(bcols)   # text, expects 'floor' when available
+    bounce_s   = _bounce_time_expr(bcols)
+    bounce_x   = _bounce_x_expr(bcols)
+    bounce_y   = _bounce_y_expr(bcols)
+    bounce_typ = _bounce_type_expr(bcols)
 
     sql = f"""
     WITH p0 AS (
       SELECT
         p.task_id, p.swing_id, p.player_id, p.rally,
-        p.valid, COALESCE(p.serve, FALSE) AS serve,
+        COALESCE(p.valid, FALSE) AS valid,
+        COALESCE(p.serve, FALSE) AS serve,
         p.ball_hit_s, p.ball_hit_x
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND COALESCE(p.valid, FALSE) IS TRUE
-        AND COALESCE(p.serve, FALSE) IS FALSE
     ),
     p1 AS (
       SELECT
@@ -389,11 +419,13 @@ def phase2_update(conn: Connection, task_id: str) -> int:
       SELECT
         p2.swing_id,
         pick.bounce_x,
+        pick.bounce_y,
         pick.bounce_type
       FROM p2
       LEFT JOIN LATERAL (
         SELECT
           {bounce_x}   AS bounce_x,
+          {bounce_y}   AS bounce_y,
           {bounce_typ} AS bounce_type,
           {bounce_s}   AS bounce_s
         FROM {bb_src}
@@ -410,24 +442,36 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     resolved AS (
       SELECT
         p2.swing_id,
-        COALESCE(
-          chosen.bounce_x,
-          p2.next_ball_hit_x,
-          p2.ball_hit_x
-        ) AS hit_x_resolved_m,
-        CASE
-          WHEN chosen.bounce_x IS NOT NULL AND chosen.bounce_type = 'floor' THEN 'floor_bounce'
-          WHEN chosen.bounce_x IS NOT NULL THEN 'any_bounce'
-          WHEN p2.next_ball_hit_x IS NOT NULL THEN 'next_contact'
-          ELSE 'ball_hit'
-        END AS hit_source_d
+        p2.serve,
+        p2.next_ball_hit_x,
+        p2.ball_hit_x,
+        chosen.bounce_x,
+        chosen.bounce_y,
+        chosen.bounce_type
       FROM p2
       LEFT JOIN chosen ON chosen.swing_id = p2.swing_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      hit_x_resolved_m = r.hit_x_resolved_m,
-      hit_source_d     = r.hit_source_d
+      -- bounce coords for ALL swings (may be NULL if no bounce in window)
+      bounce_x_m = r.bounce_x,
+      bounce_y_m = r.bounce_y,
+
+      -- resolved X only for NON-SERVES (leave existing values for serves)
+      hit_x_resolved_m = CASE
+        WHEN p.serve IS FALSE THEN COALESCE(r.bounce_x, r.next_ball_hit_x, r.ball_hit_x)
+        ELSE p.hit_x_resolved_m
+      END,
+      hit_source_d = CASE
+        WHEN p.serve IS FALSE THEN
+          CASE
+            WHEN r.bounce_x IS NOT NULL AND r.bounce_type = 'floor' THEN 'floor_bounce'
+            WHEN r.bounce_x IS NOT NULL THEN 'any_bounce'
+            WHEN r.next_ball_hit_x IS NOT NULL THEN 'next_contact'
+            ELSE 'ball_hit'
+          END
+        ELSE p.hit_source_d
+      END
     FROM resolved r
     WHERE p.task_id = :tid
       AND p.swing_id = r.swing_id;
