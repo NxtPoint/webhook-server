@@ -169,8 +169,57 @@ def _ball_hit_y_expr(cols: Dict[str, str]) -> str:
     if "ball_hit_y" in cols and "json" not in cols["ball_hit_y"]:
         return _num(cols, "ball_hit_y")
     return _xy_from_json_array(_colref("ball_hit_location"), 1)
+    
 
 # -----------Phase 2 Helpers ----------------------------
+
+# --- Helpers that reference alias `b` (for bronze.ball_bounce) -----------------
+def _colref_b(name: str) -> str:
+    n = name.lower()
+    return 'b."end"' if n == "end" else f"b.{n}"
+
+def _sec_b(cols: Dict[str, str], name: str) -> str:
+    n = name.lower()
+    if n not in cols:
+        return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(
+          CASE
+            WHEN jsonb_typeof({_colref_b(n)}::jsonb)='object'
+                 AND ({_colref_b(n)}::jsonb ? 'timestamp')
+                 AND jsonb_typeof(({_colref_b(n)}::jsonb)->'timestamp')='number'
+              THEN (({_colref_b(n)}::jsonb)->>'timestamp')::double precision
+            WHEN jsonb_typeof({_colref_b(n)}::jsonb)='number'
+              THEN ({_colref_b(n)}::text)::double precision
+            ELSE NULL::double precision
+          END)"""
+    if any(k in dt for k in ("double","real","numeric","integer")):
+        return _colref_b(n)
+    return "NULL::double precision"
+
+def _num_b(cols: Dict[str, str], name: str) -> str:
+    n = name.lower()
+    if n not in cols: return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        return f"""(CASE WHEN jsonb_typeof({_colref_b(n)})='number'
+                   THEN ({_colref_b(n)}::text)::double precision
+                   ELSE NULL::double precision END)"""
+    return _colref_b(n)
+
+def _text_b(cols: Dict[str, str], name: str) -> str:
+    return _colref_b(name) if name.lower() in cols else "NULL::text"
+
+def _xy_from_json_array_b(colref: str, index: int) -> str:
+    return f"""(
+      CASE
+        WHEN {colref} IS NOT NULL
+         AND jsonb_typeof({colref}::jsonb)='array'
+         AND jsonb_array_length({colref}::jsonb) > {index}
+        THEN ({colref}::jsonb->>{index})::double precision
+        ELSE NULL::double precision
+      END)"""
 
 def _bronze_cols(conn: Connection, name: str) -> Dict[str, str]:
     return _columns_types(conn, "bronze", name)
@@ -181,35 +230,29 @@ def _bb_src(conn: Connection) -> Tuple[str, Dict[str, str]]:
     raise RuntimeError("Bronze ball_bounce not found.")
 
 def _bounce_time_expr(bcols: Dict[str, str]) -> str:
-    # Seconds from likely time fields, preferring numeric seconds or json-number
+    # Prefer explicit second-ish fields if present; otherwise parse json 'timestamp'
     for cand in ("timestamp","ts","time_s","bounce_s","t"):
         if cand in bcols:
-            return _sec(bcols, cand)
+            return _sec_b(bcols, cand)
     # Fallback: NULL
     return "NULL::double precision"
 
 def _bounce_x_expr(bcols: Dict[str, str]) -> str:
-    # Typical numeric x or a [x,y] array in 'location'
-    if "x" in bcols and "json" not in bcols["x"]:
-        return _num(bcols, "x")
-    # Common alt names
-    for cand in ("bounce_x","x_center","x_center_m","x_m","x_pos"):
+    # Common numeric x columns
+    for cand in ("x", "bounce_x", "x_center", "x_center_m", "x_m", "x_pos"):
         if cand in bcols and "json" not in bcols[cand]:
-            return _num(bcols, cand)
-    # Array option
+            return _num_b(bcols, cand)
+    # Array field like location:[x,y]
     if "location" in bcols:
-        return _xy_from_json_array(_colref("location"), 0)
+        return _xy_from_json_array_b(_colref_b("location"), 0)
     # Fallback: NULL
     return "NULL::double precision"
 
 def _bounce_type_expr(bcols: Dict[str, str]) -> str:
-    # Common fields: bounce_type or type
-    if "bounce_type" in bcols:
-        return _text(bcols, "bounce_type")
-    if "type" in bcols:
-        return _text(bcols, "type")
+    for cand in ("bounce_type", "type"):
+        if cand in bcols:
+            return _text_b(bcols, cand)
     return "NULL::text"
-
 
 # --------------------------------- schema ensure ---------------------------------
 
@@ -391,8 +434,6 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
-
 
 # --------------------------------- Phase 2–5 (schema only now) ---------------------------------
 
