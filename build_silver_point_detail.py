@@ -108,6 +108,92 @@ def _columns_types(conn: Connection, schema: str, name: str) -> Dict[str, str]:
     rows = conn.execute(text(q), {"s": schema, "t": name}).fetchall()
     return {r[0].lower(): r[1].lower() for r in rows}
 
+# ---------- Bronze helpers shared by Phase 1/2 ----------
+
+def _bronze_cols(conn: Connection, name: str) -> dict:
+    rows = conn.execute(text("""
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema='bronze' AND table_name=:t
+    """), {"t": name}).fetchall()
+    return {r[0].lower(): r[1].lower() for r in rows}
+
+def _ps_src(conn: Connection):
+    # prefer player_swing; fallback to swing
+    if _table_exists(conn, "bronze", "player_swing"):
+        return "bronze.player_swing s", _bronze_cols(conn, "player_swing")
+    if _table_exists(conn, "bronze", "swing"):
+        return "bronze.swing s", _bronze_cols(conn, "swing")
+    raise RuntimeError("Neither bronze.player_swing nor bronze.swing exists.")
+
+def _colref_s(name: str) -> str:
+    n = name.lower()
+    return f's."end"' if n == "end" else f"s.{n}"
+
+def _xy_from_json_array(colref: str, idx: int) -> str:
+    # Safe extraction from a JSON array column
+    return f"""(
+      CASE
+        WHEN {colref} IS NOT NULL
+         AND jsonb_typeof({colref}::jsonb)='array'
+         AND jsonb_array_length({colref}::jsonb)>{idx}
+        THEN ({colref}::jsonb->>{idx})::double precision
+        ELSE NULL::double precision
+      END)"""
+
+def _safe_num_json_object_timestamp(colref: str) -> str:
+    # Extract numeric seconds from JSON object having {"timestamp": <number>}
+    return f"""(
+      CASE
+        WHEN {colref} IS NOT NULL
+         AND jsonb_typeof({colref}::jsonb)='object'
+         AND ({colref}::jsonb ? 'timestamp')
+         AND jsonb_typeof(({colref}::jsonb)->'timestamp')='number'
+      THEN (({colref}::jsonb)->>'timestamp')::double precision
+      ELSE NULL::double precision
+      END)"""
+
+def _num_s(cols: dict, name: str) -> str:
+    n = name.lower()
+    if n not in cols:
+        return "NULL::double precision"
+    dt = cols[n]
+    if "json" in dt:
+        # allow numeric JSON
+        return f"""(CASE WHEN jsonb_typeof({_colref_s(n)}::jsonb)='number'
+                  THEN ({_colref_s(n)}::text)::double precision
+                  ELSE NULL::double precision END)"""
+    return _colref_s(n)
+
+def _text_s(cols: dict, name: str) -> str:
+    return _colref_s(name) if name.lower() in cols else "NULL::text"
+
+def _bool_s(cols: dict, name: str) -> str:
+    return f"COALESCE({_colref_s(name)}, FALSE)" if name.lower() in cols else "FALSE"
+
+def _sec_s(cols: dict, name: str) -> str:
+    n = name.lower()
+    if n in cols:
+        dt = cols[n]
+        if "json" in dt:
+            # try JSON object with timestamp OR numeric JSON
+            return f"""COALESCE(
+                {_safe_num_json_object_timestamp(_colref_s(n))},
+                (CASE WHEN jsonb_typeof({_colref_s(n)}::jsonb)='number'
+                      THEN ({_colref_s(n)}::text)::double precision
+                      ELSE NULL::double precision END)
+            )"""
+        # plain numeric
+        if any(k in dt for k in ("double", "real", "numeric", "integer")):
+            return _colref_s(n)
+    # common alternates for start/end seconds
+    alt = {"start_ts": ["start","begin","t_start"], "end_ts": ["end","t_end","finish"]}
+    if name in alt:
+        for cand in alt[name]:
+            if cand in cols:
+                return _sec_s(cols, cand)
+    return "NULL::double precision"
+
 # ------------------------------- schema ensure -------------------------------
 
 DDL_CREATE_SCHEMA = f"CREATE SCHEMA IF NOT EXISTS {SILVER_SCHEMA};"
@@ -131,12 +217,56 @@ def ensure_phase_columns(conn: Connection, spec: Dict[str, str]):
 # ---------- PHASE 1 (pure 1:1 from bronze.player_swing; safe JSON extraction) ----------
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
-    PHASE 1 — Exact copy from bronze.player_swing (valid=TRUE).
-    Notes:
-      - ball_hit_location is a JSON array [x, y] → extract with ->> 0/1 then cast
-      - ball_hit is a JSON object with "timestamp" (number) → extract with ->> 'timestamp' then cast
-      - Nothing else is derived. swing_id = bronze.id (verbatim)
+    PHASE 1 — Exact copy from bronze.player_swing (fallback bronze.swing).
+    - Robust to column name variants.
+    - Safe casts for rally, coordinates, timestamps.
     """
+    src, cols = _ps_src(conn)
+
+    # Basics
+    task   = f"{_colref_s('task_id')}::uuid" if "task_id" in cols else ":tid::uuid"
+    swing  = f"{_colref_s('id')}::bigint"    if "id" in cols else "NULL::bigint"
+    pid    = _text_s(cols, "player_id")
+
+    valid  = _bool_s(cols, "valid")
+    serve  = _bool_s(cols, "serve")
+    volley = _bool_s(cols, "volley")
+    inry   = _bool_s(cols, "is_in_rally")
+
+    stype  = _text_s(cols, "swing_type")
+    impact = _text_s(cols, "ball_impact_type")
+
+    # rally safe-cast
+    rally = (f"""(
+        CASE WHEN {_colref_s('rally')} ~ '^[0-9]+$'
+             THEN {_colref_s('rally')}::int
+             ELSE NULL::int END)"""
+             if "rally" in cols else "NULL::int")
+
+    # ball_hit_x / y from _x/_y or array
+    if "ball_hit_location_x" in cols:
+        bhx = f"NULLIF({_colref_s('ball_hit_location_x')}::text,'')::double precision"
+    elif "ball_hit_location" in cols:
+        bhx = _xy_from_json_array(_colref_s("ball_hit_location"), 0)
+    else:
+        bhx = "NULL::double precision"
+
+    if "ball_hit_location_y" in cols:
+        bhy = f"NULLIF({_colref_s('ball_hit_location_y')}::text,'')::double precision"
+    elif "ball_hit_location" in cols:
+        bhy = _xy_from_json_array(_colref_s("ball_hit_location"), 1)
+    else:
+        bhy = "NULL::double precision"
+
+    # seconds
+    start_s = _sec_s(cols, "start_ts")
+    end_s   = _sec_s(cols, "end_ts")
+    ballhit = _sec_s(cols, "ball_hit")
+
+    # metrics
+    bpd = _num_s(cols, "ball_player_distance")
+    bs  = _num_s(cols, "ball_speed")
+
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       task_id, swing_id, player_id,
@@ -146,61 +276,29 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       start_s, end_s, ball_hit_s
     )
     SELECT
-      s.task_id::uuid                                        AS task_id,
-      s.id::bigint                                           AS swing_id,         -- exact copy
-      s.player_id                                            AS player_id,
-      s.valid                                                AS valid,
-      s.serve                                                AS serve,
-      s.swing_type                                           AS swing_type,
-      s.volley                                               AS volley,
-      s.is_in_rally                                          AS is_in_rally,
-      s.ball_player_distance::double precision               AS ball_player_distance,
-      s.ball_speed::double precision                         AS ball_speed,
-      NULL::text                                             AS ball_impact_type,
-      s.rally::int                                           AS rally,
-
-      /* ball_hit_x */
-      COALESCE(
-        NULLIF(s.ball_hit_location_x::text, '')::double precision,
-        CASE
-          WHEN s.ball_hit_location IS NOT NULL
-           AND jsonb_typeof(s.ball_hit_location::jsonb) = 'array'
-           AND jsonb_array_length(s.ball_hit_location::jsonb) > 0
-          THEN (s.ball_hit_location::jsonb ->> 0)::double precision
-          ELSE NULL
-        END
-      ) AS ball_hit_x,
-
-      /* ball_hit_y */
-      COALESCE(
-        NULLIF(s.ball_hit_location_y::text, '')::double precision,
-        CASE
-          WHEN s.ball_hit_location IS NOT NULL
-           AND jsonb_typeof(s.ball_hit_location::jsonb) = 'array'
-           AND jsonb_array_length(s.ball_hit_location::jsonb) > 1
-          THEN (s.ball_hit_location::jsonb ->> 1)::double precision
-          ELSE NULL
-        END
-      ) AS ball_hit_y,
-
-      /* seconds fields */
-      s.start_ts::double precision                           AS start_s,
-      s.end_ts::double precision                             AS end_s,
-      CASE
-        WHEN s.ball_hit IS NOT NULL
-         AND jsonb_typeof(s.ball_hit::jsonb) = 'object'
-         AND (s.ball_hit::jsonb ? 'timestamp')
-         AND jsonb_typeof(s.ball_hit::jsonb->'timestamp') = 'number'
-        THEN (s.ball_hit::jsonb ->> 'timestamp')::double precision
-        ELSE NULL::double precision
-      END                                                    AS ball_hit_s
-    FROM bronze.player_swing s
-    WHERE s.task_id::uuid = :tid
-      AND COALESCE(s.valid, FALSE) IS TRUE;
+      {task}                               AS task_id,
+      {swing}                              AS swing_id,
+      {pid}                                AS player_id,
+      {valid}                              AS valid,
+      {serve}                              AS serve,
+      {stype}                              AS swing_type,
+      {volley}                             AS volley,
+      {inry}                               AS is_in_rally,
+      {bpd}                                AS ball_player_distance,
+      {bs}                                 AS ball_speed,
+      {impact}                             AS ball_impact_type,
+      {rally}                              AS rally,
+      {bhx}                                AS ball_hit_x,
+      {bhy}                                AS ball_hit_y,
+      {start_s}                            AS start_s,
+      {end_s}                              AS end_s,
+      {ballhit}                            AS ball_hit_s
+    FROM {src}
+    WHERE {task} = :tid
+      AND COALESCE({valid}, FALSE) IS TRUE;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 # ------------------------------- PHASE 2 — updater (bounces + helpers) -------------------------------
 
@@ -468,38 +566,42 @@ def phase2_update(conn: Connection, task_id: str) -> int:
 
 # ------------------------------- PHASE 3 — updater (serve-only) -------------------------------
 
-# Your thresholds:
-Y_NEAR_MAX = 1.0     # y <= 1.0 → near end
-Y_FAR_MIN  = 23.0    # y >= 23.0 → far end
-X_SIDE_ABS = 4.0     # x threshold to classify ad/deuce given end
+# Thresholds (strict):
+Y_NEAR_MIN = 23.0   # y > 23.0  → near end
+Y_FAR_MAX  = 1.0    # y < 1.0   → far end
+X_SIDE_ABS = 4.0    # |x| threshold to classify ad/deuce given end
 
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 3 — Serve-only fields using Phase 1/2 data only (sheet-spec):
-      serve_d: fh_overhead AND (ball_hit_y < 1 OR ball_hit_y > 23)
-      server_end_d: CASE ball_hit_y < 1 → 'far' ELSE 'near'
-      serve_side_d: near:  x>4 → deuce else ad ;  far: x<4 → deuce else ad
-      serve_try_ix_in_point:
-          cnt=1 → 1
-          cnt>=2 → 2
-          cnt>2 AND no opponent swing after last serve → double_fault_d=TRUE, try_ix=NULL
-      service_winner_d: decisive serve (1/2, not DF) AND no opponent swing after that serve
+    Phase 3 — Serve-only fields using Phase 1/2 data.
+      serve_d: swing_type LIKE '%overhead%' AND (y > 23 OR y < 1)
+      server_end_d: 'near' if y > 23 ; 'far' if y < 1 ; else NULL
+      serve_side_d:
+        - near end (y > 23): x >= +X_SIDE_ABS → 'ad'   else 'deuce'
+        - far  end (y < 1) : x <= -X_SIDE_ABS → 'deuce' else 'ad'
     """
     sql = f"""
-    -- Pass A: mark serves + server_end + side + server_id
+    -- Pass A: detect serves + set server_end and side and server_id
     WITH serves_a AS (
       SELECT
         p.task_id, p.rally, p.swing_id, p.player_id,
         p.ball_hit_s, p.ball_hit_x, p.ball_hit_y,
-        CASE WHEN lower(coalesce(p.swing_type,'')) LIKE '%overhead%'
-               AND (p.ball_hit_y < 1 OR p.ball_hit_y > 23)
-             THEN TRUE ELSE FALSE END AS is_serve,
-        CASE WHEN p.ball_hit_y < 1 THEN 'far' ELSE 'near' END AS server_end_d,
         CASE
-          WHEN p.ball_hit_y < 1 THEN  -- far
-            CASE WHEN p.ball_hit_x < 4 THEN 'deuce' ELSE 'ad' END
-          ELSE                         -- near
-            CASE WHEN p.ball_hit_x > 4 THEN 'deuce' ELSE 'ad' END
+          WHEN lower(coalesce(p.swing_type,'')) LIKE '%overhead%'
+               AND (p.ball_hit_y > {Y_NEAR_MIN} OR p.ball_hit_y < {Y_FAR_MAX})
+          THEN TRUE ELSE FALSE
+        END AS is_serve,
+        CASE
+          WHEN p.ball_hit_y > {Y_NEAR_MIN} THEN 'near'
+          WHEN p.ball_hit_y < {Y_FAR_MAX}  THEN 'far'
+          ELSE NULL
+        END AS server_end_d,
+        CASE
+          WHEN p.ball_hit_y > {Y_NEAR_MIN} THEN
+            CASE WHEN p.ball_hit_x >= {X_SIDE_ABS}  THEN 'ad'   ELSE 'deuce' END
+          WHEN p.ball_hit_y < {Y_FAR_MAX}  THEN
+            CASE WHEN p.ball_hit_x <= -{X_SIDE_ABS} THEN 'deuce' ELSE 'ad'    END
+          ELSE NULL
         END AS serve_side_d
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid AND COALESCE(p.valid, FALSE) IS TRUE
@@ -516,39 +618,28 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       RETURNING 1
     ),
 
-    -- Pass B: restrict to rows detected as serves
+    -- Pass B onward unchanged ...
     base AS (
       SELECT p.task_id, p.rally, p.swing_id, p.player_id, p.ball_hit_s
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid AND COALESCE(p.serve_d, FALSE) IS TRUE
     ),
-
-    -- Count serves in each rally & find last-serve time
     rally_counts AS (
-      SELECT
-        task_id, rally,
-        COUNT(*) AS serve_cnt,
-        MAX(ball_hit_s) AS last_serve_t
+      SELECT task_id, rally, COUNT(*) AS serve_cnt, MAX(ball_hit_s) AS last_serve_t
       FROM base
       GROUP BY task_id, rally
     ),
-
-    -- For decisive try (1 or 2): choose by serve_cnt; for >2 we will decide DF later
     try_assign AS (
       SELECT
         b.task_id, b.rally, b.swing_id, b.player_id, b.ball_hit_s,
         rc.serve_cnt,
-        CASE
-          WHEN rc.serve_cnt = 1 THEN 1
-          WHEN rc.serve_cnt >= 2 THEN 2
-          ELSE NULL
-        END AS try_ix,
+        CASE WHEN rc.serve_cnt = 1 THEN 1
+             WHEN rc.serve_cnt >= 2 THEN 2
+             ELSE NULL END AS try_ix,
         rc.last_serve_t
       FROM base b
       JOIN rally_counts rc USING (task_id, rally)
     ),
-
-    -- Check if any opponent swing occurred after the last serve in each rally
     opp_after_last AS (
       SELECT
         rc.task_id, rc.rally,
@@ -566,24 +657,14 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ) AS opponent_after_last
       FROM rally_counts rc
     ),
-
-    -- Double fault rule: >2 serves AND no opponent swing after last serve
     df_flags AS (
       SELECT
         ta.task_id, ta.rally, ta.swing_id,
-        CASE
-          WHEN ta.serve_cnt > 2 AND o.opponent_after_last = FALSE THEN TRUE
-          ELSE FALSE
-        END AS is_df,
-        CASE
-          WHEN ta.serve_cnt > 2 AND o.opponent_after_last = FALSE THEN NULL
-          ELSE ta.try_ix
-        END AS final_try_ix
+        CASE WHEN ta.serve_cnt > 2 AND o.opponent_after_last = FALSE THEN TRUE ELSE FALSE END AS is_df,
+        CASE WHEN ta.serve_cnt > 2 AND o.opponent_after_last = FALSE THEN NULL ELSE ta.try_ix END AS final_try_ix
       FROM try_assign ta
       JOIN opp_after_last o USING (task_id, rally)
     ),
-
-    -- Decide service winner only for decisive (try 1/2, not DF):
     winners AS (
       SELECT
         ta.task_id, ta.rally, ta.swing_id,
@@ -600,7 +681,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM try_assign ta
       JOIN df_flags   df USING (task_id, rally, swing_id)
     )
-
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_try_ix_in_point = df.final_try_ix,
@@ -613,7 +693,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 # ------------------------------- Phase 2–5 (schema only) -------------------------------
 
