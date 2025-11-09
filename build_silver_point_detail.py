@@ -624,27 +624,43 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND COALESCE(p.valid, FALSE) IS TRUE
         AND COALESCE(p.serve_d, FALSE) IS TRUE
     ),
-    rally_first AS (
-      SELECT DISTINCT ON (task_id, rally)
-        task_id, rally, serve_side_d AS init_side, ball_hit_s AS init_t
+
+    -- First serve time per rally
+    rally_min AS (
+      SELECT task_id, rally, MIN(ball_hit_s) AS init_t
       FROM base
-      ORDER BY task_id, rally, ball_hit_s, swing_id
+      GROUP BY task_id, rally
     ),
+
+    -- First serve row per rally (side of the first serve)
+    rally_first AS (
+      SELECT b.task_id, b.rally, b.serve_side_d AS init_side, b.ball_hit_s AS init_t
+      FROM base b
+      JOIN rally_min m
+        ON m.task_id = b.task_id
+      AND m.rally   = b.rally
+      AND b.ball_hit_s = m.init_t
+    ),
+
+    -- Time of first serve on the opposite side (if any)
     first_opposite AS (
       SELECT
         b1.task_id, b1.rally,
         MIN(b2.ball_hit_s) AS first_opposite_t
       FROM base b1
       JOIN base b2
-        ON b1.task_id=b2.task_id AND b1.rally=b2.rally
-       AND b2.serve_side_d <> b1.serve_side_d
+        ON b1.task_id=b2.task_id
+      AND b1.rally  =b2.rally
+      AND b2.serve_side_d <> b1.serve_side_d
       GROUP BY b1.task_id, b1.rally
     ),
+
+    -- All serves on the initial side, before the opposite side appears (or until rally ends)
     block AS (
       SELECT
         b.task_id, b.rally, b.swing_id, b.player_id, b.ball_hit_s,
         ROW_NUMBER() OVER (PARTITION BY b.task_id, b.rally ORDER BY b.ball_hit_s, b.swing_id) AS rn_in_block,
-        COUNT(*)    OVER (PARTITION BY b.task_id, b.rally) AS cnt_in_block
+        COUNT(*)    OVER (PARTITION BY b.task_id, b.rally)                                           AS cnt_in_block
       FROM base b
       JOIN rally_first rf
         ON rf.task_id=b.task_id AND rf.rally=b.rally AND b.serve_side_d=rf.init_side
@@ -653,6 +669,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE b.ball_hit_s >= rf.init_t
         AND (fo.first_opposite_t IS NULL OR b.ball_hit_s < fo.first_opposite_t)
     ),
+
     resolve_try AS (
       SELECT
         blk.task_id, blk.rally, blk.swing_id,
@@ -663,27 +680,33 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS serve_try_ix_in_point,
         CASE
           WHEN blk.cnt_in_block > 2
-           AND blk.rn_in_block = blk.cnt_in_block
-           AND NOT EXISTS (
+          AND blk.rn_in_block = blk.cnt_in_block
+          AND NOT EXISTS (
                 SELECT 1 FROM first_opposite fo
                 WHERE fo.task_id = blk.task_id AND fo.rally = blk.rally
-           )
+          )
           THEN TRUE ELSE FALSE
         END AS double_fault_d
       FROM block blk
     ),
+
+    -- Decisive serves (1st/2nd in)
     decisive AS (
-      SELECT r.*
+      SELECT r.task_id, r.rally, r.swing_id
       FROM resolve_try r
       WHERE r.serve_try_ix_in_point IN (1,2)
     ),
+
+    -- Decisive serve timestamps (join instead of scalar subquery)
     decisive_ts AS (
-      SELECT d.*, p1.ball_hit_s AS serve_t
+      SELECT d.task_id, d.rally, d.swing_id, p1.player_id, p1.ball_hit_s AS serve_t
       FROM decisive d
       JOIN {SILVER_SCHEMA}.{TABLE} p1
         ON p1.task_id = d.task_id
-       AND p1.swing_id = d.swing_id
+      AND p1.swing_id = d.swing_id
     ),
+
+    -- Opponent-after check
     opp_after AS (
       SELECT
         d.task_id, d.rally, d.swing_id,
@@ -697,13 +720,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ) AS opponent_after
       FROM decisive_ts d
     ),
+
     winners AS (
       SELECT d.task_id, d.rally, d.swing_id,
-             CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END AS service_winner_d
+            CASE WHEN o.opponent_after IS FALSE THEN TRUE ELSE FALSE END AS service_winner_d
       FROM decisive_ts d
       LEFT JOIN opp_after o
         ON o.task_id=d.task_id AND o.rally=d.rally AND o.swing_id=d.swing_id
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_try_ix_in_point = r.serve_try_ix_in_point,
@@ -715,6 +740,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.swing_id = r.swing_id;
     """
+
 
 
     conn.execute(text(sql_a), {"tid": task_id})
