@@ -219,11 +219,11 @@ X_SIDE_ABS = 4.0    # side threshold
 # ---------- PHASE 3: updater (uses computed end to derive side; forward-fills end/side) ----------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    serve_d: overhead & (y > 23 or y < 1)
+    serve_d: lower(swing_type) LIKE '%overhead%' AND (y > 23 OR y < 1)
     server_end_d:
         y > 23 → 'near'
         y < 1  → 'far'
-    serve_side_d (depends ONLY on computed end + x):
+    serve_side_d (uses computed server_end_d + x):
         if end='near' and x < 4  → 'deuce' else 'ad'
         if end='far'  and x > 4  → 'deuce' else 'ad'
     serve_try_ix_in_point: row_number over consecutive serves (resets on any non-serve)
@@ -234,7 +234,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       SELECT
         p.id, p.task_id, p.player_id, p.swing_type,
         p.ball_hit_s AS t,
-        COALESCE(p.ball_hit_s, 1e15) AS ord_t,       -- stable sort when t is NULL
+        COALESCE(p.ball_hit_s, 1e15) AS ord_t,       -- stable order when t is NULL
         p.ball_hit_location_x AS x,
         p.ball_hit_location_y AS y
       FROM {SILVER_SCHEMA}.{TABLE} p
@@ -252,7 +252,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS server_end_d_calc
       FROM base b
     ),
-    -- 2) compute side from the computed end (no re-checking y)
+    -- 2) compute side from the computed end (do NOT re-check y)
     marks2 AS (
       SELECT
         m1.*,
@@ -308,9 +308,9 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
-      -- server_id is only required on serve rows; leave as-is on non-serves
+      -- server_id only written on serve rows; keep as-is on non-serves
       server_id             = CASE WHEN ff.is_serve THEN ff.server_id_calc ELSE p.server_id END,
-      -- forward-filled values applied to every row after the last serve
+      -- forward-filled values applied to every row after the last serve until the next serve
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
       -- try index set only on actual serve rows
@@ -321,6 +321,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
