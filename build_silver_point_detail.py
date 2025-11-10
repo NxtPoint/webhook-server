@@ -236,10 +236,11 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE NULL
         END AS server_end_d_calc,
         CASE
-          WHEN b.y > {Y_NEAR_MIN} THEN (CASE WHEN b.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
-          WHEN b.y < {Y_FAR_MAX}  THEN (CASE WHEN b.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
+          WHEN server_end_d_calc = 'near' THEN (CASE WHEN b.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
+          WHEN server_end_d_calc = 'far'  THEN (CASE WHEN b.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
           ELSE NULL
         END AS serve_side_d_calc
+
       FROM base b
     ),
     ordered AS (
