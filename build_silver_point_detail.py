@@ -199,48 +199,46 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ---------- PHASE 3: columns ----------
+# ---------- PHASE 3: columns (no server_id; add service_winner_d) ----------
 PHASE3_COLS = OrderedDict({
     "serve_d":               "boolean",
-    "server_id":             "text",
+    "server_end_d":          "text",
     "serve_side_d":          "text",
     "serve_try_ix_in_point": "integer",
-    "server_end_d":          "text"
+    "service_winner_d":      "boolean"
 })
 
 def phase3_add_schema(conn: Connection):
     ensure_phase_columns(conn, PHASE3_COLS)
 
-# ---------- PHASE 3: constants ----------
+# ---------- Phase 3 constants ----------
 Y_NEAR_MIN = 23.0   # y > 23 → near
 Y_FAR_MAX  = 1.0    # y < 1  → far
 X_SIDE_ABS = 4.0    # side threshold
 
-# ---------- PHASE 3: updater (uses computed end to derive side; forward-fills end/side) ----------
+# ---------- Phase 3 updater ----------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
     serve_d: lower(swing_type) LIKE '%overhead%' AND (y > 23 OR y < 1)
-    server_end_d:
-        y > 23 → 'near'
-        y < 1  → 'far'
-    serve_side_d (uses computed server_end_d + x):
-        if end='near' and x < 4  → 'deuce' else 'ad'
-        if end='far'  and x > 4  → 'deuce' else 'ad'
-    serve_try_ix_in_point: row_number over consecutive serves (resets on any non-serve)
-    Forward-fill server_end_d / serve_side_d to all rows after a serve until the next serve.
+    server_end_d: y>23 → near ; y<1 → far
+    serve_side_d: end='near' & x<4 → 'deuce' else 'ad' ; end='far' & x>4 → 'deuce' else 'ad'
+    serve_try_ix_in_point: row_number within consecutive serves (resets on any non-serve), only on serve rows
+    service_winner_d: TRUE if decisive serve (try 1 or 2) has **no opponent swing** before the next serve
+    Forward-fill server_end_d / serve_side_d to all rows until the next serve.
     """
     sql = f"""
     WITH base AS (
       SELECT
         p.id, p.task_id, p.player_id, p.swing_type,
         p.ball_hit_s AS t,
-        COALESCE(p.ball_hit_s, 1e15) AS ord_t,       -- stable order when t is NULL
+        COALESCE(p.ball_hit_s, 1e15) AS ord_t,          -- stable order when t is NULL
         p.ball_hit_location_x AS x,
         p.ball_hit_location_y AS y
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
-    -- 1) detect serves + compute end (near/far)
+
+    -- 1) detect serve & compute end (near/far)
     marks1 AS (
       SELECT
         b.*,
@@ -252,7 +250,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS server_end_d_calc
       FROM base b
     ),
-    -- 2) compute side from the computed end (do NOT re-check y)
+
+    -- 2) compute side using computed end only (don’t re-check y)
     marks2 AS (
       SELECT
         m1.*,
@@ -263,7 +262,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS serve_side_d_calc
       FROM marks1 m1
     ),
-    -- 3) segment stream and track the most recent serve row for forward-fill
+
+    -- 3) segment stream & track last serve row id for forward-fill
     ordered AS (
       SELECT
         m2.*,
@@ -275,6 +275,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_serve_id
       FROM marks2 m2
     ),
+
     -- 4) try index only on serve rows within each consecutive-serve group
     try_ix AS (
       SELECT
@@ -284,37 +285,52 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ELSE NULL END AS serve_try_ix
       FROM ordered o
     ),
-    -- 5) attributes owned by serve rows (used for forward-fill)
-    serve_rows AS (
+
+    -- 5) serves with next-serve time to bound the return window
+    serves_only AS (
       SELECT
-        t.id AS serve_row_id, t.task_id,
-        t.player_id AS server_id_calc,
-        t.server_end_d_calc, t.serve_side_d_calc
+        t.*,
+        LEAD(t.ord_t) FILTER (WHERE t.is_serve)
+          OVER (PARTITION BY t.task_id ORDER BY t.ord_t, t.id) AS next_serve_ord_t
       FROM try_ix t
       WHERE t.is_serve
     ),
-    -- 6) forward-fill end/side from last serve to all subsequent rows until next serve
+
+    -- 6) compute service_winner_d: TRUE if no opponent swing occurs in (this serve .. next serve)
+    winners AS (
+      SELECT
+        s.id AS serve_id,
+        NOT EXISTS (
+          SELECT 1
+          FROM {SILVER_SCHEMA}.{TABLE} q
+          WHERE q.task_id = s.task_id
+            AND COALESCE(q.ball_hit_s, 1e15) > s.ord_t
+            AND (s.next_serve_ord_t IS NULL OR COALESCE(q.ball_hit_s, 1e15) < s.next_serve_ord_t)
+            AND q.player_id <> s.player_id
+        ) AS service_winner_d
+      FROM serves_only s
+    ),
+
+    -- 7) values to write per row (forward-filled end/side for all rows; try_ix & winner only on serves)
     ff AS (
       SELECT
-        t.id, t.task_id, t.is_serve, t.serve_try_ix,
-        s.server_id_calc,
-        s.server_end_d_calc,
-        s.serve_side_d_calc
+        t.id, t.task_id,
+        t.is_serve,
+        t.server_end_d_calc,
+        t.serve_side_d_calc,
+        t.serve_try_ix,
+        w.service_winner_d
       FROM try_ix t
-      LEFT JOIN serve_rows s
-        ON s.task_id = t.task_id
-       AND s.serve_row_id = t.last_serve_id
+      LEFT JOIN winners w ON w.serve_id = t.id
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
-      -- server_id only written on serve rows; keep as-is on non-serves
-      server_id             = CASE WHEN ff.is_serve THEN ff.server_id_calc ELSE p.server_id END,
-      -- forward-filled values applied to every row after the last serve until the next serve
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
-      -- try index set only on actual serve rows
-      serve_try_ix_in_point = ff.serve_try_ix
+      serve_try_ix_in_point = ff.serve_try_ix,
+      service_winner_d      = COALESCE(ff.service_winner_d, p.service_winner_d)
     FROM ff
     WHERE p.task_id = :tid
       AND p.id = ff.id;
