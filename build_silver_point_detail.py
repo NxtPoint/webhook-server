@@ -329,6 +329,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     return res.rowcount or 0
 
 
+
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
 def phase3_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE3_COLS)
