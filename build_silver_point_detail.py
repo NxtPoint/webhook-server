@@ -233,10 +233,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.ball_hit_s AS t,
         COALESCE(p.ball_hit_s, 1e15) AS ord_t,
         p.ball_hit_location_x AS x,
-        p.ball_hit_location_y AS y
+        p.ball_hit_location_y AS y,
+        p.court_x AS cx                -- <— add this
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
+
     marks1 AS (
       SELECT
         b.*,
@@ -250,12 +252,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       SELECT
         m1.*,
         CASE
-          WHEN m1.server_end_d_calc = 'near' THEN (CASE WHEN m1.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
-          WHEN m1.server_end_d_calc = 'far'  THEN (CASE WHEN m1.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
+          WHEN m1.server_end_d_calc = 'near'
+            THEN CASE WHEN COALESCE(m1.cx, m1.x) <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END
+          WHEN m1.server_end_d_calc = 'far'
+            THEN CASE WHEN COALESCE(m1.cx, m1.x) >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END
           ELSE NULL
         END AS serve_side_d_calc
       FROM marks1 m1
     ),
+
     ordered AS (
       SELECT
         m2.*,
