@@ -219,7 +219,14 @@ X_SIDE_ABS = 4.0    # side threshold
 # ---------- Phase 3 updater ----------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 3: Serve detection + side logic (using ball_hit_location_x midpoint)
+    Phase 3:
+      - Detect serves from swing_type + ball_hit_location_y (hit_y).
+      - Compute server_end_d from hit_y (near if >23, far if <1).
+      - Compute serve_side_d on the SERVE row using ball_hit_location_x (hit_x)
+        vs a per-end midpoint, then FORWARD-FILL both end & side to all rows
+        until the next serve.
+      - serve_try_ix_in_point only on serve rows.
+      - service_winner_d TRUE if no opponent swing occurs before next serve.
     """
     sql = f"""
     WITH base AS (
@@ -233,17 +240,21 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
     ),
 
+    -- 1) detect serves + compute end from hit_y
     marks1 AS (
       SELECT
         b.*,
-        (lower(coalesce(b.swing_type,'')) LIKE '%overhead%' AND (b.hit_y > {Y_NEAR_MIN} OR b.hit_y < {Y_FAR_MAX})) AS is_serve,
-        CASE WHEN b.hit_y > {Y_NEAR_MIN} THEN 'near'
-             WHEN b.hit_y < {Y_FAR_MAX}  THEN 'far'
-             ELSE NULL END AS server_end_d_calc
+        (lower(coalesce(b.swing_type,'')) LIKE '%overhead%'
+         AND (b.hit_y > {Y_NEAR_MIN} OR b.hit_y < {Y_FAR_MAX})) AS is_serve,
+        CASE
+          WHEN b.hit_y > {Y_NEAR_MIN} THEN 'near'
+          WHEN b.hit_y < {Y_FAR_MAX}  THEN 'far'
+          ELSE NULL
+        END AS server_end_d_calc
       FROM base b
     ),
 
-    -- midpoint per server_end_d to get average dividing line
+    -- 2) midpoint per end (near/far) using serve contact-x
     serve_stats AS (
       SELECT
         m1.task_id,
@@ -254,14 +265,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       GROUP BY m1.task_id, m1.server_end_d_calc
     ),
 
+    -- 3) compute side on the SERVE row only, using (end + hit_x) vs per-end midpoint
     marks2 AS (
       SELECT
         m1.*,
         CASE
           WHEN m1.server_end_d_calc = 'near'
-            THEN (CASE WHEN m1.hit_x < ss.mid_x THEN 'deuce' ELSE 'ad' END)
+            THEN CASE WHEN m1.hit_x < ss.mid_x THEN 'deuce' ELSE 'ad' END
           WHEN m1.server_end_d_calc = 'far'
-            THEN (CASE WHEN m1.hit_x > ss.mid_x THEN 'deuce' ELSE 'ad' END)
+            THEN CASE WHEN m1.hit_x > ss.mid_x THEN 'deuce' ELSE 'ad' END
           ELSE NULL
         END AS serve_side_d_calc
       FROM marks1 m1
@@ -270,12 +282,16 @@ def phase3_update(conn: Connection, task_id: str) -> int:
        AND ss.server_end_d_calc = m1.server_end_d_calc
     ),
 
+    -- 4) order stream, track the *last serve id* to forward-fill end/side
     ordered AS (
       SELECT
         m2.*,
         SUM(CASE WHEN m2.is_serve THEN 1 ELSE 0 END)
           OVER (PARTITION BY m2.task_id ORDER BY m2.ord_t, m2.id
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS serve_grp
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS serve_grp,
+        MAX(CASE WHEN m2.is_serve THEN m2.id END)
+          OVER (PARTITION BY m2.task_id ORDER BY m2.ord_t, m2.id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_serve_id
       FROM marks2 m2
     ),
 
@@ -288,6 +304,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM ordered o
     ),
 
+    -- 5) serves-only to compute next-serve time (no FILTER on window fn)
     serves_only AS (
       SELECT
         s.id AS serve_id, s.task_id, s.player_id, s.ord_t,
@@ -303,28 +320,45 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           SELECT 1
           FROM {SILVER_SCHEMA}.{TABLE} q
           WHERE q.task_id = so.task_id
-            AND COALESCE(q.ball_hit_s, 1e15) > so.ord_t
+            AND COALESCE(q.ball_hit_s, 1e15) >  so.ord_t
             AND (so.next_serve_ord_t IS NULL OR COALESCE(q.ball_hit_s, 1e15) < so.next_serve_ord_t)
             AND q.player_id <> so.player_id
         ) AS service_winner_d
       FROM serves_only so
     ),
 
+    -- 6) take the *attributes from the most recent serve* for every row (FF)
+    serve_rows AS (
+      SELECT
+        m2.id AS serve_row_id, m2.task_id,
+        m2.server_end_d_calc, m2.serve_side_d_calc
+      FROM marks2 m2
+      WHERE m2.is_serve
+    ),
+
     ff AS (
       SELECT
-        t.id, t.task_id, t.is_serve,
-        t.server_end_d_calc, t.serve_side_d_calc, t.serve_try_ix,
-        w.service_winner_d
+        t.id, t.task_id, t.is_serve, t.serve_try_ix,
+        s.server_end_d_calc,
+        s.serve_side_d_calc,
+        CASE WHEN t.is_serve THEN w.service_winner_d ELSE NULL END AS service_winner_d
       FROM try_ix t
-      LEFT JOIN winners w ON w.serve_id = t.id
+      LEFT JOIN serve_rows s
+        ON s.task_id = t.task_id
+       AND s.serve_row_id = t.last_serve_id
+      LEFT JOIN winners w
+        ON w.serve_id = t.id
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
+      -- forward-fill: apply the most recent serve's end/side to every row until next serve
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
+      -- only set try index on serve rows
       serve_try_ix_in_point = ff.serve_try_ix,
+      -- winner flag only on serve rows
       service_winner_d      = COALESCE(ff.service_winner_d, p.service_winner_d)
     FROM ff
     WHERE p.task_id = :tid
@@ -332,8 +366,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
-
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
