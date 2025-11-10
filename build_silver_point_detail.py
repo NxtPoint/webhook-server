@@ -199,34 +199,52 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ------------------------------- PHASE 3 — serve logic (finalized) -------------------------------
+# ---------- PHASE 3: columns ----------
+PHASE3_COLS = OrderedDict({
+    "serve_d":               "boolean",
+    "server_id":             "text",
+    "serve_side_d":          "text",
+    "serve_try_ix_in_point": "integer",
+    "server_end_d":          "text"
+})
+
+def phase3_add_schema(conn: Connection):
+    ensure_phase_columns(conn, PHASE3_COLS)
+
+
+# ---------- PHASE 3: constants ----------
 Y_NEAR_MIN = 23.0   # y > 23 → near
 Y_FAR_MAX  = 1.0    # y < 1  → far
 X_SIDE_ABS = 4.0    # side threshold
 
+
+# ---------- PHASE 3: updater (Option 1 — compute end, then side from the computed end) ----------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
     serve_d: overhead & (y > 23 or y < 1)
-    server_end_d: near if y > 23 ; far if y < 1
-    serve_side_d (UPDATED):
-        near (y > 23): x < 4  → 'deuce' , else 'ad'
-        far  (y < 1) : x > 4  → 'deuce' , else 'ad'
+    server_end_d:
+        y > 23 → 'near'
+        y < 1  → 'far'
+    serve_side_d (depends ONLY on computed server_end_d + x):
+        if end='near' and x < 4  → 'deuce' else 'ad'
+        if end='far'  and x > 4  → 'deuce' else 'ad'
     serve_try_ix_in_point: row_number over consecutive serves (resets on any non-serve)
-    Forward-fill server_end_d and serve_side_d to all rows after a serve until the next serve.
+    Forward-fill server_end_d / serve_side_d to all rows after a serve until the next serve.
     """
     sql = f"""
     WITH base AS (
       SELECT
         p.id, p.task_id, p.player_id, p.swing_type,
-        -- order key: prefer contact time; if missing, fall back to id to keep a stable order
         p.ball_hit_s AS t,
-        COALESCE(p.ball_hit_s, 1e15) AS ord_t,
+        COALESCE(p.ball_hit_s, 1e15) AS ord_t,     -- stable ordering if t is null
         p.ball_hit_location_x AS x,
         p.ball_hit_location_y AS y
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
-    marks AS (
+
+    -- marks1: detect serve & compute end (near/far)
+    marks1 AS (
       SELECT
         b.*,
         (lower(coalesce(b.swing_type,'')) LIKE '%overhead%' AND (b.y > {Y_NEAR_MIN} OR b.y < {Y_FAR_MAX})) AS is_serve,
@@ -234,28 +252,36 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           WHEN b.y > {Y_NEAR_MIN} THEN 'near'
           WHEN b.y < {Y_FAR_MAX}  THEN 'far'
           ELSE NULL
-        END AS server_end_d_calc,
-        CASE
-          WHEN server_end_d_calc = 'near' THEN (CASE WHEN b.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
-          WHEN server_end_d_calc = 'far'  THEN (CASE WHEN b.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
-          ELSE NULL
-        END AS serve_side_d_calc
-
+        END AS server_end_d_calc
       FROM base b
     ),
+
+    -- marks2: compute side using the computed end (no re-checking y)
+    marks2 AS (
+      SELECT
+        m1.*,
+        CASE
+          WHEN m1.server_end_d_calc = 'near' THEN (CASE WHEN m1.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
+          WHEN m1.server_end_d_calc = 'far'  THEN (CASE WHEN m1.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
+          ELSE NULL
+        END AS serve_side_d_calc
+      FROM marks1 m1
+    ),
+
+    -- ordered: segment stream between serves & track last serve row for FF
     ordered AS (
       SELECT
-        m.*,
-        -- running count of serves defines segments between serves
-        SUM(CASE WHEN m.is_serve THEN 1 ELSE 0 END)
-          OVER (PARTITION BY m.task_id ORDER BY m.ord_t, m.id
+        m2.*,
+        SUM(CASE WHEN m2.is_serve THEN 1 ELSE 0 END)
+          OVER (PARTITION BY m2.task_id ORDER BY m2.ord_t, m2.id
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS serve_grp,
-        -- most recent serve id to forward-fill attributes
-        MAX(CASE WHEN m.is_serve THEN m.id END)
-          OVER (PARTITION BY m.task_id ORDER BY m.ord_t, m.id
+        MAX(CASE WHEN m2.is_serve THEN m2.id END)
+          OVER (PARTITION BY m2.task_id ORDER BY m2.ord_t, m2.id
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_serve_id
-      FROM marks m
+      FROM marks2 m2
     ),
+
+    -- try index: only for serve rows within each consecutive-serve group
     try_ix AS (
       SELECT
         o.*,
@@ -264,6 +290,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ELSE NULL END AS serve_try_ix
       FROM ordered o
     ),
+
+    -- attributes from actual serve rows (the ones we forward-fill)
     serve_rows AS (
       SELECT
         t.id AS serve_row_id, t.task_id,
@@ -272,6 +300,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM try_ix t
       WHERE t.is_serve
     ),
+
+    -- forward-fill end/side (and carry server_id only on the serve rows)
     ff AS (
       SELECT
         t.id, t.task_id, t.is_serve, t.serve_try_ix,
@@ -283,15 +313,13 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON s.task_id = t.task_id
        AND s.serve_row_id = t.last_serve_id
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
-      -- server_id only written on actual serve rows; not required on non-serves
       server_id             = CASE WHEN ff.is_serve THEN ff.server_id_calc ELSE p.server_id END,
-      -- forward-fill end/side to all rows after the last serve, until the next serve
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
-      -- try index only on serve rows (NULL for non-serves)
       serve_try_ix_in_point = ff.serve_try_ix
     FROM ff
     WHERE p.task_id = :tid
@@ -299,6 +327,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
