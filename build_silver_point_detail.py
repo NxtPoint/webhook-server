@@ -199,8 +199,7 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-# ------------------------------- PHASE 3 — serve logic (5 cols) -------------------------------
-# ------------------------------- PHASE 3 — serve logic (5 cols) -------------------------------
+# ------------------------------- PHASE 3 — serve logic (finalized) -------------------------------
 Y_NEAR_MIN = 23.0   # y > 23 → near
 Y_FAR_MAX  = 1.0    # y < 1  → far
 X_SIDE_ABS = 4.0    # side threshold
@@ -209,17 +208,19 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     serve_d: overhead & (y > 23 or y < 1)
     server_end_d: near if y > 23 ; far if y < 1
-    serve_side_d:
-        near: x < 4  → 'deuce', else 'ad'
-        far : x > 4  → 'deuce', else 'ad'
-    serve_try_ix_in_point: row_number over consecutive serves (resets after any non-serve)
-    Forward-fill server_end_d and serve_side_d to all subsequent rows until next serve.
+    serve_side_d (UPDATED):
+        near (y > 23): x < 4  → 'deuce' , else 'ad'
+        far  (y < 1) : x > 4  → 'deuce' , else 'ad'
+    serve_try_ix_in_point: row_number over consecutive serves (resets on any non-serve)
+    Forward-fill server_end_d and serve_side_d to all rows after a serve until the next serve.
     """
     sql = f"""
     WITH base AS (
       SELECT
         p.id, p.task_id, p.player_id, p.swing_type,
+        -- order key: prefer contact time; if missing, fall back to id to keep a stable order
         p.ball_hit_s AS t,
+        COALESCE(p.ball_hit_s, 1e15) AS ord_t,
         p.ball_hit_location_x AS x,
         p.ball_hit_location_y AS y
       FROM {SILVER_SCHEMA}.{TABLE} p
@@ -235,8 +236,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE NULL
         END AS server_end_d_calc,
         CASE
-          WHEN b.y > {Y_NEAR_MIN} THEN (CASE WHEN b.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad'    END)
-          WHEN b.y < {Y_FAR_MAX}  THEN (CASE WHEN b.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad'    END)
+          WHEN b.y > {Y_NEAR_MIN} THEN (CASE WHEN b.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
+          WHEN b.y < {Y_FAR_MAX}  THEN (CASE WHEN b.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad' END)
           ELSE NULL
         END AS serve_side_d_calc
       FROM base b
@@ -244,41 +245,35 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     ordered AS (
       SELECT
         m.*,
-        -- cumulative serve group id (stays constant between serves; increments on each serve row)
+        -- running count of serves defines segments between serves
         SUM(CASE WHEN m.is_serve THEN 1 ELSE 0 END)
-          OVER (PARTITION BY m.task_id ORDER BY m.t, m.id
+          OVER (PARTITION BY m.task_id ORDER BY m.ord_t, m.id
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS serve_grp,
-        -- id of the most recent serve row encountered so far
+        -- most recent serve id to forward-fill attributes
         MAX(CASE WHEN m.is_serve THEN m.id END)
-          OVER (PARTITION BY m.task_id ORDER BY m.t, m.id
+          OVER (PARTITION BY m.task_id ORDER BY m.ord_t, m.id
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_serve_id
       FROM marks m
     ),
     try_ix AS (
-      -- count consecutive serves within each serve_grp (1,2,...). Non-serves get NULL.
       SELECT
         o.*,
         CASE WHEN o.is_serve THEN
-          ROW_NUMBER() OVER (PARTITION BY o.task_id, o.serve_grp ORDER BY o.t, o.id)
+          ROW_NUMBER() OVER (PARTITION BY o.task_id, o.serve_grp ORDER BY o.ord_t, o.id)
         ELSE NULL END AS serve_try_ix
       FROM ordered o
     ),
     serve_rows AS (
-      -- attributes to forward-fill (take from actual serve rows)
       SELECT
-        t.id AS serve_row_id,
-        t.task_id,
+        t.id AS serve_row_id, t.task_id,
         t.player_id AS server_id_calc,
-        t.server_end_d_calc,
-        t.serve_side_d_calc
+        t.server_end_d_calc, t.serve_side_d_calc
       FROM try_ix t
       WHERE t.is_serve
     ),
     ff AS (
-      -- forward-fill by joining each row to the most recent serve row (last_serve_id)
       SELECT
-        t.id, t.task_id, t.is_serve,
-        t.serve_try_ix,
+        t.id, t.task_id, t.is_serve, t.serve_try_ix,
         s.server_id_calc,
         s.server_end_d_calc,
         s.serve_side_d_calc
@@ -290,9 +285,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
+      -- server_id only written on actual serve rows; not required on non-serves
       server_id             = CASE WHEN ff.is_serve THEN ff.server_id_calc ELSE p.server_id END,
+      -- forward-fill end/side to all rows after the last serve, until the next serve
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
+      -- try index only on serve rows (NULL for non-serves)
       serve_try_ix_in_point = ff.serve_try_ix
     FROM ff
     WHERE p.task_id = :tid
