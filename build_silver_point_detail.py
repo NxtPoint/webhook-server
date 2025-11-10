@@ -219,39 +219,33 @@ X_SIDE_ABS = 4.0    # side threshold
 # ---------- Phase 3 updater ----------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    serve_d: lower(swing_type) LIKE '%overhead%' AND (y > 23 OR y < 1)
-    server_end_d: y>23 → near ; y<1 → far
-    serve_side_d: end='near' & x<4 → 'deuce' else 'ad' ; end='far' & x>4 → 'deuce' else 'ad'
-    serve_try_ix_in_point: row_number within consecutive serves (resets on any non-serve), only on serve rows
-    service_winner_d: TRUE if decisive serve (try 1 or 2) has **no opponent swing** before the next serve
-    Forward-fill server_end_d / serve_side_d to all rows until the next serve.
+    P3: serve_d, server_end_d, serve_side_d, serve_try_ix_in_point, service_winner_d
+    - end: y>23 near, y<1 far
+    - side: if end='near' & x<4 → deuce else ad ; if end='far' & x>4 → deuce else ad
+    - try_ix only on serve rows (1,2,... between non-serves)
+    - service_winner_d TRUE if decisive serve not returned before next serve
+    - forward-fill end/side to all rows until the next serve
     """
     sql = f"""
     WITH base AS (
       SELECT
         p.id, p.task_id, p.player_id, p.swing_type,
         p.ball_hit_s AS t,
-        COALESCE(p.ball_hit_s, 1e15) AS ord_t,          -- stable order when t is NULL
+        COALESCE(p.ball_hit_s, 1e15) AS ord_t,
         p.ball_hit_location_x AS x,
         p.ball_hit_location_y AS y
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
-
-    -- 1) detect serve & compute end (near/far)
     marks1 AS (
       SELECT
         b.*,
         (lower(coalesce(b.swing_type,'')) LIKE '%overhead%' AND (b.y > {Y_NEAR_MIN} OR b.y < {Y_FAR_MAX})) AS is_serve,
-        CASE
-          WHEN b.y > {Y_NEAR_MIN} THEN 'near'
-          WHEN b.y < {Y_FAR_MAX}  THEN 'far'
-          ELSE NULL
-        END AS server_end_d_calc
+        CASE WHEN b.y > {Y_NEAR_MIN} THEN 'near'
+             WHEN b.y < {Y_FAR_MAX}  THEN 'far'
+             ELSE NULL END AS server_end_d_calc
       FROM base b
     ),
-
-    -- 2) compute side using computed end only (don’t re-check y)
     marks2 AS (
       SELECT
         m1.*,
@@ -262,8 +256,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS serve_side_d_calc
       FROM marks1 m1
     ),
-
-    -- 3) segment stream & track last serve row id for forward-fill
     ordered AS (
       SELECT
         m2.*,
@@ -275,8 +267,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_serve_id
       FROM marks2 m2
     ),
-
-    -- 4) try index only on serve rows within each consecutive-serve group
     try_ix AS (
       SELECT
         o.*,
@@ -285,45 +275,38 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ELSE NULL END AS serve_try_ix
       FROM ordered o
     ),
-
-    -- 5) serves with next-serve time to bound the return window
+    -- SERVES ONLY: compute next serve time using a normal LEAD() (no FILTER)
     serves_only AS (
       SELECT
-        t.*,
-        LEAD(t.ord_t) FILTER (WHERE t.is_serve)
-          OVER (PARTITION BY t.task_id ORDER BY t.ord_t, t.id) AS next_serve_ord_t
-      FROM try_ix t
-      WHERE t.is_serve
+        s.id AS serve_id,
+        s.task_id,
+        s.player_id,
+        s.ord_t AS this_serve_ord_t,
+        LEAD(s.ord_t) OVER (PARTITION BY s.task_id ORDER BY s.ord_t, s.id) AS next_serve_ord_t
+      FROM try_ix s
+      WHERE s.is_serve
     ),
-
-    -- 6) compute service_winner_d: TRUE if no opponent swing occurs in (this serve .. next serve)
     winners AS (
       SELECT
-        s.id AS serve_id,
+        so.serve_id,
         NOT EXISTS (
           SELECT 1
           FROM {SILVER_SCHEMA}.{TABLE} q
-          WHERE q.task_id = s.task_id
-            AND COALESCE(q.ball_hit_s, 1e15) > s.ord_t
-            AND (s.next_serve_ord_t IS NULL OR COALESCE(q.ball_hit_s, 1e15) < s.next_serve_ord_t)
-            AND q.player_id <> s.player_id
+          WHERE q.task_id = so.task_id
+            AND COALESCE(q.ball_hit_s, 1e15) >  so.this_serve_ord_t
+            AND (so.next_serve_ord_t IS NULL OR COALESCE(q.ball_hit_s, 1e15) < so.next_serve_ord_t)
+            AND q.player_id <> so.player_id
         ) AS service_winner_d
-      FROM serves_only s
+      FROM serves_only so
     ),
-
-    -- 7) values to write per row (forward-filled end/side for all rows; try_ix & winner only on serves)
     ff AS (
       SELECT
-        t.id, t.task_id,
-        t.is_serve,
-        t.server_end_d_calc,
-        t.serve_side_d_calc,
-        t.serve_try_ix,
+        t.id, t.task_id, t.is_serve,
+        t.server_end_d_calc, t.serve_side_d_calc, t.serve_try_ix,
         w.service_winner_d
       FROM try_ix t
       LEFT JOIN winners w ON w.serve_id = t.id
     )
-
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
