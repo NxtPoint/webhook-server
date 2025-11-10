@@ -200,18 +200,20 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     return res.rowcount or 0
 
 # ------------------------------- PHASE 3 — serve logic (5 cols) -------------------------------
-Y_NEAR_MIN = 23.0  # y > 23 → near
-Y_FAR_MAX  = 1.0   # y < 1  → far
-X_SIDE_ABS = 4.0   # |x| threshold
+# ------------------------------- PHASE 3 — serve logic (5 cols) -------------------------------
+Y_NEAR_MIN = 23.0   # y > 23 → near
+Y_FAR_MAX  = 1.0    # y < 1  → far
+X_SIDE_ABS = 4.0    # side threshold
 
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
     serve_d: overhead & (y > 23 or y < 1)
     server_end_d: near if y > 23 ; far if y < 1
-    serve_side_d: near:  x >= 4 → 'ad'    else 'deuce'
-                  far:   x <= -4 → 'deuce' else 'ad'
-    server_id:    player_id on serve rows
-    serve_try_ix_in_point: 1,2 across consecutive serves (resets after any non-serve)
+    serve_side_d:
+        near: x < 4  → 'deuce', else 'ad'
+        far : x > 4  → 'deuce', else 'ad'
+    serve_try_ix_in_point: row_number over consecutive serves (resets after any non-serve)
+    Forward-fill server_end_d and serve_side_d to all subsequent rows until next serve.
     """
     sql = f"""
     WITH base AS (
@@ -231,43 +233,70 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           WHEN b.y > {Y_NEAR_MIN} THEN 'near'
           WHEN b.y < {Y_FAR_MAX}  THEN 'far'
           ELSE NULL
-        END AS server_end_d,
+        END AS server_end_d_calc,
         CASE
-          WHEN b.y > {Y_NEAR_MIN} THEN CASE WHEN b.x >= {X_SIDE_ABS}  THEN 'ad'    ELSE 'deuce' END
-          WHEN b.y < {Y_FAR_MAX}  THEN CASE WHEN b.x <= -{X_SIDE_ABS} THEN 'deuce' ELSE 'ad'    END
+          WHEN b.y > {Y_NEAR_MIN} THEN (CASE WHEN b.x <  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad'    END)
+          WHEN b.y < {Y_FAR_MAX}  THEN (CASE WHEN b.x >  {X_SIDE_ABS} THEN 'deuce' ELSE 'ad'    END)
           ELSE NULL
-        END AS serve_side_d
+        END AS serve_side_d_calc
       FROM base b
     ),
     ordered AS (
       SELECT
         m.*,
-        CASE WHEN m.is_serve THEN 0 ELSE 1 END AS nonserve_flag,
-        SUM(CASE WHEN m.is_serve THEN 0 ELSE 1 END)
+        -- cumulative serve group id (stays constant between serves; increments on each serve row)
+        SUM(CASE WHEN m.is_serve THEN 1 ELSE 0 END)
           OVER (PARTITION BY m.task_id ORDER BY m.t, m.id
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS seg
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS serve_grp,
+        -- id of the most recent serve row encountered so far
+        MAX(CASE WHEN m.is_serve THEN m.id END)
+          OVER (PARTITION BY m.task_id ORDER BY m.t, m.id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS last_serve_id
       FROM marks m
     ),
-    serve_ix AS (
+    try_ix AS (
+      -- count consecutive serves within each serve_grp (1,2,...). Non-serves get NULL.
       SELECT
         o.*,
-        CASE
-          WHEN o.is_serve THEN
-            ROW_NUMBER() OVER (PARTITION BY o.task_id, o.seg ORDER BY o.t, o.id)
-          ELSE NULL
-        END AS try_ix
+        CASE WHEN o.is_serve THEN
+          ROW_NUMBER() OVER (PARTITION BY o.task_id, o.serve_grp ORDER BY o.t, o.id)
+        ELSE NULL END AS serve_try_ix
       FROM ordered o
+    ),
+    serve_rows AS (
+      -- attributes to forward-fill (take from actual serve rows)
+      SELECT
+        t.id AS serve_row_id,
+        t.task_id,
+        t.player_id AS server_id_calc,
+        t.server_end_d_calc,
+        t.serve_side_d_calc
+      FROM try_ix t
+      WHERE t.is_serve
+    ),
+    ff AS (
+      -- forward-fill by joining each row to the most recent serve row (last_serve_id)
+      SELECT
+        t.id, t.task_id, t.is_serve,
+        t.serve_try_ix,
+        s.server_id_calc,
+        s.server_end_d_calc,
+        s.serve_side_d_calc
+      FROM try_ix t
+      LEFT JOIN serve_rows s
+        ON s.task_id = t.task_id
+       AND s.serve_row_id = t.last_serve_id
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      serve_d               = s.is_serve,
-      server_id             = CASE WHEN s.is_serve THEN s.player_id ELSE p.server_id END,
-      server_end_d          = CASE WHEN s.is_serve THEN s.server_end_d ELSE p.server_end_d END,
-      serve_side_d          = CASE WHEN s.is_serve THEN s.serve_side_d ELSE p.serve_side_d END,
-      serve_try_ix_in_point = s.try_ix
-    FROM serve_ix s
+      serve_d               = ff.is_serve,
+      server_id             = CASE WHEN ff.is_serve THEN ff.server_id_calc ELSE p.server_id END,
+      server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
+      serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
+      serve_try_ix_in_point = ff.serve_try_ix
+    FROM ff
     WHERE p.task_id = :tid
-      AND p.id = s.id;
+      AND p.id = ff.id;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
