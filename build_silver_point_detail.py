@@ -258,11 +258,10 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     serve_stats AS (
       SELECT
         m1.task_id,
-        m1.server_end_d_calc,
         (MIN(m1.hit_x) + MAX(m1.hit_x)) / 2.0 AS mid_x
       FROM marks1 m1
       WHERE m1.is_serve
-      GROUP BY m1.task_id, m1.server_end_d_calc
+      GROUP BY m1.task_id
     ),
 
     -- 3) compute side on the SERVE row only, using (end + hit_x) vs per-end midpoint
@@ -271,16 +270,16 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         m1.*,
         CASE
           WHEN m1.server_end_d_calc = 'near'
-            THEN CASE WHEN m1.hit_x < ss.mid_x THEN 'deuce' ELSE 'ad' END
-          WHEN m1.server_end_d_calc = 'far'
             THEN CASE WHEN m1.hit_x > ss.mid_x THEN 'deuce' ELSE 'ad' END
+          WHEN m1.server_end_d_calc = 'far'
+            THEN CASE WHEN m1.hit_x < ss.mid_x THEN 'deuce' ELSE 'ad' END
           ELSE NULL
         END AS serve_side_d_calc
       FROM marks1 m1
       LEFT JOIN serve_stats ss
         ON ss.task_id = m1.task_id
-       AND ss.server_end_d_calc = m1.server_end_d_calc
     ),
+
 
     -- 4) order stream, track the *last serve id* to forward-fill end/side
     ordered AS (
