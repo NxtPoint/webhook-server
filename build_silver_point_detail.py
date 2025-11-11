@@ -375,63 +375,72 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
 def phase4_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 4
-      - serve_location_ix (1..8) on serve rows:
-          near+deuce -> 1..4 (ntile(4) by hit_x)
-          near+ad    -> 5..8 (ntile(4)+4)
-          far +deuce -> 5..8 (ntile(4)+4)
-          far +ad    -> 1..4 (ntile(4))
-      - rally_location_d ('A'..'D') on NON-serve rows using x from bounce (fallbacks)
-          if hit_y >= 11.6:  <2 'A', <4 'B', <6 'C', else 'D'
-          else (hit_y < 11.6): <2 'D', <4 'C', <6 'B', else 'A'
+    Phase 4:
+      Serve location (1..8) on serve rows:
+        - Compute task-level midpoint mid_x from ALL serves' ball_hit_location_x
+        - Map index ~ floor(hit_x) + 1, then clamp halves per rules:
+            near & deuce  → must be < mid_x → 1..4
+            near & ad     → must be > mid_x → 5..8
+            far  & deuce  → must be > mid_x → 5..8
+            far  & ad     → must be < mid_x → 1..4
+      Rally location (A..D) on NON-serve rows:
+        - x source: court_x (fallback ball_hit_location_x)
+        - if ball_hit_location_y >= 11.6:  <2 'A', <4 'B', <6 'C', else 'D'
+          else (y < 11.6):                <2 'D', <4 'C', <6 'B', else 'A'
     """
     sql = f"""
     WITH base AS (
       SELECT
-        p.id, p.task_id, p.serve_d, p.server_end_d, p.serve_side_d,
+        p.id, p.task_id,
+        p.serve_d, p.server_end_d, p.serve_side_d,
         p.ball_hit_location_x AS hit_x,
         p.ball_hit_location_y AS hit_y,
-        p.bounce_x_m, p.hit_x_resolved_m
+        p.court_x
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
 
-    -- SERVE LOCATION (1..8)
-    serves AS (
-      SELECT id, task_id, server_end_d, serve_side_d, hit_x
-      FROM base
-      WHERE serve_d IS TRUE
-        AND server_end_d IN ('near','far')
-        AND serve_side_d  IN ('deuce','ad')
-        AND hit_x IS NOT NULL
-    ),
-    ranked AS (
+    -- Midpoint from ALL serves (both ends combined)
+    mid AS (
       SELECT
-        s.*,
-        NTILE(4) OVER (
-          PARTITION BY s.task_id, s.server_end_d, s.serve_side_d
-          ORDER BY s.hit_x
-        ) AS quart
-      FROM serves s
+        b.task_id,
+        (MIN(b.hit_x) + MAX(b.hit_x))/2.0 AS mid_x
+      FROM base b
+      WHERE COALESCE(b.serve_d, FALSE) IS TRUE
+        AND b.hit_x IS NOT NULL
+      GROUP BY b.task_id
+    ),
+
+    -- SERVE LOCATION: compute raw 1..8 from hit_x, then clamp to the correct half
+    serves AS (
+      SELECT
+        b.id, b.server_end_d, b.serve_side_d, b.hit_x, m.mid_x,
+        GREATEST(1, LEAST(8, FLOOR(b.hit_x)::int + 1)) AS ix_raw
+      FROM base b
+      JOIN mid  m ON m.task_id = b.task_id
+      WHERE COALESCE(b.serve_d, FALSE) IS TRUE
+        AND b.hit_x IS NOT NULL
+        AND b.server_end_d IN ('near','far')
+        AND b.serve_side_d  IN ('deuce','ad')
     ),
     serve_loc AS (
       SELECT
-        r.id,
+        s.id,
         CASE
-          WHEN r.server_end_d='near' AND r.serve_side_d='deuce' THEN r.quart
-          WHEN r.server_end_d='near' AND r.serve_side_d='ad'    THEN r.quart + 4
-          WHEN r.server_end_d='far'  AND r.serve_side_d='deuce' THEN r.quart + 4
-          WHEN r.server_end_d='far'  AND r.serve_side_d='ad'    THEN r.quart
+          WHEN s.server_end_d='near' AND s.serve_side_d='deuce' THEN LEAST(4, s.ix_raw)
+          WHEN s.server_end_d='near' AND s.serve_side_d='ad'    THEN GREATEST(5, s.ix_raw)
+          WHEN s.server_end_d='far'  AND s.serve_side_d='deuce' THEN GREATEST(5, s.ix_raw)
+          WHEN s.server_end_d='far'  AND s.serve_side_d='ad'    THEN LEAST(4, s.ix_raw)
           ELSE NULL
         END AS serve_location_ix
-      FROM ranked r
+      FROM serves s
     ),
 
-    -- RALLY LOCATION (A..D) on NON-SERVE rows
+    -- RALLY LOCATION: court_x (fallback hit_x) + orientation by hit_y
     rallies AS (
       SELECT
         b.id,
-        COALESCE(b.bounce_x_m, b.hit_x_resolved_m, b.hit_x) AS x_src,
+        COALESCE(b.court_x, b.hit_x) AS x_src,
         b.hit_y
       FROM base b
       WHERE COALESCE(b.serve_d, FALSE) IS FALSE
@@ -459,7 +468,6 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       FROM rallies r
     )
 
-    -- Apply both updates
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_location_ix = COALESCE(sl.serve_location_ix, p.serve_location_ix),
@@ -471,6 +479,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
@@ -506,7 +515,7 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
 
         if phase in ("all","4"):
             out["phase4_rows_updated"] = phase4_update(conn, task_id)
-            
+
         if phase in ("all","5"): out["phase5"] = "schema-ready"
 
     return out
