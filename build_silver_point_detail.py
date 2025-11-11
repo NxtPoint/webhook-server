@@ -478,170 +478,70 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 
 # ------------------------------- Phase 5 Updater -------------------------------------------
 
-def phase5_update(conn, task_id: str) -> int:
+def phase5_fix_point_number(conn, task_id: str) -> int:
     """
-    Phase 5 — exclusions, point_number, point_winner_player_id (spec-only columns).
+    Recompute point_number so it increments ONLY when serve_side_d changes.
+    Anchors = rows where (serve_d=TRUE AND serve_try_ix_in_point=1).
+    Each anchor contributes +1 ONLY if its serve_side_d != previous anchor's side (per task).
+    Every row gets point_number = cumulative sum of anchor increments with anchor_s <= row.ball_hit_s.
     """
-    # ---------- UPDATE 1: point_number + exclude_d ----------
-    sql1 = f"""
-    WITH base AS (
+    sql = f"""
+    WITH anchors AS (
       SELECT
-        p.id, p.task_id, p.player_id, p.valid,
-        p.serve_d, p.serve_try_ix_in_point, p.service_winner_d,
-        p.ball_hit_s
+        p.task_id,
+        p.ball_hit_s AS anchor_s,
+        p.serve_side_d AS side
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
+        AND (p.serve_try_ix_in_point::text ~ '^[0-9]+$' AND p.serve_try_ix_in_point::int = 1)
+        AND p.serve_side_d IN ('deuce','ad')
+      ORDER BY p.ball_hit_s
     ),
-    pn AS (
+    incs AS (
       SELECT
-        b.*,
-        SUM(
-          CASE
-            WHEN COALESCE(b.serve_d, FALSE) IS TRUE
-             AND (
-                  (b.serve_try_ix_in_point::text ~ '^[0-9]+$' AND (b.serve_try_ix_in_point::int) = 1)
-               )
-            THEN 1 ELSE 0
-          END
-        ) OVER (PARTITION BY b.task_id ORDER BY b.ball_hit_s
-                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS point_number
-      FROM base b
-    ),
-    gaps AS (
-      SELECT
-        pn.*,
-        LAG(pn.ball_hit_s) OVER (PARTITION BY pn.task_id, pn.point_number ORDER BY pn.ball_hit_s) AS prev_s,
-        LAG(pn.player_id)  OVER (PARTITION BY pn.task_id, pn.point_number ORDER BY pn.ball_hit_s) AS prev_pid
-      FROM pn
-    ),
-    excl AS (
-      SELECT
-        g.*,
+        a.task_id,
+        a.anchor_s,
+        a.side,
         CASE
-          WHEN g.point_number = 0 THEN TRUE
-          WHEN g.prev_s IS NULL THEN FALSE
-          WHEN (g.ball_hit_s - g.prev_s) > 5.0 THEN TRUE
-          WHEN (g.player_id = g.prev_pid) AND (g.ball_hit_s - g.prev_s) < 0.05 THEN TRUE
-          ELSE FALSE
-        END AS exclude_d
-      FROM gaps g
+          WHEN LAG(a.side) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s) IS DISTINCT FROM a.side THEN 1
+          ELSE 0
+        END AS inc0
+      FROM anchors a
+    ),
+    incs_norm AS (
+      SELECT
+        i.*,
+        CASE
+          WHEN ROW_NUMBER() OVER (PARTITION BY i.task_id ORDER BY i.anchor_s) = 1 THEN 1  -- first point starts at 1
+          ELSE i.inc0
+        END AS inc
+      FROM incs i
+    ),
+    pn_rows AS (
+      SELECT
+        p.id,
+        COALESCE(
+          (
+            SELECT SUM(n.inc)
+            FROM incs_norm n
+            WHERE n.task_id = p.task_id
+              AND n.anchor_s <= p.ball_hit_s
+          ),
+          0
+        ) AS pn
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET point_number = e.point_number,
-        exclude_d    = e.exclude_d
-    FROM excl e
-    WHERE p.task_id = :tid
-      AND p.id = e.id;
+    SET point_number = r.pn
+    FROM pn_rows r
+    WHERE p.id = r.id
+      AND p.task_id = :tid;
     """
-    conn.execute(text(sql1), {"tid": task_id})
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
 
-    # ---------- UPDATE 2: point_winner_player_id ----------
-    sql2 = f"""
-    WITH base AS (
-      SELECT
-        p.id, p.task_id, p.player_id, p.valid,
-        p.serve_d, p.serve_try_ix_in_point, p.service_winner_d,
-        p.ball_hit_s, p.point_number
-      FROM {SILVER_SCHEMA}.{TABLE} p
-      WHERE p.task_id = :tid
-    ),
-    -- recompute exclusions to ensure consistency
-    ordered AS (
-      SELECT
-        b.*,
-        LAG(b.ball_hit_s) OVER (PARTITION BY b.task_id, b.point_number ORDER BY b.ball_hit_s) AS prev_s,
-        LAG(b.player_id)  OVER (PARTITION BY b.task_id, b.point_number ORDER BY b.ball_hit_s) AS prev_pid
-      FROM base b
-    ),
-    excl AS (
-      SELECT
-        o.*,
-        CASE
-          WHEN o.point_number = 0 THEN TRUE
-          WHEN o.prev_s IS NULL THEN FALSE
-          WHEN (o.ball_hit_s - o.prev_s) > 5.0 THEN TRUE
-          WHEN (o.player_id = o.prev_pid) AND (o.ball_hit_s - o.prev_s) < 0.05 THEN TRUE
-          ELSE FALSE
-        END AS exclude_d
-      FROM ordered o
-    ),
-    point_first_serve AS (
-      SELECT DISTINCT ON (e.task_id, e.point_number)
-        e.task_id, e.point_number, e.player_id AS server_id
-      FROM excl e
-      WHERE e.point_number > 0
-        AND COALESCE(e.serve_d, FALSE) IS TRUE
-        AND (e.serve_try_ix_in_point::text ~ '^[0-9]+$' AND e.serve_try_ix_in_point::int = 1)
-      ORDER BY e.task_id, e.point_number, e.ball_hit_s
-    ),
-    point_receiver AS (
-      SELECT DISTINCT ON (e.task_id, e.point_number)
-        e.task_id, e.point_number, e.player_id AS receiver_id
-      FROM excl e
-      JOIN point_first_serve s
-        ON s.task_id = e.task_id AND s.point_number = e.point_number
-      WHERE e.point_number > 0
-        AND e.player_id <> s.server_id
-      ORDER BY e.task_id, e.point_number, e.ball_hit_s
-    ),
-    point_flags AS (
-      SELECT
-        e.task_id, e.point_number,
-        BOOL_OR(
-          CASE
-            WHEN COALESCE(e.serve_d, FALSE) IS TRUE THEN
-              CASE
-                WHEN e.serve_try_ix_in_point IS NULL THEN FALSE
-                WHEN LOWER(e.serve_try_ix_in_point::text) LIKE '%double%' THEN TRUE
-                WHEN LOWER(e.serve_try_ix_in_point::text) LIKE '%df%'     THEN TRUE
-                WHEN LOWER(e.serve_try_ix_in_point::text) LIKE '%fault%'  AND
-                     (e.serve_try_ix_in_point::text ~ '^[0-9]+$' AND e.serve_try_ix_in_point::int >= 3)
-                     THEN TRUE
-                WHEN (e.serve_try_ix_in_point::text ~ '^[0-9]+$' AND e.serve_try_ix_in_point::int = 3)
-                     THEN TRUE
-                ELSE FALSE
-              END
-            ELSE FALSE
-          END
-        ) AS any_df,
-        BOOL_OR(COALESCE(e.service_winner_d, FALSE)) AS any_sw
-      FROM excl e
-      WHERE e.point_number > 0
-      GROUP BY e.task_id, e.point_number
-    ),
-    last_swing AS (
-      SELECT DISTINCT ON (e.task_id, e.point_number)
-        e.task_id, e.point_number, e.player_id AS last_pid, e.ball_hit_s
-      FROM excl e
-      WHERE e.point_number > 0
-        AND COALESCE(e.exclude_d, FALSE) IS FALSE
-        AND COALESCE(e.valid, TRUE) IS TRUE
-      ORDER BY e.task_id, e.point_number, e.ball_hit_s DESC
-    ),
-    winners AS (
-      SELECT
-        pfs.task_id, pfs.point_number,
-        CASE
-          WHEN pf.any_df IS TRUE THEN pr.receiver_id
-          WHEN pf.any_sw IS TRUE THEN pfs.server_id
-          ELSE ls.last_pid
-        END AS point_winner_player_id
-      FROM point_first_serve pfs
-      LEFT JOIN point_receiver pr
-        ON pr.task_id = pfs.task_id AND pr.point_number = pfs.point_number
-      LEFT JOIN point_flags pf
-        ON pf.task_id = pfs.task_id AND pf.point_number = pfs.point_number
-      LEFT JOIN last_swing ls
-        ON ls.task_id = pfs.task_id AND ls.point_number = pfs.point_number
-    )
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET point_winner_player_id = w.point_winner_player_id
-    FROM winners w
-    WHERE p.task_id = :tid
-      AND p.point_number = w.point_number;
-    """
-    conn.execute(text(sql2), {"tid": task_id})
-    return 1
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
