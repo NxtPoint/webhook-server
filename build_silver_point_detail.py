@@ -480,7 +480,11 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 
 def phase5_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 5 — exclusions, point_number, point_winner_player_id.
+    Phase 5 — exclusions, point_number, point_winner_player_id (using only spec'd columns).
+    - point_number: increments on first-serve per point (serve_d=TRUE & serve_try_ix_in_point=1)
+    - exclude_d: pre-first-serve rows, 5s gaps inside a point, and same-player micro-duplicates (<50ms)
+    - point_winner_player_id: DF -> receiver; service winner -> server; else last valid non-excluded swing
+    game_number left NULL for a later step (5b).
     """
     sql = f"""
     WITH base AS (
@@ -492,24 +496,27 @@ def phase5_update(conn: Connection, task_id: str) -> int:
         p.serve_d,
         p.serve_try_ix_in_point,
         p.service_winner_d,
-        p.double_fault_d,
         p.ball_hit_s
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
 
+    -- 1) Point numbering via first-serve (try = 1)
     pn AS (
       SELECT
         b.*,
         SUM(
-          CASE WHEN COALESCE(b.serve_d, FALSE)
-                 AND COALESCE(b.serve_try_ix_in_point, 0) = 1
-               THEN 1 ELSE 0 END
+          CASE
+            WHEN COALESCE(b.serve_d, FALSE) IS TRUE
+             AND COALESCE(b.serve_try_ix_in_point::int, NULL) = 1
+            THEN 1 ELSE 0
+          END
         ) OVER (PARTITION BY b.task_id ORDER BY b.ball_hit_s
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS point_number
       FROM base b
     ),
 
+    -- 2) Exclusions inside each point
     gaps AS (
       SELECT
         pn.*,
@@ -517,30 +524,29 @@ def phase5_update(conn: Connection, task_id: str) -> int:
         LAG(pn.player_id)  OVER (PARTITION BY pn.task_id, pn.point_number ORDER BY pn.ball_hit_s) AS prev_pid
       FROM pn
     ),
-
     excl AS (
       SELECT
         g.*,
         CASE
-          WHEN g.point_number = 0 THEN TRUE
-          WHEN g.prev_s IS NULL THEN FALSE
-          WHEN (g.ball_hit_s - g.prev_s) > 5.0 THEN TRUE
-          WHEN (g.player_id = g.prev_pid) AND (g.ball_hit_s - g.prev_s) < 0.05 THEN TRUE
+          WHEN g.point_number = 0 THEN TRUE                          -- pre-first-serve noise
+          WHEN g.prev_s IS NULL THEN FALSE                           -- first event in point allowed
+          WHEN (g.ball_hit_s - g.prev_s) > 5.0 THEN TRUE             -- swing lag > 5s
+          WHEN (g.player_id = g.prev_pid) AND (g.ball_hit_s - g.prev_s) < 0.05 THEN TRUE  -- micro-duplicate
           ELSE FALSE
         END AS exclude_d
       FROM gaps g
     ),
 
+    -- 3) Server (first serve in point) & receiver
     point_first_serve AS (
       SELECT DISTINCT ON (e.task_id, e.point_number)
         e.task_id, e.point_number, e.player_id AS server_id
       FROM excl e
       WHERE e.point_number > 0
-        AND COALESCE(e.serve_d, FALSE)
-        AND COALESCE(e.serve_try_ix_in_point, 0) = 1
+        AND COALESCE(e.serve_d, FALSE) IS TRUE
+        AND COALESCE(e.serve_try_ix_in_point::int, NULL) = 1
       ORDER BY e.task_id, e.point_number, e.ball_hit_s
     ),
-
     point_receiver AS (
       SELECT DISTINCT ON (e.task_id, e.point_number)
         e.task_id, e.point_number, e.player_id AS receiver_id
@@ -552,32 +558,49 @@ def phase5_update(conn: Connection, task_id: str) -> int:
       ORDER BY e.task_id, e.point_number, e.ball_hit_s
     ),
 
+    -- 4) Point flags (derive DF solely from serve_try_ix_in_point)
     point_flags AS (
       SELECT
         e.task_id, e.point_number,
-        BOOL_OR(COALESCE(e.double_fault_d, FALSE)) AS any_df,
+        /* any_df: true if any serve row in the point indicates a double fault.
+           We allow: NULL, the text 'fault', or numeric 3 (if encoded that way). */
+        BOOL_OR(
+          CASE
+            WHEN COALESCE(e.serve_d, FALSE) IS TRUE THEN
+              CASE
+                WHEN e.serve_try_ix_in_point IS NULL THEN TRUE
+                WHEN LOWER(e.serve_try_ix_in_point::text) LIKE '%fault%' THEN TRUE
+                WHEN e.serve_try_ix_in_point::text ~ '^[0-9]+$'
+                     AND e.serve_try_ix_in_point::int = 3 THEN TRUE
+                ELSE FALSE
+              END
+            ELSE FALSE
+          END
+        ) AS any_df,
         BOOL_OR(COALESCE(e.service_winner_d, FALSE)) AS any_sw
       FROM excl e
       WHERE e.point_number > 0
       GROUP BY e.task_id, e.point_number
     ),
 
+    -- 5) Last non-excluded, valid swing per point
     last_swing AS (
       SELECT DISTINCT ON (e.task_id, e.point_number)
         e.task_id, e.point_number, e.player_id AS last_pid, e.ball_hit_s
       FROM excl e
       WHERE e.point_number > 0
         AND COALESCE(e.exclude_d, FALSE) IS FALSE
-        AND COALESCE(e.valid, TRUE)
+        AND COALESCE(e.valid, TRUE) IS TRUE
       ORDER BY e.task_id, e.point_number, e.ball_hit_s DESC
     ),
 
+    -- 6) Winner per point: DF -> receiver; service winner -> server; else last valid swing
     winners AS (
       SELECT
         pfs.task_id, pfs.point_number,
         CASE
-          WHEN pf.any_df THEN pr.receiver_id
-          WHEN pf.any_sw THEN pfs.server_id
+          WHEN pf.any_df IS TRUE THEN pr.receiver_id
+          WHEN pf.any_sw IS TRUE THEN pfs.server_id
           ELSE ls.last_pid
         END AS point_winner_player_id
       FROM point_first_serve pfs
@@ -589,7 +612,7 @@ def phase5_update(conn: Connection, task_id: str) -> int:
         ON ls.task_id = pfs.task_id AND ls.point_number = pfs.point_number
     )
 
-    -- ✅ No semicolon here! Proceed straight to the first UPDATE
+    -- A) Set point_number + exclude_d row-by-row
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET point_number = e.point_number,
         exclude_d    = e.exclude_d
@@ -597,6 +620,7 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.id = e.id;
 
+    -- B) Set point_winner_player_id on all rows in that point
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET point_winner_player_id = w.point_winner_player_id
     FROM winners w
@@ -605,6 +629,7 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     """
     conn.execute(text(sql), {"tid": task_id})
     return 1
+
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
