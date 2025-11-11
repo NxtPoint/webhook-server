@@ -375,11 +375,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
 def phase4_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 4:
-      - serve_location_ix (1..8) on serve rows using task-level midpoint on ball_hit_location_x
-      - rally_location_d (A..D) on non-serve rows using court_x (fallback ball_hit_location_x) and y split at 11.6
+    Phase 4 — Serve and Rally Locations
+      - serve_location_ix: 1–8 for serves only
+      - rally_location_d:  A–D for non-serves only
     """
-    # 1) SERVE LOCATION (1..8)
+
+    # --- SERVE LOCATION (1..8) ---
     serve_sql = f"""
     WITH base AS (
       SELECT
@@ -388,11 +389,12 @@ def phase4_update(conn: Connection, task_id: str) -> int:
         p.ball_hit_location_x AS hit_x
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
+        AND p.ball_hit_location_x IS NOT NULL
     ),
     mid AS (
       SELECT b.task_id, (MIN(b.hit_x) + MAX(b.hit_x)) / 2.0 AS mid_x
       FROM base b
-      WHERE COALESCE(b.serve_d, FALSE) IS TRUE AND b.hit_x IS NOT NULL
       GROUP BY b.task_id
     ),
     serves AS (
@@ -400,11 +402,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
         b.id, b.server_end_d, b.serve_side_d, b.hit_x, m.mid_x,
         GREATEST(1, LEAST(8, FLOOR(b.hit_x)::int + 1)) AS ix_raw
       FROM base b
-      JOIN mid  m ON m.task_id = b.task_id
-      WHERE COALESCE(b.serve_d, FALSE) IS TRUE
-        AND b.hit_x IS NOT NULL
-        AND b.server_end_d IN ('near','far')
-        AND b.serve_side_d  IN ('deuce','ad')
+      JOIN mid m ON m.task_id = b.task_id
     ),
     serve_loc AS (
       SELECT
@@ -419,38 +417,30 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       FROM serves s
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET serve_location_ix = sl.serve_location_ix
+    SET serve_location_ix = sl.serve_location_ix,
+        rally_location_d  = NULL
     FROM serve_loc sl
     WHERE p.task_id = :tid
       AND p.id = sl.id;
     """
 
-    # 2) RALLY LOCATION (A..D)
+    # --- RALLY LOCATION (A..D) ---
     rally_sql = f"""
-    WITH base AS (
+    WITH rallies AS (
       SELECT
-        p.id, p.task_id,
-        p.serve_d,
-        p.ball_hit_location_x AS hit_x,
-        p.ball_hit_location_y AS hit_y,
-        p.court_x
+        p.id,
+        COALESCE(p.court_x, p.ball_hit_location_x) AS x_src,
+        p.ball_hit_location_y AS y_src
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
-    ),
-    rallies AS (
-      SELECT
-        b.id,
-        COALESCE(b.court_x, b.hit_x) AS x_src,
-        b.hit_y
-      FROM base b
-      WHERE COALESCE(b.serve_d, FALSE) IS FALSE
+        AND COALESCE(p.serve_d, FALSE) IS FALSE
     ),
     rally_loc AS (
       SELECT
         r.id,
         CASE
           WHEN r.x_src IS NULL THEN NULL
-          WHEN r.hit_y >= 11.6 THEN
+          WHEN r.y_src >= 11.6 THEN
             CASE
               WHEN r.x_src < 2 THEN 'A'
               WHEN r.x_src < 4 THEN 'B'
@@ -468,15 +458,16 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       FROM rallies r
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET rally_location_d = rl.rally_location_d
+    SET rally_location_d = rl.rally_location_d,
+        serve_location_ix = NULL
     FROM rally_loc rl
     WHERE p.task_id = :tid
       AND p.id = rl.id;
     """
 
-    r1 = conn.execute(text(serve_sql), {"tid": task_id})
-    r2 = conn.execute(text(rally_sql), {"tid": task_id})
-    return (r1.rowcount or 0) + (r2.rowcount or 0)
+    conn.execute(text(serve_sql), {"tid": task_id})
+    conn.execute(text(rally_sql), {"tid": task_id})
+    return 1
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
