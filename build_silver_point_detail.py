@@ -478,7 +478,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 
 # ------------------------------- Phase 5 Updater -------------------------------------------
 
-def phase5_fix_point_number(conn, task_id: str) -> int:
+def phase5_update (conn, task_id: str) -> int:
     """
     Recompute point_number so it increments ONLY when serve_side_d changes.
     Anchors = rows where (serve_d=TRUE AND serve_try_ix_in_point=1).
