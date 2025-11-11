@@ -379,14 +379,13 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       - serve_location_ix (1..8) on serve rows using task-level midpoint on ball_hit_location_x
       - rally_location_d (A..D) on non-serve rows using court_x (fallback ball_hit_location_x) and y split at 11.6
     """
-    sql = f"""
+    # 1) SERVE LOCATION (1..8)
+    serve_sql = f"""
     WITH base AS (
       SELECT
         p.id, p.task_id,
         p.serve_d, p.server_end_d, p.serve_side_d,
-        p.ball_hit_location_x AS hit_x,
-        p.ball_hit_location_y AS hit_y,
-        p.court_x
+        p.ball_hit_location_x AS hit_x
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
@@ -411,13 +410,32 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       SELECT
         s.id,
         CASE
-          WHEN s.server_end_d = 'near' AND s.serve_side_d = 'deuce' THEN LEAST(4, s.ix_raw)
-          WHEN s.server_end_d = 'near' AND s.serve_side_d = 'ad'    THEN GREATEST(5, s.ix_raw)
-          WHEN s.server_end_d = 'far'  AND s.serve_side_d = 'deuce' THEN GREATEST(5, s.ix_raw)
-          WHEN s.server_end_d = 'far'  AND s.serve_side_d = 'ad'    THEN LEAST(4, s.ix_raw)
+          WHEN s.server_end_d='near' AND s.serve_side_d='deuce' THEN LEAST(4, s.ix_raw)
+          WHEN s.server_end_d='near' AND s.serve_side_d='ad'    THEN GREATEST(5, s.ix_raw)
+          WHEN s.server_end_d='far'  AND s.serve_side_d='deuce' THEN GREATEST(5, s.ix_raw)
+          WHEN s.server_end_d='far'  AND s.serve_side_d='ad'    THEN LEAST(4, s.ix_raw)
           ELSE NULL
         END AS serve_location_ix
       FROM serves s
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET serve_location_ix = sl.serve_location_ix
+    FROM serve_loc sl
+    WHERE p.task_id = :tid
+      AND p.id = sl.id;
+    """
+
+    # 2) RALLY LOCATION (A..D)
+    rally_sql = f"""
+    WITH base AS (
+      SELECT
+        p.id, p.task_id,
+        p.serve_d,
+        p.ball_hit_location_x AS hit_x,
+        p.ball_hit_location_y AS hit_y,
+        p.court_x
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
     ),
     rallies AS (
       SELECT
@@ -449,26 +467,16 @@ def phase4_update(conn: Connection, task_id: str) -> int:
         END AS rally_location_d
       FROM rallies r
     )
-    -- 1) update serve_location_ix
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET serve_location_ix = sl.serve_location_ix
-    FROM serve_loc sl
-    WHERE p.task_id = :tid
-      AND p.id = sl.id;
-
-    -- 2) update rally_location_d
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_d = rl.rally_location_d
     FROM rally_loc rl
     WHERE p.task_id = :tid
       AND p.id = rl.id;
     """
-    res = conn.execute(text(sql), {"tid": task_id})
-    # rowcount on multi-statement text is driver-dependent; just return 1 to signal success
-    return 1
 
-
-
+    r1 = conn.execute(text(serve_sql), {"tid": task_id})
+    r2 = conn.execute(text(rally_sql), {"tid": task_id})
+    return (r1.rowcount or 0) + (r2.rowcount or 0)
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
