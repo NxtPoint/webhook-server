@@ -48,7 +48,11 @@ PHASE3_COLS = OrderedDict({
     "server_end_d":          "text"
 })
 
-PHASE4_COLS: TOrderedDict[str, str] = OrderedDict({})
+PHASE4_COLS = OrderedDict({
+    "serve_location_ix": "integer",  # 1..8 on serve rows
+    "rally_location_d":  "text"      # 'A'..'D' on non-serve rows
+})
+
 PHASE5_COLS: TOrderedDict[str, str] = OrderedDict({})
 
 # ------------------------------- helpers ---------------------------------
@@ -366,6 +370,109 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
+
+# ------------------------------- Phase 4 updater --------------------------------------------
+
+def phase4_update(conn: Connection, task_id: str) -> int:
+    """
+    Phase 4
+      - serve_location_ix (1..8) on serve rows:
+          near+deuce -> 1..4 (ntile(4) by hit_x)
+          near+ad    -> 5..8 (ntile(4)+4)
+          far +deuce -> 5..8 (ntile(4)+4)
+          far +ad    -> 1..4 (ntile(4))
+      - rally_location_d ('A'..'D') on NON-serve rows using x from bounce (fallbacks)
+          if hit_y >= 11.6:  <2 'A', <4 'B', <6 'C', else 'D'
+          else (hit_y < 11.6): <2 'D', <4 'C', <6 'B', else 'A'
+    """
+    sql = f"""
+    WITH base AS (
+      SELECT
+        p.id, p.task_id, p.serve_d, p.server_end_d, p.serve_side_d,
+        p.ball_hit_location_x AS hit_x,
+        p.ball_hit_location_y AS hit_y,
+        p.bounce_x_m, p.hit_x_resolved_m
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+    ),
+
+    -- SERVE LOCATION (1..8)
+    serves AS (
+      SELECT id, task_id, server_end_d, serve_side_d, hit_x
+      FROM base
+      WHERE serve_d IS TRUE
+        AND server_end_d IN ('near','far')
+        AND serve_side_d  IN ('deuce','ad')
+        AND hit_x IS NOT NULL
+    ),
+    ranked AS (
+      SELECT
+        s.*,
+        NTILE(4) OVER (
+          PARTITION BY s.task_id, s.server_end_d, s.serve_side_d
+          ORDER BY s.hit_x
+        ) AS quart
+      FROM serves s
+    ),
+    serve_loc AS (
+      SELECT
+        r.id,
+        CASE
+          WHEN r.server_end_d='near' AND r.serve_side_d='deuce' THEN r.quart
+          WHEN r.server_end_d='near' AND r.serve_side_d='ad'    THEN r.quart + 4
+          WHEN r.server_end_d='far'  AND r.serve_side_d='deuce' THEN r.quart + 4
+          WHEN r.server_end_d='far'  AND r.serve_side_d='ad'    THEN r.quart
+          ELSE NULL
+        END AS serve_location_ix
+      FROM ranked r
+    ),
+
+    -- RALLY LOCATION (A..D) on NON-SERVE rows
+    rallies AS (
+      SELECT
+        b.id,
+        COALESCE(b.bounce_x_m, b.hit_x_resolved_m, b.hit_x) AS x_src,
+        b.hit_y
+      FROM base b
+      WHERE COALESCE(b.serve_d, FALSE) IS FALSE
+    ),
+    rally_loc AS (
+      SELECT
+        r.id,
+        CASE
+          WHEN r.x_src IS NULL THEN NULL
+          WHEN r.hit_y >= 11.6 THEN
+            CASE
+              WHEN r.x_src < 2 THEN 'A'
+              WHEN r.x_src < 4 THEN 'B'
+              WHEN r.x_src < 6 THEN 'C'
+              ELSE 'D'
+            END
+          ELSE
+            CASE
+              WHEN r.x_src < 2 THEN 'D'
+              WHEN r.x_src < 4 THEN 'C'
+              WHEN r.x_src < 6 THEN 'B'
+              ELSE 'A'
+            END
+        END AS rally_location_d
+      FROM rallies r
+    )
+
+    -- Apply both updates
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      serve_location_ix = COALESCE(sl.serve_location_ix, p.serve_location_ix),
+      rally_location_d  = COALESCE(rl.rally_location_d,  p.rally_location_d)
+    FROM serve_loc sl
+    FULL JOIN rally_loc rl ON rl.id = p.id
+    WHERE p.task_id = :tid
+      AND (sl.id IS NOT NULL OR rl.id IS NOT NULL);
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
 def phase2_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE2_COLS)
 def phase3_add_schema(conn: Connection):  ensure_phase_columns(conn, PHASE3_COLS)
@@ -397,7 +504,9 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         if phase in ("all","3"):
             out["phase3_rows_updated"] = phase3_update(conn, task_id)
 
-        if phase in ("all","4"): out["phase4"] = "schema-ready"
+        if phase in ("all","4"):
+            out["phase4_rows_updated"] = phase4_update(conn, task_id)
+            
         if phase in ("all","5"): out["phase5"] = "schema-ready"
 
     return out
