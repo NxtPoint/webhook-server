@@ -386,18 +386,21 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
+# ----------------------- Phase 4 updater ------------------------------
 
 def phase4_update(conn: Connection, task_id: str) -> int:
     """
     Phase 4
-    - Serve location (1-8): preserved if you already fill it elsewhere.
-      We only compute it here when it's NULL, using your prior midpoint logic.
-    - Rally location (hit)   -> A-D from ball_hit_location_x / ball_hit_location_y (11.6 split).
-    - Rally location (bounce)-> A-D from bounce_x_m using same 11.6 split, with updated A/B/C/D order.
+      - serve_location (1–8): only fill when NULL
+      - rally_location_hit:   A–D from ball_hit_location_x/y (11.6 split)
+      - rally_location_bounce:A–D from bounce_x_m when available, else hit_x_resolved_m
     """
 
-    # --- Serve midpoint based on FIRST serves (try = 1) across both sides ---
-    # We'll compute a per-task midpoint so the 1–8 bins are consistent.
+    # --- Detect whether bounce_x_m exists; if not, fall back to hit_x_resolved_m ---
+    cols = _columns_types(conn, SILVER_SCHEMA, TABLE)  # your existing helper
+    bx = "p.bounce_x_m" if "bounce_x_m" in cols else "p.hit_x_resolved_m"
+
+    # --- Midpoint for serves from FIRST serves (try=1) ---
     sql_midpoint = f"""
     WITH first_serves AS (
       SELECT p.ball_hit_location_x AS x
@@ -411,10 +414,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     """
     mid_x = conn.execute(text(sql_midpoint), {"tid": task_id}).scalar() or 4.0
 
-    # --- 4 bands helper as SQL CASE (returns A/B/C/D for given x and orientation) ---
-    # Hit orientation:
-    #  - y >= 11.6 : <2='D', 2-4='B', 4-6='C', >6='A'
-    #  - y <  11.6 : <2='A', 2-4='B', 4-6='C', >6='D'
+    # --- Rally location (hit) CASE (A/B/C/D) with 11.6 split ---
     hit_case = """
       CASE
         WHEN p.ball_hit_location_y >= 11.6 THEN
@@ -436,38 +436,29 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       END
     """
 
-    # Bounce orientation (updated order for far side):
-    #  - y >= 11.6 : <2='D', 2-4='C', 4-6='B', >6='A'
-    #  - y <  11.6 : <2='A', 2-4='B', 4-6='C', >6='D'
-    bounce_case = """
+    # --- Rally location (bounce) CASE, using bx expression determined above ---
+    bounce_case = f"""
       CASE
         WHEN p.ball_hit_location_y >= 11.6 THEN
           CASE
-            WHEN p.bounce_x_m IS NULL THEN NULL
-            WHEN p.bounce_x_m < 2 THEN 'D'
-            WHEN p.bounce_x_m < 4 THEN 'C'
-            WHEN p.bounce_x_m < 6 THEN 'B'
+            WHEN {bx} IS NULL THEN NULL
+            WHEN {bx} < 2 THEN 'D'
+            WHEN {bx} < 4 THEN 'C'
+            WHEN {bx} < 6 THEN 'B'
             ELSE 'A'
           END
         ELSE
           CASE
-            WHEN p.bounce_x_m IS NULL THEN NULL
-            WHEN p.bounce_x_m < 2 THEN 'A'
-            WHEN p.bounce_x_m < 4 THEN 'B'
-            WHEN p.bounce_x_m < 6 THEN 'C'
+            WHEN {bx} IS NULL THEN NULL
+            WHEN {bx} < 2 THEN 'A'
+            WHEN {bx} < 4 THEN 'B'
+            WHEN {bx} < 6 THEN 'C'
             ELSE 'D'
           END
       END
     """
 
-    # --- Serve location 1–8 (only fill where NULL to preserve any existing values you set elsewhere) ---
-    # Rules recap (as per your earlier spec):
-    # - near & deuce  => x <  mid_x  → bins 1..4 by x
-    # - near & ad     => x >= mid_x  → bins 5..8 by x
-    # - far  & deuce  => x >  mid_x  → bins 5..8 by x
-    # - far  & ad     => x <= mid_x  → bins 1..4 by x
-    # We quantize by absolute x; if you have a different binning, keep your existing
-    # writer and this will only fill missing cells.
+    # --- Serve location (only fill where NULL) ---
     sql_serve_loc = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET serve_location = CASE
@@ -509,7 +500,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
       AND p.serve_location IS NULL;
     """
 
-    # --- Rally location (hit) A–D ---
+    # --- Rally location (hit) ---
     sql_rally_hit = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_hit =
@@ -519,7 +510,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid;
     """
 
-    # --- Rally location (bounce) A–D (relabel of the old rally column) ---
+    # --- Rally location (bounce) with bx fallback ---
     sql_rally_bounce = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_bounce =
@@ -529,12 +520,12 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid;
     """
 
-    # Execute
     conn.execute(text(sql_serve_loc), {"tid": task_id, "mid": float(mid_x)})
     conn.execute(text(sql_rally_hit), {"tid": task_id})
     conn.execute(text(sql_rally_bounce), {"tid": task_id})
 
     return 1
+
 
 # ------------------------------- PHASE 5 helpers -------------------------------
 
