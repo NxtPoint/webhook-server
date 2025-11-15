@@ -116,7 +116,28 @@ def _generated_cols(conn, table: str, cols: list[str]) -> set[str]:
         for r in rows
         if r["column_name"] in target and (r.get("is_generated") or "").upper() == "ALWAYS"
     }
+# ---------------- new code added possible delete  ----------------
+from sqlalchemy import text as sql_text
 
+def _run_bronze_init_autocommit():
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as ddl:
+        ddl.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze"))
+        ddl.execute(sql_text("""
+            CREATE TABLE IF NOT EXISTS bronze.rally (
+              task_id  TEXT,
+              rally_id TEXT,
+              start_ts DOUBLE PRECISION,
+              end_ts   DOUBLE PRECISION,
+              len_s    DOUBLE PRECISION
+            )
+        """))
+        ddl.execute(sql_text("""
+            ALTER TABLE bronze.rally
+              ADD COLUMN IF NOT EXISTS rally_id TEXT,
+              ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
+              ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
+              ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION
+        """))
 
 # ---------------- init / DDL (idempotent) ----------------
 def _run_bronze_init_conn(conn):
