@@ -390,18 +390,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
 def phase4_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 4
-      - serve_location (1–8): only fill when NULL (uses per-task midpoint from first serves)
-      - rally_location_hit:   A–D from ball_hit_location_x/y (11.6 split)
-      - rally_location_bounce:A–D from:
-          1) bounce_x_m if the column exists, else
-          2) next contact x = LEAD(ball_hit_location_x) within (task_id, rally)
+    Phase 4 — ONLY spec columns.
+      - serve_location (1–8) using ball_hit_location_x and mid_x (avg first-serve x)
+      - rally_location_hit     A–D from ball_hit_location_x / ball_hit_location_y (11.6 split)
+      - rally_location_bounce  A–D from ball_hit_location_x / ball_hit_location_y (11.6 split, reversed bands)
+      - Never uses bounce_x_m / hit_x_resolved_m / LEAD / swing_id.
     """
-    cols = _columns_types(conn, SILVER_SCHEMA, TABLE)
-    have_bounce = ("bounce_x_m" in cols)
 
-    # midpoint from FIRST serves (try = 1)
-    sql_midpoint = f"""
+    # Midpoint from first serves (serve_try_ix_in_point = 1)
+    sql_mid = f"""
     WITH first_serves AS (
       SELECT p.ball_hit_location_x AS x
       FROM {SILVER_SCHEMA}.{TABLE} p
@@ -412,131 +409,117 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     )
     SELECT COALESCE(AVG(x), 4.0) FROM first_serves;
     """
-    mid_x = conn.execute(text(sql_midpoint), {"tid": task_id}).scalar() or 4.0
+    mid_x = conn.execute(text(sql_mid), {"tid": task_id}).scalar() or 4.0
 
-    # Serve location (only where NULL)
-    sql_serve_loc = f"""
+    # 1) Serve location (only fill where NULL; only for serves with a valid x)
+    sql_srv = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET serve_location = CASE
-      WHEN COALESCE(p.serve_d, FALSE) IS FALSE OR p.ball_hit_location_x IS NULL THEN p.serve_location
-      ELSE
-        CASE
-          WHEN p.server_end_d = 'near' AND p.serve_side_d = 'deuce' AND p.ball_hit_location_x <  :mid
-            THEN CASE WHEN p.ball_hit_location_x < 1 THEN 1
-                      WHEN p.ball_hit_location_x < 2 THEN 2
-                      WHEN p.ball_hit_location_x < 3 THEN 3
-                      ELSE 4 END
-          WHEN p.server_end_d = 'near' AND p.serve_side_d = 'ad'    AND p.ball_hit_location_x >= :mid
-            THEN CASE WHEN p.ball_hit_location_x < (:mid + 1) THEN 5
-                      WHEN p.ball_hit_location_x < (:mid + 2) THEN 6
-                      WHEN p.ball_hit_location_x < (:mid + 3) THEN 7
-                      ELSE 8 END
-          WHEN p.server_end_d = 'far'  AND p.serve_side_d = 'deuce' AND p.ball_hit_location_x >  :mid
-            THEN CASE WHEN p.ball_hit_location_x < (:mid + 1) THEN 5
-                      WHEN p.ball_hit_location_x < (:mid + 2) THEN 6
-                      WHEN p.ball_hit_location_x < (:mid + 3) THEN 7
-                      ELSE 8 END
-          WHEN p.server_end_d = 'far'  AND p.serve_side_d = 'ad'    AND p.ball_hit_location_x <= :mid
-            THEN CASE WHEN p.ball_hit_location_x < 1 THEN 1
-                      WHEN p.ball_hit_location_x < 2 THEN 2
-                      WHEN p.ball_hit_location_x < 3 THEN 3
-                      ELSE 4 END
-          ELSE p.serve_location
-        END
-    END
+    SET serve_location =
+      CASE
+        WHEN COALESCE(p.serve_d, FALSE) IS FALSE OR p.ball_hit_location_x IS NULL THEN p.serve_location
+        ELSE
+          CASE
+            -- Near / Deuce → x < mid → 1..4
+            WHEN p.server_end_d = 'near' AND p.serve_side_d = 'deuce' AND p.ball_hit_location_x <  :mid THEN
+              CASE
+                WHEN p.ball_hit_location_x < 1 THEN 1
+                WHEN p.ball_hit_location_x < 2 THEN 2
+                WHEN p.ball_hit_location_x < 3 THEN 3
+                ELSE 4
+              END
+            -- Near / Ad → x >= mid → 5..8
+            WHEN p.server_end_d = 'near' AND p.serve_side_d = 'ad'    AND p.ball_hit_location_x >= :mid THEN
+              CASE
+                WHEN p.ball_hit_location_x < (:mid + 1) THEN 5
+                WHEN p.ball_hit_location_x < (:mid + 2) THEN 6
+                WHEN p.ball_hit_location_x < (:mid + 3) THEN 7
+                ELSE 8
+              END
+            -- Far / Deuce → x > mid → 5..8
+            WHEN p.server_end_d = 'far'  AND p.serve_side_d = 'deuce' AND p.ball_hit_location_x >  :mid THEN
+              CASE
+                WHEN p.ball_hit_location_x < (:mid + 1) THEN 5
+                WHEN p.ball_hit_location_x < (:mid + 2) THEN 6
+                WHEN p.ball_hit_location_x < (:mid + 3) THEN 7
+                ELSE 8
+              END
+            -- Far / Ad → x <= mid → 1..4
+            WHEN p.server_end_d = 'far'  AND p.serve_side_d = 'ad'    AND p.ball_hit_location_x <= :mid THEN
+              CASE
+                WHEN p.ball_hit_location_x < 1 THEN 1
+                WHEN p.ball_hit_location_x < 2 THEN 2
+                WHEN p.ball_hit_location_x < 3 THEN 3
+                ELSE 4
+              END
+            ELSE p.serve_location
+          END
+      END
     WHERE p.task_id = :tid
       AND p.serve_location IS NULL;
     """
-    conn.execute(text(sql_serve_loc), {"tid": task_id, "mid": float(mid_x)})
+    conn.execute(text(sql_srv), {"tid": task_id, "mid": float(mid_x)})
 
-    # Rally location (hit) — A/B/C/D from ball_hit_location_x with 11.6 split
-    sql_rally_hit = f"""
+    # 2) Rally location (hit): A–D using hit X, with 11.6 Y split; NULL for serves
+    sql_rl_hit = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_hit =
-      CASE WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
-           ELSE
-             CASE
-               WHEN p.ball_hit_location_y >= 11.6 THEN
-                 CASE
-                   WHEN p.ball_hit_location_x IS NULL THEN NULL
-                   WHEN p.ball_hit_location_x < 2 THEN 'D'
-                   WHEN p.ball_hit_location_x < 4 THEN 'B'
-                   WHEN p.ball_hit_location_x < 6 THEN 'C'
-                   ELSE 'A'
-                 END
-               ELSE
-                 CASE
-                   WHEN p.ball_hit_location_x IS NULL THEN NULL
-                   WHEN p.ball_hit_location_x < 2 THEN 'A'
-                   WHEN p.ball_hit_location_x < 4 THEN 'B'
-                   WHEN p.ball_hit_location_x < 6 THEN 'C'
-                   ELSE 'D'
-                 END
-             END
+      CASE
+        WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
+        ELSE
+          CASE
+            WHEN p.ball_hit_location_x IS NULL THEN NULL
+            WHEN p.ball_hit_location_y >= 11.6 THEN
+              CASE
+                WHEN p.ball_hit_location_x < 2 THEN 'D'
+                WHEN p.ball_hit_location_x < 4 THEN 'B'
+                WHEN p.ball_hit_location_x < 6 THEN 'C'
+                ELSE 'A'
+              END
+            ELSE
+              CASE
+                WHEN p.ball_hit_location_x < 2 THEN 'A'
+                WHEN p.ball_hit_location_x < 4 THEN 'B'
+                WHEN p.ball_hit_location_x < 6 THEN 'C'
+                ELSE 'D'
+              END
+          END
       END
     WHERE p.task_id = :tid;
     """
-    conn.execute(text(sql_rally_hit), {"tid": task_id})
+    conn.execute(text(sql_rl_hit), {"tid": task_id})
 
-    # Rally location (bounce) — prefer bounce_x_m; else LEAD(ball_hit_location_x) over rally
-    if have_bounce:
-        bx_expr = "p.bounce_x_m"
-        with_cte = f"SELECT p.id, p.task_id, p.ball_hit_location_y, {bx_expr} AS bx FROM {SILVER_SCHEMA}.{TABLE} p WHERE p.task_id = :tid"
-    else:
-        # compute next contact x within rally as fallback
-        with_cte = f"""
-        SELECT id, task_id, ball_hit_location_y,
-               LEAD(ball_hit_location_x) OVER (
-                 PARTITION BY task_id, rally
-                 ORDER BY ball_hit_s, swing_id
-               ) AS bx
-        FROM {SILVER_SCHEMA}.{TABLE}
-        WHERE task_id = :tid
-        """
-
-    sql_rally_bounce = f"""
-    WITH base AS (
-      {with_cte}
-    ),
-    mapped AS (
-      SELECT
-        b.id,
-        CASE
-          WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
-          ELSE
-            CASE
-              WHEN b.ball_hit_location_y >= 11.6 THEN
-                CASE
-                  WHEN b.bx IS NULL THEN NULL
-                  WHEN b.bx < 2 THEN 'D'
-                  WHEN b.bx < 4 THEN 'C'
-                  WHEN b.bx < 6 THEN 'B'
-                  ELSE 'A'
-                END
-              ELSE
-                CASE
-                  WHEN b.bx IS NULL THEN NULL
-                  WHEN b.bx < 2 THEN 'A'
-                  WHEN b.bx < 4 THEN 'B'
-                  WHEN b.bx < 6 THEN 'C'
-                  ELSE 'D'
-                END
-            END
-        END AS val
-      FROM base b
-      JOIN {SILVER_SCHEMA}.{TABLE} p
-        ON p.id = b.id AND p.task_id = b.task_id
-    )
+    # 3) Rally location (bounce): A–D using hit X again, reversed bands; NULL for serves
+    sql_rl_bnc = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET rally_location_bounce = m.val
-    FROM mapped m
-    WHERE p.task_id = :tid AND p.id = m.id;
+    SET rally_location_bounce =
+      CASE
+        WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
+        ELSE
+          CASE
+            WHEN p.ball_hit_location_x IS NULL THEN NULL
+            WHEN p.ball_hit_location_y >= 11.6 THEN
+              CASE
+                WHEN p.ball_hit_location_x < 2 THEN 'D'
+                WHEN p.ball_hit_location_x < 4 THEN 'C'
+                WHEN p.ball_hit_location_x < 6 THEN 'B'
+                ELSE 'A'
+              END
+            ELSE
+              CASE
+                WHEN p.ball_hit_location_x < 2 THEN 'A'
+                WHEN p.ball_hit_location_x < 4 THEN 'B'
+                WHEN p.ball_hit_location_x < 6 THEN 'C'
+                ELSE 'D'
+              END
+          END
+      END
+    WHERE p.task_id = :tid;
     """
-    conn.execute(text(sql_rally_bounce), {"tid": task_id})
+    conn.execute(text(sql_rl_bnc), {"tid": task_id})
 
     return 1
 
-# ------------------------------- PHASE 5 helpers -------------------------------
+# ------------------------------- PHASE 5 ---------------------------------
 
 def phase5_update(conn: Connection, task_id: str) -> int:
     # 1) point_number from serve_side_d flips (first serves)
