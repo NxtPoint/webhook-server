@@ -412,52 +412,62 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     mid_x = conn.execute(text(sql_mid), {"tid": task_id}).scalar() or 4.0
 
     # 1) Serve location (only fill where NULL; only for serves with a valid x)
+    # 1) Serve location — recompute for all serves (idempotent)
     sql_srv = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET serve_location =
       CASE
-        WHEN COALESCE(p.serve_d, FALSE) IS FALSE OR p.ball_hit_location_x IS NULL THEN p.serve_location
+        WHEN COALESCE(p.serve_d, FALSE) IS FALSE THEN NULL
+        WHEN p.ball_hit_location_x IS NULL THEN NULL
         ELSE
           CASE
             -- Near / Deuce → x < mid → 1..4
-            WHEN p.server_end_d = 'near' AND p.serve_side_d = 'deuce' AND p.ball_hit_location_x <  :mid THEN
+            WHEN lower(p.server_end_d) = 'near' AND lower(p.serve_side_d) = 'deuce'
+                AND p.ball_hit_location_x < :mid THEN
               CASE
                 WHEN p.ball_hit_location_x < 1 THEN 1
                 WHEN p.ball_hit_location_x < 2 THEN 2
                 WHEN p.ball_hit_location_x < 3 THEN 3
                 ELSE 4
               END
+
             -- Near / Ad → x >= mid → 5..8
-            WHEN p.server_end_d = 'near' AND p.serve_side_d = 'ad'    AND p.ball_hit_location_x >= :mid THEN
+            WHEN lower(p.server_end_d) = 'near' AND lower(p.serve_side_d) = 'ad'
+                AND p.ball_hit_location_x >= :mid THEN
               CASE
                 WHEN p.ball_hit_location_x < (:mid + 1) THEN 5
                 WHEN p.ball_hit_location_x < (:mid + 2) THEN 6
                 WHEN p.ball_hit_location_x < (:mid + 3) THEN 7
                 ELSE 8
               END
+
             -- Far / Deuce → x > mid → 5..8
-            WHEN p.server_end_d = 'far'  AND p.serve_side_d = 'deuce' AND p.ball_hit_location_x >  :mid THEN
+            WHEN lower(p.server_end_d) = 'far'  AND lower(p.serve_side_d) = 'deuce'
+                AND p.ball_hit_location_x > :mid THEN
               CASE
                 WHEN p.ball_hit_location_x < (:mid + 1) THEN 5
                 WHEN p.ball_hit_location_x < (:mid + 2) THEN 6
                 WHEN p.ball_hit_location_x < (:mid + 3) THEN 7
                 ELSE 8
               END
+
             -- Far / Ad → x <= mid → 1..4
-            WHEN p.server_end_d = 'far'  AND p.serve_side_d = 'ad'    AND p.ball_hit_location_x <= :mid THEN
+            WHEN lower(p.server_end_d) = 'far'  AND lower(p.serve_side_d) = 'ad'
+                AND p.ball_hit_location_x <= :mid THEN
               CASE
                 WHEN p.ball_hit_location_x < 1 THEN 1
                 WHEN p.ball_hit_location_x < 2 THEN 2
                 WHEN p.ball_hit_location_x < 3 THEN 3
                 ELSE 4
               END
-            ELSE p.serve_location
+
+            ELSE NULL
           END
       END
-    WHERE p.task_id = :tid
-      AND p.serve_location IS NULL;
+    WHERE p.task_id = :tid;
     """
     conn.execute(text(sql_srv), {"tid": task_id, "mid": float(mid_x)})
+
 
     # 2) Rally location (hit): A–D using hit X, with 11.6 Y split; NULL for serves
     sql_rl_hit = f"""
