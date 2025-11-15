@@ -1,8 +1,6 @@
 ﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only)
 # - Keeps: S3 upload, SportAI submit/status/cancel, presign, check-video
-# - Removes: webhook + legacy session_id-first flows
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
-# - Mirrors public.submission_context → bronze.submission_context keyed by task_id
 
 import os, json, time, socket, sys, inspect, hashlib, re, threading
 from datetime import datetime, timezone
@@ -122,48 +120,44 @@ def _sql_exec_to_json(q: str):
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
 
-# ---------- submission_context (public) ----------
-def _ensure_submission_context_schema(conn):
+# ---------- submission_context (BRONZE) ----------
+def _ensure_bronze_submission_context(conn):
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
     conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS submission_context (
-          task_id         TEXT PRIMARY KEY,
-          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-          email           TEXT,
-          customer_name   TEXT,
-          match_date      DATE,
-          start_time      TEXT,
-          location        TEXT,
-          player_a_name   TEXT,
-          player_b_name   TEXT,
-          player_a_utr    TEXT,
-          player_b_utr    TEXT,
-          video_url       TEXT,
-          share_url       TEXT,
-          raw_meta        JSONB,
-          session_id      BIGINT,
-          last_status     TEXT,
-          last_status_at  TIMESTAMPTZ,
-          last_result_url TEXT,
-          ingest_started_at  TIMESTAMPTZ,
+        CREATE TABLE IF NOT EXISTS bronze.submission_context (
+          task_id           TEXT PRIMARY KEY,
+          created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email             TEXT,
+          customer_name     TEXT,
+          match_date        DATE,
+          start_time        TEXT,
+          location          TEXT,
+          player_a_name     TEXT,
+          player_b_name     TEXT,
+          player_a_utr      TEXT,
+          player_b_utr      TEXT,
+          video_url         TEXT,
+          share_url         TEXT,
+          raw_meta          JSONB,
+          session_id        BIGINT,
+          last_status       TEXT,
+          last_status_at    TIMESTAMPTZ,
+          last_result_url   TEXT,
+          ingest_started_at TIMESTAMPTZ,
           ingest_finished_at TIMESTAMPTZ,
-          ingest_error       TEXT
+          ingest_error      TEXT
         );
     """))
-    # idempotent new columns
-    for ddl in (
-        "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ",
-        "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
-        "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT",
-    ):
-        conn.execute(sql_text(ddl))
 
-def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
-    if not engine: return
+def _store_submission_context(task_id: str, email: str, meta: dict | None,
+                              video_url: str, share_url: str | None = None):
+    if not engine:
+        return
     m = meta or {}
     with engine.begin() as conn:
-        _ensure_submission_context_schema(conn)
+        _ensure_bronze_submission_context(conn)
         conn.execute(sql_text("""
-            INSERT INTO submission_context (
+            INSERT INTO bronze.submission_context (
               task_id, email, customer_name, match_date, start_time, location,
               player_a_name, player_b_name, player_a_utr, player_b_utr,
               video_url, share_url, raw_meta
@@ -203,7 +197,7 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
 
 def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
     conn.execute(sql_text("""
-        UPDATE submission_context
+        UPDATE bronze.submission_context
            SET last_status     = :s,
                last_status_at  = now(),
                last_result_url = :r
@@ -380,26 +374,17 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
 # Ingest worker (task_id-only)
 # -------------------------------------------------------
 def _mirror_submission_to_bronze_by_task(conn, task_id: str):
-    """Mirror public.submission_context → bronze.submission_context keyed by task_id."""
-    conn.execute(sql_text("""
-        INSERT INTO bronze.submission_context (task_id, data)
-        SELECT
-          :t,
-          to_jsonb(sc.*)
-            - 'ingest_error' - 'ingest_started_at' - 'ingest_finished_at'
-            - 'last_status'  - 'last_status_at'    - 'last_result_url'
-        FROM submission_context sc
-        WHERE sc.task_id = :t
-        ON CONFLICT (task_id) DO UPDATE SET data = EXCLUDED.data
-    """), {"t": task_id})
+    """Kept for compatibility. No-op now that we write directly to bronze.submission_context."""
+    _ensure_bronze_submission_context(conn)
+    return
 
 def _do_ingest(task_id: str, result_url: str) -> bool:
     try:
         # mark started
         with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
+            _ensure_bronze_submission_context(conn)
             conn.execute(sql_text("""
-                UPDATE submission_context
+                UPDATE bronze.submission_context
                    SET ingest_started_at = COALESCE(ingest_started_at, now()),
                        ingest_error = NULL
                  WHERE task_id = :t
@@ -421,15 +406,15 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             )
             sid = res.get("session_id")
 
-            # status + mirror
+            # status
             conn.execute(sql_text("""
-                UPDATE submission_context
-                   SET session_id        = :sid,
-                       ingest_finished_at= now(),
-                       ingest_error      = NULL,
-                       last_result_url   = :url,
-                       last_status       = 'completed',
-                       last_status_at    = now()
+                UPDATE bronze.submission_context
+                   SET session_id         = :sid,
+                       ingest_finished_at = now(),
+                       ingest_error       = NULL,
+                       last_result_url    = :url,
+                       last_status        = 'completed',
+                       last_status_at     = now()
                  WHERE task_id = :t
             """), {"sid": sid, "t": task_id, "url": result_url})
 
@@ -440,7 +425,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
     except Exception as e:
         with engine.begin() as conn:
             conn.execute(sql_text("""
-                UPDATE submission_context
+                UPDATE bronze.submission_context
                    SET ingest_error = :err,
                        ingest_finished_at = now()
                  WHERE task_id = :t
@@ -450,10 +435,10 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """Return True if we started a worker; False if already done/running."""
     with engine.begin() as conn:
-        _ensure_submission_context_schema(conn)
+        _ensure_bronze_submission_context(conn)
         row = conn.execute(sql_text("""
             SELECT session_id, ingest_started_at, ingest_finished_at
-              FROM submission_context
+              FROM bronze.submission_context
              WHERE task_id = :t
              LIMIT 1
         """), {"t": task_id}).mappings().first()
@@ -464,7 +449,7 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
             return False  # already running
 
         conn.execute(sql_text("""
-            UPDATE submission_context
+            UPDATE bronze.submission_context
                SET ingest_started_at = now(),
                    ingest_error = NULL
              WHERE task_id = :t
@@ -583,7 +568,7 @@ def api_cancel_task():
     try:
         out = _sportai_cancel(str(tid))
         with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
+            _ensure_bronze_submission_context(conn)
             _set_status_cache(conn, tid, "canceled", None)
         return jsonify({"ok": True, "data": out})
     except Exception as e:
@@ -618,7 +603,7 @@ def api_upload_to_s3():
                 task_id = _sportai_submit(video_url, email=email, meta=meta)
                 _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
                 with engine.begin() as conn:
-                    _ensure_submission_context_schema(conn)
+                    _ensure_bronze_submission_context(conn)
                     _set_status_cache(conn, task_id, "queued", None)
                 return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
             except Exception as e:
@@ -641,7 +626,7 @@ def api_upload_to_s3():
         task_id = _sportai_submit(video_url, email=email, meta=meta)
         _store_submission_context(task_id, email, meta, video_url, share_url=video_url)
         with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
+            _ensure_bronze_submission_context(conn)
             _set_status_cache(conn, task_id, "queued", None)
         return jsonify({
             "ok": True, "task_id": task_id, "share_url": video_url, "video_url": video_url,
@@ -670,11 +655,11 @@ def api_task_status():
         terminal = bool(out.get("terminal"))
 
         with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
+            _ensure_bronze_submission_context(conn)
             _set_status_cache(conn, tid, status, result_url)
             sc = conn.execute(sql_text("""
                 SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
-                  FROM submission_context
+                  FROM bronze.submission_context
                  WHERE task_id = :t
                  LIMIT 1
             """), {"t": tid}).mappings().first() or {}
@@ -736,7 +721,7 @@ def ops_ingest_task():
             sid = res.get("session_id")
 
             conn.execute(sql_text(
-                "UPDATE submission_context SET session_id=:sid WHERE task_id=:t"
+                "UPDATE bronze.submission_context SET session_id=:sid WHERE task_id=:t"
             ), {"sid": sid, "t": tid})
 
             _mirror_submission_to_bronze_by_task(conn, tid)
