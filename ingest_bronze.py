@@ -240,6 +240,12 @@ def _run_bronze_init_conn(conn):
           ADD COLUMN IF NOT EXISTS swing_type TEXT,
           ADD COLUMN IF NOT EXISTS volley BOOLEAN,
           ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN,
+          -- scalar timing columns used in INSERT
+          ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS start_frame INT,
+          ADD COLUMN IF NOT EXISTS end_ts DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS end_frame INT,
+          -- original JSON blobs (kept for safety / future use)
           ADD COLUMN IF NOT EXISTS start JSONB,
           ADD COLUMN IF NOT EXISTS "end" JSONB,
           ADD COLUMN IF NOT EXISTS ball_hit JSONB,
