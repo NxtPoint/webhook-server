@@ -1,8 +1,8 @@
 ﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only)
 # - Keeps: S3 upload, SportAI submit/status/cancel, presign, check-video
+# - Removes: webhook + legacy session_id-first flows
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
-# - Mirrors/records submission meta in bronze.submission_context (not public)
-# - Hardened: bronze.* qualified, idempotent DDL, safe CORS, result/status normalization
+# - Uses bronze.submission_context keyed by task_id (no public schema)
 
 import os, json, time, socket, sys, inspect, hashlib, re, threading
 from datetime import datetime, timezone
@@ -122,43 +122,45 @@ def _sql_exec_to_json(q: str):
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
 
-# ---------- submission_context (BRONZE) ----------
+# ---------- submission_context (bronze only) ----------
 def _ensure_submission_context_schema(conn):
-    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze"))
+    # Ensure bronze schema + bronze.submission_context table
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.submission_context (
           task_id         TEXT PRIMARY KEY,
           created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-          -- keep the original meta blob
-          data            JSONB
+          email           TEXT,
+          customer_name   TEXT,
+          match_date      DATE,
+          start_time      TEXT,
+          location        TEXT,
+          player_a_name   TEXT,
+          player_b_name   TEXT,
+          player_a_utr    TEXT,
+          player_b_utr    TEXT,
+          video_url       TEXT,
+          share_url       TEXT,
+          raw_meta        JSONB,
+          session_id      BIGINT,
+          last_status     TEXT,
+          last_status_at  TIMESTAMPTZ,
+          last_result_url TEXT,
+          ingest_started_at  TIMESTAMPTZ,
+          ingest_finished_at TIMESTAMPTZ,
+          ingest_error       TEXT
         );
     """))
+    # idempotent new columns (kept for safety)
     for ddl in (
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS email TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS customer_name TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_date DATE",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS start_time TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS location TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_name TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_name TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_utr TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_utr TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS video_url TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS share_url TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS raw_meta JSONB",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_result_url TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error TEXT"
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT",
     ):
         conn.execute(sql_text(ddl))
 
-
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
-    if not engine:
-        return
+    if not engine: return
     m = meta or {}
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -166,11 +168,11 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
             INSERT INTO bronze.submission_context (
               task_id, email, customer_name, match_date, start_time, location,
               player_a_name, player_b_name, player_a_utr, player_b_utr,
-              video_url, share_url, raw_meta, data
+              video_url, share_url, raw_meta
             ) VALUES (
               :task_id, :email, :customer_name, :match_date, :start_time, :location,
               :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
-              :video_url, :share_url, CAST(:raw_meta AS JSONB), CAST(:data AS JSONB)
+              :video_url, :share_url, :raw_meta
             )
             ON CONFLICT (task_id) DO UPDATE SET
               email=EXCLUDED.email,
@@ -184,8 +186,7 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
               player_b_utr=EXCLUDED.player_b_utr,
               video_url=EXCLUDED.video_url,
               share_url=EXCLUDED.share_url,
-              raw_meta=EXCLUDED.raw_meta,
-              data=EXCLUDED.data
+              raw_meta=EXCLUDED.raw_meta
         """), {
             "task_id": task_id,
             "email": email,
@@ -200,7 +201,6 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
             "video_url": video_url,
             "share_url": share_url,
             "raw_meta": json.dumps(m),
-            "data": json.dumps(m),
         })
 
 def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
@@ -212,6 +212,9 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
 
+def _mirror_submission_to_bronze_by_task(conn, task_id: str):
+    """No-op: submission_context now lives directly in bronze.submission_context."""
+    return
 
 # -------------------------------------------------------
 # SportAI HTTP
@@ -297,7 +300,7 @@ def _sportai_status(task_id: str) -> dict:
         progress_pct = None
 
     result_url = d.get("result_url") or j.get("result_url")
-    terminal = (status or "").lower() in ("completed","done","success","succeeded","failed","canceled")
+    terminal = status.lower() in ("completed","done","success","succeeded","failed","canceled")
     if result_url and not terminal:
         status = "completed"; terminal = True
     if terminal and (progress_pct is None or progress_pct < 100):
@@ -382,6 +385,60 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
 # -------------------------------------------------------
 # Ingest worker (task_id-only)
 # -------------------------------------------------------
+def _do_ingest(task_id: str, result_url: str) -> bool:
+    try:
+        # mark started
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_started_at = COALESCE(ingest_started_at, now()),
+                       ingest_error = NULL
+                 WHERE task_id = :t
+            """), {"t": task_id})
+
+        # fetch result and ingest
+        r = requests.get(result_url, timeout=600)
+        r.raise_for_status()
+        payload = r.json()
+
+        with engine.begin() as conn:
+            _run_bronze_init(conn)  # ensure bronze schema/tables exist
+            res = ingest_bronze_strict(
+                conn,
+                payload,
+                replace=DEFAULT_REPLACE_ON_INGEST,
+                src_hint=result_url,
+                task_id=task_id,            # canonical key
+            )
+            sid = res.get("session_id")
+
+            # status + mirror
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET session_id        = :sid,
+                       ingest_finished_at= now(),
+                       ingest_error      = NULL,
+                       last_result_url   = :url,
+                       last_status       = 'completed',
+                       last_status_at    = now()
+                 WHERE task_id = :t
+            """), {"sid": sid, "t": task_id, "url": result_url})
+
+            _mirror_submission_to_bronze_by_task(conn, task_id)
+
+        return True
+
+    except Exception as e:
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_error = :err,
+                       ingest_finished_at = now()
+                 WHERE task_id = :t
+            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+        return False
+
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """Return True if we started a worker; False if already done/running."""
     with engine.begin() as conn:
@@ -408,55 +465,6 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
     th = threading.Thread(target=_do_ingest, args=(task_id, result_url), daemon=True)
     th.start()
     return True
-
-def _do_ingest(task_id: str, result_url: str) -> bool:
-    try:
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET ingest_started_at = COALESCE(ingest_started_at, now()),
-                       ingest_error = NULL
-                 WHERE task_id = :t
-            """), {"t": task_id})
-
-        r = requests.get(result_url, timeout=600)
-        r.raise_for_status()
-        payload = r.json()
-
-        with engine.begin() as conn:
-            _run_bronze_init(conn)  # ensure bronze schema/tables exist
-            res = ingest_bronze_strict(
-                conn,
-                payload,
-                replace=DEFAULT_REPLACE_ON_INGEST,
-                src_hint=result_url,
-                task_id=task_id,
-            )
-            sid = res.get("session_id")
-
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET session_id        = :sid,
-                       ingest_finished_at= now(),
-                       ingest_error      = NULL,
-                       last_result_url   = :url,
-                       last_status       = 'completed',
-                       last_status_at    = now()
-                 WHERE task_id = :t
-            """), {"sid": sid, "t": task_id, "url": result_url})
-
-        return True
-
-    except Exception as e:
-        with engine.begin() as conn:
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET ingest_error = :err,
-                       ingest_finished_at = now()
-                 WHERE task_id = :t
-            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
-        return False
 
 # -------------------------------------------------------
 # Public endpoints (uploads + status + ops)
@@ -649,53 +657,47 @@ def api_task_status():
 
     try:
         out = _sportai_status(tid)
-
-        status     = (out.get("status") or "").lower()
+        status = (out.get("status") or "").lower()
         result_url = out.get("result_url")
-        terminal   = bool(out.get("terminal"))
-
-        # Normalize: if a result_url exists, treat as completed and show 100%
-        if result_url and status != "completed":
-            status = "completed"
-            out["status"] = "completed"
-            out["progress"] = 100
-            out["progress_pct"] = 100
-            terminal = True
+        terminal = bool(out.get("terminal"))
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, status, result_url)
-
             sc = conn.execute(sql_text("""
-                SELECT ingest_started_at, ingest_finished_at, ingest_error
-                FROM bronze.submission_context
-                WHERE task_id = :t
-                LIMIT 1
+                SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
+                  FROM bronze.submission_context
+                 WHERE task_id = :t
+                 LIMIT 1
             """), {"t": tid}).mappings().first() or {}
 
-        # Derive ingest state (no session_id anywhere)
-        ingest_error    = sc.get("ingest_error")
-        ingest_started  = sc.get("ingest_started_at")  is not None
-        ingest_finished = sc.get("ingest_finished_at") is not None
-        ingest_running  = ingest_started and not ingest_finished
-        auto_ingested   = bool(ingest_finished and not ingest_error)
+        auto_ingested = False
+        auto_ingest_error = sc.get("ingest_error")
+        session_id = sc.get("session_id")
+        ingest_started   = sc.get("ingest_started_at") is not None
+        ingest_finished  = sc.get("ingest_finished_at") is not None
+        ingest_running   = ingest_started and not ingest_finished
 
-        # Optional background ingest – only if you’ve enabled it AND not already finished/running
-        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and (not ingest_running) and (not ingest_finished):
+        # Start worker if completed + result_url available and not already done/running
+        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
             started = _start_ingest_background(tid, result_url)
             ingest_started = ingest_started or started
 
+        if session_id and ingest_finished and not auto_ingest_error:
+            auto_ingested = True
+
         return jsonify({
-            "ok": True,
-            **out,                         # includes status/progress/result_url/etc
+            "ok": True, **out,
+            "session_id": session_id,
             "auto_ingested": auto_ingested,
-            "auto_ingest_error": ingest_error,
+            "auto_ingest_error": auto_ingest_error,
             "ingest_started": ingest_started,
             "ingest_running": ingest_running,
             "ingest_finished": ingest_finished
         })
 
     except Exception as e:
+        # never break the poller
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
 
 # ---------- Manual ingest helper (task_id-only) ----------
@@ -716,17 +718,20 @@ def ops_ingest_task():
 
         with engine.begin() as conn:
             _run_bronze_init(conn)
-            out = ingest_bronze_strict(
+            res = ingest_bronze_strict(
                 conn,
                 payload,
                 replace=DEFAULT_REPLACE_ON_INGEST,
                 src_hint=result_url,
-                task_id=tid,
+                task_id=tid,                     # important
             )
-            sid = out.get("session_id")
+            sid = res.get("session_id")
+
             conn.execute(sql_text(
                 "UPDATE bronze.submission_context SET session_id=:sid WHERE task_id=:t"
             ), {"sid": sid, "t": tid})
+
+            _mirror_submission_to_bronze_by_task(conn, tid)
 
         return jsonify({"ok": True, "task_id": tid, "session_id": sid})
     except Exception as e:
