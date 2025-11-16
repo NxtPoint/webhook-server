@@ -553,66 +553,6 @@ def _upsert_single(conn, table: str, task_id: str, obj) -> int:
     """), {"tid": task_id, "j": json.dumps(obj)})
     return 1
 
-def _upsert_submission_context_from_public(conn, task_id: str) -> int:
-    # Optional bridge if a public.submission_context exists; otherwise just skip.
-    try:
-        row = conn.execute(sql_text("""
-            SELECT row_to_json(t) AS j
-            FROM public.submission_context t
-            WHERE task_id=:tid
-            LIMIT 1
-        """), {"tid": task_id}).scalar()
-    except Exception:
-        row = None
-    if not row:
-        return 0
-    d = row if isinstance(row, dict) else json.loads(row)
-    email = d.get("email")
-    location = d.get("location")
-    video_url = d.get("video_url")
-    share_url = d.get("share_url")
-    match_date = d.get("match_date")
-    start_time = d.get("start_time")
-    player_a_name = d.get("player_a_name")
-    player_b_name = d.get("player_b_name")
-    player_a_utr  = d.get("player_a_utr")
-    player_b_utr  = d.get("player_b_utr")
-    customer_name = d.get("customer_name")
-
-    conn.execute(sql_text("""
-        INSERT INTO bronze.submission_context (
-            task_id, data,
-            email, location, video_url, share_url, match_date, start_time,
-            player_a_name, player_b_name, player_a_utr, player_b_utr, customer_name
-        )
-        VALUES (
-            :tid, CAST(:j AS JSONB),
-            :email, :location, :video_url, :share_url, :match_date, :start_time,
-            :pa, :pb, :pa_utr, :pb_utr, :cust
-        )
-        ON CONFLICT (task_id) DO UPDATE SET
-            data = EXCLUDED.data,
-            email = EXCLUDED.email,
-            location = EXCLUDED.location,
-            video_url = EXCLUDED.video_url,
-            share_url = EXCLUDED.share_url,
-            match_date = EXCLUDED.match_date,
-            start_time = EXCLUDED.start_time,
-            player_a_name = EXCLUDED.player_a_name,
-            player_b_name = EXCLUDED.player_b_name,
-            player_a_utr = EXCLUDED.player_a_utr,
-            player_b_utr = EXCLUDED.player_b_utr,
-            customer_name = EXCLUDED.customer_name
-    """), {
-        "tid": task_id, "j": json.dumps(d),
-        "email": email, "location": location, "video_url": video_url, "share_url": share_url,
-        "match_date": match_date, "start_time": start_time,
-        "pa": player_a_name, "pb": player_b_name,
-        "pa_utr": player_a_utr, "pb_utr": player_b_utr,
-        "cust": customer_name
-    })
-    return 1
-
 def _task_lock(conn, task_id: str):
     # transaction-scoped advisory lock; auto-released on commit/rollback
     conn.execute(sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:t, 42))"), {"t": task_id})
@@ -685,66 +625,8 @@ def _post_ingest_transforms(conn, task_id: str):
         WHERE task_id = :tid
     """), {"tid": task_id})
 
-    # submission_context flatten (idempotent cols, then update)
-    conn.execute(sql_text("""
-        ALTER TABLE bronze.submission_context
-          ADD COLUMN IF NOT EXISTS email TEXT,
-          ADD COLUMN IF NOT EXISTS location TEXT,
-          ADD COLUMN IF NOT EXISTS video_url TEXT,
-          ADD COLUMN IF NOT EXISTS share_url TEXT,
-          ADD COLUMN IF NOT EXISTS match_date DATE,
-          ADD COLUMN IF NOT EXISTS start_time TEXT,
-          ADD COLUMN IF NOT EXISTS player_a_name TEXT,
-          ADD COLUMN IF NOT EXISTS player_b_name TEXT,
-          ADD COLUMN IF NOT EXISTS player_a_utr TEXT,
-          ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
-          ADD COLUMN IF NOT EXISTS customer_name TEXT,
-          ADD COLUMN IF NOT EXISTS last_status TEXT,
-          ADD COLUMN IF NOT EXISTS ingest_error JSONB,
-          ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ,
-          ADD COLUMN IF NOT EXISTS last_result_url TEXT,
-          ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ,
-          ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ
-    """))
-
-    conn.execute(sql_text("""
-        UPDATE bronze.submission_context
-           SET email              = COALESCE(email,              data->>'email'),
-               location           = COALESCE(location,           data->>'location'),
-               video_url          = COALESCE(video_url,          data->>'video_url'),
-               share_url          = COALESCE(share_url,          data->>'share_url'),
-               match_date         = COALESCE(match_date,         NULLIF(data->>'match_date','')::date),
-               start_time         = COALESCE(start_time,         data->>'start_time'),
-               player_a_name      = COALESCE(player_a_name,      data->>'player_a_name'),
-               player_b_name      = COALESCE(player_b_name,      data->>'player_b_name'),
-               player_a_utr       = COALESCE(player_a_utr,       data->>'player_a_utr'),
-               player_b_utr       = COALESCE(player_b_utr,       data->>'player_b_utr'),
-               customer_name      = COALESCE(customer_name,      data->>'customer_name'),
-               last_status        = COALESCE(last_status,        data->>'last_status'),
-               ingest_error       = COALESCE(ingest_error,       data->'ingest_error'),
-               last_status_at     = COALESCE(last_status_at,     NULLIF(data->>'last_status_at','')::timestamptz),
-               last_result_url    = COALESCE(last_result_url,    data->>'last_result_url'),
-               ingest_started_at  = COALESCE(ingest_started_at,  NULLIF(data->>'ingest_started_at','')::timestamptz),
-               ingest_finished_at = COALESCE(ingest_finished_at, NULLIF(data->>'ingest_finished_at','')::timestamptz)
-         WHERE task_id = :tid AND data IS NOT NULL
-    """), {"tid": task_id})
-
-    conn.execute(sql_text("""
-    UPDATE bronze.submission_context AS s
-       SET data = NULLIF(
-             (
-                 jsonb_strip_nulls(COALESCE(s.data, '{}'::jsonb))
-                 - 'email' - 'task_id' - 'location' - 'raw_meta' - 'share_url' - 'video_url'
-                 - 'created_at' - 'match_date' - 'session_id' - 'start_time'
-                 - 'player_a_utr' - 'player_b_utr' - 'customer_name'
-                 - 'player_a_name' - 'player_b_name'
-                 - 'last_status' - 'ingest_error' - 'last_status_at'
-                 - 'last_result_url' - 'ingest_started_at' - 'ingest_finished_at'
-             ),
-             '{}'::jsonb
-         )
-     WHERE s.task_id = :tid
-    """), {"tid": task_id})
+    # NOTE: submission_context is now owned by upload_app in bronze.submission_context.
+    # We intentionally do not touch it here anymore.
 
 # --------------- core ingest ---------------
 def ingest_bronze_strict(
@@ -765,7 +647,7 @@ def ingest_bronze_strict(
     if replace:
         for t in ["player","player_swing","rally","ball_position","ball_bounce",
                   "unmatched_field","debug_event","player_position","session_confidences",
-                  "thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
+                  "thumbnail","highlight","team_session","bounce_heatmap"]:
             conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id=:tid"), {"tid": task_id})
 
     _persist_raw(conn, task_id, payload)
@@ -803,24 +685,20 @@ def ingest_bronze_strict(
         player_positions_flat = player_positions_raw
 
     counts = {}
-    counts["player"]            = _insert_players(conn, task_id, players)
-    counts["player_swing"]      = _insert_player_swings(conn, task_id, swing_rows)
-    counts["rally"]             = _insert_rallies(conn, task_id, payload)
-    counts["ball_position"]     = _insert_ball_positions(conn, task_id, ball_positions)
-    counts["ball_bounce"]       = _insert_ball_bounces(conn, task_id, ball_bounces)
-    counts["player_position"]   = _insert_player_positions(conn, task_id, player_positions_flat)
-    counts["debug_event"]       = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
-    counts["unmatched_field"]   = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
+    counts["player"]             = _insert_players(conn, task_id, players)
+    counts["player_swing"]       = _insert_player_swings(conn, task_id, swing_rows)
+    counts["rally"]              = _insert_rallies(conn, task_id, payload)
+    counts["ball_position"]      = _insert_ball_positions(conn, task_id, ball_positions)
+    counts["ball_bounce"]        = _insert_ball_bounces(conn, task_id, ball_bounces)
+    counts["player_position"]    = _insert_player_positions(conn, task_id, player_positions_flat)
+    counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
+    counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
     counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
-    counts["thumbnail"]         = _upsert_single(conn, "thumbnail", task_id, thumbnails)
-    counts["highlight"]         = _upsert_single(conn, "highlight", task_id, highlights)
-    counts["team_session"]      = _upsert_single(conn, "team_session", task_id, team_sessions)
-    counts["bounce_heatmap"]    = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
-
-    try:
-        counts["submission_context"] = _upsert_submission_context_from_public(conn, task_id)
-    except Exception:
-        counts["submission_context"] = 0
+    counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
+    counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
+    counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
+    counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
+    counts["submission_context"] = 0  # owned by upload_app, not touched here
 
     _post_ingest_transforms(conn, task_id)
 
