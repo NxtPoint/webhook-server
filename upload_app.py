@@ -129,36 +129,36 @@ def _ensure_submission_context_schema(conn):
         CREATE TABLE IF NOT EXISTS bronze.submission_context (
           task_id         TEXT PRIMARY KEY,
           created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-          email           TEXT,
-          customer_name   TEXT,
-          match_date      DATE,
-          start_time      TEXT,
-          location        TEXT,
-          player_a_name   TEXT,
-          player_b_name   TEXT,
-          player_a_utr    TEXT,
-          player_b_utr    TEXT,
-          video_url       TEXT,
-          share_url       TEXT,
-          raw_meta        JSONB,
-          session_id      BIGINT,
-          last_status     TEXT,
-          last_status_at  TIMESTAMPTZ,
-          last_result_url TEXT,
-          ingest_started_at  TIMESTAMPTZ,
-          ingest_finished_at TIMESTAMPTZ,
-          ingest_error       TEXT
+          -- keep the original meta blob
+          data            JSONB
         );
     """))
     for ddl in (
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS email TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS customer_name TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_date DATE",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS start_time TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS location TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_name TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_name TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_utr TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_utr TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS video_url TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS share_url TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS raw_meta JSONB",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_result_url TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error TEXT"
     ):
         conn.execute(sql_text(ddl))
 
+
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
-    if not engine: return
+    if not engine:
+        return
     m = meta or {}
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -166,11 +166,11 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
             INSERT INTO bronze.submission_context (
               task_id, email, customer_name, match_date, start_time, location,
               player_a_name, player_b_name, player_a_utr, player_b_utr,
-              video_url, share_url, raw_meta
+              video_url, share_url, raw_meta, data
             ) VALUES (
               :task_id, :email, :customer_name, :match_date, :start_time, :location,
               :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
-              :video_url, :share_url, :raw_meta
+              :video_url, :share_url, CAST(:raw_meta AS JSONB), CAST(:data AS JSONB)
             )
             ON CONFLICT (task_id) DO UPDATE SET
               email=EXCLUDED.email,
@@ -184,7 +184,8 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
               player_b_utr=EXCLUDED.player_b_utr,
               video_url=EXCLUDED.video_url,
               share_url=EXCLUDED.share_url,
-              raw_meta=EXCLUDED.raw_meta
+              raw_meta=EXCLUDED.raw_meta,
+              data=EXCLUDED.data
         """), {
             "task_id": task_id,
             "email": email,
@@ -199,6 +200,7 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
             "video_url": video_url,
             "share_url": share_url,
             "raw_meta": json.dumps(m),
+            "data": json.dumps(m),
         })
 
 def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
@@ -209,6 +211,7 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
                last_result_url = :r
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
+
 
 # -------------------------------------------------------
 # SportAI HTTP
@@ -646,39 +649,47 @@ def api_task_status():
 
     try:
         out = _sportai_status(tid)
-        status = (out.get("status") or "").lower()
+
+        status     = (out.get("status") or "").lower()
         result_url = out.get("result_url")
-        terminal = bool(out.get("terminal"))
+        terminal   = bool(out.get("terminal"))
+
+        # Normalize: if a result_url exists, treat as completed and show 100%
+        if result_url and status != "completed":
+            status = "completed"
+            out["status"] = "completed"
+            out["progress"] = 100
+            out["progress_pct"] = 100
+            terminal = True
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, status, result_url)
+
             sc = conn.execute(sql_text("""
-                SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
-                  FROM bronze.submission_context
-                 WHERE task_id = :t
-                 LIMIT 1
+                SELECT ingest_started_at, ingest_finished_at, ingest_error
+                FROM bronze.submission_context
+                WHERE task_id = :t
+                LIMIT 1
             """), {"t": tid}).mappings().first() or {}
 
-        auto_ingested = False
-        auto_ingest_error = sc.get("ingest_error")
-        session_id = sc.get("session_id")
-        ingest_started   = sc.get("ingest_started_at") is not None
-        ingest_finished  = sc.get("ingest_finished_at") is not None
-        ingest_running   = ingest_started and not ingest_finished
+        # Derive ingest state (no session_id anywhere)
+        ingest_error    = sc.get("ingest_error")
+        ingest_started  = sc.get("ingest_started_at")  is not None
+        ingest_finished = sc.get("ingest_finished_at") is not None
+        ingest_running  = ingest_started and not ingest_finished
+        auto_ingested   = bool(ingest_finished and not ingest_error)
 
-        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
+        # Optional background ingest – only if you’ve enabled it AND not already finished/running
+        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and (not ingest_running) and (not ingest_finished):
             started = _start_ingest_background(tid, result_url)
             ingest_started = ingest_started or started
 
-        if session_id and ingest_finished and not auto_ingest_error:
-            auto_ingested = True
-
         return jsonify({
-            "ok": True, **out,
-            "session_id": session_id,
+            "ok": True,
+            **out,                         # includes status/progress/result_url/etc
             "auto_ingested": auto_ingested,
-            "auto_ingest_error": auto_ingest_error,
+            "auto_ingest_error": ingest_error,
             "ingest_started": ingest_started,
             "ingest_running": ingest_running,
             "ingest_finished": ingest_finished
