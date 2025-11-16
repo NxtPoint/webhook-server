@@ -1,8 +1,8 @@
-﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only, hardened)
+﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only)
 # - Keeps: S3 upload, SportAI submit/status/cancel, presign, check-video
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
-# - Mirrors public.submission_context → bronze.submission_context keyed by task_id (no behavior change)
-# - HARDENING: move all DDL to AUTOCOMMIT, never run DDL inside transactions; avoid poisoned pool
+# - Mirrors/records submission meta in bronze.submission_context (not public)
+# - Hardened: bronze.* qualified, idempotent DDL, safe CORS, result/status normalization
 
 import os, json, time, socket, sys, inspect, hashlib, re, threading
 from datetime import datetime, timezone
@@ -13,16 +13,34 @@ from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
 
-# ---- boto3 is REQUIRED ----
+# ---- boto3 is REQUIRED (fail fast if missing) ----
 try:
     import boto3
 except Exception as e:
     raise RuntimeError("boto3 is required. Add it to requirements.txt and redeploy.") from e
 
+# -------------------------------------------------------
+# Flask app
+# -------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.url_map.strict_slashes = False
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 1024 * 1024  # 150MB default
 
+@app.get("/ops/code-hash")
+def ops_code_hash():
+    try:
+        with open(__file__, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()[:16]
+        src = inspect.getsource(sys.modules[__name__])
+        idx = src.find("@app.route(\"/upload\", methods=[\"POST\", \"OPTIONS\"])")
+        snippet = src[max(0, idx-80): idx+200] if idx != -1 else "alias not found in source"
+        return jsonify({"ok": True, "file": __file__, "sha256_16": sha, "snippet": snippet})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# -------------------------------------------------------
+# Env / config
+# -------------------------------------------------------
 OPS_KEY = os.getenv("OPS_KEY", "").strip()
 
 # ---------- SportAI config ----------
@@ -33,6 +51,7 @@ SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
 SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
 SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
 
+# Auto-ingest once completed
 AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "1").lower() in ("1","true","yes","y")
 DEFAULT_REPLACE_ON_INGEST = (
     os.getenv("INGEST_REPLACE_EXISTING")
@@ -43,6 +62,7 @@ DEFAULT_REPLACE_ON_INGEST = (
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
 
+# Try both public hostnames / path variants for resilience
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
     "https://api.sportai.com",
@@ -60,17 +80,10 @@ SPORTAI_STATUS_PATHS = list(dict.fromkeys([
 
 # ---------- DB engine / bronze ingest ----------
 from db_init import engine  # noqa: E402
-from ingest_bronze import ingest_bronze_strict_blueprint as ingest_bronze, _run_bronze_init_autocommit  # noqa: E402
+from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
 
-# Ensure bronze schema/DDL at startup (AUTOCOMMIT; safe no-op after first run)
-try:
-    _run_bronze_init_autocommit()
-    print("upload_app: bronze init (autocommit) ok")
-except Exception as e:
-    print("upload_app: bronze init failed (non-fatal):", e)
-
-# ---------- S3 config ----------
+# ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
 S3_BUCKET  = os.getenv("S3_BUCKET", "").strip() or None
 S3_PREFIX  = (os.getenv("S3_PREFIX", "incoming") or "incoming").strip().strip("/")
@@ -109,62 +122,48 @@ def _sql_exec_to_json(q: str):
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
 
-# ---------- Public submission_context (DDL hardened) ----------
-def _ensure_public_submission_context_autocommit():
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as ddl:
-        ddl.execute(sql_text("""
-            CREATE TABLE IF NOT EXISTS submission_context (
-              task_id         TEXT PRIMARY KEY,
-              created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-              email           TEXT,
-              customer_name   TEXT,
-              match_date      DATE,
-              start_time      TEXT,
-              location        TEXT,
-              player_a_name   TEXT,
-              player_b_name   TEXT,
-              player_a_utr    TEXT,
-              player_b_utr    TEXT,
-              video_url       TEXT,
-              share_url       TEXT,
-              raw_meta        JSONB,
-              session_id      BIGINT,
-              last_status     TEXT,
-              last_status_at  TIMESTAMPTZ,
-              last_result_url TEXT,
-              ingest_started_at  TIMESTAMPTZ,
-              ingest_finished_at TIMESTAMPTZ,
-              ingest_error       TEXT
-            )
-        """))
-        for ddl_sql in (
-            "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ",
-            "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
-            "ALTER TABLE submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT",
-        ):
-            ddl.execute(sql_text(ddl_sql))
-
-# Call once at startup (safe/no-op)
-try:
-    _ensure_public_submission_context_autocommit()
-    print("upload_app: public.submission_context init ok")
-except Exception as e:
-    print("upload_app: public.submission_context init failed (non-fatal):", e)
-
-def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
+# ---------- submission_context (BRONZE) ----------
+def _ensure_submission_context_schema(conn):
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze"))
     conn.execute(sql_text("""
-        UPDATE submission_context
-           SET last_status     = :s,
-               last_status_at  = now(),
-               last_result_url = :r
-         WHERE task_id = :t
-    """), {"t": task_id, "s": status, "r": result_url})
+        CREATE TABLE IF NOT EXISTS bronze.submission_context (
+          task_id         TEXT PRIMARY KEY,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email           TEXT,
+          customer_name   TEXT,
+          match_date      DATE,
+          start_time      TEXT,
+          location        TEXT,
+          player_a_name   TEXT,
+          player_b_name   TEXT,
+          player_a_utr    TEXT,
+          player_b_utr    TEXT,
+          video_url       TEXT,
+          share_url       TEXT,
+          raw_meta        JSONB,
+          session_id      BIGINT,
+          last_status     TEXT,
+          last_status_at  TIMESTAMPTZ,
+          last_result_url TEXT,
+          ingest_started_at  TIMESTAMPTZ,
+          ingest_finished_at TIMESTAMPTZ,
+          ingest_error       TEXT
+        );
+    """))
+    for ddl in (
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT",
+    ):
+        conn.execute(sql_text(ddl))
 
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
+    if not engine: return
     m = meta or {}
     with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
         conn.execute(sql_text("""
-            INSERT INTO submission_context (
+            INSERT INTO bronze.submission_context (
               task_id, email, customer_name, match_date, start_time, location,
               player_a_name, player_b_name, player_a_utr, player_b_utr,
               video_url, share_url, raw_meta
@@ -201,6 +200,15 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
             "share_url": share_url,
             "raw_meta": json.dumps(m),
         })
+
+def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
+    conn.execute(sql_text("""
+        UPDATE bronze.submission_context
+           SET last_status     = :s,
+               last_status_at  = now(),
+               last_result_url = :r
+         WHERE task_id = :t
+    """), {"t": task_id, "s": status, "r": result_url})
 
 # -------------------------------------------------------
 # SportAI HTTP
@@ -271,6 +279,7 @@ def _sportai_status(task_id: str) -> dict:
     if not status and "still being processed" in msg:
         status = "processing"
 
+    # normalize progress
     prog = d.get("task_progress") or d.get("progress") or d.get("total_subtask_progress")
     try:
         if prog is None:
@@ -285,7 +294,7 @@ def _sportai_status(task_id: str) -> dict:
         progress_pct = None
 
     result_url = d.get("result_url") or j.get("result_url")
-    terminal = status.lower() in ("completed","done","success","succeeded","failed","canceled")
+    terminal = (status or "").lower() in ("completed","done","success","succeeded","failed","canceled")
     if result_url and not terminal:
         status = "completed"; terminal = True
     if terminal and (progress_pct is None or progress_pct < 100):
@@ -346,8 +355,7 @@ def _sportai_cancel(task_id: str) -> dict:
 # S3 helpers
 # -------------------------------------------------------
 def _s3_client():
-    if not (AWS_REGION and S3_BUCKET):
-        raise RuntimeError("S3 is required: set AWS_REGION and S3_BUCKET")
+    _require_s3()
     return boto3.client("s3", region_name=AWS_REGION)
 
 def _s3_put_fileobj(fobj, key: str, content_type: str | None = None) -> dict:
@@ -369,68 +377,86 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
     )
 
 # -------------------------------------------------------
-# Import after app init (routes from bronze)
-# -------------------------------------------------------
-from ingest_bronze import ingest_bronze_strict  # noqa: E402
-
-# -------------------------------------------------------
-# Ingest worker (task_id-only) — DDL never inside transactions
+# Ingest worker (task_id-only)
 # -------------------------------------------------------
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """Return True if we started a worker; False if already done/running."""
     with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
         row = conn.execute(sql_text("""
             SELECT session_id, ingest_started_at, ingest_finished_at
-              FROM submission_context
+              FROM bronze.submission_context
              WHERE task_id = :t
              LIMIT 1
         """), {"t": task_id}).mappings().first()
 
         if row and row.get("session_id"):
-            return False
+            return False  # already done
         if row and row.get("ingest_started_at") and not row.get("ingest_finished_at"):
-            return False
+            return False  # already running
 
         conn.execute(sql_text("""
-            UPDATE submission_context
+            UPDATE bronze.submission_context
                SET ingest_started_at = now(),
                    ingest_error = NULL
              WHERE task_id = :t
         """), {"t": task_id})
 
-    def _worker():
-        try:
-            r = requests.get(result_url, timeout=600)
-            r.raise_for_status()
-            payload = r.json()
-            with engine.begin() as conn:
-                # IMPORTANT: DDL already done at startup; no schema changes here
-                res = ingest_bronze_strict(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url, task_id=task_id)
-                sid = res.get("session_id")  # may be None if not set by ingest path
-                conn.execute(sql_text("""
-                    UPDATE submission_context
-                       SET session_id        = COALESCE(:sid, session_id),
-                           ingest_finished_at= now(),
-                           ingest_error      = NULL,
-                           last_result_url   = :url,
-                           last_status       = 'completed',
-                           last_status_at    = now()
-                     WHERE task_id = :t
-                """), {"sid": sid, "t": task_id, "url": result_url})
-        except Exception as e:
-            with engine.begin() as conn:
-                conn.execute(sql_text("""
-                    UPDATE submission_context
-                       SET ingest_error = :err,
-                           ingest_finished_at = now()
-                     WHERE task_id = :t
-                """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
-
-    threading.Thread(target=_worker, daemon=True).start()
+    th = threading.Thread(target=_do_ingest, args=(task_id, result_url), daemon=True)
+    th.start()
     return True
 
+def _do_ingest(task_id: str, result_url: str) -> bool:
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_started_at = COALESCE(ingest_started_at, now()),
+                       ingest_error = NULL
+                 WHERE task_id = :t
+            """), {"t": task_id})
+
+        r = requests.get(result_url, timeout=600)
+        r.raise_for_status()
+        payload = r.json()
+
+        with engine.begin() as conn:
+            _run_bronze_init(conn)  # ensure bronze schema/tables exist
+            res = ingest_bronze_strict(
+                conn,
+                payload,
+                replace=DEFAULT_REPLACE_ON_INGEST,
+                src_hint=result_url,
+                task_id=task_id,
+            )
+            sid = res.get("session_id")
+
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET session_id        = :sid,
+                       ingest_finished_at= now(),
+                       ingest_error      = NULL,
+                       last_result_url   = :url,
+                       last_status       = 'completed',
+                       last_status_at    = now()
+                 WHERE task_id = :t
+            """), {"sid": sid, "t": task_id, "url": result_url})
+
+        return True
+
+    except Exception as e:
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_error = :err,
+                       ingest_finished_at = now()
+                 WHERE task_id = :t
+            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+        return False
+
 # -------------------------------------------------------
-# Routes
+# Public endpoints (uploads + status + ops)
 # -------------------------------------------------------
 @app.get("/")
 def root_ok(): return jsonify({"service": "NextPoint Upload/Ingester v3 (S3-only)", "ok": True})
@@ -479,7 +505,7 @@ def ops_env():
         "S3_PREFIX": S3_PREFIX,
     })
 
-# ---------- Presign ----------
+# ---------- Presign (optional) ----------
 @app.post("/upload/api/s3-presign")
 def api_s3_presign():
     _require_s3()
@@ -520,8 +546,10 @@ def api_check_video():
         if not f or not f.filename: return jsonify({"ok": False, "error": "No file provided."}), 400
         clean = secure_filename(f.filename); ts = int(time.time())
         key = f"{S3_PREFIX}/{ts}_{clean}"
-        try: f.stream.seek(0)
-        except Exception: pass
+        try:
+            f.stream.seek(0)
+        except Exception:
+            pass
         _ = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
         chk = _sportai_check(video_url)
@@ -536,6 +564,7 @@ def api_cancel_task():
     try:
         out = _sportai_cancel(str(tid))
         with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, "canceled", None)
         return jsonify({"ok": True, "data": out})
     except Exception as e:
@@ -559,6 +588,7 @@ def api_upload_to_s3():
     if request.method == "OPTIONS": return ("", 204)
     _require_s3()
 
+    # JSON path: already have video_url (e.g., after presign upload)
     if request.is_json:
         body = request.get_json(silent=True) or {}
         video_url = (body.get("video_url") or body.get("share_url") or "").strip()
@@ -569,25 +599,30 @@ def api_upload_to_s3():
                 task_id = _sportai_submit(video_url, email=email, meta=meta)
                 _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
                 with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
                     _set_status_cache(conn, task_id, "queued", None)
                 return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
             except Exception as e:
                 return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
+    # Multipart path: browser → server → S3 (fallback)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
     if not f or not f.filename: return jsonify({"ok": False, "error": "No file provided."}), 400
 
     clean = secure_filename(f.filename); ts = int(time.time()); key = f"{S3_PREFIX}/{ts}_{clean}"
     try:
-        try: f.stream.seek(0)
-        except Exception: pass
+        try:
+            f.stream.seek(0)
+        except Exception:
+            pass
         meta_up = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
         meta = _extract_meta_from_form(request.form)
         task_id = _sportai_submit(video_url, email=email, meta=meta)
         _store_submission_context(task_id, email, meta, video_url, share_url=video_url)
         with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
             _set_status_cache(conn, task_id, "queued", None)
         return jsonify({
             "ok": True, "task_id": task_id, "share_url": video_url, "video_url": video_url,
@@ -602,7 +637,7 @@ def upload_alias():
     if request.method == "OPTIONS": return ("", 204)
     return api_upload_to_s3()
 
-# ---------- Task poll (normalized progress + optional auto-ingest) ----------
+# ---------- Task poll (normalized progress + auto-ingest) ----------
 @app.get("/upload/api/task-status")
 def api_task_status():
     tid = request.args.get("task_id")
@@ -616,10 +651,11 @@ def api_task_status():
         terminal = bool(out.get("terminal"))
 
         with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, status, result_url)
             sc = conn.execute(sql_text("""
                 SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
-                  FROM submission_context
+                  FROM bronze.submission_context
                  WHERE task_id = :t
                  LIMIT 1
             """), {"t": tid}).mappings().first() or {}
@@ -632,8 +668,8 @@ def api_task_status():
         ingest_running   = ingest_started and not ingest_finished
 
         if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
-            _ = _start_ingest_background(tid, result_url)
-            ingest_started = True
+            started = _start_ingest_background(tid, result_url)
+            ingest_started = ingest_started or started
 
         if session_id and ingest_finished and not auto_ingest_error:
             auto_ingested = True
@@ -649,7 +685,6 @@ def api_task_status():
         })
 
     except Exception as e:
-        # Never break the poller
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
 
 # ---------- Manual ingest helper (task_id-only) ----------
@@ -669,19 +704,24 @@ def ops_ingest_task():
         payload = r.json()
 
         with engine.begin() as conn:
-            # DDL already done at startup; here we just ingest
-            res = ingest_bronze_strict(conn, payload, replace=DEFAULT_REPLACE_ON_INGEST, src_hint=result_url, task_id=tid)
-            sid = res.get("session_id")
-
+            _run_bronze_init(conn)
+            out = ingest_bronze_strict(
+                conn,
+                payload,
+                replace=DEFAULT_REPLACE_ON_INGEST,
+                src_hint=result_url,
+                task_id=tid,
+            )
+            sid = out.get("session_id")
             conn.execute(sql_text(
-                "UPDATE submission_context SET session_id=COALESCE(:sid, session_id) WHERE task_id=:t"
+                "UPDATE bronze.submission_context SET session_id=:sid WHERE task_id=:t"
             ), {"sid": sid, "t": tid})
 
         return jsonify({"ok": True, "task_id": tid, "session_id": sid})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
-# ---------- SQL helpers (SELECT-only) ----------
+# ---------- SQL helpers for quick inspection ----------
 @app.post("/ops/sqlx")
 def ops_sql_json():
     if not _guard(): return Response("Forbidden", 403)

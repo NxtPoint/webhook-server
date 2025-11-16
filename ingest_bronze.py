@@ -1,15 +1,19 @@
-# ingest_bronze.py — task_id-only bronze ingest (hardened, Nov 2025)
+# ingest_bronze.py — task_id-only bronze ingest (final, Nov 2025)
 # Flow:
 #   1) /bronze/ingest-from-url: fetch SportAI JSON, persist RAW (jsonb or gzip), then fan out to bronze towers
 #   2) /bronze/ingest-json: same but payload posted directly
-#   3) /bronze/reingest-from-raw (alias: /bronze/reingest-by-task-id): reload last RAW snapshot by task_id
+#   3) /bronze/reingest-from-raw: reload last RAW snapshot by task_id
 #
 # Contract:
 #   - schema: bronze
 #   - arrays: player, player_swing, rally, ball_position, ball_bounce, player_position, unmatched_field, debug_event
 #   - singletons: session_confidences, thumbnail, highlight, team_session, bounce_heatmap, submission_context
-#   - each array row has (id, task_id, data, created_at); most tables also have typed columns populated at INSERT time
+#   - each array row has (id, task_id, data, created_at)
 #   - data column holds leftover/unmapped keys ONLY; NULL if nothing left
+# Hardened:
+#   - Idempotent DDL (including raw_result new cols + chunk table)
+#   - Transaction-scoped advisory locks (auto-release)
+#   - Defensive JSON parsing & shape guards
 
 import os, json, gzip, hashlib, re
 from datetime import datetime, timezone
@@ -117,201 +121,172 @@ def _generated_cols(conn, table: str, cols: list[str]) -> set[str]:
         if r["column_name"] in target and (r.get("is_generated") or "").upper() == "ALWAYS"
     }
 
-# ------------------- AUTOCOMMIT DDL (HARDENED) -------------------
-def _run_bronze_init_autocommit():
-    """Run ALL schema/DDL in AUTOCOMMIT so user transactions never get poisoned."""
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as ddl:
-        ddl.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze"))
+# ---------------- init / DDL (idempotent) ----------------
+def _run_bronze_init_conn(conn):
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
 
-        # Raw snapshot store (with optional chunk table)
-        ddl.execute(sql_text("""
-            CREATE TABLE IF NOT EXISTS bronze.raw_result (
+    # raw snapshot store
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.raw_result (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            payload_json JSONB,
+            payload_gzip BYTEA,
+            payload_sha256 TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    # new columns used by code paths — safe, idempotent
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.raw_result
+          ADD COLUMN IF NOT EXISTS payload_len   INTEGER,
+          ADD COLUMN IF NOT EXISTS chunked       BOOLEAN NOT NULL DEFAULT FALSE,
+          ADD COLUMN IF NOT EXISTS chunk_count   INTEGER
+    """))
+    conn.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_result_task ON bronze.raw_result(task_id)"))
+
+    # chunk table for very large gzips
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.raw_result_chunk (
+            id BIGSERIAL PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            part_nr INTEGER NOT NULL,
+            data BYTEA NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+    conn.execute(sql_text("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_bronze_raw_chunk_task_part
+          ON bronze.raw_result_chunk(task_id, part_nr)
+    """))
+
+    # session registry
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS bronze.session (
+            task_id TEXT PRIMARY KEY,
+            session_uid TEXT,
+            meta JSONB,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+
+    # arrays
+    for t in ["player","player_swing","rally","ball_position","ball_bounce",
+              "unmatched_field","debug_event","player_position"]:
+        conn.execute(sql_text(f"""
+            CREATE TABLE IF NOT EXISTS bronze.{t} (
                 id BIGSERIAL PRIMARY KEY,
                 task_id TEXT NOT NULL,
-                payload_json JSONB,
-                payload_gzip BYTEA,
-                payload_sha256 TEXT,
-                payload_len INTEGER,
-                chunked BOOLEAN NOT NULL DEFAULT FALSE,
-                chunk_count INTEGER,
+                data JSONB,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
+            );
         """))
-        ddl.execute(sql_text("CREATE INDEX IF NOT EXISTS ix_bronze_raw_result_task ON bronze.raw_result(task_id)"))
-        ddl.execute(sql_text("""
-            CREATE TABLE IF NOT EXISTS bronze.raw_result_chunk (
-                id BIGSERIAL PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                part_nr INTEGER NOT NULL,
-                data BYTEA NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """))
-        ddl.execute(sql_text("CREATE UNIQUE INDEX IF NOT EXISTS ix_bronze_raw_chunk_task_part ON bronze.raw_result_chunk(task_id, part_nr)"))
+        conn.execute(sql_text(f"CREATE INDEX IF NOT EXISTS ix_bronze_{t}_task ON bronze.{t}(task_id)"))
 
-        # Session registry
-        ddl.execute(sql_text("""
-            CREATE TABLE IF NOT EXISTS bronze.session (
+    # singletons
+    for t in ["session_confidences","thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
+        conn.execute(sql_text(f"""
+            CREATE TABLE IF NOT EXISTS bronze.{t} (
                 task_id TEXT PRIMARY KEY,
-                session_uid TEXT,
-                meta JSONB,
+                data JSONB,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
+            );
         """))
 
-        # Arrays
-        for t in ["player","player_swing","rally","ball_position","ball_bounce",
-                  "unmatched_field","debug_event","player_position"]:
-            ddl.execute(sql_text(f"""
-                CREATE TABLE IF NOT EXISTS bronze.{t} (
-                    id BIGSERIAL PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    data JSONB,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """))
-            ddl.execute(sql_text(f"CREATE INDEX IF NOT EXISTS ix_bronze_{t}_task ON bronze.{t}(task_id)"))
+    # typed columns (idempotent) — keep DDL tiny; inserts will populate values
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.ball_position
+        ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS "timestamp" DOUBLE PRECISION
+    """))
 
-        # Singletons
-        for t in ["session_confidences","thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
-            ddl.execute(sql_text(f"""
-                CREATE TABLE IF NOT EXISTS bronze.{t} (
-                    task_id TEXT PRIMARY KEY,
-                    data JSONB,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """))
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.player_position
+          ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_y DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION
+    """))
 
-        # Typed columns (idempotent)
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.ball_position
-              ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS "timestamp" DOUBLE PRECISION
-        """))
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.player_position
-              ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS court_y DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION
-        """))
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.ball_bounce
-              ADD COLUMN IF NOT EXISTS type TEXT,
-              ADD COLUMN IF NOT EXISTS frame_nr INT,
-              ADD COLUMN IF NOT EXISTS player_id INT,
-              ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS court_pos JSONB,
-              ADD COLUMN IF NOT EXISTS image_pos JSONB
-        """))
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.player
-              ADD COLUMN IF NOT EXISTS player_id INT,
-              ADD COLUMN IF NOT EXISTS activity_score DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS covered_distance DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS fastest_sprint DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS fastest_sprint_timestamp DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS location_heatmap JSONB,
-              ADD COLUMN IF NOT EXISTS swing_count INT,
-              ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB
-        """))
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.player_swing
-              ADD COLUMN IF NOT EXISTS player_id INT,
-              ADD COLUMN IF NOT EXISTS valid BOOLEAN,
-              ADD COLUMN IF NOT EXISTS serve BOOLEAN,
-              ADD COLUMN IF NOT EXISTS swing_type TEXT,
-              ADD COLUMN IF NOT EXISTS volley BOOLEAN,
-              ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN,
-              ADD COLUMN IF NOT EXISTS start JSONB,
-              ADD COLUMN IF NOT EXISTS "end" JSONB,
-              ADD COLUMN IF NOT EXISTS ball_hit JSONB,
-              ADD COLUMN IF NOT EXISTS ball_hit_location JSONB,
-              ADD COLUMN IF NOT EXISTS ball_player_distance DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS ball_speed DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS ball_impact_location JSONB,
-              ADD COLUMN IF NOT EXISTS ball_impact_type TEXT,
-              ADD COLUMN IF NOT EXISTS ball_trajectory JSONB,
-              ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS confidence_swing_type DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS confidence_volley DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS intercepting_player_id INT,
-              ADD COLUMN IF NOT EXISTS rally JSONB,
-              ADD COLUMN IF NOT EXISTS annotations JSONB
-        """))
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.ball_bounce
+          ADD COLUMN IF NOT EXISTS type TEXT,
+          ADD COLUMN IF NOT EXISTS frame_nr INT,
+          ADD COLUMN IF NOT EXISTS player_id INT,
+          ADD COLUMN IF NOT EXISTS timestamp DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_pos JSONB,
+          ADD COLUMN IF NOT EXISTS image_pos JSONB
+    """))
 
-        # Rally (typed columns expected later by transforms)
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.rally
-              ADD COLUMN IF NOT EXISTS rally_id TEXT,
-              ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
-              ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION
-        """))
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.player
+          ADD COLUMN IF NOT EXISTS player_id INT,
+          ADD COLUMN IF NOT EXISTS activity_score DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS covered_distance DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS fastest_sprint DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS fastest_sprint_timestamp DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS location_heatmap JSONB,
+          ADD COLUMN IF NOT EXISTS swing_count INT,
+          ADD COLUMN IF NOT EXISTS swing_type_distribution JSONB
+    """))
 
-        # Submission context flattened columns (runtime/status)
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.submission_context
-              ADD COLUMN IF NOT EXISTS email TEXT,
-              ADD COLUMN IF NOT EXISTS location TEXT,
-              ADD COLUMN IF NOT EXISTS video_url TEXT,
-              ADD COLUMN IF NOT EXISTS share_url TEXT,
-              ADD COLUMN IF NOT EXISTS match_date DATE,
-              ADD COLUMN IF NOT EXISTS start_time TEXT,
-              ADD COLUMN IF NOT EXISTS player_a_name TEXT,
-              ADD COLUMN IF NOT EXISTS player_b_name TEXT,
-              ADD COLUMN IF NOT EXISTS player_a_utr TEXT,
-              ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
-              ADD COLUMN IF NOT EXISTS customer_name TEXT,
-              ADD COLUMN IF NOT EXISTS last_status TEXT,
-              ADD COLUMN IF NOT EXISTS ingest_error JSONB,
-              ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ,
-              ADD COLUMN IF NOT EXISTS last_result_url TEXT,
-              ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ,
-              ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ
-        """))
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.player_swing
+          ADD COLUMN IF NOT EXISTS player_id INT,
+          ADD COLUMN IF NOT EXISTS valid BOOLEAN,
+          ADD COLUMN IF NOT EXISTS serve BOOLEAN,
+          ADD COLUMN IF NOT EXISTS swing_type TEXT,
+          ADD COLUMN IF NOT EXISTS volley BOOLEAN,
+          ADD COLUMN IF NOT EXISTS is_in_rally BOOLEAN,
+          ADD COLUMN IF NOT EXISTS start JSONB,
+          ADD COLUMN IF NOT EXISTS "end" JSONB,
+          ADD COLUMN IF NOT EXISTS ball_hit JSONB,
+          ADD COLUMN IF NOT EXISTS ball_hit_location JSONB,
+          ADD COLUMN IF NOT EXISTS ball_player_distance DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_speed DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_impact_location JSONB,
+          ADD COLUMN IF NOT EXISTS ball_impact_type TEXT,
+          ADD COLUMN IF NOT EXISTS ball_trajectory JSONB,
+          ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS confidence_swing_type DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS confidence_volley DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS intercepting_player_id INT,
+          ADD COLUMN IF NOT EXISTS rally JSONB,
+          ADD COLUMN IF NOT EXISTS annotations JSONB
+    """))
 
-        # Generated scalars (keep JSON + scalar convenience)
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.ball_position
-              ADD COLUMN IF NOT EXISTS x_gen double precision
-                GENERATED ALWAYS AS (NULLIF(data->>'X','')::double precision) STORED,
-              ADD COLUMN IF NOT EXISTS y_gen double precision
-                GENERATED ALWAYS AS (NULLIF(data->>'Y','')::double precision) STORED,
-              ADD COLUMN IF NOT EXISTS timestamp_gen double precision
-                GENERATED ALWAYS AS (NULLIF(data->>'timestamp','')::double precision) STORED
-        """))
-        ddl.execute(sql_text("""
-            ALTER TABLE bronze.ball_bounce
-              ADD COLUMN IF NOT EXISTS court_x double precision
-                GENERATED ALWAYS AS ((court_pos->>0)::double precision) STORED,
-              ADD COLUMN IF NOT EXISTS court_y double precision
-                GENERATED ALWAYS AS ((court_pos->>1)::double precision) STORED,
-              ADD COLUMN IF NOT EXISTS image_x double precision
-                GENERATED ALWAYS AS ((image_pos->>0)::double precision) STORED,
-              ADD COLUMN IF NOT EXISTS image_y double precision
-                GENERATED ALWAYS AS ((image_pos->>1)::double precision) STORED
-        """))
+    # scalar generated columns
+    conn.execute(sql_text("""
+    ALTER TABLE bronze.ball_position
+      ADD COLUMN IF NOT EXISTS x double precision
+        GENERATED ALWAYS AS (NULLIF(data->>'X','')::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS y double precision
+        GENERATED ALWAYS AS (NULLIF(data->>'Y','')::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS "timestamp" double precision
+        GENERATED ALWAYS AS (NULLIF(data->>'timestamp','')::double precision) STORED;
+    """))
 
-# One-time init at import (safe no-op if already applied)
-try:
-    _run_bronze_init_autocommit()
-    print("bronze init (autocommit) ok")
-except Exception as e:
-    print("bronze init (autocommit) failed (non-fatal):", e)
+    conn.execute(sql_text("""
+    ALTER TABLE bronze.ball_bounce
+      ADD COLUMN IF NOT EXISTS court_x double precision
+        GENERATED ALWAYS AS ((court_pos->>0)::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS court_y double precision
+        GENERATED ALWAYS AS ((court_pos->>1)::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS image_x double precision
+        GENERATED ALWAYS AS ((image_pos->>0)::double precision) STORED,
+      ADD COLUMN IF NOT EXISTS image_y double precision
+        GENERATED ALWAYS AS ((image_pos->>1)::double precision) STORED;
+    """))
 
-# ---------------- advisory lock helpers (serialize per task_id) -----------
-# replace both helpers in ingest_bronze.py
-
-def _task_lock(conn, task_id: str):
-    # auto-released at end of the current transaction (commit or rollback)
-    conn.execute(sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:t, 42))"), {"t": task_id})
-
-def _task_unlock(conn, task_id: str):
-    # no-op with xact locks; keep for API symmetry
-    pass
+def _run_bronze_init(conn=None):
+    if conn is not None:
+        _run_bronze_init_conn(conn)
+    else:
+        with engine.begin() as c:
+            _run_bronze_init_conn(c)
+    return True
 
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
@@ -443,7 +418,8 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
     return len(rows)
 
 def _insert_ball_positions(conn, task_id: str, items: list) -> int:
-    if not items: return 0
+    if not items:
+        return 0
     rows = []
     drop = ["X", "Y", "timestamp"]
     for b in items:
@@ -468,7 +444,6 @@ def _insert_ball_positions(conn, task_id: str, items: list) -> int:
 def _insert_player_positions(conn, task_id: str, items: list) -> int:
     if not items:
         return 0
-
     target_cols = ["x", "y", "court_x", "court_y", "timestamp"]
     gen = _generated_cols(conn, "player_position", target_cols)
 
@@ -497,7 +472,8 @@ def _insert_player_positions(conn, task_id: str, items: list) -> int:
             "cy": it.get("court_Y"),
             "ts": it.get("timestamp"),
         })
-    if not rows: return 0
+    if not rows:
+        return 0
     conn.execute(sql_text("""
         INSERT INTO bronze.player_position (task_id, data, x, y, court_x, court_y, timestamp)
         VALUES (:tid, CAST(:j AS JSONB), :x, :y, :cx, :cy, :ts)
@@ -506,7 +482,6 @@ def _insert_player_positions(conn, task_id: str, items: list) -> int:
 
 def _insert_ball_bounces(conn, task_id: str, items: list) -> int:
     if not items: return 0
-
     target_cols = ["type","frame_nr","player_id","timestamp","court_pos","image_pos"]
     gen = _generated_cols(conn, "ball_bounce", target_cols)
 
@@ -579,20 +554,29 @@ def _upsert_single(conn, table: str, task_id: str, obj) -> int:
     return 1
 
 def _upsert_submission_context_from_public(conn, task_id: str) -> int:
-    row = conn.execute(sql_text("""
-        SELECT row_to_json(t) AS j
-        FROM public.submission_context t
-        WHERE task_id=:tid
-        LIMIT 1
-    """), {"tid": task_id}).scalar()
+    # Optional bridge if a public.submission_context exists; otherwise just skip.
+    try:
+        row = conn.execute(sql_text("""
+            SELECT row_to_json(t) AS j
+            FROM public.submission_context t
+            WHERE task_id=:tid
+            LIMIT 1
+        """), {"tid": task_id}).scalar()
+    except Exception:
+        row = None
     if not row:
         return 0
     d = row if isinstance(row, dict) else json.loads(row)
-    email = d.get("email"); location = d.get("location")
-    video_url = d.get("video_url"); share_url = d.get("share_url")
-    match_date = d.get("match_date"); start_time = d.get("start_time")
-    player_a_name = d.get("player_a_name"); player_b_name = d.get("player_b_name")
-    player_a_utr  = d.get("player_a_utr");  player_b_utr  = d.get("player_b_utr")
+    email = d.get("email")
+    location = d.get("location")
+    video_url = d.get("video_url")
+    share_url = d.get("share_url")
+    match_date = d.get("match_date")
+    start_time = d.get("start_time")
+    player_a_name = d.get("player_a_name")
+    player_b_name = d.get("player_b_name")
+    player_a_utr  = d.get("player_a_utr")
+    player_b_utr  = d.get("player_b_utr")
     customer_name = d.get("customer_name")
 
     conn.execute(sql_text("""
@@ -629,46 +613,62 @@ def _upsert_submission_context_from_public(conn, task_id: str) -> int:
     })
     return 1
 
+def _task_lock(conn, task_id: str):
+    # transaction-scoped advisory lock; auto-released on commit/rollback
+    conn.execute(sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:t, 42))"), {"t": task_id})
+
 def _post_ingest_transforms(conn, task_id: str):
-    # DML-only (no DDL here!) — rally flatten/strip
+    _task_lock(conn, task_id)
+
+    # rally columns add (idempotent)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.rally
+        ADD COLUMN IF NOT EXISTS rally_id TEXT,
+        ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS end_ts   DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS len_s    DOUBLE PRECISION
+    """))
+
+    # Top-level {id,start,end}
     conn.execute(sql_text("""
         UPDATE bronze.rally
         SET rally_id = COALESCE(rally_id, NULLIF(data->>'id','')),
             start_ts = COALESCE(start_ts, NULLIF(data->>'start','')::double precision),
             end_ts   = COALESCE(end_ts,   NULLIF(data->>'end','')::double precision)
-        WHERE task_id = :tid
-        AND data IS NOT NULL
-        AND (data ? 'start' OR data ? 'end' OR data ? 'id')
+        WHERE task_id = :tid AND data IS NOT NULL
+          AND (data ? 'start' OR data ? 'end' OR data ? 'id')
     """), {"tid": task_id})
 
+    # Wrapped object {value:{...}}
     conn.execute(sql_text("""
         UPDATE bronze.rally
         SET rally_id = COALESCE(rally_id, NULLIF(data->'value'->>'id','')),
             start_ts = COALESCE(start_ts, NULLIF(data->'value'->>'start','')::double precision),
             end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>'end','')::double precision)
-        WHERE task_id = :tid
-        AND data IS NOT NULL
-        AND jsonb_typeof(data->'value') = 'object'
+        WHERE task_id = :tid AND data IS NOT NULL
+          AND jsonb_typeof(data->'value') = 'object'
     """), {"tid": task_id})
 
+    # Wrapped array {value:[start,end,(id)]}
     conn.execute(sql_text("""
         UPDATE bronze.rally
         SET start_ts = COALESCE(start_ts, NULLIF(data->'value'->>0,'')::double precision),
             end_ts   = COALESCE(end_ts,   NULLIF(data->'value'->>1,'')::double precision),
             rally_id = COALESCE(rally_id, NULLIF(data->'value'->>2,''))
-        WHERE task_id = :tid
-        AND data IS NOT NULL
-        AND jsonb_typeof(data->'value') = 'array'
+        WHERE task_id = :tid AND data IS NOT NULL
+          AND jsonb_typeof(data->'value') = 'array'
     """), {"tid": task_id})
 
+    # Compute len_s
     conn.execute(sql_text("""
         UPDATE bronze.rally
         SET len_s = COALESCE(len_s,
-                    CASE WHEN start_ts IS NOT NULL AND end_ts IS NOT NULL
-                        THEN end_ts - start_ts END)
+                CASE WHEN start_ts IS NOT NULL AND end_ts IS NOT NULL
+                     THEN end_ts - start_ts END)
         WHERE task_id = :tid
     """), {"tid": task_id})
 
+    # Strip mapped keys
     conn.execute(sql_text("""
         UPDATE bronze.rally
         SET data = NULLIF(
@@ -685,7 +685,28 @@ def _post_ingest_transforms(conn, task_id: str):
         WHERE task_id = :tid
     """), {"tid": task_id})
 
-    # submission_context flatten & strip (DML only)
+    # submission_context flatten (idempotent cols, then update)
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.submission_context
+          ADD COLUMN IF NOT EXISTS email TEXT,
+          ADD COLUMN IF NOT EXISTS location TEXT,
+          ADD COLUMN IF NOT EXISTS video_url TEXT,
+          ADD COLUMN IF NOT EXISTS share_url TEXT,
+          ADD COLUMN IF NOT EXISTS match_date DATE,
+          ADD COLUMN IF NOT EXISTS start_time TEXT,
+          ADD COLUMN IF NOT EXISTS player_a_name TEXT,
+          ADD COLUMN IF NOT EXISTS player_b_name TEXT,
+          ADD COLUMN IF NOT EXISTS player_a_utr TEXT,
+          ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
+          ADD COLUMN IF NOT EXISTS customer_name TEXT,
+          ADD COLUMN IF NOT EXISTS last_status TEXT,
+          ADD COLUMN IF NOT EXISTS ingest_error JSONB,
+          ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS last_result_url TEXT,
+          ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ
+    """))
+
     conn.execute(sql_text("""
         UPDATE bronze.submission_context
            SET email              = COALESCE(email,              data->>'email'),
@@ -709,20 +730,20 @@ def _post_ingest_transforms(conn, task_id: str):
     """), {"tid": task_id})
 
     conn.execute(sql_text("""
-        UPDATE bronze.submission_context AS s
-           SET data = NULLIF(
-                 (
-                     jsonb_strip_nulls(COALESCE(s.data, '{}'::jsonb))
-                     - 'email' - 'task_id' - 'location' - 'raw_meta' - 'share_url' - 'video_url'
-                     - 'created_at' - 'match_date' - 'session_id' - 'start_time'
-                     - 'player_a_utr' - 'player_b_utr' - 'customer_name'
-                     - 'player_a_name' - 'player_b_name'
-                     - 'last_status' - 'ingest_error' - 'last_status_at'
-                     - 'last_result_url' - 'ingest_started_at' - 'ingest_finished_at'
-                 ),
-                 '{}'::jsonb
-             )
-         WHERE s.task_id = :tid
+    UPDATE bronze.submission_context AS s
+       SET data = NULLIF(
+             (
+                 jsonb_strip_nulls(COALESCE(s.data, '{}'::jsonb))
+                 - 'email' - 'task_id' - 'location' - 'raw_meta' - 'share_url' - 'video_url'
+                 - 'created_at' - 'match_date' - 'session_id' - 'start_time'
+                 - 'player_a_utr' - 'player_b_utr' - 'customer_name'
+                 - 'player_a_name' - 'player_b_name'
+                 - 'last_status' - 'ingest_error' - 'last_status_at'
+                 - 'last_result_url' - 'ingest_started_at' - 'ingest_finished_at'
+             ),
+             '{}'::jsonb
+         )
+     WHERE s.task_id = :tid
     """), {"tid": task_id})
 
 # --------------- core ingest ---------------
@@ -741,73 +762,73 @@ def ingest_bronze_strict(
     if not task_id:
         raise ValueError("task_id is required")
 
-    # Per-task advisory lock (serialize) — hardening only
-    _task_lock(conn, task_id)
+    if replace:
+        for t in ["player","player_swing","rally","ball_position","ball_bounce",
+                  "unmatched_field","debug_event","player_position","session_confidences",
+                  "thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
+            conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id=:tid"), {"tid": task_id})
+
+    _persist_raw(conn, task_id, payload)
+    _ensure_session(conn, task_id, payload)
+
+    players         = _as_list(payload.get("players"))
+    ball_positions  = _as_list(payload.get("ball_positions"))
+    ball_bounces    = _as_list(payload.get("ball_bounces"))
+    confidences     = payload.get("confidences")
+    thumbnails      = payload.get("thumbnails") or payload.get("thumbnail_crops")
+    highlights      = payload.get("highlights")
+    team_sessions   = payload.get("team_sessions")
+    bounce_heatmap  = payload.get("bounce_heatmap")
+    unmatched       = payload.get("unmatched") or payload.get("unmatched_fields")
+    debug_events    = payload.get("debug_events") or payload.get("events_debug")
+
+    swing_rows = []
+    for p in players:
+        if not isinstance(p, dict): continue
+        for k in ("swings","strokes","swing_events"):
+            for s in _as_list(p.get(k)):
+                if isinstance(s, dict): swing_rows.append(s)
+        stats = _as_dict(p.get("statistics") or p.get("stats"))
+        for k in ("swings","strokes","swing_events"):
+            for s in _as_list(stats.get(k)):
+                if isinstance(s, dict): swing_rows.append(s)
+
+    player_positions_raw = payload.get("player_positions")
+    player_positions_flat = []
+    if isinstance(player_positions_raw, dict):
+        for v in player_positions_raw.values():
+            if isinstance(v, list):
+                player_positions_flat.extend(v)
+    elif isinstance(player_positions_raw, list):
+        player_positions_flat = player_positions_raw
+
+    counts = {}
+    counts["player"]            = _insert_players(conn, task_id, players)
+    counts["player_swing"]      = _insert_player_swings(conn, task_id, swing_rows)
+    counts["rally"]             = _insert_rallies(conn, task_id, payload)
+    counts["ball_position"]     = _insert_ball_positions(conn, task_id, ball_positions)
+    counts["ball_bounce"]       = _insert_ball_bounces(conn, task_id, ball_bounces)
+    counts["player_position"]   = _insert_player_positions(conn, task_id, player_positions_flat)
+    counts["debug_event"]       = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
+    counts["unmatched_field"]   = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
+    counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
+    counts["thumbnail"]         = _upsert_single(conn, "thumbnail", task_id, thumbnails)
+    counts["highlight"]         = _upsert_single(conn, "highlight", task_id, highlights)
+    counts["team_session"]      = _upsert_single(conn, "team_session", task_id, team_sessions)
+    counts["bounce_heatmap"]    = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
+
     try:
-        if replace:
-            for t in ["player","player_swing","rally","ball_position","ball_bounce",
-                      "unmatched_field","debug_event","player_position","session_confidences",
-                      "thumbnail","highlight","team_session","bounce_heatmap","submission_context"]:
-                conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id=:tid"), {"tid": task_id})
+        counts["submission_context"] = _upsert_submission_context_from_public(conn, task_id)
+    except Exception:
+        counts["submission_context"] = 0
 
-        _persist_raw(conn, task_id, payload)
-        _ensure_session(conn, task_id, payload)
+    _post_ingest_transforms(conn, task_id)
 
-        players         = _as_list(payload.get("players"))
-        ball_positions  = _as_list(payload.get("ball_positions"))
-        ball_bounces    = _as_list(payload.get("ball_bounces"))
-        confidences     = payload.get("confidences")
-        thumbnails      = payload.get("thumbnails") or payload.get("thumbnail_crops")
-        highlights      = payload.get("highlights")
-        team_sessions   = payload.get("team_sessions")
-        bounce_heatmap  = payload.get("bounce_heatmap")
-        unmatched       = payload.get("unmatched") or payload.get("unmatched_fields")
-        debug_events    = payload.get("debug_events") or payload.get("events_debug")
-
-        swing_rows = []
-        for p in players:
-            if not isinstance(p, dict): continue
-            for k in ("swings","strokes","swing_events"):
-                for s in _as_list(p.get(k)):
-                    if isinstance(s, dict): swing_rows.append(s)
-            stats = _as_dict(p.get("statistics") or p.get("stats"))
-            for k in ("swings","strokes","swing_events"):
-                for s in _as_list(stats.get(k)):
-                    if isinstance(s, dict): swing_rows.append(s)
-
-        player_positions_raw = payload.get("player_positions")
-        player_positions_flat = []
-        if isinstance(player_positions_raw, dict):
-            for v in player_positions_raw.values():
-                if isinstance(v, list):
-                    player_positions_flat.extend(v)
-        elif isinstance(player_positions_raw, list):
-            player_positions_flat = player_positions_raw
-
-        counts = {}
-        counts["player"]             = _insert_players(conn, task_id, players)
-        counts["player_swing"]       = _insert_player_swings(conn, task_id, swing_rows)
-        counts["rally"]              = _insert_rallies(conn, task_id, payload)
-        counts["ball_position"]      = _insert_ball_positions(conn, task_id, ball_positions)
-        counts["ball_bounce"]        = _insert_ball_bounces(conn, task_id, ball_bounces)
-        counts["player_position"]    = _insert_player_positions(conn, task_id, player_positions_flat)
-        counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
-        counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
-        counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
-        counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
-        counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
-        counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)
-        counts["bounce_heatmap"]     = _upsert_single(conn, "bounce_heatmap", task_id, bounce_heatmap)
-
-        try:
-            counts["submission_context"] = _upsert_submission_context_from_public(conn, task_id)
-        except Exception:
-            counts["submission_context"] = 0
-
-        _post_ingest_transforms(conn, task_id)
-        return {"task_id": task_id, "counts": counts}
-    finally:
-        _task_unlock(conn, task_id)
+    # Optionally return session_uid
+    sid = conn.execute(sql_text("""
+        SELECT session_uid FROM bronze.session WHERE task_id=:tid LIMIT 1
+    """), {"tid": task_id}).scalar()
+    return {"task_id": task_id, "session_id": sid, "counts": counts}
 
 def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
     if not arr: return 0
@@ -824,7 +845,7 @@ def _insert_json_array(conn, table: str, task_id: str, arr) -> int:
 def http_bronze_init():
     if not _guard(): return _forbid()
     try:
-        _run_bronze_init_autocommit()
+        _run_bronze_init()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
@@ -838,6 +859,7 @@ def http_bronze_ingest_json():
         replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
         task_id = body.get("task_id")
         with engine.begin() as conn:
+            _run_bronze_init(conn)
             out = ingest_bronze_strict(conn, payload, task_id=task_id, replace=replace)
         return jsonify({"ok": True, **out})
     except Exception as e:
@@ -859,6 +881,7 @@ def http_bronze_ingest_from_url():
         if not task_id:
             task_id = _derive_task_id(payload, url)
         with engine.begin() as conn:
+            _run_bronze_init(conn)
             out = ingest_bronze_strict(conn, payload, task_id=task_id, replace=replace)
         return jsonify({"ok": True, **out})
     except Exception as e:
@@ -874,12 +897,14 @@ def http_bronze_reingest_from_raw():
     replace = str(body.get("replace") or "true").lower() in ("1","true","yes","y")
     try:
         with engine.begin() as conn:
+            _run_bronze_init(conn)
+
             row = conn.execute(sql_text("""
                 SELECT payload_json, payload_gzip
-                  FROM bronze.raw_result
-                 WHERE task_id=:tid
-              ORDER BY id DESC
-                 LIMIT 1
+                FROM bronze.raw_result
+                WHERE task_id=:tid
+                ORDER BY id DESC
+                LIMIT 1
             """), {"tid": task_id}).mappings().first()
 
             if not row:
@@ -901,6 +926,3 @@ def http_bronze_reingest_from_raw():
 @ingest_bronze.post("/bronze/reingest-by-task-id")
 def http_bronze_reingest_by_task_id():
     return http_bronze_reingest_from_raw()
-
-# Export blueprint symbol used by upload_app imports
-ingest_bronze_strict_blueprint = ingest_bronze
