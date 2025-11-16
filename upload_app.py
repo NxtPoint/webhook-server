@@ -81,6 +81,7 @@ SPORTAI_STATUS_PATHS = list(dict.fromkeys([
 # ---------- DB engine / bronze ingest ----------
 from db_init import engine  # noqa: E402
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
+from build_silver_point_detail import build_silver as build_silver_point_detail  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
 
 # ---------- S3 config (MANDATORY) ----------
@@ -432,7 +433,16 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 
             _mirror_submission_to_bronze_by_task(conn, task_id)
 
+        # --- NEW: auto-build Silver point_detail after Bronze succeeds ---
+        try:
+            # replace=True so reruns are idempotent if you re-trigger ingest
+            build_silver_point_detail(task_id=task_id, phase="all", replace=True)
+        except Exception as e:
+            # log but DO NOT fail Bronze ingest
+            app.logger.error("Silver build failed for task_id=%s: %s", task_id, e)
+
         return True
+
 
     except Exception as e:
         with engine.begin() as conn:
