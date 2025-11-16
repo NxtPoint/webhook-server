@@ -128,36 +128,41 @@ def _ensure_submission_context_schema(conn):
     conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.submission_context (
-          task_id         TEXT PRIMARY KEY,
-          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-          email           TEXT,
-          customer_name   TEXT,
-          match_date      DATE,
-          start_time      TEXT,
-          location        TEXT,
-          player_a_name   TEXT,
-          player_b_name   TEXT,
-          player_a_utr    TEXT,
-          player_b_utr    TEXT,
-          video_url       TEXT,
-          share_url       TEXT,
-          raw_meta        JSONB,
-          session_id      BIGINT,
-          last_status     TEXT,
-          last_status_at  TIMESTAMPTZ,
-          last_result_url TEXT,
+          task_id            TEXT PRIMARY KEY,
+          created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+          email              TEXT,
+          customer_name      TEXT,
+          match_date         DATE,
+          start_time         TEXT,
+          location           TEXT,
+          player_a_name      TEXT,
+          player_b_name      TEXT,
+          player_a_utr       TEXT,
+          player_b_utr       TEXT,
+          video_url          TEXT,
+          share_url          TEXT,
+          raw_meta           JSONB,
+          session_id         TEXT,
+          last_status        TEXT,
+          last_status_at     TIMESTAMPTZ,
+          last_result_url    TEXT,
           ingest_started_at  TIMESTAMPTZ,
           ingest_finished_at TIMESTAMPTZ,
           ingest_error       TEXT
         );
     """))
-    # idempotent new columns (kept for safety)
+    # keep these as no-ops if columns already exist (idempotent safety)
     for ddl in (
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at  TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_result_url TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error       TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id TEXT"
     ):
         conn.execute(sql_text(ddl))
+
 
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
     if not engine: return
