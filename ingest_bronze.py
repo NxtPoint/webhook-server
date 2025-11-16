@@ -303,11 +303,15 @@ except Exception as e:
     print("bronze init (autocommit) failed (non-fatal):", e)
 
 # ---------------- advisory lock helpers (serialize per task_id) -----------
+# replace both helpers in ingest_bronze.py
+
 def _task_lock(conn, task_id: str):
-    conn.execute(sql_text("SELECT pg_advisory_lock(hashtextextended(:t, 42))"), {"t": task_id})
+    # auto-released at end of the current transaction (commit or rollback)
+    conn.execute(sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:t, 42))"), {"t": task_id})
 
 def _task_unlock(conn, task_id: str):
-    conn.execute(sql_text("SELECT pg_advisory_unlock(hashtextextended(:t, 42))"), {"t": task_id})
+    # no-op with xact locks; keep for API symmetry
+    pass
 
 # --------------- raw persistence ---------------
 def _persist_raw(conn, task_id: str, payload: Dict[str, Any], size_threshold: int = 5_000_000):
