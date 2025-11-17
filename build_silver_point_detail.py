@@ -747,48 +747,85 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
-    exclude_d inside each point_number:
-      - point_number = 0 → TRUE
-      - gap > 5.0s → TRUE
-      - same player within 0.05s → TRUE
-      - else FALSE
+    Exclusions per spec:
+
+      1) Any swing events prior to the start of the first serve / point.
+      2) Any swing where the same player hits twice in a row in the point.
+      3) Any swing with a gap > 5 seconds from the previous swing in the point.
+      4) Any swing events before the first serve and after the last serve within the point.
+
+    Implemented inside each (task_id, point_number).
     """
     sql = f"""
-    WITH ordered AS (
+    WITH base AS (
       SELECT
-        p.id, p.task_id, p.point_number, p.player_id, p.ball_hit_s, p.valid
+        p.id,
+        p.task_id,
+        p.point_number,
+        p.player_id,
+        p.ball_hit_s,
+        p.serve_d
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
-    WHEN g.serve_d IS FALSE
-        AND g.point_number > 0
-        AND NOT EXISTS (
-              SELECT 1 FROM silver.point_detail z
-              WHERE z.task_id = g.task_id
-                AND z.point_number = g.point_number
-                AND z.serve_d = TRUE
-                AND z.ball_hit_s < g.ball_hit_s
-        )
-    THEN TRUE
-    gaps AS (
+
+    point_serves AS (
       SELECT
-        o.*,
-        LAG(o.ball_hit_s) OVER (PARTITION BY o.task_id, o.point_number ORDER BY o.ball_hit_s) AS prev_s,
-        LAG(o.player_id)  OVER (PARTITION BY o.task_id, o.point_number ORDER BY o.ball_hit_s) AS prev_pid
-      FROM ordered o
+        b.task_id,
+        b.point_number,
+        MIN(CASE WHEN COALESCE(b.serve_d, FALSE) THEN b.ball_hit_s END) AS first_serve_s,
+        MAX(CASE WHEN COALESCE(b.serve_d, FALSE) THEN b.ball_hit_s END) AS last_serve_s
+      FROM base b
+      GROUP BY b.task_id, b.point_number
     ),
+
+    ordered AS (
+      SELECT
+        b.*,
+        ps.first_serve_s,
+        ps.last_serve_s,
+        LAG(b.ball_hit_s) OVER (
+          PARTITION BY b.task_id, b.point_number
+          ORDER BY b.ball_hit_s, b.id
+        ) AS prev_s,
+        LAG(b.player_id) OVER (
+          PARTITION BY b.task_id, b.point_number
+          ORDER BY b.ball_hit_s, b.id
+        ) AS prev_pid
+      FROM base b
+      LEFT JOIN point_serves ps
+        ON ps.task_id = b.task_id
+       AND ps.point_number = b.point_number
+    ),
+
     excl AS (
       SELECT
-        g.id,
+        o.id,
         CASE
-          WHEN COALESCE(g.point_number,0) = 0 THEN TRUE
-          WHEN g.prev_s IS NULL THEN FALSE
-          WHEN (g.ball_hit_s - g.prev_s) > 5.0 THEN TRUE
-          WHEN (g.player_id = g.prev_pid) AND (g.ball_hit_s - g.prev_s) < 0.05 THEN TRUE
+          -- Rule 1: point_number = 0 (pre-point noise)
+          WHEN COALESCE(o.point_number, 0) = 0 THEN TRUE
+
+          -- Rule 2 + 4: before first serve in point
+          WHEN o.first_serve_s IS NOT NULL
+               AND o.ball_hit_s < o.first_serve_s THEN TRUE
+
+          -- Rule 4: after last serve in point
+          WHEN o.last_serve_s IS NOT NULL
+               AND o.ball_hit_s > o.last_serve_s THEN TRUE
+
+          -- Rule 3: gap > 5s from previous swing in same point
+          WHEN o.prev_s IS NOT NULL
+               AND (o.ball_hit_s - o.prev_s) > 5.0 THEN TRUE
+
+          -- Rule 2: duplicate player hits in a row in same point
+          WHEN o.prev_pid IS NOT NULL
+               AND o.player_id = o.prev_pid THEN TRUE
+
           ELSE FALSE
         END AS exclude_d
-      FROM gaps g
+      FROM ordered o
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET exclude_d = e.exclude_d
     FROM excl e
@@ -797,7 +834,6 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     """
