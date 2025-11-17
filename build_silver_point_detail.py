@@ -225,26 +225,12 @@ PHASE3_COLS = OrderedDict({
     "serve_d":               "boolean",
     "server_end_d":          "text",
     "serve_side_d":          "text",
-    "serve_try_ix_in_point": "integer",
+    "serve_try_ix_in_point": "text",      # TEXT here
     "service_winner_d":      "boolean"
 })
 
 def phase3_add_schema(conn: Connection):
-    """
-    Ensure Phase 3 columns exist.
-    If serve_try_ix_in_point was previously INTEGER, upgrade it to TEXT
-    so we can store '1st', '2nd', 'Ace', 'Fault', 'Double'.
-    """
     ensure_phase_columns(conn, PHASE3_COLS)
-
-    existing = _columns_types(conn, SILVER_SCHEMA, TABLE)
-    col_type = existing.get("serve_try_ix_in_point")
-    if col_type and col_type not in ("text", "character varying", "varchar"):
-        _exec(conn, f"""
-            ALTER TABLE {SILVER_SCHEMA}.{TABLE}
-            ALTER COLUMN serve_try_ix_in_point
-            TYPE text USING serve_try_ix_in_point::text;
-        """)
 
 # ---------- Phase 3 constants ----------
 Y_NEAR_MIN = 23.0   # y > 23 → near
