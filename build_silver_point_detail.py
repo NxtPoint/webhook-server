@@ -767,6 +767,16 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
+    WHEN g.serve_d IS FALSE
+        AND g.point_number > 0
+        AND NOT EXISTS (
+              SELECT 1 FROM silver.point_detail z
+              WHERE z.task_id = g.task_id
+                AND z.point_number = g.point_number
+                AND z.serve_d = TRUE
+                AND z.ball_hit_s < g.ball_hit_s
+        )
+    THEN TRUE
     gaps AS (
       SELECT
         o.*,
@@ -887,20 +897,20 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     ),
     winners AS (
       SELECT
-        pfs.task_id, pfs.point_number,
-        CASE
-          WHEN pf.any_df IS TRUE THEN pr.receiver_id
-          WHEN pf.any_sw IS TRUE THEN pfs.server_id
-          ELSE ls.last_pid
-        END AS point_winner_player_id
-      FROM point_first_serve pfs
-      LEFT JOIN point_receiver pr
-        ON pr.task_id = pfs.task_id AND pr.point_number = pfs.point_number
-      LEFT JOIN point_flags pf
-        ON pf.task_id = pfs.task_id AND pf.point_number = pfs.point_number
-      LEFT JOIN last_swing ls
-        ON ls.task_id = pfs.task_id AND ls.point_number = pfs.point_number
+        so.serve_id,
+        NOT EXISTS (
+          SELECT 1
+          FROM silver.point_detail q
+          WHERE q.task_id = so.task_id
+            AND q.ball_hit_s > so.ord_t
+            AND (so.next_serve_ord_t IS NULL OR q.ball_hit_s < so.next_serve_ord_t)
+            AND q.player_id <> so.player_id
+            AND q.valid = TRUE
+            AND COALESCE(q.exclude_d, FALSE) = FALSE
+        ) AS service_winner_d
+      FROM serves_only so
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET point_winner_player_id = w.point_winner_player_id
     FROM winners w
