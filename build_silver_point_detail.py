@@ -39,13 +39,14 @@ PHASE2_COLS: TOrderedDict[str, str] = OrderedDict({
     "court_y":   "double precision"
 })
 
-# Phase 3 (5): serve summary fields (per your spec)
+# ---------- PHASE 3: columns (no server_id; add service_winner_d) ----------
 PHASE3_COLS = OrderedDict({
     "serve_d":               "boolean",
-    "server_id":             "text",
+    "server_end_d":          "text",
     "serve_side_d":          "text",
-    "serve_try_ix_in_point": "integer",
-    "server_end_d":          "text"
+    # Spec: 1st / 2nd / Ace / Fault / Double  (store as text)
+    "serve_try_ix_in_point": "text",
+    "service_winner_d":      "boolean"
 })
 
 # ------------------------------- PHASE 4 schema -------------------------------
@@ -229,7 +230,21 @@ PHASE3_COLS = OrderedDict({
 })
 
 def phase3_add_schema(conn: Connection):
+    """
+    Ensure Phase 3 columns exist.
+    If serve_try_ix_in_point was previously INTEGER, upgrade it to TEXT
+    so we can store '1st', '2nd', 'Ace', 'Fault', 'Double'.
+    """
     ensure_phase_columns(conn, PHASE3_COLS)
+
+    existing = _columns_types(conn, SILVER_SCHEMA, TABLE)
+    col_type = existing.get("serve_try_ix_in_point")
+    if col_type and col_type not in ("text", "character varying", "varchar"):
+        _exec(conn, f"""
+            ALTER TABLE {SILVER_SCHEMA}.{TABLE}
+            ALTER COLUMN serve_try_ix_in_point
+            TYPE text USING serve_try_ix_in_point::text;
+        """)
 
 # ---------- Phase 3 constants ----------
 Y_NEAR_MIN = 23.0   # y > 23 → near
@@ -240,27 +255,41 @@ X_SIDE_ABS = 4.0    # side threshold
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
     Phase 3:
-      - Detect serves from swing_type + ball_hit_location_y (hit_y).
-      - Compute server_end_d from hit_y (near if >23, far if <1).
-      - Compute serve_side_d on the SERVE row using ball_hit_location_x (hit_x)
-        vs a per-end midpoint, then FORWARD-FILL both end & side to all rows
-        until the next serve.
-      - serve_try_ix_in_point only on serve rows.
-      - service_winner_d TRUE if no opponent swing occurs before next serve.
+      - Keep serve_d, server_end_d, serve_side_d logic EXACTLY as per spec.
+      - Fix serve_try_ix_in_point and service_winner_d:
+
+        serve_try_ix_in_point (TEXT):
+          - Within each "serve sequence" for a server:
+              * First serve in a point:
+                  - If another serve by SAME player comes before any valid return → 'Fault'
+                  - Else if NO valid return at all after this serve              → 'Ace'
+                  - Else                                                        → '1st'
+              * Second serve in that point:
+                  - If a valid return happens before the next serve             → '2nd'
+                  - Else                                                        → 'Double'  (double fault)
+
+        service_winner_d (BOOL):
+          - TRUE if:
+              * serve_try_ix_in_point is NOT 'Fault' or 'Double'
+              * AND there is NO valid return at all after the serve
+            (i.e. classic aces / unreturned serves).
     """
     sql = f"""
     WITH base AS (
       SELECT
-        p.id, p.task_id, p.player_id, p.swing_type,
-        p.ball_hit_s AS t,
-        COALESCE(p.ball_hit_s, 1e15) AS ord_t,
-        p.ball_hit_location_x AS hit_x,
-        p.ball_hit_location_y AS hit_y
+        p.id,
+        p.task_id,
+        p.player_id,
+        p.swing_type,
+        p.ball_hit_s                       AS t,
+        COALESCE(p.ball_hit_s, 1e15)       AS ord_t,
+        p.ball_hit_location_x              AS hit_x,
+        p.ball_hit_location_y              AS hit_y
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
 
-    -- 1) detect serves + compute end from hit_y
+    -- 1) Detect serves + compute end from hit_y (unchanged)
     marks1 AS (
       SELECT
         b.*,
@@ -274,7 +303,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM base b
     ),
 
-    -- 2) midpoint per end (near/far) using serve contact-x
+    -- 2) Midpoint per task from serve contact-x (unchanged)
     serve_stats AS (
       SELECT
         m1.task_id,
@@ -284,7 +313,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       GROUP BY m1.task_id
     ),
 
-    -- 3) compute side on the SERVE row only, using (end + hit_x) vs per-end midpoint
+    -- 3) Compute side on the SERVE row only (unchanged)
     marks2 AS (
       SELECT
         m1.*,
@@ -300,8 +329,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON ss.task_id = m1.task_id
     ),
 
-
-    -- 4) order stream, track the *last serve id* to forward-fill end/side
+    -- 4) Ordered stream, track last_serve_id for forward-fill (unchanged)
     ordered AS (
       SELECT
         m2.*,
@@ -314,70 +342,162 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM marks2 m2
     ),
 
-    try_ix AS (
+    -- 5) All serve rows, with prev/next serve time for same player
+    serves AS (
       SELECT
-        o.*,
-        CASE WHEN o.is_serve THEN
-          ROW_NUMBER() OVER (PARTITION BY o.task_id, o.serve_grp ORDER BY o.ord_t, o.id)
-        ELSE NULL END AS serve_try_ix
+        o.id           AS serve_id,
+        o.task_id,
+        o.player_id,
+        o.ord_t,
+        LAG(o.ord_t) OVER (
+          PARTITION BY o.task_id, o.player_id
+          ORDER BY o.ord_t, o.id
+        ) AS prev_serve_ord_t,
+        LEAD(o.ord_t) OVER (
+          PARTITION BY o.task_id, o.player_id
+          ORDER BY o.ord_t, o.id
+        ) AS next_serve_ord_t
       FROM ordered o
+      WHERE o.is_serve
     ),
 
-    -- 5) serves-only to compute next-serve time (no FILTER on window fn)
-    serves_only AS (
+    -- 6) Classify serve sequences: second tries & valid returns
+    serve_class AS (
       SELECT
-        s.id AS serve_id, s.task_id, s.player_id, s.ord_t,
-        LEAD(s.ord_t) OVER (PARTITION BY s.task_id ORDER BY s.ord_t, s.id) AS next_serve_ord_t
-      FROM try_ix s
-      WHERE s.is_serve
-    ),
+        s.*,
 
-    winners AS (
-      SELECT
-        so.serve_id,
-        NOT EXISTS (
+        -- Is this serve the SECOND try of the same point?
+        -- (No valid return between previous serve by same player and this one)
+        CASE
+          WHEN s.prev_serve_ord_t IS NULL THEN FALSE
+          ELSE NOT EXISTS (
+            SELECT 1
+            FROM {SILVER_SCHEMA}.{TABLE} q
+            WHERE q.task_id = s.task_id
+              AND COALESCE(q.ball_hit_s, 1e15) > s.prev_serve_ord_t
+              AND COALESCE(q.ball_hit_s, 1e15) < s.ord_t
+              AND q.player_id <> s.player_id
+              AND COALESCE(q.valid, FALSE) IS TRUE
+          )
+        END AS is_second_try,
+
+        -- Any valid return at any time after this serve?
+        EXISTS (
           SELECT 1
           FROM {SILVER_SCHEMA}.{TABLE} q
-          WHERE q.task_id = so.task_id
-            AND COALESCE(q.ball_hit_s, 1e15) >  so.ord_t
-            AND (so.next_serve_ord_t IS NULL OR COALESCE(q.ball_hit_s, 1e15) < so.next_serve_ord_t)
-            AND q.player_id <> so.player_id
-        ) AS service_winner_d
-      FROM serves_only so
+          WHERE q.task_id = s.task_id
+            AND COALESCE(q.ball_hit_s, 1e15) > s.ord_t
+            AND q.player_id <> s.player_id
+            AND COALESCE(q.valid, FALSE) IS TRUE
+        ) AS has_any_valid_return_after,
+
+        -- Valid return BEFORE the next serve by the same player?
+        EXISTS (
+          SELECT 1
+          FROM {SILVER_SCHEMA}.{TABLE} q
+          WHERE q.task_id = s.task_id
+            AND COALESCE(q.ball_hit_s, 1e15) > s.ord_t
+            AND (s.next_serve_ord_t IS NULL OR COALESCE(q.ball_hit_s, 1e15) < s.next_serve_ord_t)
+            AND q.player_id <> s.player_id
+            AND COALESCE(q.valid, FALSE) IS TRUE
+        ) AS has_valid_return_before_next
+      FROM serves s
     ),
 
-    -- 6) take the *attributes from the most recent serve* for every row (FF)
+    -- 7) Map to text labels + service winner flag
+    serve_labels AS (
+      SELECT
+        sc.serve_id,
+        CASE
+          WHEN sc.is_second_try IS FALSE THEN
+            CASE
+              -- First serve: second serve before any valid return → Fault
+              WHEN sc.next_serve_ord_t IS NOT NULL
+                   AND sc.has_valid_return_before_next IS FALSE
+                THEN 'Fault'
+              -- First serve: no second serve before return, and no return at all → Ace
+              WHEN sc.has_any_valid_return_after IS FALSE
+                THEN 'Ace'
+              -- First serve: rally starts → 1st
+              ELSE
+                '1st'
+            END
+          ELSE
+            CASE
+              -- Second serve with valid return before next serve → 2nd
+              WHEN sc.has_valid_return_before_next IS TRUE
+                THEN '2nd'
+              -- Second serve with no valid return → Double fault
+              ELSE
+                'Double'
+            END
+        END AS serve_try_label,
+        CASE
+          -- Service winner only if NOT a fault/double and no valid return at all
+          WHEN (
+            CASE
+              WHEN sc.is_second_try IS FALSE THEN
+                CASE
+                  WHEN sc.next_serve_ord_t IS NOT NULL
+                       AND sc.has_valid_return_before_next IS FALSE THEN 'Fault'
+                  WHEN sc.has_any_valid_return_after IS FALSE THEN 'Ace'
+                  ELSE '1st'
+                END
+              ELSE
+                CASE
+                  WHEN sc.has_valid_return_before_next IS TRUE THEN '2nd'
+                  ELSE 'Double'
+                END
+            END
+          ) NOT IN ('Fault','Double')
+          AND sc.has_any_valid_return_after IS FALSE
+          THEN TRUE
+          ELSE FALSE
+        END AS service_winner_d
+      FROM serve_class sc
+    ),
+
+    -- 8) Serve rows for forward-fill of end/side (unchanged)
     serve_rows AS (
       SELECT
-        m2.id AS serve_row_id, m2.task_id,
-        m2.server_end_d_calc, m2.serve_side_d_calc
+        m2.id AS serve_row_id,
+        m2.task_id,
+        m2.server_end_d_calc,
+        m2.serve_side_d_calc
       FROM marks2 m2
       WHERE m2.is_serve
     ),
 
+    -- 9) Final frame: every row + latest serve attributes + serve labels
     ff AS (
       SELECT
-        t.id, t.task_id, t.is_serve, t.serve_try_ix,
-        s.server_end_d_calc,
-        s.serve_side_d_calc,
-        CASE WHEN t.is_serve THEN w.service_winner_d ELSE NULL END AS service_winner_d
-      FROM try_ix t
-      LEFT JOIN serve_rows s
-        ON s.task_id = t.task_id
-       AND s.serve_row_id = t.last_serve_id
-      LEFT JOIN winners w
-        ON w.serve_id = t.id
+        o.id,
+        o.task_id,
+        o.is_serve,
+        sr.server_end_d_calc,
+        sr.serve_side_d_calc,
+        sl.serve_try_label,
+        CASE
+          WHEN o.is_serve THEN sl.service_winner_d
+          ELSE NULL
+        END AS service_winner_d
+      FROM ordered o
+      LEFT JOIN serve_rows sr
+        ON sr.task_id = o.task_id
+       AND sr.serve_row_id = o.last_serve_id
+      LEFT JOIN serve_labels sl
+        ON sl.serve_id = o.id
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_d               = ff.is_serve,
-      -- forward-fill: apply the most recent serve's end/side to every row until next serve
+      -- forward-fill end/side from most recent serve
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
-      -- only set try index on serve rows
-      serve_try_ix_in_point = ff.serve_try_ix,
-      -- winner flag only on serve rows
+      -- text label: '1st' / '2nd' / 'Ace' / 'Fault' / 'Double'
+      serve_try_ix_in_point = ff.serve_try_label,
+      -- winner flag only on serve rows, else leave as-is / NULL
       service_winner_d      = COALESCE(ff.service_winner_d, p.service_winner_d)
     FROM ff
     WHERE p.task_id = :tid
