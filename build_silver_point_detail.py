@@ -245,7 +245,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       - Compute server_end_d and serve_side_d on serve rows, then forward-fill to all rows.
       - Compute serve_try_ix_in_point as TEXT: '1st' | '2nd' | 'Ace' | 'Fault' | 'Double'.
       - Compute service_winner_d:
-          TRUE for first-serve aces (no valid opponent swing after the serve).
+          TRUE for first-serve aces (serve in, no valid opponent return in that point),
+          NULL otherwise (no FALSE values).
     """
     sql = f"""
     WITH base AS (
@@ -344,11 +345,10 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE o.is_serve
     ),
 
-    -- 6) Return flags around each serve
+    -- 6) Return flags within the SAME POINT (between this serve and the next serve in the match)
     serve_returns AS (
       SELECT
         s.serve_id,
-        -- Any valid opponent swing before the next serve in the match
         EXISTS (
           SELECT 1
           FROM {SILVER_SCHEMA}.{TABLE} q
@@ -360,16 +360,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
               s.next_serve_any_ord_t IS NULL
               OR COALESCE(q.ball_hit_s, 1e15) < s.next_serve_any_ord_t
             )
-        ) AS has_valid_return_before_next,
-        -- Any valid opponent swing at any time after this serve
-        EXISTS (
-          SELECT 1
-          FROM {SILVER_SCHEMA}.{TABLE} q2
-          WHERE q2.task_id = s.task_id
-            AND q2.valid = TRUE
-            AND q2.player_id <> s.player_id
-            AND COALESCE(q2.ball_hit_s, 1e15) > s.ord_t
-        ) AS has_any_valid_return_after
+        ) AS has_valid_return_in_point
       FROM serves s
     ),
 
@@ -377,8 +368,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     serve_class AS (
       SELECT
         s.*,
-        sr.has_valid_return_before_next,
-        sr.has_any_valid_return_after,
+        sr.has_valid_return_in_point,
         -- Is this the second try by the same player?
         CASE
           WHEN s.prev_serve_same_ord_t IS NULL THEN FALSE
@@ -392,37 +382,40 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     serve_labels AS (
       SELECT
         sc.serve_id,
+
+        -- Serve try label
         CASE
           WHEN sc.is_second_try = FALSE THEN
             CASE
               -- First serve: another serve from same player BEFORE any valid return -> Fault
               WHEN sc.next_serve_same_ord_t IS NOT NULL
-                   AND sc.has_valid_return_before_next = FALSE
+                   AND sc.has_valid_return_in_point = FALSE
                 THEN 'Fault'
-              -- First (and only) serve, no valid return at all -> Ace
-              WHEN sc.has_any_valid_return_after = FALSE
+              -- First (and only) serve, no valid return in that point -> Ace
+              WHEN sc.has_valid_return_in_point = FALSE
                 THEN 'Ace'
-              -- First serve, rally starts -> 1st
+              -- First serve, rally starts in that point -> 1st
               ELSE
                 '1st'
             END
           ELSE
             CASE
-              -- Second serve, valid return occurs -> 2nd
-              WHEN sc.has_any_valid_return_after = TRUE
+              -- Second serve, valid return occurs in that point -> 2nd
+              WHEN sc.has_valid_return_in_point = TRUE
                 THEN '2nd'
-              -- Second serve, no valid return at all -> Double fault
+              -- Second serve, no valid return in that point -> Double fault
               ELSE
                 'Double'
             END
         END AS serve_try_label,
 
+        -- Service winner: first-serve Ace only (no valid return in that point)
         CASE
-          -- Service winner: first-serve Ace (no valid return at all)
           WHEN sc.is_second_try = FALSE
-               AND sc.has_any_valid_return_after = FALSE
+               AND sc.next_serve_same_ord_t IS NULL
+               AND sc.has_valid_return_in_point = FALSE
             THEN TRUE
-          ELSE FALSE
+          ELSE NULL
         END AS service_winner_d
       FROM serve_class sc
     ),
@@ -465,7 +458,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
       serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
       serve_try_ix_in_point = ff.serve_try_label,
-      service_winner_d      = COALESCE(ff.service_winner_d, p.service_winner_d)
+      -- overwrite so non-winners become NULL (no FALSE values)
+      service_winner_d      = ff.service_winner_d
     FROM ff
     WHERE p.task_id = :tid
       AND p.id = ff.id;
