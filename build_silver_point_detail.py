@@ -560,6 +560,7 @@ def phase5_update(conn: Connection, task_id: str) -> int:
 def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
     """
     point_number increments ONLY when serve_side_d changes at FIRST serves.
+    FIRST serves are rows with serve_d = TRUE and serve_try_ix_in_point in ('1st','Ace').
     Persist across all rows by ball_hit_s.
     """
     sql = f"""
@@ -571,7 +572,7 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND COALESCE(p.serve_d, FALSE) IS TRUE
-        AND (p.serve_try_ix_in_point::text ~ '^[0-9]+$' AND p.serve_try_ix_in_point::int = 1)
+        AND LOWER(p.serve_try_ix_in_point::text) IN ('1st', 'ace')
         AND p.serve_side_d IN ('deuce','ad')
       ORDER BY p.ball_hit_s
     ),
@@ -581,7 +582,8 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
         a.anchor_s,
         a.side,
         CASE
-          WHEN LAG(a.side) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s) IS DISTINCT FROM a.side THEN 1
+          WHEN LAG(a.side) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s)
+               IS DISTINCT FROM a.side THEN 1
           ELSE 0
         END AS inc0
       FROM anchors a
@@ -590,7 +592,8 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
       SELECT
         i.*,
         CASE
-          WHEN ROW_NUMBER() OVER (PARTITION BY i.task_id ORDER BY i.anchor_s) = 1 THEN 1
+          WHEN ROW_NUMBER() OVER (PARTITION BY i.task_id ORDER BY i.anchor_s) = 1
+            THEN 1
           ELSE i.inc0
         END AS inc
       FROM incs i
@@ -848,6 +851,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
 def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     """
     game_number increments when server_end_d flips near↔far at FIRST serves.
+    FIRST serves are rows with serve_d = TRUE and serve_try_ix_in_point in ('1st','Ace').
     Persist to all rows by ball_hit_s. First game = 1.
     """
     sql = f"""
@@ -859,15 +863,18 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND COALESCE(p.serve_d, FALSE) IS TRUE
-        AND (p.serve_try_ix_in_point::text ~ '^[0-9]+$' AND p.serve_try_ix_in_point::int = 1)
+        AND LOWER(p.serve_try_ix_in_point::text) IN ('1st', 'ace')
         AND p.server_end_d IN ('near','far')
       ORDER BY p.ball_hit_s
     ),
     incs AS (
       SELECT
-        a.task_id, a.anchor_s, a.end_d,
+        a.task_id,
+        a.anchor_s,
+        a.end_d,
         CASE
-          WHEN LAG(a.end_d) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s) IS DISTINCT FROM a.end_d THEN 1
+          WHEN LAG(a.end_d) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s)
+               IS DISTINCT FROM a.end_d THEN 1
           ELSE 0
         END AS inc0
       FROM anchors a
@@ -876,7 +883,8 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
       SELECT
         i.*,
         CASE
-          WHEN ROW_NUMBER() OVER (PARTITION BY i.task_id ORDER BY i.anchor_s) = 1 THEN 1
+          WHEN ROW_NUMBER() OVER (PARTITION BY i.task_id ORDER BY i.anchor_s) = 1
+            THEN 1
           ELSE i.inc0
         END AS inc
       FROM incs i
@@ -902,7 +910,6 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
