@@ -623,15 +623,14 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
-    Phase 5 exclusions — NEW spec:
+    Phase 5 exclusions — spec:
 
       1) If serve_side_d is NULL → exclude_d = TRUE.
       2) If serve_d = FALSE and ball_hit_s is less than ball_hit_s of the LAST serve
          in the point → exclude_d = TRUE.
-      3) Within each (task_id, point_number), if ball_hit_s is more than 5 seconds
-         after the previous shot, exclude that shot AND all later shots in the point.
-
-    Only sets exclude_d; does not touch any other columns.
+      3) Where ball_hit_s is greater than last serve in point AND ball_hit_s is more
+         than 5 seconds apart from the previous shot, exclude that shot PLUS all
+         later shots in the point.
     """
     sql = f"""
     WITH base AS (
@@ -684,9 +683,13 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
          AND o.last_serve_s IS NOT NULL
          AND o.ball_hit_s < o.last_serve_s) AS r2_before_last_serve,
 
-        -- Initial break for Rule 3: gap > 5s to previous shot
+        -- Rule 3 (updated):
+        -- gap > 5s AND this shot is AFTER the last serve in the point
         CASE
-          WHEN o.prev_s IS NULL THEN FALSE
+          WHEN o.prev_s IS NULL
+               OR o.last_serve_s IS NULL
+               OR o.ball_hit_s <= o.last_serve_s
+            THEN FALSE
           ELSE (o.ball_hit_s - o.prev_s) > 5.0
         END AS gap_break
       FROM ordered o
@@ -719,6 +722,7 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 
 
