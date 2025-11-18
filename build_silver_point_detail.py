@@ -724,16 +724,24 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     return res.rowcount or 0
 
 
-
-
 def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     """
-    Winner priority per point:
-      - any double-fault → receiver
-      - else any service_winner_d → server
-      - else last non-excluded, valid swing → that player
+    Point winner logic (per point_number):
 
-    Double-fault derived ONLY from serve_try_ix_in_point = 'Double'.
+      1) If any serve in the point has serve_try_ix_in_point = 'Double'
+         → winner is the receiver.
+
+      2) Else, find the LAST non-excluded shot in the point
+         (last row with exclude_d = FALSE):
+
+         - If that last shot is IN (court_x & court_y not null)
+             → winner = player who hit that last shot.
+
+         - If that last shot is a FAULT (court_x or court_y is null) AND
+           the previous non-excluded shot is IN
+             → winner = player who hit the previous shot.
+
+         - Otherwise → winner = NULL.
     """
     sql = f"""
     WITH base AS (
@@ -741,11 +749,11 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
         p.id,
         p.task_id,
         p.player_id,
-        p.valid,
-        COALESCE(p.exclude_d, FALSE)      AS exclude_d,
-        COALESCE(p.serve_d, FALSE)        AS serve_d,
+        COALESCE(p.exclude_d, FALSE) AS exclude_d,
+        COALESCE(p.serve_d, FALSE)   AS serve_d,
         p.serve_try_ix_in_point,
-        COALESCE(p.service_winner_d, FALSE) AS service_winner_d,
+        p.court_x,
+        p.court_y,
         p.ball_hit_s,
         p.point_number
       FROM {SILVER_SCHEMA}.{TABLE} p
@@ -764,7 +772,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       ORDER BY b.task_id, b.point_number, b.ball_hit_s
     ),
 
-    -- receiver per point = first non-server player in that point
+    -- receiver per point = first non-server player
     point_receiver AS (
       SELECT DISTINCT ON (b.task_id, b.point_number)
         b.task_id,
@@ -779,9 +787,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       ORDER BY b.task_id, b.point_number, b.ball_hit_s
     ),
 
-    -- flags per point:
-    --  any_df = any serve with serve_try_ix_in_point = 'Double'
-    --  any_sw = any service_winner_d TRUE
+    -- any Double in the point?
     point_flags AS (
       SELECT
         b.task_id,
@@ -790,25 +796,41 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
           b.serve_d
           AND b.serve_try_ix_in_point IS NOT NULL
           AND LOWER(b.serve_try_ix_in_point::text) = 'double'
-        ) AS any_df,
-        BOOL_OR(b.service_winner_d) AS any_sw
+        ) AS any_double
       FROM base b
       WHERE b.point_number > 0
       GROUP BY b.task_id, b.point_number
     ),
 
-    -- last non-excluded, valid swing per point
-    last_swing AS (
-      SELECT DISTINCT ON (b.task_id, b.point_number)
-        b.task_id,
-        b.point_number,
-        b.player_id AS last_pid,
-        b.ball_hit_s
+    -- order only non-excluded shots, latest first, to get last + previous
+    ordered_included AS (
+      SELECT
+        b.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY b.task_id, b.point_number
+          ORDER BY b.ball_hit_s DESC, b.id DESC
+        ) AS rn_desc
       FROM base b
       WHERE b.point_number > 0
         AND b.exclude_d = FALSE
-        AND b.valid = TRUE
-      ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC
+    ),
+
+    last_prev AS (
+      SELECT
+        o.task_id,
+        o.point_number,
+
+        -- last shot
+        MAX(CASE WHEN o.rn_desc = 1 THEN o.player_id END) AS last_pid,
+        MAX(CASE WHEN o.rn_desc = 1 THEN o.court_x   END) AS last_cx,
+        MAX(CASE WHEN o.rn_desc = 1 THEN o.court_y   END) AS last_cy,
+
+        -- previous shot
+        MAX(CASE WHEN o.rn_desc = 2 THEN o.player_id END) AS prev_pid,
+        MAX(CASE WHEN o.rn_desc = 2 THEN o.court_x   END) AS prev_cx,
+        MAX(CASE WHEN o.rn_desc = 2 THEN o.court_y   END) AS prev_cy
+      FROM ordered_included o
+      GROUP BY o.task_id, o.point_number
     ),
 
     winners AS (
@@ -816,19 +838,27 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
         ps.task_id,
         ps.point_number,
         CASE
-          -- 1) any double-fault → receiver (if we have one)
-          WHEN pf.any_df = TRUE AND pr.receiver_id IS NOT NULL
+          -- Rule 1: any Double → receiver wins
+          WHEN pf.any_double = TRUE AND pr.receiver_id IS NOT NULL
             THEN pr.receiver_id
 
-          -- 2) else any service_winner_d → server
-          WHEN pf.any_sw = TRUE AND ps.server_id IS NOT NULL
-            THEN ps.server_id
+          -- Rule 2/3: no Double, decide from last & previous non-excluded shots
+          WHEN lp.last_pid IS NOT NULL THEN
+            CASE
+              -- last shot IN → last player wins
+              WHEN lp.last_cx IS NOT NULL AND lp.last_cy IS NOT NULL
+                THEN lp.last_pid
 
-          -- 3) else last non-excluded, valid swing → that player
-          WHEN ls.last_pid IS NOT NULL
-            THEN ls.last_pid
+              -- last shot FAULT, previous shot IN → previous player wins
+              WHEN (lp.last_cx IS NULL OR lp.last_cy IS NULL)
+                   AND lp.prev_pid IS NOT NULL
+                   AND lp.prev_cx IS NOT NULL
+                   AND lp.prev_cy IS NOT NULL
+                THEN lp.prev_pid
 
-          -- fallback: NULL (no winner)
+              ELSE NULL
+            END
+
           ELSE NULL
         END AS point_winner_player_id
       FROM point_server ps
@@ -838,9 +868,9 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       LEFT JOIN point_flags pf
         ON pf.task_id = ps.task_id
        AND pf.point_number = ps.point_number
-      LEFT JOIN last_swing ls
-        ON ls.task_id = ps.task_id
-       AND ls.point_number = ps.point_number
+      LEFT JOIN last_prev lp
+        ON lp.task_id = ps.task_id
+       AND lp.point_number = ps.point_number
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
@@ -851,6 +881,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     """
