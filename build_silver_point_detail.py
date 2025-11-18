@@ -244,11 +244,11 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       - Detect serves (serve_d) from swing_type + ball_hit_location_y (hit_y).
       - Compute server_end_d and serve_side_d on serve rows, then forward-fill to all rows.
       - Compute serve_try_ix_in_point as:
-          * '1', '2' for normal first/second serves (as text),
-          * 'Fault' on the last serve in a double-fault point.
+          * '1', '2' for normal first/second serves (capped at 2),
+          * 'Fault' for double-fault last serves.
       - Compute service_winner_d:
-          TRUE only when the server wins the point on the last serve
-          (no valid opponent return after that serve).
+          TRUE only on the last VALID serve in the point when there is
+          NO valid opponent return later in that point; NULL otherwise.
     """
     sql = f"""
     WITH base AS (
@@ -352,7 +352,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.player_id,
         p.valid,
         p.point_number,
-        p.point_winner_player_id,
         COALESCE(p.exclude_d, FALSE) AS exclude_d,
         COALESCE(p.ball_hit_s, 1e15) AS ord_t,
         COALESCE(fb.is_serve, FALSE) AS is_serve
@@ -363,7 +362,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
     ),
 
-    -- 8) Per-point serve ordering + next-shot id
+    -- 8) Per-point serve ordering (1,2,…) and last-serve flag
     serve_seq AS (
       SELECT
         s.*,
@@ -386,74 +385,78 @@ def phase3_update(conn: Connection, task_id: str) -> int:
               ORDER BY s.ord_t DESC, s.id DESC
             )
           ELSE NULL
-        END AS serve_rev_ix,
-
-        -- immediate next shot in the match (by time)
-        LEAD(s.id) OVER (
-          PARTITION BY s.task_id
-          ORDER BY s.ord_t, s.id
-        ) AS next_shot_id
+        END AS serve_rev_ix
       FROM shot_stream s
     ),
 
-    -- 9) Labels for serve_try_ix_in_point + service_winner_d
+    -- 9) Features per serve: does anything valid happen after?
+    serve_features AS (
+      SELECT
+        sq.*,
+
+        -- any valid opponent return later in the same point
+        EXISTS (
+          SELECT 1
+          FROM shot_stream r
+          WHERE r.task_id      = sq.task_id
+            AND r.point_number = sq.point_number
+            AND r.ord_t        > sq.ord_t
+            AND r.valid        = TRUE
+            AND COALESCE(r.exclude_d, FALSE) = FALSE
+            AND r.player_id    <> sq.player_id
+        ) AS has_valid_opponent_return_after,
+
+        -- any valid shot at all later in the same point
+        EXISTS (
+          SELECT 1
+          FROM shot_stream r2
+          WHERE r2.task_id      = sq.task_id
+            AND r2.point_number = sq.point_number
+            AND r2.ord_t        > sq.ord_t
+            AND r2.valid        = TRUE
+            AND COALESCE(r2.exclude_d, FALSE) = FALSE
+        ) AS has_any_valid_shot_after
+      FROM serve_seq sq
+    ),
+
+    -- 10) Labels for serve_try_ix_in_point + service_winner_d
     serve_labels AS (
       SELECT
-        sq.id,
+        sf.id,
 
         -- serve_try_ix_in_point:
         --  * '1', '2' normally (capped at 2)
-        --  * 'Fault' on last-serve double faults (server != point winner, no valid opponent return)
+        --  * 'Fault' on last-serve double faults (invalid, no valid shots after)
         CASE
-          WHEN sq.is_serve AND sq.point_number IS NOT NULL THEN
+          WHEN sf.is_serve AND sf.point_number IS NOT NULL THEN
             CASE
               WHEN
-                sq.serve_rev_ix = 1
-                AND sq.point_winner_player_id IS NOT NULL
-                AND sq.point_winner_player_id <> sq.player_id
-                AND (
-                  ns.id IS NULL
-                  OR NOT (
-                    ns.valid = TRUE
-                    AND COALESCE(ns.exclude_d, FALSE) = FALSE
-                    AND ns.player_id <> sq.player_id
-                  )
-                )
-              THEN 'Fault'                               -- double fault last serve
-              ELSE LEAST(sq.serve_try_ix, 2)::text       -- normal 1 / 2
+                sf.serve_rev_ix = 1
+                AND sf.valid = FALSE
+                AND sf.has_any_valid_shot_after = FALSE
+              THEN 'Fault'                              -- double fault last serve
+              ELSE LEAST(sf.serve_try_ix, 2)::text      -- normal 1 / 2
             END
           ELSE NULL
         END AS serve_try_ix_in_point,
 
-        -- service winner:
-        --  - only on last VALID serve in the point
-        --  - server must be the point winner
-        --  - TRUE if the IMMEDIATE next shot is NOT a valid opponent return
-        --  - otherwise NULL (no FALSE values)
+        -- service_winner_d:
+        --  - last VALID serve in the point
+        --  - and there is NO valid opponent return later in that point
+        --  - TRUE for winners, NULL otherwise (no FALSE values)
         CASE
-          WHEN sq.is_serve
-               AND sq.valid = TRUE
-               AND sq.point_number IS NOT NULL
-               AND sq.serve_rev_ix = 1
-               AND sq.point_winner_player_id IS NOT NULL
-               AND sq.point_winner_player_id = sq.player_id
-          THEN
-            CASE
-              WHEN ns.id IS NULL THEN TRUE  -- no next shot at all
-              WHEN ns.valid = TRUE
-                   AND COALESCE(ns.exclude_d, FALSE) = FALSE
-                   AND ns.player_id <> sq.player_id
-                THEN NULL                   -- immediate next is a valid opponent return
-              ELSE TRUE                      -- anything else -> no valid return
-            END
+          WHEN sf.is_serve
+               AND sf.valid = TRUE
+               AND sf.point_number IS NOT NULL
+               AND sf.serve_rev_ix = 1
+               AND sf.has_valid_opponent_return_after = FALSE
+          THEN TRUE
           ELSE NULL
         END AS service_winner_d
-      FROM serve_seq sq
-      LEFT JOIN shot_stream ns
-        ON ns.id = sq.next_shot_id
+      FROM serve_features sf
     ),
 
-    -- 10) Final rows with all attributes + labels
+    -- 11) Final rows with all attributes + labels
     final_rows AS (
       SELECT
         o.id,
