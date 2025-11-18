@@ -243,9 +243,9 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     Phase 3:
       - Detect serves (serve_d) from swing_type + ball_hit_location_y (hit_y).
       - Compute server_end_d and serve_side_d on serve rows, then forward-fill to all rows.
-      - Compute serve_try_ix_in_point as integer try index within a point (1, 2, ...).
+      - Compute serve_try_ix_in_point as integer try index within a point (1, 2; capped at 2).
       - Compute service_winner_d:
-          TRUE on the LAST serve in a point when the IMMEDIATE next shot in the sequence
+          TRUE on the LAST VALID serve in a point when the IMMEDIATE next shot in the sequence
           is NOT a valid opponent return.
     """
     sql = f"""
@@ -393,22 +393,24 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM shot_stream s
     ),
 
-    -- 9) Labels for serve_try_ix_in_point + service_winner_d
+        -- 9) Labels for serve_try_ix_in_point + service_winner_d
     serve_labels AS (
       SELECT
         sq.id,
 
-        -- numeric try index within the point (1, 2, ...)
+        -- numeric try index within the point (1, 2; cap at 2)
         CASE
-          WHEN sq.is_serve AND sq.point_number IS NOT NULL THEN sq.serve_try_ix
+          WHEN sq.is_serve AND sq.point_number IS NOT NULL THEN LEAST(sq.serve_try_ix, 2)
           ELSE NULL
         END AS serve_try_ix_in_point,
 
         -- service winner:
-        --  - only on last serve in the point (serve_rev_ix = 1)
+        --  - only on last VALID serve in the point (serve_rev_ix = 1 AND valid)
         --  - TRUE if the IMMEDIATE next shot is NOT a valid opponent return
+        --  - otherwise NULL (no FALSE values)
         CASE
           WHEN sq.is_serve
+               AND sq.valid = TRUE
                AND sq.point_number IS NOT NULL
                AND sq.serve_rev_ix = 1
           THEN
@@ -417,7 +419,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
               WHEN ns.valid = TRUE
                    AND COALESCE(ns.exclude_d, FALSE) = FALSE
                    AND ns.player_id <> sq.player_id
-                THEN FALSE                   -- immediate next is a valid opponent return
+                THEN NULL                   -- next is a valid opponent return -> not a winner
               ELSE TRUE                      -- anything else -> no valid return
             END
           ELSE NULL
@@ -426,6 +428,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       LEFT JOIN shot_stream ns
         ON ns.id = sq.next_shot_id
     ),
+
 
     -- 10) Final rows with all attributes + labels
     final_rows AS (
