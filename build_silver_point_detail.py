@@ -243,10 +243,10 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     Phase 3:
       - Detect serves (serve_d) from swing_type + ball_hit_location_y (hit_y).
       - Compute server_end_d and serve_side_d on serve rows, then forward-fill to all rows.
-      - Compute serve_try_ix_in_point as TEXT: '1st' | '2nd' | 'Ace' | 'Fault' | 'Double'.
+      - Compute serve_try_ix_in_point as integer try index within a point (1, 2, ...).
       - Compute service_winner_d:
-          TRUE on the LAST serve in a point when there is NO valid opponent return
-          between that serve and the next serve in the match.
+          TRUE on the LAST serve in a point when the IMMEDIATE next shot in the sequence
+          is NOT a valid opponent return.
     """
     sql = f"""
     WITH base AS (
@@ -317,139 +317,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM marks2 m2
     ),
 
-    -- 5) All serve rows, with prev/next serve (same player / any player)
-    serves AS (
-      SELECT
-        o.id           AS serve_id,
-        o.task_id,
-        o.player_id,
-        o.ord_t,
-        o.valid,
-        LAG(o.ord_t) OVER (
-          PARTITION BY o.task_id, o.player_id
-          ORDER BY o.ord_t, o.id
-        ) AS prev_serve_same_ord_t,
-        LEAD(o.ord_t) OVER (
-          PARTITION BY o.task_id, o.player_id
-          ORDER BY o.ord_t, o.id
-        ) AS next_serve_same_ord_t,
-        LEAD(o.ord_t) OVER (
-          PARTITION BY o.task_id
-          ORDER BY o.ord_t, o.id
-        ) AS next_serve_any_ord_t,
-        LEAD(o.player_id) OVER (
-          PARTITION BY o.task_id
-          ORDER BY o.ord_t, o.id
-        ) AS next_serve_any_player_id
-      FROM ordered o
-      WHERE o.is_serve
-    ),
-
-    -- 6) Return flags around each serve
-    serve_returns AS (
-      SELECT
-        s.serve_id,
-
-        -- Any valid opponent swing after this serve but before next serve in the match
-        EXISTS (
-          SELECT 1
-          FROM {SILVER_SCHEMA}.{TABLE} q
-          WHERE q.task_id = s.task_id
-            AND q.valid = TRUE
-            AND q.player_id <> s.player_id
-            AND COALESCE(q.ball_hit_s, 1e15) > s.ord_t
-            AND (
-              s.next_serve_any_ord_t IS NULL
-              OR COALESCE(q.ball_hit_s, 1e15) < s.next_serve_any_ord_t
-            )
-        ) AS has_valid_return_in_point,
-
-        -- Any valid opponent swing between previous same-player serve and this serve
-        CASE
-          WHEN s.prev_serve_same_ord_t IS NULL THEN FALSE
-          ELSE EXISTS (
-            SELECT 1
-            FROM {SILVER_SCHEMA}.{TABLE} q2
-            WHERE q2.task_id = s.task_id
-              AND q2.valid = TRUE
-              AND q2.player_id <> s.player_id
-              AND COALESCE(q2.ball_hit_s, 1e15) > s.prev_serve_same_ord_t
-              AND COALESCE(q2.ball_hit_s, 1e15) < s.ord_t
-          )
-        END AS has_valid_between_prev_and_this
-      FROM serves s
-    ),
-
-    -- 7) Classify serves: helper flags
-    serve_class AS (
-      SELECT
-        s.*,
-        sr.has_valid_return_in_point,
-        sr.has_valid_between_prev_and_this,
-
-        -- Second try only if no valid opponent swing since previous same-player serve
-        CASE
-          WHEN s.prev_serve_same_ord_t IS NULL THEN FALSE
-          WHEN sr.has_valid_between_prev_and_this THEN FALSE
-          ELSE TRUE
-        END AS is_second_try,
-
-        -- Last serve in the point:
-        -- no same-player serve before the next serve in the match
-        CASE
-          WHEN s.next_serve_any_ord_t IS NULL THEN TRUE
-          WHEN s.next_serve_same_ord_t IS NULL THEN TRUE
-          WHEN s.next_serve_same_ord_t >= s.next_serve_any_ord_t THEN TRUE
-          ELSE FALSE
-        END AS is_last_serve_in_point
-      FROM serves s
-      JOIN serve_returns sr
-        ON sr.serve_id = s.serve_id
-    ),
-
-    -- 8) Labels + service_winner_d
-    serve_labels AS (
-      SELECT
-        sc.serve_id,
-
-        -- Serve try label
-        CASE
-          WHEN sc.is_second_try = FALSE THEN
-            CASE
-              -- First serve: another serve from same player BEFORE any valid return -> Fault
-              WHEN sc.next_serve_same_ord_t IS NOT NULL
-                   AND sc.has_valid_return_in_point = FALSE
-                THEN 'Fault'
-              -- First (and only) serve, no valid return in that point -> Ace
-              WHEN sc.has_valid_return_in_point = FALSE
-                THEN 'Ace'
-              -- First serve, rally starts in that point -> 1st
-              ELSE
-                '1st'
-            END
-          ELSE
-            CASE
-              -- Second serve, valid return occurs -> 2nd
-              WHEN sc.has_valid_return_in_point = TRUE
-                THEN '2nd'
-              -- Second serve, no valid return at all -> Double fault
-              ELSE
-                'Double'
-            END
-        END AS serve_try_label,
-
-        -- Service winner:
-        -- TRUE on the LAST serve in the point, when there is NO valid opponent return
-        CASE
-          WHEN sc.is_last_serve_in_point = TRUE
-               AND sc.has_valid_return_in_point = FALSE
-            THEN TRUE
-          ELSE NULL
-        END AS service_winner_d
-      FROM serve_class sc
-    ),
-
-    -- 9) Serve rows for forward-fill of end/side
+    -- 5) Serve rows for forward-fill of end/side
     serve_rows AS (
       SELECT
         m2.id AS serve_row_id,
@@ -459,6 +327,105 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM marks2 m2
       WHERE m2.is_serve
     ),
+
+    -- 6) Final frame: all rows + attributes from latest serve
+    ff AS (
+      SELECT
+        o.id,
+        o.task_id,
+        o.is_serve,
+        sr.server_end_d_calc,
+        sr.serve_side_d_calc
+      FROM ordered o
+      LEFT JOIN serve_rows sr
+        ON sr.task_id = o.task_id
+       AND sr.serve_row_id = o.last_serve_id
+    ),
+
+    -- 7) Shot stream with point_number + exclude_d, using detected is_serve from ff
+    shot_stream AS (
+      SELECT
+        p.id,
+        p.task_id,
+        p.player_id,
+        p.valid,
+        p.point_number,
+        COALESCE(p.exclude_d, FALSE) AS exclude_d,
+        COALESCE(p.ball_hit_s, 1e15) AS ord_t,
+        COALESCE(ff.is_serve, FALSE) AS is_serve
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      LEFT JOIN ff
+        ON ff.id = p.id
+       AND ff.task_id = p.task_id
+      WHERE p.task_id = :tid
+    ),
+
+    -- 8) Per-point serve ordering + next-shot id
+    serve_seq AS (
+      SELECT
+        s.*,
+
+        -- try index within (task, point, server)
+        CASE
+          WHEN s.is_serve AND s.point_number IS NOT NULL THEN
+            ROW_NUMBER() OVER (
+              PARTITION BY s.task_id, s.point_number, s.player_id
+              ORDER BY s.ord_t, s.id
+            )
+          ELSE NULL
+        END AS serve_try_ix,
+
+        -- reverse index to identify last serve in the point
+        CASE
+          WHEN s.is_serve AND s.point_number IS NOT NULL THEN
+            ROW_NUMBER() OVER (
+              PARTITION BY s.task_id, s.point_number, s.player_id
+              ORDER BY s.ord_t DESC, s.id DESC
+            )
+          ELSE NULL
+        END AS serve_rev_ix,
+
+        -- immediate next shot in the match (by time)
+        LEAD(s.id) OVER (
+          PARTITION BY s.task_id
+          ORDER BY s.ord_t, s.id
+        ) AS next_shot_id
+      FROM shot_stream s
+    ),
+
+    -- 9) Labels for serve_try_ix_in_point + service_winner_d
+    serve_labels AS (
+      SELECT
+        sq.id,
+
+        -- numeric try index within the point (1, 2, ...)
+        CASE
+          WHEN sq.is_serve AND sq.point_number IS NOT NULL THEN sq.serve_try_ix
+          ELSE NULL
+        END AS serve_try_ix_in_point,
+
+        -- service winner:
+        --  - only on last serve in the point (serve_rev_ix = 1)
+        --  - TRUE if the IMMEDIATE next shot is NOT a valid opponent return
+        CASE
+          WHEN sq.is_serve
+               AND sq.point_number IS NOT NULL
+               AND sq.serve_rev_ix = 1
+          THEN
+            CASE
+              WHEN ns.id IS NULL THEN TRUE  -- no next shot at all
+              WHEN ns.valid = TRUE
+                   AND COALESCE(ns.exclude_d, FALSE) = FALSE
+                   AND ns.player_id <> sq.player_id
+                THEN FALSE                   -- immediate next is a valid opponent return
+              ELSE TRUE                      -- anything else -> no valid return
+            END
+          ELSE NULL
+        END AS service_winner_d
+      FROM serve_seq sq
+      LEFT JOIN shot_stream ns
+        ON ns.id = sq.next_shot_id
+    )
 
     -- 10) Final frame: all rows + attributes from latest serve + labels on serve rows
     ff AS (
