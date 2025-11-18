@@ -491,6 +491,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
+
 # ----------------------- Phase 4 updater ------------------------------
 
 def phase4_update(conn: Connection, task_id: str) -> int:
