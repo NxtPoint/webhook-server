@@ -244,11 +244,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       - Detect serves (serve_d) from swing_type + ball_hit_location_y (hit_y).
       - Compute server_end_d and serve_side_d on serve rows, then forward-fill to all rows.
       - Compute serve_try_ix_in_point as:
-          * '1', '2' for normal first/second serves (capped at 2),
-          * 'Fault' for double-fault last serves.
+          * '1' or '2' (capped at 2) for normal serves,
+          * 'Fault' on last-serve double faults.
       - Compute service_winner_d:
-          TRUE only on the last VALID serve in the point when there is
-          NO valid opponent return later in that point; NULL otherwise.
+          TRUE only on the last VALID serve in the point when:
+            * Server wins the point, and
+            * There is NO valid opponent return later in that point.
     """
     sql = f"""
     WITH base AS (
@@ -344,7 +345,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
        AND sr.serve_row_id = o.last_serve_id
     ),
 
-    -- 7) Shot stream with point_number + exclude_d, using detected is_serve from ff_base
+    -- 7) Shot stream with point_number + point_winner + exclude_d
     shot_stream AS (
       SELECT
         p.id,
@@ -352,6 +353,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.player_id,
         p.valid,
         p.point_number,
+        p.point_winner_player_id,
         COALESCE(p.exclude_d, FALSE) AS exclude_d,
         COALESCE(p.ball_hit_s, 1e15) AS ord_t,
         COALESCE(fb.is_serve, FALSE) AS is_serve
@@ -362,7 +364,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
     ),
 
-    -- 8) Per-point serve ordering (1,2,…) and last-serve flag
+    -- 8) Per-point serve ordering (1,2,...) + last-serve info
     serve_seq AS (
       SELECT
         s.*,
@@ -377,7 +379,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE NULL
         END AS serve_try_ix,
 
-        -- reverse index to identify last serve in the point
+        -- reverse index to identify last serve from this server in the point
         CASE
           WHEN s.is_serve AND s.point_number IS NOT NULL THEN
             ROW_NUMBER() OVER (
@@ -389,7 +391,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM shot_stream s
     ),
 
-    -- 9) Features per serve: does anything valid happen after?
+    -- 9) Features per serve: returns + who wins point
     serve_features AS (
       SELECT
         sq.*,
@@ -406,16 +408,9 @@ def phase3_update(conn: Connection, task_id: str) -> int:
             AND r.player_id    <> sq.player_id
         ) AS has_valid_opponent_return_after,
 
-        -- any valid shot at all later in the same point
-        EXISTS (
-          SELECT 1
-          FROM shot_stream r2
-          WHERE r2.task_id      = sq.task_id
-            AND r2.point_number = sq.point_number
-            AND r2.ord_t        > sq.ord_t
-            AND r2.valid        = TRUE
-            AND COALESCE(r2.exclude_d, FALSE) = FALSE
-        ) AS has_any_valid_shot_after
+        -- server wins the point?
+        (sq.point_winner_player_id IS NOT NULL
+         AND sq.point_winner_player_id = sq.player_id) AS server_won_point
       FROM serve_seq sq
     ),
 
@@ -425,30 +420,35 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         sf.id,
 
         -- serve_try_ix_in_point:
-        --  * '1', '2' normally (capped at 2)
-        --  * 'Fault' on last-serve double faults (invalid, no valid shots after)
+        --  * '1' or '2' normally (capped at 2)
+        --  * 'Fault' when:
+        --      - this is the last serve from this server in the point
+        --      - server did NOT win the point
+        --      - and there is NO valid opponent return after
         CASE
           WHEN sf.is_serve AND sf.point_number IS NOT NULL THEN
             CASE
               WHEN
                 sf.serve_rev_ix = 1
-                AND sf.valid = FALSE
-                AND sf.has_any_valid_shot_after = FALSE
-              THEN 'Fault'                              -- double fault last serve
-              ELSE LEAST(sf.serve_try_ix, 2)::text      -- normal 1 / 2
+                AND sf.server_won_point = FALSE
+                AND sf.has_valid_opponent_return_after = FALSE
+              THEN 'Fault'
+              ELSE LEAST(sf.serve_try_ix, 2)::text
             END
           ELSE NULL
         END AS serve_try_ix_in_point,
 
         -- service_winner_d:
         --  - last VALID serve in the point
-        --  - and there is NO valid opponent return later in that point
-        --  - TRUE for winners, NULL otherwise (no FALSE values)
+        --  - server must win the point
+        --  - and there is NO valid opponent return after
+        --  - TRUE for winners, NULL otherwise (no FALSEs)
         CASE
           WHEN sf.is_serve
                AND sf.valid = TRUE
                AND sf.point_number IS NOT NULL
                AND sf.serve_rev_ix = 1
+               AND sf.server_won_point = TRUE
                AND sf.has_valid_opponent_return_after = FALSE
           THEN TRUE
           ELSE NULL
