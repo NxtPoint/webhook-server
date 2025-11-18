@@ -316,7 +316,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM serve_seq sq
     ),
 
-    serve_labels AS (
+        serve_labels AS (
       SELECT
         sf.id,
 
@@ -331,11 +331,11 @@ def phase3_update(conn: Connection, task_id: str) -> int:
                 AND sf.has_valid_opponent_return_after = FALSE
               THEN 'Ace'
 
-              -- DOUBLE: last serve, server loses, no valid opponent return
+              -- DOUBLE: last serve, server loses the point
+              -- (we no longer require "no valid opponent return")
               WHEN
                 sf.serve_rev_ix = 1
                 AND sf.server_won_point = FALSE
-                AND sf.has_valid_opponent_return_after = FALSE
               THEN 'Double'
 
               -- otherwise just label 1st / 2nd (cap at 2)
@@ -347,6 +347,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
         -- service_winner_d:
         --  TRUE only on last VALID serve, server wins, no valid opponent return
+        --  NULL everywhere else
         CASE
           WHEN sf.is_serve
                AND sf.valid = TRUE
@@ -359,6 +360,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         END AS service_winner_d
       FROM serve_features sf
     )
+
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
