@@ -476,6 +476,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       LEFT JOIN serve_labels sl
         ON sl.id = o.id
     )
+    
+
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
@@ -488,6 +490,13 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.id = fr.id;
     """
+
+        # DEBUG: fingerprint phase 3 is running
+    conn.execute(text(f"""
+            UPDATE {SILVER_SCHEMA}.{TABLE}
+            SET serve_try_ix_in_point = 'DEBUG_P3'
+            WHERE task_id = :tid;
+        """), {"tid": task_id})
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
