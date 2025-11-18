@@ -242,14 +242,16 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     Phase 3:
       - Uses existing serve_d / point_number / point_winner_player_id.
-      - Computes serve_try_ix_in_point as:
-          * '1' / '2' (capped at 2) for normal serves
-          * 'Fault' on last-serve double faults (server loses point, no valid opponent return)
-      - Computes service_winner_d:
+      - Sets serve_try_ix_in_point to:
+          * '1st'   – first serve in the point (default)
+          * '2nd'   – second serve in the point (default)
+          * 'Ace'   – first serve, server wins point, no valid opponent return after
+          * 'Double'– last serve, server loses point, no valid opponent return after
+      - Sets service_winner_d:
           TRUE only on the last VALID serve in the point when:
             * Server wins the point, and
             * There is NO valid opponent return later in that point.
-        NULL everywhere else (no FALSE values).
+          NULL everywhere else (no FALSE values).
     """
     sql = f"""
     WITH shots AS (
@@ -267,7 +269,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
     ),
 
-    -- Per-point serve ordering (1,2,…) and last-serve flag
+    -- per-point serve ordering (1,2,…) + last-serve flag
     serve_seq AS (
       SELECT
         s.*,
@@ -278,7 +280,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
               ORDER BY s.ord_t, s.id
             )
           ELSE NULL
-        END AS serve_try_ix,
+        END AS serve_ix,
+
         CASE
           WHEN s.is_serve AND s.point_number IS NOT NULL THEN
             ROW_NUMBER() OVER (
@@ -290,7 +293,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM shots s
     ),
 
-    -- Features per serve: opponent returns + who wins point
+    -- features per serve: opponent returns + who wins point
     serve_features AS (
       SELECT
         sq.*,
@@ -313,35 +316,37 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM serve_seq sq
     ),
 
-    -- Final labels
     serve_labels AS (
       SELECT
         sf.id,
 
-        -- serve_try_ix_in_point:
-        --  * '1' / '2' normally (capped at 2)
-        --  * 'Fault' when:
-        --      - this is the last serve from this server in the point
-        --      - server did NOT win the point
-        --      - and there is NO valid opponent return after
+        -- serve_try_ix_in_point: '1st' / '2nd' / 'Ace' / 'Double'
         CASE
           WHEN sf.is_serve AND sf.point_number IS NOT NULL THEN
             CASE
+              -- ACE: first serve, server wins, no valid opponent return
+              WHEN
+                sf.serve_ix = 1
+                AND sf.server_won_point = TRUE
+                AND sf.has_valid_opponent_return_after = FALSE
+              THEN 'Ace'
+
+              -- DOUBLE: last serve, server loses, no valid opponent return
               WHEN
                 sf.serve_rev_ix = 1
                 AND sf.server_won_point = FALSE
                 AND sf.has_valid_opponent_return_after = FALSE
-              THEN 'Fault'
-              ELSE LEAST(sf.serve_try_ix, 2)::text
+              THEN 'Double'
+
+              -- otherwise just label 1st / 2nd (cap at 2)
+              WHEN sf.serve_ix = 1 THEN '1st'
+              WHEN sf.serve_ix >= 2 THEN '2nd'
             END
           ELSE NULL
         END AS serve_try_ix_in_point,
 
         -- service_winner_d:
-        --  - last VALID serve in the point
-        --  - server must win the point
-        --  - and there is NO valid opponent return after
-        --  - TRUE for winners, NULL otherwise (no FALSEs)
+        --  TRUE only on last VALID serve, server wins, no valid opponent return
         CASE
           WHEN sf.is_serve
                AND sf.valid = TRUE
@@ -365,6 +370,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 # ----------------------- Phase 4 updater ------------------------------
 
