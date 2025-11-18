@@ -241,17 +241,17 @@ X_SIDE_ABS = 4.0    # side threshold
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
     Phase 3:
-      - Uses existing serve_d / point_number / point_winner_player_id.
+      - Uses existing serve_d / point_number / point_winner_player_id / is_in_rally.
       - Sets serve_try_ix_in_point to:
           * '1st'   – first serve in the point (default)
           * '2nd'   – second serve in the point (default)
           * 'Ace'   – first serve, server wins point, no valid opponent return after
-          * 'Double'– last serve, server loses point, no valid opponent return after
+          * 'Double'– last serve (2nd+), server loses point, no rally after
       - Sets service_winner_d:
           TRUE only on the last VALID serve in the point when:
             * Server wins the point, and
             * There is NO valid opponent return later in that point.
-          NULL everywhere else (no FALSE values).
+          NULL everywhere else.
     """
     sql = f"""
     WITH shots AS (
@@ -264,7 +264,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.point_winner_player_id,
         COALESCE(p.exclude_d, FALSE) AS exclude_d,
         COALESCE(p.ball_hit_s, 1e15) AS ord_t,
-        COALESCE(p.serve_d, FALSE)   AS is_serve
+        COALESCE(p.serve_d, FALSE)   AS is_serve,
+        COALESCE(p.is_in_rally, FALSE) AS is_in_rally
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
@@ -293,7 +294,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM shots s
     ),
 
-    -- features per serve: opponent returns + who wins point
+    -- features per serve: opponent returns + rally + who wins point
     serve_features AS (
       SELECT
         sq.*,
@@ -310,13 +311,23 @@ def phase3_update(conn: Connection, task_id: str) -> int:
             AND r.player_id    <> sq.player_id
         ) AS has_valid_opponent_return_after,
 
+        -- any rally shot later in the same point
+        EXISTS (
+          SELECT 1
+          FROM shots r2
+          WHERE r2.task_id      = sq.task_id
+            AND r2.point_number = sq.point_number
+            AND r2.ord_t        > sq.ord_t
+            AND r2.is_in_rally  = TRUE
+        ) AS has_rally_after,
+
         -- server wins the point?
         (sq.point_winner_player_id IS NOT NULL
          AND sq.point_winner_player_id = sq.player_id) AS server_won_point
       FROM serve_seq sq
     ),
 
-        serve_labels AS (
+    serve_labels AS (
       SELECT
         sf.id,
 
@@ -331,11 +342,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
                 AND sf.has_valid_opponent_return_after = FALSE
               THEN 'Ace'
 
-              -- DOUBLE: last serve, server loses the point
-              -- (we no longer require "no valid opponent return")
+              -- DOUBLE: last serve (2nd+), server loses, no rally after
               WHEN
                 sf.serve_rev_ix = 1
+                AND sf.serve_ix >= 2
                 AND sf.server_won_point = FALSE
+                AND sf.has_rally_after = FALSE
               THEN 'Double'
 
               -- otherwise just label 1st / 2nd (cap at 2)
@@ -361,7 +373,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM serve_features sf
     )
 
-
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_try_ix_in_point = sl.serve_try_ix_in_point,
@@ -372,6 +383,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 
 # ----------------------- Phase 4 updater ------------------------------
