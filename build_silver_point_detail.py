@@ -328,8 +328,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE m2.is_serve
     ),
 
-    -- 6) Final frame: all rows + attributes from latest serve
-    ff AS (
+    -- 6) Base frame: all rows + attributes from latest serve
+    ff_base AS (
       SELECT
         o.id,
         o.task_id,
@@ -342,7 +342,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
        AND sr.serve_row_id = o.last_serve_id
     ),
 
-    -- 7) Shot stream with point_number + exclude_d, using detected is_serve from ff
+    -- 7) Shot stream with point_number + exclude_d, using detected is_serve from ff_base
     shot_stream AS (
       SELECT
         p.id,
@@ -352,11 +352,11 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.point_number,
         COALESCE(p.exclude_d, FALSE) AS exclude_d,
         COALESCE(p.ball_hit_s, 1e15) AS ord_t,
-        COALESCE(ff.is_serve, FALSE) AS is_serve
+        COALESCE(fb.is_serve, FALSE) AS is_serve
       FROM {SILVER_SCHEMA}.{TABLE} p
-      LEFT JOIN ff
-        ON ff.id = p.id
-       AND ff.task_id = p.task_id
+      LEFT JOIN ff_base fb
+        ON fb.id = p.id
+       AND fb.task_id = p.task_id
       WHERE p.task_id = :tid
     ),
 
@@ -425,39 +425,39 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM serve_seq sq
       LEFT JOIN shot_stream ns
         ON ns.id = sq.next_shot_id
-    )
+    ),
 
-    -- 10) Final frame: all rows + attributes from latest serve + labels on serve rows
-    ff AS (
+    -- 10) Final rows with all attributes + labels
+    final_rows AS (
       SELECT
         o.id,
         o.task_id,
-        o.is_serve,
-        sr.server_end_d_calc,
-        sr.serve_side_d_calc,
-        sl.serve_try_label,
+        fb.is_serve,
+        fb.server_end_d_calc,
+        fb.serve_side_d_calc,
+        sl.serve_try_ix_in_point,
         CASE
-          WHEN o.is_serve THEN sl.service_winner_d
+          WHEN fb.is_serve THEN sl.service_winner_d
           ELSE NULL
         END AS service_winner_d
       FROM ordered o
-      LEFT JOIN serve_rows sr
-        ON sr.task_id = o.task_id
-       AND sr.serve_row_id = o.last_serve_id
+      LEFT JOIN ff_base fb
+        ON fb.id = o.id
+       AND fb.task_id = o.task_id
       LEFT JOIN serve_labels sl
-        ON sl.serve_id = o.id
+        ON sl.id = o.id
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      serve_d               = ff.is_serve,
-      server_end_d          = COALESCE(ff.server_end_d_calc, p.server_end_d),
-      serve_side_d          = COALESCE(ff.serve_side_d_calc, p.serve_side_d),
-      serve_try_ix_in_point = ff.serve_try_label,
-      service_winner_d      = ff.service_winner_d
-    FROM ff
+      serve_d               = fr.is_serve,
+      server_end_d          = COALESCE(fr.server_end_d_calc, p.server_end_d),
+      serve_side_d          = COALESCE(fr.serve_side_d_calc, p.serve_side_d),
+      serve_try_ix_in_point = fr.serve_try_ix_in_point,
+      service_winner_d      = fr.service_winner_d
+    FROM final_rows fr
     WHERE p.task_id = :tid
-      AND p.id = ff.id;
+      AND p.id = fr.id;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
