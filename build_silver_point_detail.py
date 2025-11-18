@@ -358,7 +358,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
-
 # ----------------------- Phase 4 updater ------------------------------
 
 def phase4_update(conn: Connection, task_id: str) -> int:
@@ -621,14 +620,15 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
-    Exclusions per spec:
+    Phase 5 exclusions — NEW spec:
 
-      1) Any swing events prior to the start of the first serve / point.
-      2) Any swing where the same player hits twice in a row in the point.
-      3) Any swing with a gap > 5 seconds from the previous swing in the point.
-      4) Any swing events before the first serve and after the last serve within the point.
+      1) If serve_side_d is NULL → exclude_d = TRUE.
+      2) If serve_d = FALSE and ball_hit_s is less than ball_hit_s of the LAST serve
+         in the point → exclude_d = TRUE.
+      3) Within each (task_id, point_number), if ball_hit_s is more than 5 seconds
+         after the previous shot, exclude that shot AND all later shots in the point.
 
-    Implemented inside each (task_id, point_number).
+    Only sets exclude_d; does not touch any other columns.
     """
     sql = f"""
     WITH base AS (
@@ -638,17 +638,18 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
         p.point_number,
         p.player_id,
         p.ball_hit_s,
-        p.serve_d
+        COALESCE(p.serve_d, FALSE)    AS serve_d,
+        p.serve_side_d
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     ),
 
-    point_serves AS (
+    -- last serve time per point
+    point_last_serve AS (
       SELECT
         b.task_id,
         b.point_number,
-        MIN(CASE WHEN COALESCE(b.serve_d, FALSE) THEN b.ball_hit_s END) AS first_serve_s,
-        MAX(CASE WHEN COALESCE(b.serve_d, FALSE) THEN b.ball_hit_s END) AS last_serve_s
+        MAX(CASE WHEN b.serve_d THEN b.ball_hit_s END) AS last_serve_s
       FROM base b
       GROUP BY b.task_id, b.point_number
     ),
@@ -656,48 +657,55 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     ordered AS (
       SELECT
         b.*,
-        ps.first_serve_s,
-        ps.last_serve_s,
+        pls.last_serve_s,
         LAG(b.ball_hit_s) OVER (
           PARTITION BY b.task_id, b.point_number
           ORDER BY b.ball_hit_s, b.id
-        ) AS prev_s,
-        LAG(b.player_id) OVER (
-          PARTITION BY b.task_id, b.point_number
-          ORDER BY b.ball_hit_s, b.id
-        ) AS prev_pid
+        ) AS prev_s
       FROM base b
-      LEFT JOIN point_serves ps
-        ON ps.task_id = b.task_id
-       AND ps.point_number = b.point_number
+      LEFT JOIN point_last_serve pls
+        ON pls.task_id = b.task_id
+       AND pls.point_number = b.point_number
+    ),
+
+    -- rule flags
+    flagged AS (
+      SELECT
+        o.*,
+
+        -- Rule 1: serve_side_d is NULL
+        (o.serve_side_d IS NULL) AS r1_side_null,
+
+        -- Rule 2: non-serve before the last serve in the point
+        (NOT o.serve_d
+         AND o.last_serve_s IS NOT NULL
+         AND o.ball_hit_s < o.last_serve_s) AS r2_before_last_serve,
+
+        -- Initial break for Rule 3: gap > 5s to previous shot
+        CASE
+          WHEN o.prev_s IS NULL THEN FALSE
+          ELSE (o.ball_hit_s - o.prev_s) > 5.0
+        END AS gap_break
+      FROM ordered o
+    ),
+
+    -- Rule 3: once a gap_break happens in a point, everything from that row onwards is excluded
+    gap_chain AS (
+      SELECT
+        f.*,
+        BOOL_OR(f.gap_break) OVER (
+          PARTITION BY f.task_id, f.point_number
+          ORDER BY f.ball_hit_s, f.id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS r3_gap_chain
+      FROM flagged f
     ),
 
     excl AS (
       SELECT
-        o.id,
-        CASE
-          -- Rule 1: point_number = 0 (pre-point noise)
-          WHEN COALESCE(o.point_number, 0) = 0 THEN TRUE
-
-          -- Rule 2 + 4: before first serve in point
-          WHEN o.first_serve_s IS NOT NULL
-               AND o.ball_hit_s < o.first_serve_s THEN TRUE
-
-          -- Rule 4: after last serve in point
-          WHEN o.last_serve_s IS NOT NULL
-               AND o.ball_hit_s > o.last_serve_s THEN TRUE
-
-          -- Rule 3: gap > 5s from previous swing in same point
-          WHEN o.prev_s IS NOT NULL
-               AND (o.ball_hit_s - o.prev_s) > 5.0 THEN TRUE
-
-          -- Rule 2: duplicate player hits in a row in same point
-          WHEN o.prev_pid IS NOT NULL
-               AND o.player_id = o.prev_pid THEN TRUE
-
-          ELSE FALSE
-        END AS exclude_d
-      FROM ordered o
+        g.id,
+        (g.r1_side_null OR g.r2_before_last_serve OR g.r3_gap_chain) AS exclude_d
+      FROM gap_chain g
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
