@@ -733,14 +733,14 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
 
       2) Else, use non-excluded shots only:
 
-         - Mark a shot as IN if court_x & court_y are not NULL and court_y <= 23.
+         - Shot is IN if court_x & court_y are not NULL and court_y <= 23.11.
 
-         - Find the LAST non-excluded shot in the point:
-             * If that shot is IN → winner = player who hit that shot.
-             * Else (fault or out), find the LAST IN shot in that point
-               → winner = player who hit that last IN shot.
+         - If last non-excluded shot is IN → last hitter wins.
+         - Else if there is a last IN shot earlier in the point → that hitter wins.
+         - Else (no IN at all) → opponent of the last hitter wins.
 
-         - If there is no IN shot at all → winner = NULL.
+      So every real point gets a winner (no NULL), except truly degenerate cases
+      where we have neither any serve nor any non-excluded shot.
     """
     sql = f"""
     WITH base AS (
@@ -779,7 +779,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       ORDER BY b.task_id, b.point_number, b.ball_hit_s
     ),
 
-    -- receiver per point = "the other player in the task" (even if they never hit)
+    -- receiver per point = "the other player in the task"
     point_receiver AS (
       SELECT
         ps.task_id,
@@ -791,7 +791,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       GROUP BY ps.task_id, ps.point_number
     ),
 
-    -- any Double in the point? (tolerant of trailing chars / spaces)
+    -- any Double in the point? (tolerant of spacing etc.)
     point_flags AS (
       SELECT
         b.task_id,
@@ -806,12 +806,11 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       GROUP BY b.task_id, b.point_number
     ),
 
-    -- non-excluded shots with IN/OUT flag
+    -- non-excluded shots with IN/OUT flag (baseline at 23.11)
     ordered_included AS (
       SELECT
         b.*,
-        -- shot is IN if we have coords and court_y <= 23 (inside baseline)
-        (b.court_x IS NOT NULL AND b.court_y IS NOT NULL AND b.court_y <= 23.0) AS is_in
+        (b.court_x IS NOT NULL AND b.court_y IS NOT NULL AND b.court_y <= 23.11) AS is_in
       FROM base b
       WHERE b.point_number > 0
         AND b.exclude_d = FALSE
@@ -839,6 +838,18 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       ORDER BY o.task_id, o.point_number, o.ball_hit_s DESC, o.id DESC
     ),
 
+    -- opponent of last_pid (for the rare "no IN, no Double" case)
+    last_opponent AS (
+      SELECT
+        la.task_id,
+        la.point_number,
+        MIN(tp.player_id) FILTER (WHERE tp.player_id <> la.last_pid) AS opp_pid
+      FROM last_any la
+      JOIN task_players tp
+        ON tp.task_id = la.task_id
+      GROUP BY la.task_id, la.point_number
+    ),
+
     winners AS (
       SELECT
         ps.task_id,
@@ -849,7 +860,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
                AND pr.receiver_id IS NOT NULL
             THEN pr.receiver_id
 
-          -- 2) no Double: decide from last shot / last IN shot
+          -- 2) no Double: decide from last shot / last IN shot / opponent of last
           WHEN la.last_pid IS NOT NULL THEN
             CASE
               -- last shot IN → last player wins
@@ -860,6 +871,12 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
               WHEN la.last_is_in = FALSE
                    AND li.last_in_pid IS NOT NULL
                 THEN li.last_in_pid
+
+              -- no IN at all → opponent of last hitter wins
+              WHEN la.last_is_in = FALSE
+                   AND li.last_in_pid IS NULL
+                   AND lo.opp_pid IS NOT NULL
+                THEN lo.opp_pid
 
               ELSE NULL
             END
@@ -879,6 +896,9 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       LEFT JOIN last_in li
         ON li.task_id = ps.task_id
        AND li.point_number = ps.point_number
+      LEFT JOIN last_opponent lo
+        ON lo.task_id = ps.task_id
+       AND lo.point_number = ps.point_number
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
