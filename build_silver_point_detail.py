@@ -976,58 +976,37 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     return res.rowcount or 0
 
 def phase5_set_game_winner(conn: Connection, task_id: str) -> int:
-    """
-    Game winner logic:
-
-      For each (task_id, game_number):
-        - Count points won per player from point_winner_player_id.
-        - Player with the most points wins the game.
-        - Write game_winner_player_id to all rows in that game.
-
-      Assumes:
-        - point_winner_player_id is already computed.
-        - game_number is already assigned.
-    """
     sql = f"""
-    WITH points AS (
+    WITH pts AS (
       SELECT
         p.task_id,
         p.game_number,
-        p.point_winner_player_id AS pid
+        p.point_number,
+        p.point_winner_player_id,
+        MAX(p.ball_hit_s) AS last_s
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
-        AND p.game_number > 0
-        AND p.point_winner_player_id IS NOT NULL
-      GROUP BY p.task_id, p.game_number, p.point_winner_player_id
+        AND p.point_number > 0
+        AND COALESCE(p.exclude_d, FALSE) = FALSE
+      GROUP BY p.task_id, p.game_number, p.point_number, p.point_winner_player_id
     ),
 
-    game_totals AS (
-      SELECT
+    last_points AS (
+      SELECT DISTINCT ON (task_id, game_number)
         task_id,
         game_number,
-        pid,
-        COUNT(*) AS pts
-      FROM points
-      GROUP BY task_id, game_number, pid
-    ),
-
-    game_winners AS (
-      SELECT DISTINCT ON (gt.task_id, gt.game_number)
-        gt.task_id,
-        gt.game_number,
-        gt.pid::int AS winner_pid
-      FROM game_totals gt
-      ORDER BY gt.task_id, gt.game_number, gt.pts DESC
+        point_winner_player_id AS winner_pid
+      FROM pts
+      ORDER BY task_id, game_number, last_s DESC
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET game_winner_player_id = gw.winner_pid::int
-    FROM game_winners gw
+    SET game_winner_player_id = lp.winner_pid::int
+    FROM last_points lp
     WHERE p.task_id = :tid
-      AND p.game_number = gw.game_number;
+      AND p.game_number = lp.game_number;
     """
-    res = conn.execute(text(sql), {"tid": task_id})
-    return res.rowcount or 0
+    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
 
 # ------------------------------- Phase 2–5 (schema only adds) -------------------------------
