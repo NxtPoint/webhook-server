@@ -66,10 +66,9 @@ PHASE5_COLS = OrderedDict({
     "exclude_d":               "boolean",
     "point_number":            "integer",
     "point_winner_player_id":  "text",
-    "game_number":             "integer"
+    "game_number":             "integer",
+    "game_winner_player_id":   "integer"
 })
-
-
 
 # ------------------------------- helpers ---------------------------------
 def _exec(conn: Connection, sql: str, params: Optional[dict] = None):
@@ -553,7 +552,9 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     phase5_apply_exclusions(conn, task_id)
     # 3) point winner (DF via serve_try_ix_in_point, then service_winner_d, else last valid swing)
     phase5_set_point_winner(conn, task_id)
-    # 4) game number (server_end_d near↔far flips on first serves)
+    # 4) game won by (server_end_d near↔far flips on first serves)
+    phase5_set_game_winner(conn, task_id)
+    # 5) game number (server_end_d near↔far flips on first serves)
     phase5_fix_game_number(conn, task_id)
     return 1
 
@@ -970,6 +971,60 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     FROM g_rows r
     WHERE p.id = r.id
       AND p.task_id = :tid;
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+def phase5_set_game_winner(conn: Connection, task_id: str) -> int:
+    """
+    Game winner logic:
+
+      For each (task_id, game_number):
+        - Count points won per player from point_winner_player_id.
+        - Player with the most points wins the game.
+        - Write game_winner_player_id to all rows in that game.
+
+      Assumes:
+        - point_winner_player_id is already computed.
+        - game_number is already assigned.
+    """
+    sql = f"""
+    WITH points AS (
+      SELECT
+        p.task_id,
+        p.game_number,
+        p.point_winner_player_id AS pid
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND p.game_number > 0
+        AND p.point_winner_player_id IS NOT NULL
+      GROUP BY p.task_id, p.game_number, p.point_winner_player_id
+    ),
+
+    game_totals AS (
+      SELECT
+        task_id,
+        game_number,
+        pid,
+        COUNT(*) AS pts
+      FROM points
+      GROUP BY task_id, game_number, pid
+    ),
+
+    game_winners AS (
+      SELECT DISTINCT ON (gt.task_id, gt.game_number)
+        gt.task_id,
+        gt.game_number,
+        gt.pid AS winner_pid
+      FROM game_totals gt
+      ORDER BY gt.task_id, gt.game_number, gt.pts DESC
+    )
+
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET game_winner_player_id = gw.winner_pid
+    FROM game_winners gw
+    WHERE p.task_id = :tid
+      AND p.game_number = gw.game_number;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
