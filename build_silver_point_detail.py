@@ -1015,13 +1015,13 @@ def phase5_set_game_winner(conn: Connection, task_id: str) -> int:
       SELECT DISTINCT ON (gt.task_id, gt.game_number)
         gt.task_id,
         gt.game_number,
-        gt.pid AS winner_pid
+        gt.pid::int AS winner_pid
       FROM game_totals gt
       ORDER BY gt.task_id, gt.game_number, gt.pts DESC
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET game_winner_player_id = gw.winner_pid
+    SET game_winner_player_id = gw.winner_pid::int
     FROM game_winners gw
     WHERE p.task_id = :tid
       AND p.game_number = gw.game_number;
