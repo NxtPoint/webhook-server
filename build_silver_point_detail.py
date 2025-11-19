@@ -791,7 +791,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       GROUP BY ps.task_id, ps.point_number
     ),
 
-    -- any Double in the point?
+    -- any Double in the point? (tolerant of trailing chars / spaces)
     point_flags AS (
       SELECT
         b.task_id,
@@ -799,7 +799,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
         BOOL_OR(
           b.serve_d
           AND b.serve_try_ix_in_point IS NOT NULL
-          AND LOWER(b.serve_try_ix_in_point::text) = 'double'
+          AND LOWER(b.serve_try_ix_in_point::text) LIKE 'double%'
         ) AS any_double
       FROM base b
       WHERE b.point_number > 0
@@ -810,7 +810,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     ordered_included AS (
       SELECT
         b.*,
-        -- shot is IN if we have coords and court_y <= 23
+        -- shot is IN if we have coords and court_y <= 23 (inside baseline)
         (b.court_x IS NOT NULL AND b.court_y IS NOT NULL AND b.court_y <= 23.0) AS is_in
       FROM base b
       WHERE b.point_number > 0
@@ -889,7 +889,6 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
-
 
 
 def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
