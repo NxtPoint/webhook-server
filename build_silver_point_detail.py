@@ -370,38 +370,24 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
 def phase4_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 4 (spec-only):
-      - Columns: serve_location (int 1–8), rally_location_hit (A–D), rally_location_bounce (A–D)
-      - Inputs only from spec: serve_d, server_end_d, serve_side_d, serve_try_ix_in_point,
-        ball_hit_location_x, ball_hit_location_y, ball_hit_s, valid.
+    Phase 4:
+      - serve_location        : 1–8 (from court_x, server_end_d, serve_side_d)
+      - rally_location_hit    : A–D (from ball_hit_location_x / y)
+      - rally_location_bounce : A–D (from court_x + ball_hit_location_y, fallback to hit)
     """
 
-    # 0) Ensure P4 columns exist (safe no-ops if they already do)
+    # 0) Ensure P4 columns exist
     ensure_phase_columns(conn, OrderedDict({
         "serve_location":        "integer",
         "rally_location_hit":    "text",
         "rally_location_bounce": "text",
     }))
 
-    # 1) Midpoint from FIRST serves only (try = 1). Default to 4.0 if none.
-    sql_mid = f"""
-    WITH fs AS (
-      SELECT
-        NULLIF(TRIM(p.ball_hit_location_x::text), '')::double precision AS x
-      FROM {SILVER_SCHEMA}.{TABLE} p
-      WHERE p.task_id = :tid
-        AND COALESCE(p.serve_d, FALSE) IS TRUE
-        AND (
-          (p.serve_try_ix_in_point IS NOT NULL AND p.serve_try_ix_in_point::text ~ '^[0-9]+$'
-           AND p.serve_try_ix_in_point::int = 1)
-        )
-        AND NULLIF(TRIM(p.ball_hit_location_x::text), '') IS NOT NULL
-    )
-    SELECT COALESCE(AVG(x), 4.0) FROM fs;
-    """
-    mid_x = conn.execute(text(sql_mid), {"tid": task_id}).scalar() or 4.0
-
-    # 2) Serve location: 1–8 bands, spec-driven
+    # 1) Serve location (1–8) — SPEC:
+    # near + deuce  : court_x <1 →1; >3→4; >1 & <2→2; else→3; NULL→3
+    # near + ad     : court_x <5 →5; >7→8; >5 & <6→6; else→7; NULL→7
+    # far  + ad     : same as near+ad
+    # far  + deuce  : same as near+deuce; NULL→3
     sql_srv = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET serve_location =
@@ -410,77 +396,83 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 
         ELSE
           CASE
-            -- Basic sanity for x
-            WHEN NULLIF(TRIM(p.ball_hit_location_x::text), '') IS NULL THEN NULL
-
-            -- Near end, deuce side: x < mid line → 1–4
-            WHEN lower(TRIM(p.server_end_d)) = 'near' AND lower(TRIM(p.serve_side_d)) = 'deuce'
-                 AND (NULLIF(TRIM(p.ball_hit_location_x::text), '')::double precision) < :mid THEN
+            -- NEAR + DEUCE
+            WHEN lower(COALESCE(TRIM(p.server_end_d), '')) = 'near'
+             AND lower(COALESCE(TRIM(p.serve_side_d), '')) = 'deuce'
+            THEN
               CASE
-                WHEN (p.ball_hit_location_x)::double precision < 1 THEN 1
-                WHEN (p.ball_hit_location_x)::double precision < 2 THEN 2
-                WHEN (p.ball_hit_location_x)::double precision < 3 THEN 3
-                ELSE 4
+                WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
+                  THEN 3
+                WHEN (p.court_x)::double precision < 1
+                  THEN 1
+                WHEN (p.court_x)::double precision > 3
+                  THEN 4
+                WHEN (p.court_x)::double precision > 1
+                     AND (p.court_x)::double precision < 2
+                  THEN 2
+                ELSE 3
               END
 
-            -- Near end, ad side: x > mid line → 5–8
-            WHEN lower(TRIM(p.server_end_d)) = 'near' AND lower(TRIM(p.serve_side_d)) = 'ad'
-                 AND (NULLIF(TRIM(p.ball_hit_location_x::text), '')::double precision) >= :mid THEN
+            -- NEAR + AD
+            WHEN lower(COALESCE(TRIM(p.server_end_d), '')) = 'near'
+             AND lower(COALESCE(TRIM(p.serve_side_d), '')) = 'ad'
+            THEN
               CASE
-                WHEN (p.ball_hit_location_x)::double precision < (:mid + 1) THEN 5
-                WHEN (p.ball_hit_location_x)::double precision < (:mid + 2) THEN 6
-                WHEN (p.ball_hit_location_x)::double precision < (:mid + 3) THEN 7
-                ELSE 8
+                WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
+                  THEN 7
+                WHEN (p.court_x)::double precision < 5
+                  THEN 5
+                WHEN (p.court_x)::double precision > 7
+                  THEN 8
+                WHEN (p.court_x)::double precision > 5
+                     AND (p.court_x)::double precision < 6
+                  THEN 6
+                ELSE 7
               END
 
-            -- Far end, deuce side: x > mid line → 5–8
-            WHEN lower(TRIM(p.server_end_d)) = 'far' AND lower(TRIM(p.serve_side_d)) = 'deuce'
-                 AND (NULLIF(TRIM(p.ball_hit_location_x::text), '')::double precision) >= :mid THEN
+            -- FAR + AD (same bands as NEAR + AD)
+            WHEN lower(COALESCE(TRIM(p.server_end_d), '')) = 'far'
+             AND lower(COALESCE(TRIM(p.serve_side_d), '')) = 'ad'
+            THEN
               CASE
-                WHEN (p.ball_hit_location_x)::double precision < (:mid + 1) THEN 5
-                WHEN (p.ball_hit_location_x)::double precision < (:mid + 2) THEN 6
-                WHEN (p.ball_hit_location_x)::double precision < (:mid + 3) THEN 7
-                ELSE 8
+                WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
+                  THEN 7
+                WHEN (p.court_x)::double precision < 5
+                  THEN 5
+                WHEN (p.court_x)::double precision > 7
+                  THEN 8
+                WHEN (p.court_x)::double precision > 5
+                     AND (p.court_x)::double precision < 6
+                  THEN 6
+                ELSE 7
               END
 
-            -- Far end, ad side: x < mid line → 1–4
-            WHEN lower(TRIM(p.server_end_d)) = 'far'  AND lower(TRIM(p.serve_side_d)) = 'ad'
-                 AND (NULLIF(TRIM(p.ball_hit_location_x::text), '')::double precision) <= :mid THEN
+            -- FAR + DEUCE (same bands as NEAR + DEUCE)
+            WHEN lower(COALESCE(TRIM(p.server_end_d), '')) = 'far'
+             AND lower(COALESCE(TRIM(p.serve_side_d), '')) = 'deuce'
+            THEN
               CASE
-                WHEN (p.ball_hit_location_x)::double precision < 1 THEN 1
-                WHEN (p.ball_hit_location_x)::double precision < 2 THEN 2
-                WHEN (p.ball_hit_location_x)::double precision < 3 THEN 3
-                ELSE 4
+                WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
+                  THEN 3
+                WHEN (p.court_x)::double precision < 1
+                  THEN 1
+                WHEN (p.court_x)::double precision > 3
+                  THEN 4
+                WHEN (p.court_x)::double precision > 1
+                     AND (p.court_x)::double precision < 2
+                  THEN 2
+                ELSE 3
               END
 
-            -- Fallback: if side missing but end+x present, infer bands with mid_x
-            WHEN lower(TRIM(p.server_end_d)) = 'near'
-                 AND (NULLIF(TRIM(p.ball_hit_location_x::text), '')::double precision) IS NOT NULL THEN
-              CASE
-                WHEN (p.ball_hit_location_x)::double precision <  :mid THEN
-                  CASE
-                    WHEN (p.ball_hit_location_x)::double precision < 1 THEN 1
-                    WHEN (p.ball_hit_location_x)::double precision < 2 THEN 2
-                    WHEN (p.ball_hit_location_x)::double precision < 3 THEN 3
-                    ELSE 4
-                  END
-                ELSE
-                  CASE
-                    WHEN (p.ball_hit_location_x)::double precision < (:mid + 1) THEN 5
-                    WHEN (p.ball_hit_location_x)::double precision < (:mid + 2) THEN 6
-                    WHEN (p.ball_hit_location_x)::double precision < (:mid + 3) THEN 7
-                    ELSE 8
-                  END
-              END
-
+            -- If we somehow don't know side/end, leave NULL
             ELSE NULL
           END
       END
     WHERE p.task_id = :tid;
     """
-    conn.execute(text(sql_srv), {"tid": task_id, "mid": float(mid_x)})
+    conn.execute(text(sql_srv), {"tid": task_id})
 
-    # 3) Rally location (hit): A–D, non-serves only (11.6 y split), robust casts
+    # 2) Rally location (hit): A–D (this is the version you confirmed as correct)
     sql_rl_hit = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_hit =
@@ -490,6 +482,8 @@ def phase4_update(conn: Connection, task_id: str) -> int:
           CASE
             WHEN NULLIF(TRIM(p.ball_hit_location_x::text), '') IS NULL THEN NULL
             WHEN NULLIF(TRIM(p.ball_hit_location_y::text), '') IS NULL THEN NULL
+
+            -- y >= 11.6 → far half
             WHEN (p.ball_hit_location_y)::double precision >= 11.6 THEN
               CASE
                 WHEN (p.ball_hit_location_x)::double precision < 2 THEN 'D'
@@ -497,6 +491,8 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                 WHEN (p.ball_hit_location_x)::double precision < 6 THEN 'C'
                 ELSE 'A'
               END
+
+            -- y < 11.6 → near half
             ELSE
               CASE
                 WHEN (p.ball_hit_location_x)::double precision < 2 THEN 'A'
@@ -510,24 +506,25 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     """
     conn.execute(text(sql_rl_hit), {"tid": task_id})
 
-    # 4) Rally location (bounce): A–D, non-serves only, using court_x + ball_hit_location_y
+    # 3) Rally location (bounce): A–D from court_x + ball_hit_location_y
+    #    If court_x NULL → fall back to rally_location_hit.
     sql_rl_bnc = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_bounce =
       CASE
         WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
 
-        -- If we have no bounce X, fall back to rally_location_hit
+        -- No bounce X → use the hit location band
         WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
           THEN p.rally_location_hit
 
-        -- We need ball_hit_location_y to know which side
+        -- Need y to know side; if missing, return NULL
         WHEN NULLIF(TRIM(p.ball_hit_location_y::text), '') IS NULL
           THEN NULL
 
         ELSE
           CASE
-            -- Hitter on NEAR side (ball_hit_location_y > 11.6):
+            -- y > 11.6 → hitter on near side:
             --   court_x <2 'A', 2–4 'B', 4–6 'C', >6 'D'
             WHEN (p.ball_hit_location_y)::double precision > 11.6 THEN
               CASE
@@ -537,7 +534,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                 ELSE 'D'
               END
 
-            -- Hitter on FAR side (ball_hit_location_y <= 11.6):
+            -- y <= 11.6 → hitter on far side:
             --   court_x <2 'D', 2–4 'C', 4–6 'B', >6 'A'
             ELSE
               CASE
