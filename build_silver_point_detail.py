@@ -1023,13 +1023,14 @@ def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
 
       - 'Serve'  → serve_d = TRUE
       - 'Return' → shot_ix_in_point = 2 (first shot after last serve)
-      - Others (shot_ix_in_point >= 3):
-          * Compute y_local from ball_hit_location_y using server_end_d
-            so that y_local increases from net towards the hitter's own baseline.
-          * Thresholds:
-              y_local <= 0        → 'Rally'      (baseline / behind it)
-              0 < y_local < 5     → 'Transition'
-              y_local >= 5        → 'Net'        (service box and inside)
+      - Else (other shots from last serve onwards), based ONLY on ball_hit_location_y:
+
+            if  ball_hit_location_y < 0        → 'Rally'       (baseline)
+            if  ball_hit_location_y > 23       → 'Rally'       (baseline)
+            if  6 < ball_hit_location_y < 18   → 'Net'
+            else                               → 'Transition'
+
+      shots with exclude_d = TRUE or shot_ix_in_point IS NULL → NULL
     """
     sql = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
@@ -1044,36 +1045,20 @@ def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
         -- Return: first shot after last serve
         WHEN p.shot_ix_in_point = 2 THEN 'Return'
 
+        -- Other shots: phase of play by Y only
         ELSE
           CASE
-            WHEN p.ball_hit_location_y IS NULL
-                 OR p.server_id IS NULL
-                 OR p.server_end_d IS NULL
-              THEN NULL
-            ELSE
-              CASE
-                WHEN (
-                  CASE
-                    -- Hitter is NEAR camera
-                    WHEN (p.server_end_d = 'near' AND p.player_id = p.server_id)
-                      OR (p.server_end_d = 'far'  AND p.player_id <> p.server_id)
-                      THEN p.ball_hit_location_y
-                    -- Hitter is FAR camera
-                    ELSE -p.ball_hit_location_y
-                  END
-                ) <= 0 THEN 'Rally'
+            WHEN p.ball_hit_location_y IS NULL THEN NULL
 
-                WHEN (
-                  CASE
-                    WHEN (p.server_end_d = 'near' AND p.player_id = p.server_id)
-                      OR (p.server_end_d = 'far'  AND p.player_id <> p.server_id)
-                      THEN p.ball_hit_location_y
-                    ELSE -p.ball_hit_location_y
-                  END
-                ) < 5 THEN 'Transition'
+            WHEN (p.ball_hit_location_y)::double precision < 0
+                 OR (p.ball_hit_location_y)::double precision > 23
+              THEN 'Rally'        -- baseline zone
 
-                ELSE 'Net'
-              END
+            WHEN (p.ball_hit_location_y)::double precision > 6
+                 AND (p.ball_hit_location_y)::double precision < 18
+              THEN 'Net'
+
+            ELSE 'Transition'
           END
       END
     WHERE p.task_id = :tid
@@ -1081,6 +1066,7 @@ def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
+
 
 def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
     """
