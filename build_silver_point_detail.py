@@ -63,12 +63,18 @@ PHASE4_COLS = OrderedDict({
 
 # ------------------------------- PHASE 5 schema -------------------------------
 PHASE5_COLS = OrderedDict({
-    "exclude_d":               "boolean",
-    "point_number":            "integer",
-    "point_winner_player_id":  "text",
-    "game_number":             "integer",
-    "game_winner_player_id":   "integer"
+    "exclude_d":              "boolean",
+    "point_number":           "integer",
+    "point_winner_player_id": "text",
+    "game_number":            "integer",
+    "game_winner_player_id":  "integer",
+    # NEW:
+    "server_id":              "text",
+    "shot_ix_in_point":       "integer",
+    "shot_phase_d":           "text",
+    "point_key":              "text"
 })
+
 
 # ------------------------------- helpers ---------------------------------
 def _exec(conn: Connection, sql: str, params: Optional[dict] = None):
@@ -556,7 +562,16 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     phase5_set_game_winner(conn, task_id)
     # 5) game number (server_end_d near↔far flips on first serves)
     phase5_fix_game_number(conn, task_id)
+    # 6) server_id per point (first serve in each point)
+    phase5_set_server_id(conn, task_id)
+    # 7) shot_ix_in_point (ordering of non-excluded shots within point)
+    phase5_set_shot_ix_in_point(conn, task_id)
+    # 8) shot_phase_d (Serve / Return / Rally / Transition / Net)
+    phase5_set_shot_phase(conn, task_id)
+    # 9) point_key (universal point grain key)
+    phase5_set_point_key(conn, task_id)
     return 1
+
 
 def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
     """
@@ -907,6 +922,149 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     FROM winners w
     WHERE p.task_id = :tid
       AND p.point_number = w.point_number;
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+def phase5_set_server_id(conn: Connection, task_id: str) -> int:
+    """
+    server_id per point:
+      - The player who hits the FIRST serve in each (task_id, point_number).
+      - Persisted on ALL rows in that point.
+    """
+    sql = f"""
+    WITH first_serves AS (
+      SELECT
+        p.task_id,
+        p.point_number,
+        MIN(p.ball_hit_s) AS first_serve_s
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
+        AND p.point_number > 0
+      GROUP BY p.task_id, p.point_number
+    ),
+    point_server AS (
+      SELECT
+        fs.task_id,
+        fs.point_number,
+        p.player_id AS server_id
+      FROM first_serves fs
+      JOIN {SILVER_SCHEMA}.{TABLE} p
+        ON p.task_id = fs.task_id
+       AND p.point_number = fs.point_number
+       AND p.ball_hit_s = fs.first_serve_s
+    ),
+    upd AS (
+      SELECT
+        p.id,
+        ps.server_id
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      JOIN point_server ps
+        ON p.task_id = ps.task_id
+       AND p.point_number = ps.point_number
+      WHERE p.task_id = :tid
+        AND p.point_number > 0
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET server_id = u.server_id
+    FROM upd u
+    WHERE p.id = u.id
+      AND p.task_id = :tid;
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
+    """
+    shot_ix_in_point:
+      1,2,3,… per (task_id, point_number), ordered by ball_hit_s (then id),
+      using NON-excluded shots only.
+    """
+    sql = f"""
+    WITH ordered AS (
+      SELECT
+        p.id,
+        ROW_NUMBER() OVER (
+          PARTITION BY p.task_id, p.point_number
+          ORDER BY p.ball_hit_s, p.id
+        ) AS shot_ix
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND p.point_number > 0
+        AND COALESCE(p.exclude_d, FALSE) = FALSE
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET shot_ix_in_point = o.shot_ix
+    FROM ordered o
+    WHERE p.id = o.id
+      AND p.task_id = :tid;
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
+    """
+    shot_phase_d classification:
+
+      - 'Serve'      → serve_d = TRUE
+      - 'Return'     → first non-serve shot in the point (shot_ix_in_point = 2)
+      - 'Rally'      → behind baseline (far from net)
+      - 'Transition' → between baseline and mid-court
+      - 'Net'        → close to the net
+
+    Uses court_y (distance from net) on non-excluded, non-serve, non-return shots.
+    Thresholds reuse existing court geometry (11.6 mid, 23.11 baseline).
+    """
+    sql = f"""
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET shot_phase_d =
+      CASE
+        WHEN COALESCE(p.exclude_d, FALSE) = TRUE THEN NULL
+
+        -- Serve
+        WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN 'Serve'
+
+        -- Return: first non-serve in the point
+        WHEN p.shot_ix_in_point = 2 THEN 'Return'
+
+        -- Other phases: use court_y distance from net
+        ELSE
+          CASE
+            WHEN p.court_y IS NULL THEN NULL
+            -- Behind baseline: Rally
+            WHEN ABS(p.court_y)::double precision > 23.11 THEN 'Rally'
+            -- Between baseline and mid-court: Transition
+            WHEN ABS(p.court_y)::double precision >= 11.6 THEN 'Transition'
+            -- Closer than mid-court: Net zone
+            ELSE 'Net'
+          END
+      END
+    WHERE p.task_id = :tid
+      AND p.point_number > 0;
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+def phase5_set_point_key(conn: Connection, task_id: str) -> int:
+    """
+    point_key:
+      Universal point-grain key for cross-module joins.
+
+      Format: task_id|PPPP|server_id
+
+      - task_id   as text
+      - PPPP      = 4-digit zero-padded point_number
+      - server_id as text (may be blank if unknown)
+    """
+    sql = f"""
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET point_key =
+      p.task_id::text
+      || '|' || LPAD(p.point_number::text, 4, '0')
+      || '|' || COALESCE(p.server_id::text, '')
+    WHERE p.task_id = :tid
+      AND p.point_number > 0;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
