@@ -437,12 +437,12 @@ def phase4_update(conn: Connection, task_id: str) -> int:
               CASE
                 WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
                   THEN 7
-                WHEN (p.court_x)::double precision < 5
-                  THEN 5
-                WHEN (p.court_x)::double precision > 7
+                WHEN (p.court_x)::double precision < 1
                   THEN 8
-                WHEN (p.court_x)::double precision > 5
-                     AND (p.court_x)::double precision < 6
+                WHEN (p.court_x)::double precision > 3
+                  THEN 5
+                WHEN (p.court_x)::double precision > 1
+                     AND (p.court_x)::double precision < 2
                   THEN 6
                 ELSE 7
               END
@@ -454,12 +454,12 @@ def phase4_update(conn: Connection, task_id: str) -> int:
               CASE
                 WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
                   THEN 3
-                WHEN (p.court_x)::double precision < 1
-                  THEN 1
-                WHEN (p.court_x)::double precision > 3
+                WHEN (p.court_x)::double precision < 5
                   THEN 4
-                WHEN (p.court_x)::double precision > 1
-                     AND (p.court_x)::double precision < 2
+                WHEN (p.court_x)::double precision > 7
+                  THEN 1
+                WHEN (p.court_x)::double precision > 5
+                     AND (p.court_x)::double precision < 6
                   THEN 2
                 ELSE 3
               END
@@ -487,8 +487,8 @@ def phase4_update(conn: Connection, task_id: str) -> int:
             WHEN (p.ball_hit_location_y)::double precision >= 11.6 THEN
               CASE
                 WHEN (p.ball_hit_location_x)::double precision < 2 THEN 'D'
-                WHEN (p.ball_hit_location_x)::double precision < 4 THEN 'B'
-                WHEN (p.ball_hit_location_x)::double precision < 6 THEN 'C'
+                WHEN (p.ball_hit_location_x)::double precision < 4 THEN 'C'
+                WHEN (p.ball_hit_location_x)::double precision < 6 THEN 'B'
                 ELSE 'A'
               END
 
