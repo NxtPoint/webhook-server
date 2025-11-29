@@ -436,15 +436,15 @@ def phase4_update(conn: Connection, task_id: str) -> int:
             THEN
               CASE
                 WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
-                  THEN 7
+                  THEN 6
                 WHEN (p.court_x)::double precision < 1
                   THEN 8
                 WHEN (p.court_x)::double precision > 3
                   THEN 5
                 WHEN (p.court_x)::double precision > 1
                      AND (p.court_x)::double precision < 2
-                  THEN 6
-                ELSE 7
+                  THEN 7
+                ELSE 6
               END
 
             -- FAR + DEUCE (same bands as NEAR + DEUCE)
@@ -453,15 +453,15 @@ def phase4_update(conn: Connection, task_id: str) -> int:
             THEN
               CASE
                 WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
-                  THEN 3
+                  THEN 2
                 WHEN (p.court_x)::double precision < 5
                   THEN 4
                 WHEN (p.court_x)::double precision > 7
                   THEN 1
                 WHEN (p.court_x)::double precision > 5
                      AND (p.court_x)::double precision < 6
-                  THEN 2
-                ELSE 3
+                  THEN 3
+                ELSE 2
               END
 
             -- If we somehow don't know side/end, leave NULL
