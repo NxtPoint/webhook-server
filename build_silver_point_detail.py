@@ -510,29 +510,41 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     """
     conn.execute(text(sql_rl_hit), {"tid": task_id})
 
-    # 4) Rally location (bounce): A–D, non-serves only, reversed bands per spec
+    # 4) Rally location (bounce): A–D, non-serves only, using court_x + ball_hit_location_y
     sql_rl_bnc = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET rally_location_bounce =
       CASE
         WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
+
+        -- If we have no bounce X, fall back to rally_location_hit
+        WHEN NULLIF(TRIM(p.court_x::text), '') IS NULL
+          THEN p.rally_location_hit
+
+        -- We need ball_hit_location_y to know which side
+        WHEN NULLIF(TRIM(p.ball_hit_location_y::text), '') IS NULL
+          THEN NULL
+
         ELSE
           CASE
-            WHEN NULLIF(TRIM(p.ball_hit_location_x::text), '') IS NULL THEN NULL
-            WHEN NULLIF(TRIM(p.ball_hit_location_y::text), '') IS NULL THEN NULL
-            WHEN (p.ball_hit_location_y)::double precision >= 11.6 THEN
+            -- Hitter on NEAR side (ball_hit_location_y > 11.6):
+            --   court_x <2 'A', 2–4 'B', 4–6 'C', >6 'D'
+            WHEN (p.ball_hit_location_y)::double precision > 11.6 THEN
               CASE
-                WHEN (p.ball_hit_location_x)::double precision < 2 THEN 'D'
-                WHEN (p.ball_hit_location_x)::double precision < 4 THEN 'C'
-                WHEN (p.ball_hit_location_x)::double precision < 6 THEN 'B'
-                ELSE 'A'
+                WHEN (p.court_x)::double precision < 2 THEN 'A'
+                WHEN (p.court_x)::double precision < 4 THEN 'B'
+                WHEN (p.court_x)::double precision < 6 THEN 'C'
+                ELSE 'D'
               END
+
+            -- Hitter on FAR side (ball_hit_location_y <= 11.6):
+            --   court_x <2 'D', 2–4 'C', 4–6 'B', >6 'A'
             ELSE
               CASE
-                WHEN (p.ball_hit_location_x)::double precision < 2 THEN 'A'
-                WHEN (p.ball_hit_location_x)::double precision < 4 THEN 'B'
-                WHEN (p.ball_hit_location_x)::double precision < 6 THEN 'C'
-                ELSE 'D'
+                WHEN (p.court_x)::double precision < 2 THEN 'D'
+                WHEN (p.court_x)::double precision < 4 THEN 'C'
+                WHEN (p.court_x)::double precision < 6 THEN 'B'
+                ELSE 'A'
               END
           END
       END
