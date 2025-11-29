@@ -72,6 +72,7 @@ PHASE5_COLS = OrderedDict({
     "server_id":              "text",
     "shot_ix_in_point":       "integer",
     "shot_phase_d":           "text",
+    "shot_outcome_d":         "text",
     "point_key":              "text"
 })
 
@@ -570,6 +571,8 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     phase5_set_shot_phase(conn, task_id)
     # 9) point_key (universal point grain key)
     phase5_set_point_key(conn, task_id)
+    # 10) shot_outcome (In/Fault/Winner)
+    phase5_set_shot_outcome(conn, task_id)
     return 1
 
 
@@ -978,10 +981,10 @@ def phase5_set_server_id(conn: Connection, task_id: str) -> int:
 def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
     """
     shot_ix_in_point:
-      - Starts at the LAST serve in each point.
+      - Anchor at the LAST serve in each point.
       - That last serve = 1.
       - All subsequent non-excluded shots in the point = 2,3,...
-      - Earlier serves / warm-ups / faults before the last serve remain NULL.
+      - Shots before the last serve keep shot_ix_in_point = NULL.
     """
     sql = f"""
     WITH last_serve AS (
@@ -1005,7 +1008,7 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
         ) AS shot_ix
       FROM {SILVER_SCHEMA}.{TABLE} p
       JOIN last_serve ls
-        ON p.task_id = ls.task_id
+        ON p.task_id     = ls.task_id
        AND p.point_number = ls.point_number
        AND p.ball_hit_s >= ls.last_serve_s
       WHERE p.task_id = :tid
@@ -1024,49 +1027,49 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
 
 def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
     """
-    shot_phase_d classification (per shot):
+    shot_phase_d per shot:
 
-      - 'Serve'      → serve_d = TRUE
-      - 'Return'     → shot_ix_in_point = 2 (first after last serve)
-      - For other non-excluded shots:
+      - 'Serve'  → serve_d = TRUE
+      - 'Return' → shot_ix_in_point = 2 (first shot after last serve)
+      - Others (shot_ix_in_point >= 3):
           * Compute y_local from ball_hit_location_y using server_end_d
-            so that y_local increases from net towards the hitter's baseline.
-          * Thresholds (per your spec):
-              y_local > 22            → 'Rally'      (baseline)
-              17 < y_local <= 22      → 'Transition'
-              else                    → 'Net'
+            so that y_local increases from net towards the hitter's own baseline.
+          * Thresholds:
+              y_local <= 0        → 'Rally'      (baseline / behind it)
+              0 < y_local < 5     → 'Transition'
+              y_local >= 5        → 'Net'        (service box and inside)
     """
     sql = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET shot_phase_d =
       CASE
-        WHEN COALESCE(p.exclude_d, FALSE) = TRUE THEN NULL
+        WHEN COALESCE(p.exclude_d, FALSE) = TRUE
+             OR p.shot_ix_in_point IS NULL THEN NULL
 
         -- Serve
         WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN 'Serve'
 
-        -- Return: first non-serve shot after last serve
+        -- Return: first shot after last serve
         WHEN p.shot_ix_in_point = 2 THEN 'Return'
 
         ELSE
           CASE
             WHEN p.ball_hit_location_y IS NULL
                  OR p.server_id IS NULL
-                 OR p.server_end_d IS NULL THEN NULL
-
+                 OR p.server_end_d IS NULL
+              THEN NULL
             ELSE
               CASE
-                -- y_local: distance from net towards THIS hitter's baseline
                 WHEN (
                   CASE
-                    -- Player on near side
+                    -- Hitter is NEAR camera
                     WHEN (p.server_end_d = 'near' AND p.player_id = p.server_id)
                       OR (p.server_end_d = 'far'  AND p.player_id <> p.server_id)
                       THEN p.ball_hit_location_y
-                    -- Player on far side
+                    -- Hitter is FAR camera
                     ELSE -p.ball_hit_location_y
                   END
-                ) > 22 THEN 'Rally'
+                ) <= 0 THEN 'Rally'
 
                 WHEN (
                   CASE
@@ -1075,7 +1078,7 @@ def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
                       THEN p.ball_hit_location_y
                     ELSE -p.ball_hit_location_y
                   END
-                ) > 17 THEN 'Transition'
+                ) < 5 THEN 'Transition'
 
                 ELSE 'Net'
               END
@@ -1083,6 +1086,60 @@ def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
       END
     WHERE p.task_id = :tid
       AND p.point_number > 0;
+    """
+    res = conn.execute(text(sql), {"tid": task_id})
+    return res.rowcount or 0
+
+def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
+    """
+    shot_outcome_d per shot (from last serve onwards):
+
+      - All shots before the last shot in the point → 'In'
+      - Last shot in the point:
+          * if hitter = point_winner_player_id → 'Winner'
+          * else                               → 'Error'
+    """
+    sql = f"""
+    WITH last_shot AS (
+      SELECT
+        p.task_id,
+        p.point_number,
+        MAX(p.shot_ix_in_point) AS last_ix
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND p.point_number > 0
+        AND COALESCE(p.exclude_d, FALSE) = FALSE
+        AND p.shot_ix_in_point IS NOT NULL
+      GROUP BY p.task_id, p.point_number
+    ),
+    outcomes AS (
+      SELECT
+        p.id,
+        CASE
+          WHEN p.shot_ix_in_point < ls.last_ix
+            THEN 'In'
+          WHEN p.shot_ix_in_point = ls.last_ix
+            THEN CASE
+                   WHEN p.player_id = p.point_winner_player_id
+                     THEN 'Winner'
+                   ELSE 'Error'
+                 END
+          ELSE NULL
+        END AS shot_outcome_d
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      JOIN last_shot ls
+        ON p.task_id      = ls.task_id
+       AND p.point_number = ls.point_number
+      WHERE p.task_id = :tid
+        AND p.point_number > 0
+        AND COALESCE(p.exclude_d, FALSE) = FALSE
+        AND p.shot_ix_in_point IS NOT NULL
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET shot_outcome_d = o.shot_outcome_d
+    FROM outcomes o
+    WHERE p.id = o.id
+      AND p.task_id = :tid;
     """
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
