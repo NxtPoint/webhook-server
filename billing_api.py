@@ -124,8 +124,10 @@ def api_generate_invoice():
             period_start=period_start,
             period_end=period_end,
         )
-    except ValueError as e:
-        return _error(str(e), 400)
+    except Exception as e:
+        # Temporary: surface internal errors to the client so we can debug
+        return _error(f"{type(e).__name__}: {e}", 400)
+
 
     lines_payload = []
     for line in invoice.lines:
