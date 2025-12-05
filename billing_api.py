@@ -1,9 +1,8 @@
-# billing_api.py
 from flask import Blueprint, request, jsonify
 
 from sqlalchemy.orm import Session, selectinload
 from db_init import engine
-from models_billing import PricingComponent, Invoice, Account
+from models_billing import PricingComponent, Account, Invoice
 
 from billing_service import (
     create_account_with_primary_member,
@@ -13,7 +12,6 @@ from billing_service import (
     get_month_period,
 )
 
-
 billing_bp = Blueprint("billing", __name__, url_prefix="/api/billing")
 
 
@@ -22,71 +20,57 @@ def _error(message: str, status: int = 400):
     resp.status_code = status
     return resp
 
-@billing_bp.post("/invoice/generate")
-def api_generate_invoice():
-    data = request.get_json(force=True) or {}
-    try:
-        account_id = int(data["account_id"])
-        year = int(data["year"])
-        month = int(data["month"])
-    except (KeyError, ValueError) as e:
-        return _error(f"invalid payload: {e}", 400)
 
-    period_start, period_end = get_month_period(year, month)
-
-    # First: generate or regenerate the invoice (does all the math and writes lines)
-    try:
-        generate_invoice_for_period(
-            account_id=account_id,
-            period_start=period_start,
-            period_end=period_end,
-        )
-    except Exception as e:
-        # Surface internal error as JSON so we don't get a blind 500
-        return _error(f"{type(e).__name__}: {e}", 400)
-
-    # Second: reload the invoice + lines in a fresh session, with relationships eagerly loaded
+@billing_bp.get("/debug/pricing")
+def api_debug_pricing():
+    """Debug endpoint: list all pricing components."""
     with Session(engine) as session:
-        invoice = (
-            session.query(Invoice)
-            .options(selectinload(Invoice.lines))
-            .filter(
-                Invoice.account_id == account_id,
-                Invoice.period_start == period_start,
-                Invoice.period_end == period_end,
-            )
-            .one()
-        )
-
-        lines_payload = []
-        for line in invoice.lines:
-            lines_payload.append(
+        rows = session.query(PricingComponent).all()
+        pricing = []
+        for pc in rows:
+            pricing.append(
                 {
-                    "id": line.id,
-                    "pricing_component_code": line.pricing_component_code,
-                    "description": line.description,
-                    "quantity": float(line.quantity),
-                    "unit_amount": float(line.unit_amount),
-                    "line_amount": float(line.line_amount),
+                    "code": pc.code,
+                    "description": pc.description,
+                    "billing_metric": pc.billing_metric,
+                    "unit": pc.unit,
+                    "currency_code": pc.currency_code,
+                    "unit_amount": float(pc.unit_amount),
+                    "active": pc.active,
                 }
             )
+    return jsonify({"ok": True, "pricing": pricing})
 
-        return jsonify(
-            {
-                "ok": True,
-                "invoice": {
-                    "id": invoice.id,
-                    "account_id": invoice.account_id,
-                    "period_start": invoice.period_start.isoformat(),
-                    "period_end": invoice.period_end.isoformat(),
-                    "currency_code": invoice.currency_code,
-                    "total_amount": float(invoice.total_amount),
-                    "status": invoice.status,
-                    "lines": lines_payload,
-                },
-            }
-        )
 
+@billing_bp.post("/account")
+def api_create_account():
+    data = request.get_json(force=True) or {}
+    email = data.get("email")
+    name = data.get("primary_full_name")
+    currency_code = data.get("currency_code", "USD")
+    external_wix_id = data.get("external_wix_id")
+
+    if not email or not name:
+        return _error("email and primary_full_name are required", 400)
+
+    account = create_account_with_primary_member(
+        email=email,
+        primary_full_name=name,
+        currency_code=currency_code,
+        external_wix_id=external_wix_id,
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+            "account": {
+                "id": account.id,
+                "email": account.email,
+                "primary_full_name": account.primary_full_name,
+                "currency_code": account.currency_code,
+            },
+        }
+    )
 
 
 @billing_bp.post("/account/<int:account_id>/members")
@@ -158,45 +142,58 @@ def api_generate_invoice():
 
     period_start, period_end = get_month_period(year, month)
 
+    # First: generate or regenerate the invoice (writes rows and lines)
     try:
-        invoice = generate_invoice_for_period(
+        generate_invoice_for_period(
             account_id=account_id,
             period_start=period_start,
             period_end=period_end,
         )
     except Exception as e:
-        # Temporary: surface internal errors to the client so we can debug
         return _error(f"{type(e).__name__}: {e}", 400)
 
+    # Second: reload invoice + lines in a fresh session
+    with Session(engine) as session:
+        invoice = (
+            session.query(Invoice)
+            .options(selectinload(Invoice.lines))
+            .filter(
+                Invoice.account_id == account_id,
+                Invoice.period_start == period_start,
+                Invoice.period_end == period_end,
+            )
+            .one()
+        )
 
-    lines_payload = []
-    for line in invoice.lines:
-        lines_payload.append(
+        lines_payload = []
+        for line in invoice.lines:
+            lines_payload.append(
+                {
+                    "id": line.id,
+                    "pricing_component_code": line.pricing_component_code,
+                    "description": line.description,
+                    "quantity": float(line.quantity),
+                    "unit_amount": float(line.unit_amount),
+                    "line_amount": float(line.line_amount),
+                }
+            )
+
+        return jsonify(
             {
-                "id": line.id,
-                "pricing_component_code": line.pricing_component_code,
-                "description": line.description,
-                "quantity": float(line.quantity),
-                "unit_amount": float(line.unit_amount),
-                "line_amount": float(line.line_amount),
+                "ok": True,
+                "invoice": {
+                    "id": invoice.id,
+                    "account_id": invoice.account_id,
+                    "period_start": invoice.period_start.isoformat(),
+                    "period_end": invoice.period_end.isoformat(),
+                    "currency_code": invoice.currency_code,
+                    "total_amount": float(invoice.total_amount),
+                    "status": invoice.status,
+                    "lines": lines_payload,
+                },
             }
         )
 
-    return jsonify(
-        {
-            "ok": True,
-            "invoice": {
-                "id": invoice.id,
-                "account_id": invoice.account_id,
-                "period_start": invoice.period_start.isoformat(),
-                "period_end": invoice.period_end.isoformat(),
-                "currency_code": invoice.currency_code,
-                "total_amount": float(invoice.total_amount),
-                "status": invoice.status,
-                "lines": lines_payload,
-            },
-        }
-    )
 
 @billing_bp.get("/invoices/monthly")
 def api_list_invoices_monthly():
