@@ -17,8 +17,15 @@ from models_billing import (
 
 # Utility: fetch a pricing component
 def get_price(session: Session, code: str) -> PricingComponent:
-    pc = session.query(PricingComponent).filter_by(code=code, active=True).one()
+    pc = (
+        session.query(PricingComponent)
+        .filter_by(code=code, active=True)
+        .one_or_none()
+    )
+    if pc is None:
+        raise ValueError(f"Pricing component '{code}' not found or inactive")
     return pc
+
 
 
 def create_account_with_primary_member(
