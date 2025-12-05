@@ -3,7 +3,7 @@ from flask import Blueprint, request, jsonify
 
 from sqlalchemy.orm import Session, selectinload
 from db_init import engine
-from models_billing import PricingComponent, Invoice
+from models_billing import PricingComponent, Invoice, Account
 
 from billing_service import (
     create_account_with_primary_member,
@@ -197,3 +197,48 @@ def api_generate_invoice():
             },
         }
     )
+
+@billing_bp.get("/invoices/monthly")
+def api_list_invoices_monthly():
+    """
+    Export view: all invoices for a given month, per account.
+    Example:
+      GET /api/billing/invoices/monthly?year=2025&month=12
+    """
+    try:
+        year = int(request.args.get("year", ""))
+        month = int(request.args.get("month", ""))
+    except ValueError:
+        return _error("year and month query params are required and must be integers", 400)
+
+    if not (1 <= month <= 12):
+        return _error("month must be between 1 and 12", 400)
+
+    period_start, period_end = get_month_period(year, month)
+
+    with Session(engine) as session:
+        rows = (
+            session.query(Invoice, Account)
+            .join(Account, Invoice.account_id == Account.id)
+            .filter(
+                Invoice.period_start == period_start,
+                Invoice.period_end == period_end,
+            )
+            .all()
+        )
+
+        invoices_payload = []
+        for inv, acc in rows:
+            invoices_payload.append(
+                {
+                    "account_id": inv.account_id,
+                    "email": acc.email,
+                    "currency_code": inv.currency_code,
+                    "period_start": inv.period_start.isoformat(),
+                    "period_end": inv.period_end.isoformat(),
+                    "total_amount": float(inv.total_amount),
+                    "status": inv.status,
+                }
+            )
+
+    return jsonify({"ok": True, "invoices": invoices_payload})
