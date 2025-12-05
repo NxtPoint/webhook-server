@@ -13,6 +13,9 @@ from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
 
+import models_billing  # ensure billing models are registered
+from billing_api import billing_bp
+
 # ---- boto3 is REQUIRED (fail fast if missing) ----
 try:
     import boto3
@@ -779,6 +782,14 @@ try:
     print("Mounted ui_bp at /upload")
 except Exception as e:
     print("ui_bp not mounted:", e)
+
+
+# Billing API blueprint
+try:
+    app.register_blueprint(billing_bp)  # billing_bp already has url_prefix="/api/billing"
+    print("Mounted billing_bp at /api/billing")
+except Exception as e:
+    print("billing_bp not mounted:", e)
 
 # Boot log
 print("=== ROUTES ===")
