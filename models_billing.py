@@ -1,4 +1,3 @@
-# models_billing.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -12,8 +11,10 @@ from sqlalchemy import (
     ForeignKey,
     text,
 )
-from sqlalchemy.orm import relationship
-from db_init import Base  # your existing Base
+from sqlalchemy.orm import relationship, declarative_base
+
+# Local Base for billing models
+Base = declarative_base()
 
 
 class PricingComponent(Base):
@@ -24,8 +25,8 @@ class PricingComponent(Base):
     code = Column(String, unique=True, nullable=False)
     description = Column(String, nullable=False)
 
-    billing_metric = Column(String, nullable=False)  # 'account', 'member', 'video_hour'
-    unit = Column(String, nullable=False)            # 'per_month', 'per_hour'
+    billing_metric = Column(String, nullable=False)
+    unit = Column(String, nullable=False)
 
     currency_code = Column(CHAR(3), nullable=False, server_default=text("'USD'"))
     unit_amount = Column(Numeric(10, 4), nullable=False)
@@ -107,10 +108,6 @@ class UsageVideo(Base):
         nullable=False,
         server_default=text("now()"),
     )
-
-    # Optional relationships if you want them
-    # account = relationship("Account")
-    # member = relationship("Member")
 
 
 class Invoice(Base):
