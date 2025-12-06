@@ -1,4 +1,5 @@
-#=========================== git add billing_api.py ====================
+#======================================================================= 
+# billing_import_from_bronze.py
 #=======================================================================
 
 """
@@ -14,7 +15,7 @@ Rules:
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
@@ -69,7 +70,7 @@ def _find_or_create_account(session: Session, email: str, customer_name: Optiona
 def sync_usage_from_submission_context(
     status_filter: str = "completed",
     dry_run: bool = True,
-) -> None:
+) -> Dict[str, Any]:
     """
     Scan bronze.submission_context and create billing.usage_video entries
     for each SportAI submission that:
@@ -77,6 +78,8 @@ def sync_usage_from_submission_context(
       - has not already been imported (task_id in billing.usage_video)
 
     Processing minutes = ingest_finished_at - created_at.
+
+    Returns a dict with counters for API / logs.
     """
 
     with Session(engine) as session:
@@ -149,19 +152,22 @@ def sync_usage_from_submission_context(
 
             created_usage += 1
 
-        if dry_run:
-            print(f"[DRY RUN] Total rows with last_status='{status_filter}': {total}")
-            print(f"[DRY RUN] Would skip already imported: {skipped_already_imported}")
-            print(f"[DRY RUN] Would skip no/invalid processing duration: {skipped_no_duration}")
-            print(f"[DRY RUN] Would create usage rows: {created_usage}")
-        else:
+        if not dry_run:
             session.commit()
-            print(f"Processed rows with last_status='{status_filter}': {total}")
-            print(f"Skipped already imported: {skipped_already_imported}")
-            print(f"Skipped no/invalid processing duration: {skipped_no_duration}")
-            print(f"Created usage rows: {created_usage}")
+
+        return {
+            "status_filter": status_filter,
+            "dry_run": dry_run,
+            "total_rows": total,
+            "skipped_already_imported": skipped_already_imported,
+            "skipped_no_duration": skipped_no_duration,
+            "created_usage_rows": created_usage,
+        }
 
 
 if __name__ == "__main__":
-    # First run as dry-run. Flip to False once you are happy.
-    sync_usage_from_submission_context(dry_run=True)
+    # Local manual run on environments where DB works.
+    result = sync_usage_from_submission_context(dry_run=True)
+    print("[DRY RUN] sync_usage_from_submission_context result:")
+    for k, v in result.items():
+        print(f"  {k}: {v}")
