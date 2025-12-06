@@ -19,7 +19,7 @@ from datetime import datetime
 
 OPS_KEY = os.environ.get("OPS_KEY")
 
-billing_bp = Blueprint("billing", url_prefix="/api/billing")
+billing_bp = Blueprint("billing", __name__, url_prefix="/api/billing")
 
 
 def _error(message: str, status: int = 400):
