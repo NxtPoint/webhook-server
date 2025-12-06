@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify
 
 from sqlalchemy.orm import Session, selectinload
 from db_init import engine
-from models_billing import PricingComponent, Account, Invoice
+from models_billing import PricingComponent, Account, Invoice, Account
 
 from billing_service import (
     create_account_with_primary_member,
@@ -100,6 +100,39 @@ def api_add_member(account_id: int):
             },
         }
     )
+
+@billing_bp.get("/account/lookup")
+def api_account_lookup():
+    """
+    Look up an account by email.
+
+    GET /api/billing/account/lookup?email=someone@example.com
+    """
+    email = request.args.get("email")
+    if not email:
+        return _error("email query param is required", 400)
+
+    with Session(engine) as session:
+        acct = (
+            session.query(Account)
+            .filter(Account.email == email)
+            .one_or_none()
+        )
+
+        if acct is None:
+            return _error("account not found", 404)
+
+        return jsonify(
+            {
+                "ok": True,
+                "account": {
+                    "id": acct.id,
+                    "email": acct.email,
+                    "primary_full_name": acct.primary_full_name,
+                    "currency_code": acct.currency_code,
+                },
+            }
+        )
 
 
 @billing_bp.post("/usage/video")
