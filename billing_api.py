@@ -1,3 +1,8 @@
+
+
+import os
+from billing_import_from_bronze import sync_usage_from_submission_context
+
 from flask import Blueprint, request, jsonify
 
 from sqlalchemy.orm import Session, selectinload
@@ -11,6 +16,8 @@ from billing_service import (
     generate_invoice_for_period,
     get_month_period,
 )
+
+OPS_KEY = os.environ.get("OPS_KEY")
 
 billing_bp = Blueprint("billing", __name__, url_prefix="/api/billing")
 
@@ -239,3 +246,27 @@ def api_list_invoices_monthly():
             )
 
     return jsonify({"ok": True, "invoices": invoices_payload})
+
+@billing_bp.post("/sync-usage-from-bronze")
+def api_sync_usage_from_bronze():
+    """
+    Admin endpoint to pull completed SportAI submissions from bronze.submission_context
+    into billing.usage_video.
+
+    Protected by OPS_KEY via X-Ops-Key header.
+    """
+    # Auth
+    header_key = request.headers.get("X-Ops-Key")
+    if not OPS_KEY or header_key != OPS_KEY:
+        return _error("unauthorized", 401)
+
+    # dry_run flag from querystring: ?dry_run=true/false
+    dry_run_param = request.args.get("dry_run", "true").lower()
+    dry_run = dry_run_param in ("1", "true", "yes", "y")
+
+    try:
+        result = sync_usage_from_submission_context(dry_run=dry_run)
+    except Exception as e:
+        return _error(f"{type(e).__name__}: {e}", 400)
+
+    return jsonify({"ok": True, "result": result})
