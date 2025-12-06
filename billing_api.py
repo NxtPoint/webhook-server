@@ -1,5 +1,3 @@
-
-
 import os
 from billing_import_from_bronze import sync_usage_from_submission_context
 
@@ -7,7 +5,7 @@ from flask import Blueprint, request, jsonify
 
 from sqlalchemy.orm import Session, selectinload
 from db_init import engine
-from models_billing import PricingComponent, Account, Invoice, Account
+from models_billing import PricingComponent, Account, Invoice, Member  # <- cleaned import
 
 from billing_service import (
     create_account_with_primary_member,
@@ -17,9 +15,11 @@ from billing_service import (
     get_month_period,
 )
 
+from datetime import datetime
+
 OPS_KEY = os.environ.get("OPS_KEY")
 
-billing_bp = Blueprint("billing", __name__, url_prefix="/api/billing")
+billing_bp = Blueprint("billing", url_prefix="/api/billing")
 
 
 def _error(message: str, status: int = 400):
@@ -101,6 +101,7 @@ def api_add_member(account_id: int):
         }
     )
 
+
 @billing_bp.get("/account/lookup")
 def api_account_lookup():
     """
@@ -133,6 +134,131 @@ def api_account_lookup():
                 },
             }
         )
+
+
+@billing_bp.post("/sync_account")
+def api_sync_account():
+    """
+    Upsert an account + members from Wix.
+
+    POST /api/billing/sync_account
+    Payload:
+    {
+      "external_wix_id": "abc123",
+      "email": "user@example.com",
+      "primary_full_name": "John Smith",
+      "currency_code": "USD",           # optional, default USD
+      "members": [
+        {"full_name": "John Smith", "is_primary": true},
+        {"full_name": "Child A", "is_primary": false}
+      ]
+    }
+    """
+    data = request.get_json(force=True) or {}
+
+    external_wix_id = data.get("external_wix_id")
+    email = data.get("email")
+    primary_full_name = data.get("primary_full_name")
+    currency_code = data.get("currency_code", "USD")
+    members_payload = data.get("members", []) or []
+
+    if not external_wix_id:
+        return _error("external_wix_id is required", 400)
+    if not email or not primary_full_name:
+        return _error("email and primary_full_name are required", 400)
+
+    with Session(engine) as session:
+        try:
+            # 1) Find existing by external_wix_id
+            acct = (
+                session.query(Account)
+                .filter(Account.external_wix_id == external_wix_id)
+                .one_or_none()
+            )
+
+            # 2) If not found, try by email (existing manual account)
+            if acct is None:
+                acct = (
+                    session.query(Account)
+                    .filter(Account.email == email)
+                    .one_or_none()
+                )
+
+            # 3) Create if still not found
+            if acct is None:
+                acct = Account(
+                    external_wix_id=external_wix_id,
+                    email=email,
+                    primary_full_name=primary_full_name,
+                    currency_code=currency_code,
+                    active=True,
+                    created_at=datetime.utcnow(),
+                )
+                session.add(acct)
+            else:
+                # update existing
+                acct.external_wix_id = external_wix_id
+                acct.email = email
+                acct.primary_full_name = primary_full_name
+                if acct.currency_code is None:
+                    acct.currency_code = currency_code
+                acct.active = True
+
+            session.flush()  # get acct.id
+
+            # 4) Upsert members
+            member_ids = []
+            for m in members_payload:
+                full_name = (m.get("full_name") or "").strip()
+                if not full_name:
+                    continue
+                is_primary = bool(m.get("is_primary"))
+
+                existing_member = (
+                    session.query(Member)
+                    .filter(
+                        Member.account_id == acct.id,
+                        Member.full_name == full_name,
+                    )
+                    .one_or_none()
+                )
+
+                if existing_member:
+                    existing_member.is_primary = is_primary
+                    existing_member.active = True
+                    member = existing_member
+                else:
+                    member = Member(
+                        account_id=acct.id,
+                        full_name=full_name,
+                        is_primary=is_primary,
+                        active=True,
+                        created_at=datetime.utcnow(),
+                    )
+                    session.add(member)
+
+                session.flush()
+                member_ids.append(member.id)
+
+            session.commit()
+
+            return jsonify(
+                {
+                    "ok": True,
+                    "account": {
+                        "id": acct.id,
+                        "email": acct.email,
+                        "primary_full_name": acct.primary_full_name,
+                        "currency_code": acct.currency_code,
+                        "external_wix_id": acct.external_wix_id,
+                    },
+                    "member_ids": member_ids,
+                }
+            )
+
+        except Exception as e:
+            session.rollback()
+            return _error(f"{type(e).__name__}: {e}", 500)
 
 
 @billing_bp.post("/usage/video")
@@ -279,6 +405,7 @@ def api_list_invoices_monthly():
             )
 
     return jsonify({"ok": True, "invoices": invoices_payload})
+
 
 @billing_bp.post("/sync-usage-from-bronze")
 def api_sync_usage_from_bronze():
