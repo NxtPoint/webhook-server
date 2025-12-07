@@ -144,10 +144,10 @@ def api_sync_account():
     POST /api/billing/sync_account
     Payload:
     {
-      "external_wix_id": "abc123",
-      "email": "user@example.com",
-      "primary_full_name": "John Smith",
-      "currency_code": "USD",           # optional, default USD
+      "external_wix_id": "abc123",              # optional
+      "email": "user@example.com",              # required
+      "primary_full_name": "John Smith",        # required
+      "currency_code": "USD",                   # optional, default USD
       "members": [
         {"full_name": "John Smith", "is_primary": true},
         {"full_name": "Child A", "is_primary": false}
@@ -160,23 +160,25 @@ def api_sync_account():
     email = data.get("email")
     primary_full_name = data.get("primary_full_name")
     currency_code = data.get("currency_code", "USD")
-    members_payload = data.get("members", []) or []
+    members_payload = data.get("members") or []
 
-    if not external_wix_id:
-        return _error("external_wix_id is required", 400)
-    if not email or not primary_full_name:
-        return _error("email and primary_full_name are required", 400)
+    if not email:
+        return _error("email is required", 400)
+
+    if not primary_full_name:
+        primary_full_name = email  # fallback if Wix forgot to send it
 
     with Session(engine) as session:
         try:
-            # 1) Find existing by external_wix_id
-            acct = (
-                session.query(Account)
-                .filter(Account.external_wix_id == external_wix_id)
-                .one_or_none()
-            )
+            # 1) Find existing account
+            acct = None
+            if external_wix_id:
+                acct = (
+                    session.query(Account)
+                    .filter(Account.external_wix_id == external_wix_id)
+                    .one_or_none()
+                )
 
-            # 2) If not found, try by email (existing manual account)
             if acct is None:
                 acct = (
                     session.query(Account)
@@ -184,63 +186,58 @@ def api_sync_account():
                     .one_or_none()
                 )
 
-            # 3) Create if still not found
+            # 2) Create if not found, else update
             if acct is None:
                 acct = Account(
-                    external_wix_id=external_wix_id,
                     email=email,
                     primary_full_name=primary_full_name,
                     currency_code=currency_code,
+                    external_wix_id=external_wix_id,
                     active=True,
                     created_at=datetime.utcnow(),
                 )
                 session.add(acct)
+                session.flush()
             else:
-                # update existing
-                acct.external_wix_id = external_wix_id
                 acct.email = email
                 acct.primary_full_name = primary_full_name
-                if acct.currency_code is None:
+                if external_wix_id:
+                    acct.external_wix_id = external_wix_id
+                if not acct.currency_code:
                     acct.currency_code = currency_code
                 acct.active = True
+                session.flush()
 
-            session.flush()  # get acct.id
+            # 3) Replace members snapshot for this account
+            session.query(Member).filter(Member.account_id == acct.id).delete()
 
-            # 4) Upsert members
-            member_ids = []
+            created_members = []
             for m in members_payload:
                 full_name = (m.get("full_name") or "").strip()
                 if not full_name:
                     continue
                 is_primary = bool(m.get("is_primary"))
 
-                existing_member = (
-                    session.query(Member)
-                    .filter(
-                        Member.account_id == acct.id,
-                        Member.full_name == full_name,
-                    )
-                    .one_or_none()
+                member = Member(
+                    account_id=acct.id,
+                    full_name=full_name,
+                    is_primary=is_primary,
+                    active=True,
+                    created_at=datetime.utcnow(),
                 )
-
-                if existing_member:
-                    existing_member.is_primary = is_primary
-                    existing_member.active = True
-                    member = existing_member
-                else:
-                    member = Member(
-                        account_id=acct.id,
-                        full_name=full_name,
-                        is_primary=is_primary,
-                        active=True,
-                        created_at=datetime.utcnow(),
-                    )
-                    session.add(member)
-
-                session.flush()
-                member_ids.append(member.id)
+                session.add(member)
+                created_members.append(member)
 
             session.commit()
+
+            members_out = [
+                {
+                    "id": mem.id,
+                    "full_name": mem.full_name,
+                    "is_primary": mem.is_primary,
+                }
+                for mem in created_members
+            ]
 
             return jsonify(
                 {
@@ -252,7 +249,7 @@ def api_sync_account():
                         "currency_code": acct.currency_code,
                         "external_wix_id": acct.external_wix_id,
                     },
-                    "member_ids": member_ids,
+                    "members": members_out,
                 }
             )
 
