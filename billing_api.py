@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify
 
 from sqlalchemy.orm import Session, selectinload
 from db_init import engine
-from models_billing import PricingComponent, Account, Invoice, Member  # <- cleaned import
+from models_billing import PricingComponent, Account, Invoice, Member
 
 from billing_service import (
     create_account_with_primary_member,
@@ -136,6 +136,52 @@ def api_account_lookup():
         )
 
 
+@billing_bp.get("/account/members")
+def api_account_members():
+    """
+    Debug: list members for an account by email.
+
+    GET /api/billing/account/members?email=someone@example.com
+    """
+    email = request.args.get("email")
+    if not email:
+        return _error("email query param is required", 400)
+
+    with Session(engine) as session:
+        acct = (
+            session.query(Account)
+            .filter(Account.email == email)
+            .one_or_none()
+        )
+        if acct is None:
+            return _error("account not found", 404)
+
+        members = (
+            session.query(Member)
+            .filter(Member.account_id == acct.id)
+            .order_by(Member.id)
+            .all()
+        )
+
+        members_out = [
+            {
+                "id": m.id,
+                "full_name": m.full_name,
+                "is_primary": m.is_primary,
+            }
+            for m in members
+        ]
+
+        return jsonify(
+            {
+                "ok": True,
+                "account_id": acct.id,
+                "email": acct.email,
+                "members": members_out,
+            }
+        )
+
+
 @billing_bp.post("/sync_account")
 def api_sync_account():
     """
@@ -146,7 +192,7 @@ def api_sync_account():
     {
       "external_wix_id": "abc123",              # optional
       "email": "user@example.com",              # required
-      "primary_full_name": "John Smith",        # required
+      "primary_full_name": "John Smith",        # required (fallback to email)
       "currency_code": "USD",                   # optional, default USD
       "members": [
         {"full_name": "John Smith", "is_primary": true},
@@ -166,11 +212,11 @@ def api_sync_account():
         return _error("email is required", 400)
 
     if not primary_full_name:
-        primary_full_name = email  # fallback if Wix forgot to send it
+        primary_full_name = email  # fallback if missing
 
     with Session(engine) as session:
         try:
-            # 1) Find existing account
+            # 1) Find existing account by external_wix_id or email
             acct = None
             if external_wix_id:
                 acct = (
@@ -301,7 +347,7 @@ def api_generate_invoice():
         year = int(data["year"])
         month = int(data["month"])
     except (KeyError, ValueError) as e:
-        return _error(f"invalid payload: {e}", 400)
+        return _error(f"{type(e).__name__}: {e}", 400)
 
     period_start, period_end = get_month_period(year, month)
 
@@ -412,12 +458,10 @@ def api_sync_usage_from_bronze():
 
     Protected by OPS_KEY via X-Ops-Key header.
     """
-    # Auth
     header_key = request.headers.get("X-Ops-Key")
     if not OPS_KEY or header_key != OPS_KEY:
         return _error("unauthorized", 401)
 
-    # dry_run flag from querystring: ?dry_run=true/false
     dry_run_param = request.args.get("dry_run", "true").lower()
     dry_run = dry_run_param in ("1", "true", "yes", "y")
 
