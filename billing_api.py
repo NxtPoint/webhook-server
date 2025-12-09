@@ -1,3 +1,8 @@
+#======================================================================= 
+# billing_api.py
+#=======================================================================
+
+
 import os
 from billing_import_from_bronze import sync_usage_from_submission_context
 
@@ -471,3 +476,138 @@ def api_sync_usage_from_bronze():
         return _error(f"{type(e).__name__}: {e}", 400)
 
     return jsonify({"ok": True, "result": result})
+
+from decimal import Decimal, ROUND_HALF_UP
+from sqlalchemy.orm import Session
+from models_billing import Account, Member, PricingComponent
+
+# reuse get_price from billing_service if you like; duplicated here for clarity
+def _get_price(session: Session, code: str) -> PricingComponent:
+    pc = (
+        session.query(PricingComponent)
+        .filter_by(code=code, active=True)
+        .one_or_none()
+    )
+    if pc is None:
+        raise ValueError(f"Pricing component '{code}' not found or inactive")
+    return pc
+
+
+@billing_bp.post("/summary")
+def api_billing_summary():
+    """
+    POST /api/billing/summary
+    Body: { "external_wix_id": "..." }
+
+    Returns membership + pay-per-match pricing summary for this account.
+    """
+    data = request.get_json(force=True) or {}
+    external_wix_id = (data.get("external_wix_id") or "").strip()
+
+    if not external_wix_id:
+        return _error("external_wix_id is required", 400)
+
+    with Session(engine) as session:
+        acct = (
+            session.query(Account)
+            .filter(Account.external_wix_id == external_wix_id)
+            .one_or_none()
+        )
+        if acct is None:
+            return _error("account not found for this external_wix_id", 404)
+
+        # Active members count
+        total_members = (
+            session.query(Member)
+            .filter(Member.account_id == acct.id, Member.active == True)
+            .count()
+        )
+        extra_members = max(total_members - 1, 0)
+
+        # Pricing components (USD codes for now)
+        base_pc = _get_price(session, "MEMBERSHIP_BASE_USD")
+        addon_pc = _get_price(session, "MEMBER_ADDON_USD")
+        video_pc = _get_price(session, "VIDEO_ANALYSIS_USD")
+
+        currency_code = base_pc.currency_code  # assume all aligned
+
+        base_fee = Decimal(base_pc.unit_amount)
+        extra_player_fee = Decimal(addon_pc.unit_amount)
+        analysis_hour_fee = Decimal(video_pc.unit_amount)
+
+        membership_monthly_total = base_fee + extra_player_fee * Decimal(extra_members)
+
+        # Simple 15% discount on annual; adjust as needed
+        annual_factor = Decimal("0.85")
+        membership_annual_total = (
+            membership_monthly_total * Decimal(12) * annual_factor
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        # Pay-per-match price: hardcode for now (can move to PricingComponent)
+        payg_price_per_match = Decimal("20.00")
+
+        summary = {
+            "account_id": acct.id,
+            "currency_code": currency_code,
+            "base_fee": float(base_fee),
+            "extra_player_fee": float(extra_player_fee),
+            "extra_player_count": int(extra_members),
+            "analysis_hour_fee": float(analysis_hour_fee),
+            "membership_monthly_total": float(membership_monthly_total),
+            "membership_annual_total": float(membership_annual_total),
+            "payg_price_per_match": float(payg_price_per_match),
+        }
+
+        return jsonify({"ok": True, "summary": summary})
+
+@billing_bp.post("/select-plan")
+def api_select_plan():
+    """
+    POST /api/billing/select-plan
+
+    Body:
+    {
+      "external_wix_id": "...",
+      "billing_model": "MEMBERSHIP" | "PAYG_MATCH",
+      "billing_period": "MONTHLY" | "ANNUAL" | null
+    }
+
+    For now, just validate and return ok=true, checkout_required=false.
+    Later we can add PayPal integration and real plan persistence.
+    """
+    data = request.get_json(force=True) or {}
+
+    external_wix_id = (data.get("external_wix_id") or "").strip()
+    billing_model = (data.get("billing_model") or "").strip().upper()
+    billing_period = (data.get("billing_period") or None)
+    if isinstance(billing_period, str):
+        billing_period = billing_period.upper()
+
+    if not external_wix_id:
+        return _error("external_wix_id is required", 400)
+    if billing_model not in ("MEMBERSHIP", "PAYG_MATCH"):
+        return _error("billing_model must be MEMBERSHIP or PAYG_MATCH", 400)
+    if billing_model == "MEMBERSHIP" and billing_period not in ("MONTHLY", "ANNUAL"):
+        return _error("billing_period must be MONTHLY or ANNUAL for MEMBERSHIP", 400)
+
+    with Session(engine) as session:
+        acct = (
+            session.query(Account)
+            .filter(Account.external_wix_id == external_wix_id)
+            .one_or_none()
+        )
+        if acct is None:
+            return _error("account not found for this external_wix_id", 404)
+
+        # TODO: later add columns to Account for billing_model/billing_period
+        # and persist them here, plus integrate with PayPal.
+
+        # For now, no upfront checkout. We just confirm the choice.
+        return jsonify(
+            {
+                "ok": True,
+                "billing_model": billing_model,
+                "billing_period": billing_period,
+                "checkout_required": False,
+            }
+        )
