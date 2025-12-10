@@ -720,6 +720,13 @@ def api_upload_task():
       startTime, matchDate, location,
       videoUrl, firstServer
     }
+
+    Behaviour:
+    - Download videoUrl (now a proper HTTPS URL from Wix media).
+    - Copy it into our S3 bucket.
+    - Generate an S3 presigned URL.
+    - Submit that S3 URL to SportAI.
+    - Store S3 URL as video_url, original as share_url.
     """
     if not request.is_json:
         return jsonify({"ok": False, "error": "JSON body required"}), 400
@@ -727,21 +734,21 @@ def api_upload_task():
     body = request.get_json(silent=True) or {}
 
     # Basic fields
-    video_url     = (body.get("videoUrl") or body.get("video_url") or "").strip()
-    owner_id      = (body.get("ownerId") or body.get("owner_id") or "").strip()
-    player_id     = body.get("playerId") or body.get("player_id")
-    player_name   = (body.get("playerName") or "").strip()
+    source_url   = (body.get("videoUrl") or body.get("video_url") or "").strip()
+    owner_id     = (body.get("ownerId") or body.get("owner_id") or "").strip()
+    player_id    = body.get("playerId") or body.get("player_id")
+    player_name  = (body.get("playerName") or "").strip()
     opponent_name = (body.get("opponentName") or "").strip()
     opponent_utr  = (body.get("opponentUtr") or "").strip()
-    start_time    = (body.get("startTime") or "").strip()      # "HH:MM:SS"
-    match_date    = (body.get("matchDate") or "").strip()      # "YYYY-MM-DD"
+    start_time    = (body.get("startTime") or "").strip()
+    match_date    = (body.get("matchDate") or "").strip()
     location      = (body.get("location") or "").strip()
-    first_server  = (body.get("firstServer") or "").strip()    # "myPlayer" | "opponent"
+    first_server  = (body.get("firstServer") or "").strip()
 
-    if not video_url:
+    if not source_url:
         return jsonify({"ok": False, "error": "videoUrl required"}), 400
 
-    # Build metadata that will be stored in bronze.submission_context.raw_meta
+    # Build metadata stored in bronze.submission_context.raw_meta
     meta = {
         "customer_name": player_name or owner_id or None,
         "match_date": match_date or None,
@@ -749,35 +756,58 @@ def api_upload_task():
         "location": location or None,
         "player_a_name": player_name or None,
         "player_b_name": opponent_name or None,
-        "player_a_utr": None,              # you can extend later if you capture it
+        "player_a_utr": None,
         "player_b_utr": opponent_utr or None,
-
-        # extra fields for later use in Silver / dashboards
         "owner_id": owner_id or None,
         "player_id": player_id,
-        "first_server": first_server or None,   # "myPlayer" / "opponent"
+        "first_server": first_server or None,
     }
 
     try:
-        # We don't need email here; keep it empty
-        email = ""
+        # Always use S3 for SportAI
+        _require_s3()
 
-        # Submit to SportAI
-        task_id = _sportai_submit(video_url, email=email, meta=meta)
+        # --- Step 1: download from source_url (Wix media HTTP URL) ---
+        resp = requests.get(source_url, stream=True, timeout=600)
+        resp.raise_for_status()
 
-        # Persist in bronze.submission_context
-        _store_submission_context(task_id, email, meta, video_url, share_url=video_url)
+        # Derive a filename and S3 key
+        parsed = urlparse(source_url)
+        filename = os.path.basename(parsed.path) or "video.mp4"
+        clean_name = secure_filename(filename) or "video.mp4"
+        ts = int(time.time())
+        key = f"{S3_PREFIX}/{ts}_{clean_name}"
+
+        # Upload stream to S3; boto3.upload_fileobj can take resp.raw
+        meta_up = _s3_put_fileobj(
+            resp.raw,
+            key,
+            content_type=resp.headers.get("Content-Type") or "video/mp4",
+        )
+        s3_video_url = _s3_presigned_get_url(key)
+
+        # --- Step 2: Submit S3 URL to SportAI ---
+        email = ""  # not used yet for Wix flow
+        task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+
+        # --- Step 3: Persist in bronze.submission_context ---
+        _store_submission_context(
+            task_id,
+            email,
+            meta,
+            s3_video_url,
+            share_url=source_url,  # original Wix download URL
+        )
 
         # Initialize status cache as queued
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, task_id, "queued", None)
 
-        return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
+        return jsonify({"ok": True, "task_id": task_id, "video_url": s3_video_url})
 
     except Exception as e:
         return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
-
 
 # Legacy alias (kept)
 @app.route("/upload", methods=["POST", "OPTIONS"])
