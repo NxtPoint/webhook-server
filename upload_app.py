@@ -870,19 +870,28 @@ def api_task_status():
 # ---------- Manual ingest helper (task_id-only) ----------
 @app.post("/ops/ingest-task")
 def ops_ingest_task():
-    if not _guard(): return Response("Forbidden", 403)
+    # Guard
+    if not _guard():
+        return Response("Forbidden", 403)
+
     body = request.get_json(silent=True) or {}
     tid = (body.get("task_id") or "").strip()
-    if not tid: return jsonify({"ok": False, "error": "task_id required"}), 400
+    if not tid:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
+
     try:
+        # Get status + result_url
         st = _sportai_status(tid)
         result_url = st.get("result_url")
         if not result_url:
             return jsonify({"ok": False, "error": "result_url not available yet"}), 400
 
-        r = requests.get(result_url, timeout=300); r.raise_for_status()
+        # Download SportAI JSON
+        r = requests.get(result_url, timeout=300)
+        r.raise_for_status()
         payload = r.json()
 
+        # Bronze ingest
         with engine.begin() as conn:
             _run_bronze_init(conn)
             res = ingest_bronze_strict(
@@ -890,17 +899,31 @@ def ops_ingest_task():
                 payload,
                 replace=DEFAULT_REPLACE_ON_INGEST,
                 src_hint=result_url,
-                task_id=tid,                     # important
+                task_id=tid,
             )
             sid = res.get("session_id")
 
-            conn.execute(sql_text(
-                "UPDATE bronze.submission_context SET session_id=:sid WHERE task_id=:t"
-            ), {"sid": sid, "t": tid})
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET session_id        = :sid,
+                       ingest_started_at = COALESCE(ingest_started_at, now()),
+                       ingest_finished_at= now(),
+                       ingest_error      = NULL,
+                       last_status       = COALESCE(last_status, 'completed'),
+                       last_status_at    = COALESCE(last_status_at, now())
+                 WHERE task_id = :tid
+            """), {"sid": sid, "tid": tid})
 
             _mirror_submission_to_bronze_by_task(conn, tid)
 
+        # Silver build (Phase = all)
+        try:
+            build_silver_point_detail(task_id=tid, phase="all", replace=True)
+        except Exception as e:
+            app.logger.error(f"Silver build failed for task_id={tid}: {e}")
+
         return jsonify({"ok": True, "task_id": tid, "session_id": sid})
+
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
