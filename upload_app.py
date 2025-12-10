@@ -69,8 +69,7 @@ ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
     "https://api.sportai.com",
-    "https://api.sportai.app",
-]))
+    ]))
 SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([SPORTAI_SUBMIT_PATH, "/api/statistics/tennis", "/api/statistics"]))
 SPORTAI_STATUS_PATHS = list(dict.fromkeys([
     SPORTAI_STATUS_PATH,
