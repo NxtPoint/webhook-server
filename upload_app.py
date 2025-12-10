@@ -263,33 +263,72 @@ def _iter_status_endpoints(task_id: str):
 def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None = None) -> str:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
-    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
 
-    base_min  = {"video_url": video_url, "version": "latest"}
-    base_arr  = {"video_urls": [video_url], "version": "latest"}
-    with_email = {**base_min, **({"email": email} if email else {})}
-    with_meta  = {**with_email, **({"metadata": meta} if meta else {})}
-    payload_variants = [with_meta, with_email, base_min, base_arr, {"url": video_url, "version": "latest"}]
+    headers = {
+        "Authorization": f"Bearer {SPORTAI_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    # Canonical payloads using *only* video_url (no url / video_urls legacy forms)
+    base_min = {
+        "video_url": video_url,
+        "version": "latest",
+    }
+    with_email = {
+        **base_min,
+        **({"email": email} if email else {}),
+    }
+    with_meta = {
+        **with_email,
+        **({"metadata": meta} if meta else {}),
+    }
+
+    # Only these three variants now
+    payload_variants = [with_meta, with_email, base_min]
 
     last_err = None
     for submit_url in _iter_submit_endpoints():
         for payload in payload_variants:
             try:
-                app.logger.info("SportAI submit: video_url=%s via=%s", video_url, submit_url)
+                app.logger.info(
+                    "SPORTAI SUBMIT url=%s payload_keys=%s video_url=%s",
+                    submit_url,
+                    list(payload.keys()),
+                    video_url,
+                )
+
                 r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
-                if r.status_code in (400,404,405,415,422):
-                    last_err = f"{submit_url} -> {r.status_code}: {r.text}"; continue
+
+                if r.status_code in (400, 404, 405, 415, 422):
+                    # keep message but try next payload / path
+                    last_err = f"{submit_url} -> {r.status_code}: {r.text}"
+                    continue
+
                 if r.status_code >= 500:
-                    last_err = f"{submit_url} -> {r.status_code}: {r.text}"; break
+                    # server-side error: try next base/path
+                    last_err = f"{submit_url} -> {r.status_code}: {r.text}"
+                    break
+
                 r.raise_for_status()
                 j = r.json() if r.content else {}
-                task_id = j.get("task_id") or (j.get("data") or {}).get("task_id") or j.get("id")
+
+                task_id = (
+                    j.get("task_id")
+                    or (j.get("data") or {}).get("task_id")
+                    or j.get("id")
+                )
                 if not task_id:
-                    last_err = f"{submit_url} -> no task_id in response: {j}"; continue
+                    last_err = f"{submit_url} -> no task_id in response: {j}"
+                    continue
+
                 return str(task_id)
+
             except Exception as e:
-                last_err = f"{submit_url} with {list(payload.keys())} -> {e}"; continue
+                last_err = f"{submit_url} with {list(payload.keys())} -> {e}"
+                continue
+
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
+
 
 def _sportai_status(task_id: str) -> dict:
     if not SPORTAI_TOKEN:
