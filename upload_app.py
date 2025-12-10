@@ -46,15 +46,7 @@ def ops_code_hash():
 # -------------------------------------------------------
 OPS_KEY = os.getenv("OPS_KEY", "").strip()
 
-# ---------- SportAI config ----------
-#SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.com").strip().rstrip("/")
-#SPORTAI_SUBMIT_PATH = os.getenv("SPORT_AI_SUBMIT_PATH", "/api/statistics/tennis").strip()
-#SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/tennis/{task_id}/status").strip()
-#SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
-#SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
-#SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
 
-#=====================================================
 # ---------- SportAI config ----------
 SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.com").strip().rstrip("/")
 
@@ -72,10 +64,6 @@ SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/ca
 SPORTAI_BASES = [
     "https://api.sportai.com",
 ]
-
-#================================================
-
-
 
 # Auto-ingest once completed
 AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "1").lower() in ("1","true","yes","y")
