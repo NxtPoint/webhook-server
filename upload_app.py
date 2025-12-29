@@ -139,6 +139,17 @@ def _sql_exec_to_json(q: str):
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
 
+def _guard_wix_upload_task() -> bool:
+    expected = (os.getenv("WIX_UPLOAD_TASK_KEY") or "").strip()
+    if not expected:
+        return False
+    hk = request.headers.get("X-Ops-Key") or request.headers.get("X-Ops-KEY") or request.headers.get("X-OPS-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+    return hk == expected
+
+
 # ==========================
 # BRONZE.SUBMISSION_CONTEXT (TASK_ID KEYED)
 # ==========================
@@ -844,6 +855,9 @@ def api_upload_task():
       videoUrl, firstServer
     }
     """
+    if not _guard_wix_upload_task():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
     if not request.is_json:
         return jsonify({"ok": False, "error": "JSON body required"}), 400
 
@@ -944,10 +958,16 @@ def api_task_status():
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, status, result_url)
             sc = conn.execute(sql_text("""
-                SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
-                  FROM bronze.submission_context
-                 WHERE task_id = :t
-                 LIMIT 1
+                SELECT session_id,
+                    ingest_started_at,
+                    ingest_finished_at,
+                    ingest_error,
+                    wix_notified_at,
+                    wix_notify_status,
+                    wix_notify_error
+                FROM bronze.submission_context
+                WHERE task_id = :t
+                LIMIT 1
             """), {"t": tid}).mappings().first() or {}
 
         auto_ingested = False
@@ -964,6 +984,12 @@ def api_task_status():
         if session_id and ingest_finished and not auto_ingest_error:
             auto_ingested = True
 
+            if (not sc.get("wix_notified_at")) and (WIX_NOTIFY_URL and WIX_NOTIFY_KEY):
+                try:
+                    _notify_wix(tid, status="completed", session_id=session_id, result_url=result_url, error=None)
+                except Exception as e:
+                    app.logger.error("Wix notify retry from poller failed task_id=%s: %s", tid, e)
+
         return jsonify({
             "ok": True, **out,
             "session_id": session_id,
@@ -971,7 +997,10 @@ def api_task_status():
             "auto_ingest_error": auto_ingest_error,
             "ingest_started": ingest_started,
             "ingest_running": ingest_running,
-            "ingest_finished": ingest_finished
+            "ingest_finished": ingest_finished,
+            "wix_notified_at": sc.get("wix_notified_at"),
+            "wix_notify_status": sc.get("wix_notify_status"),
+            "wix_notify_error": sc.get("wix_notify_error")
         })
 
     except Exception as e:
