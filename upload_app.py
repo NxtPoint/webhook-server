@@ -104,11 +104,23 @@ def _require_s3():
         raise RuntimeError("S3 is required: set AWS_REGION and S3_BUCKET env vars")
 
 # ---------- Wix backend notify (server-side completion email trigger) ----------
-# You said you have done these (Render env + Wix backend working).
-WIX_NOTIFY_URL = (os.getenv("WIX_NOTIFY_URL") or "").strip()
-WIX_NOTIFY_KEY = (os.getenv("WIX_NOTIFY_KEY") or "").strip()
+# Render -> Wix backend endpoint. Wix backend validates X-Ops-Key.
+
+WIX_NOTIFY_URL = (
+    os.getenv("WIX_NOTIFY_UPLOAD_COMPLETE_URL")  # NEW (your Render env)
+    or os.getenv("WIX_NOTIFY_URL")               # legacy fallback (safe)
+    or ""
+).strip()
+
+WIX_NOTIFY_KEY = (
+    os.getenv("RENDER_TO_WIX_OPS_KEY")  # NEW (your Render env)
+    or os.getenv("WIX_NOTIFY_KEY")      # legacy fallback (safe)
+    or ""
+).strip()
+
 WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
 WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
+
 
 # ==========================
 # HELPERS
