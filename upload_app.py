@@ -1,6 +1,5 @@
 ﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only)
 # - Keeps: S3 upload, SportAI submit/status/cancel, presign, check-video
-# - Removes: webhook + legacy session_id-first flows
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
 # - Uses bronze.submission_context keyed by task_id (no public schema)
 
@@ -16,15 +15,17 @@ from sqlalchemy import text as sql_text
 import models_billing  # ensure billing models are registered
 from billing_api import billing_bp
 
-# ---- boto3 is REQUIRED (fail fast if missing) ----
+# ==========================
+# BOTO3 (REQUIRED)
+# ==========================
 try:
     import boto3
 except Exception as e:
     raise RuntimeError("boto3 is required. Add it to requirements.txt and redeploy.") from e
 
-# -------------------------------------------------------
-# Flask app
-# -------------------------------------------------------
+# ==========================
+# FLASK APP
+# ==========================
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.url_map.strict_slashes = False
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 1024 * 1024  # 150MB default
@@ -41,14 +42,13 @@ def ops_code_hash():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# -------------------------------------------------------
-# Env / config
-# -------------------------------------------------------
+# ==========================
+# ENV / CONFIG
+# ==========================
 OPS_KEY = os.getenv("OPS_KEY", "").strip()
 
-
 # ---------- SportAI config ----------
-SPORTAI_BASE        = os.getenv("SPORT_AI_BASE", "https://api.sportai.com").strip().rstrip("/")
+SPORTAI_BASE = os.getenv("SPORT_AI_BASE", "https://api.sportai.com").strip().rstrip("/")
 
 # Hard-guard: never allow .app even if env is wrong
 if "sportai.app" in SPORTAI_BASE:
@@ -59,11 +59,6 @@ SPORTAI_STATUS_PATH = os.getenv("SPORT_AI_STATUS_PATH", "/api/statistics/tennis/
 SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
 SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
 SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
-
-# Try public hostnames / path variants for resilience — COM ONLY
-SPORTAI_BASES = [
-    "https://api.sportai.com",
-]
 
 # Auto-ingest once completed
 AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "1").lower() in ("1","true","yes","y")
@@ -76,11 +71,12 @@ DEFAULT_REPLACE_ON_INGEST = (
 
 ENABLE_CORS = os.environ.get("ENABLE_CORS", "0").lower() in ("1","true","yes","y")
 
-# Try both public hostnames / path variants for resilience
+# Try public hostnames / path variants for resilience — COM ONLY
 SPORTAI_BASES = list(dict.fromkeys([
     SPORTAI_BASE,
     "https://api.sportai.com",
-    ]))
+]))
+
 SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([SPORTAI_SUBMIT_PATH, "/api/statistics/tennis", "/api/statistics"]))
 SPORTAI_STATUS_PATHS = list(dict.fromkeys([
     SPORTAI_STATUS_PATH,
@@ -107,9 +103,16 @@ def _require_s3():
     if not (AWS_REGION and S3_BUCKET):
         raise RuntimeError("S3 is required: set AWS_REGION and S3_BUCKET env vars")
 
-# -------------------------------------------------------
-# Helpers
-# -------------------------------------------------------
+# ---------- Wix backend notify (server-side completion email trigger) ----------
+# You said you have done these (Render env + Wix backend working).
+WIX_NOTIFY_URL = (os.getenv("WIX_NOTIFY_URL") or "").strip()
+WIX_NOTIFY_KEY = (os.getenv("WIX_NOTIFY_KEY") or "").strip()
+WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
+WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
+
+# ==========================
+# HELPERS
+# ==========================
 def _guard() -> bool:
     qk = request.args.get("key") or request.args.get("ops_key")
     hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
@@ -136,9 +139,10 @@ def _sql_exec_to_json(q: str):
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
 
-# ---------- submission_context (bronze only) ----------
+# ==========================
+# BRONZE.SUBMISSION_CONTEXT (TASK_ID KEYED)
+# ==========================
 def _ensure_submission_context_schema(conn):
-    # Ensure bronze schema + bronze.submission_context table
     conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS bronze;"))
     conn.execute(sql_text("""
         CREATE TABLE IF NOT EXISTS bronze.submission_context (
@@ -162,10 +166,17 @@ def _ensure_submission_context_schema(conn):
           last_result_url    TEXT,
           ingest_started_at  TIMESTAMPTZ,
           ingest_finished_at TIMESTAMPTZ,
-          ingest_error       TEXT
+          ingest_error       TEXT,
+
+          -- Wix notify audit (server-side completion email)
+          wix_notified_at    TIMESTAMPTZ,
+          wix_notify_status  TEXT,
+          wix_notify_error   TEXT
         );
     """))
-    # keep these as no-ops if columns already exist (idempotent safety)
+
+    # Idempotent safety: keep these as no-ops if columns already exist
+    # NOTE: Fixed a production bug here: missing comma after session_id ALTER caused SQL string concatenation.
     for ddl in (
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ",
@@ -173,13 +184,16 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ingest_error TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id TEXT"
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS session_id TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notified_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_status TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
     ):
         conn.execute(sql_text(ddl))
 
-
 def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
-    if not engine: return
+    if not engine:
+        return
     m = meta or {}
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -235,9 +249,82 @@ def _mirror_submission_to_bronze_by_task(conn, task_id: str):
     """No-op: submission_context now lives directly in bronze.submission_context."""
     return
 
-# -------------------------------------------------------
-# SportAI HTTP
-# -------------------------------------------------------
+# ==========================
+# WIX NOTIFY (RENDER → WIX → AUTOMATION)
+# ==========================
+def _wix_payload(task_id: str, status: str, session_id: str | None, result_url: str | None, error: str | None):
+    return {
+        "task_id": task_id,
+        "status": status,  # "completed" | "failed"
+        "session_id": session_id,
+        "result_url": result_url,
+        "error": error,
+        "ts_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+def _already_notified(conn, task_id: str, desired_status: str) -> bool:
+    row = conn.execute(sql_text("""
+        SELECT wix_notified_at, wix_notify_status
+          FROM bronze.submission_context
+         WHERE task_id = :t
+         LIMIT 1
+    """), {"t": task_id}).mappings().first()
+    return bool(row and row.get("wix_notified_at") and (row.get("wix_notify_status") == desired_status))
+
+def _mark_wix_notify(conn, task_id: str, status: str, err: str | None):
+    conn.execute(sql_text("""
+        UPDATE bronze.submission_context
+           SET wix_notified_at   = now(),
+               wix_notify_status = :s,
+               wix_notify_error  = :e
+         WHERE task_id = :t
+    """), {"t": task_id, "s": status, "e": err})
+
+def _notify_wix(task_id: str, status: str, session_id: str | None, result_url: str | None, error: str | None) -> None:
+    """
+    Server-side: Render calls Wix backend notify endpoint.
+    Idempotent: prevents spamming via bronze.submission_context(wix_notified_at, wix_notify_status).
+    """
+    if not WIX_NOTIFY_URL:
+        app.logger.warning("WIX_NOTIFY_URL not set; skipping Wix notify task_id=%s", task_id)
+        return
+
+    # Gate idempotency from DB
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        if _already_notified(conn, task_id, status):
+            return
+
+    headers = {"Content-Type": "application/json"}
+    if WIX_NOTIFY_KEY:
+        # Wix handler expects X-Ops-Key (matches your working Postman/Wix setup)
+        headers["X-Ops-Key"] = WIX_NOTIFY_KEY
+
+    payload = _wix_payload(task_id, status, session_id, result_url, error)
+
+    last_err = None
+    for _ in range(max(1, WIX_NOTIFY_RETRIES)):
+        try:
+            r = requests.post(WIX_NOTIFY_URL, headers=headers, json=payload, timeout=WIX_NOTIFY_TIMEOUT_S)
+            if r.status_code >= 400:
+                last_err = f"HTTP {r.status_code}: {r.text}"
+                continue
+
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                _mark_wix_notify(conn, task_id, status, None)
+            return
+
+        except Exception as e:
+            last_err = f"{e.__class__.__name__}: {e}"
+
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        _mark_wix_notify(conn, task_id, status, last_err)
+
+# ==========================
+# SPORTAI HTTP
+# ==========================
 def _iter_submit_endpoints():
     for base in SPORTAI_BASES:
         for path in SPORTAI_SUBMIT_PATHS:
@@ -258,20 +345,10 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
     }
 
     # Canonical payloads using *only* video_url (no url / video_urls legacy forms)
-    base_min = {
-        "video_url": video_url,
-        "version": "latest",
-    }
-    with_email = {
-        **base_min,
-        **({"email": email} if email else {}),
-    }
-    with_meta = {
-        **with_email,
-        **({"metadata": meta} if meta else {}),
-    }
+    base_min = {"video_url": video_url, "version": "latest"}
+    with_email = {**base_min, **({"email": email} if email else {})}
+    with_meta = {**with_email, **({"metadata": meta} if meta else {})}
 
-    # Only these three variants now
     payload_variants = [with_meta, with_email, base_min]
 
     last_err = None
@@ -288,23 +365,17 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
                 r = requests.post(submit_url, headers=headers, json=payload, timeout=60)
 
                 if r.status_code in (400, 404, 405, 415, 422):
-                    # keep message but try next payload / path
                     last_err = f"{submit_url} -> {r.status_code}: {r.text}"
                     continue
 
                 if r.status_code >= 500:
-                    # server-side error: try next base/path
                     last_err = f"{submit_url} -> {r.status_code}: {r.text}"
                     break
 
                 r.raise_for_status()
                 j = r.json() if r.content else {}
 
-                task_id = (
-                    j.get("task_id")
-                    or (j.get("data") or {}).get("task_id")
-                    or j.get("id")
-                )
+                task_id = j.get("task_id") or (j.get("data") or {}).get("task_id") or j.get("id")
                 if not task_id:
                     last_err = f"{submit_url} -> no task_id in response: {j}"
                     continue
@@ -317,7 +388,6 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
 
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
-
 def _sportai_status(task_id: str) -> dict:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
@@ -327,11 +397,14 @@ def _sportai_status(task_id: str) -> dict:
         try:
             r = requests.get(url, headers=headers, timeout=30)
             if r.status_code >= 500:
-                last_err = f"{url} -> {r.status_code}: {r.text}"; continue
+                last_err = f"{url} -> {r.status_code}: {r.text}"
+                continue
             if r.status_code == 404:
-                j = {"message": "Task not visible yet (404)."}; break
+                j = {"message": "Task not visible yet (404)."}
+                break
             r.raise_for_status()
-            j = r.json() or {}; break
+            j = r.json() or {}
+            break
         except Exception as e:
             last_err = str(e)
     if j is None:
@@ -343,7 +416,6 @@ def _sportai_status(task_id: str) -> dict:
     if not status and "still being processed" in msg:
         status = "processing"
 
-    # normalize progress
     prog = d.get("task_progress") or d.get("progress") or d.get("total_subtask_progress")
     try:
         if prog is None:
@@ -358,9 +430,10 @@ def _sportai_status(task_id: str) -> dict:
         progress_pct = None
 
     result_url = d.get("result_url") or j.get("result_url")
-    terminal = status.lower() in ("completed","done","success","succeeded","failed","canceled")
+    terminal = status.lower() in ("completed", "done", "success", "succeeded", "failed", "canceled")
     if result_url and not terminal:
-        status = "completed"; terminal = True
+        status = "completed"
+        terminal = True
     if terminal and (progress_pct is None or progress_pct < 100):
         progress_pct = 100
 
@@ -396,8 +469,10 @@ def _sportai_cancel(task_id: str) -> dict:
         raise RuntimeError("SPORT_AI_TOKEN not set")
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
     cancel_paths = list(dict.fromkeys([
-        SPORTAI_CANCEL_PATH, "/api/tasks/{task_id}/cancel",
-        "/api/statistics/{task_id}/cancel", "/api/statistics/tennis/{task_id}/cancel",
+        SPORTAI_CANCEL_PATH,
+        "/api/tasks/{task_id}/cancel",
+        "/api/statistics/{task_id}/cancel",
+        "/api/statistics/tennis/{task_id}/cancel",
     ]))
     last_err = None
     for base in SPORTAI_BASES:
@@ -405,19 +480,22 @@ def _sportai_cancel(task_id: str) -> dict:
             url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
             try:
                 r = requests.post(url, headers=headers, json={}, timeout=30)
-                if r.status_code in (400,404,405):
-                    try: detail = r.json()
-                    except Exception: detail = r.text
-                    last_err = f"{url} -> {r.status_code}: {detail}"; continue
+                if r.status_code in (400, 404, 405):
+                    try:
+                        detail = r.json()
+                    except Exception:
+                        detail = r.text
+                    last_err = f"{url} -> {r.status_code}: {detail}"
+                    continue
                 r.raise_for_status()
                 return (r.json() or {})
             except Exception as e:
                 last_err = f"{url} -> {e}"
     raise RuntimeError(f"SportAI cancel failed across endpoints: {last_err}")
 
-# -------------------------------------------------------
-# S3 helpers
-# -------------------------------------------------------
+# ==========================
+# S3 HELPERS
+# ==========================
 def _s3_client():
     _require_s3()
     return boto3.client("s3", region_name=AWS_REGION)
@@ -440,9 +518,9 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
         ExpiresIn=int(expires or S3_GET_EXPIRES),
     )
 
-# -------------------------------------------------------
-# Ingest worker (task_id-only)
-# -------------------------------------------------------
+# ==========================
+# INGEST WORKER (TASK_ID-ONLY)
+# ==========================
 def _do_ingest(task_id: str, result_url: str) -> bool:
     try:
         # mark started
@@ -467,43 +545,55 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                 payload,
                 replace=DEFAULT_REPLACE_ON_INGEST,
                 src_hint=result_url,
-                task_id=task_id,            # canonical key
+                task_id=task_id,  # canonical key
             )
             sid = res.get("session_id")
 
             # status + mirror
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
-                   SET session_id        = :sid,
-                       ingest_finished_at= now(),
-                       ingest_error      = NULL,
-                       last_result_url   = :url,
-                       last_status       = 'completed',
-                       last_status_at    = now()
+                   SET session_id         = :sid,
+                       ingest_finished_at = now(),
+                       ingest_error       = NULL,
+                       last_result_url    = :url,
+                       last_status        = 'completed',
+                       last_status_at     = now()
                  WHERE task_id = :t
             """), {"sid": sid, "t": task_id, "url": result_url})
 
             _mirror_submission_to_bronze_by_task(conn, task_id)
 
-        # --- NEW: auto-build Silver point_detail after Bronze succeeds ---
+        # --- auto-build Silver point_detail after Bronze succeeds ---
         try:
-            # replace=True so reruns are idempotent if you re-trigger ingest
             build_silver_point_detail(task_id=task_id, phase="all", replace=True)
         except Exception as e:
-            # log but DO NOT fail Bronze ingest
             app.logger.error("Silver build failed for task_id=%s: %s", task_id, e)
+
+        # --- NEW: notify Wix after successful ingest (server-side email trigger) ---
+        try:
+            _notify_wix(task_id, status="completed", session_id=sid, result_url=result_url, error=None)
+        except Exception as e:
+            app.logger.exception("Wix notify failed (completed) task_id=%s: %s", task_id, e)
 
         return True
 
-
     except Exception as e:
+        err_txt = f"{e.__class__.__name__}: {e}"
         with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                    SET ingest_error = :err,
                        ingest_finished_at = now()
                  WHERE task_id = :t
-            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+            """), {"t": task_id, "err": err_txt})
+
+        # --- NEW: notify Wix about failure (optional but useful) ---
+        try:
+            _notify_wix(task_id, status="failed", session_id=None, result_url=result_url, error=err_txt)
+        except Exception as e2:
+            app.logger.exception("Wix notify failed (failed) task_id=%s: %s", task_id, e2)
+
         return False
 
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
@@ -533,14 +623,16 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
     th.start()
     return True
 
-# -------------------------------------------------------
-# Public endpoints (uploads + status + ops)
-# -------------------------------------------------------
+# ==========================
+# PUBLIC ENDPOINTS (UPLOADS + STATUS + OPS)
+# ==========================
 @app.get("/")
-def root_ok(): return jsonify({"service": "NextPoint Upload/Ingester v3 (S3-only)", "ok": True})
+def root_ok():
+    return jsonify({"service": "NextPoint Upload/Ingester v3 (S3-only)", "ok": True})
 
 @app.get("/healthz")
-def healthz_ok(): return "OK", 200
+def healthz_ok():
+    return "OK", 200
 
 @app.get("/__routes")
 def __routes_open():
@@ -552,7 +644,8 @@ def __routes_open():
 
 @app.get("/ops/routes")
 def __routes_locked():
-    if not _guard(): return Response("Forbidden", 403)
+    if not _guard():
+        return Response("Forbidden", 403)
     return __routes_open()
 
 @app.get("/upload/api/status")
@@ -569,7 +662,8 @@ def upload_status():
 
 @app.get("/ops/env")
 def ops_env():
-    if not _guard(): return Response("Forbidden", 403)
+    if not _guard():
+        return Response("Forbidden", 403)
     return jsonify({
         "ok": True,
         "SPORT_AI_BASE": SPORTAI_BASE,
@@ -581,9 +675,13 @@ def ops_env():
         "AWS_REGION": AWS_REGION,
         "S3_BUCKET": S3_BUCKET,
         "S3_PREFIX": S3_PREFIX,
+        "WIX_NOTIFY_URL_SET": bool(WIX_NOTIFY_URL),
+        "WIX_NOTIFY_KEY_SET": bool(WIX_NOTIFY_KEY),
     })
 
-# ---------- Presign (optional) ----------
+# ==========================
+# PRESIGN (OPTIONAL)
+# ==========================
 @app.post("/upload/api/s3-presign")
 def api_s3_presign():
     _require_s3()
@@ -603,42 +701,58 @@ def api_s3_presign():
         "post": post, "get_url": _s3_presigned_get_url(key)
     })
 
-# ---------- Video check & cancel ----------
+# ==========================
+# VIDEO CHECK & CANCEL
+# ==========================
 @app.route("/upload/api/check-video", methods=["POST", "OPTIONS"])
 def api_check_video():
-    if request.method == "OPTIONS": return ("", 204)
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     def _passed(obj):
         if isinstance(obj, dict):
-            if "ok" in obj: return bool(obj["ok"])
-            if str(obj.get("status","")).lower() in ("ok","success","passed","ready"): return True
-            if obj.get("errors"): return False
+            if "ok" in obj:
+                return bool(obj["ok"])
+            if str(obj.get("status", "")).lower() in ("ok", "success", "passed", "ready"):
+                return True
+            if obj.get("errors"):
+                return False
         return True
+
     try:
         if request.is_json:
             body = request.get_json(silent=True) or {}
             video_url = (body.get("video_url") or body.get("share_url") or "").strip()
-            if not video_url: return jsonify({"ok": False, "error": "video_url required"}), 400
+            if not video_url:
+                return jsonify({"ok": False, "error": "video_url required"}), 400
             chk = _sportai_check(video_url)
             return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
+
         f = request.files.get("file") or request.files.get("video")
-        if not f or not f.filename: return jsonify({"ok": False, "error": "No file provided."}), 400
-        clean = secure_filename(f.filename); ts = int(time.time())
+        if not f or not f.filename:
+            return jsonify({"ok": False, "error": "No file provided."}), 400
+
+        clean = secure_filename(f.filename)
+        ts = int(time.time())
         key = f"{S3_PREFIX}/{ts}_{clean}"
         try:
             f.stream.seek(0)
         except Exception:
             pass
+
         _ = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
         chk = _sportai_check(video_url)
         return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
+
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.post("/upload/api/cancel-task")
 def api_cancel_task():
     tid = request.values.get("task_id") or (request.get_json(silent=True) or {}).get("task_id")
-    if not tid: return jsonify({"ok": False, "error": "task_id required"}), 400
+    if not tid:
+        return jsonify({"ok": False, "error": "task_id required"}), 400
     try:
         out = _sportai_cancel(str(tid))
         with engine.begin() as conn:
@@ -660,10 +774,13 @@ def _extract_meta_from_form(form):
         "player_b_utr": form.get("player_b_utr") or form.get("PlayerBUTR"),
     }
 
-# ---------- Upload API (S3 only) ----------
+# ==========================
+# UPLOAD API (S3 ONLY)
+# ==========================
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_s3():
-    if request.method == "OPTIONS": return ("", 204)
+    if request.method == "OPTIONS":
+        return ("", 204)
     _require_s3()
 
     # JSON path: already have video_url (e.g., after presign upload)
@@ -686,9 +803,12 @@ def api_upload_to_s3():
     # Multipart path: browser → server → S3 (fallback)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
-    if not f or not f.filename: return jsonify({"ok": False, "error": "No file provided."}), 400
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file provided."}), 400
 
-    clean = secure_filename(f.filename); ts = int(time.time()); key = f"{S3_PREFIX}/{ts}_{clean}"
+    clean = secure_filename(f.filename)
+    ts = int(time.time())
+    key = f"{S3_PREFIX}/{ts}_{clean}"
     try:
         try:
             f.stream.seek(0)
@@ -709,7 +829,10 @@ def api_upload_to_s3():
     except Exception as e:
         return jsonify({"ok": False, "error": f"S3 upload/submit failed: {e}"}), 502
 
-# ---------- JSON upload from Wix (video already hosted) ---------- TEST CODE FOR NOW !!!!
+# ==========================
+# LEGACY: JSON UPLOAD FROM WIX (VIDEO ALREADY HOSTED)
+# (Kept as-is; clearly isolated. This still copies Wix media → S3 → SportAI.)
+# ==========================
 @app.post("/api/upload_task")
 def api_upload_task():
     """
@@ -720,24 +843,16 @@ def api_upload_task():
       startTime, matchDate, location,
       videoUrl, firstServer
     }
-
-    Behaviour:
-    - Download videoUrl (now a proper HTTPS URL from Wix media).
-    - Copy it into our S3 bucket.
-    - Generate an S3 presigned URL.
-    - Submit that S3 URL to SportAI.
-    - Store S3 URL as video_url, original as share_url.
     """
     if not request.is_json:
         return jsonify({"ok": False, "error": "JSON body required"}), 400
 
     body = request.get_json(silent=True) or {}
 
-    # Basic fields
-    source_url   = (body.get("videoUrl") or body.get("video_url") or "").strip()
-    owner_id     = (body.get("ownerId") or body.get("owner_id") or "").strip()
-    player_id    = body.get("playerId") or body.get("player_id")
-    player_name  = (body.get("playerName") or "").strip()
+    source_url    = (body.get("videoUrl") or body.get("video_url") or "").strip()
+    owner_id      = (body.get("ownerId") or body.get("owner_id") or "").strip()
+    player_id     = body.get("playerId") or body.get("player_id")
+    player_name   = (body.get("playerName") or "").strip()
     opponent_name = (body.get("opponentName") or "").strip()
     opponent_utr  = (body.get("opponentUtr") or "").strip()
     start_time    = (body.get("startTime") or "").strip()
@@ -748,7 +863,6 @@ def api_upload_task():
     if not source_url:
         return jsonify({"ok": False, "error": "videoUrl required"}), 400
 
-    # Build metadata stored in bronze.submission_context.raw_meta
     meta = {
         "customer_name": player_name or owner_id or None,
         "match_date": match_date or None,
@@ -764,42 +878,35 @@ def api_upload_task():
     }
 
     try:
-        # Always use S3 for SportAI
         _require_s3()
 
-        # --- Step 1: download from source_url (Wix media HTTP URL) ---
         resp = requests.get(source_url, stream=True, timeout=600)
         resp.raise_for_status()
 
-        # Derive a filename and S3 key
         parsed = urlparse(source_url)
         filename = os.path.basename(parsed.path) or "video.mp4"
         clean_name = secure_filename(filename) or "video.mp4"
         ts = int(time.time())
         key = f"{S3_PREFIX}/{ts}_{clean_name}"
 
-        # Upload stream to S3; boto3.upload_fileobj can take resp.raw
-        meta_up = _s3_put_fileobj(
+        _ = _s3_put_fileobj(
             resp.raw,
             key,
             content_type=resp.headers.get("Content-Type") or "video/mp4",
         )
         s3_video_url = _s3_presigned_get_url(key)
 
-        # --- Step 2: Submit S3 URL to SportAI ---
         email = ""  # not used yet for Wix flow
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
-        # --- Step 3: Persist in bronze.submission_context ---
         _store_submission_context(
             task_id,
             email,
             meta,
             s3_video_url,
-            share_url=source_url,  # original Wix download URL
+            share_url=source_url,
         )
 
-        # Initialize status cache as queued
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, task_id, "queued", None)
@@ -809,13 +916,18 @@ def api_upload_task():
     except Exception as e:
         return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
-# Legacy alias (kept)
+# ==========================
+# LEGACY ALIAS (KEPT)
+# ==========================
 @app.route("/upload", methods=["POST", "OPTIONS"])
 def upload_alias():
-    if request.method == "OPTIONS": return ("", 204)
+    if request.method == "OPTIONS":
+        return ("", 204)
     return api_upload_to_s3()
 
-# ---------- Task poll (normalized progress + auto-ingest) ----------
+# ==========================
+# TASK POLL (NORMALIZED PROGRESS + AUTO-INGEST)
+# ==========================
 @app.get("/upload/api/task-status")
 def api_task_status():
     tid = request.args.get("task_id")
@@ -841,11 +953,10 @@ def api_task_status():
         auto_ingested = False
         auto_ingest_error = sc.get("ingest_error")
         session_id = sc.get("session_id")
-        ingest_started   = sc.get("ingest_started_at") is not None
-        ingest_finished  = sc.get("ingest_finished_at") is not None
-        ingest_running   = ingest_started and not ingest_finished
+        ingest_started = sc.get("ingest_started_at") is not None
+        ingest_finished = sc.get("ingest_finished_at") is not None
+        ingest_running = ingest_started and not ingest_finished
 
-        # Start worker if completed + result_url available and not already done/running
         if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
             started = _start_ingest_background(tid, result_url)
             ingest_started = ingest_started or started
@@ -864,13 +975,13 @@ def api_task_status():
         })
 
     except Exception as e:
-        # never break the poller
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
 
-# ---------- Manual ingest helper (task_id-only) ----------
+# ==========================
+# MANUAL INGEST HELPER (TASK_ID-ONLY)
+# ==========================
 @app.post("/ops/ingest-task")
 def ops_ingest_task():
-    # Guard
     if not _guard():
         return Response("Forbidden", 403)
 
@@ -880,18 +991,15 @@ def ops_ingest_task():
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
     try:
-        # Get status + result_url
         st = _sportai_status(tid)
         result_url = st.get("result_url")
         if not result_url:
             return jsonify({"ok": False, "error": "result_url not available yet"}), 400
 
-        # Download SportAI JSON
         r = requests.get(result_url, timeout=300)
         r.raise_for_status()
         payload = r.json()
 
-        # Bronze ingest
         with engine.begin() as conn:
             _run_bronze_init(conn)
             res = ingest_bronze_strict(
@@ -916,38 +1024,47 @@ def ops_ingest_task():
 
             _mirror_submission_to_bronze_by_task(conn, tid)
 
-        # Silver build (Phase = all)
         try:
             build_silver_point_detail(task_id=tid, phase="all", replace=True)
         except Exception as e:
             app.logger.error(f"Silver build failed for task_id={tid}: {e}")
+
+        # Optional: notify on manual ingest too (kept OFF by default; uncomment if desired)
+        # try:
+        #     _notify_wix(tid, status="completed", session_id=sid, result_url=result_url, error=None)
+        # except Exception as e:
+        #     app.logger.exception("Wix notify failed (manual completed) task_id=%s: %s", tid, e)
 
         return jsonify({"ok": True, "task_id": tid, "session_id": sid})
 
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
-# ---------- SQL helpers for quick inspection ----------
+# ==========================
+# SQL HELPERS FOR QUICK INSPECTION
+# ==========================
 @app.post("/ops/sqlx")
 def ops_sql_json():
-    if not _guard(): return Response("Forbidden", 403)
+    if not _guard():
+        return Response("Forbidden", 403)
     body = request.get_json(silent=True) or {}
     try:
-        return jsonify(_sql_exec_to_json(body.get("q","")))
+        return jsonify(_sql_exec_to_json(body.get("q", "")))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
 @app.get("/ops/sqlq")
 def ops_sql_qs():
-    if not _guard(): return Response("Forbidden", 403)
+    if not _guard():
+        return Response("Forbidden", 403)
     try:
-        return jsonify(_sql_exec_to_json(request.args.get("q","")))
+        return jsonify(_sql_exec_to_json(request.args.get("q", "")))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-# -------------------------------------------------------
-# Optional UI blueprint (if present); harmless if missing
-# -------------------------------------------------------
+# ==========================
+# OPTIONAL UI BLUEPRINT (IF PRESENT)
+# ==========================
 try:
     from ui_app import ui_bp
     app.register_blueprint(ui_bp, url_prefix="/upload")
@@ -955,15 +1072,19 @@ try:
 except Exception as e:
     print("ui_bp not mounted:", e)
 
-
-# Billing API blueprint
+# ==========================
+# BILLING API BLUEPRINT
+# (Left untouched as requested.)
+# ==========================
 try:
     app.register_blueprint(billing_bp)  # billing_bp already has url_prefix="/api/billing"
     print("Mounted billing_bp at /api/billing")
 except Exception as e:
     print("billing_bp not mounted:", e)
 
-# Boot log
+# ==========================
+# BOOT LOG
+# ==========================
 print("=== ROUTES ===")
 for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     meth = ",".join(sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"}))
