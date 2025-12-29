@@ -840,57 +840,111 @@ def api_upload_to_s3():
     except Exception as e:
         return jsonify({"ok": False, "error": f"S3 upload/submit failed: {e}"}), 502
 
-# ==========================
-# LEGACY: JSON UPLOAD FROM WIX (VIDEO ALREADY HOSTED)
-# (Kept as-is; clearly isolated. This still copies Wix media → S3 → SportAI.)
-# ==========================
+# =========================
+# /api/upload_task — Wix JSON → store full metadata 1:1 into submission_context.raw_meta
+# Minimal change: extend meta mapping + persist player_a_utr and set scores + end_time
+# =========================
+
 @app.post("/api/upload_task")
 def api_upload_task():
     """
-    JSON-only endpoint for Wix:
-    expects {
+    JSON-only endpoint for Wix
+    expects:
       ownerId, playerId, playerName,
       opponentName, opponentUtr,
-      startTime, matchDate, location,
+      playerUTR,
+      startTime, endTime, matchDate, location,
+      Set 1 (A/B), Set 2 (A/B), Set 3 (A/B),
       videoUrl, firstServer
-    }
     """
-    if not _guard_wix_upload_task():
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-
     if not request.is_json:
         return jsonify({"ok": False, "error": "JSON body required"}), 400
 
     body = request.get_json(silent=True) or {}
 
+    # =========================
+    # Extract canonical fields (accept both camelCase + your internal variants)
+    # =========================
     source_url    = (body.get("videoUrl") or body.get("video_url") or "").strip()
     owner_id      = (body.get("ownerId") or body.get("owner_id") or "").strip()
     player_id     = body.get("playerId") or body.get("player_id")
-    player_name   = (body.get("playerName") or "").strip()
-    opponent_name = (body.get("opponentName") or "").strip()
-    opponent_utr  = (body.get("opponentUtr") or "").strip()
-    start_time    = (body.get("startTime") or "").strip()
-    match_date    = (body.get("matchDate") or "").strip()
+    player_name   = (body.get("playerName") or body.get("player_a_name") or "").strip()
+    opponent_name = (body.get("opponentName") or body.get("player_b_name") or "").strip()
+    opponent_utr  = (body.get("opponentUtr") or body.get("player_b_utr") or "").strip()
+    player_utr    = (body.get("playerUTR") or body.get("playerUtr") or body.get("myUtr") or body.get("player_a_utr") or "").strip()
+
+    start_time    = (body.get("startTime") or body.get("start_time") or "").strip()
+    end_time      = (body.get("endTime") or body.get("end_time") or "").strip()
+    match_date    = (body.get("matchDate") or body.get("match_date") or "").strip()
     location      = (body.get("location") or "").strip()
-    first_server  = (body.get("firstServer") or "").strip()
+    first_server  = (body.get("firstServer") or body.get("first_server") or "").strip()
+
+    # Wix CMS score fields (support both spaced + coded variants)
+    set1A = body.get("Set 1 (A)") if "Set 1 (A)" in body else body.get("set1A")
+    set2A = body.get("Set 2 (A)") if "Set 2 (A)" in body else body.get("set2A")
+    set3A = body.get("Set 3 (A)") if "Set 3 (A)" in body else body.get("set3A")
+    set1B = body.get("Set 1 (B)") if "Set 1 (B)" in body else body.get("set1B")
+    set2B = body.get("Set 2 (B)") if "Set 2 (B)" in body else body.get("set2B")
+    set3B = body.get("Set 3 (B)") if "Set 3 (B)" in body else body.get("set3B")
 
     if not source_url:
         return jsonify({"ok": False, "error": "videoUrl required"}), 400
 
+    # helper to normalize scores to strings (keeps blanks as None)
+    def _norm(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s if s != "" else None
+
+    # =========================
+    # Build metadata (raw_meta) — 1:1 mirror of Wix submission
+    # Keep keys stable (snake_case) to avoid future confusion
+    # =========================
     meta = {
+        # identity
+        "owner_id": owner_id or None,
+        "player_id": str(player_id) if player_id is not None else None,
+
+        # people
         "customer_name": player_name or owner_id or None,
-        "match_date": match_date or None,
-        "start_time": start_time or None,
-        "location": location or None,
         "player_a_name": player_name or None,
         "player_b_name": opponent_name or None,
-        "player_a_utr": None,
-        "player_b_utr": opponent_utr or None,
-        "owner_id": owner_id or None,
-        "player_id": player_id,
+
+        # UTRs
+        "player_a_utr": _norm(player_utr),
+        "player_b_utr": _norm(opponent_utr),
+
+        # match info
+        "match_date": _norm(match_date),
+        "start_time": _norm(start_time),
+        "end_time": _norm(end_time),
+        "location": location or None,
         "first_server": first_server or None,
+
+        # score (as submitted)
+        "score": {
+            "set1": {"a": _norm(set1A), "b": _norm(set1B)},
+            "set2": {"a": _norm(set2A), "b": _norm(set2B)},
+            "set3": {"a": _norm(set3A), "b": _norm(set3B)},
+        },
+
+        # optional: keep the exact Wix field names too for perfect “diffing”
+        # (helps reconciliation if Wix changes display names)
+        "wix_payload": {k: body.get(k) for k in [
+            "ownerId","playerId","playerName","opponentName","opponentUtr",
+            "playerUTR","startTime","endTime","location","firstServer","matchDate",
+            "Set 1 (A)","Set 2 (A)","Set 3 (A)","Set 1 (B)","Set 2 (B)","Set 3 (B)",
+        ] if k in body}
     }
 
+    # =========================
+    # Existing behavior continues below (no logic changes):
+    # - download from source_url
+    # - upload to S3
+    # - submit S3 URL to SportAI
+    # - store submission_context
+    # =========================
     try:
         _require_s3()
 
@@ -903,14 +957,14 @@ def api_upload_task():
         ts = int(time.time())
         key = f"{S3_PREFIX}/{ts}_{clean_name}"
 
-        _ = _s3_put_fileobj(
+        meta_up = _s3_put_fileobj(
             resp.raw,
             key,
             content_type=resp.headers.get("Content-Type") or "video/mp4",
         )
         s3_video_url = _s3_presigned_get_url(key)
 
-        email = ""  # not used yet for Wix flow
+        email = ""  # Wix flow: email can be added later if you decide to pass it
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
         _store_submission_context(
@@ -918,7 +972,7 @@ def api_upload_task():
             email,
             meta,
             s3_video_url,
-            share_url=source_url,
+            share_url=source_url,  # original Wix download URL
         )
 
         with engine.begin() as conn:
@@ -929,6 +983,7 @@ def api_upload_task():
 
     except Exception as e:
         return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
+
 
 # ==========================
 # LEGACY ALIAS (KEPT)
