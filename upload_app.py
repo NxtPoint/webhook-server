@@ -984,6 +984,82 @@ def api_upload_task():
     except Exception as e:
         return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
+# =======================================================
+# Wix submit via S3 key (no URLs from Wix)
+# POST /api/submit_s3_task
+# body: { s3_key, ownerId, playerId, playerName, ...metadata... }
+# =======================================================
+@app.post("/api/submit_s3_task")
+def api_submit_s3_task():
+    if not request.is_json:
+        return jsonify({"ok": False, "error": "JSON body required"}), 400
+
+    body = request.get_json(silent=True) or {}
+    s3_key = (body.get("s3_key") or body.get("key") or "").strip()
+    if not s3_key:
+        return jsonify({"ok": False, "error": "s3_key required"}), 400
+
+    _require_s3()
+
+    # build a presigned GET internally (Wix never sees it)
+    s3_video_url = _s3_presigned_get_url(s3_key)
+
+    # reuse your existing meta builder logic (same keys you just added)
+    owner_id      = (body.get("ownerId") or "").strip()
+    player_id     = body.get("playerId")
+    player_name   = (body.get("playerName") or "").strip()
+    opponent_name = (body.get("opponentName") or "").strip()
+    opponent_utr  = (body.get("opponentUtr") or "").strip()
+    player_utr    = (body.get("playerUTR") or body.get("myUtr") or "").strip()
+    start_time    = (body.get("startTime") or "").strip()
+    end_time      = (body.get("endTime") or "").strip()
+    match_date    = (body.get("matchDate") or "").strip()
+    location      = (body.get("location") or "").strip()
+    first_server  = (body.get("firstServer") or "").strip()
+
+    def _norm(v):
+        if v is None: return None
+        s = str(v).strip()
+        return s if s else None
+
+    set1A = body.get("Set 1 (A)") if "Set 1 (A)" in body else body.get("set1A")
+    set2A = body.get("Set 2 (A)") if "Set 2 (A)" in body else body.get("set2A")
+    set3A = body.get("Set 3 (A)") if "Set 3 (A)" in body else body.get("set3A")
+    set1B = body.get("Set 1 (B)") if "Set 1 (B)" in body else body.get("set1B")
+    set2B = body.get("Set 2 (B)") if "Set 2 (B)" in body else body.get("set2B")
+    set3B = body.get("Set 3 (B)") if "Set 3 (B)" in body else body.get("set3B")
+
+    meta = {
+        "owner_id": owner_id or None,
+        "player_id": str(player_id) if player_id is not None else None,
+        "customer_name": player_name or owner_id or None,
+        "player_a_name": player_name or None,
+        "player_b_name": opponent_name or None,
+        "player_a_utr": _norm(player_utr),
+        "player_b_utr": _norm(opponent_utr),
+        "match_date": _norm(match_date),
+        "start_time": _norm(start_time),
+        "end_time": _norm(end_time),
+        "location": location or None,
+        "first_server": first_server or None,
+        "score": {
+            "set1": {"a": _norm(set1A), "b": _norm(set1B)},
+            "set2": {"a": _norm(set2A), "b": _norm(set2B)},
+            "set3": {"a": _norm(set3A), "b": _norm(set3B)},
+        },
+    }
+
+    # submit to SportAI using S3 presigned GET (Render-managed)
+    task_id = _sportai_submit(s3_video_url, email="", meta=meta)
+
+    # store submission_context (video_url = s3 presigned GET, share_url = s3_key for traceability)
+    _store_submission_context(task_id, "", meta, s3_video_url, share_url=s3_key)
+
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        _set_status_cache(conn, task_id, "queued", None)
+
+    return jsonify({"ok": True, "task_id": task_id})
 
 # ==========================
 # LEGACY ALIAS (KEPT)
