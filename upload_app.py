@@ -903,62 +903,125 @@ def _extract_meta_from_form(form):
 # ==========================
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_s3():
+    """
+    Canonical contract (keep this consistent everywhere):
+
+    JSON body (preferred):
+      {
+        "video_url": "<REQUIRED: a direct HTTP(S) URL SportAI can fetch (usually S3 presigned GET)>",
+        "share_url": "<OPTIONAL: original source URL for traceability (wix:..., wix download url, etc.)>",
+        "email": "<OPTIONAL>",
+        "meta": {...} or "metadata": {...}
+      }
+
+    Multipart form (fallback):
+      - file/video: uploaded binary
+      - email: optional
+      - other fields used by _extract_meta_from_form()
+    """
     if request.method == "OPTIONS":
         return ("", 204)
+
     _require_s3()
 
-    # JSON path: already have video_url (e.g., after presign upload)
-    if request.is_json:
+    try:
+        # ==========================
+        # JSON path: URL already exists (e.g., after S3 direct upload)
+        # ==========================
+        if request.is_json:
             body = request.get_json(silent=True) or {}
 
-            video_url = (body.get("video_url") or "").strip()          # REQUIRED
-            share_url = (body.get("share_url") or "").strip() or None  # OPTIONAL (traceability)
+            # Accept a few aliases safely, but normalize to video_url + share_url
+            video_url = (
+                body.get("video_url")
+                or body.get("source_url")   # alias: some older clients used this
+                or body.get("url")          # alias: avoid breaking older callers
+                or ""
+            ).strip()
 
-            email = (body.get("email") or "").strip().lower()
+            share_url = (
+                body.get("share_url")
+                or body.get("original_url")  # alias
+                or None
+            )
+            share_url = share_url.strip() if isinstance(share_url, str) and share_url.strip() else None
+
+            email = (body.get("email") or body.get("customer_email") or "").strip().lower()
             meta = body.get("meta") or body.get("metadata") or {}
 
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
 
+            # Optional: lightweight precheck helps catch bad URLs early (no hard fail)
             try:
-                task_id = _sportai_submit(video_url, email=email, meta=meta)
-                _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
+                head = _head_url(video_url)
+                probe = _range_probe(video_url)
+                app.logger.error("UPLOAD(JSON) precheck video_url=%s head=%s probe=%s", video_url, head, probe)
+            except Exception as _e:
+                pass
 
-                with engine.begin() as conn:
-                    _ensure_submission_context_schema(conn)
-                    _set_status_cache(conn, task_id, "queued", None)
-                return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
-            except Exception as e:
-                return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
+            task_id = _sportai_submit(video_url, email=email, meta=meta)
 
-    # Multipart path: browser → server → S3 (fallback)
-    f = request.files.get("file") or request.files.get("video")
-    email = (request.form.get("email") or "").strip().lower()
-    if not f or not f.filename:
-        return jsonify({"ok": False, "error": "No file provided."}), 400
+            _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
 
-    clean = secure_filename(f.filename)
-    ts = int(time.time())
-    key = f"{S3_PREFIX}/{ts}_{clean}"
-    try:
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                _set_status_cache(conn, task_id, "queued", None)
+
+            return jsonify({"ok": True, "task_id": task_id, "video_url": video_url, "share_url": share_url})
+
+        # ==========================
+        # Multipart path: server receives binary -> uploads to S3 -> submits to SportAI
+        # ==========================
+        f = request.files.get("file") or request.files.get("video")
+        email = (request.form.get("email") or "").strip().lower()
+
+        if not f or not getattr(f, "filename", ""):
+            return jsonify({"ok": False, "error": "No file provided."}), 400
+
+        clean = secure_filename(f.filename)
+        ts = int(time.time())
+        key = f"{S3_PREFIX}/{ts}_{clean}"
+
         try:
             f.stream.seek(0)
         except Exception:
             pass
+
         meta_up = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
+
         meta = _extract_meta_from_form(request.form)
+
+        # Optional precheck (useful for diagnosing SportAI failures)
+        try:
+            head = _head_url(video_url)
+            probe = _range_probe(video_url)
+            app.logger.error("UPLOAD(MULTIPART) precheck video_url=%s head=%s probe=%s", video_url, head, probe)
+        except Exception:
+            pass
+
         task_id = _sportai_submit(video_url, email=email, meta=meta)
+
+        # For multipart, share_url == video_url (same S3 presigned GET) unless you have an original source
         _store_submission_context(task_id, email, meta, video_url, share_url=video_url)
+
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, task_id, "queued", None)
+
         return jsonify({
-            "ok": True, "task_id": task_id, "share_url": video_url, "video_url": video_url,
-            "upload": {"path": key, "size": meta_up.get("size"), "name": clean}
+            "ok": True,
+            "task_id": task_id,
+            "video_url": video_url,
+            "share_url": video_url,
+            "upload": {"path": key, "size": meta_up.get("size"), "name": clean},
         })
+
     except Exception as e:
-        return jsonify({"ok": False, "error": f"S3 upload/submit failed: {e}"}), 502
+        # Make upstream errors explicit
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 502
+
 
 # =========================
 # /api/upload_task — Wix JSON → store full metadata 1:1 into submission_context.raw_meta
