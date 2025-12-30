@@ -40,7 +40,8 @@ def ops_code_hash():
         snippet = src[max(0, idx-80): idx+200] if idx != -1 else "alias not found in source"
         return jsonify({"ok": True, "file": __file__, "sha256_16": sha, "snippet": snippet})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
 
 # ==========================
 # ENV / CONFIG
@@ -480,12 +481,21 @@ def _sportai_status(task_id: str) -> dict:
 def _sportai_check(video_url: str) -> dict:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
+
     url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CHECK_PATH.lstrip('/')}"
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
-    payload = {"video_urls": [video_url], "version": "latest"}
+
+    # SportAI docs: expects POST with video_urls[]
+    payload = {"video_urls": [video_url], "version": "stable"}
+
     r = requests.post(url, headers=headers, json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json() or {}
+
+    # IMPORTANT: expose upstream failures clearly
+    if r.status_code >= 400:
+        raise RuntimeError(f"SportAI check failed HTTP {r.status_code}: {r.text}")
+
+    return r.json() if r.content else {}
+
 
 def _sportai_cancel(task_id: str) -> dict:
     if not SPORTAI_TOKEN:
