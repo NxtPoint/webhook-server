@@ -760,8 +760,8 @@ def ops_env():
 def api_s3_presign():
     _require_s3()
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "video.mp4").strip()
-    ctype = (body.get("content_type") or "application/octet-stream").strip()
+    name = (body.get("filename") or body.get("name") or "video.mp4").strip()
+    ctype = (body.get("contentType") or body.get("content_type") or "application/octet-stream").strip()
     clean = secure_filename(name)
     key = f"{S3_PREFIX}/{int(time.time())}_{clean}"
     cli = _s3_client()
@@ -799,7 +799,7 @@ def api_check_video():
         # -------------------------
         if request.is_json:
             body = request.get_json(silent=True) or {}
-            video_url = (body.get("video_url") or body.get("share_url") or "").strip()
+            video_url = (body.get("video_url") or "").strip()
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
 
@@ -909,14 +909,21 @@ def api_upload_to_s3():
 
     # JSON path: already have video_url (e.g., after presign upload)
     if request.is_json:
-        body = request.get_json(silent=True) or {}
-        video_url = (body.get("video_url") or body.get("share_url") or "").strip()
-        email = (body.get("email") or "").strip().lower()
-        meta = body.get("meta") or body.get("metadata") or {}
-        if video_url:
+            body = request.get_json(silent=True) or {}
+
+            video_url = (body.get("video_url") or "").strip()          # REQUIRED
+            share_url = (body.get("share_url") or "").strip() or None  # OPTIONAL (traceability)
+
+            email = (body.get("email") or "").strip().lower()
+            meta = body.get("meta") or body.get("metadata") or {}
+
+            if not video_url:
+                return jsonify({"ok": False, "error": "video_url required"}), 400
+
             try:
                 task_id = _sportai_submit(video_url, email=email, meta=meta)
-                _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
+                _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
+
                 with engine.begin() as conn:
                     _ensure_submission_context_schema(conn)
                     _set_status_cache(conn, task_id, "queued", None)
@@ -978,14 +985,14 @@ def api_upload_task():
     # =========================
     # Extract canonical fields (accept both camelCase + your internal variants)
     # =========================
-    source_url    = (body.get("videoUrl") or body.get("video_url") or "").strip()
+    source_url = (body.get("video_url") or body.get("videoUrl") or "").strip()  # accept legacy camelCase
+    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
     owner_id      = (body.get("ownerId") or body.get("owner_id") or "").strip()
     player_id     = body.get("playerId") or body.get("player_id")
     player_name   = (body.get("playerName") or body.get("player_a_name") or "").strip()
     opponent_name = (body.get("opponentName") or body.get("player_b_name") or "").strip()
     opponent_utr  = (body.get("opponentUtr") or body.get("player_b_utr") or "").strip()
     player_utr    = (body.get("playerUTR") or body.get("playerUtr") or body.get("myUtr") or body.get("player_a_utr") or "").strip()
-
     start_time    = (body.get("startTime") or body.get("start_time") or "").strip()
     end_time      = (body.get("endTime") or body.get("end_time") or "").strip()
     match_date    = (body.get("matchDate") or body.get("match_date") or "").strip()
@@ -1077,7 +1084,6 @@ def api_upload_task():
         )
         s3_video_url = _s3_presigned_get_url(key)
 
-        email = ""  # Wix flow: email can be added later if you decide to pass it
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
         _store_submission_context(
@@ -1171,21 +1177,23 @@ def api_submit_s3_task():
     task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
     # store submission_context (video_url = s3 presigned GET, share_url = s3_key for traceability)
-    _store_submission_context(task_id, email, meta, s3_video_url, share_url=s3_key)
-
+    _store_submission_context(
+        task_id,
+        email,
+        meta,
+        s3_video_url,          # video_url = presigned GET used for SportAI
+        share_url=s3_key,      # share_url = canonical object reference
+    )
 
 
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
         _set_status_cache(conn, task_id, "queued", None)
 
-        return jsonify({
+    return jsonify({
         "ok": True,
         "task_id": task_id,
-        "debug": {
-            "s3_key": s3_key,
-            "s3_head": s3_head,
-        }
+        "debug": {"s3_key": s3_key, "s3_head": s3_head},
     })
 
 
