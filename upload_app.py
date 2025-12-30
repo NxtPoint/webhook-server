@@ -794,16 +794,23 @@ def api_check_video():
         return True
 
     try:
+        # -------------------------
+        # JSON path (client provides video_url)
+        # -------------------------
         if request.is_json:
             body = request.get_json(silent=True) or {}
             video_url = (body.get("video_url") or body.get("share_url") or "").strip()
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
-                        # Prove the URL is valid from Render BEFORE calling SportAI
+
+            # Precheck: prove URL is reachable + range-readable from Render
             head = _head_url(video_url)
             probe = _range_probe(video_url)
 
-            # Retry SportAI check a few times (race conditions right after upload do happen)
+            # MUST-SEE log line in Render logs
+            app.logger.error("PRECHECK video_url=%s head=%s probe=%s", video_url, head, probe)
+
+            # Retry SportAI check a few times
             last_exc = None
             for attempt in range(1, 4):
                 try:
@@ -813,16 +820,24 @@ def api_check_video():
                         "video_url": video_url,
                         "precheck": {"head": head, "range_probe": probe},
                         "check": chk,
-                        "check_passed": _passed(chk)
+                        "check_passed": _passed(chk),
                     })
                 except Exception as e:
                     last_exc = e
                     app.logger.error("SportAI check attempt %s failed: %s", attempt, e)
                     time.sleep(1.5 * attempt)
 
-            raise last_exc
+            # Return precheck even when SportAI fails (critical for diagnosis)
+            return jsonify({
+                "ok": False,
+                "video_url": video_url,
+                "precheck": {"head": head, "range_probe": probe},
+                "error": str(last_exc),
+            }), 502
 
-
+        # -------------------------
+        # Multipart path (file upload -> S3 -> check)
+        # -------------------------
         f = request.files.get("file") or request.files.get("video")
         if not f or not f.filename:
             return jsonify({"ok": False, "error": "No file provided."}), 400
@@ -830,6 +845,7 @@ def api_check_video():
         clean = secure_filename(f.filename)
         ts = int(time.time())
         key = f"{S3_PREFIX}/{ts}_{clean}"
+
         try:
             f.stream.seek(0)
         except Exception:
@@ -837,11 +853,24 @@ def api_check_video():
 
         _ = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
+
+        head = _head_url(video_url)
+        probe = _range_probe(video_url)
+        app.logger.error("PRECHECK(multipart) video_url=%s head=%s probe=%s", video_url, head, probe)
+
         chk = _sportai_check(video_url)
-        return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
+        return jsonify({
+            "ok": True,
+            "video_url": video_url,
+            "precheck": {"head": head, "range_probe": probe},
+            "check": chk,
+            "check_passed": _passed(chk),
+        })
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
 
 @app.post("/upload/api/cancel-task")
 def api_cancel_task():
