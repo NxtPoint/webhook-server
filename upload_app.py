@@ -178,6 +178,29 @@ def _head_url(url: str, timeout: int = 30) -> dict:
     except Exception as e:
         return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
+def _range_probe(url: str, nbytes: int = 1024 * 256, timeout: int = 30) -> dict:
+    """
+    Fetch first N bytes via HTTP Range. Proves:
+    - URL is reachable from Render
+    - Range works (what SportAI often uses)
+    - Content is non-empty
+    """
+    try:
+        headers = {"Range": f"bytes=0-{nbytes-1}"}
+        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        # 206 Partial Content is ideal; 200 also acceptable
+        ok = r.status_code in (200, 206)
+        return {
+            "ok": ok,
+            "status_code": r.status_code,
+            "bytes_received": len(r.content or b""),
+            "content_type": r.headers.get("Content-Type"),
+            "content_range": r.headers.get("Content-Range"),
+            "accept_ranges": r.headers.get("Accept-Ranges"),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
 
 # ==========================
 # BRONZE.SUBMISSION_CONTEXT (TASK_ID KEYED)
@@ -505,6 +528,8 @@ def _sportai_check(video_url: str) -> dict:
     payload = {"video_urls": [video_url], "version": "stable"}
 
     r = requests.post(url, headers=headers, json=payload, timeout=60)
+    app.logger.error("SPORTAI CHECK url=%s status=%s body=%s", url, r.status_code, (r.text or "")[:800])
+
 
     # IMPORTANT: expose upstream failures clearly
     if r.status_code >= 400:
@@ -774,8 +799,29 @@ def api_check_video():
             video_url = (body.get("video_url") or body.get("share_url") or "").strip()
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
-            chk = _sportai_check(video_url)
-            return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
+                        # Prove the URL is valid from Render BEFORE calling SportAI
+            head = _head_url(video_url)
+            probe = _range_probe(video_url)
+
+            # Retry SportAI check a few times (race conditions right after upload do happen)
+            last_exc = None
+            for attempt in range(1, 4):
+                try:
+                    chk = _sportai_check(video_url)
+                    return jsonify({
+                        "ok": True,
+                        "video_url": video_url,
+                        "precheck": {"head": head, "range_probe": probe},
+                        "check": chk,
+                        "check_passed": _passed(chk)
+                    })
+                except Exception as e:
+                    last_exc = e
+                    app.logger.error("SportAI check attempt %s failed: %s", attempt, e)
+                    time.sleep(1.5 * attempt)
+
+            raise last_exc
+
 
         f = request.files.get("file") or request.files.get("video")
         if not f or not f.filename:
