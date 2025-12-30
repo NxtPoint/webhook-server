@@ -42,7 +42,6 @@ def ops_code_hash():
     except Exception as e:
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
-
 # ==========================
 # ENV / CONFIG
 # ==========================
