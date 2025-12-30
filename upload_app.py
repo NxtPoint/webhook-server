@@ -1,4 +1,4 @@
-﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only)
+﻿﻿# upload_app.py — Clean S3 → SportAI → Bronze (task_id-only)
 # - Keeps: S3 upload, SportAI submit/status/cancel, presign, check-video
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
 # - Uses bronze.submission_context keyed by task_id (no public schema)
@@ -40,7 +40,7 @@ def ops_code_hash():
         snippet = src[max(0, idx-80): idx+200] if idx != -1 else "alias not found in source"
         return jsonify({"ok": True, "file": __file__, "sha256_16": sha, "snippet": snippet})
     except Exception as e:
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # ==========================
 # ENV / CONFIG
@@ -160,46 +160,6 @@ def _guard_wix_upload_task() -> bool:
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
     return hk == expected
-
-#------- helper to fix wix front end upload issues ---- delete later not required
-def _head_url(url: str, timeout: int = 30) -> dict:
-    try:
-        r = requests.head(url, timeout=timeout, allow_redirects=True)
-        h = {k.lower(): v for k, v in (r.headers or {}).items()}
-        return {
-            "ok": True,
-            "status_code": r.status_code,
-            "content_length": h.get("content-length"),
-            "content_type": h.get("content-type"),
-            "accept_ranges": h.get("accept-ranges"),
-            "etag": h.get("etag"),
-            "final_url": str(r.url),
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
-
-def _range_probe(url: str, nbytes: int = 1024 * 256, timeout: int = 30) -> dict:
-    """
-    Fetch first N bytes via HTTP Range. Proves:
-    - URL is reachable from Render
-    - Range works (what SportAI often uses)
-    - Content is non-empty
-    """
-    try:
-        headers = {"Range": f"bytes=0-{nbytes-1}"}
-        r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        # 206 Partial Content is ideal; 200 also acceptable
-        ok = r.status_code in (200, 206)
-        return {
-            "ok": ok,
-            "status_code": r.status_code,
-            "bytes_received": len(r.content or b""),
-            "content_type": r.headers.get("Content-Type"),
-            "content_range": r.headers.get("Content-Range"),
-            "accept_ranges": r.headers.get("Accept-Ranges"),
-        }
-    except Exception as e:
-        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
 
 
 # ==========================
@@ -520,23 +480,12 @@ def _sportai_status(task_id: str) -> dict:
 def _sportai_check(video_url: str) -> dict:
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
-
     url = f"{SPORTAI_BASE.rstrip('/')}/{SPORTAI_CHECK_PATH.lstrip('/')}"
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
-
-    # SportAI docs: expects POST with video_urls[]
-    payload = {"video_urls": [video_url], "version": "stable"}
-
+    payload = {"video_urls": [video_url], "version": "latest"}
     r = requests.post(url, headers=headers, json=payload, timeout=60)
-    app.logger.error("SPORTAI CHECK url=%s status=%s body=%s", url, r.status_code, (r.text or "")[:800])
-
-
-    # IMPORTANT: expose upstream failures clearly
-    if r.status_code >= 400:
-        raise RuntimeError(f"SportAI check failed HTTP {r.status_code}: {r.text}")
-
-    return r.json() if r.content else {}
-
+    r.raise_for_status()
+    return r.json() or {}
 
 def _sportai_cancel(task_id: str) -> dict:
     if not SPORTAI_TOKEN:
@@ -760,8 +709,8 @@ def ops_env():
 def api_s3_presign():
     _require_s3()
     body = request.get_json(silent=True) or {}
-    name = (body.get("filename") or body.get("name") or "video.mp4").strip()
-    ctype = (body.get("contentType") or body.get("content_type") or "application/octet-stream").strip()
+    name = (body.get("name") or "video.mp4").strip()
+    ctype = (body.get("content_type") or "application/octet-stream").strip()
     clean = secure_filename(name)
     key = f"{S3_PREFIX}/{int(time.time())}_{clean}"
     cli = _s3_client()
@@ -794,50 +743,14 @@ def api_check_video():
         return True
 
     try:
-        # -------------------------
-        # JSON path (client provides video_url)
-        # -------------------------
         if request.is_json:
             body = request.get_json(silent=True) or {}
-            video_url = (body.get("video_url") or "").strip()
+            video_url = (body.get("video_url") or body.get("share_url") or "").strip()
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
+            chk = _sportai_check(video_url)
+            return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
 
-            # Precheck: prove URL is reachable + range-readable from Render
-            head = _head_url(video_url)
-            probe = _range_probe(video_url)
-
-            # MUST-SEE log line in Render logs
-            app.logger.error("PRECHECK video_url=%s head=%s probe=%s", video_url, head, probe)
-
-            # Retry SportAI check a few times
-            last_exc = None
-            for attempt in range(1, 4):
-                try:
-                    chk = _sportai_check(video_url)
-                    return jsonify({
-                        "ok": True,
-                        "video_url": video_url,
-                        "precheck": {"head": head, "range_probe": probe},
-                        "check": chk,
-                        "check_passed": _passed(chk),
-                    })
-                except Exception as e:
-                    last_exc = e
-                    app.logger.error("SportAI check attempt %s failed: %s", attempt, e)
-                    time.sleep(1.5 * attempt)
-
-            # Return precheck even when SportAI fails (critical for diagnosis)
-            return jsonify({
-                "ok": False,
-                "video_url": video_url,
-                "precheck": {"head": head, "range_probe": probe},
-                "error": str(last_exc),
-            }), 502
-
-        # -------------------------
-        # Multipart path (file upload -> S3 -> check)
-        # -------------------------
         f = request.files.get("file") or request.files.get("video")
         if not f or not f.filename:
             return jsonify({"ok": False, "error": "No file provided."}), 400
@@ -845,7 +758,6 @@ def api_check_video():
         clean = secure_filename(f.filename)
         ts = int(time.time())
         key = f"{S3_PREFIX}/{ts}_{clean}"
-
         try:
             f.stream.seek(0)
         except Exception:
@@ -853,24 +765,11 @@ def api_check_video():
 
         _ = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
-
-        head = _head_url(video_url)
-        probe = _range_probe(video_url)
-        app.logger.error("PRECHECK(multipart) video_url=%s head=%s probe=%s", video_url, head, probe)
-
         chk = _sportai_check(video_url)
-        return jsonify({
-            "ok": True,
-            "video_url": video_url,
-            "precheck": {"head": head, "range_probe": probe},
-            "check": chk,
-            "check_passed": _passed(chk),
-        })
+        return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
-
 
 @app.post("/upload/api/cancel-task")
 def api_cancel_task():
@@ -903,125 +802,55 @@ def _extract_meta_from_form(form):
 # ==========================
 @app.route("/upload/api/upload", methods=["POST", "OPTIONS"])
 def api_upload_to_s3():
-    """
-    Canonical contract (keep this consistent everywhere):
-
-    JSON body (preferred):
-      {
-        "video_url": "<REQUIRED: a direct HTTP(S) URL SportAI can fetch (usually S3 presigned GET)>",
-        "share_url": "<OPTIONAL: original source URL for traceability (wix:..., wix download url, etc.)>",
-        "email": "<OPTIONAL>",
-        "meta": {...} or "metadata": {...}
-      }
-
-    Multipart form (fallback):
-      - file/video: uploaded binary
-      - email: optional
-      - other fields used by _extract_meta_from_form()
-    """
     if request.method == "OPTIONS":
         return ("", 204)
-
     _require_s3()
 
-    try:
-        # ==========================
-        # JSON path: URL already exists (e.g., after S3 direct upload)
-        # ==========================
-        if request.is_json:
-            body = request.get_json(silent=True) or {}
-
-            # Accept a few aliases safely, but normalize to video_url + share_url
-            video_url = (
-                body.get("video_url")
-                or body.get("source_url")   # alias: some older clients used this
-                or body.get("url")          # alias: avoid breaking older callers
-                or ""
-            ).strip()
-
-            share_url = (
-                body.get("share_url")
-                or body.get("original_url")  # alias
-                or None
-            )
-            share_url = share_url.strip() if isinstance(share_url, str) and share_url.strip() else None
-
-            email = (body.get("email") or body.get("customer_email") or "").strip().lower()
-            meta = body.get("meta") or body.get("metadata") or {}
-
-            if not video_url:
-                return jsonify({"ok": False, "error": "video_url required"}), 400
-
-            # Optional: lightweight precheck helps catch bad URLs early (no hard fail)
+    # JSON path: already have video_url (e.g., after presign upload)
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        video_url = (body.get("video_url") or body.get("share_url") or "").strip()
+        email = (body.get("email") or "").strip().lower()
+        meta = body.get("meta") or body.get("metadata") or {}
+        if video_url:
             try:
-                head = _head_url(video_url)
-                probe = _range_probe(video_url)
-                app.logger.error("UPLOAD(JSON) precheck video_url=%s head=%s probe=%s", video_url, head, probe)
-            except Exception as _e:
-                pass
+                task_id = _sportai_submit(video_url, email=email, meta=meta)
+                _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
+                with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
+                    _set_status_cache(conn, task_id, "queued", None)
+                return jsonify({"ok": True, "task_id": task_id, "video_url": video_url})
+            except Exception as e:
+                return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
-            task_id = _sportai_submit(video_url, email=email, meta=meta)
+    # Multipart path: browser → server → S3 (fallback)
+    f = request.files.get("file") or request.files.get("video")
+    email = (request.form.get("email") or "").strip().lower()
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "No file provided."}), 400
 
-            _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
-
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _set_status_cache(conn, task_id, "queued", None)
-
-            return jsonify({"ok": True, "task_id": task_id, "video_url": video_url, "share_url": share_url})
-
-        # ==========================
-        # Multipart path: server receives binary -> uploads to S3 -> submits to SportAI
-        # ==========================
-        f = request.files.get("file") or request.files.get("video")
-        email = (request.form.get("email") or "").strip().lower()
-
-        if not f or not getattr(f, "filename", ""):
-            return jsonify({"ok": False, "error": "No file provided."}), 400
-
-        clean = secure_filename(f.filename)
-        ts = int(time.time())
-        key = f"{S3_PREFIX}/{ts}_{clean}"
-
+    clean = secure_filename(f.filename)
+    ts = int(time.time())
+    key = f"{S3_PREFIX}/{ts}_{clean}"
+    try:
         try:
             f.stream.seek(0)
         except Exception:
             pass
-
         meta_up = _s3_put_fileobj(f.stream, key, content_type=getattr(f, "mimetype", None))
         video_url = _s3_presigned_get_url(key)
-
         meta = _extract_meta_from_form(request.form)
-
-        # Optional precheck (useful for diagnosing SportAI failures)
-        try:
-            head = _head_url(video_url)
-            probe = _range_probe(video_url)
-            app.logger.error("UPLOAD(MULTIPART) precheck video_url=%s head=%s probe=%s", video_url, head, probe)
-        except Exception:
-            pass
-
         task_id = _sportai_submit(video_url, email=email, meta=meta)
-
-        # For multipart, share_url == video_url (same S3 presigned GET) unless you have an original source
         _store_submission_context(task_id, email, meta, video_url, share_url=video_url)
-
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, task_id, "queued", None)
-
         return jsonify({
-            "ok": True,
-            "task_id": task_id,
-            "video_url": video_url,
-            "share_url": video_url,
-            "upload": {"path": key, "size": meta_up.get("size"), "name": clean},
+            "ok": True, "task_id": task_id, "share_url": video_url, "video_url": video_url,
+            "upload": {"path": key, "size": meta_up.get("size"), "name": clean}
         })
-
     except Exception as e:
-        # Make upstream errors explicit
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 502
-
+        return jsonify({"ok": False, "error": f"S3 upload/submit failed: {e}"}), 502
 
 # =========================
 # /api/upload_task — Wix JSON → store full metadata 1:1 into submission_context.raw_meta
@@ -1048,14 +877,14 @@ def api_upload_task():
     # =========================
     # Extract canonical fields (accept both camelCase + your internal variants)
     # =========================
-    source_url = (body.get("video_url") or body.get("videoUrl") or "").strip()  # accept legacy camelCase
-    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+    source_url    = (body.get("videoUrl") or body.get("video_url") or "").strip()
     owner_id      = (body.get("ownerId") or body.get("owner_id") or "").strip()
     player_id     = body.get("playerId") or body.get("player_id")
     player_name   = (body.get("playerName") or body.get("player_a_name") or "").strip()
     opponent_name = (body.get("opponentName") or body.get("player_b_name") or "").strip()
     opponent_utr  = (body.get("opponentUtr") or body.get("player_b_utr") or "").strip()
     player_utr    = (body.get("playerUTR") or body.get("playerUtr") or body.get("myUtr") or body.get("player_a_utr") or "").strip()
+
     start_time    = (body.get("startTime") or body.get("start_time") or "").strip()
     end_time      = (body.get("endTime") or body.get("end_time") or "").strip()
     match_date    = (body.get("matchDate") or body.get("match_date") or "").strip()
@@ -1147,6 +976,7 @@ def api_upload_task():
         )
         s3_video_url = _s3_presigned_get_url(key)
 
+        email = ""  # Wix flow: email can be added later if you decide to pass it
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
         _store_submission_context(
@@ -1185,8 +1015,6 @@ def api_submit_s3_task():
 
     # build a presigned GET internally (Wix never sees it)
     s3_video_url = _s3_presigned_get_url(s3_key)
-    # DEBUG: prove the S3 object exists + headers before SportAI sees it
-    s3_head = _head_url(s3_video_url)
 
     # reuse your existing meta builder logic (same keys you just added)
     owner_id      = (body.get("ownerId") or "").strip()
@@ -1233,32 +1061,17 @@ def api_submit_s3_task():
         },
     }
 
-    # accept email from Wix (preferred) or fallback field names
-    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
-
     # submit to SportAI using S3 presigned GET (Render-managed)
-    task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+    task_id = _sportai_submit(s3_video_url, email="", meta=meta)
 
     # store submission_context (video_url = s3 presigned GET, share_url = s3_key for traceability)
-    _store_submission_context(
-        task_id,
-        email,
-        meta,
-        s3_video_url,          # video_url = presigned GET used for SportAI
-        share_url=s3_key,      # share_url = canonical object reference
-    )
-
+    _store_submission_context(task_id, "", meta, s3_video_url, share_url=s3_key)
 
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
         _set_status_cache(conn, task_id, "queued", None)
 
-    return jsonify({
-        "ok": True,
-        "task_id": task_id,
-        "debug": {"s3_key": s3_key, "s3_head": s3_head},
-    })
-
+    return jsonify({"ok": True, "task_id": task_id})
 
 # ==========================
 # LEGACY ALIAS (KEPT)
