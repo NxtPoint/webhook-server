@@ -435,7 +435,7 @@ def _sportai_status(task_id: str) -> dict:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
     d = j.get("data") if isinstance(j, dict) and isinstance(j.get("data"), dict) else j
-    status = (d.get("status") or d.get("task_status") or "").strip()
+    status = (d.get("status") or d.get("task_status") or d.get("taskStatus") or d.get("state") or "").strip()
     msg = (j.get("message") or "").lower()
     if not status and "still being processed" in msg:
         status = "processing"
@@ -453,7 +453,14 @@ def _sportai_status(task_id: str) -> dict:
     except Exception:
         progress_pct = None
 
-    result_url = d.get("result_url") or j.get("result_url")
+    result_url = (
+    d.get("result_url")
+    or d.get("resultUrl")
+    or (d.get("result") or {}).get("url")
+    or j.get("result_url")
+    or j.get("resultUrl")
+)
+
     terminal = status.lower() in ("completed", "done", "success", "succeeded", "failed", "canceled")
     if result_url and not terminal:
         status = "completed"
@@ -755,7 +762,7 @@ def api_check_video():
     try:
         if request.is_json:
             body = request.get_json(silent=True) or {}
-            video_url = (body.get("video_url") or body.get("share_url") or "").strip()
+            video_url = (body.get("video_url") or "").strip()
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
             chk = _sportai_check(video_url)
@@ -819,13 +826,14 @@ def api_upload_to_s3():
     # JSON path: already have video_url (e.g., after presign upload)
     if request.is_json:
         body = request.get_json(silent=True) or {}
-        video_url = (body.get("video_url") or body.get("share_url") or "").strip()
+        video_url = (body.get("video_url") or "").strip()
         email = (body.get("email") or "").strip().lower()
         meta = body.get("meta") or body.get("metadata") or {}
         if video_url:
             try:
                 task_id = _sportai_submit(video_url, email=email, meta=meta)
-                _store_submission_context(task_id, email, meta, video_url, share_url=body.get("share_url"))
+                share_url = (body.get("share_url") or "").strip() or None
+                _store_submission_context(task_id, email, meta, video_url, share_url=share_url)
                 with engine.begin() as conn:
                     _ensure_submission_context_schema(conn)
                     _set_status_cache(conn, task_id, "queued", None)
@@ -986,7 +994,7 @@ def api_upload_task():
         )
         s3_video_url = _s3_presigned_get_url(key)
 
-        email = ""  # Wix flow: email can be added later if you decide to pass it
+        email = (body.get("customer_email") or body.get("email") or "").strip().lower()
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
         _store_submission_context(
@@ -1072,10 +1080,12 @@ def api_submit_s3_task():
     }
 
     # submit to SportAI using S3 presigned GET (Render-managed)
-    task_id = _sportai_submit(s3_video_url, email="", meta=meta)
+    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+    task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+
 
     # store submission_context (video_url = s3 presigned GET, share_url = s3_key for traceability)
-    _store_submission_context(task_id, "", meta, s3_video_url, share_url=s3_key)
+    _store_submission_context(task_id, email, meta, s3_video_url, share_url=s3_key)
 
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -1157,7 +1167,8 @@ def api_task_status():
         })
 
     except Exception as e:
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 200
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 502
+
 
 # ==========================
 # MANUAL INGEST HELPER (TASK_ID-ONLY)
