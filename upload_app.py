@@ -161,6 +161,23 @@ def _guard_wix_upload_task() -> bool:
         hk = auth.split(" ", 1)[1].strip()
     return hk == expected
 
+#------- helper to fix wix front end upload issues ---- delete later not required
+def _head_url(url: str, timeout: int = 30) -> dict:
+    try:
+        r = requests.head(url, timeout=timeout, allow_redirects=True)
+        h = {k.lower(): v for k, v in (r.headers or {}).items()}
+        return {
+            "ok": True,
+            "status_code": r.status_code,
+            "content_length": h.get("content-length"),
+            "content_type": h.get("content-type"),
+            "accept_ranges": h.get("accept-ranges"),
+            "etag": h.get("etag"),
+            "final_url": str(r.url),
+        }
+    except Exception as e:
+        return {"ok": False, "error": f"{e.__class__.__name__}: {e}"}
+
 
 # ==========================
 # BRONZE.SUBMISSION_CONTEXT (TASK_ID KEYED)
@@ -1024,6 +1041,8 @@ def api_submit_s3_task():
 
     # build a presigned GET internally (Wix never sees it)
     s3_video_url = _s3_presigned_get_url(s3_key)
+    # DEBUG: prove the S3 object exists + headers before SportAI sees it
+    s3_head = _head_url(s3_video_url)
 
     # reuse your existing meta builder logic (same keys you just added)
     owner_id      = (body.get("ownerId") or "").strip()
@@ -1070,17 +1089,30 @@ def api_submit_s3_task():
         },
     }
 
+    # accept email from Wix (preferred) or fallback field names
+    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+
     # submit to SportAI using S3 presigned GET (Render-managed)
-    task_id = _sportai_submit(s3_video_url, email="", meta=meta)
+    task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
     # store submission_context (video_url = s3 presigned GET, share_url = s3_key for traceability)
-    _store_submission_context(task_id, "", meta, s3_video_url, share_url=s3_key)
+    _store_submission_context(task_id, email, meta, s3_video_url, share_url=s3_key)
+
+
 
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
         _set_status_cache(conn, task_id, "queued", None)
 
-    return jsonify({"ok": True, "task_id": task_id})
+        return jsonify({
+        "ok": True,
+        "task_id": task_id,
+        "debug": {
+            "s3_key": s3_key,
+            "s3_head": s3_head,
+        }
+    })
+
 
 # ==========================
 # LEGACY ALIAS (KEPT)
