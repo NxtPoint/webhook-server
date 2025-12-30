@@ -277,13 +277,30 @@ def _mirror_submission_to_bronze_by_task(conn, task_id: str):
 # WIX NOTIFY (RENDER → WIX → AUTOMATION)
 # ==========================
 def _wix_payload(task_id: str, status: str, session_id: str | None, result_url: str | None, error: str | None):
+    # Wix automation trigger expects: customer_email, customer_name, task_id
+    # We source email/name from bronze.submission_context for the task_id.
+    customer_email = None
+    customer_name = None
+
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            row = conn.execute(sql_text("""
+                SELECT email, customer_name
+                  FROM bronze.submission_context
+                 WHERE task_id = :t
+                 LIMIT 1
+            """), {"t": task_id}).mappings().first()
+            if row:
+                customer_email = (row.get("email") or "").strip() or None
+                customer_name = (row.get("customer_name") or "").strip() or None
+    except Exception:
+        pass
+
     return {
+        "customer_email": customer_email,
+        "customer_name": customer_name,
         "task_id": task_id,
-        "status": status,  # "completed" | "failed"
-        "session_id": session_id,
-        "result_url": result_url,
-        "error": error,
-        "ts_utc": datetime.now(timezone.utc).isoformat(),
     }
 
 def _already_notified(conn, task_id: str, desired_status: str) -> bool:
