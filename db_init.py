@@ -14,9 +14,12 @@ DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.gete
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL (or POSTGRES_URL / DB_URL) env var is required.")
 
-# Ensure psycopg2 driver if a bare postgres:// is provided
+# Normalize scheme + force psycopg v3 driver
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+if DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine = create_engine(
     DATABASE_URL,
