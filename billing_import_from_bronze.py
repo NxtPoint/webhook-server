@@ -15,7 +15,9 @@ Rules:
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional, Dict, Any
+
 
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
@@ -104,7 +106,7 @@ def sync_usage_from_submission_context(
 
         total = 0
         skipped_already_imported = 0
-        skipped_no_duration = 0
+        skipped_missing_email = 0
         created_usage = 0
 
         for row in rows:
@@ -113,15 +115,12 @@ def sync_usage_from_submission_context(
             email = row["email"]
             email = (email or "").strip().lower()
             if not email:
-                skipped_no_duration += 1
+                skipped_missing_email += 1
                 continue
 
             customer_name = row["customer_name"]
             last_status = row["last_status"]
-            start_time = row.get("start_time")
-            end_time = row.get("end_time")
-            ingest_finished_at = row.get("ingest_finished_at")
-
+            
             # Safety, though WHERE already filters
             if last_status != status_filter:
                 continue
@@ -134,41 +133,8 @@ def sync_usage_from_submission_context(
                 skipped_already_imported += 1
                 continue
 
-            def _parse_hhmmss(v: Optional[str]) -> Optional[float]:
-                if not v:
-                    return None
-                s = str(v).strip()
-                if not s:
-                    return None
-                parts = s.split(":")
-                if len(parts) != 3:
-                    return None
-                try:
-                    h, m, sec = [int(float(x)) for x in parts]
-                except Exception:
-                    return None
-                if h < 0 or m < 0 or sec < 0:
-                    return None
-                return float(h * 3600 + m * 60 + sec)
-
-            start_s = _parse_hhmmss(start_time)
-            end_s = _parse_hhmmss(end_time)
-
-            minutes = None
-            if start_s is not None and end_s is not None and end_s > start_s:
-                minutes = (end_s - start_s) / 60.0
-            elif ingest_finished_at is not None:
-                # fallback if start/end missing (keeps old behavior alive)
-                # NOTE: if you later add created_at back, switch this fallback to created_at->ingest_finished_at
-                minutes = None
-
-            if minutes is None or minutes <= 0:
-                skipped_no_duration += 1
-                continue
-
-            if dry_run:
-                created_usage += 1
-                continue
+            units = Decimal("1.00")          # per match
+            video_minutes = Decimal("0.00")  # future-proof for hybrid/minutes later
 
             # Ensure account exists based on email (Wix is master)
             account = _find_or_create_account(
@@ -181,10 +147,10 @@ def sync_usage_from_submission_context(
             record_video_usage(
                 account_id=account.id,
                 member_id=None,
-                matches=1,
                 task_id=task_id,
+                units=units,
+                video_minutes=video_minutes,
             )
-
 
             created_usage += 1
 
@@ -196,7 +162,7 @@ def sync_usage_from_submission_context(
             "dry_run": dry_run,
             "total_rows": total,
             "skipped_already_imported": skipped_already_imported,
-            "skipped_no_duration": skipped_no_duration,
+            "skipped_missing_email": skipped_missing_email,
             "created_usage_rows": created_usage,  # 1 row per match (task_id)
         }
 
