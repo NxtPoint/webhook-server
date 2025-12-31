@@ -28,6 +28,10 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 app.url_map.strict_slashes = False
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 1024 * 1024  # 150MB default
 
+from billing_read_api import billing_read_bp
+app.register_blueprint(billing_read_bp)
+
+
 @app.get("/ops/code-hash")
 def ops_code_hash():
     try:

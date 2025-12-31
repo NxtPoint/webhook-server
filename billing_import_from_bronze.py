@@ -169,3 +169,10 @@ if __name__ == "__main__":
     print("[DRY RUN] sync_usage_from_submission_context result:")
     for k, v in result.items():
         print(f"  {k}: {v}")
+
+def run_billing_import(dry_run: bool = False):
+    return sync_usage_from_submission_context(dry_run=dry_run)
+
+if __name__ == "__main__":
+    out = run_billing_import(dry_run=False)
+    print(out)
