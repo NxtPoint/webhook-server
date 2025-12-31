@@ -1,3 +1,8 @@
+#==================================
+# billing_read_api.py
+#==================================
+
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from db_init import engine
@@ -11,15 +16,22 @@ def billing_summary():
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
-        row = conn.execute(text("""
-            SELECT
-              a.email,
-              COUNT(DISTINCT u.id) AS matches_used,
-              COALESCE(SUM(u.billable_minutes),0) AS minutes_used
-            FROM billing.account a
-            LEFT JOIN billing.usage_video u ON u.account_id = a.id
-            WHERE a.email = :email
-            GROUP BY a.email
-        """), {"email": email}).mappings().first()
+                row = conn.execute(
+            text(
+                """
+                SELECT
+                  a.email,
+                  COALESCE(v.matches_granted, 0)    AS matches_granted,
+                  COALESCE(v.matches_consumed, 0)   AS matches_consumed,
+                  COALESCE(v.matches_remaining, 0)  AS matches_remaining,
+                  v.last_processed_at
+                FROM billing.account a
+                LEFT JOIN billing.vw_customer_usage v
+                  ON v.account_id = a.id
+                WHERE a.email = :email
+                """
+            ),
+            {"email": email.strip().lower()},
+        ).mappings().first()
 
     return jsonify({"ok": True, "data": dict(row) if row else None})
