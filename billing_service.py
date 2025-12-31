@@ -73,18 +73,20 @@ def add_member_to_account(account_id: int, full_name: str) -> Member:
 def record_video_usage(
     account_id: int,
     member_id: int | None,
-    video_minutes: float,
     task_id: str,
+    units: Decimal = Decimal("1.00"),   # per match = 1
+    video_minutes: Decimal = Decimal("0.00"),  # future-proof for minutes/hybrid
     source: str = "sportai",
 ) -> UsageVideo:
     billable_minutes = Decimal(str(video_minutes))
+
 
     with Session(engine) as session:
         usage = UsageVideo(
             account_id=account_id,
             member_id=member_id,
             task_id=task_id,
-            video_minutes=billable_minutes,
+            video_minutes=video_minutes,
             billable_minutes=billable_minutes,
             source=source,
             processed_at=datetime.utcnow(),
