@@ -92,15 +92,12 @@ def sync_usage_from_submission_context(
                     task_id,
                     email,
                     customer_name,
-                    last_status,
-                    start_time,
-                    end_time,
-                    ingest_finished_at
+                    last_status
                 FROM bronze.submission_context
                 WHERE last_status = :status
-
                 """
             ),
+
             {"status": status_filter},
         ).mappings().all()
 
