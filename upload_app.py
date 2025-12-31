@@ -164,6 +164,48 @@ def _guard_wix_upload_task() -> bool:
         hk = auth.split(" ", 1)[1].strip()
     return hk == expected
 
+# ==========================
+# BILLING + ROLE GATE (RENDER SSoT)
+# ==========================
+def _billing_role_gate_by_email(email: str) -> tuple[bool, str]:
+    """
+    Returns (allowed, reason_code).
+    Enforces:
+      - primary member role != coach
+      - remaining matches > 0
+    """
+    e = (email or "").strip().lower()
+    if not e:
+        return False, "email_required"
+
+    with engine.begin() as conn:
+        row = conn.execute(sql_text("""
+            SELECT
+              COALESCE(m.role, 'player_parent') AS role,
+              COALESCE(v.matches_remaining, 0)  AS matches_remaining
+            FROM billing.account a
+            LEFT JOIN billing.member m
+              ON m.account_id = a.id AND m.is_primary = true
+            LEFT JOIN billing.vw_customer_usage v
+              ON v.account_id = a.id
+            WHERE a.email = :email
+            LIMIT 1
+        """), {"email": e}).mappings().first()
+
+    if not row:
+        # No account yet -> not allowed to upload (forces proper onboarding/sync)
+        return False, "account_not_found"
+
+    role = (row.get("role") or "").strip()
+    remaining = int(row.get("matches_remaining") or 0)
+
+    if role == "coach":
+        return False, "coach_role_no_upload"
+    if remaining <= 0:
+        return False, "no_match_credits"
+
+    return True, "ok"
+
 
 # ==========================
 # BRONZE.SUBMISSION_CONTEXT (TASK_ID KEYED)
@@ -847,6 +889,10 @@ def api_upload_to_s3():
         body = request.get_json(silent=True) or {}
         video_url = (body.get("video_url") or "").strip()
         email = (body.get("email") or "").strip().lower()
+        allowed, reason = _billing_role_gate_by_email(email)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 403
+
         meta = body.get("meta") or body.get("metadata") or {}
         if video_url:
             try:
@@ -863,6 +909,10 @@ def api_upload_to_s3():
     # Multipart path: browser → server → S3 (fallback)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
+    allowed, reason = _billing_role_gate_by_email(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
     if not f or not f.filename:
         return jsonify({"ok": False, "error": "No file provided."}), 400
 
@@ -1014,6 +1064,10 @@ def api_upload_task():
         s3_video_url = _s3_presigned_get_url(key)
 
         email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+        allowed, reason = _billing_role_gate_by_email(email)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 403
+
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
         _store_submission_context(
@@ -1100,6 +1154,10 @@ def api_submit_s3_task():
 
     # submit to SportAI using S3 presigned GET (Render-managed)
     email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+    allowed, reason = _billing_role_gate_by_email(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
     task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
 
