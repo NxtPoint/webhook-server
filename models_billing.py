@@ -50,7 +50,7 @@ class Account(Base):
 
     id = Column(BigInteger, primary_key=True)
     external_wix_id = Column(String, nullable=True)
-    email = Column(String, nullable=False)
+    email = Column(String, nullable=False, unique=True)
     primary_full_name = Column(String, nullable=False)
 
     currency_code = Column(CHAR(3), nullable=False, server_default=text("'USD'"))
@@ -102,18 +102,27 @@ class UsageVideo(Base):
         ForeignKey("billing.member.id", ondelete="SET NULL"),
         nullable=True,
     )
-    task_id = Column(String, nullable=False)
 
-    video_minutes = Column(Numeric(10, 2), nullable=False)
-    billable_minutes = Column(Numeric(10, 2), nullable=False)
+    # idempotency: one usage row per SportAI task
+    task_id = Column(String, nullable=False, unique=True)
+
+    # NEW: per-match billing (minutes may remain for future pivot)
+    matches = Column(Numeric(10, 2), nullable=True)
+    billable_matches = Column(Numeric(10, 2), nullable=True)
+
+    # legacy minutes (keep during transition; can delete later)
+    video_minutes = Column(Numeric(10, 2), nullable=True)
+    billable_minutes = Column(Numeric(10, 2), nullable=True)
 
     source = Column(String, nullable=False, server_default=text("'sportai'"))
     processed_at = Column(
         DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
-    )
-
+   )
+    
+account = relationship("Account")
+member = relationship("Member")
 
 class Invoice(Base):
     __tablename__ = "invoice"
