@@ -12,8 +12,6 @@ from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
 
-import models_billing  # ensure billing models are registered
-from billing_api import billing_bp
 
 # ==========================
 # BOTO3 (REQUIRED)
@@ -1283,14 +1281,133 @@ except Exception as e:
     print("ui_bp not mounted:", e)
 
 # ==========================
-# BILLING API BLUEPRINT
-# (Left untouched as requested.)
+# SIMPLE BILLING (AUDITABLE, NO LEGACY TABLES)
+# Source of truth: bronze.submission_context
+# Per-match now; also returns total_minutes for future pivot.
 # ==========================
-try:
-    app.register_blueprint(billing_bp)  # billing_bp already has url_prefix="/api/billing"
-    print("Mounted billing_bp at /api/billing")
-except Exception as e:
-    print("billing_bp not mounted:", e)
+
+def _hms_to_seconds(s: str | None) -> int | None:
+    if not s:
+        return None
+    s = str(s).strip()
+    m = re.match(r"^(\d{1,2}):(\d{2}):(\d{2})$", s)
+    if not m:
+        return None
+    hh, mm, ss = map(int, m.groups())
+    return hh * 3600 + mm * 60 + ss
+
+def _billing_guard() -> bool:
+    expected = (os.getenv("BILLING_OPS_KEY") or OPS_KEY or "").strip()
+    if not expected:
+        return False
+    hk = request.headers.get("X-Ops-Key") or request.headers.get("X-Ops-Key".lower()) or request.headers.get("X-OPS-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+    return (hk or "").strip() == expected
+
+@app.get("/api/billing/usage_summary")
+def api_billing_usage_summary():
+    """
+    Query params:
+      - email (required)
+      - period (optional): "YYYY-MM" (defaults to current UTC month)
+
+    Returns:
+      - matches_used (count of completed tasks in period)
+      - total_minutes (sum of (end-start) where parseable)
+      - tasks (latest N tasks with durations)
+    """
+    if not _billing_guard():
+        return Response("Forbidden", 403)
+
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    period = (request.args.get("period") or "").strip()
+    if period:
+        if not re.match(r"^\d{4}-\d{2}$", period):
+            return jsonify({"ok": False, "error": "period must be YYYY-MM"}), 400
+        start_ym = period + "-01"
+        period_start = datetime.fromisoformat(start_ym).replace(tzinfo=timezone.utc)
+    else:
+        now = datetime.now(timezone.utc)
+        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # period_end = first day of next month
+    if period_start.month == 12:
+        period_end = period_start.replace(year=period_start.year + 1, month=1)
+    else:
+        period_end = period_start.replace(month=period_start.month + 1)
+
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        rows = conn.execute(sql_text("""
+            SELECT
+              task_id,
+              created_at,
+              last_status,
+              match_date,
+              start_time,
+              raw_meta
+            FROM bronze.submission_context
+            WHERE lower(email) = :email
+              AND created_at >= :p_start
+              AND created_at <  :p_end
+            ORDER BY created_at DESC
+            LIMIT 200
+        """), {
+            "email": email,
+            "p_start": period_start,
+            "p_end": period_end
+        }).mappings().all()
+
+    tasks = []
+    matches_used = 0
+    total_seconds = 0
+
+    for r in rows:
+        status = (r.get("last_status") or "").lower()
+        if status in ("completed", "done", "success", "succeeded"):
+            matches_used += 1
+
+        meta = r.get("raw_meta") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+
+        st = (meta.get("start_time") or r.get("start_time") or "").strip()
+        et = (meta.get("end_time") or "").strip()
+        st_s = _hms_to_seconds(st)
+        et_s = _hms_to_seconds(et)
+        dur_s = (et_s - st_s) if (st_s is not None and et_s is not None and et_s >= st_s) else None
+
+        if dur_s is not None:
+            total_seconds += dur_s
+
+        tasks.append({
+            "task_id": r.get("task_id"),
+            "created_at": (r.get("created_at").isoformat() if r.get("created_at") else None),
+            "status": status or None,
+            "match_date": (str(r.get("match_date")) if r.get("match_date") else None),
+            "start_time": st or None,
+            "end_time": et or None,
+            "duration_minutes": (round(dur_s / 60.0, 2) if dur_s is not None else None),
+        })
+
+    return jsonify({
+        "ok": True,
+        "email": email,
+        "period_start_utc": period_start.isoformat(),
+        "period_end_utc": period_end.isoformat(),
+        "matches_used": matches_used,
+        "total_minutes": round(total_seconds / 60.0, 2),
+        "tasks": tasks
+    })
+
 
 # ==========================
 # BOOT LOG
