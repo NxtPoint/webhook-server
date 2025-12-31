@@ -102,24 +102,23 @@ class UsageVideo(Base):
         ForeignKey("billing.member.id", ondelete="SET NULL"),
         nullable=True,
     )
+    task_id = Column(String, nullable=False)
 
-    # idempotency: one usage row per SportAI task
-    task_id = Column(String, nullable=False, unique=True)
-
-    # NEW: per-match billing (minutes may remain for future pivot)
-    matches = Column(Numeric(10, 2), nullable=True)
-    billable_matches = Column(Numeric(10, 2), nullable=True)
-
-    # legacy minutes (keep during transition; can delete later)
+    # LEGACY (keep; may exist in DB already)
     video_minutes = Column(Numeric(10, 2), nullable=True)
     billable_minutes = Column(Numeric(10, 2), nullable=True)
+
+    # NEW (per-match billing; matches schema_billing.xlsx)
+    matches = Column(Numeric(12, 4), nullable=True)
+    billable_matches = Column(Numeric(12, 4), nullable=True)
 
     source = Column(String, nullable=False, server_default=text("'sportai'"))
     processed_at = Column(
         DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
-   )
+    )
+
     
 account = relationship("Account")
 member = relationship("Member")

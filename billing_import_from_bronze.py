@@ -145,9 +145,10 @@ def sync_usage_from_submission_context(
                 account_id=account.id,
                 member_id=None,
                 task_id=task_id,
-                units=units,
-                video_minutes=video_minutes,
+                matches=1,
+                billable_matches=1,
             )
+
 
             created_usage += 1
 
