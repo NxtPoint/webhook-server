@@ -74,6 +74,7 @@ class Member(Base):
 
     full_name = Column(String, nullable=False)
     is_primary = Column(Boolean, nullable=False, server_default=text("false"))
+    role = Column(String, nullable=False, server_default=text("'player_parent'"))
     active = Column(Boolean, nullable=False, server_default=text("true"))
 
     created_at = Column(

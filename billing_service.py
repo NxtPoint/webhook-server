@@ -23,12 +23,16 @@ def create_account_with_primary_member(
     primary_full_name: str,
     currency_code: str = "USD",
     external_wix_id: str | None = None,
+    role: str = "player_parent",
 ) -> Account:
     email = (email or "").strip().lower()
     if not email:
         raise ValueError("email required")
 
     primary_full_name = (primary_full_name or "").strip() or email
+
+    if role not in ("player_parent", "coach"):
+        raise ValueError("invalid role")
 
     with Session(engine) as session:
         account = session.execute(
@@ -49,8 +53,10 @@ def create_account_with_primary_member(
                 account_id=account.id,
                 full_name=primary_full_name,
                 is_primary=True,
+                role=role,
             )
             session.add(primary_member)
+
             session.commit()
             session.refresh(account)
             return account
@@ -59,16 +65,24 @@ def create_account_with_primary_member(
         return account
 
 
-def add_member_to_account(account_id: int, full_name: str) -> Member:
+def add_member_to_account(
+    account_id: int,
+    full_name: str,
+    role: str = "player_parent",
+) -> Member:
     full_name = (full_name or "").strip()
     if not full_name:
         raise ValueError("full_name required")
+
+    if role not in ("player_parent", "coach"):
+        raise ValueError("invalid role")
 
     with Session(engine) as session:
         member = Member(
             account_id=account_id,
             full_name=full_name,
             is_primary=False,
+            role=role,
         )
         session.add(member)
         session.commit()
@@ -93,9 +107,9 @@ def grant_entitlement(
 ) -> int:
     """
     Grant match credits to an account.
-    This is called from Wix webhook handlers (Step 3 later).
+    Called from Wix webhook handlers (Step 3).
 
-    Returns the inserted entitlement_grant.id.
+    Returns billing.entitlement_grant.id.
     """
     if matches_granted < 0:
         raise ValueError("matches_granted must be >= 0")
@@ -135,7 +149,7 @@ def grant_entitlement(
 
 def get_remaining_matches(account_id: int) -> int:
     """
-    Return remaining credits (granted - consumed) for an account.
+    Remaining credits = active grants (not expired) minus consumptions.
     """
     with Session(engine) as session:
         row = session.execute(
@@ -170,7 +184,7 @@ def consume_match_for_task(
     source: str = "sportai",
 ) -> bool:
     """
-    Consume 1 match credit for a given task_id.
+    Consume 1 match credit for task_id.
     Idempotent by DB unique(task_id).
     Returns True if inserted, False if already existed.
     """
@@ -199,7 +213,6 @@ def consume_match_for_task(
 def get_usage_summary(account_id: int) -> Dict[str, Any]:
     """
     Convenience helper for UI/debugging.
-    Mirrors billing.vw_customer_usage fields for a single account.
     """
     with Session(engine) as session:
         row = session.execute(

@@ -16,22 +16,21 @@ def billing_summary():
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
-                row = conn.execute(
-            text(
-                """
-                SELECT
-                  a.email,
-                  COALESCE(v.matches_granted, 0)    AS matches_granted,
-                  COALESCE(v.matches_consumed, 0)   AS matches_consumed,
-                  COALESCE(v.matches_remaining, 0)  AS matches_remaining,
-                  v.last_processed_at
-                FROM billing.account a
-                LEFT JOIN billing.vw_customer_usage v
-                  ON v.account_id = a.id
-                WHERE a.email = :email
-                """
-            ),
-            {"email": email.strip().lower()},
-        ).mappings().first()
+        row = conn.execute(text("""
+            SELECT
+              a.email,
+              m.role,
+              COALESCE(v.matches_granted, 0)   AS matches_granted,
+              COALESCE(v.matches_consumed, 0)  AS matches_consumed,
+              COALESCE(v.matches_remaining, 0) AS matches_remaining,
+              v.last_processed_at
+            FROM billing.account a
+            LEFT JOIN billing.member m
+              ON m.account_id = a.id AND m.is_primary = true
+            LEFT JOIN billing.vw_customer_usage v
+              ON v.account_id = a.id
+            WHERE a.email = :email
+        """), {"email": email.strip().lower()}).mappings().first()
+
 
     return jsonify({"ok": True, "data": dict(row) if row else None})
