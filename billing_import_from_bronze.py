@@ -100,7 +100,7 @@ def sync_usage_from_submission_context(
                     customer_name,
                     last_status
                 FROM bronze.submission_context
-                WHERE last_status = :status
+                WHERE lower(coalesce(last_status,'')) = lower(:status)
                 """
             ),
             {"status": status_filter},
@@ -163,6 +163,41 @@ def sync_usage_from_submission_context(
 
 def run_billing_import(dry_run: bool = False):
     return sync_usage_from_submission_context(dry_run=dry_run)
+
+def sync_usage_for_task_id(task_id: str, dry_run: bool = True) -> Dict[str, Any]:
+    task_id = (task_id or "").strip()
+    if not task_id:
+        raise ValueError("task_id required")
+
+    with Session(engine) as session:
+        row = session.execute(
+            text(
+                """
+                SELECT task_id, email, customer_name, last_status
+                FROM bronze.submission_context
+                WHERE task_id = :task_id
+                """
+            ),
+            {"task_id": task_id},
+        ).mappings().first()
+
+        if not row:
+            return {"ok": False, "error": "task_id not found in bronze.submission_context"}
+
+        email = (row.get("email") or "").strip().lower()
+        if not email:
+            return {"ok": False, "error": "missing email on submission_context row"}
+
+        account = _find_or_create_account(session, email=email, customer_name=row.get("customer_name"))
+
+        inserted = _consume_match_for_task(session=session, account_id=account.id, task_id=task_id)
+
+        if not dry_run:
+            session.commit()
+        else:
+            session.rollback()
+
+        return {"ok": True, "dry_run": dry_run, "task_id": task_id, "inserted": bool(inserted), "last_status": row.get("last_status")}
 
 
 if __name__ == "__main__":
