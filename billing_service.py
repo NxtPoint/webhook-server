@@ -246,3 +246,94 @@ def get_usage_summary(account_id: int) -> Dict[str, Any]:
             "matches_remaining": int(row["matches_remaining"] or 0),
             "last_processed_at": row["last_processed_at"],
         }
+
+def sync_members_for_account(
+    *,
+    account_id: int,
+    members: list[dict],
+) -> dict:
+    """
+    Idempotent upsert of members for an account.
+    Rules:
+      - Exactly one primary (first primary in payload wins; fallback first member)
+      - Match existing rows by (account_id, full_name, is_primary) to avoid duplicates
+      - Do not delete history; just ensure required rows exist
+    """
+    if not isinstance(members, list) or not members:
+        return {"ok": True, "inserted": 0, "note": "no members provided"}
+
+    # normalize
+    cleaned = []
+    for m in members:
+        if not isinstance(m, dict):
+            continue
+        name = (m.get("full_name") or "").strip()
+        if not name:
+            continue
+        cleaned.append({
+            "full_name": name,
+            "is_primary": bool(m.get("is_primary")),
+            "role": (m.get("role") or "player_parent").strip() or "player_parent",
+        })
+
+    if not cleaned:
+        return {"ok": True, "inserted": 0, "note": "no valid members"}
+
+    # ensure exactly one primary
+    primaries = [i for i, m in enumerate(cleaned) if m["is_primary"]]
+    if len(primaries) == 0:
+        cleaned[0]["is_primary"] = True
+    else:
+        keep = primaries[0]
+        for i in primaries[1:]:
+            cleaned[i]["is_primary"] = False
+
+    inserted = 0
+
+    with Session(engine) as session:
+        # Load existing members
+        existing = session.execute(
+            select(Member).where(Member.account_id == account_id)
+        ).scalars().all()
+
+        # Helper to find existing by name+primary
+        def _exists(name: str, is_primary: bool) -> bool:
+            for em in existing:
+                if (em.full_name or "").strip().lower() == name.strip().lower() and bool(em.is_primary) == bool(is_primary):
+                    return True
+            return False
+
+        # Insert missing
+        for m in cleaned:
+            if _exists(m["full_name"], m["is_primary"]):
+                continue
+            session.add(Member(
+                account_id=account_id,
+                full_name=m["full_name"],
+                is_primary=m["is_primary"],
+                role=m["role"],
+            ))
+            inserted += 1
+
+        # Enforce exactly one primary in DB (if multiple existed historically)
+        # Keep the earliest primary if already present; otherwise set the first inserted/first existing.
+        prim_db = session.execute(
+            select(Member).where(Member.account_id == account_id, Member.is_primary == True)  # noqa: E712
+            .order_by(Member.created_at.asc())
+        ).scalars().all()
+
+        if len(prim_db) == 0:
+            # choose first by created_at
+            first = session.execute(
+                select(Member).where(Member.account_id == account_id).order_by(Member.created_at.asc())
+            ).scalars().first()
+            if first:
+                first.is_primary = True
+        elif len(prim_db) > 1:
+            keep = prim_db[0]
+            for extra in prim_db[1:]:
+                extra.is_primary = False
+
+        session.commit()
+
+    return {"ok": True, "inserted": inserted}
