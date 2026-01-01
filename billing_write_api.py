@@ -1,5 +1,5 @@
 #==================================
-# billing_write_api.py
+# billing_write_api.py  (FINAL BASELINE)
 #==================================
 
 from __future__ import annotations
@@ -38,7 +38,15 @@ def _ops_key_ok() -> bool:
 
 
 def _validate_role(role: str) -> str:
-    role = (role or "").strip()
+    """
+    Render roles are only: 'player_parent' | 'coach'
+    Wix/UI may send: 'player' for child rows -> normalize to 'player_parent'
+    """
+    role = (role or "").strip().lower()
+
+    if role == "player":
+        role = "player_parent"
+
     if role not in ("player_parent", "coach"):
         raise ValueError("invalid role")
     return role
@@ -68,6 +76,10 @@ def sync_account():
     """
     Upsert account + replace members snapshot.
     Intended to be called from Wix backend during onboarding (or later profile updates).
+
+    SAFETY / GUARD:
+    - We only delete+replace members if we have a valid snapshot ready to write.
+    - Prevents a bad/empty payload from wiping members.
     """
     payload = request.get_json(silent=True) or {}
 
@@ -94,8 +106,8 @@ def sync_account():
         if primary_role is None:
             primary_role = _validate_role(payload.get("role") or "player_parent")
 
-        # Ensure account exists (uses your “stable, no overwrite” logic)
-        account = create_account_with_primary_member(
+        # Ensure account exists (stable logic)
+        _ = create_account_with_primary_member(
             email=email,
             primary_full_name=primary_full_name,
             currency_code=currency_code,
@@ -103,25 +115,18 @@ def sync_account():
             role=primary_role,
         )
 
-        # Replace members snapshot (atomic)
+        # Replace members snapshot (atomic) WITH GUARD
         with Session(engine) as session:
             # Re-load account inside this session
             account_db = _find_account(session, email=email, external_wix_id=external_wix_id)
             if account_db is None:
-                # Should never happen, but keep safe
                 return jsonify({"ok": False, "error": "account not found after create"}), 500
 
             # If Wix id is newly available, persist it (safe, non-destructive)
             if external_wix_id and not account_db.external_wix_id:
                 account_db.external_wix_id = external_wix_id
 
-            # Delete existing members (snapshot replace)
-            session.execute(
-                text("DELETE FROM billing.member WHERE account_id = :account_id"),
-                {"account_id": account_db.id},
-            )
-
-            # Build new snapshot
+            # -------- Build snapshot FIRST (GUARD) --------
             snapshot: List[Dict[str, Any]] = []
             primary_count = 0
 
@@ -134,7 +139,12 @@ def sync_account():
                     continue
 
                 is_primary = bool(m.get("is_primary"))
-                role = _validate_role(m.get("role") or ("player_parent" if not is_primary else primary_role))
+
+                # Normalize/validate role:
+                # - primary uses primary_role default
+                # - children default to player_parent (and accept 'player' -> player_parent)
+                role_in = m.get("role") or ("player_parent" if not is_primary else primary_role)
+                role = _validate_role(role_in)
 
                 if is_primary:
                     primary_count += 1
@@ -162,7 +172,17 @@ def sync_account():
             elif primary_count > 1:
                 return jsonify({"ok": False, "error": "only one primary member allowed"}), 400
 
-            # Insert snapshot
+            # -------- GUARD: do not wipe DB if snapshot is empty --------
+            # (Can happen if Wix sends blanks / fields missing)
+            if not snapshot:
+                return jsonify({"ok": False, "error": "no valid members in payload"}), 400
+
+            # -------- Apply snapshot (delete+insert) --------
+            session.execute(
+                text("DELETE FROM billing.member WHERE account_id = :account_id"),
+                {"account_id": account_db.id},
+            )
+
             for m in snapshot:
                 session.add(
                     Member(
@@ -198,12 +218,7 @@ def sync_account():
                 {"account_id": account_db.id},
             ).mappings().first()
 
-            return jsonify(
-                {
-                    "ok": True,
-                    "data": dict(row) if row else None,
-                }
-            )
+            return jsonify({"ok": True, "data": dict(row) if row else None})
 
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
