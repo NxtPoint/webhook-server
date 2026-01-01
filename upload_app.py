@@ -97,7 +97,9 @@ SPORTAI_STATUS_PATHS = list(dict.fromkeys([
 from db_init import engine  # noqa: E402
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
 from build_silver_point_detail import build_silver as build_silver_point_detail  # noqa: E402
+from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
+
 
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
@@ -673,6 +675,14 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         except Exception as e:
             app.logger.error("Silver build failed for task_id=%s: %s", task_id, e)
 
+                # --- NEW: consume 1 match credit for this task_id (idempotent) ---
+        try:
+            out = sync_usage_for_task_id(task_id, dry_run=False)
+            app.logger.info("Billing consume sync_usage_for_task_id task_id=%s inserted=%s", task_id, out.get("inserted"))
+        except Exception as e:
+            # IMPORTANT: do NOT fail ingest if billing consume fails (we can reconcile later)
+            app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
+
         # --- NEW: notify Wix after successful ingest (server-side email trigger) ---
         try:
             _notify_wix(task_id, status="completed", session_id=sid, result_url=result_url, error=None)
@@ -1226,6 +1236,14 @@ def api_task_status():
 
         if session_id and ingest_finished and not auto_ingest_error:
             auto_ingested = True
+
+            # Best-effort: ensure billing consumption exists once job is done
+            try:
+                out = sync_usage_for_task_id(tid, dry_run=False)
+                app.logger.info("Billing consume (poller) task_id=%s inserted=%s", tid, out.get("inserted"))
+            except Exception as e:
+                app.logger.exception("Billing consume (poller) failed task_id=%s: %s", tid, e)
+
 
             if (not sc.get("wix_notified_at")) and (WIX_NOTIFY_URL and WIX_NOTIFY_KEY):
                 try:
