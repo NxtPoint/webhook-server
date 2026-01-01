@@ -1,5 +1,5 @@
 #=======================================================================
-# billing_service.py
+# billing_service.py  (FINAL BASELINE)
 #=======================================================================
 
 from __future__ import annotations
@@ -15,6 +15,34 @@ from models_billing import Account, Member
 
 
 # ----------------------------
+# Internal helpers
+# ----------------------------
+
+def _norm_email(email: str | None) -> str:
+    return (email or "").strip().lower()
+
+
+def _norm_role(role: str | None) -> str:
+    """
+    Canonical Render roles: 'player_parent' | 'coach'
+
+    Accept:
+      - 'player' (child rows from Wix) -> normalize to 'player_parent'
+    """
+    r = (role or "").strip().lower()
+    if r == "player":
+        r = "player_parent"
+    return r
+
+
+def _validate_role(role: str | None) -> str:
+    r = _norm_role(role)
+    if r not in ("player_parent", "coach"):
+        raise ValueError("invalid role")
+    return r
+
+
+# ----------------------------
 # Accounts / Members
 # ----------------------------
 
@@ -25,25 +53,34 @@ def create_account_with_primary_member(
     external_wix_id: str | None = None,
     role: str = "player_parent",
 ) -> Account:
-    email = (email or "").strip().lower()
-    if not email:
+    """
+    Create account + primary member if account does not exist.
+
+    Stability rules (to avoid accidental overwrites):
+      - If account exists: do NOT overwrite fields (email, name, currency, external_wix_id, role)
+        except:
+          - If external_wix_id is provided and account.external_wix_id is empty -> set it
+          - If no primary member exists -> create it
+
+    This function is intentionally conservative. Wix 'sync_account' owns full snapshot replacement.
+    """
+    email_n = _norm_email(email)
+    if not email_n:
         raise ValueError("email required")
 
-    primary_full_name = (primary_full_name or "").strip() or email
-
-    if role not in ("player_parent", "coach"):
-        raise ValueError("invalid role")
+    primary_full_name_n = (primary_full_name or "").strip() or email_n
+    role_n = _validate_role(role)
 
     with Session(engine) as session:
         account = session.execute(
-            select(Account).where(Account.email == email)
+            select(Account).where(Account.email == email_n)
         ).scalar_one_or_none()
 
         if account is None:
             account = Account(
-                email=email,
-                primary_full_name=primary_full_name,
-                currency_code=currency_code,
+                email=email_n,
+                primary_full_name=primary_full_name_n,
+                currency_code=(currency_code or "USD").strip().upper() or "USD",
                 external_wix_id=external_wix_id,
             )
             session.add(account)
@@ -51,9 +88,10 @@ def create_account_with_primary_member(
 
             primary_member = Member(
                 account_id=account.id,
-                full_name=primary_full_name,
+                full_name=primary_full_name_n,
                 is_primary=True,
-                role=role,
+                role=role_n,
+                active=True,
             )
             session.add(primary_member)
 
@@ -61,7 +99,27 @@ def create_account_with_primary_member(
             session.refresh(account)
             return account
 
-        # If it already exists, keep it stable (no accidental overwrites)
+        # If Wix id is newly available, persist it (safe, non-destructive)
+        if external_wix_id and not getattr(account, "external_wix_id", None):
+            account.external_wix_id = external_wix_id
+
+        # Ensure there is exactly one primary member at least (guard rail)
+        primary_exists = session.execute(
+            select(Member.id).where(Member.account_id == account.id, Member.is_primary == True)  # noqa: E712
+        ).scalar_one_or_none()
+
+        if primary_exists is None:
+            session.add(
+                Member(
+                    account_id=account.id,
+                    full_name=primary_full_name_n,
+                    is_primary=True,
+                    role=role_n,
+                    active=True,
+                )
+            )
+            session.commit()
+
         return account
 
 
@@ -70,19 +128,19 @@ def add_member_to_account(
     full_name: str,
     role: str = "player_parent",
 ) -> Member:
-    full_name = (full_name or "").strip()
-    if not full_name:
+    full_name_n = (full_name or "").strip()
+    if not full_name_n:
         raise ValueError("full_name required")
 
-    if role not in ("player_parent", "coach"):
-        raise ValueError("invalid role")
+    role_n = _validate_role(role)
 
     with Session(engine) as session:
         member = Member(
             account_id=account_id,
-            full_name=full_name,
+            full_name=full_name_n,
             is_primary=False,
-            role=role,
+            role=role_n,
+            active=True,
         )
         session.add(member)
         session.commit()
@@ -188,8 +246,8 @@ def consume_match_for_task(
     Idempotent by DB unique(task_id).
     Returns True if inserted, False if already existed.
     """
-    task_id = (task_id or "").strip()
-    if not task_id:
+    task_id_n = (task_id or "").strip()
+    if not task_id_n:
         raise ValueError("task_id required")
 
     with Session(engine) as session:
@@ -203,7 +261,7 @@ def consume_match_for_task(
                 ON CONFLICT (task_id) DO NOTHING
                 """
             ),
-            {"account_id": account_id, "task_id": task_id, "source": source},
+            {"account_id": account_id, "task_id": task_id_n, "source": source},
         )
         inserted = (res.rowcount or 0) == 1
         session.commit()
@@ -247,22 +305,27 @@ def get_usage_summary(account_id: int) -> Dict[str, Any]:
             "last_processed_at": row["last_processed_at"],
         }
 
+
+# ----------------------------
+# Legacy-safe helper (KEEP)
+# ----------------------------
+
 def sync_members_for_account(
     *,
     account_id: int,
     members: list[dict],
 ) -> dict:
     """
-    Idempotent upsert of members for an account.
-    Rules:
-      - Exactly one primary (first primary in payload wins; fallback first member)
-      - Match existing rows by (account_id, full_name, is_primary) to avoid duplicates
-      - Do not delete history; just ensure required rows exist
+    Keep this function for compatibility, but DO NOT use it for Wix onboarding.
+
+    Your chosen best practice is:
+      - Wix -> /api/billing/sync_account replaces the snapshot atomically.
+
+    This function remains as a conservative "ensure rows exist" helper only.
     """
     if not isinstance(members, list) or not members:
         return {"ok": True, "inserted": 0, "note": "no members provided"}
 
-    # normalize
     cleaned = []
     for m in members:
         if not isinstance(m, dict):
@@ -270,16 +333,18 @@ def sync_members_for_account(
         name = (m.get("full_name") or "").strip()
         if not name:
             continue
-        cleaned.append({
-            "full_name": name,
-            "is_primary": bool(m.get("is_primary")),
-            "role": (m.get("role") or "player_parent").strip() or "player_parent",
-        })
+        cleaned.append(
+            {
+                "full_name": name,
+                "is_primary": bool(m.get("is_primary")),
+                "role": _norm_role(m.get("role") or "player_parent") or "player_parent",
+            }
+        )
 
     if not cleaned:
         return {"ok": True, "inserted": 0, "note": "no valid members"}
 
-    # ensure exactly one primary
+    # ensure exactly one primary in payload
     primaries = [i for i, m in enumerate(cleaned) if m["is_primary"]]
     if len(primaries) == 0:
         cleaned[0]["is_primary"] = True
@@ -291,39 +356,41 @@ def sync_members_for_account(
     inserted = 0
 
     with Session(engine) as session:
-        # Load existing members
         existing = session.execute(
             select(Member).where(Member.account_id == account_id)
         ).scalars().all()
 
-        # Helper to find existing by name+primary
         def _exists(name: str, is_primary: bool) -> bool:
+            n = name.strip().lower()
             for em in existing:
-                if (em.full_name or "").strip().lower() == name.strip().lower() and bool(em.is_primary) == bool(is_primary):
+                if (em.full_name or "").strip().lower() == n and bool(em.is_primary) == bool(is_primary):
                     return True
             return False
 
-        # Insert missing
         for m in cleaned:
+            role_n = _validate_role(m.get("role"))
             if _exists(m["full_name"], m["is_primary"]):
                 continue
-            session.add(Member(
-                account_id=account_id,
-                full_name=m["full_name"],
-                is_primary=m["is_primary"],
-                role=m["role"],
-            ))
+
+            session.add(
+                Member(
+                    account_id=account_id,
+                    full_name=m["full_name"],
+                    is_primary=m["is_primary"],
+                    role=role_n,
+                    active=True,
+                )
+            )
             inserted += 1
 
-        # Enforce exactly one primary in DB (if multiple existed historically)
-        # Keep the earliest primary if already present; otherwise set the first inserted/first existing.
+        # enforce exactly one primary in DB
         prim_db = session.execute(
-            select(Member).where(Member.account_id == account_id, Member.is_primary == True)  # noqa: E712
+            select(Member)
+            .where(Member.account_id == account_id, Member.is_primary == True)  # noqa: E712
             .order_by(Member.created_at.asc())
         ).scalars().all()
 
         if len(prim_db) == 0:
-            # choose first by created_at
             first = session.execute(
                 select(Member).where(Member.account_id == account_id).order_by(Member.created_at.asc())
             ).scalars().first()
