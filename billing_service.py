@@ -293,33 +293,18 @@ def remaining_for_window(account_id: int, start_dt: datetime, end_dt: datetime) 
 
         return int(row[0] or 0)
 
-def consume_match_for_task(
-    *,
-    account_id: int,
-    task_id: str,
-    source: str = "sportai",
-) -> bool:
-    """
-    Consume 1 match credit for task_id.
-    Idempotent by DB unique(task_id).
-    Returns True if inserted, False if already existed.
-    """
-    task_id_n = (task_id or "").strip()
-    if not task_id_n:
-        raise ValueError("task_id required")
-
+def consume_match_for_task(*, account_id: int, task_id: str, source: str = "sportai") -> bool:
+    task_uuid = _to_uuid(task_id)
     with Session(engine) as session:
         res = session.execute(
-            text(
-                """
+            text("""
                 INSERT INTO billing.entitlement_consumption
                     (account_id, task_id, consumed_matches, source)
                 VALUES
                     (:account_id, :task_id, 1, :source)
                 ON CONFLICT (task_id) DO NOTHING
-                """
-            ),
-            {"account_id": account_id, "task_id": task_id_n, "source": source},
+            """),
+            {"account_id": account_id, "task_id": str(task_uuid), "source": source},
         )
         inserted = (res.rowcount or 0) == 1
         session.commit()

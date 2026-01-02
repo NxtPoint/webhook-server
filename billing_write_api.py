@@ -631,22 +631,11 @@ def monthly_refill():
                 conn.execute(
                     text("""
                         INSERT INTO billing.monthly_refill_log
-                          (account_id, year_month, grant_id, note)
+                        (account_id, year_month, grant_id)
                         VALUES
-                          (:account_id, :ym, :grant_id, :note)
+                        (:account_id, :ym, :grant_id)
                     """),
-                    {
-                        "account_id": account_id,
-                        "ym": ym,
-                        "grant_id": grant_id,
-                        "note": json.dumps({
-                            "remaining_before": remaining,
-                            "allowance": allowance,
-                            "delta_grant": delta_grant,
-                            "delta_expire": delta_expire,
-                            "expired_inserted": expired_inserted,
-                        }),
-                    },
+                    {"account_id": account_id, "ym": ym, "grant_id": grant_id},
                 )
 
             processed += 1
