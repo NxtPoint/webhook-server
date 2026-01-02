@@ -619,15 +619,13 @@ def monthly_refill():
                 granted_delta_total += delta_grant
 
             if delta_expire > 0:
-                task_id = f"expire:{ym}:{account_id}"
+                task_id = f"expire:{ym}:{account_id}"   # fine now, will become uuid5 deterministically
                 expired_inserted = consume_matches_for_task(
                     account_id=account_id,
                     task_id=task_id,
                     consumed_matches=delta_expire,
                     source="monthly_expire",
-                )
-                if expired_inserted:
-                    expired_total += delta_expire
+)
 
             with engine.begin() as conn:
                 conn.execute(
