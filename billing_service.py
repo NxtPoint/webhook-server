@@ -1,5 +1,7 @@
 #=======================================================================
-# billing_service.py  (FINAL BASELINE)
+# billing_service.py  (FINAL BASELINE v2)
+# - Adds idempotency for entitlement grants (prevents double credits on retries)
+# - Adds helper for monthly no-rollover resets (expire excess via consumption)
 #=======================================================================
 
 from __future__ import annotations
@@ -165,9 +167,14 @@ def grant_entitlement(
 ) -> int:
     """
     Grant match credits to an account.
-    Called from Wix webhook handlers (Step 3).
+    Called from Wix webhook handlers (Step 3) and monthly refill cron.
 
     Returns billing.entitlement_grant.id.
+
+    IMPORTANT:
+      - Idempotent when external_wix_id is supplied:
+          (account_id, source, plan_code, external_wix_id) -> single grant
+        This prevents double credits on timeouts/retries.
     """
     if matches_granted < 0:
         raise ValueError("matches_granted must be >= 0")
@@ -176,9 +183,37 @@ def grant_entitlement(
     if source not in ("wix_subscription", "wix_payg", "manual_adjustment"):
         raise ValueError("invalid source")
 
+    ext = (external_wix_id or "").strip() or None
     vf = valid_from or datetime.now(timezone.utc)
 
     with Session(engine) as session:
+        # -------- Idempotency guard (only if external_wix_id provided) --------
+        if ext:
+            existing = session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM billing.entitlement_grant
+                    WHERE account_id = :account_id
+                      AND source = :source
+                      AND plan_code = :plan_code
+                      AND external_wix_id = :external_wix_id
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "account_id": account_id,
+                    "source": source,
+                    "plan_code": plan_code,
+                    "external_wix_id": ext,
+                },
+            ).scalar_one_or_none()
+
+            if existing is not None:
+                return int(existing)
+
+        # -------- Insert new grant --------
         res = session.execute(
             text(
                 """
@@ -193,7 +228,7 @@ def grant_entitlement(
                 "account_id": account_id,
                 "source": source,
                 "plan_code": plan_code,
-                "external_wix_id": external_wix_id,
+                "external_wix_id": ext,
                 "matches_granted": matches_granted,
                 "valid_from": vf,
                 "valid_to": valid_to,
@@ -262,6 +297,51 @@ def consume_match_for_task(
                 """
             ),
             {"account_id": account_id, "task_id": task_id_n, "source": source},
+        )
+        inserted = (res.rowcount or 0) == 1
+        session.commit()
+        return inserted
+
+
+def consume_matches_for_task(
+    *,
+    account_id: int,
+    task_id: str,
+    consumed_matches: int,
+    source: str,
+) -> bool:
+    """
+    Consume N matches for a deterministic task_id.
+    Used for monthly "expire excess" (no rollover) adjustments.
+
+    Idempotent by DB unique(task_id).
+    Returns True if inserted, False if already existed.
+    """
+    task_id_n = (task_id or "").strip()
+    if not task_id_n:
+        raise ValueError("task_id required")
+    if consumed_matches <= 0:
+        raise ValueError("consumed_matches must be > 0")
+    if not source:
+        raise ValueError("source required")
+
+    with Session(engine) as session:
+        res = session.execute(
+            text(
+                """
+                INSERT INTO billing.entitlement_consumption
+                    (account_id, task_id, consumed_matches, source)
+                VALUES
+                    (:account_id, :task_id, :consumed_matches, :source)
+                ON CONFLICT (task_id) DO NOTHING
+                """
+            ),
+            {
+                "account_id": account_id,
+                "task_id": task_id_n,
+                "consumed_matches": int(consumed_matches),
+                "source": source,
+            },
         )
         inserted = (res.rowcount or 0) == 1
         session.commit()

@@ -1,5 +1,8 @@
 #==================================
-# billing_write_api.py  (FINAL BASELINE)
+# billing_write_api.py  (FINAL BASELINE v2)
+# - Subscription lifecycle event ingestion (idempotent)
+# - Entitlement check (fail-closed if subscription_state missing)
+# - Monthly refill enforces NO ROLLOVER (reset remaining to allowance)
 #==================================
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from models_billing import Account, Member
 from billing_service import (
     create_account_with_primary_member,
     grant_entitlement,
+    consume_matches_for_task,
 )
 
 billing_write_bp = Blueprint("billing_write", __name__)
@@ -33,7 +37,6 @@ def _norm_email(email: Optional[str]) -> str:
 
 
 def _ops_key_ok() -> bool:
-    # Keep compatibility with existing prod patterns
     ops_key = os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or ""
     provided = request.headers.get("X-Ops-Key") or request.headers.get("X-OPS-KEY") or ""
     return bool(ops_key) and (provided == ops_key)
@@ -53,14 +56,14 @@ def _ym_key(dt: datetime) -> str:
 
 def _event_id(payload: Dict[str, Any]) -> str:
     """
-    Deterministic id for idempotency. Do NOT rely on Wix providing an id.
+    Deterministic id for subscription events.
     """
     key = "|".join([
-        str(payload.get("event_type") or ""),
-        str(payload.get("buyer_email") or ""),
-        str(payload.get("order_id") or ""),
-        str(payload.get("plan_id") or ""),
-        str(payload.get("status") or ""),
+        str((payload.get("event_type") or "")).strip().upper(),
+        str((payload.get("buyer_email") or "")).strip().lower(),
+        str((payload.get("order_id") or "")).strip(),
+        str((payload.get("plan_id") or "")).strip(),
+        str((payload.get("status") or "")).strip().upper(),
         str(payload.get("plan_start") or ""),
         str(payload.get("plan_end") or ""),
     ])
@@ -68,23 +71,15 @@ def _event_id(payload: Dict[str, Any]) -> str:
 
 
 def _validate_role(role: str) -> str:
-    """
-    Render roles are only: 'player_parent' | 'coach'
-    Wix/UI may send: 'player' for child rows -> normalize to 'player_parent'
-    """
     role = (role or "").strip().lower()
-
     if role == "player":
         role = "player_parent"
-
     if role not in ("player_parent", "coach"):
         raise ValueError("invalid role")
     return role
 
 
 def _find_account(session: Session, *, email: str, external_wix_id: Optional[str]) -> Optional[Account]:
-    # Prefer external_wix_id when supplied (stable Wix identity),
-    # fall back to email uniqueness.
     if external_wix_id:
         acct = session.execute(
             select(Account).where(Account.external_wix_id == external_wix_id)
@@ -103,14 +98,6 @@ def _find_account(session: Session, *, email: str, external_wix_id: Optional[str
 
 @billing_write_bp.post("/api/billing/sync_account")
 def sync_account():
-    """
-    Upsert account + replace members snapshot.
-    Intended to be called from Wix backend during onboarding (or later profile updates).
-
-    SAFETY / GUARD:
-    - We only delete+replace members if we have a valid snapshot ready to write.
-    - Prevents a bad/empty payload from wiping members.
-    """
     payload = request.get_json(silent=True) or {}
 
     email = _norm_email(payload.get("email"))
@@ -121,13 +108,11 @@ def sync_account():
     currency_code = (payload.get("currency_code") or "USD").strip().upper() or "USD"
     external_wix_id = (payload.get("external_wix_id") or "").strip() or None
 
-    # Members snapshot from Wix
     members_in = payload.get("members") or []
     if not isinstance(members_in, list):
         return jsonify({"ok": False, "error": "members must be a list"}), 400
 
     try:
-        # Determine the primary role from input, else default player_parent
         primary_role = None
         for m in members_in:
             if isinstance(m, dict) and bool(m.get("is_primary")):
@@ -136,7 +121,6 @@ def sync_account():
         if primary_role is None:
             primary_role = _validate_role(payload.get("role") or "player_parent")
 
-        # Ensure account exists (stable logic)
         _ = create_account_with_primary_member(
             email=email,
             primary_full_name=primary_full_name,
@@ -145,18 +129,14 @@ def sync_account():
             role=primary_role,
         )
 
-        # Replace members snapshot (atomic) WITH GUARD
         with Session(engine) as session:
-            # Re-load account inside this session
             account_db = _find_account(session, email=email, external_wix_id=external_wix_id)
             if account_db is None:
                 return jsonify({"ok": False, "error": "account not found after create"}), 500
 
-            # If Wix id is newly available, persist it (safe, non-destructive)
             if external_wix_id and not account_db.external_wix_id:
                 account_db.external_wix_id = external_wix_id
 
-            # -------- Build snapshot FIRST (GUARD) --------
             snapshot: List[Dict[str, Any]] = []
             primary_count = 0
 
@@ -169,8 +149,6 @@ def sync_account():
                     continue
 
                 is_primary = bool(m.get("is_primary"))
-
-                # Normalize/validate role:
                 role_in = m.get("role") or ("player_parent" if not is_primary else primary_role)
                 role = _validate_role(role_in)
 
@@ -178,33 +156,20 @@ def sync_account():
                     primary_count += 1
 
                 snapshot.append(
-                    {
-                        "full_name": full_name,
-                        "is_primary": is_primary,
-                        "role": role,
-                        "active": True,
-                    }
+                    {"full_name": full_name, "is_primary": is_primary, "role": role, "active": True}
                 )
 
-            # Enforce exactly one primary
             if primary_count == 0:
                 snapshot.insert(
                     0,
-                    {
-                        "full_name": primary_full_name,
-                        "is_primary": True,
-                        "role": primary_role,
-                        "active": True,
-                    },
+                    {"full_name": primary_full_name, "is_primary": True, "role": primary_role, "active": True},
                 )
             elif primary_count > 1:
                 return jsonify({"ok": False, "error": "only one primary member allowed"}), 400
 
-            # -------- GUARD: do not wipe DB if snapshot is empty --------
             if not snapshot:
                 return jsonify({"ok": False, "error": "no valid members in payload"}), 400
 
-            # -------- Apply snapshot (delete+insert) --------
             session.execute(
                 text("DELETE FROM billing.member WHERE account_id = :account_id"),
                 {"account_id": account_db.id},
@@ -223,7 +188,6 @@ def sync_account():
 
             session.commit()
 
-            # Return fresh summary-compatible data
             row = session.execute(
                 text(
                     """
@@ -255,9 +219,6 @@ def sync_account():
 
 @billing_write_bp.post("/api/billing/entitlement/grant")
 def entitlement_grant():
-    """
-    Ops-protected credit grant. Intended for Wix subscription webhook handler to call.
-    """
     if not _ops_key_ok():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
@@ -318,23 +279,11 @@ def entitlement_grant():
 
 @billing_write_bp.get("/api/billing/entitlement/check")
 def entitlement_check():
-    """
-    Read-only entitlement check for frontend.
-
-    Rules:
-      - Coaches can never upload
-      - Must have remaining credits > 0
-      - Must have ACTIVE subscription status (from billing.subscription_state)
-
-    Safety:
-      - If billing.subscription_state table is missing/unavailable, DENY (fail-closed).
-    """
     email = _norm_email(request.args.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
-        # -------- Query 1: account + role + remaining credits --------
         row = conn.execute(
             text(
                 """
@@ -361,7 +310,6 @@ def entitlement_check():
         remaining = int(row.get("matches_remaining") or 0)
         account_id = int(row.get("account_id"))
 
-        # -------- Query 2: subscription status (split query; no joins) --------
         try:
             sub_row = conn.execute(
                 text(
@@ -377,13 +325,7 @@ def entitlement_check():
             data = dict(row)
             data["subscription_status"] = None
             return jsonify(
-                {
-                    "ok": True,
-                    "allowed": False,
-                    "reason": "subscription_state_unavailable",
-                    "data": data,
-                    "detail": str(e),
-                }
+                {"ok": True, "allowed": False, "reason": "subscription_state_unavailable", "data": data, "detail": str(e)}
             )
 
         subscription_status = (sub_row.get("subscription_status") if sub_row else "NONE")
@@ -392,7 +334,6 @@ def entitlement_check():
     data = dict(row)
     data["subscription_status"] = subscription_status
 
-    # -------- Policy checks (Python-only logic) --------
     if role == "coach":
         return jsonify({"ok": True, "allowed": False, "reason": "coach_cannot_upload", "data": data})
 
@@ -409,9 +350,8 @@ def entitlement_check():
 def subscription_event():
     """
     Ops-protected subscription lifecycle update from Wix.
-    Stores subscription status and plan window.
 
-    Expected payload (canonical keys; null allowed):
+    Canonical payload keys:
       event_type, buyer_email, status, order_id, plan_id, plan_name,
       plan_start, plan_end, plan_code, plan_type, matches_granted
     """
@@ -426,7 +366,7 @@ def subscription_event():
 
     order_id = (payload.get("order_id") or "").strip() or None
     plan_id = (payload.get("plan_id") or "").strip() or None
-    plan_name = (payload.get("plan_name") or "").strip() or None  # stored only in event log
+    plan_name = (payload.get("plan_name") or "").strip() or None
     plan_code = (payload.get("plan_code") or "").strip() or None
     plan_type = (payload.get("plan_type") or "").strip().lower() or None
     matches_granted = payload.get("matches_granted")
@@ -439,7 +379,6 @@ def subscription_event():
     if not event_type:
         return jsonify({"ok": False, "error": "event_type required"}), 400
 
-    # Normalize plan_type
     if plan_type is not None and plan_type not in ("recurring", "payg"):
         return jsonify({"ok": False, "error": "invalid plan_type"}), 400
 
@@ -458,7 +397,6 @@ def subscription_event():
 
         account_id = int(acct.id)
 
-        # Idempotency: if event_id exists, ignore
         exists = session.execute(
             text("SELECT 1 FROM billing.subscription_event_log WHERE event_id = :event_id"),
             {"event_id": ev_id},
@@ -466,7 +404,6 @@ def subscription_event():
         if exists:
             return jsonify({"ok": True, "ignored": True, "reason": "duplicate_event", "event_id": ev_id})
 
-        # Log event (audit)
         session.execute(
             text("""
                 INSERT INTO billing.subscription_event_log (event_id, account_id, event_type, payload)
@@ -480,7 +417,6 @@ def subscription_event():
             },
         )
 
-        # Ensure subscription_state exists
         session.execute(
             text("""
                 INSERT INTO billing.subscription_state (account_id)
@@ -490,7 +426,6 @@ def subscription_event():
             {"account_id": account_id},
         )
 
-        # Locked transitions
         new_status: Optional[str] = None
         cancelled_at = None
         payment_cancelled_at = None
@@ -504,7 +439,6 @@ def subscription_event():
             new_status = "CANCELLED"
             payment_cancelled_at = datetime.now(timezone.utc)
 
-        # If active but end is in the past, mark EXPIRED
         now_utc = datetime.now(timezone.utc)
         if new_status == "ACTIVE" and plan_end_dt and plan_end_dt < now_utc:
             new_status = "EXPIRED"
@@ -513,7 +447,6 @@ def subscription_event():
             session.commit()
             return jsonify({"ok": True, "stored": True, "state_changed": False, "event_id": ev_id})
 
-        # Update state (matches_granted is stored for deterministic monthly refill)
         session.execute(
             text("""
                 UPDATE billing.subscription_state
@@ -558,8 +491,17 @@ def subscription_event():
 @billing_write_bp.post("/api/billing/cron/monthly_refill")
 def monthly_refill():
     """
-    Ops-protected cron. Grants recurring plan credits on the 1st.
-    Idempotent per account per YYYY-MM.
+    Ops-protected cron. Runs on the 1st.
+
+    NO ROLLOVER RULE (locked):
+      - allowance = subscription_state.matches_granted
+      - after refill, matches_remaining must equal allowance (not remaining+allowance)
+
+    Implementation:
+      - read remaining from vw_customer_usage
+      - if remaining < allowance: grant delta
+      - if remaining > allowance: consume (expire) excess with deterministic task_id
+      - log one row in monthly_refill_log per account per YYYY-MM (idempotent)
     """
     if not _ops_key_ok():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
@@ -580,8 +522,7 @@ def monthly_refill():
                   s.account_id,
                   s.plan_code,
                   s.plan_type,
-                  s.matches_granted,
-                  s.current_period_start,
+                  s.matches_granted AS allowance,
                   s.current_period_end
                 FROM billing.subscription_state s
                 WHERE s.status = 'ACTIVE'
@@ -590,30 +531,33 @@ def monthly_refill():
             """)
         ).mappings().all()
 
-    granted = 0
+    eligible = len(rows)
+    processed = 0
     already = 0
-    missing_plan = 0
     errors = 0
+    missing = 0
+
+    granted_delta_total = 0
+    expired_total = 0
+
     details = []
 
     for r in rows:
         account_id = int(r["account_id"])
         plan_code = (r.get("plan_code") or "").strip()
-        matches_granted = int(r.get("matches_granted") or 0)
+        allowance = int(r.get("allowance") or 0)
 
         if not plan_code:
-            missing_plan += 1
+            missing += 1
             details.append({"account_id": account_id, "result": "skipped", "reason": "missing_plan_code"})
             continue
-
-        if matches_granted <= 0:
-            missing_plan += 1
-            details.append({"account_id": account_id, "result": "skipped", "reason": "missing_matches_granted"})
+        if allowance <= 0:
+            missing += 1
+            details.append({"account_id": account_id, "result": "skipped", "reason": "missing_allowance"})
             continue
 
         try:
             with engine.begin() as conn:
-                # Idempotency lock for this account + year_month
                 exists = conn.execute(
                     text("""
                         SELECT 1 FROM billing.monthly_refill_log
@@ -621,33 +565,88 @@ def monthly_refill():
                     """),
                     {"account_id": account_id, "ym": ym},
                 ).first()
-
                 if exists:
                     already += 1
                     continue
 
-                # Grant
+                usage = conn.execute(
+                    text("""
+                        SELECT COALESCE(matches_remaining, 0) AS remaining
+                        FROM billing.vw_customer_usage
+                        WHERE account_id = :account_id
+                    """),
+                    {"account_id": account_id},
+                ).mappings().first()
+
+                remaining = int((usage or {}).get("remaining") or 0)
+
+            # Compute adjustment to force remaining == allowance
+            delta_grant = 0
+            delta_expire = 0
+            if remaining < allowance:
+                delta_grant = allowance - remaining
+            elif remaining > allowance:
+                delta_expire = remaining - allowance
+
+            grant_id = None
+            expired_inserted = False
+
+            if delta_grant > 0:
                 grant_id = grant_entitlement(
                     account_id=account_id,
                     source="wix_subscription",
                     plan_code=plan_code,
-                    matches_granted=matches_granted,
-                    external_wix_id=f"monthly_refill:{ym}",
+                    matches_granted=delta_grant,
+                    external_wix_id=f"monthly_refill:{ym}",  # also idempotent at service layer
                     valid_from=now_utc,
                     valid_to=None,
                     is_active=True,
                 )
+                granted_delta_total += delta_grant
 
-                # Log refill (idempotent key)
+            if delta_expire > 0:
+                # deterministic consumption row to expire excess (NO ROLLOVER)
+                task_id = f"expire:{ym}:{account_id}"
+                expired_inserted = consume_matches_for_task(
+                    account_id=account_id,
+                    task_id=task_id,
+                    consumed_matches=delta_expire,
+                    source="monthly_expire",
+                )
+                if expired_inserted:
+                    expired_total += delta_expire
+
+            with engine.begin() as conn:
                 conn.execute(
                     text("""
-                        INSERT INTO billing.monthly_refill_log (account_id, year_month, grant_id)
-                        VALUES (:account_id, :ym, :grant_id)
+                        INSERT INTO billing.monthly_refill_log
+                          (account_id, year_month, grant_id, note)
+                        VALUES
+                          (:account_id, :ym, :grant_id, :note)
                     """),
-                    {"account_id": account_id, "ym": ym, "grant_id": grant_id},
+                    {
+                        "account_id": account_id,
+                        "ym": ym,
+                        "grant_id": grant_id,
+                        "note": json.dumps({
+                            "remaining_before": remaining,
+                            "allowance": allowance,
+                            "delta_grant": delta_grant,
+                            "delta_expire": delta_expire,
+                            "expired_inserted": expired_inserted,
+                        }),
+                    },
                 )
 
-            granted += 1
+            processed += 1
+            details.append({
+                "account_id": account_id,
+                "result": "ok",
+                "remaining_before": remaining,
+                "allowance": allowance,
+                "delta_grant": delta_grant,
+                "delta_expire": delta_expire,
+            })
 
         except Exception as e:
             errors += 1
@@ -656,10 +655,12 @@ def monthly_refill():
     return jsonify({
         "ok": True,
         "year_month": ym,
-        "eligible": len(rows),
-        "granted": granted,
+        "eligible": eligible,
+        "processed": processed,
         "already": already,
-        "missing_plan": missing_plan,
+        "missing": missing,
         "errors": errors,
+        "granted_delta_total": granted_delta_total,
+        "expired_total": expired_total,
         "details": details[:50],
     })
