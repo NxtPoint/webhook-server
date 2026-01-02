@@ -3,6 +3,8 @@
 #==================================
 
 from __future__ import annotations
+import hashlib
+from datetime import timezone, date
 
 import os
 from datetime import datetime
@@ -35,6 +37,31 @@ def _ops_key_ok() -> bool:
     ops_key = os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or ""
     provided = request.headers.get("X-Ops-Key") or request.headers.get("X-OPS-KEY") or ""
     return bool(ops_key) and (provided == ops_key)
+
+def _parse_dt(v):
+    if not v:
+        return None
+    if isinstance(v, datetime):
+        return v
+    return datetime.fromisoformat(str(v))
+
+def _ym_key(dt: datetime) -> str:
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+def _event_id(payload: Dict[str, Any]) -> str:
+    """
+    Deterministic id for idempotency. Do NOT rely on Wix providing an id.
+    """
+    key = "|".join([
+        str(payload.get("event_type") or ""),
+        str(payload.get("buyer_email") or ""),
+        str(payload.get("order_id") or ""),
+        str(payload.get("plan_id") or ""),
+        str(payload.get("status") or ""),
+        str(payload.get("plan_start") or ""),
+        str(payload.get("plan_end") or ""),
+    ])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def _validate_role(role: str) -> str:
@@ -70,6 +97,31 @@ def _find_account(session: Session, *, email: str, external_wix_id: Optional[str
 # ----------------------------
 # Write endpoints
 # ----------------------------
+
+def _parse_dt(v):
+    if not v:
+        return None
+    if isinstance(v, datetime):
+        return v
+    return datetime.fromisoformat(str(v))
+
+def _ym_key(dt: datetime) -> str:
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+def _event_id(payload: Dict[str, Any]) -> str:
+    """
+    Deterministic id for idempotency. Do NOT rely on Wix providing an id.
+    """
+    key = "|".join([
+        str(payload.get("event_type") or ""),
+        str(payload.get("buyer_email") or ""),
+        str(payload.get("order_id") or ""),
+        str(payload.get("plan_id") or ""),
+        str(payload.get("status") or ""),
+        str(payload.get("plan_start") or ""),
+        str(payload.get("plan_end") or ""),
+    ])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 @billing_write_bp.post("/api/billing/sync_account")
 def sync_account():
@@ -302,12 +354,21 @@ def entitlement_check():
     """
     Read-only entitlement check for frontend.
     Uses the same source-of-truth tables/views as summary + upload gate.
+
+    Rules:
+      - Coaches can never upload
+      - Must have remaining credits > 0
+      - Must have ACTIVE subscription status (from billing.subscription_state)
+
+    Safety:
+      - If billing.subscription_state table is missing/unavailable, DENY (fail-closed).
     """
     email = _norm_email(request.args.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
+        # -------- Query 1: account + role + remaining credits --------
         row = conn.execute(
             text(
                 """
@@ -327,16 +388,182 @@ def entitlement_check():
             {"email": email},
         ).mappings().first()
 
-    if not row:
-        return jsonify({"ok": True, "allowed": False, "reason": "account_not_found", "data": None})
+        if not row:
+            return jsonify({"ok": True, "allowed": False, "reason": "account_not_found", "data": None})
 
-    role = (row.get("role") or "player_parent").strip()
-    remaining = int(row.get("matches_remaining") or 0)
+        role = (row.get("role") or "player_parent").strip()
+        remaining = int(row.get("matches_remaining") or 0)
+        account_id = int(row.get("account_id"))
 
+        # -------- Query 2: subscription status (split query; no joins) --------
+        try:
+            sub_row = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(status, 'NONE') AS subscription_status
+                    FROM billing.subscription_state
+                    WHERE account_id = :account_id
+                    """
+                ),
+                {"account_id": account_id},
+            ).mappings().first()
+        except Exception as e:
+            # FAIL-CLOSED: if table missing or query errors, deny entitlement.
+            data = dict(row)
+            data["subscription_status"] = None
+            return jsonify(
+                {
+                    "ok": True,
+                    "allowed": False,
+                    "reason": "subscription_state_unavailable",
+                    "data": data,
+                    "detail": str(e),
+                }
+            )
+
+        subscription_status = (sub_row.get("subscription_status") if sub_row else "NONE")
+        subscription_status = str(subscription_status or "NONE").strip().upper()
+
+    # Build response data (outside conn context)
+    data = dict(row)
+    data["subscription_status"] = subscription_status
+
+    # -------- Policy checks (Python-only logic) --------
     if role == "coach":
-        return jsonify({"ok": True, "allowed": False, "reason": "coach_cannot_upload", "data": dict(row)})
+        return jsonify({"ok": True, "allowed": False, "reason": "coach_cannot_upload", "data": data})
+
+    if subscription_status != "ACTIVE":
+        return jsonify({"ok": True, "allowed": False, "reason": "subscription_inactive", "data": data})
 
     if remaining <= 0:
-        return jsonify({"ok": True, "allowed": False, "reason": "insufficient_credits", "data": dict(row)})
+        return jsonify({"ok": True, "allowed": False, "reason": "insufficient_credits", "data": data})
 
-    return jsonify({"ok": True, "allowed": True, "reason": None, "data": dict(row)})
+    return jsonify({"ok": True, "allowed": True, "reason": None, "data": data})
+
+
+@billing_write_bp.post("/api/billing/cron/monthly_refill")
+def monthly_refill():
+    """
+    Ops-protected cron. Grants recurring plan credits on the 1st.
+    Idempotent per account per YYYY-MM.
+    """
+    if not _ops_key_ok():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    force = bool(payload.get("force", False))
+
+    now_utc = datetime.now(timezone.utc)
+    if not force and now_utc.day != 1:
+        return jsonify({"ok": True, "skipped": True, "reason": "not_first_of_month", "today": now_utc.isoformat()})
+
+    ym = _ym_key(now_utc)
+
+    with engine.begin() as conn:
+        # Select ACTIVE recurring subscriptions that are in-period and not cancelled
+        rows = conn.execute(
+            text("""
+                SELECT
+                  s.account_id,
+                  s.plan_code,
+                  s.plan_id,
+                  s.current_period_start,
+                  s.current_period_end
+                FROM billing.subscription_state s
+                WHERE s.status = 'ACTIVE'
+                  AND s.plan_type = 'recurring'
+                  AND (s.current_period_end IS NULL OR s.current_period_end >= now())
+            """)
+        ).mappings().all()
+
+    granted = 0
+    already = 0
+    missing_plan = 0
+    errors = 0
+    details = []
+
+    for r in rows:
+        account_id = int(r["account_id"])
+        plan_code = (r.get("plan_code") or "").strip()
+
+        # We require plan_code to know matches_granted. This must be populated.
+        if not plan_code:
+            missing_plan += 1
+            details.append({"account_id": account_id, "result": "skipped", "reason": "missing_plan_code"})
+            continue
+
+        # Determine matches_granted from pricing components table OR a mapping table you already use.
+        # Minimal approach: read latest grant row for this account+plan_code and reuse matches_granted.
+        with engine.begin() as conn:
+            # Idempotency lock
+            exists = conn.execute(
+                text("""
+                    SELECT 1 FROM billing.monthly_refill_log
+                    WHERE account_id = :account_id AND year_month = :ym
+                """),
+                {"account_id": account_id, "ym": ym},
+            ).first()
+
+            if exists:
+                already += 1
+                continue
+
+            # Pull matches_granted from most recent grant for that plan_code
+            mg_row = conn.execute(
+                text("""
+                    SELECT matches_granted
+                    FROM billing.entitlement_grant
+                    WHERE account_id = :account_id
+                      AND plan_code = :plan_code
+                      AND source = 'wix_subscription'
+                    ORDER BY id DESC
+                    LIMIT 1
+                """),
+                {"account_id": account_id, "plan_code": plan_code},
+            ).first()
+
+            if not mg_row:
+                missing_plan += 1
+                details.append({"account_id": account_id, "result": "skipped", "reason": "no_prior_grant_to_infer_matches"})
+                continue
+
+            matches_granted = int(mg_row[0] or 0)
+
+        try:
+            # Use your existing service function (same one entitlement_grant uses)
+            grant_id = grant_entitlement(
+                account_id=account_id,
+                source="wix_subscription",
+                plan_code=plan_code,
+                matches_granted=matches_granted,
+                external_wix_id=f"monthly_refill:{ym}",
+                valid_from=now_utc,
+                valid_to=None,
+                is_active=True,
+            )
+
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO billing.monthly_refill_log (account_id, year_month, grant_id)
+                        VALUES (:account_id, :ym, :grant_id)
+                    """),
+                    {"account_id": account_id, "ym": ym, "grant_id": grant_id},
+                )
+
+            granted += 1
+
+        except Exception as e:
+            errors += 1
+            details.append({"account_id": account_id, "result": "error", "error": str(e)})
+
+    return jsonify({
+        "ok": True,
+        "year_month": ym,
+        "eligible": len(rows),
+        "granted": granted,
+        "already": already,
+        "missing_plan": missing_plan,
+        "errors": errors,
+        "details": details[:50],
+    })
