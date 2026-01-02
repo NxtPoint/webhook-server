@@ -463,8 +463,14 @@ def subscription_event():
                   status = :status,
                   current_period_start = COALESCE(:start_dt, current_period_start),
                   current_period_end = COALESCE(:end_dt, current_period_end),
-                  cancelled_at = COALESCE(:cancelled_at, cancelled_at),
-                  payment_cancelled_at = COALESCE(:payment_cancelled_at, payment_cancelled_at),
+                  cancelled_at = CASE
+                    WHEN :status = 'ACTIVE' THEN NULL
+                    ELSE COALESCE(:cancelled_at, cancelled_at)
+                    END,
+                  payment_cancelled_at = CASE
+                    WHEN :status = 'ACTIVE' THEN NULL
+                    ELSE COALESCE(:payment_cancelled_at, payment_cancelled_at)
+                  END,
                   updated_at = now()
                 WHERE account_id = :account_id
             """),
