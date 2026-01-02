@@ -165,17 +165,6 @@ def grant_entitlement(
     valid_to: Optional[datetime] = None,
     is_active: bool = True,
 ) -> int:
-    """
-    Grant match credits to an account.
-    Called from Wix webhook handlers (Step 3) and monthly refill cron.
-
-    Returns billing.entitlement_grant.id.
-
-    IMPORTANT:
-      - Idempotent when external_wix_id is supplied:
-          (account_id, source, plan_code, external_wix_id) -> single grant
-        This prevents double credits on timeouts/retries.
-    """
     if matches_granted < 0:
         raise ValueError("matches_granted must be >= 0")
     if not plan_code:
@@ -183,37 +172,33 @@ def grant_entitlement(
     if source not in ("wix_subscription", "wix_payg", "manual_adjustment"):
         raise ValueError("invalid source")
 
-    ext = (external_wix_id or "").strip() or None
     vf = valid_from or datetime.now(timezone.utc)
 
     with Session(engine) as session:
-        # -------- Idempotency guard (only if external_wix_id provided) --------
-        if ext:
+        # ---------- IDEMPOTENCY GUARD ----------
+        if external_wix_id:
             existing = session.execute(
-                text(
-                    """
+                text("""
                     SELECT id
                     FROM billing.entitlement_grant
                     WHERE account_id = :account_id
                       AND source = :source
                       AND plan_code = :plan_code
                       AND external_wix_id = :external_wix_id
-                    ORDER BY id DESC
                     LIMIT 1
-                    """
-                ),
+                """),
                 {
                     "account_id": account_id,
                     "source": source,
                     "plan_code": plan_code,
-                    "external_wix_id": ext,
+                    "external_wix_id": external_wix_id,
                 },
             ).scalar_one_or_none()
 
             if existing is not None:
                 return int(existing)
+        # --------------------------------------
 
-        # -------- Insert new grant --------
         res = session.execute(
             text(
                 """
@@ -228,7 +213,7 @@ def grant_entitlement(
                 "account_id": account_id,
                 "source": source,
                 "plan_code": plan_code,
-                "external_wix_id": ext,
+                "external_wix_id": external_wix_id,
                 "matches_granted": matches_granted,
                 "valid_from": vf,
                 "valid_to": valid_to,
@@ -269,6 +254,31 @@ def get_remaining_matches(account_id: int) -> int:
         remaining = row[0]
         return int(remaining or 0)
 
+def remaining_for_window(account_id: int, start_dt: datetime, end_dt: datetime) -> int:
+    with Session(engine) as session:
+        row = session.execute(
+            text("""
+                WITH grants AS (
+                  SELECT COALESCE(SUM(matches_granted), 0) AS g
+                  FROM billing.entitlement_grant
+                  WHERE account_id = :account_id
+                    AND is_active = true
+                    AND valid_from >= :start_dt
+                    AND valid_from < :end_dt
+                ),
+                cons AS (
+                  SELECT COALESCE(SUM(consumed_matches), 0) AS c
+                  FROM billing.entitlement_consumption
+                  WHERE account_id = :account_id
+                    AND consumed_at >= :start_dt
+                    AND consumed_at < :end_dt
+                )
+                SELECT (SELECT g FROM grants) - (SELECT c FROM cons) AS remaining
+            """),
+            {"account_id": account_id, "start_dt": start_dt, "end_dt": end_dt},
+        ).one()
+
+        return int(row[0] or 0)
 
 def consume_match_for_task(
     *,

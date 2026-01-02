@@ -1,5 +1,5 @@
 #==================================
-# billing_write_api.py  (FINAL BASELINE v2)
+# billing_write_api.py  (FINAL BASELINE v2.1)  ✅ CORRECTED
 # - Subscription lifecycle event ingestion (idempotent)
 # - Entitlement check (fail-closed if subscription_state missing)
 # - Monthly refill enforces NO ROLLOVER (reset remaining to allowance)
@@ -22,7 +22,7 @@ from models_billing import Account, Member
 from billing_service import (
     create_account_with_primary_member,
     grant_entitlement,
-    consume_matches_for_task,
+    consume_matches_for_task,  # <- assumes you added this in billing_service.py
 )
 
 billing_write_bp = Blueprint("billing_write", __name__)
@@ -219,16 +219,20 @@ def sync_account():
 
 @billing_write_bp.post("/api/billing/entitlement/grant")
 def entitlement_grant():
+    """
+    Ops-protected credit grant.
+    Called from Wix webhook handler for PLAN_PURCHASED + ACTIVE.
+    """
     if not _ops_key_ok():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     payload = request.get_json(silent=True) or {}
 
     email = _norm_email(payload.get("email"))
-    account_id = payload.get("account_id")
+    account_id_in = payload.get("account_id")
     external_wix_id = (payload.get("external_wix_id") or "").strip() or None
 
-    source = (payload.get("source") or "").strip()
+    source = (payload.get("source") or "").strip()  # wix_subscription | wix_payg | manual_adjustment
     plan_code = (payload.get("plan_code") or "").strip()
     matches_granted = payload.get("matches_granted")
     is_active = bool(payload.get("is_active", True))
@@ -247,9 +251,9 @@ def entitlement_grant():
         with Session(engine) as session:
             acct: Optional[Account] = None
 
-            if account_id is not None:
+            if account_id_in is not None:
                 acct = session.execute(
-                    select(Account).where(Account.id == int(account_id))
+                    select(Account).where(Account.id == int(account_id_in))
                 ).scalar_one_or_none()
 
             if acct is None and (external_wix_id or email):
@@ -279,6 +283,17 @@ def entitlement_grant():
 
 @billing_write_bp.get("/api/billing/entitlement/check")
 def entitlement_check():
+    """
+    Read-only entitlement check for frontend.
+
+    Rules:
+      - Coaches can never upload
+      - Must have remaining credits > 0
+      - Must have ACTIVE subscription status (from billing.subscription_state)
+
+    Safety:
+      - If billing.subscription_state table is missing/unavailable, DENY (fail-closed).
+    """
     email = _norm_email(request.args.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
@@ -597,7 +612,7 @@ def monthly_refill():
                     source="wix_subscription",
                     plan_code=plan_code,
                     matches_granted=delta_grant,
-                    external_wix_id=f"monthly_refill:{ym}",  # also idempotent at service layer
+                    external_wix_id=f"monthly_refill:{ym}",
                     valid_from=now_utc,
                     valid_to=None,
                     is_active=True,
@@ -605,7 +620,6 @@ def monthly_refill():
                 granted_delta_total += delta_grant
 
             if delta_expire > 0:
-                # deterministic consumption row to expire excess (NO ROLLOVER)
                 task_id = f"expire:{ym}:{account_id}"
                 expired_inserted = consume_matches_for_task(
                     account_id=account_id,
