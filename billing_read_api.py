@@ -32,3 +32,4 @@ def billing_summary():
         """), {"email": email}).mappings().first()
 
     return jsonify({"ok": True, "data": dict(row) if row else None})
+
