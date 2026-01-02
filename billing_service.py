@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from db_init import engine
 from models_billing import Account, Member
 
+import uuid
 
 # ----------------------------
 # Internal helpers
@@ -42,6 +43,18 @@ def _validate_role(role: str | None) -> str:
     if r not in ("player_parent", "coach"):
         raise ValueError("invalid role")
     return r
+
+def _to_uuid(v: str | uuid.UUID) -> uuid.UUID:
+    if isinstance(v, uuid.UUID):
+        return v
+    s = (v or "").strip()
+    if not s:
+        raise ValueError("task_id required")
+    try:
+        return uuid.UUID(s)
+    except Exception:
+        # deterministic UUID from arbitrary string
+        return uuid.uuid5(uuid.NAMESPACE_URL, s)
 
 
 # ----------------------------
@@ -317,23 +330,19 @@ def consume_matches_for_task(
     *,
     account_id: int,
     task_id: str,
-    consumed_matches: int,
-    source: str,
+    consumed_matches: int = 1,
+    source: str = "sportai",
 ) -> bool:
     """
-    Consume N matches for a deterministic task_id.
-    Used for monthly "expire excess" (no rollover) adjustments.
-
+    Consume N match credits for task_id.
     Idempotent by DB unique(task_id).
+    task_id column is UUID, so we normalize to UUID (uuid5 for non-uuid strings).
     Returns True if inserted, False if already existed.
     """
-    task_id_n = (task_id or "").strip()
-    if not task_id_n:
-        raise ValueError("task_id required")
     if consumed_matches <= 0:
         raise ValueError("consumed_matches must be > 0")
-    if not source:
-        raise ValueError("source required")
+
+    task_uuid = _to_uuid(task_id)
 
     with Session(engine) as session:
         res = session.execute(
@@ -348,7 +357,7 @@ def consume_matches_for_task(
             ),
             {
                 "account_id": account_id,
-                "task_id": task_id_n,
+                "task_id": str(task_uuid),
                 "consumed_matches": int(consumed_matches),
                 "source": source,
             },
@@ -356,6 +365,7 @@ def consume_matches_for_task(
         inserted = (res.rowcount or 0) == 1
         session.commit()
         return inserted
+
 
 
 def get_usage_summary(account_id: int) -> Dict[str, Any]:
