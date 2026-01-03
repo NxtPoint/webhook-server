@@ -75,21 +75,13 @@ def _norm_email(email: Optional[str]) -> str:
 
 
 def _ops_key_ok() -> bool:
-    """
-    Ops key gate for server-to-server calls.
-    Accepts any of these env vars (first found wins):
-      COACHES_OPS_KEY, OPS_KEY, BILLING_OPS_KEY
-    """
-    ops_key = (
-        os.getenv("COACHES_OPS_KEY")
-        or os.getenv("OPS_KEY")
-        or os.getenv("BILLING_OPS_KEY")
-        or ""
-    )
+    ops_key = os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or ""
+    h = request.headers
     provided = (
-        request.headers.get("X-Ops-Key")
-        or request.headers.get("X-OPS-KEY")
-        or request.headers.get("x-ops-key")
+        h.get("X-Ops-Key")
+        or h.get("X-OPS-KEY")
+        or h.get("x-ops-key")
+        or h.get("x-OPS-key")
         or ""
     )
     return bool(ops_key) and (provided == ops_key)
