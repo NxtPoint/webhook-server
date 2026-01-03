@@ -15,7 +15,7 @@
 #
 # TABLE
 # -----
-# schema: coaching
+# schema: billing
 # table : coaches_permission
 #
 # ============================================================
@@ -45,7 +45,7 @@ from models_billing import Account
 # Constants
 # ============================================================
 
-SCHEMA = "coaching"
+SCHEMA = "billing"
 STATUS_INVITED = "INVITED"
 STATUS_ACCEPTED = "ACCEPTED"
 STATUS_REVOKED = "REVOKED"
