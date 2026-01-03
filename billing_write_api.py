@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -38,7 +39,14 @@ def _norm_email(email: Optional[str]) -> str:
 
 def _ops_key_ok() -> bool:
     ops_key = os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or ""
-    provided = request.headers.get("X-Ops-Key") or request.headers.get("X-OPS-KEY") or ""
+    h = request.headers
+    provided = (
+        h.get("X-Ops-Key")
+        or h.get("X-OPS-KEY")
+        or h.get("x-ops-key")
+        or h.get("x-OPS-key")
+        or ""
+    )
     return bool(ops_key) and (provided == ops_key)
 
 
@@ -47,7 +55,16 @@ def _parse_dt(v):
         return None
     if isinstance(v, datetime):
         return v
-    return datetime.fromisoformat(str(v))
+    s = str(v).strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
 
 
 def _ym_key(dt: datetime) -> str:
@@ -315,7 +332,7 @@ def entitlement_check():
         if not row:
             return jsonify({"ok": True, "allowed": False, "reason": "account_not_found", "data": None})
 
-        role = (row.get("role") or "player_parent").strip()
+        role = str(row.get("role") or "player_parent").strip().lower()
         remaining = int(row.get("matches_remaining") or 0)
         account_id = int(row.get("account_id"))
 
@@ -619,14 +636,16 @@ def monthly_refill():
                 granted_delta_total += delta_grant
 
             if delta_expire > 0:
-                task_id = f"expire:{ym}:{account_id}"   # fine now, will become uuid5 deterministically
+                task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"monthly_expire:{ym}:{account_id}"))
                 expired_inserted = consume_matches_for_task(
                     account_id=account_id,
                     task_id=task_id,
                     consumed_matches=delta_expire,
                     source="monthly_expire",
-)
-
+                )
+                if expired_inserted:
+                    expired_total += delta_expire
+            
             with engine.begin() as conn:
                 conn.execute(
                     text("""
