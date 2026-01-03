@@ -30,9 +30,11 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 102
 
 from billing_read_api import billing_read_bp
 from billing_write_api import billing_write_bp
+from coaches_api import bp as coaches_bp
 
 app.register_blueprint(billing_read_bp)
 app.register_blueprint(billing_write_bp)
+app.register_blueprint(coaches_bp)
 
 
 @app.get("/ops/code-hash")
@@ -675,20 +677,18 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         except Exception as e:
             app.logger.error("Silver build failed for task_id=%s: %s", task_id, e)
 
-                # --- NEW: consume 1 match credit for this task_id (idempotent) ---
+        # consume 1 match credit (idempotent)
         try:
             out = sync_usage_for_task_id(task_id, dry_run=False)
             app.logger.info("Billing consume sync_usage_for_task_id task_id=%s inserted=%s", task_id, out.get("inserted"))
         except Exception as e:
-            # IMPORTANT: do NOT fail ingest if billing consume fails (we can reconcile later)
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
-        # --- NEW: notify Wix after successful ingest (server-side email trigger) ---
+        # notify Wix completion (idempotent)
         try:
             _notify_wix(task_id, status="completed", session_id=sid, result_url=result_url, error=None)
         except Exception as e:
             app.logger.exception("Wix notify failed (completed) task_id=%s: %s", task_id, e)
-
         return True
 
     except Exception as e:
@@ -1237,20 +1237,7 @@ def api_task_status():
         if session_id and ingest_finished and not auto_ingest_error:
             auto_ingested = True
 
-            # Best-effort: ensure billing consumption exists once job is done
-            try:
-                out = sync_usage_for_task_id(tid, dry_run=False)
-                app.logger.info("Billing consume (poller) task_id=%s inserted=%s", tid, out.get("inserted"))
-            except Exception as e:
-                app.logger.exception("Billing consume (poller) failed task_id=%s: %s", tid, e)
-
-
-            if (not sc.get("wix_notified_at")) and (WIX_NOTIFY_URL and WIX_NOTIFY_KEY):
-                try:
-                    _notify_wix(tid, status="completed", session_id=session_id, result_url=result_url, error=None)
-                except Exception as e:
-                    app.logger.error("Wix notify retry from poller failed task_id=%s: %s", tid, e)
-
+        
         return jsonify({
             "ok": True, **out,
             "session_id": session_id,
