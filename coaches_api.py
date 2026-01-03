@@ -1,5 +1,5 @@
 # ============================================================
-# coaches_api.py
+# coaches_api.py  (PRODUCTION BASELINE - SELF CONTAINED)
 #
 # PURPOSE
 # -------
@@ -8,232 +8,308 @@
 #
 # DESIGN PRINCIPLES
 # -----------------
-# - Separate from billing (no changes to billing code)
-# - Python-only write logic, SQL read-only elsewhere
-# - Idempotent operations
-# - Minimal surface area (no over-engineering)
+# - Separate from billing logic (no billing code touched)
+# - Self-contained module (raw SQL; no ORM/FK metadata issues)
+# - Idempotent where practical
+# - Ops-key protected endpoints (server-to-server)
 #
 # TABLE
 # -----
 # schema: billing
 # table : coaches_permission
 #
+# REQUIRED COLUMNS
+# ----------------
+# id BIGSERIAL PK
+# owner_account_id BIGINT NOT NULL  (billing.account.id)
+# coach_account_id BIGINT NULL      (billing.account.id)
+# coach_email TEXT NOT NULL
+# status TEXT NOT NULL              ('INVITED'|'ACCEPTED'|'REVOKED')
+# active BOOLEAN NOT NULL
+# created_at TIMESTAMPTZ NOT NULL
+# updated_at TIMESTAMPTZ NOT NULL
+#
+# Recommended unique index:
+#   (owner_account_id, coach_email)
 # ============================================================
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import (
-    Column,
-    BigInteger,
-    String,
-    Boolean,
-    DateTime,
-    ForeignKey,
-    text,
-    select,
-)
-from sqlalchemy.orm import Session, declarative_base
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from db_init import engine
-from models_billing import Account
 
-# ============================================================
+# ----------------------------
 # Constants
-# ============================================================
+# ----------------------------
 
 SCHEMA = "billing"
+TABLE = "coaches_permission"
+
 STATUS_INVITED = "INVITED"
 STATUS_ACCEPTED = "ACCEPTED"
 STATUS_REVOKED = "REVOKED"
 
-# ============================================================
-# SQLAlchemy Base (local to this file)
-# ============================================================
-
-Base = declarative_base()
-
-# ============================================================
-# Model
-# ============================================================
-
-Base = declarative_base()
-
-class CoachPermission(Base):
-    __tablename__ = "coaches_permission"
-    __table_args__ = {"schema": SCHEMA}
-
-    id = Column(BigInteger, primary_key=True)
-
-    owner_account_id = Column(
-        BigInteger,
-        ForeignKey("account.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    coach_account_id = Column(
-        BigInteger,
-        ForeignKey("account.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-
-
-    coach_email = Column(String, nullable=False)
-    status = Column(String, nullable=False, server_default=text(f"'{STATUS_INVITED}'"))
-    active = Column(Boolean, nullable=False, server_default=text("true"))
-
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text("now()"),
-    )
-
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text("now()"),
-    )
-
-# ============================================================
-# Service Logic
-# ============================================================
-
-def _now():
-    return datetime.now(tz=timezone.utc)
-
-
-def invite_coach(
-    session: Session,
-    owner_account_id: int,
-    coach_email: str,
-) -> CoachPermission:
-    coach_email = coach_email.strip().lower()
-
-    stmt = select(CoachPermission).where(
-        CoachPermission.owner_account_id == owner_account_id,
-        CoachPermission.coach_email == coach_email,
-    )
-
-    existing = session.execute(stmt).scalar_one_or_none()
-    now = _now()
-
-    if existing:
-        existing.status = STATUS_INVITED
-        existing.active = True
-        existing.updated_at = now
-        return existing
-
-    perm = CoachPermission(
-        owner_account_id=owner_account_id,
-        coach_email=coach_email,
-        status=STATUS_INVITED,
-        active=True,
-        created_at=now,
-        updated_at=now,
-    )
-
-    session.add(perm)
-    return perm
-
-
-def accept_coach(
-    session: Session,
-    coach_account_id: int,
-    coach_email: str,
-) -> CoachPermission:
-    coach_email = coach_email.strip().lower()
-
-    stmt = select(CoachPermission).where(
-        CoachPermission.coach_email == coach_email,
-        CoachPermission.status == STATUS_INVITED,
-        CoachPermission.active.is_(True),
-    )
-
-    perm = session.execute(stmt).scalar_one_or_none()
-    if not perm:
-        raise ValueError("invite_not_found")
-
-    perm.status = STATUS_ACCEPTED
-    perm.coach_account_id = coach_account_id
-    perm.updated_at = _now()
-
-    return perm
-
-
-def revoke_coach(
-    session: Session,
-    permission_id: int,
-) -> CoachPermission:
-    perm = session.get(CoachPermission, permission_id)
-    if not perm:
-        raise ValueError("permission_not_found")
-
-    perm.status = STATUS_REVOKED
-    perm.active = False
-    perm.updated_at = _now()
-
-    return perm
-
-# ============================================================
-# HTTP API
-# ============================================================
+# ----------------------------
+# Blueprint
+# ----------------------------
 
 bp = Blueprint("coaches", __name__, url_prefix="/api/coaches")
 
+# ----------------------------
+# Helpers
+# ----------------------------
+
+def _now_utc() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _norm_email(email: Optional[str]) -> str:
+    return (email or "").strip().lower()
+
+
+def _ops_key_ok() -> bool:
+    """
+    Ops key gate for server-to-server calls.
+    Accepts any of these env vars (first found wins):
+      COACHES_OPS_KEY, OPS_KEY, BILLING_OPS_KEY
+    """
+    ops_key = (
+        os.getenv("COACHES_OPS_KEY")
+        or os.getenv("OPS_KEY")
+        or os.getenv("BILLING_OPS_KEY")
+        or ""
+    )
+    provided = (
+        request.headers.get("X-Ops-Key")
+        or request.headers.get("X-OPS-KEY")
+        or request.headers.get("x-ops-key")
+        or ""
+    )
+    return bool(ops_key) and (provided == ops_key)
+
+
+def _require_ops_key():
+    if not _ops_key_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    return None
+
+
+# ----------------------------
+# API: Invite
+# ----------------------------
 
 @bp.post("/invite")
 def api_invite():
-    body = request.json or {}
+    unauth = _require_ops_key()
+    if unauth:
+        return unauth
 
-    owner_email = (body.get("owner_email") or "").strip().lower()
-    coach_email = (body.get("coach_email") or "").strip().lower()
+    body: Dict[str, Any] = request.get_json(silent=True) or {}
+
+    owner_email = _norm_email(body.get("owner_email"))
+    coach_email = _norm_email(body.get("coach_email"))
 
     if not owner_email or not coach_email:
         return jsonify(ok=False, error="owner_email_and_coach_email_required"), 400
 
     with Session(engine) as session:
-        owner = session.query(Account).filter_by(email=owner_email).one_or_none()
-        if not owner:
-            return jsonify(ok=False, error="owner_not_found"), 404
+        try:
+            owner = session.execute(
+                text("SELECT id FROM billing.account WHERE email = :email"),
+                {"email": owner_email},
+            ).mappings().first()
 
-        perm = invite_coach(session, owner.id, coach_email)
-        session.commit()
+            if not owner:
+                return jsonify(ok=False, error="owner_not_found"), 404
 
-        return jsonify(
-            ok=True,
-            permission_id=perm.id,
-            status=perm.status,
-        )
+            owner_account_id = int(owner["id"])
+            now = _now_utc()
 
+            # Upsert-by-hand (keeps self-contained + avoids relying on unique constraint behavior)
+            existing = session.execute(
+                text(f"""
+                    SELECT id, status, active
+                    FROM {SCHEMA}.{TABLE}
+                    WHERE owner_account_id = :owner_account_id
+                      AND coach_email = :coach_email
+                    LIMIT 1
+                """),
+                {"owner_account_id": owner_account_id, "coach_email": coach_email},
+            ).mappings().first()
+
+            if existing:
+                session.execute(
+                    text(f"""
+                        UPDATE {SCHEMA}.{TABLE}
+                        SET
+                          status = :status,
+                          active = true,
+                          coach_account_id = NULL,
+                          updated_at = :now
+                        WHERE id = :id
+                    """),
+                    {"id": int(existing["id"]), "status": STATUS_INVITED, "now": now},
+                )
+                session.commit()
+                return jsonify(
+                    ok=True,
+                    permission_id=int(existing["id"]),
+                    status=STATUS_INVITED,
+                    reused=True,
+                )
+
+            row = session.execute(
+                text(f"""
+                    INSERT INTO {SCHEMA}.{TABLE}
+                      (owner_account_id, coach_account_id, coach_email, status, active, created_at, updated_at)
+                    VALUES
+                      (:owner_account_id, NULL, :coach_email, :status, true, :now, :now)
+                    RETURNING id
+                """),
+                {
+                    "owner_account_id": owner_account_id,
+                    "coach_email": coach_email,
+                    "status": STATUS_INVITED,
+                    "now": now,
+                },
+            ).mappings().first()
+
+            session.commit()
+            return jsonify(ok=True, permission_id=int(row["id"]), status=STATUS_INVITED, reused=False)
+
+        except Exception as e:
+            session.rollback()
+            return jsonify(ok=False, error="invite_failed", detail=str(e)), 500
+
+
+# ----------------------------
+# API: Accept
+# ----------------------------
 
 @bp.post("/accept")
 def api_accept():
-    body = request.json or {}
-    coach_email = (body.get("coach_email") or "").strip().lower()
+    unauth = _require_ops_key()
+    if unauth:
+        return unauth
+
+    body: Dict[str, Any] = request.get_json(silent=True) or {}
+
+    coach_email = _norm_email(body.get("coach_email"))
+    permission_id = body.get("permission_id")  # preferred
 
     if not coach_email:
         return jsonify(ok=False, error="coach_email_required"), 400
 
     with Session(engine) as session:
-        coach = session.query(Account).filter_by(email=coach_email).one_or_none()
-        if not coach:
-            return jsonify(ok=False, error="coach_account_not_found"), 404
-
         try:
-            accept_coach(session, coach.id, coach_email)
+            coach = session.execute(
+                text("SELECT id FROM billing.account WHERE email = :email"),
+                {"email": coach_email},
+            ).mappings().first()
+
+            if not coach:
+                return jsonify(ok=False, error="coach_account_not_found"), 404
+
+            coach_account_id = int(coach["id"])
+            now = _now_utc()
+
+            # Preferred: accept a specific invite (permission_id)
+            if permission_id is not None:
+                perm = session.execute(
+                    text(f"""
+                        SELECT id, status, active
+                        FROM {SCHEMA}.{TABLE}
+                        WHERE id = :id
+                          AND coach_email = :coach_email
+                        LIMIT 1
+                    """),
+                    {"id": int(permission_id), "coach_email": coach_email},
+                ).mappings().first()
+
+                if not perm:
+                    return jsonify(ok=False, error="invite_not_found"), 400
+
+                if str(perm["status"]).upper() != STATUS_INVITED or not bool(perm["active"]):
+                    return jsonify(ok=False, error="invite_not_eligible"), 400
+
+                session.execute(
+                    text(f"""
+                        UPDATE {SCHEMA}.{TABLE}
+                        SET
+                          status = :status,
+                          coach_account_id = :coach_account_id,
+                          active = true,
+                          updated_at = :now
+                        WHERE id = :id
+                    """),
+                    {
+                        "id": int(permission_id),
+                        "status": STATUS_ACCEPTED,
+                        "coach_account_id": coach_account_id,
+                        "now": now,
+                    },
+                )
+                session.commit()
+                return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_ACCEPTED)
+
+            # Back-compat: accept by email ONLY (allowed only if exactly one eligible invite exists)
+            rows = session.execute(
+                text(f"""
+                    SELECT id
+                    FROM {SCHEMA}.{TABLE}
+                    WHERE coach_email = :coach_email
+                      AND status = :status
+                      AND active = true
+                    ORDER BY id DESC
+                """),
+                {"coach_email": coach_email, "status": STATUS_INVITED},
+            ).mappings().all()
+
+            if not rows:
+                return jsonify(ok=False, error="invite_not_found"), 400
+
+            if len(rows) > 1:
+                return jsonify(ok=False, error="multiple_invites_require_permission_id"), 400
+
+            pid = int(rows[0]["id"])
+            session.execute(
+                text(f"""
+                    UPDATE {SCHEMA}.{TABLE}
+                    SET
+                      status = :status,
+                      coach_account_id = :coach_account_id,
+                      active = true,
+                      updated_at = :now
+                    WHERE id = :id
+                """),
+                {"id": pid, "status": STATUS_ACCEPTED, "coach_account_id": coach_account_id, "now": now},
+            )
             session.commit()
-        except ValueError as e:
-            return jsonify(ok=False, error=str(e)), 400
+            return jsonify(ok=True, permission_id=pid, status=STATUS_ACCEPTED)
 
-        return jsonify(ok=True)
+        except Exception as e:
+            session.rollback()
+            return jsonify(ok=False, error="accept_failed", detail=str(e)), 500
 
+
+# ----------------------------
+# API: Revoke
+# ----------------------------
 
 @bp.post("/revoke")
 def api_revoke():
-    body = request.json or {}
+    unauth = _require_ops_key()
+    if unauth:
+        return unauth
+
+    body: Dict[str, Any] = request.get_json(silent=True) or {}
     permission_id = body.get("permission_id")
 
     if not permission_id:
@@ -241,9 +317,44 @@ def api_revoke():
 
     with Session(engine) as session:
         try:
-            revoke_coach(session, int(permission_id))
-            session.commit()
-        except ValueError as e:
-            return jsonify(ok=False, error=str(e)), 400
+            now = _now_utc()
 
-        return jsonify(ok=True)
+            perm = session.execute(
+                text(f"""
+                    SELECT id
+                    FROM {SCHEMA}.{TABLE}
+                    WHERE id = :id
+                    LIMIT 1
+                """),
+                {"id": int(permission_id)},
+            ).mappings().first()
+
+            if not perm:
+                return jsonify(ok=False, error="permission_not_found"), 404
+
+            session.execute(
+                text(f"""
+                    UPDATE {SCHEMA}.{TABLE}
+                    SET
+                      status = :status,
+                      active = false,
+                      updated_at = :now
+                    WHERE id = :id
+                """),
+                {"id": int(permission_id), "status": STATUS_REVOKED, "now": now},
+            )
+            session.commit()
+            return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_REVOKED)
+
+        except Exception as e:
+            session.rollback()
+            return jsonify(ok=False, error="revoke_failed", detail=str(e)), 500
+
+
+# ----------------------------
+# Optional: quick health check (useful for routing debug)
+# ----------------------------
+
+@bp.get("/health")
+def api_health():
+    return jsonify(ok=True, service="coaches", ts=_now_utc().isoformat())
