@@ -60,6 +60,8 @@ Base = declarative_base()
 # Model
 # ============================================================
 
+Base = declarative_base()
+
 class CoachPermission(Base):
     __tablename__ = "coaches_permission"
     __table_args__ = {"schema": SCHEMA}
@@ -68,15 +70,16 @@ class CoachPermission(Base):
 
     owner_account_id = Column(
         BigInteger,
-        ForeignKey("billing.account.id", ondelete="CASCADE"),
+        ForeignKey("account.id", ondelete="CASCADE"),
         nullable=False,
     )
 
     coach_account_id = Column(
         BigInteger,
-        ForeignKey("billing.account.id", ondelete="CASCADE"),
+        ForeignKey("account.id", ondelete="CASCADE"),
         nullable=True,
     )
+
 
     coach_email = Column(String, nullable=False)
     status = Column(String, nullable=False, server_default=text(f"'{STATUS_INVITED}'"))
