@@ -216,7 +216,7 @@ def api_accept():
                 {"email": coach_email},
             ).mappings().first()
 
-            coach_account_id = int(coach["id"]) if coach and coach.get("id") is not None else None
+            coach_account_id = int(coach["id"]) if coach else None
             now = _now_utc()
 
             if permission_id is not None:
@@ -330,11 +330,16 @@ def api_revoke():
                 session.execute(
                     text(f"""
                         UPDATE {SCHEMA}.{TABLE}
-                        SET status = :status, active = false, updated_at = :now
+                        SET
+                        status = :status,
+                        active = false,
+                        coach_account_id = NULL,
+                        updated_at = :now
                         WHERE id = :id
                     """),
                     {"id": int(permission_id), "status": STATUS_REVOKED, "now": now},
                 )
+
                 session.commit()
                 return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_REVOKED)
 
@@ -367,11 +372,16 @@ def api_revoke():
             session.execute(
                 text(f"""
                     UPDATE {SCHEMA}.{TABLE}
-                    SET status = :status, active = false, updated_at = :now
+                    SET
+                    status = :status,
+                    active = false,
+                    coach_account_id = NULL,
+                    updated_at = :now
                     WHERE id = :id
                 """),
                 {"id": pid, "status": STATUS_REVOKED, "now": now},
             )
+
             session.commit()
             return jsonify(ok=True, permission_id=pid, status=STATUS_REVOKED)
 
