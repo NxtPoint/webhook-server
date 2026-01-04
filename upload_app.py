@@ -28,13 +28,17 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 app.url_map.strict_slashes = False
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_MB", "150")) * 1024 * 1024  # 150MB default
 
-from billing_read_api import billing_read_bp
-from billing_write_api import billing_write_bp
 from coaches_api import bp as coaches_bp
-
-app.register_blueprint(billing_read_bp)
-app.register_blueprint(billing_write_bp)
 app.register_blueprint(coaches_bp)
+
+from members_api import members_bp
+from subscriptions_api import subscriptions_bp
+from usage_api import usage_bp
+
+app.register_blueprint(members_bp)
+app.register_blueprint(subscriptions_bp)
+app.register_blueprint(usage_bp)
+
 
 
 @app.get("/ops/code-hash")
@@ -174,13 +178,8 @@ def _guard_wix_upload_task() -> bool:
 # ==========================
 # BILLING + ROLE GATE (RENDER SSoT)
 # ==========================
-def _billing_role_gate_by_email(email: str) -> tuple[bool, str]:
-    """
-    Returns (allowed, reason_code).
-    Enforces:
-      - primary member role != coach
-      - remaining matches > 0
-    """
+
+def _upload_entitlement_gate(email: str) -> tuple[bool, str]:
     e = (email or "").strip().lower()
     if not e:
         return False, "email_required"
@@ -188,6 +187,7 @@ def _billing_role_gate_by_email(email: str) -> tuple[bool, str]:
     with engine.begin() as conn:
         row = conn.execute(sql_text("""
             SELECT
+              a.id AS account_id,
               COALESCE(m.role, 'player_parent') AS role,
               COALESCE(v.matches_remaining, 0)  AS matches_remaining
             FROM billing.account a
@@ -199,17 +199,31 @@ def _billing_role_gate_by_email(email: str) -> tuple[bool, str]:
             LIMIT 1
         """), {"email": e}).mappings().first()
 
-    if not row:
-        # No account yet -> not allowed to upload (forces proper onboarding/sync)
-        return False, "account_not_found"
+        if not row:
+            return False, "account_not_found"
 
-    role = (row.get("role") or "").strip()
-    remaining = int(row.get("matches_remaining") or 0)
+        role = (row.get("role") or "player_parent").strip().lower()
+        remaining = int(row.get("matches_remaining") or 0)
+        account_id = int(row.get("account_id"))
+
+        try:
+            sub = conn.execute(sql_text("""
+                SELECT COALESCE(status, 'NONE') AS subscription_status
+                FROM billing.subscription_state
+                WHERE account_id = :account_id
+                LIMIT 1
+            """), {"account_id": account_id}).mappings().first()
+        except Exception:
+            return False, "subscription_state_unavailable"
+
+    subscription_status = str((sub or {}).get("subscription_status") or "NONE").strip().upper()
 
     if role == "coach":
-        return False, "coach_role_no_upload"
+        return False, "coach_cannot_upload"
+    if subscription_status != "ACTIVE":
+        return False, "subscription_inactive"
     if remaining <= 0:
-        return False, "no_match_credits"
+        return False, "insufficient_credits"
 
     return True, "ok"
 
@@ -527,7 +541,7 @@ def _sportai_status(task_id: str) -> dict:
     or (d.get("result") or {}).get("url")
     or j.get("result_url")
     or j.get("resultUrl")
-)
+    )
 
     terminal = status.lower() in ("completed", "done", "success", "succeeded", "failed", "canceled")
     if result_url and not terminal:
@@ -610,13 +624,18 @@ def _s3_client():
 
 def _s3_put_fileobj(fobj, key: str, content_type: str | None = None) -> dict:
     cli = _s3_client()
-    extra = {"ContentType": content_type} if content_type else {}
-    cli.upload_fileobj(fobj, S3_BUCKET, key, ExtraArgs=(extra or None))
+    if content_type:
+        cli.upload_fileobj(fobj, S3_BUCKET, key, ExtraArgs={"ContentType": content_type})
+    else:
+        cli.upload_fileobj(fobj, S3_BUCKET, key)
+
     try:
         size = fobj.tell()
     except Exception:
         size = None
+
     return {"bucket": S3_BUCKET, "key": key, "size": size}
+
 
 def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
     cli = _s3_client()
@@ -902,7 +921,7 @@ def api_upload_to_s3():
         body = request.get_json(silent=True) or {}
         video_url = (body.get("video_url") or "").strip()
         email = (body.get("email") or "").strip().lower()
-        allowed, reason = _billing_role_gate_by_email(email)
+        allowed, reason = _upload_entitlement_gate(email)
         if not allowed:
             return jsonify({"ok": False, "error": reason}), 403
 
@@ -922,7 +941,7 @@ def api_upload_to_s3():
     # Multipart path: browser → server → S3 (fallback)
     f = request.files.get("file") or request.files.get("video")
     email = (request.form.get("email") or "").strip().lower()
-    allowed, reason = _billing_role_gate_by_email(email)
+    allowed, reason = _upload_entitlement_gate(email)
     if not allowed:
         return jsonify({"ok": False, "error": reason}), 403
 
@@ -1077,7 +1096,7 @@ def api_upload_task():
         s3_video_url = _s3_presigned_get_url(key)
 
         email = (body.get("customer_email") or body.get("email") or "").strip().lower()
-        allowed, reason = _billing_role_gate_by_email(email)
+        allowed, reason = _upload_entitlement_gate(email)
         if not allowed:
             return jsonify({"ok": False, "error": reason}), 403
 
@@ -1167,7 +1186,7 @@ def api_submit_s3_task():
 
     # submit to SportAI using S3 presigned GET (Render-managed)
     email = (body.get("customer_email") or body.get("email") or "").strip().lower()
-    allowed, reason = _billing_role_gate_by_email(email)
+    allowed, reason = _upload_entitlement_gate(email)
     if not allowed:
         return jsonify({"ok": False, "error": reason}), 403
 
