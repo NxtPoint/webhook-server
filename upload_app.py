@@ -819,6 +819,13 @@ def ops_env():
 def api_s3_presign():
     _require_s3()
     body = request.get_json(silent=True) or {}
+
+    # NEW: entitlement gate BEFORE presign (prevents cancelled users uploading to S3)
+    email = (body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
     name = (body.get("name") or "video.mp4").strip()
     ctype = (body.get("content_type") or "application/octet-stream").strip()
     clean = secure_filename(name)
@@ -833,6 +840,7 @@ def api_s3_presign():
         "ok": True, "bucket": S3_BUCKET, "key": key,
         "post": post, "get_url": _s3_presigned_get_url(key)
     })
+
 
 # ==========================
 # VIDEO CHECK & CANCEL
@@ -853,13 +861,28 @@ def api_check_video():
         return True
 
     try:
+        # ---------- JSON path (Wix) ----------
         if request.is_json:
             body = request.get_json(silent=True) or {}
             video_url = (body.get("video_url") or "").strip()
             if not video_url:
                 return jsonify({"ok": False, "error": "video_url required"}), 400
+
+            # NEW: entitlement gate BEFORE SportAI check
+            email = (body.get("email") or "").strip().lower()
+            allowed, reason = _upload_entitlement_gate(email)
+            if not allowed:
+                return jsonify({"ok": False, "error": reason}), 403
+
             chk = _sportai_check(video_url)
             return jsonify({"ok": True, "video_url": video_url, "check": chk, "check_passed": _passed(chk)})
+
+        # ---------- multipart fallback ----------
+        # NEW: entitlement gate BEFORE any S3 upload
+        email = (request.form.get("email") or "").strip().lower()
+        allowed, reason = _upload_entitlement_gate(email)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 403
 
         f = request.files.get("file") or request.files.get("video")
         if not f or not f.filename:
@@ -880,6 +903,7 @@ def api_check_video():
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 @app.post("/upload/api/cancel-task")
 def api_cancel_task():
@@ -1079,6 +1103,11 @@ def api_upload_task():
     try:
         _require_s3()
 
+        email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+        allowed, reason = _upload_entitlement_gate(email)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 403
+
         resp = requests.get(source_url, stream=True, timeout=600)
         resp.raise_for_status()
 
@@ -1095,10 +1124,6 @@ def api_upload_task():
         )
         s3_video_url = _s3_presigned_get_url(key)
 
-        email = (body.get("customer_email") or body.get("email") or "").strip().lower()
-        allowed, reason = _upload_entitlement_gate(email)
-        if not allowed:
-            return jsonify({"ok": False, "error": reason}), 403
 
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
@@ -1394,7 +1419,6 @@ def _billing_guard() -> bool:
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
     return (hk or "").strip() == expected
-
 
 
 # ==========================
