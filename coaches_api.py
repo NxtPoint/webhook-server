@@ -118,7 +118,7 @@ def _get_owner_account_id(session: Session, owner_external_wix_id: str, owner_em
 # API: Invite
 # ----------------------------
 
-@bp.post("/invite")@bp.post("/invite")
+@bp.post("/invite")
 def api_invite():
     unauth = _require_ops_key()
     if unauth:
