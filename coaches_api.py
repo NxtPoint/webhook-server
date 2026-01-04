@@ -216,7 +216,7 @@ def api_accept():
                 {"email": coach_email},
             ).mappings().first()
 
-            coach_account_id = int(coach["id"]) if coach else None
+            coach_account_id = int(coach["id"]) if coach and coach.get("id") is not None else None
             now = _now_utc()
 
             if permission_id is not None:
