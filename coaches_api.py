@@ -92,12 +92,33 @@ def _require_ops_key():
         return jsonify(ok=False, error="unauthorized"), 401
     return None
 
+def _norm_str(v: Optional[str]) -> str:
+    return (v or "").strip()
+
+def _get_owner_account_id(session: Session, owner_external_wix_id: str, owner_email: str) -> Optional[int]:
+    if owner_external_wix_id:
+        row = session.execute(
+            text("SELECT id FROM billing.account WHERE external_wix_id = :x LIMIT 1"),
+            {"x": owner_external_wix_id},
+        ).mappings().first()
+        if row:
+            return int(row["id"])
+
+    if owner_email:
+        row = session.execute(
+            text("SELECT id FROM billing.account WHERE email = :email LIMIT 1"),
+            {"email": owner_email},
+        ).mappings().first()
+        if row:
+            return int(row["id"])
+
+    return None
 
 # ----------------------------
 # API: Invite
 # ----------------------------
 
-@bp.post("/invite")
+@bp.post("/invite")@bp.post("/invite")
 def api_invite():
     unauth = _require_ops_key()
     if unauth:
@@ -105,29 +126,27 @@ def api_invite():
 
     body: Dict[str, Any] = request.get_json(silent=True) or {}
 
+    owner_external_wix_id = _norm_str(body.get("owner_external_wix_id"))
     owner_email = _norm_email(body.get("owner_email"))
     coach_email = _norm_email(body.get("coach_email"))
 
-    if not owner_email or not coach_email:
-        return jsonify(ok=False, error="owner_email_and_coach_email_required"), 400
+    if not coach_email:
+        return jsonify(ok=False, error="coach_email_required"), 400
+
+    if not owner_external_wix_id and not owner_email:
+        return jsonify(ok=False, error="owner_external_wix_id_or_owner_email_required"), 400
 
     with Session(engine) as session:
         try:
-            owner = session.execute(
-                text("SELECT id FROM billing.account WHERE email = :email"),
-                {"email": owner_email},
-            ).mappings().first()
-
-            if not owner:
+            owner_account_id = _get_owner_account_id(session, owner_external_wix_id, owner_email)
+            if not owner_account_id:
                 return jsonify(ok=False, error="owner_not_found"), 404
 
-            owner_account_id = int(owner["id"])
             now = _now_utc()
 
-            # Upsert-by-hand (keeps self-contained + avoids relying on unique constraint behavior)
             existing = session.execute(
                 text(f"""
-                    SELECT id, status, active
+                    SELECT id
                     FROM {SCHEMA}.{TABLE}
                     WHERE owner_account_id = :owner_account_id
                       AND coach_email = :coach_email
@@ -150,12 +169,7 @@ def api_invite():
                     {"id": int(existing["id"]), "status": STATUS_INVITED, "now": now},
                 )
                 session.commit()
-                return jsonify(
-                    ok=True,
-                    permission_id=int(existing["id"]),
-                    status=STATUS_INVITED,
-                    reused=True,
-                )
+                return jsonify(ok=True, permission_id=int(existing["id"]), status=STATUS_INVITED, reused=True)
 
             row = session.execute(
                 text(f"""
@@ -165,12 +179,7 @@ def api_invite():
                       (:owner_account_id, NULL, :coach_email, :status, true, :now, :now)
                     RETURNING id
                 """),
-                {
-                    "owner_account_id": owner_account_id,
-                    "coach_email": coach_email,
-                    "status": STATUS_INVITED,
-                    "now": now,
-                },
+                {"owner_account_id": owner_account_id, "coach_email": coach_email, "status": STATUS_INVITED, "now": now},
             ).mappings().first()
 
             session.commit()
@@ -179,6 +188,7 @@ def api_invite():
         except Exception as e:
             session.rollback()
             return jsonify(ok=False, error="invite_failed", detail=str(e)), 500
+
 
 
 # ----------------------------
@@ -202,17 +212,13 @@ def api_accept():
     with Session(engine) as session:
         try:
             coach = session.execute(
-                text("SELECT id FROM billing.account WHERE email = :email"),
+                text("SELECT id FROM billing.account WHERE email = :email LIMIT 1"),
                 {"email": coach_email},
             ).mappings().first()
 
-            if not coach:
-                return jsonify(ok=False, error="coach_account_not_found"), 404
-
-            coach_account_id = int(coach["id"])
+            coach_account_id = int(coach["id"]) if coach else None
             now = _now_utc()
 
-            # Preferred: accept a specific invite (permission_id)
             if permission_id is not None:
                 perm = session.execute(
                     text(f"""
@@ -249,9 +255,8 @@ def api_accept():
                     },
                 )
                 session.commit()
-                return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_ACCEPTED)
+                return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_ACCEPTED, coach_linked=bool(coach_account_id))
 
-            # Back-compat: accept by email ONLY (allowed only if exactly one eligible invite exists)
             rows = session.execute(
                 text(f"""
                     SELECT id
@@ -284,11 +289,12 @@ def api_accept():
                 {"id": pid, "status": STATUS_ACCEPTED, "coach_account_id": coach_account_id, "now": now},
             )
             session.commit()
-            return jsonify(ok=True, permission_id=pid, status=STATUS_ACCEPTED)
+            return jsonify(ok=True, permission_id=pid, status=STATUS_ACCEPTED, coach_linked=bool(coach_account_id))
 
         except Exception as e:
             session.rollback()
             return jsonify(ok=False, error="accept_failed", detail=str(e)), 500
+
 
 
 # ----------------------------
@@ -304,39 +310,70 @@ def api_revoke():
     body: Dict[str, Any] = request.get_json(silent=True) or {}
     permission_id = body.get("permission_id")
 
-    if not permission_id:
-        return jsonify(ok=False, error="permission_id_required"), 400
+    owner_external_wix_id = _norm_str(body.get("owner_external_wix_id"))
+    owner_email = _norm_email(body.get("owner_email"))
+    coach_email = _norm_email(body.get("coach_email"))
 
     with Session(engine) as session:
         try:
             now = _now_utc()
 
+            if permission_id:
+                perm = session.execute(
+                    text(f"SELECT id FROM {SCHEMA}.{TABLE} WHERE id = :id LIMIT 1"),
+                    {"id": int(permission_id)},
+                ).mappings().first()
+
+                if not perm:
+                    return jsonify(ok=False, error="permission_not_found"), 404
+
+                session.execute(
+                    text(f"""
+                        UPDATE {SCHEMA}.{TABLE}
+                        SET status = :status, active = false, updated_at = :now
+                        WHERE id = :id
+                    """),
+                    {"id": int(permission_id), "status": STATUS_REVOKED, "now": now},
+                )
+                session.commit()
+                return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_REVOKED)
+
+            # email-based revoke (requires owner + coach_email)
+            if not coach_email:
+                return jsonify(ok=False, error="permission_id_or_coach_email_required"), 400
+
+            if not owner_external_wix_id and not owner_email:
+                return jsonify(ok=False, error="owner_external_wix_id_or_owner_email_required"), 400
+
+            owner_account_id = _get_owner_account_id(session, owner_external_wix_id, owner_email)
+            if not owner_account_id:
+                return jsonify(ok=False, error="owner_not_found"), 404
+
             perm = session.execute(
                 text(f"""
                     SELECT id
                     FROM {SCHEMA}.{TABLE}
-                    WHERE id = :id
+                    WHERE owner_account_id = :owner_account_id
+                      AND coach_email = :coach_email
                     LIMIT 1
                 """),
-                {"id": int(permission_id)},
+                {"owner_account_id": owner_account_id, "coach_email": coach_email},
             ).mappings().first()
 
             if not perm:
                 return jsonify(ok=False, error="permission_not_found"), 404
 
+            pid = int(perm["id"])
             session.execute(
                 text(f"""
                     UPDATE {SCHEMA}.{TABLE}
-                    SET
-                      status = :status,
-                      active = false,
-                      updated_at = :now
+                    SET status = :status, active = false, updated_at = :now
                     WHERE id = :id
                 """),
-                {"id": int(permission_id), "status": STATUS_REVOKED, "now": now},
+                {"id": pid, "status": STATUS_REVOKED, "now": now},
             )
             session.commit()
-            return jsonify(ok=True, permission_id=int(permission_id), status=STATUS_REVOKED)
+            return jsonify(ok=True, permission_id=pid, status=STATUS_REVOKED)
 
         except Exception as e:
             session.rollback()
