@@ -76,6 +76,7 @@ INSERT INTO billing.entitlements (
   account_id, email, role, account_active,
   subscription_status, current_period_end, paid_active,
   matches_granted, matches_consumed, matches_remaining,
+  can_view_dashboards, dashboard_block_reason,
   can_upload, block_reason, updated_at
 )
 SELECT
@@ -83,7 +84,16 @@ SELECT
   subscription_status, current_period_end, paid_active,
   matches_granted, matches_consumed, matches_remaining,
 
-  (account_active AND role <> 'coach' AND paid_active AND matches_remaining > 0) AS can_upload,
+(account_active AND paid_active) AS can_view_dashboards,
+
+CASE
+  WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
+  WHEN NOT paid_active THEN 'SUBSCRIPTION_INACTIVE'
+  ELSE NULL
+END AS dashboard_block_reason,
+
+(account_active AND role <> 'coach' AND paid_active AND matches_remaining > 0) AS can_upload,
+
 
   CASE
     WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
@@ -107,6 +117,8 @@ ON CONFLICT (account_id) DO UPDATE SET
   matches_remaining   = EXCLUDED.matches_remaining,
   can_upload          = EXCLUDED.can_upload,
   block_reason        = EXCLUDED.block_reason,
+  can_view_dashboards    = EXCLUDED.can_view_dashboards,
+  dashboard_block_reason = EXCLUDED.dashboard_block_reason,
   updated_at          = now();
 """)
 
@@ -124,6 +136,8 @@ SELECT
   matches_remaining,
   can_upload,
   block_reason,
+  can_view_dashboards,
+  dashboard_block_reason,
   updated_at
 FROM billing.entitlements
 WHERE email = :email
