@@ -26,6 +26,8 @@ s AS (
   SELECT account_id, status AS subscription_status, current_period_end
   FROM billing.subscription_state
   WHERE account_id IN (SELECT account_id FROM a)
+  ORDER BY updated_at DESC NULLS LAST
+  LIMIT 1
 ),
 g AS (
   SELECT
@@ -125,6 +127,7 @@ SELECT
   updated_at
 FROM billing.entitlements
 WHERE email = :email
+ORDER BY updated_at DESC
 LIMIT 1
 """)
 
@@ -135,6 +138,7 @@ def entitlements_summary():
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
+        # Always recompute -> always fresh at request time.
         conn.execute(UPSERT_SQL, {"email": email})
         row = conn.execute(READ_SQL, {"email": email}).mappings().first()
 
