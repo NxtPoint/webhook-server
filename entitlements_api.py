@@ -84,16 +84,15 @@ SELECT
   subscription_status, current_period_end, paid_active,
   matches_granted, matches_consumed, matches_remaining,
 
-(account_active AND paid_active) AS can_view_dashboards,
+  (account_active AND paid_active) AS can_view_dashboards,
 
-CASE
-  WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
-  WHEN NOT paid_active THEN 'SUBSCRIPTION_INACTIVE'
-  ELSE NULL
-END AS dashboard_block_reason,
+  CASE
+    WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
+    WHEN NOT paid_active THEN 'SUBSCRIPTION_INACTIVE'
+    ELSE NULL
+  END AS dashboard_block_reason,
 
-(account_active AND role <> 'coach' AND paid_active AND matches_remaining > 0) AS can_upload,
-
+  (account_active AND role <> 'coach' AND paid_active AND matches_remaining > 0) AS can_upload,
 
   CASE
     WHEN NOT account_active THEN 'ACCOUNT_INACTIVE'
@@ -106,20 +105,20 @@ END AS dashboard_block_reason,
   now()
 FROM calc
 ON CONFLICT (account_id) DO UPDATE SET
-  email               = EXCLUDED.email,
-  role                = EXCLUDED.role,
-  account_active      = EXCLUDED.account_active,
-  subscription_status = EXCLUDED.subscription_status,
-  current_period_end  = EXCLUDED.current_period_end,
-  paid_active         = EXCLUDED.paid_active,
-  matches_granted     = EXCLUDED.matches_granted,
-  matches_consumed    = EXCLUDED.matches_consumed,
-  matches_remaining   = EXCLUDED.matches_remaining,
-  can_upload          = EXCLUDED.can_upload,
-  block_reason        = EXCLUDED.block_reason,
+  email                  = EXCLUDED.email,
+  role                   = EXCLUDED.role,
+  account_active         = EXCLUDED.account_active,
+  subscription_status    = EXCLUDED.subscription_status,
+  current_period_end     = EXCLUDED.current_period_end,
+  paid_active            = EXCLUDED.paid_active,
+  matches_granted        = EXCLUDED.matches_granted,
+  matches_consumed       = EXCLUDED.matches_consumed,
+  matches_remaining      = EXCLUDED.matches_remaining,
   can_view_dashboards    = EXCLUDED.can_view_dashboards,
   dashboard_block_reason = EXCLUDED.dashboard_block_reason,
-  updated_at          = now();
+  can_upload             = EXCLUDED.can_upload,
+  block_reason           = EXCLUDED.block_reason,
+  updated_at             = now();
 """)
 
 READ_SQL = text("""
@@ -152,7 +151,6 @@ def entitlements_summary():
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
-        # Always recompute -> always fresh at request time.
         conn.execute(UPSERT_SQL, {"email": email})
         row = conn.execute(READ_SQL, {"email": email}).mappings().first()
 
