@@ -1,5 +1,5 @@
 #==================================
-# entitlements_api.py  (NEW CANONICAL GATE)
+# entitlements_api.py
 #==================================
 
 from flask import Blueprint, jsonify, request
@@ -8,15 +8,16 @@ from db_init import engine
 
 entitlements_bp = Blueprint("entitlements", __name__)
 
-UPSERT_SQL = text("""  -- paste the SQL upsert from section 3A here
--- (keep it exactly as-is, with :email parameter)
+UPSERT_SQL = text("""
+-- paste the UPSERT SQL here, but replace the literal email with:
+-- WHERE email = :email
 """)
 
 READ_SQL = text("""
   SELECT
-    account_id, email, role,
-    account_is_active, subscription_status, paid_through_ts, is_paid_active,
-    matches_granted, matches_consumed, matches_remaining, last_processed_at,
+    account_id, email, role, account_active,
+    subscription_status, current_period_end, paid_active,
+    matches_granted, matches_consumed, matches_remaining,
     can_upload, block_reason, updated_at
   FROM billing.entitlements
   WHERE email = :email
@@ -30,7 +31,6 @@ def entitlements_summary():
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.begin() as conn:
-        # recompute (fail-closed if missing account)
         conn.execute(UPSERT_SQL, {"email": email})
         row = conn.execute(READ_SQL, {"email": email}).mappings().first()
 

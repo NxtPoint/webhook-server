@@ -34,11 +34,12 @@ app.register_blueprint(coaches_bp)
 from members_api import members_bp
 from subscriptions_api import subscriptions_bp
 from usage_api import usage_bp
+from entitlements_api import entitlements_bp
 
 app.register_blueprint(members_bp)
 app.register_blueprint(subscriptions_bp)
 app.register_blueprint(usage_bp)
-
+app.register_blueprint(entitlements_bp)
 
 
 @app.get("/ops/code-hash")
