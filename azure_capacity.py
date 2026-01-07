@@ -16,7 +16,10 @@
 
 import os
 from azure.identity import ClientSecretCredential
-from azure.mgmt.powerbidedicated import PowerBIDedicatedManagementClient
+from azure.mgmt.powerbidedicated.power_bi_dedicated_management_client import (
+    PowerBIDedicatedManagementClient,
+)
+
 
 
 def _env(name: str) -> str:
