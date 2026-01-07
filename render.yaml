@@ -1,16 +1,17 @@
 services:
+  # =========================================
+  # 1) SportAI / Upload / Webhook API service
+  # =========================================
   - type: web
     name: webhook-server
     env: python
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "python db_views.py && python upload_app.py"
+    startCommand: "gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
 
     envVars:
-      # Render injects PORT; no hard-coded value needed
-      - key: PORT
-        fromService: ${RENDER}
-        # (leaving this keeps PORT visible in /ops/env)
+      - key: PYTHON_VERSION
+        value: "3.12.3"
 
       # ---- Dropbox (kept as fallback) ----
       - key: DROPBOX_APP_KEY
@@ -26,7 +27,7 @@ services:
       - key: SPORT_AI_TOKEN
         sync: false
       - key: SPORT_AI_BASE
-        value: "https://api.sportai.app"
+        value: "https://api.sportai.com"
 
       # ---- App behavior flags ----
       - key: INGEST_REPLACE_EXISTING
@@ -34,7 +35,7 @@ services:
       - key: AUTO_INGEST_ON_COMPLETE
         value: "1"
 
-      # ---- S3 (enable when ready) ----
+      # ---- S3 ----
       - key: S3_BUCKET
         sync: false
       - key: S3_PREFIX
@@ -50,4 +51,43 @@ services:
 
       # ---- DB ----
       - key: DATABASE_URL
+        sync: false
+
+
+  # =========================================
+  # 2) Power BI embed/refresh service
+  # =========================================
+  - type: web
+    name: powerbi-service
+    env: python
+    plan: free
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    startCommand: "gunicorn powerbi_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+
+      - key: OPS_KEY
+        sync: false
+
+      - key: PBI_TENANT_ID
+        sync: false
+      - key: PBI_CLIENT_ID
+        sync: false
+      - key: PBI_CLIENT_SECRET
+        sync: false
+
+      - key: PBI_WORKSPACE_ID
+        sync: false
+      - key: PBI_REPORT_ID
+        sync: false
+      - key: PBI_DATASET_ID
+        sync: false
+
+      - key: AZ_SUBSCRIPTION_ID
+        sync: false
+      - key: AZ_RESOURCE_GROUP
+        sync: false
+      - key: AZ_CAPACITY_NAME
         sync: false
