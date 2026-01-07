@@ -160,14 +160,15 @@ def trigger_dataset_refresh(workspace_id: str, dataset_id: str) -> None:
 
 def generate_embed_token(
     workspace_id: str,
-    report_id: str,
+    report_id: str,   # kept for signature compatibility (not used)
     dataset_id: str,
     username: Optional[str] = None,
     roles: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Generates an embed token for a specific report (recommended endpoint).
-    Supports future RLS via identities.
+    Generates an embed token scoped to the DATASET.
+    Required for service principal + app-owns-data.
+    RLS-ready via identities (disabled unless username provided).
     """
     body: Dict[str, Any] = {"accessLevel": "View"}
 
@@ -180,5 +181,8 @@ def generate_embed_token(
             }
         ]
 
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}/GenerateToken"
+    url = (
+        f"https://api.powerbi.com/v1.0/myorg/"
+        f"groups/{workspace_id}/datasets/{dataset_id}/GenerateToken"
+    )
     return _pbi_post(url, body)
