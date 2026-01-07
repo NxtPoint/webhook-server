@@ -1,5 +1,5 @@
 # =========================================
-# app.py
+# powerbi_app.py
 # =========================================
 # PURPOSE
 # -------
@@ -14,10 +14,7 @@
 import os
 from flask import Flask, request, jsonify
 
-from azure_capacity import (
-    ensure_capacity_running,
-    suspend_capacity,
-)
+
 from powerbi_embed import (
     resolve_ids_if_needed,
     generate_embed_token,
@@ -42,7 +39,7 @@ def health():
 def capacity_warmup():
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
-
+    from azure_capacity import ensure_capacity_running
     ensure_capacity_running()
     return jsonify({"ok": True})
 
@@ -51,9 +48,10 @@ def capacity_warmup():
 def capacity_suspend():
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
-
+    from azure_capacity import suspend_capacity
     suspend_capacity()
     return jsonify({"ok": True})
+
 
 
 @app.post("/dataset/refresh")
