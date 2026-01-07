@@ -8,12 +8,10 @@ services:
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
-
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"
 
-      # ---- Dropbox (kept as fallback) ----
       - key: DROPBOX_APP_KEY
         sync: false
       - key: DROPBOX_APP_SECRET
@@ -23,19 +21,16 @@ services:
       - key: DROPBOX_UPLOAD_FOLDER
         value: "/wix-uploads"
 
-      # ---- SportAI ----
       - key: SPORT_AI_TOKEN
         sync: false
       - key: SPORT_AI_BASE
         value: "https://api.sportai.com"
 
-      # ---- App behavior flags ----
       - key: INGEST_REPLACE_EXISTING
         value: "1"
       - key: AUTO_INGEST_ON_COMPLETE
         value: "1"
 
-      # ---- S3 ----
       - key: S3_BUCKET
         sync: false
       - key: S3_PREFIX
@@ -49,7 +44,6 @@ services:
       - key: AWS_SECRET_ACCESS_KEY
         sync: false
 
-      # ---- DB ----
       - key: DATABASE_URL
         sync: false
 
@@ -63,7 +57,6 @@ services:
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "gunicorn powerbi_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
-
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"
