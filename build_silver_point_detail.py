@@ -254,21 +254,14 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     tid = {"tid": task_id}
     total = 0
 
-    # 1) serve_d (SPEC): y < 1 OR y > 23 AND swing_type = fh_overhead
+    # 1) serve_d = SportAI serve flag (source of truth)
     sql1 = """
     UPDATE silver.point_detail p
-    SET serve_d =
-      (
-        p.ball_hit_location_y IS NOT NULL
-        AND (
-          (p.ball_hit_location_y)::double precision < 1.0
-          OR (p.ball_hit_location_y)::double precision > 23.0
-        )
-        AND lower(COALESCE(p.swing_type, '')) = 'fh_overhead'
-      )
+    SET serve_d = COALESCE(p.serve, FALSE)
     WHERE p.task_id = :tid
     """
     total += conn.execute(text(sql1), tid).rowcount or 0
+
 
     # 2) server_end_d (SPEC): if serve_d true and y < 1 => far else near
     sql2 = """
@@ -284,37 +277,88 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     """
     total += conn.execute(text(sql2), tid).rowcount or 0
 
-    # 3) serve_side_d (SPEC intent): depends on server_end_d.
-    # Use per-end median X as midpoint (robust, task-specific, no magic "4.0").
+    # 3) serve_side_d: compute from FIRST serve in each inferred point, then freeze to all serves in that point
     sql3 = """
-    WITH mids AS (
+    WITH serves AS (
+      SELECT
+        p.id,
+        p.task_id,
+        p.ball_hit_s,
+        p.server_end_d,
+        p.ball_hit_location_x,
+        COALESCE(p.valid, TRUE) AS valid,
+        LAG(COALESCE(p.valid, TRUE)) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS prev_valid,
+        LAG(COALESCE(p.valid, TRUE), 2) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS prev2_valid
+      FROM silver.point_detail p
+      WHERE p.task_id = :tid
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
+        AND p.ball_hit_s IS NOT NULL
+    ),
+    flags AS (
+      SELECT
+        s.*,
+        CASE
+          WHEN s.prev_valid IS NULL THEN 1
+          WHEN s.prev_valid = FALSE AND s.prev2_valid = FALSE THEN 1   -- after double fault => new point
+          WHEN s.prev_valid = FALSE THEN 0                             -- second serve in same point
+          ELSE 1                                                       -- previous serve was in => new point
+        END AS new_point_flag
+      FROM serves s
+    ),
+    grp AS (
+      SELECT
+        f.*,
+        SUM(new_point_flag) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id ROWS UNBOUNDED PRECEDING) AS point_ix
+      FROM flags f
+    ),
+    ranked AS (
+      SELECT
+        g.*,
+        ROW_NUMBER() OVER (PARTITION BY task_id, point_ix ORDER BY ball_hit_s, id) AS serve_ix_in_point
+      FROM grp g
+    ),
+    mids AS (
       SELECT
         server_end_d,
         percentile_cont(0.5) WITHIN GROUP (ORDER BY (ball_hit_location_x)::double precision) AS mid_x
-      FROM silver.point_detail
-      WHERE task_id = :tid
-        AND COALESCE(serve_d, FALSE) IS TRUE
-        AND ball_hit_location_x IS NOT NULL
+      FROM ranked
+      WHERE ball_hit_location_x IS NOT NULL
         AND server_end_d IN ('near','far')
       GROUP BY server_end_d
+    ),
+    first_serves AS (
+      SELECT
+        r.id,
+        r.point_ix,
+        CASE
+          WHEN r.ball_hit_location_x IS NULL THEN NULL
+          WHEN r.server_end_d = 'near' AND (r.ball_hit_location_x)::double precision > m.mid_x THEN 'deuce'
+          WHEN r.server_end_d = 'near' THEN 'ad'
+          WHEN r.server_end_d = 'far'  AND (r.ball_hit_location_x)::double precision < m.mid_x THEN 'deuce'
+          WHEN r.server_end_d = 'far'  THEN 'ad'
+          ELSE NULL
+        END AS side_calc
+      FROM ranked r
+      JOIN mids m
+        ON m.server_end_d = r.server_end_d
+      WHERE r.serve_ix_in_point = 1
+    ),
+    freeze AS (
+      SELECT
+        r.id,
+        fs.side_calc
+      FROM ranked r
+      JOIN first_serves fs
+        ON fs.point_ix = r.point_ix
     )
     UPDATE silver.point_detail p
-    SET serve_side_d =
-      CASE
-        WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE THEN NULL
-        WHEN p.ball_hit_location_x IS NULL THEN NULL
-        WHEN p.server_end_d = 'near' AND (p.ball_hit_location_x)::double precision > m.mid_x THEN 'deuce'
-        WHEN p.server_end_d = 'near' THEN 'ad'
-        WHEN p.server_end_d = 'far'  AND (p.ball_hit_location_x)::double precision < m.mid_x THEN 'deuce'
-        WHEN p.server_end_d = 'far'  THEN 'ad'
-        ELSE NULL
-      END
-    FROM mids m
+    SET serve_side_d = f.side_calc
+    FROM freeze f
     WHERE p.task_id = :tid
-      AND COALESCE(p.serve_d, FALSE) IS TRUE
-      AND p.server_end_d = m.server_end_d
+      AND p.id = f.id
     """
     total += conn.execute(text(sql3), tid).rowcount or 0
+
 
     # 4) propagate last serve context forward to all rows by time (keeps SportAI 98% but fills gaps)
     sql4 = """
@@ -351,43 +395,45 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     """
     total += conn.execute(text(sql4), tid).rowcount or 0
 
-    # 5) serve_try_ix_in_point + service_winner_d
-    # Conservative rules:
-    # - "fault" if serve row valid = false
-    # - point boundary inferred from serve_side_d OR server_end_d changes (your spec for points later)
-    # - "ace"/service_winner when not fault AND no valid in-rally return exists before next serve
+    # 5) serve_try_ix_in_point + service_winner_d (non-circular; uses serve validity sequencing)
     sql5 = """
     WITH serves AS (
       SELECT
-        id,
-        task_id,
-        ball_hit_s,
-        server_end_d,
-        serve_side_d,
-        valid,
-        LEAD(ball_hit_s) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id) AS next_serve_s,
-        CASE
-          WHEN LAG(serve_side_d) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id) IS DISTINCT FROM serve_side_d
-            OR LAG(server_end_d) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id) IS DISTINCT FROM server_end_d
-          THEN 1 ELSE 0
-        END AS new_point_flag
-      FROM silver.point_detail
-      WHERE task_id = :tid
-        AND COALESCE(serve_d, FALSE) IS TRUE
-        AND ball_hit_s IS NOT NULL
+        p.id,
+        p.task_id,
+        p.ball_hit_s,
+        COALESCE(p.valid, TRUE) AS valid,
+        LEAD(p.ball_hit_s) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS next_serve_s,
+        LAG(COALESCE(p.valid, TRUE)) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS prev_valid,
+        LAG(COALESCE(p.valid, TRUE), 2) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS prev2_valid
+      FROM silver.point_detail p
+      WHERE p.task_id = :tid
+        AND COALESCE(p.serve_d, FALSE) IS TRUE
+        AND p.ball_hit_s IS NOT NULL
     ),
-    serve_points AS (
+    flags AS (
       SELECT
         s.*,
-        SUM(new_point_flag) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id ROWS UNBOUNDED PRECEDING) AS point_ix
+        CASE
+          WHEN s.prev_valid IS NULL THEN 1
+          WHEN s.prev_valid = FALSE AND s.prev2_valid = FALSE THEN 1   -- after double fault => new point
+          WHEN s.prev_valid = FALSE THEN 0                             -- second serve in same point
+          ELSE 1                                                       -- previous serve was in => new point
+        END AS new_point_flag
       FROM serves s
+    ),
+    grp AS (
+      SELECT
+        f.*,
+        SUM(new_point_flag) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id ROWS UNBOUNDED PRECEDING) AS point_ix
+      FROM flags f
     ),
     serve_rank AS (
       SELECT
-        sp.*,
+        g.*,
         ROW_NUMBER() OVER (PARTITION BY task_id, point_ix ORDER BY ball_hit_s, id) AS serve_ix_in_point,
         COUNT(*)    OVER (PARTITION BY task_id, point_ix) AS serves_in_point
-      FROM serve_points sp
+      FROM grp g
     ),
     returns AS (
       SELECT
@@ -429,10 +475,6 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
       AND p.id = sr.id
     """
     total += conn.execute(text(sql5), tid).rowcount or 0
-
-    return total
-
-
 
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
