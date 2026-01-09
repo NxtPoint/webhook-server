@@ -247,52 +247,57 @@ X_SIDE_ABS = 4.0    # side threshold
 
 # ---------- Phase 3 updater ----------
 # new code added - include bootstadp to fix failing serve_d logic ... 09/01/2026
-def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
-    """
-    Populate serve_d, server_end_d, serve_side_d using the spec, then propagate
-    server_end_d + serve_side_d forward to all later shots until next serve.
-    """
+from sqlalchemy import text
 
-    sql = f"""
-    -- 1) serve_d (SPEC): y < 1 OR y > 23 AND swing_type = fh_overhead
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
+def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
+    tid = {"tid": task_id}
+    total = 0
+
+    sql1 = f"""
+    UPDATE silver.point_detail p
     SET serve_d =
       (
         p.ball_hit_location_y IS NOT NULL
         AND (
-          (p.ball_hit_location_y)::double precision < {Y_FAR_MAX}
-          OR (p.ball_hit_location_y)::double precision > {Y_NEAR_MIN}
+          (p.ball_hit_location_y)::double precision < 1.0
+          OR (p.ball_hit_location_y)::double precision > 23.0
         )
         AND lower(COALESCE(p.swing_type, '')) = 'fh_overhead'
       )
-    WHERE p.task_id = :tid;
+    WHERE p.task_id = :tid
+    """
+    total += conn.execute(text(sql1), tid).rowcount or 0
 
-    -- 2) server_end_d (SPEC): if serve_d true and y < 1 => far else near
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    sql2 = f"""
+    UPDATE silver.point_detail p
     SET server_end_d =
       CASE
         WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE THEN NULL
-        WHEN (p.ball_hit_location_y)::double precision < {Y_FAR_MAX} THEN 'far'
-        WHEN (p.ball_hit_location_y)::double precision > {Y_NEAR_MIN} THEN 'near'
+        WHEN (p.ball_hit_location_y)::double precision < 1.0 THEN 'far'
+        WHEN (p.ball_hit_location_y)::double precision > 23.0 THEN 'near'
         ELSE NULL
       END
-    WHERE p.task_id = :tid;
+    WHERE p.task_id = :tid
+    """
+    total += conn.execute(text(sql2), tid).rowcount or 0
 
-    -- 3) serve_side_d (temporary stable midpoint=4.0; we can later replace with calibrated midpoint)
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    sql3 = f"""
+    UPDATE silver.point_detail p
     SET serve_side_d =
       CASE
         WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE THEN NULL
         WHEN p.ball_hit_location_x IS NULL THEN NULL
-        WHEN (p.ball_hit_location_x)::double precision < {X_SIDE_ABS} THEN 'deuce'
+        WHEN (p.ball_hit_location_x)::double precision < 4.0 THEN 'deuce'
         ELSE 'ad'
       END
-    WHERE p.task_id = :tid;
+    WHERE p.task_id = :tid
+    """
+    total += conn.execute(text(sql3), tid).rowcount or 0
 
-    -- 4) propagate last serve context forward to all rows by time
+    sql4 = f"""
     WITH ordered AS (
       SELECT id, task_id, ball_hit_s
-      FROM {SILVER_SCHEMA}.{TABLE}
+      FROM silver.point_detail
       WHERE task_id = :tid
         AND ball_hit_s IS NOT NULL
     ),
@@ -304,7 +309,7 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
       FROM ordered o
       LEFT JOIN LATERAL (
         SELECT server_end_d, serve_side_d
-        FROM {SILVER_SCHEMA}.{TABLE} p2
+        FROM silver.point_detail p2
         WHERE p2.task_id = :tid
           AND COALESCE(p2.serve_d, FALSE) IS TRUE
           AND p2.ball_hit_s IS NOT NULL
@@ -313,16 +318,18 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
         LIMIT 1
       ) s ON TRUE
     )
-    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    UPDATE silver.point_detail p
     SET
       server_end_d = COALESCE(p.server_end_d, c.server_end_d),
       serve_side_d = COALESCE(p.serve_side_d, c.serve_side_d)
     FROM ctx c
     WHERE p.task_id = :tid
-      AND p.id = c.id;
+      AND p.id = c.id
     """
-    res = conn.execute(text(sql), {"tid": task_id})
-    return res.rowcount or 0
+    total += conn.execute(text(sql4), tid).rowcount or 0
+
+    return total
+
 
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
