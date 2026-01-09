@@ -248,12 +248,14 @@ X_SIDE_ABS = 4.0    # side threshold
 # ---------- Phase 3 updater ----------
 # new code added - include bootstadp to fix failing serve_d logic ... 09/01/2026
 from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     tid = {"tid": task_id}
     total = 0
 
-    sql1 = f"""
+    # 1) serve_d (SPEC): y < 1 OR y > 23 AND swing_type = fh_overhead
+    sql1 = """
     UPDATE silver.point_detail p
     SET serve_d =
       (
@@ -268,7 +270,8 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     """
     total += conn.execute(text(sql1), tid).rowcount or 0
 
-    sql2 = f"""
+    # 2) server_end_d (SPEC): if serve_d true and y < 1 => far else near
+    sql2 = """
     UPDATE silver.point_detail p
     SET server_end_d =
       CASE
@@ -281,20 +284,40 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     """
     total += conn.execute(text(sql2), tid).rowcount or 0
 
-    sql3 = f"""
+    # 3) serve_side_d (SPEC intent): depends on server_end_d.
+    # Use per-end median X as midpoint (robust, task-specific, no magic "4.0").
+    sql3 = """
+    WITH mids AS (
+      SELECT
+        server_end_d,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY (ball_hit_location_x)::double precision) AS mid_x
+      FROM silver.point_detail
+      WHERE task_id = :tid
+        AND COALESCE(serve_d, FALSE) IS TRUE
+        AND ball_hit_location_x IS NOT NULL
+        AND server_end_d IN ('near','far')
+      GROUP BY server_end_d
+    )
     UPDATE silver.point_detail p
     SET serve_side_d =
       CASE
         WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE THEN NULL
         WHEN p.ball_hit_location_x IS NULL THEN NULL
-        WHEN (p.ball_hit_location_x)::double precision < 4.0 THEN 'deuce'
-        ELSE 'ad'
+        WHEN p.server_end_d = 'near' AND (p.ball_hit_location_x)::double precision > m.mid_x THEN 'deuce'
+        WHEN p.server_end_d = 'near' THEN 'ad'
+        WHEN p.server_end_d = 'far'  AND (p.ball_hit_location_x)::double precision < m.mid_x THEN 'deuce'
+        WHEN p.server_end_d = 'far'  THEN 'ad'
+        ELSE NULL
       END
+    FROM mids m
     WHERE p.task_id = :tid
+      AND COALESCE(p.serve_d, FALSE) IS TRUE
+      AND p.server_end_d = m.server_end_d
     """
     total += conn.execute(text(sql3), tid).rowcount or 0
 
-    sql4 = f"""
+    # 4) propagate last serve context forward to all rows by time (keeps SportAI 98% but fills gaps)
+    sql4 = """
     WITH ordered AS (
       SELECT id, task_id, ball_hit_s
       FROM silver.point_detail
@@ -328,7 +351,87 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
     """
     total += conn.execute(text(sql4), tid).rowcount or 0
 
+    # 5) serve_try_ix_in_point + service_winner_d
+    # Conservative rules:
+    # - "fault" if serve row valid = false
+    # - point boundary inferred from serve_side_d OR server_end_d changes (your spec for points later)
+    # - "ace"/service_winner when not fault AND no valid in-rally return exists before next serve
+    sql5 = """
+    WITH serves AS (
+      SELECT
+        id,
+        task_id,
+        ball_hit_s,
+        server_end_d,
+        serve_side_d,
+        valid,
+        LEAD(ball_hit_s) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id) AS next_serve_s,
+        CASE
+          WHEN LAG(serve_side_d) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id) IS DISTINCT FROM serve_side_d
+            OR LAG(server_end_d) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id) IS DISTINCT FROM server_end_d
+          THEN 1 ELSE 0
+        END AS new_point_flag
+      FROM silver.point_detail
+      WHERE task_id = :tid
+        AND COALESCE(serve_d, FALSE) IS TRUE
+        AND ball_hit_s IS NOT NULL
+    ),
+    serve_points AS (
+      SELECT
+        s.*,
+        SUM(new_point_flag) OVER (PARTITION BY task_id ORDER BY ball_hit_s, id ROWS UNBOUNDED PRECEDING) AS point_ix
+      FROM serves s
+    ),
+    serve_rank AS (
+      SELECT
+        sp.*,
+        ROW_NUMBER() OVER (PARTITION BY task_id, point_ix ORDER BY ball_hit_s, id) AS serve_ix_in_point,
+        COUNT(*)    OVER (PARTITION BY task_id, point_ix) AS serves_in_point
+      FROM serve_points sp
+    ),
+    returns AS (
+      SELECT
+        sr.id AS serve_id,
+        EXISTS (
+          SELECT 1
+          FROM silver.point_detail r
+          WHERE r.task_id = :tid
+            AND COALESCE(r.serve_d, FALSE) IS NOT TRUE
+            AND r.ball_hit_s IS NOT NULL
+            AND r.ball_hit_s > sr.ball_hit_s
+            AND (sr.next_serve_s IS NULL OR r.ball_hit_s < sr.next_serve_s)
+            AND COALESCE(r.valid, FALSE) IS TRUE
+            AND COALESCE(r.is_in_rally, FALSE) IS TRUE
+        ) AS has_valid_return
+      FROM serve_rank sr
+    )
+    UPDATE silver.point_detail p
+    SET
+      serve_try_ix_in_point =
+        CASE
+          WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE THEN NULL
+          WHEN COALESCE(p.valid, TRUE) IS FALSE AND sr.serve_ix_in_point = 2 THEN 'double'
+          WHEN COALESCE(p.valid, TRUE) IS FALSE THEN 'fault'
+          WHEN sr.serves_in_point = 1 AND COALESCE(rt.has_valid_return, FALSE) IS FALSE THEN 'ace'
+          WHEN sr.serve_ix_in_point = 1 THEN '1st'
+          ELSE '2nd'
+        END,
+      service_winner_d =
+        CASE
+          WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE THEN NULL
+          WHEN COALESCE(p.valid, TRUE) IS FALSE THEN FALSE
+          WHEN COALESCE(rt.has_valid_return, FALSE) IS FALSE THEN TRUE
+          ELSE FALSE
+        END
+    FROM serve_rank sr
+    JOIN returns rt ON rt.serve_id = sr.id
+    WHERE p.task_id = :tid
+      AND p.id = sr.id
+    """
+    total += conn.execute(text(sql5), tid).rowcount or 0
+
     return total
+
 
 
 def phase3_update(conn: Connection, task_id: str) -> int:
