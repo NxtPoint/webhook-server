@@ -322,7 +322,7 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
         p.server_end_d,
         p.ball_hit_location_x,
         COALESCE(p.valid, TRUE) AS valid,
-        LAG(COALESCE(p.valid, TRUE)) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS prev_valid,
+        LAG(COALESCE(p.valid, TRUE)) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id)     AS prev_valid,
         LAG(COALESCE(p.valid, TRUE), 2) OVER (PARTITION BY p.task_id ORDER BY p.ball_hit_s, p.id) AS prev2_valid
       FROM silver.point_detail p
       WHERE p.task_id = :tid
@@ -385,7 +385,7 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
         ON m.server_end_d = r.server_end_d
       WHERE r.serve_ix_in_point = 1
     ),
-    freeze AS (
+    freeze_ctx AS (
       SELECT
         r.id,
         fs.side_calc
@@ -394,13 +394,11 @@ def phase3_bootstrap_serve_context(conn: Connection, task_id: str) -> int:
         ON fs.point_ix = r.point_ix
     )
     UPDATE silver.point_detail p
-    SET serve_side_d = f.side_calc
-    FROM freeze f
+    SET serve_side_d = fc.side_calc
+    FROM freeze_ctx fc
     WHERE p.task_id = :tid
-      AND p.id = f.id
+      AND p.id = fc.id
     """
-    rc = conn.execute(text(sql3), tid).rowcount
-    total += (rc or 0)
 
     # ------------------------------------------------------------------
     # 4) propagate last serve context forward to ALL rows by time
