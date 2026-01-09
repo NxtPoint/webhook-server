@@ -132,7 +132,7 @@ def upsert_member():
         if not full_name:
             return jsonify({"ok": False, "error": "full_name required"}), 400
 
-        child_email = _norm_email(payload.get("child_email")) or None
+        child_email = _norm_email(payload.get("child_email") or payload.get("member_email")) or None
         active = payload.get("active")
         if active is None:
             active = True
