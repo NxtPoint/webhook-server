@@ -1453,8 +1453,8 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
             out["phase2_rows_updated"] = phase2_update(conn, task_id)
 
         if phase in ("all","3"):
-          out["phase3_bootstrap_rows_updated"] = phase3_bootstrap_serve_context(conn, task_id)
-          out["phase3_rows_updated"] = phase3_update(conn, task_id)
+          out["phase3_rows_updated"] = phase3_bootstrap_serve_context(conn, task_id)
+
 
         if phase in ("all","4"):
             out["phase4_rows_updated"] = phase4_update(conn, task_id)
