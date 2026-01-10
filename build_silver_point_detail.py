@@ -247,37 +247,22 @@ def phase2_update(conn: Connection, task_id: str) -> int:
 # ------------------------------- PHASE 3 ---------------------------------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    Implements requested Phase 3 rules:
+    Phase 3 (updated):
 
-    serve_d:
-      TRUE when swing_type is overhead-ish AND ball_hit_location_y is <1 OR >23.
+    Changes requested:
+      1) serve_d MUST respect SportAI serve flag:
+         - if silver.point_detail.serve = FALSE -> serve_d = FALSE (even if heuristics would say serve)
+         - else use existing heuristic (overhead-ish AND y < 1 OR y > 23)
 
-    server_end_d:
-      if serve_d TRUE:
-        y < 1  -> 'far'
-        else   -> 'near'
+      2) server_end_d MUST persist on every line:
+         - compute end for serve rows
+         - forward-fill across all rows in task by time (ball_hit_s, id)
+         - fallback: if no prior end, back-fill from next known end (optional safety)
 
-    serve_side_d:
-      Use midpoint = AVG(ball_hit_location_x) over serves in task.
-      Mapping relative to end:
-        near: x > mid -> deuce, x < mid -> ad
-        far : x < mid -> deuce, x > mid -> ad
-
-    serve_try_ix_in_point:
-      Detect 2nd serve when a serve is preceded by another serve by same player on same end+side
-      with NO opponent shot in between.
-      Label:
-        first serve in that micro-point -> '1st'
-        second serve -> '2nd' unless bounce coords missing then 'Double'
-
-    service_winner_d:
-      TRUE on last serve in that micro-point when:
-        - not Double
-        - no later non-serve valid shot (with court_x & court_y present) occurs before the next serve by anyone
-      NULL otherwise.
+    Everything else unchanged (serve_side_d, serve_try_ix_in_point, service_winner_d).
     """
 
-    # 1) Midpoint for X (avg of serve hit x). Default to 5.6 if no serves.
+    # 1) Midpoint for X (avg of serve-hit x). Default to 5.6 if no serves.
     sql_mid = f"""
     WITH srv AS (
       SELECT NULLIF(TRIM(ball_hit_location_x::text), '')::double precision AS x
@@ -285,6 +270,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE task_id = :tid
         AND ball_hit_location_x IS NOT NULL
         AND ball_hit_location_y IS NOT NULL
+        AND COALESCE(serve, FALSE) IS TRUE
         AND (
           lower(COALESCE(trim(swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
         )
@@ -299,7 +285,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     if mid_x is None:
         mid_x = 5.6
 
-    # 2) Full Phase 3 update in one pass.
     sql = f"""
     WITH base AS (
       SELECT
@@ -307,6 +292,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.task_id,
         p.player_id,
         p.valid,
+        p.serve,          -- SportAI flag (Phase 1 column)
         p.swing_type,
         p.ball_hit_s,
         p.ball_hit_location_x AS x,
@@ -317,16 +303,23 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
     ),
 
+    -- serve_d respects SportAI serve flag
     srv0 AS (
       SELECT
         b.*,
-        (
-          lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
-          AND b.y IS NOT NULL
-          AND ( (b.y)::double precision < 1.0 OR (b.y)::double precision > 23.0 )
-        ) AS serve_d,
 
         CASE
+          WHEN COALESCE(b.serve, FALSE) IS FALSE THEN FALSE
+          WHEN (
+            lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
+            AND b.y IS NOT NULL
+            AND ( (b.y)::double precision < 1.0 OR (b.y)::double precision > 23.0 )
+          ) THEN TRUE
+          ELSE FALSE
+        END AS serve_d_raw,
+
+        CASE
+          WHEN COALESCE(b.serve, FALSE) IS FALSE THEN NULL
           WHEN (
             lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
             AND b.y IS NOT NULL
@@ -334,35 +327,58 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           )
           THEN CASE WHEN (b.y)::double precision < 1.0 THEN 'far' ELSE 'near' END
           ELSE NULL
-        END AS server_end_d
+        END AS server_end_raw
       FROM base b
+    ),
+
+    -- forward-fill server_end across all rows (persist)
+    ff AS (
+      SELECT
+        s.*,
+        MAX(s.server_end_raw) FILTER (WHERE s.server_end_raw IN ('near','far'))
+          OVER (PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS server_end_ff
+      FROM srv0 s
+    ),
+
+    -- optional back-fill if the first rows have NULL and a later end exists
+    bf AS (
+      SELECT
+        f.*,
+        MIN(f.server_end_raw) FILTER (WHERE f.server_end_raw IN ('near','far'))
+          OVER (PARTITION BY f.task_id ORDER BY f.ball_hit_s, f.id
+                ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS server_end_bf
+      FROM ff f
     ),
 
     srv1 AS (
       SELECT
-        s.*,
+        b.*,
+        b.serve_d_raw AS serve_d,
+        COALESCE(b.server_end_ff, b.server_end_bf) AS server_end_d,
+
         CASE
-          WHEN s.serve_d IS TRUE
-           AND s.x IS NOT NULL
-           AND s.server_end_d IN ('near','far')
+          WHEN b.serve_d_raw IS TRUE
+           AND b.x IS NOT NULL
+           AND COALESCE(b.server_end_ff, b.server_end_bf) IN ('near','far')
           THEN
             CASE
-              WHEN s.server_end_d = 'near' THEN
+              WHEN COALESCE(b.server_end_ff, b.server_end_bf) = 'near' THEN
                 CASE
-                  WHEN (s.x)::double precision > :mid THEN 'deuce'
-                  WHEN (s.x)::double precision < :mid THEN 'ad'
+                  WHEN (b.x)::double precision > :mid THEN 'deuce'
+                  WHEN (b.x)::double precision < :mid THEN 'ad'
                   ELSE 'deuce'
                 END
               ELSE
                 CASE
-                  WHEN (s.x)::double precision < :mid THEN 'deuce'
-                  WHEN (s.x)::double precision > :mid THEN 'ad'
+                  WHEN (b.x)::double precision < :mid THEN 'deuce'
+                  WHEN (b.x)::double precision > :mid THEN 'ad'
                   ELSE 'deuce'
                 END
             END
           ELSE NULL
         END AS serve_side_d
-      FROM srv0 s
+      FROM bf b
     ),
 
     -- mark opponent "real shots" (non-serve, valid, with court coords)
@@ -372,7 +388,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         b.player_id,
         b.ball_hit_s AS t,
         b.id
-      FROM base b
+      FROM srv1 b
       WHERE b.valid IS TRUE
         AND b.court_x IS NOT NULL
         AND b.court_y IS NOT NULL
@@ -387,7 +403,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND s.ball_hit_s IS NOT NULL
     ),
 
-    -- For each serve, find the immediately previous serve by same player with same end+side
+    -- For each serve, find immediately previous serve by same player with same end+side
     prev_same AS (
       SELECT
         a.id AS serve_id,
@@ -415,7 +431,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON p.id = ps.prev_serve_id
     ),
 
-    -- determine if there is any opponent shot between prev serve and this serve
     second_serve_flag AS (
       SELECT
         s.id AS serve_id,
@@ -453,7 +468,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE '1st'
         END AS serve_try_ix_in_point,
 
-        -- service winner: last serve of the micro-point
         CASE
           WHEN s.serve_d IS TRUE
            AND (CASE
@@ -464,19 +478,14 @@ def phase3_update(conn: Connection, task_id: str) -> int:
                   ELSE '1st'
                 END) <> 'Double'
            AND NOT EXISTS (
-             -- any later non-serve valid court shot before the next serve by anyone?
              SELECT 1
-             FROM base q
+             FROM srv1 q
              WHERE q.task_id = s.task_id
                AND q.ball_hit_s > s.ball_hit_s
                AND q.valid IS TRUE
                AND q.court_x IS NOT NULL
                AND q.court_y IS NOT NULL
-               AND NOT (
-                 lower(COALESCE(trim(q.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
-                 AND q.y IS NOT NULL
-                AND ( (q.y)::double precision < 1.0 OR (q.y)::double precision > 23.0 )
-               )
+               AND q.serve_d IS NOT TRUE
                AND q.ball_hit_s < COALESCE(
                  (SELECT MIN(z.ball_hit_s) FROM serves z
                   WHERE z.task_id = s.task_id AND z.ball_hit_s > s.ball_hit_s),
@@ -493,19 +502,22 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      serve_d               = sl.serve_d,
-      server_end_d          = sl.server_end_d,
-      serve_side_d          = sl.serve_side_d,
+      serve_d               = s1.serve_d,
+      server_end_d          = s1.server_end_d,
+      serve_side_d          = s1.serve_side_d,
       serve_try_ix_in_point = sl.serve_try_ix_in_point,
       service_winner_d      = sl.service_winner_d
-    FROM serve_labels sl
+    FROM srv1 s1
+    LEFT JOIN serve_labels sl
+      ON sl.id = s1.id
     WHERE p.task_id = :tid
-      AND p.id = sl.id;
+      AND p.id = s1.id;
     """
     res = conn.execute(text(sql), {"tid": task_id, "mid": float(mid_x)})
     return res.rowcount or 0
 
 
+# ------------------------------- PHASE 4 ---------------------------------
 def phase4_update(conn: Connection, task_id: str) -> int:
     """
     Phase 4:
