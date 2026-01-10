@@ -780,68 +780,95 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
-    Minimal exclusions (newer baseline):
-      1) if serve_side_d is NULL -> exclude_d=TRUE
-      2) non-serve before last serve in point -> exclude_d=TRUE
-      3) gap > 5s after last serve in point -> exclude this + rest of point
+    Minimal exclusions (reverted + tightened):
+
+      1) non-serve BEFORE the last serve in the point -> exclude_d = TRUE
+      2) gap > 5s AFTER the last serve in point -> exclude this + rest of point
+
+    NOTE:
+      - serve_side_d IS NULL is now allowed (NOT an exclusion)
+      - no same-player-back-to-back exclusion
+      - no pre-point blanket exclusion
     """
     sql = f"""
     WITH base AS (
       SELECT
-        p.id, p.task_id, p.point_number, p.player_id, p.ball_hit_s,
-        COALESCE(p.serve_d, FALSE) AS serve_d,
-        p.serve_side_d
+        p.id,
+        p.task_id,
+        p.point_number,
+        p.ball_hit_s,
+        COALESCE(p.serve_d, FALSE) AS serve_d
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND p.ball_hit_s IS NOT NULL
+        AND p.point_number > 0
     ),
-    pls AS (
+
+    last_serve AS (
       SELECT
-        b.task_id, b.point_number,
+        b.task_id,
+        b.point_number,
         MAX(CASE WHEN b.serve_d THEN b.ball_hit_s END) AS last_serve_s
       FROM base b
       GROUP BY b.task_id, b.point_number
     ),
+
     ordered AS (
       SELECT
         b.*,
-        pls.last_serve_s,
+        ls.last_serve_s,
         LAG(b.ball_hit_s) OVER (
           PARTITION BY b.task_id, b.point_number
           ORDER BY b.ball_hit_s, b.id
         ) AS prev_s
       FROM base b
-      LEFT JOIN pls
-        ON pls.task_id = b.task_id
-       AND pls.point_number = b.point_number
+      LEFT JOIN last_serve ls
+        ON ls.task_id = b.task_id
+       AND ls.point_number = b.point_number
     ),
-    flagged AS (
+
+    flags AS (
       SELECT
-        o.*,
-        (o.serve_side_d IS NULL) AS r1_side_null,
-        (NOT o.serve_d AND o.last_serve_s IS NOT NULL AND o.ball_hit_s < o.last_serve_s) AS r2_before_last_serve,
-        CASE
-          WHEN o.prev_s IS NULL OR o.last_serve_s IS NULL OR o.ball_hit_s <= o.last_serve_s THEN FALSE
-          ELSE (o.ball_hit_s - o.prev_s) > 5.0
-        END AS gap_break
+        o.id,
+
+        -- Rule 1: non-serve BEFORE last serve in point
+        (
+          NOT o.serve_d
+          AND o.last_serve_s IS NOT NULL
+          AND o.ball_hit_s < o.last_serve_s
+        ) AS r1_before_last_serve,
+
+        -- Rule 2: gap > 5s AFTER last serve
+        (
+          o.prev_s IS NOT NULL
+          AND o.last_serve_s IS NOT NULL
+          AND o.ball_hit_s > o.last_serve_s
+          AND (o.ball_hit_s - o.prev_s) > 5.0
+        ) AS gap_break
       FROM ordered o
     ),
+
     chain AS (
       SELECT
-        f.*,
+        f.id,
         BOOL_OR(f.gap_break) OVER (
-          PARTITION BY f.task_id, f.point_number
-          ORDER BY f.ball_hit_s, f.id
+          PARTITION BY b.task_id, b.point_number
+          ORDER BY b.ball_hit_s, b.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS r3_gap_chain
-      FROM flagged f
+        ) AS r2_gap_chain,
+        f.r1_before_last_serve
+      FROM flags f
+      JOIN {SILVER_SCHEMA}.{TABLE} b
+        ON b.id = f.id
     ),
+
     excl AS (
       SELECT
-        c.id,
-        (c.r1_side_null OR c.r2_before_last_serve OR c.r3_gap_chain) AS exclude_d
-      FROM chain c
+        id,
+        (r1_before_last_serve OR r2_gap_chain) AS exclude_d
+      FROM chain
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET exclude_d = e.exclude_d
     FROM excl e
