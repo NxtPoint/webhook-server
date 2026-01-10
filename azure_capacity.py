@@ -43,15 +43,15 @@
 # BEHAVIOR RULES
 # --------------
 # - Functions raise RuntimeError with actionable messages if misconfigured or if ARM returns an error.
-# - Resume/Suspend are asynchronous (often HTTP 202). We poll once via GET to confirm a state change,
-#   but do not block indefinitely.
+# - Resume/Suspend are asynchronous (often HTTP 202). We poll via GET to confirm a state change,
+#   keeping total wait bounded.
 # ==================================================================================================
 
 from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import requests
 from azure.identity import ClientSecretCredential
@@ -115,9 +115,7 @@ def _credential() -> ClientSecretCredential:
 
 
 def _arm_token() -> str:
-    """
-    Fetch an ARM (management.azure.com) bearer token.
-    """
+    """Fetch an ARM (management.azure.com) bearer token."""
     cred = _credential()
     token = cred.get_token("https://management.azure.com/.default")
     return token.token
@@ -152,7 +150,7 @@ def _arm_get(url: str) -> Dict[str, Any]:
 
 def _arm_post(url: str) -> None:
     r = requests.post(url, headers=_arm_headers(), timeout=_timeout_s())
-    # Resume/Suspend typically returns 202 Accepted, sometimes 200.
+    # Resume/Suspend typically returns 202 Accepted, sometimes 200/204.
     if r.status_code not in (200, 202, 204):
         raise RuntimeError(f"ARM POST failed ({r.status_code}): {r.text}")
 
@@ -169,41 +167,37 @@ def get_capacity_status() -> Dict[str, Any]:
 def _capacity_state_lower(cap_json: Dict[str, Any]) -> str:
     props = (cap_json or {}).get("properties") or {}
     state = (props.get("state") or "").strip().lower()
-    # Some fields of interest:
     # provisioningState can be present; state is the key indicator ("Paused"/"Active")
     return state
 
 
-def ensure_capacity_running(poll_seconds: int = 10) -> None:
+def ensure_capacity_running(poll_seconds: int = 30) -> None:
     """
     If capacity is paused, resume it.
-    Poll once after resume to reduce race conditions, but keep total wait bounded.
+    Poll (bounded) to reduce race conditions.
     """
     base = _arm_base_url()
     api = _api_version()
 
     cap = _arm_get(f"{base}?api-version={api}")
-    state = _capacity_state_lower(cap)
-
-    if state != "paused":
-        # Consider anything not explicitly "paused" as running enough for embed usage
+    if _capacity_state_lower(cap) != "paused":
         return
 
     _arm_post(f"{base}/resume?api-version={api}")
 
-    # Poll once (bounded) to confirm it transitions away from Paused
-    deadline = time.time() + max(1, poll_seconds)
+    deadline = time.time() + max(5, poll_seconds)
     while time.time() < deadline:
-        time.sleep(2)
+        time.sleep(5)
         cap2 = _arm_get(f"{base}?api-version={api}")
         if _capacity_state_lower(cap2) != "paused":
             return
 
-    # If still paused after bounded wait, surface a clear error
-    raise RuntimeError("Capacity resume requested but capacity still reports state=Paused after polling.")
+    raise RuntimeError(
+        f"Capacity resume requested but capacity still reports state=Paused after {poll_seconds}s polling."
+    )
 
 
-def suspend_capacity(poll_seconds: int = 120) -> None:
+def suspend_capacity(poll_seconds: int = 180) -> None:
     """
     Suspend (pause) capacity. Idempotent.
     Azure can take a while; poll up to poll_seconds.
@@ -218,18 +212,14 @@ def suspend_capacity(poll_seconds: int = 120) -> None:
 
     _arm_post(f"{base}/suspend?api-version={api}")
 
-    # Poll until paused (Azure commonly takes 30-120s)
-    deadline = time.time() + max(5, poll_seconds)
+    # Poll until paused (Azure commonly takes 30-180s)
+    deadline = time.time() + max(10, poll_seconds)
     while time.time() < deadline:
         time.sleep(5)
         cap = _arm_get(f"{base}?api-version={api}")
-        state = _capacity_state_lower(cap)
-
-        # Some tenants show intermediate provisioningState; state is still the key
-        if state == "paused":
+        if _capacity_state_lower(cap) == "paused":
             return
 
-    # If we get here, we didn't observe paused in time. Don't guess.
     raise RuntimeError(
         f"Capacity suspend requested but still not paused after {poll_seconds}s. "
         f"Check Azure portal activity log for completion."
