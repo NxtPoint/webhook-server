@@ -749,13 +749,13 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 #   - fail-closed preflight: needs >=1 first-serve anchor and exactly 2 players
 
 def phase5_update(conn: Connection, task_id: str) -> int:
-    _phase5_preflight(conn, task_id)
+    pf = _phase5_preflight(conn, task_id)  # {"p1":..., "p2":...}
 
-    r1 = phase5_fix_point_number(conn, task_id)
+    r1 = phase5_fix_point_number(conn, task_id, pf)
     r2 = phase5_apply_exclusions(conn, task_id)
-    r3 = phase5_set_point_winner(conn, task_id)
+    r3 = phase5_set_point_winner(conn, task_id, pf)
     r4 = phase5_set_game_winner(conn, task_id)
-    r5 = phase5_fix_game_number(conn, task_id)
+    r5 = phase5_fix_game_number(conn, task_id, pf)
     r6 = phase5_set_server_id(conn, task_id)
     r7 = phase5_set_shot_ix_in_point(conn, task_id)
     r8 = phase5_set_shot_phase(conn, task_id)
@@ -765,38 +765,45 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     return int((r1 or 0) + (r2 or 0) + (r3 or 0) + (r4 or 0) + (r5 or 0) + (r6 or 0) + (r7 or 0) + (r8 or 0) + (r9 or 0) + (r10 or 0))
 
 
-def _phase5_preflight(conn: Connection, task_id: str) -> None:
+def _phase5_preflight(conn: Connection, task_id: str) -> dict:
+    """
+    Production-grade preflight:
+      - Resolve the 2 "real" players even if extra player_id values exist.
+      - Fail-closed only if we cannot resolve 2 players.
+    Returns: {"p1": <player_id>, "p2": <player_id>}
+    """
+
     sql = f"""
     WITH base AS (
       SELECT
-        task_id,
         player_id,
-        COALESCE(serve_d, FALSE) AS serve_d,
-        LOWER(COALESCE(serve_try_ix_in_point::text,'')) AS try_d,
-        ball_hit_s
+        COALESCE(valid, TRUE) AS valid,
+        COALESCE(exclude_d, FALSE) AS exclude_d
       FROM {SILVER_SCHEMA}.{TABLE}
       WHERE task_id = :tid
+        AND player_id IS NOT NULL
     ),
-    first_serves AS (
-      SELECT 1
+    ranked AS (
+      SELECT
+        player_id,
+        COUNT(*) AS n
       FROM base
-      WHERE serve_d IS TRUE
-        AND try_d = '1st'
-        AND ball_hit_s IS NOT NULL
-      LIMIT 1
+      WHERE valid IS TRUE
+        AND exclude_d IS FALSE
+      GROUP BY player_id
+      ORDER BY n DESC, player_id
+      LIMIT 2
     )
     SELECT
-      (SELECT COUNT(DISTINCT player_id) FROM base WHERE player_id IS NOT NULL) AS player_cnt,
-      EXISTS (SELECT 1 FROM first_serves) AS has_first_serve
-    ;
+      (SELECT COUNT(*) FROM ranked) AS top2_cnt,
+      (SELECT player_id FROM ranked ORDER BY n DESC, player_id LIMIT 1) AS p1,
+      (SELECT player_id FROM ranked ORDER BY n DESC, player_id OFFSET 1 LIMIT 1) AS p2;
     """
-    row = conn.execute(text(sql), {"tid": task_id}).mappings().first() or {}
-    player_cnt = int(row.get("player_cnt") or 0)
-    has_first = bool(row.get("has_first_serve"))
-    if player_cnt != 2:
-        raise ValueError(f"Phase5 fail-closed: expected exactly 2 distinct player_id; got {player_cnt} (task_id={task_id})")
-    if not has_first:
-        raise ValueError(f"Phase5 fail-closed: no FIRST-serve anchors found (serve_d=TRUE and serve_try_ix_in_point='1st' with ball_hit_s not NULL) (task_id={task_id})")
+    r = conn.execute(text(sql), {"tid": task_id}).mappings().first() or {}
+    if int(r.get("top2_cnt") or 0) != 2:
+        raise ValueError(f"Phase5 fail-closed: could not resolve 2 primary players (task_id={task_id})")
+    return {"p1": r["p1"], "p2": r["p2"]}
+
 
 
 def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
@@ -950,13 +957,7 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
 
-def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
-    """
-    Winner priority per point:
-      - any double-fault → receiver
-      - else any service_winner_d → server
-      - else last non-excluded, valid swing → that player
-    """
+def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
     sql = f"""
     WITH base AS (
       SELECT
@@ -973,16 +974,17 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       FROM base b
       WHERE b.point_number > 0
         AND COALESCE(b.serve_d, FALSE) IS TRUE
-      ORDER BY b.task_id, b.point_number, b.ball_hit_s NULLS LAST, b.id
+      ORDER BY b.task_id, b.point_number, b.ball_hit_s, b.id
     ),
     point_receiver AS (
       SELECT
         ps.task_id, ps.point_number,
-        MIN(tp.player_id) FILTER (WHERE tp.player_id <> ps.server_id) AS receiver_id
+        CASE
+          WHEN ps.server_id = :p1 THEN :p2
+          WHEN ps.server_id = :p2 THEN :p1
+          ELSE NULL
+        END AS receiver_id
       FROM point_server ps
-      JOIN (SELECT DISTINCT task_id, player_id FROM base) tp
-        ON tp.task_id = ps.task_id
-      GROUP BY ps.task_id, ps.point_number
     ),
     flags AS (
       SELECT
@@ -1001,7 +1003,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
       WHERE b.point_number > 0
         AND b.exclude_d IS FALSE
         AND COALESCE(b.valid, TRUE) IS TRUE
-      ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC NULLS LAST, b.id DESC
+      ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC, b.id DESC
     ),
     winners AS (
       SELECT
@@ -1025,7 +1027,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.point_number = w.point_number;
     """
-    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+    return conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]}).rowcount or 0
 
 
 def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
