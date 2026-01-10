@@ -325,7 +325,13 @@ def phase3_update(conn: Connection, task_id: str) -> int:
             AND b.y IS NOT NULL
             AND ( (b.y)::double precision < 1.0 OR (b.y)::double precision > 23.0 )
           )
-          THEN CASE WHEN (b.y)::double precision < 1.0 THEN 'far' ELSE 'near' END
+          THEN
+            CASE
+              WHEN (b.y)::double precision < 1.0  THEN 'far'
+              WHEN (b.y)::double precision > 23.0 THEN 'near'
+              ELSE 'near'
+            END
+
           ELSE NULL
         END AS server_end_raw
       FROM base b
