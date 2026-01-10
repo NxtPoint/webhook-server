@@ -746,12 +746,13 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 #   - all anchor logic is based ONLY on FIRST serves with non-null ball_hit_s
 #   - exclude_d logic is stable (no dependence on serve_side_d non-null)
 #   - game_winner_player_id stays TEXT (no casts)
-#   - fail-closed preflight: needs >=1 first-serve anchor and exactly 2 players
+#   - preflight resolves 2 primary players even if extra player_id values exist
 
 def phase5_update(conn: Connection, task_id: str) -> int:
     pf = _phase5_preflight(conn, task_id)  # {"p1":..., "p2":...}
 
-    r1 = phase5_fix_point_number(conn, task_id)
+    # FIX: pass pf to functions that require it
+    r1 = phase5_fix_point_number(conn, task_id, pf)
     r2 = phase5_apply_exclusions(conn, task_id)
     r3 = phase5_set_point_winner(conn, task_id, pf)
     r4 = phase5_set_game_winner(conn, task_id)
@@ -762,17 +763,27 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     r9 = phase5_set_point_key(conn, task_id)
     r10 = phase5_set_shot_outcome(conn, task_id)
 
-    return int((r1 or 0) + (r2 or 0) + (r3 or 0) + (r4 or 0) + (r5 or 0) + (r6 or 0) + (r7 or 0) + (r8 or 0) + (r9 or 0) + (r10 or 0))
+    return int(
+        (r1 or 0)
+        + (r2 or 0)
+        + (r3 or 0)
+        + (r4 or 0)
+        + (r5 or 0)
+        + (r6 or 0)
+        + (r7 or 0)
+        + (r8 or 0)
+        + (r9 or 0)
+        + (r10 or 0)
+    )
 
 
 def _phase5_preflight(conn: Connection, task_id: str) -> dict:
     """
-    Production-grade preflight:
-      - Resolve the 2 "real" players even if extra player_id values exist.
-      - Fail-closed only if we cannot resolve 2 players.
+    Resolve the 2 "real" players even if extra player_id values exist.
+    Fail-closed only if we cannot resolve 2 players.
+
     Returns: {"p1": <player_id>, "p2": <player_id>}
     """
-
     sql = f"""
     WITH base AS (
       SELECT
@@ -801,9 +812,10 @@ def _phase5_preflight(conn: Connection, task_id: str) -> dict:
     """
     r = conn.execute(text(sql), {"tid": task_id}).mappings().first() or {}
     if int(r.get("top2_cnt") or 0) != 2:
-        raise ValueError(f"Phase5 fail-closed: could not resolve 2 primary players (task_id={task_id})")
+        raise ValueError(
+            f"Phase5 fail-closed: could not resolve 2 primary players (task_id={task_id})"
+        )
     return {"p1": r["p1"], "p2": r["p2"]}
-
 
 
 def phase5_fix_point_number(conn: Connection, task_id: str, pf: dict) -> int:
@@ -829,16 +841,16 @@ def phase5_fix_point_number(conn: Connection, task_id: str, pf: dict) -> int:
         AND COALESCE(p.serve_d, FALSE) IS TRUE
         AND LOWER(COALESCE(p.serve_try_ix_in_point::text,'')) = '1st'
         AND p.ball_hit_s IS NOT NULL
-      ORDER BY p.ball_hit_s, p.id
+      ORDER BY p.ball_hit_s NULLS LAST, p.id
     ),
     incs AS (
       SELECT
         a.*,
         CASE
-          WHEN ROW_NUMBER() OVER (PARTITION BY a.task_id ORDER BY a.anchor_s, a.id) = 1 THEN 1
-          WHEN LAG(a.server_pid) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s, a.id)
+          WHEN ROW_NUMBER() OVER (PARTITION BY a.task_id ORDER BY a.anchor_s NULLS LAST, a.id) = 1 THEN 1
+          WHEN LAG(a.server_pid) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s NULLS LAST, a.id)
                IS DISTINCT FROM a.server_pid THEN 1
-          WHEN LAG(a.side) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s, a.id)
+          WHEN LAG(a.side) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s NULLS LAST, a.id)
                IS DISTINCT FROM a.side THEN 1
           ELSE 0
         END AS inc
@@ -864,8 +876,12 @@ def phase5_fix_point_number(conn: Connection, task_id: str, pf: dict) -> int:
     WHERE p.id = r.id
       AND p.task_id = :tid;
     """
-    res = conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]})
+    res = conn.execute(
+        text(sql),
+        {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]},
+    )
     return res.rowcount or 0
+
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
@@ -958,6 +974,12 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
 
 
 def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
+    """
+    Winner priority per point:
+      - any double-fault → receiver
+      - else any service_winner_d → server
+      - else last non-excluded, valid swing → that player
+    """
     sql = f"""
     WITH base AS (
       SELECT
@@ -974,7 +996,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
       FROM base b
       WHERE b.point_number > 0
         AND COALESCE(b.serve_d, FALSE) IS TRUE
-      ORDER BY b.task_id, b.point_number, b.ball_hit_s, b.id
+      ORDER BY b.task_id, b.point_number, b.ball_hit_s NULLS LAST, b.id
     ),
     point_receiver AS (
       SELECT
@@ -1003,7 +1025,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
       WHERE b.point_number > 0
         AND b.exclude_d IS FALSE
         AND COALESCE(b.valid, TRUE) IS TRUE
-      ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC, b.id DESC
+      ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC NULLS LAST, b.id DESC
     ),
     winners AS (
       SELECT
@@ -1027,10 +1049,17 @@ def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
     WHERE p.task_id = :tid
       AND p.point_number = w.point_number;
     """
-    return conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]}).rowcount or 0
+    return conn.execute(
+        text(sql),
+        {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]},
+    ).rowcount or 0
 
 
 def phase5_fix_game_number(conn: Connection, task_id: str, pf: dict) -> int:
+    """
+    game_number increments when the SERVER changes at FIRST serves.
+    Anchors restricted to the 2 resolved players.
+    """
     sql = f"""
     WITH anchors AS (
       SELECT
@@ -1044,14 +1073,14 @@ def phase5_fix_game_number(conn: Connection, task_id: str, pf: dict) -> int:
         AND COALESCE(p.serve_d, FALSE) IS TRUE
         AND LOWER(COALESCE(p.serve_try_ix_in_point::text,'')) = '1st'
         AND p.ball_hit_s IS NOT NULL
-      ORDER BY p.ball_hit_s, p.id
+      ORDER BY p.ball_hit_s NULLS LAST, p.id
     ),
     incs AS (
       SELECT
         a.*,
         CASE
-          WHEN ROW_NUMBER() OVER (PARTITION BY a.task_id ORDER BY a.anchor_s, a.id) = 1 THEN 1
-          WHEN LAG(a.server_pid) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s, a.id)
+          WHEN ROW_NUMBER() OVER (PARTITION BY a.task_id ORDER BY a.anchor_s NULLS LAST, a.id) = 1 THEN 1
+          WHEN LAG(a.server_pid) OVER (PARTITION BY a.task_id ORDER BY a.anchor_s NULLS LAST, a.id)
                IS DISTINCT FROM a.server_pid THEN 1
           ELSE 0
         END AS inc
@@ -1077,9 +1106,11 @@ def phase5_fix_game_number(conn: Connection, task_id: str, pf: dict) -> int:
     WHERE p.id = r.id
       AND p.task_id = :tid;
     """
-    res = conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]})
+    res = conn.execute(
+        text(sql),
+        {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]},
+    )
     return res.rowcount or 0
-
 
 
 def phase5_set_game_winner(conn: Connection, task_id: str) -> int:
@@ -1361,7 +1392,11 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         # Phase execution in correct dependency order
         if phase in ("all", "1"):
             if replace:
-                _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
+                _exec(
+                    conn,
+                    f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid",
+                    {"tid": task_id},
+                )
             out["phase1_rows_inserted"] = phase1_load(conn, task_id)
 
         if phase in ("all", "2"):
@@ -1382,9 +1417,21 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
 # ------------------------------- CLI -------------------------------
 if __name__ == "__main__":
     import argparse, json
-    p = argparse.ArgumentParser(description="Silver point_detail — P1..P5 (serve context + point/game)")
+
+    p = argparse.ArgumentParser(
+        description="Silver point_detail — P1..P5 (serve context + point/game)"
+    )
     p.add_argument("--task-id", required=True, help="task UUID")
-    p.add_argument("--phase", choices=["1", "2", "3", "4", "5", "all"], default="all", help="which phase(s) to run")
-    p.add_argument("--replace", action="store_true", help="delete existing rows for this task_id before Phase 1 load")
+    p.add_argument(
+        "--phase",
+        choices=["1", "2", "3", "4", "5", "all"],
+        default="all",
+        help="which phase(s) to run",
+    )
+    p.add_argument(
+        "--replace",
+        action="store_true",
+        help="delete existing rows for this task_id before Phase 1 load",
+    )
     args = p.parse_args()
     print(json.dumps(build_silver(task_id=args.task_id, phase=args.phase, replace=args.replace)))
