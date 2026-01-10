@@ -5,60 +5,66 @@
 #
 # PURPOSE
 # -------
-# Single Flask web service that provides Power BI Embedded support for Wix:
+# Single Flask web service that provides Power BI Embedded support for Wix + backend automation:
 #
-#   1) Capacity control (A1 / Embedded):
-#        POST /capacity/warmup   -> resumes capacity (if paused)
-#        POST /capacity/suspend  -> pauses capacity (cost control)
+#   1) Capacity control (A1 / Embedded) via Azure ARM:
+#        POST /capacity/warmup    -> resumes capacity (if paused)
+#        POST /capacity/suspend   -> pauses capacity (cost control)
 #
-#   2) Dataset refresh trigger:
-#        POST /dataset/refresh   -> triggers a refresh for the configured dataset
-#        Intended caller: SportAI pipeline after ingest completes (server-to-server)
+#   2) Dataset refresh trigger (for SportAI completion):
+#        POST /dataset/refresh          -> triggers refresh (legacy/simple)
+#        POST /dataset/refresh_once     -> triggers refresh once per task_id (recommended)
 #
 #   3) Embed support for Wix UI:
-#        GET  /embed/config      -> returns embedUrl + IDs (workspace/report/dataset)
-#        POST /embed/token       -> returns an embed token for the report
+#        GET  /embed/config       -> returns embedUrl + IDs (workspace/report/dataset)
+#        POST /embed/token        -> resumes capacity (if configured) + returns embed token
 #
 # SECURITY MODEL
 # --------------
 # - All endpoints (except /health) are protected by OPS_KEY via header: x-ops-key
-# - This service is intended to be called only from:
-#     - Wix backend (powerbi.jsw) or
-#     - NextPoint backend services (e.g., webhook-server / upload_app.py)
-# - Never call these endpoints directly from Wix browser code with OPS_KEY exposed.
+# - Callers:
+#     - Wix backend (powerbi.jsw)
+#     - NextPoint backend services (SportAI completion pipeline)
+# - Never call from browser code with OPS_KEY.
 #
 # ENVIRONMENT VARIABLES
 # ---------------------
 # Required:
-#   OPS_KEY                Shared secret for server-to-server calls (x-ops-key header)
-#   PBI_TENANT_ID           Azure AD tenant ID
-#   PBI_CLIENT_ID           Azure AD app (service principal) client ID
-#   PBI_CLIENT_SECRET       Azure AD app secret VALUE (not secret id)
-#   PBI_WORKSPACE_ID        Power BI workspace (group) ID
-#   PBI_REPORT_ID           Power BI report ID
-#   PBI_DATASET_ID          Power BI dataset ID
+#   OPS_KEY
+#   PBI_TENANT_ID
+#   PBI_CLIENT_ID
+#   PBI_CLIENT_SECRET
+#   PBI_WORKSPACE_ID
+#   PBI_REPORT_ID
+#   PBI_DATASET_ID
 #
-# Optional:
-#   PORT                   Render sets this automatically
+# Optional (Capacity Control):
+#   AZ_SUBSCRIPTION_ID
+#   AZ_RESOURCE_GROUP
+#   AZ_CAPACITY_NAME
+#   AZ_ARM_OK_CACHE_S          (handled in azure_capacity.py)
 #
-# For capacity endpoints (only if you use warmup/suspend):
-#   AZ_SUBSCRIPTION_ID      Azure subscription containing the capacity resource
-#   AZ_RESOURCE_GROUP       Resource group name for the capacity resource
-#   AZ_CAPACITY_NAME        Capacity resource name (e.g., pbinextpointa1)
+# Optional (Behavior):
+#   PBI_AUTOWARMUP_ON_EMBED    default: "1"
+#       If "1": /embed/token will call ensure_capacity_running() before minting token.
+#       If "0": you must manage capacity externally (not recommended).
 #
-# OPERATIONAL RULES / BEST PRACTICE
-# ---------------------------------
-# - /embed/config MUST be fast and must not do capacity management or refresh work.
-# - Capacity management is decoupled from embedding:
-#     - Call /capacity/warmup shortly before embedding (optional), OR after SportAI completes.
-# - Dataset refresh is a side-effect operation:
-#     - Caller should be idempotent on their side (e.g., only call once per task_id).
-# - Keep this service stateless. All state is in:
-#     - Power BI / Azure
-#     - Render env vars
+# Idempotent refresh:
+#   PBI_REFRESH_ONCE_TTL_S     default: "3600"
+#       In-memory TTL window for /dataset/refresh_once task_id dedupe.
+#       This is best-effort; caller should still be idempotent where possible.
+#
+# NOTES
+# -----
+# - This service is intended to be stateless. The refresh-once cache is in-memory and best-effort,
+#   sufficient for "don’t spam refresh during one completion flow".
+# - If you need durable idempotency, store task_id in Postgres; we can add that later.
 # ==================================================================================================
 
 import os
+import time
+from typing import Any, Dict
+
 from flask import Flask, request, jsonify
 
 from powerbi_embed import (
@@ -69,18 +75,51 @@ from powerbi_embed import (
 
 app = Flask(__name__)
 
+_REFRESH_ONCE_CACHE: Dict[str, int] = {}  # task_id -> last_refresh_epoch_s
+
 
 # ==================================================================================================
-# AUTH
+# HELPERS
 # ==================================================================================================
+def _env(name: str, default: str = "") -> str:
+    return (os.getenv(name, default) or "").strip()
+
+
 def _require_ops_key(req) -> bool:
-    """
-    Enforces server-to-server authentication.
-    Expect caller to send: x-ops-key: <OPS_KEY>
-    """
-    expected = os.getenv("OPS_KEY", "").strip()
+    expected = _env("OPS_KEY", "")
     sent = (req.headers.get("x-ops-key", "") or "").strip()
     return bool(expected) and (sent == expected)
+
+
+def _autowarmup_enabled() -> bool:
+    return _env("PBI_AUTOWARMUP_ON_EMBED", "1") == "1"
+
+
+def _refresh_once_ttl_s() -> int:
+    try:
+        return int(_env("PBI_REFRESH_ONCE_TTL_S", "3600"))
+    except Exception:
+        return 3600
+
+
+def _maybe_warmup_capacity() -> None:
+    """
+    Resume capacity if paused. Safe to call often due to caching in azure_capacity.py.
+    """
+    if not _autowarmup_enabled():
+        return
+
+    # Lazy import so this service can still run without Azure capacity env during dev.
+    from azure_capacity import ensure_capacity_running
+
+    ensure_capacity_running()
+
+
+def _prune_refresh_once_cache(now: int) -> None:
+    ttl = _refresh_once_ttl_s()
+    dead = [k for k, ts in _REFRESH_ONCE_CACHE.items() if now - ts > ttl]
+    for k in dead:
+        _REFRESH_ONCE_CACHE.pop(k, None)
 
 
 # ==================================================================================================
@@ -88,23 +127,17 @@ def _require_ops_key(req) -> bool:
 # ==================================================================================================
 @app.get("/health")
 def health():
-    """Public-ish health check for Render uptime monitoring."""
     return jsonify({"ok": True})
 
 
 # ==================================================================================================
-# CAPACITY CONTROL (OPTIONAL)
+# CAPACITY CONTROL
 # ==================================================================================================
 @app.post("/capacity/warmup")
 def capacity_warmup():
-    """
-    Resume Power BI Embedded capacity if paused.
-    Protected by OPS_KEY.
-    """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
-    # Lazy import to avoid startup failures if Azure SDK/config is misconfigured.
     from azure_capacity import ensure_capacity_running
 
     ensure_capacity_running()
@@ -113,14 +146,9 @@ def capacity_warmup():
 
 @app.post("/capacity/suspend")
 def capacity_suspend():
-    """
-    Pause Power BI Embedded capacity (cost control).
-    Protected by OPS_KEY.
-    """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
-    # Lazy import to avoid startup failures if Azure SDK/config is misconfigured.
     from azure_capacity import suspend_capacity
 
     suspend_capacity()
@@ -133,12 +161,14 @@ def capacity_suspend():
 @app.post("/dataset/refresh")
 def dataset_refresh():
     """
-    Trigger a dataset refresh in the configured workspace.
-    Intended caller: backend pipeline after SportAI ingest completes.
-    Protected by OPS_KEY.
+    Simple refresh trigger (no idempotency).
+    Intended caller: backend pipeline after ingest completes.
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
+
+    # Optional: warmup so refresh doesn't fail if capacity is paused
+    _maybe_warmup_capacity()
 
     workspace_id, _, dataset_id = resolve_ids_if_needed()
     trigger_dataset_refresh(workspace_id, dataset_id)
@@ -146,24 +176,47 @@ def dataset_refresh():
     return jsonify({"ok": True})
 
 
+@app.post("/dataset/refresh_once")
+def dataset_refresh_once():
+    """
+    Refresh trigger with best-effort idempotency by task_id.
+    Body: { "task_id": "<uuid>", "force": false }
+    """
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    task_id = str(body.get("task_id") or "").strip()
+    force = bool(body.get("force") is True)
+
+    if not task_id:
+        return jsonify({"ok": False, "error": "Missing task_id"}), 400
+
+    now = int(time.time())
+    _prune_refresh_once_cache(now)
+
+    if (not force) and task_id in _REFRESH_ONCE_CACHE:
+        return jsonify({"ok": True, "skipped": True, "reason": "already_refreshed", "task_id": task_id})
+
+    _maybe_warmup_capacity()
+
+    workspace_id, _, dataset_id = resolve_ids_if_needed()
+    trigger_dataset_refresh(workspace_id, dataset_id)
+
+    _REFRESH_ONCE_CACHE[task_id] = now
+    return jsonify({"ok": True, "skipped": False, "task_id": task_id})
+
+
 # ==================================================================================================
 # EMBED SUPPORT
 # ==================================================================================================
 @app.get("/embed/config")
 def embed_config():
-    """
-    Returns IDs + embedUrl for Wix.
-    Protected by OPS_KEY to avoid leaking workspace/report IDs publicly.
-    """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
     workspace_id, report_id, dataset_id = resolve_ids_if_needed()
-
-    embed_url = (
-        "https://app.powerbi.com/reportEmbed"
-        f"?reportId={report_id}&groupId={workspace_id}"
-    )
+    embed_url = "https://app.powerbi.com/reportEmbed" f"?reportId={report_id}&groupId={workspace_id}"
 
     return jsonify(
         {
@@ -178,36 +231,29 @@ def embed_config():
 @app.post("/embed/token")
 def embed_token():
     """
-    Returns an embed token for the configured report (and dataset).
-    Protected by OPS_KEY.
-    RLS hook:
-      - pass 'username' (later: parent/player email or child UUID mapping)
-      - generate_embed_token can add identities when you implement RLS roles.
+    Resumes capacity (if enabled) then returns embed token.
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
-    workspace_id, report_id, dataset_id = resolve_ids_if_needed()
+    # Ensure capacity is running before token mint + immediate embed usage.
+    _maybe_warmup_capacity()
 
-    body = request.get_json(silent=True) or {}
+    workspace_id, report_id, dataset_id = resolve_ids_if_needed()
+    body: Dict[str, Any] = request.get_json(silent=True) or {}
     username = body.get("username")
 
-    token = generate_embed_token(
+    tok = generate_embed_token(
         workspace_id=workspace_id,
         report_id=report_id,
         dataset_id=dataset_id,
         username=username,
     )
-
-    return jsonify(token)
+    return jsonify(tok)
 
 
 # ==================================================================================================
-# LOCAL DEV ONLY
+# LOCAL DEV
 # ==================================================================================================
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "5000")),
-        debug=False,
-    )
+    app.run(host="0.0.0.0", port=int(_env("PORT", "5000")), debug=False)
