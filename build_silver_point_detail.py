@@ -387,6 +387,20 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM bf b
     ),
 
+    srv2 AS (
+      SELECT
+        s.*,
+        COALESCE(
+          s.server_end_d,
+          LAST_VALUE(s.server_end_d) IGNORE NULLS OVER (
+            PARTITION BY s.task_id
+            ORDER BY s.ball_hit_s, s.id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          )
+        ) AS server_end_d_ff
+      FROM srv1 s
+    ),
+
     -- mark opponent "real shots" (non-serve, valid, with court coords)
     shots_valid AS (
       SELECT
@@ -461,7 +475,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       SELECT
         s.id,
         s.serve_d,
-        s.server_end_d,
+        s.server_end_d_ff AS server_end_d,
         s.serve_side_d,
 
         CASE
