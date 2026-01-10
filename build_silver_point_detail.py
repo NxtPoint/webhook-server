@@ -532,9 +532,9 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 
 def phase5_update(conn: Connection, task_id: str) -> int:
     # 1) point_number from serve_side_d flips (first serves)
-    phase5_fix_point_number(conn, task_id)
+    # phase5_fix_point_number(conn, task_id)
     # 2) exclusions (pre-serve, >5s gap, <0.05s same-player)
-    phase5_apply_exclusions(conn, task_id)
+    # phase5_apply_exclusions(conn, task_id)
     # 3) point winner (DF via serve_try_ix_in_point, then service_winner_d, else last valid swing)
     phase5_set_point_winner(conn, task_id)
     # 4) game won by (server_end_d near↔far flips on first serves)
@@ -569,7 +569,6 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND COALESCE(p.serve_d, FALSE) IS TRUE
-        AND LOWER(p.serve_try_ix_in_point::text) IN ('1st', 'ace')
         AND p.serve_side_d IN ('deuce','ad')
       ORDER BY p.ball_hit_s
     ),
@@ -1245,30 +1244,52 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
     with engine.begin() as conn:
         ensure_table_exists(conn)
         ensure_phase_columns(conn, PHASE1_COLS)
-        if phase in ("all","2","3","4","5"): phase2_add_schema(conn)
-        if phase in ("all","3","4","5"):     phase3_add_schema(conn)
-        if phase in ("all","4","5"):         phase4_add_schema(conn)
-        if phase in ("all","5"):             phase5_add_schema(conn)
 
-        if phase in ("all","1"):
+        # Ensure schemas for requested phases
+        if phase in ("all", "2", "3", "4", "5"): phase2_add_schema(conn)
+        if phase in ("all", "3", "4", "5"):     phase3_add_schema(conn)
+        if phase in ("all", "4", "5"):          phase4_add_schema(conn)
+        if phase in ("all", "5"):               phase5_add_schema(conn)
+
+        # Phase 1
+        if phase in ("all", "1"):
             if replace:
                 _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
             out["phase1_rows"] = phase1_load(conn, task_id)
 
-        if phase in ("all","2"):
+        # Phase 2
+        if phase in ("all", "2"):
             out["phase2_rows_updated"] = phase2_update(conn, task_id)
 
-        if phase in ("all","3"):
-          out["phase3_rows_updated"] = phase3_bootstrap_serve_context(conn, task_id)
+        # ---- Fix B: for ALL, compute point_number + exclude_d BEFORE Phase 3 ----
+        if phase == "all":
+            # Phase 5 (partial): these two are prerequisites for Phase 3 labels
+            out["phase5_point_number_rows_updated"] = phase5_fix_point_number(conn, task_id)
+            out["phase5_exclude_rows_updated"]      = phase5_apply_exclusions(conn, task_id)
 
+            # Phase 3 (serve labeling + service_winner)
+            out["phase3_rows_updated"] = phase3_bootstrap_serve_context(conn, task_id)
 
-        if phase in ("all","4"):
+            # Phase 4 (depends on serve_side/server_end etc; unchanged)
             out["phase4_rows_updated"] = phase4_update(conn, task_id)
 
-        if phase in ("all","5"):
+            # Phase 5 (rest): DO NOT re-run point_number/exclude inside phase5_update
+            out["phase5_rows_updated"] = phase5_update(conn, task_id)
+
+            return out  # all done
+
+        # ---- Non-"all" phases: keep existing behavior ----
+        if phase in ("all", "3"):
+            out["phase3_rows_updated"] = phase3_bootstrap_serve_context(conn, task_id)
+
+        if phase in ("all", "4"):
+            out["phase4_rows_updated"] = phase4_update(conn, task_id)
+
+        if phase in ("all", "5"):
             out["phase5_rows_updated"] = phase5_update(conn, task_id)
 
     return out
+
 
 # ------------------------------- CLI -------------------------------
 if __name__ == "__main__":
