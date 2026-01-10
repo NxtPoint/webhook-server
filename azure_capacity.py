@@ -203,20 +203,34 @@ def ensure_capacity_running(poll_seconds: int = 10) -> None:
     raise RuntimeError("Capacity resume requested but capacity still reports state=Paused after polling.")
 
 
-def suspend_capacity(poll_seconds: int = 10) -> None:
+def suspend_capacity(poll_seconds: int = 120) -> None:
     """
-    Suspend (pause) capacity. Poll once after suspend to confirm.
+    Suspend (pause) capacity. Idempotent.
+    Azure can take a while; poll up to poll_seconds.
     """
     base = _arm_base_url()
     api = _api_version()
 
+    # If already paused, return cleanly
+    cap0 = _arm_get(f"{base}?api-version={api}")
+    if _capacity_state_lower(cap0) == "paused":
+        return
+
     _arm_post(f"{base}/suspend?api-version={api}")
 
-    deadline = time.time() + max(1, poll_seconds)
+    # Poll until paused (Azure commonly takes 30-120s)
+    deadline = time.time() + max(5, poll_seconds)
     while time.time() < deadline:
-        time.sleep(2)
+        time.sleep(5)
         cap = _arm_get(f"{base}?api-version={api}")
-        if _capacity_state_lower(cap) == "paused":
+        state = _capacity_state_lower(cap)
+
+        # Some tenants show intermediate provisioningState; state is still the key
+        if state == "paused":
             return
 
-    raise RuntimeError("Capacity suspend requested but capacity did not report state=Paused after polling.")
+    # If we get here, we didn't observe paused in time. Don't guess.
+    raise RuntimeError(
+        f"Capacity suspend requested but still not paused after {poll_seconds}s. "
+        f"Check Azure portal activity log for completion."
+    )
