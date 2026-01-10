@@ -1288,6 +1288,29 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
     res = conn.execute(text(sql), {"tid": task_id})
     return res.rowcount or 0
 
+def phase5_add_schema(conn: Connection):
+    ensure_phase_columns(conn, PHASE5_COLS)
+
+    # schema repair: if legacy column is integer, convert to text
+    sql_fix = f"""
+    DO $$
+    DECLARE t text;
+    BEGIN
+      SELECT data_type INTO t
+      FROM information_schema.columns
+      WHERE table_schema = '{SILVER_SCHEMA}'
+        AND table_name   = '{TABLE}'
+        AND column_name  = 'game_winner_player_id';
+
+      IF t = 'integer' THEN
+        ALTER TABLE {SILVER_SCHEMA}.{TABLE}
+          ALTER COLUMN game_winner_player_id TYPE text
+          USING game_winner_player_id::text;
+      END IF;
+    END $$;
+    """
+    _exec(conn, sql_fix)
+
 # ------------------------------- Orchestrator -------------------------------
 def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dict:
     if not task_id:
