@@ -1270,6 +1270,7 @@ def phase5_add_schema(conn: Connection):
     _exec(conn, sql_fix)
 
 
+
 # ------------------------------- Orchestrator -------------------------------
 def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dict:
     if not task_id:
