@@ -475,8 +475,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
                AND q.court_y IS NOT NULL
                AND NOT (
                  lower(COALESCE(trim(q.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
-                 AND q.ball_hit_location_y IS NOT NULL
-                 AND ( (q.ball_hit_location_y)::double precision < 1.0 OR (q.ball_hit_location_y)::double precision > 23.0 )
+                 AND q.y IS NOT NULL
+                AND ( (q.y)::double precision < 1.0 OR (q.y)::double precision > 23.0 )
                )
                AND q.ball_hit_s < COALESCE(
                  (SELECT MIN(z.ball_hit_s) FROM serves z
