@@ -751,7 +751,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 def phase5_update(conn: Connection, task_id: str) -> int:
     pf = _phase5_preflight(conn, task_id)  # {"p1":..., "p2":...}
 
-    r1 = phase5_fix_point_number(conn, task_id, pf)
+    r1 = phase5_fix_point_number(conn, task_id)
     r2 = phase5_apply_exclusions(conn, task_id)
     r3 = phase5_set_point_winner(conn, task_id, pf)
     r4 = phase5_set_game_winner(conn, task_id)
@@ -806,18 +806,14 @@ def _phase5_preflight(conn: Connection, task_id: str) -> dict:
 
 
 
-def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
+def phase5_fix_point_number(conn: Connection, task_id: str, pf: dict) -> int:
     """
     point_number increments at FIRST serves when EITHER:
       - server (player_id) changes, OR
       - serve_side_d changes (deuce/ad)
 
-    FIRST serves are rows with serve_d = TRUE and serve_try_ix_in_point = '1st'.
-    Persist across all rows by time. First point = 1.
-
-    Determinism:
-      - anchor order uses (ball_hit_s NULLS LAST, id)
-      - carry to rows with ball_hit_s NOT NULL only (NULL timestamps remain NULL point_number)
+    Anchors only consider the 2 resolved players (pf['p1'], pf['p2'])
+    so any extra/ghost player_id cannot create false point increments.
     """
     sql = f"""
     WITH anchors AS (
@@ -829,6 +825,7 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
         p.serve_side_d AS side
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
+        AND p.player_id IN (:p1, :p2)
         AND COALESCE(p.serve_d, FALSE) IS TRUE
         AND LOWER(COALESCE(p.serve_try_ix_in_point::text,'')) = '1st'
         AND p.ball_hit_s IS NOT NULL
@@ -850,10 +847,13 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
     pn_rows AS (
       SELECT
         p.id,
-        (SELECT SUM(i.inc)
-         FROM incs i
-         WHERE i.task_id = p.task_id
-           AND i.anchor_s <= p.ball_hit_s) AS pn
+        COALESCE(
+          (SELECT SUM(i.inc)
+           FROM incs i
+           WHERE i.task_id = p.task_id
+             AND i.anchor_s <= p.ball_hit_s),
+          0
+        ) AS pn
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND p.ball_hit_s IS NOT NULL
@@ -864,8 +864,8 @@ def phase5_fix_point_number(conn: Connection, task_id: str) -> int:
     WHERE p.id = r.id
       AND p.task_id = :tid;
     """
-    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
-
+    res = conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]})
+    return res.rowcount or 0
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
@@ -1030,12 +1030,7 @@ def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
     return conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]}).rowcount or 0
 
 
-def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
-    """
-    game_number increments when the SERVER changes at FIRST serves.
-    FIRST serves are rows with serve_d = TRUE and serve_try_ix_in_point = '1st'.
-    Persist to all rows by time. First game = 1.
-    """
+def phase5_fix_game_number(conn: Connection, task_id: str, pf: dict) -> int:
     sql = f"""
     WITH anchors AS (
       SELECT
@@ -1045,6 +1040,7 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
         p.player_id AS server_pid
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
+        AND p.player_id IN (:p1, :p2)
         AND COALESCE(p.serve_d, FALSE) IS TRUE
         AND LOWER(COALESCE(p.serve_try_ix_in_point::text,'')) = '1st'
         AND p.ball_hit_s IS NOT NULL
@@ -1064,10 +1060,13 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     g_rows AS (
       SELECT
         p.id,
-        (SELECT SUM(i.inc)
-         FROM incs i
-         WHERE i.task_id = p.task_id
-           AND i.anchor_s <= p.ball_hit_s) AS gnum
+        COALESCE(
+          (SELECT SUM(i.inc)
+           FROM incs i
+           WHERE i.task_id = p.task_id
+             AND i.anchor_s <= p.ball_hit_s),
+          0
+        ) AS gnum
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND p.ball_hit_s IS NOT NULL
@@ -1078,7 +1077,9 @@ def phase5_fix_game_number(conn: Connection, task_id: str) -> int:
     WHERE p.id = r.id
       AND p.task_id = :tid;
     """
-    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+    res = conn.execute(text(sql), {"tid": task_id, "p1": pf["p1"], "p2": pf["p2"]})
+    return res.rowcount or 0
+
 
 
 def phase5_set_game_winner(conn: Connection, task_id: str) -> int:
