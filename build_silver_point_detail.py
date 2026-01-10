@@ -253,12 +253,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
        - if serve = FALSE -> serve_d = FALSE
        - else serve_d = heuristic (overhead-ish AND (y < 1 OR y > 23))
 
-    2) server_end_d:
+    2) server_end_d business rule (as documented):
        - for serve rows:
-           y < 1  -> 'far'
-           y > 23 -> 'far'
-           else   -> 'near'
-       - persisted on every row by forward-fill; if early rows are NULL, back-fill from next known end.
+           if y < 1 -> 'far'
+           else     -> 'near'
+       - persisted on every row by carrying forward the most recent *serve-derived* end.
+         (No global MAX/MIN text fill; uses last-serve lookup per row.)
 
     Everything else unchanged (serve_side_d, serve_try_ix_in_point, service_winner_d).
     """
@@ -302,7 +302,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       WHERE p.task_id = :tid
     ),
 
-    -- compute serve_d_raw + server_end_raw ONLY when SportAI serve flag is TRUE
+    -- serve_d respects SportAI serve flag
     srv0 AS (
       SELECT
         b.*,
@@ -317,6 +317,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE FALSE
         END AS serve_d_raw,
 
+        -- server_end_raw ONLY for serve rows, per documented rule:
+        -- if y < 1 -> far else near
         CASE
           WHEN COALESCE(b.serve, FALSE) IS FALSE THEN NULL
           WHEN (
@@ -326,8 +328,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           )
           THEN
             CASE
-              WHEN (b.y)::double precision < 1.0  THEN 'far'
-              WHEN (b.y)::double precision > 23.0 THEN 'far'
+              WHEN (b.y)::double precision < 1.0 THEN 'far'
               ELSE 'near'
             END
           ELSE NULL
@@ -335,60 +336,52 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM base b
     ),
 
-    -- forward-fill (carry last known end)
-    ff AS (
-      SELECT
-        s.*,
-        MAX(s.server_end_raw) FILTER (WHERE s.server_end_raw IN ('near','far'))
-          OVER (
-            PARTITION BY s.task_id
-            ORDER BY s.ball_hit_s NULLS LAST, s.id
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-          ) AS server_end_ff
-      FROM srv0 s
-    ),
-
-    -- back-fill (for early NULLs before first known end)
-    bf AS (
-      SELECT
-        f.*,
-        MIN(f.server_end_raw) FILTER (WHERE f.server_end_raw IN ('near','far'))
-          OVER (
-            PARTITION BY f.task_id
-            ORDER BY f.ball_hit_s NULLS LAST, f.id
-            ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING
-          ) AS server_end_bf
-      FROM ff f
-    ),
-
+    -- Persist server_end_d by taking the most recent *serve-derived* server_end_raw at or before each row.
+    -- (This is stable; avoids MAX/MIN on text.)
     srv1 AS (
       SELECT
-        b.*,
-        b.serve_d_raw AS serve_d,
-        COALESCE(b.server_end_ff, b.server_end_bf) AS server_end_d,
+        s.*,
+        s.serve_d_raw AS serve_d,
+
+        COALESCE(
+          s.server_end_raw,
+          lastsrv.server_end_raw
+        ) AS server_end_d,
 
         CASE
-          WHEN b.serve_d_raw IS TRUE
-           AND b.x IS NOT NULL
-           AND COALESCE(b.server_end_ff, b.server_end_bf) IN ('near','far')
+          WHEN s.serve_d_raw IS TRUE
+           AND s.x IS NOT NULL
+           AND COALESCE(s.server_end_raw, lastsrv.server_end_raw) IN ('near','far')
           THEN
             CASE
-              WHEN COALESCE(b.server_end_ff, b.server_end_bf) = 'near' THEN
+              WHEN COALESCE(s.server_end_raw, lastsrv.server_end_raw) = 'near' THEN
                 CASE
-                  WHEN (b.x)::double precision > :mid THEN 'deuce'
-                  WHEN (b.x)::double precision < :mid THEN 'ad'
+                  WHEN (s.x)::double precision > :mid THEN 'deuce'
+                  WHEN (s.x)::double precision < :mid THEN 'ad'
                   ELSE 'deuce'
                 END
               ELSE
                 CASE
-                  WHEN (b.x)::double precision < :mid THEN 'deuce'
-                  WHEN (b.x)::double precision > :mid THEN 'ad'
+                  WHEN (s.x)::double precision < :mid THEN 'deuce'
+                  WHEN (s.x)::double precision > :mid THEN 'ad'
                   ELSE 'deuce'
                 END
             END
           ELSE NULL
         END AS serve_side_d
-      FROM bf b
+      FROM srv0 s
+      LEFT JOIN LATERAL (
+        SELECT s2.server_end_raw
+        FROM srv0 s2
+        WHERE s2.task_id = s.task_id
+          AND s2.server_end_raw IN ('near','far')
+          AND (
+            s2.ball_hit_s < s.ball_hit_s
+            OR (s2.ball_hit_s = s.ball_hit_s AND s2.id <= s.id)
+          )
+        ORDER BY s2.ball_hit_s DESC, s2.id DESC
+        LIMIT 1
+      ) lastsrv ON TRUE
     ),
 
     -- mark opponent "real shots" (valid, with court coords)
@@ -413,6 +406,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND s.ball_hit_s IS NOT NULL
     ),
 
+    -- For each serve, find immediately previous serve by same player with same end+side
     prev_same AS (
       SELECT
         a.id AS serve_id,
@@ -524,6 +518,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
     res = conn.execute(text(sql), {"tid": task_id, "mid": float(mid_x)})
     return res.rowcount or 0
+
 
 # ------------------------------- PHASE 4 ---------------------------------
 def phase4_update(conn: Connection, task_id: str) -> int:
