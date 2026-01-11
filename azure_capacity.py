@@ -150,9 +150,24 @@ def _arm_get(url: str) -> Dict[str, Any]:
 
 def _arm_post(url: str) -> None:
     r = requests.post(url, headers=_arm_headers(), timeout=_timeout_s())
+
     # Resume/Suspend typically returns 202 Accepted, sometimes 200/204.
-    if r.status_code not in (200, 202, 204):
-        raise RuntimeError(f"ARM POST failed ({r.status_code}): {r.text}")
+    if r.status_code in (200, 202, 204):
+        return
+
+    # IMPORTANT: Azure sometimes returns 400 "Service is not ready to be updated"
+    # when a previous resume/suspend is already in-flight. Treat as "accepted".
+    if r.status_code == 400:
+        try:
+            j = r.json()
+            msg = (j.get("error") or {}).get("message", "") or ""
+        except Exception:
+            msg = r.text or ""
+        if "Service is not ready to be updated" in msg:
+            return
+
+    raise RuntimeError(f"ARM POST failed ({r.status_code}): {r.text}")
+
 
 
 def get_capacity_status() -> Dict[str, Any]:
