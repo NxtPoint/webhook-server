@@ -278,24 +278,132 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_status TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
+
+        # --- NEW: typed score + timing + SR fields (idempotent) ---
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set1_games INT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_set1_games INT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set2_games INT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_set2_games INT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set3_games INT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_set3_games INT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_start_ts TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_end_ts TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS first_server TEXT",
     ):
         conn.execute(sql_text(ddl))
 
-def _store_submission_context(task_id: str, email: str, meta: dict | None, video_url: str, share_url: str | None = None):
+
+def _as_int(x):
+    try:
+        if x is None:
+            return None
+        s = str(x).strip()
+        if s == "":
+            return None
+        return int(s)
+    except Exception:
+        return None
+
+
+def _as_ts_from_text(v):
+    """
+    Accepts:
+      - None / "" -> None
+      - ISO datetime string -> TIMESTAMPTZ-ready string
+      - "HH:MM" or "HH:MM:SS" -> NOT a true timestamp without a date => returns None
+    Conservative: only parse full ISO-like values; else None.
+    """
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    # Only accept ISO-ish timestamps; otherwise return None
+    if "T" in s:
+        return s
+    return None
+
+
+def _norm_first_server(v):
+    if v is None:
+        return None
+    s = str(v).strip().upper()
+    if s in ("S", "R"):
+        return s
+    return None
+
+
+def _store_submission_context(
+    task_id: str,
+    email: str,
+    meta: dict | None,
+    video_url: str,
+    share_url: str | None = None,
+):
     if not engine:
         return
+
     m = meta or {}
+
+    # ---------------------------
+    # Extract scores from meta["score"]
+    # ---------------------------
+    score = m.get("score") if isinstance(m.get("score"), dict) else {}
+    set1 = score.get("set1") if isinstance(score.get("set1"), dict) else {}
+    set2 = score.get("set2") if isinstance(score.get("set2"), dict) else {}
+    set3 = score.get("set3") if isinstance(score.get("set3"), dict) else {}
+
+    a1 = _as_int(set1.get("a"))
+    b1 = _as_int(set1.get("b"))
+    a2 = _as_int(set2.get("a"))
+    b2 = _as_int(set2.get("b"))
+    a3 = _as_int(set3.get("a"))
+    b3 = _as_int(set3.get("b"))
+
+    # ---------------------------
+    # Extract first_server + times
+    # ---------------------------
+    wix_payload = m.get("wix_payload") if isinstance(m.get("wix_payload"), dict) else {}
+
+    first_server = _norm_first_server(m.get("first_server") or wix_payload.get("firstServer"))
+
+    # Keep raw strings (table already has start_time TEXT)
+    start_time_txt = m.get("start_time") or wix_payload.get("startTime") or None
+    end_time_txt   = m.get("end_time")   or wix_payload.get("endTime")   or None
+
+    if isinstance(start_time_txt, str):
+        start_time_txt = start_time_txt.strip() or None
+    if isinstance(end_time_txt, str):
+        end_time_txt = end_time_txt.strip() or None
+
+    # Optional true timestamps (only if Wix ever sends ISO datetime)
+    start_ts = _as_ts_from_text(m.get("match_start_ts") or m.get("start_ts") or start_time_txt)
+    end_ts   = _as_ts_from_text(m.get("match_end_ts")   or m.get("end_ts")   or end_time_txt)
+
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
+
         conn.execute(sql_text("""
             INSERT INTO bronze.submission_context (
               task_id, email, customer_name, match_date, start_time, location,
               player_a_name, player_b_name, player_a_utr, player_b_utr,
-              video_url, share_url, raw_meta
+              video_url, share_url, raw_meta,
+
+              player_a_set1_games, player_b_set1_games,
+              player_a_set2_games, player_b_set2_games,
+              player_a_set3_games, player_b_set3_games,
+              match_start_ts, match_end_ts,
+              first_server
             ) VALUES (
               :task_id, :email, :customer_name, :match_date, :start_time, :location,
               :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
-              :video_url, :share_url, :raw_meta
+              :video_url, :share_url, :raw_meta,
+
+              :a1, :b1,
+              :a2, :b2,
+              :a3, :b3,
+              :start_ts, :end_ts,
+              :first_server
             )
             ON CONFLICT (task_id) DO UPDATE SET
               email=EXCLUDED.email,
@@ -309,13 +417,23 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
               player_b_utr=EXCLUDED.player_b_utr,
               video_url=EXCLUDED.video_url,
               share_url=EXCLUDED.share_url,
-              raw_meta=EXCLUDED.raw_meta
+              raw_meta=EXCLUDED.raw_meta,
+
+              player_a_set1_games=EXCLUDED.player_a_set1_games,
+              player_b_set1_games=EXCLUDED.player_b_set1_games,
+              player_a_set2_games=EXCLUDED.player_a_set2_games,
+              player_b_set2_games=EXCLUDED.player_b_set2_games,
+              player_a_set3_games=EXCLUDED.player_a_set3_games,
+              player_b_set3_games=EXCLUDED.player_b_set3_games,
+              match_start_ts=EXCLUDED.match_start_ts,
+              match_end_ts=EXCLUDED.match_end_ts,
+              first_server=EXCLUDED.first_server
         """), {
             "task_id": task_id,
             "email": email,
             "customer_name": m.get("customer_name"),
             "match_date": m.get("match_date"),
-            "start_time": m.get("start_time"),
+            "start_time": start_time_txt,
             "location": m.get("location"),
             "player_a_name": m.get("player_a_name") or "Player A",
             "player_b_name": m.get("player_b_name") or "Player B",
@@ -324,7 +442,15 @@ def _store_submission_context(task_id: str, email: str, meta: dict | None, video
             "video_url": video_url,
             "share_url": share_url,
             "raw_meta": json.dumps(m),
+
+            "a1": a1, "b1": b1,
+            "a2": a2, "b2": b2,
+            "a3": a3, "b3": b3,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "first_server": first_server,
         })
+
 
 def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | None):
     conn.execute(sql_text("""
