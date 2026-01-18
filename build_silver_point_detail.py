@@ -126,13 +126,73 @@ def phase3_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE3_COLS)
 def phase4_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE4_COLS)
 def phase5_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE5_COLS)
 
+# ------------------------------- PHASE 0: clean playerids and de-dup repeat ids------------------------------
+def _player_id_canonical_map(conn: Connection, task_id: str) -> dict:
+    """
+    SportAI sometimes emits a 3rd/ghost player_id with tiny counts.
+    Canonical rule (deterministic, fail-closed-ish):
+      - Find top 2 player_id values by COUNT(*) in bronze.player_swing for this task_id (valid only).
+      - Keep those as-is.
+      - Map any other player_id to the 2nd-most-common player (p2).
+    This matches your case: 242(1) -> 234(51) when 234 is p2.
+    """
+    sql = """
+    WITH ranked AS (
+      SELECT
+        player_id,
+        COUNT(*) AS n
+      FROM bronze.player_swing
+      WHERE task_id::uuid = :tid
+        AND COALESCE(valid, FALSE) = TRUE
+        AND player_id IS NOT NULL
+      GROUP BY player_id
+      ORDER BY n DESC, player_id
+    )
+    SELECT player_id, n
+    FROM ranked
+    LIMIT 10;
+    """
+    rows = conn.execute(text(sql), {"tid": task_id}).fetchall()
+    if not rows:
+        return {}
+
+    # top 2
+    p1 = rows[0][0]
+    p2 = rows[1][0] if len(rows) > 1 else rows[0][0]
+
+    mapping = {p1: p1, p2: p2}
+    for pid, _n in rows[2:]:
+        mapping[pid] = p2  # map all extras to p2
+    return mapping
+
 
 # ------------------------------- PHASE 1 ---------------------------------
 def phase1_load(conn: Connection, task_id: str) -> int:
     """
     Insert core fields + split x/y + ball_hit_s.
-    Structural fix B: ON CONFLICT DO NOTHING (together with UNIQUE(task_id,id)) makes reruns safe.
+
+    Fix: canonicalize SportAI player_id to exactly 2 players:
+      - map any extra/ghost player_id to the 2nd most common player_id for the task.
     """
+    pid_map = _player_id_canonical_map(conn, task_id)
+
+    # Build CASE expression safely (no string interpolation of values)
+    # We pass mapping as bind params.
+    case_lines = []
+    params = {"tid": task_id}
+    i = 0
+    for src_pid, dst_pid in pid_map.items():
+        i += 1
+        params[f"src_{i}"] = src_pid
+        params[f"dst_{i}"] = dst_pid
+        case_lines.append(f"WHEN s.player_id = :src_{i} THEN :dst_{i}")
+
+    # If mapping is empty, keep original player_id
+    if case_lines:
+        player_id_expr = "CASE " + " ".join(case_lines) + " ELSE s.player_id END"
+    else:
+        player_id_expr = "s.player_id"
+
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       id, task_id, player_id, valid, serve, swing_type, volley, is_in_rally,
@@ -142,7 +202,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
     SELECT
       s.id::bigint                               AS id,
       s.task_id::uuid                            AS task_id,
-      s.player_id                                AS player_id,
+      {player_id_expr}                           AS player_id,
       COALESCE(s.valid, FALSE)                   AS valid,
       COALESCE(s.serve, FALSE)                   AS serve,
       s.swing_type                               AS swing_type,
@@ -178,7 +238,7 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       AND COALESCE(s.valid, FALSE) = TRUE
     ON CONFLICT (task_id, id) DO NOTHING;
     """
-    res = conn.execute(text(sql), {"tid": task_id})
+    res = conn.execute(text(sql), params)
     return res.rowcount or 0
 
 
