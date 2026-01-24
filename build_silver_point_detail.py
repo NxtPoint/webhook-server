@@ -66,6 +66,8 @@ PHASE5_COLS = OrderedDict({
     "shot_phase_d":           "text",
     "shot_outcome_d":         "text",
     "point_key":              "text",
+    "set_number":             "integer",
+    "set_game_number":        "integer",
 })
 
 # ------------------------------- helpers ---------------------------------
@@ -809,31 +811,27 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 #   - preflight resolves 2 primary players even if extra player_id values exist
 
 def phase5_update(conn: Connection, task_id: str) -> int:
-    pf = _phase5_preflight(conn, task_id)  # {"p1":..., "p2":...}
+    pf = _phase5_preflight(conn, task_id)
 
-    # FIX: pass pf to functions that require it
-    r1 = phase5_fix_point_number(conn, task_id, pf)
-    r2 = phase5_apply_exclusions(conn, task_id)
-    r3 = phase5_set_point_winner(conn, task_id, pf)
-    r4 = phase5_set_game_winner(conn, task_id)
-    r5 = phase5_fix_game_number(conn, task_id, pf)
-    r6 = phase5_set_server_id(conn, task_id)
-    r7 = phase5_set_shot_ix_in_point(conn, task_id)
-    r8 = phase5_set_shot_phase(conn, task_id)
-    r9 = phase5_set_point_key(conn, task_id)
+    r1  = phase5_fix_point_number(conn, task_id, pf)
+    r2  = phase5_apply_exclusions(conn, task_id)
+    r3  = phase5_set_point_winner(conn, task_id, pf)
+    r4  = phase5_set_game_winner(conn, task_id)
+    r5  = phase5_fix_game_number(conn, task_id, pf)
+
+    # NEW
+    r5b = phase5_set_set_number(conn, task_id)
+
+    r6  = phase5_set_server_id(conn, task_id)
+    r7  = phase5_set_shot_ix_in_point(conn, task_id)
+    r8  = phase5_set_shot_phase(conn, task_id)
+    r9  = phase5_set_point_key(conn, task_id)
     r10 = phase5_set_shot_outcome(conn, task_id)
 
     return int(
-        (r1 or 0)
-        + (r2 or 0)
-        + (r3 or 0)
-        + (r4 or 0)
-        + (r5 or 0)
-        + (r6 or 0)
-        + (r7 or 0)
-        + (r8 or 0)
-        + (r9 or 0)
-        + (r10 or 0)
+        (r1 or 0) + (r2 or 0) + (r3 or 0) + (r4 or 0) + (r5 or 0)
+        + (r5b or 0)
+        + (r6 or 0) + (r7 or 0) + (r8 or 0) + (r9 or 0) + (r10 or 0)
     )
 
 
@@ -1396,6 +1394,77 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
     FROM outcomes o
     WHERE p.id = o.id
       AND p.task_id = :tid;
+    """
+    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+
+def phase5_set_set_number(conn: Connection, task_id: str) -> int:
+    """
+    set_number derived from final set scores in bronze.submission_context and game_number.
+
+    Uses totals:
+      g1 = a1+b1, g2 = a2+b2, g3 = a3+b3
+
+    set_number:
+      1 if game_number in [1..g1]
+      2 if game_number in [g1+1..g1+g2]
+      3 if game_number in [g1+g2+1..g1+g2+g3]
+      else NULL (fail-closed)
+
+    set_game_number:
+      game number within the set.
+    """
+    sql = f"""
+    WITH sc AS (
+      SELECT
+        sc.task_id::uuid AS task_id,
+        (COALESCE(sc.player_a_set1_games,0) + COALESCE(sc.player_b_set1_games,0))::int AS g1,
+        (COALESCE(sc.player_a_set2_games,0) + COALESCE(sc.player_b_set2_games,0))::int AS g2,
+        (COALESCE(sc.player_a_set3_games,0) + COALESCE(sc.player_b_set3_games,0))::int AS g3
+      FROM bronze.submission_context sc
+      WHERE sc.task_id::uuid = :tid
+      LIMIT 1
+    ),
+    bounds AS (
+      SELECT
+        task_id,
+        g1,
+        (g1 + g2)::int AS g12,
+        (g1 + g2 + g3)::int AS g123
+      FROM sc
+    ),
+    mapped AS (
+      SELECT
+        p.id,
+        p.game_number,
+        b.g1, b.g12, b.g123,
+        CASE
+          WHEN p.game_number IS NULL OR p.game_number <= 0 THEN NULL
+          WHEN b.g1   IS NULL OR b.g1   <= 0 THEN NULL
+          WHEN p.game_number <= b.g1 THEN 1
+          WHEN b.g12 > b.g1   AND p.game_number <= b.g12 THEN 2
+          WHEN b.g123 > b.g12 AND p.game_number <= b.g123 THEN 3
+          ELSE NULL
+        END AS set_number,
+        CASE
+          WHEN p.game_number IS NULL OR p.game_number <= 0 THEN NULL
+          WHEN b.g1   IS NULL OR b.g1   <= 0 THEN NULL
+          WHEN p.game_number <= b.g1 THEN p.game_number
+          WHEN b.g12 > b.g1   AND p.game_number <= b.g12 THEN p.game_number - b.g1
+          WHEN b.g123 > b.g12 AND p.game_number <= b.g123 THEN p.game_number - b.g12
+          ELSE NULL
+        END AS set_game_number
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      CROSS JOIN bounds b
+      WHERE p.task_id = :tid
+        AND p.point_number > 0
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      set_number = m.set_number,
+      set_game_number = m.set_game_number
+    FROM mapped m
+    WHERE p.task_id = :tid
+      AND p.id = m.id;
     """
     return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
