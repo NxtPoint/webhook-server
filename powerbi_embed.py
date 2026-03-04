@@ -167,20 +167,28 @@ def generate_embed_token(
 ) -> Dict[str, Any]:
     """
     Generates an embed token for a report (App-Owns-Data).
-    IMPORTANT: include datasets explicitly; otherwise some tenants return tokens
-    that fail at embed-time with 401 "Get report failed".
-    Supports future RLS via identities.
+    For SaaS embedding with RLS, username MUST be provided (Wix member email).
     """
+    require_identity = _env("PBI_REQUIRE_RLS_IDENTITY", "1") == "1"
+
+    norm_user = (username or "").strip().lower()
+    if require_identity and not norm_user:
+        raise RuntimeError("Missing username for Power BI embed token (fail-closed).")
+
+    # Default to your single RLS role if not supplied
+    eff_roles = roles or ["rls_email"]
+
     body: Dict[str, Any] = {
         "accessLevel": "View",
         "datasets": [{"id": dataset_id}],
     }
 
-    if username:
+    # Always include identities when we have a username
+    if norm_user:
         body["identities"] = [
             {
-                "username": username,
-                "roles": roles or [],
+                "username": norm_user,
+                "roles": eff_roles,
                 "datasets": [dataset_id],
             }
         ]

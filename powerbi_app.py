@@ -192,22 +192,31 @@ def embed_config():
 def embed_token():
     """
     Resumes capacity (if enabled) then returns embed token.
+    Requires username for RLS (fail-closed).
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
+
+    body: Dict[str, Any] = request.get_json(silent=True) or {}
+
+    # Fail-closed: Wix must send logged-in member email
+    username_raw = body.get("username")
+    username = (str(username_raw or "").strip().lower())
+
+    if not username or "@" not in username:
+        return jsonify({"error": "missing_or_invalid_username"}), 400
 
     # Ensure capacity is running before token mint + immediate embed usage.
     _maybe_warmup_capacity()
 
     workspace_id, report_id, dataset_id = resolve_ids_if_needed()
-    body: Dict[str, Any] = request.get_json(silent=True) or {}
-    username = body.get("username")
 
     tok = generate_embed_token(
         workspace_id=workspace_id,
         report_id=report_id,
         dataset_id=dataset_id,
         username=username,
+        roles=["rls_email"],  # REQUIRED
     )
     return jsonify(tok)
 
@@ -217,3 +226,5 @@ def embed_token():
 # ==================================================================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(_env("PORT", "5000")), debug=False)
+
+

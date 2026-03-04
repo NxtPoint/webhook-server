@@ -52,10 +52,12 @@ from __future__ import annotations
 import os
 import time
 from typing import Any, Dict
-
+import threading
+_CAPACITY_LOCK = threading.Lock()
 import requests
 from azure.identity import ClientSecretCredential
 
+_ARM_TOKEN_CACHE: Dict[str, Any] = {"token": None, "expires_at": 0}
 
 def _env(name: str, default: str = "") -> str:
     return (os.getenv(name, default) or "").strip()
@@ -115,10 +117,20 @@ def _credential() -> ClientSecretCredential:
 
 
 def _arm_token() -> str:
-    """Fetch an ARM (management.azure.com) bearer token."""
+    """Fetch an ARM bearer token with caching."""
+    now = int(time.time())
+    tok = _ARM_TOKEN_CACHE.get("token")
+    exp = int(_ARM_TOKEN_CACHE.get("expires_at") or 0)
+    if tok and now < exp - 60:
+        return str(tok)
+
     cred = _credential()
-    token = cred.get_token("https://management.azure.com/.default")
-    return token.token
+    t = cred.get_token("https://management.azure.com/.default")
+    # azure-identity token has expires_on (epoch seconds)
+    expires_on = int(getattr(t, "expires_on", now + 3600))
+    _ARM_TOKEN_CACHE["token"] = t.token
+    _ARM_TOKEN_CACHE["expires_at"] = expires_on
+    return str(t.token)
 
 
 def _arm_base_url() -> str:
@@ -187,10 +199,6 @@ def _capacity_state_lower(cap_json: Dict[str, Any]) -> str:
 
 
 def ensure_capacity_running(poll_seconds: int = 30) -> None:
-    """
-    If capacity is paused, resume it.
-    Poll (bounded) to reduce race conditions.
-    """
     base = _arm_base_url()
     api = _api_version()
 
@@ -198,14 +206,20 @@ def ensure_capacity_running(poll_seconds: int = 30) -> None:
     if _capacity_state_lower(cap) != "paused":
         return
 
-    _arm_post(f"{base}/resume?api-version={api}")
-
-    deadline = time.time() + max(5, poll_seconds)
-    while time.time() < deadline:
-        time.sleep(5)
-        cap2 = _arm_get(f"{base}?api-version={api}")
-        if _capacity_state_lower(cap2) != "paused":
+    with _CAPACITY_LOCK:
+        # Re-check after acquiring lock
+        cap = _arm_get(f"{base}?api-version={api}")
+        if _capacity_state_lower(cap) != "paused":
             return
+
+        _arm_post(f"{base}/resume?api-version={api}")
+
+        deadline = time.time() + max(5, poll_seconds)
+        while time.time() < deadline:
+            time.sleep(5)
+            cap2 = _arm_get(f"{base}?api-version={api}")
+            if _capacity_state_lower(cap2) != "paused":
+                return
 
     raise RuntimeError(
         f"Capacity resume requested but capacity still reports state=Paused after {poll_seconds}s polling."
