@@ -27,6 +27,8 @@ from powerbi_embed import (
     trigger_dataset_refresh,
 )
 
+
+
 app = Flask(__name__)
 
 _REFRESH_ONCE_CACHE: Dict[str, int] = {}  # task_id -> last_refresh_epoch_s
@@ -84,6 +86,26 @@ def _prune_refresh_once_cache(now: int) -> None:
 def health():
     return jsonify({"ok": True})
 
+from powerbi_embed import _pbi_get  # or expose a safe wrapper
+
+@app.get("/debug/report_dataset")
+def debug_report_dataset():
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    workspace_id, report_id, dataset_id = resolve_ids_if_needed()
+
+    rep = _pbi_get(f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}")
+    ds  = _pbi_get(f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}")
+
+    return jsonify({
+        "workspaceId": workspace_id,
+        "reportId": report_id,
+        "report.datasetId": rep.get("datasetId"),
+        "dataset.isEffectiveIdentityRequired": ds.get("isEffectiveIdentityRequired"),
+        "dataset.isEffectiveIdentityRolesRequired": ds.get("isEffectiveIdentityRolesRequired"),
+        "dataset.name": ds.get("name"),
+    })
 
 # ==================================================================================================
 # CAPACITY CONTROL
