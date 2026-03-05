@@ -1232,32 +1232,52 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
 
 def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
     """
-    Winner priority per point:
-      - any double-fault → receiver
-      - else any service_winner_d → server
-      - else last non-excluded, valid swing → that player
+    Winner per point (updated business rule):
+
+      1) If any double-fault in the point -> receiver wins.
+      2) Else use LAST non-excluded, valid shot in the point:
+           - if that shot_outcome_d = 'Winner' -> shooter (player_id) wins
+           - else (Error / In / NULL) -> opponent wins
+
+    Notes:
+      - exclude_d rule remains untouched (we only consume it).
+      - "last shot" remains the last non-excluded, valid row by (ball_hit_s, id).
+      - Opponent is resolved using pf['p1'], pf['p2'] only (fail-closed to NULL if unknown).
     """
     sql = f"""
     WITH base AS (
       SELECT
-        p.id, p.task_id, p.player_id, p.valid,
-        p.serve_d, p.serve_try_ix_in_point, p.service_winner_d,
-        p.ball_hit_s, p.point_number,
-        COALESCE(p.exclude_d, FALSE) AS exclude_d
+        p.id,
+        p.task_id,
+        p.point_number,
+        p.player_id,
+        COALESCE(p.valid, TRUE) AS valid,
+        COALESCE(p.exclude_d, FALSE) AS exclude_d,
+        COALESCE(p.serve_d, FALSE) AS serve_d,
+        p.serve_try_ix_in_point,
+        p.shot_outcome_d,
+        p.ball_hit_s
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
+        AND p.point_number > 0
     ),
+
+    -- server = first serve row in point
     point_server AS (
       SELECT DISTINCT ON (b.task_id, b.point_number)
-        b.task_id, b.point_number, b.player_id AS server_id
+        b.task_id,
+        b.point_number,
+        b.player_id AS server_id
       FROM base b
-      WHERE b.point_number > 0
-        AND COALESCE(b.serve_d, FALSE) IS TRUE
+      WHERE b.serve_d IS TRUE
       ORDER BY b.task_id, b.point_number, b.ball_hit_s NULLS LAST, b.id
     ),
+
+    -- receiver = other player among the two resolved players
     point_receiver AS (
       SELECT
-        ps.task_id, ps.point_number,
+        ps.task_id,
+        ps.point_number,
         CASE
           WHEN ps.server_id = :p1 THEN :p2
           WHEN ps.server_id = :p2 THEN :p1
@@ -1265,41 +1285,61 @@ def phase5_set_point_winner(conn: Connection, task_id: str, pf: dict) -> int:
         END AS receiver_id
       FROM point_server ps
     ),
+
+    -- double-fault flag (uses serve_try_ix_in_point; assumes it is persisted to serve rows)
     flags AS (
       SELECT
-        b.task_id, b.point_number,
-        BOOL_OR(COALESCE(b.serve_d, FALSE) IS TRUE
-               AND LOWER(COALESCE(b.serve_try_ix_in_point::text,'')) LIKE 'double%') AS any_double,
-        BOOL_OR(COALESCE(b.service_winner_d, FALSE)) AS any_sw
+        b.task_id,
+        b.point_number,
+        BOOL_OR(
+          b.serve_d IS TRUE
+          AND LOWER(COALESCE(b.serve_try_ix_in_point::text,'')) LIKE 'double%'
+        ) AS any_double
       FROM base b
-      WHERE b.point_number > 0
       GROUP BY b.task_id, b.point_number
     ),
+
+    -- last non-excluded, valid row (this is your "last shot" anchor)
     last_valid AS (
       SELECT DISTINCT ON (b.task_id, b.point_number)
-        b.task_id, b.point_number, b.player_id AS last_pid
+        b.task_id,
+        b.point_number,
+        b.player_id AS last_pid,
+        b.shot_outcome_d AS last_outcome
       FROM base b
-      WHERE b.point_number > 0
-        AND b.exclude_d IS FALSE
-        AND COALESCE(b.valid, TRUE) IS TRUE
+      WHERE b.exclude_d IS FALSE
+        AND b.valid IS TRUE
       ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC NULLS LAST, b.id DESC
     ),
+
     winners AS (
       SELECT
-        ps.task_id, ps.point_number,
+        ps.task_id,
+        ps.point_number,
         CASE
+          -- Rule 1: any double fault -> receiver
           WHEN f.any_double IS TRUE THEN pr.receiver_id
-          WHEN f.any_sw IS TRUE THEN ps.server_id
-          ELSE lv.last_pid
+
+          -- Rule 2: last shot decides
+          WHEN LOWER(COALESCE(lv.last_outcome::text,'')) = 'winner' THEN lv.last_pid
+
+          -- otherwise opponent of last shooter
+          WHEN lv.last_pid = :p1 THEN :p2
+          WHEN lv.last_pid = :p2 THEN :p1
+          ELSE NULL
         END AS winner_pid
       FROM point_server ps
       LEFT JOIN point_receiver pr
-        ON pr.task_id = ps.task_id AND pr.point_number = ps.point_number
+        ON pr.task_id = ps.task_id
+       AND pr.point_number = ps.point_number
       LEFT JOIN flags f
-        ON f.task_id = ps.task_id AND f.point_number = ps.point_number
+        ON f.task_id = ps.task_id
+       AND f.point_number = ps.point_number
       LEFT JOIN last_valid lv
-        ON lv.task_id = ps.task_id AND lv.point_number = ps.point_number
+        ON lv.task_id = ps.task_id
+       AND lv.point_number = ps.point_number
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET point_winner_player_id = w.winner_pid
     FROM winners w
