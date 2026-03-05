@@ -320,7 +320,9 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     - Singles in-play region for x: [1.37, 9.60]
     - serve_side uses midline 5.485 (singles center line)
     - point_number increments when serve_side changes (serve rows), then forward-filled
-    - serve_try computed within point (prevents point starting with '2nd'), then forward-filled
+    - serve_try computed within point (prevents point starting with '2nd'), then forward-filled (persisted)
+    - service_winner computed on serve rows; persisted PER POINT (no leaks across points)
+      Fix: do NOT require bounce coords to detect a return (prevents false service winners).
     """
 
     COURT_LENGTH_M = 23.77
@@ -510,7 +512,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM srv1 s1
     ),
 
-        -- compute point_number on serve rows by serve_side changes (no nested windows)
+    -- compute point_number on serve rows by serve_side changes (no nested windows)
     serve_points0 AS (
       SELECT
         s.id,
@@ -557,20 +559,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON sp.id = s2.id
     ),
 
-    shots_valid AS (
-      SELECT
-        b.task_id,
-        b.player_id,
-        b.ball_hit_s AS t,
-        b.id,
-        b.point_number
-      FROM t_point b
-      WHERE b.valid IS TRUE
-        AND b.court_x IS NOT NULL
-        AND b.court_y IS NOT NULL
-        AND b.point_number IS NOT NULL
-    ),
-
+    -- serve rows within points
     serves AS (
       SELECT s.*
       FROM t_point s
@@ -578,6 +567,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND s.point_number IS NOT NULL
     ),
 
+    -- prior serve within the point (to decide 2nd serve)
     prev_in_point AS (
       SELECT
         a.id AS serve_id,
@@ -604,6 +594,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON p.id = ps.prev_serve_id
     ),
 
+    -- 2nd serve if no opponent non-serve shot occurs between prev serve and this serve (within same point)
     second_serve_flag AS (
       SELECT
         s.id AS serve_id,
@@ -612,11 +603,13 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE
             NOT EXISTS (
               SELECT 1
-              FROM shots_valid r
+              FROM t_point r
               WHERE r.task_id = s.task_id
                 AND r.point_number = s.point_number
-                AND r.t > pd.prev_t
-                AND r.t < s.ball_hit_s
+                AND r.ball_hit_s > pd.prev_t
+                AND r.ball_hit_s < s.ball_hit_s
+                AND r.serve_d IS NOT TRUE
+                AND COALESCE(r.valid, TRUE) IS TRUE
                 AND r.player_id <> s.player_id
             )
         END AS is_second_serve
@@ -625,6 +618,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON pd.serve_id = s.id
     ),
 
+    -- serve labels (raw)
     serve_labels AS (
       SELECT
         s.id,
@@ -649,17 +643,18 @@ def phase3_update(conn: Connection, task_id: str) -> int:
              SELECT 1
              FROM t_point q
              WHERE q.task_id = s.task_id
-               AND q.ball_hit_s > s.ball_hit_s
-               AND q.valid IS TRUE
-               AND q.court_x IS NOT NULL
-               AND q.court_y IS NOT NULL
-               AND q.serve_d IS NOT TRUE
                AND q.point_number = s.point_number
+               AND q.ball_hit_s > s.ball_hit_s
                AND q.ball_hit_s < COALESCE(
-                 (SELECT MIN(z.ball_hit_s) FROM serves z
-                  WHERE z.task_id = s.task_id AND z.ball_hit_s > s.ball_hit_s),
+                 (SELECT MIN(z.ball_hit_s)
+                  FROM serves z
+                  WHERE z.task_id = s.task_id
+                    AND z.ball_hit_s > s.ball_hit_s),
                  1e15
                )
+               AND q.serve_d IS NOT TRUE
+               AND COALESCE(q.valid, TRUE) IS TRUE
+               AND q.player_id <> s.player_id
            )
           THEN TRUE
           ELSE NULL
@@ -682,6 +677,8 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     t1 AS (
       SELECT
         t0.*,
+
+        -- Persist serve_try across the full timeline (as you requested)
         (
           ARRAY_AGG(t0.serve_try_raw ORDER BY t0.ball_hit_s, t0.id)
           FILTER (WHERE t0.serve_try_raw IS NOT NULL)
@@ -692,15 +689,12 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           )
         ] AS serve_try_ix_in_point,
 
+        -- Persist service_winner per POINT (prevents cross-point leakage)
         (
-          ARRAY_AGG(t0.service_winner_raw ORDER BY t0.ball_hit_s, t0.id)
-          FILTER (WHERE t0.service_winner_raw IS NOT NULL)
-        )[
-          CARDINALITY(
-            ARRAY_AGG(t0.service_winner_raw ORDER BY t0.ball_hit_s, t0.id)
-            FILTER (WHERE t0.service_winner_raw IS NOT NULL)
-          )
-        ] AS service_winner_d
+          MAX(CASE WHEN t0.service_winner_raw IS TRUE THEN 1 ELSE 0 END)
+          OVER (PARTITION BY t0.task_id, t0.point_number)
+        ) = 1 AS service_winner_d
+
       FROM t0
       GROUP BY
         t0.id, t0.task_id, t0.player_id, t0.valid, t0.serve, t0.swing_type, t0.ball_hit_s, t0.x, t0.y,
@@ -722,15 +716,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
 
     res = conn.execute(
-      text(sql),
-      {
-        "tid": task_id,
-        "mid": float(mid_x),
-        "eps": float(EPS_BASELINE_M),
-        "y_max": float(COURT_LENGTH_M),
-        "sx_left": float(SINGLES_LEFT_X),
-        "sx_right": float(SINGLES_RIGHT_X),
-      },
+        text(sql),
+        {
+            "tid": task_id,
+            "mid": float(mid_x),
+            "eps": float(EPS_BASELINE_M),
+            "y_max": float(COURT_LENGTH_M),
+            "sx_left": float(SINGLES_LEFT_X),
+            "sx_right": float(SINGLES_RIGHT_X),
+        },
     )
     return res.rowcount or 0
 
