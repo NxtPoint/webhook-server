@@ -1570,6 +1570,15 @@ def phase5_set_point_key(conn: Connection, task_id: str) -> int:
 
 
 def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
+    # Singles geometry (meters) with SportAI x-origin at outside doubles sideline
+    COURT_LEN = 23.77
+    SINGLES_LEFT_X = 1.37
+    SINGLES_RIGHT_X = 9.60
+
+    # Net is at half court; use a tolerant band to catch net bounces/contacts
+    NET_Y = 11.885
+    NET_BAND = 2.25  # adjust later if needed
+
     sql = f"""
     WITH last_shot AS (
       SELECT
@@ -1589,12 +1598,23 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
         CASE
           WHEN p.shot_ix_in_point < ls.last_ix
             THEN 'In'
+
           WHEN p.shot_ix_in_point = ls.last_ix
-            THEN CASE
-                   WHEN p.player_id = p.point_winner_player_id
-                     THEN 'Winner'
-                   ELSE 'Error'
-                 END
+            THEN
+              CASE
+                -- Winner if the LAST shot's bounce is in singles court (and not a net bounce)
+                WHEN p.court_x IS NOT NULL
+                 AND p.court_y IS NOT NULL
+                 AND (p.court_x)::double precision BETWEEN :sx_left AND :sx_right
+                 AND (p.court_y)::double precision BETWEEN 0 AND :court_len
+                 AND NOT (
+                   lower(COALESCE(p.type,'')) = 'floor'
+                   AND ABS((p.court_y)::double precision - :net_y) <= :net_band
+                 )
+                  THEN 'Winner'
+                ELSE 'Error'
+              END
+
           ELSE NULL
         END AS shot_outcome_d
       FROM {SILVER_SCHEMA}.{TABLE} p
@@ -1612,7 +1632,17 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
     WHERE p.id = o.id
       AND p.task_id = :tid;
     """
-    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+    return conn.execute(
+        text(sql),
+        {
+            "tid": task_id,
+            "court_len": float(COURT_LEN),
+            "sx_left": float(SINGLES_LEFT_X),
+            "sx_right": float(SINGLES_RIGHT_X),
+            "net_y": float(NET_Y),
+            "net_band": float(NET_BAND),
+        },
+    ).rowcount or 0
 
 def phase5_set_set_number(conn: Connection, task_id: str) -> int:
     """
