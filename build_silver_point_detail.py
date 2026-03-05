@@ -1512,6 +1512,11 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
 
 
 def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
+    # Singles exact geometry (meters). y=0 at near baseline; y increases to far baseline.
+    COURT_LENGTH_M = 23.77
+    SERVICE_LINE_M = 6.40
+    FAR_SERVICE_LINE_M = COURT_LENGTH_M - SERVICE_LINE_M  # 17.37
+
     sql = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET shot_phase_d =
@@ -1523,19 +1528,32 @@ def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
         ELSE
           CASE
             WHEN p.ball_hit_location_y IS NULL THEN NULL
+
+            -- exact court bounds
             WHEN (p.ball_hit_location_y)::double precision < 0
-                 OR (p.ball_hit_location_y)::double precision > 23
+                 OR (p.ball_hit_location_y)::double precision > :court_len
               THEN 'Rally'
-            WHEN (p.ball_hit_location_y)::double precision > 6
-                 AND (p.ball_hit_location_y)::double precision < 18
+
+            -- "Net" band: between service lines (exact)
+            WHEN (p.ball_hit_location_y)::double precision > :svc
+                 AND (p.ball_hit_location_y)::double precision < :far_svc
               THEN 'Net'
+
             ELSE 'Transition'
           END
       END
     WHERE p.task_id = :tid
       AND p.point_number > 0;
     """
-    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+    return conn.execute(
+        text(sql),
+        {
+            "tid": task_id,
+            "court_len": float(COURT_LENGTH_M),
+            "svc": float(SERVICE_LINE_M),
+            "far_svc": float(FAR_SERVICE_LINE_M),
+        },
+    ).rowcount or 0
 
 
 def phase5_set_point_key(conn: Connection, task_id: str) -> int:
