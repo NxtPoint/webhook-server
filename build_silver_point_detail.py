@@ -510,27 +510,38 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM srv1 s1
     ),
 
-    serve_points AS (
+        -- compute point_number on serve rows by serve_side changes (no nested windows)
+    serve_points0 AS (
       SELECT
         s.id,
         s.task_id,
-        1
-        + SUM(
-            CASE
-              WHEN LAG(s.serve_side_d) OVER (
-                     PARTITION BY s.task_id
-                     ORDER BY s.ball_hit_s, s.id
-                   ) IS DISTINCT FROM s.serve_side_d
-              THEN 1 ELSE 0
-            END
-          ) OVER (
-            PARTITION BY s.task_id
-            ORDER BY s.ball_hit_s, s.id
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-          )::integer AS point_number_serves
+        s.ball_hit_s,
+        s.serve_side_d,
+        LAG(s.serve_side_d) OVER (
+          PARTITION BY s.task_id
+          ORDER BY s.ball_hit_s, s.id
+        ) AS prev_serve_side_d
       FROM srv2 s
       WHERE s.serve_d IS TRUE
         AND s.serve_side_d IS NOT NULL
+    ),
+
+    serve_points AS (
+      SELECT
+        sp0.id,
+        sp0.task_id,
+        1
+        + SUM(
+            CASE
+              WHEN sp0.prev_serve_side_d IS DISTINCT FROM sp0.serve_side_d THEN 1
+              ELSE 0
+            END
+          ) OVER (
+            PARTITION BY sp0.task_id
+            ORDER BY sp0.ball_hit_s, sp0.id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          )::integer AS point_number_serves
+      FROM serve_points0 sp0
     ),
 
     t_point AS (
