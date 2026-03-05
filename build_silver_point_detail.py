@@ -314,43 +314,24 @@ def phase2_update(conn: Connection, task_id: str) -> int:
 # ------------------------------- PHASE 3 ---------------------------------
 def phase3_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 3 (production-grade, baseline-compatible, Postgres-safe):
+    Phase 3 (singles court rules; coordinate origin still doubles):
 
-    1) serve_d respects SportAI flag:
-       - if serve = FALSE -> serve_d = FALSE
-       - else serve_d = heuristic (overhead-ish AND (y near baselines))
-
-    2) server_end_d business rule (as documented):
-       - for serve rows:
-           if y near near-baseline -> 'far'
-           else                    -> 'near'
-       - persisted on every row by carrying forward the most recent *serve-derived* end.
-
-    3) serve_side_d:
-       - computed on serve rows using x vs mid_x and server_end_d rule (unchanged)
-       - persisted on every row (no gaps).
-
-    4) point_number:
-       - increments when serve_side_d changes (serve rows only), then forward-filled (no gaps).
-
-    5) serve_try_ix_in_point + service_winner_d:
-       - computed on serve rows
-       - serve_try logic is constrained within point_number so a new point cannot start with '2nd'
-       - persisted on every row (no gaps).
+    - x origin: 0 at OUTSIDE doubles sideline (data coordinate frame)
+    - Singles in-play region for x: [1.37, 9.60]
+    - serve_side uses midline 5.485 (singles center line)
+    - point_number increments when serve_side changes (serve rows), then forward-filled
+    - serve_try computed within point (prevents point starting with '2nd'), then forward-filled
     """
 
-    # -------------------
-    # Exact court constants (meters), per your coordinate system:
-    # x=0 at OUTSIDE doubles sideline; y=0 at near baseline
-    # -------------------
     COURT_LENGTH_M = 23.77
     DOUBLES_WIDTH_M = 10.97
-    DOUBLES_MID_X = DOUBLES_WIDTH_M / 2.0  # 5.485
-    EPS_BASELINE_M = 0.30  # tolerance for "near baseline" anchoring
+    EPS_BASELINE_M = 0.30
 
-    # -------------------
-    # Preflight checks (non-fatal; only to avoid bad runs)
-    # -------------------
+    # Singles boundaries in doubles-origin frame
+    SINGLES_LEFT_X = (DOUBLES_WIDTH_M - 8.23) / 2.0  # 1.37
+    SINGLES_RIGHT_X = SINGLES_LEFT_X + 8.23          # 9.60
+    MID_X_DEFAULT = SINGLES_LEFT_X + 8.23 / 2.0      # 5.485
+
     sql_checks = f"""
     WITH base AS (
       SELECT
@@ -377,11 +358,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND b.ball_hit_s IS NOT NULL
       LIMIT 1
     )
-    SELECT
-      (SELECT COUNT(DISTINCT player_id) FROM base WHERE player_id IS NOT NULL) AS player_cnt,
-      (SELECT COUNT(*) FROM base WHERE sportai_serve IS TRUE AND ball_hit_s IS NULL) AS serve_null_s_cnt,
-      (SELECT COUNT(*) FROM base WHERE sportai_serve IS TRUE AND y IS NULL) AS serve_null_y_cnt,
-      EXISTS (SELECT 1 FROM anchors) AS has_anchor;
+    SELECT EXISTS (SELECT 1 FROM anchors) AS has_anchor;
     """
     chk = conn.execute(
         text(sql_checks),
@@ -391,9 +368,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     if not chk.get("has_anchor", False):
         return 0
 
-    # -------------------
-    # Midpoint for X (avg serve-hit x). Default to exact doubles midline if no serves.
-    # -------------------
+    # Midpoint for X (avg serve-hit x). Default to singles midline.
     sql_mid = f"""
     WITH srv AS (
       SELECT NULLIF(TRIM(ball_hit_location_x::text), '')::double precision AS x
@@ -407,6 +382,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           (ball_hit_location_y)::double precision < :eps
           OR (ball_hit_location_y)::double precision > (:y_max - :eps)
         )
+        AND (ball_hit_location_x)::double precision BETWEEN :sx_left AND :sx_right
     )
     SELECT COALESCE(AVG(x), :mid_default) FROM srv;
     """
@@ -416,15 +392,14 @@ def phase3_update(conn: Connection, task_id: str) -> int:
             "tid": task_id,
             "eps": float(EPS_BASELINE_M),
             "y_max": float(COURT_LENGTH_M),
-            "mid_default": float(DOUBLES_MID_X),
+            "sx_left": float(SINGLES_LEFT_X),
+            "sx_right": float(SINGLES_RIGHT_X),
+            "mid_default": float(MID_X_DEFAULT),
         },
     ).scalar()
     if mid_x is None:
-        mid_x = float(DOUBLES_MID_X)
+        mid_x = float(MID_X_DEFAULT)
 
-    # -------------------
-    # Main Phase 3 update
-    # -------------------
     sql = f"""
     WITH base AS (
       SELECT
@@ -432,7 +407,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         p.task_id,
         p.player_id,
         p.valid,
-        p.serve,          -- SportAI serve flag
+        p.serve,
         p.swing_type,
         p.ball_hit_s,
         p.ball_hit_location_x AS x,
@@ -444,11 +419,9 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND p.ball_hit_s IS NOT NULL
     ),
 
-    -- compute serve_d_raw + server_end_raw only from SportAI-serve TRUE rows
     srv0 AS (
       SELECT
         b.*,
-
         CASE
           WHEN COALESCE(b.serve, FALSE) IS FALSE THEN FALSE
           WHEN (
@@ -462,7 +435,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           ELSE FALSE
         END AS serve_d_raw,
 
-        -- end rule: y near near-baseline => far, else near (only for serve rows)
         CASE
           WHEN COALESCE(b.serve, FALSE) IS FALSE THEN NULL
           WHEN (
@@ -479,16 +451,17 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM base b
     ),
 
-    -- persist server_end_d by last known serve-derived end at or before each row
     srv1 AS (
       SELECT
         s.*,
         s.serve_d_raw AS serve_d,
         COALESCE(s.server_end_raw, lastsrv.server_end_raw) AS server_end_d,
 
+        -- Singles guard: only compute side if x is inside singles sidelines
         CASE
           WHEN s.serve_d_raw IS TRUE
            AND s.x IS NOT NULL
+           AND (s.x)::double precision BETWEEN :sx_left AND :sx_right
            AND COALESCE(s.server_end_raw, lastsrv.server_end_raw) IN ('near','far')
           THEN
             CASE
@@ -519,7 +492,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       ) lastsrv ON TRUE
     ),
 
-    -- Persist serve_side_d (no gaps) by carrying forward last non-null serve_side_raw
     srv2 AS (
       SELECT
         s1.*,
@@ -538,7 +510,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       FROM srv1 s1
     ),
 
-    -- compute point_number on serve rows by serve_side changes, then forward-fill
     serve_points AS (
       SELECT
         s.id,
@@ -575,7 +546,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON sp.id = s2.id
     ),
 
-    -- opponent "real shots" (valid, with court coords)
     shots_valid AS (
       SELECT
         b.task_id,
@@ -597,7 +567,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         AND s.point_number IS NOT NULL
     ),
 
-    -- previous serve within the SAME POINT (this is the critical fix)
     prev_in_point AS (
       SELECT
         a.id AS serve_id,
@@ -624,7 +593,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON p.id = ps.prev_serve_id
     ),
 
-    -- 2nd serve only if there is a previous serve within the point and no opponent shot between them
     second_serve_flag AS (
       SELECT
         s.id AS serve_id,
@@ -690,7 +658,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON sf.serve_id = s.id
     ),
 
-    -- attach raw serve labels to full timeline
     t0 AS (
       SELECT
         tp.*,
@@ -701,11 +668,9 @@ def phase3_update(conn: Connection, task_id: str) -> int:
         ON sl.id = tp.id
     ),
 
-    -- persist serve_try_ix_in_point and service_winner_d (no gaps) by carrying forward last non-null
     t1 AS (
       SELECT
         t0.*,
-
         (
           ARRAY_AGG(t0.serve_try_raw ORDER BY t0.ball_hit_s, t0.id)
           FILTER (WHERE t0.serve_try_raw IS NOT NULL)
@@ -746,13 +711,15 @@ def phase3_update(conn: Connection, task_id: str) -> int:
     """
 
     res = conn.execute(
-        text(sql),
-        {
-            "tid": task_id,
-            "mid": float(mid_x),
-            "eps": float(EPS_BASELINE_M),
-            "y_max": float(COURT_LENGTH_M),
-        },
+      text(sql),
+      {
+        "tid": task_id,
+        "mid": float(mid_x),
+        "eps": float(EPS_BASELINE_M),
+        "y_max": float(COURT_LENGTH_M),
+        "sx_left": float(SINGLES_LEFT_X),
+        "sx_right": float(SINGLES_RIGHT_X),
+      },
     )
     return res.rowcount or 0
 
