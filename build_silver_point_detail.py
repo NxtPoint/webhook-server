@@ -90,6 +90,8 @@ PHASE7_COLS = OrderedDict({
     "stroke_d":                 "text",
     "shot_q":                   "integer",
     "shot_key_q":               "text",
+    "aggression_d":             "text",
+    "depth_d":                  "text",
 })
 
 # ------------------------------- helpers ---------------------------------
@@ -1930,6 +1932,23 @@ def phase7_update(conn: Connection, task_id: str) -> int:
               ELSE 'Forehand'
             END
         END
+      
+      aggression_d =
+        CASE
+          WHEN p.ball_hit_y_norm IS NULL THEN NULL
+          WHEN p.ball_hit_y_norm <= 23 THEN 'Attack'
+          WHEN p.ball_hit_y_norm > 23 AND p.ball_hit_y_norm < 26 THEN 'Neutral'
+          WHEN p.ball_hit_y_norm >= 26 THEN 'Defence'
+        END,
+
+      depth_d =
+        CASE
+          WHEN p.ball_bounce_y_norm IS NULL THEN NULL
+          WHEN p.ball_bounce_y_norm > 20 THEN 'Deep'
+          WHEN p.ball_bounce_y_norm > 18 AND p.ball_bounce_y_norm <= 20 THEN 'Middle'
+          WHEN p.ball_bounce_y_norm <= 18 THEN 'Short'
+        END
+
     WHERE p.task_id = :tid;
     """
     r1 = conn.execute(text(sql_1), {"tid": task_id}).rowcount or 0
