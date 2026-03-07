@@ -5,6 +5,8 @@
 # Phase 3: serve context (serve_d, server_end_d, serve_side_d, serve_try_ix_in_point, service_winner_d)
 # Phase 4: serve_location + rally_location_hit/bounce
 # Phase 5: point_number + exclusions + point_winner + game_number + (optional) server_id/shot_ix/etc if you later extend
+# Phase 6: normalization (invert flags + normalized coordinates)
+# Phase 7: analytics/presentation features (serve buckets, rally length, stroke, shot sequence)
 
 from typing import Dict, Optional, OrderedDict as TOrderedDict
 from collections import OrderedDict
@@ -70,6 +72,26 @@ PHASE5_COLS = OrderedDict({
     "set_game_number":        "integer",
 })
 
+PHASE6_COLS = OrderedDict({
+    "invert_hit":          "boolean",
+    "invert_bounce":       "boolean",
+    "ball_hit_x_norm":     "double precision",
+    "ball_hit_y_norm":     "double precision",
+    "ball_bounce_x_norm":  "double precision",
+    "ball_bounce_y_norm":  "double precision",
+})
+
+PHASE7_COLS = OrderedDict({
+    "serve_bucket_d":           "text",
+    "serve_location_category":  "text",
+    "rally_length":             "integer",
+    "rally_length_point":       "integer",
+    "rally_length_bucket_d":    "text",
+    "stroke_d":                 "text",
+    "shot_q":                   "integer",
+    "shot_key_q":               "text",
+})
+
 # ------------------------------- helpers ---------------------------------
 def _exec(conn: Connection, sql: str, params: Optional[dict] = None):
     conn.execute(text(sql), params or {})
@@ -127,6 +149,8 @@ def phase2_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE2_COLS)
 def phase3_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE3_COLS)
 def phase4_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE4_COLS)
 def phase5_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE5_COLS)
+def phase6_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE6_COLS)
+def phase7_add_schema(conn: Connection): ensure_phase_columns(conn, PHASE7_COLS)
 
 # ------------------------------- PHASE 0: clean playerids and de-dup repeat ids------------------------------
 def _player_id_canonical_map(conn: Connection, task_id: str) -> dict:
@@ -1777,6 +1801,192 @@ def phase5_add_schema(conn: Connection):
     """
     _exec(conn, sql_fix)
 
+# ------------------------------- Phase 6 Nomralised Co_ordinates -------------------------------
+
+def phase6_update(conn: Connection, task_id: str) -> int:
+    """
+    Phase 6: normalization only
+      - exact singles geometry
+      - x origin still outside doubles sideline
+      - convert to singles-local normalized coordinates
+    """
+    HALF_Y = 11.885
+    COURT_LEN = 23.77
+    SINGLES_LEFT_X = 1.37
+    SINGLES_WIDTH = 8.23
+
+    sql = f"""
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      invert_hit =
+        CASE
+          WHEN p.ball_hit_location_y IS NOT NULL
+           AND (p.ball_hit_location_y)::double precision < :half_y
+            THEN TRUE
+          ELSE FALSE
+        END,
+
+      invert_bounce =
+        CASE
+          WHEN p.ball_hit_location_y IS NOT NULL
+           AND (p.ball_hit_location_y)::double precision > :half_y
+            THEN TRUE
+          ELSE FALSE
+        END,
+
+      ball_hit_x_norm =
+        CASE
+          WHEN p.ball_hit_location_x IS NULL THEN NULL
+          WHEN p.ball_hit_location_y IS NOT NULL
+           AND (p.ball_hit_location_y)::double precision < :half_y
+            THEN :singles_w - ((p.ball_hit_location_x)::double precision - :sx_left)
+          ELSE (p.ball_hit_location_x)::double precision - :sx_left
+        END,
+
+      ball_hit_y_norm =
+        CASE
+          WHEN p.ball_hit_location_y IS NULL THEN NULL
+          WHEN (p.ball_hit_location_y)::double precision < :half_y
+            THEN :court_len - (p.ball_hit_location_y)::double precision
+          ELSE (p.ball_hit_location_y)::double precision
+        END,
+
+      ball_bounce_x_norm =
+        CASE
+          WHEN p.court_x IS NULL THEN NULL
+          WHEN p.ball_hit_location_y IS NOT NULL
+           AND (p.ball_hit_location_y)::double precision > :half_y
+            THEN :singles_w - ((p.court_x)::double precision - :sx_left)
+          ELSE (p.court_x)::double precision - :sx_left
+        END,
+
+      ball_bounce_y_norm =
+        CASE
+          WHEN p.court_y IS NULL THEN NULL
+          WHEN p.ball_hit_location_y IS NOT NULL
+           AND (p.ball_hit_location_y)::double precision > :half_y
+            THEN :court_len - (p.court_y)::double precision
+          ELSE (p.court_y)::double precision
+        END
+    WHERE p.task_id = :tid;
+    """
+    return conn.execute(
+        text(sql),
+        {
+            "tid": task_id,
+            "half_y": float(HALF_Y),
+            "court_len": float(COURT_LEN),
+            "sx_left": float(SINGLES_LEFT_X),
+            "singles_w": float(SINGLES_WIDTH),
+        },
+    ).rowcount or 0
+
+# ------------------------------- Phase 7 Analysitcal Views -------------------------------
+def phase7_update(conn: Connection, task_id: str) -> int:
+    """
+    Phase 7: analytics / presentation features only
+      - serve buckets
+      - rally length
+      - stroke classification
+      - shot sequence keys
+    """
+
+    # 1) Serve buckets + stroke + row-level rally length
+    sql_1 = f"""
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      serve_bucket_d =
+        CASE
+          WHEN p.serve_location IN (1, 8) THEN 'wide'
+          WHEN p.serve_location IN (2, 3, 6, 7) THEN 'body'
+          WHEN p.serve_location IN (4, 5) THEN 'T'
+          ELSE NULL
+        END,
+
+      serve_location_category =
+        CASE
+          WHEN p.serve_location IN (1, 8) THEN 'wide'
+          WHEN p.serve_location IN (2, 3, 6, 7) THEN 'body'
+          WHEN p.serve_location IN (4, 5) THEN 'T'
+          ELSE NULL
+        END,
+
+      rally_length =
+        CASE
+          WHEN p.shot_ix_in_point IS NOT NULL THEN p.shot_ix_in_point + 1
+          ELSE NULL
+        END,
+
+      stroke_d =
+        CASE
+          WHEN p.serve_d IS TRUE THEN 'Serve'
+          WHEN p.volley IS TRUE THEN 'Volley'
+          ELSE
+            CASE
+              WHEN lower(COALESCE(p.swing_type,'')) = '_fh_overhead' THEN 'Overhead'
+              WHEN lower(COALESCE(p.swing_type,'')) = 'fh' THEN 'Forehand'
+              WHEN lower(COALESCE(p.swing_type,'')) = '2h_bh' THEN 'Backhand'
+              WHEN lower(COALESCE(p.swing_type,'')) = '1h_backhand' THEN 'Slice'
+              ELSE 'Forehand'
+            END
+        END
+    WHERE p.task_id = :tid;
+    """
+    r1 = conn.execute(text(sql_1), {"tid": task_id}).rowcount or 0
+
+    # 2) rally_length_point + bucket
+    sql_2 = f"""
+    WITH rl AS (
+      SELECT
+        p.id,
+        MAX(
+          CASE
+            WHEN p.rally_length IS NOT NULL THEN p.rally_length
+            ELSE NULL
+          END
+        ) OVER (PARTITION BY p.task_id, p.point_key) AS rally_length_point
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      rally_length_point = rl.rally_length_point,
+      rally_length_bucket_d =
+        CASE
+          WHEN rl.rally_length_point IS NULL THEN NULL
+          WHEN rl.rally_length_point <= 4 THEN '0–4 shots'
+          WHEN rl.rally_length_point <= 8 THEN '5–8 shots'
+          ELSE '9+ shots'
+        END
+    FROM rl
+    WHERE p.task_id = :tid
+      AND p.id = rl.id;
+    """
+    r2 = conn.execute(text(sql_2), {"tid": task_id}).rowcount or 0
+
+    # 3) shot_q + shot_key_q
+    sql_3 = f"""
+    WITH seq AS (
+      SELECT
+        p.id,
+        ROW_NUMBER() OVER (
+          PARTITION BY p.task_id
+          ORDER BY p.ball_hit_s, p.player_id, p.shot_ix_in_point, p."timestamp", p.id
+        ) AS shot_q
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      shot_q = s.shot_q,
+      shot_key_q = p.task_id::text || '|' || s.shot_q::text
+    FROM seq s
+    WHERE p.task_id = :tid
+      AND p.id = s.id;
+    """
+    r3 = conn.execute(text(sql_3), {"tid": task_id}).rowcount or 0
+
+    return int((r1 or 0) + (r2 or 0) + (r3 or 0))
 
 # ------------------------------- Orchestrator -------------------------------
 def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dict:
@@ -1788,18 +1998,22 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
     with engine.begin() as conn:
         ensure_table_exists(conn)
 
-        # Ensure all columns upfront (safe)
+        # Ensure all columns upfront
         ensure_phase_columns(conn, PHASE1_COLS)
-        if phase in ("all", "2", "3", "4", "5"):
+        if phase in ("all", "2", "3", "4", "5", "6", "7"):
             phase2_add_schema(conn)
-        if phase in ("all", "3", "4", "5"):
+        if phase in ("all", "3", "4", "5", "6", "7"):
             phase3_add_schema(conn)
-        if phase in ("all", "4", "5"):
+        if phase in ("all", "4", "5", "6", "7"):
             phase4_add_schema(conn)
-        if phase in ("all", "5"):
+        if phase in ("all", "5", "6", "7"):
             phase5_add_schema(conn)
+        if phase in ("all", "6", "7"):
+            phase6_add_schema(conn)
+        if phase in ("all", "7"):
+            phase7_add_schema(conn)
 
-        # Phase execution in correct dependency order
+        # Execution order
         if phase in ("all", "1"):
             if replace:
                 _exec(
@@ -1821,8 +2035,13 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         if phase in ("all", "5"):
             out["phase5_rows_updated"] = phase5_update(conn, task_id)
 
-    return out
+        if phase in ("all", "6"):
+            out["phase6_rows_updated"] = phase6_update(conn, task_id)
 
+        if phase in ("all", "7"):
+            out["phase7_rows_updated"] = phase7_update(conn, task_id)
+
+    return out
 
 # ------------------------------- CLI -------------------------------
 if __name__ == "__main__":
@@ -1834,7 +2053,7 @@ if __name__ == "__main__":
     p.add_argument("--task-id", required=True, help="task UUID")
     p.add_argument(
         "--phase",
-        choices=["1", "2", "3", "4", "5", "all"],
+        choices=["1", "2", "3", "4", "5", "6", "7","all"],
         default="all",
         help="which phase(s) to run",
     )
