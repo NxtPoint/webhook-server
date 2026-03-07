@@ -83,7 +83,6 @@ PHASE6_COLS = OrderedDict({
 
 PHASE7_COLS = OrderedDict({
     "serve_bucket_d":           "text",
-    "serve_location_category":  "text",
     "rally_length":             "integer",
     "rally_length_point":       "integer",
     "rally_length_bucket_d":    "text",
@@ -1898,14 +1897,6 @@ def phase7_update(conn: Connection, task_id: str) -> int:
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
       serve_bucket_d =
-        CASE
-          WHEN p.serve_location IN (1, 8) THEN 'wide'
-          WHEN p.serve_location IN (2, 3, 6, 7) THEN 'body'
-          WHEN p.serve_location IN (4, 5) THEN 'T'
-          ELSE NULL
-        END,
-
-      serve_location_category =
         CASE
           WHEN p.serve_location IN (1, 8) THEN 'wide'
           WHEN p.serve_location IN (2, 3, 6, 7) THEN 'body'
