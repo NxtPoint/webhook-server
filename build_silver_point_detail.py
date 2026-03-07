@@ -1931,14 +1931,15 @@ def phase7_update(conn: Connection, task_id: str) -> int:
               WHEN lower(COALESCE(p.swing_type,'')) = '1h_backhand' THEN 'Slice'
               ELSE 'Forehand'
             END
-        END
-      
+        END,
+
       aggression_d =
         CASE
           WHEN p.ball_hit_y_norm IS NULL THEN NULL
-          WHEN p.ball_hit_y_norm <= 23 THEN 'Attack'
-          WHEN p.ball_hit_y_norm > 23 AND p.ball_hit_y_norm < 26 THEN 'Neutral'
+          WHEN p.ball_hit_y_norm <= 24 THEN 'Attack'
+          WHEN p.ball_hit_y_norm > 24 AND p.ball_hit_y_norm < 26 THEN 'Neutral'
           WHEN p.ball_hit_y_norm >= 26 THEN 'Defence'
+          ELSE NULL
         END,
 
       depth_d =
@@ -1947,8 +1948,8 @@ def phase7_update(conn: Connection, task_id: str) -> int:
           WHEN p.ball_bounce_y_norm > 20 THEN 'Deep'
           WHEN p.ball_bounce_y_norm > 18 AND p.ball_bounce_y_norm <= 20 THEN 'Middle'
           WHEN p.ball_bounce_y_norm <= 18 THEN 'Short'
+          ELSE NULL
         END
-
     WHERE p.task_id = :tid;
     """
     r1 = conn.execute(text(sql_1), {"tid": task_id}).rowcount or 0
