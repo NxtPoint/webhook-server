@@ -519,8 +519,15 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
 
-def _set_pbi_refresh_state(conn, task_id: str, status: str | None = None, error: str | None = None,
-                           started: bool = False, finished: bool = False):
+def _set_pbi_refresh_state(
+    conn,
+    task_id: str,
+    status: str | None = None,
+    error: str | None = None,
+    started: bool = False,
+    finished: bool = False,
+    clear_error: bool = False,
+):
     sets = []
     params = {"t": task_id}
 
@@ -534,7 +541,9 @@ def _set_pbi_refresh_state(conn, task_id: str, status: str | None = None, error:
         sets.append("pbi_refresh_status = :s")
         params["s"] = status
 
-    if error is not None:
+    if clear_error:
+        sets.append("pbi_refresh_error = NULL")
+    elif error is not None:
         sets.append("pbi_refresh_error = :e")
         params["e"] = error
 
@@ -546,7 +555,6 @@ def _set_pbi_refresh_state(conn, task_id: str, status: str | None = None, error:
            SET {", ".join(sets)}
          WHERE task_id = :t
     """), params)
-
 
 def _get_pbi_refresh_state(conn, task_id: str) -> dict:
     row = conn.execute(sql_text("""
@@ -927,7 +935,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         try:
             build_silver_point_detail(task_id=task_id, phase="all", replace=True)
         except Exception as e:
-            app.logger.error("Silver build failed for task_id=%s: %s", task_id, e)
+            raise RuntimeError(f"Silver build failed: {e}")
 
         # consume 1 match credit (idempotent)
         try:
@@ -948,9 +956,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                     conn,
                     task_id,
                     status="running",
-                    error=None,
                     started=True,
                     finished=False,
+                    clear_error=True,
                 )
 
             pbi = _refresh_powerbi_and_suspend(task_id)
@@ -979,6 +987,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                 error=(None if pbi_ok else pbi_err),
                 started=False,
                 finished=True,
+                clear_error=pbi_ok,
             )
 
         # If you want strict dashboard-ready semantics, do not mark completed unless refresh succeeded
