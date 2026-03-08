@@ -235,12 +235,20 @@ def embed_token():
     workspace_id, report_id, dataset_id = resolve_ids_if_needed()
 
     tok = generate_embed_token(
-        workspace_id=workspace_id,
-        report_id=report_id,
-        dataset_id=dataset_id,
-        username=username,
-        roles=["rls_email"],  # REQUIRED
-    )
+    workspace_id=workspace_id,
+    report_id=report_id,
+    dataset_id=dataset_id,
+    username=username,
+    roles=["rls_email"],
+)
+
+    token = str((tok or {}).get("token") or "").strip()
+    if not token:
+        return jsonify({
+            "error": "embed_token_missing",
+            "detail": tok,
+        }), 500
+
     return jsonify(tok)
 
 @app.get("/dataset/refresh_status")

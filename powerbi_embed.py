@@ -87,6 +87,7 @@ def _get_access_token() -> str:
         timeout=_timeout_s(),
     )
 
+    
     if resp.status_code >= 400:
         raise RuntimeError(f"Power BI token request failed ({resp.status_code}): {resp.text}")
 
@@ -112,9 +113,12 @@ def _pbi_post(url: str, body: Dict[str, Any]) -> Dict[str, Any]:
         json=body,
         timeout=_timeout_s(),
     )
+
+    print(f"PBI POST url={url} status={resp.status_code} body={resp.text[:1000]}")
+
     if resp.status_code >= 400:
         raise RuntimeError(f"Power BI POST failed ({resp.status_code}) {url}: {resp.text}")
-    # Some Power BI POSTs return empty body, but token endpoints return JSON.
+
     return resp.json() if resp.text else {}
 
 
@@ -193,12 +197,16 @@ def generate_embed_token(
             }
         ]
 
-def _pbi_get_raw(url: str) -> requests.Response:
+def _pbi_get(url: str) -> Dict[str, Any]:
     token = _get_access_token()
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_timeout_s())
+
+    print(f"PBI GET url={url} status={resp.status_code} body={resp.text[:1000]}")
+
     if resp.status_code >= 400:
         raise RuntimeError(f"Power BI GET failed ({resp.status_code}) {url}: {resp.text}")
-    return resp
+
+    return resp.json()
 
 
 def get_latest_refresh_status(workspace_id: str, dataset_id: str) -> Dict[str, Any]:
