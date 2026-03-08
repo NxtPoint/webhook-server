@@ -193,5 +193,26 @@ def generate_embed_token(
             }
         ]
 
-    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}/GenerateToken"
-    return _pbi_post(url, body)
+def _pbi_get_raw(url: str) -> requests.Response:
+    token = _get_access_token()
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_timeout_s())
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Power BI GET failed ({resp.status_code}) {url}: {resp.text}")
+    return resp
+
+
+def get_latest_refresh_status(workspace_id: str, dataset_id: str) -> Dict[str, Any]:
+    """
+    Returns the latest dataset refresh row, if any.
+    Typical Power BI statuses: Unknown, Completed, Failed, Disabled, Cancelled, InProgress
+    """
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes?$top=1"
+    data = _pbi_get(url)
+    rows = data.get("value", []) or []
+    if not rows:
+        return {"status": None, "raw": None}
+
+    row = rows[0] or {}
+    status = str(row.get("status") or "").strip()
+    return {"status": status or None, "raw": row}
+

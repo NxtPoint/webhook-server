@@ -137,6 +137,13 @@ WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
 WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 
 
+# ---------- Power BI service ----------
+PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
+PBI_SERVICE_OPS_KEY = (os.getenv("POWERBI_SERVICE_OPS_KEY") or OPS_KEY or "").strip()
+PBI_REFRESH_TIMEOUT_S = int(os.getenv("PBI_REFRESH_TIMEOUT_S", "900"))
+PBI_REFRESH_POLL_S = int(os.getenv("PBI_REFRESH_POLL_S", "15"))
+PBI_SUSPEND_AFTER_REFRESH = os.getenv("PBI_SUSPEND_AFTER_REFRESH", "1").lower() in ("1","true","yes","y")
+
 # ==========================
 # HELPERS
 # ==========================
@@ -175,6 +182,46 @@ def _guard_wix_upload_task() -> bool:
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
     return hk == expected
+
+def _pbi_headers():
+    if not PBI_SERVICE_BASE:
+        raise RuntimeError("POWERBI_SERVICE_BASE_URL not set")
+    if not PBI_SERVICE_OPS_KEY:
+        raise RuntimeError("POWERBI_SERVICE_OPS_KEY/OPS_KEY not set")
+    return {
+        "Content-Type": "application/json",
+        "x-ops-key": PBI_SERVICE_OPS_KEY,
+    }
+
+def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
+    url = f"{PBI_SERVICE_BASE}{path}"
+    r = requests.post(url, headers=_pbi_headers(), json=(body or {}), timeout=timeout)
+    if r.status_code >= 400:
+        raise RuntimeError(f"PBI POST failed {path}: HTTP {r.status_code}: {r.text}")
+    return r.json() if r.text else {}
+
+def _refresh_powerbi_and_suspend(task_id: str) -> dict:
+    """
+    Trigger refresh, wait for terminal status, then suspend capacity in finally.
+    """
+    out = None
+    try:
+        out = _pbi_post(
+            "/dataset/refresh_and_wait",
+            {
+                "task_id": task_id,
+                "timeout_s": PBI_REFRESH_TIMEOUT_S,
+                "poll_s": PBI_REFRESH_POLL_S,
+            },
+            timeout=PBI_REFRESH_TIMEOUT_S + 60,
+        )
+        return out
+    finally:
+        if PBI_SUSPEND_AFTER_REFRESH:
+            try:
+                _pbi_post("/capacity/suspend", {}, timeout=60)
+            except Exception as e:
+                app.logger.exception("Power BI suspend failed after refresh task_id=%s: %s", task_id, e)
 
 # ==========================
 # BILLING + ROLE GATE (RENDER SSoT)
@@ -830,12 +877,45 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         except Exception as e:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
-        # notify Wix completion (idempotent)
+        # Power BI refresh + suspend capacity
+        pbi_ok = True
+        pbi_err = None
         try:
-            _notify_wix(task_id, status="completed", session_id=sid, result_url=result_url, error=None)
+            pbi = _refresh_powerbi_and_suspend(task_id)
+            pbi_ok = bool((pbi or {}).get("ok") is True)
+            if not pbi_ok:
+                pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={(pbi or {}).get('status')}"
+                app.logger.error("Power BI refresh not successful task_id=%s: %s", task_id, pbi)
+            else:
+                app.logger.info("Power BI refresh complete task_id=%s status=%s", task_id, (pbi or {}).get("status"))
         except Exception as e:
-            app.logger.exception("Wix notify failed (completed) task_id=%s: %s", task_id, e)
-        return True
+            pbi_ok = False
+            pbi_err = f"{e.__class__.__name__}: {e}"
+            app.logger.exception("Power BI refresh failed task_id=%s: %s", task_id, e)
+
+        # If you want strict dashboard-ready semantics, fail completion notify when refresh fails
+        if not pbi_ok:
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET ingest_error = COALESCE(ingest_error, :err)
+                     WHERE task_id = :t
+                """), {"t": task_id, "err": f"powerbi_refresh_failed: {pbi_err}"})
+
+        # notify Wix completion only after refresh path has finished
+        try:
+            _notify_wix(
+                task_id,
+                status=("completed" if pbi_ok else "failed"),
+                session_id=sid,
+                result_url=result_url,
+                error=(None if pbi_ok else f"powerbi_refresh_failed: {pbi_err}")
+            )
+        except Exception as e:
+            app.logger.exception("Wix notify failed task_id=%s: %s", task_id, e)
+
+        return pbi_ok
 
     except Exception as e:
         err_txt = f"{e.__class__.__name__}: {e}"

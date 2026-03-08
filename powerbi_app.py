@@ -25,6 +25,7 @@ from powerbi_embed import (
     resolve_ids_if_needed,
     generate_embed_token,
     trigger_dataset_refresh,
+    get_latest_refresh_status,
 )
 
 
@@ -242,6 +243,65 @@ def embed_token():
     )
     return jsonify(tok)
 
+@app.get("/dataset/refresh_status")
+def dataset_refresh_status():
+    """
+    Returns latest refresh status row.
+    """
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    workspace_id, _, dataset_id = resolve_ids_if_needed()
+    out = get_latest_refresh_status(workspace_id, dataset_id)
+    return jsonify({"ok": True, **out})
+
+
+@app.post("/dataset/refresh_and_wait")
+def dataset_refresh_and_wait():
+    """
+    Triggers dataset refresh, polls until terminal status, then returns terminal outcome.
+    Body:
+      {
+        "timeout_s": 900,
+        "poll_s": 15
+      }
+    """
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    timeout_s = int(body.get("timeout_s") or 900)
+    poll_s = int(body.get("poll_s") or 15)
+
+    workspace_id, _, dataset_id = resolve_ids_if_needed()
+
+    trigger_dataset_refresh(workspace_id, dataset_id)
+
+    deadline = time.time() + timeout_s
+    last = None
+
+    while time.time() < deadline:
+        out = get_latest_refresh_status(workspace_id, dataset_id)
+        last = out
+        status = str(out.get("status") or "").strip().lower()
+
+        if status in ("completed", "failed", "cancelled", "disabled"):
+            return jsonify({
+                "ok": status == "completed",
+                "terminal": True,
+                "status": out.get("status"),
+                "raw": out.get("raw"),
+            })
+
+        time.sleep(max(5, poll_s))
+
+    return jsonify({
+        "ok": False,
+        "terminal": False,
+        "status": (last or {}).get("status"),
+        "raw": (last or {}).get("raw"),
+        "error": "refresh_timeout",
+    }), 504
 
 # ==================================================================================================
 # LOCAL DEV
