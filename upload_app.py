@@ -203,6 +203,7 @@ def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
 def _refresh_powerbi_and_suspend(task_id: str) -> dict:
     """
     Trigger refresh, wait for terminal status, then suspend capacity in finally.
+    Returns the Power BI service response.
     """
     out = None
     try:
@@ -215,7 +216,7 @@ def _refresh_powerbi_and_suspend(task_id: str) -> dict:
             },
             timeout=PBI_REFRESH_TIMEOUT_S + 60,
         )
-        return out
+        return out or {}
     finally:
         if PBI_SUSPEND_AFTER_REFRESH:
             try:
@@ -305,6 +306,12 @@ def _ensure_submission_context_schema(conn):
           ingest_finished_at TIMESTAMPTZ,
           ingest_error       TEXT,
 
+          -- Power BI refresh audit
+          pbi_refresh_started_at  TIMESTAMPTZ,
+          pbi_refresh_finished_at TIMESTAMPTZ,
+          pbi_refresh_status      TEXT,
+          pbi_refresh_error       TEXT,
+                                          
           -- Wix notify audit (server-side completion email)
           wix_notified_at    TIMESTAMPTZ,
           wix_notify_status  TEXT,
@@ -325,6 +332,10 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_status TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_started_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_finished_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_status TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_error TEXT",
 
         # --- NEW: typed score + timing + SR fields (idempotent) ---
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set1_games INT",
@@ -507,6 +518,54 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
                last_result_url = :r
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
+
+def _set_pbi_refresh_state(conn, task_id: str, status: str | None = None, error: str | None = None,
+                           started: bool = False, finished: bool = False):
+    sets = []
+    params = {"t": task_id}
+
+    if started:
+        sets.append("pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now())")
+
+    if finished:
+        sets.append("pbi_refresh_finished_at = now()")
+
+    if status is not None:
+        sets.append("pbi_refresh_status = :s")
+        params["s"] = status
+
+    if error is not None:
+        sets.append("pbi_refresh_error = :e")
+        params["e"] = error
+
+    if not sets:
+        return
+
+    conn.execute(sql_text(f"""
+        UPDATE bronze.submission_context
+           SET {", ".join(sets)}
+         WHERE task_id = :t
+    """), params)
+
+
+def _get_pbi_refresh_state(conn, task_id: str) -> dict:
+    row = conn.execute(sql_text("""
+        SELECT
+          pbi_refresh_started_at,
+          pbi_refresh_finished_at,
+          pbi_refresh_status,
+          pbi_refresh_error
+        FROM bronze.submission_context
+        WHERE task_id = :t
+        LIMIT 1
+    """), {"t": task_id}).mappings().first() or {}
+
+    return {
+        "pbi_refresh_started_at": row.get("pbi_refresh_started_at"),
+        "pbi_refresh_finished_at": row.get("pbi_refresh_finished_at"),
+        "pbi_refresh_status": row.get("pbi_refresh_status"),
+        "pbi_refresh_error": row.get("pbi_refresh_error"),
+    }    
 
 def _mirror_submission_to_bronze_by_task(conn, task_id: str):
     """No-op: submission_context now lives directly in bronze.submission_context."""
@@ -877,23 +936,52 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         except Exception as e:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
-        # Power BI refresh + suspend capacity
+                # Power BI refresh + suspend capacity
         pbi_ok = True
         pbi_err = None
+        pbi_status = "skipped"
+
         try:
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                _set_pbi_refresh_state(
+                    conn,
+                    task_id,
+                    status="running",
+                    error=None,
+                    started=True,
+                    finished=False,
+                )
+
             pbi = _refresh_powerbi_and_suspend(task_id)
             pbi_ok = bool((pbi or {}).get("ok") is True)
+            pbi_status = str((pbi or {}).get("status") or "").strip() or ("completed" if pbi_ok else "failed")
+
             if not pbi_ok:
-                pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={(pbi or {}).get('status')}"
+                pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={pbi_status}"
                 app.logger.error("Power BI refresh not successful task_id=%s: %s", task_id, pbi)
             else:
-                app.logger.info("Power BI refresh complete task_id=%s status=%s", task_id, (pbi or {}).get("status"))
+                app.logger.info("Power BI refresh complete task_id=%s status=%s", task_id, pbi_status)
+
         except Exception as e:
             pbi_ok = False
+            pbi_status = "failed"
             pbi_err = f"{e.__class__.__name__}: {e}"
             app.logger.exception("Power BI refresh failed task_id=%s: %s", task_id, e)
 
-        # If you want strict dashboard-ready semantics, fail completion notify when refresh fails
+        # persist Power BI refresh state
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_pbi_refresh_state(
+                conn,
+                task_id,
+                status=("completed" if pbi_ok else pbi_status),
+                error=(None if pbi_ok else pbi_err),
+                started=False,
+                finished=True,
+            )
+
+        # If you want strict dashboard-ready semantics, do not mark completed unless refresh succeeded
         if not pbi_ok:
             with engine.begin() as conn:
                 _ensure_submission_context_schema(conn)
@@ -1487,6 +1575,10 @@ def api_task_status():
                     ingest_started_at,
                     ingest_finished_at,
                     ingest_error,
+                    pbi_refresh_started_at,
+                    pbi_refresh_finished_at,
+                    pbi_refresh_status,
+                    pbi_refresh_error,
                     wix_notified_at,
                     wix_notify_status,
                     wix_notify_error
@@ -1509,7 +1601,21 @@ def api_task_status():
         if session_id and ingest_finished and not auto_ingest_error:
             auto_ingested = True
 
-        
+        pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
+        pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
+        pbi_refresh_status = sc.get("pbi_refresh_status")
+        pbi_refresh_error = sc.get("pbi_refresh_error")
+
+        dashboard_ready = bool(
+            session_id
+            and ingest_finished
+            and not auto_ingest_error
+            and pbi_refresh_finished
+            and str(pbi_refresh_status or "").lower() == "completed"
+            and not pbi_refresh_error
+        )
+
+
         return jsonify({
             "ok": True, **out,
             "session_id": session_id,
@@ -1520,7 +1626,12 @@ def api_task_status():
             "ingest_finished": ingest_finished,
             "wix_notified_at": sc.get("wix_notified_at"),
             "wix_notify_status": sc.get("wix_notify_status"),
-            "wix_notify_error": sc.get("wix_notify_error")
+            "wix_notify_error": sc.get("wix_notify_error"),
+            "pbi_refresh_started": pbi_refresh_started,
+            "pbi_refresh_finished": pbi_refresh_finished,
+            "pbi_refresh_status": pbi_refresh_status,
+            "pbi_refresh_error": pbi_refresh_error,
+            "dashboard_ready": dashboard_ready
         })
 
     except Exception as e:
