@@ -213,43 +213,53 @@ def embed_config():
 
 @app.post("/embed/token")
 def embed_token():
-    """
-    Resumes capacity (if enabled) then returns embed token.
-    Requires username for RLS (fail-closed).
-    """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
     body: Dict[str, Any] = request.get_json(silent=True) or {}
 
-    # Fail-closed: Wix must send logged-in member email
     username_raw = body.get("username")
     username = (str(username_raw or "").strip().lower())
 
     if not username or "@" not in username:
         return jsonify({"error": "missing_or_invalid_username"}), 400
 
-    # Ensure capacity is running before token mint + immediate embed usage.
-    _maybe_warmup_capacity()
+    try:
+        _maybe_warmup_capacity()
 
-    workspace_id, report_id, dataset_id = resolve_ids_if_needed()
+        workspace_id, report_id, dataset_id = resolve_ids_if_needed()
 
-    tok = generate_embed_token(
-    workspace_id=workspace_id,
-    report_id=report_id,
-    dataset_id=dataset_id,
-    username=username,
-    roles=["rls_email"],
-)
+        tok = generate_embed_token(
+            workspace_id=workspace_id,
+            report_id=report_id,
+            dataset_id=dataset_id,
+            username=username,
+            roles=["rls_email"],
+        )
 
-    token = str((tok or {}).get("token") or "").strip()
-    if not token:
+        print(f"EMBED TOKEN RESPONSE username={username} tok={tok}")
+
+        token = str((tok or {}).get("token") or "").strip()
+        if not token:
+            return jsonify({
+                "error": "embed_token_missing",
+                "detail": tok,
+                "workspace_id": workspace_id,
+                "report_id": report_id,
+                "dataset_id": dataset_id,
+                "username": username,
+            }), 500
+
+        return jsonify(tok)
+
+    except Exception as e:
+        print(f"EMBED TOKEN EXCEPTION username={username} err={e}")
         return jsonify({
-            "error": "embed_token_missing",
-            "detail": tok,
+            "error": "embed_token_exception",
+            "detail": str(e),
+            "username": username,
         }), 500
-
-    return jsonify(tok)
+    
 
 @app.get("/dataset/refresh_status")
 def dataset_refresh_status():
