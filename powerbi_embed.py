@@ -114,13 +114,18 @@ def _pbi_post(url: str, body: Dict[str, Any]) -> Dict[str, Any]:
         timeout=_timeout_s(),
     )
 
-    print(f"PBI POST url={url} status={resp.status_code} body={resp.text[:1000]}")
+    print(f"PBI POST url={url} status={resp.status_code} text={resp.text[:2000]}")
 
     if resp.status_code >= 400:
         raise RuntimeError(f"Power BI POST failed ({resp.status_code}) {url}: {resp.text}")
 
-    return resp.json() if resp.text else {}
+    if not resp.text:
+        print("PBI POST returned empty body -> {}")
+        return {}
 
+    out = resp.json()
+    print(f"PBI POST parsed json={out}")
+    return out
 
 def resolve_ids_if_needed() -> Tuple[str, str, str]:
     """
@@ -169,17 +174,12 @@ def generate_embed_token(
     username: Optional[str] = None,
     roles: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Generates an embed token for a report (App-Owns-Data).
-    For SaaS embedding with RLS, username MUST be provided (Wix member email).
-    """
     require_identity = _env("PBI_REQUIRE_RLS_IDENTITY", "1") == "1"
 
     norm_user = (username or "").strip().lower()
     if require_identity and not norm_user:
         raise RuntimeError("Missing username for Power BI embed token (fail-closed).")
 
-    # Default to your single RLS role if not supplied
     eff_roles = roles or ["rls_email"]
 
     body: Dict[str, Any] = {
@@ -187,7 +187,6 @@ def generate_embed_token(
         "datasets": [{"id": dataset_id}],
     }
 
-    # Always include identities when we have a username
     if norm_user:
         body["identities"] = [
             {
@@ -196,6 +195,14 @@ def generate_embed_token(
                 "datasets": [dataset_id],
             }
         ]
+
+    url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}/GenerateToken"
+
+    print(f"GENERATE TOKEN body={body}")
+    out = _pbi_post(url, body)
+    print(f"GENERATE TOKEN out={out}")
+
+    return out
 
 def _pbi_get(url: str) -> Dict[str, Any]:
     token = _get_access_token()
