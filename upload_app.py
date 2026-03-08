@@ -947,7 +947,6 @@ def api_s3_presign():
     _require_s3()
     body = request.get_json(silent=True) or {}
 
-    # NEW: entitlement gate BEFORE presign (prevents cancelled users uploading to S3)
     email = (body.get("email") or "").strip().lower()
     allowed, reason = _upload_entitlement_gate(email)
     if not allowed:
@@ -955,17 +954,39 @@ def api_s3_presign():
 
     name = (body.get("name") or "video.mp4").strip()
     ctype = (body.get("content_type") or "application/octet-stream").strip()
-    clean = secure_filename(name)
+    clean = secure_filename(name) or "video.mp4"
+
+    if not ctype.lower().startswith("video/"):
+        return jsonify({"ok": False, "error": "invalid_content_type"}), 400
+
+    _, ext = os.path.splitext(clean.lower())
+    allowed_ext = {".mp4", ".mov", ".m4v", ".mpg", ".mpeg"}
+    if ext not in allowed_ext:
+        return jsonify({"ok": False, "error": "unsupported_file_extension"}), 400
+
+    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))  # default 2GB
+
     key = f"{S3_PREFIX}/{int(time.time())}_{clean}"
     cli = _s3_client()
+
     post = cli.generate_presigned_post(
-        Bucket=S3_BUCKET, Key=key,
-        Fields={"Content-Type": ctype}, Conditions=[{"Content-Type": ctype}],
+        Bucket=S3_BUCKET,
+        Key=key,
+        Fields={"Content-Type": ctype},
+        Conditions=[
+            {"Content-Type": ctype},
+            ["content-length-range", 1, max_bytes]
+        ],
         ExpiresIn=600,
     )
+
     return jsonify({
-        "ok": True, "bucket": S3_BUCKET, "key": key,
-        "post": post, "get_url": _s3_presigned_get_url(key)
+        "ok": True,
+        "bucket": S3_BUCKET,
+        "key": key,
+        "post": post,
+        "get_url": _s3_presigned_get_url(key),
+        "max_upload_bytes": max_bytes
     })
 
 
