@@ -216,14 +216,9 @@ def generate_embed_token(
 
 
 def get_latest_refresh_status(workspace_id: str, dataset_id: str) -> Dict[str, Any]:
-    """
-    TEMP DIAGNOSTIC VERSION
-    """
     url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes?$top=5"
     data = _pbi_get(url)
-
     rows = data.get("value", []) or []
-    print(f"PBI refresh history dataset_id={dataset_id} row_count={len(rows)} rows={rows}")
 
     if not rows:
         return {

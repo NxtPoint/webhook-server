@@ -74,7 +74,7 @@ def _norm_status(raw_status: str) -> str:
     s = (raw_status or "").strip().lower()
 
     if s in ("unknown", ""):
-        return "unknown"
+        return "running"
     if s in ("queued",):
         return "queued"
     if s in ("inprogress", "in_progress", "running"):
