@@ -214,9 +214,12 @@ def capacity_suspend():
 def dataset_refresh():
     """
     Simple refresh trigger (non-blocking, no idempotency).
+    Capacity must be running before refresh.
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
+
+    _maybe_warmup_capacity()
 
     workspace_id, _, dataset_id = resolve_ids_if_needed()
     trigger_dataset_refresh(workspace_id, dataset_id)
@@ -242,6 +245,7 @@ def dataset_refresh_once():
     - Non-blocking
     - No durable idempotency here
     - task_id accepted for correlation/logging only
+    - Capacity must be running before refresh
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
@@ -251,6 +255,8 @@ def dataset_refresh_once():
 
     if not task_id:
         return jsonify({"ok": False, "error": "missing_task_id"}), 400
+
+    _maybe_warmup_capacity()
 
     workspace_id, _, dataset_id = resolve_ids_if_needed()
     trigger_dataset_refresh(workspace_id, dataset_id)
