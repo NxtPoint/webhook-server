@@ -5,9 +5,10 @@ services:
   - type: web
     name: webhook-server
     env: python
+    pythonVersion: 3.12.3
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
+    startCommand: "gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 1800"
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"
@@ -57,7 +58,7 @@ services:
     pythonVersion: 3.12.3
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "gunicorn powerbi_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120"
+    startCommand: "gunicorn powerbi_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 1800"
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"
