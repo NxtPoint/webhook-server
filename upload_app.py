@@ -140,8 +140,10 @@ WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 # ---------- Power BI service ----------
 PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
 PBI_SERVICE_OPS_KEY = (os.getenv("POWERBI_SERVICE_OPS_KEY") or OPS_KEY or "").strip()
-PBI_REFRESH_TIMEOUT_S = int(os.getenv("PBI_REFRESH_TIMEOUT_S", "900"))
 PBI_REFRESH_POLL_S = int(os.getenv("PBI_REFRESH_POLL_S", "15"))
+PBI_REFRESH_MAX_WAIT_S = int(os.getenv("PBI_REFRESH_MAX_WAIT_S", "1800"))
+PBI_REFRESH_TRIGGER_TIMEOUT_S = int(os.getenv("PBI_REFRESH_TRIGGER_TIMEOUT_S", "60"))
+PBI_REFRESH_STATUS_TIMEOUT_S = int(os.getenv("PBI_REFRESH_STATUS_TIMEOUT_S", "60"))
 PBI_SUSPEND_AFTER_REFRESH = os.getenv("PBI_SUSPEND_AFTER_REFRESH", "1").lower() in ("1","true","yes","y")
 
 # ==========================
@@ -200,29 +202,122 @@ def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
         raise RuntimeError(f"PBI POST failed {path}: HTTP {r.status_code}: {r.text}")
     return r.json() if r.text else {}
 
-def _refresh_powerbi_and_suspend(task_id: str) -> dict:
+def _pbi_get(path: str, timeout: int = 60) -> dict:
+    url = f"{PBI_SERVICE_BASE}{path}"
+    r = requests.get(url, headers=_pbi_headers(), timeout=timeout)
+    if r.status_code >= 400:
+        raise RuntimeError(f"PBI GET failed {path}: HTTP {r.status_code}: {r.text}")
+    return r.json() if r.text else {}
+
+def _poll_powerbi_refresh_until_terminal(task_id: str) -> dict:
     """
-    Trigger refresh, wait for terminal status, then suspend capacity in finally.
-    Returns the Power BI service response.
+    Async-safe refresh orchestration:
+    - trigger refresh once
+    - poll latest status in short-lived HTTP calls
+    - persist state changes into bronze.submission_context
+    - always attempt suspend after terminal state
     """
-    out = None
+    trigger_out = _pbi_post(
+        "/dataset/refresh_once",
+        {"task_id": task_id},
+        timeout=PBI_REFRESH_TRIGGER_TIMEOUT_S,
+    )
+    trigger_started_at_epoch = time.time()
+
+    app.logger.info("PBI refresh trigger accepted task_id=%s out=%s", task_id, {
+        "ok": trigger_out.get("ok"),
+        "accepted": trigger_out.get("accepted"),
+        "status": trigger_out.get("status"),
+        "triggered_at": trigger_out.get("triggered_at"),
+    })
+
+    poll_started_at = time.time()
+    deadline = poll_started_at + PBI_REFRESH_MAX_WAIT_S
+    last_status = None
+    last_out = None
+
     try:
-        out = _pbi_post(
-            "/dataset/refresh_and_wait",
-            {
-                "task_id": task_id,
-                "timeout_s": PBI_REFRESH_TIMEOUT_S,
-                "poll_s": PBI_REFRESH_POLL_S,
-            },
-            timeout=PBI_REFRESH_TIMEOUT_S + 60,
-        )
-        return out or {}
+        while time.time() < deadline:
+            out = _pbi_get("/dataset/refresh_status", timeout=PBI_REFRESH_STATUS_TIMEOUT_S) or {}
+            last_out = out
+
+            status = str(out.get("status") or "").strip().lower()
+            is_terminal = bool(out.get("is_terminal"))
+            error_message = (out.get("error_message") or "").strip() or None
+            started_at_raw = out.get("started_at")
+
+            started_at_epoch = None
+            if started_at_raw:
+                try:
+                    started_at_epoch = datetime.fromisoformat(
+                        str(started_at_raw).replace("Z", "+00:00")
+                    ).timestamp()
+                except Exception:
+                    started_at_epoch = None
+
+            if started_at_epoch is not None and started_at_epoch < (trigger_started_at_epoch - 10):
+                time.sleep(3)
+                continue
+
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                _set_pbi_refresh_state(
+                    conn,
+                    task_id,
+                    status=status or "unknown",
+                    error=error_message,
+                    started=True,
+                    finished=is_terminal,
+                    clear_error=not error_message,
+                )
+
+            if status != last_status:
+                app.logger.info(
+                    "PBI refresh status change task_id=%s status=%s terminal=%s",
+                    task_id, status, is_terminal
+                )
+                last_status = status
+
+            if is_terminal:
+                return {
+                    "ok": bool(out.get("is_success") is True),
+                    "status": status,
+                    "terminal": True,
+                    "error": error_message,
+                    "raw": out,
+                }
+
+            elapsed = time.time() - poll_started_at
+            sleep_s = 5 if elapsed < 60 else max(5, PBI_REFRESH_POLL_S)
+            time.sleep(sleep_s)
+
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_pbi_refresh_state(
+                conn,
+                task_id,
+                status="timeout",
+                error=f"refresh_timeout after {PBI_REFRESH_MAX_WAIT_S}s",
+                started=True,
+                finished=True,
+                clear_error=False,
+            )
+
+        return {
+            "ok": False,
+            "status": "timeout",
+            "terminal": True,
+            "error": f"refresh_timeout after {PBI_REFRESH_MAX_WAIT_S}s",
+            "raw": last_out,
+        }
+
     finally:
         if PBI_SUSPEND_AFTER_REFRESH:
             try:
                 _pbi_post("/capacity/suspend", {}, timeout=60)
+                app.logger.info("PBI capacity suspend ok task_id=%s", task_id)
             except Exception as e:
-                app.logger.exception("Power BI suspend failed after refresh task_id=%s: %s", task_id, e)
+                app.logger.exception("PBI capacity suspend failed task_id=%s: %s", task_id, e)
 
 # ==========================
 # BILLING + ROLE GATE (RENDER SSoT)
@@ -532,7 +627,9 @@ def _set_pbi_refresh_state(
     params = {"t": task_id}
 
     if started:
-        sets.append("pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now())")
+        sets.append("pbi_refresh_started_at = now()")
+        if not finished:
+            sets.append("pbi_refresh_finished_at = NULL")
 
     if finished:
         sets.append("pbi_refresh_finished_at = now()")
@@ -944,7 +1041,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         except Exception as e:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
-                # Power BI refresh + suspend capacity
+        # Power BI refresh async poll
         pbi_ok = True
         pbi_err = None
         pbi_status = "skipped"
@@ -955,40 +1052,39 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                 _set_pbi_refresh_state(
                     conn,
                     task_id,
-                    status="running",
+                    status="queued",
                     started=True,
                     finished=False,
                     clear_error=True,
                 )
 
-            pbi = _refresh_powerbi_and_suspend(task_id)
+            pbi = _poll_powerbi_refresh_until_terminal(task_id)
             pbi_ok = bool((pbi or {}).get("ok") is True)
-            pbi_status = str((pbi or {}).get("status") or "").strip() or ("completed" if pbi_ok else "failed")
+            pbi_status = str((pbi or {}).get("status") or "").strip().lower() or ("completed" if pbi_ok else "failed")
 
             if not pbi_ok:
                 pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={pbi_status}"
-                app.logger.error("Power BI refresh not successful task_id=%s: %s", task_id, pbi)
+                app.logger.error("PBI refresh not successful task_id=%s status=%s error=%s", task_id, pbi_status, pbi_err)
             else:
-                app.logger.info("Power BI refresh complete task_id=%s status=%s", task_id, pbi_status)
+                app.logger.info("PBI refresh complete task_id=%s status=%s", task_id, pbi_status)
 
         except Exception as e:
             pbi_ok = False
             pbi_status = "failed"
             pbi_err = f"{e.__class__.__name__}: {e}"
-            app.logger.exception("Power BI refresh failed task_id=%s: %s", task_id, e)
+            app.logger.exception("PBI refresh failed task_id=%s: %s", task_id, e)
 
-        # persist Power BI refresh state
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            _set_pbi_refresh_state(
-                conn,
-                task_id,
-                status=("completed" if pbi_ok else pbi_status),
-                error=(None if pbi_ok else pbi_err),
-                started=False,
-                finished=True,
-                clear_error=pbi_ok,
-            )
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                _set_pbi_refresh_state(
+                    conn,
+                    task_id,
+                    status=pbi_status,
+                    error=pbi_err,
+                    started=False,
+                    finished=True,
+                    clear_error=False,
+                )
 
         # If you want strict dashboard-ready semantics, do not mark completed unless refresh succeeded
         if not pbi_ok:
@@ -996,7 +1092,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                 _ensure_submission_context_schema(conn)
                 conn.execute(sql_text("""
                     UPDATE bronze.submission_context
-                       SET ingest_error = COALESCE(ingest_error, :err)
+                       SET ingest_error = :err
                      WHERE task_id = :t
                 """), {"t": task_id, "err": f"powerbi_refresh_failed: {pbi_err}"})
 
@@ -1615,12 +1711,14 @@ def api_task_status():
         pbi_refresh_status = sc.get("pbi_refresh_status")
         pbi_refresh_error = sc.get("pbi_refresh_error")
 
+        pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
+
         dashboard_ready = bool(
             session_id
             and ingest_finished
             and not auto_ingest_error
             and pbi_refresh_finished
-            and str(pbi_refresh_status or "").lower() == "completed"
+            and pbi_status_norm == "completed"
             and not pbi_refresh_error
         )
 
@@ -1640,6 +1738,17 @@ def api_task_status():
             "pbi_refresh_finished": pbi_refresh_finished,
             "pbi_refresh_status": pbi_refresh_status,
             "pbi_refresh_error": pbi_refresh_error,
+            "stage": (
+                "complete"
+                if dashboard_ready else
+                "refreshing_dashboard"
+                if pbi_refresh_started and not dashboard_ready else
+                "building_analytics"
+                if ingest_started and not pbi_refresh_started else
+                "match_analysis_in_progress"
+                if status in ("queued", "processing", "running", "in_progress") else
+                "queued_for_analysis"
+            ),
             "dashboard_ready": dashboard_ready
         })
 

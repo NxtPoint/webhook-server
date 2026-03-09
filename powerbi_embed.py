@@ -1,5 +1,5 @@
 # ==================================================================================================
-# powerbi_embed.py
+# powerbi_embed.py  (PRODUCTION BASELINE vNext - SAFE LOGGING / REFRESH NORMALIZATION)
 # ==================================================================================================
 # PURPOSE
 # -------
@@ -9,27 +9,12 @@
 # - Obtains OAuth access tokens (client credentials flow) for Power BI REST API
 # - Resolves workspace/report/dataset IDs from environment variables
 # - Triggers dataset refresh
-# - Generates embed tokens for Wix (supports future RLS identities)
+# - Generates embed tokens for Wix (supports RLS identities)
+# - Reads latest dataset refresh status
 #
 # What this module does NOT do:
 # - It does NOT talk to Azure Resource Manager (capacity pause/resume is separate).
-#
-# REQUIRED ENV VARS
-# -----------------
-#   PBI_TENANT_ID
-#   PBI_CLIENT_ID
-#   PBI_CLIENT_SECRET   (secret VALUE, not secret id)
-#   PBI_WORKSPACE_ID
-#   PBI_REPORT_ID
-#   PBI_DATASET_ID
-#
-# OPTIONAL ENV VARS
-# -----------------
-#   PBI_SCOPE            default: https://analysis.windows.net/powerbi/api/.default
-#   PBI_HTTP_TIMEOUT_S   default: 30
-#   PBI_ALLOW_FALLBACK_ID_RESOLUTION  default: 0
-#       If set to "1", missing REPORT/DATASET IDs will be resolved by taking the first report/dataset
-#       in the workspace (debug convenience only; not recommended for production).
+# - It does NOT wait synchronously for refresh completion.
 # ==================================================================================================
 
 from __future__ import annotations
@@ -65,6 +50,23 @@ def _require(name: str) -> str:
     return v
 
 
+def _safe_text(resp: requests.Response, limit: int = 500) -> str:
+    try:
+        txt = (resp.text or "").strip()
+        if len(txt) > limit:
+            return txt[:limit] + "...[truncated]"
+        return txt
+    except Exception:
+        return ""
+
+
+def _safe_json(resp: requests.Response) -> Dict[str, Any]:
+    try:
+        return resp.json()
+    except Exception:
+        return {}
+
+
 def _get_access_token() -> str:
     now = int(time.time())
     if _TOKEN_CACHE["access_token"] and now < int(_TOKEN_CACHE["expires_at"]) - 60:
@@ -87,22 +89,31 @@ def _get_access_token() -> str:
         timeout=_timeout_s(),
     )
 
-    
     if resp.status_code >= 400:
-        raise RuntimeError(f"Power BI token request failed ({resp.status_code}): {resp.text}")
+        raise RuntimeError(f"Power BI token request failed ({resp.status_code}): {_safe_text(resp)}")
 
-    data = resp.json()
-    _TOKEN_CACHE["access_token"] = data["access_token"]
+    data = _safe_json(resp)
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("Power BI token response missing access_token")
+
+    _TOKEN_CACHE["access_token"] = access_token
     _TOKEN_CACHE["expires_at"] = now + int(data.get("expires_in", 3600))
-    return str(_TOKEN_CACHE["access_token"])
+    return access_token
 
 
 def _pbi_get(url: str) -> Dict[str, Any]:
     token = _get_access_token()
-    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_timeout_s())
+    resp = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=_timeout_s(),
+    )
+
     if resp.status_code >= 400:
-        raise RuntimeError(f"Power BI GET failed ({resp.status_code}) {url}: {resp.text}")
-    return resp.json()
+        raise RuntimeError(f"Power BI GET failed ({resp.status_code}) {url}: {_safe_text(resp)}")
+
+    return _safe_json(resp)
 
 
 def _pbi_post(url: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,18 +125,14 @@ def _pbi_post(url: str, body: Dict[str, Any]) -> Dict[str, Any]:
         timeout=_timeout_s(),
     )
 
-    print(f"PBI POST url={url} status={resp.status_code} text={resp.text[:2000]}")
-
     if resp.status_code >= 400:
-        raise RuntimeError(f"Power BI POST failed ({resp.status_code}) {url}: {resp.text}")
+        raise RuntimeError(f"Power BI POST failed ({resp.status_code}) {url}: {_safe_text(resp)}")
 
-    if not resp.text:
-        print("PBI POST returned empty body -> {}")
+    if not (resp.text or "").strip():
         return {}
 
-    out = resp.json()
-    print(f"PBI POST parsed json={out}")
-    return out
+    return _safe_json(resp)
+
 
 def resolve_ids_if_needed() -> Tuple[str, str, str]:
     """
@@ -158,13 +165,21 @@ def resolve_ids_if_needed() -> Tuple[str, str, str]:
     return workspace_id, str(report_id), str(dataset_id)
 
 
-def trigger_dataset_refresh(workspace_id: str, dataset_id: str) -> None:
+def trigger_dataset_refresh(workspace_id: str, dataset_id: str) -> Dict[str, Any]:
     """
-    Triggers a dataset refresh. This does not wait for completion.
+    Triggers a dataset refresh. Non-blocking.
+    Returns compact metadata only.
     """
     url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
     body = {"notifyOption": "NoNotification"}
-    _pbi_post(url, body)
+    out = _pbi_post(url, body)
+
+    return {
+        "accepted": True,
+        "dataset_id": dataset_id,
+        "request_id": out.get("requestId") or out.get("id"),
+        "raw": out,
+    }
 
 
 def generate_embed_token(
@@ -197,23 +212,7 @@ def generate_embed_token(
         ]
 
     url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}/GenerateToken"
-
-    print(f"GENERATE TOKEN body={body}")
-    out = _pbi_post(url, body)
-    print(f"GENERATE TOKEN out={out}")
-
-    return out
-
-def _pbi_get(url: str) -> Dict[str, Any]:
-    token = _get_access_token()
-    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_timeout_s())
-
-    print(f"PBI GET url={url} status={resp.status_code} body={resp.text[:1000]}")
-
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Power BI GET failed ({resp.status_code}) {url}: {resp.text}")
-
-    return resp.json()
+    return _pbi_post(url, body)
 
 
 def get_latest_refresh_status(workspace_id: str, dataset_id: str) -> Dict[str, Any]:
@@ -224,10 +223,23 @@ def get_latest_refresh_status(workspace_id: str, dataset_id: str) -> Dict[str, A
     url = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}/refreshes?$top=1"
     data = _pbi_get(url)
     rows = data.get("value", []) or []
+
     if not rows:
-        return {"status": None, "raw": None}
+        return {
+            "status": None,
+            "raw": None,
+            "requestId": None,
+            "startTime": None,
+            "endTime": None,
+        }
 
     row = rows[0] or {}
-    status = str(row.get("status") or "").strip()
-    return {"status": status or None, "raw": row}
+    status = str(row.get("status") or "").strip() or None
 
+    return {
+        "status": status,
+        "raw": row,
+        "requestId": row.get("requestId") or row.get("id"),
+        "startTime": row.get("startTime"),
+        "endTime": row.get("endTime"),
+    }

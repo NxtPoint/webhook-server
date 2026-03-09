@@ -1,22 +1,22 @@
 # ==================================================================================================
-# powerbi_app.py  (PRODUCTION BASELINE vNext)
+# powerbi_app.py  (PRODUCTION BASELINE vNext - ASYNC REFRESH SAFE)
 # ==================================================================================================
 # SERVICE: NextPoint Power BI Service (Render)
 #
-# CHANGE SUMMARY (vs your current file)
-# ------------------------------------
-# 1) /dataset/refresh and /dataset/refresh_once NO LONGER call _maybe_warmup_capacity()
-#    - Prevents ARM resume collisions and unintended cost.
-#    - Refresh is a Power BI REST call (dataset refresh) and does not require capacity running.
-# 2) Capacity warmup remains ONLY on:
-#    - POST /capacity/warmup (explicit)
-#    - POST /embed/token (optional autowarmup gate)
-#
-# Everything else preserved.
+# DESIGN
+# ------
+# - Refresh endpoints are NON-BLOCKING
+# - No synchronous wait endpoint
+# - No in-memory refresh idempotency as source of truth
+# - Status endpoint returns normalized lifecycle fields
+# - Capacity warmup remains ONLY on:
+#     - POST /capacity/warmup
+#     - POST /embed/token (optional autowarmup gate)
+# - Dashboard readiness is decided in upload_app.py, NOT here
 # ==================================================================================================
 
 import os
-import time
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from flask import Flask, request, jsonify
@@ -26,13 +26,10 @@ from powerbi_embed import (
     generate_embed_token,
     trigger_dataset_refresh,
     get_latest_refresh_status,
+    _pbi_get,
 )
 
-
-
 app = Flask(__name__)
-
-_REFRESH_ONCE_CACHE: Dict[str, int] = {}  # task_id -> last_refresh_epoch_s
 
 
 # ==================================================================================================
@@ -52,11 +49,12 @@ def _autowarmup_enabled() -> bool:
     return _env("PBI_AUTOWARMUP_ON_EMBED", "1") == "1"
 
 
-def _refresh_once_ttl_s() -> int:
-    try:
-        return int(_env("PBI_REFRESH_ONCE_TTL_S", "3600"))
-    except Exception:
-        return 3600
+def _debug_endpoints_enabled() -> bool:
+    return _env("PBI_DEBUG_ENDPOINTS", "0") == "1"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _maybe_warmup_capacity() -> None:
@@ -67,17 +65,83 @@ def _maybe_warmup_capacity() -> None:
     if not _autowarmup_enabled():
         return
 
-    # Lazy import so this service can still run without Azure capacity env during dev.
     from azure_capacity import ensure_capacity_running
 
     ensure_capacity_running()
 
 
-def _prune_refresh_once_cache(now: int) -> None:
-    ttl = _refresh_once_ttl_s()
-    dead = [k for k, ts in _REFRESH_ONCE_CACHE.items() if now - ts > ttl]
-    for k in dead:
-        _REFRESH_ONCE_CACHE.pop(k, None)
+def _norm_status(raw_status: str) -> str:
+    s = (raw_status or "").strip().lower()
+
+    if s in ("unknown", ""):
+        return "unknown"
+    if s in ("queued",):
+        return "queued"
+    if s in ("inprogress", "in_progress", "running"):
+        return "running"
+    if s in ("completed", "succeeded", "success"):
+        return "completed"
+    if s in ("failed",):
+        return "failed"
+    if s in ("cancelled", "canceled"):
+        return "cancelled"
+    if s in ("disabled",):
+        return "failed"
+
+    return s
+
+
+def _is_terminal(norm_status: str) -> bool:
+    return norm_status in ("completed", "failed", "cancelled")
+
+
+def _extract_error_message(raw: Any) -> str:
+    if isinstance(raw, dict):
+        for key in ("serviceExceptionJson", "error", "message", "extendedStatus"):
+            val = raw.get(key)
+            if val:
+                return str(val)
+
+    return ""
+
+
+def _normalize_refresh_payload(out: Dict[str, Any]) -> Dict[str, Any]:
+    raw_status = str(out.get("status") or "").strip()
+    status = _norm_status(raw_status)
+    raw = out.get("raw") or {}
+
+    started_at = (
+        out.get("startTime")
+        or out.get("started_at")
+        or (raw.get("startTime") if isinstance(raw, dict) else None)
+    )
+    ended_at = (
+        out.get("endTime")
+        or out.get("endTimeUtc")
+        or out.get("finished_at")
+        or (raw.get("endTime") if isinstance(raw, dict) else None)
+    )
+    request_id = (
+        out.get("requestId")
+        or out.get("id")
+        or (raw.get("requestId") if isinstance(raw, dict) else None)
+        or (raw.get("id") if isinstance(raw, dict) else None)
+    )
+    error_message = _extract_error_message(raw)
+
+    return {
+        "ok": True,
+        "status": status,
+        "raw_status": raw_status,
+        "is_terminal": _is_terminal(status),
+        "is_success": status == "completed",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "request_id": request_id,
+        "error_message": error_message,
+        "checked_at": _utc_now_iso(),
+        "raw": raw,
+    }
 
 
 # ==================================================================================================
@@ -87,26 +151,34 @@ def _prune_refresh_once_cache(now: int) -> None:
 def health():
     return jsonify({"ok": True})
 
-from powerbi_embed import _pbi_get  # or expose a safe wrapper
 
+# ==================================================================================================
+# DEBUG
+# ==================================================================================================
 @app.get("/debug/report_dataset")
 def debug_report_dataset():
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
+    if not _debug_endpoints_enabled():
+        return jsonify({"error": "debug_endpoints_disabled"}), 404
+
     workspace_id, report_id, dataset_id = resolve_ids_if_needed()
 
     rep = _pbi_get(f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/reports/{report_id}")
-    ds  = _pbi_get(f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}")
+    ds = _pbi_get(f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}")
 
-    return jsonify({
-        "workspaceId": workspace_id,
-        "reportId": report_id,
-        "report.datasetId": rep.get("datasetId"),
-        "dataset.isEffectiveIdentityRequired": ds.get("isEffectiveIdentityRequired"),
-        "dataset.isEffectiveIdentityRolesRequired": ds.get("isEffectiveIdentityRolesRequired"),
-        "dataset.name": ds.get("name"),
-    })
+    return jsonify(
+        {
+            "workspaceId": workspace_id,
+            "reportId": report_id,
+            "report.datasetId": rep.get("datasetId"),
+            "dataset.isEffectiveIdentityRequired": ds.get("isEffectiveIdentityRequired"),
+            "dataset.isEffectiveIdentityRolesRequired": ds.get("isEffectiveIdentityRolesRequired"),
+            "dataset.name": ds.get("name"),
+        }
+    )
+
 
 # ==================================================================================================
 # CAPACITY CONTROL
@@ -119,6 +191,7 @@ def capacity_warmup():
     from azure_capacity import ensure_capacity_running
 
     ensure_capacity_running()
+    print("PBI capacity warmup ok")
     return jsonify({"ok": True})
 
 
@@ -130,6 +203,7 @@ def capacity_suspend():
     from azure_capacity import suspend_capacity
 
     suspend_capacity()
+    print("PBI capacity suspend ok")
     return jsonify({"ok": True})
 
 
@@ -139,13 +213,7 @@ def capacity_suspend():
 @app.post("/dataset/refresh")
 def dataset_refresh():
     """
-    Simple refresh trigger (no idempotency).
-    Intended caller: backend pipeline after ingest completes.
-
-    IMPORTANT:
-    - Does NOT warm up capacity.
-    - Dataset refresh is a Power BI REST API operation and can run while capacity is paused.
-    - Avoids ARM resume collisions and unintended costs.
+    Simple refresh trigger (non-blocking, no idempotency).
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
@@ -153,41 +221,72 @@ def dataset_refresh():
     workspace_id, _, dataset_id = resolve_ids_if_needed()
     trigger_dataset_refresh(workspace_id, dataset_id)
 
-    return jsonify({"ok": True})
+    print(f"PBI refresh triggered dataset_id={dataset_id}")
+    return jsonify(
+        {
+            "ok": True,
+            "accepted": True,
+            "terminal": False,
+            "status": "queued",
+            "dataset_id": dataset_id,
+            "triggered_at": _utc_now_iso(),
+        }
+    )
 
 
 @app.post("/dataset/refresh_once")
 def dataset_refresh_once():
     """
-    Refresh trigger with best-effort idempotency by task_id.
-    Body: { "task_id": "<uuid>", "force": false }
-
-    IMPORTANT:
-    - Does NOT warm up capacity.
+    Refresh trigger endpoint for pipeline callers.
+    NOTE:
+    - Non-blocking
+    - No durable idempotency here
+    - task_id accepted for correlation/logging only
     """
     if not _require_ops_key(request):
         return jsonify({"error": "unauthorized"}), 401
 
     body = request.get_json(silent=True) or {}
     task_id = str(body.get("task_id") or "").strip()
-    force = bool(body.get("force") is True)
 
     if not task_id:
-        return jsonify({"ok": False, "error": "Missing task_id"}), 400
-
-    now = int(time.time())
-    _prune_refresh_once_cache(now)
-
-    if (not force) and task_id in _REFRESH_ONCE_CACHE:
-        return jsonify(
-            {"ok": True, "skipped": True, "reason": "already_refreshed", "task_id": task_id}
-        )
+        return jsonify({"ok": False, "error": "missing_task_id"}), 400
 
     workspace_id, _, dataset_id = resolve_ids_if_needed()
     trigger_dataset_refresh(workspace_id, dataset_id)
 
-    _REFRESH_ONCE_CACHE[task_id] = now
-    return jsonify({"ok": True, "skipped": False, "task_id": task_id})
+    print(f"PBI refresh_once triggered task_id={task_id} dataset_id={dataset_id}")
+    return jsonify(
+        {
+            "ok": True,
+            "accepted": True,
+            "terminal": False,
+            "status": "queued",
+            "task_id": task_id,
+            "dataset_id": dataset_id,
+            "triggered_at": _utc_now_iso(),
+        }
+    )
+
+
+@app.get("/dataset/refresh_status")
+def dataset_refresh_status():
+    """
+    Returns latest refresh status row, normalized for upload_app.py polling.
+    """
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    workspace_id, _, dataset_id = resolve_ids_if_needed()
+    out = get_latest_refresh_status(workspace_id, dataset_id)
+    norm = _normalize_refresh_payload(out)
+
+    print(
+        f"PBI refresh_status dataset_id={dataset_id} "
+        f"status={norm.get('status')} terminal={norm.get('is_terminal')}"
+    )
+
+    return jsonify(norm)
 
 
 # ==================================================================================================
@@ -199,7 +298,7 @@ def embed_config():
         return jsonify({"error": "unauthorized"}), 401
 
     workspace_id, report_id, dataset_id = resolve_ids_if_needed()
-    embed_url = "https://app.powerbi.com/reportEmbed" f"?reportId={report_id}&groupId={workspace_id}"
+    embed_url = f"https://app.powerbi.com/reportEmbed?reportId={report_id}&groupId={workspace_id}"
 
     return jsonify(
         {
@@ -219,7 +318,7 @@ def embed_token():
     body: Dict[str, Any] = request.get_json(silent=True) or {}
 
     username_raw = body.get("username")
-    username = (str(username_raw or "").strip().lower())
+    username = str(username_raw or "").strip().lower()
 
     if not username or "@" not in username:
         return jsonify({"error": "missing_or_invalid_username"}), 400
@@ -237,94 +336,38 @@ def embed_token():
             roles=["rls_email"],
         )
 
-        print(f"EMBED TOKEN RESPONSE username={username} tok={tok}")
-
         token = str((tok or {}).get("token") or "").strip()
         if not token:
-            return jsonify({
-                "error": "embed_token_missing",
-                "detail": tok,
-                "workspace_id": workspace_id,
-                "report_id": report_id,
-                "dataset_id": dataset_id,
-                "username": username,
-            }), 500
+            print(f"PBI embed token missing username={username}")
+            return jsonify(
+                {
+                    "error": "embed_token_missing",
+                    "workspace_id": workspace_id,
+                    "report_id": report_id,
+                    "dataset_id": dataset_id,
+                    "username": username,
+                }
+            ), 500
 
+        print(
+            f"PBI embed token ok username={username} "
+            f"tokenId={tok.get('tokenId')} expiration={tok.get('expiration')}"
+        )
         return jsonify(tok)
 
     except Exception as e:
-        print(f"EMBED TOKEN EXCEPTION username={username} err={e}")
-        return jsonify({
-            "error": "embed_token_exception",
-            "detail": str(e),
-            "username": username,
-        }), 500
-    
+        print(f"PBI embed token exception username={username} err={str(e)}")
+        return jsonify(
+            {
+                "error": "embed_token_exception",
+                "detail": str(e),
+                "username": username,
+            }
+        ), 500
 
-@app.get("/dataset/refresh_status")
-def dataset_refresh_status():
-    """
-    Returns latest refresh status row.
-    """
-    if not _require_ops_key(request):
-        return jsonify({"error": "unauthorized"}), 401
-
-    workspace_id, _, dataset_id = resolve_ids_if_needed()
-    out = get_latest_refresh_status(workspace_id, dataset_id)
-    return jsonify({"ok": True, **out})
-
-
-@app.post("/dataset/refresh_and_wait")
-def dataset_refresh_and_wait():
-    """
-    Triggers dataset refresh, polls until terminal status, then returns terminal outcome.
-    Body:
-      {
-        "timeout_s": 900,
-        "poll_s": 15
-      }
-    """
-    if not _require_ops_key(request):
-        return jsonify({"error": "unauthorized"}), 401
-
-    body = request.get_json(silent=True) or {}
-    timeout_s = int(body.get("timeout_s") or 900)
-    poll_s = int(body.get("poll_s") or 15)
-
-    workspace_id, _, dataset_id = resolve_ids_if_needed()
-
-    trigger_dataset_refresh(workspace_id, dataset_id)
-
-    deadline = time.time() + timeout_s
-    last = None
-
-    while time.time() < deadline:
-        out = get_latest_refresh_status(workspace_id, dataset_id)
-        last = out
-        status = str(out.get("status") or "").strip().lower()
-
-        if status in ("completed", "failed", "cancelled", "disabled"):
-            return jsonify({
-                "ok": status == "completed",
-                "terminal": True,
-                "status": out.get("status"),
-                "raw": out.get("raw"),
-            })
-
-        time.sleep(max(5, poll_s))
-
-    return jsonify({
-        "ok": False,
-        "terminal": False,
-        "status": (last or {}).get("status"),
-        "raw": (last or {}).get("raw"),
-        "error": "refresh_timeout",
-    }), 504
 
 # ==================================================================================================
 # LOCAL DEV
 # ==================================================================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(_env("PORT", "5000")), debug=False)
-
-
