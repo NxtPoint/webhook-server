@@ -259,17 +259,24 @@ def _poll_powerbi_refresh_until_terminal(task_id: str) -> dict:
                 time.sleep(3)
                 continue
 
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _set_pbi_refresh_state(
-                    conn,
-                    task_id,
-                    status=status or "unknown",
-                    error=error_message,
-                    started=True,
-                    finished=is_terminal,
-                    clear_error=not error_message,
-                )
+            should_persist = (
+                status != last_status
+                or is_terminal
+                or bool(error_message)
+            )
+
+            if should_persist:
+                with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
+                    _set_pbi_refresh_state(
+                        conn,
+                        task_id,
+                        status=status or "unknown",
+                        error=error_message,
+                        started=True,
+                        finished=is_terminal,
+                        clear_error=not error_message,
+                    )
 
             if status != last_status:
                 app.logger.info(
@@ -288,7 +295,16 @@ def _poll_powerbi_refresh_until_terminal(task_id: str) -> dict:
                 }
 
             elapsed = time.time() - poll_started_at
-            sleep_s = 5 if elapsed < 60 else max(5, PBI_REFRESH_POLL_S)
+
+            if elapsed < 15:
+                sleep_s = 2
+            elif elapsed < 30:
+                sleep_s = 3
+            elif elapsed < 60:
+                sleep_s = 5
+            else:
+                sleep_s = max(8, PBI_REFRESH_POLL_S)
+
             time.sleep(sleep_s)
 
         with engine.begin() as conn:
