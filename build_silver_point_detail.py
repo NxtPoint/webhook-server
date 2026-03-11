@@ -738,22 +738,27 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     L2 = SINGLES_WIDTH / 2.0          # 4.115
     L3 = 3.0 * SINGLES_WIDTH / 4.0    # 6.1725
 
+        # =========================================================================
+    # 1) Serve location (1–8) — corrected to true singles halves in doubles-origin x
     # =========================================================================
-    # 1) Serve location (1–8) — UPDATED FOR SINGLES + PERSISTED ON ALL ROWS
-    # =========================================================================
     #
-    # We bucket based on distance-from-wide-singles-sideline towards center line (0..4.115).
-    # For each serve, decide which wide sideline applies based on serve_side_d:
-    #   deuce: wide is RIGHT singles sideline (x=9.60), so d = 9.60 - court_x
-    #   ad   : wide is LEFT  singles sideline (x=1.37), so d = court_x - 1.37
+    # Singles x range: [1.37 .. 9.60]
+    # Midline: 5.485
     #
-    # Then bucket d into 4 zones (wide→T): [0,Q1)->1, [Q1,Q2)->2, [Q2,Q3)->3, [Q3,4.115]->4
-    # Map to 1–4 for deuce and 5–8 for ad (same numbering convention as you already use).
+    # Near side:
+    #   deuce = left half  (1.37 .. 5.485) -> buckets 1..4 left-to-right
+    #   ad    = right half (5.485 .. 9.60) -> buckets 5..8 left-to-right
     #
-    # Persistence requirement:
-    #   - serve rows: compute serve_location_raw
-    #   - non-serve rows: carry forward last non-null serve_location_raw (no gaps)
+    # Far side (reversed from camera x because server faces opposite way):
+    #   deuce = right half (5.485 .. 9.60) -> buckets 1..4 right-to-left in database x
+    #   ad    = left half  (1.37 .. 5.485) -> buckets 5..8 right-to-left in database x
     #
+    HALF_W = SINGLES_WIDTH / 2.0      # 4.115
+    B1 = HALF_W / 4.0                 # 1.02875
+    B2 = HALF_W / 2.0                 # 2.0575
+    B3 = 3.0 * HALF_W / 4.0           # 3.08625
+    MID_X = SINGLES_LEFT_X + HALF_W   # 5.485
+
     sql_srv = f"""
     WITH base AS (
       SELECT
@@ -768,34 +773,71 @@ def phase4_update(conn: Connection, task_id: str) -> int:
         CASE
           WHEN COALESCE(b.serve_d, FALSE) IS NOT TRUE THEN NULL
           WHEN NULLIF(TRIM(b.court_x::text), '') IS NULL THEN NULL
+          WHEN lower(COALESCE(TRIM(b.server_end_d), '')) NOT IN ('near','far') THEN NULL
           WHEN lower(COALESCE(TRIM(b.serve_side_d), '')) NOT IN ('deuce','ad') THEN NULL
           WHEN (b.court_x)::double precision < :sx_left OR (b.court_x)::double precision > :sx_right THEN NULL
-          ELSE
+
+          -- =========================
+          -- NEAR SIDE
+          -- =========================
+          WHEN lower(TRIM(b.server_end_d)) = 'near' AND lower(TRIM(b.serve_side_d)) = 'deuce' THEN
             CASE
-              WHEN lower(COALESCE(TRIM(b.serve_side_d), '')) = 'deuce' THEN
-                -- wide is RIGHT singles sideline
+              WHEN (b.court_x)::double precision < :mid_x THEN
                 CASE
-                  WHEN (:sx_right - (b.court_x)::double precision) < :q1 THEN 1
-                  WHEN (:sx_right - (b.court_x)::double precision) < :q2 THEN 2
-                  WHEN (:sx_right - (b.court_x)::double precision) < :q3 THEN 3
+                  WHEN ((b.court_x)::double precision - :sx_left) < :b1 THEN 1
+                  WHEN ((b.court_x)::double precision - :sx_left) < :b2 THEN 2
+                  WHEN ((b.court_x)::double precision - :sx_left) < :b3 THEN 3
                   ELSE 4
                 END
-              ELSE
-                -- ad: wide is LEFT singles sideline
+              ELSE NULL
+            END
+
+          WHEN lower(TRIM(b.server_end_d)) = 'near' AND lower(TRIM(b.serve_side_d)) = 'ad' THEN
+            CASE
+              WHEN (b.court_x)::double precision >= :mid_x THEN
                 CASE
-                  WHEN ((b.court_x)::double precision - :sx_left) < :q1 THEN 5
-                  WHEN ((b.court_x)::double precision - :sx_left) < :q2 THEN 6
-                  WHEN ((b.court_x)::double precision - :sx_left) < :q3 THEN 7
+                  WHEN ((b.court_x)::double precision - :mid_x) < :b1 THEN 5
+                  WHEN ((b.court_x)::double precision - :mid_x) < :b2 THEN 6
+                  WHEN ((b.court_x)::double precision - :mid_x) < :b3 THEN 7
                   ELSE 8
                 END
+              ELSE NULL
             END
+
+          -- =========================
+          -- FAR SIDE (reverse x within each service half)
+          -- =========================
+          WHEN lower(TRIM(b.server_end_d)) = 'far' AND lower(TRIM(b.serve_side_d)) = 'deuce' THEN
+            CASE
+              WHEN (b.court_x)::double precision >= :mid_x THEN
+                CASE
+                  WHEN (:sx_right - (b.court_x)::double precision) < :b1 THEN 1
+                  WHEN (:sx_right - (b.court_x)::double precision) < :b2 THEN 2
+                  WHEN (:sx_right - (b.court_x)::double precision) < :b3 THEN 3
+                  ELSE 4
+                END
+              ELSE NULL
+            END
+
+          WHEN lower(TRIM(b.server_end_d)) = 'far' AND lower(TRIM(b.serve_side_d)) = 'ad' THEN
+            CASE
+              WHEN (b.court_x)::double precision < :mid_x THEN
+                CASE
+                  WHEN (:mid_x - (b.court_x)::double precision) < :b1 THEN 5
+                  WHEN (:mid_x - (b.court_x)::double precision) < :b2 THEN 6
+                  WHEN (:mid_x - (b.court_x)::double precision) < :b3 THEN 7
+                  ELSE 8
+                END
+              ELSE NULL
+            END
+
+          ELSE NULL
         END AS serve_location_raw
       FROM base b
     ),
     filled AS (
       SELECT
         b.id,
-        -- carry forward last serve_location_raw across timeline
         MAX(r.serve_location_raw) OVER (
           PARTITION BY b.task_id
           ORDER BY b.ball_hit_s, b.id
@@ -817,9 +859,10 @@ def phase4_update(conn: Connection, task_id: str) -> int:
             "tid": task_id,
             "sx_left": float(SINGLES_LEFT_X),
             "sx_right": float(SINGLES_RIGHT_X),
-            "q1": float(Q1),
-            "q2": float(Q2),
-            "q3": float(Q3),
+            "mid_x": float(MID_X),
+            "b1": float(B1),
+            "b2": float(B2),
+            "b3": float(B3),
         },
     )
 
