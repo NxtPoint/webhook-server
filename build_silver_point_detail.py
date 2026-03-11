@@ -1582,9 +1582,9 @@ def phase5_set_point_key(conn: Connection, task_id: str) -> int:
 def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
     # Singles geometry (meters) with SportAI x-origin at outside doubles sideline
     COURT_LEN = 23.77
+    HALF_Y = 11.885
     SINGLES_LEFT_X = 1.37
     SINGLES_RIGHT_X = 9.60
-    NET_Y = 11.885
     SERVE_NET_BAND = 1.60
 
     sql = f"""
@@ -1610,17 +1610,38 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
           WHEN p.shot_ix_in_point = ls.last_ix
             THEN
               CASE
-                -- valid in-court landing
-                WHEN p.court_x IS NOT NULL
-                 AND p.court_y IS NOT NULL
-                 AND (p.court_x)::double precision BETWEEN :sx_left AND :sx_right
-                 AND (p.court_y)::double precision BETWEEN 0 AND :court_len
-                 AND NOT (
-                   COALESCE(p.serve_d, FALSE) IS TRUE
-                   AND ABS((p.court_y)::double precision - :net_y) <= :serve_net_band
-                 )
-                  THEN 'Winner'
-                ELSE 'Error'
+                -- no bounce = terminal error
+                WHEN p.court_x IS NULL OR p.court_y IS NULL
+                  THEN 'Error'
+
+                -- bounce outside singles court = error
+                WHEN (p.court_x)::double precision < :sx_left
+                  OR (p.court_x)::double precision > :sx_right
+                  OR (p.court_y)::double precision < 0
+                  OR (p.court_y)::double precision > :court_len
+                  THEN 'Error'
+
+                -- serve-specific net fault
+                WHEN COALESCE(p.serve_d, FALSE) IS TRUE
+                 AND ABS((p.court_y)::double precision - :half_y) <= :serve_net_band
+                  THEN 'Error'
+
+                -- non-serve terminal shot must land on OPPOSITE side of the net
+                -- far side hit (0..11.885) must land near side (>11.885)
+                WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE
+                 AND p.ball_hit_location_y IS NOT NULL
+                 AND (p.ball_hit_location_y)::double precision < :half_y
+                 AND (p.court_y)::double precision <= :half_y
+                  THEN 'Error'
+
+                -- near side hit (11.885..23.77) must land far side (<11.885)
+                WHEN COALESCE(p.serve_d, FALSE) IS NOT TRUE
+                 AND p.ball_hit_location_y IS NOT NULL
+                 AND (p.ball_hit_location_y)::double precision > :half_y
+                 AND (p.court_y)::double precision >= :half_y
+                  THEN 'Error'
+
+                ELSE 'Winner'
               END
 
           ELSE NULL
@@ -1645,9 +1666,9 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
         {
             "tid": task_id,
             "court_len": float(COURT_LEN),
+            "half_y": float(HALF_Y),
             "sx_left": float(SINGLES_LEFT_X),
             "sx_right": float(SINGLES_RIGHT_X),
-            "net_y": float(NET_Y),
             "serve_net_band": float(SERVE_NET_BAND),
         },
     ).rowcount or 0
