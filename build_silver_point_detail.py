@@ -586,107 +586,47 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
     -- serve rows within points
     serves AS (
-      SELECT s.*
+      SELECT
+        s.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.task_id, s.point_number
+          ORDER BY s.ball_hit_s, s.id
+        ) AS serve_seq,
+        COUNT(*) OVER (
+          PARTITION BY s.task_id, s.point_number
+        ) AS serve_cnt
       FROM t_point s
       WHERE s.serve_d IS TRUE
         AND s.point_number IS NOT NULL
     ),
 
-    -- prior serve within the point (to decide 2nd serve)
-    prev_in_point AS (
-      SELECT
-        a.id AS serve_id,
-        a.point_number,
-        (
-          SELECT p.id
-          FROM serves p
-          WHERE p.task_id = a.task_id
-            AND p.point_number = a.point_number
-            AND (p.ball_hit_s < a.ball_hit_s OR (p.ball_hit_s = a.ball_hit_s AND p.id < a.id))
-          ORDER BY p.ball_hit_s DESC, p.id DESC
-          LIMIT 1
-        ) AS prev_serve_id
-      FROM serves a
-    ),
-
-    prev_detail AS (
-      SELECT
-        ps.serve_id,
-        ps.prev_serve_id,
-        p.ball_hit_s AS prev_t
-      FROM prev_in_point ps
-      LEFT JOIN serves p
-        ON p.id = ps.prev_serve_id
-    ),
-
-    -- 2nd serve if no opponent non-serve shot occurs between prev serve and this serve (within same point)
-    second_serve_flag AS (
-      SELECT
-        s.id AS serve_id,
-        CASE
-          WHEN pd.prev_serve_id IS NULL THEN FALSE
-          ELSE
-            NOT EXISTS (
-              SELECT 1
-              FROM t_point r
-              WHERE r.task_id = s.task_id
-                AND r.point_number = s.point_number
-                AND r.ball_hit_s > pd.prev_t
-                AND r.ball_hit_s < s.ball_hit_s
-                AND r.serve_d IS NOT TRUE
-                AND COALESCE(r.valid, TRUE) IS TRUE
-                AND r.player_id <> s.player_id
-            )
-        END AS is_second_serve
-      FROM serves s
-      LEFT JOIN prev_detail pd
-        ON pd.serve_id = s.id
-    ),
-
-    -- serve labels (raw)
     serve_labels AS (
       SELECT
         s.id,
         CASE
           WHEN s.serve_d IS NOT TRUE THEN NULL
-          WHEN sf.is_second_serve IS TRUE THEN
-            CASE
-              WHEN s.court_x IS NULL OR s.court_y IS NULL THEN 'Double'
-              ELSE '2nd'
-            END
-          ELSE '1st'
+          WHEN s.serve_seq = 1 THEN '1st'
+          WHEN s.serve_seq = 2 THEN '2nd'
+          ELSE '2nd'
         END AS serve_try_raw,
 
         CASE
           WHEN s.serve_d IS TRUE
-           AND (CASE
-                  WHEN sf.is_second_serve IS TRUE AND (s.court_x IS NULL OR s.court_y IS NULL) THEN 'Double'
-                  WHEN sf.is_second_serve IS TRUE THEN '2nd'
-                  ELSE '1st'
-                END) <> 'Double'
+           AND s.serve_seq = s.serve_cnt
            AND NOT EXISTS (
              SELECT 1
              FROM t_point q
              WHERE q.task_id = s.task_id
                AND q.point_number = s.point_number
                AND q.ball_hit_s > s.ball_hit_s
-               AND q.ball_hit_s < COALESCE(
-                 (SELECT MIN(z.ball_hit_s)
-                  FROM serves z
-                  WHERE z.task_id = s.task_id
-                    AND z.ball_hit_s > s.ball_hit_s),
-                 1e15
-               )
                AND q.serve_d IS NOT TRUE
                AND COALESCE(q.valid, TRUE) IS TRUE
                AND q.player_id <> s.player_id
            )
           THEN TRUE
-          ELSE NULL
+          ELSE FALSE
         END AS service_winner_raw
       FROM serves s
-      LEFT JOIN second_serve_flag sf
-        ON sf.serve_id = s.id
     ),
 
     t0 AS (
@@ -703,7 +643,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       SELECT
         t0.*,
 
-        -- Persist serve_try across the full timeline (as you requested)
         (
           ARRAY_AGG(t0.serve_try_raw ORDER BY t0.ball_hit_s, t0.id)
           FILTER (WHERE t0.serve_try_raw IS NOT NULL)
@@ -714,7 +653,6 @@ def phase3_update(conn: Connection, task_id: str) -> int:
           )
         ] AS serve_try_ix_in_point,
 
-        -- Persist service_winner per POINT (prevents cross-point leakage)
         (
           MAX(CASE WHEN t0.service_winner_raw IS TRUE THEN 1 ELSE 0 END)
           OVER (PARTITION BY t0.task_id, t0.point_number)
@@ -1033,25 +971,26 @@ def phase5_update(conn: Connection, task_id: str) -> int:
 
     r1  = phase5_fix_point_number(conn, task_id, pf)
     r2  = phase5_apply_exclusions(conn, task_id)
-    r3  = phase5_set_point_winner(conn, task_id, pf)
-    r4  = phase5_set_game_winner(conn, task_id)
-    r5  = phase5_fix_game_number(conn, task_id, pf)
+    r3  = phase5_fix_game_number(conn, task_id, pf)
+    r4  = phase5_set_set_number(conn, task_id)
+    r5  = phase5_set_server_id(conn, task_id)
+    r6  = phase5_set_shot_ix_in_point(conn, task_id)
+    r7  = phase5_set_shot_phase(conn, task_id)
+    r8  = phase5_set_point_key(conn, task_id)
+    r9  = phase5_set_shot_outcome(conn, task_id)
 
-    # NEW
-    r5b = phase5_set_set_number(conn, task_id)
+    # NEW: finalize 1st / 2nd / Double after shot_outcome exists
+    r9b = phase5_finalize_serve_labels(conn, task_id)
 
-    r6  = phase5_set_server_id(conn, task_id)
-    r7  = phase5_set_shot_ix_in_point(conn, task_id)
-    r8  = phase5_set_shot_phase(conn, task_id)
-    r9  = phase5_set_point_key(conn, task_id)
-    r10 = phase5_set_shot_outcome(conn, task_id)
+    r10 = phase5_set_point_winner(conn, task_id, pf)
+    r11 = phase5_set_game_winner(conn, task_id)
 
     return int(
         (r1 or 0) + (r2 or 0) + (r3 or 0) + (r4 or 0) + (r5 or 0)
-        + (r5b or 0)
-        + (r6 or 0) + (r7 or 0) + (r8 or 0) + (r9 or 0) + (r10 or 0)
+        + (r6 or 0) + (r7 or 0) + (r8 or 0) + (r9 or 0)
+        + (r9b or 0)
+        + (r10 or 0) + (r11 or 0)
     )
-
 
 def _phase5_preflight(conn: Connection, task_id: str) -> dict:
     """
@@ -1161,13 +1100,15 @@ def phase5_fix_point_number(conn: Connection, task_id: str, pf: dict) -> int:
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
-    Minimal exclusions (reverted + tightened):
+    Minimal exclusions (tightened):
 
       1) non-serve BEFORE the last serve in the point -> exclude_d = TRUE
       2) gap > 5s AFTER the last serve in point -> exclude this + rest of point
+      3) non-serve rows with no hit coordinates at all -> exclude_d = TRUE
+         (phantom / empty rows inserted by SportAI between points or after point end)
 
     NOTE:
-      - serve_side_d IS NULL is allowed (NOT an exclusion)
+      - serve_side_d IS NULL is allowed
       - no same-player-back-to-back exclusion
       - no pre-point blanket exclusion
     """
@@ -1178,7 +1119,9 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
         p.task_id,
         p.point_number,
         p.ball_hit_s,
-        COALESCE(p.serve_d, FALSE) AS serve_d
+        COALESCE(p.serve_d, FALSE) AS serve_d,
+        p.ball_hit_location_x,
+        p.ball_hit_location_y
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND p.ball_hit_s IS NOT NULL
@@ -1213,12 +1156,19 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
           AND o.last_serve_s IS NOT NULL
           AND o.ball_hit_s < o.last_serve_s
         ) AS r1_before_last_serve,
+
         (
           o.prev_s IS NOT NULL
           AND o.last_serve_s IS NOT NULL
           AND o.ball_hit_s > o.last_serve_s
           AND (o.ball_hit_s - o.prev_s) > 5.0
-        ) AS gap_break
+        ) AS gap_break,
+
+        (
+          NOT o.serve_d
+          AND o.ball_hit_location_x IS NULL
+          AND o.ball_hit_location_y IS NULL
+        ) AS r3_empty_non_serve
       FROM ordered o
     ),
     chain AS (
@@ -1229,7 +1179,8 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
           ORDER BY b.ball_hit_s, b.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS r2_gap_chain,
-        f.r1_before_last_serve
+        f.r1_before_last_serve,
+        f.r3_empty_non_serve
       FROM flags f
       JOIN {SILVER_SCHEMA}.{TABLE} b
         ON b.id = f.id
@@ -1237,7 +1188,7 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     excl AS (
       SELECT
         id,
-        (r1_before_last_serve OR r2_gap_chain) AS exclude_d
+        (r1_before_last_serve OR r2_gap_chain OR r3_empty_non_serve) AS exclude_d
       FROM chain
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
@@ -1703,6 +1654,53 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
         },
     ).rowcount or 0
 
+def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
+    """
+    Finalize serve_try_ix_in_point AFTER shot_outcome_d exists.
+
+    Rule:
+      - If the LAST non-excluded shot in the point is a serve
+      - and that serve is currently labelled '2nd'
+      - and that serve ended in Error
+      => whole point becomes 'Double'
+
+    Also force service_winner_d = FALSE on those points.
+    """
+    sql = f"""
+    WITH last_valid AS (
+      SELECT DISTINCT ON (p.task_id, p.point_number)
+        p.task_id,
+        p.point_number,
+        COALESCE(p.serve_d, FALSE) AS last_is_serve,
+        LOWER(COALESCE(p.serve_try_ix_in_point::text, '')) AS last_try,
+        LOWER(COALESCE(p.shot_outcome_d::text, '')) AS last_outcome
+      FROM {SILVER_SCHEMA}.{TABLE} p
+      WHERE p.task_id = :tid
+        AND p.point_number > 0
+        AND COALESCE(p.exclude_d, FALSE) = FALSE
+        AND COALESCE(p.valid, TRUE) = TRUE
+      ORDER BY p.task_id, p.point_number, p.ball_hit_s DESC NULLS LAST, p.id DESC
+    ),
+    dbl AS (
+      SELECT
+        lv.task_id,
+        lv.point_number
+      FROM last_valid lv
+      WHERE lv.last_is_serve IS TRUE
+        AND lv.last_try = '2nd'
+        AND lv.last_outcome = 'error'
+    )
+    UPDATE {SILVER_SCHEMA}.{TABLE} p
+    SET
+      serve_try_ix_in_point = 'Double',
+      service_winner_d = FALSE
+    FROM dbl d
+    WHERE p.task_id = :tid
+      AND p.task_id = d.task_id
+      AND p.point_number = d.point_number;
+    """
+    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+
 def phase5_set_set_number(conn: Connection, task_id: str) -> int:
     """
     set_number derived from final set scores in bronze.submission_context and game_number.
@@ -1913,15 +1911,26 @@ def phase7_update(conn: Connection, task_id: str) -> int:
       stroke_d =
         CASE
           WHEN p.serve_d IS TRUE THEN 'Serve'
+
+          -- overhead / smash must win over volley flag
+          WHEN lower(COALESCE(p.swing_type,'')) IN ('fh_overhead','bh_overhead','overhead','smash')
+            THEN 'Smash'
+
           WHEN p.volley IS TRUE THEN 'Volley'
-          ELSE
-            CASE
-              WHEN lower(COALESCE(p.swing_type,'')) = '_fh_overhead' THEN 'Overhead'
-              WHEN lower(COALESCE(p.swing_type,'')) = 'fh' THEN 'Forehand'
-              WHEN lower(COALESCE(p.swing_type,'')) = '2h_bh' THEN 'Backhand'
-              WHEN lower(COALESCE(p.swing_type,'')) = '1h_backhand' THEN 'Slice'
-              ELSE 'Forehand'
-            END
+
+          WHEN lower(COALESCE(p.swing_type,'')) = 'fh'
+            THEN 'Forehand'
+
+          WHEN lower(COALESCE(p.swing_type,'')) IN ('2h_bh','1h_bh')
+            THEN 'Backhand'
+
+          WHEN lower(COALESCE(p.swing_type,'')) IN ('slice','bh_slice','fh_slice')
+            THEN 'Slice'
+
+          WHEN lower(COALESCE(p.swing_type,'')) = 'other'
+            THEN 'Other'
+
+          ELSE 'Other'
         END,
 
       aggression_d =
