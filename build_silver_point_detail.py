@@ -762,27 +762,35 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     sql_srv = f"""
     WITH base AS (
       SELECT
-        id, task_id, ball_hit_s, serve_d, server_end_d, serve_side_d, court_x
+        id,
+        task_id,
+        ball_hit_s,
+        serve_d,
+        server_end_d,
+        serve_side_d,
+        court_x
       FROM {SILVER_SCHEMA}.{TABLE}
       WHERE task_id = :tid
         AND ball_hit_s IS NOT NULL
     ),
+
     srv_loc_raw AS (
       SELECT
         b.id,
-                CASE
+        CASE
           WHEN COALESCE(b.serve_d, FALSE) IS NOT TRUE THEN NULL
           WHEN NULLIF(TRIM(b.court_x::text), '') IS NULL THEN NULL
           WHEN lower(COALESCE(TRIM(b.server_end_d), '')) NOT IN ('near','far') THEN NULL
           WHEN lower(COALESCE(TRIM(b.serve_side_d), '')) NOT IN ('deuce','ad') THEN NULL
-          WHEN (b.court_x)::double precision < :sx_left OR (b.court_x)::double precision > :sx_right THEN NULL
+          WHEN (b.court_x)::double precision < :sx_left
+            OR (b.court_x)::double precision > :sx_right THEN NULL
 
           -- ==========================================================
-          -- NEAR SIDE
-          -- near + deuce = LEFT -> MID   => buckets 1..4
-          -- near + ad    = MID  -> RIGHT => buckets 5..8
+          -- NEAR + DEUCE : 1.37 -> 5.485  => 1..4
           -- ==========================================================
-          WHEN lower(TRIM(b.server_end_d)) = 'near' AND lower(TRIM(b.serve_side_d)) = 'deuce' THEN
+          WHEN lower(TRIM(b.server_end_d)) = 'near'
+           AND lower(TRIM(b.serve_side_d)) = 'deuce'
+          THEN
             CASE
               WHEN (b.court_x)::double precision < :mid_x THEN
                 CASE
@@ -794,7 +802,12 @@ def phase4_update(conn: Connection, task_id: str) -> int:
               ELSE 4
             END
 
-          WHEN lower(TRIM(b.server_end_d)) = 'near' AND lower(TRIM(b.serve_side_d)) = 'ad' THEN
+          -- ==========================================================
+          -- NEAR + AD : 5.485 -> 9.60  => 5..8
+          -- ==========================================================
+          WHEN lower(TRIM(b.server_end_d)) = 'near'
+           AND lower(TRIM(b.serve_side_d)) = 'ad'
+          THEN
             CASE
               WHEN (b.court_x)::double precision >= :mid_x THEN
                 CASE
@@ -807,11 +820,11 @@ def phase4_update(conn: Connection, task_id: str) -> int:
             END
 
           -- ==========================================================
-          -- FAR SIDE
-          -- far + deuce = RIGHT -> MID  => buckets 1..4
-          -- far + ad    = MID   -> LEFT => buckets 5..8
+          -- FAR + DEUCE : 9.60 -> 5.485  => 1..4
           -- ==========================================================
-          WHEN lower(TRIM(b.server_end_d)) = 'far' AND lower(TRIM(b.serve_side_d)) = 'deuce' THEN
+          WHEN lower(TRIM(b.server_end_d)) = 'far'
+           AND lower(TRIM(b.serve_side_d)) = 'deuce'
+          THEN
             CASE
               WHEN (b.court_x)::double precision >= :mid_x THEN
                 CASE
@@ -823,7 +836,12 @@ def phase4_update(conn: Connection, task_id: str) -> int:
               ELSE 4
             END
 
-          WHEN lower(TRIM(b.server_end_d)) = 'far' AND lower(TRIM(b.serve_side_d)) = 'ad' THEN
+          -- ==========================================================
+          -- FAR + AD : 5.485 -> 1.37  => 5..8
+          -- ==========================================================
+          WHEN lower(TRIM(b.server_end_d)) = 'far'
+           AND lower(TRIM(b.serve_side_d)) = 'ad'
+          THEN
             CASE
               WHEN (b.court_x)::double precision < :mid_x THEN
                 CASE
@@ -839,18 +857,30 @@ def phase4_update(conn: Connection, task_id: str) -> int:
         END AS serve_location_raw
       FROM base b
     ),
-    filled AS (
+
+    ordered AS (
       SELECT
-        b.id,
-        MAX(r.serve_location_raw) OVER (
+        b.*,
+        r.serve_location_raw,
+        COUNT(r.serve_location_raw) OVER (
           PARTITION BY b.task_id
           ORDER BY b.ball_hit_s, b.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS serve_location
+        ) AS grp
       FROM base b
       LEFT JOIN srv_loc_raw r
         ON r.id = b.id
+    ),
+
+    filled AS (
+      SELECT
+        o.id,
+        MAX(o.serve_location_raw) OVER (
+          PARTITION BY o.task_id, o.grp
+        ) AS serve_location
+      FROM ordered o
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET serve_location = f.serve_location
     FROM filled f
