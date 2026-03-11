@@ -1584,10 +1584,8 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
     COURT_LEN = 23.77
     SINGLES_LEFT_X = 1.37
     SINGLES_RIGHT_X = 9.60
-
-    # Net is at half court; use a tolerant band to catch net bounces/contacts
     NET_Y = 11.885
-    NET_BAND = 2.25  # adjust later if needed
+    SERVE_NET_BAND = 1.60
 
     sql = f"""
     WITH last_shot AS (
@@ -1612,14 +1610,14 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
           WHEN p.shot_ix_in_point = ls.last_ix
             THEN
               CASE
-                -- Winner if the LAST shot's bounce is in singles court (and not a net bounce)
+                -- valid in-court landing
                 WHEN p.court_x IS NOT NULL
                  AND p.court_y IS NOT NULL
                  AND (p.court_x)::double precision BETWEEN :sx_left AND :sx_right
                  AND (p.court_y)::double precision BETWEEN 0 AND :court_len
                  AND NOT (
-                   lower(COALESCE(p.type,'')) = 'floor'
-                   AND ABS((p.court_y)::double precision - :net_y) <= :net_band
+                   COALESCE(p.serve_d, FALSE) IS TRUE
+                   AND ABS((p.court_y)::double precision - :net_y) <= :serve_net_band
                  )
                   THEN 'Winner'
                 ELSE 'Error'
@@ -1650,7 +1648,7 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
             "sx_left": float(SINGLES_LEFT_X),
             "sx_right": float(SINGLES_RIGHT_X),
             "net_y": float(NET_Y),
-            "net_band": float(NET_BAND),
+            "serve_net_band": float(SERVE_NET_BAND),
         },
     ).rowcount or 0
 
@@ -1661,11 +1659,22 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
     Rule:
       - If the LAST non-excluded shot in the point is a serve
       - and that serve is currently labelled '2nd'
-      - and that serve ended in Error
+      - and that serve is NOT a valid in-serve
       => whole point becomes 'Double'
+
+    A serve is treated as NOT valid in-serve when:
+      - bounce missing, OR
+      - bounce outside singles court, OR
+      - bounce is in the net band
 
     Also force service_winner_d = FALSE on those points.
     """
+    COURT_LEN = 23.77
+    SINGLES_LEFT_X = 1.37
+    SINGLES_RIGHT_X = 9.60
+    NET_Y = 11.885
+    NET_BAND = 1.60
+
     sql = f"""
     WITH last_valid AS (
       SELECT DISTINCT ON (p.task_id, p.point_number)
@@ -1673,7 +1682,9 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
         p.point_number,
         COALESCE(p.serve_d, FALSE) AS last_is_serve,
         LOWER(COALESCE(p.serve_try_ix_in_point::text, '')) AS last_try,
-        LOWER(COALESCE(p.shot_outcome_d::text, '')) AS last_outcome
+        p.court_x,
+        p.court_y,
+        p.type
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND p.point_number > 0
@@ -1688,7 +1699,15 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
       FROM last_valid lv
       WHERE lv.last_is_serve IS TRUE
         AND lv.last_try = '2nd'
-        AND lv.last_outcome = 'error'
+        AND (
+             lv.court_x IS NULL
+          OR lv.court_y IS NULL
+          OR (lv.court_x)::double precision < :sx_left
+          OR (lv.court_x)::double precision > :sx_right
+          OR (lv.court_y)::double precision < 0
+          OR (lv.court_y)::double precision > :court_len
+          OR ABS((lv.court_y)::double precision - :net_y) <= :net_band
+        )
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
@@ -1699,7 +1718,17 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
       AND p.task_id = d.task_id
       AND p.point_number = d.point_number;
     """
-    return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
+    return conn.execute(
+        text(sql),
+        {
+            "tid": task_id,
+            "court_len": float(COURT_LEN),
+            "sx_left": float(SINGLES_LEFT_X),
+            "sx_right": float(SINGLES_RIGHT_X),
+            "net_y": float(NET_Y),
+            "net_band": float(NET_BAND),
+        },
+    ).rowcount or 0
 
 def phase5_set_set_number(conn: Connection, task_id: str) -> int:
     """
@@ -1908,15 +1937,14 @@ def phase7_update(conn: Connection, task_id: str) -> int:
           ELSE NULL
         END,
 
-      stroke_d =
+       stroke_d =
         CASE
           WHEN p.serve_d IS TRUE THEN 'Serve'
 
-          -- overhead / smash must win over volley flag
-          WHEN lower(COALESCE(p.swing_type,'')) IN ('fh_overhead','bh_overhead','overhead','smash')
-            THEN 'Smash'
-
           WHEN p.volley IS TRUE THEN 'Volley'
+
+          WHEN lower(COALESCE(p.swing_type,'')) IN ('fh_overhead','bh_overhead','overhead','smash')
+            THEN 'Overhead'
 
           WHEN lower(COALESCE(p.swing_type,'')) = 'fh'
             THEN 'Forehand'
