@@ -770,16 +770,18 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     srv_loc_raw AS (
       SELECT
         b.id,
-        CASE
+                CASE
           WHEN COALESCE(b.serve_d, FALSE) IS NOT TRUE THEN NULL
           WHEN NULLIF(TRIM(b.court_x::text), '') IS NULL THEN NULL
           WHEN lower(COALESCE(TRIM(b.server_end_d), '')) NOT IN ('near','far') THEN NULL
           WHEN lower(COALESCE(TRIM(b.serve_side_d), '')) NOT IN ('deuce','ad') THEN NULL
           WHEN (b.court_x)::double precision < :sx_left OR (b.court_x)::double precision > :sx_right THEN NULL
 
-          -- =========================
+          -- ==========================================================
           -- NEAR SIDE
-          -- =========================
+          -- near + deuce = LEFT -> MID   => buckets 1..4
+          -- near + ad    = MID  -> RIGHT => buckets 5..8
+          -- ==========================================================
           WHEN lower(TRIM(b.server_end_d)) = 'near' AND lower(TRIM(b.serve_side_d)) = 'deuce' THEN
             CASE
               WHEN (b.court_x)::double precision < :mid_x THEN
@@ -789,7 +791,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN ((b.court_x)::double precision - :sx_left) < :b3 THEN 3
                   ELSE 4
                 END
-              ELSE NULL
+              ELSE 4
             END
 
           WHEN lower(TRIM(b.server_end_d)) = 'near' AND lower(TRIM(b.serve_side_d)) = 'ad' THEN
@@ -801,12 +803,14 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN ((b.court_x)::double precision - :mid_x) < :b3 THEN 7
                   ELSE 8
                 END
-              ELSE NULL
+              ELSE 5
             END
 
-          -- =========================
-          -- FAR SIDE (reverse x within each service half)
-          -- =========================
+          -- ==========================================================
+          -- FAR SIDE
+          -- far + deuce = RIGHT -> MID  => buckets 1..4
+          -- far + ad    = MID   -> LEFT => buckets 5..8
+          -- ==========================================================
           WHEN lower(TRIM(b.server_end_d)) = 'far' AND lower(TRIM(b.serve_side_d)) = 'deuce' THEN
             CASE
               WHEN (b.court_x)::double precision >= :mid_x THEN
@@ -816,7 +820,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN (:sx_right - (b.court_x)::double precision) < :b3 THEN 3
                   ELSE 4
                 END
-              ELSE NULL
+              ELSE 4
             END
 
           WHEN lower(TRIM(b.server_end_d)) = 'far' AND lower(TRIM(b.serve_side_d)) = 'ad' THEN
@@ -828,7 +832,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN (:mid_x - (b.court_x)::double precision) < :b3 THEN 7
                   ELSE 8
                 END
-              ELSE NULL
+              ELSE 5
             END
 
           ELSE NULL
