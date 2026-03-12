@@ -799,7 +799,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN ((b.court_x)::double precision - :sx_left) < :b3 THEN 3
                   ELSE 4
                 END
-              ELSE 4
+              ELSE 2
             END
 
           -- ==========================================================
@@ -816,7 +816,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN ((b.court_x)::double precision - :mid_x) < :b3 THEN 7
                   ELSE 8
                 END
-              ELSE 5
+              ELSE 7
             END
 
           -- ==========================================================
@@ -833,7 +833,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN (:sx_right - (b.court_x)::double precision) < :b3 THEN 3
                   ELSE 4
                 END
-              ELSE 4
+              ELSE 2
             END
 
           -- ==========================================================
@@ -850,7 +850,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
                   WHEN (:mid_x - (b.court_x)::double precision) < :b3 THEN 7
                   ELSE 8
                 END
-              ELSE 5
+              ELSE 7
             END
 
           ELSE NULL
