@@ -2254,7 +2254,7 @@ def phase7_update(conn: Connection, task_id: str) -> int:
         WHEN p.ball_hit_y_norm < 17 THEN 'Net'
 
         ELSE NULL
-      END
+      END,
     WHERE p.task_id = :tid;
     """
     r1 = conn.execute(text(sql_1), {"tid": task_id}).rowcount or 0
