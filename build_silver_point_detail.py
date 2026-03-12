@@ -1921,19 +1921,33 @@ def phase5_add_schema(conn: Connection):
     """
     _exec(conn, sql_fix)
 
-# ------------------------------- Phase 6 Nomralised Co_ordinates -------------------------------
+# ------------------------------- Phase 6 Normalised Co-ordinates -------------------------------
 
 def phase6_update(conn: Connection, task_id: str) -> int:
     """
-    Phase 6: normalization only
-      - exact singles geometry
-      - x origin still outside doubles sideline
-      - convert to singles-local normalized coordinates
+    Phase 6: camera-normalized coordinates
+
+    Locked business rule:
+      - Normalize everything to the near-side camera view.
+      - Keep raw coordinate frame in doubles-origin coordinates.
+      - DO NOT convert x into singles-local by subtracting 1.37.
+
+    Invert flags (already correct):
+      - invert_hit    = TRUE  when hit came from far side  (ball_hit_location_y < 11.885)
+      - invert_hit    = FALSE when hit came from near side (ball_hit_location_y >= 11.885)
+
+      - invert_bounce = TRUE  when hit came from near side (ball_hit_location_y > 11.885)
+      - invert_bounce = FALSE when hit came from far side  (ball_hit_location_y <= 11.885)
+
+    Normalization math:
+      - if invert = FALSE => norm = raw
+      - if invert = TRUE  => flip across full court:
+            x_norm = 10.97 - x
+            y_norm = 23.77 - y
     """
     HALF_Y = 11.885
     COURT_LEN = 23.77
-    SINGLES_LEFT_X = 1.37
-    SINGLES_WIDTH = 8.23
+    DOUBLES_W = 10.97
 
     sql = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
@@ -1959,14 +1973,15 @@ def phase6_update(conn: Connection, task_id: str) -> int:
           WHEN p.ball_hit_location_x IS NULL THEN NULL
           WHEN p.ball_hit_location_y IS NOT NULL
            AND (p.ball_hit_location_y)::double precision < :half_y
-            THEN :singles_w - ((p.ball_hit_location_x)::double precision - :sx_left)
-          ELSE (p.ball_hit_location_x)::double precision - :sx_left
+            THEN :court_w - (p.ball_hit_location_x)::double precision
+          ELSE (p.ball_hit_location_x)::double precision
         END,
 
       ball_hit_y_norm =
         CASE
           WHEN p.ball_hit_location_y IS NULL THEN NULL
-          WHEN (p.ball_hit_location_y)::double precision < :half_y
+          WHEN p.ball_hit_location_y IS NOT NULL
+           AND (p.ball_hit_location_y)::double precision < :half_y
             THEN :court_len - (p.ball_hit_location_y)::double precision
           ELSE (p.ball_hit_location_y)::double precision
         END,
@@ -1976,8 +1991,8 @@ def phase6_update(conn: Connection, task_id: str) -> int:
           WHEN p.court_x IS NULL THEN NULL
           WHEN p.ball_hit_location_y IS NOT NULL
            AND (p.ball_hit_location_y)::double precision > :half_y
-            THEN :singles_w - ((p.court_x)::double precision - :sx_left)
-          ELSE (p.court_x)::double precision - :sx_left
+            THEN :court_w - (p.court_x)::double precision
+          ELSE (p.court_x)::double precision
         END,
 
       ball_bounce_y_norm =
@@ -1996,8 +2011,7 @@ def phase6_update(conn: Connection, task_id: str) -> int:
             "tid": task_id,
             "half_y": float(HALF_Y),
             "court_len": float(COURT_LEN),
-            "sx_left": float(SINGLES_LEFT_X),
-            "singles_w": float(SINGLES_WIDTH),
+            "court_w": float(DOUBLES_W),
         },
     ).rowcount or 0
 
