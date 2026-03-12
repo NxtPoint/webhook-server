@@ -1759,11 +1759,6 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
       - and current serve_try_ix_in_point = '2nd'
       - and serve is not a valid in-serve
       => mark whole point as Double
-
-    Valid in-serve means:
-      - bounce present
-      - bounce inside singles court
-      - not in net band
     """
     COURT_LEN = 23.77
     SINGLES_LEFT_X = 1.37
@@ -1792,7 +1787,6 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
         AND p.point_number > 0
     ),
 
-    -- last non-excluded valid row in point
     last_valid AS (
       SELECT DISTINCT ON (b.task_id, b.point_number)
         b.task_id,
@@ -1811,7 +1805,6 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
       ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC NULLS LAST, b.id DESC
     ),
 
-    -- points that must become Double
     dbl AS (
       SELECT
         lv.task_id,
@@ -1830,7 +1823,6 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
         )
     ),
 
-    -- first valid serve row in point
     serve_rows AS (
       SELECT
         b.*,
@@ -1856,7 +1848,6 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
       WHERE s.serve_rn = 1
     ),
 
-    -- first opponent non-serve row after the serve (i.e. return attempt)
     first_return AS (
       SELECT DISTINCT ON (fs.task_id, fs.point_number)
         fs.task_id,
@@ -1874,7 +1865,6 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
        AND r.serve_d IS NOT TRUE
        AND r.player_id <> fs.server_id
       ORDER BY fs.task_id, fs.point_number, r.ball_hit_s, r.id
-    ), BY fs.task_id, fs.point_number, r.ball_hit_s, r.id
     ),
 
     point_stats AS (
