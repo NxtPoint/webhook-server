@@ -1863,7 +1863,7 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
         fs.point_number,
         r.id AS return_id,
         r.player_id AS returner_id,
-        LOWER(COALESCE(r.shot_outcome_d::text, '')) AS return_outcome_lc,
+        r.shot_outcome_lc AS return_outcome_lc,
         r.shot_ix_in_point
       FROM first_serve fs
       JOIN base r
@@ -1874,6 +1874,7 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
        AND r.serve_d IS NOT TRUE
        AND r.player_id <> fs.server_id
       ORDER BY fs.task_id, fs.point_number, r.ball_hit_s, r.id
+    ), BY fs.task_id, fs.point_number, r.ball_hit_s, r.id
     ),
 
     point_stats AS (
