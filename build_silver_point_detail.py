@@ -2240,21 +2240,7 @@ def phase7_update(conn: Connection, task_id: str) -> int:
           WHEN p.ball_bounce_y_norm <= 18 THEN 'Short'
           ELSE NULL
         END
-
-     player_position_d =
-      CASE
-        WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
-        WHEN p.ball_hit_y_norm IS NULL THEN NULL
-
-        WHEN p.ball_hit_y_norm >= 27 THEN 'Deep Behind Baseline'
-        WHEN p.ball_hit_y_norm >= 25 AND p.ball_hit_y_norm < 27 THEN 'Behind Baseline'
-        WHEN p.ball_hit_y_norm >= 23 AND p.ball_hit_y_norm < 25 THEN 'On Baseline'
-        WHEN p.ball_hit_y_norm >= 20 AND p.ball_hit_y_norm < 23 THEN 'Inside Baseline'
-        WHEN p.ball_hit_y_norm >= 17 AND p.ball_hit_y_norm < 20 THEN 'Mid Court'
-        WHEN p.ball_hit_y_norm < 17 THEN 'Net'
-
-        ELSE NULL
-      END,
+      END
     WHERE p.task_id = :tid;
     """
     r1 = conn.execute(text(sql_1), {"tid": task_id}).rowcount or 0
