@@ -738,20 +738,24 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     L2 = SINGLES_WIDTH / 2.0          # 4.115
     L3 = 3.0 * SINGLES_WIDTH / 4.0    # 6.1725
 
-        # =========================================================================
-    # 1) Serve location (1–8) — corrected to true singles halves in doubles-origin x
+    # =========================================================================
+    # 1) Serve location (1–8) — corrected mapping + safe carry-forward
     # =========================================================================
     #
-    # Singles x range: [1.37 .. 9.60]
-    # Midline: 5.485
+    # Singles x range in doubles-origin coordinates:
+    #   left sideline  = 1.37
+    #   midline        = 5.485
+    #   right sideline = 9.60
     #
-    # Near side:
-    #   deuce = left half  (1.37 .. 5.485) -> buckets 1..4 left-to-right
-    #   ad    = right half (5.485 .. 9.60) -> buckets 5..8 left-to-right
+    # Mapping:
+    #   near + deuce : 1.37 -> 5.485  => 1..4
+    #   near + ad    : 5.485 -> 9.60  => 5..8
+    #   far  + deuce : 9.60 -> 5.485  => 1..4
+    #   far  + ad    : 5.485 -> 1.37  => 5..8
     #
-    # Far side (reversed from camera x because server faces opposite way):
-    #   deuce = right half (5.485 .. 9.60) -> buckets 1..4 right-to-left in database x
-    #   ad    = left half  (1.37 .. 5.485) -> buckets 5..8 right-to-left in database x
+    # Defaults for invalid / missing serve bounce x:
+    #   deuce -> 2
+    #   ad    -> 7
     #
     HALF_W = SINGLES_WIDTH / 2.0      # 4.115
     B1 = HALF_W / 4.0                 # 1.02875
@@ -779,11 +783,26 @@ def phase4_update(conn: Connection, task_id: str) -> int:
         b.id,
         CASE
           WHEN COALESCE(b.serve_d, FALSE) IS NOT TRUE THEN NULL
-          WHEN NULLIF(TRIM(b.court_x::text), '') IS NULL THEN NULL
           WHEN lower(COALESCE(TRIM(b.server_end_d), '')) NOT IN ('near','far') THEN NULL
           WHEN lower(COALESCE(TRIM(b.serve_side_d), '')) NOT IN ('deuce','ad') THEN NULL
+
+          -- ==========================================================
+          -- INVALID / MISSING X FOR SERVE ROWS -> use defaults
+          -- deuce => 2
+          -- ad    => 7
+          -- ==========================================================
+          WHEN NULLIF(TRIM(b.court_x::text), '') IS NULL THEN
+            CASE
+              WHEN lower(TRIM(b.serve_side_d)) = 'deuce' THEN 2
+              ELSE 7
+            END
+
           WHEN (b.court_x)::double precision < :sx_left
-            OR (b.court_x)::double precision > :sx_right THEN NULL
+            OR (b.court_x)::double precision > :sx_right THEN
+            CASE
+              WHEN lower(TRIM(b.serve_side_d)) = 'deuce' THEN 2
+              ELSE 7
+            END
 
           -- ==========================================================
           -- NEAR + DEUCE : 1.37 -> 5.485  => 1..4
@@ -792,14 +811,10 @@ def phase4_update(conn: Connection, task_id: str) -> int:
            AND lower(TRIM(b.serve_side_d)) = 'deuce'
           THEN
             CASE
-              WHEN (b.court_x)::double precision < :mid_x THEN
-                CASE
-                  WHEN ((b.court_x)::double precision - :sx_left) < :b1 THEN 1
-                  WHEN ((b.court_x)::double precision - :sx_left) < :b2 THEN 2
-                  WHEN ((b.court_x)::double precision - :sx_left) < :b3 THEN 3
-                  ELSE 4
-                END
-              ELSE 2
+              WHEN ((b.court_x)::double precision - :sx_left) < :b1 THEN 1
+              WHEN ((b.court_x)::double precision - :sx_left) < :b2 THEN 2
+              WHEN ((b.court_x)::double precision - :sx_left) < :b3 THEN 3
+              ELSE 4
             END
 
           -- ==========================================================
@@ -809,14 +824,10 @@ def phase4_update(conn: Connection, task_id: str) -> int:
            AND lower(TRIM(b.serve_side_d)) = 'ad'
           THEN
             CASE
-              WHEN (b.court_x)::double precision >= :mid_x THEN
-                CASE
-                  WHEN ((b.court_x)::double precision - :mid_x) < :b1 THEN 5
-                  WHEN ((b.court_x)::double precision - :mid_x) < :b2 THEN 6
-                  WHEN ((b.court_x)::double precision - :mid_x) < :b3 THEN 7
-                  ELSE 8
-                END
-              ELSE 7
+              WHEN ((b.court_x)::double precision - :mid_x) < :b1 THEN 5
+              WHEN ((b.court_x)::double precision - :mid_x) < :b2 THEN 6
+              WHEN ((b.court_x)::double precision - :mid_x) < :b3 THEN 7
+              ELSE 8
             END
 
           -- ==========================================================
@@ -826,14 +837,10 @@ def phase4_update(conn: Connection, task_id: str) -> int:
            AND lower(TRIM(b.serve_side_d)) = 'deuce'
           THEN
             CASE
-              WHEN (b.court_x)::double precision >= :mid_x THEN
-                CASE
-                  WHEN (:sx_right - (b.court_x)::double precision) < :b1 THEN 1
-                  WHEN (:sx_right - (b.court_x)::double precision) < :b2 THEN 2
-                  WHEN (:sx_right - (b.court_x)::double precision) < :b3 THEN 3
-                  ELSE 4
-                END
-              ELSE 2
+              WHEN (:sx_right - (b.court_x)::double precision) < :b1 THEN 1
+              WHEN (:sx_right - (b.court_x)::double precision) < :b2 THEN 2
+              WHEN (:sx_right - (b.court_x)::double precision) < :b3 THEN 3
+              ELSE 4
             END
 
           -- ==========================================================
@@ -843,14 +850,10 @@ def phase4_update(conn: Connection, task_id: str) -> int:
            AND lower(TRIM(b.serve_side_d)) = 'ad'
           THEN
             CASE
-              WHEN (b.court_x)::double precision < :mid_x THEN
-                CASE
-                  WHEN (:mid_x - (b.court_x)::double precision) < :b1 THEN 5
-                  WHEN (:mid_x - (b.court_x)::double precision) < :b2 THEN 6
-                  WHEN (:mid_x - (b.court_x)::double precision) < :b3 THEN 7
-                  ELSE 8
-                END
-              ELSE 7
+              WHEN (:mid_x - (b.court_x)::double precision) < :b1 THEN 5
+              WHEN (:mid_x - (b.court_x)::double precision) < :b2 THEN 6
+              WHEN (:mid_x - (b.court_x)::double precision) < :b3 THEN 7
+              ELSE 8
             END
 
           ELSE NULL
@@ -860,7 +863,9 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 
     ordered AS (
       SELECT
-        b.*,
+        b.id,
+        b.task_id,
+        b.ball_hit_s,
         r.serve_location_raw,
         COUNT(r.serve_location_raw) OVER (
           PARTITION BY b.task_id
