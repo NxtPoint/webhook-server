@@ -70,6 +70,7 @@ PHASE5_COLS = OrderedDict({
     "point_key":              "text",
     "set_number":             "integer",
     "set_game_number":        "integer",
+    "ace_d":                  "boolean",
 })
 
 PHASE6_COLS = OrderedDict({
@@ -1050,7 +1051,7 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     r8  = phase5_set_point_key(conn, task_id)
     r9  = phase5_set_shot_outcome(conn, task_id)
 
-    # NEW: finalize 1st / 2nd / Double after shot_outcome exists
+    # serve outcomes AFTER shot_outcome exists
     r9b = phase5_finalize_serve_labels(conn, task_id)
 
     r10 = phase5_set_point_winner(conn, task_id, pf)
@@ -1746,20 +1747,23 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
 
 def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
     """
-    Finalize serve_try_ix_in_point AFTER shot_outcome_d exists.
+    Finalize serve-related outcome labels AFTER shot_outcome_d exists.
 
-    Rule:
-      - If the LAST non-excluded shot in the point is a serve
-      - and that serve is currently labelled '2nd'
-      - and that serve is NOT a valid in-serve
-      => whole point becomes 'Double'
+    Outputs:
+      - serve_try_ix_in_point : keep 1st / 2nd / Double
+      - ace_d                 : TRUE when valid serve wins point with no opponent return row
+      - service_winner_d      : TRUE when valid serve is followed by opponent return row that ends in Error
 
-    A serve is treated as NOT valid in-serve when:
-      - bounce missing, OR
-      - bounce outside singles court, OR
-      - bounce is in the net band
+    Double rule:
+      - If last non-excluded valid row in point is a serve
+      - and current serve_try_ix_in_point = '2nd'
+      - and serve is not a valid in-serve
+      => mark whole point as Double
 
-    Also force service_winner_d = FALSE on those points.
+    Valid in-serve means:
+      - bounce present
+      - bounce inside singles court
+      - not in net band
     """
     COURT_LEN = 23.77
     SINGLES_LEFT_X = 1.37
@@ -1768,29 +1772,53 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
     NET_BAND = 1.60
 
     sql = f"""
-    WITH last_valid AS (
-      SELECT DISTINCT ON (p.task_id, p.point_number)
+    WITH base AS (
+      SELECT
+        p.id,
         p.task_id,
         p.point_number,
-        COALESCE(p.serve_d, FALSE) AS last_is_serve,
-        LOWER(COALESCE(p.serve_try_ix_in_point::text, '')) AS last_try,
+        p.player_id,
+        p.ball_hit_s,
+        COALESCE(p.valid, TRUE) AS valid,
+        COALESCE(p.exclude_d, FALSE) AS exclude_d,
+        COALESCE(p.serve_d, FALSE) AS serve_d,
+        LOWER(COALESCE(p.serve_try_ix_in_point::text, '')) AS serve_try_lc,
+        LOWER(COALESCE(p.shot_outcome_d::text, '')) AS shot_outcome_lc,
+        p.shot_ix_in_point,
         p.court_x,
-        p.court_y,
-        p.type
+        p.court_y
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
         AND p.point_number > 0
-        AND COALESCE(p.exclude_d, FALSE) = FALSE
-        AND COALESCE(p.valid, TRUE) = TRUE
-      ORDER BY p.task_id, p.point_number, p.ball_hit_s DESC NULLS LAST, p.id DESC
     ),
+
+    -- last non-excluded valid row in point
+    last_valid AS (
+      SELECT DISTINCT ON (b.task_id, b.point_number)
+        b.task_id,
+        b.point_number,
+        b.id,
+        b.player_id,
+        b.serve_d,
+        b.serve_try_lc,
+        b.shot_outcome_lc,
+        b.court_x,
+        b.court_y,
+        b.shot_ix_in_point
+      FROM base b
+      WHERE b.exclude_d IS FALSE
+        AND b.valid IS TRUE
+      ORDER BY b.task_id, b.point_number, b.ball_hit_s DESC NULLS LAST, b.id DESC
+    ),
+
+    -- points that must become Double
     dbl AS (
       SELECT
         lv.task_id,
         lv.point_number
       FROM last_valid lv
-      WHERE lv.last_is_serve IS TRUE
-        AND lv.last_try = '2nd'
+      WHERE lv.serve_d IS TRUE
+        AND lv.serve_try_lc = '2nd'
         AND (
              lv.court_x IS NULL
           OR lv.court_y IS NULL
@@ -1800,15 +1828,144 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
           OR (lv.court_y)::double precision > :court_len
           OR ABS((lv.court_y)::double precision - :net_y) <= :net_band
         )
+    ),
+
+    -- first valid serve row in point
+    serve_rows AS (
+      SELECT
+        b.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY b.task_id, b.point_number
+          ORDER BY b.ball_hit_s, b.id
+        ) AS serve_rn
+      FROM base b
+      WHERE b.exclude_d IS FALSE
+        AND b.valid IS TRUE
+        AND b.serve_d IS TRUE
+    ),
+
+    first_serve AS (
+      SELECT
+        s.task_id,
+        s.point_number,
+        s.id AS serve_id,
+        s.player_id AS server_id,
+        s.serve_try_lc,
+        s.shot_outcome_lc
+      FROM serve_rows s
+      WHERE s.serve_rn = 1
+    ),
+
+    -- first opponent non-serve row after the serve (i.e. return attempt)
+    first_return AS (
+      SELECT DISTINCT ON (fs.task_id, fs.point_number)
+        fs.task_id,
+        fs.point_number,
+        r.id AS return_id,
+        r.player_id AS returner_id,
+        LOWER(COALESCE(r.shot_outcome_d::text, '')) AS return_outcome_lc,
+        r.shot_ix_in_point
+      FROM first_serve fs
+      JOIN base r
+        ON r.task_id = fs.task_id
+       AND r.point_number = fs.point_number
+       AND r.exclude_d IS FALSE
+       AND r.valid IS TRUE
+       AND r.serve_d IS NOT TRUE
+       AND r.player_id <> fs.server_id
+      ORDER BY fs.task_id, fs.point_number, r.ball_hit_s, r.id
+    ),
+
+    point_stats AS (
+      SELECT
+        b.task_id,
+        b.point_number,
+        COUNT(*) FILTER (
+          WHERE b.exclude_d IS FALSE
+            AND b.valid IS TRUE
+            AND b.serve_d IS NOT TRUE
+        ) AS non_serve_rows
+      FROM base b
+      GROUP BY b.task_id, b.point_number
+    ),
+
+    ace_points AS (
+      SELECT
+        fs.task_id,
+        fs.point_number
+      FROM first_serve fs
+      JOIN last_valid lv
+        ON lv.task_id = fs.task_id
+       AND lv.point_number = fs.point_number
+      JOIN point_stats ps
+        ON ps.task_id = fs.task_id
+       AND ps.point_number = fs.point_number
+      LEFT JOIN dbl d
+        ON d.task_id = fs.task_id
+       AND d.point_number = fs.point_number
+      WHERE d.point_number IS NULL
+        AND fs.serve_try_lc IN ('1st','2nd')
+        AND lv.id = fs.serve_id
+        AND lv.shot_outcome_lc = 'winner'
+        AND ps.non_serve_rows = 0
+    ),
+
+    service_winner_points AS (
+      SELECT
+        fs.task_id,
+        fs.point_number
+      FROM first_serve fs
+      JOIN first_return fr
+        ON fr.task_id = fs.task_id
+       AND fr.point_number = fs.point_number
+      JOIN last_valid lv
+        ON lv.task_id = fs.task_id
+       AND lv.point_number = fs.point_number
+      LEFT JOIN dbl d
+        ON d.task_id = fs.task_id
+       AND d.point_number = fs.point_number
+      WHERE d.point_number IS NULL
+        AND fs.serve_try_lc IN ('1st','2nd')
+        AND fr.return_outcome_lc = 'error'
+        AND lv.id = fr.return_id
     )
+
     UPDATE {SILVER_SCHEMA}.{TABLE} p
     SET
-      serve_try_ix_in_point = 'Double',
-      service_winner_d = FALSE
-    FROM dbl d
+      serve_try_ix_in_point =
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM dbl d
+            WHERE d.task_id = p.task_id
+              AND d.point_number = p.point_number
+          ) THEN 'Double'
+          ELSE p.serve_try_ix_in_point
+        END,
+
+      ace_d =
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM ace_points a
+            WHERE a.task_id = p.task_id
+              AND a.point_number = p.point_number
+          ) THEN TRUE
+          ELSE FALSE
+        END,
+
+      service_winner_d =
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM service_winner_points s
+            WHERE s.task_id = p.task_id
+              AND s.point_number = p.point_number
+          ) THEN TRUE
+          ELSE FALSE
+        END
     WHERE p.task_id = :tid
-      AND p.task_id = d.task_id
-      AND p.point_number = d.point_number;
+      AND p.point_number > 0;
     """
     return conn.execute(
         text(sql),
