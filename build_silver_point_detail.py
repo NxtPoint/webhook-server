@@ -2015,7 +2015,7 @@ def phase6_update(conn: Connection, task_id: str) -> int:
         },
     ).rowcount or 0
 
-# ------------------------------- Phase 7 Analysitcal Views -------------------------------
+# ------------------------------- Phase 7 Analytical Views -------------------------------
 def phase7_update(conn: Connection, task_id: str) -> int:
     """
     Phase 7: analytics / presentation features only
@@ -2023,6 +2023,10 @@ def phase7_update(conn: Connection, task_id: str) -> int:
       - rally length
       - stroke classification
       - shot sequence keys
+
+    Notes:
+      - rally_length = pure rally length AFTER serve
+      - serves excluded from aggression_d and depth_d
     """
 
     # 1) Serve buckets + stroke + row-level rally length
@@ -2039,11 +2043,12 @@ def phase7_update(conn: Connection, task_id: str) -> int:
 
       rally_length =
         CASE
-          WHEN p.shot_ix_in_point IS NOT NULL THEN p.shot_ix_in_point + 1
-          ELSE NULL
+          WHEN p.shot_ix_in_point IS NULL THEN NULL
+          WHEN p.shot_ix_in_point = 1 THEN 0
+          ELSE p.shot_ix_in_point - 1
         END,
 
-       stroke_d =
+      stroke_d =
         CASE
           WHEN p.serve_d IS TRUE THEN 'Serve'
 
@@ -2069,6 +2074,7 @@ def phase7_update(conn: Connection, task_id: str) -> int:
 
       aggression_d =
         CASE
+          WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
           WHEN p.ball_hit_y_norm IS NULL THEN NULL
           WHEN p.ball_hit_y_norm <= 24 THEN 'Attack'
           WHEN p.ball_hit_y_norm > 24 AND p.ball_hit_y_norm < 26 THEN 'Neutral'
@@ -2078,6 +2084,7 @@ def phase7_update(conn: Connection, task_id: str) -> int:
 
       depth_d =
         CASE
+          WHEN COALESCE(p.serve_d, FALSE) IS TRUE THEN NULL
           WHEN p.ball_bounce_y_norm IS NULL THEN NULL
           WHEN p.ball_bounce_y_norm > 20 THEN 'Deep'
           WHEN p.ball_bounce_y_norm > 18 AND p.ball_bounce_y_norm <= 20 THEN 'Middle'
@@ -2093,12 +2100,7 @@ def phase7_update(conn: Connection, task_id: str) -> int:
     WITH rl AS (
       SELECT
         p.id,
-        MAX(
-          CASE
-            WHEN p.rally_length IS NOT NULL THEN p.rally_length
-            ELSE NULL
-          END
-        ) OVER (PARTITION BY p.task_id, p.point_key) AS rally_length_point
+        MAX(p.rally_length) OVER (PARTITION BY p.task_id, p.point_key) AS rally_length_point
       FROM {SILVER_SCHEMA}.{TABLE} p
       WHERE p.task_id = :tid
     )
