@@ -29,7 +29,18 @@ from powerbi_embed import (
     _pbi_get,
 )
 
+from powerbi_capacity_sessions import (
+    powerbi_capacity_sessions_init,
+    start_session,
+    heartbeat_session,
+    end_session,
+    sweep_sessions,
+    has_active_sessions,
+)
+
 app = Flask(__name__)
+
+powerbi_capacity_sessions_init()
 
 
 # ==================================================================================================
@@ -104,6 +115,41 @@ def _extract_error_message(raw: Any) -> str:
 
     return ""
 
+def _lease_seconds() -> int:
+    try:
+        return max(60, int(_env("PBI_SESSION_LEASE_SECONDS", "180")))
+    except Exception:
+        return 180
+
+
+def _extract_username_from_body(body: Dict[str, Any]) -> str:
+    username_raw = body.get("username")
+    username = str(username_raw or "").strip().lower()
+    if not username or "@" not in username:
+        raise RuntimeError("missing_or_invalid_username")
+    return username
+
+
+def _safe_has_active_sessions() -> bool:
+    try:
+        return has_active_sessions()
+    except Exception:
+        return True
+
+def _refresh_is_active() -> bool:
+    """
+    True when latest dataset refresh is queued/running.
+    This prevents sweep from suspending capacity mid-refresh.
+    """
+    try:
+        workspace_id, _, dataset_id = resolve_ids_if_needed()
+        out = get_latest_refresh_status(workspace_id, dataset_id)
+        norm = _normalize_refresh_payload(out)
+        return norm.get("status") in ("queued", "running")
+    except Exception as e:
+        print(f"PBI refresh activity check failed err={str(e)}")
+        # Fail-safe: assume refresh may be active so we do NOT suspend by mistake
+        return True
 
 def _normalize_refresh_payload(out: Dict[str, Any]) -> Dict[str, Any]:
     raw_status = str(out.get("status") or "").strip()
@@ -206,6 +252,170 @@ def capacity_suspend():
     print("PBI capacity suspend ok")
     return jsonify({"ok": True})
 
+# ==================================================================================================
+# SESSION LEASE CONTROL
+# ==================================================================================================
+@app.post("/session/start")
+def session_start():
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    try:
+        body: Dict[str, Any] = request.get_json(silent=True) or {}
+        username = _extract_username_from_body(body)
+
+        workspace_id, report_id, dataset_id = resolve_ids_if_needed()
+
+        sess = start_session(
+            username=username,
+            lease_seconds=_lease_seconds(),
+            report_id=report_id,
+            workspace_id=workspace_id,
+            dataset_id=dataset_id,
+            created_by="embed",
+        )
+
+        # Ensure capacity is running AFTER session row exists.
+        # This is safer because the sweeper can now see active demand.
+        _maybe_warmup_capacity()
+
+        print(
+            f"PBI session start ok username={username} "
+            f"session_id={sess.get('session_id')} lease_s={_lease_seconds()}"
+        )
+
+        return jsonify(
+            {
+                "ok": True,
+                "session_id": sess.get("session_id"),
+                "username": username,
+                "lease_seconds": _lease_seconds(),
+                "workspaceId": workspace_id,
+                "reportId": report_id,
+                "datasetId": dataset_id,
+                "started_at": sess.get("started_at"),
+                "last_seen_at": sess.get("last_seen_at"),
+                "expires_at": sess.get("expires_at"),
+            }
+        )
+
+    except Exception as e:
+        print(f"PBI session start exception err={str(e)}")
+        return jsonify({"ok": False, "error": "session_start_failed", "detail": str(e)}), 500
+
+
+@app.post("/session/heartbeat")
+def session_heartbeat():
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    try:
+        body: Dict[str, Any] = request.get_json(silent=True) or {}
+        username = _extract_username_from_body(body)
+        session_id = str(body.get("session_id") or "").strip()
+
+        if not session_id:
+            return jsonify({"ok": False, "error": "missing_session_id"}), 400
+
+        out = heartbeat_session(
+            session_id=session_id,
+            username=username,
+            lease_seconds=_lease_seconds(),
+        )
+
+        print(
+            f"PBI session heartbeat username={username} "
+            f"session_id={session_id} found={out.get('found')} status={out.get('status')}"
+        )
+
+        return jsonify(out)
+
+    except Exception as e:
+        print(f"PBI session heartbeat exception err={str(e)}")
+        return jsonify({"ok": False, "error": "session_heartbeat_failed", "detail": str(e)}), 500
+
+
+@app.post("/session/end")
+def session_end():
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    try:
+        body: Dict[str, Any] = request.get_json(silent=True) or {}
+        username = _extract_username_from_body(body)
+        session_id = str(body.get("session_id") or "").strip()
+        reason = str(body.get("reason") or "client_end").strip()
+
+        if not session_id:
+            return jsonify({"ok": False, "error": "missing_session_id"}), 400
+
+        out = end_session(
+            session_id=session_id,
+            username=username,
+            reason=reason,
+        )
+
+        has_active_sessions_remaining = _safe_has_active_sessions()
+        suspended = False
+
+        if not has_active_sessions_remaining:
+            from azure_capacity import suspend_capacity
+            suspend_capacity()
+            suspended = True
+
+        print(
+            f"PBI session end username={username} session_id={session_id} "
+            f"status={out.get('status')} has_active_sessions_remaining={has_active_sessions_remaining} "
+            f"suspended={suspended}"
+        )
+
+        return jsonify(
+            {
+                **out,
+                "has_active_sessions_remaining": has_active_sessions_remaining,
+                "capacity_suspend_attempted": suspended,
+            }
+        )
+
+    except Exception as e:
+        print(f"PBI session end exception err={str(e)}")
+        return jsonify({"ok": False, "error": "session_end_failed", "detail": str(e)}), 500
+
+
+@app.post("/session/sweep")
+def session_sweep():
+    if not _require_ops_key(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    try:
+        out = sweep_sessions()
+        active_count = int(out.get("active_session_count") or 0)
+        refresh_active = _refresh_is_active()
+
+        suspended = False
+        if active_count == 0 and not refresh_active:
+            from azure_capacity import suspend_capacity
+            suspend_capacity()
+            suspended = True
+
+        print(
+            f"PBI session sweep expired={out.get('expired_count')} "
+            f"active={active_count} refresh_active={refresh_active} suspended={suspended}"
+        )
+
+        return jsonify(
+            {
+                "ok": True,
+                **out,
+                "refresh_active": refresh_active,
+                "capacity_suspend_attempted": suspended,
+                "checked_at": _utc_now_iso(),
+            }
+        )
+
+    except Exception as e:
+        print(f"PBI session sweep exception err={str(e)}")
+        return jsonify({"ok": False, "error": "session_sweep_failed", "detail": str(e)}), 500
 
 # ==================================================================================================
 # DATASET REFRESH
