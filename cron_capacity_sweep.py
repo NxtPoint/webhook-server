@@ -20,4 +20,5 @@ req = urllib.request.Request(
     method="POST",
 )
 
-print(urllib.request.urlopen(req).read().decode("utf-8"))
+with urllib.request.urlopen(req, timeout=60) as resp:
+    print(resp.read().decode("utf-8"))
