@@ -999,6 +999,44 @@ def _s3_presigned_get_url(key: str, expires: int | None = None) -> str:
         ExpiresIn=int(expires or S3_GET_EXPIRES),
     )
 
+def _s3_head_object(key: str) -> dict:
+    cli = _s3_client()
+    out = cli.head_object(Bucket=S3_BUCKET, Key=key)
+    return {
+        "content_length": int(out.get("ContentLength") or 0),
+        "content_type": str(out.get("ContentType") or "").strip(),
+        "etag": out.get("ETag"),
+    }
+
+def _validate_uploaded_s3_object_for_submit(key: str) -> tuple[bool, str | None, dict | None]:
+    try:
+        meta = _s3_head_object(key)
+    except Exception as e:
+        return False, f"s3_object_not_found: {e}", None
+
+    size = int(meta.get("content_length") or 0)
+    ctype = str(meta.get("content_type") or "").lower().strip()
+
+    if size <= 0:
+        return False, "s3_object_empty", meta
+
+    allowed_ctypes = {
+        "video/mp4",
+        "video/quicktime",
+        "video/x-m4v",
+        "video/mpeg",
+    }
+
+    if ctype and ctype not in allowed_ctypes and not ctype.startswith("video/"):
+        return False, f"invalid_s3_content_type:{ctype}", meta
+
+    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+    if size > max_bytes:
+        return False, f"s3_object_exceeds_max_upload_bytes:{size}", meta
+
+    return True, None, meta
+
+
 # ==========================
 # INGEST WORKER (TASK_ID-ONLY)
 # ==========================
@@ -1598,10 +1636,21 @@ def api_submit_s3_task():
 
     _require_s3()
 
-    # build a presigned GET internally (Wix never sees it)
+    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
+    ok_obj, obj_err, obj_meta = _validate_uploaded_s3_object_for_submit(s3_key)
+    if not ok_obj:
+        return jsonify({
+            "ok": False,
+            "error": obj_err,
+            "s3_meta": obj_meta
+        }), 400
+
     s3_video_url = _s3_presigned_get_url(s3_key)
 
-    # reuse your existing meta builder logic (same keys you just added)
     owner_id      = (body.get("ownerId") or "").strip()
     player_id     = body.get("playerId")
     player_name   = (body.get("playerName") or "").strip()
@@ -1615,7 +1664,8 @@ def api_submit_s3_task():
     first_server  = (body.get("firstServer") or "").strip()
 
     def _norm(v):
-        if v is None: return None
+        if v is None:
+            return None
         s = str(v).strip()
         return s if s else None
 
@@ -1644,25 +1694,30 @@ def api_submit_s3_task():
             "set2": {"a": _norm(set2A), "b": _norm(set2B)},
             "set3": {"a": _norm(set3A), "b": _norm(set3B)},
         },
+        "s3_upload": {
+            "key": s3_key,
+            "content_length": (obj_meta or {}).get("content_length"),
+            "content_type": (obj_meta or {}).get("content_type"),
+            "etag": (obj_meta or {}).get("etag"),
+        }
     }
 
-    # submit to SportAI using S3 presigned GET (Render-managed)
-    email = (body.get("customer_email") or body.get("email") or "").strip().lower()
-    allowed, reason = _upload_entitlement_gate(email)
-    if not allowed:
-        return jsonify({"ok": False, "error": reason}), 403
+    try:
+        task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+        _store_submission_context(task_id, email, meta, s3_video_url, share_url=s3_key)
 
-    task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_status_cache(conn, task_id, "queued", None)
 
-
-    # store submission_context (video_url = s3 presigned GET, share_url = s3_key for traceability)
-    _store_submission_context(task_id, email, meta, s3_video_url, share_url=s3_key)
-
-    with engine.begin() as conn:
-        _ensure_submission_context_schema(conn)
-        _set_status_cache(conn, task_id, "queued", None)
-
-    return jsonify({"ok": True, "task_id": task_id})
+        return jsonify({
+            "ok": True,
+            "task_id": task_id,
+            "s3_verified": True,
+            "s3_meta": obj_meta
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
 
 # ==========================
 # LEGACY ALIAS (KEPT)
