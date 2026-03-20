@@ -1036,6 +1036,51 @@ def _validate_uploaded_s3_object_for_submit(key: str) -> tuple[bool, str | None,
 
     return True, None, meta
 
+# ==========================
+# S3 MULTIPART HELPERS
+# ==========================
+MULTIPART_PART_SIZE_MB = int(os.getenv("MULTIPART_PART_SIZE_MB", "25"))
+MULTIPART_PART_SIZE = MULTIPART_PART_SIZE_MB * 1024 * 1024
+
+def _s3_create_multipart_upload(key: str, content_type: str | None = None) -> dict:
+    cli = _s3_client()
+    kwargs = {
+        "Bucket": S3_BUCKET,
+        "Key": key,
+    }
+    if content_type:
+        kwargs["ContentType"] = content_type
+    return cli.create_multipart_upload(**kwargs)
+
+def _s3_presign_upload_part(key: str, upload_id: str, part_number: int, expires: int = 3600) -> str:
+    cli = _s3_client()
+    return cli.generate_presigned_url(
+        "upload_part",
+        Params={
+            "Bucket": S3_BUCKET,
+            "Key": key,
+            "UploadId": upload_id,
+            "PartNumber": int(part_number),
+        },
+        ExpiresIn=int(expires),
+    )
+
+def _s3_complete_multipart_upload(key: str, upload_id: str, parts: list[dict]) -> dict:
+    cli = _s3_client()
+    return cli.complete_multipart_upload(
+        Bucket=S3_BUCKET,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": parts},
+    )
+
+def _s3_abort_multipart_upload(key: str, upload_id: str) -> dict:
+    cli = _s3_client()
+    return cli.abort_multipart_upload(
+        Bucket=S3_BUCKET,
+        Key=key,
+        UploadId=upload_id,
+    )
 
 # ==========================
 # INGEST WORKER (TASK_ID-ONLY)
@@ -1316,6 +1361,175 @@ def api_s3_presign():
         "max_upload_bytes": max_bytes
     })
 
+# ==========================
+# MULTIPART INITIATE / PART / COMPLETE / ABORT
+# ==========================
+@app.post("/upload/api/multipart/initiate")
+def api_multipart_initiate():
+    _require_s3()
+    body = request.get_json(silent=True) or {}
+
+    email = (body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
+    name = (body.get("name") or "video.mp4").strip()
+    ctype = (body.get("content_type") or "application/octet-stream").strip()
+    size = int(body.get("size") or 0)
+
+    clean = secure_filename(name) or "video.mp4"
+
+    if not ctype.lower().startswith("video/"):
+        return jsonify({"ok": False, "error": "invalid_content_type"}), 400
+
+    _, ext = os.path.splitext(clean.lower())
+    allowed_ext = {".mp4", ".mov", ".m4v", ".mpg", ".mpeg"}
+    if ext not in allowed_ext:
+        return jsonify({"ok": False, "error": "unsupported_file_extension"}), 400
+
+    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024 * 1024)))  # 5GB ceiling for multipart v1
+    if size <= 0:
+        return jsonify({"ok": False, "error": "invalid_size"}), 400
+    if size > max_bytes:
+        return jsonify({"ok": False, "error": f"file_too_large:{size}"}), 400
+
+    key = f"{S3_PREFIX}/{int(time.time())}_{clean}"
+
+    try:
+        out = _s3_create_multipart_upload(key, content_type=ctype)
+        upload_id = out.get("UploadId")
+        if not upload_id:
+            return jsonify({"ok": False, "error": "missing_upload_id"}), 500
+
+        part_size = MULTIPART_PART_SIZE
+        part_count = (size + part_size - 1) // part_size
+
+        return jsonify({
+            "ok": True,
+            "bucket": S3_BUCKET,
+            "key": key,
+            "upload_id": upload_id,
+            "part_size": part_size,
+            "part_count": part_count,
+            "max_upload_bytes": max_bytes,
+            "get_url": _s3_presigned_get_url(key),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"multipart_initiate_failed: {e}"}), 500
+
+
+@app.post("/upload/api/multipart/presign-part")
+def api_multipart_presign_part():
+    _require_s3()
+    body = request.get_json(silent=True) or {}
+
+    email = (body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
+    key = (body.get("key") or "").strip()
+    upload_id = (body.get("upload_id") or "").strip()
+    part_number = int(body.get("part_number") or 0)
+
+    if not key:
+        return jsonify({"ok": False, "error": "key required"}), 400
+    if not upload_id:
+        return jsonify({"ok": False, "error": "upload_id required"}), 400
+    if part_number < 1:
+        return jsonify({"ok": False, "error": "invalid_part_number"}), 400
+
+    try:
+        url = _s3_presign_upload_part(key, upload_id, part_number)
+        return jsonify({
+            "ok": True,
+            "url": url,
+            "part_number": part_number,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"presign_part_failed: {e}"}), 500
+
+
+@app.post("/upload/api/multipart/complete")
+def api_multipart_complete():
+    _require_s3()
+    body = request.get_json(silent=True) or {}
+
+    email = (body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
+    key = (body.get("key") or "").strip()
+    upload_id = (body.get("upload_id") or "").strip()
+    parts = body.get("parts") or []
+
+    if not key:
+        return jsonify({"ok": False, "error": "key required"}), 400
+    if not upload_id:
+        return jsonify({"ok": False, "error": "upload_id required"}), 400
+    if not isinstance(parts, list) or not parts:
+        return jsonify({"ok": False, "error": "parts required"}), 400
+
+    norm_parts = []
+    for p in parts:
+        try:
+            pn = int(p.get("PartNumber"))
+            et = str(p.get("ETag") or "").strip()
+            if pn < 1 or not et:
+                raise ValueError("bad part")
+            norm_parts.append({"PartNumber": pn, "ETag": et})
+        except Exception:
+            return jsonify({"ok": False, "error": f"invalid_part:{p}"}), 400
+
+    norm_parts.sort(key=lambda x: x["PartNumber"])
+
+    try:
+        out = _s3_complete_multipart_upload(key, upload_id, norm_parts)
+        head_ok, head_err, head_meta = _validate_uploaded_s3_object_for_submit(key)
+        if not head_ok:
+            return jsonify({
+                "ok": False,
+                "error": head_err,
+                "s3_meta": head_meta
+            }), 400
+
+        return jsonify({
+            "ok": True,
+            "key": key,
+            "location": out.get("Location"),
+            "etag": out.get("ETag"),
+            "get_url": _s3_presigned_get_url(key),
+            "s3_meta": head_meta,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"multipart_complete_failed: {e}"}), 500
+
+
+@app.post("/upload/api/multipart/abort")
+def api_multipart_abort():
+    _require_s3()
+    body = request.get_json(silent=True) or {}
+
+    email = (body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
+    key = (body.get("key") or "").strip()
+    upload_id = (body.get("upload_id") or "").strip()
+
+    if not key:
+        return jsonify({"ok": False, "error": "key required"}), 400
+    if not upload_id:
+        return jsonify({"ok": False, "error": "upload_id required"}), 400
+
+    try:
+        _s3_abort_multipart_upload(key, upload_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"multipart_abort_failed: {e}"}), 500
 
 # ==========================
 # VIDEO CHECK & CANCEL
