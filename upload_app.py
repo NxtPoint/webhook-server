@@ -929,7 +929,7 @@ def _sportai_check(video_url: str) -> dict:
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}", "Content-Type": "application/json"}
 
     # SportAI docs: expects POST with video_urls[]
-    payload = {"video_urls": [video_url], "version": "stable"}
+    payload = {"video_urls": [video_url], "version": "latest"}
 
     r = requests.post(url, headers=headers, json=payload, timeout=60)
 
