@@ -1472,39 +1472,77 @@ def api_multipart_complete():
     if not isinstance(parts, list) or not parts:
         return jsonify({"ok": False, "error": "parts required"}), 400
 
+    # =========================
+    # NORMALISE PARTS (FIX ETag)
+    # =========================
     norm_parts = []
     for p in parts:
         try:
             pn = int(p.get("PartNumber"))
             et = str(p.get("ETag") or "").strip()
+
             if pn < 1 or not et:
                 raise ValueError("bad part")
+
+            # 🔥 CRITICAL: ensure quotes
+            if not et.startswith('"'):
+                et = f'"{et}"'
+
             norm_parts.append({"PartNumber": pn, "ETag": et})
-        except Exception:
+
+        except Exception as e:
+            app.logger.error("INVALID PART: %s ERROR: %s", p, e)
             return jsonify({"ok": False, "error": f"invalid_part:{p}"}), 400
 
     norm_parts.sort(key=lambda x: x["PartNumber"])
 
+    # =========================
+    # LOG START
+    # =========================
+    app.logger.info(
+        "MULTIPART COMPLETE START key=%s upload_id=%s parts=%s",
+        key, upload_id, len(norm_parts)
+    )
+
+    # =========================
+    # COMPLETE MULTIPART
+    # =========================
     try:
         out = _s3_complete_multipart_upload(key, upload_id, norm_parts)
-        head_ok, head_err, head_meta = _validate_uploaded_s3_object_for_submit(key)
-        if not head_ok:
-            return jsonify({
-                "ok": False,
-                "error": head_err,
-                "s3_meta": head_meta
-            }), 400
 
-        return jsonify({
-            "ok": True,
-            "key": key,
-            "location": out.get("Location"),
-            "etag": out.get("ETag"),
-            "get_url": _s3_presigned_get_url(key),
-            "s3_meta": head_meta,
-        })
     except Exception as e:
-        return jsonify({"ok": False, "error": f"multipart_complete_failed: {e}"}), 500
+        app.logger.exception(
+            "MULTIPART COMPLETE FAILED key=%s upload_id=%s parts=%s",
+            key, upload_id, norm_parts[:3]
+        )
+        return jsonify({
+            "ok": False,
+            "error": f"multipart_complete_failed: {e}",
+            "debug_parts_count": len(norm_parts)
+        }), 500
+
+    # =========================
+    # VALIDATE S3 OBJECT
+    # =========================
+    head_ok, head_err, head_meta = _validate_uploaded_s3_object_for_submit(key)
+    if not head_ok:
+        return jsonify({
+            "ok": False,
+            "error": head_err,
+            "s3_meta": head_meta
+        }), 400
+
+    # =========================
+    # SUCCESS
+    # =========================
+    return jsonify({
+        "ok": True,
+        "key": key,
+        "location": out.get("Location"),
+        "etag": out.get("ETag"),
+        "get_url": _s3_presigned_get_url(key),
+        "s3_meta": head_meta,
+    })
 
 
 @app.post("/upload/api/multipart/abort")
