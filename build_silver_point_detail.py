@@ -1066,28 +1066,23 @@ def phase5_update(conn: Connection, task_id: str) -> int:
 
 def _phase5_preflight(conn: Connection, task_id: str) -> dict:
     """
-    Resolve the 2 "real" players even if extra player_id values exist.
-    Fail-closed only if we cannot resolve 2 players.
+    Resolve the 2 primary players for the task.
 
-    Returns: {"p1": <player_id>, "p2": <player_id>}
+    FIX:
+    - Do NOT filter on exclude_d (not yet computed)
+    - Do NOT require valid=TRUE
+    - Always pick top 2 players by volume
+    - Fail only if <2 players exist
     """
+
     sql = f"""
-    WITH base AS (
-      SELECT
-        player_id,
-        COALESCE(valid, TRUE) AS valid,
-        COALESCE(exclude_d, FALSE) AS exclude_d
-      FROM {SILVER_SCHEMA}.{TABLE}
-      WHERE task_id = :tid
-        AND player_id IS NOT NULL
-    ),
-    ranked AS (
+    WITH ranked AS (
       SELECT
         player_id,
         COUNT(*) AS n
-      FROM base
-      WHERE valid IS TRUE
-        AND exclude_d IS FALSE
+      FROM {SILVER_SCHEMA}.{TABLE}
+      WHERE task_id = :tid
+        AND player_id IS NOT NULL
       GROUP BY player_id
       ORDER BY n DESC, player_id
       LIMIT 2
@@ -1097,11 +1092,14 @@ def _phase5_preflight(conn: Connection, task_id: str) -> dict:
       (SELECT player_id FROM ranked ORDER BY n DESC, player_id LIMIT 1) AS p1,
       (SELECT player_id FROM ranked ORDER BY n DESC, player_id OFFSET 1 LIMIT 1) AS p2;
     """
+
     r = conn.execute(text(sql), {"tid": task_id}).mappings().first() or {}
-    if int(r.get("top2_cnt") or 0) != 2:
+
+    if int(r.get("top2_cnt") or 0) < 2:
         raise ValueError(
-            f"Phase5 fail-closed: could not resolve 2 primary players (task_id={task_id})"
+            f"Phase5 fail-closed: could not resolve 2 players (task_id={task_id})"
         )
+
     return {"p1": r["p1"], "p2": r["p2"]}
 
 
