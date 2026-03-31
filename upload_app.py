@@ -1086,7 +1086,14 @@ def _s3_abort_multipart_upload(key: str, upload_id: str) -> dict:
 # INGEST WORKER (TASK_ID-ONLY)
 # ==========================
 def _do_ingest(task_id: str, result_url: str) -> bool:
+    sid = None
+    pbi_ok = True
+    pbi_err = None
+    pbi_status = "skipped"
+
     try:
+        app.logger.info("INGEST START task_id=%s result_url=%s", task_id, result_url)
+
         # mark started
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
@@ -1097,10 +1104,40 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                  WHERE task_id = :t
             """), {"t": task_id})
 
-        # fetch result and ingest
-        r = requests.get(result_url, timeout=600)
+        # -------------------------
+        # STEP 1: DOWNLOAD RESULT JSON
+        # -------------------------
+        app.logger.info("INGEST STEP task_id=%s step=download_result_start", task_id)
+
+        import gzip
+
+        r = requests.get(result_url, timeout=900, stream=True)
         r.raise_for_status()
-        payload = r.json()
+
+        content_encoding = (r.headers.get("Content-Encoding") or "").lower().strip()
+        content_length = r.headers.get("Content-Length")
+        content_type = r.headers.get("Content-Type")
+
+        app.logger.info(
+            "INGEST STEP task_id=%s step=download_result_headers status=%s content_length=%s content_type=%s content_encoding=%s",
+            task_id,
+            r.status_code,
+            content_length,
+            content_type,
+            content_encoding,
+        )
+
+        if "gzip" in content_encoding:
+            payload = json.load(gzip.GzipFile(fileobj=r.raw))
+        else:
+            payload = json.load(r.raw)
+
+        app.logger.info("INGEST STEP task_id=%s step=download_result_done", task_id)
+
+        # -------------------------
+        # STEP 2: BRONZE INGEST
+        # -------------------------
+        app.logger.info("INGEST STEP task_id=%s step=bronze_ingest_start", task_id)
 
         with engine.begin() as conn:
             _run_bronze_init(conn)  # ensure bronze schema/tables exist
@@ -1113,7 +1150,6 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             )
             sid = res.get("session_id")
 
-            # status + mirror
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                    SET session_id         = :sid,
@@ -1127,23 +1163,48 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 
             _mirror_submission_to_bronze_by_task(conn, task_id)
 
-        # --- auto-build Silver point_detail after Bronze succeeds ---
+        app.logger.info(
+            "INGEST STEP task_id=%s step=bronze_ingest_done session_id=%s",
+            task_id, sid
+        )
+
+        # Release large JSON object before heavier downstream steps
+        try:
+            del payload
+        except Exception:
+            pass
+
+        # -------------------------
+        # STEP 3: SILVER BUILD
+        # -------------------------
+        app.logger.info("INGEST STEP task_id=%s step=silver_build_start", task_id)
+
         try:
             build_silver_point_detail(task_id=task_id, phase="all", replace=True)
         except Exception as e:
             raise RuntimeError(f"Silver build failed: {e}")
 
-        # consume 1 match credit (idempotent)
+        app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
+
+        # -------------------------
+        # STEP 4: BILLING SYNC
+        # -------------------------
+        app.logger.info("INGEST STEP task_id=%s step=billing_sync_start", task_id)
+
         try:
             out = sync_usage_for_task_id(task_id, dry_run=False)
-            app.logger.info("Billing consume sync_usage_for_task_id task_id=%s inserted=%s", task_id, out.get("inserted"))
+            app.logger.info(
+                "INGEST STEP task_id=%s step=billing_sync_done inserted=%s",
+                task_id,
+                out.get("inserted"),
+            )
         except Exception as e:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
-        # Power BI refresh async poll
-        pbi_ok = True
-        pbi_err = None
-        pbi_status = "skipped"
+        # -------------------------
+        # STEP 5: POWER BI REFRESH
+        # -------------------------
+        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_start", task_id)
 
         try:
             with engine.begin() as conn:
@@ -1159,13 +1220,21 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 
             pbi = _poll_powerbi_refresh_until_terminal(task_id)
             pbi_ok = bool((pbi or {}).get("ok") is True)
-            pbi_status = str((pbi or {}).get("status") or "").strip().lower() or ("completed" if pbi_ok else "failed")
+            pbi_status = str((pbi or {}).get("status") or "").strip().lower() or (
+                "completed" if pbi_ok else "failed"
+            )
 
             if not pbi_ok:
                 pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={pbi_status}"
-                app.logger.error("PBI refresh not successful task_id=%s status=%s error=%s", task_id, pbi_status, pbi_err)
+                app.logger.error(
+                    "PBI refresh not successful task_id=%s status=%s error=%s",
+                    task_id, pbi_status, pbi_err
+                )
             else:
-                app.logger.info("PBI refresh complete task_id=%s status=%s", task_id, pbi_status)
+                app.logger.info(
+                    "PBI refresh complete task_id=%s status=%s",
+                    task_id, pbi_status
+                )
 
         except Exception as e:
             pbi_ok = False
@@ -1185,21 +1254,22 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                     clear_error=False,
                 )
 
-        # If you want strict dashboard-ready semantics, do not mark completed unless refresh succeeded
+        # IMPORTANT:
+        # Do NOT fail the whole ingest because Power BI refresh failed.
+        # Keep refresh state in pbi_* fields only.
         if not pbi_ok:
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                conn.execute(sql_text("""
-                    UPDATE bronze.submission_context
-                       SET ingest_error = :err
-                     WHERE task_id = :t
-                """), {"t": task_id, "err": f"powerbi_refresh_failed: {pbi_err}"})
+            app.logger.warning(
+                "INGEST COMPLETE WITH PBI FAILURE task_id=%s pbi_status=%s pbi_error=%s",
+                task_id, pbi_status, pbi_err
+            )
+        else:
+            app.logger.info("INGEST COMPLETE task_id=%s", task_id)
 
-        # notify Wix completion only after refresh path has finished
+        # notify Wix completion after refresh attempt finishes
         try:
             _notify_wix(
                 task_id,
-                status=("completed" if pbi_ok else "failed"),
+                status="completed",   # keep match processing successful even if PBI refresh failed
                 session_id=sid,
                 result_url=result_url,
                 error=(None if pbi_ok else f"powerbi_refresh_failed: {pbi_err}")
@@ -1207,9 +1277,11 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         except Exception as e:
             app.logger.exception("Wix notify failed task_id=%s: %s", task_id, e)
 
-        return pbi_ok
+        return True
 
     except Exception as e:
+        app.logger.exception("INGEST FAILED task_id=%s result_url=%s", task_id, result_url)
+
         err_txt = f"{e.__class__.__name__}: {e}"
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
@@ -1220,9 +1292,14 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                  WHERE task_id = :t
             """), {"t": task_id, "err": err_txt})
 
-        # --- NEW: notify Wix about failure (optional but useful) ---
         try:
-            _notify_wix(task_id, status="failed", session_id=None, result_url=result_url, error=err_txt)
+            _notify_wix(
+                task_id,
+                status="failed",
+                session_id=sid,
+                result_url=result_url,
+                error=err_txt
+            )
         except Exception as e2:
             app.logger.exception("Wix notify failed (failed) task_id=%s: %s", task_id, e2)
 
