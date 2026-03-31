@@ -1989,99 +1989,24 @@ def api_task_status():
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
-    try:
-        out = _sportai_status(tid)
-        status = (out.get("status") or "").lower()
-        result_url = out.get("result_url")
-        terminal = bool(out.get("terminal"))
-
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            _set_status_cache(conn, tid, status, result_url)
-            sc = conn.execute(sql_text("""
-                SELECT session_id,
-                    ingest_started_at,
-                    ingest_finished_at,
-                    ingest_error,
-                    pbi_refresh_started_at,
-                    pbi_refresh_finished_at,
-                    pbi_refresh_status,
-                    pbi_refresh_error,
-                    wix_notified_at,
-                    wix_notify_status,
-                    wix_notify_error
-                FROM bronze.submission_context
-                WHERE task_id = :t
-                LIMIT 1
-            """), {"t": tid}).mappings().first() or {}
-
-        auto_ingested = False
-        auto_ingest_error = sc.get("ingest_error")
-        session_id = sc.get("session_id")
-        ingest_started = sc.get("ingest_started_at") is not None
-        ingest_finished = sc.get("ingest_finished_at") is not None
-        ingest_running = ingest_started and not ingest_finished
-
-        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
-            started = _start_ingest_background(tid, result_url)
-            ingest_started = ingest_started or started
-
-        if session_id and ingest_finished and not auto_ingest_error:
-            auto_ingested = True
-
-        pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
-        pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
-        pbi_refresh_status = sc.get("pbi_refresh_status")
-        pbi_refresh_error = sc.get("pbi_refresh_error")
-
-        pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
-
-        dashboard_ready = bool(
-            session_id
-            and ingest_finished
-            and not auto_ingest_error
-            and pbi_refresh_finished
-            and pbi_status_norm == "completed"
-            and not pbi_refresh_error
+    def _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready):
+        s = str(status or "").lower().strip()
+        return (
+            "complete"
+            if dashboard_ready else
+            "refreshing_dashboard"
+            if pbi_refresh_started and not dashboard_ready else
+            "building_analytics"
+            if ingest_started and not pbi_refresh_started else
+            "match_analysis_in_progress"
+            if s in ("queued", "processing", "running", "in_progress") else
+            "queued_for_analysis"
         )
 
-
-        return jsonify({
-            "ok": True, **out,
-            "session_id": session_id,
-            "auto_ingested": auto_ingested,
-            "auto_ingest_error": auto_ingest_error,
-            "ingest_started": ingest_started,
-            "ingest_running": ingest_running,
-            "ingest_finished": ingest_finished,
-            "wix_notified_at": sc.get("wix_notified_at"),
-            "wix_notify_status": sc.get("wix_notify_status"),
-            "wix_notify_error": sc.get("wix_notify_error"),
-            "pbi_refresh_started": pbi_refresh_started,
-            "pbi_refresh_finished": pbi_refresh_finished,
-            "pbi_refresh_status": pbi_refresh_status,
-            "pbi_refresh_error": pbi_refresh_error,
-            "stage": (
-                "complete"
-                if dashboard_ready else
-                "refreshing_dashboard"
-                if pbi_refresh_started and not dashboard_ready else
-                "building_analytics"
-                if ingest_started and not pbi_refresh_started else
-                "match_analysis_in_progress"
-                if status in ("queued", "processing", "running", "in_progress") else
-                "queued_for_analysis"
-            ),
-            "dashboard_ready": dashboard_ready
-        })
-
-    except Exception as e:
-        live_error = f"{e.__class__.__name__}: {e}"
-
-        # fallback to DB state
+    def _load_submission_context(task_id: str):
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
-            sc = conn.execute(sql_text("""
+            return conn.execute(sql_text("""
                 SELECT session_id,
                     last_status,
                     last_result_url,
@@ -2098,25 +2023,134 @@ def api_task_status():
                 FROM bronze.submission_context
                 WHERE task_id = :t
                 LIMIT 1
-            """), {"t": tid}).mappings().first() or {}
+            """), {"t": task_id}).mappings().first() or {}
+
+    try:
+        out = _sportai_status(tid)
+        status = (out.get("status") or "").lower().strip()
+        result_url = out.get("result_url")
+        terminal = bool(out.get("terminal"))
+
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            _set_status_cache(conn, tid, status, result_url)
+
+        sc = _load_submission_context(tid)
+
+        auto_ingested = False
+        auto_ingest_error = sc.get("ingest_error")
+        session_id = sc.get("session_id")
+        ingest_started = sc.get("ingest_started_at") is not None
+        ingest_finished = sc.get("ingest_finished_at") is not None
+        ingest_running = ingest_started and not ingest_finished
+
+        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
+            started = _start_ingest_background(tid, result_url)
+            ingest_started = ingest_started or started
+            ingest_running = ingest_started and not ingest_finished
+
+        if session_id and ingest_finished and not auto_ingest_error:
+            auto_ingested = True
+
+        pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
+        pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
+        pbi_refresh_status = sc.get("pbi_refresh_status")
+        pbi_refresh_error = sc.get("pbi_refresh_error")
+        pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
+
+        dashboard_ready = bool(
+            session_id
+            and ingest_finished
+            and not auto_ingest_error
+            and pbi_refresh_finished
+            and pbi_status_norm == "completed"
+            and not pbi_refresh_error
+        )
+
+        return jsonify({
+            "ok": True,
+            **out,
+            "fallback": False,
+            "live_status_error": None,
+            "session_id": session_id,
+            "auto_ingested": auto_ingested,
+            "auto_ingest_error": auto_ingest_error,
+            "ingest_started": ingest_started,
+            "ingest_running": ingest_running,
+            "ingest_finished": ingest_finished,
+            "wix_notified_at": sc.get("wix_notified_at"),
+            "wix_notify_status": sc.get("wix_notify_status"),
+            "wix_notify_error": sc.get("wix_notify_error"),
+            "pbi_refresh_started": pbi_refresh_started,
+            "pbi_refresh_finished": pbi_refresh_finished,
+            "pbi_refresh_status": pbi_refresh_status,
+            "pbi_refresh_error": pbi_refresh_error,
+            "stage": _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready),
+            "dashboard_ready": dashboard_ready
+        }), 200
+
+    except Exception as e:
+        live_error = f"{e.__class__.__name__}: {e}"
+        sc = _load_submission_context(tid)
+
+        status = str(sc.get("last_status") or "unknown").lower().strip()
+        result_url = sc.get("last_result_url")
+        session_id = sc.get("session_id")
+
+        ingest_started = sc.get("ingest_started_at") is not None
+        ingest_finished = sc.get("ingest_finished_at") is not None
+        ingest_error = sc.get("ingest_error")
+        ingest_running = ingest_started and not ingest_finished
+
+        # fail-soft auto-ingest from cached completion state
+        if AUTO_INGEST_ON_COMPLETE and status in ("completed", "done", "success", "succeeded") and result_url and not session_id and not ingest_running:
+            try:
+                started = _start_ingest_background(tid, result_url)
+                ingest_started = ingest_started or started
+                ingest_running = ingest_started and not ingest_finished
+            except Exception:
+                pass
+
+        pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
+        pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
+        pbi_refresh_status = sc.get("pbi_refresh_status")
+        pbi_refresh_error = sc.get("pbi_refresh_error")
+        pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
+
+        dashboard_ready = bool(
+            session_id
+            and ingest_finished
+            and not ingest_error
+            and pbi_refresh_finished
+            and pbi_status_norm == "completed"
+            and not pbi_refresh_error
+        )
+
+        auto_ingested = bool(session_id and ingest_finished and not ingest_error)
 
         return jsonify({
             "ok": True,
             "task_id": tid,
-            "status": (sc.get("last_status") or "unknown"),
-            "result_url": sc.get("last_result_url"),
-            "live_status_error": live_error,
+            "status": status,
+            "result_url": result_url,
+            "terminal": status in ("completed", "done", "success", "succeeded", "failed", "canceled"),
             "fallback": True,
-
-            "session_id": sc.get("session_id"),
-            "ingest_started": sc.get("ingest_started_at") is not None,
-            "ingest_finished": sc.get("ingest_finished_at") is not None,
-            "ingest_error": sc.get("ingest_error"),
-
-            "pbi_refresh_status": sc.get("pbi_refresh_status"),
-            "pbi_refresh_error": sc.get("pbi_refresh_error"),
-
-            "dashboard_ready": False
+            "live_status_error": live_error,
+            "session_id": session_id,
+            "auto_ingested": auto_ingested,
+            "auto_ingest_error": ingest_error,
+            "ingest_started": ingest_started,
+            "ingest_running": ingest_running,
+            "ingest_finished": ingest_finished,
+            "wix_notified_at": sc.get("wix_notified_at"),
+            "wix_notify_status": sc.get("wix_notify_status"),
+            "wix_notify_error": sc.get("wix_notify_error"),
+            "pbi_refresh_started": pbi_refresh_started,
+            "pbi_refresh_finished": pbi_refresh_finished,
+            "pbi_refresh_status": pbi_refresh_status,
+            "pbi_refresh_error": pbi_refresh_error,
+            "stage": _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready),
+            "dashboard_ready": dashboard_ready
         }), 200
 
 
