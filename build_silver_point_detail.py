@@ -1172,17 +1172,15 @@ def phase5_fix_point_number(conn: Connection, task_id: str, pf: dict) -> int:
 
 def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     """
-    Minimal exclusions (tightened):
+    exclude_d rules:
+      1) exclude non-serve rows before the last serve in the point
+      2) once a >5s post-serve gap occurs, exclude that row and everything after it in the point
+      3) exclude non-serve rows with both hit coordinates NULL
 
-      1) non-serve BEFORE the last serve in the point -> exclude_d = TRUE
-      2) gap > 5s AFTER the last serve in point -> exclude this + rest of point
-      3) non-serve rows with no hit coordinates at all -> exclude_d = TRUE
-         (phantom / empty rows inserted by SportAI between points or after point end)
-
-    NOTE:
-      - serve_side_d IS NULL is allowed
-      - no same-player-back-to-back exclusion
-      - no pre-point blanket exclusion
+    Optimized:
+      - stays fully scoped to the task_id from the first CTE
+      - avoids re-joining to the whole silver table just to recover partition columns
+      - only updates rows whose value would actually change
     """
     sql = f"""
     WITH base AS (
@@ -1209,7 +1207,13 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     ),
     ordered AS (
       SELECT
-        b.*,
+        b.id,
+        b.task_id,
+        b.point_number,
+        b.ball_hit_s,
+        b.serve_d,
+        b.ball_hit_location_x,
+        b.ball_hit_location_y,
         ls.last_serve_s,
         LAG(b.ball_hit_s) OVER (
           PARTITION BY b.task_id, b.point_number
@@ -1223,6 +1227,10 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     flags AS (
       SELECT
         o.id,
+        o.task_id,
+        o.point_number,
+        o.ball_hit_s,
+
         (
           NOT o.serve_d
           AND o.last_serve_s IS NOT NULL
@@ -1246,16 +1254,14 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
     chain AS (
       SELECT
         f.id,
+        f.r1_before_last_serve,
         BOOL_OR(f.gap_break) OVER (
-          PARTITION BY b.task_id, b.point_number
-          ORDER BY b.ball_hit_s, b.id
+          PARTITION BY f.task_id, f.point_number
+          ORDER BY f.ball_hit_s, f.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS r2_gap_chain,
-        f.r1_before_last_serve,
         f.r3_empty_non_serve
       FROM flags f
-      JOIN {SILVER_SCHEMA}.{TABLE} b
-        ON b.id = f.id
     ),
     excl AS (
       SELECT
@@ -1264,10 +1270,11 @@ def phase5_apply_exclusions(conn: Connection, task_id: str) -> int:
       FROM chain
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET exclude_d = e.exclude_d
-    FROM excl e
-    WHERE p.task_id = :tid
-      AND p.id = e.id;
+       SET exclude_d = e.exclude_d
+      FROM excl e
+     WHERE p.task_id = :tid
+       AND p.id = e.id
+       AND COALESCE(p.exclude_d, FALSE) IS DISTINCT FROM e.exclude_d;
     """
     return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
@@ -1552,6 +1559,10 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
       - that last serve = 1
       - subsequent non-excluded shots in the point = 2,3,...
       - shots before the last serve keep NULL
+
+    Optimized:
+      - fully task-scoped
+      - minimizes writes using IS DISTINCT FROM
     """
     sql = f"""
     WITH last_serve AS (
@@ -1576,7 +1587,7 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
         ) AS shot_ix
       FROM {SILVER_SCHEMA}.{TABLE} p
       JOIN last_serve ls
-        ON p.task_id      = ls.task_id
+        ON p.task_id = ls.task_id
        AND p.point_number = ls.point_number
        AND p.ball_hit_s >= ls.last_serve_s
       WHERE p.task_id = :tid
@@ -1585,10 +1596,11 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
         AND COALESCE(p.exclude_d, FALSE) = FALSE
     )
     UPDATE {SILVER_SCHEMA}.{TABLE} p
-    SET shot_ix_in_point = o.shot_ix
-    FROM ordered o
-    WHERE p.id = o.id
-      AND p.task_id = :tid;
+       SET shot_ix_in_point = o.shot_ix
+      FROM ordered o
+     WHERE p.task_id = :tid
+       AND p.id = o.id
+       AND p.shot_ix_in_point IS DISTINCT FROM o.shot_ix;
     """
     return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
