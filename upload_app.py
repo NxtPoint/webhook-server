@@ -1388,7 +1388,7 @@ def api_multipart_initiate():
     if ext not in allowed_ext:
         return jsonify({"ok": False, "error": "unsupported_file_extension"}), 400
 
-    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024 * 1024)))  # 5GB ceiling for multipart v1
+    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024 * 1024)))  # 5GB ceiling for multipart v1
     if size <= 0:
         return jsonify({"ok": False, "error": "invalid_size"}), 400
     if size > max_bytes:
