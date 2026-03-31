@@ -2076,7 +2076,48 @@ def api_task_status():
         })
 
     except Exception as e:
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 502
+        live_error = f"{e.__class__.__name__}: {e}"
+
+        # fallback to DB state
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            sc = conn.execute(sql_text("""
+                SELECT session_id,
+                    last_status,
+                    last_result_url,
+                    ingest_started_at,
+                    ingest_finished_at,
+                    ingest_error,
+                    pbi_refresh_started_at,
+                    pbi_refresh_finished_at,
+                    pbi_refresh_status,
+                    pbi_refresh_error,
+                    wix_notified_at,
+                    wix_notify_status,
+                    wix_notify_error
+                FROM bronze.submission_context
+                WHERE task_id = :t
+                LIMIT 1
+            """), {"t": tid}).mappings().first() or {}
+
+        return jsonify({
+            "ok": True,
+            "task_id": tid,
+            "status": (sc.get("last_status") or "unknown"),
+            "result_url": sc.get("last_result_url"),
+            "live_status_error": live_error,
+            "fallback": True,
+
+            "session_id": sc.get("session_id"),
+            "ingest_started": sc.get("ingest_started_at") is not None,
+            "ingest_finished": sc.get("ingest_finished_at") is not None,
+            "ingest_error": sc.get("ingest_error"),
+
+            "pbi_refresh_status": sc.get("pbi_refresh_status"),
+            "pbi_refresh_error": sc.get("pbi_refresh_error"),
+
+            "dashboard_ready": False
+        }), 200
 
 
 # ==========================
