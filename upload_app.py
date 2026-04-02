@@ -3,7 +3,7 @@
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
 # - Uses bronze.submission_context keyed by task_id (no public schema)
 
-import os, json, time, socket, sys, inspect, hashlib, re, threading
+import os, json, time, socket, sys, inspect, hashlib, re, threading, subprocess
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -145,17 +145,26 @@ PBI_REFRESH_MAX_WAIT_S = int(os.getenv("PBI_REFRESH_MAX_WAIT_S", "1800"))
 PBI_REFRESH_TRIGGER_TIMEOUT_S = int(os.getenv("PBI_REFRESH_TRIGGER_TIMEOUT_S", "60"))
 PBI_REFRESH_STATUS_TIMEOUT_S = int(os.getenv("PBI_REFRESH_STATUS_TIMEOUT_S", "60"))
 PBI_SUSPEND_AFTER_REFRESH = os.getenv("PBI_SUSPEND_AFTER_REFRESH", "1").lower() in ("1","true","yes","y")
+INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 min
 
 # ==========================
 # HELPERS
 # ==========================
 def _guard() -> bool:
-    qk = request.args.get("key") or request.args.get("ops_key")
+    """
+    Header-only ops auth.
+    Prevents OPS_KEY leakage into access logs via query strings.
+    Accepted headers:
+      - X-Ops-Key
+      - X-OPS-Key
+      - Authorization: Bearer <key>
+    """
     hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
-    supplied = qk or hk
+
+    supplied = (hk or "").strip()
     return bool(OPS_KEY) and supplied == OPS_KEY
 
 def _sql_clean_one_select(q: str) -> str:
@@ -1305,31 +1314,81 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 
         return False
 
+INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 minutes
+
+def _launch_ingest_subprocess(task_id: str, result_url: str) -> None:
+    """
+    Launch ingest in a detached child Python process.
+    Safer than daemon threads inside Gunicorn workers.
+    """
+    py_code = (
+        "from upload_app import _do_ingest; "
+        "import sys; "
+        "_do_ingest(sys.argv[1], sys.argv[2])"
+    )
+
+    env = os.environ.copy()
+
+    subprocess.Popen(
+        [sys.executable, "-c", py_code, task_id, result_url],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+        cwd=os.getcwd(),
+        env=env,
+    )
+
+def _is_stale_ingest_row(row) -> bool:
+    started_at = row.get("ingest_started_at") if row else None
+    finished_at = row.get("ingest_finished_at") if row else None
+
+    if not started_at or finished_at:
+        return False
+
+    try:
+        now_utc = datetime.now(timezone.utc)
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        age_s = (now_utc - started_at).total_seconds()
+        return age_s >= INGEST_STALE_AFTER_S
+    except Exception:
+        return False
+
+
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
-    """Return True if we started a worker; False if already done/running."""
+    """Return True if we launched a worker; False if already done/running."""
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
         row = conn.execute(sql_text("""
-            SELECT session_id, ingest_started_at, ingest_finished_at
+            SELECT session_id, ingest_started_at, ingest_finished_at, ingest_error
               FROM bronze.submission_context
              WHERE task_id = :t
              LIMIT 1
         """), {"t": task_id}).mappings().first()
 
-        if row and row.get("session_id"):
+        if row and row.get("session_id") and row.get("ingest_finished_at"):
             return False  # already done
+
         if row and row.get("ingest_started_at") and not row.get("ingest_finished_at"):
-            return False  # already running
+            if not _is_stale_ingest_row(row):
+                return False  # already running
+            app.logger.warning(
+                "INGEST STALE DETECTED task_id=%s ingest_started_at=%s - restarting",
+                task_id, row.get("ingest_started_at")
+            )
 
         conn.execute(sql_text("""
             UPDATE bronze.submission_context
                SET ingest_started_at = now(),
+                   ingest_finished_at = NULL,
                    ingest_error = NULL
              WHERE task_id = :t
         """), {"t": task_id})
 
-    th = threading.Thread(target=_do_ingest, args=(task_id, result_url), daemon=True)
-    th.start()
+    _launch_ingest_subprocess(task_id, result_url)
+    app.logger.info("INGEST SUBPROCESS LAUNCHED task_id=%s", task_id)
     return True
 
 # ==========================
