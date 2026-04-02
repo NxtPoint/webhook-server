@@ -1162,7 +1162,6 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                    SET session_id         = :sid,
-                       ingest_finished_at = now(),
                        ingest_error       = NULL,
                        last_result_url    = :url,
                        last_status        = 'completed',
@@ -1211,9 +1210,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
         # -------------------------
-        # STEP 5: POWER BI REFRESH
+        # STEP 5: POWER BI REFRESH (NON-BLOCKING)
         # -------------------------
-        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_start", task_id)
+        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_trigger_start", task_id)
 
         try:
             with engine.begin() as conn:
@@ -1227,29 +1226,31 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                     clear_error=True,
                 )
 
-            pbi = _poll_powerbi_refresh_until_terminal(task_id)
-            pbi_ok = bool((pbi or {}).get("ok") is True)
-            pbi_status = str((pbi or {}).get("status") or "").strip().lower() or (
-                "completed" if pbi_ok else "failed"
+            out = _pbi_post(
+                "/dataset/refresh_once",
+                {"task_id": task_id},
+                timeout=PBI_REFRESH_TRIGGER_TIMEOUT_S,
             )
 
-            if not pbi_ok:
-                pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={pbi_status}"
-                app.logger.error(
-                    "PBI refresh not successful task_id=%s status=%s error=%s",
-                    task_id, pbi_status, pbi_err
-                )
-            else:
-                app.logger.info(
-                    "PBI refresh complete task_id=%s status=%s",
-                    task_id, pbi_status
-                )
+            pbi_ok = True
+            pbi_status = str((out or {}).get("status") or "queued").strip().lower() or "queued"
+            pbi_err = None
+
+            app.logger.info(
+                "PBI refresh trigger accepted task_id=%s status=%s out=%s",
+                task_id, pbi_status, {
+                    "ok": out.get("ok"),
+                    "accepted": out.get("accepted"),
+                    "status": out.get("status"),
+                    "triggered_at": out.get("triggered_at"),
+                }
+            )
 
         except Exception as e:
             pbi_ok = False
             pbi_status = "failed"
             pbi_err = f"{e.__class__.__name__}: {e}"
-            app.logger.exception("PBI refresh failed task_id=%s: %s", task_id, e)
+            app.logger.exception("PBI refresh trigger failed task_id=%s: %s", task_id, e)
 
             with engine.begin() as conn:
                 _ensure_submission_context_schema(conn)
@@ -1285,6 +1286,15 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             )
         except Exception as e:
             app.logger.exception("Wix notify failed task_id=%s: %s", task_id, e)
+
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_finished_at = now(),
+                       ingest_error = NULL
+                 WHERE task_id = :t
+            """), {"t": task_id})
 
         return True
 
