@@ -136,6 +136,10 @@ WIX_NOTIFY_KEY = (
 WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
 WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 
+# ---------- Dedicated ingest worker ----------
+INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
+INGEST_WORKER_OPS_KEY = (os.getenv("INGEST_WORKER_OPS_KEY") or "").strip()
+INGEST_WORKER_TIMEOUT_S = int(os.getenv("INGEST_WORKER_TIMEOUT_S", "30"))
 
 # ---------- Power BI service ----------
 PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
@@ -203,6 +207,27 @@ def _pbi_headers():
         "Content-Type": "application/json",
         "x-ops-key": PBI_SERVICE_OPS_KEY,
     }
+
+def _call_ingest_worker(task_id: str, result_url: str) -> dict:
+    if not INGEST_WORKER_BASE_URL:
+        raise RuntimeError("INGEST_WORKER_BASE_URL not set")
+    if not INGEST_WORKER_OPS_KEY:
+        raise RuntimeError("INGEST_WORKER_OPS_KEY not set")
+
+    url = f"{INGEST_WORKER_BASE_URL}/ingest"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {INGEST_WORKER_OPS_KEY}",
+    }
+    body = {
+        "task_id": task_id,
+        "result_url": result_url,
+    }
+
+    r = requests.post(url, headers=headers, json=body, timeout=INGEST_WORKER_TIMEOUT_S)
+    if r.status_code >= 400:
+        raise RuntimeError(f"ingest worker failed HTTP {r.status_code}: {r.text}")
+    return r.json() if r.text else {}
 
 def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
     url = f"{PBI_SERVICE_BASE}{path}"
@@ -1397,8 +1422,8 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
              WHERE task_id = :t
         """), {"t": task_id})
 
-    _launch_ingest_subprocess(task_id, result_url)
-    app.logger.info("INGEST SUBPROCESS LAUNCHED task_id=%s", task_id)
+    out = _call_ingest_worker(task_id, result_url)
+    app.logger.info("INGEST WORKER CALLED task_id=%s out=%s", task_id, out)
     return True
 
 # ==========================

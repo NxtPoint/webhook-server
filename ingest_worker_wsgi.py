@@ -1,0 +1,1 @@
+from ingest_worker_app import app
