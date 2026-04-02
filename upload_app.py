@@ -2313,11 +2313,6 @@ def ops_ingest_task():
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
-    sid = None
-    pbi_ok = True
-    pbi_err = None
-    pbi_status = "skipped"
-
     try:
         app.logger.info("OPS INGEST START task_id=%s", tid)
 
@@ -2328,213 +2323,39 @@ def ops_ingest_task():
 
         app.logger.info("OPS INGEST task_id=%s result_url=%s", tid, result_url)
 
-        # mark started
+        ok = _do_ingest(tid, result_url)
+
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET ingest_started_at = COALESCE(ingest_started_at, now()),
-                       ingest_error = NULL
-                 WHERE task_id = :tid
-            """), {"tid": tid})
-
-        # -------------------------
-        # STEP 1: DOWNLOAD RESULT JSON
-        # -------------------------
-        app.logger.info("OPS INGEST STEP task_id=%s step=download_result_start", tid)
-
-        import gzip
-
-        r = requests.get(result_url, timeout=900, stream=True)
-        r.raise_for_status()
-
-        content_encoding = (r.headers.get("Content-Encoding") or "").lower().strip()
-        content_length = r.headers.get("Content-Length")
-        content_type = r.headers.get("Content-Type")
-
-        app.logger.info(
-            "OPS INGEST STEP task_id=%s step=download_result_headers status=%s content_length=%s content_type=%s content_encoding=%s",
-            tid,
-            r.status_code,
-            content_length,
-            content_type,
-            content_encoding,
-        )
-
-        if "gzip" in content_encoding:
-            payload = json.load(gzip.GzipFile(fileobj=r.raw))
-        else:
-            payload = json.load(r.raw)
-
-        app.logger.info("OPS INGEST STEP task_id=%s step=download_result_done", tid)
-
-        # -------------------------
-        # STEP 2: BRONZE INGEST
-        # -------------------------
-        app.logger.info("OPS INGEST STEP task_id=%s step=bronze_ingest_start", tid)
-
-        with engine.begin() as conn:
-            _run_bronze_init(conn)
-            res = ingest_bronze_strict(
-                conn,
-                payload,
-                replace=DEFAULT_REPLACE_ON_INGEST,
-                src_hint=result_url,
-                task_id=tid,
-            )
-            sid = res.get("session_id")
-
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET session_id         = :sid,
-                       ingest_finished_at = now(),
-                       ingest_error       = NULL,
-                       last_result_url    = :url,
-                       last_status        = 'completed',
-                       last_status_at     = now()
-                 WHERE task_id = :tid
-            """), {"sid": sid, "tid": tid, "url": result_url})
-
-            _mirror_submission_to_bronze_by_task(conn, tid)
-
-        app.logger.info(
-            "OPS INGEST STEP task_id=%s step=bronze_ingest_done session_id=%s",
-            tid, sid
-        )
-
-        try:
-            del payload
-        except Exception:
-            pass
-
-        # -------------------------
-        # STEP 3: SILVER BUILD
-        # -------------------------
-        app.logger.info("OPS INGEST STEP task_id=%s step=silver_build_start", tid)
-        out = build_silver_point_detail(task_id=tid, phase="all", replace=True)
-        app.logger.info("OPS INGEST STEP task_id=%s step=silver_build_done out=%s", tid, out)
-
-        # -------------------------
-        # STEP 4: BILLING SYNC
-        # -------------------------
-        app.logger.info("OPS INGEST STEP task_id=%s step=billing_sync_start", tid)
-        try:
-            bill_out = sync_usage_for_task_id(tid, dry_run=False)
-            app.logger.info(
-                "OPS INGEST STEP task_id=%s step=billing_sync_done inserted=%s",
-                tid,
-                bill_out.get("inserted"),
-            )
-        except Exception as e:
-            app.logger.exception("Billing consume failed task_id=%s: %s", tid, e)
-
-        # -------------------------
-        # STEP 5: POWER BI REFRESH
-        # -------------------------
-        app.logger.info("OPS INGEST STEP task_id=%s step=pbi_refresh_start", tid)
-
-        try:
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _set_pbi_refresh_state(
-                    conn,
-                    tid,
-                    status="queued",
-                    started=True,
-                    finished=False,
-                    clear_error=True,
-                )
-
-            pbi = _poll_powerbi_refresh_until_terminal(tid)
-            pbi_ok = bool((pbi or {}).get("ok") is True)
-            pbi_status = str((pbi or {}).get("status") or "").strip().lower() or (
-                "completed" if pbi_ok else "failed"
-            )
-
-            if not pbi_ok:
-                pbi_err = (pbi or {}).get("error") or f"refresh_not_completed status={pbi_status}"
-                app.logger.error(
-                    "PBI refresh not successful task_id=%s status=%s error=%s",
-                    tid, pbi_status, pbi_err
-                )
-            else:
-                app.logger.info(
-                    "PBI refresh complete task_id=%s status=%s",
-                    tid, pbi_status
-                )
-
-        except Exception as e:
-            pbi_ok = False
-            pbi_status = "failed"
-            pbi_err = f"{e.__class__.__name__}: {e}"
-            app.logger.exception("PBI refresh failed task_id=%s: %s", tid, e)
-
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _set_pbi_refresh_state(
-                    conn,
-                    tid,
-                    status=pbi_status,
-                    error=pbi_err,
-                    started=False,
-                    finished=True,
-                    clear_error=False,
-                )
-
-        # -------------------------
-        # STEP 6: WIX NOTIFY
-        # -------------------------
-        try:
-            _notify_wix(
-                tid,
-                status="completed",
-                session_id=sid,
-                result_url=result_url,
-                error=(None if pbi_ok else f"powerbi_refresh_failed: {pbi_err}")
-            )
-        except Exception as e:
-            app.logger.exception("Wix notify failed (manual completed) task_id=%s: %s", tid, e)
-
-        app.logger.info(
-            "OPS INGEST COMPLETE task_id=%s session_id=%s pbi_ok=%s pbi_status=%s",
-            tid, sid, pbi_ok, pbi_status
-        )
+            row = conn.execute(sql_text("""
+                SELECT
+                  session_id,
+                  ingest_error,
+                  pbi_refresh_status,
+                  pbi_refresh_error,
+                  wix_notify_status,
+                  wix_notify_error
+                FROM bronze.submission_context
+                WHERE task_id = :tid
+                LIMIT 1
+            """), {"tid": tid}).mappings().first() or {}
 
         return jsonify({
-            "ok": True,
+            "ok": bool(ok),
             "task_id": tid,
-            "session_id": sid,
-            "pbi_ok": pbi_ok,
-            "pbi_status": pbi_status,
-            "pbi_error": pbi_err,
-        })
+            "session_id": row.get("session_id"),
+            "ingest_error": row.get("ingest_error"),
+            "pbi_refresh_status": row.get("pbi_refresh_status"),
+            "pbi_refresh_error": row.get("pbi_refresh_error"),
+            "wix_notify_status": row.get("wix_notify_status"),
+            "wix_notify_error": row.get("wix_notify_error"),
+        }), (200 if ok else 500)
 
     except Exception as e:
         app.logger.exception("OPS INGEST FAILED task_id=%s", tid)
-
-        err_txt = f"{e.__class__.__name__}: {e}"
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET ingest_error = :err,
-                       ingest_finished_at = now()
-                 WHERE task_id = :tid
-            """), {"tid": tid, "err": err_txt})
-
-        try:
-            _notify_wix(
-                tid,
-                status="failed",
-                session_id=sid,
-                result_url=None,
-                error=err_txt
-            )
-        except Exception as e2:
-            app.logger.exception("Wix notify failed (manual failed) task_id=%s: %s", tid, e2)
-
-        return jsonify({"ok": False, "error": err_txt}), 500
-
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+    
+    
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
 # ==========================
