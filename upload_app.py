@@ -224,9 +224,10 @@ def _call_ingest_worker(task_id: str, result_url: str) -> dict:
         "result_url": result_url,
     }
 
-    r = requests.post(url, headers=headers, json=body, timeout=INGEST_WORKER_TIMEOUT_S)
+    r = requests.post(url, headers=headers, json=body, timeout=10)
     if r.status_code >= 400:
         raise RuntimeError(f"ingest worker failed HTTP {r.status_code}: {r.text}")
+
     return r.json() if r.text else {}
 
 def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
@@ -818,32 +819,22 @@ def _derive_display_progress_pct(
     pipeline_stage: str,
     dashboard_ready: bool,
 ) -> int:
-    """
-    Customer-facing progress, derived on backend.
-    Keeps compatibility for existing frontend while separating it
-    from raw SportAI progress.
-    """
     if dashboard_ready or pipeline_stage == "complete":
         return 100
 
     if pipeline_stage == "refreshing_dashboard":
-        return max(92, min(99, int(sportai_progress_pct or 100)))
+        return 95
 
     if pipeline_stage == "building_analytics":
-        base = 88
-        if sportai_progress_pct is None:
-            return base
-        return max(base, min(95, int(sportai_progress_pct)))
+        return 90
 
     if pipeline_stage == "match_analysis_in_progress":
         if sportai_progress_pct is None:
-            return 25
+            return 10
         return max(10, min(85, int(sportai_progress_pct)))
 
     if pipeline_stage == "queued_for_analysis":
-        if sportai_progress_pct is None:
-            return 5
-        return max(1, min(15, int(sportai_progress_pct)))
+        return 5
 
     if pipeline_stage in {"failed", "canceled"}:
         return int(sportai_progress_pct or 0)
@@ -2493,9 +2484,7 @@ def api_task_status():
         "pbi_refresh_status": pbi_refresh_status,
         "pbi_refresh_error": pbi_refresh_error,
 
-        "dashboard_ready": dashboard_ready,
-
-        "sportai_data": (live or {}).get("data")        
+        "dashboard_ready": dashboard_ready,        
     }), 200
 
 
