@@ -2208,20 +2208,23 @@ def api_task_status():
 
         sc = _load_submission_context(tid)
 
-        auto_ingested = False
-        auto_ingest_error = sc.get("ingest_error")
         session_id = sc.get("session_id")
         ingest_started = sc.get("ingest_started_at") is not None
         ingest_finished = sc.get("ingest_finished_at") is not None
+        auto_ingest_error = sc.get("ingest_error")
         ingest_running = ingest_started and not ingest_finished
 
         if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
             started = _start_ingest_background(tid, result_url)
-            ingest_started = ingest_started or started
-            ingest_running = ingest_started and not ingest_finished
+            if started:
+                sc = _load_submission_context(tid)
+                session_id = sc.get("session_id")
+                ingest_started = sc.get("ingest_started_at") is not None
+                ingest_finished = sc.get("ingest_finished_at") is not None
+                auto_ingest_error = sc.get("ingest_error")
+                ingest_running = ingest_started and not ingest_finished
 
-        if session_id and ingest_finished and not auto_ingest_error:
-            auto_ingested = True
+        auto_ingested = bool(session_id and ingest_finished and not auto_ingest_error)
 
         pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
         pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
@@ -2274,11 +2277,25 @@ def api_task_status():
         ingest_running = ingest_started and not ingest_finished
 
         # fail-soft auto-ingest from cached completion state
-        if AUTO_INGEST_ON_COMPLETE and status in ("completed", "done", "success", "succeeded") and result_url and not session_id and not ingest_running:
+        # IMPORTANT: refresh result_url from SportAI again before triggering worker
+        if AUTO_INGEST_ON_COMPLETE and status in ("completed", "done", "success", "succeeded") and not session_id and not ingest_running:
             try:
-                started = _start_ingest_background(tid, result_url)
-                ingest_started = ingest_started or started
-                ingest_running = ingest_started and not ingest_finished
+                fresh = _sportai_status(tid)
+                fresh_result_url = fresh.get("result_url") or result_url
+                if fresh_result_url:
+                    with engine.begin() as conn:
+                        _ensure_submission_context_schema(conn)
+                        _set_status_cache(conn, tid, status, fresh_result_url)
+
+                    started = _start_ingest_background(tid, fresh_result_url)
+                    if started:
+                        sc = _load_submission_context(tid)
+                        session_id = sc.get("session_id")
+                        ingest_started = sc.get("ingest_started_at") is not None
+                        ingest_finished = sc.get("ingest_finished_at") is not None
+                        ingest_error = sc.get("ingest_error")
+                        ingest_running = ingest_started and not ingest_finished
+                        result_url = fresh_result_url
             except Exception:
                 pass
 
@@ -2323,7 +2340,6 @@ def api_task_status():
             "stage": _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready),
             "dashboard_ready": dashboard_ready
         }), 200
-
 
 # ==========================
 # MANUAL INGEST HELPER (TASK_ID-ONLY)
