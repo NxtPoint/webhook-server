@@ -2400,8 +2400,13 @@ def api_task_status():
     ingest_error = sc.get("ingest_error")
     ingest_running = ingest_started and not ingest_finished
 
-    # Auto-ingest only from explicit successful terminal status
-    if AUTO_INGEST_ON_COMPLETE and success_terminal and result_url and not session_id and not ingest_running:
+    # IMPORTANT:
+    # SportAI may expose result_url before it gives us a clean terminal status.
+    # For ingestion orchestration, result_url is sufficient to begin backend processing.
+    # This MUST be separate from the customer-facing display state.
+    ingest_ready = bool(result_url)
+
+    if AUTO_INGEST_ON_COMPLETE and ingest_ready and not session_id and not ingest_running:
         try:
             started = _start_ingest_background(tid, result_url)
             if started:
