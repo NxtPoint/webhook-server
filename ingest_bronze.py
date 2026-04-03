@@ -656,7 +656,8 @@ def ingest_bronze_strict(
                   "thumbnail","highlight","team_session","bounce_heatmap"]:
             conn.execute(sql_text(f"DELETE FROM bronze.{t} WHERE task_id=:tid"), {"tid": task_id})
 
-    _persist_raw(conn, task_id, payload)
+    # skip storing raw payload (too large, causes connection drops)
+    pass
     _ensure_session(conn, task_id, payload)
 
     players         = _as_list(payload.get("players"))
