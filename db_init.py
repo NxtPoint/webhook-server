@@ -205,7 +205,7 @@ def _add_typed_columns(conn):
           ADD COLUMN IF NOT EXISTS player_b_utr TEXT,
           ADD COLUMN IF NOT EXISTS customer_name TEXT,
           ADD COLUMN IF NOT EXISTS last_status TEXT,
-          ADD COLUMN IF NOT EXISTS ingest_error JSONB,
+          ADD COLUMN IF NOT EXISTS ingest_error TEXT,
           ADD COLUMN IF NOT EXISTS last_status_at TIMESTAMPTZ,
           ADD COLUMN IF NOT EXISTS last_result_url TEXT,
           ADD COLUMN IF NOT EXISTS ingest_started_at TIMESTAMPTZ,
