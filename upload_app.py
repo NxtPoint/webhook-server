@@ -2495,10 +2495,7 @@ def api_task_status():
 
         "dashboard_ready": dashboard_ready,
 
-        "sportai": {
-            "raw": (live or {}).get("raw"),
-            "data": (live or {}).get("data"),
-        },
+        "sportai_data": (live or {}).get("data")        
     }), 200
 
 
