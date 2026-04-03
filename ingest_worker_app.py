@@ -26,12 +26,16 @@ def healthz_ok():
 @app.post("/ingest")
 def ingest():
     if not _auth_ok(request):
+        app.logger.warning("INGEST WORKER unauthorized request")
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     body = request.get_json(silent=True) or {}
 
     task_id = str(body.get("task_id") or "").strip()
     result_url = str(body.get("result_url") or "").strip()
+
+    app.logger.info("INGEST WORKER REQUEST task_id=%s result_url_present=%s",
+                    task_id, bool(result_url))
 
     if not task_id:
         return jsonify({"ok": False, "error": "task_id required"}), 400
