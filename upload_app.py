@@ -722,6 +722,135 @@ def _get_pbi_refresh_state(conn, task_id: str) -> dict:
         "pbi_refresh_error": row.get("pbi_refresh_error"),
     }    
 
+def _load_submission_context_row(task_id: str) -> dict:
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        return conn.execute(sql_text("""
+            SELECT
+              session_id,
+              last_status,
+              last_result_url,
+              ingest_started_at,
+              ingest_finished_at,
+              ingest_error,
+              pbi_refresh_started_at,
+              pbi_refresh_finished_at,
+              pbi_refresh_status,
+              pbi_refresh_error,
+              wix_notified_at,
+              wix_notify_status,
+              wix_notify_error
+            FROM bronze.submission_context
+            WHERE task_id = :t
+            LIMIT 1
+        """), {"t": task_id}).mappings().first() or {}
+
+
+def _resolve_result_url_for_task(task_id: str) -> str | None:
+    """
+    Resolve result_url in the safest order:
+    1) cached DB value
+    2) fresh SportAI status lookup
+    """
+    sc = _load_submission_context_row(task_id)
+    cached = str(sc.get("last_result_url") or "").strip()
+    if cached:
+        return cached
+
+    try:
+        st = _sportai_status(task_id)
+        fresh = str(st.get("result_url") or "").strip()
+        if fresh:
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                _set_status_cache(conn, task_id, st.get("status"), fresh)
+            return fresh
+    except Exception:
+        pass
+
+    return None
+
+
+def _derive_pipeline_stage(
+    sportai_status: str | None,
+    ingest_started: bool,
+    ingest_finished: bool,
+    ingest_error: str | None,
+    pbi_refresh_started: bool,
+    pbi_refresh_finished: bool,
+    pbi_refresh_status: str | None,
+    pbi_refresh_error: str | None,
+    dashboard_ready: bool,
+) -> str:
+    s = _normalize_sportai_status(sportai_status)
+
+    if s == "failed":
+        return "failed"
+
+    if s == "canceled":
+        return "canceled"
+
+    if dashboard_ready:
+        return "complete"
+
+    if ingest_error:
+        return "failed"
+
+    if pbi_refresh_started and not dashboard_ready:
+        return "refreshing_dashboard"
+
+    if ingest_started and not ingest_finished:
+        return "building_analytics"
+
+    if ingest_finished and not dashboard_ready:
+        return "building_analytics"
+
+    if s == "processing":
+        return "match_analysis_in_progress"
+
+    if s == "queued":
+        return "queued_for_analysis"
+
+    return "queued_for_analysis"
+
+
+def _derive_display_progress_pct(
+    sportai_progress_pct: int | None,
+    pipeline_stage: str,
+    dashboard_ready: bool,
+) -> int:
+    """
+    Customer-facing progress, derived on backend.
+    Keeps compatibility for existing frontend while separating it
+    from raw SportAI progress.
+    """
+    if dashboard_ready or pipeline_stage == "complete":
+        return 100
+
+    if pipeline_stage == "refreshing_dashboard":
+        return max(92, min(99, int(sportai_progress_pct or 100)))
+
+    if pipeline_stage == "building_analytics":
+        base = 88
+        if sportai_progress_pct is None:
+            return base
+        return max(base, min(95, int(sportai_progress_pct)))
+
+    if pipeline_stage == "match_analysis_in_progress":
+        if sportai_progress_pct is None:
+            return 25
+        return max(10, min(85, int(sportai_progress_pct)))
+
+    if pipeline_stage == "queued_for_analysis":
+        if sportai_progress_pct is None:
+            return 5
+        return max(1, min(15, int(sportai_progress_pct)))
+
+    if pipeline_stage in {"failed", "canceled"}:
+        return int(sportai_progress_pct or 0)
+
+    return int(sportai_progress_pct or 0)
+
 def _mirror_submission_to_bronze_by_task(conn, task_id: str):
     """No-op: submission_context now lives directly in bronze.submission_context."""
     return
@@ -882,74 +1011,157 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
 
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
 
+def _normalize_sportai_status(v: str | None) -> str | None:
+    s = str(v or "").strip().lower()
+    if not s:
+        return None
+
+    mapping = {
+        "queued": "queued",
+        "pending": "queued",
+        "submitted": "queued",
+
+        "processing": "processing",
+        "running": "processing",
+        "in_progress": "processing",
+        "inprogress": "processing",
+
+        "completed": "completed",
+        "done": "completed",
+        "success": "completed",
+        "succeeded": "completed",
+
+        "failed": "failed",
+        "failure": "failed",
+        "error": "failed",
+
+        "canceled": "canceled",
+        "cancelled": "canceled",
+    }
+    return mapping.get(s, s)
+
+
+def _is_success_terminal_status(status: str | None) -> bool:
+    return _normalize_sportai_status(status) == "completed"
+
+
+def _is_terminal_status(status: str | None) -> bool:
+    return _normalize_sportai_status(status) in {"completed", "failed", "canceled"}
+
+
+def _coerce_progress_pct(raw) -> int | None:
+    try:
+        if raw is None:
+            return None
+
+        v = float(raw)
+
+        # SportAI sometimes returns 0..1, sometimes 0..100
+        if 0 <= v <= 1:
+            v = v * 100
+
+        pct = int(round(v))
+        return max(0, min(100, pct))
+    except Exception:
+        return None
+
+
 def _sportai_status(task_id: str) -> dict:
+    """
+    Pure adapter over SportAI status.
+    IMPORTANT:
+    - do not force terminal because result_url exists
+    - do not mutate status based on local pipeline state
+    - expose raw-ish SportAI truth + normalized convenience fields
+    """
     if not SPORTAI_TOKEN:
         raise RuntimeError("SPORT_AI_TOKEN not set")
+
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
-    last_err, j = None, None
+    last_err = None
+    j = None
+
     for url in _iter_status_endpoints(task_id):
         try:
             r = requests.get(url, headers=headers, timeout=30)
+
             if r.status_code >= 500:
                 last_err = f"{url} -> {r.status_code}: {r.text}"
                 continue
+
             if r.status_code == 404:
                 j = {"message": "Task not visible yet (404)."}
                 break
+
             r.raise_for_status()
             j = r.json() or {}
             break
+
         except Exception as e:
-            last_err = str(e)
+            last_err = f"{url} -> {e}"
+
     if j is None:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
     d = j.get("data") if isinstance(j, dict) and isinstance(j.get("data"), dict) else j
-    status = (d.get("status") or d.get("task_status") or d.get("taskStatus") or d.get("state") or "").strip()
-    msg = (j.get("message") or "").lower()
-    if not status and "still being processed" in msg:
-        status = "processing"
 
-    prog = d.get("task_progress") or d.get("progress") or d.get("total_subtask_progress")
-    try:
-        if prog is None:
-            progress_pct = None
-        elif isinstance(prog, (int, float)) and prog <= 1.0:
-            progress_pct = int(round(float(prog) * 100))
-        else:
-            progress_pct = int(round(float(prog)))
-        if progress_pct is not None:
-            progress_pct = max(0, min(100, progress_pct))
-    except Exception:
-        progress_pct = None
+    raw_status = (
+        d.get("status")
+        or d.get("task_status")
+        or d.get("taskStatus")
+        or d.get("state")
+        or ""
+    )
+    raw_status = str(raw_status or "").strip()
+
+    msg = str(j.get("message") or "").strip().lower()
+    if not raw_status and "still being processed" in msg:
+        raw_status = "processing"
+
+    status = _normalize_sportai_status(raw_status)
+
+    # Prefer explicit task_progress first, then total progress, then generic progress
+    raw_progress = (
+        d.get("task_progress")
+        if d.get("task_progress") is not None else
+        d.get("total_subtask_progress")
+        if d.get("total_subtask_progress") is not None else
+        d.get("progress")
+    )
+    progress_pct = _coerce_progress_pct(raw_progress)
 
     result_url = (
-    d.get("result_url")
-    or d.get("resultUrl")
-    or (d.get("result") or {}).get("url")
-    or j.get("result_url")
-    or j.get("resultUrl")
+        d.get("result_url")
+        or d.get("resultUrl")
+        or (d.get("result") or {}).get("url")
+        or j.get("result_url")
+        or j.get("resultUrl")
     )
 
-    terminal = status.lower() in ("completed", "done", "success", "succeeded", "failed", "canceled")
-    if result_url and not terminal:
-        status = "completed"
-        terminal = True
-    if terminal and (progress_pct is None or progress_pct < 100):
+    terminal = _is_terminal_status(status)
+
+    # Only force 100 for explicit successful terminal status
+    if _is_success_terminal_status(status) and (progress_pct is None or progress_pct < 100):
         progress_pct = 100
 
     return {
-        "status": status or None,
+        "task_id": task_id,
+        "status": status,
+        "sportai_status": status,
+        "sportai_status_raw": raw_status or None,
         "result_url": result_url,
         "progress_pct": progress_pct,
         "progress": progress_pct,
+        "sportai_progress_pct": progress_pct,
         "terminal": terminal,
+        "success_terminal": _is_success_terminal_status(status),
         "data": {
             "task_id": d.get("task_id"),
             "video_url": d.get("video_url"),
             "task_status": d.get("task_status") or d.get("status"),
-            "task_progress": d.get("task_progress") or d.get("progress"),
+            "task_progress": d.get("task_progress"),
             "total_subtask_progress": d.get("total_subtask_progress"),
+            "progress": d.get("progress"),
             "subtask_progress": d.get("subtask_progress") or {},
         },
         "raw": j,
@@ -2160,186 +2372,131 @@ def api_task_status():
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
-    def _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready):
-        s = str(status or "").lower().strip()
-        return (
-            "complete"
-            if dashboard_ready else
-            "refreshing_dashboard"
-            if pbi_refresh_started and not dashboard_ready else
-            "building_analytics"
-            if ingest_started and not pbi_refresh_started else
-            "match_analysis_in_progress"
-            if s in ("queued", "processing", "running", "in_progress") else
-            "queued_for_analysis"
-        )
-
-    def _load_submission_context(task_id: str):
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            return conn.execute(sql_text("""
-                SELECT session_id,
-                    last_status,
-                    last_result_url,
-                    ingest_started_at,
-                    ingest_finished_at,
-                    ingest_error,
-                    pbi_refresh_started_at,
-                    pbi_refresh_finished_at,
-                    pbi_refresh_status,
-                    pbi_refresh_error,
-                    wix_notified_at,
-                    wix_notify_status,
-                    wix_notify_error
-                FROM bronze.submission_context
-                WHERE task_id = :t
-                LIMIT 1
-            """), {"t": task_id}).mappings().first() or {}
+    live_error = None
+    live = None
 
     try:
-        out = _sportai_status(tid)
-        status = (out.get("status") or "").lower().strip()
-        result_url = out.get("result_url")
-        terminal = bool(out.get("terminal"))
+        live = _sportai_status(tid)
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
-            _set_status_cache(conn, tid, status, result_url)
-
-        sc = _load_submission_context(tid)
-
-        session_id = sc.get("session_id")
-        ingest_started = sc.get("ingest_started_at") is not None
-        ingest_finished = sc.get("ingest_finished_at") is not None
-        auto_ingest_error = sc.get("ingest_error")
-        ingest_running = ingest_started and not ingest_finished
-
-        if AUTO_INGEST_ON_COMPLETE and terminal and result_url and not session_id and not ingest_running:
-            started = _start_ingest_background(tid, result_url)
-            if started:
-                sc = _load_submission_context(tid)
-                session_id = sc.get("session_id")
-                ingest_started = sc.get("ingest_started_at") is not None
-                ingest_finished = sc.get("ingest_finished_at") is not None
-                auto_ingest_error = sc.get("ingest_error")
-                ingest_running = ingest_started and not ingest_finished
-
-        auto_ingested = bool(session_id and ingest_finished and not auto_ingest_error)
-
-        pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
-        pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
-        pbi_refresh_status = sc.get("pbi_refresh_status")
-        pbi_refresh_error = sc.get("pbi_refresh_error")
-        pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
-
-        dashboard_ready = bool(
-            session_id
-            and ingest_finished
-            and not auto_ingest_error
-            and pbi_refresh_finished
-            and pbi_status_norm == "completed"
-            and not pbi_refresh_error
-        )
-
-        return jsonify({
-            "ok": True,
-            **out,
-            "fallback": False,
-            "live_status_error": None,
-            "session_id": session_id,
-            "auto_ingested": auto_ingested,
-            "auto_ingest_error": auto_ingest_error,
-            "ingest_started": ingest_started,
-            "ingest_running": ingest_running,
-            "ingest_finished": ingest_finished,
-            "wix_notified_at": sc.get("wix_notified_at"),
-            "wix_notify_status": sc.get("wix_notify_status"),
-            "wix_notify_error": sc.get("wix_notify_error"),
-            "pbi_refresh_started": pbi_refresh_started,
-            "pbi_refresh_finished": pbi_refresh_finished,
-            "pbi_refresh_status": pbi_refresh_status,
-            "pbi_refresh_error": pbi_refresh_error,
-            "stage": _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready),
-            "dashboard_ready": dashboard_ready
-        }), 200
+            _set_status_cache(conn, tid, live.get("status"), live.get("result_url"))
 
     except Exception as e:
         live_error = f"{e.__class__.__name__}: {e}"
-        sc = _load_submission_context(tid)
 
-        status = str(sc.get("last_status") or "unknown").lower().strip()
-        result_url = sc.get("last_result_url")
-        session_id = sc.get("session_id")
+    sc = _load_submission_context_row(tid)
 
-        ingest_started = sc.get("ingest_started_at") is not None
-        ingest_finished = sc.get("ingest_finished_at") is not None
-        ingest_error = sc.get("ingest_error")
-        ingest_running = ingest_started and not ingest_finished
+    status = _normalize_sportai_status(
+        (live or {}).get("status") or sc.get("last_status") or "unknown"
+    )
+    result_url = (live or {}).get("result_url") or sc.get("last_result_url")
+    sportai_progress_pct = (live or {}).get("sportai_progress_pct")
+    terminal = _is_terminal_status(status)
+    success_terminal = _is_success_terminal_status(status)
 
-        # fail-soft auto-ingest from cached completion state
-        # IMPORTANT: refresh result_url from SportAI again before triggering worker
-        if AUTO_INGEST_ON_COMPLETE and status in ("completed", "done", "success", "succeeded") and not session_id and not ingest_running:
-            try:
-                fresh = _sportai_status(tid)
-                fresh_result_url = fresh.get("result_url") or result_url
-                if fresh_result_url:
-                    with engine.begin() as conn:
-                        _ensure_submission_context_schema(conn)
-                        _set_status_cache(conn, tid, status, fresh_result_url)
+    session_id = sc.get("session_id")
+    ingest_started = sc.get("ingest_started_at") is not None
+    ingest_finished = sc.get("ingest_finished_at") is not None
+    ingest_error = sc.get("ingest_error")
+    ingest_running = ingest_started and not ingest_finished
 
-                    started = _start_ingest_background(tid, fresh_result_url)
-                    if started:
-                        sc = _load_submission_context(tid)
-                        session_id = sc.get("session_id")
-                        ingest_started = sc.get("ingest_started_at") is not None
-                        ingest_finished = sc.get("ingest_finished_at") is not None
-                        ingest_error = sc.get("ingest_error")
-                        ingest_running = ingest_started and not ingest_finished
-                        result_url = fresh_result_url
-            except Exception:
-                pass
+    # Auto-ingest only from explicit successful terminal status
+    if AUTO_INGEST_ON_COMPLETE and success_terminal and result_url and not session_id and not ingest_running:
+        try:
+            started = _start_ingest_background(tid, result_url)
+            if started:
+                sc = _load_submission_context_row(tid)
+                session_id = sc.get("session_id")
+                ingest_started = sc.get("ingest_started_at") is not None
+                ingest_finished = sc.get("ingest_finished_at") is not None
+                ingest_error = sc.get("ingest_error")
+                ingest_running = ingest_started and not ingest_finished
+        except Exception as e:
+            app.logger.exception("AUTO INGEST START FAILED task_id=%s: %s", tid, e)
 
-        pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
-        pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
-        pbi_refresh_status = sc.get("pbi_refresh_status")
-        pbi_refresh_error = sc.get("pbi_refresh_error")
-        pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
+    auto_ingested = bool(session_id and ingest_finished and not ingest_error)
 
-        dashboard_ready = bool(
-            session_id
-            and ingest_finished
-            and not ingest_error
-            and pbi_refresh_finished
-            and pbi_status_norm == "completed"
-            and not pbi_refresh_error
-        )
+    pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
+    pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
+    pbi_refresh_status = sc.get("pbi_refresh_status")
+    pbi_refresh_error = sc.get("pbi_refresh_error")
+    pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
 
-        auto_ingested = bool(session_id and ingest_finished and not ingest_error)
+    dashboard_ready = bool(
+        session_id
+        and ingest_finished
+        and not ingest_error
+        and pbi_refresh_finished
+        and pbi_status_norm == "completed"
+        and not pbi_refresh_error
+    )
 
-        return jsonify({
-            "ok": True,
-            "task_id": tid,
-            "status": status,
-            "result_url": result_url,
-            "terminal": status in ("completed", "done", "success", "succeeded", "failed", "canceled"),
-            "fallback": True,
-            "live_status_error": live_error,
-            "session_id": session_id,
-            "auto_ingested": auto_ingested,
-            "auto_ingest_error": ingest_error,
-            "ingest_started": ingest_started,
-            "ingest_running": ingest_running,
-            "ingest_finished": ingest_finished,
-            "wix_notified_at": sc.get("wix_notified_at"),
-            "wix_notify_status": sc.get("wix_notify_status"),
-            "wix_notify_error": sc.get("wix_notify_error"),
-            "pbi_refresh_started": pbi_refresh_started,
-            "pbi_refresh_finished": pbi_refresh_finished,
-            "pbi_refresh_status": pbi_refresh_status,
-            "pbi_refresh_error": pbi_refresh_error,
-            "stage": _stage_from_state(status, ingest_started, pbi_refresh_started, dashboard_ready),
-            "dashboard_ready": dashboard_ready
-        }), 200
+    pipeline_stage = _derive_pipeline_stage(
+        sportai_status=status,
+        ingest_started=ingest_started,
+        ingest_finished=ingest_finished,
+        ingest_error=ingest_error,
+        pbi_refresh_started=pbi_refresh_started,
+        pbi_refresh_finished=pbi_refresh_finished,
+        pbi_refresh_status=pbi_refresh_status,
+        pbi_refresh_error=pbi_refresh_error,
+        dashboard_ready=dashboard_ready,
+    )
+
+    display_progress_pct = _derive_display_progress_pct(
+        sportai_progress_pct=sportai_progress_pct,
+        pipeline_stage=pipeline_stage,
+        dashboard_ready=dashboard_ready,
+    )
+
+    return jsonify({
+        "ok": True,
+        "task_id": tid,
+
+        # Canonical fields
+        "sportai_status": status,
+        "sportai_progress_pct": sportai_progress_pct,
+        "pipeline_stage": pipeline_stage,
+        "display_progress_pct": display_progress_pct,
+
+        # Backward-compatible fields
+        "status": status,
+        "progress_pct": sportai_progress_pct,
+        "progress": sportai_progress_pct,
+        "stage": pipeline_stage,
+
+        "result_url": result_url,
+        "terminal": terminal,
+        "success_terminal": success_terminal,
+
+        "fallback": live is None,
+        "live_status_error": live_error,
+
+        "session_id": session_id,
+        "auto_ingested": auto_ingested,
+        "auto_ingest_error": ingest_error,
+        "ingest_started": ingest_started,
+        "ingest_running": ingest_running,
+        "ingest_finished": ingest_finished,
+
+        "wix_notified_at": sc.get("wix_notified_at"),
+        "wix_notify_status": sc.get("wix_notify_status"),
+        "wix_notify_error": sc.get("wix_notify_error"),
+
+        "pbi_refresh_started": pbi_refresh_started,
+        "pbi_refresh_finished": pbi_refresh_finished,
+        "pbi_refresh_status": pbi_refresh_status,
+        "pbi_refresh_error": pbi_refresh_error,
+
+        "dashboard_ready": dashboard_ready,
+
+        "sportai": {
+            "raw": (live or {}).get("raw"),
+            "data": (live or {}).get("data"),
+        },
+    }), 200
+
 
 # ==========================
 # MANUAL INGEST HELPER (TASK_ID-ONLY)
@@ -2357,12 +2514,15 @@ def ops_ingest_task():
     try:
         app.logger.info("OPS INGEST START task_id=%s", tid)
 
-        st = _sportai_status(tid)
-        result_url = st.get("result_url")
+        result_url = _resolve_result_url_for_task(tid)
         if not result_url:
-            return jsonify({"ok": False, "error": "result_url not available yet"}), 400
+            return jsonify({
+                "ok": False,
+                "error": "result_url_not_available",
+                "task_id": tid,
+            }), 400
 
-        app.logger.info("OPS INGEST task_id=%s result_url=%s", tid, result_url)
+        app.logger.info("OPS INGEST RESOLVED task_id=%s result_url=%s", tid, result_url)
 
         ok = _do_ingest(tid, result_url)
 
@@ -2394,8 +2554,7 @@ def ops_ingest_task():
 
     except Exception as e:
         app.logger.exception("OPS INGEST FAILED task_id=%s", tid)
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
-    
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500 
     
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
