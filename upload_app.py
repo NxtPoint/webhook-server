@@ -749,14 +749,9 @@ def _load_submission_context_row(task_id: str) -> dict:
 def _resolve_result_url_for_task(task_id: str) -> str | None:
     """
     Resolve result_url in the safest order:
-    1) cached DB value
-    2) fresh SportAI status lookup
+    1) fresh SportAI status lookup
+    2) cached DB value
     """
-    sc = _load_submission_context_row(task_id)
-    cached = str(sc.get("last_result_url") or "").strip()
-    if cached:
-        return cached
-
     try:
         st = _sportai_status(task_id)
         fresh = str(st.get("result_url") or "").strip()
@@ -768,8 +763,12 @@ def _resolve_result_url_for_task(task_id: str) -> str | None:
     except Exception:
         pass
 
-    return None
+    sc = _load_submission_context_row(task_id)
+    cached = str(sc.get("last_result_url") or "").strip()
+    if cached:
+        return cached
 
+    return None
 
 def _derive_pipeline_stage(
     sportai_status: str | None,
