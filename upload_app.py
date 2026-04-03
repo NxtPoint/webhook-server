@@ -1043,6 +1043,145 @@ def _coerce_progress_pct(raw) -> int | None:
     try:
         if raw is None:
             return None
+        v = float(raw)
+        if 0 <= v <= 1:
+            v = v * 100
+        pct = int(round(v))
+        return max(0, min(100, pct))
+    except Exception:
+        return None
+
+
+def _first_non_null(*vals):
+    for v in vals:
+        if v is not None:
+            return v
+    return None
+
+
+def _sportai_status(task_id: str) -> dict:
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+    last_err = None
+    j = None
+
+    for url in _iter_status_endpoints(task_id):
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+
+            if r.status_code >= 500:
+                last_err = f"{url} -> {r.status_code}: {r.text}"
+                continue
+
+            if r.status_code == 404:
+                j = {"message": "Task not visible yet (404)."}
+                break
+
+            r.raise_for_status()
+            j = r.json() or {}
+            break
+
+        except Exception as e:
+            last_err = f"{url} -> {e}"
+
+    if j is None:
+        raise RuntimeError(f"SportAI status failed: {last_err}")
+
+    root = j if isinstance(j, dict) else {}
+    data = root.get("data") if isinstance(root.get("data"), dict) else {}
+
+    # Search both top-level and nested data payloads
+    raw_status = _first_non_null(
+        data.get("status"),
+        data.get("task_status"),
+        data.get("taskStatus"),
+        data.get("state"),
+        root.get("status"),
+        root.get("task_status"),
+        root.get("taskStatus"),
+        root.get("state"),
+    )
+    raw_status = str(raw_status or "").strip()
+
+    msg = str(root.get("message") or "").strip().lower()
+    if not raw_status and "still being processed" in msg:
+        raw_status = "processing"
+
+    status = _normalize_sportai_status(raw_status)
+
+    raw_progress = _first_non_null(
+        data.get("task_progress"),
+        data.get("total_subtask_progress"),
+        data.get("progress"),
+        root.get("task_progress"),
+        root.get("total_subtask_progress"),
+        root.get("progress"),
+    )
+    progress_pct = _coerce_progress_pct(raw_progress)
+
+    result_url = _first_non_null(
+        data.get("result_url"),
+        data.get("resultUrl"),
+        (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
+        root.get("result_url"),
+        root.get("resultUrl"),
+        (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
+    )
+
+    terminal = _is_terminal_status(status)
+
+    # Do NOT mark completed just because result_url exists.
+    # But if status is explicitly completed, force 100.
+    if _is_success_terminal_status(status) and (progress_pct is None or progress_pct < 100):
+        progress_pct = 100
+
+    # Lightweight debug log only when SportAI gives us poor structure
+    if progress_pct is None or not status:
+        app.logger.info(
+            "SPORTAI STATUS PARSE task_id=%s status=%s progress=%s keys_root=%s keys_data=%s",
+            task_id,
+            status,
+            progress_pct,
+            sorted(list(root.keys()))[:20],
+            sorted(list(data.keys()))[:20],
+        )
+
+    return {
+        "task_id": task_id,
+        "status": status,
+        "sportai_status": status,
+        "sportai_status_raw": raw_status or None,
+        "result_url": result_url,
+        "progress_pct": progress_pct,
+        "progress": progress_pct,
+        "sportai_progress_pct": progress_pct,
+        "terminal": terminal,
+        "success_terminal": _is_success_terminal_status(status),
+        "data": {
+            "task_id": _first_non_null(data.get("task_id"), root.get("task_id")),
+            "video_url": _first_non_null(data.get("video_url"), root.get("video_url")),
+            "task_status": _first_non_null(data.get("task_status"), data.get("status"), root.get("task_status"), root.get("status")),
+            "task_progress": _first_non_null(data.get("task_progress"), root.get("task_progress")),
+            "total_subtask_progress": _first_non_null(data.get("total_subtask_progress"), root.get("total_subtask_progress")),
+            "progress": _first_non_null(data.get("progress"), root.get("progress")),
+            "subtask_progress": _first_non_null(data.get("subtask_progress"), root.get("subtask_progress")) or {},
+        },
+    }
+
+def _is_success_terminal_status(status: str | None) -> bool:
+    return _normalize_sportai_status(status) == "completed"
+
+
+def _is_terminal_status(status: str | None) -> bool:
+    return _normalize_sportai_status(status) in {"completed", "failed", "canceled"}
+
+
+def _coerce_progress_pct(raw) -> int | None:
+    try:
+        if raw is None:
+            return None
 
         v = float(raw)
 
@@ -2461,7 +2600,6 @@ def api_task_status():
         "progress": sportai_progress_pct,
         "stage": pipeline_stage,
 
-        "result_url": result_url,
         "terminal": terminal,
         "success_terminal": success_terminal,
 
