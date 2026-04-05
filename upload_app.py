@@ -1278,7 +1278,7 @@ def _validate_uploaded_s3_object_for_submit(key: str) -> tuple[bool, str | None,
     if ctype and ctype not in allowed_ctypes and not ctype.startswith("video/"):
         return False, f"invalid_s3_content_type:{ctype}", meta
 
-    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024 * 1024)))
     if size > max_bytes:
         return False, f"s3_object_exceeds_max_upload_bytes:{size}", meta
 
@@ -1329,6 +1329,36 @@ def _s3_abort_multipart_upload(key: str, upload_id: str) -> dict:
         Key=key,
         UploadId=upload_id,
     )
+
+def _s3_list_multipart_parts(key: str, upload_id: str) -> list[dict]:
+    cli = _s3_client()
+
+    parts = []
+    kwargs = {
+        "Bucket": S3_BUCKET,
+        "Key": key,
+        "UploadId": upload_id,
+    }
+
+    while True:
+        out = cli.list_parts(**kwargs)
+        batch = out.get("Parts") or []
+
+        for p in batch:
+            parts.append({
+                "PartNumber": int(p["PartNumber"]),
+                "ETag": str(p["ETag"]),
+                "Size": int(p.get("Size") or 0),
+            })
+
+        if not out.get("IsTruncated"):
+            break
+
+        kwargs["PartNumberMarker"] = out.get("NextPartNumberMarker")
+
+    parts.sort(key=lambda x: x["PartNumber"])
+    return parts
+
 
 # ==========================
 # INGEST WORKER (TASK_ID-ONLY)
@@ -1721,7 +1751,7 @@ def api_s3_presign():
     if ext not in allowed_ext:
         return jsonify({"ok": False, "error": "unsupported_file_extension"}), 400
 
-    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))  # default 2GB
+    max_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024 * 1024)))  # default 2GB
 
     key = f"{S3_PREFIX}/{int(time.time())}_{clean}"
     cli = _s3_client()
@@ -1745,6 +1775,35 @@ def api_s3_presign():
         "get_url": _s3_presigned_get_url(key),
         "max_upload_bytes": max_bytes
     })
+
+def _s3_list_multipart_parts(key: str, upload_id: str) -> list[dict]:
+    cli = _s3_client()
+
+    parts = []
+    kwargs = {
+        "Bucket": S3_BUCKET,
+        "Key": key,
+        "UploadId": upload_id,
+    }
+
+    while True:
+        out = cli.list_parts(**kwargs)
+        batch = out.get("Parts") or []
+
+        for p in batch:
+            parts.append({
+                "PartNumber": int(p["PartNumber"]),
+                "ETag": str(p["ETag"]),
+                "Size": int(p.get("Size") or 0),
+            })
+
+        if not out.get("IsTruncated"):
+            break
+
+        kwargs["PartNumberMarker"] = out.get("NextPartNumberMarker")
+
+    parts.sort(key=lambda x: x["PartNumber"])
+    return parts
 
 # ==========================
 # MULTIPART INITIATE / PART / COMPLETE / ABORT
