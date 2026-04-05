@@ -162,11 +162,6 @@ services:
       - key: VIDEO_WORKER_OPS_KEY
         sync: false
 
-      - key: CALLBACK_BASE_URL
-        value: "https://webhook-server.onrender.com"
-      - key: CALLBACK_OPS_KEY
-        sync: false
-
       - key: S3_BUCKET
         sync: false
       - key: AWS_REGION
@@ -180,3 +175,6 @@ services:
         value: "ffmpeg"
       - key: FFPROBE_BIN
         value: "ffprobe"
+
+      - key: VIDEO_TRIM_CALLBACK_TIMEOUT_S
+        value: "20"
