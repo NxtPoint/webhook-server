@@ -1795,6 +1795,43 @@ def video_trim_complete():
 
     return jsonify({"ok": True})
 
+# Testing webhook to improve autodectect and automingest - probably delete as i dot tink this is the issue
+@app.post("/webhook")
+def sportai_webhook():
+    body = request.get_json(silent=True) or {}
+
+    task_id = (
+        body.get("task_id")
+        or (body.get("data") or {}).get("task_id")
+        or body.get("id")
+        or ""
+    )
+    task_id = str(task_id).strip()
+
+    if not task_id:
+        return jsonify({"ok": False, "error": "task_id missing"}), 400
+
+    try:
+        app.logger.info("SPORTAI WEBHOOK RECEIVED task_id=%s body_keys=%s", task_id, list(body.keys()))
+
+        result_url = _resolve_result_url_for_task(task_id)
+        if not result_url:
+            app.logger.warning("SPORTAI WEBHOOK NO RESULT URL task_id=%s", task_id)
+            return jsonify({"ok": True, "accepted": False, "task_id": task_id, "reason": "result_url_not_available"}), 202
+
+        started = _start_ingest_background(task_id, result_url)
+
+        return jsonify({
+            "ok": True,
+            "accepted": bool(started),
+            "task_id": task_id,
+            "result_url": result_url,
+        }), 202
+
+    except Exception as e:
+        app.logger.exception("SPORTAI WEBHOOK FAILED task_id=%s: %s", task_id, e)
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
 # ==========================
 # PRESIGN (OPTIONAL)
 # ==========================
