@@ -1062,24 +1062,20 @@ def _sportai_status(task_id: str) -> dict:
     last_err = None
     j = None
 
-    for url in _iter_status_endpoints(task_id):
-        try:
-            r = requests.get(url, headers=headers, timeout=30)
+    # Canonical live-status endpoint only
+    url = f"{SPORTAI_BASE.rstrip('/')}/api/statistics/tennis/{task_id}/status"
 
-            if r.status_code >= 500:
-                last_err = f"{url} -> {r.status_code}: {r.text}"
-                continue
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
 
-            if r.status_code == 404:
-                j = {"message": "Task not visible yet (404)."}
-                break
-
+        if r.status_code == 404:
+            j = {"message": "Task not visible yet (404)."}
+        else:
             r.raise_for_status()
             j = r.json() or {}
-            break
 
-        except Exception as e:
-            last_err = f"{url} -> {e}"
+    except Exception as e:
+        last_err = f"{url} -> {e}"
 
     if j is None:
         raise RuntimeError(f"SportAI status failed: {last_err}")
@@ -1088,12 +1084,10 @@ def _sportai_status(task_id: str) -> dict:
     data = root.get("data") if isinstance(root.get("data"), dict) else {}
 
     # Use exactly what SportAI gives us
-    raw_status = str(data.get("task_status") or "").strip()
+    raw_status = str(data.get("task_status") or root.get("task_status") or "").strip()
     raw_progress = data.get("task_progress")
-
-    # Minimal fallback only if task_status is absent
-    if not raw_status:
-        raw_status = str(root.get("task_status") or "").strip()
+    if raw_progress is None:
+        raw_progress = root.get("task_progress")
 
     msg = str(root.get("message") or "").strip().lower()
     if not raw_status and "still being processed" in msg:
@@ -1110,6 +1104,10 @@ def _sportai_status(task_id: str) -> dict:
         root.get("resultUrl"),
         (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
     )
+
+    # If status is complete but canonical endpoint has no result_url, resolve it separately
+    if _is_success_terminal_status(status) and not result_url:
+        result_url = _sportai_result_url(task_id)
 
     terminal = _is_terminal_status(status)
 
@@ -1144,6 +1142,61 @@ def _sportai_status(task_id: str) -> dict:
             "subtask_progress": data.get("subtask_progress") or {},
         },
     }
+
+def _sportai_result_url(task_id: str) -> str | None:
+    """
+    Resolve SportAI result_url from the broader result/status endpoints.
+
+    We keep live progress/status parsing simple and explicit via the canonical
+    /status endpoint, but result_url may only appear on alternate endpoints.
+    """
+    if not SPORTAI_TOKEN:
+        raise RuntimeError("SPORT_AI_TOKEN not set")
+
+    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
+
+    candidate_paths = [
+        "/api/statistics/tennis/{task_id}",
+        "/api/statistics/{task_id}",
+        "/api/tasks/{task_id}",
+        "/api/statistics/tennis/{task_id}/status",
+    ]
+
+    for base in SPORTAI_BASES:
+        for path in candidate_paths:
+            url = f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
+            try:
+                r = requests.get(url, headers=headers, timeout=30)
+
+                if r.status_code == 404:
+                    continue
+                if r.status_code >= 500:
+                    continue
+
+                r.raise_for_status()
+                root = r.json() or {}
+                if not isinstance(root, dict):
+                    continue
+
+                data = root.get("data") if isinstance(root.get("data"), dict) else {}
+
+                result_url = _first_non_null(
+                    data.get("result_url"),
+                    data.get("resultUrl"),
+                    (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
+                    root.get("result_url"),
+                    root.get("resultUrl"),
+                    (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
+                )
+
+                if result_url:
+                    app.logger.info("SPORTAI RESULT URL FOUND task_id=%s url=%s", task_id, url)
+                    return str(result_url).strip()
+
+            except Exception:
+                continue
+
+    return None
 
 def _sportai_check(video_url: str) -> dict:
     if not SPORTAI_TOKEN:
@@ -2490,11 +2543,16 @@ def ops_ingest_task():
 
     body = request.get_json(silent=True) or {}
     tid = (body.get("task_id") or "").strip()
+    mode = (body.get("mode") or "worker").strip().lower()
+
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
+    if mode not in {"worker", "sync"}:
+        return jsonify({"ok": False, "error": "mode must be 'worker' or 'sync'"}), 400
+
     try:
-        app.logger.info("OPS INGEST START task_id=%s", tid)
+        app.logger.info("OPS INGEST START task_id=%s mode=%s", tid, mode)
 
         result_url = _resolve_result_url_for_task(tid)
         if not result_url:
@@ -2506,6 +2564,42 @@ def ops_ingest_task():
 
         app.logger.info("OPS INGEST RESOLVED task_id=%s result_url=%s", tid, result_url)
 
+        if mode == "worker":
+            launched = _start_ingest_background(tid, result_url)
+
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                row = conn.execute(sql_text("""
+                    SELECT
+                      session_id,
+                      ingest_started_at,
+                      ingest_finished_at,
+                      ingest_error,
+                      pbi_refresh_status,
+                      pbi_refresh_error,
+                      wix_notify_status,
+                      wix_notify_error
+                    FROM bronze.submission_context
+                    WHERE task_id = :tid
+                    LIMIT 1
+                """), {"tid": tid}).mappings().first() or {}
+
+            return jsonify({
+                "ok": True,
+                "accepted": bool(launched),
+                "mode": "worker",
+                "task_id": tid,
+                "session_id": row.get("session_id"),
+                "ingest_started_at": row.get("ingest_started_at"),
+                "ingest_finished_at": row.get("ingest_finished_at"),
+                "ingest_error": row.get("ingest_error"),
+                "pbi_refresh_status": row.get("pbi_refresh_status"),
+                "pbi_refresh_error": row.get("pbi_refresh_error"),
+                "wix_notify_status": row.get("wix_notify_status"),
+                "wix_notify_error": row.get("wix_notify_error"),
+            }), 202
+
+        # Explicit sync mode = deep debug only
         ok = _do_ingest(tid, result_url)
 
         with engine.begin() as conn:
@@ -2513,6 +2607,8 @@ def ops_ingest_task():
             row = conn.execute(sql_text("""
                 SELECT
                   session_id,
+                  ingest_started_at,
+                  ingest_finished_at,
                   ingest_error,
                   pbi_refresh_status,
                   pbi_refresh_error,
@@ -2525,8 +2621,11 @@ def ops_ingest_task():
 
         return jsonify({
             "ok": bool(ok),
+            "mode": "sync",
             "task_id": tid,
             "session_id": row.get("session_id"),
+            "ingest_started_at": row.get("ingest_started_at"),
+            "ingest_finished_at": row.get("ingest_finished_at"),
             "ingest_error": row.get("ingest_error"),
             "pbi_refresh_status": row.get("pbi_refresh_status"),
             "pbi_refresh_error": row.get("pbi_refresh_error"),
@@ -2535,8 +2634,8 @@ def ops_ingest_task():
         }), (200 if ok else 500)
 
     except Exception as e:
-        app.logger.exception("OPS INGEST FAILED task_id=%s", tid)
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500 
+        app.logger.exception("OPS INGEST FAILED task_id=%s mode=%s", tid, mode)
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
     
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
