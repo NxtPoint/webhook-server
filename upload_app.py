@@ -2653,7 +2653,16 @@ def ops_ingest_task():
                       pbi_refresh_status,
                       pbi_refresh_error,
                       wix_notify_status,
-                      wix_notify_error
+                      wix_notify_error,
+                      trim_requested_at,
+                      trim_finished_at,
+                      trim_status,
+                      trim_error,
+                      trim_output_s3_key,
+                      trim_source_duration_s,
+                      trim_duration_s,
+                      trim_segment_count,
+                      trim_seconds_removed
                     FROM bronze.submission_context
                     WHERE task_id = :tid
                     LIMIT 1
@@ -2664,6 +2673,7 @@ def ops_ingest_task():
                 "accepted": bool(launched),
                 "mode": "worker",
                 "task_id": tid,
+                "result_url": result_url,
                 "session_id": row.get("session_id"),
                 "ingest_started_at": row.get("ingest_started_at"),
                 "ingest_finished_at": row.get("ingest_finished_at"),
@@ -2672,6 +2682,15 @@ def ops_ingest_task():
                 "pbi_refresh_error": row.get("pbi_refresh_error"),
                 "wix_notify_status": row.get("wix_notify_status"),
                 "wix_notify_error": row.get("wix_notify_error"),
+                "trim_requested_at": row.get("trim_requested_at"),
+                "trim_finished_at": row.get("trim_finished_at"),
+                "trim_status": row.get("trim_status"),
+                "trim_error": row.get("trim_error"),
+                "trim_output_s3_key": row.get("trim_output_s3_key"),
+                "trim_source_duration_s": row.get("trim_source_duration_s"),
+                "trim_duration_s": row.get("trim_duration_s"),
+                "trim_segment_count": row.get("trim_segment_count"),
+                "trim_seconds_removed": row.get("trim_seconds_removed"),
             }), 202
 
         # Explicit sync mode = deep debug only
@@ -2688,7 +2707,16 @@ def ops_ingest_task():
                   pbi_refresh_status,
                   pbi_refresh_error,
                   wix_notify_status,
-                  wix_notify_error
+                  wix_notify_error,
+                  trim_requested_at,
+                  trim_finished_at,
+                  trim_status,
+                  trim_error,
+                  trim_output_s3_key,
+                  trim_source_duration_s,
+                  trim_duration_s,
+                  trim_segment_count,
+                  trim_seconds_removed
                 FROM bronze.submission_context
                 WHERE task_id = :tid
                 LIMIT 1
@@ -2698,6 +2726,7 @@ def ops_ingest_task():
             "ok": bool(ok),
             "mode": "sync",
             "task_id": tid,
+            "result_url": result_url,
             "session_id": row.get("session_id"),
             "ingest_started_at": row.get("ingest_started_at"),
             "ingest_finished_at": row.get("ingest_finished_at"),
@@ -2706,6 +2735,15 @@ def ops_ingest_task():
             "pbi_refresh_error": row.get("pbi_refresh_error"),
             "wix_notify_status": row.get("wix_notify_status"),
             "wix_notify_error": row.get("wix_notify_error"),
+            "trim_requested_at": row.get("trim_requested_at"),
+            "trim_finished_at": row.get("trim_finished_at"),
+            "trim_status": row.get("trim_status"),
+            "trim_error": row.get("trim_error"),
+            "trim_output_s3_key": row.get("trim_output_s3_key"),
+            "trim_source_duration_s": row.get("trim_source_duration_s"),
+            "trim_duration_s": row.get("trim_duration_s"),
+            "trim_segment_count": row.get("trim_segment_count"),
+            "trim_seconds_removed": row.get("trim_seconds_removed"),
         }), (200 if ok else 500)
 
     except Exception as e:
