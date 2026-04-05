@@ -17,6 +17,7 @@ from video_pipeline.build_video_timeline import (
     timeline_to_edl,
 )
 
+
 VIDEO_WORKER_BASE_URL = (os.getenv("VIDEO_WORKER_BASE_URL") or "").strip().rstrip("/")
 VIDEO_WORKER_OPS_KEY = (os.getenv("VIDEO_WORKER_OPS_KEY") or "").strip()
 
