@@ -1154,8 +1154,6 @@ def _sportai_status(task_id: str) -> dict:
         "sportai_status": status,
         "sportai_status_raw": raw_status or None,
         "result_url": result_url,
-        "progress_pct": progress_pct,
-        "progress": progress_pct,
         "sportai_progress_pct": progress_pct,
         "terminal": terminal,
         "success_terminal": _is_success_terminal_status(status),
@@ -1170,131 +1168,6 @@ def _sportai_status(task_id: str) -> dict:
         },
     }
 
-def _is_success_terminal_status(status: str | None) -> bool:
-    return _normalize_sportai_status(status) == "completed"
-
-
-def _is_terminal_status(status: str | None) -> bool:
-    return _normalize_sportai_status(status) in {"completed", "failed", "canceled"}
-
-
-def _coerce_progress_pct(raw) -> int | None:
-    try:
-        if raw is None:
-            return None
-
-        v = float(raw)
-
-        # SportAI sometimes returns 0..1, sometimes 0..100
-        if 0 <= v <= 1:
-            v = v * 100
-
-        pct = int(round(v))
-        return max(0, min(100, pct))
-    except Exception:
-        return None
-
-
-def _sportai_status(task_id: str) -> dict:
-    """
-    Pure adapter over SportAI status.
-    IMPORTANT:
-    - do not force terminal because result_url exists
-    - do not mutate status based on local pipeline state
-    - expose raw-ish SportAI truth + normalized convenience fields
-    """
-    if not SPORTAI_TOKEN:
-        raise RuntimeError("SPORT_AI_TOKEN not set")
-
-    headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
-    last_err = None
-    j = None
-
-    for url in _iter_status_endpoints(task_id):
-        try:
-            r = requests.get(url, headers=headers, timeout=30)
-
-            if r.status_code >= 500:
-                last_err = f"{url} -> {r.status_code}: {r.text}"
-                continue
-
-            if r.status_code == 404:
-                j = {"message": "Task not visible yet (404)."}
-                break
-
-            r.raise_for_status()
-            j = r.json() or {}
-            break
-
-        except Exception as e:
-            last_err = f"{url} -> {e}"
-
-    if j is None:
-        raise RuntimeError(f"SportAI status failed: {last_err}")
-
-    d = j.get("data") if isinstance(j, dict) and isinstance(j.get("data"), dict) else j
-
-    raw_status = (
-        d.get("status")
-        or d.get("task_status")
-        or d.get("taskStatus")
-        or d.get("state")
-        or ""
-    )
-    raw_status = str(raw_status or "").strip()
-
-    msg = str(j.get("message") or "").strip().lower()
-    if not raw_status and "still being processed" in msg:
-        raw_status = "processing"
-
-    status = _normalize_sportai_status(raw_status)
-
-    # Prefer explicit task_progress first, then total progress, then generic progress
-    raw_progress = (
-        d.get("task_progress")
-        if d.get("task_progress") is not None else
-        d.get("total_subtask_progress")
-        if d.get("total_subtask_progress") is not None else
-        d.get("progress")
-    )
-    progress_pct = _coerce_progress_pct(raw_progress)
-
-    result_url = (
-        d.get("result_url")
-        or d.get("resultUrl")
-        or (d.get("result") or {}).get("url")
-        or j.get("result_url")
-        or j.get("resultUrl")
-    )
-
-    terminal = _is_terminal_status(status)
-
-    # Only force 100 for explicit successful terminal status
-    if _is_success_terminal_status(status) and (progress_pct is None or progress_pct < 100):
-        progress_pct = 100
-
-    return {
-        "task_id": task_id,
-        "status": status,
-        "sportai_status": status,
-        "sportai_status_raw": raw_status or None,
-        "result_url": result_url,
-        "progress_pct": progress_pct,
-        "progress": progress_pct,
-        "sportai_progress_pct": progress_pct,
-        "terminal": terminal,
-        "success_terminal": _is_success_terminal_status(status),
-        "data": {
-            "task_id": d.get("task_id"),
-            "video_url": d.get("video_url"),
-            "task_status": d.get("task_status") or d.get("status"),
-            "task_progress": d.get("task_progress"),
-            "total_subtask_progress": d.get("total_subtask_progress"),
-            "progress": d.get("progress"),
-            "subtask_progress": d.get("subtask_progress") or {},
-        },
-        "raw": j,
-    }
 
 def _sportai_check(video_url: str) -> dict:
     if not SPORTAI_TOKEN:
@@ -2306,8 +2179,8 @@ def api_upload_task():
         "player_b_name": opponent_name or None,
 
         # UTRs
-        "player_a_utr": _norm(player_utr),
-        "player_b_utr": _norm(opponent_utr),
+        "player_a_utr": _norm(player_utr) if str(player_utr).strip().isdigit() else None,
+        "player_b_utr": _norm(opponent_utr) if str(opponent_utr).strip().isdigit() else None,
 
         # match info
         "match_date": _norm(match_date),
@@ -2596,8 +2469,8 @@ def api_task_status():
 
         # Backward-compatible fields
         "status": status,
-        "progress_pct": sportai_progress_pct,
-        "progress": sportai_progress_pct,
+        "progress_pct": display_progress_pct,
+        "progress": display_progress_pct,
         "stage": pipeline_stage,
 
         "terminal": terminal,

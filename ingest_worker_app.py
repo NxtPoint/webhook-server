@@ -17,7 +17,7 @@ def _auth_ok(req) -> bool:
     return auth == f"Bearer {INGEST_WORKER_OPS_KEY}"
 
 
-def _run_ingest_async(task_id: str, result_url: str):
+def _run_ingest_async(task_id: str, result_url: str) -> None:
     try:
         app.logger.info("INGEST WORKER BACKGROUND START task_id=%s", task_id)
         _do_ingest(task_id, result_url)
