@@ -1,0 +1,1 @@
+from video_pipeline.video_worker_app import APP as app

@@ -13,7 +13,7 @@
 #   - SQL is only for I/O (fetching rows), never for derived logic.
 #
 # BUSINESS RULES (CURRENT BASELINE)
-#   - Use Silver point_detail as input (already “perfect” per your confirmation).
+#   - Use Silver point_detail as input.
 #   - Only include rows where exclude_d == False (NULL treated as False).
 #   - Each point segment is defined by ball_hit_s:
 #       point_start_s = min(ball_hit_s) per (task_id, point_number)
@@ -21,8 +21,10 @@
 #   - Apply padding:
 #       start_s = max(point_start_s - PAD_BEFORE_S, 0)
 #       end_s   = point_end_s + PAD_AFTER_S
+#   - Optional clamp:
+#       if video_duration_s is supplied, end_s is clamped to video duration
 #   - Merge behavior:
-#       MERGE_GAP_S = 0.0  (baseline): merge overlaps only; do NOT merge close gaps
+#       MERGE_GAP_S = 0.0 baseline = merge overlaps only
 #   - Drop segments shorter than MIN_SEGMENT_S after merging.
 #
 # OUTPUT
@@ -49,8 +51,16 @@ import pandas as pd
 PAD_BEFORE_S = 2.0       # seconds kept before each point start
 PAD_AFTER_S = 2.0        # seconds kept after each point end
 
-MERGE_GAP_S = 0.0        # baseline: merge overlaps only (no "close gap" merging)
+MERGE_GAP_S = 0.0        # baseline: merge overlaps only
 MIN_SEGMENT_S = 2.0      # discard merged segments shorter than this
+
+# Optional pre-merge noise control:
+# drop raw point segments shorter than this before padding/merge
+MIN_POINT_DURATION_S = 0.5
+
+# Confidence heuristic:
+# longer merged segments get higher confidence, capped at 1.0
+CONFIDENCE_FULL_AT_S = 10.0
 
 # ============================================================
 # SECTION 1: INPUT VALIDATION
@@ -69,11 +79,41 @@ def _validate_silver(df_silver: pd.DataFrame) -> None:
         raise ValueError(f"df_silver missing required columns: {sorted(missing)}")
 
 
+def _validate_video_duration(video_duration_s: Optional[float]) -> Optional[float]:
+    if video_duration_s is None:
+        return None
+
+    try:
+        v = float(video_duration_s)
+    except Exception as e:
+        raise ValueError(f"video_duration_s must be numeric, got {video_duration_s!r}") from e
+
+    if v <= 0:
+        raise ValueError(f"video_duration_s must be > 0, got {v}")
+
+    return v
+
+def _infer_video_duration_from_segments(df: pd.DataFrame) -> float:
+    """
+    Fallback duration if video_duration_s is not provided.
+    Uses max observed timestamp + buffer.
+    """
+    max_s = pd.to_numeric(df["ball_hit_s"], errors="coerce").max()
+    if pd.isna(max_s):
+        raise ValueError("Cannot infer video duration from ball_hit_s")
+
+    return float(max_s) + 5.0  # safety buffer
+
 # ============================================================
 # SECTION 2: BUILD POINT-LEVEL SEGMENTS FROM SILVER
 # ============================================================
 
-def _build_point_segments(df_silver: pd.DataFrame, *, task_id: Optional[str] = None) -> pd.DataFrame:
+def _build_point_segments(
+    df_silver: pd.DataFrame,
+    *,
+    task_id: Optional[str] = None,
+    video_duration_s: Optional[float] = None,
+) -> pd.DataFrame:
     """
     Build one row per point with start/end seconds derived from Silver.
 
@@ -81,11 +121,18 @@ def _build_point_segments(df_silver: pd.DataFrame, *, task_id: Optional[str] = N
       - exclude_d must be False (NULL treated as False)
       - point_start_s = min(ball_hit_s) within point
       - point_end_s   = max(ball_hit_s) within point
+      - raw point duration = point_end_s - point_start_s
+      - drop very short raw point segments (< MIN_POINT_DURATION_S)
       - apply padding:
           start_s = max(point_start_s - PAD_BEFORE_S, 0)
           end_s   = point_end_s + PAD_AFTER_S
+      - if video_duration_s is provided, clamp end_s to video duration
     """
     _validate_silver(df_silver)
+    if video_duration_s is None:
+        video_duration_s = _infer_video_duration_from_segments(df_silver)
+        
+    video_duration_s = _validate_video_duration(video_duration_s)
 
     # Work on a private copy
     df = df_silver.copy()
@@ -134,10 +181,32 @@ def _build_point_segments(df_silver: pd.DataFrame, *, task_id: Optional[str] = N
     )
 
     # --------------------------
+    # Raw point duration filter
+    # --------------------------
+    points.loc[:, "point_duration_s"] = points["point_end_s"] - points["point_start_s"]
+    points = points.loc[points["point_duration_s"] >= MIN_POINT_DURATION_S].copy()
+    if points.empty:
+        raise ValueError(
+            "All raw point segments were filtered out by MIN_POINT_DURATION_S. "
+            "Check timing quality or lower the threshold."
+        )
+
+    # --------------------------
     # Apply padding
     # --------------------------
     points.loc[:, "start_s"] = (points["point_start_s"] - PAD_BEFORE_S).clip(lower=0)
     points.loc[:, "end_s"] = points["point_end_s"] + PAD_AFTER_S
+
+    # --------------------------
+    # Optional clamp to video duration
+    # --------------------------
+    if video_duration_s is not None:
+        points.loc[:, "end_s"] = points["end_s"].clip(upper=video_duration_s)
+
+    # Remove invalid/zero segments after clamp
+    points = points.loc[points["end_s"] > points["start_s"]].copy()
+    if points.empty:
+        raise ValueError("No valid point segments remain after padding/clamping.")
 
     # Canonical point-level timeline shape
     timeline = points[["task_id", "point_number", "start_s", "end_s"]].rename(
@@ -160,7 +229,7 @@ def _merge_and_validate_segments(df_segments: pd.DataFrame) -> pd.DataFrame:
       DataFrame with columns: start_s, end_s (at minimum)
     Output:
       Clean merged segments:
-        - sorted by start_s
+        - sorted by start_s, end_s
         - overlaps merged
         - small gaps merged ONLY if MERGE_GAP_S > 0
         - segments shorter than MIN_SEGMENT_S dropped
@@ -178,7 +247,7 @@ def _merge_and_validate_segments(df_segments: pd.DataFrame) -> pd.DataFrame:
     if seg.empty:
         raise ValueError("No valid segments remain after cleaning start/end seconds.")
 
-    seg = seg.sort_values("start_s").reset_index(drop=True)
+    seg = seg.sort_values(["start_s", "end_s"]).reset_index(drop=True)
 
     merged_rows: List[Tuple[float, float]] = []
     cur_start: Optional[float] = None
@@ -192,10 +261,9 @@ def _merge_and_validate_segments(df_segments: pd.DataFrame) -> pd.DataFrame:
             cur_start, cur_end = s, e
             continue
 
-        # cur_end is not None here
         gap = s - float(cur_end)
 
-        # Merge if overlapping OR within configured gap (baseline MERGE_GAP_S=0 means overlaps only)
+        # Merge if overlapping OR within configured gap
         if gap <= MERGE_GAP_S:
             cur_end = max(float(cur_end), e)
         else:
@@ -216,6 +284,9 @@ def _merge_and_validate_segments(df_segments: pd.DataFrame) -> pd.DataFrame:
     if out.empty:
         raise ValueError("All segments were filtered out; check PAD/MERGE/MIN thresholds.")
 
+    out = out.sort_values(["start_s", "end_s"]).reset_index(drop=True)
+    out.loc[:, "duration_s"] = out["end_s"] - out["start_s"]
+
     if not (out["end_s"] > out["start_s"]).all():
         raise AssertionError("Invalid segment found where end_s <= start_s")
 
@@ -230,9 +301,23 @@ def _merge_and_validate_segments(df_segments: pd.DataFrame) -> pd.DataFrame:
 # SECTION 4: PUBLIC API
 # ============================================================
 
-def build_video_timeline_from_silver(df_silver: pd.DataFrame, *, task_id: Optional[str] = None) -> pd.DataFrame:
+def build_video_timeline_from_silver(
+    df_silver: pd.DataFrame,
+    *,
+    task_id: Optional[str] = None,
+    video_duration_s: Optional[float] = None,
+) -> pd.DataFrame:
     """
     Build the merged, canonical "keep segments" timeline.
+
+    Args:
+      df_silver:
+        Silver point_detail rows
+      task_id:
+        Optional task filter
+      video_duration_s:
+        Optional source video duration in seconds. If supplied, end_s is clamped
+        so no generated segment can extend beyond the source duration.
 
     Returns:
       DataFrame columns:
@@ -244,7 +329,11 @@ def build_video_timeline_from_silver(df_silver: pd.DataFrame, *, task_id: Option
         - source
         - confidence
     """
-    base_points = _build_point_segments(df_silver, task_id=task_id)
+    base_points = _build_point_segments(
+        df_silver,
+        task_id=task_id,
+        video_duration_s=video_duration_s,
+    )
     merged = _merge_and_validate_segments(base_points)
 
     # Determine task_id deterministically
@@ -263,7 +352,13 @@ def build_video_timeline_from_silver(df_silver: pd.DataFrame, *, task_id: Option
     merged.loc[:, "entity_type"] = "point_group"
     merged.loc[:, "entity_id"] = range(1, len(merged) + 1)
     merged.loc[:, "source"] = "silver"
-    merged.loc[:, "confidence"] = 1.0
+    merged.loc[:, "confidence"] = (
+        (merged["duration_s"] / CONFIDENCE_FULL_AT_S)
+        .clip(lower=0.0, upper=1.0)
+        .astype(float)
+    )
+
+    merged = merged.sort_values(["start_s", "end_s"]).reset_index(drop=True)
 
     merged = merged[[
         "task_id",
@@ -302,9 +397,14 @@ def timeline_to_edl(df_timeline: pd.DataFrame) -> Dict:
     if df_timeline is None or df_timeline.empty:
         raise ValueError("df_timeline is empty; cannot build EDL.")
 
+    required = {"task_id", "start_s", "end_s"}
+    missing = required - set(df_timeline.columns)
+    if missing:
+        raise ValueError(f"df_timeline missing required columns: {sorted(missing)}")
+
     segs = [
         {"start_s": float(r.start_s), "end_s": float(r.end_s)}
-        for r in df_timeline.itertuples(index=False)
+        for r in df_timeline.sort_values(["start_s", "end_s"]).itertuples(index=False)
     ]
 
     return {
@@ -325,5 +425,5 @@ def timeline_to_edl(df_timeline: pd.DataFrame) -> Dict:
 if __name__ == "__main__":
     print(
         "build_video_timeline.py loaded.\n"
-        "Import and call build_video_timeline_from_silver(df_silver, task_id=...)."
+        "Import and call build_video_timeline_from_silver(df_silver, task_id=..., video_duration_s=...)."
     )
