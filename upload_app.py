@@ -91,14 +91,9 @@ SPORTAI_BASES = list(dict.fromkeys([
 ]))
 
 SPORTAI_SUBMIT_PATHS = list(dict.fromkeys([SPORTAI_SUBMIT_PATH, "/api/statistics/tennis", "/api/statistics"]))
-SPORTAI_STATUS_PATHS = list(dict.fromkeys([
-    SPORTAI_STATUS_PATH,
+SPORTAI_STATUS_PATHS = [
     "/api/statistics/tennis/{task_id}/status",
-    "/api/statistics/{task_id}/status",
-    "/api/statistics/tennis/{task_id}",
-    "/api/statistics/{task_id}",
-    "/api/tasks/{task_id}",
-]))
+]
 
 # ---------- DB engine / bronze ingest ----------
 from db_init import engine  # noqa: E402
