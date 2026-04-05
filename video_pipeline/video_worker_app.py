@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 import traceback
-import threading
 from typing import Any, Dict
 
 import requests
@@ -145,7 +147,7 @@ def _run_trim_job(
             )
 
 
-def _launch_trim_thread(
+def _launch_trim_subprocess(
     *,
     task_id: str,
     s3_bucket: str,
@@ -154,20 +156,34 @@ def _launch_trim_thread(
     callback_url: str,
     callback_headers: Dict[str, Any],
 ) -> None:
-    t = threading.Thread(
-        target=_run_trim_job,
-        kwargs={
-            "task_id": task_id,
-            "s3_bucket": s3_bucket,
-            "s3_key": s3_key,
-            "edl": edl,
-            "callback_url": callback_url,
-            "callback_headers": callback_headers,
-        },
-        daemon=True,
-        name=f"trim-{task_id[:12]}",
+    payload = {
+        "task_id": task_id,
+        "s3_bucket": s3_bucket,
+        "s3_key": s3_key,
+        "edl": edl,
+        "callback_url": callback_url,
+        "callback_headers": callback_headers,
+    }
+
+    py_code = (
+        "import json, sys; "
+        "from video_pipeline.video_worker_app import _run_trim_job; "
+        "payload = json.loads(sys.argv[1]); "
+        "_run_trim_job(**payload)"
     )
-    t.start()
+
+    env = os.environ.copy()
+
+    subprocess.Popen(
+        [sys.executable, "-c", py_code, json.dumps(payload)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+        cwd=os.getcwd(),
+        env=env,
+    )
 
 
 @APP.post("/trim")
@@ -186,7 +202,7 @@ def trim():
         }), 400
 
     try:
-        _launch_trim_thread(
+        _launch_trim_subprocess(
             task_id=payload["task_id"],
             s3_bucket=payload["s3_bucket"],
             s3_key=payload["s3_key"],

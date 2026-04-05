@@ -1499,12 +1499,11 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # STEP 4: VIDEO TRIM TRIGGER (ASYNC / NON-BLOCKING)
         # Must NOT fail ingest if trim trigger fails
         # -------------------------
-        app.logger.warning("VIDEO TRIM DEBUG ENTERED task_id=%s", task_id)
+        
         app.logger.info("INGEST STEP task_id=%s step=video_trim_trigger_start", task_id)
 
         try:
             trim_out = trigger_video_trim(task_id)
-            app.logger.warning("VIDEO TRIM DEBUG RESULT task_id=%s out=%s", task_id, trim_out)
             app.logger.info(
                 "INGEST STEP task_id=%s step=video_trim_trigger_done out=%s",
                 task_id,
