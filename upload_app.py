@@ -1060,70 +1060,7 @@ def _sportai_status(task_id: str) -> dict:
 
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
     last_err = None
-    best_root = None
-    best_score = -1
-
-    def _extract_candidate(root: dict) -> tuple[int, dict]:
-        data = root.get("data") if isinstance(root.get("data"), dict) else {}
-
-        raw_status = _first_non_null(
-            data.get("status"),
-            data.get("task_status"),
-            data.get("taskStatus"),
-            data.get("state"),
-            root.get("status"),
-            root.get("task_status"),
-            root.get("taskStatus"),
-            root.get("state"),
-        )
-        raw_status = str(raw_status or "").strip()
-
-        msg = str(root.get("message") or "").strip().lower()
-        if not raw_status and "still being processed" in msg:
-            raw_status = "processing"
-
-        status = _normalize_sportai_status(raw_status)
-
-        raw_progress = _first_non_null(
-            data.get("task_progress"),
-            data.get("total_subtask_progress"),
-            data.get("progress"),
-            root.get("task_progress"),
-            root.get("total_subtask_progress"),
-            root.get("progress"),
-        )
-        progress_pct = _coerce_progress_pct(raw_progress)
-
-        result_url = _first_non_null(
-            data.get("result_url"),
-            data.get("resultUrl"),
-            (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
-            root.get("result_url"),
-            root.get("resultUrl"),
-            (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
-        )
-
-        # Prefer responses that contain real status/progress.
-        # Thin result_url-only payloads should lose to richer ones.
-        score = 0
-        if status:
-            score += 100
-        if progress_pct is not None:
-            score += 50
-        if result_url:
-            score += 10
-        if data:
-            score += 5
-
-        candidate = {
-            "root": root,
-            "data": data,
-            "raw_status": raw_status,
-            "status": status,
-            "progress_pct": progress_pct,
-            "result_url": result_url,
-        }
-        return score, candidate
+    j = None
 
     for url in _iter_status_endpoints(task_id):
         try:
@@ -1134,51 +1071,48 @@ def _sportai_status(task_id: str) -> dict:
                 continue
 
             if r.status_code == 404:
-                last_err = f"{url} -> 404"
-                continue
+                j = {"message": "Task not visible yet (404)."}
+                break
 
             r.raise_for_status()
-            root = r.json() or {}
-            if not isinstance(root, dict):
-                continue
-
-            score, candidate = _extract_candidate(root)
-
-            app.logger.info(
-                "SPORTAI STATUS CANDIDATE task_id=%s url=%s score=%s raw_status=%s progress=%s has_result_url=%s",
-                task_id,
-                url,
-                score,
-                candidate["raw_status"] or None,
-                candidate["progress_pct"],
-                bool(candidate["result_url"]),
-            )
-
-            if score > best_score:
-                best_score = score
-                best_root = candidate
-
-            # Strong enough response: stop early
-            if candidate["status"] or candidate["progress_pct"] is not None:
-                break
+            j = r.json() or {}
+            break
 
         except Exception as e:
             last_err = f"{url} -> {e}"
 
-    if best_root is None:
+    if j is None:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
-    root = best_root["root"]
-    data = best_root["data"]
-    raw_status = best_root["raw_status"]
-    status = best_root["status"]
-    progress_pct = best_root["progress_pct"]
-    result_url = best_root["result_url"]
+    root = j if isinstance(j, dict) else {}
+    data = root.get("data") if isinstance(root.get("data"), dict) else {}
+
+    # Use exactly what SportAI gives us
+    raw_status = str(data.get("task_status") or "").strip()
+    raw_progress = data.get("task_progress")
+
+    # Minimal fallback only if task_status is absent
+    if not raw_status:
+        raw_status = str(root.get("task_status") or "").strip()
+
+    msg = str(root.get("message") or "").strip().lower()
+    if not raw_status and "still being processed" in msg:
+        raw_status = "processing"
+
+    status = _normalize_sportai_status(raw_status)
+    progress_pct = _coerce_progress_pct(raw_progress)
+
+    result_url = _first_non_null(
+        data.get("result_url"),
+        data.get("resultUrl"),
+        (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
+        root.get("result_url"),
+        root.get("resultUrl"),
+        (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
+    )
 
     terminal = _is_terminal_status(status)
 
-    # Do NOT mark completed just because result_url exists.
-    # But if status is explicitly completed, force 100.
     if _is_success_terminal_status(status) and (progress_pct is None or progress_pct < 100):
         progress_pct = 100
 
@@ -1202,16 +1136,14 @@ def _sportai_status(task_id: str) -> dict:
         "terminal": terminal,
         "success_terminal": _is_success_terminal_status(status),
         "data": {
-            "task_id": _first_non_null(data.get("task_id"), root.get("task_id")),
-            "video_url": _first_non_null(data.get("video_url"), root.get("video_url")),
-            "task_status": _first_non_null(data.get("task_status"), data.get("status"), root.get("task_status"), root.get("status")),
-            "task_progress": _first_non_null(data.get("task_progress"), root.get("task_progress")),
-            "total_subtask_progress": _first_non_null(data.get("total_subtask_progress"), root.get("total_subtask_progress")),
-            "progress": _first_non_null(data.get("progress"), root.get("progress")),
-            "subtask_progress": _first_non_null(data.get("subtask_progress"), root.get("subtask_progress")) or {},
+            "task_id": data.get("task_id"),
+            "video_url": data.get("video_url"),
+            "task_status": data.get("task_status"),
+            "task_progress": data.get("task_progress"),
+            "total_subtask_progress": data.get("total_subtask_progress"),
+            "subtask_progress": data.get("subtask_progress") or {},
         },
     }
-
 
 def _sportai_check(video_url: str) -> dict:
     if not SPORTAI_TOKEN:
