@@ -1065,7 +1065,70 @@ def _sportai_status(task_id: str) -> dict:
 
     headers = {"Authorization": f"Bearer {SPORTAI_TOKEN}"}
     last_err = None
-    j = None
+    best_root = None
+    best_score = -1
+
+    def _extract_candidate(root: dict) -> tuple[int, dict]:
+        data = root.get("data") if isinstance(root.get("data"), dict) else {}
+
+        raw_status = _first_non_null(
+            data.get("status"),
+            data.get("task_status"),
+            data.get("taskStatus"),
+            data.get("state"),
+            root.get("status"),
+            root.get("task_status"),
+            root.get("taskStatus"),
+            root.get("state"),
+        )
+        raw_status = str(raw_status or "").strip()
+
+        msg = str(root.get("message") or "").strip().lower()
+        if not raw_status and "still being processed" in msg:
+            raw_status = "processing"
+
+        status = _normalize_sportai_status(raw_status)
+
+        raw_progress = _first_non_null(
+            data.get("task_progress"),
+            data.get("total_subtask_progress"),
+            data.get("progress"),
+            root.get("task_progress"),
+            root.get("total_subtask_progress"),
+            root.get("progress"),
+        )
+        progress_pct = _coerce_progress_pct(raw_progress)
+
+        result_url = _first_non_null(
+            data.get("result_url"),
+            data.get("resultUrl"),
+            (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
+            root.get("result_url"),
+            root.get("resultUrl"),
+            (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
+        )
+
+        # Prefer responses that contain real status/progress.
+        # Thin result_url-only payloads should lose to richer ones.
+        score = 0
+        if status:
+            score += 100
+        if progress_pct is not None:
+            score += 50
+        if result_url:
+            score += 10
+        if data:
+            score += 5
+
+        candidate = {
+            "root": root,
+            "data": data,
+            "raw_status": raw_status,
+            "status": status,
+            "progress_pct": progress_pct,
+            "result_url": result_url,
+        }
+        return score, candidate
 
     for url in _iter_status_endpoints(task_id):
         try:
@@ -1076,59 +1139,46 @@ def _sportai_status(task_id: str) -> dict:
                 continue
 
             if r.status_code == 404:
-                j = {"message": "Task not visible yet (404)."}
-                break
+                last_err = f"{url} -> 404"
+                continue
 
             r.raise_for_status()
-            j = r.json() or {}
-            break
+            root = r.json() or {}
+            if not isinstance(root, dict):
+                continue
+
+            score, candidate = _extract_candidate(root)
+
+            app.logger.info(
+                "SPORTAI STATUS CANDIDATE task_id=%s url=%s score=%s raw_status=%s progress=%s has_result_url=%s",
+                task_id,
+                url,
+                score,
+                candidate["raw_status"] or None,
+                candidate["progress_pct"],
+                bool(candidate["result_url"]),
+            )
+
+            if score > best_score:
+                best_score = score
+                best_root = candidate
+
+            # Strong enough response: stop early
+            if candidate["status"] or candidate["progress_pct"] is not None:
+                break
 
         except Exception as e:
             last_err = f"{url} -> {e}"
 
-    if j is None:
+    if best_root is None:
         raise RuntimeError(f"SportAI status failed: {last_err}")
 
-    root = j if isinstance(j, dict) else {}
-    data = root.get("data") if isinstance(root.get("data"), dict) else {}
-
-    # Search both top-level and nested data payloads
-    raw_status = _first_non_null(
-        data.get("status"),
-        data.get("task_status"),
-        data.get("taskStatus"),
-        data.get("state"),
-        root.get("status"),
-        root.get("task_status"),
-        root.get("taskStatus"),
-        root.get("state"),
-    )
-    raw_status = str(raw_status or "").strip()
-
-    msg = str(root.get("message") or "").strip().lower()
-    if not raw_status and "still being processed" in msg:
-        raw_status = "processing"
-
-    status = _normalize_sportai_status(raw_status)
-
-    raw_progress = _first_non_null(
-        data.get("task_progress"),
-        data.get("total_subtask_progress"),
-        data.get("progress"),
-        root.get("task_progress"),
-        root.get("total_subtask_progress"),
-        root.get("progress"),
-    )
-    progress_pct = _coerce_progress_pct(raw_progress)
-
-    result_url = _first_non_null(
-        data.get("result_url"),
-        data.get("resultUrl"),
-        (data.get("result") or {}).get("url") if isinstance(data.get("result"), dict) else None,
-        root.get("result_url"),
-        root.get("resultUrl"),
-        (root.get("result") or {}).get("url") if isinstance(root.get("result"), dict) else None,
-    )
+    root = best_root["root"]
+    data = best_root["data"]
+    raw_status = best_root["raw_status"]
+    status = best_root["status"]
+    progress_pct = best_root["progress_pct"]
+    result_url = best_root["result_url"]
 
     terminal = _is_terminal_status(status)
 
@@ -1137,7 +1187,6 @@ def _sportai_status(task_id: str) -> dict:
     if _is_success_terminal_status(status) and (progress_pct is None or progress_pct < 100):
         progress_pct = 100
 
-    # Lightweight debug log only when SportAI gives us poor structure
     if progress_pct is None or not status:
         app.logger.info(
             "SPORTAI STATUS PARSE task_id=%s status=%s progress=%s keys_root=%s keys_data=%s",
@@ -1365,9 +1414,6 @@ def _s3_list_multipart_parts(key: str, upload_id: str) -> list[dict]:
 # ==========================
 def _do_ingest(task_id: str, result_url: str) -> bool:
     sid = None
-    pbi_ok = True
-    pbi_err = None
-    pbi_status = "skipped"
 
     try:
         app.logger.info("INGEST START task_id=%s result_url=%s", task_id, result_url)
@@ -1378,6 +1424,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                    SET ingest_started_at = COALESCE(ingest_started_at, now()),
+                       ingest_finished_at = NULL,
                        ingest_error = NULL
                  WHERE task_id = :t
             """), {"t": task_id})
@@ -1418,13 +1465,13 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         app.logger.info("INGEST STEP task_id=%s step=bronze_ingest_start", task_id)
 
         with engine.begin() as conn:
-            _run_bronze_init(conn)  # ensure bronze schema/tables exist
+            _run_bronze_init(conn)
             res = ingest_bronze_strict(
                 conn,
                 payload,
                 replace=DEFAULT_REPLACE_ON_INGEST,
                 src_hint=result_url,
-                task_id=task_id,  # canonical key
+                task_id=task_id,
             )
             sid = res.get("session_id")
 
@@ -1445,7 +1492,6 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             task_id, sid
         )
 
-        # Release large JSON object before heavier downstream steps
         try:
             del payload
         except Exception:
@@ -1456,10 +1502,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # -------------------------
         app.logger.info("INGEST STEP task_id=%s step=silver_build_start", task_id)
 
-        try:
-            build_silver_point_detail(task_id=task_id, phase="all", replace=True)
-        except Exception as e:
-            raise RuntimeError(f"Silver build failed: {e}")
+        build_silver_point_detail(task_id=task_id, phase="all", replace=True)
 
         app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
 
@@ -1479,83 +1522,42 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
         # -------------------------
-        # STEP 5: POWER BI REFRESH (NON-BLOCKING)
+        # STEP 5: POWER BI REFRESH (WAIT TO TERMINAL)
         # -------------------------
-        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_trigger_start", task_id)
+        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_wait_start", task_id)
 
-        try:
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _set_pbi_refresh_state(
-                    conn,
-                    task_id,
-                    status="queued",
-                    started=True,
-                    finished=False,
-                    clear_error=True,
-                )
+        refresh_out = _poll_powerbi_refresh_until_terminal(task_id)
 
-            out = _pbi_post(
-                "/dataset/refresh_once",
-                {"task_id": task_id},
-                timeout=PBI_REFRESH_TRIGGER_TIMEOUT_S,
-            )
+        pbi_ok = bool(refresh_out.get("ok"))
+        pbi_status = str(refresh_out.get("status") or "").strip().lower()
+        pbi_err = (refresh_out.get("error") or "").strip() or None
 
-            pbi_ok = True
-            pbi_status = str((out or {}).get("status") or "queued").strip().lower() or "queued"
-            pbi_err = None
+        app.logger.info(
+            "INGEST STEP task_id=%s step=pbi_refresh_wait_done ok=%s status=%s error=%s",
+            task_id, pbi_ok, pbi_status, pbi_err
+        )
 
-            app.logger.info(
-                "PBI refresh trigger accepted task_id=%s status=%s out=%s",
-                task_id, pbi_status, {
-                    "ok": out.get("ok"),
-                    "accepted": out.get("accepted"),
-                    "status": out.get("status"),
-                    "triggered_at": out.get("triggered_at"),
-                }
-            )
-
-        except Exception as e:
-            pbi_ok = False
-            pbi_status = "failed"
-            pbi_err = f"{e.__class__.__name__}: {e}"
-            app.logger.exception("PBI refresh trigger failed task_id=%s: %s", task_id, e)
-
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _set_pbi_refresh_state(
-                    conn,
-                    task_id,
-                    status=pbi_status,
-                    error=pbi_err,
-                    started=False,
-                    finished=True,
-                    clear_error=False,
-                )
-
-        # IMPORTANT:
-        # Do NOT fail the whole ingest because Power BI refresh failed.
-        # Keep refresh state in pbi_* fields only.
         if not pbi_ok:
-            app.logger.warning(
-                "INGEST COMPLETE WITH PBI FAILURE task_id=%s pbi_status=%s pbi_error=%s",
-                task_id, pbi_status, pbi_err
-            )
-        else:
-            app.logger.info("INGEST COMPLETE task_id=%s", task_id)
+            raise RuntimeError(f"Power BI refresh failed: status={pbi_status} error={pbi_err or 'unknown'}")
 
-        # notify Wix completion after refresh attempt finishes
+        # -------------------------
+        # STEP 6: WIX NOTIFY (ONLY AFTER CONFIRMED PBI SUCCESS)
+        # -------------------------
         try:
             _notify_wix(
                 task_id,
-                status="completed",   # keep match processing successful even if PBI refresh failed
+                status="completed",
                 session_id=sid,
                 result_url=result_url,
-                error=(None if pbi_ok else f"powerbi_refresh_failed: {pbi_err}")
+                error=None,
             )
         except Exception as e:
             app.logger.exception("Wix notify failed task_id=%s: %s", task_id, e)
+            raise RuntimeError(f"Wix notify failed: {e}")
 
+        # -------------------------
+        # STEP 7: FINAL SUCCESS
+        # -------------------------
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             conn.execute(sql_text("""
@@ -1565,6 +1567,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                  WHERE task_id = :t
             """), {"t": task_id})
 
+        app.logger.info("INGEST COMPLETE task_id=%s", task_id)
         return True
 
     except Exception as e:
@@ -1580,17 +1583,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                  WHERE task_id = :t
             """), {"t": task_id, "err": err_txt})
 
-        try:
-            _notify_wix(
-                task_id,
-                status="failed",
-                session_id=sid,
-                result_url=result_url,
-                error=err_txt
-            )
-        except Exception as e2:
-            app.logger.exception("Wix notify failed (failed) task_id=%s: %s", task_id, e2)
-
+        # IMPORTANT:
+        # do NOT send "completed" Wix notify on failure
+        # leave failed handling to ops / later explicit failure-email design
         return False
 
 INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 minutes
