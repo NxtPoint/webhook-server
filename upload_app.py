@@ -539,6 +539,8 @@ def _store_submission_context(
     meta: dict | None,
     video_url: str,
     share_url: str | None = None,
+    s3_bucket: str | None = None,
+    s3_key: str | None = None,
 ):
     if not engine:
         return
@@ -588,6 +590,7 @@ def _store_submission_context(
               task_id, email, customer_name, match_date, start_time, location,
               player_a_name, player_b_name, player_a_utr, player_b_utr,
               video_url, share_url, raw_meta,
+              s3_bucket, s3_key,
 
               player_a_set1_games, player_b_set1_games,
               player_a_set2_games, player_b_set2_games,
@@ -598,6 +601,7 @@ def _store_submission_context(
               :task_id, :email, :customer_name, :match_date, :start_time, :location,
               :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
               :video_url, :share_url, :raw_meta,
+              :s3_bucket, :s3_key,
 
               :a1, :b1,
               :a2, :b2,
@@ -617,7 +621,9 @@ def _store_submission_context(
               player_b_utr=EXCLUDED.player_b_utr,
               video_url=EXCLUDED.video_url,
               share_url=EXCLUDED.share_url,
-              raw_meta=EXCLUDED.raw_meta,
+              raw_meta=EXCLUDED.raw_meta,                            
+              s3_bucket=EXCLUDED.s3_bucket,
+              s3_key=EXCLUDED.s3_key,                
 
               player_a_set1_games=EXCLUDED.player_a_set1_games,
               player_b_set1_games=EXCLUDED.player_b_set1_games,
@@ -642,6 +648,8 @@ def _store_submission_context(
             "video_url": video_url,
             "share_url": share_url,
             "raw_meta": json.dumps(m),
+            "s3_bucket": s3_bucket,
+            "s3_key": s3_key,
 
             "a1": a1, "b1": b1,
             "a2": a2, "b2": b2,
@@ -2351,11 +2359,13 @@ def api_upload_task():
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
 
         _store_submission_context(
-            task_id,
-            email,
-            meta,
-            s3_video_url,
+            task_id=task_id,
+            email=email,
+            meta=meta,
+            video_url=s3_video_url,
             share_url=source_url,  # original Wix download URL
+            s3_bucket=S3_BUCKET,
+            s3_key=key,
         )
 
         with engine.begin() as conn:
