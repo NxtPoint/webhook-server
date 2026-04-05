@@ -11,6 +11,7 @@ import requests
 from flask import Flask, request, jsonify, Response
 from werkzeug.utils import secure_filename
 from sqlalchemy import text as sql_text
+from video_pipeline.video_trim_api import trigger_video_trim
 
 
 # ==========================
@@ -1487,7 +1488,27 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
 
         # -------------------------
-        # STEP 4: BILLING SYNC
+        # STEP 4: VIDEO TRIM TRIGGER (ASYNC / NON-BLOCKING)
+        # Must NOT fail ingest if trim trigger fails
+        # -------------------------
+        app.logger.info("INGEST STEP task_id=%s step=video_trim_trigger_start", task_id)
+
+        try:
+            trim_out = trigger_video_trim(task_id)
+            app.logger.info(
+                "INGEST STEP task_id=%s step=video_trim_trigger_done out=%s",
+                task_id,
+                trim_out,
+            )
+        except Exception as e:
+            app.logger.exception(
+                "INGEST STEP task_id=%s step=video_trim_trigger_failed error=%s",
+                task_id,
+                e,
+            )
+
+        # -------------------------
+        # STEP 5: BILLING SYNC
         # -------------------------
         app.logger.info("INGEST STEP task_id=%s step=billing_sync_start", task_id)
 
@@ -1502,7 +1523,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
         # -------------------------
-        # STEP 5: POWER BI REFRESH (WAIT TO TERMINAL)
+        # STEP 6: POWER BI REFRESH (WAIT TO TERMINAL)
         # -------------------------
         app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_wait_start", task_id)
 
@@ -1521,7 +1542,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             raise RuntimeError(f"Power BI refresh failed: status={pbi_status} error={pbi_err or 'unknown'}")
 
         # -------------------------
-        # STEP 6: WIX NOTIFY (ONLY AFTER CONFIRMED PBI SUCCESS)
+        # STEP 7: WIX NOTIFY (ONLY AFTER CONFIRMED PBI SUCCESS)
         # -------------------------
         try:
             _notify_wix(
@@ -1536,7 +1557,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             raise RuntimeError(f"Wix notify failed: {e}")
 
         # -------------------------
-        # STEP 7: FINAL SUCCESS
+        # STEP 8: FINAL SUCCESS
         # -------------------------
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
@@ -1700,6 +1721,60 @@ def ops_env():
         "WIX_NOTIFY_URL_SET": bool(WIX_NOTIFY_URL),
         "WIX_NOTIFY_KEY_SET": bool(WIX_NOTIFY_KEY),
     })
+
+#=============================================================
+# NEW CALLBACK ENDPOINT FOR VIDEO WORKER
+#==============================================================
+@app.post("/internal/video_trim_complete")
+def video_trim_complete():
+    if not _guard():
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(force=True) or {}
+
+    task_id = str(body.get("task_id") or "").strip()
+    status = str(body.get("status") or "").strip().lower()
+
+    if not task_id or status not in {"completed", "failed"}:
+        return jsonify({"error": "invalid_payload"}), 400
+
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+
+        if status == "completed":
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET trim_status = 'completed',
+                       trim_finished_at = now(),
+                       trim_output_s3_key = :output_s3_key,
+                       trim_source_duration_s = :source_duration_s,
+                       trim_duration_s = :trimmed_duration_s,
+                       trim_segment_count = :segment_count,
+                       trim_seconds_removed = :seconds_removed,
+                       trim_error = NULL
+                 WHERE task_id = :task_id
+            """), {
+                "task_id": task_id,
+                "output_s3_key": body.get("output_s3_key"),
+                "source_duration_s": body.get("source_duration_s"),
+                "trimmed_duration_s": body.get("trimmed_duration_s"),
+                "segment_count": body.get("segment_count"),
+                "seconds_removed": body.get("seconds_removed"),
+            })
+
+        else:
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET trim_status = 'failed',
+                       trim_finished_at = now(),
+                       trim_error = :error
+                 WHERE task_id = :task_id
+            """), {
+                "task_id": task_id,
+                "error": body.get("error"),
+            })
+
+    return jsonify({"ok": True})
 
 # ==========================
 # PRESIGN (OPTIONAL)
