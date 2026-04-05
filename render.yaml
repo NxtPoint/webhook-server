@@ -1,26 +1,20 @@
 services:
   # =========================================
-  # 1) SportAI / Upload / Webhook API service
+  # 1) Main API / Upload / SportAI service
   # =========================================
   - type: web
     name: webhook-server
     env: python
     pythonVersion: 3.12.3
-    plan: free
+    plan: starter
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 1800"
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"
 
-      - key: DROPBOX_APP_KEY
+      - key: OPS_KEY
         sync: false
-      - key: DROPBOX_APP_SECRET
-        sync: false
-      - key: DROPBOX_REFRESH_TOKEN
-        sync: false
-      - key: DROPBOX_UPLOAD_FOLDER
-        value: "/wix-uploads"
 
       - key: SPORT_AI_TOKEN
         sync: false
@@ -48,6 +42,25 @@ services:
       - key: DATABASE_URL
         sync: false
 
+      - key: POWERBI_SERVICE_BASE_URL
+        value: "https://powerbi-service.onrender.com"
+      - key: POWERBI_SERVICE_OPS_KEY
+        sync: false
+
+      - key: INGEST_WORKER_BASE_URL
+        value: "https://ingest-worker.onrender.com"
+      - key: INGEST_WORKER_OPS_KEY
+        sync: false
+
+      - key: VIDEO_WORKER_BASE_URL
+        value: "https://video-worker.onrender.com"
+      - key: VIDEO_WORKER_OPS_KEY
+        sync: false
+
+      - key: WIX_NOTIFY_UPLOAD_COMPLETE_URL
+        sync: false
+      - key: RENDER_TO_WIX_OPS_KEY
+        sync: false
 
   # =========================================
   # 2) Power BI embed/refresh service
@@ -56,7 +69,7 @@ services:
     name: powerbi-service
     env: python
     pythonVersion: 3.12.3
-    plan: free
+    plan: starter
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "gunicorn powerbi_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 1800"
     envVars:
@@ -86,3 +99,84 @@ services:
         sync: false
       - key: AZ_CAPACITY_NAME
         sync: false
+
+  # =========================================
+  # 3) Ingest worker service
+  # =========================================
+  - type: web
+    name: ingest-worker
+    env: python
+    pythonVersion: 3.12.3
+    plan: starter
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    startCommand: "gunicorn ingest_worker_app:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 3600"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+
+      - key: INGEST_WORKER_OPS_KEY
+        sync: false
+
+      - key: OPS_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+
+      - key: SPORT_AI_TOKEN
+        sync: false
+      - key: SPORT_AI_BASE
+        value: "https://api.sportai.com"
+
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_PREFIX
+        value: "wix-uploads"
+      - key: AWS_REGION
+        value: "us-east-1"
+      - key: S3_GET_EXPIRES
+        value: "604800"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+      - key: POWERBI_SERVICE_BASE_URL
+        value: "https://powerbi-service.onrender.com"
+      - key: POWERBI_SERVICE_OPS_KEY
+        sync: false
+
+      - key: WIX_NOTIFY_UPLOAD_COMPLETE_URL
+        sync: false
+      - key: RENDER_TO_WIX_OPS_KEY
+        sync: false
+
+  # =========================================
+  # 4) Video trim worker service
+  # =========================================
+  - type: web
+    name: video-worker
+    env: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile.worker
+    envVars:
+      - key: VIDEO_WORKER_OPS_KEY
+        sync: false
+
+      - key: CALLBACK_BASE_URL
+        value: "https://webhook-server.onrender.com"
+      - key: CALLBACK_OPS_KEY
+        sync: false
+
+      - key: S3_BUCKET
+        sync: false
+      - key: AWS_REGION
+        value: "us-east-1"
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+      - key: FFMPEG_BIN
+        value: "ffmpeg"
+      - key: FFPROBE_BIN
+        value: "ffprobe"
