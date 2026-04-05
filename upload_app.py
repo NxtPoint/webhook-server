@@ -1671,9 +1671,19 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
              WHERE task_id = :t
         """), {"t": task_id})
 
-    out = _call_ingest_worker(task_id, result_url)
-    app.logger.info("INGEST WORKER CALLED task_id=%s out=%s", task_id, out)
-    return True
+    try:
+        out = _call_ingest_worker(task_id, result_url)
+        app.logger.info("INGEST WORKER CALLED task_id=%s out=%s", task_id, out)
+        return True
+    except Exception as e:
+        app.logger.exception(
+            "INGEST WORKER CALL FAILED task_id=%s - falling back to local subprocess: %s",
+            task_id,
+            e,
+        )
+        _launch_ingest_subprocess(task_id, result_url)
+        app.logger.info("INGEST LOCAL SUBPROCESS LAUNCHED task_id=%s", task_id)
+        return True
 
 # ==========================
 # PUBLIC ENDPOINTS (UPLOADS + STATUS + OPS)
