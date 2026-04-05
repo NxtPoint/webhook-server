@@ -2585,8 +2585,22 @@ def api_task_status():
     ingest_ready = bool(result_url)
 
     if AUTO_INGEST_ON_COMPLETE and ingest_ready and not session_id and not ingest_running:
+        app.logger.info(
+            "AUTO INGEST CHECK task_id=%s ingest_ready=%s session_id=%s ingest_running=%s result_url_present=%s status=%s",
+            tid,
+            ingest_ready,
+            bool(session_id),
+            ingest_running,
+            bool(result_url),
+            status,
+        )
         try:
             started = _start_ingest_background(tid, result_url)
+            app.logger.info(
+                "AUTO INGEST START RESULT task_id=%s started=%s",
+                tid,
+                started,
+            )
             if started:
                 sc = _load_submission_context_row(tid)
                 session_id = sc.get("session_id")
