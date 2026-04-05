@@ -2462,7 +2462,15 @@ def api_submit_s3_task():
 
     try:
         task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
-        _store_submission_context(task_id, email, meta, s3_video_url, share_url=s3_key)
+        _store_submission_context(
+            task_id=task_id,
+            email=email,
+            meta=meta,
+            video_url=s3_video_url,
+            share_url=s3_key,
+            s3_bucket=S3_BUCKET,
+            s3_key=s3_key,
+        )
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
