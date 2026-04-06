@@ -7,9 +7,12 @@
 #   Step 3: Silver build
 #   Step 4: Video trim trigger  (fire-and-forget)
 #   Step 5: Billing sync        (fire-and-forget)
-#   Step 6: Wix notify          (data is ready after silver)
-#   Step 7: PBI refresh trigger (fire-and-forget — dashboard concern)
-#   Step 8: Mark complete
+#   Step 6: PBI refresh trigger (fire-and-forget — dashboard concern)
+#   Step 7: Mark complete
+#
+# NOTE: Wix notify is NOT sent by this worker. It fires from
+# upload_app.py when task-status polling detects dashboard_ready=True,
+# ensuring the customer is only notified once their dashboard is viewable.
 #
 # Design rules:
 #   - Self-contained: does NOT import upload_app.py
@@ -380,29 +383,21 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             app.logger.exception("INGEST STEP task_id=%s billing_sync_failed: %s", task_id, e)
 
         # -------------------------
-        # STEP 6: WIX NOTIFY (data is ready — customer can view analysis)
-        # Moved BEFORE PBI refresh: silver data is the customer deliverable,
-        # dashboard refresh is a separate concern.
-        # -------------------------
-        app.logger.info("INGEST STEP task_id=%s step=wix_notify_start", task_id)
-        try:
-            _notify_wix(task_id, session_id=sid, result_url=result_url)
-            app.logger.info("INGEST STEP task_id=%s step=wix_notify_done", task_id)
-        except Exception as e:
-            # Wix notify failure should NOT crash the ingest
-            app.logger.exception("INGEST STEP task_id=%s wix_notify_failed: %s", task_id, e)
-
-        # -------------------------
-        # STEP 7: PBI REFRESH TRIGGER (fire-and-forget — no polling)
+        # STEP 6: PBI REFRESH TRIGGER (fire-and-forget — no polling)
         # Dashboard will refresh independently. Capacity sweep cron
         # handles auto-suspend after refresh completes.
+        #
+        # NOTE: Wix notify is NOT sent here. It fires from upload_app.py
+        # when task-status polling detects dashboard_ready=True (i.e. PBI
+        # refresh completed). This ensures the customer is only notified
+        # once their dashboard is actually viewable.
         # -------------------------
         app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_trigger_start", task_id)
         _trigger_pbi_refresh(task_id)
         app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_trigger_done", task_id)
 
         # -------------------------
-        # STEP 8: FINAL SUCCESS
+        # STEP 7: FINAL SUCCESS
         # -------------------------
         with engine.begin() as conn:
             _ensure_schema(conn)

@@ -2560,6 +2560,49 @@ def api_task_status():
     pbi_refresh_error = sc.get("pbi_refresh_error")
     pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
 
+    # Lightweight PBI status sync: if refresh was triggered but not yet
+    # terminal, do a single quick GET to check if it finished.
+    # This replaces the old 30-min blocking poll — one fast check per
+    # client poll cycle (~5s) until PBI reports terminal.
+    if (
+        pbi_refresh_started
+        and not pbi_refresh_finished
+        and pbi_status_norm in {"triggered", "running", "queued", "unknown"}
+        and PBI_SERVICE_BASE
+    ):
+        try:
+            pbi_out = _pbi_get("/dataset/refresh_status", timeout=PBI_REFRESH_STATUS_TIMEOUT_S)
+            pbi_live_status = str(pbi_out.get("status") or "").strip().lower()
+            pbi_is_terminal = bool(pbi_out.get("is_terminal"))
+            pbi_error_msg = (pbi_out.get("error_message") or "").strip() or None
+
+            if pbi_live_status and pbi_live_status != pbi_status_norm:
+                with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
+                    _set_pbi_refresh_state(
+                        conn, tid,
+                        status=pbi_live_status,
+                        error=pbi_error_msg,
+                        started=True,
+                        finished=pbi_is_terminal,
+                        clear_error=not pbi_error_msg,
+                    )
+                pbi_refresh_status = pbi_live_status
+                pbi_status_norm = pbi_live_status
+                pbi_refresh_error = pbi_error_msg
+                if pbi_is_terminal:
+                    pbi_refresh_finished = True
+
+                    # Auto-suspend capacity after terminal
+                    if PBI_SUSPEND_AFTER_REFRESH:
+                        try:
+                            _pbi_post("/capacity/suspend", {}, timeout=60)
+                        except Exception:
+                            pass
+
+        except Exception as e:
+            app.logger.debug("PBI status check failed task_id=%s: %s", tid, e)
+
     dashboard_ready = bool(
         session_id
         and ingest_finished
@@ -2568,6 +2611,19 @@ def api_task_status():
         and pbi_status_norm == "completed"
         and not pbi_refresh_error
     )
+
+    # Auto-fire Wix notify once dashboard is ready (idempotent)
+    if dashboard_ready:
+        try:
+            _notify_wix(
+                tid,
+                status="completed",
+                session_id=session_id,
+                result_url=result_url,
+                error=None,
+            )
+        except Exception as e:
+            app.logger.exception("WIX NOTIFY FAILED task_id=%s: %s", tid, e)
 
     pipeline_stage = _derive_pipeline_stage(
         sportai_status=status,
