@@ -46,12 +46,11 @@ app.register_blueprint(client_bp)
 
 # CORS for client-facing API (Locker Room iframe on a different subdomain)
 from flask_cors import CORS
-CORS(app, resources={r"/api/client/*": {"origins": [
-    "https://locker-room-26kd.onrender.com",
-    "https://*.onrender.com",
-    "https://*.wixsite.com",
-    "https://*.wix.com",
-]}})
+CORS(app, resources={r"/api/client/*": {
+    "origins": "*",
+    "allow_headers": ["Content-Type", "X-Client-Key", "Authorization"],
+    "methods": ["GET", "POST", "PATCH", "OPTIONS"],
+}})
 
 
 @app.get("/ops/code-hash")
