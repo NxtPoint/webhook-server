@@ -21,6 +21,13 @@ CLIENT_API_KEY = os.environ.get("CLIENT_API_KEY", "").strip()
 log = logging.getLogger(__name__)
 
 
+# Handle OPTIONS preflight for all client API routes
+@client_bp.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        return "", 204
+
+
 # ----------------------------
 # Auth
 # ----------------------------
@@ -45,7 +52,7 @@ def _norm_email(email: Optional[str]) -> str:
 # GET /api/client/matches
 # ----------------------------
 
-@client_bp.get("/api/client/matches")
+@client_bp.route("/api/client/matches", methods=["GET", "OPTIONS"])
 def list_matches():
     if not _guard():
         return _forbid()
@@ -126,7 +133,7 @@ def _format_score(r) -> str:
 # GET /api/client/matches/<task_id>
 # ----------------------------
 
-@client_bp.get("/api/client/matches/<task_id>")
+@client_bp.route("/api/client/matches/<task_id>", methods=["GET", "OPTIONS"])
 def match_detail(task_id: str):
     if not _guard():
         return _forbid()
@@ -185,7 +192,7 @@ def _serialize(v):
 # GET /api/client/usage
 # ----------------------------
 
-@client_bp.get("/api/client/usage")
+@client_bp.route("/api/client/usage", methods=["GET", "OPTIONS"])
 def client_usage():
     if not _guard():
         return _forbid()
@@ -238,7 +245,7 @@ def client_usage():
 
 EDITABLE_FIELDS = {"player_a_name", "player_b_name", "location", "match_date"}
 
-@client_bp.patch("/api/client/matches/<task_id>")
+@client_bp.route("/api/client/matches/<task_id>", methods=["PATCH"], endpoint="update_match")
 def update_match(task_id: str):
     if not _guard():
         return _forbid()
@@ -279,7 +286,7 @@ def update_match(task_id: str):
 # POST /api/client/matches/<task_id>/reprocess
 # ----------------------------
 
-@client_bp.post("/api/client/matches/<task_id>/reprocess")
+@client_bp.route("/api/client/matches/<task_id>/reprocess", methods=["POST", "OPTIONS"])
 def reprocess_match(task_id: str):
     if not _guard():
         return _forbid()

@@ -37,18 +37,21 @@ from subscriptions_api import subscriptions_bp
 from usage_api import usage_bp
 from entitlements_api import entitlements_bp
 from client_api import client_bp
-from flask_cors import CORS
-
-# CORS must be applied before blueprint registration
-CORS(client_bp, origins="*",
-     allow_headers=["Content-Type", "X-Client-Key", "Authorization"],
-     methods=["GET", "POST", "PATCH", "OPTIONS"])
 
 app.register_blueprint(members_bp)
 app.register_blueprint(subscriptions_bp)
 app.register_blueprint(usage_bp)
 app.register_blueprint(entitlements_bp)
 app.register_blueprint(client_bp)
+
+# Manual CORS for /api/client/* (more reliable than flask-cors with blueprints)
+@app.after_request
+def add_cors_headers(response):
+    if request.path.startswith("/api/client/"):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Client-Key, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+    return response
 
 
 @app.get("/ops/code-hash")
