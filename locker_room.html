@@ -62,7 +62,9 @@ button { cursor: pointer; font-family: inherit; }
 .chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  max-height: 220px; overflow: hidden; position: relative;
 }
+.chart-wrap { position: relative; height: 140px; }
 .chart-card h3 { font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
 .gauge-container { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 10px 0; }
 .gauge-number { font-size: 2.8rem; font-weight: 700; color: var(--green); }
@@ -280,12 +282,12 @@ function render() {
       </div>
     </div>
     <div class="charts-row">
-      <div class="chart-card"><h3>Matches Per Month</h3><canvas id="chartMonthly" height="140"></canvas></div>
+      <div class="chart-card"><h3>Matches Per Month</h3><div class="chart-wrap"><canvas id="chartMonthly"></canvas></div></div>
       <div class="chart-card">
         <h3>Usage</h3>
         <div class="gauge-container">
-          <div class="gauge-number">${consumed}</div>
-          <div class="gauge-label">of ${granted} matches used</div>
+          <div class="gauge-number">${consumed}<span style="font-size:1rem;color:var(--text-dim);font-weight:400"> / ${granted}</span></div>
+          <div class="gauge-label">matches used &mdash; <strong style="color:var(--green)">${remaining} remaining</strong></div>
           <div class="gauge-bar"><div class="gauge-fill" style="width:${granted>0?Math.min(100,Math.round(consumed/granted*100)):0}%"></div></div>
         </div>
       </div>
