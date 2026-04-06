@@ -132,10 +132,6 @@ WIX_NOTIFY_KEY = (
 WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
 WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 
-# ---------- Dedicated ingest worker ----------
-INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
-INGEST_WORKER_OPS_KEY = (os.getenv("INGEST_WORKER_OPS_KEY") or "").strip()
-INGEST_WORKER_TIMEOUT_S = int(os.getenv("INGEST_WORKER_TIMEOUT_S", "30"))
 
 # ---------- Power BI service ----------
 PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
@@ -204,27 +200,6 @@ def _pbi_headers():
         "x-ops-key": PBI_SERVICE_OPS_KEY,
     }
 
-def _call_ingest_worker(task_id: str, result_url: str) -> dict:
-    if not INGEST_WORKER_BASE_URL:
-        raise RuntimeError("INGEST_WORKER_BASE_URL not set")
-    if not INGEST_WORKER_OPS_KEY:
-        raise RuntimeError("INGEST_WORKER_OPS_KEY not set")
-
-    url = f"{INGEST_WORKER_BASE_URL}/ingest"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {INGEST_WORKER_OPS_KEY}",
-    }
-    body = {
-        "task_id": task_id,
-        "result_url": result_url,
-    }
-
-    r = requests.post(url, headers=headers, json=body, timeout=10)
-    if r.status_code >= 400:
-        raise RuntimeError(f"ingest worker failed HTTP {r.status_code}: {r.text}")
-
-    return r.json() if r.text else {}
 
 def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
     url = f"{PBI_SERVICE_BASE}{path}"
@@ -682,7 +657,7 @@ def _set_pbi_refresh_state(
     params = {"t": task_id}
 
     if started:
-        sets.append("pbi_refresh_started_at = now()")
+        sets.append("pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now())")
         if not finished:
             sets.append("pbi_refresh_finished_at = NULL")
 
@@ -1640,12 +1615,10 @@ def _is_stale_ingest_row(row) -> bool:
     except Exception:
         return False
 
-
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """
-    TEMP STABILISATION MODE:
-    Run ingest synchronously in-process because worker/subprocess handoff
-    is the failing path in production.
+    Production-stable mode:
+    Run ingest synchronously in-process.
 
     Returns True if ingest was run, False if already done/running.
     """
@@ -1835,34 +1808,6 @@ def api_s3_presign():
         "max_upload_bytes": max_bytes
     })
 
-def _s3_list_multipart_parts(key: str, upload_id: str) -> list[dict]:
-    cli = _s3_client()
-
-    parts = []
-    kwargs = {
-        "Bucket": S3_BUCKET,
-        "Key": key,
-        "UploadId": upload_id,
-    }
-
-    while True:
-        out = cli.list_parts(**kwargs)
-        batch = out.get("Parts") or []
-
-        for p in batch:
-            parts.append({
-                "PartNumber": int(p["PartNumber"]),
-                "ETag": str(p["ETag"]),
-                "Size": int(p.get("Size") or 0),
-            })
-
-        if not out.get("IsTruncated"):
-            break
-
-        kwargs["PartNumberMarker"] = out.get("NextPartNumberMarker")
-
-    parts.sort(key=lambda x: x["PartNumber"])
-    return parts
 
 # ==========================
 # MULTIPART INITIATE / PART / COMPLETE / ABORT
@@ -2652,6 +2597,9 @@ def ops_ingest_task():
     body = request.get_json(silent=True) or {}
     tid = (body.get("task_id") or "").strip()
     mode = (body.get("mode") or "sync").strip().lower()
+
+    if mode != "sync":
+        return jsonify({"ok": False, "error": "mode must be 'sync'"}), 400
 
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
