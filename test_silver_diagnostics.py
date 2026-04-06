@@ -56,7 +56,7 @@ def run(tid):
             SELECT
               (SELECT COUNT(DISTINCT point_number) FROM silver.point_detail
                WHERE task_id = :tid AND point_number > 0) as silver_points,
-              (SELECT COUNT(*) FROM bronze.rally WHERE task_id::text = :tid) as bronze_rallies
+              (SELECT COUNT(*) FROM bronze.rally WHERE task_id = CAST(:tid AS text)) as bronze_rallies
         """), {"tid": tid}).mappings().first()
         out["3_rally_validation"] = dict(r)
 
