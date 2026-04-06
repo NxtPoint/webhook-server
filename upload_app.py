@@ -99,7 +99,7 @@ SPORTAI_STATUS_PATHS = [
 # ---------- DB engine / bronze ingest ----------
 from db_init import engine  # noqa: E402
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
-from build_silver_point_detail import build_silver as build_silver_point_detail, DEFAULT_SPORT_TYPE  # noqa: E402
+from build_silver_v2 import build_silver_v2 as build_silver_point_detail, DEFAULT_SPORT_TYPE  # noqa: E402
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
 
@@ -1471,7 +1471,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # -------------------------
         app.logger.info("INGEST STEP task_id=%s step=silver_build_start", task_id)
 
-        build_silver_point_detail(task_id=task_id, phase="all", replace=True)
+        build_silver_point_detail(task_id=task_id, replace=True)
 
         app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
 
