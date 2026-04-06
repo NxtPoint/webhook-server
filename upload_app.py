@@ -1724,41 +1724,57 @@ def video_trim_complete():
     if not task_id or status not in {"completed", "failed"}:
         return jsonify({"error": "invalid_payload"}), 400
 
-    with engine.begin() as conn:
-        _ensure_submission_context_schema(conn)
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
 
-        if status == "completed":
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET trim_status = 'completed',
-                       trim_finished_at = now(),
-                       trim_output_s3_key = :output_s3_key,
-                       trim_source_duration_s = :source_duration_s,
-                       trim_duration_s = :trimmed_duration_s,
-                       trim_segment_count = :segment_count,
-                       trim_seconds_removed = :seconds_removed,
-                       trim_error = NULL
-                 WHERE task_id = :task_id
-            """), {
-                "task_id": task_id,
-                "output_s3_key": body.get("output_s3_key"),
-                "source_duration_s": body.get("source_duration_s"),
-                "trimmed_duration_s": body.get("trimmed_duration_s"),
-                "segment_count": body.get("segment_count"),
-                "seconds_removed": body.get("seconds_removed"),
-            })
+            if status == "completed":
+                # Idempotent: do not overwrite a previously completed trim
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET trim_status = 'completed',
+                           trim_finished_at = now(),
+                           trim_output_s3_key = :output_s3_key,
+                           trim_source_duration_s = :source_duration_s,
+                           trim_duration_s = :trimmed_duration_s,
+                           trim_segment_count = :segment_count,
+                           trim_seconds_removed = :seconds_removed,
+                           trim_error = NULL
+                     WHERE task_id = :task_id
+                       AND trim_status != 'completed'
+                """), {
+                    "task_id": task_id,
+                    "output_s3_key": body.get("output_s3_key"),
+                    "source_duration_s": body.get("source_duration_s"),
+                    "trimmed_duration_s": body.get("trimmed_duration_s"),
+                    "segment_count": body.get("segment_count"),
+                    "seconds_removed": body.get("seconds_removed"),
+                })
 
-        else:
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET trim_status = 'failed',
-                       trim_finished_at = now(),
-                       trim_error = :error
-                 WHERE task_id = :task_id
-            """), {
-                "task_id": task_id,
-                "error": body.get("error"),
-            })
+            else:
+                # Idempotent: do not overwrite a completed trim with a failure
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                       SET trim_status = 'failed',
+                           trim_finished_at = now(),
+                           trim_error = LEFT(:error, 4000)
+                     WHERE task_id = :task_id
+                       AND trim_status != 'completed'
+                """), {
+                    "task_id": task_id,
+                    "error": body.get("error"),
+                })
+
+        app.logger.info(
+            "VIDEO TRIM CALLBACK task_id=%s status=%s", task_id, status,
+        )
+
+    except Exception as e:
+        app.logger.exception(
+            "VIDEO TRIM CALLBACK DB ERROR task_id=%s status=%s error=%s",
+            task_id, status, e,
+        )
+        return jsonify({"error": "db_update_failed"}), 500
 
     return jsonify({"ok": True})
 

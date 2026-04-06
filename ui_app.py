@@ -1,5 +1,5 @@
 # ui_app.py
-import os, traceback
+import os
 from flask import Blueprint, render_template_string, request, url_for, jsonify, Response
 from sqlalchemy import text
 
@@ -16,7 +16,22 @@ if DATABASE_URL:
 else:
     db_error = "DATABASE_URL not set"
 
-OPS_KEY = os.environ.get("OPS_KEY", "")
+OPS_KEY = os.environ.get("OPS_KEY", "").strip()
+
+
+def _guard() -> bool:
+    """Header-only auth. Never accept key via query string (leaks to logs)."""
+    hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+    supplied = (hk or "").strip()
+    return bool(OPS_KEY) and supplied == OPS_KEY
+
+
+def _forbid():
+    return Response("Forbidden", 403)
+
 
 ui_bp = Blueprint(
     "ui",
@@ -49,12 +64,10 @@ def home():
         max_upload_mb=max_upload_mb,
     )
 
-# 🔎 Diagnostic route so we can confirm which template file is used on Render
+# Diagnostic route so we can confirm which template file is used on Render
 @ui_bp.route("/__which")
 def ui_which():
-    """
-    Show exactly which upload.html Flask will load for this blueprint.
-    """
+    if not _guard(): return _forbid()
     try:
         expected = os.path.join(ui_bp.root_path, ui_bp.template_folder or "", "upload.html")
         exists = os.path.exists(expected)
@@ -76,6 +89,7 @@ def ui_which():
 
 @ui_bp.route("/sessions")
 def sessions():
+    if not _guard(): return _forbid()
     if not engine:
         return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
                                       _BASE=_BASE, db_error=db_error), 503
@@ -103,10 +117,10 @@ def sessions():
           </div>
           <div class="row small">
             Global ops:
-            <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
-            <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
-            <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
-            <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
+            <a class="pill" href="/ops/init-views" target="_blank">/ops/init-views</a>
+            <a class="pill" href="/ops/perf-indexes" target="_blank">/ops/perf-indexes</a>
+            <a class="pill" href="/ops/db-ping" target="_blank">/ops/db-ping</a>
+            <a class="pill" href="/ops/build-gold" target="_blank">/ops/build-gold</a>
           </div>
           <table>
             <thead><tr>
@@ -126,9 +140,9 @@ def sessions():
                 <td>{{ r.snapshots }}</td>
                 <td>
                   <a class="btn" target="_blank"
-                     href="/ops/reconcile?key={{ key }}&session_uid={{ r.session_uid }}">Reconcile</a>
+                     href="/ops/reconcile?session_uid={{ r.session_uid }}">Reconcile</a>
                   <a class="btn" target="_blank"
-                     href="/ops/repair-swings?key={{ key }}&session_uid={{ r.session_uid }}">Repair serves</a>
+                     href="/ops/repair-swings?session_uid={{ r.session_uid }}">Repair serves</a>
                   <a class="btn" target="_blank"
                      href="{{ url_for('ui.peek', session_uid=r.session_uid) }}">Peek</a>
                   <a class="btn danger"
@@ -140,13 +154,15 @@ def sessions():
           </table>
         {% endblock %}
         """
-        return render_template_string(tpl, _BASE=_BASE, rows=rows, key=OPS_KEY, db_error=db_error)
+        return render_template_string(tpl, _BASE=_BASE, rows=rows, db_error=db_error)
     except Exception:
-        tb = traceback.format_exc()
-        return Response("UI /upload/sessions failed:\n\n" + tb, mimetype="text/plain", status=500)
+        import logging
+        logging.getLogger(__name__).exception("UI /upload/sessions failed")
+        return Response("Internal server error", mimetype="text/plain", status=500)
 
 @ui_bp.route("/peek/<session_uid>")
 def peek(session_uid):
+    if not _guard(): return _forbid()
     if not engine:
         return Response("DB not available", status=503)
     q1 = text("""
@@ -186,20 +202,22 @@ def peek(session_uid):
 
 @ui_bp.route("/delete/<session_uid>")
 def delete_confirm(session_uid):
+    if not _guard(): return _forbid()
     tpl = """
     {% extends _BASE %}{% block body %}
       <h2>Delete Session</h2>
       <p>Delete <span class="mono">{{ uid }}</span>?</p>
       <p>
-        <a class="btn danger" href="/ops/delete-session?key={{ key }}&session_uid={{ uid }}">Yes, delete</a>
+        <a class="btn danger" href="/ops/delete-session?session_uid={{ uid }}">Yes, delete</a>
         <a class="btn" href="{{ url_for('ui.sessions') }}">Cancel</a>
       </p>
     {% endblock %}
     """
-    return render_template_string(tpl, _BASE=_BASE, uid=session_uid, key=OPS_KEY, db_error=db_error)
+    return render_template_string(tpl, _BASE=_BASE, uid=session_uid, db_error=db_error)
 
 @ui_bp.route("/sql", methods=["GET", "POST"])
 def sql():
+    if not _guard(): return _forbid()
     if not engine:
         return render_template_string("{% extends _BASE %}{% block body %}<p>DB not available.</p>{% endblock %}",
                                       _BASE=_BASE, db_error=db_error), 503
@@ -240,17 +258,18 @@ def sql():
       {% endif %}
       <p class="small">
         Quick links:
-        <a class="pill" href="/ops/db-ping?key={{ key }}" target="_blank">/ops/db-ping</a>
-        <a class="pill" href="/ops/init-views?key={{ key }}" target="_blank">/ops/init-views</a>
-        <a class="pill" href="/ops/perf-indexes?key={{ key }}" target="_blank">/ops/perf-indexes</a>
-        <a class="pill" href="/ops/build-gold?key={{ key }}" target="_blank">/ops/build-gold</a>
+        <a class="pill" href="/ops/db-ping" target="_blank">/ops/db-ping</a>
+        <a class="pill" href="/ops/init-views" target="_blank">/ops/init-views</a>
+        <a class="pill" href="/ops/perf-indexes" target="_blank">/ops/perf-indexes</a>
+        <a class="pill" href="/ops/build-gold" target="_blank">/ops/build-gold</a>
       </p>
     {% endblock %}
     """
-    return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, key=OPS_KEY, db_error=db_error)
+    return render_template_string(tpl, _BASE=_BASE, default_q=default_q, result=result, error=error, db_error=db_error)
 
 @ui_bp.route("/sessions_raw")
 def sessions_raw():
+    if not _guard(): return _forbid()
     if not engine:
         return jsonify({"ok": False, "error": db_error}), 503
     try:
@@ -259,7 +278,9 @@ def sessions_raw():
             rows = conn.execute(text(sql)).mappings().all()
         return jsonify({"ok": True, "rows": len(rows), "data": [dict(r) for r in rows]})
     except Exception:
-        return jsonify({"ok": False, "error": traceback.format_exc()}), 500
+        import logging
+        logging.getLogger(__name__).exception("UI /upload/sessions_raw failed")
+        return jsonify({"ok": False, "error": "Internal server error"}), 500
 
 @ui_bp.route("/health")
 def ui_health():
@@ -274,7 +295,7 @@ def ui_health():
 
 @ui_bp.route("/ops/build-gold", methods=["GET"])
 def ops_build_gold():
-    if not (bool(OPS_KEY) and request.args.get("key") == OPS_KEY):
+    if not _guard():
         return jsonify({"ok": False, "error": "forbidden"}), 403
     if not engine:
         return jsonify({"ok": False, "error": db_error}), 503

@@ -30,15 +30,14 @@ OPS_KEY = os.getenv("OPS_KEY", "").strip()
 
 ingest_bronze = Blueprint("ingest_bronze", __name__)
 
-# ------------------- auth -------------------
+# ------------------- auth (header-only, no query string) -------------------
 def _guard() -> bool:
-    qk = request.args.get("key") or request.args.get("ops_key")
     hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
-    supplied = qk or hk
-    return (not OPS_KEY) or supplied == OPS_KEY
+    supplied = (hk or "").strip()
+    return bool(OPS_KEY) and supplied == OPS_KEY
 
 def _forbid(): return Response("Forbidden", 403)
 

@@ -456,6 +456,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     point_anchors AS (
       SELECT a.id, a.task_id, a.ball_hit_s,
         1 + SUM(CASE
+          WHEN a.prev_side IS NULL THEN 0
           WHEN a.prev_side IS DISTINCT FROM a.serve_side_d THEN 1
           WHEN a.prev_pid IS DISTINCT FROM a.player_id THEN 1
           ELSE 0
@@ -560,7 +561,9 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
 
     game_nums AS (
       SELECT g.id,
-        1 + SUM(CASE WHEN g.prev_pid IS DISTINCT FROM g.player_id THEN 1 ELSE 0 END)
+        1 + SUM(CASE WHEN g.prev_pid IS NULL THEN 0
+                      WHEN g.prev_pid IS DISTINCT FROM g.player_id THEN 1
+                      ELSE 0 END)
           OVER (PARTITION BY g.task_id ORDER BY g.ball_hit_s, g.id
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)::integer AS game_number
       FROM game_anchors g
@@ -828,18 +831,21 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM shot_outcome so
     ),
 
-    -- Forward-fill serve_location
-    srv_loc_ff AS (
-      SELECT so.id,
-        MAX(sl.serve_location_raw) OVER (
-          PARTITION BY so.task_id,
-            COUNT(sl.serve_location_raw) OVER (
-              PARTITION BY so.task_id ORDER BY so.ball_hit_s, so.id
-              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            )
-        ) AS serve_location
+    -- Forward-fill serve_location (two-step: group, then fill)
+    srv_loc_grp AS (
+      SELECT so.id, so.task_id, sl.serve_location_raw,
+        COUNT(sl.serve_location_raw) OVER (
+          PARTITION BY so.task_id ORDER BY so.ball_hit_s, so.id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS grp
       FROM shot_outcome so
       LEFT JOIN srv_loc sl ON sl.id = so.id
+    ),
+
+    srv_loc_ff AS (
+      SELECT id,
+        MAX(serve_location_raw) OVER (PARTITION BY task_id, grp) AS serve_location
+      FROM srv_loc_grp
     ),
 
     -- ========== FINAL ASSEMBLY ==========
