@@ -5,282 +5,217 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TEN-FIFTY5 Locker Room</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
-/* ============================================================
-   THEME & RESET
-   ============================================================ */
 :root {
-  --bg:           #0a0a0a;
-  --card-bg:      #1a1a1a;
-  --border:       #2a2a2a;
-  --green:        #1a5c2e;
-  --green-light:  #2a8c4a;
-  --green-glow:   rgba(26,92,46,0.35);
-  --amber:        #d4a017;
-  --red:          #c0392b;
-  --white:        #ffffff;
-  --text:         #ffffff;
-  --text-sec:     #a0a0a0;
-  --text-dim:     #707070;
-  --radius:       12px;
-  --transition:   0.2s ease;
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
 }
-
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { font-size: 15px; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.5;
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
 }
-a { color: var(--green-light); text-decoration: none; }
 button { cursor: pointer; font-family: inherit; }
 
-/* ============================================================
-   LAYOUT
-   ============================================================ */
-.app { max-width: 960px; margin: 0 auto; padding: 20px 16px 80px; }
+.app { max-width: 960px; margin: 0 auto; padding: 16px 16px 80px; }
 
-/* ============================================================
-   HEADER
-   ============================================================ */
+/* HEADER */
 .header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 0 24px; border-bottom: 1px solid var(--border);
-  margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
+  padding: 14px 0; border-bottom: 1px solid var(--border);
+  margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
+  background: var(--white);
+  margin: -16px -16px 20px; padding: 14px 16px;
 }
-.logo {
-  font-size: 1.6rem; font-weight: 700; letter-spacing: 1px;
-  color: var(--green-light);
-}
-.header-right { display: flex; align-items: center; gap: 14px; }
+.logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
+.header-right { display: flex; align-items: center; gap: 12px; }
 .player-info { text-align: right; }
-.player-name { font-weight: 600; font-size: 0.95rem; }
-.player-email { color: var(--text-sec); font-size: 0.78rem; }
-
+.player-name { font-weight: 600; font-size: 0.9rem; color: var(--text); }
+.player-email { color: var(--text-sec); font-size: 0.75rem; }
 .usage-pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 14px; border-radius: 20px;
-  font-size: 0.8rem; font-weight: 600;
-  border: 1px solid var(--border);
-  background: rgba(26,92,46,0.15);
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 4px;
+  font-size: 0.78rem; font-weight: 600;
+  background: var(--green-bg); color: var(--green); border: 1px solid var(--green);
 }
-.usage-pill.healthy { border-color: var(--green); color: var(--green-light); }
-.usage-pill.low     { border-color: var(--amber); color: var(--amber); background: rgba(212,160,23,0.1); }
-.usage-pill.critical{ border-color: var(--red);   color: var(--red);   background: rgba(192,57,43,0.1); }
+.usage-pill.low { background: rgba(217,119,6,0.08); color: var(--amber); border-color: var(--amber); }
+.usage-pill.critical { background: rgba(220,38,38,0.08); color: var(--red); border-color: var(--red); }
 
-/* ============================================================
-   LOADING / EMPTY STATE
-   ============================================================ */
-.loading, .empty-state {
-  text-align: center; padding: 80px 20px; color: var(--text-sec);
+/* CHARTS SECTION */
+.charts-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;
 }
+.chart-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.chart-card h3 { font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.gauge-container { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 10px 0; }
+.gauge-number { font-size: 2.8rem; font-weight: 700; color: var(--green); }
+.gauge-label { font-size: 0.82rem; color: var(--text-sec); margin-top: 4px; }
+.gauge-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+.gauge-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width 0.5s ease; }
+
+/* LOADING / EMPTY */
+.loading, .empty-state { text-align: center; padding: 60px 20px; color: var(--text-sec); }
 .loading .spinner {
-  width: 36px; height: 36px; border: 3px solid var(--border);
-  border-top-color: var(--green-light); border-radius: 50%;
-  animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin: 0 auto 12px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.empty-state h3 { font-weight: 500; margin-bottom: 6px; color: var(--text); }
+.empty-state p { color: var(--text-dim); font-size: 0.88rem; max-width: 340px; margin: 0 auto; }
 
-.empty-state .tennis-icon { font-size: 3rem; margin-bottom: 16px; }
-.empty-state h3 { font-weight: 500; margin-bottom: 8px; }
-.empty-state p { color: var(--text-dim); font-size: 0.9rem; max-width: 360px; margin: 0 auto; }
+/* YEAR/MONTH GROUPS */
+.year-group { margin-bottom: 16px; }
+.year-header, .month-header {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 10px 14px; border-radius: var(--radius);
+  font-weight: 600; user-select: none; transition: background var(--transition);
+}
+.year-header { font-size: 1.1rem; background: var(--white); border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.year-header:hover { background: var(--green-bg); }
+.month-header { font-size: 0.95rem; background: var(--white); margin: 6px 0 6px 16px; border: 1px solid var(--border); }
+.month-header:hover { background: var(--green-bg); }
+.chevron { transition: transform var(--transition); font-size: 0.7rem; color: var(--text-dim); }
+.chevron.open { transform: rotate(90deg); }
+.group-count { color: var(--text-dim); font-size: 0.78rem; font-weight: 400; margin-left: auto; }
+.group-content { display: none; }
+.group-content.open { display: block; }
 
-/* ============================================================
-   MATCH CARDS
-   ============================================================ */
-.match-list { display: flex; flex-direction: column; gap: 12px; }
-
+/* MATCH ROWS */
+.match-list { padding-left: 32px; }
 .match-card {
-  background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 20px;
-  cursor: pointer;
-  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  cursor: pointer; transition: border-color var(--transition), box-shadow var(--transition);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-.match-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--green);
-  box-shadow: 0 4px 20px var(--green-glow);
-}
-.match-card:active { transform: translateY(0); }
-
-.card-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
-.opponent-name { font-size: 1.15rem; font-weight: 700; }
+.match-card:hover { border-left: 3px solid var(--green); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.match-info { flex: 1; min-width: 0; }
+.match-opponent { font-weight: 600; font-size: 0.95rem; }
 .match-meta { color: var(--text-sec); font-size: 0.78rem; margin-top: 2px; }
-
-.score-badge {
-  font-size: 1.1rem; font-weight: 700; color: var(--green-light);
-  letter-spacing: 1.5px; white-space: nowrap;
-}
-
+.match-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.match-score { font-weight: 700; font-size: 1rem; color: var(--green); letter-spacing: 1px; }
 .status-badge {
-  display: inline-block; padding: 2px 10px; border-radius: 10px;
-  font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  display: inline-block; padding: 2px 8px; border-radius: var(--radius);
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
 }
-.status-badge.processed  { background: rgba(26,92,46,0.2); color: var(--green-light); }
-.status-badge.processing { background: rgba(212,160,23,0.15); color: var(--amber); }
-.status-badge.failed     { background: rgba(192,57,43,0.15); color: var(--red); }
+.status-badge.processed { background: var(--green-bg); color: var(--green); }
+.status-badge.processing { background: rgba(217,119,6,0.08); color: var(--amber); }
+.status-badge.failed { background: rgba(220,38,38,0.08); color: var(--red); }
+.btn-edit {
+  background: var(--white); color: var(--green); border: 1px solid var(--green);
+  padding: 6px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
+  transition: all var(--transition); white-space: nowrap;
+}
+.btn-edit:hover { background: var(--green); color: var(--white); }
 
-.card-stats {
-  display: flex; gap: 20px; flex-wrap: wrap;
-  padding-top: 10px; border-top: 1px solid var(--border);
-}
-.stat-chip {
-  display: flex; flex-direction: column; align-items: center;
-  min-width: 56px;
-}
-.stat-val { font-size: 1rem; font-weight: 700; color: var(--white); }
-.stat-label { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-
-/* ============================================================
-   DETAIL PANEL (slide-in overlay)
-   ============================================================ */
+/* OVERLAY + DETAIL PANEL */
 .overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
-  z-index: 100; opacity: 0; pointer-events: none;
-  transition: opacity var(--transition);
+  position: fixed; inset: 0; background: rgba(0,0,0,0.3);
+  z-index: 100; opacity: 0; pointer-events: none; transition: opacity var(--transition);
 }
 .overlay.open { opacity: 1; pointer-events: auto; }
-
 .detail-panel {
   position: fixed; top: 0; right: 0; bottom: 0;
-  width: min(520px, 100vw); background: var(--bg);
+  width: min(560px, 100vw); background: var(--white);
   border-left: 1px solid var(--border);
-  z-index: 101; transform: translateX(100%);
-  transition: transform 0.3s ease;
-  overflow-y: auto;
-  display: flex; flex-direction: column;
+  z-index: 101; transform: translateX(100%); transition: transform 0.3s ease;
+  overflow-y: auto; display: flex; flex-direction: column;
 }
 .detail-panel.open { transform: translateX(0); }
-
 .panel-header {
-  position: sticky; top: 0; background: var(--bg);
-  padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
-  z-index: 1;
+  position: sticky; top: 0; background: var(--white);
+  padding: 16px 20px 12px; border-bottom: 1px solid var(--border); z-index: 1;
 }
 .panel-close {
   background: none; border: none; color: var(--text-sec);
-  font-size: 1.4rem; float: right; padding: 4px 8px;
-  transition: color var(--transition);
+  font-size: 1.3rem; float: right; padding: 4px 8px; transition: color var(--transition);
 }
-.panel-close:hover { color: var(--white); }
-
-.panel-title {
-  font-size: 1.3rem; font-weight: 700; margin-top: 4px;
-}
-.panel-subtitle { color: var(--text-sec); font-size: 0.82rem; margin-top: 4px; }
-
-.panel-body { padding: 20px 24px; flex: 1; }
+.panel-close:hover { color: var(--text); }
+.panel-title { font-size: 1.15rem; font-weight: 700; margin-top: 4px; }
+.panel-subtitle { color: var(--text-sec); font-size: 0.78rem; margin-top: 2px; }
+.panel-body { padding: 16px 20px; flex: 1; }
 
 /* Stats grid */
-.stats-grid {
-  display: grid; grid-template-columns: 1fr auto 1fr;
-  gap: 12px 8px; margin-bottom: 24px;
-}
-.stats-grid .stat-row {
-  display: contents;
-}
-.stats-grid .val-a, .stats-grid .val-b {
-  font-size: 1.1rem; font-weight: 700;
-}
-.stats-grid .val-a { text-align: right; }
-.stats-grid .val-b { text-align: left; }
-.stats-grid .stat-name {
-  text-align: center; color: var(--text-sec); font-size: 0.78rem;
-  align-self: center; text-transform: uppercase; letter-spacing: 0.5px;
-}
+.stats-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px 6px; margin-bottom: 20px; }
+.stat-row { display: contents; }
+.val-a, .val-b { font-size: 1rem; font-weight: 700; }
+.val-a { text-align: right; }
+.val-b { text-align: left; }
+.stat-name { text-align: center; color: var(--text-sec); font-size: 0.75rem; align-self: center; text-transform: uppercase; letter-spacing: 0.3px; }
 
-/* Editable fields */
-.editable-section { margin-top: 24px; }
-.editable-section h4 {
-  font-size: 0.82rem; text-transform: uppercase; letter-spacing: 1px;
-  color: var(--text-dim); margin-bottom: 12px;
-}
-
-.edit-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 0; border-bottom: 1px solid var(--border);
-}
-.edit-label { color: var(--text-sec); font-size: 0.82rem; min-width: 100px; }
-.edit-value {
-  flex: 1; font-weight: 500; cursor: pointer;
-  padding: 4px 8px; border-radius: 6px;
-  transition: background var(--transition);
-}
-.edit-value:hover { background: rgba(255,255,255,0.05); }
-.edit-pencil {
-  color: var(--text-dim); font-size: 0.75rem; cursor: pointer;
-  transition: color var(--transition);
-}
-.edit-pencil:hover { color: var(--green-light); }
-
+/* Edit fields */
+.edit-section { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px; }
+.edit-section h4 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 12px; }
+.edit-field { margin-bottom: 12px; }
+.edit-label { display: block; font-size: 0.78rem; color: var(--text-sec); margin-bottom: 4px; font-weight: 500; }
 .edit-input {
-  flex: 1; background: var(--card-bg); border: 1px solid var(--green);
-  border-radius: 6px; padding: 6px 10px; color: var(--white);
-  font-family: inherit; font-size: 0.95rem; outline: none;
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: inherit; font-size: 0.9rem; color: var(--text); background: var(--white);
+  transition: border-color var(--transition); outline: none;
 }
+.edit-input:focus { border-color: var(--green); }
+select.edit-input { appearance: auto; }
+.score-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.score-set { text-align: center; }
+.score-set label { display: block; font-size: 0.7rem; color: var(--text-dim); margin-bottom: 2px; }
+.score-set input { width: 100%; text-align: center; }
 
-.save-bar {
-  display: none; padding: 12px 0; text-align: right;
-}
-.save-bar.visible { display: block; }
-.btn-save {
+/* Buttons */
+.btn-primary {
   background: var(--green); color: var(--white); border: none;
-  padding: 8px 24px; border-radius: 8px; font-weight: 600; font-size: 0.85rem;
-  transition: background var(--transition);
+  padding: 10px 24px; border-radius: var(--radius); font-weight: 600; font-size: 0.88rem;
+  width: 100%; margin-top: 16px; transition: background var(--transition);
 }
-.btn-save:hover { background: var(--green-light); }
-
-/* Reprocess button */
-.btn-reprocess {
-  margin-top: 24px; width: 100%;
-  background: transparent; color: var(--red); border: 1px solid var(--red);
-  padding: 10px; border-radius: 8px; font-weight: 600; font-size: 0.85rem;
-  transition: all var(--transition);
+.btn-primary:hover { background: var(--green-light); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-danger {
+  background: var(--white); color: var(--red); border: 1px solid var(--red);
+  padding: 8px 24px; border-radius: var(--radius); font-weight: 600; font-size: 0.82rem;
+  width: 100%; margin-top: 8px; transition: all var(--transition);
 }
-.btn-reprocess:hover { background: rgba(192,57,43,0.1); }
-.btn-reprocess:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-danger:hover { background: rgba(220,38,38,0.05); }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+.msg-bar { padding: 10px 14px; border-radius: var(--radius); font-size: 0.85rem; font-weight: 500; margin-top: 12px; display: none; }
+.msg-bar.info { display: block; background: var(--green-bg); color: var(--green); }
+.msg-bar.error { display: block; background: rgba(220,38,38,0.08); color: var(--red); }
+.msg-bar.success { display: block; background: var(--green-bg); color: var(--green); }
 
-/* ============================================================
-   MOBILE
-   ============================================================ */
+/* MOBILE */
 @media (max-width: 600px) {
-  html { font-size: 14px; }
+  .charts-row { grid-template-columns: 1fr; }
   .header { flex-direction: column; align-items: flex-start; }
   .header-right { width: 100%; justify-content: space-between; }
   .player-info { text-align: left; }
-  .match-card { padding: 14px 16px; }
-  .card-stats { gap: 12px; }
-
+  .match-card { flex-wrap: wrap; }
+  .match-list { padding-left: 16px; }
   .detail-panel { width: 100vw; border-left: none; }
-  .panel-header { padding: 16px; }
-  .panel-body { padding: 16px; }
-
-  .edit-row { flex-wrap: wrap; }
-  .edit-label { min-width: unset; width: 100%; font-size: 0.75rem; }
-
-  /* 44px min tap target */
-  .match-card, .btn-save, .btn-reprocess, .panel-close,
-  .edit-value, .edit-pencil { min-height: 44px; display: flex; align-items: center; }
+  .match-card, .btn-edit, .btn-primary, .btn-danger, .panel-close { min-height: 44px; }
 }
 </style>
 </head>
 <body>
-
 <div class="app" id="app">
-  <!-- Populated by JS -->
-  <div class="loading" id="loading">
-    <div class="spinner"></div>
-    <p>Loading your matches...</p>
-  </div>
+  <div class="loading" id="loading"><div class="spinner"></div><p>Loading your matches...</p></div>
 </div>
-
-<!-- Overlay + Detail Panel -->
 <div class="overlay" id="overlay" onclick="closeDetail()"></div>
 <div class="detail-panel" id="detailPanel">
   <div class="panel-header">
@@ -292,78 +227,46 @@ button { cursor: pointer; font-family: inherit; }
 </div>
 
 <script>
-// ============================================================
-// CONFIG — injected via URL params from Wix iframe
-// ============================================================
 const params = new URLSearchParams(window.location.search);
 const EMAIL = (params.get('email') || '').trim().toLowerCase();
 const API_KEY = params.get('key') || '';
 const API_BASE = params.get('api') || '';
 
-function apiUrl(path) {
-  return API_BASE + path;
-}
-
 function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
   const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
-  return fetch(apiUrl(path) + (path.includes('?') ? '&' : '?') + 'email=' + encodeURIComponent(EMAIL), {
-    ...opts,
-    headers,
-  });
+  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
 }
 
-// ============================================================
-// STATE
-// ============================================================
-let matches = [];
-let usage = null;
-let pendingEdits = {};
+let matches = [], usage = null, players = [];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-// ============================================================
-// INIT
-// ============================================================
 async function init() {
   if (!EMAIL || !API_KEY) {
-    document.getElementById('app').innerHTML = `
-      <div class="empty-state">
-        <div class="tennis-icon">&#127934;</div>
-        <h3>Configuration Required</h3>
-        <p>Missing email or API key. Please access the Locker Room through your Wix dashboard.</p>
-      </div>`;
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key. Access the Locker Room through your dashboard.</p></div>';
     return;
   }
-
   try {
-    const [matchRes, usageRes] = await Promise.all([
+    const [mRes, uRes, pRes] = await Promise.all([
       apiFetch('/api/client/matches'),
       apiFetch('/api/client/usage'),
+      apiFetch('/api/client/players'),
     ]);
-
-    const matchData = await matchRes.json();
-    const usageData = await usageRes.json();
-
-    matches = matchData.ok ? matchData.matches : [];
-    usage = usageData.ok ? usageData.usage : null;
-  } catch (e) {
-    console.error('Failed to load data', e);
-    matches = [];
-    usage = null;
-  }
-
+    const mData = await mRes.json(), uData = await uRes.json(), pData = await pRes.json();
+    matches = mData.ok ? mData.matches : [];
+    usage = uData.ok ? uData.usage : null;
+    players = pData.ok ? pData.players : [];
+  } catch (e) { console.error('Load failed', e); }
   render();
 }
 
-// ============================================================
-// RENDER
-// ============================================================
 function render() {
   const app = document.getElementById('app');
-  app.innerHTML = '';
-
-  // Header
   const playerName = usage?.player_name || EMAIL.split('@')[0];
   const remaining = usage?.matches_remaining ?? 0;
-  const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : 'healthy';
+  const granted = usage?.matches_granted ?? 0;
+  const consumed = usage?.matches_consumed ?? 0;
+  const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
 
   app.innerHTML = `
     <div class="header">
@@ -373,109 +276,227 @@ function render() {
           <div class="player-name">${esc(playerName)}</div>
           <div class="player-email">${esc(EMAIL)}</div>
         </div>
-        <div class="usage-pill ${pillClass}">
-          ${remaining} match${remaining !== 1 ? 'es' : ''} remaining
+        <div class="usage-pill ${pillClass}">${remaining} match${remaining!==1?'es':''} remaining</div>
+      </div>
+    </div>
+    <div class="charts-row">
+      <div class="chart-card"><h3>Matches Per Month</h3><canvas id="chartMonthly" height="140"></canvas></div>
+      <div class="chart-card">
+        <h3>Usage</h3>
+        <div class="gauge-container">
+          <div class="gauge-number">${consumed}</div>
+          <div class="gauge-label">of ${granted} matches used</div>
+          <div class="gauge-bar"><div class="gauge-fill" style="width:${granted>0?Math.min(100,Math.round(consumed/granted*100)):0}%"></div></div>
         </div>
       </div>
     </div>
-    <div class="match-list" id="matchList"></div>
+    <div id="matchGroups"></div>
   `;
 
-  const list = document.getElementById('matchList');
-
   if (matches.length === 0) {
-    list.innerHTML = `
-      <div class="empty-state">
-        <div class="tennis-icon">&#127934;</div>
-        <h3>No matches yet</h3>
-        <p>Your matches will appear here once your first video is processed.</p>
-      </div>`;
-    return;
+    document.getElementById('matchGroups').innerHTML = '<div class="empty-state"><h3>No matches yet</h3><p>Your matches will appear here once your first video is processed.</p></div>';
+  } else {
+    renderGroupedMatches();
   }
+  renderMonthlyChart();
+}
 
+function renderGroupedMatches() {
+  // Group by year then month
+  const groups = {};
   matches.forEach((m, i) => {
-    const card = document.createElement('div');
-    card.className = 'match-card';
-    card.onclick = () => openDetail(i);
+    m._idx = i;
+    const d = m.match_date ? new Date(m.match_date) : (m.created_at ? new Date(m.created_at) : null);
+    const yr = d ? d.getFullYear() : 'Unknown';
+    const mo = d ? d.getMonth() : 0;
+    if (!groups[yr]) groups[yr] = {};
+    if (!groups[yr][mo]) groups[yr][mo] = [];
+    groups[yr][mo].push(m);
+  });
 
-    const opponent = m.player_b_name || 'Opponent';
-    const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
-    const status = normalizeStatus(m.last_status);
+  const container = document.getElementById('matchGroups');
+  const years = Object.keys(groups).sort((a,b) => b-a);
+  let html = '';
 
-    card.innerHTML = `
-      <div class="card-top">
-        <div>
-          <div class="opponent-name">vs ${esc(opponent)}</div>
-          <div class="match-meta">${esc(meta)}</div>
-          <span class="status-badge ${status.cls}">${status.label}</span>
-        </div>
-        <div class="score-badge">${esc(m.score || '')}</div>
+  years.forEach((yr, yi) => {
+    const yearMatches = Object.values(groups[yr]).flat();
+    html += `<div class="year-group">
+      <div class="year-header" onclick="toggleGroup('y${yi}')">
+        <span class="chevron ${yi===0?'open':''}" id="chev-y${yi}">&#9654;</span>
+        <span>${yr}</span>
+        <span class="group-count">${yearMatches.length} match${yearMatches.length!==1?'es':''}</span>
       </div>
-      <div class="card-stats">
-        <div class="stat-chip"><span class="stat-val">${m.total_aces}</span><span class="stat-label">Aces</span></div>
-        <div class="stat-chip"><span class="stat-val">${m.avg_rally_length}</span><span class="stat-label">Avg Rally</span></div>
-        <div class="stat-chip"><span class="stat-val">${m.player_a_first_serve_pct}%</span><span class="stat-label">1st Serve</span></div>
-        <div class="stat-chip"><span class="stat-val">${m.player_a_winners}</span><span class="stat-label">Winners</span></div>
-        <div class="stat-chip"><span class="stat-val">${m.total_points}</span><span class="stat-label">Points</span></div>
+      <div class="group-content ${yi===0?'open':''}" id="grp-y${yi}">`;
+
+    const months = Object.keys(groups[yr]).sort((a,b) => b-a);
+    months.forEach((mo, mi) => {
+      const moMatches = groups[yr][mo];
+      const moOpen = yi === 0 && mi === 0;
+      const gid = `y${yi}m${mi}`;
+      html += `<div class="month-header" onclick="toggleGroup('${gid}')">
+        <span class="chevron ${moOpen?'open':''}" id="chev-${gid}">&#9654;</span>
+        <span>${MONTHS[mo]} ${yr}</span>
+        <span class="group-count">${moMatches.length}</span>
       </div>
-    `;
-    list.appendChild(card);
+      <div class="group-content ${moOpen?'open':''}" id="grp-${gid}">
+        <div class="match-list">`;
+
+      moMatches.forEach(m => {
+        const status = normalizeStatus(m.last_status);
+        const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
+        html += `<div class="match-card" onclick="openDetail(${m._idx})">
+          <div class="match-info">
+            <div class="match-opponent">vs ${esc(m.player_b_name||'Opponent')}</div>
+            <div class="match-meta">${esc(meta)} <span class="status-badge ${status.cls}">${status.label}</span></div>
+          </div>
+          <div class="match-right">
+            <div class="match-score">${esc(m.score||'')}</div>
+            <button class="btn-edit" onclick="event.stopPropagation();openDetail(${m._idx})">Edit</button>
+          </div>
+        </div>`;
+      });
+      html += '</div></div>';
+    });
+    html += '</div></div>';
+  });
+  container.innerHTML = html;
+}
+
+function toggleGroup(id) {
+  const el = document.getElementById('grp-' + id);
+  const ch = document.getElementById('chev-' + id);
+  if (el) el.classList.toggle('open');
+  if (ch) ch.classList.toggle('open');
+}
+
+function renderMonthlyChart() {
+  const canvas = document.getElementById('chartMonthly');
+  if (!canvas) return;
+  const now = new Date();
+  const yr = now.getFullYear();
+  const counts = new Array(12).fill(0);
+  matches.forEach(m => {
+    const d = m.match_date ? new Date(m.match_date) : null;
+    if (d && d.getFullYear() === yr) counts[d.getMonth()]++;
+  });
+  new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: MONTHS,
+      datasets: [{
+        label: 'Matches',
+        data: counts,
+        borderColor: '#1a5c2e',
+        backgroundColor: 'rgba(26,92,46,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 4,
+        pointBackgroundColor: '#1a5c2e',
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, ticks: { stepSize: 1, color: '#6b7280', font: { size: 11 } }, grid: { color: '#e5e5e5' } },
+        x: { ticks: { color: '#6b7280', font: { size: 11 } }, grid: { display: false } }
+      }
+    }
   });
 }
 
 function normalizeStatus(s) {
   if (!s) return { cls: 'processing', label: 'Processing' };
-  const lower = (s || '').toLowerCase();
-  if (lower === 'completed' || lower === 'processed' || lower === 'ingested') return { cls: 'processed', label: 'Processed' };
-  if (lower === 'failed' || lower === 'error') return { cls: 'failed', label: 'Failed' };
+  const l = (s||'').toLowerCase();
+  if (l==='completed'||l==='processed'||l==='ingested') return { cls: 'processed', label: 'Processed' };
+  if (l==='failed'||l==='error') return { cls: 'failed', label: 'Failed' };
   return { cls: 'processing', label: 'Processing' };
 }
 
-// ============================================================
-// DETAIL PANEL
-// ============================================================
+// ============ DETAIL PANEL ============
 function openDetail(idx) {
   const m = matches[idx];
   if (!m) return;
-  pendingEdits = {};
-
-  const title = `${esc(m.player_a_name || 'Player A')} vs ${esc(m.player_b_name || 'Player B')}`;
+  const title = `${esc(m.player_a_name||'Player A')} vs ${esc(m.player_b_name||'Player B')}`;
   const subtitle = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
   const status = normalizeStatus(m.last_status);
 
   document.getElementById('panelTitle').innerHTML = title;
   document.getElementById('panelSubtitle').textContent = subtitle;
 
-  const body = document.getElementById('panelBody');
-  body.innerHTML = `
-    <div class="score-badge" style="font-size:1.4rem;margin-bottom:20px;">${esc(m.score || 'No score')}</div>
+  const playerOpts = players.map(p => `<option value="${esc(p)}" ${p===m.player_a_name?'selected':''}>${esc(p)}</option>`).join('');
+  const fsOpts = `<option value="player_a" ${m.first_server==='player_a'?'selected':''}>Player A</option>
+    <option value="player_b" ${m.first_server==='player_b'?'selected':''}>Player B</option>`;
+  const frOpts = `<option value="player_b" ${m.first_server!=='player_b'?'selected':''}>Player B</option>
+    <option value="player_a" ${m.first_server==='player_b'?'selected':''}>Player A</option>`;
 
+  document.getElementById('panelBody').innerHTML = `
+    <div class="match-score" style="font-size:1.3rem;margin-bottom:16px;font-weight:700;color:var(--green)">${esc(m.score||'No score')}</div>
     <div class="stats-grid">
-      ${statRow(m.player_a_points_won, 'Points Won', m.player_b_points_won)}
-      ${statRow(m.player_a_games_won, 'Games Won', m.player_b_games_won)}
-      ${statRow(m.player_a_winners, 'Winners', m.player_b_winners)}
-      ${statRow(m.player_a_first_serve_pct + '%', '1st Serve %', m.player_b_first_serve_pct + '%')}
-      ${statRow(m.total_aces, 'Total Aces', '')}
-      ${statRow(m.total_double_faults, 'Double Faults', '')}
-      ${statRow(m.avg_rally_length, 'Avg Rally', m.max_rally_length + ' max')}
+      ${statRow(m.player_a_points_won,'Points Won',m.player_b_points_won)}
+      ${statRow(m.player_a_games_won,'Games Won',m.player_b_games_won)}
+      ${statRow(m.player_a_winners,'Winners',m.player_b_winners)}
+      ${statRow(m.player_a_first_serve_pct+'%','1st Serve %',m.player_b_first_serve_pct+'%')}
+      ${statRow(m.total_aces,'Aces',m.total_double_faults+' DFs')}
+      ${statRow(m.avg_rally_length,'Avg Rally',m.max_rally_length+' max')}
     </div>
 
-    <div class="editable-section">
+    <div class="edit-section">
       <h4>Match Details</h4>
-      ${editRow('player_a_name', 'Player A', m.player_a_name, idx)}
-      ${editRow('player_b_name', 'Player B', m.player_b_name, idx)}
-      ${editRow('location', 'Location', m.location, idx)}
-      ${editRow('match_date', 'Date', m.match_date, idx)}
-    </div>
+      <div class="edit-field">
+        <label class="edit-label">Player A</label>
+        <select class="edit-input" id="ed-player_a_name">${playerOpts}
+          <option value="">-- Other --</option>
+        </select>
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Player A UTR</label>
+        <input class="edit-input" type="number" step="0.01" id="ed-player_a_utr" value="${esc(m.player_a_utr||'')}">
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Player B</label>
+        <input class="edit-input" type="text" id="ed-player_b_name" value="${esc(m.player_b_name||'')}">
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Player B UTR</label>
+        <input class="edit-input" type="number" step="0.01" id="ed-player_b_utr" value="${esc(m.player_b_utr||'')}">
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Match Date</label>
+        <input class="edit-input" type="date" id="ed-match_date" value="${esc(m.match_date||'')}">
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Venue / Location</label>
+        <input class="edit-input" type="text" id="ed-location" value="${esc(m.location||'')}">
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">First Server</label>
+        <select class="edit-input" id="ed-first_server">${fsOpts}</select>
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">First Returner</label>
+        <select class="edit-input" id="ed-first_returner">${frOpts}</select>
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Score</label>
+        <div class="score-grid">
+          <div class="score-set"><label>Set 1 (A)</label><input class="edit-input" type="number" min="0" max="7" id="ed-player_a_set1_games" value="${m.player_a_set1_games??''}"></div>
+          <div class="score-set"><label>Set 2 (A)</label><input class="edit-input" type="number" min="0" max="7" id="ed-player_a_set2_games" value="${m.player_a_set2_games??''}"></div>
+          <div class="score-set"><label>Set 3 (A)</label><input class="edit-input" type="number" min="0" max="7" id="ed-player_a_set3_games" value="${m.player_a_set3_games??''}"></div>
+          <div class="score-set"><label>Set 1 (B)</label><input class="edit-input" type="number" min="0" max="7" id="ed-player_b_set1_games" value="${m.player_b_set1_games??''}"></div>
+          <div class="score-set"><label>Set 2 (B)</label><input class="edit-input" type="number" min="0" max="7" id="ed-player_b_set2_games" value="${m.player_b_set2_games??''}"></div>
+          <div class="score-set"><label>Set 3 (B)</label><input class="edit-input" type="number" min="0" max="7" id="ed-player_b_set3_games" value="${m.player_b_set3_games??''}"></div>
+        </div>
+      </div>
+      <div class="edit-field">
+        <label class="edit-label">Seconds from video start to first point</label>
+        <input class="edit-input" type="number" step="1" min="0" id="ed-start_time" value="${esc(m.start_time||'')}">
+      </div>
 
-    <div class="save-bar" id="saveBar">
-      <button class="btn-save" onclick="saveEdits('${m.task_id}', ${idx})">Save Changes</button>
+      <button class="btn-primary" id="btnSave" onclick="saveAndReprocess('${m.task_id}',${idx})">Save Changes</button>
+      ${status.cls!=='processed' ? `<button class="btn-danger" id="btnReprocess" onclick="reprocessOnly('${m.task_id}')">Reprocess Match</button>` : ''}
+      <div class="msg-bar" id="msgBar"></div>
     </div>
-
-    ${status.cls !== 'processed' ? `
-      <button class="btn-reprocess" id="btnReprocess" onclick="reprocess('${m.task_id}')">
-        Reprocess Match
-      </button>` : ''}
   `;
 
   document.getElementById('overlay').classList.add('open');
@@ -489,117 +510,93 @@ function closeDetail() {
   document.body.style.overflow = '';
 }
 
-function statRow(valA, label, valB) {
-  return `<div class="stat-row">
-    <div class="val-a">${valA}</div>
-    <div class="stat-name">${label}</div>
-    <div class="val-b">${valB}</div>
-  </div>`;
+function statRow(a, label, b) {
+  return `<div class="stat-row"><div class="val-a">${a}</div><div class="stat-name">${label}</div><div class="val-b">${b}</div></div>`;
 }
 
-function editRow(field, label, value, matchIdx) {
-  const id = `edit-${field}`;
-  return `<div class="edit-row">
-    <span class="edit-label">${label}</span>
-    <span class="edit-value" id="${id}" onclick="startEdit('${field}', '${id}', ${matchIdx})">${esc(value || '---')}</span>
-    <span class="edit-pencil" onclick="startEdit('${field}', '${id}', ${matchIdx})">&#9998;</span>
-  </div>`;
+function collectEdits() {
+  const fields = ['player_a_name','player_a_utr','player_b_name','player_b_utr','match_date','location',
+    'first_server','start_time',
+    'player_a_set1_games','player_b_set1_games','player_a_set2_games','player_b_set2_games',
+    'player_a_set3_games','player_b_set3_games'];
+  const data = {};
+  fields.forEach(f => {
+    const el = document.getElementById('ed-' + f);
+    if (el) {
+      const v = el.value.trim();
+      if (v !== '') data[f] = v;
+    }
+  });
+  return data;
 }
 
-function startEdit(field, elemId, matchIdx) {
-  const el = document.getElementById(elemId);
-  if (el.querySelector('input')) return; // already editing
-
-  const current = matches[matchIdx][field] || '';
-  const inputType = field === 'match_date' ? 'date' : 'text';
-  el.innerHTML = `<input class="edit-input" type="${inputType}" value="${esc(current)}"
-    onchange="trackEdit('${field}', this.value)"
-    onkeydown="if(event.key==='Enter') this.blur()">`;
-  el.querySelector('input').focus();
-  el.onclick = null;
+function showMsg(type, text) {
+  const bar = document.getElementById('msgBar');
+  if (!bar) return;
+  bar.className = 'msg-bar ' + type;
+  bar.textContent = text;
 }
 
-function trackEdit(field, value) {
-  pendingEdits[field] = value;
-  const bar = document.getElementById('saveBar');
-  if (bar) bar.classList.add('visible');
-}
+async function saveAndReprocess(taskId, idx) {
+  const btn = document.getElementById('btnSave');
+  const edits = collectEdits();
+  if (Object.keys(edits).length === 0) { showMsg('error', 'No changes to save'); return; }
 
-async function saveEdits(taskId, matchIdx) {
-  if (Object.keys(pendingEdits).length === 0) return;
-
-  const btn = document.querySelector('.btn-save');
-  btn.textContent = 'Saving...';
-  btn.disabled = true;
+  btn.textContent = 'Saving...'; btn.disabled = true;
+  showMsg('info', 'Saving your changes...');
 
   try {
     const res = await apiFetch(`/api/client/matches/${taskId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(pendingEdits),
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edits),
     });
     const data = await res.json();
-    if (data.ok) {
-      // Update local state
-      Object.assign(matches[matchIdx], pendingEdits);
-      pendingEdits = {};
-      openDetail(matchIdx); // re-render panel
-      render(); // re-render card list
-      openDetail(matchIdx);
+    if (!data.ok) { showMsg('error', 'Save failed: ' + (data.error||'unknown')); btn.textContent = 'Save Changes'; btn.disabled = false; return; }
+
+    // Update local state
+    Object.assign(matches[idx], edits);
+
+    showMsg('info', 'Updating your match data...');
+    btn.textContent = 'Reprocessing...';
+
+    const rRes = await apiFetch(`/api/client/matches/${taskId}/reprocess`, { method: 'POST' });
+    const rData = await rRes.json();
+    if (rData.ok) {
+      showMsg('success', 'Match updated successfully! Your dashboards will refresh shortly.');
+      btn.textContent = 'Saved!'; btn.disabled = true;
+      setTimeout(() => { init(); closeDetail(); }, 2000);
     } else {
-      alert('Save failed: ' + (data.error || 'unknown'));
+      showMsg('error', 'Reprocess failed: ' + (rData.error||'unknown'));
+      btn.textContent = 'Save Changes'; btn.disabled = false;
     }
   } catch (e) {
-    alert('Save failed: ' + e.message);
-  } finally {
-    btn.textContent = 'Save Changes';
-    btn.disabled = false;
+    showMsg('error', 'Error: ' + e.message);
+    btn.textContent = 'Save Changes'; btn.disabled = false;
   }
 }
 
-async function reprocess(taskId) {
+async function reprocessOnly(taskId) {
   const btn = document.getElementById('btnReprocess');
   if (!btn) return;
-  btn.textContent = 'Reprocessing...';
-  btn.disabled = true;
-
+  btn.textContent = 'Reprocessing...'; btn.disabled = true;
+  showMsg('info', 'Updating your match data...');
   try {
     const res = await apiFetch(`/api/client/matches/${taskId}/reprocess`, { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
-      btn.textContent = 'Reprocessed!';
-      btn.style.borderColor = 'var(--green)';
-      btn.style.color = 'var(--green-light)';
-      // Reload data after a short delay
-      setTimeout(() => { init(); closeDetail(); }, 1500);
+      showMsg('success', 'Match updated successfully! Your dashboards will refresh shortly.');
+      setTimeout(() => { init(); closeDetail(); }, 2000);
     } else {
-      btn.textContent = 'Failed - Try Again';
-      btn.disabled = false;
+      showMsg('error', 'Failed: ' + (data.error||'unknown'));
+      btn.textContent = 'Reprocess Match'; btn.disabled = false;
     }
   } catch (e) {
-    btn.textContent = 'Failed - Try Again';
-    btn.disabled = false;
+    showMsg('error', 'Error: ' + e.message);
+    btn.textContent = 'Reprocess Match'; btn.disabled = false;
   }
 }
 
-// ============================================================
-// UTILS
-// ============================================================
-function esc(str) {
-  if (str == null) return '';
-  const d = document.createElement('div');
-  d.textContent = String(str);
-  return d.innerHTML;
-}
-
-// Keyboard: Escape closes detail
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeDetail();
-});
-
-// ============================================================
-// GO
-// ============================================================
+function esc(s) { if(s==null)return''; const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeDetail(); });
 init();
 </script>
 </body>

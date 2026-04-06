@@ -477,8 +477,6 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_set2_games INT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set3_games INT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_set3_games INT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_start_ts TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_end_ts TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS first_server TEXT",
         f"ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS sport_type TEXT DEFAULT '{DEFAULT_SPORT_TYPE}'",
     ):
@@ -561,18 +559,10 @@ def _store_submission_context(
 
     first_server = _norm_first_server(m.get("first_server") or wix_payload.get("firstServer"))
 
-    # Keep raw strings (table already has start_time TEXT)
+    # Keep raw string (table has start_time TEXT — seconds from video start to first point)
     start_time_txt = m.get("start_time") or wix_payload.get("startTime") or None
-    end_time_txt   = m.get("end_time")   or wix_payload.get("endTime")   or None
-
     if isinstance(start_time_txt, str):
         start_time_txt = start_time_txt.strip() or None
-    if isinstance(end_time_txt, str):
-        end_time_txt = end_time_txt.strip() or None
-
-    # Optional true timestamps (only if Wix ever sends ISO datetime)
-    start_ts = _as_ts_from_text(m.get("match_start_ts") or m.get("start_ts") or start_time_txt)
-    end_ts   = _as_ts_from_text(m.get("match_end_ts")   or m.get("end_ts")   or end_time_txt)
 
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -587,7 +577,6 @@ def _store_submission_context(
               player_a_set1_games, player_b_set1_games,
               player_a_set2_games, player_b_set2_games,
               player_a_set3_games, player_b_set3_games,
-              match_start_ts, match_end_ts,
               first_server,
               sport_type
             ) VALUES (
@@ -599,7 +588,6 @@ def _store_submission_context(
               :a1, :b1,
               :a2, :b2,
               :a3, :b3,
-              :start_ts, :end_ts,
               :first_server,
               :sport_type
             )
@@ -625,8 +613,6 @@ def _store_submission_context(
               player_b_set2_games=EXCLUDED.player_b_set2_games,
               player_a_set3_games=EXCLUDED.player_a_set3_games,
               player_b_set3_games=EXCLUDED.player_b_set3_games,
-              match_start_ts=EXCLUDED.match_start_ts,
-              match_end_ts=EXCLUDED.match_end_ts,
               first_server=EXCLUDED.first_server,
               sport_type=EXCLUDED.sport_type
         """), {
@@ -649,8 +635,6 @@ def _store_submission_context(
             "a1": a1, "b1": b1,
             "a2": a2, "b2": b2,
             "a3": a3, "b3": b3,
-            "start_ts": start_ts,
-            "end_ts": end_ts,
             "first_server": first_server,
             "sport_type": DEFAULT_SPORT_TYPE,
         })

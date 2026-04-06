@@ -213,7 +213,7 @@ def _resolve_two_players(conn: Connection, task_id: str) -> dict:
 # PASS 1: Load from bronze (INSERT)
 # ============================================================
 
-def pass1_load(conn: Connection, task_id: str, cfg: dict) -> int:
+def pass1_load(conn: Connection, task_id: str, cfg: dict, start_time_s: Optional[float] = None) -> int:
     pf = _resolve_two_players(conn, task_id)
 
     # Build CASE for player de-ghosting
@@ -225,6 +225,12 @@ def pass1_load(conn: Connection, task_id: str, cfg: dict) -> int:
         case_lines.append(f"WHEN s.player_id = :src_{i} THEN :dst_{i}")
 
     pid_expr = ("CASE " + " ".join(case_lines) + " ELSE s.player_id END") if case_lines else "s.player_id"
+
+    # Warmup filter: exclude swings before start_time_s (seconds from video start)
+    warmup_clause = ""
+    if start_time_s is not None and start_time_s > 0:
+        warmup_clause = "AND s.ball_hit_s >= :start_time_s"
+        params["start_time_s"] = start_time_s
 
     sql = f"""
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
@@ -251,6 +257,7 @@ def pass1_load(conn: Connection, task_id: str, cfg: dict) -> int:
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) = TRUE
       AND COALESCE(s.is_in_rally, TRUE) = TRUE
+      {warmup_clause}
     ON CONFLICT (task_id, id) DO NOTHING;
     """
     return conn.execute(text(sql), params).rowcount or 0
@@ -1181,13 +1188,22 @@ def build_silver_v2(task_id: str, replace: bool = False) -> Dict:
     with engine.begin() as conn:
         ensure_schema(conn)
 
-        # Resolve sport_type
+        # Resolve sport_type + start_time (warmup offset)
         row = conn.execute(text("""
-            SELECT sport_type FROM bronze.submission_context WHERE task_id = :tid LIMIT 1
+            SELECT sport_type, start_time FROM bronze.submission_context WHERE task_id = :tid LIMIT 1
         """), {"tid": task_id}).mappings().first()
         sport_type = (row["sport_type"] if row and row.get("sport_type") else DEFAULT_SPORT_TYPE)
         cfg = SPORT_CONFIG.get(sport_type, SPORT_CONFIG[DEFAULT_SPORT_TYPE])
         out["sport_type"] = sport_type
+
+        # Parse start_time (seconds from video start to first point)
+        start_time_s = None
+        if row and row.get("start_time"):
+            try:
+                start_time_s = float(row["start_time"])
+                out["start_time_s"] = start_time_s
+            except (ValueError, TypeError):
+                pass
 
         # Confidence quality gate
         conf_row = conn.execute(text("""
@@ -1209,7 +1225,7 @@ def build_silver_v2(task_id: str, replace: bool = False) -> Dict:
         if replace:
             _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
 
-        out["pass1_rows"] = pass1_load(conn, task_id, cfg)
+        out["pass1_rows"] = pass1_load(conn, task_id, cfg, start_time_s=start_time_s)
         out["pass2_rows"] = pass2_bounce(conn, task_id, cfg)
         out["pass3_rows"] = pass3_point_context(conn, task_id, cfg)
         out["pass4_rows"] = pass4_zones_and_normalize(conn, task_id, cfg)

@@ -65,22 +65,25 @@ def list_matches():
         rows = conn.execute(
             text("""
                 SELECT
-                    task_id, match_date, location,
-                    player_a_name, player_b_name, sport_type,
-                    video_url, share_url, email, last_status, created_at,
-                    total_points, total_games, total_sets,
-                    player_a_points_won, player_b_points_won,
-                    player_a_games_won, player_b_games_won,
-                    total_aces, total_double_faults,
-                    avg_rally_length, max_rally_length,
-                    player_a_first_serve_pct, player_b_first_serve_pct,
-                    player_a_winners, player_b_winners,
-                    player_a_set1_games, player_b_set1_games,
-                    player_a_set2_games, player_b_set2_games,
-                    player_a_set3_games, player_b_set3_games
-                FROM gold.vw_client_match_summary
-                WHERE email = :email
-                ORDER BY match_date DESC NULLS LAST, created_at DESC
+                    g.task_id, g.match_date, g.location,
+                    g.player_a_name, g.player_b_name, g.sport_type,
+                    g.video_url, g.share_url, g.email, g.last_status, g.created_at,
+                    g.total_points, g.total_games, g.total_sets,
+                    g.player_a_points_won, g.player_b_points_won,
+                    g.player_a_games_won, g.player_b_games_won,
+                    g.total_aces, g.total_double_faults,
+                    g.avg_rally_length, g.max_rally_length,
+                    g.player_a_first_serve_pct, g.player_b_first_serve_pct,
+                    g.player_a_winners, g.player_b_winners,
+                    g.player_a_set1_games, g.player_b_set1_games,
+                    g.player_a_set2_games, g.player_b_set2_games,
+                    g.player_a_set3_games, g.player_b_set3_games,
+                    sc.player_a_utr, sc.player_b_utr,
+                    sc.first_server, sc.start_time
+                FROM gold.vw_client_match_summary g
+                JOIN bronze.submission_context sc ON sc.task_id = g.task_id
+                WHERE g.email = :email
+                ORDER BY g.match_date ASC NULLS LAST, g.created_at ASC
             """),
             {"email": email},
         ).mappings().all()
@@ -93,6 +96,10 @@ def list_matches():
             "location": r["location"],
             "player_a_name": r["player_a_name"],
             "player_b_name": r["player_b_name"],
+            "player_a_utr": r["player_a_utr"],
+            "player_b_utr": r["player_b_utr"],
+            "first_server": r["first_server"],
+            "start_time": r["start_time"],
             "sport_type": r["sport_type"],
             "video_url": r["video_url"],
             "share_url": r["share_url"],
@@ -114,6 +121,12 @@ def list_matches():
             "player_a_winners": int(r["player_a_winners"] or 0),
             "player_b_winners": int(r["player_b_winners"] or 0),
             "score": _format_score(r),
+            "player_a_set1_games": r["player_a_set1_games"],
+            "player_b_set1_games": r["player_b_set1_games"],
+            "player_a_set2_games": r["player_a_set2_games"],
+            "player_b_set2_games": r["player_b_set2_games"],
+            "player_a_set3_games": r["player_a_set3_games"],
+            "player_b_set3_games": r["player_b_set3_games"],
         })
 
     return jsonify({"ok": True, "matches": matches})
@@ -130,6 +143,37 @@ def _format_score(r) -> str:
 
 
 # ----------------------------
+# GET /api/client/players
+# ----------------------------
+
+@client_bp.route("/api/client/players", methods=["GET", "OPTIONS"])
+def list_players():
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT DISTINCT player_a_name AS name
+                FROM bronze.submission_context
+                WHERE email = :email AND player_a_name IS NOT NULL AND player_a_name != ''
+                UNION
+                SELECT DISTINCT player_b_name AS name
+                FROM bronze.submission_context
+                WHERE email = :email AND player_b_name IS NOT NULL AND player_b_name != ''
+                ORDER BY name
+            """),
+            {"email": email},
+        ).scalars().all()
+
+    return jsonify({"ok": True, "players": list(rows)})
+
+
+# ----------------------------
 # GET /api/client/matches/<task_id>
 # ----------------------------
 
@@ -143,7 +187,6 @@ def match_detail(task_id: str):
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.connect() as conn:
-        # Verify the match belongs to this email
         owner = conn.execute(
             text("SELECT email FROM bronze.submission_context WHERE task_id = :tid"),
             {"tid": task_id},
@@ -243,7 +286,13 @@ def client_usage():
 # PATCH /api/client/matches/<task_id>
 # ----------------------------
 
-EDITABLE_FIELDS = {"player_a_name", "player_b_name", "location", "match_date"}
+EDITABLE_FIELDS = {
+    "player_a_name", "player_a_utr", "player_b_name", "player_b_utr",
+    "match_date", "location", "first_server", "start_time",
+    "player_a_set1_games", "player_b_set1_games",
+    "player_a_set2_games", "player_b_set2_games",
+    "player_a_set3_games", "player_b_set3_games",
+}
 
 @client_bp.route("/api/client/matches/<task_id>", methods=["PATCH"], endpoint="update_match")
 def update_match(task_id: str):
