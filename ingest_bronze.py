@@ -222,6 +222,12 @@ def _run_bronze_init_conn(conn):
     """))
 
     conn.execute(sql_text("""
+        ALTER TABLE bronze.session_confidences
+          ADD COLUMN IF NOT EXISTS tracking_confidence        DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_detection_confidence DOUBLE PRECISION
+    """))
+
+    conn.execute(sql_text("""
         ALTER TABLE bronze.player
           ADD COLUMN IF NOT EXISTS player_id INT,
           ADD COLUMN IF NOT EXISTS activity_score DOUBLE PRECISION,
@@ -577,6 +583,43 @@ def _upsert_single(conn, table: str, task_id: str, obj) -> int:
     """), {"tid": task_id, "j": json.dumps(obj)})
     return 1
 
+def _upsert_session_confidences(conn, task_id: str, obj) -> int:
+    """
+    Upsert session_confidences with typed score extraction.
+    SportAI's confidence block structure varies; we extract known keys
+    and fall back gracefully when they're absent.
+    """
+    if obj is None: return 0
+    d = obj if isinstance(obj, dict) else {}
+
+    # Try common key patterns for confidence scores
+    tracking = (
+        _as_float(d.get("tracking_confidence"))
+        or _as_float(d.get("tracking"))
+        or _as_float((d.get("tracking") or {}).get("confidence") if isinstance(d.get("tracking"), dict) else None)
+    )
+    court = (
+        _as_float(d.get("court_detection_confidence"))
+        or _as_float(d.get("court_detection"))
+        or _as_float(d.get("court"))
+        or _as_float((d.get("court_detection") or {}).get("confidence") if isinstance(d.get("court_detection"), dict) else None)
+    )
+
+    conn.execute(sql_text("""
+        INSERT INTO bronze.session_confidences (task_id, data, tracking_confidence, court_detection_confidence)
+        VALUES (:tid, CAST(:j AS JSONB), :tc, :cc)
+        ON CONFLICT (task_id) DO UPDATE SET
+          data = EXCLUDED.data,
+          tracking_confidence = EXCLUDED.tracking_confidence,
+          court_detection_confidence = EXCLUDED.court_detection_confidence
+    """), {
+        "tid": task_id,
+        "j": json.dumps(obj),
+        "tc": tracking,
+        "cc": court,
+    })
+    return 1
+
 def _task_lock(conn, task_id: str):
     # transaction-scoped advisory lock; auto-released on commit/rollback
     conn.execute(sql_text("SELECT pg_advisory_xact_lock(hashtextextended(:t, 42))"), {"t": task_id})
@@ -720,7 +763,7 @@ def ingest_bronze_strict(
     counts["player_position"]    = _insert_player_positions(conn, task_id, player_positions_flat)
     counts["debug_event"]        = _insert_json_array(conn, "debug_event", task_id, debug_events:=debug_events)
     counts["unmatched_field"]    = _insert_json_array(conn, "unmatched_field", task_id, unmatched:=unmatched)
-    counts["session_confidences"]= _upsert_single(conn, "session_confidences", task_id, confidences)
+    counts["session_confidences"]= _upsert_session_confidences(conn, task_id, confidences)
     counts["thumbnail"]          = _upsert_single(conn, "thumbnail", task_id, thumbnails)
     counts["highlight"]          = _upsert_single(conn, "highlight", task_id, highlights)
     counts["team_session"]       = _upsert_single(conn, "team_session", task_id, team_sessions)

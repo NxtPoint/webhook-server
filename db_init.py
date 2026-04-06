@@ -219,6 +219,13 @@ def _add_typed_columns(conn):
           ADD COLUMN IF NOT EXISTS ingest_finished_at TIMESTAMPTZ;
     """))
 
+    # ---------------- session_confidences (extracted quality scores) ----------------
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.session_confidences
+          ADD COLUMN IF NOT EXISTS tracking_confidence        DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS court_detection_confidence DOUBLE PRECISION;
+    """))
+
 def _add_indexes(conn):
     # Hot-path indexes (no-ops if they already exist)
     conn.execute(sql_text("""

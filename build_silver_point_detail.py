@@ -275,6 +275,7 @@ def phase1_load(conn: Connection, task_id: str, cfg: dict) -> int:
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) = TRUE
+      AND COALESCE(s.is_in_rally, FALSE) = TRUE
     ON CONFLICT (task_id, id) DO NOTHING;
     """
     res = conn.execute(text(sql), params)
@@ -2351,6 +2352,31 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         cfg = SPORT_CONFIG.get(sport_type, SPORT_CONFIG[DEFAULT_SPORT_TYPE])
         out["sport_type"] = sport_type
 
+        # ---- session confidence quality gate ----
+        conf_row = conn.execute(
+            text("""
+                SELECT tracking_confidence, court_detection_confidence
+                FROM bronze.session_confidences
+                WHERE task_id = :tid
+                LIMIT 1
+            """),
+            {"tid": task_id},
+        ).mappings().first()
+        if conf_row:
+            tc = conf_row.get("tracking_confidence")
+            cc = conf_row.get("court_detection_confidence")
+            if tc is not None:
+                out["tracking_confidence"] = float(tc)
+            if cc is not None:
+                out["court_detection_confidence"] = float(cc)
+            if tc is not None and float(tc) < 0.5:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "LOW TRACKING CONFIDENCE task_id=%s tracking_confidence=%.3f — silver data may be unreliable",
+                    task_id, float(tc),
+                )
+                out["confidence_warning"] = f"tracking_confidence={float(tc):.3f} is below 0.5"
+
         # Ensure all columns upfront
         ensure_phase_columns(conn, PHASE1_COLS)
         if phase in ("all", "2", "3", "4", "5", "6", "7"):
@@ -2394,7 +2420,59 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
         if phase in ("all", "7"):
             out["phase7_rows_updated"] = phase7_update(conn, task_id)
 
+        # ---- post-build rally count validation ----
+        if phase == "all":
+            out.update(_validate_rally_count(conn, task_id))
+
     return out
+
+
+def _validate_rally_count(conn: Connection, task_id: str) -> Dict:
+    """
+    Compare silver's derived point count against bronze.rally row count
+    for the same task.  Returns counts + a warning flag if they diverge
+    by more than 30%.
+    """
+    silver_points = conn.execute(
+        text(f"""
+            SELECT COUNT(DISTINCT point_number) AS n
+            FROM {SILVER_SCHEMA}.{TABLE}
+            WHERE task_id = :tid
+              AND point_number IS NOT NULL
+              AND point_number > 0
+        """),
+        {"tid": task_id},
+    ).scalar() or 0
+
+    bronze_rallies = conn.execute(
+        text("""
+            SELECT COUNT(*) AS n
+            FROM bronze.rally
+            WHERE task_id = :tid
+        """),
+        {"tid": task_id},
+    ).scalar() or 0
+
+    result: Dict = {
+        "validation_silver_points": int(silver_points),
+        "validation_bronze_rallies": int(bronze_rallies),
+    }
+
+    if bronze_rallies > 0 and silver_points > 0:
+        ratio = abs(silver_points - bronze_rallies) / max(silver_points, bronze_rallies)
+        result["validation_divergence_pct"] = round(ratio * 100, 1)
+        if ratio > 0.30:
+            import logging
+            logging.getLogger(__name__).warning(
+                "RALLY VALIDATION WARNING task_id=%s: silver_points=%d vs bronze_rallies=%d (%.1f%% divergence)",
+                task_id, silver_points, bronze_rallies, ratio * 100,
+            )
+            result["validation_warning"] = (
+                f"silver points ({silver_points}) vs bronze rallies ({bronze_rallies}) "
+                f"diverge by {result['validation_divergence_pct']}%"
+            )
+
+    return result
 
 # ------------------------------- CLI -------------------------------
 if __name__ == "__main__":
