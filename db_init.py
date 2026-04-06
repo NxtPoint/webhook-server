@@ -272,3 +272,148 @@ def bronze_init():
         _create_core(conn)
         _add_typed_columns(conn)
         _add_indexes(conn)
+
+
+# -----------------------------------------------------------------------------
+# Gold Init (idempotent)
+# -----------------------------------------------------------------------------
+
+def gold_init():
+    """
+    Create the gold schema and client-facing views.
+    Safe to call on every boot (idempotent CREATE OR REPLACE).
+    """
+    with engine.begin() as conn:
+        conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS gold;"))
+        conn.execute(sql_text("""
+            CREATE OR REPLACE VIEW gold.vw_client_match_summary AS
+            WITH player_map AS (
+                -- Map internal player_id → player_a / player_b using first_server
+                SELECT
+                    sc.task_id,
+                    sc.first_server,
+                    -- first_server is the player_id of player_a's server
+                    -- We find the two distinct player_ids per task from silver
+                    MIN(pd.player_id) AS pid_min,
+                    MAX(pd.player_id) AS pid_max
+                FROM bronze.submission_context sc
+                JOIN silver.point_detail pd ON pd.task_id = sc.task_id::uuid
+                WHERE pd.player_id IS NOT NULL
+                GROUP BY sc.task_id, sc.first_server
+            ),
+            mapped AS (
+                SELECT
+                    task_id,
+                    -- If first_server matches pid_min, then pid_min=player_a, pid_max=player_b
+                    -- Otherwise pid_max=player_a, pid_min=player_b
+                    CASE WHEN first_server = pid_min THEN pid_min ELSE pid_max END AS player_a_pid,
+                    CASE WHEN first_server = pid_min THEN pid_max ELSE pid_min END AS player_b_pid
+                FROM player_map
+            ),
+            stats AS (
+                SELECT
+                    pd.task_id,
+                    m.player_a_pid,
+                    m.player_b_pid,
+
+                    -- Points
+                    MAX(pd.point_number) FILTER (WHERE pd.exclude_d IS NOT TRUE) AS total_points,
+                    MAX(pd.game_number)  FILTER (WHERE pd.exclude_d IS NOT TRUE) AS total_games,
+                    MAX(pd.set_number)   FILTER (WHERE pd.exclude_d IS NOT TRUE) AS total_sets,
+
+                    COUNT(DISTINCT pd.point_number)
+                        FILTER (WHERE pd.point_winner_player_id = m.player_a_pid
+                                  AND pd.exclude_d IS NOT TRUE)
+                        AS player_a_points_won,
+                    COUNT(DISTINCT pd.point_number)
+                        FILTER (WHERE pd.point_winner_player_id = m.player_b_pid
+                                  AND pd.exclude_d IS NOT TRUE)
+                        AS player_b_points_won,
+
+                    -- Games
+                    COUNT(DISTINCT pd.game_number)
+                        FILTER (WHERE pd.game_winner_player_id = m.player_a_pid
+                                  AND pd.exclude_d IS NOT TRUE)
+                        AS player_a_games_won,
+                    COUNT(DISTINCT pd.game_number)
+                        FILTER (WHERE pd.game_winner_player_id = m.player_b_pid
+                                  AND pd.exclude_d IS NOT TRUE)
+                        AS player_b_games_won,
+
+                    -- Aces & double faults
+                    COUNT(*) FILTER (WHERE pd.ace_d = TRUE AND pd.exclude_d IS NOT TRUE) AS total_aces,
+                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'double_fault' AND pd.exclude_d IS NOT TRUE) AS total_double_faults,
+
+                    -- Rally length
+                    AVG(pd.rally_length_point) FILTER (WHERE pd.shot_ix_in_point = 1 AND pd.exclude_d IS NOT TRUE) AS avg_rally_length,
+                    MAX(pd.rally_length_point) FILTER (WHERE pd.shot_ix_in_point = 1 AND pd.exclude_d IS NOT TRUE) AS max_rally_length,
+
+                    -- First serve %
+                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE AND pd.serve_try_ix_in_point = '1'
+                                       AND pd.player_id = m.player_a_pid AND pd.exclude_d IS NOT TRUE)
+                        AS player_a_first_serves,
+                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE
+                                       AND pd.player_id = m.player_a_pid AND pd.exclude_d IS NOT TRUE)
+                        AS player_a_total_serves,
+                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE AND pd.serve_try_ix_in_point = '1'
+                                       AND pd.player_id = m.player_b_pid AND pd.exclude_d IS NOT TRUE)
+                        AS player_b_first_serves,
+                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE
+                                       AND pd.player_id = m.player_b_pid AND pd.exclude_d IS NOT TRUE)
+                        AS player_b_total_serves,
+
+                    -- Winners
+                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'winner'
+                                       AND pd.player_id = m.player_a_pid AND pd.exclude_d IS NOT TRUE)
+                        AS player_a_winners,
+                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'winner'
+                                       AND pd.player_id = m.player_b_pid AND pd.exclude_d IS NOT TRUE)
+                        AS player_b_winners
+
+                FROM silver.point_detail pd
+                JOIN mapped m ON m.task_id = pd.task_id::text
+                -- mapped.task_id is TEXT (from submission_context), pd.task_id is UUID
+                GROUP BY pd.task_id, m.player_a_pid, m.player_b_pid
+            )
+            SELECT
+                sc.task_id,
+                sc.match_date,
+                sc.location,
+                sc.player_a_name,
+                sc.player_b_name,
+                sc.sport_type,
+                sc.video_url,
+                sc.share_url,
+                sc.email,
+                sc.last_status,
+                sc.created_at,
+
+                COALESCE(s.total_points, 0)   AS total_points,
+                COALESCE(s.total_games, 0)    AS total_games,
+                COALESCE(s.total_sets, 0)     AS total_sets,
+                COALESCE(s.player_a_points_won, 0) AS player_a_points_won,
+                COALESCE(s.player_b_points_won, 0) AS player_b_points_won,
+                COALESCE(s.player_a_games_won, 0)  AS player_a_games_won,
+                COALESCE(s.player_b_games_won, 0)  AS player_b_games_won,
+                COALESCE(s.total_aces, 0)     AS total_aces,
+                COALESCE(s.total_double_faults, 0) AS total_double_faults,
+                ROUND(COALESCE(s.avg_rally_length, 0)::numeric, 1) AS avg_rally_length,
+                COALESCE(s.max_rally_length, 0) AS max_rally_length,
+                CASE WHEN s.player_a_total_serves > 0
+                     THEN ROUND(100.0 * s.player_a_first_serves / s.player_a_total_serves, 1)
+                     ELSE 0 END AS player_a_first_serve_pct,
+                CASE WHEN s.player_b_total_serves > 0
+                     THEN ROUND(100.0 * s.player_b_first_serves / s.player_b_total_serves, 1)
+                     ELSE 0 END AS player_b_first_serve_pct,
+                COALESCE(s.player_a_winners, 0) AS player_a_winners,
+                COALESCE(s.player_b_winners, 0) AS player_b_winners,
+
+                -- Score (from submission_context typed columns)
+                sc.player_a_set1_games, sc.player_b_set1_games,
+                sc.player_a_set2_games, sc.player_b_set2_games,
+                sc.player_a_set3_games, sc.player_b_set3_games
+
+            FROM bronze.submission_context sc
+            LEFT JOIN stats s ON s.task_id = sc.task_id::uuid
+            WHERE sc.email IS NOT NULL;
+        """))

@@ -62,6 +62,9 @@ services:
       - key: RENDER_TO_WIX_OPS_KEY
         sync: false
 
+      - key: CLIENT_API_KEY
+        sync: false
+
   # =========================================
   # 2) Power BI embed/refresh service
   # =========================================
@@ -189,3 +192,17 @@ services:
 
       - key: VIDEO_TRIM_CALLBACK_TIMEOUT_S
         value: "20"
+
+  # =========================================
+  # 5) Locker Room dashboard (client-facing)
+  # =========================================
+  - type: web
+    name: locker-room
+    env: python
+    pythonVersion: 3.12.3
+    plan: starter
+    buildCommand: "pip install --upgrade pip && pip install flask gunicorn"
+    startCommand: "gunicorn locker_room_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 2 --timeout 120"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
