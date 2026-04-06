@@ -138,7 +138,10 @@ def _add_typed_columns(conn):
           ADD COLUMN IF NOT EXISTS ball_hit_s              DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS ball_hit_frame          INTEGER,
           ADD COLUMN IF NOT EXISTS ball_hit_location_x     DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS ball_hit_location_y     DOUBLE PRECISION;
+          ADD COLUMN IF NOT EXISTS ball_hit_location_y     DOUBLE PRECISION,
+          -- extracted scalars from ball_impact_location blob
+          ADD COLUMN IF NOT EXISTS ball_impact_location_x  DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_impact_location_y  DOUBLE PRECISION;
     """))
 
     # ---------------- rally (real columns; data may be {id,start,end} or {value:{...}}) ----------------
@@ -224,6 +227,14 @@ def _add_typed_columns(conn):
         ALTER TABLE bronze.session_confidences
           ADD COLUMN IF NOT EXISTS tracking_confidence        DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS court_detection_confidence DOUBLE PRECISION;
+    """))
+
+    # ---------------- team_session (player identity info) ----------------
+    conn.execute(sql_text("""
+        ALTER TABLE bronze.team_session
+          ADD COLUMN IF NOT EXISTS player_count  INTEGER,
+          ADD COLUMN IF NOT EXISTS player_a_id   TEXT,
+          ADD COLUMN IF NOT EXISTS player_b_id   TEXT;
     """))
 
 def _add_indexes(conn):
