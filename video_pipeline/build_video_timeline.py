@@ -40,9 +40,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Tuple, Optional
 
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 # ============================================================
 # CONFIG (MVP1 BASELINE)
@@ -129,9 +132,12 @@ def _build_point_segments(
       - if video_duration_s is provided, clamp end_s to video duration
     """
     _validate_silver(df_silver)
+    log.info("TIMELINE input rows=%d task_id=%s", len(df_silver), task_id)
+
     if video_duration_s is None:
         video_duration_s = _infer_video_duration_from_segments(df_silver)
-        
+        log.info("TIMELINE inferred video_duration_s=%.3f", video_duration_s)
+
     video_duration_s = _validate_video_duration(video_duration_s)
 
     # Work on a private copy
@@ -141,7 +147,10 @@ def _build_point_segments(
     # Business rule: exclude_d
     # --------------------------
     df.loc[:, "exclude_d"] = df["exclude_d"].fillna(False).astype(bool)
+    excluded_count = df["exclude_d"].sum()
     df = df.loc[df["exclude_d"] == False].copy()
+    if excluded_count > 0:
+        log.info("TIMELINE exclude_d filter: removed %d rows, %d remain", excluded_count, len(df))
     if df.empty:
         raise ValueError("After applying exclude_d=False filter, no rows remain.")
 
@@ -162,8 +171,12 @@ def _build_point_segments(
     # --------------------------
     # Ensure numeric seconds
     # --------------------------
+    pre_coerce = len(df)
     df.loc[:, "ball_hit_s"] = pd.to_numeric(df["ball_hit_s"], errors="coerce")
     df = df.dropna(subset=["ball_hit_s"]).copy()
+    coerced_dropped = pre_coerce - len(df)
+    if coerced_dropped > 0:
+        log.warning("TIMELINE ball_hit_s coercion: dropped %d non-numeric rows", coerced_dropped)
     if df.empty:
         raise ValueError("After coercing ball_hit_s to numeric, no valid rows remain.")
 
@@ -183,8 +196,12 @@ def _build_point_segments(
     # --------------------------
     # Raw point duration filter
     # --------------------------
+    pre_filter = len(points)
     points.loc[:, "point_duration_s"] = points["point_end_s"] - points["point_start_s"]
     points = points.loc[points["point_duration_s"] >= MIN_POINT_DURATION_S].copy()
+    short_dropped = pre_filter - len(points)
+    if short_dropped > 0:
+        log.info("TIMELINE min-duration filter: dropped %d/%d points (< %.1fs)", short_dropped, pre_filter, MIN_POINT_DURATION_S)
     if points.empty:
         raise ValueError(
             "All raw point segments were filtered out by MIN_POINT_DURATION_S. "
@@ -215,6 +232,11 @@ def _build_point_segments(
     timeline.loc[:, "entity_type"] = "point"
     timeline.loc[:, "source"] = "silver"
     timeline.loc[:, "confidence"] = 1.0
+
+    log.info(
+        "TIMELINE point segments: %d points, span=%.1f-%.1fs",
+        len(timeline), timeline["start_s"].min(), timeline["end_s"].max(),
+    )
 
     return timeline.reset_index(drop=True)
 
@@ -277,6 +299,11 @@ def _merge_and_validate_segments(df_segments: pd.DataFrame) -> pd.DataFrame:
             merged_rows.append((float(cur_start), float(cur_end)))
 
     out = pd.DataFrame(merged_rows, columns=["start_s", "end_s"])
+
+    log.info(
+        "TIMELINE merge: %d input segments → %d merged segments (gap_tol=%.1fs, min=%.1fs)",
+        len(seg), len(out), MERGE_GAP_S, MIN_SEGMENT_S,
+    )
 
     # --------------------------
     # Final validations
@@ -369,6 +396,12 @@ def build_video_timeline_from_silver(
         "source",
         "confidence",
     ]]
+
+    total_keep = (merged["end_s"] - merged["start_s"]).sum()
+    log.info(
+        "TIMELINE FINAL task_id=%s segments=%d total_keep=%.1fs",
+        merged_task_id, len(merged), total_keep,
+    )
 
     return merged.reset_index(drop=True)
 

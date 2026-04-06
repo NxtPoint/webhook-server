@@ -5,13 +5,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import boto3
+
+log = logging.getLogger(__name__)
 
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
@@ -26,6 +30,11 @@ MIN_KEEP_SEGMENT_S = float(os.getenv("MIN_KEEP_SEGMENT_S", "0.25"))
 # Single deterministic output naming
 OUTPUT_KEY_TEMPLATE = "trimmed/{task_id}/review.mp4"
 
+# Safety ceilings
+FFMPEG_TIMEOUT_S = int(os.getenv("FFMPEG_TIMEOUT_S", "1800"))        # 30 min per segment
+FFPROBE_TIMEOUT_S = int(os.getenv("FFPROBE_TIMEOUT_S", "60"))        # 1 min probe
+MIN_DISK_FREE_MB = int(os.getenv("TRIM_MIN_DISK_FREE_MB", "500"))    # 500 MB minimum
+
 s3 = boto3.client("s3")
 
 
@@ -33,17 +42,26 @@ s3 = boto3.client("s3")
 # Low-level process helpers
 # ============================================================
 
-def _run(cmd: List[str]) -> str:
+def _run(cmd: List[str], *, timeout: int | None = None) -> str:
     """
     Run a subprocess and return stdout.
     Raise RuntimeError with full stderr/stdout context on failure.
     """
-    p = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    effective_timeout = timeout or FFMPEG_TIMEOUT_S
+    try:
+        p = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=effective_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"Command timed out after {effective_timeout}s\n"
+            f"cmd={' '.join(cmd)}"
+        )
+
     if p.returncode != 0:
         raise RuntimeError(
             "Command failed\n"
@@ -65,7 +83,7 @@ def _probe_duration(path: Path) -> float:
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(path),
-    ])
+    ], timeout=FFPROBE_TIMEOUT_S)
 
     try:
         duration = float(out)
@@ -183,10 +201,22 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
         concat_list = td / "concat.txt"
 
         # --------------------------
+        # Disk space guard
+        # --------------------------
+        disk = shutil.disk_usage(td)
+        free_mb = disk.free // (1024 * 1024)
+        if free_mb < MIN_DISK_FREE_MB:
+            raise RuntimeError(
+                f"Insufficient disk space: {free_mb}MB free, need at least {MIN_DISK_FREE_MB}MB"
+            )
+
+        # --------------------------
         # Download + probe source
         # --------------------------
+        log.info("FFMPEG TRIM task_id=%s downloading s3://%s/%s", task_id, s3_bucket, s3_key)
         s3.download_file(s3_bucket, s3_key, str(src))
         source_duration_s = _probe_duration(src)
+        log.info("FFMPEG TRIM task_id=%s source_duration=%.3fs", task_id, source_duration_s)
 
         # --------------------------
         # Normalize segments
@@ -194,6 +224,12 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
         valid_segments = _normalize_segments(segments, source_duration_s)
         if not valid_segments:
             raise ValueError("No valid segments remain after normalization/clamping")
+
+        total_keep = sum(e - s for s, e in valid_segments)
+        log.info(
+            "FFMPEG TRIM task_id=%s segments=%d total_keep=%.3fs removing=%.3fs",
+            task_id, len(valid_segments), total_keep, source_duration_s - total_keep,
+        )
 
         # --------------------------
         # Render each segment
@@ -203,6 +239,7 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
 
         for i, (s, e) in enumerate(valid_segments, start=1):
             seg_file = td / f"seg_{i:03d}.mp4"
+            log.info("FFMPEG TRIM task_id=%s encoding segment %d/%d (%.3f-%.3fs)", task_id, i, len(valid_segments), s, e)
 
             _run([
                 FFMPEG_BIN,
@@ -257,6 +294,7 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
 
         # Prefer actual output duration as truth
         out_key = OUTPUT_KEY_TEMPLATE.format(task_id=task_id)
+        log.info("FFMPEG TRIM task_id=%s uploading to s3://%s/%s (%.3fs)", task_id, s3_bucket, out_key, trimmed_duration_s)
 
         s3.upload_file(
             str(out),
@@ -268,6 +306,11 @@ def run_ffmpeg_trim(*, task_id: str, s3_bucket: str, s3_key: str, edl: dict) -> 
         )
 
         seconds_removed = max(0.0, round(source_duration_s - trimmed_duration_s, 3))
+
+        log.info(
+            "FFMPEG TRIM DONE task_id=%s source=%.1fs trimmed=%.1fs removed=%.1fs segments=%d",
+            task_id, source_duration_s, trimmed_duration_s, seconds_removed, len(valid_segments),
+        )
 
         return {
             "task_id": str(task_id),

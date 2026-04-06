@@ -142,7 +142,15 @@ def _mark_trim_accepted(conn, task_id: str) -> None:
     conn.execute(
         text("""
             UPDATE bronze.submission_context
-               SET trim_status = 'accepted'
+               SET trim_requested_at = COALESCE(trim_requested_at, NOW()),
+                   trim_finished_at = NULL,
+                   trim_status = 'accepted',
+                   trim_error = NULL,
+                   trim_output_s3_key = NULL,
+                   trim_source_duration_s = NULL,
+                   trim_duration_s = NULL,
+                   trim_segment_count = NULL,
+                   trim_seconds_removed = NULL
              WHERE task_id = :task_id
         """),
         {"task_id": task_id},
@@ -168,7 +176,7 @@ def trigger_video_trim(task_id: str) -> dict:
         raise ValueError("task_id is required")
 
     # --------------------------
-    # Gather data + prepare payload
+    # Gather data + prepare payload (read-only — no state change yet)
     # --------------------------
     with engine.begin() as conn:
         _ensure_trim_columns(conn)
@@ -219,7 +227,8 @@ def trigger_video_trim(task_id: str) -> dict:
         if not edl.get("segments"):
             raise ValueError(f"EDL contains no segments for task_id={task_id}")
 
-        _mark_trim_queued(conn, task_id)
+    # NOTE: DB is NOT marked queued yet — we only mark after the worker accepts.
+    # This prevents orphaned "queued" rows if the process dies before the POST.
 
     # --------------------------
     # Trigger worker
@@ -253,14 +262,14 @@ def trigger_video_trim(task_id: str) -> dict:
         resp.raise_for_status()
         out = resp.json() if resp.content else {}
     except Exception as e:
-        # Fail-safe: update DB, but do not leave trim stuck in queued forever
+        # Worker trigger failed — mark as failed so it can be retried later
         with engine.begin() as conn:
             _ensure_trim_columns(conn)
             _mark_trim_trigger_failed(conn, task_id, f"worker_trigger_failed: {type(e).__name__}: {e}")
         raise
 
     # --------------------------
-    # Mark accepted only after worker accepted
+    # Mark accepted only after worker accepted (single atomic write)
     # --------------------------
     with engine.begin() as conn:
         _ensure_trim_columns(conn)

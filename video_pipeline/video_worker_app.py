@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
+import time
 import traceback
 from typing import Any, Dict
 
@@ -20,6 +22,11 @@ APP = Flask(__name__)
 
 VIDEO_WORKER_OPS_KEY = (os.getenv("VIDEO_WORKER_OPS_KEY") or "").strip()
 CALLBACK_TIMEOUT_S = int(os.getenv("VIDEO_TRIM_CALLBACK_TIMEOUT_S", "20"))
+CALLBACK_MAX_RETRIES = int(os.getenv("VIDEO_TRIM_CALLBACK_MAX_RETRIES", "3"))
+CALLBACK_RETRY_BASE_S = float(os.getenv("VIDEO_TRIM_CALLBACK_RETRY_BASE_S", "2.0"))
+
+# Subprocess log directory — logs are preserved for debugging failed trims
+TRIM_LOG_DIR = os.getenv("TRIM_LOG_DIR", "/tmp/trim_logs")
 
 if not VIDEO_WORKER_OPS_KEY:
     raise RuntimeError("VIDEO_WORKER_OPS_KEY env var is required")
@@ -67,19 +74,37 @@ def _validate_trim_request(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _callback(callback_url: str, callback_headers: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """POST callback with retry + exponential backoff."""
     headers = {"Content-Type": "application/json"}
     for k, v in (callback_headers or {}).items():
         if v is not None:
             headers[str(k)] = str(v)
 
-    r = requests.post(
-        callback_url,
-        json=payload,
-        headers=headers,
-        timeout=CALLBACK_TIMEOUT_S,
+    last_err: Exception | None = None
+    for attempt in range(1, CALLBACK_MAX_RETRIES + 1):
+        try:
+            r = requests.post(
+                callback_url,
+                json=payload,
+                headers=headers,
+                timeout=CALLBACK_TIMEOUT_S,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"callback_failed_http_{r.status_code}: {r.text}")
+            return  # success
+        except Exception as e:
+            last_err = e
+            if attempt < CALLBACK_MAX_RETRIES:
+                wait = CALLBACK_RETRY_BASE_S * (2 ** (attempt - 1))
+                APP.logger.warning(
+                    "VIDEO TRIM CALLBACK attempt %d/%d failed task_id=%s error=%s — retrying in %.1fs",
+                    attempt, CALLBACK_MAX_RETRIES, payload.get("task_id"), e, wait,
+                )
+                time.sleep(wait)
+
+    raise RuntimeError(
+        f"callback_failed_after_{CALLBACK_MAX_RETRIES}_attempts: {last_err}"
     )
-    if r.status_code >= 400:
-        raise RuntimeError(f"callback_failed_http_{r.status_code}: {r.text}")
 
 
 def _run_trim_job(
@@ -174,12 +199,22 @@ def _launch_trim_subprocess(
 
     env = os.environ.copy()
 
+    # Route subprocess output to log files for post-mortem debugging
+    os.makedirs(TRIM_LOG_DIR, exist_ok=True)
+    log_path = os.path.join(TRIM_LOG_DIR, f"trim_{task_id[:8]}.log")
+
+    log_fh = open(log_path, "a", encoding="utf-8")
+    APP.logger.info(
+        "VIDEO TRIM SUBPROCESS launching task_id=%s log=%s",
+        task_id, log_path,
+    )
+
     subprocess.Popen(
         [sys.executable, "-c", py_code, json.dumps(payload)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_fh,
+        stderr=log_fh,
         stdin=subprocess.DEVNULL,
-        close_fds=True,
+        close_fds=False,
         start_new_session=True,
         cwd=os.getcwd(),
         env=env,
