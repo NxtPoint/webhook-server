@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TEN-FIFTY5 Locker Room</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   THEME & RESET
+   ============================================================ */
+:root {
+  --bg:           #0a0a0a;
+  --card-bg:      #1a1a1a;
+  --border:       #2a2a2a;
+  --green:        #1a5c2e;
+  --green-light:  #2a8c4a;
+  --green-glow:   rgba(26,92,46,0.35);
+  --amber:        #d4a017;
+  --red:          #c0392b;
+  --white:        #ffffff;
+  --text:         #ffffff;
+  --text-sec:     #a0a0a0;
+  --text-dim:     #707070;
+  --radius:       12px;
+  --transition:   0.2s ease;
+}
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--green-light); text-decoration: none; }
+button { cursor: pointer; font-family: inherit; }
+
+/* ============================================================
+   LAYOUT
+   ============================================================ */
+.app { max-width: 960px; margin: 0 auto; padding: 20px 16px 80px; }
+
+/* ============================================================
+   HEADER
+   ============================================================ */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 0 24px; border-bottom: 1px solid var(--border);
+  margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
+}
+.logo {
+  font-size: 1.6rem; font-weight: 700; letter-spacing: 1px;
+  color: var(--green-light);
+}
+.header-right { display: flex; align-items: center; gap: 14px; }
+.player-info { text-align: right; }
+.player-name { font-weight: 600; font-size: 0.95rem; }
+.player-email { color: var(--text-sec); font-size: 0.78rem; }
+
+.usage-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px;
+  font-size: 0.8rem; font-weight: 600;
+  border: 1px solid var(--border);
+  background: rgba(26,92,46,0.15);
+}
+.usage-pill.healthy { border-color: var(--green); color: var(--green-light); }
+.usage-pill.low     { border-color: var(--amber); color: var(--amber); background: rgba(212,160,23,0.1); }
+.usage-pill.critical{ border-color: var(--red);   color: var(--red);   background: rgba(192,57,43,0.1); }
+
+/* ============================================================
+   LOADING / EMPTY STATE
+   ============================================================ */
+.loading, .empty-state {
+  text-align: center; padding: 80px 20px; color: var(--text-sec);
+}
+.loading .spinner {
+  width: 36px; height: 36px; border: 3px solid var(--border);
+  border-top-color: var(--green-light); border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state .tennis-icon { font-size: 3rem; margin-bottom: 16px; }
+.empty-state h3 { font-weight: 500; margin-bottom: 8px; }
+.empty-state p { color: var(--text-dim); font-size: 0.9rem; max-width: 360px; margin: 0 auto; }
+
+/* ============================================================
+   MATCH CARDS
+   ============================================================ */
+.match-list { display: flex; flex-direction: column; gap: 12px; }
+
+.match-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+}
+.match-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--green);
+  box-shadow: 0 4px 20px var(--green-glow);
+}
+.match-card:active { transform: translateY(0); }
+
+.card-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
+.opponent-name { font-size: 1.15rem; font-weight: 700; }
+.match-meta { color: var(--text-sec); font-size: 0.78rem; margin-top: 2px; }
+
+.score-badge {
+  font-size: 1.1rem; font-weight: 700; color: var(--green-light);
+  letter-spacing: 1.5px; white-space: nowrap;
+}
+
+.status-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 10px;
+  font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.status-badge.processed  { background: rgba(26,92,46,0.2); color: var(--green-light); }
+.status-badge.processing { background: rgba(212,160,23,0.15); color: var(--amber); }
+.status-badge.failed     { background: rgba(192,57,43,0.15); color: var(--red); }
+
+.card-stats {
+  display: flex; gap: 20px; flex-wrap: wrap;
+  padding-top: 10px; border-top: 1px solid var(--border);
+}
+.stat-chip {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 56px;
+}
+.stat-val { font-size: 1rem; font-weight: 700; color: var(--white); }
+.stat-label { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ============================================================
+   DETAIL PANEL (slide-in overlay)
+   ============================================================ */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 100; opacity: 0; pointer-events: none;
+  transition: opacity var(--transition);
+}
+.overlay.open { opacity: 1; pointer-events: auto; }
+
+.detail-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(520px, 100vw); background: var(--bg);
+  border-left: 1px solid var(--border);
+  z-index: 101; transform: translateX(100%);
+  transition: transform 0.3s ease;
+  overflow-y: auto;
+  display: flex; flex-direction: column;
+}
+.detail-panel.open { transform: translateX(0); }
+
+.panel-header {
+  position: sticky; top: 0; background: var(--bg);
+  padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+.panel-close {
+  background: none; border: none; color: var(--text-sec);
+  font-size: 1.4rem; float: right; padding: 4px 8px;
+  transition: color var(--transition);
+}
+.panel-close:hover { color: var(--white); }
+
+.panel-title {
+  font-size: 1.3rem; font-weight: 700; margin-top: 4px;
+}
+.panel-subtitle { color: var(--text-sec); font-size: 0.82rem; margin-top: 4px; }
+
+.panel-body { padding: 20px 24px; flex: 1; }
+
+/* Stats grid */
+.stats-grid {
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  gap: 12px 8px; margin-bottom: 24px;
+}
+.stats-grid .stat-row {
+  display: contents;
+}
+.stats-grid .val-a, .stats-grid .val-b {
+  font-size: 1.1rem; font-weight: 700;
+}
+.stats-grid .val-a { text-align: right; }
+.stats-grid .val-b { text-align: left; }
+.stats-grid .stat-name {
+  text-align: center; color: var(--text-sec); font-size: 0.78rem;
+  align-self: center; text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+/* Editable fields */
+.editable-section { margin-top: 24px; }
+.editable-section h4 {
+  font-size: 0.82rem; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-dim); margin-bottom: 12px;
+}
+
+.edit-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.edit-label { color: var(--text-sec); font-size: 0.82rem; min-width: 100px; }
+.edit-value {
+  flex: 1; font-weight: 500; cursor: pointer;
+  padding: 4px 8px; border-radius: 6px;
+  transition: background var(--transition);
+}
+.edit-value:hover { background: rgba(255,255,255,0.05); }
+.edit-pencil {
+  color: var(--text-dim); font-size: 0.75rem; cursor: pointer;
+  transition: color var(--transition);
+}
+.edit-pencil:hover { color: var(--green-light); }
+
+.edit-input {
+  flex: 1; background: var(--card-bg); border: 1px solid var(--green);
+  border-radius: 6px; padding: 6px 10px; color: var(--white);
+  font-family: inherit; font-size: 0.95rem; outline: none;
+}
+
+.save-bar {
+  display: none; padding: 12px 0; text-align: right;
+}
+.save-bar.visible { display: block; }
+.btn-save {
+  background: var(--green); color: var(--white); border: none;
+  padding: 8px 24px; border-radius: 8px; font-weight: 600; font-size: 0.85rem;
+  transition: background var(--transition);
+}
+.btn-save:hover { background: var(--green-light); }
+
+/* Reprocess button */
+.btn-reprocess {
+  margin-top: 24px; width: 100%;
+  background: transparent; color: var(--red); border: 1px solid var(--red);
+  padding: 10px; border-radius: 8px; font-weight: 600; font-size: 0.85rem;
+  transition: all var(--transition);
+}
+.btn-reprocess:hover { background: rgba(192,57,43,0.1); }
+.btn-reprocess:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ============================================================
+   MOBILE
+   ============================================================ */
+@media (max-width: 600px) {
+  html { font-size: 14px; }
+  .header { flex-direction: column; align-items: flex-start; }
+  .header-right { width: 100%; justify-content: space-between; }
+  .player-info { text-align: left; }
+  .match-card { padding: 14px 16px; }
+  .card-stats { gap: 12px; }
+
+  .detail-panel { width: 100vw; border-left: none; }
+  .panel-header { padding: 16px; }
+  .panel-body { padding: 16px; }
+
+  .edit-row { flex-wrap: wrap; }
+  .edit-label { min-width: unset; width: 100%; font-size: 0.75rem; }
+
+  /* 44px min tap target */
+  .match-card, .btn-save, .btn-reprocess, .panel-close,
+  .edit-value, .edit-pencil { min-height: 44px; display: flex; align-items: center; }
+}
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+  <!-- Populated by JS -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p>Loading your matches...</p>
+  </div>
+</div>
+
+<!-- Overlay + Detail Panel -->
+<div class="overlay" id="overlay" onclick="closeDetail()"></div>
+<div class="detail-panel" id="detailPanel">
+  <div class="panel-header">
+    <button class="panel-close" onclick="closeDetail()">&times;</button>
+    <div class="panel-title" id="panelTitle"></div>
+    <div class="panel-subtitle" id="panelSubtitle"></div>
+  </div>
+  <div class="panel-body" id="panelBody"></div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG — injected via URL params from Wix iframe
+// ============================================================
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || '';
+
+function apiUrl(path) {
+  return API_BASE + path;
+}
+
+function apiFetch(path, opts = {}) {
+  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
+  return fetch(apiUrl(path) + (path.includes('?') ? '&' : '?') + 'email=' + encodeURIComponent(EMAIL), {
+    ...opts,
+    headers,
+  });
+}
+
+// ============================================================
+// STATE
+// ============================================================
+let matches = [];
+let usage = null;
+let pendingEdits = {};
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = `
+      <div class="empty-state">
+        <div class="tennis-icon">&#127934;</div>
+        <h3>Configuration Required</h3>
+        <p>Missing email or API key. Please access the Locker Room through your Wix dashboard.</p>
+      </div>`;
+    return;
+  }
+
+  try {
+    const [matchRes, usageRes] = await Promise.all([
+      apiFetch('/api/client/matches'),
+      apiFetch('/api/client/usage'),
+    ]);
+
+    const matchData = await matchRes.json();
+    const usageData = await usageRes.json();
+
+    matches = matchData.ok ? matchData.matches : [];
+    usage = usageData.ok ? usageData.usage : null;
+  } catch (e) {
+    console.error('Failed to load data', e);
+    matches = [];
+    usage = null;
+  }
+
+  render();
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+
+  // Header
+  const playerName = usage?.player_name || EMAIL.split('@')[0];
+  const remaining = usage?.matches_remaining ?? 0;
+  const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : 'healthy';
+
+  app.innerHTML = `
+    <div class="header">
+      <div class="logo">TEN-FIFTY5</div>
+      <div class="header-right">
+        <div class="player-info">
+          <div class="player-name">${esc(playerName)}</div>
+          <div class="player-email">${esc(EMAIL)}</div>
+        </div>
+        <div class="usage-pill ${pillClass}">
+          ${remaining} match${remaining !== 1 ? 'es' : ''} remaining
+        </div>
+      </div>
+    </div>
+    <div class="match-list" id="matchList"></div>
+  `;
+
+  const list = document.getElementById('matchList');
+
+  if (matches.length === 0) {
+    list.innerHTML = `
+      <div class="empty-state">
+        <div class="tennis-icon">&#127934;</div>
+        <h3>No matches yet</h3>
+        <p>Your matches will appear here once your first video is processed.</p>
+      </div>`;
+    return;
+  }
+
+  matches.forEach((m, i) => {
+    const card = document.createElement('div');
+    card.className = 'match-card';
+    card.onclick = () => openDetail(i);
+
+    const opponent = m.player_b_name || 'Opponent';
+    const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
+    const status = normalizeStatus(m.last_status);
+
+    card.innerHTML = `
+      <div class="card-top">
+        <div>
+          <div class="opponent-name">vs ${esc(opponent)}</div>
+          <div class="match-meta">${esc(meta)}</div>
+          <span class="status-badge ${status.cls}">${status.label}</span>
+        </div>
+        <div class="score-badge">${esc(m.score || '')}</div>
+      </div>
+      <div class="card-stats">
+        <div class="stat-chip"><span class="stat-val">${m.total_aces}</span><span class="stat-label">Aces</span></div>
+        <div class="stat-chip"><span class="stat-val">${m.avg_rally_length}</span><span class="stat-label">Avg Rally</span></div>
+        <div class="stat-chip"><span class="stat-val">${m.player_a_first_serve_pct}%</span><span class="stat-label">1st Serve</span></div>
+        <div class="stat-chip"><span class="stat-val">${m.player_a_winners}</span><span class="stat-label">Winners</span></div>
+        <div class="stat-chip"><span class="stat-val">${m.total_points}</span><span class="stat-label">Points</span></div>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function normalizeStatus(s) {
+  if (!s) return { cls: 'processing', label: 'Processing' };
+  const lower = (s || '').toLowerCase();
+  if (lower === 'completed' || lower === 'processed' || lower === 'ingested') return { cls: 'processed', label: 'Processed' };
+  if (lower === 'failed' || lower === 'error') return { cls: 'failed', label: 'Failed' };
+  return { cls: 'processing', label: 'Processing' };
+}
+
+// ============================================================
+// DETAIL PANEL
+// ============================================================
+function openDetail(idx) {
+  const m = matches[idx];
+  if (!m) return;
+  pendingEdits = {};
+
+  const title = `${esc(m.player_a_name || 'Player A')} vs ${esc(m.player_b_name || 'Player B')}`;
+  const subtitle = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
+  const status = normalizeStatus(m.last_status);
+
+  document.getElementById('panelTitle').innerHTML = title;
+  document.getElementById('panelSubtitle').textContent = subtitle;
+
+  const body = document.getElementById('panelBody');
+  body.innerHTML = `
+    <div class="score-badge" style="font-size:1.4rem;margin-bottom:20px;">${esc(m.score || 'No score')}</div>
+
+    <div class="stats-grid">
+      ${statRow(m.player_a_points_won, 'Points Won', m.player_b_points_won)}
+      ${statRow(m.player_a_games_won, 'Games Won', m.player_b_games_won)}
+      ${statRow(m.player_a_winners, 'Winners', m.player_b_winners)}
+      ${statRow(m.player_a_first_serve_pct + '%', '1st Serve %', m.player_b_first_serve_pct + '%')}
+      ${statRow(m.total_aces, 'Total Aces', '')}
+      ${statRow(m.total_double_faults, 'Double Faults', '')}
+      ${statRow(m.avg_rally_length, 'Avg Rally', m.max_rally_length + ' max')}
+    </div>
+
+    <div class="editable-section">
+      <h4>Match Details</h4>
+      ${editRow('player_a_name', 'Player A', m.player_a_name, idx)}
+      ${editRow('player_b_name', 'Player B', m.player_b_name, idx)}
+      ${editRow('location', 'Location', m.location, idx)}
+      ${editRow('match_date', 'Date', m.match_date, idx)}
+    </div>
+
+    <div class="save-bar" id="saveBar">
+      <button class="btn-save" onclick="saveEdits('${m.task_id}', ${idx})">Save Changes</button>
+    </div>
+
+    ${status.cls !== 'processed' ? `
+      <button class="btn-reprocess" id="btnReprocess" onclick="reprocess('${m.task_id}')">
+        Reprocess Match
+      </button>` : ''}
+  `;
+
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('detailPanel').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeDetail() {
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('detailPanel').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function statRow(valA, label, valB) {
+  return `<div class="stat-row">
+    <div class="val-a">${valA}</div>
+    <div class="stat-name">${label}</div>
+    <div class="val-b">${valB}</div>
+  </div>`;
+}
+
+function editRow(field, label, value, matchIdx) {
+  const id = `edit-${field}`;
+  return `<div class="edit-row">
+    <span class="edit-label">${label}</span>
+    <span class="edit-value" id="${id}" onclick="startEdit('${field}', '${id}', ${matchIdx})">${esc(value || '---')}</span>
+    <span class="edit-pencil" onclick="startEdit('${field}', '${id}', ${matchIdx})">&#9998;</span>
+  </div>`;
+}
+
+function startEdit(field, elemId, matchIdx) {
+  const el = document.getElementById(elemId);
+  if (el.querySelector('input')) return; // already editing
+
+  const current = matches[matchIdx][field] || '';
+  const inputType = field === 'match_date' ? 'date' : 'text';
+  el.innerHTML = `<input class="edit-input" type="${inputType}" value="${esc(current)}"
+    onchange="trackEdit('${field}', this.value)"
+    onkeydown="if(event.key==='Enter') this.blur()">`;
+  el.querySelector('input').focus();
+  el.onclick = null;
+}
+
+function trackEdit(field, value) {
+  pendingEdits[field] = value;
+  const bar = document.getElementById('saveBar');
+  if (bar) bar.classList.add('visible');
+}
+
+async function saveEdits(taskId, matchIdx) {
+  if (Object.keys(pendingEdits).length === 0) return;
+
+  const btn = document.querySelector('.btn-save');
+  btn.textContent = 'Saving...';
+  btn.disabled = true;
+
+  try {
+    const res = await apiFetch(`/api/client/matches/${taskId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pendingEdits),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      // Update local state
+      Object.assign(matches[matchIdx], pendingEdits);
+      pendingEdits = {};
+      openDetail(matchIdx); // re-render panel
+      render(); // re-render card list
+      openDetail(matchIdx);
+    } else {
+      alert('Save failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  } finally {
+    btn.textContent = 'Save Changes';
+    btn.disabled = false;
+  }
+}
+
+async function reprocess(taskId) {
+  const btn = document.getElementById('btnReprocess');
+  if (!btn) return;
+  btn.textContent = 'Reprocessing...';
+  btn.disabled = true;
+
+  try {
+    const res = await apiFetch(`/api/client/matches/${taskId}/reprocess`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      btn.textContent = 'Reprocessed!';
+      btn.style.borderColor = 'var(--green)';
+      btn.style.color = 'var(--green-light)';
+      // Reload data after a short delay
+      setTimeout(() => { init(); closeDetail(); }, 1500);
+    } else {
+      btn.textContent = 'Failed - Try Again';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.textContent = 'Failed - Try Again';
+    btn.disabled = false;
+  }
+}
+
+// ============================================================
+// UTILS
+// ============================================================
+function esc(str) {
+  if (str == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(str);
+  return d.innerHTML;
+}
+
+// Keyboard: Escape closes detail
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDetail();
+});
+
+// ============================================================
+// GO
+// ============================================================
+init();
+</script>
+</body>
+</html>
