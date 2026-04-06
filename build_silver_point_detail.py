@@ -275,7 +275,7 @@ def phase1_load(conn: Connection, task_id: str, cfg: dict) -> int:
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) = TRUE
-      AND COALESCE(s.is_in_rally, FALSE) = TRUE
+      AND COALESCE(s.is_in_rally, TRUE) = TRUE
     ON CONFLICT (task_id, id) DO NOTHING;
     """
     res = conn.execute(text(sql), params)
