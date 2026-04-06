@@ -281,7 +281,10 @@ def _run_bronze_init_conn(conn):
           ADD COLUMN IF NOT EXISTS ball_hit_location_y     DOUBLE PRECISION,
           -- extracted scalars from ball_impact_location blob
           ADD COLUMN IF NOT EXISTS ball_impact_location_x  DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS ball_impact_location_y  DOUBLE PRECISION
+          ADD COLUMN IF NOT EXISTS ball_impact_location_y  DOUBLE PRECISION,
+          -- extracted scalars from rally blob [start_s, end_s]
+          ADD COLUMN IF NOT EXISTS rally_start_s           DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS rally_end_s             DOUBLE PRECISION
     """))
 
     # scalar generated columns
@@ -395,6 +398,7 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
         ball_hit_obj = _as_dict(s.get("ball_hit"))
         ball_hit_loc = s.get("ball_hit_location")
         ball_impact_loc = s.get("ball_impact_location")
+        rally_raw = s.get("rally")
         j_clean = _clean_data(s, drop)
         rows.append({
             "tid": task_id,
@@ -409,7 +413,7 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             "swing_type": (s.get("swing_type") or None),
             "volley": _as_bool(s.get("volley")),
             "is_in_rally": _as_bool(s.get("is_in_rally")),
-            "rally": json.dumps(s.get("rally")) if s.get("rally") is not None else None,
+            "rally": json.dumps(rally_raw) if rally_raw is not None else None,
             "ball_hit": json.dumps(s.get("ball_hit")) if s.get("ball_hit") is not None else None,
             "confidence_swing_type": _as_float(s.get("confidence_swing_type")),
             "confidence": _as_float(s.get("confidence")),
@@ -430,6 +434,9 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             # extracted scalars from ball_impact_location blob
             "ball_impact_location_x": _as_float(ball_impact_loc[0]) if isinstance(ball_impact_loc, list) and len(ball_impact_loc) > 0 else None,
             "ball_impact_location_y": _as_float(ball_impact_loc[1]) if isinstance(ball_impact_loc, list) and len(ball_impact_loc) > 1 else None,
+            # extracted scalars from rally blob [start_s, end_s]
+            "rally_start_s": _as_float(rally_raw[0]) if isinstance(rally_raw, list) and len(rally_raw) > 0 else None,
+            "rally_end_s":   _as_float(rally_raw[1]) if isinstance(rally_raw, list) and len(rally_raw) > 1 else None,
         })
     if not rows: return 0
     conn.execute(sql_text("""
@@ -443,7 +450,8 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             ball_impact_location, ball_impact_type, intercepting_player_id,
             ball_trajectory, annotations,
             ball_hit_s, ball_hit_frame, ball_hit_location_x, ball_hit_location_y,
-            ball_impact_location_x, ball_impact_location_y
+            ball_impact_location_x, ball_impact_location_y,
+            rally_start_s, rally_end_s
         ) VALUES (
             :tid, CAST(:j AS JSONB),
             :start_ts, :start_frame, :end_ts, :end_frame,
@@ -454,7 +462,8 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             CAST(:ball_impact_location AS JSONB), :ball_impact_type, :intercepting_player_id,
             CAST(:ball_trajectory AS JSONB), CAST(:annotations AS JSONB),
             :ball_hit_s, :ball_hit_frame, :ball_hit_location_x, :ball_hit_location_y,
-            :ball_impact_location_x, :ball_impact_location_y
+            :ball_impact_location_x, :ball_impact_location_y,
+            :rally_start_s, :rally_end_s
         )
     """), rows)
     return len(rows)

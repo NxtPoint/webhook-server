@@ -141,7 +141,10 @@ def _add_typed_columns(conn):
           ADD COLUMN IF NOT EXISTS ball_hit_location_y     DOUBLE PRECISION,
           -- extracted scalars from ball_impact_location blob
           ADD COLUMN IF NOT EXISTS ball_impact_location_x  DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS ball_impact_location_y  DOUBLE PRECISION;
+          ADD COLUMN IF NOT EXISTS ball_impact_location_y  DOUBLE PRECISION,
+          -- extracted scalars from rally blob [start_s, end_s]
+          ADD COLUMN IF NOT EXISTS rally_start_s           DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS rally_end_s             DOUBLE PRECISION;
     """))
 
     # ---------------- rally (real columns; data may be {id,start,end} or {value:{...}}) ----------------
