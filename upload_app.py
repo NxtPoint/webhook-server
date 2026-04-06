@@ -133,6 +133,11 @@ WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
 WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 
 
+# ---------- Ingest worker service ----------
+INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
+INGEST_WORKER_OPS_KEY = (os.getenv("INGEST_WORKER_OPS_KEY") or "").strip()
+INGEST_WORKER_TIMEOUT_S = int(os.getenv("INGEST_WORKER_TIMEOUT_S", "10"))
+
 # ---------- Power BI service ----------
 PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
 PBI_SERVICE_OPS_KEY = (os.getenv("POWERBI_SERVICE_OPS_KEY") or OPS_KEY or "").strip()
@@ -1580,29 +1585,6 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
 
 INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 minutes
 
-def _launch_ingest_subprocess(task_id: str, result_url: str) -> None:
-    """
-    Launch ingest in a detached child Python process.
-    Safer than daemon threads inside Gunicorn workers.
-    """
-    py_code = (
-        "from upload_app import _do_ingest; "
-        "import sys; "
-        "_do_ingest(sys.argv[1], sys.argv[2])"
-    )
-
-    env = os.environ.copy()
-
-    subprocess.Popen(
-        [sys.executable, "-c", py_code, task_id, result_url],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        close_fds=True,
-        start_new_session=True,
-        cwd=os.getcwd(),
-        env=env,
-    )
 
 def _is_stale_ingest_row(row) -> bool:
     started_at = row.get("ingest_started_at") if row else None
@@ -1620,12 +1602,38 @@ def _is_stale_ingest_row(row) -> bool:
     except Exception:
         return False
 
+
+def _delegate_to_ingest_worker(task_id: str, result_url: str) -> dict:
+    """
+    POST to the ingest-worker service. Returns immediately (202).
+    The worker runs the full pipeline in a background thread.
+    """
+    if not INGEST_WORKER_BASE_URL:
+        raise RuntimeError("INGEST_WORKER_BASE_URL not set — cannot delegate ingest")
+    if not INGEST_WORKER_OPS_KEY:
+        raise RuntimeError("INGEST_WORKER_OPS_KEY not set — cannot delegate ingest")
+
+    resp = requests.post(
+        f"{INGEST_WORKER_BASE_URL}/ingest",
+        json={"task_id": task_id, "result_url": result_url},
+        headers={
+            "Authorization": f"Bearer {INGEST_WORKER_OPS_KEY}",
+            "Content-Type": "application/json",
+        },
+        timeout=INGEST_WORKER_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
+
+
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """
-    Production-stable mode:
-    Run ingest synchronously in-process.
+    Delegate ingest to the ingest-worker service.
 
-    Returns True if ingest was run, False if already done/running.
+    Idempotent: checks DB state before delegating.
+    Falls back to in-process _do_ingest if the worker is unreachable.
+
+    Returns True if ingest was triggered, False if already done/running.
     """
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -1643,14 +1651,28 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
             if not _is_stale_ingest_row(row):
                 return False  # already running
             app.logger.warning(
-                "INGEST STALE DETECTED task_id=%s ingest_started_at=%s - rerunning sync ingest",
-                task_id, row.get("ingest_started_at")
+                "INGEST STALE DETECTED task_id=%s ingest_started_at=%s — re-triggering",
+                task_id, row.get("ingest_started_at"),
             )
 
-    app.logger.info("INGEST SYNC AUTO START task_id=%s", task_id)
-    ok = _do_ingest(task_id, result_url)
-    app.logger.info("INGEST SYNC AUTO DONE task_id=%s ok=%s", task_id, ok)
-    return True
+    # Delegate to ingest worker service
+    try:
+        out = _delegate_to_ingest_worker(task_id, result_url)
+        app.logger.info(
+            "INGEST DELEGATED task_id=%s worker_response=%s",
+            task_id, out,
+        )
+        return True
+
+    except Exception as e:
+        app.logger.exception(
+            "INGEST WORKER UNREACHABLE task_id=%s error=%s — falling back to in-process",
+            task_id, e,
+        )
+        # Fallback: run in-process so ingest still happens
+        ok = _do_ingest(task_id, result_url)
+        app.logger.info("INGEST FALLBACK DONE task_id=%s ok=%s", task_id, ok)
+        return True
 
 # ==========================
 # PUBLIC ENDPOINTS (UPLOADS + STATUS + OPS)
@@ -2619,9 +2641,6 @@ def ops_ingest_task():
     tid = (body.get("task_id") or "").strip()
     mode = (body.get("mode") or "sync").strip().lower()
 
-    if mode != "sync":
-        return jsonify({"ok": False, "error": "mode must be 'sync'"}), 400
-
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
 
@@ -2642,7 +2661,8 @@ def ops_ingest_task():
         app.logger.info("OPS INGEST RESOLVED task_id=%s result_url=%s", tid, result_url)
 
         if mode == "worker":
-            launched = _start_ingest_background(tid, result_url)
+            out = _delegate_to_ingest_worker(tid, result_url)
+            launched = bool(out.get("accepted"))
 
             with engine.begin() as conn:
                 _ensure_submission_context_schema(conn)

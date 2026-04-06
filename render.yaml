@@ -150,6 +150,17 @@ services:
       - key: RENDER_TO_WIX_OPS_KEY
         sync: false
 
+      - key: VIDEO_WORKER_BASE_URL
+        value: "https://video-worker.onrender.com"
+      - key: VIDEO_WORKER_OPS_KEY
+        sync: false
+
+      - key: VIDEO_TRIM_CALLBACK_URL
+        sync: false
+
+      - key: INGEST_REPLACE_EXISTING
+        value: "1"
+
   # =========================================
   # 4) Video trim worker service
   # =========================================
