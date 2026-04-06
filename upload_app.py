@@ -1642,7 +1642,13 @@ def _is_stale_ingest_row(row) -> bool:
 
 
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
-    """Return True if we launched a worker; False if already done/running."""
+    """
+    TEMP STABILISATION MODE:
+    Run ingest synchronously in-process because worker/subprocess handoff
+    is the failing path in production.
+
+    Returns True if ingest was run, False if already done/running.
+    """
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
         row = conn.execute(sql_text("""
@@ -1659,31 +1665,14 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
             if not _is_stale_ingest_row(row):
                 return False  # already running
             app.logger.warning(
-                "INGEST STALE DETECTED task_id=%s ingest_started_at=%s - restarting",
+                "INGEST STALE DETECTED task_id=%s ingest_started_at=%s - rerunning sync ingest",
                 task_id, row.get("ingest_started_at")
             )
 
-        conn.execute(sql_text("""
-            UPDATE bronze.submission_context
-               SET ingest_started_at = now(),
-                   ingest_finished_at = NULL,
-                   ingest_error = NULL
-             WHERE task_id = :t
-        """), {"t": task_id})
-
-    try:
-        out = _call_ingest_worker(task_id, result_url)
-        app.logger.info("INGEST WORKER CALLED task_id=%s out=%s", task_id, out)
-        return True
-    except Exception as e:
-        app.logger.exception(
-            "INGEST WORKER CALL FAILED task_id=%s - falling back to local subprocess: %s",
-            task_id,
-            e,
-        )
-        _launch_ingest_subprocess(task_id, result_url)
-        app.logger.info("INGEST LOCAL SUBPROCESS LAUNCHED task_id=%s", task_id)
-        return True
+    app.logger.info("INGEST SYNC AUTO START task_id=%s", task_id)
+    ok = _do_ingest(task_id, result_url)
+    app.logger.info("INGEST SYNC AUTO DONE task_id=%s ok=%s", task_id, ok)
+    return True
 
 # ==========================
 # PUBLIC ENDPOINTS (UPLOADS + STATUS + OPS)
@@ -1795,42 +1784,6 @@ def video_trim_complete():
 
     return jsonify({"ok": True})
 
-# Testing webhook to improve autodectect and automingest - probably delete as i dot tink this is the issue
-@app.post("/webhook")
-def sportai_webhook():
-    body = request.get_json(silent=True) or {}
-
-    task_id = (
-        body.get("task_id")
-        or (body.get("data") or {}).get("task_id")
-        or body.get("id")
-        or ""
-    )
-    task_id = str(task_id).strip()
-
-    if not task_id:
-        return jsonify({"ok": False, "error": "task_id missing"}), 400
-
-    try:
-        app.logger.info("SPORTAI WEBHOOK RECEIVED task_id=%s body_keys=%s", task_id, list(body.keys()))
-
-        result_url = _resolve_result_url_for_task(task_id)
-        if not result_url:
-            app.logger.warning("SPORTAI WEBHOOK NO RESULT URL task_id=%s", task_id)
-            return jsonify({"ok": True, "accepted": False, "task_id": task_id, "reason": "result_url_not_available"}), 202
-
-        started = _start_ingest_background(task_id, result_url)
-
-        return jsonify({
-            "ok": True,
-            "accepted": bool(started),
-            "task_id": task_id,
-            "result_url": result_url,
-        }), 202
-
-    except Exception as e:
-        app.logger.exception("SPORTAI WEBHOOK FAILED task_id=%s: %s", task_id, e)
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
 # ==========================
 # PRESIGN (OPTIONAL)
