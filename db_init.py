@@ -133,7 +133,12 @@ def _add_typed_columns(conn):
           ADD COLUMN IF NOT EXISTS start_ts DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS start_frame INT,
           ADD COLUMN IF NOT EXISTS end_ts DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS end_frame INT;
+          ADD COLUMN IF NOT EXISTS end_frame INT,
+          -- extracted scalars from ball_hit / ball_hit_location blobs
+          ADD COLUMN IF NOT EXISTS ball_hit_s              DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_hit_frame          INTEGER,
+          ADD COLUMN IF NOT EXISTS ball_hit_location_x     DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_hit_location_y     DOUBLE PRECISION;
     """))
 
     # ---------------- rally (real columns; data may be {id,start,end} or {value:{...}}) ----------------
@@ -160,6 +165,7 @@ def _add_typed_columns(conn):
     # ---------------- player_position (real columns; we insert numbers directly) ----------------
     conn.execute(sql_text("""
         ALTER TABLE bronze.player_position
+          ADD COLUMN IF NOT EXISTS player_id TEXT,
           ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION,
@@ -193,6 +199,7 @@ def _add_typed_columns(conn):
     # ---------------- submission_context (flatten common + runtime/status fields) ----------------
     conn.execute(sql_text("""
         ALTER TABLE bronze.submission_context
+          ADD COLUMN IF NOT EXISTS sport_type TEXT,
           ADD COLUMN IF NOT EXISTS email TEXT,
           ADD COLUMN IF NOT EXISTS location TEXT,
           ADD COLUMN IF NOT EXISTS video_url TEXT,

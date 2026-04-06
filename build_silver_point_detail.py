@@ -17,6 +17,31 @@ from db_init import engine
 SILVER_SCHEMA = "silver"
 TABLE = "point_detail"
 
+# ============================================================
+# SPORT CONFIG
+# Single source of truth for all court geometry.
+# To add doubles support: add a "tennis_doubles" entry below,
+# then update the Wix form toggle and _store_submission_context
+# in upload_app.py — no phase function changes needed.
+# ============================================================
+
+DEFAULT_SPORT_TYPE = "tennis_singles"
+
+SPORT_CONFIG: Dict[str, Dict[str, float]] = {
+    "tennis_singles": {
+        "court_length_m":      23.77,
+        "doubles_width_m":     10.97,   # full court width (coordinate origin)
+        "singles_left_x":       1.37,   # singles left sideline in doubles-origin frame
+        "singles_right_x":      9.60,   # singles right sideline in doubles-origin frame
+        "singles_width":        8.23,
+        "half_y":              11.885,  # net mid-point (y axis)
+        "service_line_m":       6.40,
+        "far_service_line_m":  17.37,   # court_length - service_line
+        "eps_baseline_m":       0.30,   # tolerance for baseline detection
+    },
+    # "tennis_doubles": { ... }  — add here when Wix toggle is ready
+}
+
 
 # ------------------------------- Column specs -------------------------------
 PHASE1_COLS = OrderedDict({
@@ -195,9 +220,13 @@ def _player_id_canonical_map(conn: Connection, task_id: str) -> dict:
 
 
 # ------------------------------- PHASE 1 ---------------------------------
-def phase1_load(conn: Connection, task_id: str) -> int:
+def phase1_load(conn: Connection, task_id: str, cfg: dict) -> int:
     """
     Insert core fields + split x/y + ball_hit_s.
+
+    Reads ball_hit_s, ball_hit_location_x/y from typed bronze columns
+    (not from blob-parsing SQL) so a SportAI field rename won't silently
+    produce NULLs.
 
     Fix: canonicalize SportAI player_id to exactly 2 players:
       - map any extra/ghost player_id to the 2nd most common player_id for the task.
@@ -240,27 +269,9 @@ def phase1_load(conn: Connection, task_id: str) -> int:
       s.ball_speed::double precision             AS ball_speed,
       s.ball_impact_type                         AS ball_impact_type,
 
-      CASE
-        WHEN s.ball_hit IS NOT NULL
-         AND s.ball_hit::text LIKE '{{%%'
-         AND s.ball_hit::text LIKE '%%"timestamp"%%'
-        THEN (s.ball_hit::jsonb ->> 'timestamp')::double precision
-        ELSE NULL::double precision
-      END                                         AS ball_hit_s,
-
-      CASE
-        WHEN s.ball_hit_location IS NOT NULL
-         AND s.ball_hit_location::text LIKE '[%%'
-        THEN (s.ball_hit_location::jsonb ->> 0)::double precision
-        ELSE NULL::double precision
-      END                                         AS ball_hit_location_x,
-
-      CASE
-        WHEN s.ball_hit_location IS NOT NULL
-         AND s.ball_hit_location::text LIKE '[%%'
-        THEN (s.ball_hit_location::jsonb ->> 1)::double precision
-        ELSE NULL::double precision
-      END                                         AS ball_hit_location_y
+      s.ball_hit_s                                AS ball_hit_s,
+      s.ball_hit_location_x                       AS ball_hit_location_x,
+      s.ball_hit_location_y                       AS ball_hit_location_y
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) = TRUE
@@ -271,18 +282,27 @@ def phase1_load(conn: Connection, task_id: str) -> int:
 
 
 # ------------------------------- PHASE 2 ---------------------------------
-def phase2_update(conn: Connection, task_id: str) -> int:
+def phase2_update(conn: Connection, task_id: str, cfg: dict) -> int:
     """
     Pick FIRST bounce strictly after contact time within:
       (ball_hit_s + 0.005,  min(next_ball_hit_s, ball_hit_s + 2.5]]
+
+    Geometric guard (v0.6.97 multi-ball defence):
+      For non-serve shots the ball must cross the net, so the bounce must
+      land on the OPPOSITE side of the net from the hitter.
+      Bounces that violate this are excluded from the candidate set so
+      the LATERAL picks the next-best match rather than a wrong-ball hit.
+      Serves are excluded from the guard (they bounce in the service box,
+      same half of the court as the receiver).
     """
+    half_y = cfg["half_y"]
     sql = f"""
     WITH p AS (
-      SELECT p1.id, p1.task_id, p1.ball_hit_s
+      SELECT p1.id, p1.task_id, p1.ball_hit_s,
+             p1.ball_hit_location_y,
+             COALESCE(p1.serve, FALSE) AS serve
       FROM {SILVER_SCHEMA}.{TABLE} p1
       WHERE p1.task_id = :tid
-      -- Optional perf tightening (safe): skip null-hit rows
-      -- AND p1.ball_hit_s IS NOT NULL
     ),
     p_lead AS (
       SELECT
@@ -319,6 +339,16 @@ def phase2_update(conn: Connection, task_id: str) -> int:
           AND b.timestamp IS NOT NULL
           AND b.timestamp >  w.win_start
           AND b.timestamp <= w.win_end
+          -- Geometric guard: bounce must be on opposite side of net from hitter.
+          -- Skipped for serves (service box is same half as receiver) and
+          -- when hit-location or bounce coords are missing (fallback: allow through).
+          AND (
+            w.serve IS TRUE
+            OR w.ball_hit_location_y IS NULL
+            OR b.court_y IS NULL
+            OR (w.ball_hit_location_y < :half_y AND b.court_y > :half_y)
+            OR (w.ball_hit_location_y > :half_y AND b.court_y < :half_y)
+          )
         ORDER BY (type = 'floor') DESC, timestamp
         LIMIT 1
       ) b ON TRUE
@@ -333,12 +363,12 @@ def phase2_update(conn: Connection, task_id: str) -> int:
     WHERE p.task_id = :tid
       AND p.id = c.id;
     """
-    res = conn.execute(text(sql), {"tid": task_id})
+    res = conn.execute(text(sql), {"tid": task_id, "half_y": float(half_y)})
     return res.rowcount or 0
 
 
 # ------------------------------- PHASE 3 ---------------------------------
-def phase3_update(conn: Connection, task_id: str) -> int:
+def phase3_update(conn: Connection, task_id: str, cfg: dict) -> int:
     """
     Phase 3 (singles court rules; coordinate origin still doubles):
 
@@ -351,14 +381,11 @@ def phase3_update(conn: Connection, task_id: str) -> int:
       Fix: do NOT require bounce coords to detect a return (prevents false service winners).
     """
 
-    COURT_LENGTH_M = 23.77
-    DOUBLES_WIDTH_M = 10.97
-    EPS_BASELINE_M = 0.30
-
-    # Singles boundaries in doubles-origin frame
-    SINGLES_LEFT_X = (DOUBLES_WIDTH_M - 8.23) / 2.0  # 1.37
-    SINGLES_RIGHT_X = SINGLES_LEFT_X + 8.23          # 9.60
-    MID_X_DEFAULT = SINGLES_LEFT_X + 8.23 / 2.0      # 5.485
+    COURT_LENGTH_M  = cfg["court_length_m"]
+    EPS_BASELINE_M  = cfg["eps_baseline_m"]
+    SINGLES_LEFT_X  = cfg["singles_left_x"]
+    SINGLES_RIGHT_X = cfg["singles_right_x"]
+    MID_X_DEFAULT   = SINGLES_LEFT_X + cfg["singles_width"] / 2.0  # 5.485
 
     sql_checks = f"""
     WITH base AS (
@@ -694,7 +721,7 @@ def phase3_update(conn: Connection, task_id: str) -> int:
 
 # ------------------------------- PHASE 4 ---------------------------------
 
-def phase4_update(conn: Connection, task_id: str) -> int:
+def phase4_update(conn: Connection, task_id: str, cfg: dict) -> int:
     """
     Phase 4 (SINGLES court, SportAI x origin still at OUTSIDE doubles sideline):
       - serve_location        : 1–8 (from court_x, server_end_d, serve_side_d)  [persisted]
@@ -720,24 +747,23 @@ def phase4_update(conn: Connection, task_id: str) -> int:
     }))
 
     # -------------------
-    # Exact singles constants (meters) in doubles-origin coordinate frame
+    # Court constants from SPORT_CONFIG
     # -------------------
-    SINGLES_LEFT_X = 1.37
-    SINGLES_RIGHT_X = 9.60
-    SINGLES_WIDTH = 8.23
-    HALF_Y = 11.885
+    SINGLES_LEFT_X  = cfg["singles_left_x"]
+    SINGLES_RIGHT_X = cfg["singles_right_x"]
+    SINGLES_WIDTH   = cfg["singles_width"]
+    HALF_Y          = cfg["half_y"]
 
     # Service box, measured from singles wide sideline towards center line:
-    # half-width of singles court = 8.23/2 = 4.115
-    BOX_HALF_W = SINGLES_WIDTH / 2.0  # 4.115
-    Q1 = BOX_HALF_W / 4.0             # 1.02875
-    Q2 = BOX_HALF_W / 2.0             # 2.0575
-    Q3 = 3.0 * BOX_HALF_W / 4.0       # 3.08625
+    BOX_HALF_W = SINGLES_WIDTH / 2.0
+    Q1 = BOX_HALF_W / 4.0
+    Q2 = BOX_HALF_W / 2.0
+    Q3 = 3.0 * BOX_HALF_W / 4.0
 
-    # Rally bands across singles width (0..8.23) into 4 equal lanes:
-    L1 = SINGLES_WIDTH / 4.0          # 2.0575
-    L2 = SINGLES_WIDTH / 2.0          # 4.115
-    L3 = 3.0 * SINGLES_WIDTH / 4.0    # 6.1725
+    # Rally bands across singles width into 4 equal lanes:
+    L1 = SINGLES_WIDTH / 4.0
+    L2 = SINGLES_WIDTH / 2.0
+    L3 = 3.0 * SINGLES_WIDTH / 4.0
 
     # =========================================================================
     # 1) Serve location (1–8) — corrected mapping + safe carry-forward
@@ -1038,7 +1064,7 @@ def phase4_update(conn: Connection, task_id: str) -> int:
 #   - game_winner_player_id stays TEXT (no casts)
 #   - preflight resolves 2 primary players even if extra player_id values exist
 
-def phase5_update(conn: Connection, task_id: str) -> int:
+def phase5_update(conn: Connection, task_id: str, cfg: dict) -> int:
     pf = _phase5_preflight(conn, task_id)
 
     r1  = phase5_fix_point_number(conn, task_id, pf)
@@ -1047,12 +1073,12 @@ def phase5_update(conn: Connection, task_id: str) -> int:
     r4  = phase5_set_set_number(conn, task_id)
     r5  = phase5_set_server_id(conn, task_id)
     r6  = phase5_set_shot_ix_in_point(conn, task_id)
-    r7  = phase5_set_shot_phase(conn, task_id)
+    r7  = phase5_set_shot_phase(conn, task_id, cfg)
     r8  = phase5_set_point_key(conn, task_id)
-    r9  = phase5_set_shot_outcome(conn, task_id)
+    r9  = phase5_set_shot_outcome(conn, task_id, cfg)
 
     # serve outcomes AFTER shot_outcome exists
-    r9b = phase5_finalize_serve_labels(conn, task_id)
+    r9b = phase5_finalize_serve_labels(conn, task_id, cfg)
 
     r10 = phase5_set_point_winner(conn, task_id, pf)
     r11 = phase5_set_game_winner(conn, task_id)
@@ -1603,11 +1629,10 @@ def phase5_set_shot_ix_in_point(conn: Connection, task_id: str) -> int:
     return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
 
-def phase5_set_shot_phase(conn: Connection, task_id: str) -> int:
-    # Singles exact geometry (meters). y=0 at near baseline; y increases to far baseline.
-    COURT_LENGTH_M = 23.77
-    SERVICE_LINE_M = 6.40
-    FAR_SERVICE_LINE_M = COURT_LENGTH_M - SERVICE_LINE_M  # 17.37
+def phase5_set_shot_phase(conn: Connection, task_id: str, cfg: dict) -> int:
+    COURT_LENGTH_M     = cfg["court_length_m"]
+    SERVICE_LINE_M     = cfg["service_line_m"]
+    FAR_SERVICE_LINE_M = cfg["far_service_line_m"]
 
     sql = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
@@ -1661,13 +1686,12 @@ def phase5_set_point_key(conn: Connection, task_id: str) -> int:
     return conn.execute(text(sql), {"tid": task_id}).rowcount or 0
 
 
-def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
-    # Singles geometry (meters) with SportAI x-origin at outside doubles sideline
-    COURT_LEN = 23.77
-    HALF_Y = 11.885
-    SINGLES_LEFT_X = 1.37
-    SINGLES_RIGHT_X = 9.60
-    SERVE_NET_BAND = 1.60
+def phase5_set_shot_outcome(conn: Connection, task_id: str, cfg: dict) -> int:
+    COURT_LEN       = cfg["court_length_m"]
+    HALF_Y          = cfg["half_y"]
+    SINGLES_LEFT_X  = cfg["singles_left_x"]
+    SINGLES_RIGHT_X = cfg["singles_right_x"]
+    SERVE_NET_BAND  = 1.60
 
     sql = f"""
     WITH last_shot AS (
@@ -1755,7 +1779,7 @@ def phase5_set_shot_outcome(conn: Connection, task_id: str) -> int:
         },
     ).rowcount or 0
 
-def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
+def phase5_finalize_serve_labels(conn: Connection, task_id: str, cfg: dict) -> int:
     """
     Finalize serve-related outcome labels AFTER shot_outcome_d exists.
 
@@ -1770,11 +1794,11 @@ def phase5_finalize_serve_labels(conn: Connection, task_id: str) -> int:
       - and serve is not a valid in-serve
       => mark whole point as Double
     """
-    COURT_LEN = 23.77
-    SINGLES_LEFT_X = 1.37
-    SINGLES_RIGHT_X = 9.60
-    NET_Y = 11.885
-    NET_BAND = 1.60
+    COURT_LEN       = cfg["court_length_m"]
+    SINGLES_LEFT_X  = cfg["singles_left_x"]
+    SINGLES_RIGHT_X = cfg["singles_right_x"]
+    NET_Y           = cfg["half_y"]
+    NET_BAND        = 1.60
 
     sql = f"""
     WITH base AS (
@@ -2081,7 +2105,7 @@ def phase5_add_schema(conn: Connection):
 
 # ------------------------------- Phase 6 Normalised Co-ordinates -------------------------------
 
-def phase6_update(conn: Connection, task_id: str) -> int:
+def phase6_update(conn: Connection, task_id: str, cfg: dict) -> int:
     """
     Phase 6: camera-normalized coordinates
 
@@ -2103,9 +2127,9 @@ def phase6_update(conn: Connection, task_id: str) -> int:
             x_norm = 10.97 - x
             y_norm = 23.77 - y
     """
-    HALF_Y = 11.885
-    COURT_LEN = 23.77
-    DOUBLES_W = 10.97
+    HALF_Y    = cfg["half_y"]
+    COURT_LEN = cfg["court_length_m"]
+    DOUBLES_W = cfg["doubles_width_m"]
 
     sql = f"""
     UPDATE {SILVER_SCHEMA}.{TABLE} p
@@ -2313,6 +2337,20 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
     with engine.begin() as conn:
         ensure_table_exists(conn)
 
+        # ---- resolve sport_type per task from submission_context ----
+        row = conn.execute(
+            text("""
+                SELECT sport_type
+                FROM bronze.submission_context
+                WHERE task_id = :tid
+                LIMIT 1
+            """),
+            {"tid": task_id},
+        ).mappings().first()
+        sport_type = (row["sport_type"] if row and row.get("sport_type") else DEFAULT_SPORT_TYPE)
+        cfg = SPORT_CONFIG.get(sport_type, SPORT_CONFIG[DEFAULT_SPORT_TYPE])
+        out["sport_type"] = sport_type
+
         # Ensure all columns upfront
         ensure_phase_columns(conn, PHASE1_COLS)
         if phase in ("all", "2", "3", "4", "5", "6", "7"):
@@ -2336,22 +2374,22 @@ def build_silver(task_id: str, phase: str = "all", replace: bool = False) -> Dic
                     f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid",
                     {"tid": task_id},
                 )
-            out["phase1_rows_inserted"] = phase1_load(conn, task_id)
+            out["phase1_rows_inserted"] = phase1_load(conn, task_id, cfg)
 
         if phase in ("all", "2"):
-            out["phase2_rows_updated"] = phase2_update(conn, task_id)
+            out["phase2_rows_updated"] = phase2_update(conn, task_id, cfg)
 
         if phase in ("all", "3"):
-            out["phase3_rows_updated"] = phase3_update(conn, task_id)
+            out["phase3_rows_updated"] = phase3_update(conn, task_id, cfg)
 
         if phase in ("all", "4"):
-            out["phase4_rows_updated"] = phase4_update(conn, task_id)
+            out["phase4_rows_updated"] = phase4_update(conn, task_id, cfg)
 
         if phase in ("all", "5"):
-            out["phase5_rows_updated"] = phase5_update(conn, task_id)
+            out["phase5_rows_updated"] = phase5_update(conn, task_id, cfg)
 
         if phase in ("all", "6"):
-            out["phase6_rows_updated"] = phase6_update(conn, task_id)
+            out["phase6_rows_updated"] = phase6_update(conn, task_id, cfg)
 
         if phase in ("all", "7"):
             out["phase7_rows_updated"] = phase7_update(conn, task_id)

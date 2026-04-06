@@ -203,6 +203,7 @@ def _run_bronze_init_conn(conn):
 
     conn.execute(sql_text("""
         ALTER TABLE bronze.player_position
+          ADD COLUMN IF NOT EXISTS player_id TEXT,
           ADD COLUMN IF NOT EXISTS x DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS y DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS court_x DOUBLE PRECISION,
@@ -260,7 +261,12 @@ def _run_bronze_init_conn(conn):
           ADD COLUMN IF NOT EXISTS confidence_volley DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS intercepting_player_id INT,
           ADD COLUMN IF NOT EXISTS rally JSONB,
-          ADD COLUMN IF NOT EXISTS annotations JSONB
+          ADD COLUMN IF NOT EXISTS annotations JSONB,
+          -- extracted scalars from ball_hit / ball_hit_location blobs
+          ADD COLUMN IF NOT EXISTS ball_hit_s              DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_hit_frame          INTEGER,
+          ADD COLUMN IF NOT EXISTS ball_hit_location_x     DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS ball_hit_location_y     DOUBLE PRECISION
     """))
 
     # scalar generated columns
@@ -371,6 +377,8 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             continue
         start = _as_dict(s.get("start"))
         end   = _as_dict(s.get("end"))
+        ball_hit_obj = _as_dict(s.get("ball_hit"))
+        ball_hit_loc = s.get("ball_hit_location")
         j_clean = _clean_data(s, drop)
         rows.append({
             "tid": task_id,
@@ -390,7 +398,7 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             "confidence_swing_type": _as_float(s.get("confidence_swing_type")),
             "confidence": _as_float(s.get("confidence")),
             "confidence_volley": _as_float(s.get("confidence_volley")),
-            "ball_hit_location": json.dumps(s.get("ball_hit_location")) if s.get("ball_hit_location") is not None else None,
+            "ball_hit_location": json.dumps(ball_hit_loc) if ball_hit_loc is not None else None,
             "ball_player_distance": _as_float(s.get("ball_player_distance")),
             "ball_speed": _as_float(s.get("ball_speed")),
             "ball_impact_location": json.dumps(s.get("ball_impact_location")) if s.get("ball_impact_location") is not None else None,
@@ -398,6 +406,11 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             "intercepting_player_id": _as_int(s.get("intercepting_player_id")),
             "ball_trajectory": json.dumps(s.get("ball_trajectory")) if s.get("ball_trajectory") is not None else None,
             "annotations": json.dumps(s.get("annotations")) if s.get("annotations") is not None else None,
+            # extracted scalars from ball_hit / ball_hit_location blobs
+            "ball_hit_s": _as_float(ball_hit_obj.get("timestamp")) if ball_hit_obj else None,
+            "ball_hit_frame": _as_int(ball_hit_obj.get("frame_nr")) if ball_hit_obj else None,
+            "ball_hit_location_x": _as_float(ball_hit_loc[0]) if isinstance(ball_hit_loc, list) and len(ball_hit_loc) > 0 else None,
+            "ball_hit_location_y": _as_float(ball_hit_loc[1]) if isinstance(ball_hit_loc, list) and len(ball_hit_loc) > 1 else None,
         })
     if not rows: return 0
     conn.execute(sql_text("""
@@ -409,7 +422,8 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             confidence_swing_type, confidence, confidence_volley,
             ball_hit_location, ball_player_distance, ball_speed,
             ball_impact_location, ball_impact_type, intercepting_player_id,
-            ball_trajectory, annotations
+            ball_trajectory, annotations,
+            ball_hit_s, ball_hit_frame, ball_hit_location_x, ball_hit_location_y
         ) VALUES (
             :tid, CAST(:j AS JSONB),
             :start_ts, :start_frame, :end_ts, :end_frame,
@@ -418,7 +432,8 @@ def _insert_player_swings(conn, task_id: str, swings: list) -> int:
             :confidence_swing_type, :confidence, :confidence_volley,
             CAST(:ball_hit_location AS JSONB), :ball_player_distance, :ball_speed,
             CAST(:ball_impact_location AS JSONB), :ball_impact_type, :intercepting_player_id,
-            CAST(:ball_trajectory AS JSONB), CAST(:annotations AS JSONB)
+            CAST(:ball_trajectory AS JSONB), CAST(:annotations AS JSONB),
+            :ball_hit_s, :ball_hit_frame, :ball_hit_location_x, :ball_hit_location_y
         )
     """), rows)
     return len(rows)
@@ -457,21 +472,24 @@ def _insert_player_positions(conn, task_id: str, items: list) -> int:
     if gen:
         for it in items:
             if not isinstance(it, dict): continue
-            rows.append({"tid": task_id, "j": json.dumps(it)})
+            pid = it.pop("_player_id", None)
+            rows.append({"tid": task_id, "j": json.dumps(it), "pid": pid})
         if not rows: return 0
         conn.execute(sql_text("""
-            INSERT INTO bronze.player_position (task_id, data)
-            VALUES (:tid, CAST(:j AS JSONB))
+            INSERT INTO bronze.player_position (task_id, data, player_id)
+            VALUES (:tid, CAST(:j AS JSONB), :pid)
         """), rows)
         return len(rows)
 
-    drop = ["X", "Y", "court_X", "court_Y", "timestamp"]
+    drop = ["X", "Y", "court_X", "court_Y", "timestamp", "_player_id"]
     for it in items:
         if not isinstance(it, dict): continue
+        pid = it.get("_player_id")
         j_clean = {k: v for k, v in it.items() if k not in drop} or None
         rows.append({
             "tid": task_id,
             "j": json.dumps(j_clean) if j_clean is not None else None,
+            "pid": pid,
             "x":  it.get("X"),
             "y":  it.get("Y"),
             "cx": it.get("court_X"),
@@ -481,8 +499,8 @@ def _insert_player_positions(conn, task_id: str, items: list) -> int:
     if not rows:
         return 0
     conn.execute(sql_text("""
-        INSERT INTO bronze.player_position (task_id, data, x, y, court_x, court_y, timestamp)
-        VALUES (:tid, CAST(:j AS JSONB), :x, :y, :cx, :cy, :ts)
+        INSERT INTO bronze.player_position (task_id, data, player_id, x, y, court_x, court_y, timestamp)
+        VALUES (:tid, CAST(:j AS JSONB), :pid, :x, :y, :cx, :cy, :ts)
     """), rows)
     return len(rows)
 
@@ -685,9 +703,11 @@ def ingest_bronze_strict(
     player_positions_raw = payload.get("player_positions")
     player_positions_flat = []
     if isinstance(player_positions_raw, dict):
-        for v in player_positions_raw.values():
+        for pid, v in player_positions_raw.items():
             if isinstance(v, list):
-                player_positions_flat.extend(v)
+                for item in v:
+                    if isinstance(item, dict):
+                        player_positions_flat.append({**item, "_player_id": str(pid)})
     elif isinstance(player_positions_raw, list):
         player_positions_flat = player_positions_raw
 

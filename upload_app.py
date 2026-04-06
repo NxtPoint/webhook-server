@@ -99,7 +99,7 @@ SPORTAI_STATUS_PATHS = [
 # ---------- DB engine / bronze ingest ----------
 from db_init import engine  # noqa: E402
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
-from build_silver_point_detail import build_silver as build_silver_point_detail  # noqa: E402
+from build_silver_point_detail import build_silver as build_silver_point_detail, DEFAULT_SPORT_TYPE  # noqa: E402
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
 
@@ -464,6 +464,7 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_start_ts TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_end_ts TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS first_server TEXT",
+        f"ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS sport_type TEXT DEFAULT '{DEFAULT_SPORT_TYPE}'",
     ):
         conn.execute(sql_text(ddl))
 
@@ -571,7 +572,8 @@ def _store_submission_context(
               player_a_set2_games, player_b_set2_games,
               player_a_set3_games, player_b_set3_games,
               match_start_ts, match_end_ts,
-              first_server
+              first_server,
+              sport_type
             ) VALUES (
               :task_id, :email, :customer_name, :match_date, :start_time, :location,
               :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
@@ -582,7 +584,8 @@ def _store_submission_context(
               :a2, :b2,
               :a3, :b3,
               :start_ts, :end_ts,
-              :first_server
+              :first_server,
+              :sport_type
             )
             ON CONFLICT (task_id) DO UPDATE SET
               email=EXCLUDED.email,
@@ -608,7 +611,8 @@ def _store_submission_context(
               player_b_set3_games=EXCLUDED.player_b_set3_games,
               match_start_ts=EXCLUDED.match_start_ts,
               match_end_ts=EXCLUDED.match_end_ts,
-              first_server=EXCLUDED.first_server
+              first_server=EXCLUDED.first_server,
+              sport_type=EXCLUDED.sport_type
         """), {
             "task_id": task_id,
             "email": email,
@@ -632,6 +636,7 @@ def _store_submission_context(
             "start_ts": start_ts,
             "end_ts": end_ts,
             "first_server": first_server,
+            "sport_type": DEFAULT_SPORT_TYPE,
         })
 
 
