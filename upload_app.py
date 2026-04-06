@@ -2651,7 +2651,7 @@ def ops_ingest_task():
 
     body = request.get_json(silent=True) or {}
     tid = (body.get("task_id") or "").strip()
-    mode = (body.get("mode") or "worker").strip().lower()
+    mode = (body.get("mode") or "sync").strip().lower()
 
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
