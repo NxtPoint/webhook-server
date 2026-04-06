@@ -189,6 +189,9 @@ def grant_entitlement(
 
     with Session(engine) as session:
         # ---------- IDEMPOTENCY GUARD ----------
+        # Check by external_wix_id first (strongest match), then fall back
+        # to (account_id, source, plan_code, valid_from) to prevent duplicates
+        # even when external_wix_id is not provided.
         if external_wix_id:
             existing = session.execute(
                 text("""
@@ -205,6 +208,28 @@ def grant_entitlement(
                     "source": source,
                     "plan_code": plan_code,
                     "external_wix_id": external_wix_id,
+                },
+            ).scalar_one_or_none()
+
+            if existing is not None:
+                return int(existing)
+        else:
+            existing = session.execute(
+                text("""
+                    SELECT id
+                    FROM billing.entitlement_grant
+                    WHERE account_id = :account_id
+                      AND source = :source
+                      AND plan_code = :plan_code
+                      AND valid_from = :valid_from
+                      AND external_wix_id IS NULL
+                    LIMIT 1
+                """),
+                {
+                    "account_id": account_id,
+                    "source": source,
+                    "plan_code": plan_code,
+                    "valid_from": vf,
                 },
             ).scalar_one_or_none()
 

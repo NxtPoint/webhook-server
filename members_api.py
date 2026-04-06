@@ -6,7 +6,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, jsonify, request
+import os
+
+from flask import Blueprint, jsonify, request, Response
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,20 @@ from models_billing import Account, Member
 from billing_service import create_account_with_primary_member
 
 members_bp = Blueprint("members_api", __name__)
+
+OPS_KEY = os.environ.get("OPS_KEY", "").strip()
+
+
+def _guard() -> bool:
+    hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+    return bool(OPS_KEY) and (hk or "").strip() == OPS_KEY
+
+
+def _forbid():
+    return jsonify({"ok": False, "error": "forbidden"}), 403
 
 
 def _norm_email(email: Optional[str]) -> str:
@@ -66,10 +82,7 @@ def _require_email_arg() -> str:
 
 @members_bp.get("/api/billing/members")
 def list_members():
-    """
-    Authoritative list for Member Profile Section 2.
-    Returns all members (primary + children) for the account identified by email.
-    """
+    if not _guard(): return _forbid()
     try:
         email = _require_email_arg()
 
@@ -97,27 +110,13 @@ def list_members():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        return jsonify({"ok": False, "error": f"list_members_failed: {str(e)}"}), 500
+        import logging; logging.getLogger(__name__).exception("list_members_failed")
+        return jsonify({"ok": False, "error": "internal_error"}), 500
 
 
 @members_bp.post("/api/billing/member/upsert")
 def upsert_member():
-    """
-    Create/update a NON-primary member (child).
-    Body:
-      {
-        "email": "owner@email.com",
-        "member_id": 123 (optional, for update),
-        "full_name": "Child Name",
-        "child_email": "child@email.com" (optional),
-        "active": true|false (optional; default true)
-      }
-
-    Rules:
-    - Cannot create/update primary via this endpoint.
-    - Role forced to player_parent for children.
-    - Member must belong to the account for the given email.
-    """
+    if not _guard(): return _forbid()
     payload = request.get_json(silent=True) or {}
 
     try:
@@ -190,15 +189,13 @@ def upsert_member():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        return jsonify({"ok": False, "error": f"upsert_failed: {str(e)}"}), 500
+        import logging; logging.getLogger(__name__).exception("upsert_failed")
+        return jsonify({"ok": False, "error": "internal_error"}), 500
 
 
 @members_bp.post("/api/billing/member/deactivate")
 def deactivate_member():
-    """
-    Soft delete a child member (active=false).
-    Body: { "email": "owner@email.com", "member_id": 123 }
-    """
+    if not _guard(): return _forbid()
     payload = request.get_json(silent=True) or {}
 
     try:
@@ -238,15 +235,13 @@ def deactivate_member():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        return jsonify({"ok": False, "error": f"deactivate_failed: {str(e)}"}), 500
+        import logging; logging.getLogger(__name__).exception("deactivate_failed")
+        return jsonify({"ok": False, "error": "internal_error"}), 500
 
 
 @members_bp.post("/api/billing/sync_account")
 def sync_account():
-    """
-    Bulk sync used by onboarding/backfill.
-    NOTE: This deletes all members for the account and recreates them.
-    """
+    if not _guard(): return _forbid()
     payload = request.get_json(silent=True) or {}
 
     email = _norm_email(payload.get("email"))
@@ -374,4 +369,5 @@ def sync_account():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        return jsonify({"ok": False, "error": f"sync failed: {str(e)}"}), 500
+        import logging; logging.getLogger(__name__).exception("sync_account_failed")
+        return jsonify({"ok": False, "error": "internal_error"}), 500

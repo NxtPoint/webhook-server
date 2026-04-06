@@ -187,7 +187,7 @@ def api_invite():
 
         except Exception as e:
             session.rollback()
-            return jsonify(ok=False, error="invite_failed", detail=str(e)), 500
+            return jsonify(ok=False, error="invite_failed"), 500
 
 
 
@@ -293,7 +293,7 @@ def api_accept():
 
         except Exception as e:
             session.rollback()
-            return jsonify(ok=False, error="accept_failed", detail=str(e)), 500
+            return jsonify(ok=False, error="accept_failed"), 500
 
 
 
@@ -387,7 +387,7 @@ def api_revoke():
 
         except Exception as e:
             session.rollback()
-            return jsonify(ok=False, error="revoke_failed", detail=str(e)), 500
+            return jsonify(ok=False, error="revoke_failed"), 500
 
 
 # ----------------------------
@@ -396,25 +396,4 @@ def api_revoke():
 
 @bp.get("/health")
 def api_health():
-    return jsonify(ok=True, service="coaches", ts=_now_utc().isoformat())
-
-# temporary ... test can delete later 
-
-@bp.get("/debug/ops")
-def debug_ops():
-    ops_key = os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or ""
-    h = request.headers
-    provided = (
-        h.get("X-Ops-Key")
-        or h.get("X-OPS-KEY")
-        or h.get("x-ops-key")
-        or h.get("x-OPS-key")
-        or ""
-    )
-    return jsonify(
-        ok=True,
-        has_env=bool(ops_key),
-        env_len=len(ops_key),
-        provided_len=len(provided),
-        match=(bool(ops_key) and provided == ops_key),
-    )
+    return jsonify(ok=True, service="coaches")

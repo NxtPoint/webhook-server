@@ -28,22 +28,15 @@ def _norm_email(email: Optional[str]) -> str:
     return (email or "").strip().lower()
 
 
+OPS_KEY = (os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or "").strip()
+
+
 def _ops_key_ok() -> bool:
-    ops_key = (os.getenv("BILLING_OPS_KEY") or os.getenv("OPS_KEY") or "").strip()
-    if not ops_key:
-        return False
-
-    h = request.headers
-    provided = (
-        h.get("X-Ops-Key")
-        or h.get("X-OPS-Key")
-        or h.get("X-OPS-KEY")
-        or h.get("x-ops-key")
-        or h.get("x-OPS-key")
-        or ""
-    ).strip()
-
-    return provided == ops_key
+    hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+    return bool(OPS_KEY) and (hk or "").strip() == OPS_KEY
 
 
 def _find_account(session: Session, *, email: str, external_wix_id: Optional[str]) -> Optional[Account]:
@@ -81,6 +74,8 @@ def _parse_dt(v):
 
 @usage_bp.get("/api/billing/summary")
 def billing_summary():
+    if not _ops_key_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
     email = _norm_email(request.args.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
@@ -111,17 +106,8 @@ def billing_summary():
 
 @usage_bp.get("/api/billing/entitlement/check")
 def entitlement_check():
-    """
-    Read-only entitlement check for frontend.
-
-    Rules:
-      - Coaches can never upload
-      - Must have remaining credits > 0
-      - Must have ACTIVE subscription status (from billing.subscription_state)
-
-    Safety:
-      - If billing.subscription_state table is missing/unavailable, DENY (fail-closed).
-    """
+    if not _ops_key_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
     email = _norm_email(request.args.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
@@ -170,7 +156,7 @@ def entitlement_check():
                 "allowed": False,
                 "reason": "subscription_state_unavailable",
                 "data": data,
-                "detail": str(e),
+                "detail": "subscription_state table unavailable",
             })
 
         subscription_status = (sub_row.get("subscription_status") if sub_row else "NONE")
@@ -252,4 +238,5 @@ def entitlement_grant_endpoint():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        return jsonify({"ok": False, "error": f"grant failed: {str(e)}"}), 500
+        import logging; logging.getLogger(__name__).exception("entitlement_grant_failed")
+        return jsonify({"ok": False, "error": "internal_error"}), 500

@@ -308,15 +308,27 @@ def monthly_refill():
             continue
 
         try:
+            # Race-safe: claim the refill slot first with INSERT ... ON CONFLICT.
+            # If another cron instance already claimed it, skip this account.
             with engine.begin() as conn:
-                exists = conn.execute(
+                # Ensure unique constraint exists (idempotent)
+                conn.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_refill_account_month
+                    ON billing.monthly_refill_log (account_id, year_month)
+                """))
+
+                claimed = conn.execute(
                     text("""
-                        SELECT 1 FROM billing.monthly_refill_log
-                        WHERE account_id = :account_id AND year_month = :ym
+                        INSERT INTO billing.monthly_refill_log
+                        (account_id, year_month, grant_id)
+                        VALUES (:account_id, :ym, NULL)
+                        ON CONFLICT (account_id, year_month) DO NOTHING
+                        RETURNING account_id
                     """),
                     {"account_id": account_id, "ym": ym},
                 ).first()
-                if exists:
+
+                if not claimed:
                     already += 1
                     continue
 
@@ -364,16 +376,17 @@ def monthly_refill():
                 if inserted:
                     expired_total += delta_expire
 
-            with engine.begin() as conn:
-                conn.execute(
-                    text("""
-                        INSERT INTO billing.monthly_refill_log
-                        (account_id, year_month, grant_id)
-                        VALUES
-                        (:account_id, :ym, :grant_id)
-                    """),
-                    {"account_id": account_id, "ym": ym, "grant_id": grant_id},
-                )
+            # Update the log row with the grant_id now that processing is done
+            if grant_id:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            UPDATE billing.monthly_refill_log
+                            SET grant_id = :grant_id
+                            WHERE account_id = :account_id AND year_month = :ym
+                        """),
+                        {"account_id": account_id, "ym": ym, "grant_id": grant_id},
+                    )
 
             processed += 1
             details.append({
@@ -386,8 +399,9 @@ def monthly_refill():
             })
 
         except Exception as e:
+            import logging; logging.getLogger(__name__).exception("monthly_refill error account_id=%s", account_id)
             errors += 1
-            details.append({"account_id": account_id, "result": "error", "error": str(e)})
+            details.append({"account_id": account_id, "result": "error"})
 
     return jsonify({
         "ok": True,

@@ -3,11 +3,23 @@
 # CANONICAL UPLOAD GATE
 #==================================
 
+import os
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from db_init import engine
 
 entitlements_bp = Blueprint("entitlements", __name__)
+
+OPS_KEY = os.environ.get("OPS_KEY", "").strip()
+
+
+def _guard() -> bool:
+    hk = request.headers.get("X-OPS-Key") or request.headers.get("X-Ops-Key")
+    auth = request.headers.get("Authorization", "")
+    if auth and auth.lower().startswith("bearer "):
+        hk = auth.split(" ", 1)[1].strip()
+    return bool(OPS_KEY) and (hk or "").strip() == OPS_KEY
 
 UPSERT_SQL = text("""
 WITH a AS (
@@ -146,6 +158,8 @@ LIMIT 1
 
 @entitlements_bp.get("/api/entitlements/summary")
 def entitlements_summary():
+    if not _guard():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
     email = (request.args.get("email") or "").strip().lower()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
