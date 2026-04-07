@@ -18,6 +18,11 @@ def players_enclosure():
     return send_file("players_enclosure.html")
 
 
+@app.get("/media-room")
+def media_room():
+    return send_file("media_room.html")
+
+
 @app.get("/__alive")
 def alive():
     return jsonify({"ok": True, "service": "locker-room"})
