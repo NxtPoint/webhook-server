@@ -520,7 +520,8 @@ function renderBlocked(reason) {
 // ============================================================
 function renderStepIndicator() {
   const labels = ['Game Type', 'Upload Video', 'Match Details', 'Analysis'];
-  let html = '<div class="step-indicator">';
+  let html = '<div class="section-card" style="margin-bottom:16px;padding:16px 20px">';
+  html += '<div class="step-indicator">';
   labels.forEach((label, i) => {
     const n = i + 1;
     const cls = n === STATE.step ? 'active' : n < STATE.step ? 'done' : '';
@@ -529,6 +530,7 @@ function renderStepIndicator() {
   });
   html += '</div>';
   html += `<div class="step-title">Step ${STATE.step} of 4 &mdash; ${labels[STATE.step - 1]}</div>`;
+  html += '</div>';
   return html;
 }
 
@@ -1233,8 +1235,8 @@ let txLogEntries = [];
 
 function renderStep4(el) {
   txLogEntries = [];
-  addTxLog('ok', 'File received');
-  addTxLog('ok', 'Upload to SportAI initiated');
+  addTxLog('ok', 'Video uploaded successfully');
+  addTxLog('ok', 'Submitting match for analysis');
 
   el.innerHTML = `
     <div class="section-card">
@@ -1244,7 +1246,7 @@ function renderStep4(el) {
         <span id="analysisPct" style="font-weight:700;font-size:0.95rem;color:var(--green)">0%</span>
       </div>
       <div class="progress-bar-wrap"><div class="progress-bar-fill" id="analysisBar"></div></div>
-      <div id="analysisStatus" style="font-size:0.82rem;color:var(--text-sec);margin-top:4px"></div>
+      <div id="analysisStatus" style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;word-break:break-all"></div>
       <div class="tx-log" id="txLog"></div>
       <div id="analysisResult"></div>
       <div class="msg-bar" id="analysisMsg"></div>
@@ -1270,10 +1272,10 @@ function renderTxLog() {
 }
 
 const STAGE_LABELS = {
-  'queued_for_analysis': 'Queued for analysis',
-  'match_analysis_in_progress': 'Analysis processing',
-  'building_analytics': 'Building analytics',
-  'refreshing_dashboard': 'Refreshing dashboard',
+  'queued_for_analysis': 'Waiting to start analysis',
+  'match_analysis_in_progress': 'Analysing your match',
+  'building_analytics': 'Building your match report',
+  'refreshing_dashboard': 'Updating your dashboards',
   'complete': 'Complete',
   'failed': 'Failed',
   'canceled': 'Cancelled',
@@ -1313,26 +1315,31 @@ async function pollStatus() {
     if (bar) bar.style.width = pct + '%';
     if (pctEl) pctEl.textContent = pct + '%';
     if (stageEl) stageEl.textContent = STAGE_LABELS[stage] || stage;
-    if (statusEl) statusEl.textContent = `SportAI: ${status} | Task: ${STATE.taskId.substring(0, 8)}...`;
+    if (statusEl) statusEl.textContent = `Reference: ${STATE.taskId}`;
 
-    // Log stage transitions
+    // Log stage transitions (customer-friendly language)
     if (stage !== lastStage) {
       if (stage === 'queued_for_analysis' && !lastStage) {
-        addTxLog('ok', 'SportAI acknowledgement');
-        addTxLog('ok', 'Analysis queued');
+        addTxLog('ok', 'Video received and validated');
+        addTxLog('ok', 'Match submitted for analysis');
       }
-      if (stage === 'match_analysis_in_progress') addTxLog('ok', 'Analysis processing');
+      if (stage === 'match_analysis_in_progress') addTxLog('ok', 'Analysing match — detecting shots, serves, and rallies');
       if (stage === 'building_analytics') {
-        addTxLog('ok', 'Clips extracted');
-        addTxLog('ok', 'Report ready');
+        addTxLog('ok', 'Match analysis complete');
+        addTxLog('ok', 'Building match statistics and point-by-point breakdown');
+        addTxLog('ok', 'Trimming video footage for highlights');
       }
-      if (stage === 'refreshing_dashboard') addTxLog('ok', 'Record saved to DB');
+      if (stage === 'refreshing_dashboard') {
+        addTxLog('ok', 'Match data saved');
+        addTxLog('ok', 'Updating your dashboards');
+      }
       if (stage === 'complete') {
-        addTxLog('ok', 'Record saved to DB');
-        addTxLog('ok', 'Dashboard ready');
+        if (lastStage !== 'refreshing_dashboard') addTxLog('ok', 'Match data saved');
+        addTxLog('ok', 'Dashboards updated');
+        addTxLog('ok', 'Your match is ready to view');
       }
-      if (stage === 'failed') addTxLog('err', 'Analysis failed');
-      if (stage === 'canceled') addTxLog('warn', 'Analysis cancelled');
+      if (stage === 'failed') addTxLog('err', 'Something went wrong — please try again or contact support');
+      if (stage === 'canceled') addTxLog('warn', 'Analysis was cancelled');
       lastStage = stage;
     }
 
@@ -1361,18 +1368,15 @@ function showAnalysisSuccess() {
   const el = document.getElementById('analysisResult');
   if (!el) return;
 
-  // Build Locker Room URL
-  const lockerRoomBase = params.get('locker_room_url') || '';
-  let lrLink = '';
-  if (lockerRoomBase) {
-    lrLink = `<a href="${esc(lockerRoomBase)}" target="_top" style="display:inline-block;background:var(--green);color:var(--white);padding:10px 24px;border-radius:var(--radius);font-weight:600;text-decoration:none;font-size:0.88rem;margin-top:12px">View in Locker Room</a>`;
-  }
+  // Build Locker Room URL from same origin (media room and locker room are on the same service)
+  const lrBase = params.get('locker_room_url')
+    || (window.location.origin + '/?email=' + encodeURIComponent(EMAIL) + '&key=' + encodeURIComponent(API_KEY) + '&api=' + encodeURIComponent(API_BASE));
 
   el.innerHTML = `
     <div class="success-card">
       <h3>Analysis Complete</h3>
       <p>Your match has been processed and your dashboards are ready.</p>
-      ${lrLink}
+      <a href="${esc(lrBase)}" target="_top" style="display:inline-block;background:var(--green);color:var(--white);padding:10px 24px;border-radius:var(--radius);font-weight:600;text-decoration:none;font-size:0.88rem;margin-top:12px">View in Locker Room</a>
     </div>
   `;
 }
