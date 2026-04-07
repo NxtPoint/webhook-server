@@ -229,7 +229,7 @@ textarea.form-input { resize: vertical; min-height: 60px; }
 
 const params = new URLSearchParams(window.location.search);
 const API_KEY = params.get('key') || '';
-const API_BASE = params.get('api') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
 
 // Wix handoff data — populated via postMessage or URL params
 let WIX_DATA = {
@@ -255,6 +255,8 @@ window.addEventListener('message', function(event) {
 });
 
 let initDone = false;
+let alreadyRegistered = false;
+let profile = null;
 let currentStep = 0; // 0=welcome, 1=role, 2=children, 3=complete
 let selectedRole = '';
 let childForms = [0]; // indices of child forms
@@ -274,42 +276,55 @@ function esc(s) {
   return d.innerHTML;
 }
 
-async function init() {
-  if (!WIX_DATA.email || !API_KEY) {
-    // If no email, wait briefly for postMessage, then show error
-    if (!WIX_DATA.email) {
-      setTimeout(() => {
-        if (!WIX_DATA.email) {
-          document.getElementById('app').innerHTML = `
-            <div class="header"><div class="header-top"><div class="logo">TEN-FIFTY5</div><div class="nav-title">Players' Enclosure</div></div></div>
-            <div class="empty-state"><h3>Missing Information</h3><p>We couldn't receive your account details. Please access this page through your TEN-FIFTY5 dashboard. Required: email, first name, and surname.</p></div>`;
-        }
-      }, 2000);
-      return;
-    }
-    if (!API_KEY) {
-      document.getElementById('app').innerHTML = `
-        <div class="header"><div class="header-top"><div class="logo">TEN-FIFTY5</div><div class="nav-title">Players' Enclosure</div></div></div>
-        <div class="empty-state"><h3>Configuration Required</h3><p>Missing API key. Access the Players' Enclosure through your dashboard.</p></div>`;
-      return;
-    }
-  }
+function showError(title, msg) {
+  document.getElementById('app').innerHTML = `
+    <div class="header"><div class="header-top"><div class="logo">TEN-FIFTY5</div><div class="nav-title">Players' Enclosure</div></div></div>
+    <div class="empty-state"><h3>${title}</h3><p>${msg}</p></div>`;
+}
 
-  if (!WIX_DATA.firstName || !WIX_DATA.surname) {
-    document.getElementById('app').innerHTML = `
-      <div class="header"><div class="header-top"><div class="logo">TEN-FIFTY5</div><div class="nav-title">Players' Enclosure</div></div></div>
-      <div class="empty-state"><h3>Missing Information</h3><p>We need your first name and surname to set up your account. Please ensure your Wix profile is complete, then try again.</p></div>`;
+async function init() {
+  // Gate: need email + key at minimum
+  if (!WIX_DATA.email) {
+    setTimeout(() => {
+      if (!WIX_DATA.email) showError('Missing Information', 'We couldn\'t receive your account details. Please access this page through your TEN-FIFTY5 dashboard.');
+    }, 2000);
+    return;
+  }
+  if (!API_KEY) {
+    showError('Configuration Required', 'Missing API key. Access the Players\' Enclosure through your dashboard.');
     return;
   }
 
   initDone = true;
 
-  // Fetch entitlements
+  // Fetch profile + entitlements from API (user may already exist)
   try {
-    const eRes = await apiFetch('/api/client/entitlements');
+    const [prRes, eRes] = await Promise.all([
+      apiFetch('/api/client/profile'),
+      apiFetch('/api/client/entitlements'),
+    ]);
+    const prData = await prRes.json();
     const eData = await eRes.json();
+    profile = prData.ok ? prData.profile : null;
     entitlements = eData.ok ? eData.entitlements : null;
-  } catch (e) { console.error('Entitlements fetch failed', e); }
+  } catch (e) { console.error('API fetch failed', e); }
+
+  // If profile exists in DB, pre-populate WIX_DATA from it
+  if (profile) {
+    WIX_DATA.firstName = WIX_DATA.firstName || profile.full_name || '';
+    WIX_DATA.surname = WIX_DATA.surname || profile.surname || '';
+
+    // If user already has a role set, they've completed registration before
+    if (profile.role) {
+      alreadyRegistered = true;
+    }
+  }
+
+  // For brand-new users with no profile AND no Wix handoff data, show error
+  if (!profile && !WIX_DATA.firstName) {
+    showError('Missing Information', 'We need your name to set up your account. Please ensure your Wix profile is complete, or access this page through your TEN-FIFTY5 dashboard.');
+    return;
+  }
 
   render();
 }
@@ -339,6 +354,25 @@ function render() {
         <span>No active plan. <a href="${esc(entitlements.plans_page_url)}" target="_blank">View plans</a> to get started.</span>
       </div>`;
     }
+  }
+
+  // Already registered — show summary instead of wizard
+  if (alreadyRegistered) {
+    const roleLabels = { player_parent: 'Player / Parent', coach: 'Coach' };
+    html += `<div class="completion-card">
+      <h2>Your Profile</h2>
+      <p>Your account is already set up.</p>
+      <div class="completion-summary">
+        <div class="summary-row"><span class="summary-label">Name</span><span class="summary-value">${esc(WIX_DATA.firstName)} ${esc(WIX_DATA.surname)}</span></div>
+        <div class="summary-row"><span class="summary-label">Email</span><span class="summary-value">${esc(WIX_DATA.email)}</span></div>
+        <div class="summary-row"><span class="summary-label">Role</span><span class="summary-value">${roleLabels[profile?.role] || profile?.role || 'Player / Parent'}</span></div>
+      </div>
+      <div class="btn-row" style="justify-content:center;margin-top:24px">
+        <button class="btn-primary" onclick="goToLockerRoom()">Go to Locker Room</button>
+      </div>
+    </div>`;
+    app.innerHTML = html;
+    return;
   }
 
   // Progress bar
