@@ -64,10 +64,16 @@ def _member_to_dict(m: Member) -> Dict[str, Any]:
         "id": int(m.id),
         "account_id": int(m.account_id),
         "full_name": m.full_name,
+        "surname": getattr(m, "surname", None),
         "is_primary": bool(m.is_primary),
         "role": m.role,
         "active": bool(m.active),
         "email": (getattr(m, "email", None) or None),
+        "phone": getattr(m, "phone", None),
+        "utr": getattr(m, "utr", None),
+        "dominant_hand": getattr(m, "dominant_hand", None),
+        "country": getattr(m, "country", None),
+        "area": getattr(m, "area", None),
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }
 

@@ -8,6 +8,7 @@ from sqlalchemy import (
     BigInteger,
     String,
     Boolean,
+    Date,
     DateTime,
     CHAR,
     ForeignKey,
@@ -78,6 +79,20 @@ class Member(Base):
     role = Column(String, nullable=False, server_default=text("'player_parent'"))
     active = Column(Boolean, nullable=False, server_default=text("true"))
 
+    # Profile fields (Locker Room)
+    surname = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    utr = Column(String, nullable=True)
+    dominant_hand = Column(String, nullable=True)   # left / right
+    country = Column(String, nullable=True)
+    area = Column(String, nullable=True)
+
+    # Child profile fields (Players' Enclosure)
+    dob = Column(Date, nullable=True)
+    skill_level = Column(String, nullable=True)
+    club_school = Column(String, nullable=True)
+    notes = Column(String, nullable=True)
+    profile_photo_url = Column(String, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),

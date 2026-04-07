@@ -1,4 +1,4 @@
-# client_api.py — Client-facing API for Locker Room dashboard
+# client_api.py — Client-facing API for Locker Room + Players' Enclosure
 # Auth: X-Client-Key header (CLIENT_API_KEY env var, separate from OPS_KEY)
 
 from __future__ import annotations
@@ -13,12 +13,21 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from db_init import engine
+from models_billing import Member
 
 client_bp = Blueprint("client_api", __name__)
 
 CLIENT_API_KEY = os.environ.get("CLIENT_API_KEY", "").strip()
+PLANS_PAGE_URL = os.environ.get("PLANS_PAGE_URL", "https://www.tenfifty5.com/plans").strip()
 
 log = logging.getLogger(__name__)
+
+# Profile fields editable from Locker Room
+PROFILE_FIELDS = {
+    "full_name", "surname", "phone", "utr",
+    "dominant_hand", "country", "area",
+    "profile_photo_url",
+}
 
 
 # Handle OPTIONS preflight for all client API routes
@@ -79,7 +88,9 @@ def list_matches():
                     g.player_a_set2_games, g.player_b_set2_games,
                     g.player_a_set3_games, g.player_b_set3_games,
                     sc.player_a_utr, sc.player_b_utr,
-                    sc.first_server, sc.start_time
+                    sc.first_server, sc.start_time,
+                    sc.trim_status, sc.trim_output_s3_key,
+                    sc.trim_duration_s
                 FROM gold.vw_client_match_summary g
                 JOIN bronze.submission_context sc ON sc.task_id = g.task_id
                 WHERE g.email = :email
@@ -127,6 +138,9 @@ def list_matches():
             "player_b_set2_games": r["player_b_set2_games"],
             "player_a_set3_games": r["player_a_set3_games"],
             "player_b_set3_games": r["player_b_set3_games"],
+            "trim_status": r["trim_status"],
+            "trim_output_s3_key": r["trim_output_s3_key"],
+            "trim_duration_s": float(r["trim_duration_s"]) if r["trim_duration_s"] else None,
         })
 
     return jsonify({"ok": True, "matches": matches})
@@ -360,3 +374,428 @@ def reprocess_match(task_id: str):
     except Exception:
         log.exception("reprocess failed task_id=%s", task_id)
         return jsonify({"ok": False, "error": "reprocess_failed"}), 500
+
+
+# ----------------------------
+# GET /api/client/profile
+# ----------------------------
+
+@client_bp.route("/api/client/profile", methods=["GET", "OPTIONS"])
+def get_profile():
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    m.id, m.full_name, m.surname, m.phone, m.utr,
+                    m.dominant_hand, m.country, m.area,
+                    m.role, a.email
+                FROM billing.account a
+                JOIN billing.member m ON m.account_id = a.id AND m.is_primary = true
+                WHERE a.email = :email
+            """),
+            {"email": email},
+        ).mappings().first()
+
+    if not row:
+        return jsonify({"ok": True, "profile": None})
+
+    return jsonify({
+        "ok": True,
+        "profile": {
+            "member_id": int(row["id"]),
+            "full_name": row["full_name"],
+            "surname": row["surname"],
+            "email": row["email"],
+            "phone": row["phone"],
+            "utr": row["utr"],
+            "dominant_hand": row["dominant_hand"],
+            "country": row["country"],
+            "area": row["area"],
+            "role": row["role"],
+        },
+    })
+
+
+# ----------------------------
+# PATCH /api/client/profile
+# ----------------------------
+
+@client_bp.route("/api/client/profile", methods=["PATCH"], endpoint="update_profile")
+def update_profile():
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    updates = {k: v for k, v in payload.items() if k in PROFILE_FIELDS}
+    if not updates:
+        return jsonify({"ok": False, "error": "no editable fields provided"}), 400
+
+    with Session(engine) as session:
+        row = session.execute(
+            text("""
+                SELECT m.id
+                FROM billing.account a
+                JOIN billing.member m ON m.account_id = a.id AND m.is_primary = true
+                WHERE a.email = :email
+            """),
+            {"email": email},
+        ).mappings().first()
+
+        if not row:
+            return jsonify({"ok": False, "error": "profile_not_found"}), 404
+
+        member_id = row["id"]
+        set_parts = []
+        params = {"mid": member_id}
+        for k, v in updates.items():
+            set_parts.append(f"{k} = :{k}")
+            params[k] = v
+
+        sql = f"UPDATE billing.member SET {', '.join(set_parts)} WHERE id = :mid"
+        session.execute(text(sql), params)
+        session.commit()
+
+    return jsonify({"ok": True, "updated": list(updates.keys())})
+
+
+# ----------------------------
+# GET /api/client/footage-url/<task_id>
+# ----------------------------
+
+@client_bp.route("/api/client/footage-url/<task_id>", methods=["GET", "OPTIONS"])
+def footage_url(task_id: str):
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT email, trim_status, trim_output_s3_key
+                FROM bronze.submission_context
+                WHERE task_id = :tid
+            """),
+            {"tid": task_id},
+        ).mappings().first()
+
+    if not row or _norm_email(row["email"]) != email:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    if row["trim_status"] != "completed" or not row["trim_output_s3_key"]:
+        return jsonify({"ok": False, "error": "footage_not_ready"}), 404
+
+    try:
+        from upload_app import _s3_presigned_get_url
+        url = _s3_presigned_get_url(row["trim_output_s3_key"], expires=3600)
+        return jsonify({"ok": True, "url": url})
+    except Exception:
+        log.exception("presigned url failed task_id=%s", task_id)
+        return jsonify({"ok": False, "error": "url_generation_failed"}), 500
+
+
+# ----------------------------
+# GET /api/client/entitlements
+# ----------------------------
+
+@client_bp.route("/api/client/entitlements", methods=["GET", "OPTIONS"])
+def client_entitlements():
+    """Authoritative entitlement check for all client-facing pages."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT
+                    a.id AS account_id,
+                    a.active AS account_active,
+                    COALESCE(m.role, 'player_parent') AS role,
+                    s.status AS subscription_status,
+                    COALESCE(v.matches_remaining, 0) AS credits_remaining,
+                    COALESCE(v.matches_granted, 0)   AS matches_granted,
+                    COALESCE(v.matches_consumed, 0)   AS matches_consumed
+                FROM billing.account a
+                LEFT JOIN billing.member m
+                    ON m.account_id = a.id AND m.is_primary = true
+                LEFT JOIN billing.subscription_state s
+                    ON s.account_id = a.id
+                LEFT JOIN billing.vw_customer_usage v
+                    ON v.account_id = a.id
+                WHERE a.email = :email
+            """),
+            {"email": email},
+        ).mappings().first()
+
+    if not row:
+        return jsonify({"ok": True, "entitlements": None})
+
+    account_active = bool(row["account_active"])
+    sub_status = (row["subscription_status"] or "").upper()
+    plan_active = sub_status == "ACTIVE"
+
+    if not account_active:
+        account_status = "terminated"
+    else:
+        account_status = "active"
+
+    return jsonify({
+        "ok": True,
+        "entitlements": {
+            "role": row["role"],
+            "plan_active": plan_active,
+            "credits_remaining": int(row["credits_remaining"]),
+            "matches_granted": int(row["matches_granted"]),
+            "matches_consumed": int(row["matches_consumed"]),
+            "account_status": account_status,
+            "plans_page_url": PLANS_PAGE_URL,
+        },
+    })
+
+
+# ----------------------------
+# POST /api/client/register
+# ----------------------------
+
+@client_bp.route("/api/client/register", methods=["POST", "OPTIONS"])
+def register_member():
+    """Onboarding registration from Players' Enclosure."""
+    if not _guard():
+        return _forbid()
+
+    payload = request.get_json(silent=True) or {}
+    email = _norm_email(payload.get("email"))
+    first_name = (payload.get("first_name") or "").strip()
+    surname = (payload.get("surname") or "").strip()
+    wix_member_id = (payload.get("wix_member_id") or "").strip() or None
+    role = (payload.get("role") or "player_parent").strip().lower()
+
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+    if not first_name:
+        return jsonify({"ok": False, "error": "first_name required"}), 400
+
+    if role not in ("player_parent", "coach"):
+        role = "player_parent"
+
+    from billing_service import create_account_with_primary_member
+
+    acct = create_account_with_primary_member(
+        email=email,
+        primary_full_name=first_name,
+        external_wix_id=wix_member_id,
+        role=role,
+    )
+
+    with Session(engine) as session:
+        member_id = session.execute(
+            text("""
+                SELECT id FROM billing.member
+                WHERE account_id = :aid AND is_primary = true
+                LIMIT 1
+            """),
+            {"aid": acct.id},
+        ).scalar_one_or_none()
+
+        if member_id:
+            session.execute(
+                text("""
+                    UPDATE billing.member
+                    SET surname = :surname, role = :role, full_name = :full_name
+                    WHERE id = :mid
+                """),
+                {"surname": surname or None, "role": role, "full_name": first_name, "mid": member_id},
+            )
+            session.commit()
+
+    return jsonify({"ok": True, "account_id": int(acct.id)})
+
+
+# ----------------------------
+# POST /api/client/children
+# ----------------------------
+
+@client_bp.route("/api/client/children", methods=["POST", "OPTIONS"])
+def add_children():
+    """Add child profiles from Players' Enclosure onboarding."""
+    if not _guard():
+        return _forbid()
+
+    payload = request.get_json(silent=True) or {}
+    email = _norm_email(payload.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    children = payload.get("children", [])
+    if not isinstance(children, list) or not children:
+        return jsonify({"ok": False, "error": "children list required"}), 400
+
+    with Session(engine) as session:
+        acct_id = session.execute(
+            text("SELECT id FROM billing.account WHERE email = :email"),
+            {"email": email},
+        ).scalar_one_or_none()
+
+        if not acct_id:
+            return jsonify({"ok": False, "error": "account_not_found"}), 404
+
+        created = []
+        for c in children:
+            if not isinstance(c, dict):
+                continue
+            name = (c.get("name") or "").strip()
+            if not name:
+                continue
+
+            row = session.execute(
+                text("""
+                    INSERT INTO billing.member
+                        (account_id, full_name, is_primary, role, active,
+                         dominant_hand, dob, skill_level, club_school, notes)
+                    VALUES
+                        (:aid, :name, false, 'player_parent', true,
+                         :hand, :dob::date, :skill, :club, :notes)
+                    RETURNING id
+                """),
+                {
+                    "aid": acct_id,
+                    "name": name,
+                    "hand": (c.get("dominant_hand") or "").strip() or None,
+                    "dob": (c.get("dob") or "").strip() or None,
+                    "skill": (c.get("skill_level") or "").strip() or None,
+                    "club": (c.get("club_school") or "").strip() or None,
+                    "notes": (c.get("notes") or "").strip() or None,
+                },
+            )
+            child_id = row.scalar_one()
+            created.append({"id": int(child_id), "name": name})
+
+        session.commit()
+
+    return jsonify({"ok": True, "children": created})
+
+
+# ----------------------------
+# GET /api/client/profile-photo-upload-url
+# ----------------------------
+
+@client_bp.route("/api/client/profile-photo-upload-url", methods=["GET", "OPTIONS"])
+def profile_photo_upload_url():
+    """Returns a presigned S3 PUT URL for profile photo upload."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    import uuid as _uuid
+    bucket = os.environ.get("S3_BUCKET", "")
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    if not bucket:
+        return jsonify({"ok": False, "error": "s3_not_configured"}), 500
+
+    photo_key = f"profile-photos/{email}/{_uuid.uuid4().hex}.jpg"
+
+    try:
+        import boto3
+        s3 = boto3.client("s3", region_name=region)
+        url = s3.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": photo_key,
+                "ContentType": "image/jpeg",
+            },
+            ExpiresIn=300,
+        )
+        return jsonify({"ok": True, "upload_url": url, "photo_key": photo_key})
+    except Exception:
+        log.exception("presigned photo upload url failed")
+        return jsonify({"ok": False, "error": "url_generation_failed"}), 500
+
+
+# ----------------------------
+# DDL: ensure profile columns exist on billing.member
+# ----------------------------
+
+def _ensure_member_profile_columns():
+    """Idempotent ALTER TABLE to add profile columns. Called on import."""
+    try:
+        with engine.begin() as conn:
+            for ddl in (
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS surname TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS phone TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS utr TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS dominant_hand TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS country TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS area TEXT",
+                # Child profile fields (Players' Enclosure)
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS dob DATE",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS skill_level TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS club_school TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS notes TEXT",
+                "ALTER TABLE billing.member ADD COLUMN IF NOT EXISTS profile_photo_url TEXT",
+            ):
+                conn.execute(text(ddl))
+    except Exception:
+        log.warning("member profile columns DDL skipped (DB not available)")
+
+
+_ensure_member_profile_columns()
+
+
+# ----------------------------
+# GET /api/client/members
+# ----------------------------
+
+@client_bp.route("/api/client/members", methods=["GET", "OPTIONS"])
+def list_account_members():
+    """Return all active members on the account (primary + children) for player dropdowns."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT m.id, m.full_name, m.is_primary, m.role, m.utr
+                FROM billing.account a
+                JOIN billing.member m ON m.account_id = a.id AND m.active = true
+                WHERE a.email = :email
+                ORDER BY m.is_primary DESC, m.full_name ASC
+            """),
+            {"email": email},
+        ).mappings().all()
+
+    members = []
+    for r in rows:
+        members.append({
+            "id": int(r["id"]),
+            "full_name": r["full_name"],
+            "is_primary": bool(r["is_primary"]),
+            "role": r["role"],
+            "utr": r["utr"],
+        })
+
+    return jsonify({"ok": True, "members": members})

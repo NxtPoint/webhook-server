@@ -33,13 +33,18 @@ button { cursor: pointer; font-family: inherit; }
 
 .app { max-width: 960px; margin: 0 auto; padding: 16px 16px 80px; }
 
-/* HEADER */
+/* ========== HEADER + PROFILE ========== */
 .header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 0; border-bottom: 1px solid var(--border);
-  margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
   background: var(--white);
-  margin: -16px -16px 20px; padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.header-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; flex-wrap: wrap; gap: 10px;
+  border-bottom: 1px solid var(--border);
 }
 .logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
 .header-right { display: flex; align-items: center; gap: 12px; }
@@ -55,9 +60,64 @@ button { cursor: pointer; font-family: inherit; }
 .usage-pill.low { background: rgba(217,119,6,0.08); color: var(--amber); border-color: var(--amber); }
 .usage-pill.critical { background: rgba(220,38,38,0.08); color: var(--red); border-color: var(--red); }
 
-/* CHARTS SECTION */
+/* Profile collapsible */
+.profile-toggle {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 10px 16px; font-size: 0.82rem; font-weight: 600;
+  color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
+  user-select: none; transition: background var(--transition);
+}
+.profile-toggle:hover { background: var(--green-bg); }
+.profile-toggle .chevron { transition: transform var(--transition); font-size: 0.7rem; color: var(--text-dim); }
+.profile-toggle .chevron.open { transform: rotate(90deg); }
+
+.profile-body { display: none; padding: 0 16px 16px; }
+.profile-body.open { display: block; }
+.profile-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.profile-field { min-width: 0; }
+.profile-label { display: block; font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
+.profile-input {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: inherit; font-size: 0.85rem; color: var(--text); background: var(--white);
+  transition: border-color var(--transition); outline: none;
+}
+.profile-input:focus { border-color: var(--green); }
+select.profile-input { appearance: auto; }
+.profile-actions { display: flex; gap: 8px; margin-top: 12px; }
+.btn-sm {
+  padding: 7px 18px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
+  transition: all var(--transition); border: none;
+}
+.btn-sm-primary { background: var(--green); color: var(--white); }
+.btn-sm-primary:hover { background: var(--green-light); }
+.btn-sm-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.profile-msg { font-size: 0.78rem; padding: 6px 0 0; display: none; }
+.profile-msg.show { display: block; }
+.profile-msg.ok { color: var(--green); }
+.profile-msg.err { color: var(--red); }
+
+/* ========== CREDITS EXHAUSTED BANNER ========== */
+.credits-banner {
+  background: rgba(220,38,38,0.06); border: 1px solid var(--red); border-radius: var(--radius);
+  padding: 10px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; font-size: 0.85rem; color: var(--red);
+}
+.credits-banner a { color: var(--red); font-weight: 600; text-decoration: underline; }
+.credits-banner .dismiss {
+  background: none; border: none; color: var(--red); font-size: 1.1rem; padding: 2px 6px;
+  opacity: 0.6; transition: opacity var(--transition);
+}
+.credits-banner .dismiss:hover { opacity: 1; }
+
+/* ========== CHARTS SECTION ========== */
+.section-label {
+  font-size: 0.82rem; font-weight: 600; color: var(--text-sec);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+}
 .charts-row {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;
 }
 .chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
@@ -72,7 +132,7 @@ button { cursor: pointer; font-family: inherit; }
 .gauge-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
 .gauge-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width 0.5s ease; }
 
-/* LOADING / EMPTY */
+/* ========== LOADING / EMPTY ========== */
 .loading, .empty-state { text-align: center; padding: 60px 20px; color: var(--text-sec); }
 .loading .spinner {
   width: 32px; height: 32px; border: 3px solid var(--border);
@@ -83,7 +143,41 @@ button { cursor: pointer; font-family: inherit; }
 .empty-state h3 { font-weight: 500; margin-bottom: 6px; color: var(--text); }
 .empty-state p { color: var(--text-dim); font-size: 0.88rem; max-width: 340px; margin: 0 auto; }
 
-/* YEAR/MONTH GROUPS */
+/* ========== LATEST MATCH HERO ========== */
+.hero-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.hero-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.hero-title { font-size: 1.15rem; font-weight: 700; color: var(--text); }
+.hero-meta { color: var(--text-sec); font-size: 0.82rem; margin-top: 2px; }
+.hero-score { font-size: 1.5rem; font-weight: 700; color: var(--green); letter-spacing: 1.5px; text-align: right; }
+.hero-stats { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
+.hero-stat { text-align: center; }
+.hero-stat-val { font-size: 1.1rem; font-weight: 700; color: var(--text); }
+.hero-stat-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+.hero-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-watch {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--green); color: var(--white); border: none;
+  padding: 8px 18px; border-radius: var(--radius); font-weight: 600; font-size: 0.82rem;
+  transition: background var(--transition);
+}
+.btn-watch:hover { background: var(--green-light); }
+.btn-watch:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-edit {
+  background: var(--white); color: var(--green); border: 1px solid var(--green);
+  padding: 6px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
+  transition: all var(--transition); white-space: nowrap;
+}
+.btn-edit:hover { background: var(--green); color: var(--white); }
+.badge-processing {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 14px; border-radius: var(--radius); font-size: 0.78rem; font-weight: 600;
+  background: rgba(217,119,6,0.08); color: var(--amber); border: 1px solid var(--amber);
+}
+
+/* ========== YEAR/MONTH GROUPS ========== */
 .year-group { margin-bottom: 16px; }
 .year-header, .month-header {
   display: flex; align-items: center; gap: 8px; cursor: pointer;
@@ -100,7 +194,7 @@ button { cursor: pointer; font-family: inherit; }
 .group-content { display: none; }
 .group-content.open { display: block; }
 
-/* MATCH ROWS */
+/* ========== MATCH ROWS ========== */
 .match-list { padding-left: 32px; }
 .match-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
@@ -113,7 +207,7 @@ button { cursor: pointer; font-family: inherit; }
 .match-info { flex: 1; min-width: 0; }
 .match-opponent { font-weight: 600; font-size: 0.95rem; }
 .match-meta { color: var(--text-sec); font-size: 0.78rem; margin-top: 2px; }
-.match-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.match-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .match-score { font-weight: 700; font-size: 1rem; color: var(--green); letter-spacing: 1px; }
 .status-badge {
   display: inline-block; padding: 2px 8px; border-radius: var(--radius);
@@ -122,14 +216,23 @@ button { cursor: pointer; font-family: inherit; }
 .status-badge.processed { background: var(--green-bg); color: var(--green); }
 .status-badge.processing { background: rgba(217,119,6,0.08); color: var(--amber); }
 .status-badge.failed { background: rgba(220,38,38,0.08); color: var(--red); }
-.btn-edit {
-  background: var(--white); color: var(--green); border: 1px solid var(--green);
-  padding: 6px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
-  transition: all var(--transition); white-space: nowrap;
-}
-.btn-edit:hover { background: var(--green); color: var(--white); }
 
-/* OVERLAY + DETAIL PANEL */
+/* Play icon in match rows */
+.btn-play {
+  background: none; border: none; font-size: 1.1rem; padding: 4px 6px;
+  color: var(--green); transition: color var(--transition);
+  position: relative;
+}
+.btn-play:hover { color: var(--green-light); }
+.btn-play.disabled { color: var(--text-dim); cursor: default; }
+.btn-play .tooltip {
+  display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+  background: var(--text); color: var(--white); padding: 4px 8px; border-radius: 3px;
+  font-size: 0.68rem; white-space: nowrap; pointer-events: none;
+}
+.btn-play.disabled:hover .tooltip { display: block; }
+
+/* ========== OVERLAY + DETAIL PANEL ========== */
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.3);
   z-index: 100; opacity: 0; pointer-events: none; transition: opacity var(--transition);
@@ -201,16 +304,35 @@ select.edit-input { appearance: auto; }
 .msg-bar.error { display: block; background: rgba(220,38,38,0.08); color: var(--red); }
 .msg-bar.success { display: block; background: var(--green-bg); color: var(--green); }
 
-/* MOBILE */
+/* ========== VIDEO MODAL ========== */
+.video-modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+  z-index: 200; display: none; align-items: center; justify-content: center;
+}
+.video-modal.open { display: flex; }
+.video-modal-inner { position: relative; width: min(90vw, 800px); max-height: 90vh; }
+.video-modal-inner video { width: 100%; max-height: 80vh; border-radius: var(--radius); background: #000; }
+.video-modal-close {
+  position: absolute; top: -36px; right: 0;
+  background: none; border: none; color: #fff; font-size: 1.5rem;
+  padding: 4px 8px; cursor: pointer; opacity: 0.8; transition: opacity var(--transition);
+}
+.video-modal-close:hover { opacity: 1; }
+
+/* ========== MOBILE ========== */
 @media (max-width: 600px) {
   .charts-row { grid-template-columns: 1fr; }
-  .header { flex-direction: column; align-items: flex-start; }
+  .header-top { flex-direction: column; align-items: flex-start; }
   .header-right { width: 100%; justify-content: space-between; }
   .player-info { text-align: left; }
+  .profile-grid { grid-template-columns: 1fr; }
   .match-card { flex-wrap: wrap; }
   .match-list { padding-left: 16px; }
   .detail-panel { width: 100vw; border-left: none; }
-  .match-card, .btn-edit, .btn-primary, .btn-danger, .panel-close { min-height: 44px; }
+  .match-card, .btn-edit, .btn-primary, .btn-danger, .panel-close, .btn-watch { min-height: 44px; }
+  .hero-top { flex-direction: column; }
+  .hero-score { text-align: left; }
+  .hero-stats { gap: 16px; }
 }
 </style>
 </head>
@@ -228,6 +350,14 @@ select.edit-input { appearance: auto; }
   <div class="panel-body" id="panelBody"></div>
 </div>
 
+<!-- Video Player Modal -->
+<div class="video-modal" id="videoModal">
+  <div class="video-modal-inner">
+    <button class="video-modal-close" onclick="closeVideo()">&times;</button>
+    <video id="videoPlayer" controls preload="none"></video>
+  </div>
+</div>
+
 <script>
 const params = new URLSearchParams(window.location.search);
 const EMAIL = (params.get('email') || '').trim().toLowerCase();
@@ -240,7 +370,7 @@ function apiFetch(path, opts = {}) {
   return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
 }
 
-let matches = [], usage = null, players = [];
+let matches = [], usage = null, players = [], profile = null;
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 async function init() {
@@ -249,62 +379,254 @@ async function init() {
     return;
   }
   try {
-    const [mRes, uRes, pRes] = await Promise.all([
+    const [mRes, uRes, pRes, prRes] = await Promise.all([
       apiFetch('/api/client/matches'),
       apiFetch('/api/client/usage'),
       apiFetch('/api/client/players'),
+      apiFetch('/api/client/profile'),
     ]);
-    const mData = await mRes.json(), uData = await uRes.json(), pData = await pRes.json();
+    const mData = await mRes.json(), uData = await uRes.json(), pData = await pRes.json(), prData = await prRes.json();
     matches = mData.ok ? mData.matches : [];
     usage = uData.ok ? uData.usage : null;
     players = pData.ok ? pData.players : [];
+    profile = prData.ok ? prData.profile : null;
   } catch (e) { console.error('Load failed', e); }
   render();
 }
 
 function render() {
   const app = document.getElementById('app');
-  const playerName = usage?.player_name || EMAIL.split('@')[0];
+  const playerName = profile?.full_name || usage?.player_name || EMAIL.split('@')[0];
+  const surname = profile?.surname || '';
+  const displayName = surname ? playerName + ' ' + surname : playerName;
   const remaining = usage?.matches_remaining ?? 0;
   const granted = usage?.matches_granted ?? 0;
   const consumed = usage?.matches_consumed ?? 0;
   const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
+  const isCoach = (profile?.role || '').toLowerCase() === 'coach';
 
-  app.innerHTML = `
-    <div class="header">
+  let html = '';
+
+  // === CREDITS EXHAUSTED BANNER (Task 6) ===
+  if (remaining <= 0 && !isCoach) {
+    html += `<div class="credits-banner" id="creditsBanner">
+      <span>You have no remaining match credits. <a href="https://www.tenfifty5.com/plans" target="_blank">View plans</a> to continue analysing matches.</span>
+      <button class="dismiss" onclick="document.getElementById('creditsBanner').style.display='none'">&times;</button>
+    </div>`;
+  }
+
+  // === HEADER + PROFILE ===
+  html += `<div class="header">
+    <div class="header-top">
       <div class="logo">TEN-FIFTY5</div>
       <div class="header-right">
         <div class="player-info">
-          <div class="player-name">${esc(playerName)}</div>
+          <div class="player-name">${esc(displayName)}</div>
           <div class="player-email">${esc(EMAIL)}</div>
         </div>
         <div class="usage-pill ${pillClass}">${remaining} match${remaining!==1?'es':''} remaining</div>
       </div>
     </div>
-    <div class="charts-row">
-      <div class="chart-card"><h3>Matches Per Month</h3><div class="chart-wrap"><canvas id="chartMonthly"></canvas></div></div>
-      <div class="chart-card">
-        <h3>Usage</h3>
-        <div class="gauge-container">
-          <div class="gauge-number">${consumed}<span style="font-size:1rem;color:var(--text-dim);font-weight:400"> / ${granted}</span></div>
-          <div class="gauge-label">matches used &mdash; <strong style="color:var(--green)">${remaining} remaining</strong></div>
-          <div class="gauge-bar"><div class="gauge-fill" style="width:${granted>0?Math.min(100,Math.round(consumed/granted*100)):0}%"></div></div>
+    <div class="profile-toggle" onclick="toggleProfile()">
+      <span class="chevron" id="chevProfile">&#9654;</span>
+      <span>My Details</span>
+    </div>
+    <div class="profile-body" id="profileBody">
+      <div class="profile-grid">
+        <div class="profile-field">
+          <label class="profile-label">First Name</label>
+          <input class="profile-input" id="pf-full_name" value="${esc(profile?.full_name||'')}">
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">Surname</label>
+          <input class="profile-input" id="pf-surname" value="${esc(profile?.surname||'')}">
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">Email</label>
+          <input class="profile-input" value="${esc(EMAIL)}" disabled style="background:#fafafa;color:var(--text-dim)">
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">Mobile</label>
+          <input class="profile-input" id="pf-phone" type="tel" value="${esc(profile?.phone||'')}">
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">UTR</label>
+          <input class="profile-input" id="pf-utr" type="text" value="${esc(profile?.utr||'')}">
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">Dominant Hand</label>
+          <select class="profile-input" id="pf-dominant_hand">
+            <option value="">—</option>
+            <option value="right" ${profile?.dominant_hand==='right'?'selected':''}>Right</option>
+            <option value="left" ${profile?.dominant_hand==='left'?'selected':''}>Left</option>
+          </select>
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">Country</label>
+          <input class="profile-input" id="pf-country" value="${esc(profile?.country||'')}">
+        </div>
+        <div class="profile-field">
+          <label class="profile-label">Area</label>
+          <input class="profile-input" id="pf-area" value="${esc(profile?.area||'')}">
         </div>
       </div>
+      <div class="profile-actions">
+        <button class="btn-sm btn-sm-primary" id="btnSaveProfile" onclick="saveProfile()">Save</button>
+      </div>
+      <div class="profile-msg" id="profileMsg"></div>
     </div>
-    <div id="matchGroups"></div>
-  `;
+  </div>`;
 
+  // === CHARTS ===
+  html += `<div class="charts-row">
+    <div class="chart-card"><h3>Matches Per Month</h3><div class="chart-wrap"><canvas id="chartMonthly"></canvas></div></div>
+    <div class="chart-card">
+      <h3>Usage</h3>
+      <div class="gauge-container">
+        <div class="gauge-number">${consumed}<span style="font-size:1rem;color:var(--text-dim);font-weight:400"> / ${granted}</span></div>
+        <div class="gauge-label">matches used &mdash; <strong style="color:var(--green)">${remaining} remaining</strong></div>
+        <div class="gauge-bar"><div class="gauge-fill" style="width:${granted>0?Math.min(100,Math.round(consumed/granted*100)):0}%"></div></div>
+      </div>
+    </div>
+  </div>`;
+
+  // === LATEST MATCH HERO ===
+  html += '<div id="heroArea"></div>';
+
+  // === HISTORICAL MATCHES ===
+  html += '<div id="matchGroups"></div>';
+
+  app.innerHTML = html;
+
+  // Populate sections
   if (matches.length === 0) {
     document.getElementById('matchGroups').innerHTML = '<div class="empty-state"><h3>No matches yet</h3><p>Your matches will appear here once your first video is processed.</p></div>';
   } else {
+    renderHero();
     renderGroupedMatches();
   }
   renderMonthlyChart();
 }
 
+// ============ PROFILE ============
+
+function toggleProfile() {
+  const body = document.getElementById('profileBody');
+  const chev = document.getElementById('chevProfile');
+  if (body) body.classList.toggle('open');
+  if (chev) chev.classList.toggle('open');
+}
+
+async function saveProfile() {
+  const btn = document.getElementById('btnSaveProfile');
+  const msg = document.getElementById('profileMsg');
+  const fields = ['full_name','surname','phone','utr','dominant_hand','country','area'];
+  const data = {};
+  fields.forEach(f => {
+    const el = document.getElementById('pf-' + f);
+    if (el) data[f] = el.value.trim();
+  });
+
+  btn.textContent = 'Saving...'; btn.disabled = true;
+  msg.className = 'profile-msg'; msg.textContent = '';
+
+  try {
+    const res = await apiFetch('/api/client/profile', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const r = await res.json();
+    if (r.ok) {
+      msg.className = 'profile-msg show ok'; msg.textContent = 'Profile saved.';
+      // Update local profile
+      if (profile) Object.assign(profile, data);
+      // Update header name display
+      const nameEl = document.querySelector('.player-name');
+      if (nameEl) {
+        const dn = data.surname ? (data.full_name + ' ' + data.surname) : data.full_name;
+        nameEl.textContent = dn;
+      }
+    } else {
+      msg.className = 'profile-msg show err'; msg.textContent = 'Save failed: ' + (r.error||'unknown');
+    }
+  } catch (e) {
+    msg.className = 'profile-msg show err'; msg.textContent = 'Error: ' + e.message;
+  }
+  btn.textContent = 'Save'; btn.disabled = false;
+}
+
+// ============ LATEST MATCH HERO (Task 4) ============
+
+function renderHero() {
+  // Latest = last in array (sorted ASC by date)
+  const latest = matches[matches.length - 1];
+  if (!latest) return;
+
+  const status = normalizeStatus(latest.last_status);
+  const meta = [latest.match_date, latest.location].filter(Boolean).join(' \u2022 ');
+  const hasTrim = latest.trim_status === 'completed' && latest.trim_output_s3_key;
+  const trimProcessing = latest.trim_status && latest.trim_status !== 'completed' && latest.trim_status !== 'failed';
+  const durationMin = latest.trim_duration_s ? Math.round(latest.trim_duration_s / 60) : null;
+
+  let actionsHtml = '';
+  if (hasTrim) {
+    actionsHtml += `<button class="btn-watch" onclick="playFootage('${latest.task_id}')">&#9654; Watch Footage</button>`;
+  } else if (trimProcessing) {
+    actionsHtml += `<span class="badge-processing">&#9203; Processing footage&hellip;</span>`;
+  }
+  actionsHtml += `<button class="btn-edit" onclick="openDetail(${latest._idx !== undefined ? latest._idx : matches.length - 1})">Edit Details</button>`;
+
+  const heroArea = document.getElementById('heroArea');
+  heroArea.innerHTML = `
+    <div class="section-label">Latest Match</div>
+    <div class="hero-card">
+      <div class="hero-top">
+        <div>
+          <div class="hero-title">${esc(latest.player_a_name||'Player A')} vs ${esc(latest.player_b_name||'Opponent')}</div>
+          <div class="hero-meta">${esc(meta)} <span class="status-badge ${status.cls}">${status.label}</span></div>
+        </div>
+        <div class="hero-score">${esc(latest.score||'')}</div>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat"><div class="hero-stat-val">${latest.total_points||0}</div><div class="hero-stat-label">Points</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${latest.total_games||0}</div><div class="hero-stat-label">Games</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${latest.total_aces||0}</div><div class="hero-stat-label">Aces</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${latest.avg_rally_length||0}</div><div class="hero-stat-label">Avg Rally</div></div>
+        ${durationMin ? `<div class="hero-stat"><div class="hero-stat-val">${durationMin}m</div><div class="hero-stat-label">Duration</div></div>` : ''}
+      </div>
+      <div class="hero-actions">${actionsHtml}</div>
+    </div>
+  `;
+}
+
+// ============ VIDEO PLAYER (Task 4 + 5) ============
+
+async function playFootage(taskId) {
+  try {
+    const res = await apiFetch('/api/client/footage-url/' + taskId);
+    const data = await res.json();
+    if (!data.ok || !data.url) { alert('Footage not available.'); return; }
+    const player = document.getElementById('videoPlayer');
+    player.src = data.url;
+    document.getElementById('videoModal').classList.add('open');
+    player.play();
+  } catch (e) { alert('Error loading footage: ' + e.message); }
+}
+
+function closeVideo() {
+  const player = document.getElementById('videoPlayer');
+  player.pause(); player.src = '';
+  document.getElementById('videoModal').classList.remove('open');
+}
+
+document.getElementById('videoModal').addEventListener('click', function(e) {
+  if (e.target === this) closeVideo();
+});
+
+// ============ GROUPED MATCHES ============
+
 function renderGroupedMatches() {
-  // Group by year then month
   const groups = {};
   matches.forEach((m, i) => {
     m._idx = i;
@@ -318,7 +640,7 @@ function renderGroupedMatches() {
 
   const container = document.getElementById('matchGroups');
   const years = Object.keys(groups).sort((a,b) => b-a);
-  let html = '';
+  let html = '<div class="section-label">Match History</div>';
 
   years.forEach((yr, yi) => {
     const yearMatches = Object.values(groups[yr]).flat();
@@ -346,6 +668,12 @@ function renderGroupedMatches() {
       moMatches.forEach(m => {
         const status = normalizeStatus(m.last_status);
         const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
+        const hasTrim = m.trim_status === 'completed' && m.trim_output_s3_key;
+        const playBtnClass = hasTrim ? 'btn-play' : 'btn-play disabled';
+        const playAction = hasTrim
+          ? `onclick="event.stopPropagation();playFootage('${m.task_id}')"`
+          : 'onclick="event.stopPropagation()"';
+
         html += `<div class="match-card" onclick="openDetail(${m._idx})">
           <div class="match-info">
             <div class="match-opponent">vs ${esc(m.player_b_name||'Opponent')}</div>
@@ -353,6 +681,9 @@ function renderGroupedMatches() {
           </div>
           <div class="match-right">
             <div class="match-score">${esc(m.score||'')}</div>
+            <button class="${playBtnClass}" ${playAction} title="${hasTrim ? 'Watch footage' : 'Footage not yet available'}">
+              &#9654;${hasTrim ? '' : '<span class="tooltip">Footage not yet available</span>'}
+            </button>
             <button class="btn-edit" onclick="event.stopPropagation();openDetail(${m._idx})">Edit</button>
           </div>
         </div>`;
@@ -429,8 +760,6 @@ function openDetail(idx) {
   const playerOpts = players.map(p => `<option value="${esc(p)}" ${p===m.player_a_name?'selected':''}>${esc(p)}</option>`).join('');
   const fsOpts = `<option value="player_a" ${m.first_server==='player_a'?'selected':''}>Player A</option>
     <option value="player_b" ${m.first_server==='player_b'?'selected':''}>Player B</option>`;
-  const frOpts = `<option value="player_b" ${m.first_server!=='player_b'?'selected':''}>Player B</option>
-    <option value="player_a" ${m.first_server==='player_b'?'selected':''}>Player A</option>`;
 
   document.getElementById('panelBody').innerHTML = `
     <div class="match-score" style="font-size:1.3rem;margin-bottom:16px;font-weight:700;color:var(--green)">${esc(m.score||'No score')}</div>
@@ -474,10 +803,6 @@ function openDetail(idx) {
       <div class="edit-field">
         <label class="edit-label">First Server</label>
         <select class="edit-input" id="ed-first_server">${fsOpts}</select>
-      </div>
-      <div class="edit-field">
-        <label class="edit-label">First Returner</label>
-        <select class="edit-input" id="ed-first_returner">${frOpts}</select>
       </div>
       <div class="edit-field">
         <label class="edit-label">Score</label>
@@ -554,7 +879,6 @@ async function saveAndReprocess(taskId, idx) {
     const data = await res.json();
     if (!data.ok) { showMsg('error', 'Save failed: ' + (data.error||'unknown')); btn.textContent = 'Save Changes'; btn.disabled = false; return; }
 
-    // Update local state
     Object.assign(matches[idx], edits);
 
     showMsg('info', 'Updating your match data...');
@@ -598,7 +922,12 @@ async function reprocessOnly(taskId) {
 }
 
 function esc(s) { if(s==null)return''; const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
-document.addEventListener('keydown', e => { if(e.key==='Escape') closeDetail(); });
+document.addEventListener('keydown', e => {
+  if (e.key==='Escape') {
+    if (document.getElementById('videoModal').classList.contains('open')) closeVideo();
+    else closeDetail();
+  }
+});
 init();
 </script>
 </body>
