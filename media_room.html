@@ -207,16 +207,17 @@ textarea.edit-input { resize: vertical; min-height: 60px; }
 
 /* TRANSACTION LOG */
 .tx-log {
-  background: #1a1a1a; color: #a3e635; border-radius: var(--radius);
-  padding: 12px 16px; font-family: 'Courier New', monospace; font-size: 0.75rem;
+  background: var(--white); color: var(--text-sec); border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 12px 16px; font-family: inherit; font-size: 0.78rem;
   max-height: 260px; overflow-y: auto; margin: 12px 0;
   line-height: 1.6;
 }
 .tx-log .tx-entry { margin-bottom: 2px; }
-.tx-log .tx-time { color: #6b7280; margin-right: 8px; }
-.tx-log .tx-ok { color: #22c55e; }
-.tx-log .tx-err { color: #ef4444; }
-.tx-log .tx-warn { color: #eab308; }
+.tx-log .tx-time { color: var(--text-dim); margin-right: 8px; }
+.tx-log .tx-ok { color: var(--text-sec); }
+.tx-log .tx-err { color: var(--red); }
+.tx-log .tx-warn { color: var(--amber); }
 
 /* SUCCESS CARD */
 .success-card {

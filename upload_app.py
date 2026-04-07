@@ -2085,6 +2085,11 @@ def api_multipart_list_parts():
     _require_s3()
     body = request.get_json(silent=True) or {}
 
+    email = (body.get("email") or "").strip().lower()
+    allowed, reason = _upload_entitlement_gate(email)
+    if not allowed:
+        return jsonify({"ok": False, "error": reason}), 403
+
     key = (body.get("key") or "").strip()
     upload_id = (body.get("upload_id") or "").strip()
 
