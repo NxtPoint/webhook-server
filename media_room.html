@@ -297,7 +297,7 @@ textarea.edit-input { resize: vertical; min-height: 60px; }
 const params = new URLSearchParams(window.location.search);
 const EMAIL = (params.get('email') || '').trim().toLowerCase();
 const API_KEY = params.get('key') || '';
-const API_BASE = params.get('api') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
 
 function apiFetch(path, opts = {}) {
   const sep = path.includes('?') ? '&' : '?';

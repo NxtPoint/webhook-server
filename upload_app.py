@@ -44,10 +44,24 @@ app.register_blueprint(usage_bp)
 app.register_blueprint(entitlements_bp)
 app.register_blueprint(client_bp)
 
-# Manual CORS for /api/client/* (more reliable than flask-cors with blueprints)
+# ── CORS (cross-origin support for Wix iframe embeds) ──────────────
+# Covers: /api/client/*, /upload/api/*, /api/submit_s3_task, /media-room
+CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room")
+
+@app.before_request
+def handle_cors_preflight():
+    """Return 204 for OPTIONS preflight on all CORS-enabled paths."""
+    if request.method == "OPTIONS" and any(request.path.startswith(p) or request.path == p for p in CORS_PATHS):
+        resp = app.make_response(("", 204))
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Client-Key, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
+        resp.headers["Access-Control-Max-Age"] = "86400"
+        return resp
+
 @app.after_request
 def add_cors_headers(response):
-    if request.path.startswith("/api/client/") or request.path.startswith("/upload/api/") or request.path.startswith("/api/submit_s3_task"):
+    if any(request.path.startswith(p) or request.path == p for p in CORS_PATHS):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Client-Key, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
