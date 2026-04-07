@@ -276,16 +276,16 @@ select.profile-input { appearance: auto; }
 }
 
 /* ========== YEAR/MONTH GROUPS ========== */
-.year-group { margin-bottom: 16px; }
+.year-group { margin-bottom: 4px; }
 .year-header, .month-header {
   display: flex; align-items: center; gap: 8px; cursor: pointer;
-  padding: 10px 14px; border-radius: var(--radius);
-  font-weight: 600; user-select: none; transition: background var(--transition);
+  padding: 8px 0; border-radius: 0;
+  font-weight: 600; user-select: none; transition: color var(--transition);
 }
-.year-header { font-size: 1.1rem; background: var(--white); border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
-.year-header:hover { background: var(--green-bg); }
-.month-header { font-size: 0.95rem; background: var(--white); margin: 6px 0; border: 1px solid var(--border); }
-.month-header:hover { background: var(--green-bg); }
+.year-header { font-size: 1.05rem; color: var(--text); }
+.year-header:hover { color: var(--green); }
+.month-header { font-size: 0.92rem; color: var(--text-sec); padding-left: 16px; }
+.month-header:hover { color: var(--green); }
 .chevron { transition: transform var(--transition); font-size: 0.7rem; color: var(--text-dim); }
 .chevron.open { transform: rotate(90deg); }
 .group-count { color: var(--text-dim); font-size: 0.78rem; font-weight: 400; margin-left: auto; }
@@ -293,13 +293,12 @@ select.profile-input { appearance: auto; }
 .group-content.open { display: block; }
 
 /* ========== MATCH ROWS ========== */
-.match-list { padding-left: 0; }
+.match-list { padding-left: 32px; }
 .match-card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 14px 16px; margin-bottom: 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; margin-bottom: 6px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   cursor: pointer; transition: border-color var(--transition), box-shadow var(--transition);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .match-card:hover { border-left: 3px solid var(--green); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .match-info { flex: 1; min-width: 0; }
@@ -426,7 +425,7 @@ select.edit-input { appearance: auto; }
   .profile-grid { grid-template-columns: 1fr; }
   .member-card-grid { grid-template-columns: 1fr; }
   .match-card { flex-wrap: wrap; }
-  .match-list { padding-left: 0; }
+  .match-list { padding-left: 16px; }
   .detail-panel { width: 100vw; border-left: none; }
   .match-card, .btn-edit, .btn-primary, .btn-danger, .panel-close, .btn-watch { min-height: 44px; }
   .hero-top { flex-direction: column; }
@@ -676,8 +675,9 @@ async function saveProfile() {
       // Update header name display
       const nameEl = document.querySelector('.player-name');
       if (nameEl) {
-        const dn = data.surname ? (data.full_name + ' ' + data.surname) : data.full_name;
-        nameEl.textContent = dn;
+        const fn = data.full_name || profile?.full_name || '';
+        const sn = data.surname || profile?.surname || '';
+        nameEl.textContent = sn ? fn + ' ' + sn : fn;
       }
     } else {
       msg.className = 'profile-msg show err'; msg.textContent = 'Save failed: ' + (r.error||'unknown');
@@ -825,6 +825,13 @@ async function saveMember(mid) {
       msg.style.color = 'var(--green)'; msg.textContent = 'Saved';
       const m = members.find(x => x.id === mid);
       if (m) Object.assign(m, data);
+      // Update the card heading with new name
+      const cardName = document.querySelector('#mc-' + mid + ' .member-card-name');
+      if (cardName) {
+        const chevHtml = cardName.querySelector('.chevron')?.outerHTML || '';
+        const displayName = (data.full_name || '') + (data.surname ? ' ' + data.surname : '');
+        cardName.innerHTML = chevHtml + ' ' + esc(displayName);
+      }
     } else {
       msg.style.color = 'var(--red)'; msg.textContent = r.error || 'Failed';
     }
@@ -983,7 +990,7 @@ function renderGroupedMatches() {
       const moMatches = groups[yr][mo].sort((a, b) => {
         const da = a.match_date || a.created_at || '';
         const db = b.match_date || b.created_at || '';
-        return da < db ? -1 : da > db ? 1 : 0;
+        return da > db ? -1 : da < db ? 1 : 0;
       });
       const moOpen = yi === 0 && mi === 0;
       const gid = `y${yi}m${mi}`;
@@ -1088,10 +1095,9 @@ function openDetail(idx) {
   document.getElementById('panelTitle').innerHTML = title;
   document.getElementById('panelSubtitle').textContent = subtitle;
 
-  // Build Player A options from account members + historical players (matching Media Room)
-  const memberNames = members.map(mb => mb.full_name).filter(Boolean);
-  const allNames = [...new Set([...memberNames, ...players])].sort();
-  const playerOpts = allNames.map(n => `<option value="${esc(n)}" ${n===m.player_a_name?'selected':''}>${esc(n)}</option>`).join('');
+  // Build Player A options from active account members only (primary + children)
+  const memberNames = members.filter(mb => mb.full_name).map(mb => mb.full_name);
+  const playerOpts = memberNames.map(n => `<option value="${esc(n)}" ${n===m.player_a_name?'selected':''}>${esc(n)}</option>`).join('');
 
   const fsIsA = m.first_server !== 'player_b';
   const fsIsB = m.first_server === 'player_b';
