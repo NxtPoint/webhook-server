@@ -245,9 +245,8 @@ Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY
 ### Diagnostics
 
 - `GET /__alive` — liveness probe (from `probes.py`)
-- `GET /__routes` — list all registered routes
+- `GET /ops/routes?key=<OPS_KEY>` — list all registered routes (auth required)
 - `GET /ops/db-ping?key=<OPS_KEY>` — DB connectivity check
-- `GET /upload/__which` — confirm which template file Flask resolves
 
 ### Other
 

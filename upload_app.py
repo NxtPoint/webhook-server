@@ -3,7 +3,7 @@
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
 # - Uses bronze.submission_context keyed by task_id (no public schema)
 
-import os, json, time, socket, sys, inspect, hashlib, re, threading, subprocess
+import os, json, time, socket, sys, hashlib, re, threading, subprocess
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -66,19 +66,6 @@ def add_cors_headers(response):
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Client-Key, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     return response
-
-
-@app.get("/ops/code-hash")
-def ops_code_hash():
-    try:
-        with open(__file__, "rb") as f:
-            sha = hashlib.sha256(f.read()).hexdigest()[:16]
-        src = inspect.getsource(sys.modules[__name__])
-        idx = src.find("@app.route(\"/upload\", methods=[\"POST\", \"OPTIONS\"])")
-        snippet = src[max(0, idx-80): idx+200] if idx != -1 else "alias not found in source"
-        return jsonify({"ok": True, "file": __file__, "sha256_16": sha, "snippet": snippet})
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
 
 # ==========================
@@ -209,16 +196,6 @@ def _sql_exec_to_json(q: str):
         cols = list(res.keys())
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
-
-def _guard_wix_upload_task() -> bool:
-    expected = (os.getenv("WIX_UPLOAD_TASK_KEY") or "").strip()
-    if not expected:
-        return False
-    hk = request.headers.get("X-Ops-Key") or request.headers.get("X-Ops-KEY") or request.headers.get("X-OPS-Key")
-    auth = request.headers.get("Authorization", "")
-    if auth and auth.lower().startswith("bearer "):
-        hk = auth.split(" ", 1)[1].strip()
-    return hk == expected
 
 def _pbi_headers():
     if not PBI_SERVICE_BASE:
@@ -509,25 +486,6 @@ def _as_int(x):
         return None
 
 
-def _as_ts_from_text(v):
-    """
-    Accepts:
-      - None / "" -> None
-      - ISO datetime string -> TIMESTAMPTZ-ready string
-      - "HH:MM" or "HH:MM:SS" -> NOT a true timestamp without a date => returns None
-    Conservative: only parse full ISO-like values; else None.
-    """
-    if v is None:
-        return None
-    s = str(v).strip()
-    if not s:
-        return None
-    # Only accept ISO-ish timestamps; otherwise return None
-    if "T" in s:
-        return s
-    return None
-
-
 def _norm_first_server(v):
     if v is None:
         return None
@@ -702,25 +660,6 @@ def _set_pbi_refresh_state(
          WHERE task_id = :t
     """), params)
 
-def _get_pbi_refresh_state(conn, task_id: str) -> dict:
-    row = conn.execute(sql_text("""
-        SELECT
-          pbi_refresh_started_at,
-          pbi_refresh_finished_at,
-          pbi_refresh_status,
-          pbi_refresh_error
-        FROM bronze.submission_context
-        WHERE task_id = :t
-        LIMIT 1
-    """), {"t": task_id}).mappings().first() or {}
-
-    return {
-        "pbi_refresh_started_at": row.get("pbi_refresh_started_at"),
-        "pbi_refresh_finished_at": row.get("pbi_refresh_finished_at"),
-        "pbi_refresh_status": row.get("pbi_refresh_status"),
-        "pbi_refresh_error": row.get("pbi_refresh_error"),
-    }    
-
 def _load_submission_context_row(task_id: str) -> dict:
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -839,10 +778,6 @@ def _derive_display_progress_pct(
 
     return int(sportai_progress_pct or 0)
 
-def _mirror_submission_to_bronze_by_task(conn, task_id: str):
-    """No-op: submission_context now lives directly in bronze.submission_context."""
-    return
-
 # ==========================
 # WIX NOTIFY (RENDER → WIX → AUTOMATION)
 # ==========================
@@ -940,11 +875,6 @@ def _iter_submit_endpoints():
     for base in SPORTAI_BASES:
         for path in SPORTAI_SUBMIT_PATHS:
             yield f"{base.rstrip('/')}/{path.lstrip('/')}"
-
-def _iter_status_endpoints(task_id: str):
-    for base in SPORTAI_BASES:
-        for path in SPORTAI_STATUS_PATHS:
-            yield f"{base.rstrip('/')}/{path.lstrip('/').format(task_id=task_id)}"
 
 def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None = None) -> str:
     if not SPORTAI_TOKEN:
@@ -1468,8 +1398,6 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
                  WHERE task_id = :t
             """), {"sid": sid, "t": task_id, "url": result_url})
 
-            _mirror_submission_to_bronze_by_task(conn, task_id)
-
         app.logger.info(
             "INGEST STEP task_id=%s step=bronze_ingest_done session_id=%s",
             task_id, sid
@@ -1703,19 +1631,15 @@ def root_ok():
 def healthz_ok():
     return "OK", 200
 
-@app.get("/__routes")
-def __routes_open():
+@app.get("/ops/routes")
+def ops_routes():
+    if not _guard():
+        return Response("Forbidden", 403)
     routes = [{"rule": r.rule, "endpoint": r.endpoint,
                "methods": sorted(m for m in r.methods if m not in {"HEAD","OPTIONS"})}
               for r in app.url_map.iter_rules()]
     routes.sort(key=lambda x: x["rule"])
     return jsonify({"ok": True, "count": len(routes), "routes": routes})
-
-@app.get("/ops/routes")
-def __routes_locked():
-    if not _guard():
-        return Response("Forbidden", 403)
-    return __routes_open()
 
 @app.get("/upload/api/status")
 def upload_status():
@@ -2906,33 +2830,6 @@ except Exception as e:
     print("ui_bp not mounted:", e)
 
 # ==========================
-# SIMPLE BILLING (AUDITABLE, NO LEGACY TABLES)
-# Source of truth: bronze.submission_context
-# Per-match now; also returns total_minutes for future pivot.
-# ==========================
-
-def _hms_to_seconds(s: str | None) -> int | None:
-    if not s:
-        return None
-    s = str(s).strip()
-    m = re.match(r"^(\d{1,2}):(\d{2}):(\d{2})$", s)
-    if not m:
-        return None
-    hh, mm, ss = map(int, m.groups())
-    return hh * 3600 + mm * 60 + ss
-
-def _billing_guard() -> bool:
-    expected = (os.getenv("BILLING_OPS_KEY") or OPS_KEY or "").strip()
-    if not expected:
-        return False
-    hk = request.headers.get("X-Ops-Key") or request.headers.get("X-Ops-Key".lower()) or request.headers.get("X-OPS-Key")
-    auth = request.headers.get("Authorization", "")
-    if auth and auth.lower().startswith("bearer "):
-        hk = auth.split(" ", 1)[1].strip()
-    return (hk or "").strip() == expected
-
-
-# ==========================
 # BOOT LOG
 # ==========================
 print("=== ROUTES ===")
@@ -2941,22 +2838,3 @@ for r in sorted(app.url_map.iter_rules(), key=lambda x: x.rule):
     print(f"{r.rule:30s} -> {r.endpoint:24s} [{meth}]")
 print("================")
 
-@app.get("/upload/__which_app")
-def upload_which_app():
-    try:
-        search = getattr(app.jinja_loader, "searchpath", [])
-    except Exception:
-        search = []
-    expected = os.path.join(os.path.dirname(__file__), "templates", "upload.html")
-    exists = os.path.exists(expected)
-    head = ""
-    if exists:
-        try:
-            with open(expected, "r", encoding="utf-8") as f:
-                head = f.read(600)
-        except Exception as e:
-            head = f"<read error: {e}>"
-    return jsonify({
-        "ok": True, "module": __file__, "searchpath": search,
-        "expected_template_path": expected, "exists": exists, "head": head,
-    })
