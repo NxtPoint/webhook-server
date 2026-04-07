@@ -98,18 +98,37 @@ select.profile-input { appearance: auto; }
 .profile-msg.ok { color: var(--green); }
 .profile-msg.err { color: var(--red); }
 
-/* ========== CREDITS EXHAUSTED BANNER ========== */
-.credits-banner {
-  background: rgba(220,38,38,0.06); border: 1px solid var(--red); border-radius: var(--radius);
+/* ========== ENTITLEMENT BANNERS & OVERLAYS ========== */
+.credits-banner, .entitlement-banner {
+  border: 1px solid; border-radius: var(--radius);
   padding: 10px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; font-size: 0.85rem; color: var(--red);
+  gap: 12px; font-size: 0.85rem;
 }
-.credits-banner a { color: var(--red); font-weight: 600; text-decoration: underline; }
-.credits-banner .dismiss {
-  background: none; border: none; color: var(--red); font-size: 1.1rem; padding: 2px 6px;
+.credits-banner { background: rgba(220,38,38,0.06); border-color: var(--red); color: var(--red); }
+.entitlement-banner.warn { background: rgba(220,38,38,0.06); border-color: var(--red); color: var(--red); }
+.entitlement-banner.info { background: rgba(217,119,6,0.06); border-color: var(--amber); color: var(--amber); }
+.credits-banner a, .entitlement-banner a { font-weight: 600; text-decoration: underline; color: inherit; }
+.credits-banner .dismiss, .entitlement-banner .dismiss {
+  background: none; border: none; color: inherit; font-size: 1.1rem; padding: 2px 6px;
   opacity: 0.6; transition: opacity var(--transition);
 }
-.credits-banner .dismiss:hover { opacity: 1; }
+.credits-banner .dismiss:hover, .entitlement-banner .dismiss:hover { opacity: 1; }
+
+.block-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  z-index: 9999; display: flex; align-items: center; justify-content: center;
+}
+.block-overlay-box {
+  background: var(--white); border-radius: var(--radius); padding: 40px 32px;
+  max-width: 440px; width: 90%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.block-overlay-box h2 { font-size: 1.2rem; margin-bottom: 12px; color: var(--red); }
+.block-overlay-box p { color: var(--text-sec); font-size: 0.9rem; line-height: 1.6; }
+.block-overlay-box a { color: var(--green); font-weight: 600; }
+.coach-notice {
+  background: var(--green-bg); border: 1px solid var(--green); border-radius: var(--radius);
+  padding: 10px 16px; margin-bottom: 16px; font-size: 0.85rem; color: var(--green);
+}
 
 /* ========== CHARTS SECTION ========== */
 .section-label {
@@ -370,7 +389,7 @@ function apiFetch(path, opts = {}) {
   return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
 }
 
-let matches = [], usage = null, players = [], profile = null;
+let matches = [], usage = null, players = [], profile = null, entitlements = null;
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 async function init() {
@@ -378,19 +397,24 @@ async function init() {
     document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key. Access the Locker Room through your dashboard.</p></div>';
     return;
   }
-  try {
-    const [mRes, uRes, pRes, prRes] = await Promise.all([
-      apiFetch('/api/client/matches'),
-      apiFetch('/api/client/usage'),
-      apiFetch('/api/client/players'),
-      apiFetch('/api/client/profile'),
-    ]);
-    const mData = await mRes.json(), uData = await uRes.json(), pData = await pRes.json(), prData = await prRes.json();
-    matches = mData.ok ? mData.matches : [];
-    usage = uData.ok ? uData.usage : null;
-    players = pData.ok ? pData.players : [];
-    profile = prData.ok ? prData.profile : null;
-  } catch (e) { console.error('Load failed', e); }
+  async function safeFetch(path) {
+    try {
+      const res = await apiFetch(path);
+      return await res.json();
+    } catch (e) { console.warn('fetch failed:', path, e); return { ok: false }; }
+  }
+  const [mData, uData, pData, prData, eData] = await Promise.all([
+    safeFetch('/api/client/matches'),
+    safeFetch('/api/client/usage'),
+    safeFetch('/api/client/players'),
+    safeFetch('/api/client/profile'),
+    safeFetch('/api/client/entitlements'),
+  ]);
+  matches = mData.ok ? mData.matches : [];
+  usage = uData.ok ? uData.usage : null;
+  players = pData.ok ? pData.players : [];
+  profile = prData.ok ? prData.profile : null;
+  entitlements = eData.ok ? eData.entitlements : null;
   render();
 }
 
@@ -399,18 +423,43 @@ function render() {
   const playerName = profile?.full_name || usage?.player_name || EMAIL.split('@')[0];
   const surname = profile?.surname || '';
   const displayName = surname ? playerName + ' ' + surname : playerName;
-  const remaining = usage?.matches_remaining ?? 0;
-  const granted = usage?.matches_granted ?? 0;
-  const consumed = usage?.matches_consumed ?? 0;
+  const remaining = entitlements?.credits_remaining ?? usage?.matches_remaining ?? 0;
+  const granted = entitlements?.matches_granted ?? usage?.matches_granted ?? 0;
+  const consumed = entitlements?.matches_consumed ?? usage?.matches_consumed ?? 0;
   const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
-  const isCoach = (profile?.role || '').toLowerCase() === 'coach';
+  const isCoach = (entitlements?.role || profile?.role || '').toLowerCase() === 'coach';
+  const planActive = entitlements?.plan_active ?? true;
+  const accountStatus = entitlements?.account_status || 'active';
+  const plansUrl = entitlements?.plans_page_url || 'https://www.tenfifty5.com/plans';
 
   let html = '';
 
-  // === CREDITS EXHAUSTED BANNER (Task 6) ===
-  if (remaining <= 0 && !isCoach) {
+  // === ACCOUNT BLOCKED OVERLAY ===
+  if (accountStatus === 'terminated' || accountStatus === 'suspended') {
+    html += `<div class="block-overlay"><div class="block-overlay-box">
+      <h2>Account Suspended</h2>
+      <p>Your account has been suspended. Please contact support at <a href="mailto:support@tenfifty5.com">support@tenfifty5.com</a> for assistance.</p>
+    </div></div>`;
+    console.warn('Blocked access attempt: account_status=' + accountStatus + ', email=' + EMAIL);
+  }
+
+  // === COACH VIEW-ONLY NOTICE ===
+  if (isCoach) {
+    html += `<div class="coach-notice">You are signed in as a <strong>Coach</strong>. You can view match analysis and footage but cannot upload new matches.</div>`;
+  }
+
+  // === NO ACTIVE PLAN BANNER ===
+  if (!planActive && !isCoach && accountStatus === 'active') {
+    html += `<div class="entitlement-banner info" id="noPlanBanner">
+      <span>No active plan. <a href="${esc(plansUrl)}" target="_blank">View plans</a> to start analysing matches.</span>
+      <button class="dismiss" onclick="document.getElementById('noPlanBanner').style.display='none'">&times;</button>
+    </div>`;
+  }
+
+  // === CREDITS EXHAUSTED BANNER ===
+  if (remaining <= 0 && planActive && !isCoach && accountStatus === 'active') {
     html += `<div class="credits-banner" id="creditsBanner">
-      <span>You have no remaining match credits. <a href="https://www.tenfifty5.com/plans" target="_blank">View plans</a> to continue analysing matches.</span>
+      <span>You have no remaining match credits. <a href="${esc(plansUrl)}" target="_blank">Top up</a> to continue analysing matches.</span>
       <button class="dismiss" onclick="document.getElementById('creditsBanner').style.display='none'">&times;</button>
     </div>`;
   }

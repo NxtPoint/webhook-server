@@ -522,27 +522,58 @@ def client_entitlements():
         return jsonify({"ok": False, "error": "email required"}), 400
 
     with engine.connect() as conn:
-        row = conn.execute(
+        # Check if subscription_state table exists (created lazily by subscriptions_api)
+        has_sub_table = conn.execute(
             text("""
-                SELECT
-                    a.id AS account_id,
-                    a.active AS account_active,
-                    COALESCE(m.role, 'player_parent') AS role,
-                    s.status AS subscription_status,
-                    COALESCE(v.matches_remaining, 0) AS credits_remaining,
-                    COALESCE(v.matches_granted, 0)   AS matches_granted,
-                    COALESCE(v.matches_consumed, 0)   AS matches_consumed
-                FROM billing.account a
-                LEFT JOIN billing.member m
-                    ON m.account_id = a.id AND m.is_primary = true
-                LEFT JOIN billing.subscription_state s
-                    ON s.account_id = a.id
-                LEFT JOIN billing.vw_customer_usage v
-                    ON v.account_id = a.id
-                WHERE a.email = :email
-            """),
-            {"email": email},
-        ).mappings().first()
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'billing' AND table_name = 'subscription_state'
+                )
+            """)
+        ).scalar()
+
+        if has_sub_table:
+            row = conn.execute(
+                text("""
+                    SELECT
+                        a.id AS account_id,
+                        a.active AS account_active,
+                        COALESCE(m.role, 'player_parent') AS role,
+                        s.status AS subscription_status,
+                        COALESCE(v.matches_remaining, 0) AS credits_remaining,
+                        COALESCE(v.matches_granted, 0)   AS matches_granted,
+                        COALESCE(v.matches_consumed, 0)   AS matches_consumed
+                    FROM billing.account a
+                    LEFT JOIN billing.member m
+                        ON m.account_id = a.id AND m.is_primary = true
+                    LEFT JOIN billing.subscription_state s
+                        ON s.account_id = a.id
+                    LEFT JOIN billing.vw_customer_usage v
+                        ON v.account_id = a.id
+                    WHERE a.email = :email
+                """),
+                {"email": email},
+            ).mappings().first()
+        else:
+            row = conn.execute(
+                text("""
+                    SELECT
+                        a.id AS account_id,
+                        a.active AS account_active,
+                        COALESCE(m.role, 'player_parent') AS role,
+                        NULL AS subscription_status,
+                        COALESCE(v.matches_remaining, 0) AS credits_remaining,
+                        COALESCE(v.matches_granted, 0)   AS matches_granted,
+                        COALESCE(v.matches_consumed, 0)   AS matches_consumed
+                    FROM billing.account a
+                    LEFT JOIN billing.member m
+                        ON m.account_id = a.id AND m.is_primary = true
+                    LEFT JOIN billing.vw_customer_usage v
+                        ON v.account_id = a.id
+                    WHERE a.email = :email
+                """),
+                {"email": email},
+            ).mappings().first()
 
     if not row:
         return jsonify({"ok": True, "entitlements": None})
