@@ -972,7 +972,7 @@ function renderGroupedMatches() {
 
         html += `<div class="match-card" onclick="openDetail(${m._idx})">
           <div class="match-info">
-            <div class="match-opponent">vs ${esc(m.player_b_name||'Opponent')}</div>
+            <div class="match-opponent">${esc(m.player_a_name||'Player A')} vs ${esc(m.player_b_name||'Opponent')}</div>
             <div class="match-meta">${esc(meta)} <span class="status-badge ${status.cls}">${status.label}</span></div>
           </div>
           <div class="match-right">
