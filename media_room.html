@@ -1121,19 +1121,15 @@ function renderSinglesForm(el) {
 
       <div class="edit-field">
         <label class="edit-label">Score</label>
-        <div style="margin-top:8px">
-          <div style="font-weight:600;font-size:0.85rem;color:var(--green);margin-bottom:4px" id="scoreNameA">${esc(defaultPlayerADisplay)}</div>
-          <div class="score-grid" style="margin-bottom:12px">
-            <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
-            <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
-            <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
-          </div>
-          <div style="font-weight:600;font-size:0.85rem;color:var(--text-sec);margin-bottom:4px" id="scoreNameB">Opponent</div>
-          <div class="score-grid">
-            <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
-            <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
-            <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
-          </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;align-items:center;margin-top:8px">
+          <div style="font-weight:600;font-size:0.85rem;color:var(--green);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="scoreNameA">${esc(defaultPlayerADisplay)}</div>
+          <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
+          <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
+          <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
+          <div style="font-weight:600;font-size:0.85rem;color:var(--text-sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="scoreNameB">Opponent</div>
+          <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
+          <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
+          <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
         </div>
       </div>
 
@@ -1322,8 +1318,13 @@ async function pollStatus() {
     if (!data.ok) return;
 
     const stage = data.pipeline_stage || data.stage || 'queued_for_analysis';
-    const pct = data.display_progress_pct ?? data.progress_pct ?? 0;
     const status = data.sportai_status || data.status || 'unknown';
+
+    // Use raw SportAI progress (0-100) — not display_progress_pct which
+    // maps pipeline stages to artificial percentages causing jumps/drops.
+    // Show 100% only when dashboard_ready or stage === 'complete'.
+    let pct = data.sportai_progress_pct ?? 0;
+    if (data.dashboard_ready || stage === 'complete') pct = 100;
 
     // Update progress
     const bar = document.getElementById('analysisBar');
