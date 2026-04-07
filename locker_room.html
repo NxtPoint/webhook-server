@@ -98,6 +98,57 @@ select.profile-input { appearance: auto; }
 .profile-msg.ok { color: var(--green); }
 .profile-msg.err { color: var(--red); }
 
+/* Linked Players section */
+.members-section { border-top: 1px solid var(--border); padding: 16px 16px 16px; }
+.members-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.members-title { font-size: 0.82rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; }
+.btn-add-member {
+  padding: 5px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.75rem;
+  background: var(--white); color: var(--green); border: 1px solid var(--green);
+  transition: all var(--transition);
+}
+.btn-add-member:hover { background: var(--green); color: var(--white); }
+.member-cards { display: flex; flex-direction: column; gap: 10px; }
+.member-card {
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; position: relative;
+}
+.member-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.member-card-name { font-weight: 600; font-size: 0.92rem; }
+.member-card-role {
+  font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+  padding: 2px 8px; border-radius: var(--radius);
+}
+.member-card-role.player { background: var(--green-bg); color: var(--green); }
+.member-card-role.coach { background: rgba(59,130,246,0.08); color: #2563eb; }
+.member-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.member-card-field label { display: block; font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 1px; }
+.member-card-field input, .member-card-field select {
+  width: 100%; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: inherit; font-size: 0.82rem; color: var(--text); background: var(--white);
+  outline: none; transition: border-color var(--transition);
+}
+.member-card-field input:focus, .member-card-field select:focus { border-color: var(--green); }
+.member-card-field select { appearance: auto; }
+.member-card-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.member-card-msg { font-size: 0.75rem; margin-left: 8px; }
+.btn-remove {
+  padding: 5px 12px; border-radius: var(--radius); font-weight: 600; font-size: 0.72rem;
+  background: var(--white); color: var(--red); border: 1px solid var(--red);
+  transition: all var(--transition);
+}
+.btn-remove:hover { background: rgba(220,38,38,0.05); }
+
+/* Add member form */
+.add-member-form {
+  background: var(--bg); border: 1px dashed var(--border); border-radius: var(--radius);
+  padding: 12px 14px; display: none;
+}
+.add-member-form.open { display: block; }
+
 /* ========== ENTITLEMENT BANNERS & OVERLAYS ========== */
 .credits-banner, .entitlement-banner {
   border: 1px solid; border-radius: var(--radius);
@@ -345,6 +396,7 @@ select.edit-input { appearance: auto; }
   .header-right { width: 100%; justify-content: space-between; }
   .player-info { text-align: left; }
   .profile-grid { grid-template-columns: 1fr; }
+  .member-card-grid { grid-template-columns: 1fr; }
   .match-card { flex-wrap: wrap; }
   .match-list { padding-left: 16px; }
   .detail-panel { width: 100vw; border-left: none; }
@@ -389,7 +441,7 @@ function apiFetch(path, opts = {}) {
   return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
 }
 
-let matches = [], usage = null, players = [], profile = null, entitlements = null;
+let matches = [], usage = null, players = [], profile = null, entitlements = null, members = [];
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 async function init() {
@@ -403,18 +455,20 @@ async function init() {
       return await res.json();
     } catch (e) { console.warn('fetch failed:', path, e); return { ok: false }; }
   }
-  const [mData, uData, pData, prData, eData] = await Promise.all([
+  const [mData, uData, pData, prData, eData, mbData] = await Promise.all([
     safeFetch('/api/client/matches'),
     safeFetch('/api/client/usage'),
     safeFetch('/api/client/players'),
     safeFetch('/api/client/profile'),
     safeFetch('/api/client/entitlements'),
+    safeFetch('/api/client/members'),
   ]);
   matches = mData.ok ? mData.matches : [];
   usage = uData.ok ? uData.usage : null;
   players = pData.ok ? pData.players : [];
   profile = prData.ok ? prData.profile : null;
   entitlements = eData.ok ? eData.entitlements : null;
+  members = mbData.ok ? mbData.members : [];
   render();
 }
 
@@ -524,6 +578,7 @@ function render() {
       </div>
       <div class="profile-msg" id="profileMsg"></div>
     </div>
+    ${renderLinkedPlayers()}
   </div>`;
 
   // === CHARTS ===

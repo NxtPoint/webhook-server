@@ -50,7 +50,7 @@ def add_cors_headers(response):
     if request.path.startswith("/api/client/") or request.path.startswith("/upload/api/") or request.path.startswith("/api/submit_s3_task"):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Client-Key, Authorization"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     return response
 
 

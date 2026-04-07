@@ -797,9 +797,37 @@ _ensure_member_profile_columns()
 # GET /api/client/members
 # ----------------------------
 
+MEMBER_FIELDS = [
+    "id", "full_name", "surname", "is_primary", "role", "email",
+    "phone", "utr", "dominant_hand", "country", "area",
+    "dob", "skill_level", "club_school", "notes", "profile_photo_url",
+]
+
+MEMBER_EDITABLE = {
+    "full_name", "surname", "phone", "utr", "dominant_hand",
+    "country", "area", "dob", "skill_level", "club_school", "notes",
+    "profile_photo_url", "email",
+}
+
+
+def _member_row_to_dict(r) -> dict:
+    d = {}
+    for f in MEMBER_FIELDS:
+        v = r.get(f)
+        if f == "id":
+            d[f] = int(v)
+        elif f == "is_primary":
+            d[f] = bool(v)
+        elif f == "dob":
+            d[f] = str(v) if v else None
+        else:
+            d[f] = v
+    return d
+
+
 @client_bp.route("/api/client/members", methods=["GET", "OPTIONS"])
 def list_account_members():
-    """Return all active members on the account (primary + children) for player dropdowns."""
+    """Return all active members on the account (primary + children/coaches)."""
     if not _guard():
         return _forbid()
 
@@ -810,7 +838,9 @@ def list_account_members():
     with engine.connect() as conn:
         rows = conn.execute(
             text("""
-                SELECT m.id, m.full_name, m.is_primary, m.role, m.utr
+                SELECT m.id, m.full_name, m.surname, m.is_primary, m.role, m.email,
+                       m.phone, m.utr, m.dominant_hand, m.country, m.area,
+                       m.dob, m.skill_level, m.club_school, m.notes, m.profile_photo_url
                 FROM billing.account a
                 JOIN billing.member m ON m.account_id = a.id AND m.active = true
                 WHERE a.email = :email
@@ -819,14 +849,150 @@ def list_account_members():
             {"email": email},
         ).mappings().all()
 
-    members = []
-    for r in rows:
-        members.append({
-            "id": int(r["id"]),
-            "full_name": r["full_name"],
-            "is_primary": bool(r["is_primary"]),
-            "role": r["role"],
-            "utr": r["utr"],
-        })
+    return jsonify({"ok": True, "members": [_member_row_to_dict(r) for r in rows]})
 
-    return jsonify({"ok": True, "members": members})
+
+# ----------------------------
+# POST /api/client/members  (add a linked player)
+# ----------------------------
+
+@client_bp.route("/api/client/members", methods=["POST"], endpoint="add_member")
+def add_member():
+    """Add a child or coach member to the account."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    full_name = (payload.get("full_name") or "").strip()
+    if not full_name:
+        return jsonify({"ok": False, "error": "full_name required"}), 400
+
+    with Session(engine) as session:
+        acct_id = session.execute(
+            text("SELECT id FROM billing.account WHERE email = :email"),
+            {"email": email},
+        ).scalar_one_or_none()
+        if not acct_id:
+            return jsonify({"ok": False, "error": "account_not_found"}), 404
+
+        params = {"aid": acct_id, "name": full_name}
+        cols = ["account_id", "full_name", "is_primary", "active"]
+        vals = [":aid", ":name", "false", "true"]
+
+        for f in MEMBER_EDITABLE - {"full_name"}:
+            v = payload.get(f)
+            if v is not None:
+                v_str = str(v).strip()
+                if v_str:
+                    cols.append(f)
+                    vals.append(f":{f}")
+                    params[f] = v_str if f != "dob" else v_str
+
+        # Force role to valid value
+        role = (payload.get("role") or "player_parent").strip().lower()
+        if role not in ("player_parent", "coach"):
+            role = "player_parent"
+        cols.append("role")
+        vals.append(":role")
+        params["role"] = role
+
+        row = session.execute(
+            text(f"INSERT INTO billing.member ({', '.join(cols)}) VALUES ({', '.join(vals)}) RETURNING id"),
+            params,
+        )
+        member_id = int(row.scalar_one())
+        session.commit()
+
+    return jsonify({"ok": True, "member_id": member_id})
+
+
+# ----------------------------
+# PATCH /api/client/members/<member_id>
+# ----------------------------
+
+@client_bp.route("/api/client/members/<int:member_id>", methods=["PATCH", "OPTIONS"], endpoint="update_member")
+def update_member(member_id: int):
+    """Update a linked member's profile fields."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    updates = {k: v for k, v in payload.items() if k in MEMBER_EDITABLE}
+    if not updates:
+        return jsonify({"ok": False, "error": "no editable fields provided"}), 400
+
+    with Session(engine) as session:
+        row = session.execute(
+            text("""
+                SELECT m.id, m.account_id
+                FROM billing.member m
+                JOIN billing.account a ON a.id = m.account_id
+                WHERE m.id = :mid AND a.email = :email AND m.active = true
+            """),
+            {"mid": member_id, "email": email},
+        ).mappings().first()
+
+        if not row:
+            return jsonify({"ok": False, "error": "member_not_found"}), 404
+
+        set_parts = []
+        params = {"mid": member_id}
+        for k, v in updates.items():
+            set_parts.append(f"{k} = :{k}")
+            params[k] = v
+
+        session.execute(
+            text(f"UPDATE billing.member SET {', '.join(set_parts)} WHERE id = :mid"),
+            params,
+        )
+        session.commit()
+
+    return jsonify({"ok": True, "updated": list(updates.keys())})
+
+
+# ----------------------------
+# DELETE /api/client/members/<member_id>  (soft-delete)
+# ----------------------------
+
+@client_bp.route("/api/client/members/<int:member_id>", methods=["DELETE", "OPTIONS"], endpoint="delete_member")
+def delete_member(member_id: int):
+    """Soft-delete a linked member (set active=false). Cannot delete primary."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with Session(engine) as session:
+        row = session.execute(
+            text("""
+                SELECT m.id, m.is_primary
+                FROM billing.member m
+                JOIN billing.account a ON a.id = m.account_id
+                WHERE m.id = :mid AND a.email = :email AND m.active = true
+            """),
+            {"mid": member_id, "email": email},
+        ).mappings().first()
+
+        if not row:
+            return jsonify({"ok": False, "error": "member_not_found"}), 404
+
+        if row["is_primary"]:
+            return jsonify({"ok": False, "error": "cannot_delete_primary_member"}), 400
+
+        session.execute(
+            text("UPDATE billing.member SET active = false WHERE id = :mid"),
+            {"mid": member_id},
+        )
+        session.commit()
+
+    return jsonify({"ok": True})
