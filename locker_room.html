@@ -660,6 +660,172 @@ async function saveProfile() {
   btn.textContent = 'Save'; btn.disabled = false;
 }
 
+// ============ LINKED PLAYERS ============
+
+function renderLinkedPlayers() {
+  // Non-primary members linked to this account
+  const linked = members.filter(m => !m.is_primary);
+
+  let cards = '';
+  linked.forEach(m => {
+    const roleClass = (m.role||'').includes('coach') ? 'coach' : 'player';
+    const roleLabel = (m.role||'').includes('coach') ? 'Coach' : 'Player';
+    cards += `<div class="member-card" id="mc-${m.id}">
+      <div class="member-card-top">
+        <span class="member-card-name">${esc(m.full_name||'')}${m.surname ? ' ' + esc(m.surname) : ''}</span>
+        <span class="member-card-role ${roleClass}">${roleLabel}</span>
+      </div>
+      <div class="member-card-grid">
+        <div class="member-card-field">
+          <label>First Name</label>
+          <input id="mf-${m.id}-full_name" value="${esc(m.full_name||'')}">
+        </div>
+        <div class="member-card-field">
+          <label>Surname</label>
+          <input id="mf-${m.id}-surname" value="${esc(m.surname||'')}">
+        </div>
+        <div class="member-card-field">
+          <label>Email</label>
+          <input id="mf-${m.id}-email" type="email" value="${esc(m.email||'')}">
+        </div>
+        <div class="member-card-field">
+          <label>Mobile</label>
+          <input id="mf-${m.id}-phone" type="tel" value="${esc(m.phone||'')}">
+        </div>
+        <div class="member-card-field">
+          <label>UTR</label>
+          <input id="mf-${m.id}-utr" value="${esc(m.utr||'')}">
+        </div>
+        <div class="member-card-field">
+          <label>Dominant Hand</label>
+          <select id="mf-${m.id}-dominant_hand">
+            <option value="">—</option>
+            <option value="right" ${m.dominant_hand==='right'?'selected':''}>Right</option>
+            <option value="left" ${m.dominant_hand==='left'?'selected':''}>Left</option>
+          </select>
+        </div>
+        <div class="member-card-field">
+          <label>Country</label>
+          <input id="mf-${m.id}-country" value="${esc(m.country||'')}">
+        </div>
+        <div class="member-card-field">
+          <label>Area</label>
+          <input id="mf-${m.id}-area" value="${esc(m.area||'')}">
+        </div>
+      </div>
+      <div class="member-card-actions">
+        <button class="btn-sm btn-sm-primary" onclick="saveMember(${m.id})">Save</button>
+        <button class="btn-remove" onclick="removeMember(${m.id},'${esc(m.full_name||'')}')">Remove</button>
+        <span class="member-card-msg" id="mmsg-${m.id}"></span>
+      </div>
+    </div>`;
+  });
+
+  return `<div class="members-section">
+    <div class="members-header">
+      <span class="members-title">Linked Players</span>
+      <button class="btn-add-member" onclick="toggleAddMember()">+ Add Player</button>
+    </div>
+    <div class="member-cards">
+      ${linked.length === 0 ? '<div style="color:var(--text-dim);font-size:0.85rem;padding:8px 0;">No linked players yet. Add a child or coach above.</div>' : cards}
+    </div>
+    <div class="add-member-form" id="addMemberForm">
+      <div class="member-card-grid">
+        <div class="member-card-field"><label>First Name</label><input id="new-full_name"></div>
+        <div class="member-card-field"><label>Surname</label><input id="new-surname"></div>
+        <div class="member-card-field"><label>Email</label><input id="new-email" type="email"></div>
+        <div class="member-card-field"><label>Mobile</label><input id="new-phone" type="tel"></div>
+        <div class="member-card-field"><label>UTR</label><input id="new-utr"></div>
+        <div class="member-card-field">
+          <label>Dominant Hand</label>
+          <select id="new-dominant_hand"><option value="">—</option><option value="right">Right</option><option value="left">Left</option></select>
+        </div>
+        <div class="member-card-field"><label>Country</label><input id="new-country"></div>
+        <div class="member-card-field"><label>Area</label><input id="new-area"></div>
+        <div class="member-card-field">
+          <label>Role</label>
+          <select id="new-role"><option value="player_parent">Player</option><option value="coach">Coach</option></select>
+        </div>
+      </div>
+      <div class="member-card-actions" style="margin-top:10px;">
+        <button class="btn-sm btn-sm-primary" onclick="addMember()">Add</button>
+        <button class="btn-sm" style="background:var(--white);color:var(--text-sec);border:1px solid var(--border);" onclick="toggleAddMember()">Cancel</button>
+        <span class="member-card-msg" id="addMemberMsg"></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleAddMember() {
+  document.getElementById('addMemberForm').classList.toggle('open');
+}
+
+async function saveMember(mid) {
+  const fields = ['full_name','surname','email','phone','utr','dominant_hand','country','area'];
+  const data = {};
+  fields.forEach(f => {
+    const el = document.getElementById('mf-' + mid + '-' + f);
+    if (el) data[f] = el.value.trim();
+  });
+  const msg = document.getElementById('mmsg-' + mid);
+  try {
+    const res = await apiFetch('/api/client/members/' + mid, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+    const r = await res.json();
+    if (r.ok) {
+      msg.style.color = 'var(--green)'; msg.textContent = 'Saved';
+      const m = members.find(x => x.id === mid);
+      if (m) Object.assign(m, data);
+    } else {
+      msg.style.color = 'var(--red)'; msg.textContent = r.error || 'Failed';
+    }
+  } catch (e) { msg.style.color = 'var(--red)'; msg.textContent = e.message; }
+  setTimeout(() => { msg.textContent = ''; }, 3000);
+}
+
+async function removeMember(mid, name) {
+  if (!confirm('Remove ' + name + ' from your account?')) return;
+  try {
+    const res = await apiFetch('/api/client/members/' + mid, { method: 'DELETE' });
+    const r = await res.json();
+    if (r.ok) {
+      members = members.filter(x => x.id !== mid);
+      const card = document.getElementById('mc-' + mid);
+      if (card) card.remove();
+    } else { alert(r.error || 'Failed'); }
+  } catch (e) { alert(e.message); }
+}
+
+async function addMember() {
+  const fields = ['full_name','surname','email','phone','utr','dominant_hand','country','area','role'];
+  const data = {};
+  fields.forEach(f => {
+    const el = document.getElementById('new-' + f);
+    if (el) data[f] = el.value.trim();
+  });
+  if (!data.full_name) {
+    const msg = document.getElementById('addMemberMsg');
+    msg.style.color = 'var(--red)'; msg.textContent = 'First name is required';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+    return;
+  }
+  const msg = document.getElementById('addMemberMsg');
+  try {
+    const res = await apiFetch('/api/client/members', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+    });
+    const r = await res.json();
+    if (r.ok) {
+      msg.style.color = 'var(--green)'; msg.textContent = 'Added!';
+      setTimeout(() => { init(); }, 1000);
+    } else {
+      msg.style.color = 'var(--red)'; msg.textContent = r.error || 'Failed';
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+    }
+  } catch (e) { msg.style.color = 'var(--red)'; msg.textContent = e.message; }
+}
+
 // ============ LATEST MATCH HERO (Task 4) ============
 
 function renderHero() {
