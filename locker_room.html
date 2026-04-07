@@ -99,11 +99,19 @@ select.profile-input { appearance: auto; }
 .profile-msg.err { color: var(--red); }
 
 /* Linked Players section */
-.members-section { border-top: 1px solid var(--border); padding: 16px 16px 16px; }
-.members-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 12px;
+.members-section { border-top: 1px solid var(--border); }
+.members-toggle {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 10px 16px; font-size: 0.82rem; font-weight: 600;
+  color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
+  user-select: none; transition: background var(--transition);
 }
+.members-toggle:hover { background: var(--green-bg); }
+.members-toggle .chevron { transition: transform var(--transition); font-size: 0.7rem; color: var(--text-dim); }
+.members-toggle .chevron.open { transform: rotate(90deg); }
+.members-toggle .add-inline { margin-left: auto; }
+.members-body { display: none; padding: 0 16px 16px; }
+.members-body.open { display: block; }
 .members-title { font-size: 0.82rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; }
 .btn-add-member {
   padding: 5px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.75rem;
@@ -187,7 +195,7 @@ select.profile-input { appearance: auto; }
   text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
 }
 .charts-row {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;
+  display: grid; grid-template-columns: 7fr 3fr; gap: 16px; margin-bottom: 24px;
 }
 .chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
@@ -217,7 +225,9 @@ select.profile-input { appearance: auto; }
 .hero-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 20px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  cursor: pointer; transition: border-color var(--transition), box-shadow var(--transition);
 }
+.hero-card:hover { border-left: 3px solid var(--green); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .hero-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .hero-title { font-size: 1.15rem; font-weight: 700; color: var(--text); }
 .hero-meta { color: var(--text-sec); font-size: 0.82rem; margin-top: 2px; }
@@ -256,7 +266,7 @@ select.profile-input { appearance: auto; }
 }
 .year-header { font-size: 1.1rem; background: var(--white); border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
 .year-header:hover { background: var(--green-bg); }
-.month-header { font-size: 0.95rem; background: var(--white); margin: 6px 0 6px 16px; border: 1px solid var(--border); }
+.month-header { font-size: 0.95rem; background: var(--white); margin: 6px 0; border: 1px solid var(--border); }
 .month-header:hover { background: var(--green-bg); }
 .chevron { transition: transform var(--transition); font-size: 0.7rem; color: var(--text-dim); }
 .chevron.open { transform: rotate(90deg); }
@@ -265,7 +275,7 @@ select.profile-input { appearance: auto; }
 .group-content.open { display: block; }
 
 /* ========== MATCH ROWS ========== */
-.match-list { padding-left: 32px; }
+.match-list { padding-left: 0; }
 .match-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 14px 16px; margin-bottom: 8px;
@@ -398,7 +408,7 @@ select.edit-input { appearance: auto; }
   .profile-grid { grid-template-columns: 1fr; }
   .member-card-grid { grid-template-columns: 1fr; }
   .match-card { flex-wrap: wrap; }
-  .match-list { padding-left: 16px; }
+  .match-list { padding-left: 0; }
   .detail-panel { width: 100vw; border-left: none; }
   .match-card, .btn-edit, .btn-primary, .btn-danger, .panel-close, .btn-watch { min-height: 44px; }
   .hero-top { flex-direction: column; }
@@ -722,12 +732,14 @@ function renderLinkedPlayers() {
   });
 
   return `<div class="members-section">
-    <div class="members-header">
-      <span class="members-title">Linked Players</span>
-      <button class="btn-add-member" onclick="toggleAddMember()">+ Add Player</button>
+    <div class="members-toggle" onclick="toggleLinkedPlayers()">
+      <span class="chevron" id="chevMembers">&#9654;</span>
+      <span>Linked Players${linked.length ? ' (' + linked.length + ')' : ''}</span>
+      <span class="add-inline"><button class="btn-add-member" onclick="event.stopPropagation();toggleLinkedPlayers(true);toggleAddMember()">+ Add Player</button></span>
     </div>
+    <div class="members-body" id="membersBody">
     <div class="member-cards">
-      ${linked.length === 0 ? '<div style="color:var(--text-dim);font-size:0.85rem;padding:8px 0;">No linked players yet. Add a child or coach above.</div>' : cards}
+      ${linked.length === 0 ? '<div style="color:var(--text-dim);font-size:0.85rem;padding:8px 0;">No linked players yet. Add a child or coach below.</div>' : cards}
     </div>
     <div class="add-member-form" id="addMemberForm">
       <div class="member-card-grid">
@@ -753,7 +765,20 @@ function renderLinkedPlayers() {
         <span class="member-card-msg" id="addMemberMsg"></span>
       </div>
     </div>
+    </div>
   </div>`;
+}
+
+function toggleLinkedPlayers(forceOpen) {
+  const body = document.getElementById('membersBody');
+  const chev = document.getElementById('chevMembers');
+  if (forceOpen) {
+    if (body) body.classList.add('open');
+    if (chev) chev.classList.add('open');
+  } else {
+    if (body) body.classList.toggle('open');
+    if (chev) chev.classList.toggle('open');
+  }
 }
 
 function toggleAddMember() {
@@ -841,16 +866,17 @@ function renderHero() {
 
   let actionsHtml = '';
   if (hasTrim) {
-    actionsHtml += `<button class="btn-watch" onclick="playFootage('${latest.task_id}')">&#9654; Watch Footage</button>`;
+    actionsHtml += `<button class="btn-watch" onclick="event.stopPropagation();playFootage('${latest.task_id}')">&#9654; Watch Footage</button>`;
   } else if (trimProcessing) {
     actionsHtml += `<span class="badge-processing">&#9203; Processing footage&hellip;</span>`;
   }
-  actionsHtml += `<button class="btn-edit" onclick="openDetail(${latest._idx !== undefined ? latest._idx : matches.length - 1})">Edit Details</button>`;
+  const heroIdx = latest._idx !== undefined ? latest._idx : matches.length - 1;
+  actionsHtml += `<button class="btn-edit" onclick="event.stopPropagation();openDetail(${heroIdx})">Edit Details</button>`;
 
   const heroArea = document.getElementById('heroArea');
   heroArea.innerHTML = `
     <div class="section-label">Latest Match</div>
-    <div class="hero-card">
+    <div class="hero-card" onclick="openDetail(${heroIdx})">
       <div class="hero-top">
         <div>
           <div class="hero-title">${esc(latest.player_a_name||'Player A')} vs ${esc(latest.player_b_name||'Opponent')}</div>
