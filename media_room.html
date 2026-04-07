@@ -1062,9 +1062,12 @@ function renderSinglesForm(el) {
   const defaultPlayerA = primaryMember ? primaryMember.full_name : '';
   const defaultUtrA = primaryMember ? (primaryMember.utr || '') : '';
 
+  const primaryDisplay = primaryMember ? primaryMember.full_name + (primaryMember.surname ? ' ' + primaryMember.surname : '') : '';
+  const defaultPlayerADisplay = primaryDisplay || defaultPlayerA;
+
   const playerOpts = STATE.members.filter(m => m.full_name).map(m => {
     const display = m.full_name + (m.surname ? ' ' + m.surname : '');
-    return `<option value="${esc(m.full_name)}" ${m.full_name === defaultPlayerA ? 'selected' : ''}>${esc(display)}</option>`;
+    return `<option value="${esc(m.full_name)}" data-display="${esc(display)}" ${m.full_name === defaultPlayerA ? 'selected' : ''}>${esc(display)}</option>`;
   }).join('');
 
   el.innerHTML = `
@@ -1072,10 +1075,9 @@ function renderSinglesForm(el) {
       <div class="section-title">Match Details</div>
 
       <div class="edit-field">
-        <label class="edit-label">Player A</label>
-        <select class="edit-input" id="fd-player_a_name">
+        <label class="edit-label">Player A (You / Your Player)</label>
+        <select class="edit-input" id="fd-player_a_name" onchange="updateScoreNames()">
           ${playerOpts}
-          <option value="">-- Other --</option>
         </select>
       </div>
 
@@ -1086,7 +1088,7 @@ function renderSinglesForm(el) {
 
       <div class="edit-field">
         <label class="edit-label">Player B (Opponent)</label>
-        <input class="edit-input" type="text" id="fd-player_b_name" placeholder="Opponent name">
+        <input class="edit-input" type="text" id="fd-player_b_name" placeholder="Opponent name" oninput="updateScoreNames()">
       </div>
 
       <div class="edit-field">
@@ -1119,13 +1121,19 @@ function renderSinglesForm(el) {
 
       <div class="edit-field">
         <label class="edit-label">Score</label>
-        <div class="score-grid">
-          <div class="score-set"><label>Set 1 (A)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
-          <div class="score-set"><label>Set 2 (A)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
-          <div class="score-set"><label>Set 3 (A)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
-          <div class="score-set"><label>Set 1 (B)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
-          <div class="score-set"><label>Set 2 (B)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
-          <div class="score-set"><label>Set 3 (B)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
+        <div style="margin-top:8px">
+          <div style="font-weight:600;font-size:0.85rem;color:var(--green);margin-bottom:4px" id="scoreNameA">${esc(defaultPlayerADisplay)}</div>
+          <div class="score-grid" style="margin-bottom:12px">
+            <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
+            <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
+            <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
+          </div>
+          <div style="font-weight:600;font-size:0.85rem;color:var(--text-sec);margin-bottom:4px" id="scoreNameB">Opponent</div>
+          <div class="score-grid">
+            <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
+            <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
+            <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
+          </div>
         </div>
       </div>
 
@@ -1137,12 +1145,23 @@ function renderSinglesForm(el) {
 
   // Store first_server default
   STATE._firstServer = 'player_a';
+  updateScoreNames();
 }
 
 function setFirstServer(val) {
   STATE._firstServer = val;
   document.getElementById('toggle-server').classList.toggle('active', val === 'player_a');
   document.getElementById('toggle-returner').classList.toggle('active', val === 'player_b');
+}
+
+function updateScoreNames() {
+  const sel = document.getElementById('fd-player_a_name');
+  const nameA = sel ? (sel.options[sel.selectedIndex]?.getAttribute('data-display') || sel.value || 'Player A') : 'Player A';
+  const nameB = (document.getElementById('fd-player_b_name')?.value || '').trim() || 'Opponent';
+  const elA = document.getElementById('scoreNameA');
+  const elB = document.getElementById('scoreNameB');
+  if (elA) elA.textContent = nameA;
+  if (elB) elB.textContent = nameB;
 }
 
 function showDetailsMsg(type, text) {
