@@ -1057,16 +1057,15 @@ function renderStep3(el) {
 }
 
 function renderSinglesForm(el) {
-  // Build Player A options: members + historical players
-  const memberNames = STATE.members.map(m => m.full_name).filter(Boolean);
-  const allNames = [...new Set([...memberNames, ...STATE.players])].sort();
+  // Build Player A options: account members only (primary + children)
   const primaryMember = STATE.members.find(m => m.is_primary);
-  const defaultPlayerA = primaryMember ? primaryMember.full_name : (allNames[0] || '');
+  const defaultPlayerA = primaryMember ? primaryMember.full_name : '';
   const defaultUtrA = primaryMember ? (primaryMember.utr || '') : '';
 
-  const playerOpts = allNames.map(n =>
-    `<option value="${esc(n)}" ${n === defaultPlayerA ? 'selected' : ''}>${esc(n)}</option>`
-  ).join('');
+  const playerOpts = STATE.members.filter(m => m.full_name).map(m => {
+    const display = m.full_name + (m.surname ? ' ' + m.surname : '');
+    return `<option value="${esc(m.full_name)}" ${m.full_name === defaultPlayerA ? 'selected' : ''}>${esc(display)}</option>`;
+  }).join('');
 
   el.innerHTML = `
     <div class="section-card">
@@ -1249,6 +1248,7 @@ function renderStep4(el) {
       <div id="analysisStatus" style="font-size:0.75rem;color:var(--text-dim);margin-top:4px;word-break:break-all"></div>
       <div class="tx-log" id="txLog"></div>
       <div id="analysisResult"></div>
+      <button class="btn-danger" id="btnCancelAnalysis" onclick="cancelAnalysis()">Cancel Analysis</button>
       <div class="msg-bar" id="analysisMsg"></div>
     </div>
   `;
@@ -1367,6 +1367,8 @@ async function pollStatus() {
 function showAnalysisSuccess() {
   const el = document.getElementById('analysisResult');
   if (!el) return;
+  const cancelBtn = document.getElementById('btnCancelAnalysis');
+  if (cancelBtn) cancelBtn.style.display = 'none';
 
   // Build Locker Room URL from same origin (media room and locker room are on the same service)
   const lrBase = params.get('locker_room_url')
@@ -1398,6 +1400,31 @@ function showAnalysisFailure(error, stage) {
 function retryAnalysis() {
   // Go back to step 3 to re-submit
   goToStep(3);
+}
+
+async function cancelAnalysis() {
+  if (!STATE.taskId) return;
+  const btn = document.getElementById('btnCancelAnalysis');
+  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling...'; }
+
+  try {
+    const res = await apiPost('/upload/api/cancel-task', { task_id: STATE.taskId });
+    const data = await res.json();
+    if (data.ok) {
+      stopPolling();
+      addTxLog('warn', 'Analysis cancelled by user');
+      if (btn) btn.style.display = 'none';
+      const bar = document.getElementById('analysisBar');
+      if (bar) bar.classList.add('error');
+      showAnalysisFailure('Cancelled by user', 'canceled');
+    } else {
+      addTxLog('err', 'Cancel failed: ' + (data.error || 'unknown'));
+      if (btn) { btn.disabled = false; btn.textContent = 'Cancel Analysis'; }
+    }
+  } catch (e) {
+    addTxLog('err', 'Cancel failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Cancel Analysis'; }
+  }
 }
 
 // ============================================================

@@ -1096,8 +1096,11 @@ function openDetail(idx) {
   document.getElementById('panelSubtitle').textContent = subtitle;
 
   // Build Player A options from active account members only (primary + children)
-  const memberNames = members.filter(mb => mb.full_name).map(mb => mb.full_name);
-  const playerOpts = memberNames.map(n => `<option value="${esc(n)}" ${n===m.player_a_name?'selected':''}>${esc(n)}</option>`).join('');
+  const memberOpts = members.filter(mb => mb.full_name).map(mb => {
+    const display = mb.full_name + (mb.surname ? ' ' + mb.surname : '');
+    return { value: mb.full_name, display };
+  });
+  const playerOpts = memberOpts.map(o => `<option value="${esc(o.value)}" ${o.value===m.player_a_name?'selected':''}>${esc(o.display)}</option>`).join('');
 
   const fsIsA = m.first_server !== 'player_b';
   const fsIsB = m.first_server === 'player_b';
