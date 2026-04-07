@@ -1,0 +1,1404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TEN-FIFTY5 Media Room</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   DESIGN SYSTEM — identical to locker_room.html
+   ============================================================ */
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
+}
+button { cursor: pointer; font-family: inherit; }
+
+.app { max-width: 960px; margin: 0 auto; padding: 16px 16px 80px; }
+
+/* HEADER */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 0; border-bottom: 1px solid var(--border);
+  margin-bottom: 20px; flex-wrap: wrap; gap: 10px;
+  background: var(--white);
+  margin: -16px -16px 20px; padding: 14px 16px;
+}
+.logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.player-info { text-align: right; }
+.player-name { font-weight: 600; font-size: 0.9rem; color: var(--text); }
+.player-email { color: var(--text-sec); font-size: 0.75rem; }
+.usage-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 4px;
+  font-size: 0.78rem; font-weight: 600;
+  background: var(--green-bg); color: var(--green); border: 1px solid var(--green);
+}
+.usage-pill.low { background: rgba(217,119,6,0.08); color: var(--amber); border-color: var(--amber); }
+.usage-pill.critical { background: rgba(220,38,38,0.08); color: var(--red); border-color: var(--red); }
+
+/* LOADING / EMPTY */
+.loading, .empty-state { text-align: center; padding: 60px 20px; color: var(--text-sec); }
+.loading .spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty-state h3 { font-weight: 500; margin-bottom: 6px; color: var(--text); }
+.empty-state p { color: var(--text-dim); font-size: 0.88rem; max-width: 400px; margin: 0 auto; }
+
+/* BUTTONS */
+.btn-primary {
+  background: var(--green); color: var(--white); border: none;
+  padding: 10px 24px; border-radius: var(--radius); font-weight: 600; font-size: 0.88rem;
+  width: 100%; margin-top: 16px; transition: background var(--transition);
+}
+.btn-primary:hover { background: var(--green-light); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-danger {
+  background: var(--white); color: var(--red); border: 1px solid var(--red);
+  padding: 8px 24px; border-radius: var(--radius); font-weight: 600; font-size: 0.82rem;
+  width: 100%; margin-top: 8px; transition: all var(--transition);
+}
+.btn-danger:hover { background: rgba(220,38,38,0.05); }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-secondary {
+  background: var(--white); color: var(--green); border: 1px solid var(--green);
+  padding: 8px 24px; border-radius: var(--radius); font-weight: 600; font-size: 0.82rem;
+  width: 100%; margin-top: 8px; transition: all var(--transition);
+}
+.btn-secondary:hover { background: var(--green-bg); }
+.btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* MSG BAR */
+.msg-bar { padding: 10px 14px; border-radius: var(--radius); font-size: 0.85rem; font-weight: 500; margin-top: 12px; display: none; }
+.msg-bar.info { display: block; background: var(--green-bg); color: var(--green); }
+.msg-bar.error { display: block; background: rgba(220,38,38,0.08); color: var(--red); }
+.msg-bar.success { display: block; background: var(--green-bg); color: var(--green); }
+.msg-bar.warn { display: block; background: rgba(217,119,6,0.08); color: var(--amber); }
+
+/* EDIT FIELDS (from locker_room) */
+.edit-field { margin-bottom: 12px; }
+.edit-label { display: block; font-size: 0.78rem; color: var(--text-sec); margin-bottom: 4px; font-weight: 500; }
+.edit-input {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: inherit; font-size: 0.9rem; color: var(--text); background: var(--white);
+  transition: border-color var(--transition); outline: none;
+}
+.edit-input:focus { border-color: var(--green); }
+select.edit-input { appearance: auto; }
+textarea.edit-input { resize: vertical; min-height: 60px; }
+.score-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.score-set { text-align: center; }
+.score-set label { display: block; font-size: 0.7rem; color: var(--text-dim); margin-bottom: 2px; }
+.score-set input { width: 100%; text-align: center; }
+
+/* ============================================================
+   MEDIA ROOM SPECIFIC STYLES
+   ============================================================ */
+
+/* STEP INDICATOR */
+.step-indicator {
+  display: flex; align-items: center; justify-content: center; gap: 0;
+  margin-bottom: 24px; padding: 12px 0;
+}
+.step-dot {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.78rem; font-weight: 700;
+  border: 2px solid var(--border); color: var(--text-dim);
+  background: var(--white); transition: all var(--transition);
+  flex-shrink: 0;
+}
+.step-dot.active { border-color: var(--green); background: var(--green); color: var(--white); }
+.step-dot.done { border-color: var(--green); background: var(--green-bg); color: var(--green); }
+.step-line { width: 40px; height: 2px; background: var(--border); flex-shrink: 0; }
+.step-line.done { background: var(--green); }
+.step-title { text-align: center; font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 4px; }
+
+/* CARD GRID (game type) */
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+.game-card {
+  background: var(--white); border: 2px solid var(--border); border-radius: var(--radius);
+  padding: 20px 16px; text-align: center; cursor: pointer;
+  transition: all var(--transition); position: relative;
+}
+.game-card:hover:not(.disabled) { border-color: var(--green); box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.game-card.selected { border-color: var(--green); background: var(--green-bg); }
+.game-card.disabled { opacity: 0.5; cursor: not-allowed; }
+.game-card-icon { font-size: 1.8rem; margin-bottom: 8px; }
+.game-card-title { font-weight: 600; font-size: 0.95rem; }
+.game-card-sub { font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; }
+.coming-soon-badge {
+  position: absolute; top: 8px; right: 8px;
+  font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+  background: var(--border); color: var(--text-dim); padding: 2px 6px;
+  border-radius: 3px; letter-spacing: 0.5px;
+}
+
+/* DROP ZONE */
+.drop-zone {
+  border: 2px dashed var(--border); border-radius: var(--radius);
+  padding: 40px 20px; text-align: center; cursor: pointer;
+  transition: all var(--transition); background: var(--white);
+  margin-bottom: 16px;
+}
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--green); background: var(--green-bg); }
+.drop-zone-icon { font-size: 2.5rem; margin-bottom: 8px; color: var(--text-dim); }
+.drop-zone-text { font-size: 0.9rem; color: var(--text-sec); }
+.drop-zone-hint { font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; }
+
+/* PROGRESS */
+.upload-progress { margin: 16px 0; }
+.progress-bar-wrap {
+  width: 100%; height: 12px; background: var(--border);
+  border-radius: 6px; overflow: hidden; margin-bottom: 8px;
+}
+.progress-bar-fill {
+  height: 100%; background: var(--green); border-radius: 6px;
+  transition: width 0.3s ease; width: 0%;
+}
+.progress-bar-fill.error { background: var(--red); }
+.progress-stats {
+  display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px;
+  font-size: 0.75rem; color: var(--text-sec);
+}
+.progress-stat { text-align: center; }
+.progress-stat-value { font-weight: 700; font-size: 0.88rem; color: var(--text); }
+.progress-stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.3px; }
+
+/* RESUME BANNER */
+.resume-banner {
+  background: rgba(217,119,6,0.08); border: 1px solid var(--amber);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.resume-banner-text { font-size: 0.85rem; color: var(--amber); font-weight: 500; }
+.resume-banner-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.resume-banner-actions button {
+  padding: 6px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
+  border: 1px solid var(--amber); background: var(--white); color: var(--amber);
+  transition: all var(--transition);
+}
+.resume-banner-actions button:hover { background: var(--amber); color: var(--white); }
+.resume-banner-actions button.discard { border-color: var(--text-dim); color: var(--text-dim); }
+.resume-banner-actions button.discard:hover { background: var(--text-dim); color: var(--white); }
+
+/* TRANSACTION LOG */
+.tx-log {
+  background: #1a1a1a; color: #a3e635; border-radius: var(--radius);
+  padding: 12px 16px; font-family: 'Courier New', monospace; font-size: 0.75rem;
+  max-height: 260px; overflow-y: auto; margin: 12px 0;
+  line-height: 1.6;
+}
+.tx-log .tx-entry { margin-bottom: 2px; }
+.tx-log .tx-time { color: #6b7280; margin-right: 8px; }
+.tx-log .tx-ok { color: #22c55e; }
+.tx-log .tx-err { color: #ef4444; }
+.tx-log .tx-warn { color: #eab308; }
+
+/* SUCCESS CARD */
+.success-card {
+  background: var(--green-bg); border: 2px solid var(--green);
+  border-radius: var(--radius); padding: 24px; text-align: center;
+  margin: 20px 0;
+}
+.success-card h3 { color: var(--green); font-size: 1.1rem; margin-bottom: 8px; }
+.success-card p { color: var(--text-sec); font-size: 0.88rem; }
+
+/* SECTION */
+.section-card {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-bottom: 16px;
+}
+.section-title {
+  font-size: 0.82rem; font-weight: 600; color: var(--text-sec);
+  margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+/* TOGGLE */
+.toggle-group {
+  display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.toggle-btn {
+  flex: 1; padding: 8px 12px; border: none; background: var(--white);
+  font-family: inherit; font-size: 0.85rem; font-weight: 500;
+  color: var(--text-sec); cursor: pointer; transition: all var(--transition);
+  text-align: center;
+}
+.toggle-btn.active { background: var(--green); color: var(--white); }
+
+/* BLOCKED STATE */
+.blocked-card {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 40px 24px; text-align: center;
+}
+.blocked-card h3 { font-weight: 600; margin-bottom: 8px; color: var(--text); font-size: 1.1rem; }
+.blocked-card p { color: var(--text-sec); font-size: 0.88rem; margin-bottom: 16px; max-width: 400px; margin-left: auto; margin-right: auto; }
+.blocked-card a {
+  display: inline-block; background: var(--green); color: var(--white);
+  padding: 10px 24px; border-radius: var(--radius); font-weight: 600;
+  text-decoration: none; font-size: 0.88rem; transition: background var(--transition);
+}
+.blocked-card a:hover { background: var(--green-light); }
+
+/* WAKELOCK WARNING */
+.wakelock-warn {
+  background: rgba(217,119,6,0.08); border-radius: var(--radius);
+  padding: 8px 12px; font-size: 0.75rem; color: var(--amber); margin-bottom: 12px;
+  display: none;
+}
+.wakelock-warn.show { display: block; }
+
+/* MOBILE */
+@media (max-width: 600px) {
+  .header { flex-direction: column; align-items: flex-start; }
+  .header-right { width: 100%; justify-content: space-between; }
+  .player-info { text-align: left; }
+  .card-grid { grid-template-columns: 1fr; }
+  .progress-stats { grid-template-columns: 1fr 1fr; }
+  .resume-banner { flex-direction: column; align-items: flex-start; }
+  .btn-primary, .btn-secondary, .btn-danger { min-height: 44px; }
+  .step-line { width: 24px; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="loading" id="loading"><div class="spinner"></div><p>Loading...</p></div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG & AUTH (same pattern as locker_room.html)
+// ============================================================
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || '';
+
+function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
+  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
+}
+
+function apiPost(path, body) {
+  return fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, email: EMAIL }),
+  });
+}
+
+// ============================================================
+// STATE
+// ============================================================
+const STATE = {
+  step: 1,
+  gameType: 'singles',
+  upload: { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 },
+  taskId: null,
+  entitlements: null,
+  members: [],
+  players: [],
+  profile: null,
+  usage: null,
+  wakeLock: null,
+};
+
+const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_RETRIES = 3;
+const RESUME_KEY = 'tf5_media_upload_state';
+const ALLOWED_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv'];
+const LARGE_FILE_WARN_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
+
+// ============================================================
+// HELPERS
+// ============================================================
+function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function fmtBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+  return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+function fmtTime(s) {
+  if (!s || s === Infinity || isNaN(s)) return '--:--';
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ':' + String(sec).padStart(2, '0');
+}
+function nowTS() {
+  const d = new Date();
+  return d.toLocaleTimeString('en-GB', { hour12: false });
+}
+
+// ============================================================
+// WAKE LOCK
+// ============================================================
+async function acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return false;
+  try {
+    STATE.wakeLock = await navigator.wakeLock.request('screen');
+    STATE.wakeLock.addEventListener('release', () => { STATE.wakeLock = null; });
+    return true;
+  } catch (e) {
+    console.warn('Wake Lock failed:', e);
+    return false;
+  }
+}
+function releaseWakeLock() {
+  if (STATE.wakeLock) { try { STATE.wakeLock.release(); } catch (e) {} STATE.wakeLock = null; }
+}
+
+// ============================================================
+// LOCAL STORAGE RESUME
+// ============================================================
+function saveUploadState() {
+  const s = {
+    key: STATE.upload.key,
+    uploadId: STATE.upload.uploadId,
+    completedParts: STATE.upload.completedParts,
+    fileName: STATE.upload.fileName,
+    fileSize: STATE.upload.fileSize,
+    fileLastModified: STATE.upload.fileLastModified,
+    savedAt: Date.now(),
+  };
+  try { localStorage.setItem(RESUME_KEY, JSON.stringify(s)); } catch (e) {}
+}
+function loadUploadState() {
+  try {
+    const raw = localStorage.getItem(RESUME_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    // Expire after 24 hours
+    if (Date.now() - (s.savedAt || 0) > 24 * 60 * 60 * 1000) { clearUploadState(); return null; }
+    return s;
+  } catch (e) { return null; }
+}
+function clearUploadState() {
+  try { localStorage.removeItem(RESUME_KEY); } catch (e) {}
+}
+
+// ============================================================
+// INIT
+// ============================================================
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key. Access the Media Room through your dashboard.</p></div>';
+    return;
+  }
+
+  try {
+    const [entRes, profileRes, usageRes, membersRes, playersRes] = await Promise.all([
+      apiFetch('/api/client/entitlements'),
+      apiFetch('/api/client/profile'),
+      apiFetch('/api/client/usage'),
+      apiFetch('/api/client/members'),
+      apiFetch('/api/client/players'),
+    ]);
+
+    const entData = await entRes.json();
+    const profileData = await profileRes.json();
+    const usageData = await usageRes.json();
+    const membersData = await membersRes.json();
+    const playersData = await playersRes.json();
+
+    STATE.entitlements = entData.ok ? entData.entitlements : null;
+    STATE.profile = profileData.ok ? profileData.profile : null;
+    STATE.usage = usageData.ok ? usageData.usage : null;
+    STATE.members = membersData.ok ? membersData.members : [];
+    STATE.players = playersData.ok ? playersData.players : [];
+  } catch (e) {
+    console.error('Init load failed', e);
+  }
+
+  render();
+}
+
+// ============================================================
+// RENDER — MAIN DISPATCHER
+// ============================================================
+function render() {
+  const app = document.getElementById('app');
+  const playerName = STATE.usage?.player_name || STATE.profile?.full_name || EMAIL.split('@')[0];
+  const remaining = STATE.usage?.matches_remaining ?? 0;
+  const granted = STATE.usage?.matches_granted ?? 0;
+  const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
+
+  // Check entitlements
+  const ent = STATE.entitlements;
+  if (ent) {
+    if (ent.role === 'coach') {
+      app.innerHTML = renderHeader(playerName, remaining, pillClass) + renderBlocked('coach');
+      return;
+    }
+    if (!ent.plan_active && ent.matches_granted === 0) {
+      app.innerHTML = renderHeader(playerName, remaining, pillClass) + renderBlocked('no_plan');
+      return;
+    }
+    if (ent.credits_remaining <= 0) {
+      app.innerHTML = renderHeader(playerName, remaining, pillClass) + renderBlocked('no_credits');
+      return;
+    }
+  }
+
+  app.innerHTML = renderHeader(playerName, remaining, pillClass)
+    + renderStepIndicator()
+    + '<div id="stepContent"></div>';
+
+  renderStep();
+}
+
+function renderHeader(name, remaining, pillClass) {
+  return `<div class="header">
+    <div class="logo">TEN-FIFTY5</div>
+    <div class="header-right">
+      <div class="player-info">
+        <div class="player-name">${esc(name)}</div>
+        <div class="player-email">${esc(EMAIL)}</div>
+      </div>
+      <div class="usage-pill ${pillClass}">${remaining} match${remaining !== 1 ? 'es' : ''} remaining</div>
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// TASK 2 — ENTITLEMENT GATE (BLOCKED STATES)
+// ============================================================
+function renderBlocked(reason) {
+  const plansUrl = STATE.entitlements?.plans_page_url || '#';
+  if (reason === 'coach') {
+    return `<div class="blocked-card">
+      <h3>Coach Access</h3>
+      <p>Coaches can view match data in the Locker Room but cannot upload videos. Contact the account holder to upload matches.</p>
+    </div>`;
+  }
+  if (reason === 'no_plan') {
+    return `<div class="blocked-card">
+      <h3>No Active Plan</h3>
+      <p>You need an active subscription to upload match videos for analysis.</p>
+      <a href="${esc(plansUrl)}" target="_top">View Plans</a>
+    </div>`;
+  }
+  if (reason === 'no_credits') {
+    return `<div class="blocked-card">
+      <h3>No Credits Remaining</h3>
+      <p>You've used all your match credits. Purchase additional credits to continue uploading.</p>
+      <a href="${esc(plansUrl)}" target="_top">Get More Credits</a>
+    </div>`;
+  }
+  return '';
+}
+
+// ============================================================
+// STEP INDICATOR
+// ============================================================
+function renderStepIndicator() {
+  const labels = ['Game Type', 'Upload Video', 'Match Details', 'Analysis'];
+  let html = '<div class="step-indicator">';
+  labels.forEach((label, i) => {
+    const n = i + 1;
+    const cls = n === STATE.step ? 'active' : n < STATE.step ? 'done' : '';
+    if (i > 0) html += `<div class="step-line ${n <= STATE.step ? 'done' : ''}"></div>`;
+    html += `<div class="step-dot ${cls}">${n < STATE.step ? '&#10003;' : n}</div>`;
+  });
+  html += '</div>';
+  html += `<div class="step-title">Step ${STATE.step} of 4 &mdash; ${labels[STATE.step - 1]}</div>`;
+  return html;
+}
+
+function renderStep() {
+  const el = document.getElementById('stepContent');
+  if (!el) return;
+  if (STATE.step === 1) renderStep1(el);
+  else if (STATE.step === 2) renderStep2(el);
+  else if (STATE.step === 3) renderStep3(el);
+  else if (STATE.step === 4) renderStep4(el);
+}
+
+function goToStep(n) {
+  STATE.step = n;
+  render();
+}
+
+// ============================================================
+// TASK 3 — STEP 1: GAME TYPE SELECTOR
+// ============================================================
+function renderStep1(el) {
+  el.innerHTML = `
+    <div class="section-card">
+      <div class="section-title">Select Game Type</div>
+      <div class="card-grid">
+        <div class="game-card selected" onclick="selectGameType('singles', this)" data-type="singles">
+          <div class="game-card-icon">&#127934;</div>
+          <div class="game-card-title">Singles</div>
+          <div class="game-card-sub">Full match analysis</div>
+        </div>
+        <div class="game-card disabled" data-type="technique">
+          <div class="coming-soon-badge">Coming Soon</div>
+          <div class="game-card-icon">&#127919;</div>
+          <div class="game-card-title">Technique Session</div>
+          <div class="game-card-sub">Stroke analysis</div>
+        </div>
+        <div class="game-card disabled" data-type="doubles">
+          <div class="coming-soon-badge">Coming Soon</div>
+          <div class="game-card-icon">&#129309;</div>
+          <div class="game-card-title">Doubles Training</div>
+          <div class="game-card-sub">Team dynamics</div>
+        </div>
+        <div class="game-card disabled" data-type="serve">
+          <div class="coming-soon-badge">Coming Soon</div>
+          <div class="game-card-icon">&#9889;</div>
+          <div class="game-card-title">Serve Practice</div>
+          <div class="game-card-sub">Serve metrics</div>
+        </div>
+      </div>
+      <button class="btn-primary" onclick="goToStep(2)">Continue &rarr;</button>
+    </div>
+  `;
+}
+
+function selectGameType(type, card) {
+  if (type !== 'singles') return;
+  STATE.gameType = type;
+  document.querySelectorAll('.game-card').forEach(c => c.classList.remove('selected'));
+  card.classList.add('selected');
+}
+
+// ============================================================
+// TASK 4 — STEP 2: VIDEO UPLOAD (CHUNKED MULTIPART)
+// ============================================================
+let uploadAborted = false;
+let uploadInProgress = false;
+
+function renderStep2(el) {
+  const saved = loadUploadState();
+  let resumeHtml = '';
+  if (saved && saved.key && saved.uploadId) {
+    resumeHtml = `
+      <div class="resume-banner" id="resumeBanner">
+        <div class="resume-banner-text">
+          Interrupted upload detected: <strong>${esc(saved.fileName)}</strong> (${fmtBytes(saved.fileSize)})
+          &mdash; ${saved.completedParts.length}/${Math.ceil(saved.fileSize / CHUNK_SIZE)} chunks uploaded
+        </div>
+        <div class="resume-banner-actions">
+          <button onclick="resumeUpload()">Resume</button>
+          <button class="discard" onclick="discardResume()">Discard</button>
+        </div>
+      </div>`;
+  }
+
+  // Check if upload is already complete (we have a key and came back)
+  if (STATE.upload.key && !STATE.upload.uploadId) {
+    el.innerHTML = `
+      <div class="section-card">
+        <div class="section-title">Upload Video</div>
+        <div class="success-card">
+          <h3>Upload Complete</h3>
+          <p>${esc(STATE.upload.fileName)} (${fmtBytes(STATE.upload.fileSize)})</p>
+        </div>
+        <button class="btn-primary" onclick="goToStep(3)">Continue &rarr;</button>
+        <button class="btn-secondary" onclick="resetUpload()">Upload Different Video</button>
+      </div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="section-card">
+      <div class="section-title">Upload Video</div>
+      ${resumeHtml}
+      <div class="wakelock-warn" id="wakelockWarn">
+        Your browser does not support Wake Lock. Keep your screen on during upload to avoid interruptions.
+      </div>
+      <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="drop-zone-icon">&#128249;</div>
+        <div class="drop-zone-text">Drag & drop your match video here</div>
+        <div class="drop-zone-hint">or click to browse &mdash; MP4, MOV, AVI, MKV</div>
+      </div>
+      <input type="file" id="fileInput" accept="video/*,.mp4,.mov,.avi,.mkv" style="display:none" onchange="handleFileSelect(event)">
+      <div id="uploadUI" style="display:none">
+        <div class="upload-progress">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+            <span id="uploadFileName" style="font-weight:600;font-size:0.88rem"></span>
+            <span id="uploadPct" style="font-weight:700;font-size:0.95rem;color:var(--green)">0%</span>
+          </div>
+          <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressBar"></div></div>
+          <div class="progress-stats">
+            <div class="progress-stat"><div class="progress-stat-value" id="statChunks">0/0</div><div class="progress-stat-label">Chunks</div></div>
+            <div class="progress-stat"><div class="progress-stat-value" id="statSpeed">--</div><div class="progress-stat-label">Speed</div></div>
+            <div class="progress-stat"><div class="progress-stat-value" id="statETA">--:--</div><div class="progress-stat-label">ETA</div></div>
+            <div class="progress-stat"><div class="progress-stat-value" id="statUploaded">0 MB</div><div class="progress-stat-label">Uploaded</div></div>
+          </div>
+        </div>
+        <button class="btn-danger" id="btnCancel" onclick="cancelUpload()">Cancel Upload</button>
+      </div>
+      <div id="uploadDone" style="display:none">
+        <div class="success-card">
+          <h3>Upload Complete</h3>
+          <p id="uploadDoneInfo"></p>
+        </div>
+        <button class="btn-primary" onclick="goToStep(3)">Continue &rarr;</button>
+        <button class="btn-secondary" onclick="resetUpload()">Upload Different Video</button>
+      </div>
+      <div class="msg-bar" id="uploadMsg"></div>
+      <button class="btn-secondary" style="margin-top:12px" onclick="goToStep(1)">&larr; Back</button>
+    </div>
+  `;
+
+  setupDropZone();
+
+  // Show Wake Lock warning if not supported
+  if (!('wakeLock' in navigator)) {
+    const ww = document.getElementById('wakelockWarn');
+    if (ww) ww.classList.add('show');
+  }
+}
+
+function setupDropZone() {
+  const dz = document.getElementById('dropZone');
+  if (!dz) return;
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', e => { e.preventDefault(); dz.classList.remove('drag-over'); });
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    dz.classList.remove('drag-over');
+    const files = e.dataTransfer.files;
+    if (files.length > 0) startFileUpload(files[0]);
+  });
+}
+
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (file) startFileUpload(file);
+}
+
+function validateFile(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    return `Unsupported file type (.${ext}). Please upload MP4, MOV, AVI, or MKV.`;
+  }
+  return null;
+}
+
+function showUploadMsg(type, text) {
+  const bar = document.getElementById('uploadMsg');
+  if (!bar) return;
+  bar.className = 'msg-bar ' + type;
+  bar.textContent = text;
+}
+
+async function startFileUpload(file) {
+  const err = validateFile(file);
+  if (err) { showUploadMsg('error', err); return; }
+
+  if (file.size > LARGE_FILE_WARN_BYTES) {
+    showUploadMsg('warn', `Large file (${fmtBytes(file.size)}). Upload may take a while. Keep your screen on.`);
+  }
+
+  uploadAborted = false;
+  uploadInProgress = true;
+
+  // Acquire Wake Lock
+  const wlOk = await acquireWakeLock();
+  if (!wlOk && 'wakeLock' in navigator) {
+    showUploadMsg('warn', 'Could not acquire Wake Lock. Keep your screen on during upload.');
+  }
+
+  // Show upload UI, hide drop zone
+  document.getElementById('dropZone').style.display = 'none';
+  const rb = document.getElementById('resumeBanner');
+  if (rb) rb.style.display = 'none';
+  document.getElementById('uploadUI').style.display = 'block';
+  document.getElementById('uploadFileName').textContent = file.name;
+
+  const contentType = file.type || 'video/mp4';
+
+  try {
+    // 1. INITIATE MULTIPART
+    const initRes = await apiPost('/upload/api/multipart/initiate', {
+      name: file.name,
+      content_type: contentType,
+      size: file.size,
+    });
+    const initData = await initRes.json();
+    if (!initData.ok) throw new Error(initData.error || 'initiate_failed');
+
+    const { key, upload_id } = initData;
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    STATE.upload = {
+      key, uploadId: upload_id,
+      completedParts: [],
+      fileName: file.name,
+      fileSize: file.size,
+      fileLastModified: file.lastModified,
+    };
+    saveUploadState();
+
+    // 2. UPLOAD CHUNKS
+    await uploadChunks(file, key, upload_id, totalChunks, 0);
+
+    if (uploadAborted) return;
+
+    // 3. LIST PARTS FROM SERVER (reliable ETag source)
+    const listRes = await apiPost('/upload/api/multipart/list-parts', { key, upload_id });
+    const listData = await listRes.json();
+    if (!listData.ok) throw new Error(listData.error || 'list_parts_failed');
+
+    const serverParts = listData.parts.map(p => ({
+      PartNumber: p.PartNumber,
+      ETag: p.ETag,
+    }));
+
+    if (serverParts.length < totalChunks) {
+      throw new Error(`Server has ${serverParts.length}/${totalChunks} parts. Upload incomplete.`);
+    }
+
+    // 4. COMPLETE MULTIPART
+    const completeRes = await apiPost('/upload/api/multipart/complete', {
+      key, upload_id, parts: serverParts,
+    });
+    const completeData = await completeRes.json();
+    if (!completeData.ok) throw new Error(completeData.error || 'complete_failed');
+
+    // SUCCESS
+    clearUploadState();
+    STATE.upload.uploadId = null; // mark complete (key stays for submit)
+
+    document.getElementById('uploadUI').style.display = 'none';
+    document.getElementById('uploadDone').style.display = 'block';
+    document.getElementById('uploadDoneInfo').textContent = `${file.name} (${fmtBytes(file.size)})`;
+
+    releaseWakeLock();
+    uploadInProgress = false;
+
+  } catch (e) {
+    uploadInProgress = false;
+    releaseWakeLock();
+    if (!uploadAborted) {
+      showUploadMsg('error', 'Upload failed: ' + e.message);
+      const bar = document.getElementById('progressBar');
+      if (bar) bar.classList.add('error');
+    }
+  }
+}
+
+async function uploadChunks(file, key, uploadId, totalChunks, startFrom) {
+  let uploadedBytes = 0;
+  const startTime = Date.now();
+  let lastTimestamp = startTime;
+  let lastBytes = 0;
+
+  // Count already completed
+  for (const p of STATE.upload.completedParts) {
+    const pStart = (p.PartNumber - 1) * CHUNK_SIZE;
+    const pEnd = Math.min(pStart + CHUNK_SIZE, file.size);
+    uploadedBytes += (pEnd - pStart);
+  }
+
+  for (let i = startFrom; i < totalChunks; i++) {
+    if (uploadAborted) return;
+
+    const partNumber = i + 1;
+
+    // Skip already completed parts (resume)
+    if (STATE.upload.completedParts.some(p => p.PartNumber === partNumber)) {
+      updateUploadProgress(partNumber, totalChunks, uploadedBytes, file.size, 0, startTime);
+      continue;
+    }
+
+    // Get presigned URL
+    const presignRes = await apiPost('/upload/api/multipart/presign-part', {
+      key, upload_id: uploadId, part_number: partNumber,
+    });
+    const presignData = await presignRes.json();
+    if (!presignData.ok) throw new Error(presignData.error || 'presign_failed');
+
+    const chunkStart = i * CHUNK_SIZE;
+    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, file.size);
+    const chunk = file.slice(chunkStart, chunkEnd);
+    const chunkSize = chunkEnd - chunkStart;
+
+    // Upload with retries
+    let etag = null;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      if (uploadAborted) return;
+      try {
+        const resp = await fetch(presignData.url, { method: 'PUT', body: chunk });
+        if (!resp.ok) throw new Error(`S3 HTTP ${resp.status}`);
+        etag = resp.headers.get('ETag') || null;
+        break;
+      } catch (e) {
+        if (attempt === MAX_RETRIES - 1) throw new Error(`Chunk ${partNumber} failed after ${MAX_RETRIES} retries: ${e.message}`);
+        await sleep(Math.pow(2, attempt) * 1000);
+      }
+    }
+
+    uploadedBytes += chunkSize;
+
+    STATE.upload.completedParts.push({ PartNumber: partNumber, ETag: etag || '' });
+    saveUploadState();
+
+    // Speed calculation
+    const now = Date.now();
+    const elapsed = (now - startTime) / 1000;
+    const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
+
+    updateUploadProgress(partNumber, totalChunks, uploadedBytes, file.size, speed, startTime);
+  }
+}
+
+function updateUploadProgress(current, total, uploadedBytes, totalBytes, speed, startTime) {
+  const pct = Math.min(100, Math.round((uploadedBytes / totalBytes) * 100));
+  const remaining = speed > 0 ? (totalBytes - uploadedBytes) / speed : 0;
+
+  const bar = document.getElementById('progressBar');
+  const pctEl = document.getElementById('uploadPct');
+  const chunks = document.getElementById('statChunks');
+  const speedEl = document.getElementById('statSpeed');
+  const etaEl = document.getElementById('statETA');
+  const uploaded = document.getElementById('statUploaded');
+
+  if (bar) bar.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (chunks) chunks.textContent = current + '/' + total;
+  if (speedEl) speedEl.textContent = speed > 0 ? fmtBytes(speed) + '/s' : '--';
+  if (etaEl) etaEl.textContent = fmtTime(remaining);
+  if (uploaded) uploaded.textContent = fmtBytes(uploadedBytes);
+}
+
+async function resumeUpload() {
+  const saved = loadUploadState();
+  if (!saved) { discardResume(); return; }
+
+  // User needs to re-select the same file
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'video/*,.mp4,.mov,.avi,.mkv';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Verify file identity
+    if (file.name !== saved.fileName || file.size !== saved.fileSize || file.lastModified !== saved.fileLastModified) {
+      showUploadMsg('error', 'Selected file does not match the interrupted upload. Please select the same file or discard the interrupted upload.');
+      return;
+    }
+
+    uploadAborted = false;
+    uploadInProgress = true;
+    const wlOk = await acquireWakeLock();
+
+    document.getElementById('dropZone').style.display = 'none';
+    const rb = document.getElementById('resumeBanner');
+    if (rb) rb.style.display = 'none';
+    document.getElementById('uploadUI').style.display = 'block';
+    document.getElementById('uploadFileName').textContent = file.name;
+
+    STATE.upload = {
+      key: saved.key,
+      uploadId: saved.uploadId,
+      completedParts: saved.completedParts || [],
+      fileName: saved.fileName,
+      fileSize: saved.fileSize,
+      fileLastModified: saved.fileLastModified,
+    };
+
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    try {
+      await uploadChunks(file, saved.key, saved.uploadId, totalChunks, 0);
+
+      if (uploadAborted) return;
+
+      const listRes = await apiPost('/upload/api/multipart/list-parts', { key: saved.key, upload_id: saved.uploadId });
+      const listData = await listRes.json();
+      if (!listData.ok) throw new Error(listData.error || 'list_parts_failed');
+
+      const serverParts = listData.parts.map(p => ({ PartNumber: p.PartNumber, ETag: p.ETag }));
+
+      if (serverParts.length < totalChunks) {
+        throw new Error(`Server has ${serverParts.length}/${totalChunks} parts. Upload incomplete.`);
+      }
+
+      const completeRes = await apiPost('/upload/api/multipart/complete', {
+        key: saved.key, upload_id: saved.uploadId, parts: serverParts,
+      });
+      const completeData = await completeRes.json();
+      if (!completeData.ok) throw new Error(completeData.error || 'complete_failed');
+
+      clearUploadState();
+      STATE.upload.uploadId = null;
+
+      document.getElementById('uploadUI').style.display = 'none';
+      document.getElementById('uploadDone').style.display = 'block';
+      document.getElementById('uploadDoneInfo').textContent = `${file.name} (${fmtBytes(file.size)})`;
+
+      releaseWakeLock();
+      uploadInProgress = false;
+
+    } catch (e) {
+      uploadInProgress = false;
+      releaseWakeLock();
+      if (!uploadAborted) {
+        showUploadMsg('error', 'Resume failed: ' + e.message);
+        const bar = document.getElementById('progressBar');
+        if (bar) bar.classList.add('error');
+      }
+    }
+  };
+  input.click();
+}
+
+function discardResume() {
+  const saved = loadUploadState();
+  if (saved && saved.key && saved.uploadId) {
+    apiPost('/upload/api/multipart/abort', { key: saved.key, upload_id: saved.uploadId }).catch(() => {});
+  }
+  clearUploadState();
+  STATE.upload = { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 };
+  renderStep2(document.getElementById('stepContent'));
+}
+
+async function cancelUpload() {
+  uploadAborted = true;
+  uploadInProgress = false;
+  releaseWakeLock();
+
+  if (STATE.upload.key && STATE.upload.uploadId) {
+    try {
+      await apiPost('/upload/api/multipart/abort', { key: STATE.upload.key, upload_id: STATE.upload.uploadId });
+    } catch (e) {}
+  }
+
+  clearUploadState();
+  STATE.upload = { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 };
+  renderStep2(document.getElementById('stepContent'));
+  showUploadMsg('info', 'Upload cancelled.');
+}
+
+function resetUpload() {
+  clearUploadState();
+  STATE.upload = { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 };
+  renderStep2(document.getElementById('stepContent'));
+}
+
+// Re-acquire Wake Lock when page becomes visible again (browser may release it)
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && uploadInProgress) {
+    await acquireWakeLock();
+  }
+});
+
+// ============================================================
+// TASK 5 — STEP 3: MATCH DETAILS FORM
+// ============================================================
+
+/*
+ * ──────────────────────────────────────────────────────────────
+ * FUTURE-PROOFING STUB (Task 7)
+ *
+ * getFormConfig(gameType) returns form field configuration for
+ * each game type. Currently only 'singles' is implemented.
+ *
+ * When adding new game types (technique, doubles, serve):
+ *   1. Add a case to getFormConfig() returning the fields array
+ *   2. Each field: { name, label, type, options?, required? }
+ *   3. The renderStep3() function will auto-generate the form
+ *   4. The submit handler will collect all field values
+ *   5. Update the submit_s3_task meta builder for new fields
+ *
+ * Field types: 'text', 'number', 'date', 'select', 'toggle',
+ *              'score-grid', 'textarea', 'member-select'
+ *
+ * Example for future 'technique' type:
+ *   { name: 'stroke_focus', label: 'Stroke Focus',
+ *     type: 'select', options: ['Forehand','Backhand','Serve','Volley'] }
+ * ──────────────────────────────────────────────────────────────
+ */
+function getFormConfig(gameType) {
+  if (gameType === 'singles') {
+    return { type: 'singles', formRenderer: renderSinglesForm };
+  }
+  // Future game types will return their own config here
+  return { type: gameType, formRenderer: renderSinglesForm };
+}
+
+function renderStep3(el) {
+  const config = getFormConfig(STATE.gameType);
+  config.formRenderer(el);
+}
+
+function renderSinglesForm(el) {
+  // Build Player A options: members + historical players
+  const memberNames = STATE.members.map(m => m.full_name).filter(Boolean);
+  const allNames = [...new Set([...memberNames, ...STATE.players])].sort();
+  const primaryMember = STATE.members.find(m => m.is_primary);
+  const defaultPlayerA = primaryMember ? primaryMember.full_name : (allNames[0] || '');
+  const defaultUtrA = primaryMember ? (primaryMember.utr || '') : '';
+
+  const playerOpts = allNames.map(n =>
+    `<option value="${esc(n)}" ${n === defaultPlayerA ? 'selected' : ''}>${esc(n)}</option>`
+  ).join('');
+
+  el.innerHTML = `
+    <div class="section-card">
+      <div class="section-title">Match Details</div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player A</label>
+        <select class="edit-input" id="fd-player_a_name">
+          ${playerOpts}
+          <option value="">-- Other --</option>
+        </select>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player A UTR</label>
+        <input class="edit-input" type="number" step="0.01" id="fd-player_a_utr" value="${esc(defaultUtrA)}">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player B (Opponent)</label>
+        <input class="edit-input" type="text" id="fd-player_b_name" placeholder="Opponent name">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player B UTR</label>
+        <input class="edit-input" type="number" step="0.01" id="fd-player_b_utr">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Match Date</label>
+        <input class="edit-input" type="date" id="fd-match_date" value="${new Date().toISOString().split('T')[0]}">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Venue / Location</label>
+        <input class="edit-input" type="text" id="fd-location" placeholder="e.g. Wimbledon Club Court 3">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">First Point: Player A was...</label>
+        <div class="toggle-group">
+          <button class="toggle-btn active" id="toggle-server" onclick="setFirstServer('player_a')">Server</button>
+          <button class="toggle-btn" id="toggle-returner" onclick="setFirstServer('player_b')">Returner</button>
+        </div>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Seconds from video start to first point</label>
+        <input class="edit-input" type="number" step="1" min="0" id="fd-start_time" placeholder="e.g. 30">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Score</label>
+        <div class="score-grid">
+          <div class="score-set"><label>Set 1 (A)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
+          <div class="score-set"><label>Set 2 (A)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
+          <div class="score-set"><label>Set 3 (A)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
+          <div class="score-set"><label>Set 1 (B)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
+          <div class="score-set"><label>Set 2 (B)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
+          <div class="score-set"><label>Set 3 (B)</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
+        </div>
+      </div>
+
+      <button class="btn-primary" id="btnSubmitDetails" onclick="submitMatchDetails()">Submit &amp; Start Analysis &rarr;</button>
+      <button class="btn-secondary" onclick="goToStep(2)">&larr; Back</button>
+      <div class="msg-bar" id="detailsMsg"></div>
+    </div>
+  `;
+
+  // Store first_server default
+  STATE._firstServer = 'player_a';
+}
+
+function setFirstServer(val) {
+  STATE._firstServer = val;
+  document.getElementById('toggle-server').classList.toggle('active', val === 'player_a');
+  document.getElementById('toggle-returner').classList.toggle('active', val === 'player_b');
+}
+
+function showDetailsMsg(type, text) {
+  const bar = document.getElementById('detailsMsg');
+  if (!bar) return;
+  bar.className = 'msg-bar ' + type;
+  bar.textContent = text;
+}
+
+async function submitMatchDetails() {
+  const btn = document.getElementById('btnSubmitDetails');
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+  showDetailsMsg('info', 'Submitting to analysis...');
+
+  const val = (id) => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+
+  const playerA = val('fd-player_a_name');
+  const playerAUtr = val('fd-player_a_utr');
+  const playerB = val('fd-player_b_name');
+  const playerBUtr = val('fd-player_b_utr');
+  const matchDate = val('fd-match_date');
+  const location = val('fd-location');
+  const startTime = val('fd-start_time');
+  const firstServer = STATE._firstServer || 'player_a';
+
+  const s1a = val('fd-player_a_set1_games');
+  const s2a = val('fd-player_a_set2_games');
+  const s3a = val('fd-player_a_set3_games');
+  const s1b = val('fd-player_b_set1_games');
+  const s2b = val('fd-player_b_set2_games');
+  const s3b = val('fd-player_b_set3_games');
+
+  try {
+    // Call /api/submit_s3_task
+    const body = {
+      s3_key: STATE.upload.key,
+      email: EMAIL,
+      playerName: playerA || undefined,
+      opponentName: playerB || undefined,
+      playerUTR: playerAUtr || undefined,
+      opponentUtr: playerBUtr || undefined,
+      matchDate: matchDate || undefined,
+      location: location || undefined,
+      startTime: startTime || undefined,
+      firstServer: firstServer === 'player_a' ? 'S' : 'R',
+      'Set 1 (A)': s1a || undefined,
+      'Set 1 (B)': s1b || undefined,
+      'Set 2 (A)': s2a || undefined,
+      'Set 2 (B)': s2b || undefined,
+      'Set 3 (A)': s3a || undefined,
+      'Set 3 (B)': s3b || undefined,
+    };
+
+    const res = await fetch(API_BASE + '/api/submit_s3_task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (!data.ok) {
+      throw new Error(data.error || 'submit_failed');
+    }
+
+    STATE.taskId = data.task_id;
+
+    // Now PATCH to set first_server as player_a/player_b (matching locker room format)
+    await apiFetch(`/api/client/matches/${data.task_id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ first_server: firstServer }),
+    });
+
+    goToStep(4);
+
+  } catch (e) {
+    showDetailsMsg('error', 'Submission failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Submit & Start Analysis \u2192';
+  }
+}
+
+// ============================================================
+// TASK 6 — STEP 4: SPORTAI ANALYSIS PROGRESS
+// ============================================================
+let pollTimer = null;
+let txLogEntries = [];
+
+function renderStep4(el) {
+  txLogEntries = [];
+  addTxLog('ok', 'File received');
+  addTxLog('ok', 'Upload to SportAI initiated');
+
+  el.innerHTML = `
+    <div class="section-card">
+      <div class="section-title">Analysis in Progress</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+        <span id="analysisStage" style="font-weight:600;font-size:0.88rem">Queued for analysis...</span>
+        <span id="analysisPct" style="font-weight:700;font-size:0.95rem;color:var(--green)">0%</span>
+      </div>
+      <div class="progress-bar-wrap"><div class="progress-bar-fill" id="analysisBar"></div></div>
+      <div id="analysisStatus" style="font-size:0.82rem;color:var(--text-sec);margin-top:4px"></div>
+      <div class="tx-log" id="txLog"></div>
+      <div id="analysisResult"></div>
+      <div class="msg-bar" id="analysisMsg"></div>
+    </div>
+  `;
+
+  renderTxLog();
+  startPolling();
+}
+
+function addTxLog(type, msg) {
+  txLogEntries.push({ time: nowTS(), type, msg });
+  renderTxLog();
+}
+
+function renderTxLog() {
+  const el = document.getElementById('txLog');
+  if (!el) return;
+  el.innerHTML = txLogEntries.map(e =>
+    `<div class="tx-entry"><span class="tx-time">${e.time}</span><span class="tx-${e.type}">${esc(e.msg)}</span></div>`
+  ).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+const STAGE_LABELS = {
+  'queued_for_analysis': 'Queued for analysis',
+  'match_analysis_in_progress': 'Analysis processing',
+  'building_analytics': 'Building analytics',
+  'refreshing_dashboard': 'Refreshing dashboard',
+  'complete': 'Complete',
+  'failed': 'Failed',
+  'canceled': 'Cancelled',
+};
+
+let lastStage = null;
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  lastStage = null;
+  pollTimer = setInterval(pollStatus, 5000);
+  pollStatus(); // immediate first poll
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+async function pollStatus() {
+  if (!STATE.taskId) return;
+
+  try {
+    const res = await fetch(API_BASE + '/upload/api/task-status?task_id=' + encodeURIComponent(STATE.taskId));
+    const data = await res.json();
+    if (!data.ok) return;
+
+    const stage = data.pipeline_stage || data.stage || 'queued_for_analysis';
+    const pct = data.display_progress_pct ?? data.progress_pct ?? 0;
+    const status = data.sportai_status || data.status || 'unknown';
+
+    // Update progress
+    const bar = document.getElementById('analysisBar');
+    const pctEl = document.getElementById('analysisPct');
+    const stageEl = document.getElementById('analysisStage');
+    const statusEl = document.getElementById('analysisStatus');
+
+    if (bar) bar.style.width = pct + '%';
+    if (pctEl) pctEl.textContent = pct + '%';
+    if (stageEl) stageEl.textContent = STAGE_LABELS[stage] || stage;
+    if (statusEl) statusEl.textContent = `SportAI: ${status} | Task: ${STATE.taskId.substring(0, 8)}...`;
+
+    // Log stage transitions
+    if (stage !== lastStage) {
+      if (stage === 'queued_for_analysis' && !lastStage) {
+        addTxLog('ok', 'SportAI acknowledgement');
+        addTxLog('ok', 'Analysis queued');
+      }
+      if (stage === 'match_analysis_in_progress') addTxLog('ok', 'Analysis processing');
+      if (stage === 'building_analytics') {
+        addTxLog('ok', 'Clips extracted');
+        addTxLog('ok', 'Report ready');
+      }
+      if (stage === 'refreshing_dashboard') addTxLog('ok', 'Record saved to DB');
+      if (stage === 'complete') {
+        addTxLog('ok', 'Record saved to DB');
+        addTxLog('ok', 'Dashboard ready');
+      }
+      if (stage === 'failed') addTxLog('err', 'Analysis failed');
+      if (stage === 'canceled') addTxLog('warn', 'Analysis cancelled');
+      lastStage = stage;
+    }
+
+    // Terminal states
+    if (data.dashboard_ready || stage === 'complete') {
+      stopPolling();
+      if (bar) bar.style.width = '100%';
+      if (pctEl) pctEl.textContent = '100%';
+      showAnalysisSuccess();
+      return;
+    }
+
+    if (stage === 'failed' || stage === 'canceled') {
+      stopPolling();
+      if (bar) bar.classList.add('error');
+      showAnalysisFailure(data.auto_ingest_error || status, stage);
+      return;
+    }
+
+  } catch (e) {
+    console.error('Poll error', e);
+  }
+}
+
+function showAnalysisSuccess() {
+  const el = document.getElementById('analysisResult');
+  if (!el) return;
+
+  // Build Locker Room URL
+  const lockerRoomBase = params.get('locker_room_url') || '';
+  let lrLink = '';
+  if (lockerRoomBase) {
+    lrLink = `<a href="${esc(lockerRoomBase)}" target="_top" style="display:inline-block;background:var(--green);color:var(--white);padding:10px 24px;border-radius:var(--radius);font-weight:600;text-decoration:none;font-size:0.88rem;margin-top:12px">View in Locker Room</a>`;
+  }
+
+  el.innerHTML = `
+    <div class="success-card">
+      <h3>Analysis Complete</h3>
+      <p>Your match has been processed and your dashboards are ready.</p>
+      ${lrLink}
+    </div>
+  `;
+}
+
+function showAnalysisFailure(error, stage) {
+  const el = document.getElementById('analysisResult');
+  if (!el) return;
+
+  el.innerHTML = `
+    <div style="background:rgba(220,38,38,0.08);border:2px solid var(--red);border-radius:var(--radius);padding:24px;text-align:center;margin:20px 0">
+      <h3 style="color:var(--red);font-size:1.1rem;margin-bottom:8px">${stage === 'canceled' ? 'Analysis Cancelled' : 'Analysis Failed'}</h3>
+      <p style="color:var(--text-sec);font-size:0.85rem;margin-bottom:4px">Error: ${esc(error)}</p>
+      <p style="color:var(--text-dim);font-size:0.78rem">Reference: ${esc(STATE.taskId)}</p>
+      <button class="btn-primary" style="width:auto;display:inline-block;margin-top:12px" onclick="retryAnalysis()">Retry</button>
+    </div>
+  `;
+}
+
+function retryAnalysis() {
+  // Go back to step 3 to re-submit
+  goToStep(3);
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+init();
+</script>
+</body>
+</html>

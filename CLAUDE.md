@@ -110,9 +110,9 @@ Key patterns:
 
 API blueprints: `subscriptions_api`, `usage_api`, `entitlements_api`.
 
-### Client API & Locker Room
+### Client API, Locker Room & Players' Enclosure
 
-`client_api.py` is the backend for the Locker Room dashboard (client-facing SPA). Uses separate auth: `X-Client-Key` header checked against `CLIENT_API_KEY` env var (not OPS_KEY). CORS headers manually injected for `/api/client/*` routes.
+`client_api.py` is the backend for the Locker Room dashboard and Players' Enclosure onboarding (client-facing SPAs). Uses separate auth: `X-Client-Key` header checked against `CLIENT_API_KEY` env var (not OPS_KEY). CORS headers manually injected for `/api/client/*` routes.
 
 Key endpoints:
 - `GET /api/client/matches` — list matches with stats, scores, trim status/footage keys
@@ -121,12 +121,97 @@ Key endpoints:
 - `PATCH /api/client/matches/<task_id>` — update match metadata
 - `POST /api/client/matches/<task_id>/reprocess` — rebuild silver via `build_silver_v2`
 - `GET /api/client/profile` — primary member profile (name, surname, phone, UTR, dominant hand, country, area)
-- `PATCH /api/client/profile` — update profile fields on `billing.member`
+- `PATCH /api/client/profile` — update profile fields on `billing.member` (includes `profile_photo_url`)
 - `GET /api/client/footage-url/<task_id>` — returns a time-limited S3 presigned URL for the trimmed match footage
+- `GET /api/client/entitlements` — authoritative entitlement check (role, plan_active, credits_remaining, account_status, plans_page_url)
+- `POST /api/client/register` — onboarding registration (creates/updates account + primary member with role)
+- `POST /api/client/children` — add child member profiles under an account
+- `GET /api/client/profile-photo-upload-url` — presigned S3 PUT URL for profile photo upload
+- `GET /api/client/members` — list all active members on an account (primary + children)
 
-**Locker Room dashboard** (`locker_room.html`) layout: header with player info + collapsible "My Details" profile editor → usage charts → latest match hero card with video player → historical match list with per-row footage playback. Entitlement guards: coach role hides upload CTAs; exhausted credits show a dismissible banner linking to `/plans`.
+**Locker Room dashboard** (`locker_room.html`) layout: header with player info + collapsible "My Details" profile editor → usage charts → latest match hero card with video player → historical match list with per-row footage playback.
 
-**Profile columns on `billing.member`**: `surname`, `phone`, `utr`, `dominant_hand`, `country`, `area`. Added idempotently via `_ensure_member_profile_columns()` in `client_api.py` (runs on import). The match listing query also returns `trim_status`, `trim_output_s3_key`, and `trim_duration_s` from `bronze.submission_context`.
+**Players' Enclosure** (`players_enclosure.html`) is the member registration/onboarding page. Multi-step wizard: Welcome → Role Selection → Child Profiles (conditional) → Completion + Photo Upload. Served from `locker_room_app.py` at `/register`.
+
+**Profile columns on `billing.member`**: `surname`, `phone`, `utr`, `dominant_hand`, `country`, `area`, `dob`, `skill_level`, `club_school`, `notes`, `profile_photo_url`. Added idempotently via `_ensure_member_profile_columns()` in `client_api.py` (runs on import). The match listing query also returns `trim_status`, `trim_output_s3_key`, and `trim_duration_s` from `bronze.submission_context`.
+
+### Wix → HTML Data Handoff
+
+The Players' Enclosure receives user identity data from Wix via two mechanisms (in priority order):
+1. **postMessage** (preferred): Wix parent sends `{ type: 'wix-handoff', email, firstName, surname, wixMemberId }`. The page listens on `window.addEventListener('message', ...)`.
+2. **URL params** (fallback): `?email=...&firstName=...&surname=...&wixMemberId=...&key=...&api=...`
+
+Both mechanisms populate the same internal `WIX_DATA` object. If email, firstName, or surname are missing after a 2-second grace period, the page shows an error. The user is never asked to re-enter these fields.
+
+### Entitlement System
+
+#### What Exists
+
+**Ops-level entitlement gate** (`entitlements_api.py`): `GET /api/entitlements/summary?email=` (OPS_KEY auth). Upserts into `billing.entitlements` table — a denormalized cache that joins account, member, subscription_state, grants, and consumption. Returns `can_upload`, `block_reason`, `can_view_dashboards`, `dashboard_block_reason`. Used for server-side upload gating.
+
+**Subscription lifecycle** (`subscriptions_api.py`): Processes Wix subscription events (PLAN_PURCHASED, PLAN_CANCELLED, RECURRING_PAYMENT_CANCELLED). Writes to `billing.subscription_event_log` (idempotent by event hash) and `billing.subscription_state` (upserted per account). Monthly refill cron resets credits based on subscription allowance.
+
+**Billing core** (`billing_service.py`, `models_billing.py`): Account/Member/EntitlementGrant/EntitlementConsumption ORM models. Credit math: remaining = active grants - consumption. `billing_import_from_bronze.py` syncs completed tasks into consumption.
+
+**Members API** (`members_api.py`): `POST /api/billing/sync_account` (snapshot replacement from Wix), `POST /api/billing/member/upsert`, `POST /api/billing/member/deactivate`. OPS_KEY auth.
+
+#### Client-Facing Entitlement Gate (NEW)
+
+`GET /api/client/entitlements` (CLIENT_API_KEY auth) returns:
+```json
+{
+  "role": "player_parent|coach",
+  "plan_active": true,
+  "credits_remaining": 5,
+  "matches_granted": 10,
+  "matches_consumed": 5,
+  "account_status": "active|terminated",
+  "plans_page_url": "https://www.tenfifty5.com/plans"
+}
+```
+
+`plans_page_url` is read from `PLANS_PAGE_URL` env var (default: `https://www.tenfifty5.com/plans`).
+
+#### Entitlement Matrix (Client-Side UX)
+
+| Condition | Locker Room | Players' Enclosure |
+|---|---|---|
+| **Coach role** | Green notice: "Signed in as Coach — view only" | Allowed to complete onboarding |
+| **No active plan** | Amber banner: "No active plan" + link to plans page | Amber banner with plans link |
+| **Credits = 0, plan active** | Red banner: "Credits exhausted" + top-up link (dismissible) | N/A (onboarding page) |
+| **Account terminated/suspended** | Full-screen blocking overlay with support email | Full-screen blocking overlay |
+| **Active, credits > 0** | Normal view | Normal onboarding flow |
+
+Server-side enforcement: `GET /api/entitlements/summary` (OPS_KEY) gates uploads via `can_upload` / `block_reason`. The client-facing `GET /api/client/entitlements` is for UX rendering only — security enforcement is server-side.
+
+#### Assumptions
+
+- `billing.subscription_state` and `billing.entitlements` tables are created by their respective API modules on first use (not in `db_init.py`).
+- `media_room.html` is the Video Upload page (served at `/media-room` from the main app). Uses entitlement checks via `/api/client/entitlements` (same pattern as locker_room.html).
+- Account "suspended" vs "terminated" both map to `account.active = false` (no separate suspended state in DB currently). The blocking overlay uses the same treatment for both.
+- Roles are `player_parent` (covers both solo players and parents) and `coach`. The "Parent with Children" selection in Players' Enclosure stores `player_parent` as the DB role — the distinction is behavioral (child profiles are created).
+
+### Media Room (`media_room.html`)
+
+Video upload page replacing the Wix-based upload flow. Served at `GET /media-room` from the main webhook-server app (same-origin, no CORS needed for upload APIs). Self-contained iframe embed, same auth pattern as Locker Room (`?email=...&key=...&api=...`).
+
+**4-step wizard flow:**
+1. **Game Type Selection** — Singles (active), Technique Session / Doubles Training / Serve Practice (coming soon). Selection stored in state.
+2. **Video Upload** — Chunked multipart upload directly to S3 via presigned URLs. 10 MB chunks with 3 retries + exponential backoff. Browser Wake Lock API prevents screen sleep on mobile (graceful fallback with warning). Resumable: upload state (uploadId, key, completed parts) persisted in `localStorage` with 24h expiry. On page load, checks for interrupted uploads and offers Resume/Discard. Progress shows: % bar, chunk counter, upload speed (MB/s), ETA.
+3. **Match Details Form** — Exact same fields as Locker Room edit panel, writing to `bronze.submission_context`: `player_a_name` (dropdown from `/api/client/members` + `/api/client/players`), `player_a_utr`, `player_b_name`, `player_b_utr`, `match_date`, `location`, `first_server` (toggle: Server/Returner), `start_time` (seconds from video start), score (3 sets, A+B). Submit calls `POST /api/submit_s3_task` then PATCHes `first_server` to `player_a`/`player_b` format (matching Locker Room).
+4. **SportAI Analysis Progress** — Polls `GET /upload/api/task-status?task_id=` every 5s. Shows progress bar, pipeline stage label, and scrollable dark terminal-style transaction log with timestamped entries. On completion: success card with optional Locker Room link (`?locker_room_url=` param). On failure: error card with reference code and retry button.
+
+**Entitlement gate:** On page load, calls `/api/client/entitlements`. Blocks coaches (view-only message), no-plan users (link to plans page), and zero-credit users (link to buy more). Upload API endpoints also enforce server-side via `_upload_entitlement_gate(email)`.
+
+**Future-proofing:** `getFormConfig(gameType)` stub function returns form configuration per game type. Currently only `singles` is implemented. New game types add a case returning their field config; the form renderer auto-generates the UI.
+
+**New/modified endpoints:**
+- `GET /media-room` — serves `media_room.html` (added to `upload_app.py`)
+- `POST /upload/api/multipart/list-parts` — returns parts already uploaded for a multipart upload, used for reliable ETag retrieval and resume verification (added to `upload_app.py`)
+- `GET /api/client/members` — returns active members on an account for player dropdowns (added to `client_api.py`)
+- CORS extended to cover `/upload/api/*` and `/api/submit_s3_task` paths (modified in `upload_app.py`)
+
+**No DB changes.** All fields written are existing `bronze.submission_context` columns.
 
 ### Admin UI (`ui_app.py`)
 
@@ -153,7 +238,7 @@ All ops endpoints use `OPS_KEY` checked via `X-Ops-Key` header or `Authorization
 
 ### Required Environment Variables
 
-Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`
+Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `PLANS_PAGE_URL` (optional, default `https://www.tenfifty5.com/plans`)
 
 Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 

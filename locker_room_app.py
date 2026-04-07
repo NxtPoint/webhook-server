@@ -1,5 +1,5 @@
-# locker_room_app.py — Minimal Flask server for Locker Room dashboard
-# Serves locker_room.html as a static single-page app.
+# locker_room_app.py — Minimal Flask server for Locker Room + Players' Enclosure
+# Serves HTML SPAs as static files.
 # No DB connection — all data comes from the webhook-server API.
 
 import os
@@ -11,6 +11,11 @@ app = Flask(__name__)
 @app.get("/")
 def index():
     return send_file("locker_room.html")
+
+
+@app.get("/register")
+def players_enclosure():
+    return send_file("players_enclosure.html")
 
 
 @app.get("/__alive")

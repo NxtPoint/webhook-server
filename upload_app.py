@@ -47,7 +47,7 @@ app.register_blueprint(client_bp)
 # Manual CORS for /api/client/* (more reliable than flask-cors with blueprints)
 @app.after_request
 def add_cors_headers(response):
-    if request.path.startswith("/api/client/"):
+    if request.path.startswith("/api/client/") or request.path.startswith("/upload/api/") or request.path.startswith("/api/submit_s3_task"):
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Client-Key, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
@@ -1670,6 +1670,15 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
         return True
 
 # ==========================
+# MEDIA ROOM (served same-origin for upload API access)
+# ==========================
+@app.get("/media-room")
+def media_room():
+    from flask import send_file
+    return send_file("media_room.html")
+
+
+# ==========================
 # PUBLIC ENDPOINTS (UPLOADS + STATUS + OPS)
 # ==========================
 @app.get("/")
@@ -2054,6 +2063,28 @@ def api_multipart_abort():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": f"multipart_abort_failed: {e}"}), 500
+
+
+@app.post("/upload/api/multipart/list-parts")
+def api_multipart_list_parts():
+    """Return parts already uploaded for a multipart upload (for resume & ETag retrieval)."""
+    _require_s3()
+    body = request.get_json(silent=True) or {}
+
+    key = (body.get("key") or "").strip()
+    upload_id = (body.get("upload_id") or "").strip()
+
+    if not key:
+        return jsonify({"ok": False, "error": "key required"}), 400
+    if not upload_id:
+        return jsonify({"ok": False, "error": "upload_id required"}), 400
+
+    try:
+        parts = _s3_list_multipart_parts(key, upload_id)
+        return jsonify({"ok": True, "parts": parts})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"list_parts_failed: {e}"}), 500
+
 
 # ==========================
 # VIDEO CHECK & CANCEL
