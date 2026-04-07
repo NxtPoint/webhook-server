@@ -122,9 +122,16 @@ select.profile-input { appearance: auto; }
 .member-cards { display: flex; flex-direction: column; gap: 10px; }
 .member-card {
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px; position: relative;
+  overflow: hidden; position: relative;
 }
-.member-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.member-card-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; cursor: pointer; user-select: none;
+  transition: background var(--transition);
+}
+.member-card-top:hover { background: rgba(0,0,0,0.02); }
+.member-card-body { display: none; padding: 0 14px 12px; }
+.member-card-body.open { display: block; }
 .member-card-name { font-weight: 600; font-size: 0.92rem; }
 .member-card-role {
   font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
@@ -143,12 +150,23 @@ select.profile-input { appearance: auto; }
 .member-card-field select { appearance: auto; }
 .member-card-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
 .member-card-msg { font-size: 0.75rem; margin-left: 8px; }
-.btn-remove {
+.btn-deactivate {
   padding: 5px 12px; border-radius: var(--radius); font-weight: 600; font-size: 0.72rem;
-  background: var(--white); color: var(--red); border: 1px solid var(--red);
+  background: var(--white); color: var(--amber); border: 1px solid var(--amber);
   transition: all var(--transition);
 }
-.btn-remove:hover { background: rgba(220,38,38,0.05); }
+.btn-deactivate:hover { background: rgba(217,119,6,0.05); }
+
+/* Toggle buttons (matches Media Room) */
+.toggle-group {
+  display: flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
+}
+.toggle-btn {
+  flex: 1; padding: 8px 12px; border: none; background: var(--white);
+  font-family: inherit; font-size: 0.85rem; font-weight: 500;
+  color: var(--text-sec); cursor: pointer; transition: all var(--transition);
+}
+.toggle-btn.active { background: var(--green); color: var(--white); }
 
 /* Add member form */
 .add-member-form {
@@ -681,10 +699,14 @@ function renderLinkedPlayers() {
     const roleClass = (m.role||'').includes('coach') ? 'coach' : 'player';
     const roleLabel = (m.role||'').includes('coach') ? 'Coach' : 'Player';
     cards += `<div class="member-card" id="mc-${m.id}">
-      <div class="member-card-top">
-        <span class="member-card-name">${esc(m.full_name||'')}${m.surname ? ' ' + esc(m.surname) : ''}</span>
+      <div class="member-card-top" onclick="toggleMemberCard(${m.id})">
+        <span class="member-card-name">
+          <span class="chevron" id="chev-mc-${m.id}" style="font-size:0.7rem;color:var(--text-dim);margin-right:6px">&#9654;</span>
+          ${esc(m.full_name||'')}${m.surname ? ' ' + esc(m.surname) : ''}
+        </span>
         <span class="member-card-role ${roleClass}">${roleLabel}</span>
       </div>
+      <div class="member-card-body" id="mcb-${m.id}">
       <div class="member-card-grid">
         <div class="member-card-field">
           <label>First Name</label>
@@ -725,8 +747,9 @@ function renderLinkedPlayers() {
       </div>
       <div class="member-card-actions">
         <button class="btn-sm btn-sm-primary" onclick="saveMember(${m.id})">Save</button>
-        <button class="btn-remove" onclick="removeMember(${m.id},'${esc(m.full_name||'')}')">Remove</button>
+        <button class="btn-deactivate" onclick="deactivateMember(${m.id},'${esc(m.full_name||'')}')">Deactivate</button>
         <span class="member-card-msg" id="mmsg-${m.id}"></span>
+      </div>
       </div>
     </div>`;
   });
@@ -809,8 +832,15 @@ async function saveMember(mid) {
   setTimeout(() => { msg.textContent = ''; }, 3000);
 }
 
-async function removeMember(mid, name) {
-  if (!confirm('Remove ' + name + ' from your account?')) return;
+function toggleMemberCard(mid) {
+  const body = document.getElementById('mcb-' + mid);
+  const chev = document.getElementById('chev-mc-' + mid);
+  if (body) body.classList.toggle('open');
+  if (chev) chev.classList.toggle('open');
+}
+
+async function deactivateMember(mid, name) {
+  if (!confirm('Deactivate ' + name + '? They will no longer appear in player dropdowns or be able to upload matches.')) return;
   try {
     const res = await apiFetch('/api/client/members/' + mid, { method: 'DELETE' });
     const r = await res.json();
@@ -875,8 +905,8 @@ function renderHero() {
 
   const heroArea = document.getElementById('heroArea');
   heroArea.innerHTML = `
-    <div class="section-label">Latest Match</div>
     <div class="hero-card" onclick="openDetail(${heroIdx})">
+      <div class="section-label" style="margin-bottom:12px">Latest Match</div>
       <div class="hero-top">
         <div>
           <div class="hero-title">${esc(latest.player_a_name||'Player A')} vs ${esc(latest.player_b_name||'Opponent')}</div>
@@ -936,7 +966,7 @@ function renderGroupedMatches() {
 
   const container = document.getElementById('matchGroups');
   const years = Object.keys(groups).sort((a,b) => b-a);
-  let html = '<div class="section-label">Match History</div>';
+  let html = '<div style="background:var(--white);border:1px solid var(--border);border-radius:var(--radius);padding:16px 16px 8px;box-shadow:0 1px 3px rgba(0,0,0,0.04)"><div class="section-label" style="margin-bottom:12px">Match History</div>';
 
   years.forEach((yr, yi) => {
     const yearMatches = Object.values(groups[yr]).flat();
@@ -950,7 +980,11 @@ function renderGroupedMatches() {
 
     const months = Object.keys(groups[yr]).sort((a,b) => b-a);
     months.forEach((mo, mi) => {
-      const moMatches = groups[yr][mo];
+      const moMatches = groups[yr][mo].sort((a, b) => {
+        const da = a.match_date || a.created_at || '';
+        const db = b.match_date || b.created_at || '';
+        return da < db ? -1 : da > db ? 1 : 0;
+      });
       const moOpen = yi === 0 && mi === 0;
       const gid = `y${yi}m${mi}`;
       html += `<div class="month-header" onclick="toggleGroup('${gid}')">
@@ -988,6 +1022,7 @@ function renderGroupedMatches() {
     });
     html += '</div></div>';
   });
+  html += '</div>';
   container.innerHTML = html;
 }
 
@@ -1053,9 +1088,13 @@ function openDetail(idx) {
   document.getElementById('panelTitle').innerHTML = title;
   document.getElementById('panelSubtitle').textContent = subtitle;
 
-  const playerOpts = players.map(p => `<option value="${esc(p)}" ${p===m.player_a_name?'selected':''}>${esc(p)}</option>`).join('');
-  const fsOpts = `<option value="player_a" ${m.first_server==='player_a'?'selected':''}>Player A</option>
-    <option value="player_b" ${m.first_server==='player_b'?'selected':''}>Player B</option>`;
+  // Build Player A options from account members + historical players (matching Media Room)
+  const memberNames = members.map(mb => mb.full_name).filter(Boolean);
+  const allNames = [...new Set([...memberNames, ...players])].sort();
+  const playerOpts = allNames.map(n => `<option value="${esc(n)}" ${n===m.player_a_name?'selected':''}>${esc(n)}</option>`).join('');
+
+  const fsIsA = m.first_server !== 'player_b';
+  const fsIsB = m.first_server === 'player_b';
 
   document.getElementById('panelBody').innerHTML = `
     <div class="match-score" style="font-size:1.3rem;margin-bottom:16px;font-weight:700;color:var(--green)">${esc(m.score||'No score')}</div>
@@ -1097,8 +1136,12 @@ function openDetail(idx) {
         <input class="edit-input" type="text" id="ed-location" value="${esc(m.location||'')}">
       </div>
       <div class="edit-field">
-        <label class="edit-label">First Server</label>
-        <select class="edit-input" id="ed-first_server">${fsOpts}</select>
+        <label class="edit-label">First Point: Player A was...</label>
+        <div class="toggle-group">
+          <button type="button" class="toggle-btn ${fsIsA?'active':''}" id="ed-toggle-server" onclick="setEditFirstServer('player_a')">Server</button>
+          <button type="button" class="toggle-btn ${fsIsB?'active':''}" id="ed-toggle-returner" onclick="setEditFirstServer('player_b')">Returner</button>
+        </div>
+        <input type="hidden" id="ed-first_server" value="${m.first_server||'player_a'}">
       </div>
       <div class="edit-field">
         <label class="edit-label">Score</label>
@@ -1135,6 +1178,12 @@ function closeDetail() {
 
 function statRow(a, label, b) {
   return `<div class="stat-row"><div class="val-a">${a}</div><div class="stat-name">${label}</div><div class="val-b">${b}</div></div>`;
+}
+
+function setEditFirstServer(val) {
+  document.getElementById('ed-first_server').value = val;
+  document.getElementById('ed-toggle-server').classList.toggle('active', val === 'player_a');
+  document.getElementById('ed-toggle-returner').classList.toggle('active', val === 'player_b');
 }
 
 function collectEdits() {
