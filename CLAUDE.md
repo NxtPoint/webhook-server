@@ -80,11 +80,13 @@ Court geometry constants live in `SPORT_CONFIG` dict at top of file.
 
 ### Main App (`upload_app.py`)
 
-The primary service (~2800 lines). Responsibilities:
-- S3 presigned URL generation (upload + get)
+The primary service. Responsibilities:
+- S3 presigned URL generation (single-part + multipart upload, GET)
+- S3 multipart lifecycle: `initiate`, `presign-part`, `list-parts`, `complete`, `abort`
 - SportAI job submission (`POST /api/statistics/tennis`) and status polling
+- Task status orchestration: auto-ingest trigger, PBI refresh polling, Wix notify
 - Video trim callback (`POST /internal/video_trim_complete`)
-- Blueprint registration and CORS
+- CORS preflight handling (global `before_request` for OPTIONS on all client/upload paths)
 - Wix backend notification on completion (legacy — will be removed when Wix is retired)
 
 Registered blueprints: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, and `ingest_bronze` (mounted at root).
@@ -163,15 +165,17 @@ Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&a
 
 ### Media Room (`media_room.html`)
 
-Video upload page served at `GET /media-room`. Same auth pattern as Locker Room.
+Video upload page replacing the Wix-based upload flow. Served at `GET /media-room` from the Locker Room service. Also served at `GET /media-room` from the main webhook-server (backup/same-origin for upload APIs). Auth via URL params: `?email=...&key=...&api=...`. API_BASE defaults to `https://api.nextpointtennis.com` if `?api=` is omitted.
 
 **4-step wizard flow:**
-1. **Game Type Selection** — Singles (active), others coming soon
-2. **Video Upload** — Chunked multipart upload to S3 via presigned URLs. 10 MB chunks, 3 retries + exponential backoff. Browser Wake Lock API. Resumable via `localStorage`.
-3. **Match Details Form** — Player A dropdown from `/api/client/members`, same fields as Locker Room edit panel. First server as Server/Returner toggle. Submit calls `POST /api/submit_s3_task`.
-4. **Analysis Progress** — Polls task status every 5s. Terminal-style transaction log. On completion: success card with Locker Room link.
+1. **Game Type Selection** — Singles (active), Technique Session / Doubles Training / Serve Practice (coming soon). `getFormConfig(gameType)` stub for future game types.
+2. **Video Upload** — Chunked multipart upload directly to S3 via presigned URLs. 10 MB chunks, 3 retries + exponential backoff. Browser Wake Lock API prevents screen sleep on mobile (graceful fallback with warning, re-acquires on `visibilitychange`). Resumable: upload state (uploadId, key, completed parts, file identity) persisted in `localStorage` with 24h expiry. On page load, checks for interrupted uploads and offers Resume/Discard. Progress shows: % bar, chunk counter, upload speed (MB/s), ETA. After all chunks uploaded, calls `POST /upload/api/multipart/list-parts` for reliable server-side ETag retrieval, then completes the multipart upload.
+3. **Match Details Form** — Player A dropdown from `/api/client/members` (account members only, shows `full_name + surname`). Same fields as Locker Room edit panel: Player A UTR, Player B (opponent), Player B UTR, match date, location, first server (Server/Returner toggle), start time offset, score (inline grid: player name + 3 set boxes per row, names update live). Submit calls `POST /api/submit_s3_task` then PATCHes `first_server` to `player_a`/`player_b` format.
+4. **Analysis Progress** — Polls `GET /upload/api/task-status` every 5s. Progress bar uses raw `sportai_progress_pct` (0-100%, no artificial stage-based jumps). Customer-friendly transaction log with timestamped entries. Cancel button calls `POST /upload/api/cancel-task`. On completion: success card with auto-built Locker Room link. On failure: error card with full reference ID and retry button.
 
-**Entitlement gate**: calls `/api/client/entitlements` on load. Blocks coaches, no-plan users, zero-credit users.
+**Entitlement gate**: calls `/api/client/entitlements` on load. Blocks coaches (view-only message), no-plan users (link to plans page), zero-credit users (link to buy more). Upload API endpoints also enforce server-side via `_upload_entitlement_gate(email)`.
+
+**CORS**: `upload_app.py` has a global `before_request` handler for OPTIONS preflight on all CORS-enabled paths (`/api/client/*`, `/upload/api/*`, `/api/submit_s3_task`, `/media-room`). The S3 bucket CORS must include the Locker Room Render domain for direct browser-to-S3 uploads.
 
 ### Players' Enclosure (`players_enclosure.html`)
 
@@ -234,7 +238,11 @@ Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY
 
 ### S3 CORS
 
-The S3 bucket requires CORS configuration for cross-origin video playback and file uploads from the client-facing SPAs. AllowedOrigins must include: the Locker Room Render domain, tenfifty5.com variants, Wix editor/site domains.
+The S3 bucket (`nextpoint-prod-uploads`) requires CORS configuration for browser-to-S3 multipart uploads (Media Room) and video playback (Locker Room). Configuration:
+- **AllowedMethods**: GET, PUT, POST, HEAD
+- **AllowedHeaders**: `*`
+- **ExposeHeaders**: `ETag` (required for multipart upload completion)
+- **AllowedOrigins** must include: `https://locker-room-26kd.onrender.com`, tenfifty5.com variants, Wix editor/site domains
 
 ### Diagnostics
 
