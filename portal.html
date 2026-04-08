@@ -420,7 +420,7 @@ async function fetchProfile() {
     });
     if (res.status === 403) {
       if (statusEl) { statusEl.textContent = 'API key invalid'; statusEl.style.color = 'var(--red)'; }
-      console.error('Portal: API key rejected (403). Key prefix:', API_KEY.substring(0, 4) + '...', 'API:', API_BASE);
+      console.error('Portal: API key rejected (403). API:', API_BASE);
       return;
     }
     if (!res.ok) {
