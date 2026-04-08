@@ -62,5 +62,6 @@ def accept_by_token():
         "ok": True,
         "status": "ACCEPTED",
         "owner_name": perm["owner_name"],
+        "coach_email": perm["coach_email"],
         "coach_linked": bool(coach_account_id),
     })

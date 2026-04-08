@@ -268,19 +268,27 @@ Plans & pricing page. Fetches entitlements on load and conditionally renders one
 - **Top-up only** (player/parent with active recurring subscription): shows only credit top-up packs with a note that plan changes are available after the current period ends
 - **Coach view**: explains that coach access is free and managed by player accounts
 
-On plan selection, redirects to the corresponding Wix Payment Plan URL (with email pre-fill) for PayPal checkout. Plan catalogue is configured as JS constants (`PLAYER_PLANS`, `TOPUP_PACKS`, `COACH_PLANS`) — update `wixUrl` fields when Wix plan IDs change.
+On plan selection, sends `postMessage({ type: 'wix-checkout', planId })` up through portal to the Wix parent, which calls `checkout.startOnlinePurchase(planId)` via the Wix Pricing Plans API. Plan catalogue is configured as JS constants (`PLAYER_PLANS`, `TOPUP_PACKS`, `COACH_PLANS`) with `wixPlanId` fields — update these when Wix plan IDs change.
 
 Status bar shows current plan, renewal date, and credit usage. All billing state reads come from `/api/client/entitlements`.
 
 ### Portal (`portal.html`)
 
-Unified navigation shell — **main entry point for Wix embedding**. Collapsible sidebar with navigation. Content pages load in inner iframe with auth params forwarded.
+Unified navigation shell — **the single frontend entry point**. Collapsible sidebar with navigation. Content pages load in an inner iframe with auth params forwarded.
+
+**Hosting architecture**: The portal is embedded in a Wix page (`https://www.tenfifty5.com/portal`) as an HTML iframe. Wix handles member authentication and passes identity data to the portal via URL params. All SPA pages (dashboard, upload, profile, analytics, pricing, backoffice) are rendered inside the portal's inner iframe. **Wix is no longer used for any page rendering** — only for member login, payment checkout (PayPal via Wix Pricing Plans API), and the coach accept landing page redirect.
+
+**Wix page code** (in Wix Velo): fetches member identity via `wix-members-frontend`, reads `CLIENT_API_KEY` from Wix Secrets Manager via a backend web module (`backend/secrets.web.js`), builds the portal URL with auth params, and listens for `wix-checkout` postMessages to trigger `checkout.startOnlinePurchase()`.
+
+**postMessage protocol** (portal ↔ child pages ↔ Wix):
+- `{ type: 'portal-navigate', target: 'pricing' }` — child page requests portal navigation
+- `{ type: 'wix-checkout', planId: '...' }` — pricing page → portal → Wix (triggers PayPal checkout)
+- `{ type: 'wix-handoff', email, firstName, surname, wixMemberId }` — Wix → portal → child page (identity forwarding)
 
 ### Wix → HTML Data Handoff
 
-Client-facing pages receive identity data from Wix via:
-1. **postMessage** (preferred): `{ type: 'wix-handoff', email, firstName, surname, wixMemberId }`
-2. **URL params** (fallback): `?email=...&firstName=...&surname=...&wixMemberId=...&key=...&api=...`
+Client-facing pages receive identity data from Wix via URL params passed through the portal:
+`?email=...&firstName=...&surname=...&wixMemberId=...&key=...&api=...`
 
 ### Entitlement System
 
@@ -370,14 +378,22 @@ bash ml_pipeline/test_e2e.sh <video_path>                   # e2e test
 
 **Models:** TrackNet V2 (`tracknet_v2.pt`, 41MB), YOLOv8m (`yolov8m.pt`, 50MB), Court detector (`court_keypoints.pth`, 41MB). See `config.py` for download sources.
 
-### Future: Post-Wix Cleanup
+### Wix Remaining Dependencies
 
-When Wix is retired:
+Wix pages have been retired. The portal (Render-hosted) is the sole frontend. **Wix is only used for:**
+- **Member authentication**: Wix login + member identity passed to portal via URL params
+- **Payment checkout**: `checkout.startOnlinePurchase(planId)` via Wix Pricing Plans API / PayPal
+- **Subscription event webhook**: Wix fires `POST /api/billing/subscription/event` after payment
+
+### Future: Full Wix Removal
+
+When Wix is fully retired (own auth + own payments):
 - Remove: `_notify_wix` flow + all `WIX_NOTIFY_*` env vars from `upload_app.py`
-- Remove: Wix-specific admin ops, `_upload_entitlement_gate` Wix checks
 - Remove: `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY` from Render env
 - Consolidate: `_ensure_submission_context_schema` DDL into `db_init.py`
 - Rename: `wix_notified_at` / `wix_notify_status` columns to generic `notified_at` / `notify_status`
+- Replace: Wix member auth with own auth (e.g., magic link or OAuth)
+- Replace: Wix Pricing Plans with direct PayPal/Stripe integration
 
 ### Other
 

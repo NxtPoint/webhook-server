@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>TEN-FIFTY5 Media Room</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -33,7 +33,7 @@ body {
 }
 button { cursor: pointer; font-family: inherit; }
 
-.app { max-width: 960px; margin: 0 auto; padding: 16px 16px 80px; }
+.app { max-width: 960px; margin: 0 auto; padding: 16px 16px calc(120px + env(safe-area-inset-bottom, 0px)); }
 
 /* HEADER */
 .header {
