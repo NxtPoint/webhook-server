@@ -452,6 +452,11 @@ def update_profile():
     if not updates:
         return jsonify({"ok": False, "error": "no editable fields provided"}), 400
 
+    # Convert empty strings to None for nullable DB columns
+    for k in updates:
+        if k != "full_name" and updates[k] == "":
+            updates[k] = None
+
     with Session(engine) as session:
         row = session.execute(
             text("""
@@ -940,6 +945,13 @@ def update_member(member_id: int):
     if not updates:
         return jsonify({"ok": False, "error": "no editable fields provided"}), 400
 
+    # Convert empty strings to None for nullable DB columns
+    NULLABLE_COLS = {"dob", "phone", "utr", "dominant_hand", "country", "area",
+                     "skill_level", "club_school", "notes", "profile_photo_url", "email"}
+    for k in updates:
+        if k in NULLABLE_COLS and updates[k] == "":
+            updates[k] = None
+
     with Session(engine) as session:
         row = session.execute(
             text("""
@@ -960,11 +972,16 @@ def update_member(member_id: int):
             set_parts.append(f"{k} = :{k}")
             params[k] = v
 
-        session.execute(
-            text(f"UPDATE billing.member SET {', '.join(set_parts)} WHERE id = :mid"),
-            params,
-        )
-        session.commit()
+        try:
+            session.execute(
+                text(f"UPDATE billing.member SET {', '.join(set_parts)} WHERE id = :mid"),
+                params,
+            )
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            log.exception("Member update failed mid=%s", member_id)
+            return jsonify({"ok": False, "error": "update_failed"}), 500
 
     return jsonify({"ok": True, "updated": list(updates.keys())})
 
