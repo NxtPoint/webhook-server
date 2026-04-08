@@ -1470,3 +1470,172 @@ def pbi_session_end():
         pass  # best effort
 
     return jsonify({"ok": True})
+
+
+# ----------------------------
+# GET /api/client/coaches
+# ----------------------------
+
+@client_bp.route("/api/client/coaches", methods=["GET", "OPTIONS"])
+def list_coaches():
+    """List coach permissions for the account (INVITED/ACCEPTED/REVOKED)."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT cp.id, cp.coach_email, cp.status, cp.active,
+                       cp.created_at, cp.updated_at
+                FROM billing.coaches_permission cp
+                JOIN billing.account a ON a.id = cp.owner_account_id
+                WHERE a.email = :email
+                ORDER BY cp.created_at DESC
+            """),
+            {"email": email},
+        ).mappings().all()
+
+    coaches = []
+    for r in rows:
+        coaches.append({
+            "id": int(r["id"]),
+            "coach_email": r["coach_email"],
+            "status": r["status"],
+            "active": bool(r["active"]),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        })
+
+    return jsonify({"ok": True, "coaches": coaches})
+
+
+# ----------------------------
+# POST /api/client/coach-invite
+# ----------------------------
+
+@client_bp.route("/api/client/coach-invite", methods=["POST", "OPTIONS"])
+def coach_invite():
+    """Invite a coach — creates a billing.coaches_permission row."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    coach_email = _norm_email(payload.get("coach_email"))
+    if not coach_email:
+        return jsonify({"ok": False, "error": "coach_email required"}), 400
+
+    from coaches_api import STATUS_INVITED, SCHEMA, TABLE
+
+    with Session(engine) as session:
+        acct_id = session.execute(
+            text("SELECT id FROM billing.account WHERE email = :email"),
+            {"email": email},
+        ).scalar_one_or_none()
+        if not acct_id:
+            return jsonify({"ok": False, "error": "account_not_found"}), 404
+
+        from datetime import timezone
+        now = datetime.now(tz=timezone.utc)
+
+        existing = session.execute(
+            text(f"""
+                SELECT id FROM {SCHEMA}.{TABLE}
+                WHERE owner_account_id = :aid AND coach_email = :ce
+                LIMIT 1
+            """),
+            {"aid": acct_id, "ce": coach_email},
+        ).mappings().first()
+
+        if existing:
+            session.execute(
+                text(f"""
+                    UPDATE {SCHEMA}.{TABLE}
+                    SET status = :status, active = true,
+                        coach_account_id = NULL, updated_at = :now
+                    WHERE id = :id
+                """),
+                {"id": int(existing["id"]), "status": STATUS_INVITED, "now": now},
+            )
+            session.commit()
+            return jsonify({"ok": True, "permission_id": int(existing["id"]),
+                            "status": STATUS_INVITED, "reused": True})
+
+        row = session.execute(
+            text(f"""
+                INSERT INTO {SCHEMA}.{TABLE}
+                  (owner_account_id, coach_account_id, coach_email, status, active, created_at, updated_at)
+                VALUES (:aid, NULL, :ce, :status, true, :now, :now)
+                RETURNING id
+            """),
+            {"aid": acct_id, "ce": coach_email, "status": STATUS_INVITED, "now": now},
+        ).mappings().first()
+
+        session.commit()
+        return jsonify({"ok": True, "permission_id": int(row["id"]),
+                        "status": STATUS_INVITED, "reused": False})
+
+
+# ----------------------------
+# POST /api/client/coach-revoke
+# ----------------------------
+
+@client_bp.route("/api/client/coach-revoke", methods=["POST", "OPTIONS"])
+def coach_revoke():
+    """Revoke a coach permission."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    permission_id = payload.get("permission_id")
+    if not permission_id:
+        return jsonify({"ok": False, "error": "permission_id required"}), 400
+
+    from coaches_api import STATUS_REVOKED, SCHEMA, TABLE
+
+    with Session(engine) as session:
+        acct_id = session.execute(
+            text("SELECT id FROM billing.account WHERE email = :email"),
+            {"email": email},
+        ).scalar_one_or_none()
+        if not acct_id:
+            return jsonify({"ok": False, "error": "account_not_found"}), 404
+
+        perm = session.execute(
+            text(f"""
+                SELECT id FROM {SCHEMA}.{TABLE}
+                WHERE id = :id AND owner_account_id = :aid
+                LIMIT 1
+            """),
+            {"id": int(permission_id), "aid": acct_id},
+        ).mappings().first()
+
+        if not perm:
+            return jsonify({"ok": False, "error": "permission_not_found"}), 404
+
+        from datetime import timezone
+        now = datetime.now(tz=timezone.utc)
+
+        session.execute(
+            text(f"""
+                UPDATE {SCHEMA}.{TABLE}
+                SET status = :status, active = false,
+                    coach_account_id = NULL, updated_at = :now
+                WHERE id = :id
+            """),
+            {"id": int(permission_id), "status": STATUS_REVOKED, "now": now},
+        )
+        session.commit()
+        return jsonify({"ok": True, "permission_id": int(permission_id),
+                        "status": STATUS_REVOKED})

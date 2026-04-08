@@ -76,6 +76,40 @@ On upload completion, the system follows this flow:
 
 Key design: the ingest worker is self-contained — it does NOT import `upload_app.py`. It calls `ingest_bronze_strict()` directly from `ingest_bronze.py` (function call, not HTTP). Worker timeout is 3600s vs main app 1800s.
 
+### T5 Pipeline (Serve Practice / Rally Practice)
+
+Parallel analysis path for practice sessions, using the in-house T5 ML pipeline instead of SportAI. The routing is based on `gameType` sent from the Media Room frontend.
+
+**Game type → pipeline routing:**
+
+| Game Type | `sport_type` (DB) | Pipeline | Billing |
+|---|---|---|---|
+| Singles | `tennis_singles` | SportAI | 1 credit |
+| Serve Practice | `serve_practice` | T5 (AWS Batch GPU) | Free |
+| Rally Practice | `rally_practice` | T5 (AWS Batch GPU) | Free |
+| Technique | TBD | TBD | TBD |
+| Doubles | TBD | TBD | TBD |
+
+**T5 flow** (same UX as SportAI, different backend):
+1. **Media Room** user selects "Serve Practice" or "Rally Practice", uploads video to S3 (same `wix-uploads/` prefix)
+2. `POST /api/submit_s3_task` with `gameType: "serve"` → `_t5_submit()` creates `ml_analysis.video_analysis_jobs` row + submits AWS Batch job
+3. `GET /upload/api/task-status` detects `sport_type` in `T5_SPORT_TYPES` → `_t5_status()` polls `ml_analysis.video_analysis_jobs` (DB query, not external API)
+4. Batch job completes → `_t5_status` returns `status=completed` + sentinel `result_url=t5://complete/{id}`
+5. Auto-ingest detects sentinel URL → `_do_ingest_t5()` runs lightweight ingest: mark started, skip bronze/silver/billing/trim, trigger PBI refresh, mark done
+6. Frontend shows completion
+
+**Key differences from SportAI path:**
+- Submit: `_t5_submit()` → AWS Batch (vs `_sportai_submit()` → external API)
+- Status poll: DB query on `ml_analysis.video_analysis_jobs` (vs SportAI HTTP call)
+- Ingest: `_do_ingest_t5()` — lightweight, skips bronze/silver/billing/trim (data already in `ml_analysis.*`)
+- Billing: no credit consumed for practice sessions
+
+**Required env vars** (for T5 routing in upload_app.py): `BATCH_JOB_QUEUE` (default: `ten-fifty5-ml-queue`), `BATCH_JOB_DEF` (default: `ten-fifty5-ml-pipeline`)
+
+**`sport_type` field**: stored on `bronze.submission_context.sport_type`. Determines which pipeline path is used for status polling and ingest. The `T5_SPORT_TYPES` set in `upload_app.py` controls routing.
+
+**Strategic note**: serve + rally practice are designed so that combining them produces match-level analysis — if SportAI becomes unavailable, only the orchestration layer needs to change.
+
 ### Data Layers (PostgreSQL)
 
 - **Bronze** (`bronze.*`): Raw SportAI JSON ingested verbatim. `db_init.py` owns schema creation (idempotent, called on boot). Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
@@ -101,8 +135,8 @@ Court geometry constants live in `SPORT_CONFIG` dict at top of file.
 The primary service. Responsibilities:
 - S3 presigned URL generation (single-part + multipart upload, GET)
 - S3 multipart lifecycle: `initiate`, `presign-part`, `list-parts`, `complete`, `abort`
-- SportAI job submission (`POST /api/statistics/tennis`) and status polling
-- Task status orchestration: auto-ingest trigger, PBI refresh polling, Wix notify
+- SportAI job submission (`POST /api/statistics/tennis`) and T5 Batch submission — routed by `gameType`/`sport_type`
+- Task status orchestration: auto-ingest trigger (SportAI or T5), PBI refresh polling, Wix notify
 - Video trim callback (`POST /internal/video_trim_complete`)
 - CORS preflight handling (global `before_request` for OPTIONS on all client/upload paths)
 - Wix backend notification on completion (legacy — will be removed when Wix is retired)
@@ -163,6 +197,9 @@ Key endpoints:
 - `POST /api/client/register` — onboarding registration
 - `POST /api/client/children` — add child member profiles (Players' Enclosure onboarding)
 - `GET /api/client/profile-photo-upload-url` — presigned S3 PUT URL for profile photo
+- `GET /api/client/coaches` — list coach permissions for the account
+- `POST /api/client/coach-invite` — invite a coach by email
+- `POST /api/client/coach-revoke` — revoke a coach permission
 - `GET /api/client/pbi-embed` — Power BI embed token (proxies to PBI service: session/start + embed/config + embed/token)
 - `POST /api/client/pbi-heartbeat` — keep PBI capacity session alive
 - `POST /api/client/pbi-session-end` — end PBI capacity session on page unload
@@ -181,7 +218,7 @@ Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&a
    - **Account tab** (default) — name, email, account status, subscription status, matches remaining (usage pill), matches used/granted, role, registration date. Read-only. Data from `billing.account`, `billing.member`, `billing.vw_customer_usage`, and `/api/client/entitlements`.
    - **My Details tab** — editable profile: first name, surname, email (read-only), mobile, UTR, dominant hand, country, area. Save button PATCHes `/api/client/profile`.
    - **Linked Players tab** — cards for each non-primary member (children/coaches). Each card is individually collapsible with editable fields matching My Details. "Deactivate" soft-deletes (keeps history). "+ Add Player" inline form.
-   - **Invite Coach tab** — placeholder (coming soon). Will allow owners to invite coaches by email. See "Coach Invite Flow" section below.
+   - **Invite Coach tab** — invite coaches by email, list invited/accepted coaches with status badges, revoke access. Data from `billing.coaches_permission` via `/api/client/coaches`.
 2. **Charts** — 70/30 grid: matches per month line chart | usage gauge
 3. **Latest Match** — hero card inside a white block. Shows player names, date, location, score, key stats (points, games, aces, avg rally, duration). "Watch Footage" button opens modal HTML5 video player (or "Processing..." badge). Entire card clickable to open edit panel.
 4. **Match History** — single white card block. Year headers → month headers (indented) → match rows (indented further). Years and months newest first. Matches within a month sort latest to oldest. Each row shows Player A vs Player B, date, location, status badge, score, play icon (footage), edit button.
@@ -199,7 +236,7 @@ Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&a
 Video upload page replacing the Wix-based upload flow. Served at `GET /media-room` from the Locker Room service. Also served at `GET /media-room` from the main webhook-server (backup/same-origin for upload APIs). Auth via URL params: `?email=...&key=...&api=...`. API_BASE defaults to `https://api.nextpointtennis.com` if `?api=` is omitted.
 
 **4-step wizard flow:**
-1. **Game Type Selection** — Singles (active), Technique Session / Doubles Training / Serve Practice (coming soon). `getFormConfig(gameType)` stub for future game types.
+1. **Game Type Selection** — Singles, Serve Practice, Rally Practice (all active). Technique Session / Doubles Training (coming soon). `getFormConfig(gameType)` routes to `renderSinglesForm` or `renderPracticeForm`. Practice form is simplified: player, date, location only (no opponent, score, or first server).
 2. **Video Upload** — Chunked multipart upload directly to S3 via presigned URLs. 10 MB chunks, 3 retries + exponential backoff. Browser Wake Lock API prevents screen sleep on mobile (graceful fallback with warning, re-acquires on `visibilitychange`). Resumable: upload state (uploadId, key, completed parts, file identity) persisted in `localStorage` with 24h expiry. On page load, checks for interrupted uploads and offers Resume/Discard. Progress shows: % bar, chunk counter, upload speed (MB/s), ETA. After all chunks uploaded, calls `POST /upload/api/multipart/list-parts` for reliable server-side ETag retrieval, then completes the multipart upload.
 3. **Match Details Form** — Player A dropdown from `/api/client/members` (account members only, shows `full_name + surname`). Same fields as Locker Room edit panel: Player A UTR, Player B (opponent), Player B UTR, match date, location, first server (Server/Returner toggle), start time offset, score (inline grid: player name + 3 set boxes per row, names update live). Submit calls `POST /api/submit_s3_task` then PATCHes `first_server` to `player_a`/`player_b` format.
 4. **Analysis Progress** — Polls `GET /upload/api/task-status` every 5s. Progress bar uses raw `sportai_progress_pct` (0-100%, no artificial stage-based jumps). Customer-friendly transaction log with timestamped entries. Cancel button calls `POST /upload/api/cancel-task`. On completion: success card with auto-built Locker Room link. On failure: error card with full reference ID and retry button.
@@ -234,28 +271,25 @@ Collapsible sidebar with navigation: Dashboard (/), Upload (/media-room), My Pro
 
 Profile fetch on init shows user name in sidebar footer with connection status indicator (Connected/API key invalid/Connection failed).
 
-### Coach Invite Flow (partially built — next priority)
+### Coach Invite Flow
 
-**Current state**: The "Invite Coach" tab in the Locker Room is a placeholder. The Render-side coach endpoints already exist in `coaches_api.py`:
-- `POST /api/coaches/invite` — creates a `billing.coach_permission` row (status=INVITED), requires `owner_email` + `coach_email`, OPS_KEY auth
-- `POST /api/coaches/accept` — sets status=ACCEPTED, requires `permission_id` + `coach_email`, OPS_KEY auth
-- `POST /api/coaches/revoke` — sets status=REVOKED, requires `permission_id` OR (`owner_email` + `coach_email`), OPS_KEY auth
+Owner invites coaches from the Locker Room "Invite Coach" tab. Data stored in `billing.coaches_permission` table.
 
-**Current Wix flow** (to be ported):
-1. Owner clicks "Invite Coach" in Wix frontend → calls `/_functions/coachInviteNow`
-2. Wix backend calls Render `/api/coaches/invite` (creates permission row)
-3. Wix backend upserts a row in Wix CMS `AuthorizedCoaches` collection (status=INVITED, with invite token)
-4. Wix triggers email via `COACH_INVITE_WEBHOOK_URL` webhook with accept URL containing token
-5. Coach clicks accept link → Wix `/_functions/coach_accept` consumes token, updates CMS, calls Render `/api/coaches/accept`
-6. Revoke: owner clicks revoke → Wix calls Render `/api/coaches/revoke`, updates CMS
+**Server-to-server endpoints** (`coaches_api.py`, OPS_KEY auth):
+- `POST /api/coaches/invite` — creates permission row (status=INVITED)
+- `POST /api/coaches/accept` — sets status=ACCEPTED
+- `POST /api/coaches/revoke` — sets status=REVOKED
 
-**What needs building**:
-1. Client-facing endpoint `POST /api/client/coach-invite` in `client_api.py` that proxies to the coaches API (similar to how `pbi-embed` proxies to PBI service)
-2. Client-facing endpoint `POST /api/client/coach-revoke` 
-3. Client-facing endpoint `GET /api/client/coaches` to list invited/accepted coaches
-4. The Invite Coach tab UI: email input, invite button, list of coaches with status badges, revoke buttons
-5. Email: can continue to go through Wix webhook (`COACH_INVITE_WEBHOOK_URL`) for now — the invite endpoint triggers it
-6. Accept flow: stays on Wix acceptance page (`ten-fifty5.com/coach-accept?token=...`) — no change needed
+**Client-facing endpoints** (`client_api.py`, CLIENT_API_KEY auth):
+- `GET /api/client/coaches` — list all coach permissions for the account
+- `POST /api/client/coach-invite` — invite a coach (creates/reuses permission row directly via DB, not HTTP proxy)
+- `POST /api/client/coach-revoke` — revoke a coach (verifies ownership via account_id)
+
+**Accept flow**: stays on Wix acceptance page (`ten-fifty5.com/coach-accept?token=...`). Coach clicks link → Wix calls Render `/api/coaches/accept`.
+
+**Email**: not yet wired — invite creates the permission row but does not send email. Will be connected via `COACH_INVITE_WEBHOOK_URL` in a follow-up.
+
+**Idempotency**: re-inviting a previously revoked coach reuses the existing row (resets status to INVITED, active=true).
 
 ### Wix → HTML Data Handoff
 
