@@ -580,20 +580,17 @@ function renderPlanCard(plan, isCurrent) {
   </div>`;
 }
 
-// ==================== PLAN SELECTION → WIX REDIRECT ====================
+// ==================== PLAN SELECTION → WIX CHECKOUT ====================
 function selectPlan(wixPlanId) {
-  const url = wixCheckoutUrl(wixPlanId);
-  if (!url) return;
+  if (!wixPlanId) return;
 
-  // Append email for pre-fill on Wix checkout
-  const redirectUrl = url + '&email=' + encodeURIComponent(EMAIL);
-
-  // Open in top-level window (escape iframe if inside portal)
-  if (window.top !== window.self) {
-    window.top.location.href = redirectUrl;
-  } else {
-    window.location.href = redirectUrl;
-  }
+  // Send checkout request to Wix parent via postMessage.
+  // The Wix page code listens for this and calls the Wix Pricing Plans API.
+  window.top.postMessage({
+    type: 'wix-checkout',
+    planId: wixPlanId,
+    email: EMAIL,
+  }, '*');
 }
 
 // ==================== INIT ====================
