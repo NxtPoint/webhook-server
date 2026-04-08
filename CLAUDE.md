@@ -44,6 +44,17 @@ python video_pipeline/test_video_timeline.py
 python bronze_json_schema.py <session_id>
 ```
 
+**Silver diagnostics** (requires live DB):
+```bash
+python test_silver_diagnostics.py
+```
+
+### Testing & Code Quality
+
+No automated test suite, CI pipeline, or linter is configured. All testing is manual against the live Render database. There is no pytest, no conftest, no test runner. Do not attempt to run `pytest` — it will find nothing useful.
+
+Schema DDL is split across multiple files: `db_init.py` (bronze tables, called on boot), `_ensure_member_profile_columns()` in `client_api.py` (billing columns, runs on import), and `_ensure_submission_context_schema()` in `upload_app.py`. These all use idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` or `CREATE TABLE IF NOT EXISTS` patterns.
+
 ## Architecture Overview
 
 ### Service Topology & Data Flow
@@ -117,7 +128,9 @@ Key patterns:
 - `billing_import_from_bronze.py` syncs completed tasks from `bronze.submission_context` into billing consumption records, auto-creating accounts from email + customer_name if missing
 - `entitlements_api.py` gates uploads on remaining credit check
 
-**Member profile columns** on `billing.member`: `surname`, `phone`, `utr`, `dominant_hand`, `country`, `area`, `dob`, `skill_level`, `club_school`, `notes`, `profile_photo_url`. Added idempotently via `_ensure_member_profile_columns()` in `client_api.py` (runs on import).
+**`billing.member` is the single source of truth for all customer/player/child/coach profile data.** Every client-facing page (Locker Room, Media Room, Players' Enclosure) reads from and writes back to this one table. Match-level data (`player_a_name`, `player_b_name` etc.) is stored separately in `bronze.submission_context` as point-in-time snapshots — this is by design so that editing a player's name doesn't rewrite historical match records. Player A dropdowns in match edit forms pull member names from `billing.member`, but the selected value is written to `bronze.submission_context`.
+
+**Member profile columns** on `billing.member`: `surname`, `phone`, `utr`, `dominant_hand`, `country`, `area`, `dob`, `skill_level`, `club_school`, `notes`, `profile_photo_url`. All fields are viewable and editable from the Locker Room Linked Players section. Added idempotently via `_ensure_member_profile_columns()` in `client_api.py` (runs on import).
 
 API blueprints: `subscriptions_api`, `usage_api`, `entitlements_api`.
 
