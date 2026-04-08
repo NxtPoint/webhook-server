@@ -32,6 +32,7 @@ PIPELINE_STAGES = [
     ("tracking_players",    70),
     ("computing_analytics", 80),
     ("generating_heatmaps", 85),
+    ("transcoding",         90),
     ("saving_results",      95),
     ("complete",           100),
 ]

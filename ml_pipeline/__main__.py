@@ -51,10 +51,42 @@ def _run_local(video_path: str):
     print(f"{'='*60}")
 
 
+def _transcode_to_mp4(source_path: str) -> str:
+    """
+    Transcode video to compressed H.264 MP4 using FFmpeg.
+    Returns path to the output MP4 file.
+    """
+    import subprocess
+    out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(out_fd)
+
+    ffmpeg_bin = os.environ.get("FFMPEG_BIN", "ffmpeg")
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", source_path,
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    logger.info(f"Transcoding: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed (rc={result.returncode}): {result.stderr[-500:]}")
+
+    src_size = os.path.getsize(source_path)
+    out_size = os.path.getsize(out_path)
+    logger.info(f"Transcode complete: {src_size} → {out_size} bytes ({out_size/src_size*100:.0f}%)")
+    return out_path
+
+
 def _run_batch(job_id: str, s3_key: str):
     """
     AWS Batch mode: download video from S3, run pipeline, save results to DB,
-    upload heatmaps to S3, clean up temp file.
+    upload heatmaps to S3, transcode to MP4, clean up source.
     """
     import boto3
     from sqlalchemy import text as sql_text
@@ -144,7 +176,47 @@ def _run_batch(job_id: str, s3_key: str):
 
         db.save_heatmap_keys(job_id, ball_heatmap_key, player_heatmap_keys)
 
-        # 5. Record cost and mark complete
+        # 5. Transcode to MP4 + upload to trimmed/{job_id}/practice.mp4
+        on_progress("transcoding", 90)
+        mp4_path = None
+        try:
+            mp4_path = _transcode_to_mp4(tmp_path)
+            trimmed_key = f"trimmed/{job_id}/practice.mp4"
+            s3.upload_file(mp4_path, s3_bucket, trimmed_key,
+                           ExtraArgs={"ContentType": "video/mp4"})
+            logger.info(f"Uploaded trimmed: s3://{s3_bucket}/{trimmed_key}")
+
+            # Update job row with trimmed key
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    UPDATE ml_analysis.video_analysis_jobs
+                    SET compute_env = :tkey, updated_at = now()
+                    WHERE job_id = :jid
+                """), {"jid": job_id, "tkey": trimmed_key})
+
+            # Also update submission_context so Locker Room can find the footage
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                    SET trim_status = 'completed',
+                        trim_output_s3_key = :tkey
+                    WHERE task_id = :jid
+                """), {"jid": job_id, "tkey": trimmed_key})
+
+        except Exception as e:
+            logger.warning(f"Transcode failed (non-fatal): {e}")
+        finally:
+            if mp4_path and os.path.exists(mp4_path):
+                os.unlink(mp4_path)
+
+        # 6. Delete raw source from S3 (MOV cleanup)
+        try:
+            s3.delete_object(Bucket=s3_bucket, Key=s3_key)
+            logger.info(f"Deleted raw source: s3://{s3_bucket}/{s3_key}")
+        except Exception as e:
+            logger.warning(f"Source cleanup failed (non-fatal): {e}")
+
+        # 7. Record cost and mark complete
         batch_duration = time.time() - batch_start
         # G4dn.xlarge spot ≈ $0.1578/hr
         estimated_cost = (batch_duration / 3600) * 0.1578
