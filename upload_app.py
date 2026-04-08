@@ -884,6 +884,53 @@ def _notify_wix(task_id: str, status: str, session_id: str | None, result_url: s
         _ensure_submission_context_schema(conn)
         _mark_wix_notify(conn, task_id, status, last_err)
 
+
+def _notify_ses_completion(task_id: str) -> None:
+    """
+    Send video analysis complete email via SES.
+    Runs alongside _notify_wix during transition. Uses the same idempotency
+    gate (wix_notified_at) — if Wix already notified, SES skips too.
+    """
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            if _already_notified(conn, task_id, "completed"):
+                return
+
+        # Fetch customer + match details for the email
+        with engine.connect() as conn:
+            row = conn.execute(sql_text("""
+                SELECT email, customer_name, player_a_name, player_b_name,
+                       match_date, location
+                FROM bronze.submission_context
+                WHERE task_id = :t
+                LIMIT 1
+            """), {"t": task_id}).mappings().first()
+
+        if not row or not row.get("email"):
+            app.logger.warning("SES notify: no email for task_id=%s", task_id)
+            return
+
+        from coach_invite.video_complete_email import send_completion_email
+        result = send_completion_email(
+            task_id=task_id,
+            customer_email=(row["email"] or "").strip(),
+            customer_name=(row.get("customer_name") or "").strip(),
+            player_a=(row.get("player_a_name") or "").strip(),
+            player_b=(row.get("player_b_name") or "").strip(),
+            match_date=str(row["match_date"]) if row.get("match_date") else "",
+            location=(row.get("location") or "").strip(),
+        )
+
+        if result.get("ok"):
+            app.logger.info("SES completion email sent task_id=%s", task_id)
+        else:
+            app.logger.warning("SES completion email failed task_id=%s: %s", task_id, result.get("error"))
+
+    except Exception as e:
+        app.logger.exception("SES notify error task_id=%s: %s", task_id, e)
+
+
 # ==========================
 # SPORTAI HTTP
 # ==========================
@@ -1584,8 +1631,10 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             raise RuntimeError(f"Power BI refresh failed: status={pbi_status} error={pbi_err or 'unknown'}")
 
         # -------------------------
-        # STEP 7: WIX NOTIFY (ONLY AFTER CONFIRMED PBI SUCCESS)
+        # STEP 7: NOTIFY CUSTOMER (SES email + Wix webhook during transition)
         # -------------------------
+        _notify_ses_completion(task_id)
+
         try:
             _notify_wix(
                 task_id,
@@ -2811,8 +2860,10 @@ def api_task_status():
         and not pbi_refresh_error
     )
 
-    # Auto-fire Wix notify once dashboard is ready (idempotent)
+    # Auto-fire notify once dashboard is ready (idempotent)
     if dashboard_ready:
+        _notify_ses_completion(tid)
+
         try:
             _notify_wix(
                 tid,
