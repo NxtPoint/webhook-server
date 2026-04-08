@@ -113,7 +113,7 @@ Parallel analysis path for practice sessions, using the in-house T5 ML pipeline 
 ### Data Layers (PostgreSQL)
 
 - **Bronze** (`bronze.*`): Raw SportAI JSON ingested verbatim. `db_init.py` owns schema creation (idempotent, called on boot). Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
-- **Silver** (`silver.*`): Structured/normalized data. `silver.point_detail` is the key table consumed by the video timeline and client API. Built by `build_silver_v2.py` (5-pass SQL approach; `build_silver_point_detail.py` is the legacy Python-based version kept for reference).
+- **Silver** (`silver.*`): Structured/normalized data. `silver.point_detail` is the key match table consumed by the video timeline and client API. Built by `build_silver_v2.py` (5-pass SQL approach). `silver.practice_detail` is the practice table for serve/rally sessions. Built by `ml_pipeline/build_silver_practice.py` (3-pass: extract bounces → sequence detection → analytics). Legacy: `build_silver_point_detail.py` (Python-based, kept for reference).
 - **Gold**: Materialized view tables (`point_log_tbl`, `point_summary_tbl`) built on demand via `/ops/build-gold`. `gold.vw_client_match_summary` is consumed by the Locker Room client API.
 - **Billing** (`billing.*`): Separate schema for credit-based usage tracking. See Billing System below.
 
@@ -129,6 +129,19 @@ Current prod implementation. 5-pass SQL pipeline:
 5. Analytics (serve buckets, stroke, rally_length, aggression, depth)
 
 Court geometry constants live in `SPORT_CONFIG` dict at top of file.
+
+### Silver Practice (`ml_pipeline/build_silver_practice.py`)
+
+Silver builder for serve and rally practice data. Reads from `ml_analysis.ball_detections` + `ml_analysis.player_detections` (T5 bronze), writes to `silver.practice_detail`.
+
+**3-pass approach:**
+1. Extract bounces with court coordinates + nearest player position → insert rows
+2. Sequence detection: serve practice = sequential numbering with deuce/ad alternation; rally practice = group bounces into rallies by frame gap, number shots within each
+3. Analytics: placement zone (A/B/C/D quadrant), depth (Deep/Middle/Short), serve zone (Wide/Body/T), serve result (In/Fault), rally length and duration
+
+**`silver.practice_detail` key columns:** `task_id`, `practice_type`, `sequence_num` (serve # or rally #), `shot_ix`, `ball_x/y` (court metres), `ball_speed_kmh`, `is_in`, `serve_zone`, `serve_side`, `serve_result`, `rally_length`, `rally_duration_s`, `placement_zone`, `depth_d`.
+
+Called from `_do_ingest_t5()` in `upload_app.py` after T5 Batch job completes. Schema managed by `ml_pipeline/db_schema.py` (idempotent).
 
 ### Main App (`upload_app.py`)
 

@@ -1800,11 +1800,20 @@ def _do_ingest_t5(task_id: str) -> bool:
                 WHERE task_id = :t
             """), {"t": task_id, "task_id": task_id})
 
-        # Skip: bronze ingest (data in ml_analysis.*)
-        # Skip: silver build (no silver for practice v1)
+        # Skip: bronze ingest (data already in ml_analysis.*)
+        # Silver: build practice_detail from ml_analysis detections
+        try:
+            from ml_pipeline.build_silver_practice import build_silver_practice
+            silver_result = build_silver_practice(task_id=task_id, replace=True, engine=engine)
+            app.logger.info("T5 INGEST task_id=%s silver practice built: %s", task_id, silver_result)
+        except ImportError:
+            app.logger.warning("T5 INGEST task_id=%s silver builder not available (ml deps missing)", task_id)
+        except Exception as e:
+            app.logger.warning("T5 INGEST task_id=%s silver build failed (non-fatal): %s", task_id, e)
+
         # Skip: video trim (no trim for practice v1)
         # Skip: billing (practice is free — no credit consumption)
-        app.logger.info("T5 INGEST task_id=%s skipped bronze/silver/billing/trim (practice mode)", task_id)
+        app.logger.info("T5 INGEST task_id=%s skipped billing/trim (practice mode)", task_id)
 
         # PBI refresh (when dataset exists for practice data)
         if PBI_SERVICE_BASE:

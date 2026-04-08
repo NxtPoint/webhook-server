@@ -46,6 +46,7 @@ def ml_analysis_init(engine=None):
         _create_ball_detections_table(conn)
         _create_player_detections_table(conn)
         _create_match_analytics_table(conn)
+        _create_practice_detail_table(conn)
         _create_indexes(conn)
     logger.info("ml_analysis schema init complete")
 
@@ -178,6 +179,48 @@ def _create_match_analytics_table(conn):
     """))
 
 
+def _create_practice_detail_table(conn):
+    conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS silver;"))
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS silver.practice_detail (
+            id              BIGSERIAL PRIMARY KEY,
+            task_id         TEXT NOT NULL,
+            practice_type   TEXT NOT NULL,
+            player_id       INTEGER,
+            sequence_num    INTEGER NOT NULL,
+            shot_ix         INTEGER,
+
+            -- Ball data
+            ball_x          DOUBLE PRECISION,
+            ball_y          DOUBLE PRECISION,
+            ball_speed_kmh  DOUBLE PRECISION,
+            is_bounce       BOOLEAN NOT NULL DEFAULT TRUE,
+            is_in           BOOLEAN,
+            frame_idx       INTEGER,
+            timestamp_s     DOUBLE PRECISION,
+
+            -- Serve-specific
+            serve_zone      TEXT,
+            serve_side      TEXT,
+            serve_result    TEXT,
+
+            -- Rally-specific
+            rally_length    INTEGER,
+            rally_duration_s DOUBLE PRECISION,
+
+            -- Player position at this frame
+            player_court_x  DOUBLE PRECISION,
+            player_court_y  DOUBLE PRECISION,
+
+            -- Derived analytics
+            placement_zone  TEXT,
+            depth_d         TEXT,
+
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+    """))
+
+
 def _create_indexes(conn):
     # video_analysis_jobs
     conn.execute(sql_text("""
@@ -229,4 +272,18 @@ def _create_indexes(conn):
     conn.execute(sql_text("""
         CREATE INDEX IF NOT EXISTS ix_ml_analytics_task
             ON ml_analysis.match_analytics (task_id);
+    """))
+
+    # practice_detail (silver schema)
+    conn.execute(sql_text("""
+        CREATE INDEX IF NOT EXISTS ix_practice_detail_task
+            ON silver.practice_detail (task_id);
+    """))
+    conn.execute(sql_text("""
+        CREATE INDEX IF NOT EXISTS ix_practice_detail_task_seq
+            ON silver.practice_detail (task_id, sequence_num);
+    """))
+    conn.execute(sql_text("""
+        CREATE INDEX IF NOT EXISTS ix_practice_detail_type
+            ON silver.practice_detail (task_id, practice_type);
     """))
