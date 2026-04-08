@@ -1398,9 +1398,18 @@ function showAnalysisSuccess() {
     <div class="success-card">
       <h3>Analysis Complete</h3>
       <p>Your match has been processed and your dashboards are ready.</p>
-      <a href="${esc(lrBase)}" target="_top" style="display:inline-block;background:var(--green);color:var(--white);padding:10px 24px;border-radius:var(--radius);font-weight:600;text-decoration:none;font-size:0.88rem;margin-top:12px">View in Locker Room</a>
+      <button onclick="goToDashboard()" style="display:inline-block;background:var(--green);color:var(--white);padding:10px 24px;border-radius:var(--radius);font-weight:600;border:none;font-size:0.88rem;margin-top:12px;cursor:pointer;font-family:inherit;">View in Locker Room</button>
     </div>
   `;
+}
+
+function goToDashboard() {
+  // If inside portal iframe, send navigation message to parent
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'portal-navigate', target: 'dashboard' }, '*');
+  } else {
+    window.location.href = '/?email=' + encodeURIComponent(EMAIL) + '&key=' + encodeURIComponent(API_KEY) + '&api=' + encodeURIComponent(API_BASE);
+  }
 }
 
 function showAnalysisFailure(error, stage) {

@@ -447,12 +447,30 @@ window.addEventListener('hashchange', () => {
   if (hash !== currentPage) navigateTo(hash);
 });
 
-// Listen for Wix postMessage handoff (pass through to content iframe)
+// Listen for messages from child iframes and Wix parent
 window.addEventListener('message', function(event) {
   if (!event.data || typeof event.data !== 'object') return;
   const d = event.data;
+
+  // Navigation requests from child pages (media room, players enclosure, etc.)
+  if (d.type === 'navigate' || d.type === 'portal-navigate') {
+    const targetMap = {
+      'locker_room': 'dashboard',
+      'dashboard': 'dashboard',
+      'media_room': 'upload',
+      'upload': 'upload',
+      'register': 'profile',
+      'profile': 'profile',
+      'analytics': 'analytics',
+      'backoffice': 'backoffice',
+    };
+    const pageId = targetMap[(d.target || '').toLowerCase()] || d.target;
+    if (pageId) navigateTo(pageId);
+    return;
+  }
+
+  // Wix postMessage handoff (forward to content iframe)
   if (d.type === 'wix-handoff' || d.email) {
-    // Forward to content iframe
     const frame = document.getElementById('contentFrame');
     if (frame && frame.contentWindow) {
       frame.contentWindow.postMessage(event.data, '*');
