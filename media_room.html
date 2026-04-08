@@ -567,17 +567,27 @@ function renderStep1(el) {
           <div class="game-card-title">Technique Session</div>
           <div class="game-card-sub">Stroke analysis</div>
         </div>
+        <div class="game-card" onclick="selectGameType('serve', this)" data-type="serve">
+          <div class="game-card-icon">&#9889;</div>
+          <div class="game-card-title">Serve Practice</div>
+          <div class="game-card-sub">Serve metrics</div>
+        </div>
+        <div class="game-card" onclick="selectGameType('rally', this)" data-type="rally">
+          <div class="game-card-icon">&#127936;</div>
+          <div class="game-card-title">Rally Practice</div>
+          <div class="game-card-sub">Rally analysis</div>
+        </div>
+        <div class="game-card disabled" data-type="technique">
+          <div class="coming-soon-badge">Coming Soon</div>
+          <div class="game-card-icon">&#127919;</div>
+          <div class="game-card-title">Technique Session</div>
+          <div class="game-card-sub">Stroke analysis</div>
+        </div>
         <div class="game-card disabled" data-type="doubles">
           <div class="coming-soon-badge">Coming Soon</div>
           <div class="game-card-icon">&#129309;</div>
           <div class="game-card-title">Doubles Training</div>
           <div class="game-card-sub">Team dynamics</div>
-        </div>
-        <div class="game-card disabled" data-type="serve">
-          <div class="coming-soon-badge">Coming Soon</div>
-          <div class="game-card-icon">&#9889;</div>
-          <div class="game-card-title">Serve Practice</div>
-          <div class="game-card-sub">Serve metrics</div>
         </div>
       </div>
       <button class="btn-primary" onclick="goToStep(2)">Continue &rarr;</button>
@@ -586,7 +596,8 @@ function renderStep1(el) {
 }
 
 function selectGameType(type, card) {
-  if (type !== 'singles') return;
+  const allowed = ['singles', 'serve', 'rally'];
+  if (!allowed.includes(type)) return;
   STATE.gameType = type;
   document.querySelectorAll('.game-card').forEach(c => c.classList.remove('selected'));
   card.classList.add('selected');
@@ -1047,6 +1058,9 @@ function getFormConfig(gameType) {
   if (gameType === 'singles') {
     return { type: 'singles', formRenderer: renderSinglesForm };
   }
+  if (gameType === 'serve' || gameType === 'rally') {
+    return { type: gameType, formRenderer: renderPracticeForm };
+  }
   // Future game types will return their own config here
   return { type: gameType, formRenderer: renderSinglesForm };
 }
@@ -1160,6 +1174,52 @@ function updateScoreNames() {
   if (elB) elB.textContent = nameB;
 }
 
+function renderPracticeForm(el) {
+  const gameLabel = STATE.gameType === 'serve' ? 'Serve Practice' : 'Rally Practice';
+
+  // Player dropdown from account members
+  const primaryMember = STATE.members.find(m => m.is_primary);
+  const defaultPlayerA = primaryMember ? primaryMember.full_name : '';
+
+  const primaryDisplay = primaryMember ? primaryMember.full_name + (primaryMember.surname ? ' ' + primaryMember.surname : '') : '';
+  const playerOpts = STATE.members.filter(m => m.full_name).map(m => {
+    const display = m.full_name + (m.surname ? ' ' + m.surname : '');
+    return `<option value="${esc(m.full_name)}" data-display="${esc(display)}" ${m.full_name === defaultPlayerA ? 'selected' : ''}>${esc(display)}</option>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="section-card">
+      <div class="section-title">${esc(gameLabel)} Details</div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player</label>
+        <select class="edit-input" id="fd-player_a_name">
+          ${playerOpts}
+        </select>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Date</label>
+        <input class="edit-input" type="date" id="fd-match_date" value="${new Date().toISOString().split('T')[0]}">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Venue / Location</label>
+        <input class="edit-input" type="text" id="fd-location" placeholder="e.g. Wimbledon Club Court 3">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Seconds from video start to first point</label>
+        <input class="edit-input" type="number" step="1" min="0" id="fd-start_time" placeholder="e.g. 30">
+      </div>
+
+      <button class="btn-primary" id="btnSubmitDetails" onclick="submitMatchDetails()">Submit &amp; Start Analysis &rarr;</button>
+      <button class="btn-secondary" onclick="goToStep(2)">&larr; Back</button>
+      <div class="msg-bar" id="detailsMsg"></div>
+    </div>
+  `;
+}
+
 function showDetailsMsg(type, text) {
   const bar = document.getElementById('detailsMsg');
   if (!bar) return;
@@ -1193,24 +1253,30 @@ async function submitMatchDetails() {
 
   try {
     // Call /api/submit_s3_task
+    const isPractice = ['serve', 'rally'].includes(STATE.gameType);
     const body = {
       s3_key: STATE.upload.key,
       email: EMAIL,
+      gameType: STATE.gameType,
       playerName: playerA || undefined,
-      opponentName: playerB || undefined,
-      playerUTR: playerAUtr || undefined,
-      opponentUtr: playerBUtr || undefined,
       matchDate: matchDate || undefined,
       location: location || undefined,
       startTime: startTime || undefined,
-      firstServer: firstServer === 'player_a' ? 'S' : 'R',
-      'Set 1 (A)': s1a || undefined,
-      'Set 1 (B)': s1b || undefined,
-      'Set 2 (A)': s2a || undefined,
-      'Set 2 (B)': s2b || undefined,
-      'Set 3 (A)': s3a || undefined,
-      'Set 3 (B)': s3b || undefined,
     };
+
+    // Singles-only fields (opponent, score, first server)
+    if (!isPractice) {
+      body.opponentName = playerB || undefined;
+      body.playerUTR = playerAUtr || undefined;
+      body.opponentUtr = playerBUtr || undefined;
+      body.firstServer = firstServer === 'player_a' ? 'S' : 'R';
+      body['Set 1 (A)'] = s1a || undefined;
+      body['Set 1 (B)'] = s1b || undefined;
+      body['Set 2 (A)'] = s2a || undefined;
+      body['Set 2 (B)'] = s2b || undefined;
+      body['Set 3 (A)'] = s3a || undefined;
+      body['Set 3 (B)'] = s3b || undefined;
+    }
 
     const res = await fetch(API_BASE + '/api/submit_s3_task', {
       method: 'POST',
@@ -1286,15 +1352,33 @@ function renderTxLog() {
   el.scrollTop = el.scrollHeight;
 }
 
-const STAGE_LABELS = {
-  'queued_for_analysis': 'Waiting to start analysis',
-  'match_analysis_in_progress': 'Analysing your match',
-  'building_analytics': 'Building your match report',
-  'refreshing_dashboard': 'Updating your dashboards',
-  'complete': 'Complete',
-  'failed': 'Failed',
-  'canceled': 'Cancelled',
+const STAGE_LABELS_BY_TYPE = {
+  singles: {
+    'queued_for_analysis': 'Waiting to start analysis',
+    'match_analysis_in_progress': 'Analysing your match',
+    'building_analytics': 'Building your match report',
+    'refreshing_dashboard': 'Updating your dashboards',
+    'complete': 'Complete', 'failed': 'Failed', 'canceled': 'Cancelled',
+  },
+  serve: {
+    'queued_for_analysis': 'Waiting to start analysis',
+    'match_analysis_in_progress': 'Analysing your serve session',
+    'building_analytics': 'Building your serve report',
+    'refreshing_dashboard': 'Updating your dashboards',
+    'complete': 'Complete', 'failed': 'Failed', 'canceled': 'Cancelled',
+  },
+  rally: {
+    'queued_for_analysis': 'Waiting to start analysis',
+    'match_analysis_in_progress': 'Analysing your rally session',
+    'building_analytics': 'Building your rally report',
+    'refreshing_dashboard': 'Updating your dashboards',
+    'complete': 'Complete', 'failed': 'Failed', 'canceled': 'Cancelled',
+  },
 };
+function getStageLabel(stage) {
+  const labels = STAGE_LABELS_BY_TYPE[STATE.gameType] || STAGE_LABELS_BY_TYPE.singles;
+  return labels[stage] || stage;
+}
 
 let lastStage = null;
 
@@ -1334,7 +1418,7 @@ async function pollStatus() {
 
     if (bar) bar.style.width = pct + '%';
     if (pctEl) pctEl.textContent = pct + '%';
-    if (stageEl) stageEl.textContent = STAGE_LABELS[stage] || stage;
+    if (stageEl) stageEl.textContent = getStageLabel(stage) || stage;
     if (statusEl) statusEl.textContent = `Reference: ${STATE.taskId}`;
 
     // Log stage transitions (customer-friendly language)
