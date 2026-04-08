@@ -725,6 +725,10 @@ function renderLinkedPlayers() {
           <input id="mf-${m.id}-phone" type="tel" value="${esc(m.phone||'')}">
         </div>
         <div class="member-card-field">
+          <label>Date of Birth</label>
+          <input id="mf-${m.id}-dob" type="date" value="${esc(m.dob||'')}">
+        </div>
+        <div class="member-card-field">
           <label>UTR</label>
           <input id="mf-${m.id}-utr" value="${esc(m.utr||'')}">
         </div>
@@ -737,12 +741,30 @@ function renderLinkedPlayers() {
           </select>
         </div>
         <div class="member-card-field">
+          <label>Skill Level</label>
+          <select id="mf-${m.id}-skill_level">
+            <option value="">—</option>
+            <option value="beginner" ${m.skill_level==='beginner'?'selected':''}>Beginner</option>
+            <option value="intermediate" ${m.skill_level==='intermediate'?'selected':''}>Intermediate</option>
+            <option value="advanced" ${m.skill_level==='advanced'?'selected':''}>Advanced</option>
+            <option value="competitive" ${m.skill_level==='competitive'?'selected':''}>Competitive</option>
+          </select>
+        </div>
+        <div class="member-card-field">
+          <label>Club / School</label>
+          <input id="mf-${m.id}-club_school" value="${esc(m.club_school||'')}">
+        </div>
+        <div class="member-card-field">
           <label>Country</label>
           <input id="mf-${m.id}-country" value="${esc(m.country||'')}">
         </div>
         <div class="member-card-field">
           <label>Area</label>
           <input id="mf-${m.id}-area" value="${esc(m.area||'')}">
+        </div>
+        <div class="member-card-field" style="grid-column:1/-1">
+          <label>Notes</label>
+          <input id="mf-${m.id}-notes" value="${esc(m.notes||'')}">
         </div>
       </div>
       <div class="member-card-actions">
@@ -766,21 +788,28 @@ function renderLinkedPlayers() {
     </div>
     <div class="add-member-form" id="addMemberForm">
       <div class="member-card-grid">
-        <div class="member-card-field"><label>First Name</label><input id="new-full_name"></div>
+        <div class="member-card-field"><label>First Name *</label><input id="new-full_name"></div>
         <div class="member-card-field"><label>Surname</label><input id="new-surname"></div>
         <div class="member-card-field"><label>Email</label><input id="new-email" type="email"></div>
         <div class="member-card-field"><label>Mobile</label><input id="new-phone" type="tel"></div>
+        <div class="member-card-field"><label>Date of Birth</label><input id="new-dob" type="date"></div>
         <div class="member-card-field"><label>UTR</label><input id="new-utr"></div>
         <div class="member-card-field">
           <label>Dominant Hand</label>
           <select id="new-dominant_hand"><option value="">—</option><option value="right">Right</option><option value="left">Left</option></select>
         </div>
+        <div class="member-card-field">
+          <label>Skill Level</label>
+          <select id="new-skill_level"><option value="">—</option><option value="beginner">Beginner</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option><option value="competitive">Competitive</option></select>
+        </div>
+        <div class="member-card-field"><label>Club / School</label><input id="new-club_school"></div>
         <div class="member-card-field"><label>Country</label><input id="new-country"></div>
         <div class="member-card-field"><label>Area</label><input id="new-area"></div>
         <div class="member-card-field">
           <label>Role</label>
           <select id="new-role"><option value="player_parent">Player</option><option value="coach">Coach</option></select>
         </div>
+        <div class="member-card-field" style="grid-column:1/-1"><label>Notes</label><input id="new-notes"></div>
       </div>
       <div class="member-card-actions" style="margin-top:10px;">
         <button class="btn-sm btn-sm-primary" onclick="addMember()">Add</button>
@@ -809,7 +838,7 @@ function toggleAddMember() {
 }
 
 async function saveMember(mid) {
-  const fields = ['full_name','surname','email','phone','utr','dominant_hand','country','area'];
+  const fields = ['full_name','surname','email','phone','dob','utr','dominant_hand','skill_level','club_school','country','area','notes'];
   const data = {};
   fields.forEach(f => {
     const el = document.getElementById('mf-' + mid + '-' + f);
@@ -860,7 +889,7 @@ async function deactivateMember(mid, name) {
 }
 
 async function addMember() {
-  const fields = ['full_name','surname','email','phone','utr','dominant_hand','country','area','role'];
+  const fields = ['full_name','surname','email','phone','dob','utr','dominant_hand','skill_level','club_school','country','area','role','notes'];
   const data = {};
   fields.forEach(f => {
     const el = document.getElementById('new-' + f);
