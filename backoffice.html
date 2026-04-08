@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TEN-FIFTY5 Backoffice</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
+}
+button { cursor: pointer; font-family: inherit; }
+
+.app { max-width: 1200px; margin: 0 auto; padding: 16px 16px 80px; }
+
+/* ========== HEADER ========== */
+.header {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.header-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; flex-wrap: wrap; gap: 10px;
+}
+.logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.admin-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: var(--radius);
+  font-size: 0.78rem; font-weight: 600;
+  background: rgba(59,130,246,0.08); color: #2563eb; border: 1px solid #2563eb;
+}
+
+/* ========== DATE FILTER ========== */
+.date-filter {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-top: 1px solid var(--border); flex-wrap: wrap;
+}
+.date-filter label { font-size: 0.78rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px; }
+.date-filter input[type="date"] {
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: inherit; font-size: 0.85rem; color: var(--text); outline: none;
+}
+.date-filter input[type="date"]:focus { border-color: var(--green); }
+.btn-sm {
+  padding: 7px 18px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
+  transition: all var(--transition); border: none;
+}
+.btn-sm-primary { background: var(--green); color: var(--white); }
+.btn-sm-primary:hover { background: var(--green-light); }
+.btn-sm-outline { background: var(--white); color: var(--green); border: 1px solid var(--green); }
+.btn-sm-outline:hover { background: var(--green); color: var(--white); }
+
+/* ========== SECTION LABEL ========== */
+.section-label {
+  font-size: 0.82rem; font-weight: 600; color: var(--text-sec);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+}
+
+/* ========== KPI CARDS ========== */
+.kpi-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px;
+}
+.kpi-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); text-align: center;
+}
+.kpi-value { font-size: 2rem; font-weight: 700; color: var(--green); }
+.kpi-value.amber { color: var(--amber); }
+.kpi-value.red { color: var(--red); }
+.kpi-label { font-size: 0.75rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px; margin-top: 4px; }
+.kpi-sub { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+
+/* ========== CHARTS ========== */
+.charts-row {
+  display: grid; grid-template-columns: 7fr 3fr; gap: 16px; margin-bottom: 24px;
+}
+.chart-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  max-height: 260px; overflow: hidden; position: relative;
+}
+.chart-wrap { position: relative; height: 180px; }
+.chart-card h3 { font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+.gauge-container { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 10px 0; }
+.gauge-number { font-size: 2.8rem; font-weight: 700; color: var(--green); }
+.gauge-label { font-size: 0.82rem; color: var(--text-sec); margin-top: 4px; }
+.gauge-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+.gauge-fill { height: 100%; background: var(--green); border-radius: 4px; transition: width 0.5s ease; }
+
+/* ========== PIPELINE TABLE ========== */
+.table-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04); margin-bottom: 24px; overflow: hidden;
+}
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+thead th {
+  background: var(--bg); padding: 10px 12px; text-align: left;
+  font-size: 0.72rem; font-weight: 600; color: var(--text-sec);
+  text-transform: uppercase; letter-spacing: 0.3px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+tbody td {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  vertical-align: top; white-space: nowrap;
+}
+tbody tr:hover { background: var(--green-bg); }
+tbody tr:last-child td { border-bottom: none; }
+
+/* Stage pills */
+.stage-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: var(--radius);
+  font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.stage-pill.ok { background: var(--green-bg); color: var(--green); }
+.stage-pill.running { background: rgba(59,130,246,0.08); color: #2563eb; }
+.stage-pill.warn { background: rgba(217,119,6,0.08); color: var(--amber); }
+.stage-pill.fail { background: rgba(220,38,38,0.08); color: var(--red); }
+.stage-pill.pending { background: var(--bg); color: var(--text-dim); }
+
+/* Error tooltip */
+.err-icon {
+  cursor: help; position: relative; display: inline-flex; align-items: center;
+}
+.err-icon .err-tip {
+  display: none; position: absolute; bottom: 100%; left: 0;
+  background: var(--text); color: var(--white); padding: 6px 10px; border-radius: 3px;
+  font-size: 0.7rem; white-space: pre-wrap; max-width: 340px;
+  z-index: 10; pointer-events: none; word-break: break-word;
+}
+.err-icon:hover .err-tip { display: block; }
+
+.task-id-cell { font-family: monospace; font-size: 0.72rem; color: var(--text-sec); max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+.customer-cell { font-weight: 600; font-size: 0.82rem; }
+.customer-email { font-size: 0.7rem; color: var(--text-dim); font-weight: 400; }
+
+/* ========== CUSTOMER TABLE ========== */
+.sub-status { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+.sub-status.active { color: var(--green); }
+.sub-status.cancelled { color: var(--red); }
+.sub-status.expired { color: var(--text-dim); }
+.sub-status.none { color: var(--text-dim); }
+
+.usage-bar { width: 80px; height: 6px; background: var(--border); border-radius: 3px; display: inline-block; vertical-align: middle; margin-left: 6px; overflow: hidden; }
+.usage-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+
+/* ========== DETAIL PANEL ========== */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.3);
+  z-index: 100; opacity: 0; pointer-events: none; transition: opacity var(--transition);
+}
+.overlay.open { opacity: 1; pointer-events: auto; }
+.detail-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(600px, 100vw); background: var(--white);
+  border-left: 1px solid var(--border);
+  z-index: 101; transform: translateX(100%); transition: transform 0.3s ease;
+  overflow-y: auto; display: flex; flex-direction: column;
+}
+.detail-panel.open { transform: translateX(0); }
+.panel-header {
+  position: sticky; top: 0; background: var(--white);
+  padding: 16px 20px 12px; border-bottom: 1px solid var(--border); z-index: 1;
+}
+.panel-close {
+  background: none; border: none; color: var(--text-sec);
+  font-size: 1.3rem; float: right; padding: 4px 8px; transition: color var(--transition);
+}
+.panel-close:hover { color: var(--text); }
+.panel-title { font-size: 1.15rem; font-weight: 700; margin-top: 4px; }
+.panel-subtitle { color: var(--text-sec); font-size: 0.78rem; margin-top: 2px; }
+.panel-body { padding: 16px 20px; flex: 1; }
+
+/* Pipeline detail steps */
+.pipeline-steps { display: flex; flex-direction: column; gap: 0; }
+.pipeline-step {
+  display: flex; align-items: flex-start; gap: 12px; padding: 14px 0;
+  border-bottom: 1px solid var(--border); position: relative;
+}
+.pipeline-step:last-child { border-bottom: none; }
+.step-icon {
+  width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 0.75rem; font-weight: 700; flex-shrink: 0;
+}
+.step-icon.ok { background: var(--green-bg); color: var(--green); }
+.step-icon.fail { background: rgba(220,38,38,0.08); color: var(--red); }
+.step-icon.running { background: rgba(59,130,246,0.08); color: #2563eb; }
+.step-icon.pending { background: var(--bg); color: var(--text-dim); }
+.step-body { flex: 1; min-width: 0; }
+.step-name { font-weight: 600; font-size: 0.88rem; }
+.step-time { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+.step-error { font-size: 0.78rem; color: var(--red); margin-top: 4px; background: rgba(220,38,38,0.04); padding: 6px 10px; border-radius: var(--radius); word-break: break-word; white-space: pre-wrap; }
+.step-meta { font-size: 0.75rem; color: var(--text-sec); margin-top: 4px; }
+
+/* ========== LOADING / EMPTY ========== */
+.loading, .empty-state { text-align: center; padding: 60px 20px; color: var(--text-sec); }
+.loading .spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.empty-state h3 { font-weight: 500; margin-bottom: 6px; color: var(--text); }
+.empty-state p { color: var(--text-dim); font-size: 0.88rem; max-width: 340px; margin: 0 auto; }
+
+/* Collapsible sections */
+.section-toggle {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 12px 16px; font-size: 0.82rem; font-weight: 600;
+  color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
+  user-select: none; transition: background var(--transition);
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  margin-bottom: 10px;
+}
+.section-toggle:hover { background: var(--green-bg); }
+.section-toggle .chevron { transition: transform var(--transition); font-size: 0.7rem; color: var(--text-dim); }
+.section-toggle .chevron.open { transform: rotate(90deg); }
+.section-toggle .count { margin-left: auto; font-weight: 400; color: var(--text-dim); font-size: 0.78rem; }
+
+/* Tab row for pipeline/customer views */
+.tab-row { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
+.tab-btn {
+  padding: 10px 20px; border: none; background: none;
+  font-family: inherit; font-size: 0.88rem; font-weight: 600;
+  color: var(--text-sec); cursor: pointer; transition: all var(--transition);
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+}
+.tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
+.tab-btn:hover { color: var(--green); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* ========== MOBILE ========== */
+@media (max-width: 600px) {
+  .app { padding: 10px 10px 60px; }
+  .charts-row { grid-template-columns: 1fr; }
+  .kpi-row { grid-template-columns: 1fr 1fr; }
+  .header-top { flex-direction: column; align-items: flex-start; }
+  .detail-panel { width: 100vw; border-left: none; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="loading" id="loading"><div class="spinner"></div><p>Loading backoffice data...</p></div>
+</div>
+
+<div class="overlay" id="overlay" onclick="closePanel()"></div>
+<div class="detail-panel" id="detailPanel">
+  <div class="panel-header">
+    <button class="panel-close" onclick="closePanel()">&times;</button>
+    <div class="panel-title" id="panelTitle"></div>
+    <div class="panel-subtitle" id="panelSubtitle"></div>
+  </div>
+  <div class="panel-body" id="panelBody"></div>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+
+const ADMIN_EMAILS = ['info@ten-fifty5.com', 'tomo.stojakovic@gmail.com'];
+
+function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
+  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
+}
+
+let kpis = null, pipeline = [], customers = [];
+let currentDateFrom = new Date().toISOString().slice(0, 10);
+let currentDateTo = currentDateFrom;
+
+async function safeFetch(path) {
+  try {
+    const res = await apiFetch(path);
+    if (res.status === 403) return { ok: false, error: 'forbidden' };
+    return await res.json();
+  } catch (e) { console.warn('fetch failed:', path, e); return { ok: false }; }
+}
+
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>Missing credentials. Use ?email=...&key=... parameters.</p></div>';
+    return;
+  }
+  if (!ADMIN_EMAILS.includes(EMAIL)) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>Admin access only.</p></div>';
+    return;
+  }
+
+  const [kData, pData, cData] = await Promise.all([
+    safeFetch('/api/client/backoffice/kpis'),
+    safeFetch('/api/client/backoffice/pipeline?date_from=' + currentDateFrom + '&date_to=' + currentDateTo),
+    safeFetch('/api/client/backoffice/customers'),
+  ]);
+
+  if (kData.error === 'forbidden' || pData.error === 'forbidden') {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>Admin access only.</p></div>';
+    return;
+  }
+
+  kpis = kData.ok ? kData.kpis : null;
+  pipeline = pData.ok ? pData.tasks : [];
+  customers = cData.ok ? cData.customers : [];
+  render();
+}
+
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+
+  // Header
+  app.innerHTML += `
+    <div class="header">
+      <div class="header-top">
+        <div class="logo">TEN-FIFTY5</div>
+        <div class="header-right">
+          <span class="admin-badge">BACKOFFICE</span>
+        </div>
+      </div>
+      <div class="date-filter">
+        <label>Date range:</label>
+        <input type="date" id="dateFrom" value="${currentDateFrom}">
+        <span style="color:var(--text-dim)">to</span>
+        <input type="date" id="dateTo" value="${currentDateTo}">
+        <button class="btn-sm btn-sm-primary" onclick="refreshPipeline()">Refresh</button>
+        <button class="btn-sm btn-sm-outline" onclick="setToday()">Today</button>
+        <button class="btn-sm btn-sm-outline" onclick="setWeek()">Last 7 Days</button>
+        <button class="btn-sm btn-sm-outline" onclick="setMonth()">This Month</button>
+      </div>
+    </div>
+  `;
+
+  renderKPIs(app);
+  renderTabs(app);
+}
+
+// ==================== KPI CARDS ====================
+function renderKPIs(app) {
+  if (!kpis) return;
+  const successRate = kpis.tasks_all_time > 0 ? Math.round(kpis.completed_all_time / kpis.tasks_all_time * 100) : 0;
+  const todayRate = kpis.tasks_today > 0 ? Math.round(kpis.completed_today / kpis.tasks_today * 100) : 0;
+
+  const html = `
+    <div class="section-label">Business Overview</div>
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-value">${kpis.tasks_today}</div>
+        <div class="kpi-label">Tasks Today</div>
+        <div class="kpi-sub">${kpis.completed_today} completed, ${kpis.failed_today} failed</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value${todayRate < 80 ? ' amber' : ''}">${todayRate}%</div>
+        <div class="kpi-label">Today Success Rate</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${kpis.tasks_month}</div>
+        <div class="kpi-label">Tasks This Month</div>
+        <div class="kpi-sub">${kpis.completed_month} completed</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${kpis.active_accounts}</div>
+        <div class="kpi-label">Active Accounts</div>
+        <div class="kpi-sub">${kpis.active_members} members</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${kpis.active_subscriptions}</div>
+        <div class="kpi-label">Active Subs</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">${kpis.total_credits_consumed}</div>
+        <div class="kpi-label">Credits Used</div>
+        <div class="kpi-sub">of ${kpis.total_credits_granted} granted</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value${successRate < 90 ? ' amber' : ''}">${successRate}%</div>
+        <div class="kpi-label">All-Time Success</div>
+        <div class="kpi-sub">${kpis.tasks_all_time} total tasks</div>
+      </div>
+    </div>
+  `;
+  app.insertAdjacentHTML('beforeend', html);
+
+  // Monthly trend chart
+  if (kpis.monthly_trend && kpis.monthly_trend.length > 0) {
+    const chartHtml = `
+      <div class="charts-row">
+        <div class="chart-card">
+          <h3>Monthly Trend (12 Months)</h3>
+          <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3>Credit Utilisation</h3>
+          <div class="gauge-container">
+            <div class="gauge-number">${kpis.total_credits_granted > 0 ? Math.round(kpis.total_credits_consumed / kpis.total_credits_granted * 100) : 0}%</div>
+            <div class="gauge-label">${kpis.total_credits_consumed} / ${kpis.total_credits_granted}</div>
+            <div class="gauge-bar"><div class="gauge-fill" style="width:${kpis.total_credits_granted > 0 ? Math.min(100, Math.round(kpis.total_credits_consumed / kpis.total_credits_granted * 100)) : 0}%"></div></div>
+          </div>
+        </div>
+      </div>
+    `;
+    app.insertAdjacentHTML('beforeend', chartHtml);
+
+    requestAnimationFrame(() => {
+      const ctx = document.getElementById('trendChart');
+      if (!ctx) return;
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: kpis.monthly_trend.map(m => m.month),
+          datasets: [
+            { label: 'Completed', data: kpis.monthly_trend.map(m => m.completed), backgroundColor: 'rgba(26,92,46,0.7)', borderRadius: 3 },
+            { label: 'Failed', data: kpis.monthly_trend.map(m => m.failed), backgroundColor: 'rgba(220,38,38,0.6)', borderRadius: 3 },
+          ],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11, family: 'Inter' } } } },
+          scales: {
+            x: { stacked: true, grid: { display: false }, ticks: { font: { size: 10, family: 'Inter' } } },
+            y: { stacked: true, beginAtZero: true, ticks: { font: { size: 10, family: 'Inter' } } },
+          },
+        },
+      });
+    });
+  }
+}
+
+// ==================== TABS ====================
+function renderTabs(app) {
+  const html = `
+    <div class="tab-row">
+      <button class="tab-btn active" onclick="switchTab('pipeline', this)">Pipeline Monitor (${pipeline.length})</button>
+      <button class="tab-btn" onclick="switchTab('customers', this)">Customers (${customers.length})</button>
+    </div>
+    <div class="tab-content active" id="tab-pipeline"></div>
+    <div class="tab-content" id="tab-customers"></div>
+  `;
+  app.insertAdjacentHTML('beforeend', html);
+  renderPipeline();
+  renderCustomers();
+}
+
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+// ==================== PIPELINE TABLE ====================
+function stagePill(status, label) {
+  if (!status && !label) return '<span class="stage-pill pending">--</span>';
+  const s = (status || '').toLowerCase();
+  let cls = 'pending';
+  if (['completed', 'ok', 'true'].includes(s) || label === 'Yes') cls = 'ok';
+  else if (['failed', 'error', 'stale_timeout', 'trigger_failed'].includes(s) || label === 'Error') cls = 'fail';
+  else if (['running', 'processing', 'accepted', 'queued', 'triggered'].includes(s)) cls = 'running';
+  else if (s === 'warn') cls = 'warn';
+  return `<span class="stage-pill ${cls}">${label || status || '--'}</span>`;
+}
+
+function errTip(error) {
+  if (!error) return '';
+  const escaped = error.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  return ` <span class="err-icon">&#9888;<span class="err-tip">${escaped}</span></span>`;
+}
+
+function shortId(id) {
+  return id ? id.substring(0, 8) : '';
+}
+
+function renderPipeline() {
+  const el = document.getElementById('tab-pipeline');
+  if (pipeline.length === 0) {
+    el.innerHTML = '<div class="empty-state"><h3>No tasks</h3><p>No tasks found for the selected date range.</p></div>';
+    return;
+  }
+
+  let rows = '';
+  for (const t of pipeline) {
+    const sportaiOk = t.last_status === 'completed';
+    const bronzeOk = !!t.ingest_finished_at && !t.ingest_error;
+    const silverOk = t.silver_built;
+    const trimOk = t.trim_status === 'completed';
+    const pbiOk = t.pbi_refresh_status === 'completed';
+    const wixOk = t.wix_notify_status === 'completed';
+
+    const sportaiPill = stagePill(t.last_status, t.last_status === 'completed' ? 'Yes' : t.last_status);
+    const bronzePill = t.ingest_error
+      ? stagePill('failed', 'Error') + errTip(t.ingest_error)
+      : t.ingest_finished_at
+        ? stagePill('completed', 'Yes')
+        : t.ingest_started_at
+          ? stagePill('running', 'Running')
+          : stagePill(null);
+    const silverPill = silverOk ? stagePill('completed', 'Yes') : (bronzeOk ? stagePill('failed', 'No') : stagePill(null));
+    const trimPill = t.trim_error
+      ? stagePill('failed', t.trim_status || 'Error') + errTip(t.trim_error)
+      : t.trim_status
+        ? stagePill(t.trim_status, t.trim_status === 'completed' ? 'Yes' : t.trim_status)
+        : stagePill(null);
+    const pbiPill = t.pbi_refresh_error
+      ? stagePill('failed', t.pbi_refresh_status || 'Error') + errTip(t.pbi_refresh_error)
+      : t.pbi_refresh_status
+        ? stagePill(t.pbi_refresh_status, t.pbi_refresh_status === 'completed' ? 'Yes' : t.pbi_refresh_status)
+        : stagePill(null);
+    const wixPill = wixOk
+      ? stagePill('completed', 'Yes')
+      : t.wix_notify_error
+        ? stagePill('failed', 'Error') + errTip(t.wix_notify_error)
+        : stagePill(null);
+
+    const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
+
+    rows += `
+      <tr onclick="openTaskDetail('${t.task_id}')" style="cursor:pointer">
+        <td class="task-id-cell" title="${t.task_id}">${shortId(t.task_id)}</td>
+        <td>${time}</td>
+        <td><span class="customer-cell">${t.customer_name || ''}</span><br><span class="customer-email">${t.email || ''}</span></td>
+        <td>${t.player_a_name || ''} vs ${t.player_b_name || ''}</td>
+        <td>${sportaiPill}</td>
+        <td>${bronzePill}</td>
+        <td>${silverPill}</td>
+        <td>${trimPill}</td>
+        <td>${pbiPill}</td>
+        <td>${wixPill}</td>
+      </tr>
+    `;
+  }
+
+  el.innerHTML = `
+    <div class="table-card">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Task ID</th>
+              <th>Time</th>
+              <th>Customer</th>
+              <th>Match</th>
+              <th>SportAI</th>
+              <th>Bronze</th>
+              <th>Silver</th>
+              <th>Trim</th>
+              <th>PBI</th>
+              <th>Wix</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== TASK DETAIL PANEL ====================
+function openTaskDetail(taskId) {
+  const t = pipeline.find(x => x.task_id === taskId);
+  if (!t) return;
+
+  document.getElementById('panelTitle').textContent = (t.customer_name || t.email || 'Unknown');
+  document.getElementById('panelSubtitle').textContent = `${t.player_a_name || '?'} vs ${t.player_b_name || '?'}  |  ${t.match_date || ''}  |  ${t.location || ''}`;
+
+  const fmtTime = (iso) => {
+    if (!iso) return '--';
+    const d = new Date(iso);
+    return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  const steps = [
+    {
+      name: 'SportAI Processing',
+      status: t.last_status === 'completed' ? 'ok' : t.last_status === 'failed' ? 'fail' : (t.last_status === 'processing' || t.last_status === 'queued') ? 'running' : 'pending',
+      icon: t.last_status === 'completed' ? '&#10003;' : t.last_status === 'failed' ? '&#10007;' : '&#8635;',
+      time: fmtTime(t.last_status_at),
+      detail: `Status: ${t.last_status || '--'}`,
+    },
+    {
+      name: 'Bronze Ingest',
+      status: t.ingest_error ? 'fail' : t.ingest_finished_at ? 'ok' : t.ingest_started_at ? 'running' : 'pending',
+      icon: t.ingest_error ? '&#10007;' : t.ingest_finished_at ? '&#10003;' : t.ingest_started_at ? '&#8635;' : '&#8212;',
+      time: t.ingest_started_at ? `Started: ${fmtTime(t.ingest_started_at)}` + (t.ingest_finished_at ? ` | Finished: ${fmtTime(t.ingest_finished_at)}` : '') : '--',
+      error: t.ingest_error,
+    },
+    {
+      name: 'Silver Build',
+      status: t.silver_built ? 'ok' : (t.ingest_finished_at && !t.ingest_error) ? 'fail' : 'pending',
+      icon: t.silver_built ? '&#10003;' : (t.ingest_finished_at && !t.ingest_error) ? '&#10007;' : '&#8212;',
+      time: t.session_id ? `Session: ${t.session_id.substring(0, 12)}...` : '--',
+    },
+    {
+      name: 'Video Trim',
+      status: t.trim_status === 'completed' ? 'ok' : t.trim_error ? 'fail' : (t.trim_status === 'accepted' || t.trim_status === 'queued' || t.trim_status === 'processing') ? 'running' : 'pending',
+      icon: t.trim_status === 'completed' ? '&#10003;' : t.trim_error ? '&#10007;' : t.trim_status ? '&#8635;' : '&#8212;',
+      time: t.trim_requested_at ? `Requested: ${fmtTime(t.trim_requested_at)}` + (t.trim_finished_at ? ` | Finished: ${fmtTime(t.trim_finished_at)}` : '') : '--',
+      error: t.trim_error,
+      detail: t.trim_status === 'completed'
+        ? `Duration: ${t.trim_duration_s ? Math.round(t.trim_duration_s) + 's' : '--'} | Source: ${t.trim_source_duration_s ? Math.round(t.trim_source_duration_s) + 's' : '--'} | Segments: ${t.trim_segment_count || '--'}`
+        : t.trim_status ? `Status: ${t.trim_status}` : null,
+    },
+    {
+      name: 'Power BI Refresh',
+      status: t.pbi_refresh_status === 'completed' ? 'ok' : t.pbi_refresh_error ? 'fail' : (['triggered', 'running', 'queued'].includes(t.pbi_refresh_status)) ? 'running' : 'pending',
+      icon: t.pbi_refresh_status === 'completed' ? '&#10003;' : t.pbi_refresh_error ? '&#10007;' : t.pbi_refresh_status ? '&#8635;' : '&#8212;',
+      time: t.pbi_refresh_started_at ? `Started: ${fmtTime(t.pbi_refresh_started_at)}` + (t.pbi_refresh_finished_at ? ` | Finished: ${fmtTime(t.pbi_refresh_finished_at)}` : '') : '--',
+      error: t.pbi_refresh_error,
+      detail: t.pbi_refresh_status ? `Status: ${t.pbi_refresh_status}` : null,
+    },
+    {
+      name: 'Wix Notification',
+      status: t.wix_notify_status === 'completed' ? 'ok' : t.wix_notify_error ? 'fail' : 'pending',
+      icon: t.wix_notify_status === 'completed' ? '&#10003;' : t.wix_notify_error ? '&#10007;' : '&#8212;',
+      time: t.wix_notified_at ? fmtTime(t.wix_notified_at) : '--',
+      error: t.wix_notify_error,
+    },
+  ];
+
+  let stepsHtml = '';
+  for (const s of steps) {
+    stepsHtml += `
+      <div class="pipeline-step">
+        <div class="step-icon ${s.status}">${s.icon}</div>
+        <div class="step-body">
+          <div class="step-name">${s.name}</div>
+          <div class="step-time">${s.time}</div>
+          ${s.detail ? `<div class="step-meta">${s.detail}</div>` : ''}
+          ${s.error ? `<div class="step-error">${s.error}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  const metaHtml = `
+    <div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--border);">
+      <div class="section-label">Task Details</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:0.82rem;">
+        <div><span style="color:var(--text-dim)">Task ID</span><br><span style="font-family:monospace; font-size:0.75rem;">${t.task_id}</span></div>
+        <div><span style="color:var(--text-dim)">Created</span><br>${fmtTime(t.created_at)}</div>
+        <div><span style="color:var(--text-dim)">Score</span><br>${t.score || '--'}</div>
+        <div><span style="color:var(--text-dim)">S3 Key</span><br><span style="font-family:monospace; font-size:0.72rem; word-break:break-all;">${t.s3_key || '--'}</span></div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('panelBody').innerHTML = `
+    <div class="section-label">Pipeline Progress</div>
+    <div class="pipeline-steps">${stepsHtml}</div>
+    ${metaHtml}
+  `;
+
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('detailPanel').classList.add('open');
+}
+
+function closePanel() {
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('detailPanel').classList.remove('open');
+}
+
+// ==================== CUSTOMER TABLE ====================
+function renderCustomers() {
+  const el = document.getElementById('tab-customers');
+  if (customers.length === 0) {
+    el.innerHTML = '<div class="empty-state"><h3>No customers</h3><p>No billing accounts found.</p></div>';
+    return;
+  }
+
+  let rows = '';
+  for (const c of customers) {
+    const subCls = (c.subscription_status || 'none').toLowerCase();
+    const usagePct = c.matches_granted > 0 ? Math.round(c.matches_consumed / c.matches_granted * 100) : 0;
+    const barColor = usagePct > 90 ? 'var(--red)' : usagePct > 70 ? 'var(--amber)' : 'var(--green)';
+
+    rows += `
+      <tr>
+        <td><span class="customer-cell">${c.name || ''}</span><br><span class="customer-email">${c.email}</span></td>
+        <td><span class="sub-status ${subCls}">${c.subscription_status || 'NONE'}</span></td>
+        <td>${c.plan_code || '--'}</td>
+        <td>${c.plan_allowance || '--'}</td>
+        <td>
+          ${c.matches_consumed} / ${c.matches_granted}
+          <div class="usage-bar"><div class="usage-fill" style="width:${Math.min(100, usagePct)}%;background:${barColor}"></div></div>
+        </td>
+        <td>${c.matches_remaining}</td>
+        <td>${c.member_count}</td>
+        <td>${c.total_tasks}</td>
+        <td>${c.completed_tasks} <span style="color:var(--text-dim)">/ ${c.failed_tasks} fail</span></td>
+        <td>${c.last_upload_at ? new Date(c.last_upload_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '--'}</td>
+      </tr>
+    `;
+  }
+
+  el.innerHTML = `
+    <div class="table-card">
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Sub Status</th>
+              <th>Plan</th>
+              <th>Monthly</th>
+              <th>Credits Used</th>
+              <th>Remaining</th>
+              <th>Members</th>
+              <th>Total Tasks</th>
+              <th>Completed / Failed</th>
+              <th>Last Upload</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== DATE HELPERS ====================
+async function refreshPipeline() {
+  currentDateFrom = document.getElementById('dateFrom').value;
+  currentDateTo = document.getElementById('dateTo').value;
+  const pData = await safeFetch('/api/client/backoffice/pipeline?date_from=' + currentDateFrom + '&date_to=' + currentDateTo);
+  pipeline = pData.ok ? pData.tasks : [];
+  // Re-render just the pipeline tab
+  renderPipeline();
+  // Update tab count
+  document.querySelector('.tab-btn.active').textContent = `Pipeline Monitor (${pipeline.length})`;
+}
+
+function setToday() {
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('dateFrom').value = today;
+  document.getElementById('dateTo').value = today;
+  refreshPipeline();
+}
+
+function setWeek() {
+  const today = new Date();
+  const week = new Date(today);
+  week.setDate(week.getDate() - 7);
+  document.getElementById('dateFrom').value = week.toISOString().slice(0, 10);
+  document.getElementById('dateTo').value = today.toISOString().slice(0, 10);
+  refreshPipeline();
+}
+
+function setMonth() {
+  const today = new Date();
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  document.getElementById('dateFrom').value = monthStart.toISOString().slice(0, 10);
+  document.getElementById('dateTo').value = today.toISOString().slice(0, 10);
+  refreshPipeline();
+}
+
+// Keyboard close
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePanel(); });
+
+init();
+</script>
+</body>
+</html>

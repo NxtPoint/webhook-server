@@ -46,7 +46,7 @@ app.register_blueprint(client_bp)
 
 # ── CORS (cross-origin support for Wix iframe embeds) ──────────────
 # Covers: /api/client/*, /upload/api/*, /api/submit_s3_task, /media-room
-CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room")
+CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room", "/backoffice", "/portal")
 
 @app.before_request
 def handle_cors_preflight():
@@ -1618,6 +1618,24 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
 def media_room():
     from flask import send_file
     return send_file("media_room.html")
+
+
+# ==========================
+# BACKOFFICE (admin cockpit, same-origin for API access)
+# ==========================
+@app.get("/backoffice")
+def backoffice():
+    from flask import send_file
+    return send_file("backoffice.html")
+
+
+# ==========================
+# PORTAL (unified nav shell — entry point for Wix)
+# ==========================
+@app.get("/portal")
+def portal():
+    from flask import send_file
+    return send_file("portal.html")
 
 
 # ==========================

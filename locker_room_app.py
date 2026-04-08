@@ -23,6 +23,16 @@ def media_room():
     return send_file("media_room.html")
 
 
+@app.get("/backoffice")
+def backoffice():
+    return send_file("backoffice.html")
+
+
+@app.get("/portal")
+def portal():
+    return send_file("portal.html")
+
+
 @app.get("/__alive")
 def alive():
     return jsonify({"ok": True, "service": "locker-room"})

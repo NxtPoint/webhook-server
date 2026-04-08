@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TEN-FIFTY5</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
+  --sidebar-w: 220px;
+  --sidebar-collapsed: 56px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+}
+
+/* ========== SIDEBAR ========== */
+.sidebar {
+  width: var(--sidebar-collapsed);
+  min-width: var(--sidebar-collapsed);
+  height: 100vh;
+  background: var(--white);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  transition: width 0.25s ease, min-width 0.25s ease;
+  overflow: hidden;
+  z-index: 50;
+  box-shadow: 1px 0 4px rgba(0,0,0,0.04);
+}
+.sidebar.expanded {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+}
+
+/* Brand */
+.sidebar-brand {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+  white-space: nowrap; overflow: hidden;
+}
+.sidebar-brand .logo-icon {
+  width: 32px; height: 32px; border-radius: var(--radius);
+  background: var(--green); color: var(--white);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 0.85rem; flex-shrink: 0;
+}
+.sidebar-brand .logo-text {
+  font-size: 1rem; font-weight: 700; letter-spacing: 1px; color: var(--green);
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.sidebar.expanded .logo-text { opacity: 1; }
+
+/* Toggle */
+.sidebar-toggle {
+  padding: 10px 12px; border: none; background: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-sec); font-size: 1.1rem;
+  cursor: pointer; transition: color var(--transition);
+  width: 100%;
+}
+.sidebar-toggle:hover { color: var(--green); background: var(--green-bg); }
+.sidebar-toggle svg {
+  width: 20px; height: 20px; transition: transform 0.25s ease;
+}
+.sidebar.expanded .sidebar-toggle svg { transform: rotate(180deg); }
+
+/* Nav items */
+.sidebar-nav { flex: 1; padding: 8px 0; overflow-y: auto; overflow-x: hidden; }
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; margin: 2px 6px;
+  border-radius: var(--radius);
+  font-size: 0.85rem; font-weight: 500;
+  color: var(--text-sec); text-decoration: none;
+  cursor: pointer; transition: all var(--transition);
+  white-space: nowrap; overflow: hidden;
+  border: none; background: none; width: calc(100% - 12px);
+  text-align: left; font-family: inherit;
+}
+.nav-item:hover { background: var(--green-bg); color: var(--green); }
+.nav-item.active { background: var(--green); color: var(--white); }
+.nav-item.active:hover { background: var(--green-light); }
+.nav-icon {
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; font-size: 1rem;
+}
+.nav-icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.nav-label { opacity: 0; transition: opacity 0.15s ease; }
+.sidebar.expanded .nav-label { opacity: 1; }
+
+/* Nav separator */
+.nav-sep {
+  height: 1px; background: var(--border); margin: 8px 16px;
+}
+
+/* Admin label */
+.nav-section {
+  padding: 8px 16px 4px; font-size: 0.65rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.sidebar.expanded .nav-section { opacity: 1; }
+
+/* Sidebar footer */
+.sidebar-footer {
+  padding: 10px 12px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+  white-space: nowrap; overflow: hidden;
+}
+.sidebar-footer .user-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--green-bg); color: var(--green);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 600; font-size: 0.75rem; flex-shrink: 0;
+}
+.sidebar-footer .user-info { opacity: 0; transition: opacity 0.15s ease; overflow: hidden; }
+.sidebar.expanded .sidebar-footer .user-info { opacity: 1; }
+.sidebar-footer .user-name { font-size: 0.78rem; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.sidebar-footer .user-email { font-size: 0.68rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
+
+/* ========== CONTENT AREA ========== */
+.content { flex: 1; height: 100vh; overflow: hidden; }
+.content iframe {
+  width: 100%; height: 100%; border: none; display: block;
+}
+
+/* ========== LOADING ========== */
+.portal-loading {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: var(--text-sec);
+  flex-direction: column; gap: 12px;
+}
+.portal-loading .spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Access denied */
+.access-denied {
+  display: flex; align-items: center; justify-content: center;
+  height: 100vh; width: 100%;
+  flex-direction: column; gap: 8px; color: var(--text-sec); text-align: center;
+}
+.access-denied h3 { font-weight: 500; color: var(--text); }
+.access-denied p { font-size: 0.88rem; max-width: 340px; }
+
+/* ========== MOBILE ========== */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    transform: translateX(-100%);
+    z-index: 200; width: var(--sidebar-w) !important;
+    min-width: var(--sidebar-w) !important;
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .sidebar .nav-label, .sidebar .logo-text, .sidebar .nav-section, .sidebar .user-info { opacity: 1 !important; }
+  .mobile-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.3);
+    z-index: 199; display: none;
+  }
+  .mobile-overlay.open { display: block; }
+  .mobile-hamburger {
+    position: fixed; top: 10px; left: 10px; z-index: 198;
+    background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px 10px; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mobile-hamburger svg { width: 20px; height: 20px; stroke: var(--green); fill: none; stroke-width: 2; }
+  .content { width: 100vw; }
+}
+@media (min-width: 769px) {
+  .mobile-overlay, .mobile-hamburger { display: none !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- Mobile hamburger -->
+<button class="mobile-hamburger" onclick="toggleMobile()">
+  <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+</button>
+<div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobile()"></div>
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="logo-icon">T5</div>
+    <span class="logo-text">TEN-FIFTY5</span>
+  </div>
+
+  <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="13 17 18 12 13 7"></polyline>
+      <polyline points="6 17 11 12 6 7"></polyline>
+    </svg>
+  </button>
+
+  <div class="sidebar-nav" id="sidebarNav">
+    <!-- Populated by JS -->
+  </div>
+
+  <div class="sidebar-footer" id="sidebarFooter">
+    <div class="user-avatar" id="userAvatar">?</div>
+    <div class="user-info">
+      <div class="user-name" id="userName">Loading...</div>
+      <div class="user-email" id="userEmail"></div>
+    </div>
+  </div>
+</nav>
+
+<!-- Content -->
+<div class="content" id="content">
+  <div class="portal-loading"><div class="spinner"></div><p>Loading...</p></div>
+</div>
+
+<script>
+// ==================== AUTH ====================
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+const FIRST_NAME = (params.get('firstName') || params.get('first_name') || '').trim();
+const SURNAME = (params.get('surname') || params.get('last_name') || '').trim();
+const WIX_MEMBER_ID = (params.get('wixMemberId') || params.get('wix_member_id') || '').trim();
+
+const ADMIN_EMAILS = ['info@ten-fifty5.com', 'tomo.stojakovic@gmail.com'];
+const isAdmin = ADMIN_EMAILS.includes(EMAIL);
+
+// Build auth query string to forward to each page
+function authParams() {
+  const p = new URLSearchParams();
+  if (EMAIL) p.set('email', EMAIL);
+  if (API_KEY) p.set('key', API_KEY);
+  if (API_BASE && API_BASE !== 'https://api.nextpointtennis.com') p.set('api', API_BASE);
+  if (FIRST_NAME) p.set('firstName', FIRST_NAME);
+  if (SURNAME) p.set('surname', SURNAME);
+  if (WIX_MEMBER_ID) p.set('wixMemberId', WIX_MEMBER_ID);
+  return p.toString();
+}
+
+// ==================== NAV CONFIG ====================
+const NAV_ITEMS = [
+  {
+    id: 'dashboard',
+    label: 'Dashboard',
+    path: '/',
+    icon: '<svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+  },
+  {
+    id: 'upload',
+    label: 'Upload Match',
+    path: '/media-room',
+    icon: '<svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>',
+  },
+  {
+    id: 'profile',
+    label: 'My Profile',
+    path: '/register',
+    icon: '<svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  },
+  {
+    id: 'analytics',
+    label: 'Analytics',
+    path: null,  // future — PowerBI embed
+    icon: '<svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
+    disabled: true,
+    badge: 'Soon',
+  },
+  { sep: true },
+  {
+    id: 'pricing',
+    label: 'Plans & Pricing',
+    path: null,  // future — links to Wix pricing/checkout
+    icon: '<svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>',
+    disabled: true,
+    badge: 'Soon',
+  },
+];
+
+const ADMIN_NAV_ITEMS = [
+  { section: 'Admin' },
+  {
+    id: 'backoffice',
+    label: 'Backoffice',
+    path: '/backoffice',
+    icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  },
+];
+
+// ==================== STATE ====================
+let currentPage = 'dashboard';
+let sidebarExpanded = localStorage.getItem('portal_sidebar') !== 'collapsed';
+
+// ==================== RENDER NAV ====================
+function renderNav() {
+  const nav = document.getElementById('sidebarNav');
+  let html = '';
+
+  const allItems = isAdmin ? [...NAV_ITEMS, ...ADMIN_NAV_ITEMS] : NAV_ITEMS;
+
+  for (const item of allItems) {
+    if (item.sep) {
+      html += '<div class="nav-sep"></div>';
+      continue;
+    }
+    if (item.section) {
+      html += `<div class="nav-section">${item.section}</div>`;
+      continue;
+    }
+    const active = currentPage === item.id ? ' active' : '';
+    const disabled = item.disabled ? ' style="opacity:0.45;cursor:default;"' : '';
+    const badge = item.badge ? ` <span style="font-size:0.6rem;background:var(--amber);color:var(--white);padding:1px 5px;border-radius:3px;margin-left:4px;vertical-align:middle;">${item.badge}</span>` : '';
+
+    html += `
+      <button class="nav-item${active}" data-page="${item.id}"${disabled}
+        onclick="${item.disabled ? '' : "navigateTo('" + item.id + "')"}"
+        title="${item.label}">
+        <span class="nav-icon">${item.icon}</span>
+        <span class="nav-label">${item.label}${badge}</span>
+      </button>
+    `;
+  }
+  nav.innerHTML = html;
+}
+
+// ==================== NAVIGATE ====================
+function navigateTo(pageId) {
+  const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
+  const item = allItems.find(i => i.id === pageId);
+  if (!item || item.disabled) return;
+
+  currentPage = pageId;
+  renderNav();
+
+  // Update URL hash (for bookmarking / back button)
+  window.location.hash = pageId === 'dashboard' ? '' : pageId;
+
+  // Load page in content iframe
+  const contentEl = document.getElementById('content');
+  const pagePath = item.path + (item.path.includes('?') ? '&' : '?') + authParams();
+  contentEl.innerHTML = `<iframe src="${pagePath}" id="contentFrame" title="${item.label}"></iframe>`;
+
+  // Close mobile sidebar
+  document.getElementById('sidebar').classList.remove('mobile-open');
+  document.getElementById('mobileOverlay').classList.remove('open');
+}
+
+// ==================== SIDEBAR TOGGLE ====================
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  sidebarExpanded = !sidebarExpanded;
+  sb.classList.toggle('expanded', sidebarExpanded);
+  localStorage.setItem('portal_sidebar', sidebarExpanded ? 'expanded' : 'collapsed');
+}
+
+function toggleMobile() {
+  document.getElementById('sidebar').classList.toggle('mobile-open');
+  document.getElementById('mobileOverlay').classList.toggle('open');
+}
+
+// ==================== INIT ====================
+function init() {
+  if (!EMAIL || !API_KEY) {
+    document.body.innerHTML = '<div class="access-denied"><h3>Configuration Required</h3><p>Missing email or API key. Access through your dashboard.</p></div>';
+    return;
+  }
+
+  // Set sidebar state
+  document.getElementById('sidebar').classList.toggle('expanded', sidebarExpanded);
+
+  // Set user info in footer
+  const name = [FIRST_NAME, SURNAME].filter(Boolean).join(' ') || EMAIL.split('@')[0];
+  document.getElementById('userName').textContent = name;
+  document.getElementById('userEmail').textContent = EMAIL;
+  document.getElementById('userAvatar').textContent = (name[0] || '?').toUpperCase();
+
+  // Fetch profile to get real name (async, non-blocking)
+  fetchProfile();
+
+  renderNav();
+
+  // Resolve initial page from hash
+  const hash = window.location.hash.replace('#', '');
+  const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
+  if (hash && allItems.find(i => i.id === hash && !i.disabled)) {
+    navigateTo(hash);
+  } else {
+    navigateTo('dashboard');
+  }
+}
+
+async function fetchProfile() {
+  try {
+    const res = await fetch(API_BASE + '/api/client/profile?email=' + encodeURIComponent(EMAIL), {
+      headers: { 'X-Client-Key': API_KEY },
+    });
+    const data = await res.json();
+    if (data.ok && data.profile) {
+      const p = data.profile;
+      const name = [p.full_name, p.surname].filter(Boolean).join(' ') || EMAIL.split('@')[0];
+      document.getElementById('userName').textContent = name;
+      document.getElementById('userAvatar').textContent = (name[0] || '?').toUpperCase();
+    }
+  } catch (e) { /* non-critical */ }
+}
+
+// Handle browser back/forward
+window.addEventListener('hashchange', () => {
+  const hash = window.location.hash.replace('#', '') || 'dashboard';
+  if (hash !== currentPage) navigateTo(hash);
+});
+
+// Listen for Wix postMessage handoff (pass through to content iframe)
+window.addEventListener('message', function(event) {
+  if (!event.data || typeof event.data !== 'object') return;
+  const d = event.data;
+  if (d.type === 'wix-handoff' || d.email) {
+    // Forward to content iframe
+    const frame = document.getElementById('contentFrame');
+    if (frame && frame.contentWindow) {
+      frame.contentWindow.postMessage(event.data, '*');
+    }
+  }
+});
+
+init();
+</script>
+</body>
+</html>

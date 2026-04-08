@@ -20,6 +20,8 @@ client_bp = Blueprint("client_api", __name__)
 CLIENT_API_KEY = os.environ.get("CLIENT_API_KEY", "").strip()
 PLANS_PAGE_URL = os.environ.get("PLANS_PAGE_URL", "https://www.tenfifty5.com/plans").strip()
 
+ADMIN_EMAILS = {"info@ten-fifty5.com", "tomo.stojakovic@gmail.com"}
+
 log = logging.getLogger(__name__)
 
 # Profile fields editable from Locker Room
@@ -996,3 +998,288 @@ def delete_member(member_id: int):
         session.commit()
 
     return jsonify({"ok": True})
+
+
+# ============================================================
+# BACKOFFICE — admin-only endpoints
+# ============================================================
+
+def _admin_guard() -> bool:
+    """Guard + admin email whitelist."""
+    if not _guard():
+        return False
+    email = _norm_email(request.args.get("email"))
+    return email in ADMIN_EMAILS
+
+
+# ----------------------------
+# GET /api/client/backoffice/pipeline
+# ----------------------------
+
+@client_bp.route("/api/client/backoffice/pipeline", methods=["GET", "OPTIONS"])
+def backoffice_pipeline():
+    if not _admin_guard():
+        return _forbid()
+
+    date_from = request.args.get("date_from")
+    date_to = request.args.get("date_to")
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                    sc.task_id,
+                    sc.email,
+                    sc.customer_name,
+                    sc.created_at,
+                    sc.match_date,
+                    sc.location,
+                    sc.player_a_name,
+                    sc.player_b_name,
+                    sc.s3_key,
+                    -- SportAI stage
+                    sc.last_status,
+                    sc.last_status_at,
+                    -- Bronze ingest stage
+                    sc.ingest_started_at,
+                    sc.ingest_finished_at,
+                    sc.ingest_error,
+                    sc.session_id,
+                    -- Silver (session_id not null = silver built)
+                    -- Video trim stage
+                    sc.trim_status,
+                    sc.trim_requested_at,
+                    sc.trim_finished_at,
+                    sc.trim_error,
+                    sc.trim_output_s3_key,
+                    sc.trim_duration_s,
+                    sc.trim_source_duration_s,
+                    sc.trim_segment_count,
+                    -- PBI refresh stage
+                    sc.pbi_refresh_status,
+                    sc.pbi_refresh_started_at,
+                    sc.pbi_refresh_finished_at,
+                    sc.pbi_refresh_error,
+                    -- Wix notify stage
+                    sc.wix_notify_status,
+                    sc.wix_notified_at,
+                    sc.wix_notify_error,
+                    -- Score
+                    sc.player_a_set1_games, sc.player_b_set1_games,
+                    sc.player_a_set2_games, sc.player_b_set2_games,
+                    sc.player_a_set3_games, sc.player_b_set3_games
+                FROM bronze.submission_context sc
+                WHERE sc.created_at >= COALESCE(:d_from, CURRENT_DATE)::timestamptz
+                  AND sc.created_at < (COALESCE(:d_to, CURRENT_DATE)::date + 1)::timestamptz
+                ORDER BY sc.created_at DESC
+            """),
+            {"d_from": date_from, "d_to": date_to},
+        ).mappings().all()
+
+    def _ts(v):
+        return v.isoformat() if v else None
+
+    tasks = []
+    for r in rows:
+        tasks.append({
+            "task_id": r["task_id"],
+            "email": r["email"],
+            "customer_name": r["customer_name"],
+            "created_at": _ts(r["created_at"]),
+            "match_date": str(r["match_date"]) if r["match_date"] else None,
+            "location": r["location"],
+            "player_a_name": r["player_a_name"],
+            "player_b_name": r["player_b_name"],
+            "s3_key": r["s3_key"],
+            "last_status": r["last_status"],
+            "last_status_at": _ts(r["last_status_at"]),
+            "ingest_started_at": _ts(r["ingest_started_at"]),
+            "ingest_finished_at": _ts(r["ingest_finished_at"]),
+            "ingest_error": r["ingest_error"],
+            "session_id": r["session_id"],
+            "silver_built": r["session_id"] is not None,
+            "trim_status": r["trim_status"],
+            "trim_requested_at": _ts(r["trim_requested_at"]),
+            "trim_finished_at": _ts(r["trim_finished_at"]),
+            "trim_error": r["trim_error"],
+            "trim_output_s3_key": r["trim_output_s3_key"],
+            "trim_duration_s": float(r["trim_duration_s"]) if r["trim_duration_s"] else None,
+            "trim_source_duration_s": float(r["trim_source_duration_s"]) if r["trim_source_duration_s"] else None,
+            "trim_segment_count": int(r["trim_segment_count"]) if r["trim_segment_count"] else None,
+            "pbi_refresh_status": r["pbi_refresh_status"],
+            "pbi_refresh_started_at": _ts(r["pbi_refresh_started_at"]),
+            "pbi_refresh_finished_at": _ts(r["pbi_refresh_finished_at"]),
+            "pbi_refresh_error": r["pbi_refresh_error"],
+            "wix_notify_status": r["wix_notify_status"],
+            "wix_notified_at": _ts(r["wix_notified_at"]),
+            "wix_notify_error": r["wix_notify_error"],
+            "score": _format_score(r),
+        })
+
+    return jsonify({"ok": True, "tasks": tasks})
+
+
+# ----------------------------
+# GET /api/client/backoffice/customers
+# ----------------------------
+
+@client_bp.route("/api/client/backoffice/customers", methods=["GET", "OPTIONS"])
+def backoffice_customers():
+    if not _admin_guard():
+        return _forbid()
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                    a.id AS account_id,
+                    a.email,
+                    a.primary_full_name,
+                    a.active AS account_active,
+                    a.created_at AS account_created_at,
+                    -- Usage
+                    COALESCE(v.matches_granted, 0)    AS matches_granted,
+                    COALESCE(v.matches_consumed, 0)    AS matches_consumed,
+                    COALESCE(v.matches_remaining, 0)   AS matches_remaining,
+                    -- Subscription
+                    s.plan_code,
+                    s.plan_type,
+                    s.status AS subscription_status,
+                    s.matches_granted AS plan_allowance,
+                    s.current_period_start,
+                    s.current_period_end,
+                    s.cancelled_at,
+                    -- Members
+                    (SELECT count(*) FROM billing.member m
+                     WHERE m.account_id = a.id AND m.active = true) AS member_count,
+                    -- Match stats
+                    (SELECT count(*) FROM bronze.submission_context sc
+                     WHERE sc.email = a.email) AS total_tasks,
+                    (SELECT count(*) FROM bronze.submission_context sc
+                     WHERE sc.email = a.email AND sc.last_status = 'completed') AS completed_tasks,
+                    (SELECT count(*) FROM bronze.submission_context sc
+                     WHERE sc.email = a.email AND sc.last_status = 'failed') AS failed_tasks,
+                    (SELECT max(sc.created_at) FROM bronze.submission_context sc
+                     WHERE sc.email = a.email) AS last_upload_at
+                FROM billing.account a
+                LEFT JOIN billing.vw_customer_usage v ON v.account_id = a.id
+                LEFT JOIN billing.subscription_state s ON s.account_id = a.id
+                ORDER BY a.created_at DESC
+            """)
+        ).mappings().all()
+
+    def _ts(v):
+        return v.isoformat() if v else None
+
+    customers = []
+    for r in rows:
+        customers.append({
+            "account_id": int(r["account_id"]),
+            "email": r["email"],
+            "name": r["primary_full_name"],
+            "account_active": r["account_active"],
+            "account_created_at": _ts(r["account_created_at"]),
+            "matches_granted": int(r["matches_granted"]),
+            "matches_consumed": int(r["matches_consumed"]),
+            "matches_remaining": int(r["matches_remaining"]),
+            "plan_code": r["plan_code"],
+            "plan_type": r["plan_type"],
+            "subscription_status": r["subscription_status"],
+            "plan_allowance": int(r["plan_allowance"]) if r["plan_allowance"] else None,
+            "current_period_start": _ts(r["current_period_start"]),
+            "current_period_end": _ts(r["current_period_end"]),
+            "cancelled_at": _ts(r["cancelled_at"]),
+            "member_count": int(r["member_count"]),
+            "total_tasks": int(r["total_tasks"]),
+            "completed_tasks": int(r["completed_tasks"]),
+            "failed_tasks": int(r["failed_tasks"]),
+            "last_upload_at": _ts(r["last_upload_at"]),
+        })
+
+    return jsonify({"ok": True, "customers": customers})
+
+
+# ----------------------------
+# GET /api/client/backoffice/kpis
+# ----------------------------
+
+@client_bp.route("/api/client/backoffice/kpis", methods=["GET", "OPTIONS"])
+def backoffice_kpis():
+    if not _admin_guard():
+        return _forbid()
+
+    with engine.connect() as conn:
+        kpi = conn.execute(
+            text("""
+                SELECT
+                  (SELECT count(*) FROM billing.account WHERE active = true)
+                      AS active_accounts,
+                  (SELECT count(*) FROM billing.member WHERE active = true)
+                      AS active_members,
+                  -- Today
+                  (SELECT count(*) FROM bronze.submission_context
+                   WHERE created_at >= CURRENT_DATE)
+                      AS tasks_today,
+                  (SELECT count(*) FROM bronze.submission_context
+                   WHERE created_at >= CURRENT_DATE AND last_status = 'completed')
+                      AS completed_today,
+                  (SELECT count(*) FROM bronze.submission_context
+                   WHERE created_at >= CURRENT_DATE AND last_status = 'failed')
+                      AS failed_today,
+                  -- This month
+                  (SELECT count(*) FROM bronze.submission_context
+                   WHERE created_at >= date_trunc('month', CURRENT_DATE))
+                      AS tasks_month,
+                  (SELECT count(*) FROM bronze.submission_context
+                   WHERE created_at >= date_trunc('month', CURRENT_DATE) AND last_status = 'completed')
+                      AS completed_month,
+                  -- All time
+                  (SELECT count(*) FROM bronze.submission_context)
+                      AS tasks_all_time,
+                  (SELECT count(*) FROM bronze.submission_context
+                   WHERE last_status = 'completed')
+                      AS completed_all_time,
+                  -- Credits
+                  (SELECT COALESCE(sum(matches_granted), 0)
+                   FROM billing.entitlement_grant WHERE is_active = true)
+                      AS total_credits_granted,
+                  (SELECT COALESCE(sum(consumed_matches), 0)
+                   FROM billing.entitlement_consumption)
+                      AS total_credits_consumed,
+                  -- Active subscriptions
+                  (SELECT count(*) FROM billing.subscription_state
+                   WHERE status = 'ACTIVE')
+                      AS active_subscriptions,
+                  -- Monthly tasks (last 12 months for chart)
+                  (SELECT json_agg(row_to_json(m))
+                   FROM (
+                     SELECT to_char(date_trunc('month', created_at), 'YYYY-MM') AS month,
+                            count(*) AS total,
+                            count(*) FILTER (WHERE last_status = 'completed') AS completed,
+                            count(*) FILTER (WHERE last_status = 'failed') AS failed
+                     FROM bronze.submission_context
+                     WHERE created_at >= (CURRENT_DATE - interval '12 months')
+                     GROUP BY 1 ORDER BY 1
+                   ) m)
+                      AS monthly_trend
+            """)
+        ).mappings().first()
+
+    return jsonify({
+        "ok": True,
+        "kpis": {
+            "active_accounts": int(kpi["active_accounts"]),
+            "active_members": int(kpi["active_members"]),
+            "tasks_today": int(kpi["tasks_today"]),
+            "completed_today": int(kpi["completed_today"]),
+            "failed_today": int(kpi["failed_today"]),
+            "tasks_month": int(kpi["tasks_month"]),
+            "completed_month": int(kpi["completed_month"]),
+            "tasks_all_time": int(kpi["tasks_all_time"]),
+            "completed_all_time": int(kpi["completed_all_time"]),
+            "total_credits_granted": int(kpi["total_credits_granted"]),
+            "total_credits_consumed": int(kpi["total_credits_consumed"]),
+            "active_subscriptions": int(kpi["active_subscriptions"]),
+            "monthly_trend": kpi["monthly_trend"] or [],
+        },
+    })
