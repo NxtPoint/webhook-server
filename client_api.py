@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
+import requests as http_requests
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -1315,3 +1316,132 @@ def backoffice_kpis():
             "monthly_trend": kpi["monthly_trend"] or [],
         },
     })
+
+
+# ============================================================
+# ANALYTICS — Power BI embed (proxies to PBI service)
+# ============================================================
+
+PBI_SERVICE_BASE = os.environ.get("POWERBI_SERVICE_BASE_URL", "").strip().rstrip("/")
+PBI_SERVICE_OPS_KEY = (os.environ.get("POWERBI_SERVICE_OPS_KEY") or os.environ.get("OPS_KEY", "")).strip()
+
+
+@client_bp.route("/api/client/pbi-embed", methods=["GET", "OPTIONS"])
+def pbi_embed():
+    """Get PowerBI embed config + token for the authenticated user."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    if not PBI_SERVICE_BASE or not PBI_SERVICE_OPS_KEY:
+        return jsonify({"ok": False, "error": "pbi_service_not_configured"}), 503
+
+    pbi_headers = {"x-ops-key": PBI_SERVICE_OPS_KEY, "Content-Type": "application/json"}
+
+    try:
+        # 1. Start a session (warms up capacity)
+        sess_resp = http_requests.post(
+            f"{PBI_SERVICE_BASE}/session/start",
+            json={"username": email},
+            headers=pbi_headers,
+            timeout=30,
+        )
+        if sess_resp.status_code >= 400:
+            log.error("PBI session/start failed: %s %s", sess_resp.status_code, sess_resp.text[:200])
+            return jsonify({"ok": False, "error": "pbi_session_failed"}), 502
+
+        sess = sess_resp.json()
+
+        # 2. Get embed config
+        cfg_resp = http_requests.get(
+            f"{PBI_SERVICE_BASE}/embed/config",
+            headers=pbi_headers,
+            timeout=15,
+        )
+        if cfg_resp.status_code >= 400:
+            return jsonify({"ok": False, "error": "pbi_config_failed"}), 502
+
+        cfg = cfg_resp.json()
+
+        # 3. Generate embed token (RLS by email)
+        tok_resp = http_requests.post(
+            f"{PBI_SERVICE_BASE}/embed/token",
+            json={"username": email},
+            headers=pbi_headers,
+            timeout=30,
+        )
+        if tok_resp.status_code >= 400:
+            log.error("PBI embed/token failed: %s %s", tok_resp.status_code, tok_resp.text[:200])
+            return jsonify({"ok": False, "error": "pbi_token_failed"}), 502
+
+        tok = tok_resp.json()
+
+        return jsonify({
+            "ok": True,
+            "embedUrl": cfg.get("embedUrl"),
+            "reportId": cfg.get("reportId"),
+            "token": tok.get("token"),
+            "tokenExpiry": tok.get("expiration"),
+            "sessionId": sess.get("session_id"),
+        })
+
+    except http_requests.Timeout:
+        return jsonify({"ok": False, "error": "pbi_timeout"}), 504
+    except Exception as e:
+        log.exception("PBI embed proxy error")
+        return jsonify({"ok": False, "error": "pbi_error"}), 502
+
+
+@client_bp.route("/api/client/pbi-heartbeat", methods=["POST", "OPTIONS"])
+def pbi_heartbeat():
+    """Keep PBI capacity session alive."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    body = request.get_json(silent=True) or {}
+    session_id = (body.get("session_id") or "").strip()
+
+    if not email or not session_id or not PBI_SERVICE_BASE:
+        return jsonify({"ok": False}), 400
+
+    try:
+        http_requests.post(
+            f"{PBI_SERVICE_BASE}/session/heartbeat",
+            json={"username": email, "session_id": session_id},
+            headers={"x-ops-key": PBI_SERVICE_OPS_KEY, "Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception:
+        pass  # non-critical
+
+    return jsonify({"ok": True})
+
+
+@client_bp.route("/api/client/pbi-session-end", methods=["POST", "OPTIONS"])
+def pbi_session_end():
+    """End PBI capacity session (called on page unload)."""
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    body = request.get_json(silent=True) or {}
+    session_id = (body.get("session_id") or "").strip()
+
+    if not email or not session_id or not PBI_SERVICE_BASE:
+        return jsonify({"ok": False}), 400
+
+    try:
+        http_requests.post(
+            f"{PBI_SERVICE_BASE}/session/end",
+            json={"username": email, "session_id": session_id, "reason": "client_navigate_away"},
+            headers={"x-ops-key": PBI_SERVICE_OPS_KEY, "Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception:
+        pass  # best effort
+
+    return jsonify({"ok": True})

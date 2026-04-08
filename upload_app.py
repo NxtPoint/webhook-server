@@ -49,7 +49,7 @@ app.register_blueprint(ml_analysis_bp)
 
 # ── CORS (cross-origin support for Wix iframe embeds) ──────────────
 # Covers: /api/client/*, /upload/api/*, /api/submit_s3_task, /media-room
-CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room", "/backoffice", "/portal")
+CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room", "/backoffice", "/analytics", "/portal")
 
 @app.before_request
 def handle_cors_preflight():
@@ -1630,6 +1630,15 @@ def media_room():
 def backoffice():
     from flask import send_file
     return send_file("backoffice.html")
+
+
+# ==========================
+# ANALYTICS (Power BI embed)
+# ==========================
+@app.get("/analytics")
+def analytics():
+    from flask import send_file
+    return send_file("analytics.html")
 
 
 # ==========================

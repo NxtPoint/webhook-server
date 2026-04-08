@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>TEN-FIFTY5 Analytics</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; width: 100%; overflow: hidden; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  display: flex; flex-direction: column;
+}
+
+/* ========== STATUS BAR ========== */
+.status-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 16px; background: var(--white);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.status-left { display: flex; align-items: center; gap: 10px; }
+.status-logo { font-size: 0.9rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
+.status-label { font-size: 0.78rem; color: var(--text-sec); }
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+}
+.status-dot.loading { background: var(--amber); animation: pulse 1.5s infinite; }
+.status-dot.connected { background: var(--green); }
+.status-dot.error { background: var(--red); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.status-msg { font-size: 0.72rem; color: var(--text-dim); }
+
+/* ========== REPORT CONTAINER ========== */
+#reportContainer {
+  flex: 1;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* ========== LOADING / ERROR STATES ========== */
+.center-msg {
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 12px; height: 100%; text-align: center;
+  padding: 40px;
+}
+.center-msg .spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.center-msg h3 { font-weight: 500; color: var(--text); }
+.center-msg p { color: var(--text-dim); font-size: 0.88rem; max-width: 400px; }
+.btn-retry {
+  padding: 8px 20px; border-radius: var(--radius); font-weight: 600; font-size: 0.82rem;
+  background: var(--green); color: var(--white); border: none;
+  cursor: pointer; transition: background var(--transition);
+}
+.btn-retry:hover { background: var(--green-light); }
+</style>
+</head>
+<body>
+
+<div class="status-bar" id="statusBar">
+  <div class="status-left">
+    <span class="status-logo">TEN-FIFTY5</span>
+    <span class="status-label">Analytics</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;">
+    <span class="status-dot loading" id="statusDot"></span>
+    <span class="status-msg" id="statusMsg">Connecting to Power BI...</span>
+  </div>
+</div>
+
+<div id="reportContainer">
+  <div class="center-msg" id="loadingMsg">
+    <div class="spinner"></div>
+    <h3>Loading Analytics</h3>
+    <p>Starting Power BI capacity and generating your secure embed token...</p>
+  </div>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+
+let pbiSessionId = null;
+let heartbeatTimer = null;
+let report = null;
+
+function setStatus(state, msg) {
+  const dot = document.getElementById('statusDot');
+  const msgEl = document.getElementById('statusMsg');
+  dot.className = 'status-dot ' + state;
+  msgEl.textContent = msg;
+}
+
+function showError(title, detail, retryable) {
+  const container = document.getElementById('reportContainer');
+  container.innerHTML = `
+    <div class="center-msg">
+      <h3>${title}</h3>
+      <p>${detail}</p>
+      ${retryable ? '<button class="btn-retry" onclick="init()">Retry</button>' : ''}
+    </div>
+  `;
+}
+
+// ==================== EMBED ====================
+function pickDisplayOption(models) {
+  const w = window.innerWidth || 1;
+  const h = (window.innerHeight || 1) - 40; // subtract status bar
+  const fitToWidthHeight = (w * 9) / 16;
+  if (fitToWidthHeight > h) return models.DisplayOption.FitToPage;
+  return models.DisplayOption.FitToWidth;
+}
+
+function applyLayout(models) {
+  if (!report) return;
+  report.updateSettings({
+    background: models.BackgroundType.Default,
+    layoutType: models.LayoutType.Custom,
+    customLayout: { displayOption: pickDisplayOption(models) },
+    panes: { filters: { visible: false }, pageNavigation: { visible: true } },
+  }).catch(() => {});
+}
+
+function embedReport(data) {
+  const models = window['powerbi-client'].models;
+  const container = document.getElementById('reportContainer');
+  container.innerHTML = '';
+
+  const config = {
+    type: 'report',
+    tokenType: models.TokenType.Embed,
+    accessToken: data.token,
+    embedUrl: data.embedUrl,
+    id: data.reportId,
+    permissions: models.Permissions.Read,
+    settings: {
+      background: models.BackgroundType.Default,
+      layoutType: models.LayoutType.Custom,
+      customLayout: { displayOption: pickDisplayOption(models) },
+      panes: { filters: { visible: false }, pageNavigation: { visible: true } },
+    },
+  };
+
+  powerbi.reset(container);
+  report = powerbi.embed(container, config);
+
+  report.on('loaded', () => {
+    setStatus('connected', 'Connected');
+    applyLayout(models);
+  });
+
+  report.on('rendered', () => setStatus('connected', 'Connected'));
+
+  report.on('pageChanged', () => applyLayout(models));
+
+  report.on('error', (event) => {
+    const detail = event?.detail || event;
+    console.error('PBI error:', detail);
+    setStatus('error', 'Report error');
+  });
+
+  window.addEventListener('resize', () => applyLayout(models), { passive: true });
+}
+
+// ==================== SESSION HEARTBEAT ====================
+function startHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  // Heartbeat every 60s to keep capacity alive
+  heartbeatTimer = setInterval(async () => {
+    if (!pbiSessionId) return;
+    try {
+      await fetch(API_BASE + '/api/client/pbi-heartbeat?email=' + encodeURIComponent(EMAIL), {
+        method: 'POST',
+        headers: { 'X-Client-Key': API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: pbiSessionId }),
+      });
+    } catch (e) { /* non-critical */ }
+  }, 60000);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+}
+
+// End session when leaving the page
+window.addEventListener('beforeunload', () => {
+  stopHeartbeat();
+  if (pbiSessionId) {
+    const url = API_BASE + '/api/client/pbi-session-end?email=' + encodeURIComponent(EMAIL);
+    try {
+      fetch(url, {
+        method: 'POST',
+        headers: { 'X-Client-Key': API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: pbiSessionId }),
+        keepalive: true,
+      });
+    } catch (e) { /* best effort */ }
+  }
+});
+
+// ==================== INIT ====================
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    showError('Configuration Required', 'Missing email or API key. Access through your dashboard.', false);
+    return;
+  }
+
+  // Reset UI
+  document.getElementById('reportContainer').innerHTML = `
+    <div class="center-msg" id="loadingMsg">
+      <div class="spinner"></div>
+      <h3>Loading Analytics</h3>
+      <p>Starting Power BI capacity and generating your secure embed token...</p>
+    </div>
+  `;
+  setStatus('loading', 'Connecting to Power BI...');
+
+  try {
+    const res = await fetch(
+      API_BASE + '/api/client/pbi-embed?email=' + encodeURIComponent(EMAIL),
+      { headers: { 'X-Client-Key': API_KEY } },
+    );
+
+    if (res.status === 403) {
+      showError('Access Denied', 'Authentication failed. Check your credentials.', false);
+      setStatus('error', 'Auth failed');
+      return;
+    }
+
+    if (res.status === 503) {
+      showError('Analytics Unavailable', 'Power BI service is not configured. Contact support.', true);
+      setStatus('error', 'Not configured');
+      return;
+    }
+
+    if (!res.ok) {
+      showError('Connection Error', 'Could not reach the analytics service. Please try again.', true);
+      setStatus('error', 'Error ' + res.status);
+      return;
+    }
+
+    const data = await res.json();
+
+    if (!data.ok) {
+      showError('Analytics Error', data.error === 'pbi_timeout'
+        ? 'Power BI is warming up. This can take up to 60 seconds. Please retry.'
+        : 'Could not load analytics. Please try again.',
+        true);
+      setStatus('error', data.error || 'Error');
+      return;
+    }
+
+    if (!data.token || !data.embedUrl || !data.reportId) {
+      showError('Configuration Error', 'Incomplete response from analytics service.', true);
+      setStatus('error', 'Missing config');
+      return;
+    }
+
+    pbiSessionId = data.sessionId;
+    setStatus('loading', 'Embedding report...');
+    embedReport(data);
+    startHeartbeat();
+
+  } catch (e) {
+    console.error('Analytics init error:', e);
+    showError('Connection Failed', 'Could not connect to the analytics service. Check your network and try again.', true);
+    setStatus('error', 'Network error');
+  }
+}
+
+init();
+</script>
+</body>
+</html>

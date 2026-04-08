@@ -28,6 +28,11 @@ def backoffice():
     return send_file("backoffice.html")
 
 
+@app.get("/analytics")
+def analytics():
+    return send_file("analytics.html")
+
+
 @app.get("/portal")
 def portal():
     return send_file("portal.html")
