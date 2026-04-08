@@ -468,6 +468,12 @@ window.addEventListener('message', function(event) {
     return;
   }
 
+  // Relay checkout requests from child pages up to Wix parent
+  if (d.type === 'wix-checkout' && d.planId) {
+    window.parent.postMessage(d, '*');
+    return;
+  }
+
   // Wix postMessage handoff (forward to content iframe)
   if (d.type === 'wix-handoff' || d.email) {
     const frame = document.getElementById('contentFrame');

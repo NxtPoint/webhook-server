@@ -584,9 +584,8 @@ function renderPlanCard(plan, isCurrent) {
 function selectPlan(wixPlanId) {
   if (!wixPlanId) return;
 
-  // Send checkout request to Wix parent via postMessage.
-  // The Wix page code listens for this and calls the Wix Pricing Plans API.
-  window.top.postMessage({
+  // Send checkout request up to portal (parent), which relays to Wix (grandparent).
+  window.parent.postMessage({
     type: 'wix-checkout',
     planId: wixPlanId,
     email: EMAIL,
