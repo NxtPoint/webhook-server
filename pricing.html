@@ -252,88 +252,95 @@ async function apiFetch(path, opts = {}) {
 }
 
 // ==================== PLAN CATALOGUE ====================
-// Wix Payment Plan URLs — update these when Wix plan IDs change.
-// Each plan maps to a Wix checkout URL that handles PayPal payment.
-const WIX_PLAN_BASE = 'https://www.tenfifty5.com/plans';
+// Wix Payment Plan checkout. URL is built from base + planId slug.
+// To update: change the wixPlanId for each plan below.
+const WIX_PLANS_PAGE = 'https://www.tenfifty5.com/plans';
+
+// Build Wix checkout URL from plan ID
+function wixCheckoutUrl(planId) {
+  if (!planId) return null;
+  return WIX_PLANS_PAGE + '?planSlug=' + encodeURIComponent(planId);
+}
 
 const PLAYER_PLANS = [
   {
-    code: 'starter',
+    code: 'player starter',
+    wixPlanId: '9b8b3bd1-430b-45d9-8d1e-bdd75ffed130',
     name: 'Starter',
-    price: 29,
+    price: null,
     period: '/mo',
     type: 'recurring',
     matches: 3,
     desc: 'Perfect for casual players who play a few times a month.',
     features: ['3 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard'],
     featured: false,
-    wixUrl: WIX_PLAN_BASE + '?plan=starter',
   },
   {
-    code: 'pro',
-    name: 'Pro',
-    price: 49,
+    code: 'player standard',
+    wixPlanId: '64f83c88-6720-4ab2-a1c4-858f49eda7a7',
+    name: 'Standard',
+    price: null,
     period: '/mo',
     type: 'recurring',
-    matches: 6,
+    matches: 5,
     desc: 'For competitive players training multiple times per week.',
-    features: ['6 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard', 'Priority processing'],
+    features: ['5 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard', 'Priority processing'],
     featured: true,
-    wixUrl: WIX_PLAN_BASE + '?plan=pro',
   },
   {
-    code: 'elite',
-    name: 'Elite',
-    price: 79,
+    code: 'player advances',
+    wixPlanId: 'b405caec-9e29-45c9-a2af-d5d70c152855',
+    name: 'Advanced',
+    price: null,
     period: '/mo',
     type: 'recurring',
-    matches: 12,
+    matches: 10,
     desc: 'For serious competitors and academy players.',
-    features: ['12 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard', 'Priority processing'],
+    features: ['10 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard', 'Priority processing'],
     featured: false,
-    wixUrl: WIX_PLAN_BASE + '?plan=elite',
   },
 ];
 
 const TOPUP_PACKS = [
   {
-    code: 'topup_1',
+    code: 'once off',
+    wixPlanId: '33d94f21-e1b3-467c-b355-8b6aa225b815',
     name: '1 Match Credit',
-    price: 15,
+    price: null,
     period: '',
     type: 'payg',
     matches: 1,
     desc: 'Single match analysis credit.',
     features: ['1 match analysis', 'Full point-by-point breakdown', 'Trimmed match footage'],
-    wixUrl: WIX_PLAN_BASE + '?plan=topup_1',
   },
   {
-    code: 'topup_3',
+    code: 'payg 3 matches',
+    wixPlanId: '3f4b2758-d92b-42fc-9df4-b73d42b51fc5',
     name: '3 Match Credits',
-    price: 35,
+    price: null,
     period: '',
     type: 'payg',
     matches: 3,
     desc: 'Small credit pack — best value per match.',
     features: ['3 match analyses', 'Full point-by-point breakdown', 'Trimmed match footage'],
-    wixUrl: WIX_PLAN_BASE + '?plan=topup_3',
   },
   {
-    code: 'topup_5',
+    code: 'payg 5 matches',
+    wixPlanId: 'e38df7f5-1681-4ee9-beee-7ebd6bcf5c7e',
     name: '5 Match Credits',
-    price: 50,
+    price: null,
     period: '',
     type: 'payg',
     matches: 5,
     desc: 'Bulk credit pack for frequent players.',
     features: ['5 match analyses', 'Full point-by-point breakdown', 'Trimmed match footage'],
-    wixUrl: WIX_PLAN_BASE + '?plan=topup_5',
   },
 ];
 
 const COACH_PLANS = [
   {
-    code: 'coach_monthly',
+    code: 'free coach',
+    wixPlanId: 'cd2b6772-1880-42ec-9049-4d9e4decc42b',
     name: 'Coach Access',
     price: 0,
     period: '',
@@ -341,9 +348,15 @@ const COACH_PLANS = [
     matches: 0,
     desc: 'Coaches are invited by player accounts. Coach access is free — your players\' subscriptions cover match analyses.',
     features: ['View all assigned players\' matches', 'Full point-by-point data access', 'Performance analytics dashboard', 'No upload or credit usage'],
-    wixUrl: null,
   },
+
+  // Additional Wix coach plan IDs (not shown on pricing page, kept for reference):
+  // '82694b71-888d-471a-9f6c-1e99feb5a253' — 1 month subscription (coach)
+  // 'd0f5eda4-380b-416c-ae08-a3d26c63d840' — ongoing (coach)
 ];
+
+// Free membership plan (auto-assigned, not shown on pricing page):
+// 'b2fa29b9-f406-4a50-8469-be8476f05ff5' — free membership, 5 matches
 
 // ==================== STATE ====================
 let entitlements = null;
@@ -529,25 +542,36 @@ function renderPlanCard(plan, isCurrent) {
     isCurrent ? 'current' : '',
   ].filter(Boolean).join(' ');
 
-  const priceDisplay = plan.price === 0
-    ? '<span style="font-size:1.4rem;font-weight:700;color:var(--green)">Free</span>'
-    : `<span class="currency">$</span>${plan.price}<span class="period">${plan.period}</span>`;
+  let priceDisplay;
+  if (plan.price === 0) {
+    priceDisplay = '<span style="font-size:1.4rem;font-weight:700;color:var(--green)">Free</span>';
+  } else if (plan.price != null) {
+    priceDisplay = `<span class="currency">$</span>${plan.price}<span class="period">${plan.period}</span>`;
+  } else {
+    // Price managed in Wix — show match count as the value prop
+    priceDisplay = `<span style="font-size:1.1rem;font-weight:700;color:var(--green)">${plan.matches} match${plan.matches !== 1 ? 'es' : ''}</span><span class="period">${plan.type === 'recurring' ? ' /mo' : ''}</span>`;
+  }
+
+  const checkoutUrl = wixCheckoutUrl(plan.wixPlanId);
 
   let btnHtml;
   if (isCurrent && plan.type !== 'payg') {
     btnHtml = `<div class="plan-current-label">Current Plan</div>`;
-  } else if (!plan.wixUrl) {
+  } else if (plan.type === 'coach' && isCurrent) {
+    btnHtml = `<div class="plan-current-label">Included</div>`;
+  } else if (!checkoutUrl) {
     btnHtml = `<div class="plan-current-label">Included</div>`;
   } else {
     const btnCls = plan.featured ? 'plan-btn plan-btn-primary' : 'plan-btn plan-btn-secondary';
-    btnHtml = `<button class="${btnCls}" onclick="selectPlan('${esc(plan.code)}', '${esc(plan.wixUrl)}')">${plan.type === 'payg' ? 'Buy Credits' : 'Get Started'}</button>`;
+    const label = plan.type === 'payg' ? 'Buy Credits' : 'Get Started';
+    btnHtml = `<button class="${btnCls}" onclick="selectPlan('${esc(plan.wixPlanId)}')">${label}</button>`;
   }
 
   return `<div class="${cls}">
     <div class="plan-badge">Most Popular</div>
     <div class="plan-name">${esc(plan.name)}</div>
     <div class="plan-price">${priceDisplay}</div>
-    ${plan.matches > 0 ? `<div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:8px">${plan.matches} match${plan.matches !== 1 ? 'es' : ''}${plan.type === 'recurring' ? ' per month' : ''}</div>` : '<div style="margin-bottom:8px"></div>'}
+    ${plan.matches > 0 && plan.price != null ? `<div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:8px">${plan.matches} match${plan.matches !== 1 ? 'es' : ''}${plan.type === 'recurring' ? ' per month' : ''}</div>` : '<div style="margin-bottom:8px"></div>'}
     <div class="plan-desc">${esc(plan.desc)}</div>
     <ul class="plan-features">
       ${plan.features.map(f => `<li class="check">${esc(f)}</li>`).join('')}
@@ -557,12 +581,12 @@ function renderPlanCard(plan, isCurrent) {
 }
 
 // ==================== PLAN SELECTION → WIX REDIRECT ====================
-function selectPlan(code, wixUrl) {
-  if (!wixUrl) return;
+function selectPlan(wixPlanId) {
+  const url = wixCheckoutUrl(wixPlanId);
+  if (!url) return;
 
   // Append email for pre-fill on Wix checkout
-  const sep = wixUrl.includes('?') ? '&' : '?';
-  const redirectUrl = wixUrl + sep + 'email=' + encodeURIComponent(EMAIL);
+  const redirectUrl = url + '&email=' + encodeURIComponent(EMAIL);
 
   // Open in top-level window (escape iframe if inside portal)
   if (window.top !== window.self) {
