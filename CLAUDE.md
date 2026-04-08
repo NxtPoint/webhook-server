@@ -133,6 +133,7 @@ Key endpoints:
 - `POST /api/client/matches/<task_id>/reprocess` — rebuild silver via `build_silver_v2`
 - `GET /api/client/profile` — primary member profile
 - `PATCH /api/client/profile` — update profile fields on `billing.member`
+- `GET /api/client/usage` — account usage summary (matches granted/consumed/remaining)
 - `GET /api/client/footage-url/<task_id>` — time-limited S3 presigned URL for trimmed match footage
 - `GET /api/client/entitlements` — entitlement check (role, plan_active, credits_remaining, account_status, plans_page_url). Handles missing `billing.subscription_state` table gracefully.
 - `GET /api/client/members` — all active members on an account (full profile fields)
@@ -179,7 +180,11 @@ Video upload page replacing the Wix-based upload flow. Served at `GET /media-roo
 
 ### Players' Enclosure (`players_enclosure.html`)
 
-Member registration/onboarding page. Multi-step wizard: Welcome → Role Selection → Child Profiles (conditional) → Completion + Photo Upload. Served at `/register`.
+Member registration/onboarding page. Served at `/register`. On load, fetches `/api/client/profile` to check if the user already exists:
+- **Existing user** (profile found): shows "Your Profile — already set up" summary with a "Go to Locker Room" button. Registration is one-time only.
+- **New user** (no profile): runs the multi-step wizard: Welcome → Role Selection (Player/Parent Solo, Parent with Children, Coach) → Child Profiles (conditional for "Parent with Children") → Completion + optional profile photo upload (S3 presigned PUT).
+
+New users' names are pre-populated from Wix handoff data (postMessage or URL params). The page never asks the user to re-enter name or email.
 
 ### Wix → HTML Data Handoff
 
