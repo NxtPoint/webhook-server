@@ -160,8 +160,10 @@ Tables: `Account`, `Member`, `EntitlementGrant`, `EntitlementConsumption`. Views
 Key patterns:
 - 1 task = 1 match consumed (idempotent by `task_id` unique constraint)
 - Entitlement grants are idempotent by `(account_id, source, plan_code, external_wix_id)`
+- **Immediate credit grant on purchase**: `subscription_event()` calls `grant_entitlement()` when `PLAN_PURCHASED` + `ACTIVE`, so credits are available instantly (not delayed until monthly refill). Works for both recurring (`wix_subscription`) and PAYG (`wix_payg`) plans. Idempotent via `external_wix_id = "purchase:{order_id}:{account_id}"`.
 - `billing_import_from_bronze.py` syncs completed tasks from `bronze.submission_context` into billing consumption records, auto-creating accounts from email + customer_name if missing
 - `entitlements_api.py` gates uploads on remaining credit check
+- **Upload gate**: allows upload if user has an active subscription OR remaining credits (PAYG users have no subscription but have credits)
 
 **`billing.member` is the single source of truth for all customer/player/child/coach profile data.** Every client-facing page reads from and writes back to this one table. Match-level data (`player_a_name`, `player_b_name` etc.) is stored separately in `bronze.submission_context` as point-in-time snapshots — editing a player's name doesn't rewrite historical match records.
 
@@ -181,7 +183,7 @@ Key endpoints:
 - `PATCH /api/client/profile` — update profile fields on `billing.member`
 - `GET /api/client/usage` — account usage summary
 - `GET /api/client/footage-url/<task_id>` — time-limited S3 presigned URL for trimmed footage
-- `GET /api/client/entitlements` — entitlement check (role, plan, credits, account_status)
+- `GET /api/client/entitlements` — entitlement check (role, plan_active, credits_remaining, matches_granted, matches_consumed, account_status, subscription_status, plan_code, plan_type, current_period_end, plans_page_url)
 - `GET /api/client/members` — all active members on an account
 - `POST /api/client/members` — add a linked player
 - `PATCH /api/client/members/<id>` — update a linked member
@@ -219,7 +221,8 @@ Owner invites coaches from the Locker Room "Invite Coach" tab. Data stored in `b
 
 **Accept flow** (self-contained on Render, no Wix dependency):
 - `GET /coach-accept?token=...` — serves `coach_accept.html` (standalone SPA)
-- `POST /api/coaches/accept-token` — **public endpoint** (token IS the auth). Validates token against `billing.coaches_permission` (status=INVITED, active=true), sets status=ACCEPTED, clears token.
+- `POST /api/coaches/accept-token` — **public endpoint** (token IS the auth). Validates token against `billing.coaches_permission` (status=INVITED, active=true), sets status=ACCEPTED, clears token. Returns `coach_email` so the page can show which email to log in with.
+- On success: shows confirmation with email login hint, auto-redirects to `https://www.ten-fifty5.com/portal` after 5 seconds.
 
 **Idempotency**: re-inviting a previously revoked coach reuses the existing row (resets status to INVITED, generates new token, sends new email). Tokens are single-use (cleared on accept and revoke).
 
@@ -232,7 +235,7 @@ All transactional emails are sent via AWS SES using `boto3.client('ses')`. The `
 | Email | Module | Trigger | Template |
 |---|---|---|---|
 | Coach invite | `coach_invite/email_sender.py` | `POST /api/client/coach-invite` | Branded HTML: "X has invited you to coach" + accept CTA button |
-| Video complete | `coach_invite/video_complete_email.py` | Ingest step 7 + task-status auto-fire | Branded HTML: "Your match analysis is ready" + Locker Room CTA button |
+| Video complete | `coach_invite/video_complete_email.py` | Ingest step 7 + task-status auto-fire | Branded HTML: "Your match analysis is ready" + Portal CTA button |
 
 **AWS SES setup:**
 - **Region**: `eu-north-1` (Stockholm) — matches the Render deployment region
@@ -243,13 +246,13 @@ All transactional emails are sent via AWS SES using `boto3.client('ses')`. The `
 **Env vars:**
 - `SES_FROM_EMAIL` — sender address (default: `noreply@ten-fifty5.com`). Domain must be verified in SES.
 - `COACH_ACCEPT_BASE_URL` — base URL for accept links (default: `https://api.nextpointtennis.com`)
-- `LOCKER_ROOM_BASE_URL` — CTA link in video completion email (default: `https://www.ten-fifty5.com/locker-room`)
+- `LOCKER_ROOM_BASE_URL` — CTA link in video completion email (default: `https://www.ten-fifty5.com/portal`)
 
-**Transition note**: video completion emails run alongside the legacy Wix notify (`_notify_wix` in `upload_app.py`). Both fire at the same points, guarded by the same idempotency check (`wix_notified_at`). SES fires first, then Wix. Once Wix is retired, remove `_notify_wix` and all `WIX_NOTIFY_*` env vars.
+**Transition note**: video completion emails run alongside the legacy Wix notify (`_notify_wix` in `upload_app.py`). Both fire at the same points, guarded by the same idempotency check (`wix_notified_at`). SES fires first, then Wix. The CTA button in the email links to the portal (`LOCKER_ROOM_BASE_URL`). Once Wix notify is fully retired, remove `_notify_wix` and all `WIX_NOTIFY_*` env vars.
 
 ### Locker Room (`locker_room.html`)
 
-Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&api=...`.
+Dashboard SPA loaded inside the portal's inner iframe. Auth via URL params: `?email=...&key=...&api=...`.
 
 **Header tabs:** Account (read-only stats), My Details (editable profile), Linked Players (member cards with add/edit/deactivate), Invite Coach (email input + coach list with status badges + revoke).
 
@@ -321,7 +324,7 @@ Client-facing pages receive identity data from Wix via URL params passed through
 
 ### Required Environment Variables
 
-Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `SES_FROM_EMAIL`, `COACH_ACCEPT_BASE_URL`, `PLANS_PAGE_URL` (optional)
+Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `SES_FROM_EMAIL`, `COACH_ACCEPT_BASE_URL`, `LOCKER_ROOM_BASE_URL`, `PLANS_PAGE_URL` (optional)
 
 Ingest worker: same as main service plus `VIDEO_TRIM_CALLBACK_OPS_KEY` (must match main API's `OPS_KEY`), `INGEST_WORKER_OPS_KEY`
 
@@ -352,7 +355,9 @@ The S3 bucket (`nextpoint-prod-uploads`) requires CORS for browser-to-S3 multipa
 
 New features **must live in their own subdirectory** (not loose files in the repo root). Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`. Each directory should be a self-contained package with its own `__init__.py`. The repo root is for service entry points only (`*_app.py`, `wsgi.py`).
 
-**Exception**: the Locker Room SPA files (`locker_room.html`, `media_room.html`, `portal.html`, `backoffice.html`, `analytics.html`, `coach_accept.html`, `players_enclosure.html`) live in the repo root because `locker_room_app.py` serves them with `send_file()` from the working directory.
+**Exception**: the Locker Room SPA files (`locker_room.html`, `media_room.html`, `portal.html`, `backoffice.html`, `analytics.html`, `pricing.html`, `coach_accept.html`, `players_enclosure.html`) live in the repo root because `locker_room_app.py` serves them with `send_file()` from the working directory.
+
+**iOS iframe CSS rules**: All pages run inside a nested iframe (Wix → portal → page). On iOS Safari, `100vh` refers to the outer viewport, not the iframe. Portal uses `height: 100%` (not `vh`). All inner pages use `viewport-fit=cover` meta tag, `padding-bottom: 300px` on mobile, and no `min-height: 100vh` on body. Autofill inputs use `-webkit-box-shadow` override to replace browser blue with `var(--bg)`.
 
 ### ML Pipeline (`ml_pipeline/`)
 
