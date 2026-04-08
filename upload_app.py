@@ -705,9 +705,17 @@ def _load_submission_context_row(task_id: str) -> dict:
 def _resolve_result_url_for_task(task_id: str) -> str | None:
     """
     Resolve result_url in the safest order:
-    1) fresh SportAI status lookup
-    2) cached DB value
+    - T5 jobs: check ml_analysis status, return sentinel URL
+    - SportAI jobs: fresh status lookup, then cached DB value
     """
+    sc = _load_submission_context_row(task_id)
+
+    if sc.get("sport_type") in T5_SPORT_TYPES:
+        live = _t5_status(task_id)
+        if live.get("status") == "completed":
+            return f"t5://complete/{task_id}"
+        return None
+
     try:
         st = _sportai_status(task_id)
         fresh = str(st.get("result_url") or "").strip()
@@ -719,7 +727,6 @@ def _resolve_result_url_for_task(task_id: str) -> str | None:
     except Exception:
         pass
 
-    sc = _load_submission_context_row(task_id)
     cached = str(sc.get("last_result_url") or "").strip()
     if cached:
         return cached
@@ -1087,6 +1094,34 @@ def _t5_status(task_id: str) -> dict:
         "sportai_progress_pct": row["progress_pct"] or 0,
         "message": row["error_message"],
     }
+
+
+def _t5_cancel(task_id: str) -> dict:
+    """Cancel a T5 AWS Batch job."""
+    with engine.connect() as conn:
+        row = conn.execute(sql_text("""
+            SELECT job_id, batch_job_id FROM ml_analysis.video_analysis_jobs
+            WHERE job_id = :jid OR task_id = :jid
+            ORDER BY created_at DESC LIMIT 1
+        """), {"jid": task_id}).mappings().first()
+
+    if not row:
+        raise RuntimeError(f"T5 job not found for task_id={task_id}")
+
+    batch_job_id = row.get("batch_job_id")
+    if batch_job_id:
+        batch = boto3.client("batch", region_name=AWS_REGION)
+        batch.terminate_job(jobId=batch_job_id, reason="Cancelled by user")
+        app.logger.info("T5 CANCEL batch_job_id=%s task_id=%s", batch_job_id, task_id)
+
+    with engine.begin() as conn:
+        conn.execute(sql_text("""
+            UPDATE ml_analysis.video_analysis_jobs
+            SET status = 'failed', error_message = 'Cancelled by user', updated_at = now()
+            WHERE job_id = :jid
+        """), {"jid": row["job_id"]})
+
+    return {"status": "cancelled", "batch_job_id": batch_job_id}
 
 
 def _normalize_sportai_status(v: str | None) -> str | None:
@@ -2373,7 +2408,11 @@ def api_cancel_task():
     if not tid:
         return jsonify({"ok": False, "error": "task_id required"}), 400
     try:
-        out = _sportai_cancel(str(tid))
+        sc = _load_submission_context_row(tid)
+        if sc.get("sport_type") in T5_SPORT_TYPES:
+            out = _t5_cancel(str(tid))
+        else:
+            out = _sportai_cancel(str(tid))
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, tid, "canceled", None)
