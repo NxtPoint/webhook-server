@@ -1,0 +1,19 @@
+# ML Pipeline dependencies — install in addition to main requirements.txt
+# pip install -r ml_pipeline/requirements.txt
+
+torch==2.3.1
+torchvision==0.18.1
+ultralytics==8.2.50
+opencv-python==4.10.0.84
+ffmpeg-python==0.2.0
+numpy==1.26.4
+scipy==1.13.1
+boto3==1.34.131
+psycopg2-binary==2.9.9
+mediapipe==0.10.14
+tqdm==4.66.4
+pandas==2.2.2
+matplotlib==3.9.0
+seaborn==0.13.2
+sqlalchemy==2.0.31
+psycopg[binary]==3.1.19

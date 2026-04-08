@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Services and How to Run
 
-This repo defines five Render services (see `render.yaml`). All are Python/Flask + Gunicorn:
+This repo defines five Render services (see `render.yaml`). All are Python 3.12.3 / Flask + Gunicorn:
 
 | Service | Start command | Entry point |
 |---|---|---|
@@ -14,10 +14,13 @@ This repo defines five Render services (see `render.yaml`). All are Python/Flask
 | Video trim worker | Docker (see `Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` → `video_pipeline/video_worker_app.py` |
 | Locker Room | `gunicorn locker_room_app:app` | `locker_room_app.py` (serves HTML SPAs, no DB) |
 
-The Locker Room service serves three pages:
+The Locker Room service serves four pages:
 - `GET /` → `locker_room.html` (dashboard)
 - `GET /media-room` → `media_room.html` (video upload)
 - `GET /register` → `players_enclosure.html` (onboarding wizard)
+- `GET /backoffice` → `backoffice.html` (admin dashboard)
+
+Note: The Locker Room service only installs `flask` + `gunicorn` (not full `requirements.txt`).
 
 **Local dev:**
 ```bash
@@ -100,7 +103,7 @@ The primary service. Responsibilities:
 - CORS preflight handling (global `before_request` for OPTIONS on all client/upload paths)
 - Wix backend notification on completion (legacy — will be removed when Wix is retired)
 
-Registered blueprints: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, and `ingest_bronze` (mounted at root).
+Registered blueprints: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, `ml_analysis_bp`, and `ingest_bronze` (mounted at root).
 
 ### Video Trim Pipeline
 
@@ -156,6 +159,9 @@ Key endpoints:
 - `POST /api/client/register` — onboarding registration
 - `POST /api/client/children` — add child member profiles (Players' Enclosure onboarding)
 - `GET /api/client/profile-photo-upload-url` — presigned S3 PUT URL for profile photo
+- `GET /api/client/backoffice/pipeline` — pipeline status table (task/stage tracking)
+- `GET /api/client/backoffice/customers` — customer list with usage/subscription stats
+- `GET /api/client/backoffice/kpis` — KPI cards (active accounts, tasks today/month/all-time, credits)
 
 ### Locker Room (`locker_room.html`)
 
@@ -199,6 +205,10 @@ Member registration/onboarding page. Served at `/register`. On load, fetches `/a
 
 New users' names are pre-populated from Wix handoff data (postMessage or URL params). The page never asks the user to re-enter name or email.
 
+### Backoffice Dashboard (`backoffice.html`)
+
+Admin-only SPA served at `/backoffice`. Auth: same `X-Client-Key` as client API, plus email must be in `ADMIN_EMAILS` whitelist (hardcoded in `client_api.py`). Date-range filters, KPI cards, pipeline status table (per-task stage tracking), and customer table (usage/subscription stats). Uses the same design system as other SPAs.
+
 ### Wix → HTML Data Handoff
 
 Client-facing pages receive identity data from Wix via:
@@ -220,6 +230,12 @@ Client-facing pages receive identity data from Wix via:
 | **Credits = 0** | Red dismissible banner | Blocked with top-up link |
 | **Account terminated** | Full-screen overlay | Full-screen overlay |
 | **Active, credits > 0** | Normal view | Normal upload flow |
+
+### HTML Templates
+
+Client-facing SPAs are **root-level standalone HTML files** (not in a templates folder):
+- `locker_room.html`, `media_room.html`, `players_enclosure.html`, `backoffice.html` — served by `locker_room_app.py`
+- `templates/ui/upload.html` — legacy admin UI template (served by `ui_app.py` Blueprint)
 
 ### Admin UI (`ui_app.py`)
 
@@ -250,9 +266,11 @@ Flask Blueprint mounted at `/upload`. Provides:
 
 Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `PLANS_PAGE_URL` (optional, default `https://www.tenfifty5.com/plans`)
 
-Ingest worker: same as main service plus `VIDEO_TRIM_CALLBACK_OPS_KEY` (must match main API's `OPS_KEY`)
+Ingest worker: same as main service plus `VIDEO_TRIM_CALLBACK_OPS_KEY` (must match main API's `OPS_KEY`), `INGEST_WORKER_OPS_KEY`
 
-Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `FFMPEG_BIN`, `FFPROBE_BIN`
+
+Hardcoded defaults in `render.yaml`: `SPORT_AI_BASE=https://api.sportai.com`, `S3_PREFIX=wix-uploads`, `AWS_REGION=us-east-1`, `S3_GET_EXPIRES=604800`, `INGEST_REPLACE_EXISTING=1`, `AUTO_INGEST_ON_COMPLETE=1`
 
 ### S3 CORS
 
@@ -274,6 +292,159 @@ When Wix is retired, `upload_app.py` can be significantly simplified:
 - Remove: Wix notify flow, old `/upload` HTML form routes, `_upload_entitlement_gate` Wix checks, Wix-specific admin ops
 - Refactor: split monolith into app factory + `sportai_api.py` + `s3_helpers.py` + `trim_callback.py`
 - Consolidate: `_ensure_submission_context_schema` DDL into `db_init.py`
+
+### Code Organisation
+
+New features **must live in their own subdirectory** (not loose files in the repo root). Examples: `video_pipeline/`, `ml_pipeline/`, `migrations/`. Each directory should be a self-contained package with its own `__init__.py`, `requirements.txt` (if it has extra deps), and `config.py` (if it has tunable parameters). The repo root is for service entry points only (`*_app.py`, `wsgi.py`).
+
+### ML Pipeline (`ml_pipeline/`)
+
+ML inference pipeline for tennis video analysis. Supports both local dev mode and AWS Batch production mode (S3 input → GPU processing → PostgreSQL + S3 output).
+
+**Run:**
+```bash
+# Install ML-specific deps (in addition to main requirements.txt)
+pip install -r ml_pipeline/requirements.txt
+
+# Local mode: analyse a video file
+python -m ml_pipeline <video_path>
+
+# AWS Batch mode: download from S3, process, save to DB + S3
+python -m ml_pipeline --job-id <job_id> --s3-key <s3_key>
+
+# Run test suite
+python -m ml_pipeline.test_pipeline
+
+# Deploy AWS infrastructure (ECR + Batch + Lambda)
+bash ml_pipeline/deploy_aws.sh   # ECR repo, Batch compute/queue/job def
+bash lambda/deploy.sh             # Lambda trigger + S3 event + DLQ
+
+# End-to-end test (requires live AWS)
+bash ml_pipeline/test_e2e.sh <video_path>
+```
+
+**Architecture:**
+```
+ml_pipeline/
+  config.py              # All tunable parameters (thresholds, model paths, court dimensions)
+  video_preprocessor.py  # OpenCV frame extraction, generator-based (memory efficient)
+  court_detector.py      # 14 court keypoints → homography matrix → to_court_coords()
+  ball_tracker.py        # TrackNet V2 ball detection, bounce/speed/in-out analysis
+  player_tracker.py      # YOLOv8 person detection + IoU tracking
+  pipeline.py            # Orchestrator: frame-by-frame, produces AnalysisResult + progress callbacks
+  heatmaps.py            # Ball landing + player position heatmaps (matplotlib on 2D court)
+  db_schema.py           # Idempotent DDL for ml_analysis.* tables (called on boot)
+  db_writer.py           # Saves AnalysisResult + progress to PostgreSQL
+  api.py                 # Flask blueprint: /api/analysis/* endpoints (OPS_KEY auth)
+  Dockerfile             # nvidia/cuda:12.2, Python 3.11, FFmpeg, model weights
+  deploy_aws.sh          # ECR + Batch infrastructure setup script
+  test_e2e.sh            # End-to-end test script
+  test_pipeline.py       # Unit test with synthetic video
+  models/                # Pretrained weights (git-ignored, ~135MB total)
+  test_videos/           # Test clips (git-ignored)
+lambda/
+  ml_trigger.py          # S3 ObjectCreated → create job row → submit Batch job
+  deploy.sh              # Lambda deployment + S3 event + DLQ setup
+```
+
+**AWS Resources:**
+
+| Resource | Name | Notes |
+|---|---|---|
+| ECR Repository | `ten-fifty5-ml-pipeline` | Lifecycle: keep 5 tagged, delete untagged after 1 day |
+| Batch Compute Env | `ten-fifty5-ml-compute` | Spot G4dn.xlarge, 0–4 vCPUs |
+| Batch Job Queue | `ten-fifty5-ml-queue` | Priority 1 |
+| Batch Job Definition | `ten-fifty5-ml-pipeline` | 4 vCPU, 15GB RAM, 1 GPU, 2hr timeout |
+| Lambda Function | `ten-fifty5-ml-trigger` | S3 videos/ prefix trigger |
+| DLQ | `ten-fifty5-ml-trigger-dlq` | SQS, 14-day retention |
+| CloudWatch Logs | `/aws/batch/ten-fifty5-ml-pipeline` | 30-day retention |
+
+All resources tagged: `Project=TEN-FIFTY5`, `Environment=production`.
+
+**Job Lifecycle:**
+
+```
+S3 upload to videos/{task_id}/file.mp4
+  → Lambda creates ml_analysis.video_analysis_jobs row (status=queued)
+  → Lambda submits AWS Batch job
+  → Batch pulls Docker image from ECR, runs on Spot G4dn.xlarge
+  → Pipeline stages: downloading → extracting_frames → detecting_court
+    → tracking_ball → tracking_players → computing_analytics
+    → generating_heatmaps → saving_results → complete
+  → Results saved to ml_analysis.* tables
+  → Heatmaps uploaded to S3: analysis/{job_id}/ball_heatmap.png, player_heatmap_{n}.png
+  → Cost logged (G4dn.xlarge spot ≈ $0.16/hr)
+```
+
+Status: `queued` → `processing` → `complete` | `failed`
+
+**Database Schema** (`ml_analysis.*`, managed by `db_schema.py`):
+- `video_analysis_jobs` — one row per pipeline run (status, progress, video metadata, cost, heatmap S3 keys)
+- `ball_detections` — per-frame ball positions (x, y, court coords, speed, bounce, in/out)
+- `player_detections` — per-frame player bounding boxes + court coords
+- `match_analytics` — aggregated stats per job (detection rate, bounces, rallies, serves, speeds)
+
+**S3 Key Structure:**
+- Input: `videos/{task_id}/{filename}.mp4`
+- Heatmaps: `analysis/{job_id}/ball_heatmap.png`, `analysis/{job_id}/player_heatmap_0.png`, `analysis/{job_id}/player_heatmap_1.png`
+
+**API Endpoints** (registered as `ml_analysis_bp` in `upload_app.py`, OPS_KEY auth):
+- `GET /api/analysis/jobs/<job_id>` — full job status and metadata
+- `GET /api/analysis/results/<match_id>` — analysis results by task_id (match_analytics + job data)
+- `GET /api/analysis/heatmap/<job_id>/<type>` — presigned S3 URL for heatmap (1hr expiry). Types: `ball`, `player_0`, `player_1`
+- `POST /api/analysis/retry/<job_id>` — reset failed/complete job, clear old detections, resubmit to Batch
+
+**Models & weights:**
+
+| Model | Architecture | Weights file | Source | Size |
+|---|---|---|---|---|
+| Ball tracker | TrackNet V2 (encoder-decoder CNN, 9→256ch) | `tracknet_v2.pt` | [yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet) (Google Drive) | 41MB |
+| Player tracker | YOLOv8m (COCO pretrained) | `yolov8m.pt` | [ultralytics/assets v8.4.0](https://github.com/ultralytics/assets) | 50MB |
+| Court detector | TrackNet-style CNN (3→15ch, 14 keypoints + center) | `court_keypoints.pth` | [yastrebksv/TennisCourtDetector](https://github.com/yastrebksv/TennisCourtDetector) (Google Drive) | 41MB |
+
+To re-download weights: `python -c "from ultralytics import YOLO; YOLO('yolov8m.pt')"` for YOLO; use `gdown` for TrackNet/court weights (see Google Drive IDs in config.py comments).
+
+**`AnalysisResult` data structure** (returned by `TennisAnalysisPipeline.process()`):
+```python
+@dataclass
+class AnalysisResult:
+    video_path: str
+    video_metadata: VideoMetadata        # duration, fps, resolution, codec
+    total_frames_processed: int
+    processing_time_sec: float
+    ms_per_frame: float
+    court_detected: bool
+    court_confidence: float              # 0.0–1.0
+    court_used_fallback: bool            # True if Hough lines used instead of CNN
+    ball_detections: List[BallDetection] # per-frame: x, y, court_x, court_y, speed_kmh, is_bounce, is_in
+    player_detections: List[PlayerDetection]  # per-frame: player_id (0/1), bbox, center, court coords
+    ball_detection_rate: float           # fraction of frames with ball found
+    bounce_count: int
+    bounces_in: int
+    bounces_out: int
+    max_speed_kmh: float
+    avg_speed_kmh: float
+    rally_count: int
+    avg_rally_length: float              # bounces per rally
+    serve_count: int
+    first_serve_pct: float               # percentage
+    player_count: int                    # distinct player IDs detected
+    frame_errors: int
+```
+
+**Performance (CPU, 640x360 synthetic video):**
+- ~5.5s per frame on CPU (TrackNet + CourtNet + YOLOv8m)
+- Court detection runs every 30 frames (cached between)
+- Player detection runs every 5 frames (reuses last bbox between)
+- On GPU: expect 10–50x speedup (~100–500ms/frame)
+- For production 2-hour videos: GPU is mandatory
+
+**Known limitations:**
+- Ball detection rate will be lower on real footage with fast-moving balls, camera motion, and occlusion. TrackNet V2 was trained on broadcast tennis; performance on amateur/phone footage is unvalidated.
+- Player tracker assigns IDs by vertical position (bottom=player 0, top=player 1) which assumes a fixed camera angle. Moving/tilted cameras will break ID consistency.
+- Court detector CNN is trained on standard tennis court views. Non-standard angles (side-on, close-up) may fail, triggering the Hough line fallback.
+- Speed calculations assume a flat court plane. Ball height is not modelled, so speeds are 2D projections.
+- No GPU auto-detection for mixed CPU/GPU setups — set device explicitly if needed.
 
 ### Other
 

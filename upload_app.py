@@ -44,6 +44,9 @@ app.register_blueprint(usage_bp)
 app.register_blueprint(entitlements_bp)
 app.register_blueprint(client_bp)
 
+from ml_pipeline.api import ml_analysis_bp
+app.register_blueprint(ml_analysis_bp)
+
 # ── CORS (cross-origin support for Wix iframe embeds) ──────────────
 # Covers: /api/client/*, /upload/api/*, /api/submit_s3_task, /media-room
 CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room", "/backoffice", "/portal")
