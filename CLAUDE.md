@@ -14,11 +14,15 @@ This repo defines five Render services (see `render.yaml`). All are Python 3.12.
 | Video trim worker | Docker (see `Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` → `video_pipeline/video_worker_app.py` |
 | Locker Room | `gunicorn locker_room_app:app` | `locker_room_app.py` (serves HTML SPAs, no DB) |
 
-The Locker Room service serves four pages:
+The Locker Room service serves seven pages:
 - `GET /` → `locker_room.html` (dashboard)
 - `GET /media-room` → `media_room.html` (video upload)
 - `GET /register` → `players_enclosure.html` (onboarding wizard)
 - `GET /backoffice` → `backoffice.html` (admin dashboard)
+- `GET /analytics` → `analytics.html` (Power BI embed)
+- `GET /portal` → `portal.html` (unified nav shell — main entry point for Wix)
+
+The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, and `/portal` as same-origin backups for API access.
 
 Note: The Locker Room service only installs `flask` + `gunicorn` (not full `requirements.txt`).
 
@@ -159,21 +163,28 @@ Key endpoints:
 - `POST /api/client/register` — onboarding registration
 - `POST /api/client/children` — add child member profiles (Players' Enclosure onboarding)
 - `GET /api/client/profile-photo-upload-url` — presigned S3 PUT URL for profile photo
-- `GET /api/client/backoffice/pipeline` — pipeline status table (task/stage tracking)
-- `GET /api/client/backoffice/customers` — customer list with usage/subscription stats
-- `GET /api/client/backoffice/kpis` — KPI cards (active accounts, tasks today/month/all-time, credits)
+- `GET /api/client/pbi-embed` — Power BI embed token (proxies to PBI service: session/start + embed/config + embed/token)
+- `POST /api/client/pbi-heartbeat` — keep PBI capacity session alive
+- `POST /api/client/pbi-session-end` — end PBI capacity session on page unload
+- `GET /api/client/backoffice/pipeline` — admin: pipeline status table (task/stage tracking)
+- `GET /api/client/backoffice/customers` — admin: customer list with usage/subscription stats
+- `GET /api/client/backoffice/kpis` — admin: KPI cards (active accounts, tasks today/month/all-time, credits)
+
+Admin endpoints require email in `ADMIN_EMAILS` whitelist (hardcoded set in `client_api.py`): `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`.
 
 ### Locker Room (`locker_room.html`)
 
 Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&api=...`.
 
 **Page layout (top to bottom):**
-1. **Header** — TEN-FIFTY5 logo, player name + surname, email, usage pill (remaining matches)
-2. **My Details** (collapsible, collapsed by default) — editable profile: first name, surname, email (read-only), mobile, UTR, dominant hand, country, area
-3. **Linked Players** (collapsible, collapsed by default) — cards for each non-primary member (children/coaches). Each card is individually collapsible with editable fields matching My Details. "Deactivate" soft-deletes (keeps history). "+ Add Player" inline form.
-4. **Charts** — 70/30 grid: matches per month line chart | usage gauge
-5. **Latest Match** — hero card inside a white block. Shows player names, date, location, score, key stats (points, games, aces, avg rally, duration). "Watch Footage" button opens modal HTML5 video player (or "Processing..." badge). Entire card clickable to open edit panel.
-6. **Match History** — single white card block. Year headers → month headers (indented) → match rows (indented further). Years and months newest first. Matches within a month sort latest to oldest. Each row shows Player A vs Player B, date, location, status badge, score, play icon (footage), edit button.
+1. **Header** — TEN-FIFTY5 logo + tabbed sections:
+   - **Account tab** (default) — name, email, account status, subscription status, matches remaining (usage pill), matches used/granted, role, registration date. Read-only. Data from `billing.account`, `billing.member`, `billing.vw_customer_usage`, and `/api/client/entitlements`.
+   - **My Details tab** — editable profile: first name, surname, email (read-only), mobile, UTR, dominant hand, country, area. Save button PATCHes `/api/client/profile`.
+   - **Linked Players tab** — cards for each non-primary member (children/coaches). Each card is individually collapsible with editable fields matching My Details. "Deactivate" soft-deletes (keeps history). "+ Add Player" inline form.
+   - **Invite Coach tab** — placeholder (coming soon). Will allow owners to invite coaches by email. See "Coach Invite Flow" section below.
+2. **Charts** — 70/30 grid: matches per month line chart | usage gauge
+3. **Latest Match** — hero card inside a white block. Shows player names, date, location, score, key stats (points, games, aces, avg rally, duration). "Watch Footage" button opens modal HTML5 video player (or "Processing..." badge). Entire card clickable to open edit panel.
+4. **Match History** — single white card block. Year headers → month headers (indented) → match rows (indented further). Years and months newest first. Matches within a month sort latest to oldest. Each row shows Player A vs Player B, date, location, status badge, score, play icon (footage), edit button.
 
 **Edit panel** (slide-in from right): match stats grid, then editable fields — Player A (dropdown of active account members only), Player A UTR, Player B (free text), Player B UTR, match date, venue, "First Point: Player A was..." (Server/Returner toggle buttons matching Media Room), score (3 sets), start time offset. Save + Reprocess buttons.
 
@@ -207,7 +218,44 @@ New users' names are pre-populated from Wix handoff data (postMessage or URL par
 
 ### Backoffice Dashboard (`backoffice.html`)
 
-Admin-only SPA served at `/backoffice`. Auth: same `X-Client-Key` as client API, plus email must be in `ADMIN_EMAILS` whitelist (hardcoded in `client_api.py`). Date-range filters, KPI cards, pipeline status table (per-task stage tracking), and customer table (usage/subscription stats). Uses the same design system as other SPAs.
+Admin-only SPA served at `/backoffice`. Auth: same `X-Client-Key` as client API, plus email must be in `ADMIN_EMAILS` whitelist (hardcoded in `client_api.py`). Sections: KPI cards (tasks today/month, success rates, active accounts/subs, credits), monthly trend bar chart (12 months), credit utilisation gauge, pipeline monitor tab (per-task stage tracking with date filters), customer tab (usage/subscription stats per account). Uses the same design system as other SPAs.
+
+### Analytics (`analytics.html`)
+
+Power BI embed page served at `/analytics`. Fetches embed token from `GET /api/client/pbi-embed` (which proxies to the PBI service: session/start → embed/config → embed/token with RLS by email). Uses `powerbi-client@2.23.1` JS library. Auto-layout (FitToPage/FitToWidth based on viewport). Heartbeat every 60s keeps Azure capacity alive. Session ends on page unload via `fetch` with `keepalive: true`.
+
+### Portal (`portal.html`)
+
+Unified navigation shell served at `/portal`. **This is the main entry point for Wix embedding.** One Wix page → one iframe → `/portal?email=...&key=...&api=...`.
+
+Collapsible sidebar with navigation: Dashboard (/), Upload (/media-room), My Profile (/register), Analytics (/analytics), Backoffice (/backoffice, admin only). Content pages load in an inner iframe with auth params forwarded via `authParams()`. Sidebar state persists in `localStorage`.
+
+**Inter-page navigation**: child pages can send `postMessage({ type: 'portal-navigate', target: 'dashboard' })` to navigate within the portal instead of breaking out of the iframe. The portal also forwards `wix-handoff` postMessages to the active content iframe.
+
+Profile fetch on init shows user name in sidebar footer with connection status indicator (Connected/API key invalid/Connection failed).
+
+### Coach Invite Flow (partially built — next priority)
+
+**Current state**: The "Invite Coach" tab in the Locker Room is a placeholder. The Render-side coach endpoints already exist in `coaches_api.py`:
+- `POST /api/coaches/invite` — creates a `billing.coach_permission` row (status=INVITED), requires `owner_email` + `coach_email`, OPS_KEY auth
+- `POST /api/coaches/accept` — sets status=ACCEPTED, requires `permission_id` + `coach_email`, OPS_KEY auth
+- `POST /api/coaches/revoke` — sets status=REVOKED, requires `permission_id` OR (`owner_email` + `coach_email`), OPS_KEY auth
+
+**Current Wix flow** (to be ported):
+1. Owner clicks "Invite Coach" in Wix frontend → calls `/_functions/coachInviteNow`
+2. Wix backend calls Render `/api/coaches/invite` (creates permission row)
+3. Wix backend upserts a row in Wix CMS `AuthorizedCoaches` collection (status=INVITED, with invite token)
+4. Wix triggers email via `COACH_INVITE_WEBHOOK_URL` webhook with accept URL containing token
+5. Coach clicks accept link → Wix `/_functions/coach_accept` consumes token, updates CMS, calls Render `/api/coaches/accept`
+6. Revoke: owner clicks revoke → Wix calls Render `/api/coaches/revoke`, updates CMS
+
+**What needs building**:
+1. Client-facing endpoint `POST /api/client/coach-invite` in `client_api.py` that proxies to the coaches API (similar to how `pbi-embed` proxies to PBI service)
+2. Client-facing endpoint `POST /api/client/coach-revoke` 
+3. Client-facing endpoint `GET /api/client/coaches` to list invited/accepted coaches
+4. The Invite Coach tab UI: email input, invite button, list of coaches with status badges, revoke buttons
+5. Email: can continue to go through Wix webhook (`COACH_INVITE_WEBHOOK_URL`) for now — the invite endpoint triggers it
+6. Accept flow: stays on Wix acceptance page (`ten-fifty5.com/coach-accept?token=...`) — no change needed
 
 ### Wix → HTML Data Handoff
 
