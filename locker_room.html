@@ -168,6 +168,30 @@ select.profile-input { appearance: auto; }
 }
 .toggle-btn.active { background: var(--green); color: var(--white); }
 
+/* Header tabs */
+.header-tabs {
+  display: flex; border-bottom: 2px solid var(--border); padding: 0 16px;
+}
+.header-tab {
+  padding: 10px 16px; border: none; background: none;
+  font-family: inherit; font-size: 0.82rem; font-weight: 600;
+  color: var(--text-sec); cursor: pointer; transition: all var(--transition);
+  border-bottom: 2px solid transparent; margin-bottom: -2px; white-space: nowrap;
+}
+.header-tab.active { color: var(--green); border-bottom-color: var(--green); }
+.header-tab:hover { color: var(--green); }
+.header-tab-content { display: none; padding: 0 16px 16px; }
+.header-tab-content.active { display: block; }
+
+/* Account tab fields */
+.account-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.account-field { min-width: 0; }
+.account-value {
+  padding: 7px 0; font-size: 0.85rem; color: var(--text); font-weight: 500;
+}
+
 /* Add member form */
 .add-member-form {
   background: var(--bg); border: 1px dashed var(--border); border-radius: var(--radius);
@@ -545,67 +569,136 @@ function render() {
     </div>`;
   }
 
-  // === HEADER + PROFILE ===
+  // === HEADER + TABS ===
+  const accountDate = profile?.account_created_at ? new Date(profile.account_created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  const memberDate = profile?.member_created_at ? new Date(profile.member_created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+  const accountActive = profile?.account_active !== false;
+  const statusLabel = accountStatus === 'terminated' ? 'Suspended' : accountActive ? 'Active' : 'Inactive';
+  const statusColor = accountStatus === 'terminated' ? 'var(--red)' : accountActive ? 'var(--green)' : 'var(--amber)';
+  const planLabel = entitlements?.plan_active ? 'Active' : 'No Active Plan';
+  const planColor = entitlements?.plan_active ? 'var(--green)' : 'var(--amber)';
+  const roleLabel = isCoach ? 'Coach' : 'Player / Parent';
+
   html += `<div class="header">
     <div class="header-top">
       <div class="logo">TEN-FIFTY5</div>
-      <div class="header-right">
-        <div class="player-info">
-          <div class="player-name">${esc(displayName)}</div>
-          <div class="player-email">${esc(EMAIL)}</div>
+    </div>
+    <div class="header-tabs">
+      <button class="header-tab active" onclick="switchHeaderTab('account',this)">Account</button>
+      <button class="header-tab" onclick="switchHeaderTab('details',this)">My Details</button>
+      <button class="header-tab" onclick="switchHeaderTab('players',this)">Linked Players</button>
+      <button class="header-tab" onclick="switchHeaderTab('coach',this)">Invite Coach</button>
+    </div>
+
+    <!-- TAB 1: Account -->
+    <div class="header-tab-content active" id="htab-account">
+      <div style="padding-top:14px">
+        <div class="account-grid">
+          <div class="account-field">
+            <label class="profile-label">Name</label>
+            <div class="account-value">${esc(displayName)}</div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Email</label>
+            <div class="account-value">${esc(EMAIL)}</div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Account Status</label>
+            <div class="account-value" style="color:${statusColor};font-weight:600">${statusLabel}</div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Subscription</label>
+            <div class="account-value" style="color:${planColor};font-weight:600">${planLabel}</div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Matches Remaining</label>
+            <div class="account-value"><span class="usage-pill ${pillClass}" style="display:inline-flex">${remaining} match${remaining!==1?'es':''}</span></div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Matches Used</label>
+            <div class="account-value">${consumed} / ${granted}</div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Role</label>
+            <div class="account-value">${roleLabel}</div>
+          </div>
+          <div class="account-field">
+            <label class="profile-label">Registered</label>
+            <div class="account-value">${accountDate}</div>
+          </div>
         </div>
-        <div class="usage-pill ${pillClass}">${remaining} match${remaining!==1?'es':''} remaining</div>
       </div>
     </div>
-    <div class="profile-toggle" onclick="toggleProfile()">
-      <span class="chevron" id="chevProfile">&#9654;</span>
-      <span>My Details</span>
+
+    <!-- TAB 2: My Details (unchanged) -->
+    <div class="header-tab-content" id="htab-details">
+      <div style="padding-top:14px">
+        <div class="profile-grid">
+          <div class="profile-field">
+            <label class="profile-label">First Name</label>
+            <input class="profile-input" id="pf-full_name" value="${esc(profile?.full_name||'')}">
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">Surname</label>
+            <input class="profile-input" id="pf-surname" value="${esc(profile?.surname||'')}">
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">Email</label>
+            <input class="profile-input" value="${esc(EMAIL)}" disabled style="background:#fafafa;color:var(--text-dim)">
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">Mobile</label>
+            <input class="profile-input" id="pf-phone" type="tel" value="${esc(profile?.phone||'')}">
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">UTR</label>
+            <input class="profile-input" id="pf-utr" type="text" value="${esc(profile?.utr||'')}">
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">Dominant Hand</label>
+            <select class="profile-input" id="pf-dominant_hand">
+              <option value="">—</option>
+              <option value="right" ${profile?.dominant_hand==='right'?'selected':''}>Right</option>
+              <option value="left" ${profile?.dominant_hand==='left'?'selected':''}>Left</option>
+            </select>
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">Country</label>
+            <input class="profile-input" id="pf-country" value="${esc(profile?.country||'')}">
+          </div>
+          <div class="profile-field">
+            <label class="profile-label">Area</label>
+            <input class="profile-input" id="pf-area" value="${esc(profile?.area||'')}">
+          </div>
+        </div>
+        <div class="profile-actions">
+          <button class="btn-sm btn-sm-primary" id="btnSaveProfile" onclick="saveProfile()">Save</button>
+        </div>
+        <div class="profile-msg" id="profileMsg"></div>
+      </div>
     </div>
-    <div class="profile-body" id="profileBody">
-      <div class="profile-grid">
-        <div class="profile-field">
-          <label class="profile-label">First Name</label>
-          <input class="profile-input" id="pf-full_name" value="${esc(profile?.full_name||'')}">
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">Surname</label>
-          <input class="profile-input" id="pf-surname" value="${esc(profile?.surname||'')}">
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">Email</label>
-          <input class="profile-input" value="${esc(EMAIL)}" disabled style="background:#fafafa;color:var(--text-dim)">
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">Mobile</label>
-          <input class="profile-input" id="pf-phone" type="tel" value="${esc(profile?.phone||'')}">
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">UTR</label>
-          <input class="profile-input" id="pf-utr" type="text" value="${esc(profile?.utr||'')}">
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">Dominant Hand</label>
-          <select class="profile-input" id="pf-dominant_hand">
-            <option value="">—</option>
-            <option value="right" ${profile?.dominant_hand==='right'?'selected':''}>Right</option>
-            <option value="left" ${profile?.dominant_hand==='left'?'selected':''}>Left</option>
-          </select>
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">Country</label>
-          <input class="profile-input" id="pf-country" value="${esc(profile?.country||'')}">
-        </div>
-        <div class="profile-field">
-          <label class="profile-label">Area</label>
-          <input class="profile-input" id="pf-area" value="${esc(profile?.area||'')}">
+
+    <!-- TAB 3: Linked Players (unchanged) -->
+    <div class="header-tab-content" id="htab-players">
+      <div style="padding-top:14px">
+        ${renderLinkedPlayersContent()}
+      </div>
+    </div>
+
+    <!-- TAB 4: Invite Coach (placeholder) -->
+    <div class="header-tab-content" id="htab-coach">
+      <div style="padding-top:14px">
+        <div style="text-align:center;padding:30px 20px;color:var(--text-sec);">
+          <div style="font-size:1.5rem;margin-bottom:8px;">&#127934;</div>
+          <h3 style="font-weight:500;margin-bottom:6px;color:var(--text)">Invite Your Coach</h3>
+          <p style="font-size:0.85rem;max-width:400px;margin:0 auto;color:var(--text-dim)">
+            Share access to your match analysis with your tennis coach.
+            They'll be able to view your matches and footage in read-only mode.
+          </p>
+          <p style="font-size:0.82rem;margin-top:16px;color:var(--amber);font-weight:500">Coming soon</p>
         </div>
       </div>
-      <div class="profile-actions">
-        <button class="btn-sm btn-sm-primary" id="btnSaveProfile" onclick="saveProfile()">Save</button>
-      </div>
-      <div class="profile-msg" id="profileMsg"></div>
     </div>
-    ${renderLinkedPlayers()}
   </div>`;
 
   // === CHARTS ===
@@ -639,14 +732,17 @@ function render() {
   renderMonthlyChart();
 }
 
-// ============ PROFILE ============
+// ============ HEADER TABS ============
 
-function toggleProfile() {
-  const body = document.getElementById('profileBody');
-  const chev = document.getElementById('chevProfile');
-  if (body) body.classList.toggle('open');
-  if (chev) chev.classList.toggle('open');
+function switchHeaderTab(name, btn) {
+  document.querySelectorAll('.header-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.header-tab-content').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  const el = document.getElementById('htab-' + name);
+  if (el) el.classList.add('active');
 }
+
+// ============ PROFILE ============
 
 async function saveProfile() {
   const btn = document.getElementById('btnSaveProfile');
@@ -672,13 +768,6 @@ async function saveProfile() {
       msg.className = 'profile-msg show ok'; msg.textContent = 'Profile saved.';
       // Update local profile
       if (profile) Object.assign(profile, data);
-      // Update header name display
-      const nameEl = document.querySelector('.player-name');
-      if (nameEl) {
-        const fn = data.full_name || profile?.full_name || '';
-        const sn = data.surname || profile?.surname || '';
-        nameEl.textContent = sn ? fn + ' ' + sn : fn;
-      }
     } else {
       msg.className = 'profile-msg show err'; msg.textContent = 'Save failed: ' + (r.error||'unknown');
     }
@@ -690,7 +779,7 @@ async function saveProfile() {
 
 // ============ LINKED PLAYERS ============
 
-function renderLinkedPlayers() {
+function renderLinkedPlayersContent() {
   // Non-primary members linked to this account
   const linked = members.filter(m => !m.is_primary);
 
@@ -776,13 +865,11 @@ function renderLinkedPlayers() {
     </div>`;
   });
 
-  return `<div class="members-section">
-    <div class="members-toggle" onclick="toggleLinkedPlayers()">
-      <span class="chevron" id="chevMembers">&#9654;</span>
-      <span>Linked Players${linked.length ? ' (' + linked.length + ')' : ''}</span>
-      <span class="add-inline"><button class="btn-add-member" onclick="event.stopPropagation();toggleLinkedPlayers(true);toggleAddMember()">+ Add Player</button></span>
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <span style="font-size:0.82rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px">Linked Players${linked.length ? ' (' + linked.length + ')' : ''}</span>
+      <button class="btn-add-member" onclick="toggleAddMember()">+ Add Player</button>
     </div>
-    <div class="members-body" id="membersBody">
     <div class="member-cards">
       ${linked.length === 0 ? '<div style="color:var(--text-dim);font-size:0.85rem;padding:8px 0;">No linked players yet. Add a child or coach below.</div>' : cards}
     </div>
@@ -816,21 +903,7 @@ function renderLinkedPlayers() {
         <button class="btn-sm" style="background:var(--white);color:var(--text-sec);border:1px solid var(--border);" onclick="toggleAddMember()">Cancel</button>
         <span class="member-card-msg" id="addMemberMsg"></span>
       </div>
-    </div>
-    </div>
-  </div>`;
-}
-
-function toggleLinkedPlayers(forceOpen) {
-  const body = document.getElementById('membersBody');
-  const chev = document.getElementById('chevMembers');
-  if (forceOpen) {
-    if (body) body.classList.add('open');
-    if (chev) chev.classList.add('open');
-  } else {
-    if (body) body.classList.toggle('open');
-    if (chev) chev.classList.toggle('open');
-  }
+    </div>`;
 }
 
 function toggleAddMember() {

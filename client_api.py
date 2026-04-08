@@ -398,7 +398,11 @@ def get_profile():
                 SELECT
                     m.id, m.full_name, m.surname, m.phone, m.utr,
                     m.dominant_hand, m.country, m.area,
-                    m.role, a.email
+                    m.role, a.email,
+                    a.id AS account_id,
+                    a.created_at AS account_created_at,
+                    a.active AS account_active,
+                    m.created_at AS member_created_at
                 FROM billing.account a
                 JOIN billing.member m ON m.account_id = a.id AND m.is_primary = true
                 WHERE a.email = :email
@@ -413,6 +417,7 @@ def get_profile():
         "ok": True,
         "profile": {
             "member_id": int(row["id"]),
+            "account_id": int(row["account_id"]),
             "full_name": row["full_name"],
             "surname": row["surname"],
             "email": row["email"],
@@ -422,6 +427,9 @@ def get_profile():
             "country": row["country"],
             "area": row["area"],
             "role": row["role"],
+            "account_created_at": row["account_created_at"].isoformat() if row["account_created_at"] else None,
+            "account_active": row["account_active"],
+            "member_created_at": row["member_created_at"].isoformat() if row["member_created_at"] else None,
         },
     })
 
