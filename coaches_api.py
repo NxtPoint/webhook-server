@@ -334,6 +334,7 @@ def api_revoke():
                         status = :status,
                         active = false,
                         coach_account_id = NULL,
+                        invite_token = NULL,
                         updated_at = :now
                         WHERE id = :id
                     """),
@@ -376,6 +377,7 @@ def api_revoke():
                     status = :status,
                     active = false,
                     coach_account_id = NULL,
+                    invite_token = NULL,
                     updated_at = :now
                     WHERE id = :id
                 """),

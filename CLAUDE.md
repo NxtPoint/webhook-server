@@ -273,23 +273,27 @@ Profile fetch on init shows user name in sidebar footer with connection status i
 
 ### Coach Invite Flow
 
-Owner invites coaches from the Locker Room "Invite Coach" tab. Data stored in `billing.coaches_permission` table.
+Owner invites coaches from the Locker Room "Invite Coach" tab. Data stored in `billing.coaches_permission` table (columns: id, owner_account_id, coach_account_id, coach_email, status, active, invite_token, created_at, updated_at).
+
+**Module**: `coach_invite/` — contains `db.py` (schema + token helpers), `email_sender.py` (AWS SES), `accept_page.py` (Flask blueprint).
 
 **Server-to-server endpoints** (`coaches_api.py`, OPS_KEY auth):
 - `POST /api/coaches/invite` — creates permission row (status=INVITED)
 - `POST /api/coaches/accept` — sets status=ACCEPTED
-- `POST /api/coaches/revoke` — sets status=REVOKED
+- `POST /api/coaches/revoke` — sets status=REVOKED, clears invite_token
 
 **Client-facing endpoints** (`client_api.py`, CLIENT_API_KEY auth):
 - `GET /api/client/coaches` — list all coach permissions for the account
-- `POST /api/client/coach-invite` — invite a coach (creates/reuses permission row directly via DB, not HTTP proxy)
-- `POST /api/client/coach-revoke` — revoke a coach (verifies ownership via account_id)
+- `POST /api/client/coach-invite` — invite a coach: creates/reuses permission row, generates secure token (`secrets.token_urlsafe(32)`), sends invite email via AWS SES
+- `POST /api/client/coach-revoke` — revoke a coach, clears invite_token
 
-**Accept flow**: stays on Wix acceptance page (`ten-fifty5.com/coach-accept?token=...`). Coach clicks link → Wix calls Render `/api/coaches/accept`.
+**Accept flow** (self-contained on Render, no Wix dependency):
+- `GET /coach-accept?token=...` — serves `coach_accept.html` (standalone SPA)
+- `POST /api/coaches/accept-token` — **public endpoint** (token IS the auth). Validates token against `billing.coaches_permission` (status=INVITED, active=true), sets status=ACCEPTED, clears token.
 
-**Email**: not yet wired — invite creates the permission row but does not send email. Will be connected via `COACH_INVITE_WEBHOOK_URL` in a follow-up.
+**Email**: sent via AWS SES (`boto3.client('ses')`). HTML email with TEN-FIFTY5 branding + plain-text fallback. Env vars: `SES_FROM_EMAIL`, `COACH_ACCEPT_BASE_URL`.
 
-**Idempotency**: re-inviting a previously revoked coach reuses the existing row (resets status to INVITED, active=true).
+**Idempotency**: re-inviting a previously revoked coach reuses the existing row (resets status to INVITED, generates new token, sends new email). Tokens are single-use (cleared on accept and revoke).
 
 ### Wix → HTML Data Handoff
 

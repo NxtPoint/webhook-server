@@ -44,6 +44,9 @@ app.register_blueprint(usage_bp)
 app.register_blueprint(entitlements_bp)
 app.register_blueprint(client_bp)
 
+from coach_invite import accept_bp as coach_accept_bp
+app.register_blueprint(coach_accept_bp)
+
 try:
     from ml_pipeline.api import ml_analysis_bp
     app.register_blueprint(ml_analysis_bp)
@@ -52,7 +55,7 @@ except ImportError:
 
 # ── CORS (cross-origin support for Wix iframe embeds) ──────────────
 # Covers: /api/client/*, /upload/api/*, /api/submit_s3_task, /media-room
-CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/media-room", "/backoffice", "/analytics", "/portal")
+CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/api/coaches/accept-token", "/media-room", "/backoffice", "/analytics", "/portal", "/coach-accept")
 
 @app.before_request
 def handle_cors_preflight():
@@ -150,6 +153,11 @@ WIX_NOTIFY_KEY = (
 WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
 WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 
+
+# ---------- T5 ML Pipeline (AWS Batch) ----------
+BATCH_JOB_QUEUE = os.getenv("BATCH_JOB_QUEUE", "ten-fifty5-ml-queue")
+BATCH_JOB_DEF = os.getenv("BATCH_JOB_DEF", "ten-fifty5-ml-pipeline")
+T5_SPORT_TYPES = {"serve_practice", "rally_practice"}
 
 # ---------- Ingest worker service ----------
 INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
@@ -509,6 +517,7 @@ def _store_submission_context(
     share_url: str | None = None,
     s3_bucket: str | None = None,
     s3_key: str | None = None,
+    sport_type: str | None = None,
 ):
     if not engine:
         return
@@ -614,7 +623,7 @@ def _store_submission_context(
             "a2": a2, "b2": b2,
             "a3": a3, "b3": b3,
             "first_server": first_server,
-            "sport_type": DEFAULT_SPORT_TYPE,
+            "sport_type": sport_type or DEFAULT_SPORT_TYPE,
         })
 
 
@@ -683,7 +692,8 @@ def _load_submission_context_row(task_id: str) -> dict:
               pbi_refresh_error,
               wix_notified_at,
               wix_notify_status,
-              wix_notify_error
+              wix_notify_error,
+              sport_type
             FROM bronze.submission_context
             WHERE task_id = :t
             LIMIT 1
@@ -934,6 +944,101 @@ def _sportai_submit(video_url: str, email: str | None = None, meta: dict | None 
                 continue
 
     raise RuntimeError(f"SportAI submit failed across all endpoints: {last_err}")
+
+
+def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
+               sport_type: str = "serve_practice") -> str:
+    """
+    Submit a T5 ML pipeline job via AWS Batch.
+    Returns a job_id that doubles as the task_id for bronze.submission_context.
+    """
+    import uuid
+    from sqlalchemy import text as sql_text
+
+    job_id = str(uuid.uuid4())
+
+    # 1. Ensure ml_analysis schema exists
+    try:
+        from ml_pipeline.db_schema import ml_analysis_init
+        ml_analysis_init(engine)
+    except ImportError:
+        pass  # ml_pipeline DB deps not available — schema must already exist
+
+    # 2. Create job row
+    with engine.begin() as conn:
+        conn.execute(sql_text("""
+            INSERT INTO ml_analysis.video_analysis_jobs
+                (job_id, task_id, s3_key, status, current_stage, progress_pct)
+            VALUES (:job_id, :job_id, :s3_key, 'queued', 'queued', 0)
+            ON CONFLICT (job_id) DO NOTHING
+        """), {"job_id": job_id, "s3_key": s3_key})
+
+    # 3. Submit AWS Batch job
+    batch = boto3.client("batch", region_name=AWS_REGION)
+    resp = batch.submit_job(
+        jobName=f"t5-{sport_type[:5]}-{job_id[:8]}",
+        jobQueue=BATCH_JOB_QUEUE,
+        jobDefinition=BATCH_JOB_DEF,
+        containerOverrides={
+            "command": [
+                "python", "-m", "ml_pipeline",
+                "--job-id", job_id,
+                "--s3-key", s3_key,
+            ],
+        },
+        tags={
+            "Project": "TEN-FIFTY5",
+            "Environment": "production",
+            "JobId": job_id,
+            "SportType": sport_type,
+        },
+    )
+    batch_job_id = resp["jobId"]
+
+    # 4. Store Batch job ID
+    with engine.begin() as conn:
+        conn.execute(sql_text("""
+            UPDATE ml_analysis.video_analysis_jobs
+            SET batch_job_id = :bid, updated_at = now()
+            WHERE job_id = :jid
+        """), {"jid": job_id, "bid": batch_job_id})
+
+    app.logger.info("T5 SUBMIT job_id=%s batch_job_id=%s s3_key=%s sport_type=%s",
+                     job_id, batch_job_id, s3_key, sport_type)
+    return job_id
+
+
+def _t5_status(task_id: str) -> dict:
+    """
+    Poll T5 job status from ml_analysis.video_analysis_jobs.
+    Returns the same shape as _sportai_status() for unified polling.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(sql_text("""
+            SELECT status, current_stage, progress_pct, error_message
+            FROM ml_analysis.video_analysis_jobs
+            WHERE job_id = :jid OR task_id = :jid
+            ORDER BY created_at DESC LIMIT 1
+        """), {"jid": task_id}).mappings().first()
+
+    if not row:
+        return {"status": "unknown", "sportai_progress_pct": None, "result_url": None}
+
+    status_map = {"queued": "queued", "processing": "processing",
+                  "complete": "completed", "failed": "failed"}
+    mapped = status_map.get(row["status"], row["status"])
+
+    # Sentinel result_url triggers existing auto-ingest logic
+    result_url = f"t5://complete/{task_id}" if mapped == "completed" else None
+
+    return {
+        "task_id": task_id,
+        "status": mapped,
+        "result_url": result_url,
+        "sportai_progress_pct": row["progress_pct"] or 0,
+        "message": row["error_message"],
+    }
+
 
 def _normalize_sportai_status(v: str | None) -> str | None:
     s = str(v or "").strip().lower()
@@ -1598,7 +1703,13 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
                 task_id, row.get("ingest_started_at"),
             )
 
-    # Delegate to ingest worker service
+    # T5 jobs: lightweight ingest (data already in ml_analysis.*)
+    if str(result_url or "").startswith("t5://"):
+        ok = _do_ingest_t5(task_id)
+        app.logger.info("T5 INGEST DONE task_id=%s ok=%s", task_id, ok)
+        return True
+
+    # SportAI jobs: delegate to ingest worker service
     try:
         out = _delegate_to_ingest_worker(task_id, result_url)
         app.logger.info(
@@ -1616,6 +1727,68 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
         ok = _do_ingest(task_id, result_url)
         app.logger.info("INGEST FALLBACK DONE task_id=%s ok=%s", task_id, ok)
         return True
+
+
+def _do_ingest_t5(task_id: str) -> bool:
+    """
+    Lightweight ingest for T5 ML pipeline jobs.
+    Results are already in ml_analysis.* tables — skip bronze/silver/billing.
+    Steps: mark started → (skip heavy ingest) → PBI refresh → mark done.
+    """
+    try:
+        app.logger.info("T5 INGEST START task_id=%s", task_id)
+
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                SET ingest_started_at = COALESCE(ingest_started_at, now()),
+                    ingest_finished_at = NULL,
+                    ingest_error = NULL,
+                    session_id = :task_id,
+                    last_status = 'completed',
+                    last_status_at = now()
+                WHERE task_id = :t
+            """), {"t": task_id, "task_id": task_id})
+
+        # Skip: bronze ingest (data in ml_analysis.*)
+        # Skip: silver build (no silver for practice v1)
+        # Skip: video trim (no trim for practice v1)
+        # Skip: billing (practice is free — no credit consumption)
+        app.logger.info("T5 INGEST task_id=%s skipped bronze/silver/billing/trim (practice mode)", task_id)
+
+        # PBI refresh (when dataset exists for practice data)
+        if PBI_SERVICE_BASE:
+            try:
+                _pbi_post("/dataset/refresh_once", json={"task_id": task_id}, timeout=60)
+                app.logger.info("T5 INGEST task_id=%s PBI refresh triggered", task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s PBI refresh failed (non-fatal): %s", task_id, e)
+
+        # Mark complete
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                SET ingest_finished_at = now(),
+                    ingest_error = NULL
+                WHERE task_id = :t
+            """), {"t": task_id})
+
+        app.logger.info("T5 INGEST COMPLETE task_id=%s", task_id)
+        return True
+
+    except Exception as e:
+        app.logger.exception("T5 INGEST FAILED task_id=%s", task_id)
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                SET ingest_error = :err, ingest_finished_at = now()
+                WHERE task_id = :t
+            """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"})
+        return False
+
 
 # ==========================
 # MEDIA ROOM (served same-origin for upload API access)
@@ -2449,8 +2622,24 @@ def api_submit_s3_task():
         }
     }
 
+    # ── Route to T5 or SportAI based on game type ──
+    game_type = (body.get("gameType") or "singles").strip().lower()
+    SPORT_TYPE_MAP = {
+        "singles": "tennis_singles",
+        "serve": "serve_practice",
+        "serve_practice": "serve_practice",
+        "rally": "rally_practice",
+        "rally_practice": "rally_practice",
+    }
+    sport_type = SPORT_TYPE_MAP.get(game_type, "tennis_singles")
+    is_t5 = sport_type in T5_SPORT_TYPES
+
     try:
-        task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+        if is_t5:
+            task_id = _t5_submit(s3_key, email=email, meta=meta, sport_type=sport_type)
+        else:
+            task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
+
         _store_submission_context(
             task_id=task_id,
             email=email,
@@ -2459,6 +2648,7 @@ def api_submit_s3_task():
             share_url=s3_key,
             s3_bucket=S3_BUCKET,
             s3_key=s3_key,
+            sport_type=sport_type,
         )
 
         with engine.begin() as conn:
@@ -2468,11 +2658,13 @@ def api_submit_s3_task():
         return jsonify({
             "ok": True,
             "task_id": task_id,
+            "pipeline": "t5" if is_t5 else "sportai",
             "s3_verified": True,
             "s3_meta": obj_meta
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": f"SportAI submit failed: {e}"}), 502
+        label = "T5" if is_t5 else "SportAI"
+        return jsonify({"ok": False, "error": f"{label} submit failed: {e}"}), 502
 
 # ==========================
 # LEGACY ALIAS (KEPT)
@@ -2495,8 +2687,15 @@ def api_task_status():
     live_error = None
     live = None
 
+    # Load submission context first to determine pipeline type
+    sc = _load_submission_context_row(tid)
+    is_t5 = sc.get("sport_type") in T5_SPORT_TYPES
+
     try:
-        live = _sportai_status(tid)
+        if is_t5:
+            live = _t5_status(tid)
+        else:
+            live = _sportai_status(tid)
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
@@ -2504,8 +2703,6 @@ def api_task_status():
 
     except Exception as e:
         live_error = f"{e.__class__.__name__}: {e}"
-
-    sc = _load_submission_context_row(tid)
 
     status = _normalize_sportai_status(
         (live or {}).get("status") or sc.get("last_status") or "unknown"

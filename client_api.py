@@ -23,9 +23,7 @@ PLANS_PAGE_URL = os.environ.get("PLANS_PAGE_URL", "https://www.tenfifty5.com/pla
 
 ADMIN_EMAILS = {"info@ten-fifty5.com", "tomo.stojakovic@gmail.com"}
 
-# Wix coach invite webhook — triggers CMS upsert + email automation
-WIX_COACH_INVITE_URL = os.environ.get("WIX_COACH_INVITE_URL", "").strip()
-WIX_COACH_INVITE_KEY = os.environ.get("WIX_COACH_INVITE_KEY", "").strip()
+COACH_ACCEPT_BASE_URL = os.environ.get("COACH_ACCEPT_BASE_URL", "https://api.nextpointtennis.com").strip()
 
 log = logging.getLogger(__name__)
 
@@ -1523,7 +1521,7 @@ def list_coaches():
 
 @client_bp.route("/api/client/coach-invite", methods=["POST", "OPTIONS"])
 def coach_invite():
-    """Invite a coach — creates a billing.coaches_permission row + triggers Wix email."""
+    """Invite a coach — creates permission row, generates token, sends SES email."""
     if not _guard():
         return _forbid()
 
@@ -1539,11 +1537,9 @@ def coach_invite():
     from coaches_api import STATUS_INVITED, SCHEMA, TABLE
 
     with Session(engine) as session:
-        # Look up owner account + name for the Wix webhook payload
         acct_row = session.execute(
             text("""
-                SELECT a.id, a.external_wix_id,
-                       m.full_name, m.surname
+                SELECT a.id, m.full_name, m.surname
                 FROM billing.account a
                 LEFT JOIN billing.member m ON m.account_id = a.id AND m.is_primary = true AND m.active = true
                 WHERE a.email = :email
@@ -1555,7 +1551,6 @@ def coach_invite():
             return jsonify({"ok": False, "error": "account_not_found"}), 404
 
         acct_id = int(acct_row["id"])
-        owner_wix_id = acct_row["external_wix_id"] or ""
         owner_name = " ".join(filter(None, [acct_row["full_name"], acct_row["surname"]])) or email
 
         from datetime import timezone
@@ -1575,7 +1570,7 @@ def coach_invite():
                 text(f"""
                     UPDATE {SCHEMA}.{TABLE}
                     SET status = :status, active = true,
-                        coach_account_id = NULL, updated_at = :now
+                        coach_account_id = NULL, invite_token = NULL, updated_at = :now
                     WHERE id = :id
                 """),
                 {"id": int(existing["id"]), "status": STATUS_INVITED, "now": now},
@@ -1597,38 +1592,24 @@ def coach_invite():
             permission_id = int(row["id"])
             reused = False
 
-    # Fire-and-forget: trigger Wix to send the invite email
-    wix_email_error = None
-    if WIX_COACH_INVITE_URL:
-        try:
-            wix_payload = {
-                "coachEmail": coach_email,
-                "coachFullName": (payload.get("coach_name") or "").strip() or coach_email,
-                "ownerName": owner_name,
-                "ownerId": owner_wix_id,
-                "ownerEmail": email,
-            }
-            headers = {"Content-Type": "application/json"}
-            if WIX_COACH_INVITE_KEY:
-                headers["X-Ops-Key"] = WIX_COACH_INVITE_KEY
-            resp = http_requests.post(WIX_COACH_INVITE_URL, json=wix_payload,
-                                      headers=headers, timeout=15)
-            if resp.status_code >= 400:
-                wix_email_error = f"HTTP {resp.status_code}"
-                log.warning("Wix coach invite webhook failed: %s %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            wix_email_error = str(e)
-            log.warning("Wix coach invite webhook error: %s", e)
-    else:
-        log.info("WIX_COACH_INVITE_URL not set; skipping invite email for %s", coach_email)
+    # Generate token and send invite email via SES
+    from coach_invite.db import generate_token, set_token
+    from coach_invite.email_sender import send_invite_email
+
+    token = generate_token()
+    set_token(permission_id, token)
+
+    accept_url = f"{COACH_ACCEPT_BASE_URL}/coach-accept?token={token}"
+    coach_name = (payload.get("coach_name") or "").strip()
+    email_result = send_invite_email(coach_email, coach_name, owner_name, accept_url)
 
     return jsonify({
         "ok": True,
         "permission_id": permission_id,
         "status": STATUS_INVITED,
         "reused": reused,
-        "email_sent": wix_email_error is None and bool(WIX_COACH_INVITE_URL),
-        "email_error": wix_email_error,
+        "email_sent": email_result.get("ok", False),
+        "email_error": email_result.get("error"),
     })
 
 
@@ -1680,7 +1661,7 @@ def coach_revoke():
             text(f"""
                 UPDATE {SCHEMA}.{TABLE}
                 SET status = :status, active = false,
-                    coach_account_id = NULL, updated_at = :now
+                    coach_account_id = NULL, invite_token = NULL, updated_at = :now
                 WHERE id = :id
             """),
             {"id": int(permission_id), "status": STATUS_REVOKED, "now": now},

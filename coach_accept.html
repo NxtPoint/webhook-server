@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Accept Coach Invitation - TEN-FIFTY5</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.card {
+  background: var(--white);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  max-width: 460px;
+  width: 100%;
+  overflow: hidden;
+}
+.card-header {
+  background: var(--green);
+  padding: 20px 28px;
+}
+.card-header span {
+  color: var(--white);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.card-body {
+  padding: 32px 28px;
+  text-align: center;
+}
+.icon {
+  font-size: 2.5rem;
+  margin-bottom: 16px;
+}
+.card-body h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.card-body p {
+  font-size: 0.88rem;
+  color: var(--text-sec);
+  line-height: 1.5;
+  margin-bottom: 0;
+}
+.owner-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.state-loading .spinner {
+  display: inline-block;
+  width: 28px; height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.state { display: none; }
+.state.active { display: block; }
+.error-detail {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(220,38,38,0.05);
+  border-radius: var(--radius);
+  font-size: 0.78rem;
+  color: var(--red);
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="card-header">
+    <span>TEN-FIFTY5</span>
+  </div>
+  <div class="card-body">
+    <!-- Loading state -->
+    <div class="state state-loading active" id="stateLoading">
+      <div class="spinner"></div>
+      <h2>Accepting invitation...</h2>
+      <p>Please wait while we connect your account.</p>
+    </div>
+
+    <!-- Success state -->
+    <div class="state" id="stateSuccess">
+      <div class="icon">&#9989;</div>
+      <h2>You're connected!</h2>
+      <p>You are now a coach for <span class="owner-name" id="ownerName"></span>.
+         You can view their match analysis and footage in the Locker Room.</p>
+    </div>
+
+    <!-- Error state -->
+    <div class="state" id="stateError">
+      <div class="icon">&#10060;</div>
+      <h2>Invalid or expired link</h2>
+      <p>This invitation link is no longer valid. It may have already been accepted or revoked by the account owner.</p>
+      <div class="error-detail" id="errorDetail" style="display:none"></div>
+    </div>
+
+    <!-- No token -->
+    <div class="state" id="stateNoToken">
+      <div class="icon">&#128279;</div>
+      <h2>Missing invitation link</h2>
+      <p>No invitation token found. Please use the link from your email.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  const token = (params.get('token') || '').trim();
+
+  function show(id) {
+    document.querySelectorAll('.state').forEach(el => el.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+  }
+
+  if (!token) {
+    show('stateNoToken');
+    return;
+  }
+
+  // Determine API base — same origin as the page
+  const apiBase = window.location.origin;
+
+  fetch(apiBase + '/api/coaches/accept-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: token }),
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.ok) {
+      document.getElementById('ownerName').textContent = data.owner_name || 'the account owner';
+      show('stateSuccess');
+    } else {
+      const detail = document.getElementById('errorDetail');
+      if (data.error && data.error !== 'invalid_or_expired_token') {
+        detail.textContent = data.error;
+        detail.style.display = 'block';
+      }
+      show('stateError');
+    }
+  })
+  .catch(err => {
+    const detail = document.getElementById('errorDetail');
+    detail.textContent = 'Connection error: ' + err.message;
+    detail.style.display = 'block';
+    show('stateError');
+  });
+})();
+</script>
+</body>
+</html>

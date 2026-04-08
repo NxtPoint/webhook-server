@@ -38,6 +38,11 @@ def portal():
     return send_file("portal.html")
 
 
+@app.get("/coach-accept")
+def coach_accept():
+    return send_file("coach_accept.html")
+
+
 @app.get("/__alive")
 def alive():
     return jsonify({"ok": True, "service": "locker-room"})
