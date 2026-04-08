@@ -226,6 +226,7 @@ body {
     <div class="user-info">
       <div class="user-name" id="userName">Loading...</div>
       <div class="user-email" id="userEmail"></div>
+      <div id="connStatus" style="font-size:0.65rem;margin-top:2px;color:var(--text-dim);">Connecting...</div>
     </div>
   </div>
 </nav>
@@ -253,7 +254,7 @@ function authParams() {
   const p = new URLSearchParams();
   if (EMAIL) p.set('email', EMAIL);
   if (API_KEY) p.set('key', API_KEY);
-  if (API_BASE && API_BASE !== 'https://api.nextpointtennis.com') p.set('api', API_BASE);
+  if (API_BASE) p.set('api', API_BASE);
   if (FIRST_NAME) p.set('firstName', FIRST_NAME);
   if (SURNAME) p.set('surname', SURNAME);
   if (WIX_MEMBER_ID) p.set('wixMemberId', WIX_MEMBER_ID);
@@ -412,18 +413,34 @@ function init() {
 }
 
 async function fetchProfile() {
+  const statusEl = document.getElementById('connStatus');
   try {
     const res = await fetch(API_BASE + '/api/client/profile?email=' + encodeURIComponent(EMAIL), {
       headers: { 'X-Client-Key': API_KEY },
     });
+    if (res.status === 403) {
+      if (statusEl) { statusEl.textContent = 'API key invalid'; statusEl.style.color = 'var(--red)'; }
+      console.error('Portal: API key rejected (403). Key prefix:', API_KEY.substring(0, 4) + '...', 'API:', API_BASE);
+      return;
+    }
+    if (!res.ok) {
+      if (statusEl) { statusEl.textContent = 'API error ' + res.status; statusEl.style.color = 'var(--red)'; }
+      return;
+    }
     const data = await res.json();
     if (data.ok && data.profile) {
       const p = data.profile;
       const name = [p.full_name, p.surname].filter(Boolean).join(' ') || EMAIL.split('@')[0];
       document.getElementById('userName').textContent = name;
       document.getElementById('userAvatar').textContent = (name[0] || '?').toUpperCase();
+      if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = 'var(--green)'; }
+    } else {
+      if (statusEl) { statusEl.textContent = 'No profile found'; statusEl.style.color = 'var(--amber)'; }
     }
-  } catch (e) { /* non-critical */ }
+  } catch (e) {
+    console.error('Portal: fetchProfile failed', e);
+    if (statusEl) { statusEl.textContent = 'Connection failed'; statusEl.style.color = 'var(--red)'; }
+  }
 }
 
 // Handle browser back/forward

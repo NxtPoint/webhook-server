@@ -371,15 +371,14 @@ function render() {
     </div>
   `;
 
-  // Debug banner (shows API errors if any)
-  if (apiErrors.length > 0) {
-    app.insertAdjacentHTML('beforeend', `
-      <div style="background:rgba(220,38,38,0.06);border:1px solid var(--red);border-radius:var(--radius);padding:10px 16px;margin-bottom:16px;font-size:0.82rem;color:var(--red);">
-        <strong>API Errors:</strong> ${apiErrors.join(' | ')}<br>
-        <span style="font-size:0.72rem;color:var(--text-dim);">Email: ${EMAIL} | API: ${API_BASE} | Key: ${API_KEY ? API_KEY.substring(0,4) + '...' : 'MISSING'}</span>
-      </div>
-    `);
-  }
+  // Debug banner (always shows connection info, red if errors)
+  const hasErrors = apiErrors.length > 0;
+  app.insertAdjacentHTML('beforeend', `
+    <div style="background:${hasErrors ? 'rgba(220,38,38,0.06)' : 'var(--green-bg)'};border:1px solid ${hasErrors ? 'var(--red)' : 'var(--green)'};border-radius:var(--radius);padding:10px 16px;margin-bottom:16px;font-size:0.82rem;color:${hasErrors ? 'var(--red)' : 'var(--green)'};">
+      ${hasErrors ? '<strong>API Errors:</strong> ' + apiErrors.join(' | ') + '<br>' : '<strong>Connected</strong><br>'}
+      <span style="font-size:0.72rem;color:var(--text-dim);">Email: ${EMAIL} | API: ${API_BASE} | Key: ${API_KEY ? API_KEY.substring(0,4) + '...' : 'MISSING'}</span>
+    </div>
+  `);
 
   renderKPIs(app);
   renderTabs(app);
