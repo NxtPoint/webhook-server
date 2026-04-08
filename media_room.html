@@ -1303,7 +1303,12 @@ async function submitMatchDetails() {
     goToStep(4);
 
   } catch (e) {
-    showDetailsMsg('error', 'Submission failed: ' + e.message);
+    const msg = e.message || '';
+    if (msg.includes('503') || msg.includes('temporarily unavailable')) {
+      showDetailsMsg('error', 'Our analysis service is currently offline. Please try again shortly.');
+    } else {
+      showDetailsMsg('error', 'Submission failed: ' + msg);
+    }
     btn.disabled = false;
     btn.textContent = 'Submit & Start Analysis \u2192';
   }
