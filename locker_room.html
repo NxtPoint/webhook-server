@@ -1044,6 +1044,10 @@ function renderCoachInviteContent() {
           <label>Coach Email *</label>
           <input id="coach-email" type="email" placeholder="coach@example.com">
         </div>
+        <div class="member-card-field">
+          <label>Coach Name</label>
+          <input id="coach-name" type="text" placeholder="Full name">
+        </div>
       </div>
       <div class="member-card-actions" style="margin-top:10px">
         <button class="btn-sm btn-sm-primary" onclick="inviteCoach()">Send Invite</button>
@@ -1060,6 +1064,7 @@ function renderCoachInviteContent() {
 
 async function inviteCoach() {
   const emailEl = document.getElementById('coach-email');
+  const nameEl = document.getElementById('coach-name');
   const msg = document.getElementById('coachInviteMsg');
   const coachEmail = (emailEl.value || '').trim().toLowerCase();
   if (!coachEmail) {
@@ -1067,16 +1072,18 @@ async function inviteCoach() {
     setTimeout(() => { msg.textContent = ''; }, 3000);
     return;
   }
+  const coachName = (nameEl.value || '').trim();
   try {
     const res = await apiFetch('/api/client/coach-invite', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ coach_email: coachEmail }),
+      body: JSON.stringify({ coach_email: coachEmail, coach_name: coachName }),
     });
     const r = await res.json();
     if (r.ok) {
-      msg.style.color = 'var(--green)'; msg.textContent = 'Invited!';
-      emailEl.value = '';
-      setTimeout(() => { init(); }, 1000);
+      const emailNote = r.email_sent ? ' — invite email sent' : (r.email_error ? ' — email failed, permission created' : '');
+      msg.style.color = 'var(--green)'; msg.textContent = 'Invited!' + emailNote;
+      emailEl.value = ''; nameEl.value = '';
+      setTimeout(() => { init(); }, 1500);
     } else {
       msg.style.color = 'var(--red)'; msg.textContent = r.error || 'Failed';
       setTimeout(() => { msg.textContent = ''; }, 3000);

@@ -23,6 +23,10 @@ PLANS_PAGE_URL = os.environ.get("PLANS_PAGE_URL", "https://www.tenfifty5.com/pla
 
 ADMIN_EMAILS = {"info@ten-fifty5.com", "tomo.stojakovic@gmail.com"}
 
+# Wix coach invite webhook — triggers CMS upsert + email automation
+WIX_COACH_INVITE_URL = os.environ.get("WIX_COACH_INVITE_URL", "").strip()
+WIX_COACH_INVITE_KEY = os.environ.get("WIX_COACH_INVITE_KEY", "").strip()
+
 log = logging.getLogger(__name__)
 
 # Profile fields editable from Locker Room
@@ -1519,7 +1523,7 @@ def list_coaches():
 
 @client_bp.route("/api/client/coach-invite", methods=["POST", "OPTIONS"])
 def coach_invite():
-    """Invite a coach — creates a billing.coaches_permission row."""
+    """Invite a coach — creates a billing.coaches_permission row + triggers Wix email."""
     if not _guard():
         return _forbid()
 
@@ -1535,12 +1539,24 @@ def coach_invite():
     from coaches_api import STATUS_INVITED, SCHEMA, TABLE
 
     with Session(engine) as session:
-        acct_id = session.execute(
-            text("SELECT id FROM billing.account WHERE email = :email"),
+        # Look up owner account + name for the Wix webhook payload
+        acct_row = session.execute(
+            text("""
+                SELECT a.id, a.external_wix_id,
+                       m.full_name, m.surname
+                FROM billing.account a
+                LEFT JOIN billing.member m ON m.account_id = a.id AND m.is_primary = true AND m.active = true
+                WHERE a.email = :email
+                LIMIT 1
+            """),
             {"email": email},
-        ).scalar_one_or_none()
-        if not acct_id:
+        ).mappings().first()
+        if not acct_row:
             return jsonify({"ok": False, "error": "account_not_found"}), 404
+
+        acct_id = int(acct_row["id"])
+        owner_wix_id = acct_row["external_wix_id"] or ""
+        owner_name = " ".join(filter(None, [acct_row["full_name"], acct_row["surname"]])) or email
 
         from datetime import timezone
         now = datetime.now(tz=timezone.utc)
@@ -1565,22 +1581,55 @@ def coach_invite():
                 {"id": int(existing["id"]), "status": STATUS_INVITED, "now": now},
             )
             session.commit()
-            return jsonify({"ok": True, "permission_id": int(existing["id"]),
-                            "status": STATUS_INVITED, "reused": True})
+            permission_id = int(existing["id"])
+            reused = True
+        else:
+            row = session.execute(
+                text(f"""
+                    INSERT INTO {SCHEMA}.{TABLE}
+                      (owner_account_id, coach_account_id, coach_email, status, active, created_at, updated_at)
+                    VALUES (:aid, NULL, :ce, :status, true, :now, :now)
+                    RETURNING id
+                """),
+                {"aid": acct_id, "ce": coach_email, "status": STATUS_INVITED, "now": now},
+            ).mappings().first()
+            session.commit()
+            permission_id = int(row["id"])
+            reused = False
 
-        row = session.execute(
-            text(f"""
-                INSERT INTO {SCHEMA}.{TABLE}
-                  (owner_account_id, coach_account_id, coach_email, status, active, created_at, updated_at)
-                VALUES (:aid, NULL, :ce, :status, true, :now, :now)
-                RETURNING id
-            """),
-            {"aid": acct_id, "ce": coach_email, "status": STATUS_INVITED, "now": now},
-        ).mappings().first()
+    # Fire-and-forget: trigger Wix to send the invite email
+    wix_email_error = None
+    if WIX_COACH_INVITE_URL:
+        try:
+            wix_payload = {
+                "coachEmail": coach_email,
+                "coachFullName": (payload.get("coach_name") or "").strip() or coach_email,
+                "ownerName": owner_name,
+                "ownerId": owner_wix_id,
+                "ownerEmail": email,
+            }
+            headers = {"Content-Type": "application/json"}
+            if WIX_COACH_INVITE_KEY:
+                headers["X-Ops-Key"] = WIX_COACH_INVITE_KEY
+            resp = http_requests.post(WIX_COACH_INVITE_URL, json=wix_payload,
+                                      headers=headers, timeout=15)
+            if resp.status_code >= 400:
+                wix_email_error = f"HTTP {resp.status_code}"
+                log.warning("Wix coach invite webhook failed: %s %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            wix_email_error = str(e)
+            log.warning("Wix coach invite webhook error: %s", e)
+    else:
+        log.info("WIX_COACH_INVITE_URL not set; skipping invite email for %s", coach_email)
 
-        session.commit()
-        return jsonify({"ok": True, "permission_id": int(row["id"]),
-                        "status": STATUS_INVITED, "reused": False})
+    return jsonify({
+        "ok": True,
+        "permission_id": permission_id,
+        "status": STATUS_INVITED,
+        "reused": reused,
+        "email_sent": wix_email_error is None and bool(WIX_COACH_INVITE_URL),
+        "email_error": wix_email_error,
+    })
 
 
 # ----------------------------
