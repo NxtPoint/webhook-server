@@ -470,6 +470,7 @@ window.addEventListener('message', function(event) {
 
   // Relay checkout requests from child pages up to Wix parent
   if (d.type === 'wix-checkout' && d.planId) {
+    console.log('[portal] relaying wix-checkout to parent, planId:', d.planId);
     window.parent.postMessage(d, '*');
     return;
   }

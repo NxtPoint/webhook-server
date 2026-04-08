@@ -583,13 +583,12 @@ function renderPlanCard(plan, isCurrent) {
 // ==================== PLAN SELECTION → WIX CHECKOUT ====================
 function selectPlan(wixPlanId) {
   if (!wixPlanId) return;
+  console.log('[pricing] selectPlan fired, planId:', wixPlanId);
 
   // Send checkout request up to portal (parent), which relays to Wix (grandparent).
-  window.parent.postMessage({
-    type: 'wix-checkout',
-    planId: wixPlanId,
-    email: EMAIL,
-  }, '*');
+  const msg = { type: 'wix-checkout', planId: wixPlanId, email: EMAIL };
+  window.parent.postMessage(msg, '*');
+  console.log('[pricing] postMessage sent to parent');
 }
 
 // ==================== INIT ====================
