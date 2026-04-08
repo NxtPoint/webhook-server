@@ -87,8 +87,12 @@ Parallel analysis path for practice sessions, using the in-house T5 ML pipeline 
 **Key differences from SportAI path:**
 - Submit: `_t5_submit()` → AWS Batch (vs `_sportai_submit()` → external API)
 - Status poll: DB query on `ml_analysis.video_analysis_jobs` (vs SportAI HTTP call)
+- Cancel: `_t5_cancel()` → terminates Batch job (vs `_sportai_cancel()` → external API)
 - Ingest: `_do_ingest_t5()` — lightweight, skips bronze/silver/billing/trim (data already in `ml_analysis.*`)
 - Billing: no credit consumed for practice sessions
+- Result URL resolution: `_resolve_result_url_for_task()` checks `sport_type` and uses `_t5_status()` for practice jobs (not SportAI)
+
+**Cancel / unhappy path routing**: the cancel endpoint (`/upload/api/cancel-task`) and `_resolve_result_url_for_task()` both check `sport_type in T5_SPORT_TYPES` before deciding whether to call SportAI or T5 functions. All new endpoints that interact with analysis jobs must do the same check.
 
 **Required env vars** (for T5 routing in upload_app.py): `BATCH_JOB_QUEUE` (default: `ten-fifty5-ml-queue`), `BATCH_JOB_DEF` (default: `ten-fifty5-ml-pipeline`)
 
@@ -373,9 +377,21 @@ bash ml_pipeline/deploy_aws.sh                              # deploy infra
 bash ml_pipeline/test_e2e.sh <video_path>                   # e2e test
 ```
 
+**Docker build** (from repo root):
+```bash
+docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
+```
+Base image: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. PyTorch installed from `--extra-index-url https://download.pytorch.org/whl/cu121` to use system CUDA. `.dockerignore` excludes `.venv/`, `.git/`, etc. Model weights (`ml_pipeline/models/`, ~135MB, git-ignored) must be present on disk at build time.
+
 **Architecture:** `config.py` (tunable params) → `video_preprocessor.py` (OpenCV frames) → `court_detector.py` (14 keypoints → homography) → `ball_tracker.py` (TrackNet V2) → `player_tracker.py` (YOLOv8) → `pipeline.py` (orchestrator) → `heatmaps.py` (matplotlib) → `db_writer.py` (PostgreSQL) → `api.py` (Flask blueprint).
 
-**AWS Resources:** ECR (`ten-fifty5-ml-pipeline`), Batch compute (Spot G4dn.xlarge, 0–4 vCPUs), Batch queue (`ten-fifty5-ml-queue`), Batch job def (4 vCPU, 15GB RAM, 1 GPU, 2hr timeout), Lambda trigger (`ten-fifty5-ml-trigger`, S3 `videos/` prefix), DLQ (SQS, 14-day retention). All tagged `Project=TEN-FIFTY5`.
+**AWS Resources (eu-north-1):** ECR (`ten-fifty5-ml-pipeline`), Batch compute (`ten-fifty5-ml-compute`, Spot G4dn.xlarge, 0–4 vCPUs), Batch queue (`ten-fifty5-ml-queue`), Batch job def (`ten-fifty5-ml-pipeline`, 4 vCPU, 15GB RAM, 1 GPU, 2hr timeout), CloudWatch logs (`/aws/batch/ten-fifty5-ml-pipeline`, 30-day retention). IAM roles: `ten-fifty5-ml-instance-role` (EC2), `ten-fifty5-ml-job-role` (ECS tasks, S3 + CloudWatch access), `aws-ec2-spot-fleet-tagging-role` (Spot Fleet). All tagged `Project=TEN-FIFTY5`.
+
+**Spot GPU quota**: AWS account needs "All G and VT Spot Instance Requests" quota >= 4 vCPUs in eu-north-1 (Service Quotas → Amazon EC2). Default is 0 — must be requested.
+
+**Batch job post-processing** (`__main__.py`): after pipeline completes, the Batch job also: (1) transcodes source video to H.264 MP4 via FFmpeg, (2) uploads to `trimmed/{job_id}/practice.mp4`, (3) updates `bronze.submission_context.trim_output_s3_key`, (4) deletes raw source from S3. Both steps are non-fatal.
+
+**`deploy_aws.sh` on Windows/Git Bash**: paths starting with `/` get mangled by MSYS2. Prefix commands with `MSYS_NO_PATHCONV=1` or run the Batch/CloudWatch steps manually.
 
 **Database Schema** (`ml_analysis.*`, managed by `db_schema.py`): `video_analysis_jobs`, `ball_detections`, `player_detections`, `match_analytics`.
 
