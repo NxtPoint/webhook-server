@@ -107,6 +107,13 @@ button { cursor: pointer; font-family: inherit; }
   transition: border-color var(--transition); outline: none;
 }
 .edit-input:focus { border-color: var(--green); }
+.edit-input:-webkit-autofill,
+.edit-input:-webkit-autofill:hover,
+.edit-input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 30px var(--bg) inset !important;
+  -webkit-text-fill-color: var(--text) !important;
+  border-color: var(--border);
+}
 select.edit-input { appearance: auto; }
 textarea.edit-input { resize: vertical; min-height: 60px; }
 .score-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
@@ -1137,15 +1144,15 @@ function renderSinglesForm(el) {
 
       <div class="edit-field">
         <label class="edit-label">Score</label>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;align-items:center;margin-top:8px">
-          <div style="font-weight:600;font-size:0.85rem;color:var(--green);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="scoreNameA">${esc(defaultPlayerADisplay)}</div>
-          <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
-          <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
-          <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
-          <div style="font-weight:600;font-size:0.85rem;color:var(--text-sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="scoreNameB">Opponent</div>
-          <div class="score-set"><label>Set 1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
-          <div class="score-set"><label>Set 2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
-          <div class="score-set"><label>Set 3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
+        <div style="display:grid;grid-template-columns:2.5fr 1fr 1fr 1fr;gap:4px;align-items:center;margin-top:8px">
+          <div style="font-weight:600;font-size:0.82rem;color:var(--green);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:4px" id="scoreNameA">${esc(defaultPlayerADisplay)}</div>
+          <div class="score-set"><label>S1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set1_games"></div>
+          <div class="score-set"><label>S2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set2_games"></div>
+          <div class="score-set"><label>S3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_a_set3_games"></div>
+          <div style="font-weight:600;font-size:0.82rem;color:var(--text-sec);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:4px" id="scoreNameB">Opponent</div>
+          <div class="score-set"><label>S1</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set1_games"></div>
+          <div class="score-set"><label>S2</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set2_games"></div>
+          <div class="score-set"><label>S3</label><input class="edit-input" type="number" min="0" max="7" id="fd-player_b_set3_games"></div>
         </div>
       </div>
 
