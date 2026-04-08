@@ -301,10 +301,17 @@ let currentDateTo = currentDateFrom;
 async function safeFetch(path) {
   try {
     const res = await apiFetch(path);
-    if (res.status === 403) return { ok: false, error: 'forbidden' };
+    if (res.status === 403) return { ok: false, error: 'forbidden', _status: 403 };
+    if (!res.ok) {
+      const body = await res.text();
+      console.error('API error:', path, res.status, body);
+      return { ok: false, error: `HTTP ${res.status}`, _status: res.status, _body: body };
+    }
     return await res.json();
-  } catch (e) { console.warn('fetch failed:', path, e); return { ok: false }; }
+  } catch (e) { console.error('fetch failed:', path, e); return { ok: false, error: e.message }; }
 }
+
+let apiErrors = [];
 
 async function init() {
   if (!EMAIL || !API_KEY) {
@@ -312,7 +319,7 @@ async function init() {
     return;
   }
   if (!ADMIN_EMAILS.includes(EMAIL)) {
-    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>Admin access only.</p></div>';
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>Admin access only. Email: ' + EMAIL + '</p></div>';
     return;
   }
 
@@ -322,8 +329,13 @@ async function init() {
     safeFetch('/api/client/backoffice/customers'),
   ]);
 
+  // Collect any errors for debug display
+  if (!kData.ok) apiErrors.push('KPIs: ' + (kData.error || 'unknown'));
+  if (!pData.ok) apiErrors.push('Pipeline: ' + (pData.error || 'unknown'));
+  if (!cData.ok) apiErrors.push('Customers: ' + (cData.error || 'unknown'));
+
   if (kData.error === 'forbidden' || pData.error === 'forbidden') {
-    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>Admin access only.</p></div>';
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Access Denied</h3><p>API returned 403 forbidden for ' + EMAIL + '.<br>Check that CLIENT_API_KEY matches.</p></div>';
     return;
   }
 
@@ -358,6 +370,16 @@ function render() {
       </div>
     </div>
   `;
+
+  // Debug banner (shows API errors if any)
+  if (apiErrors.length > 0) {
+    app.insertAdjacentHTML('beforeend', `
+      <div style="background:rgba(220,38,38,0.06);border:1px solid var(--red);border-radius:var(--radius);padding:10px 16px;margin-bottom:16px;font-size:0.82rem;color:var(--red);">
+        <strong>API Errors:</strong> ${apiErrors.join(' | ')}<br>
+        <span style="font-size:0.72rem;color:var(--text-dim);">Email: ${EMAIL} | API: ${API_BASE} | Key: ${API_KEY ? API_KEY.substring(0,4) + '...' : 'MISSING'}</span>
+      </div>
+    `);
+  }
 
   renderKPIs(app);
   renderTabs(app);
