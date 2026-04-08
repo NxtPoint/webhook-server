@@ -1129,8 +1129,35 @@ def backoffice_customers():
         return _forbid()
 
     with engine.connect() as conn:
-        rows = conn.execute(
+        # subscription_state is created lazily — check before joining
+        has_sub = conn.execute(
             text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'billing' AND table_name = 'subscription_state'
+                )
+            """)
+        ).scalar()
+
+        sub_join = "LEFT JOIN billing.subscription_state s ON s.account_id = a.id" if has_sub else ""
+        sub_cols = """
+                    s.plan_code,
+                    s.plan_type,
+                    s.status AS subscription_status,
+                    s.matches_granted AS plan_allowance,
+                    s.current_period_start,
+                    s.current_period_end,
+                    s.cancelled_at,""" if has_sub else """
+                    NULL AS plan_code,
+                    NULL AS plan_type,
+                    NULL AS subscription_status,
+                    NULL AS plan_allowance,
+                    NULL AS current_period_start,
+                    NULL AS current_period_end,
+                    NULL AS cancelled_at,"""
+
+        rows = conn.execute(
+            text(f"""
                 SELECT
                     a.id AS account_id,
                     a.email,
@@ -1142,13 +1169,7 @@ def backoffice_customers():
                     COALESCE(v.matches_consumed, 0)    AS matches_consumed,
                     COALESCE(v.matches_remaining, 0)   AS matches_remaining,
                     -- Subscription
-                    s.plan_code,
-                    s.plan_type,
-                    s.status AS subscription_status,
-                    s.matches_granted AS plan_allowance,
-                    s.current_period_start,
-                    s.current_period_end,
-                    s.cancelled_at,
+                    {sub_cols}
                     -- Members
                     (SELECT count(*) FROM billing.member m
                      WHERE m.account_id = a.id AND m.active = true) AS member_count,
@@ -1163,7 +1184,7 @@ def backoffice_customers():
                      WHERE sc.email = a.email) AS last_upload_at
                 FROM billing.account a
                 LEFT JOIN billing.vw_customer_usage v ON v.account_id = a.id
-                LEFT JOIN billing.subscription_state s ON s.account_id = a.id
+                {sub_join}
                 ORDER BY a.created_at DESC
             """)
         ).mappings().all()
@@ -1209,8 +1230,20 @@ def backoffice_kpis():
         return _forbid()
 
     with engine.connect() as conn:
-        kpi = conn.execute(
+        # subscription_state is created lazily — check before querying
+        has_sub = conn.execute(
             text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'billing' AND table_name = 'subscription_state'
+                )
+            """)
+        ).scalar()
+
+        sub_count = "(SELECT count(*) FROM billing.subscription_state WHERE status = 'ACTIVE')" if has_sub else "0"
+
+        kpi = conn.execute(
+            text(f"""
                 SELECT
                   (SELECT count(*) FROM billing.account WHERE active = true)
                       AS active_accounts,
@@ -1247,8 +1280,7 @@ def backoffice_kpis():
                    FROM billing.entitlement_consumption)
                       AS total_credits_consumed,
                   -- Active subscriptions
-                  (SELECT count(*) FROM billing.subscription_state
-                   WHERE status = 'ACTIVE')
+                  {sub_count}
                       AS active_subscriptions,
                   -- Monthly tasks (last 12 months for chart)
                   (SELECT json_agg(row_to_json(m))
