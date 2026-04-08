@@ -577,7 +577,7 @@ function render() {
   // === NO ACTIVE PLAN BANNER ===
   if (!planActive && !isCoach && accountStatus === 'active') {
     html += `<div class="entitlement-banner info" id="noPlanBanner">
-      <span>No active plan. <a href="${esc(plansUrl)}" target="_blank">View plans</a> to start analysing matches.</span>
+      <span>No active plan. <a href="#" onclick="goToPricing();return false">View plans</a> to start analysing matches.</span>
       <button class="dismiss" onclick="document.getElementById('noPlanBanner').style.display='none'">&times;</button>
     </div>`;
   }
@@ -585,7 +585,7 @@ function render() {
   // === CREDITS EXHAUSTED BANNER ===
   if (remaining <= 0 && planActive && !isCoach && accountStatus === 'active') {
     html += `<div class="credits-banner" id="creditsBanner">
-      <span>You have no remaining match credits. <a href="${esc(plansUrl)}" target="_blank">Top up</a> to continue analysing matches.</span>
+      <span>You have no remaining match credits. <a href="#" onclick="goToPricing();return false">Top up</a> to continue analysing matches.</span>
       <button class="dismiss" onclick="document.getElementById('creditsBanner').style.display='none'">&times;</button>
     </div>`;
   }
@@ -1483,6 +1483,7 @@ async function reprocessOnly(taskId) {
 }
 
 function esc(s) { if(s==null)return''; const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
+function goToPricing() { if (window.parent !== window) { window.parent.postMessage({ type: 'portal-navigate', target: 'pricing' }, '*'); } else { window.location.href = '/pricing?' + new URLSearchParams({ email: EMAIL, key: API_KEY, api: API_BASE }).toString(); } }
 document.addEventListener('keydown', e => {
   if (e.key==='Escape') {
     if (document.getElementById('videoModal').classList.contains('open')) closeVideo();

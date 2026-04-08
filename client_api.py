@@ -558,6 +558,9 @@ def client_entitlements():
                         a.active AS account_active,
                         COALESCE(m.role, 'player_parent') AS role,
                         s.status AS subscription_status,
+                        s.plan_code,
+                        s.plan_type,
+                        s.current_period_end,
                         COALESCE(v.matches_remaining, 0) AS credits_remaining,
                         COALESCE(v.matches_granted, 0)   AS matches_granted,
                         COALESCE(v.matches_consumed, 0)   AS matches_consumed
@@ -580,6 +583,9 @@ def client_entitlements():
                         a.active AS account_active,
                         COALESCE(m.role, 'player_parent') AS role,
                         NULL AS subscription_status,
+                        NULL AS plan_code,
+                        NULL AS plan_type,
+                        NULL AS current_period_end,
                         COALESCE(v.matches_remaining, 0) AS credits_remaining,
                         COALESCE(v.matches_granted, 0)   AS matches_granted,
                         COALESCE(v.matches_consumed, 0)   AS matches_consumed
@@ -605,6 +611,9 @@ def client_entitlements():
     else:
         account_status = "active"
 
+    period_end = row["current_period_end"]
+    period_end_iso = period_end.isoformat() if period_end else None
+
     return jsonify({
         "ok": True,
         "entitlements": {
@@ -614,6 +623,10 @@ def client_entitlements():
             "matches_granted": int(row["matches_granted"]),
             "matches_consumed": int(row["matches_consumed"]),
             "account_status": account_status,
+            "subscription_status": sub_status or None,
+            "plan_code": row["plan_code"],
+            "plan_type": row["plan_type"],
+            "current_period_end": period_end_iso,
             "plans_page_url": PLANS_PAGE_URL,
         },
     })

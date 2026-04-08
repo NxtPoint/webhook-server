@@ -14,16 +14,17 @@ This repo defines five Render services (see `render.yaml`). All are Python 3.12.
 | Video trim worker | Docker (see `Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` → `video_pipeline/video_worker_app.py` |
 | Locker Room | `gunicorn locker_room_app:app` | `locker_room_app.py` (serves HTML SPAs, no DB) |
 
-The Locker Room service serves eight pages:
+The Locker Room service serves nine pages:
 - `GET /` → `locker_room.html` (dashboard)
 - `GET /media-room` → `media_room.html` (video upload)
 - `GET /register` → `players_enclosure.html` (onboarding wizard)
 - `GET /backoffice` → `backoffice.html` (admin dashboard)
 - `GET /analytics` → `analytics.html` (Power BI embed)
 - `GET /portal` → `portal.html` (unified nav shell — main entry point for Wix)
+- `GET /pricing` → `pricing.html` (plans & pricing page)
 - `GET /coach-accept` → `coach_accept.html` (coach invitation acceptance)
 
-The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, `/portal`, and `/coach-accept` as same-origin backups for API access.
+The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, `/portal`, `/pricing`, and `/coach-accept` as same-origin backups for API access.
 
 Note: The Locker Room service only installs `flask` + `gunicorn` (not full `requirements.txt`).
 
@@ -260,6 +261,17 @@ Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&a
 
 Video upload page. 4-step wizard: Game Type Selection → Video Upload (chunked multipart to S3) → Match Details Form → Analysis Progress (polls task-status). Auth via URL params. Entitlement gate on load.
 
+### Pricing (`pricing.html`)
+
+Plans & pricing page. Fetches entitlements on load and conditionally renders one of three views:
+- **New plan selection** (player/parent with no active recurring subscription): shows monthly subscription plans + pay-as-you-go credit packs
+- **Top-up only** (player/parent with active recurring subscription): shows only credit top-up packs with a note that plan changes are available after the current period ends
+- **Coach view**: explains that coach access is free and managed by player accounts
+
+On plan selection, redirects to the corresponding Wix Payment Plan URL (with email pre-fill) for PayPal checkout. Plan catalogue is configured as JS constants (`PLAYER_PLANS`, `TOPUP_PACKS`, `COACH_PLANS`) — update `wixUrl` fields when Wix plan IDs change.
+
+Status bar shows current plan, renewal date, and credit usage. All billing state reads come from `/api/client/entitlements`.
+
 ### Portal (`portal.html`)
 
 Unified navigation shell — **main entry point for Wix embedding**. Collapsible sidebar with navigation. Content pages load in inner iframe with auth params forwarded.
@@ -317,6 +329,11 @@ The S3 bucket (`nextpoint-prod-uploads`) requires CORS for browser-to-S3 multipa
 - **ExposeHeaders**: `ETag` (required for multipart upload completion)
 - **AllowedOrigins** must include: `https://locker-room-26kd.onrender.com`, tenfifty5.com variants, Wix editor/site domains
 
+### Cron Jobs (Render)
+
+- **`cron_capacity_sweep.py`** — runs every few minutes. Sweeps stale PBI sessions (suspends capacity if idle), detects stuck PBI refreshes, stuck ingests, and stuck video trims.
+- **`cron_monthly_refill.py`** — monthly billing entitlement refill. Calls `POST /api/billing/cron/monthly_refill` on the main API.
+
 ### Diagnostics
 
 - `GET /__alive` — liveness probe (from `probes.py`)
@@ -326,6 +343,8 @@ The S3 bucket (`nextpoint-prod-uploads`) requires CORS for browser-to-S3 multipa
 ### Code Organisation
 
 New features **must live in their own subdirectory** (not loose files in the repo root). Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`. Each directory should be a self-contained package with its own `__init__.py`. The repo root is for service entry points only (`*_app.py`, `wsgi.py`).
+
+**Exception**: the Locker Room SPA files (`locker_room.html`, `media_room.html`, `portal.html`, `backoffice.html`, `analytics.html`, `coach_accept.html`, `players_enclosure.html`) live in the repo root because `locker_room_app.py` serves them with `send_file()` from the working directory.
 
 ### ML Pipeline (`ml_pipeline/`)
 
@@ -364,3 +383,5 @@ When Wix is retired:
 
 - **`superset/`**: Optional Superset BI deployment config (Power BI is primary). Not in `render.yaml`.
 - **`migrations/`**: One-off backfill SQL scripts. No automated migration framework — schema is managed idempotently via `db_init.py`.
+- **`_archive/`**: Deprecated/replaced code kept for reference.
+- **`lambda/`**: AWS Lambda function source (e.g., S3 trigger for ML pipeline).

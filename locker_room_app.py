@@ -38,6 +38,11 @@ def portal():
     return send_file("portal.html")
 
 
+@app.get("/pricing")
+def pricing():
+    return send_file("pricing.html")
+
+
 @app.get("/coach-accept")
 def coach_accept():
     return send_file("coach_accept.html")

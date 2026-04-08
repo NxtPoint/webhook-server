@@ -490,8 +490,9 @@ function renderHeader(name, remaining, pillClass) {
 // ============================================================
 // TASK 2 — ENTITLEMENT GATE (BLOCKED STATES)
 // ============================================================
+function goToPricing() { if (window.parent !== window) { window.parent.postMessage({ type: 'portal-navigate', target: 'pricing' }, '*'); } else { window.location.href = '/pricing?' + new URLSearchParams({ email: EMAIL, key: API_KEY, api: API_BASE }).toString(); } }
+
 function renderBlocked(reason) {
-  const plansUrl = STATE.entitlements?.plans_page_url || '#';
   if (reason === 'coach') {
     return `<div class="blocked-card">
       <h3>Coach Access</h3>
@@ -502,14 +503,14 @@ function renderBlocked(reason) {
     return `<div class="blocked-card">
       <h3>No Active Plan</h3>
       <p>You need an active subscription to upload match videos for analysis.</p>
-      <a href="${esc(plansUrl)}" target="_top">View Plans</a>
+      <a href="#" onclick="goToPricing();return false">View Plans</a>
     </div>`;
   }
   if (reason === 'no_credits') {
     return `<div class="blocked-card">
       <h3>No Credits Remaining</h3>
       <p>You've used all your match credits. Purchase additional credits to continue uploading.</p>
-      <a href="${esc(plansUrl)}" target="_top">Get More Credits</a>
+      <a href="#" onclick="goToPricing();return false">Get More Credits</a>
     </div>`;
   }
   return '';

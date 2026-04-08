@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TEN-FIFTY5 Plans &amp; Pricing</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  min-height: 100vh; -webkit-font-smoothing: antialiased;
+}
+button { cursor: pointer; font-family: inherit; }
+
+.app { max-width: 960px; margin: 0 auto; padding: 16px 16px 80px; }
+
+/* ========== HEADER ========== */
+.header {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.header-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; flex-wrap: wrap; gap: 10px;
+}
+.logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.player-info { text-align: right; }
+.player-name { font-weight: 600; font-size: 0.9rem; color: var(--text); }
+.player-email { color: var(--text-sec); font-size: 0.75rem; }
+.usage-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 12px; border-radius: 4px;
+  font-size: 0.78rem; font-weight: 600;
+  background: var(--green-bg); color: var(--green); border: 1px solid var(--green);
+}
+.usage-pill.low { background: rgba(217,119,6,0.08); color: var(--amber); border-color: var(--amber); }
+.usage-pill.critical { background: rgba(220,38,38,0.08); color: var(--red); border-color: var(--red); }
+
+/* ========== ENTITLEMENT BANNERS & OVERLAYS ========== */
+.credits-banner, .entitlement-banner {
+  border: 1px solid; border-radius: var(--radius);
+  padding: 10px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; font-size: 0.85rem;
+}
+.credits-banner { background: rgba(220,38,38,0.06); border-color: var(--red); color: var(--red); }
+.entitlement-banner.warn { background: rgba(220,38,38,0.06); border-color: var(--red); color: var(--red); }
+.entitlement-banner.info { background: rgba(217,119,6,0.06); border-color: var(--amber); color: var(--amber); }
+.credits-banner a, .entitlement-banner a { font-weight: 600; text-decoration: underline; color: inherit; }
+
+.block-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  z-index: 9999; display: flex; align-items: center; justify-content: center;
+}
+.block-overlay-box {
+  background: var(--white); border-radius: var(--radius); padding: 40px 32px;
+  max-width: 440px; width: 90%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.block-overlay-box h2 { font-size: 1.2rem; margin-bottom: 12px; color: var(--red); }
+.block-overlay-box p { color: var(--text-sec); font-size: 0.9rem; line-height: 1.6; }
+.block-overlay-box a { color: var(--green); font-weight: 600; }
+.coach-notice {
+  background: var(--green-bg); border: 1px solid var(--green); border-radius: var(--radius);
+  padding: 10px 16px; margin-bottom: 16px; font-size: 0.85rem; color: var(--green);
+}
+
+/* ========== STATUS BAR ========== */
+.status-bar {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px;
+}
+.status-bar-left { display: flex; flex-direction: column; gap: 2px; }
+.status-bar-label { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); }
+.status-bar-plan { font-size: 0.95rem; font-weight: 600; color: var(--text); }
+.status-bar-detail { font-size: 0.8rem; color: var(--text-sec); }
+.status-bar-right { display: flex; align-items: center; gap: 14px; }
+
+/* ========== SECTION HEADING ========== */
+.section-heading {
+  font-size: 1rem; font-weight: 700; color: var(--text);
+  margin-bottom: 6px;
+}
+.section-sub {
+  font-size: 0.82rem; color: var(--text-sec); margin-bottom: 16px;
+}
+
+/* ========== PLAN CARDS ========== */
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.plan-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  display: flex; flex-direction: column;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.plan-card:hover { border-color: var(--green); box-shadow: 0 2px 8px rgba(26,92,46,0.1); }
+.plan-card.featured {
+  border-color: var(--green);
+  box-shadow: 0 2px 8px rgba(26,92,46,0.1);
+}
+.plan-card.featured .plan-badge {
+  display: inline-block;
+  background: var(--green);
+  color: var(--white);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  margin-bottom: 8px;
+  align-self: flex-start;
+}
+.plan-card .plan-badge { display: none; }
+.plan-card.current {
+  border-color: var(--green);
+  background: var(--green-bg);
+}
+.plan-name { font-size: 1rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.plan-price { font-size: 1.4rem; font-weight: 700; color: var(--green); margin-bottom: 2px; }
+.plan-price .currency { font-size: 0.85rem; font-weight: 600; vertical-align: super; }
+.plan-price .period { font-size: 0.78rem; font-weight: 400; color: var(--text-sec); }
+.plan-desc { font-size: 0.8rem; color: var(--text-sec); margin-bottom: 14px; flex: 1; }
+.plan-features { list-style: none; margin-bottom: 16px; }
+.plan-features li {
+  font-size: 0.8rem; color: var(--text-sec); padding: 3px 0;
+  display: flex; align-items: flex-start; gap: 8px;
+}
+.plan-features li::before {
+  content: '';
+  width: 16px; height: 16px; flex-shrink: 0;
+  background: var(--green-bg);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  margin-top: 1px;
+}
+.plan-features .check::before {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%231a5c2e' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E") center/10px no-repeat var(--green-bg);
+}
+.plan-btn {
+  display: block; width: 100%; padding: 10px;
+  border: none; border-radius: var(--radius);
+  font-size: 0.85rem; font-weight: 600; text-align: center;
+  transition: all var(--transition); text-decoration: none;
+}
+.plan-btn-primary {
+  background: var(--green); color: var(--white);
+}
+.plan-btn-primary:hover { background: var(--green-light); }
+.plan-btn-secondary {
+  background: var(--white); color: var(--green);
+  border: 1px solid var(--green);
+}
+.plan-btn-secondary:hover { background: var(--green-bg); }
+.plan-btn:disabled, .plan-btn[disabled] {
+  opacity: 0.45; cursor: default; pointer-events: none;
+}
+
+.plan-current-label {
+  display: block; width: 100%; padding: 10px;
+  border: 1px solid var(--green); border-radius: var(--radius);
+  font-size: 0.85rem; font-weight: 600; text-align: center;
+  color: var(--green); background: var(--green-bg);
+}
+
+/* ========== TOP-UP SECTION ========== */
+.topup-note {
+  background: rgba(217,119,6,0.06);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  font-size: 0.82rem;
+  color: var(--amber);
+  margin-bottom: 16px;
+}
+
+/* ========== LOADING ========== */
+.loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: 60px 20px;
+  flex-direction: column; gap: 12px;
+  color: var(--text-sec); font-size: 0.88rem;
+}
+.spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 640px) {
+  .plan-grid { grid-template-columns: 1fr; }
+  .status-bar { flex-direction: column; align-items: flex-start; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="loading"><div class="spinner"></div><p>Loading plans...</p></div>
+</div>
+
+<script>
+// ==================== AUTH ====================
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+const FIRST_NAME = (params.get('firstName') || params.get('first_name') || '').trim();
+const SURNAME = (params.get('surname') || params.get('last_name') || '').trim();
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+async function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
+  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
+}
+
+// ==================== PLAN CATALOGUE ====================
+// Wix Payment Plan URLs — update these when Wix plan IDs change.
+// Each plan maps to a Wix checkout URL that handles PayPal payment.
+const WIX_PLAN_BASE = 'https://www.tenfifty5.com/plans';
+
+const PLAYER_PLANS = [
+  {
+    code: 'starter',
+    name: 'Starter',
+    price: 29,
+    period: '/mo',
+    type: 'recurring',
+    matches: 3,
+    desc: 'Perfect for casual players who play a few times a month.',
+    features: ['3 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard'],
+    featured: false,
+    wixUrl: WIX_PLAN_BASE + '?plan=starter',
+  },
+  {
+    code: 'pro',
+    name: 'Pro',
+    price: 49,
+    period: '/mo',
+    type: 'recurring',
+    matches: 6,
+    desc: 'For competitive players training multiple times per week.',
+    features: ['6 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard', 'Priority processing'],
+    featured: true,
+    wixUrl: WIX_PLAN_BASE + '?plan=pro',
+  },
+  {
+    code: 'elite',
+    name: 'Elite',
+    price: 79,
+    period: '/mo',
+    type: 'recurring',
+    matches: 12,
+    desc: 'For serious competitors and academy players.',
+    features: ['12 match analyses per month', 'Full point-by-point breakdown', 'Trimmed match footage', 'Performance analytics dashboard', 'Priority processing'],
+    featured: false,
+    wixUrl: WIX_PLAN_BASE + '?plan=elite',
+  },
+];
+
+const TOPUP_PACKS = [
+  {
+    code: 'topup_1',
+    name: '1 Match Credit',
+    price: 15,
+    period: '',
+    type: 'payg',
+    matches: 1,
+    desc: 'Single match analysis credit.',
+    features: ['1 match analysis', 'Full point-by-point breakdown', 'Trimmed match footage'],
+    wixUrl: WIX_PLAN_BASE + '?plan=topup_1',
+  },
+  {
+    code: 'topup_3',
+    name: '3 Match Credits',
+    price: 35,
+    period: '',
+    type: 'payg',
+    matches: 3,
+    desc: 'Small credit pack — best value per match.',
+    features: ['3 match analyses', 'Full point-by-point breakdown', 'Trimmed match footage'],
+    wixUrl: WIX_PLAN_BASE + '?plan=topup_3',
+  },
+  {
+    code: 'topup_5',
+    name: '5 Match Credits',
+    price: 50,
+    period: '',
+    type: 'payg',
+    matches: 5,
+    desc: 'Bulk credit pack for frequent players.',
+    features: ['5 match analyses', 'Full point-by-point breakdown', 'Trimmed match footage'],
+    wixUrl: WIX_PLAN_BASE + '?plan=topup_5',
+  },
+];
+
+const COACH_PLANS = [
+  {
+    code: 'coach_monthly',
+    name: 'Coach Access',
+    price: 0,
+    period: '',
+    type: 'coach',
+    matches: 0,
+    desc: 'Coaches are invited by player accounts. Coach access is free — your players\' subscriptions cover match analyses.',
+    features: ['View all assigned players\' matches', 'Full point-by-point data access', 'Performance analytics dashboard', 'No upload or credit usage'],
+    wixUrl: null,
+  },
+];
+
+// ==================== STATE ====================
+let entitlements = null;
+
+// ==================== RENDER ====================
+function render() {
+  const app = document.getElementById('app');
+  const name = [FIRST_NAME, SURNAME].filter(Boolean).join(' ') || EMAIL.split('@')[0] || '';
+  const role = (entitlements?.role || 'player_parent').toLowerCase();
+  const isCoach = role === 'coach';
+  const planActive = entitlements?.plan_active ?? false;
+  const accountStatus = entitlements?.account_status || 'active';
+  const remaining = entitlements?.credits_remaining ?? 0;
+  const granted = entitlements?.matches_granted ?? 0;
+  const consumed = entitlements?.matches_consumed ?? 0;
+  const planCode = entitlements?.plan_code || null;
+  const planType = entitlements?.plan_type || null;
+  const subStatus = entitlements?.subscription_status || null;
+  const periodEnd = entitlements?.current_period_end || null;
+
+  const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
+
+  let html = '';
+
+  // === ACCOUNT BLOCKED OVERLAY ===
+  if (accountStatus === 'terminated' || accountStatus === 'suspended') {
+    html += `<div class="block-overlay"><div class="block-overlay-box">
+      <h2>Account Suspended</h2>
+      <p>Your account has been suspended. Please contact support at <a href="mailto:support@tenfifty5.com">support@tenfifty5.com</a> for assistance.</p>
+    </div></div>`;
+  }
+
+  // === HEADER ===
+  html += `<div class="header"><div class="header-top">
+    <div class="logo">Plans &amp; Pricing</div>
+    <div class="header-right">
+      <span class="usage-pill ${pillClass}">${remaining} match${remaining !== 1 ? 'es' : ''} remaining</span>
+      <div class="player-info">
+        <div class="player-name">${esc(name)}</div>
+        <div class="player-email">${esc(EMAIL)}</div>
+      </div>
+    </div>
+  </div></div>`;
+
+  // === COACH VIEW ===
+  if (isCoach) {
+    html += `<div class="coach-notice">You are signed in as a <strong>Coach</strong>. Coach access is free and managed by your players' accounts.</div>`;
+    html += renderCoachView();
+    app.innerHTML = html;
+    return;
+  }
+
+  // === STATUS BAR (current subscription) ===
+  html += renderStatusBar(planActive, planCode, planType, subStatus, periodEnd, remaining, granted, consumed);
+
+  // === ROUTING: top-up only vs full plan selection ===
+  if (planActive && planType === 'recurring') {
+    // Mid-subscription: show top-up only
+    html += renderTopUpView(planCode, periodEnd);
+  } else {
+    // No active plan or PAYG-only: show full plan selection
+    html += renderFullPlanView(planCode);
+  }
+
+  app.innerHTML = html;
+}
+
+function renderStatusBar(planActive, planCode, planType, subStatus, periodEnd, remaining, granted, consumed) {
+  let planLabel = 'No Active Plan';
+  let planColor = 'var(--amber)';
+  let detail = '';
+
+  if (planActive) {
+    // Find matching plan name
+    const match = PLAYER_PLANS.find(p => p.code === planCode);
+    planLabel = match ? match.name : (planCode || 'Active Plan');
+    planColor = 'var(--green)';
+
+    if (planType === 'recurring' && periodEnd) {
+      const endDate = new Date(periodEnd);
+      detail = `Renews ${endDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+    }
+  } else if (subStatus === 'CANCELLED') {
+    planLabel = 'Cancelled';
+    planColor = 'var(--red)';
+    if (periodEnd) {
+      const endDate = new Date(periodEnd);
+      detail = `Access until ${endDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+    }
+  } else if (subStatus === 'EXPIRED') {
+    planLabel = 'Expired';
+    planColor = 'var(--text-dim)';
+  }
+
+  const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
+
+  return `<div class="status-bar">
+    <div class="status-bar-left">
+      <div class="status-bar-label">Current Plan</div>
+      <div class="status-bar-plan" style="color:${planColor}">${esc(planLabel)}</div>
+      ${detail ? `<div class="status-bar-detail">${detail}</div>` : ''}
+    </div>
+    <div class="status-bar-right">
+      <div style="text-align:right">
+        <div class="status-bar-label">Credits</div>
+        <span class="usage-pill ${pillClass}">${remaining} / ${granted}</span>
+      </div>
+      <div style="text-align:right">
+        <div class="status-bar-label">Used</div>
+        <div style="font-size:0.9rem;font-weight:600;color:var(--text)">${consumed}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderFullPlanView(currentPlanCode) {
+  let html = '';
+
+  // Monthly subscription plans
+  html += `<div class="section-heading">Monthly Subscriptions</div>`;
+  html += `<div class="section-sub">Choose a monthly plan to get started. Credits refresh each billing cycle. Cancel anytime.</div>`;
+  html += `<div class="plan-grid">`;
+  for (const plan of PLAYER_PLANS) {
+    const isCurrent = plan.code === currentPlanCode;
+    html += renderPlanCard(plan, isCurrent);
+  }
+  html += `</div>`;
+
+  // Pay-as-you-go packs
+  html += `<div class="section-heading">Pay-As-You-Go</div>`;
+  html += `<div class="section-sub">No subscription needed. Purchase match credits individually or in packs.</div>`;
+  html += `<div class="plan-grid">`;
+  for (const pack of TOPUP_PACKS) {
+    html += renderPlanCard(pack, false);
+  }
+  html += `</div>`;
+
+  return html;
+}
+
+function renderTopUpView(currentPlanCode, periodEnd) {
+  let html = '';
+
+  let endNote = '';
+  if (periodEnd) {
+    const endDate = new Date(periodEnd);
+    endNote = ` Your current billing period ends on <strong>${endDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</strong>.`;
+  }
+
+  html += `<div class="topup-note">
+    You have an active subscription. Plan changes are available after your current period ends.${endNote} You can top up with additional match credits below.
+  </div>`;
+
+  html += `<div class="section-heading">Top Up Match Credits</div>`;
+  html += `<div class="section-sub">Need more matches this month? Add credits instantly.</div>`;
+  html += `<div class="plan-grid">`;
+  for (const pack of TOPUP_PACKS) {
+    html += renderPlanCard(pack, false);
+  }
+  html += `</div>`;
+
+  return html;
+}
+
+function renderCoachView() {
+  let html = '';
+
+  html += `<div class="section-heading">Coach Access</div>`;
+  html += `<div class="section-sub">Coaches are added by player or parent accounts. There is no cost for coach access.</div>`;
+  html += `<div class="plan-grid">`;
+  for (const plan of COACH_PLANS) {
+    html += renderPlanCard(plan, true);
+  }
+  html += `</div>`;
+
+  return html;
+}
+
+function renderPlanCard(plan, isCurrent) {
+  const cls = [
+    'plan-card',
+    plan.featured ? 'featured' : '',
+    isCurrent ? 'current' : '',
+  ].filter(Boolean).join(' ');
+
+  const priceDisplay = plan.price === 0
+    ? '<span style="font-size:1.4rem;font-weight:700;color:var(--green)">Free</span>'
+    : `<span class="currency">$</span>${plan.price}<span class="period">${plan.period}</span>`;
+
+  let btnHtml;
+  if (isCurrent && plan.type !== 'payg') {
+    btnHtml = `<div class="plan-current-label">Current Plan</div>`;
+  } else if (!plan.wixUrl) {
+    btnHtml = `<div class="plan-current-label">Included</div>`;
+  } else {
+    const btnCls = plan.featured ? 'plan-btn plan-btn-primary' : 'plan-btn plan-btn-secondary';
+    btnHtml = `<button class="${btnCls}" onclick="selectPlan('${esc(plan.code)}', '${esc(plan.wixUrl)}')">${plan.type === 'payg' ? 'Buy Credits' : 'Get Started'}</button>`;
+  }
+
+  return `<div class="${cls}">
+    <div class="plan-badge">Most Popular</div>
+    <div class="plan-name">${esc(plan.name)}</div>
+    <div class="plan-price">${priceDisplay}</div>
+    ${plan.matches > 0 ? `<div style="font-size:0.75rem;color:var(--text-dim);margin-bottom:8px">${plan.matches} match${plan.matches !== 1 ? 'es' : ''}${plan.type === 'recurring' ? ' per month' : ''}</div>` : '<div style="margin-bottom:8px"></div>'}
+    <div class="plan-desc">${esc(plan.desc)}</div>
+    <ul class="plan-features">
+      ${plan.features.map(f => `<li class="check">${esc(f)}</li>`).join('')}
+    </ul>
+    ${btnHtml}
+  </div>`;
+}
+
+// ==================== PLAN SELECTION → WIX REDIRECT ====================
+function selectPlan(code, wixUrl) {
+  if (!wixUrl) return;
+
+  // Append email for pre-fill on Wix checkout
+  const sep = wixUrl.includes('?') ? '&' : '?';
+  const redirectUrl = wixUrl + sep + 'email=' + encodeURIComponent(EMAIL);
+
+  // Open in top-level window (escape iframe if inside portal)
+  if (window.top !== window.self) {
+    window.top.location.href = redirectUrl;
+  } else {
+    window.location.href = redirectUrl;
+  }
+}
+
+// ==================== INIT ====================
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = `
+      <div class="loading">
+        <p style="color:var(--red)">Configuration required. Missing email or API key.</p>
+      </div>`;
+    return;
+  }
+
+  try {
+    const res = await apiFetch('/api/client/entitlements');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.ok) {
+        entitlements = data.entitlements;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to fetch entitlements', e);
+  }
+
+  render();
+}
+
+init();
+</script>
+</body>
+</html>

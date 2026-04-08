@@ -55,7 +55,7 @@ except ImportError:
 
 # ── CORS (cross-origin support for Wix iframe embeds) ──────────────
 # Covers: /api/client/*, /upload/api/*, /api/submit_s3_task, /media-room
-CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/api/coaches/accept-token", "/media-room", "/backoffice", "/analytics", "/portal", "/coach-accept")
+CORS_PATHS = ("/api/client/", "/upload/api/", "/api/submit_s3_task", "/api/coaches/accept-token", "/media-room", "/backoffice", "/analytics", "/portal", "/pricing", "/coach-accept")
 
 @app.before_request
 def handle_cors_preflight():
@@ -1882,6 +1882,15 @@ def analytics():
 def portal():
     from flask import send_file
     return send_file("portal.html")
+
+
+# ==========================
+# PRICING (plans & pricing page)
+# ==========================
+@app.get("/pricing")
+def pricing():
+    from flask import send_file
+    return send_file("pricing.html")
 
 
 # ==========================

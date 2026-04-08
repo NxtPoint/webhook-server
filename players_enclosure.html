@@ -275,6 +275,7 @@ function esc(s) {
   d.textContent = String(s);
   return d.innerHTML;
 }
+function goToPricing() { if (window.parent !== window) { window.parent.postMessage({ type: 'portal-navigate', target: 'pricing' }, '*'); } else { window.location.href = '/pricing?' + new URLSearchParams({ email: EMAIL, key: API_KEY, api: API_BASE }).toString(); } }
 
 function showError(title, msg) {
   document.getElementById('app').innerHTML = `
@@ -351,7 +352,7 @@ function render() {
     }
     if (!entitlements.plan_active && entitlements.credits_remaining <= 0) {
       html += `<div class="entitlement-banner info">
-        <span>No active plan. <a href="${esc(entitlements.plans_page_url)}" target="_blank">View plans</a> to get started.</span>
+        <span>No active plan. <a href="#" onclick="goToPricing();return false">View plans</a> to get started.</span>
       </div>`;
     }
   }
