@@ -1,7 +1,7 @@
 # Dockerfile for ml_pipeline
 # Build from repo root: docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
 
-FROM nvidia/cuda:12.2.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
