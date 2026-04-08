@@ -26,7 +26,7 @@ html { font-size: 15px; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
-  min-height: 100vh; -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: antialiased;
 }
 button { cursor: pointer; font-family: inherit; }
 
@@ -226,6 +226,7 @@ button { cursor: pointer; font-family: inherit; }
 @media (max-width: 640px) {
   .plan-grid { grid-template-columns: 1fr; }
   .status-bar { flex-direction: column; align-items: flex-start; }
+  .app { padding-bottom: 200px !important; }
 }
 </style>
 </head>
