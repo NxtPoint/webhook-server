@@ -43,6 +43,12 @@ def alive():
     return jsonify({"ok": True, "service": "locker-room"})
 
 
+@app.errorhandler(404)
+def not_found(e):
+    """Return JSON for API paths that accidentally hit the locker-room service."""
+    return jsonify({"ok": False, "error": "not_found", "service": "locker-room"}), 404
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
     app.run(host="0.0.0.0", port=port, debug=True)
