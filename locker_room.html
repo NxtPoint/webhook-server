@@ -1006,9 +1006,8 @@ async function addMember() {
 // ============ COACH INVITE ============
 
 function renderCoachInviteContent() {
-  // Only show non-revoked coaches (INVITED + ACCEPTED), plus revoked for history
+  // Only show non-revoked coaches (INVITED + ACCEPTED)
   const active = coaches.filter(c => c.status !== 'REVOKED');
-  const revoked = coaches.filter(c => c.status === 'REVOKED');
 
   let cards = '';
   active.forEach(c => {
@@ -1020,15 +1019,6 @@ function renderCoachInviteContent() {
           <span class="coach-status ${statusClass}">${esc(c.status)}</span>
           <button class="btn-revoke" onclick="revokeCoach(${c.id},'${esc(c.coach_email)}')">Revoke</button>
         </span>
-      </div>
-    </div>`;
-  });
-
-  revoked.forEach(c => {
-    cards += `<div class="member-card" id="cc-${c.id}" style="opacity:0.5">
-      <div class="member-card-top" style="cursor:default">
-        <span class="member-card-name">${esc(c.coach_email)}</span>
-        <span class="coach-status revoked">${esc(c.status)}</span>
       </div>
     </div>`;
   });
@@ -1058,7 +1048,7 @@ function renderCoachInviteContent() {
       <span style="font-size:0.82rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px">Coaches${active.length ? ' (' + active.length + ')' : ''}</span>
     </div>
     <div class="member-cards">
-      ${coaches.length === 0 ? '<div style="color:var(--text-dim);font-size:0.85rem;padding:8px 0;">No coaches invited yet.</div>' : cards}
+      ${active.length === 0 ? '<div style="color:var(--text-dim);font-size:0.85rem;padding:8px 0;">No coaches invited yet.</div>' : cards}
     </div>`;
 }
 
