@@ -14,53 +14,37 @@ This repo defines five Render services (see `render.yaml`). All are Python 3.12.
 | Video trim worker | Docker (see `Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` → `video_pipeline/video_worker_app.py` |
 | Locker Room | `gunicorn locker_room_app:app` | `locker_room_app.py` (serves HTML SPAs, no DB) |
 
-The Locker Room service serves seven pages:
+The Locker Room service serves eight pages:
 - `GET /` → `locker_room.html` (dashboard)
 - `GET /media-room` → `media_room.html` (video upload)
 - `GET /register` → `players_enclosure.html` (onboarding wizard)
 - `GET /backoffice` → `backoffice.html` (admin dashboard)
 - `GET /analytics` → `analytics.html` (Power BI embed)
 - `GET /portal` → `portal.html` (unified nav shell — main entry point for Wix)
+- `GET /coach-accept` → `coach_accept.html` (coach invitation acceptance)
 
-The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, and `/portal` as same-origin backups for API access.
+The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, `/portal`, and `/coach-accept` as same-origin backups for API access.
 
 Note: The Locker Room service only installs `flask` + `gunicorn` (not full `requirements.txt`).
 
 **Local dev:**
 ```bash
-# Activate venv
 source .venv/Scripts/activate  # Windows bash
-
-# Install deps
 pip install -r requirements.txt
-
-# Run main app locally (requires DATABASE_URL, OPS_KEY, S3_BUCKET, etc.)
 gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 1800
-
-# Run video worker locally (requires VIDEO_WORKER_OPS_KEY)
 gunicorn video_pipeline.video_worker_wsgi:app --bind 0.0.0.0:8001
 ```
 
-**Manual integration smoke test** (requires live DB connection):
+**Manual integration smoke test** (requires live DB):
 ```bash
 python video_pipeline/test_video_timeline.py
 ```
 
-**Bronze JSON schema explorer** (requires live DB):
-```bash
-python bronze_json_schema.py <session_id>
-```
-
-**Silver diagnostics** (requires live DB):
-```bash
-python test_silver_diagnostics.py
-```
-
 ### Testing & Code Quality
 
-No automated test suite, CI pipeline, or linter is configured. All testing is manual against the live Render database. There is no pytest, no conftest, no test runner. Do not attempt to run `pytest` — it will find nothing useful.
+No automated test suite, CI pipeline, or linter is configured. All testing is manual against the live Render database. Do not attempt to run `pytest`.
 
-Schema DDL is split across multiple files: `db_init.py` (bronze tables, called on boot), `_ensure_member_profile_columns()` in `client_api.py` (billing columns, runs on import), and `_ensure_submission_context_schema()` in `upload_app.py`. These all use idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` or `CREATE TABLE IF NOT EXISTS` patterns.
+Schema DDL is split across multiple files: `db_init.py` (bronze tables, called on boot), `_ensure_member_profile_columns()` in `client_api.py` (billing columns, runs on import), `_ensure_submission_context_schema()` in `upload_app.py`, and `ensure_invite_token_column()` in `coach_invite/db.py`. These all use idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` or `CREATE TABLE IF NOT EXISTS` patterns.
 
 ## Architecture Overview
 
@@ -72,7 +56,8 @@ On upload completion, the system follows this flow:
 3. Main app POSTs to **ingest worker** `/ingest` (returns 202)
 4. Ingest worker runs full pipeline: bronze ingest → silver build → video trim trigger → billing sync → PBI refresh
 5. Video worker trims footage, POSTs callback to `/internal/video_trim_complete` → `trim_status` = `completed`
-6. **Locker Room** displays match data + trimmed footage playback
+6. **Customer notification**: SES email sent (+ Wix webhook during transition) → customer sees "Your match analysis is ready"
+7. **Locker Room** displays match data + trimmed footage playback
 
 Key design: the ingest worker is self-contained — it does NOT import `upload_app.py`. It calls `ingest_bronze_strict()` directly from `ingest_bronze.py` (function call, not HTTP). Worker timeout is 3600s vs main app 1800s.
 
@@ -139,8 +124,6 @@ Silver builder for serve and rally practice data. Reads from `ml_analysis.ball_d
 2. Sequence detection: serve practice = sequential numbering with deuce/ad alternation; rally practice = group bounces into rallies by frame gap, number shots within each
 3. Analytics: placement zone (A/B/C/D quadrant), depth (Deep/Middle/Short), serve zone (Wide/Body/T), serve result (In/Fault), rally length and duration
 
-**`silver.practice_detail` key columns:** `task_id`, `practice_type`, `sequence_num` (serve # or rally #), `shot_ix`, `ball_x/y` (court metres), `ball_speed_kmh`, `is_in`, `serve_zone`, `serve_side`, `serve_result`, `rally_length`, `rally_duration_s`, `placement_zone`, `depth_d`.
-
 Called from `_do_ingest_t5()` in `upload_app.py` after T5 Batch job completes. Schema managed by `ml_pipeline/db_schema.py` (idempotent).
 
 ### Main App (`upload_app.py`)
@@ -149,26 +132,23 @@ The primary service. Responsibilities:
 - S3 presigned URL generation (single-part + multipart upload, GET)
 - S3 multipart lifecycle: `initiate`, `presign-part`, `list-parts`, `complete`, `abort`
 - SportAI job submission (`POST /api/statistics/tennis`) and T5 Batch submission — routed by `gameType`/`sport_type`
-- Task status orchestration: auto-ingest trigger (SportAI or T5), PBI refresh polling, Wix notify
+- Task status orchestration: auto-ingest trigger (SportAI or T5), PBI refresh polling, customer notification (SES + Wix)
 - Video trim callback (`POST /internal/video_trim_complete`)
 - CORS preflight handling (global `before_request` for OPTIONS on all client/upload paths)
-- Wix backend notification on completion (legacy — will be removed when Wix is retired)
 
-Registered blueprints: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, `ml_analysis_bp`, and `ingest_bronze` (mounted at root).
+Registered blueprints: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, `coach_accept` (from `coach_invite`), `ml_analysis_bp`, and `ingest_bronze` (mounted at root).
 
 ### Video Trim Pipeline
 
 Fire-and-forget async flow:
 1. **Ingest worker** calls `trigger_video_trim(task_id)` in `video_pipeline/video_trim_api.py`
-2. Builds EDL (Edit Decision List) from `silver.point_detail` via `build_video_timeline_from_silver()`
+2. Builds EDL from `silver.point_detail` via `build_video_timeline_from_silver()`
 3. POSTs to the **video worker** service at `VIDEO_WORKER_BASE_URL/trim`
-4. **Video worker** (`video_pipeline/video_worker_app.py`) accepts the request, spawns a detached subprocess, returns 202 immediately
-5. Subprocess: downloads source from S3, FFmpeg re-encodes keep segments, concatenates, uploads `trimmed/{task_id}/review.mp4` to S3
-6. Worker POSTs callback to `VIDEO_TRIM_CALLBACK_URL` with status + output S3 key (authenticated via `VIDEO_TRIM_CALLBACK_OPS_KEY` as Bearer token)
+4. **Video worker** accepts, spawns detached subprocess, returns 202
+5. Subprocess: downloads from S3 → FFmpeg re-encodes → uploads `trimmed/{task_id}/review.mp4`
+6. Worker POSTs callback to `VIDEO_TRIM_CALLBACK_URL` with status + output S3 key
 
-State is tracked in `bronze.submission_context.trim_status` (`queued` → `accepted` → `completed`/`failed`).
-
-**Critical env var**: `VIDEO_TRIM_CALLBACK_OPS_KEY` on the ingest worker must match `OPS_KEY` on the main API — otherwise the callback returns 401.
+State tracked in `bronze.submission_context.trim_status` (`queued` → `accepted` → `completed`/`failed`).
 
 ### Billing System
 
@@ -182,15 +162,13 @@ Key patterns:
 - `billing_import_from_bronze.py` syncs completed tasks from `bronze.submission_context` into billing consumption records, auto-creating accounts from email + customer_name if missing
 - `entitlements_api.py` gates uploads on remaining credit check
 
-**`billing.member` is the single source of truth for all customer/player/child/coach profile data.** Every client-facing page (Locker Room, Media Room, Players' Enclosure) reads from and writes back to this one table. Match-level data (`player_a_name`, `player_b_name` etc.) is stored separately in `bronze.submission_context` as point-in-time snapshots — this is by design so that editing a player's name doesn't rewrite historical match records. Player A dropdowns in match edit forms pull member names from `billing.member`, but the selected value is written to `bronze.submission_context`.
-
-**Member profile columns** on `billing.member`: `surname`, `phone`, `utr`, `dominant_hand`, `country`, `area`, `dob`, `skill_level`, `club_school`, `notes`, `profile_photo_url`. All fields are viewable and editable from the Locker Room Linked Players section. Added idempotently via `_ensure_member_profile_columns()` in `client_api.py` (runs on import).
+**`billing.member` is the single source of truth for all customer/player/child/coach profile data.** Every client-facing page reads from and writes back to this one table. Match-level data (`player_a_name`, `player_b_name` etc.) is stored separately in `bronze.submission_context` as point-in-time snapshots — editing a player's name doesn't rewrite historical match records.
 
 API blueprints: `subscriptions_api`, `usage_api`, `entitlements_api`.
 
 ### Client API (`client_api.py`)
 
-Backend for all client-facing SPAs (Locker Room, Media Room, Players' Enclosure). Uses separate auth: `X-Client-Key` header checked against `CLIENT_API_KEY` env var (not OPS_KEY). CORS headers manually injected for `/api/client/*` routes.
+Backend for all client-facing SPAs. Uses separate auth: `X-Client-Key` header checked against `CLIENT_API_KEY` env var (not OPS_KEY).
 
 Key endpoints:
 - `GET /api/client/matches` — list matches with stats, scores, trim status, footage keys
@@ -200,95 +178,33 @@ Key endpoints:
 - `POST /api/client/matches/<task_id>/reprocess` — rebuild silver via `build_silver_v2`
 - `GET /api/client/profile` — primary member profile
 - `PATCH /api/client/profile` — update profile fields on `billing.member`
-- `GET /api/client/usage` — account usage summary (matches granted/consumed/remaining)
-- `GET /api/client/footage-url/<task_id>` — time-limited S3 presigned URL for trimmed match footage
-- `GET /api/client/entitlements` — entitlement check (role, plan_active, credits_remaining, account_status, plans_page_url). Handles missing `billing.subscription_state` table gracefully.
-- `GET /api/client/members` — all active members on an account (full profile fields)
-- `POST /api/client/members` — add a linked player (child or coach)
-- `PATCH /api/client/members/<id>` — update a linked member's profile
-- `DELETE /api/client/members/<id>` — soft-delete (sets `active=false`, preserves history)
+- `GET /api/client/usage` — account usage summary
+- `GET /api/client/footage-url/<task_id>` — time-limited S3 presigned URL for trimmed footage
+- `GET /api/client/entitlements` — entitlement check (role, plan, credits, account_status)
+- `GET /api/client/members` — all active members on an account
+- `POST /api/client/members` — add a linked player
+- `PATCH /api/client/members/<id>` — update a linked member
+- `DELETE /api/client/members/<id>` — soft-delete (sets `active=false`)
 - `POST /api/client/register` — onboarding registration
-- `POST /api/client/children` — add child member profiles (Players' Enclosure onboarding)
+- `POST /api/client/children` — add child member profiles
 - `GET /api/client/profile-photo-upload-url` — presigned S3 PUT URL for profile photo
 - `GET /api/client/coaches` — list coach permissions for the account
-- `POST /api/client/coach-invite` — invite a coach by email
+- `POST /api/client/coach-invite` — invite a coach (creates permission + token + SES email)
 - `POST /api/client/coach-revoke` — revoke a coach permission
-- `GET /api/client/pbi-embed` — Power BI embed token (proxies to PBI service: session/start + embed/config + embed/token)
+- `GET /api/client/pbi-embed` — Power BI embed token (proxies to PBI service)
 - `POST /api/client/pbi-heartbeat` — keep PBI capacity session alive
 - `POST /api/client/pbi-session-end` — end PBI capacity session on page unload
-- `GET /api/client/backoffice/pipeline` — admin: pipeline status table (task/stage tracking)
-- `GET /api/client/backoffice/customers` — admin: customer list with usage/subscription stats
-- `GET /api/client/backoffice/kpis` — admin: KPI cards (active accounts, tasks today/month/all-time, credits)
+- `GET /api/client/backoffice/pipeline` — admin: pipeline status table
+- `GET /api/client/backoffice/customers` — admin: customer list with usage stats
+- `GET /api/client/backoffice/kpis` — admin: KPI cards
 
 Admin endpoints require email in `ADMIN_EMAILS` whitelist (hardcoded set in `client_api.py`): `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`.
-
-### Locker Room (`locker_room.html`)
-
-Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&api=...`.
-
-**Page layout (top to bottom):**
-1. **Header** — TEN-FIFTY5 logo + tabbed sections:
-   - **Account tab** (default) — name, email, account status, subscription status, matches remaining (usage pill), matches used/granted, role, registration date. Read-only. Data from `billing.account`, `billing.member`, `billing.vw_customer_usage`, and `/api/client/entitlements`.
-   - **My Details tab** — editable profile: first name, surname, email (read-only), mobile, UTR, dominant hand, country, area. Save button PATCHes `/api/client/profile`.
-   - **Linked Players tab** — cards for each non-primary member (children/coaches). Each card is individually collapsible with editable fields matching My Details. "Deactivate" soft-deletes (keeps history). "+ Add Player" inline form.
-   - **Invite Coach tab** — invite coaches by email, list invited/accepted coaches with status badges, revoke access. Data from `billing.coaches_permission` via `/api/client/coaches`.
-2. **Charts** — 70/30 grid: matches per month line chart | usage gauge
-3. **Latest Match** — hero card inside a white block. Shows player names, date, location, score, key stats (points, games, aces, avg rally, duration). "Watch Footage" button opens modal HTML5 video player (or "Processing..." badge). Entire card clickable to open edit panel.
-4. **Match History** — single white card block. Year headers → month headers (indented) → match rows (indented further). Years and months newest first. Matches within a month sort latest to oldest. Each row shows Player A vs Player B, date, location, status badge, score, play icon (footage), edit button.
-
-**Edit panel** (slide-in from right): match stats grid, then editable fields — Player A (dropdown of active account members only), Player A UTR, Player B (free text), Player B UTR, match date, venue, "First Point: Player A was..." (Server/Returner toggle buttons matching Media Room), score (3 sets), start time offset. Save + Reprocess buttons.
-
-**Video modal**: fullscreen overlay player, shared between hero card and match row play icons. Fetches presigned URL from `/api/client/footage-url/<task_id>`.
-
-**Entitlement guards**: coach role shows view-only notice; exhausted credits show dismissible banner linking to plans page (`PLANS_PAGE_URL` env var).
-
-**Design system**: all pages share the same CSS variables, Inter font, green/amber/red colour palette. Toggle buttons (`.toggle-group` / `.toggle-btn`) are identical between Locker Room and Media Room.
-
-### Media Room (`media_room.html`)
-
-Video upload page replacing the Wix-based upload flow. Served at `GET /media-room` from the Locker Room service. Also served at `GET /media-room` from the main webhook-server (backup/same-origin for upload APIs). Auth via URL params: `?email=...&key=...&api=...`. API_BASE defaults to `https://api.nextpointtennis.com` if `?api=` is omitted.
-
-**4-step wizard flow:**
-1. **Game Type Selection** — Singles, Serve Practice, Rally Practice (all active). Technique Session / Doubles Training (coming soon). `getFormConfig(gameType)` routes to `renderSinglesForm` or `renderPracticeForm`. Practice form is simplified: player, date, location only (no opponent, score, or first server).
-2. **Video Upload** — Chunked multipart upload directly to S3 via presigned URLs. 10 MB chunks, 3 retries + exponential backoff. Browser Wake Lock API prevents screen sleep on mobile (graceful fallback with warning, re-acquires on `visibilitychange`). Resumable: upload state (uploadId, key, completed parts, file identity) persisted in `localStorage` with 24h expiry. On page load, checks for interrupted uploads and offers Resume/Discard. Progress shows: % bar, chunk counter, upload speed (MB/s), ETA. After all chunks uploaded, calls `POST /upload/api/multipart/list-parts` for reliable server-side ETag retrieval, then completes the multipart upload.
-3. **Match Details Form** — Player A dropdown from `/api/client/members` (account members only, shows `full_name + surname`). Same fields as Locker Room edit panel: Player A UTR, Player B (opponent), Player B UTR, match date, location, first server (Server/Returner toggle), start time offset, score (inline grid: player name + 3 set boxes per row, names update live). Submit calls `POST /api/submit_s3_task` then PATCHes `first_server` to `player_a`/`player_b` format.
-4. **Analysis Progress** — Polls `GET /upload/api/task-status` every 5s. Progress bar uses raw `sportai_progress_pct` (0-100%, no artificial stage-based jumps). Customer-friendly transaction log with timestamped entries. Cancel button calls `POST /upload/api/cancel-task`. On completion: success card with auto-built Locker Room link. On failure: error card with full reference ID and retry button.
-
-**Entitlement gate**: calls `/api/client/entitlements` on load. Blocks coaches (view-only message), no-plan users (link to plans page), zero-credit users (link to buy more). Upload API endpoints also enforce server-side via `_upload_entitlement_gate(email)`.
-
-**CORS**: `upload_app.py` has a global `before_request` handler for OPTIONS preflight on all CORS-enabled paths (`/api/client/*`, `/upload/api/*`, `/api/submit_s3_task`, `/media-room`). The S3 bucket CORS must include the Locker Room Render domain for direct browser-to-S3 uploads.
-
-### Players' Enclosure (`players_enclosure.html`)
-
-Member registration/onboarding page. Served at `/register`. On load, fetches `/api/client/profile` to check if the user already exists:
-- **Existing user** (profile found): shows "Your Profile — already set up" summary with a "Go to Locker Room" button. Registration is one-time only.
-- **New user** (no profile): runs the multi-step wizard: Welcome → Role Selection (Player/Parent Solo, Parent with Children, Coach) → Child Profiles (conditional for "Parent with Children") → Completion + optional profile photo upload (S3 presigned PUT).
-
-New users' names are pre-populated from Wix handoff data (postMessage or URL params). The page never asks the user to re-enter name or email.
-
-### Backoffice Dashboard (`backoffice.html`)
-
-Admin-only SPA served at `/backoffice`. Auth: same `X-Client-Key` as client API, plus email must be in `ADMIN_EMAILS` whitelist (hardcoded in `client_api.py`). Sections: KPI cards (tasks today/month, success rates, active accounts/subs, credits), monthly trend bar chart (12 months), credit utilisation gauge, pipeline monitor tab (per-task stage tracking with date filters), customer tab (usage/subscription stats per account). Uses the same design system as other SPAs.
-
-### Analytics (`analytics.html`)
-
-Power BI embed page served at `/analytics`. Fetches embed token from `GET /api/client/pbi-embed` (which proxies to the PBI service: session/start → embed/config → embed/token with RLS by email). Uses `powerbi-client@2.23.1` JS library. Auto-layout (FitToPage/FitToWidth based on viewport). Heartbeat every 60s keeps Azure capacity alive. Session ends on page unload via `fetch` with `keepalive: true`.
-
-### Portal (`portal.html`)
-
-Unified navigation shell served at `/portal`. **This is the main entry point for Wix embedding.** One Wix page → one iframe → `/portal?email=...&key=...&api=...`.
-
-Collapsible sidebar with navigation: Dashboard (/), Upload (/media-room), My Profile (/register), Analytics (/analytics), Backoffice (/backoffice, admin only). Content pages load in an inner iframe with auth params forwarded via `authParams()`. Sidebar state persists in `localStorage`.
-
-**Inter-page navigation**: child pages can send `postMessage({ type: 'portal-navigate', target: 'dashboard' })` to navigate within the portal instead of breaking out of the iframe. The portal also forwards `wix-handoff` postMessages to the active content iframe.
-
-Profile fetch on init shows user name in sidebar footer with connection status indicator (Connected/API key invalid/Connection failed).
 
 ### Coach Invite Flow
 
 Owner invites coaches from the Locker Room "Invite Coach" tab. Data stored in `billing.coaches_permission` table (columns: id, owner_account_id, coach_account_id, coach_email, status, active, invite_token, created_at, updated_at).
 
-**Module**: `coach_invite/` — contains `db.py` (schema + token helpers), `email_sender.py` (AWS SES), `accept_page.py` (Flask blueprint).
+**Module**: `coach_invite/` — contains `db.py` (schema + token helpers), `email_sender.py` (AWS SES coach invite email), `video_complete_email.py` (AWS SES video completion email), `accept_page.py` (Flask blueprint).
 
 **Server-to-server endpoints** (`coaches_api.py`, OPS_KEY auth):
 - `POST /api/coaches/invite` — creates permission row (status=INVITED)
@@ -304,9 +220,49 @@ Owner invites coaches from the Locker Room "Invite Coach" tab. Data stored in `b
 - `GET /coach-accept?token=...` — serves `coach_accept.html` (standalone SPA)
 - `POST /api/coaches/accept-token` — **public endpoint** (token IS the auth). Validates token against `billing.coaches_permission` (status=INVITED, active=true), sets status=ACCEPTED, clears token.
 
-**Email**: sent via AWS SES (`boto3.client('ses')`). HTML email with TEN-FIFTY5 branding + plain-text fallback. Env vars: `SES_FROM_EMAIL`, `COACH_ACCEPT_BASE_URL`.
-
 **Idempotency**: re-inviting a previously revoked coach reuses the existing row (resets status to INVITED, generates new token, sends new email). Tokens are single-use (cleared on accept and revoke).
+
+### Email System (AWS SES)
+
+All transactional emails are sent via AWS SES using `boto3.client('ses')`. The `coach_invite/` package contains the email modules.
+
+**Email types:**
+
+| Email | Module | Trigger | Template |
+|---|---|---|---|
+| Coach invite | `coach_invite/email_sender.py` | `POST /api/client/coach-invite` | Branded HTML: "X has invited you to coach" + accept CTA button |
+| Video complete | `coach_invite/video_complete_email.py` | Ingest step 7 + task-status auto-fire | Branded HTML: "Your match analysis is ready" + Locker Room CTA button |
+
+**AWS SES setup:**
+- **Region**: `eu-north-1` (Stockholm) — matches the Render deployment region
+- **IAM user**: `nextpoint-uploader` — must have `AmazonSESFullAccess` policy (or `ses:SendEmail` + `ses:SendRawEmail`)
+- **Verified identity**: domain `ten-fifty5.com` verified via DKIM (3 CNAME records in Wix DNS)
+- **Sandbox**: must be promoted to production access to send to non-verified recipients
+
+**Env vars:**
+- `SES_FROM_EMAIL` — sender address (default: `noreply@ten-fifty5.com`). Domain must be verified in SES.
+- `COACH_ACCEPT_BASE_URL` — base URL for accept links (default: `https://api.nextpointtennis.com`)
+- `LOCKER_ROOM_BASE_URL` — CTA link in video completion email (default: `https://www.tenfifty5.com/locker-room`)
+
+**Transition note**: video completion emails run alongside the legacy Wix notify (`_notify_wix` in `upload_app.py`). Both fire at the same points, guarded by the same idempotency check (`wix_notified_at`). SES fires first, then Wix. Once Wix is retired, remove `_notify_wix` and all `WIX_NOTIFY_*` env vars.
+
+### Locker Room (`locker_room.html`)
+
+Dashboard SPA embedded as Wix iframe. Auth via URL params: `?email=...&key=...&api=...`.
+
+**Header tabs:** Account (read-only stats), My Details (editable profile), Linked Players (member cards with add/edit/deactivate), Invite Coach (email input + coach list with status badges + revoke).
+
+**Main sections:** Charts (matches per month + usage gauge), Latest Match (hero card), Match History (year → month → match rows), Edit Panel (slide-in), Video Modal (fullscreen player).
+
+**Design system**: all pages share CSS variables, Inter font, green/amber/red colour palette. Toggle buttons (`.toggle-group` / `.toggle-btn`) are identical between Locker Room and Media Room.
+
+### Media Room (`media_room.html`)
+
+Video upload page. 4-step wizard: Game Type Selection → Video Upload (chunked multipart to S3) → Match Details Form → Analysis Progress (polls task-status). Auth via URL params. Entitlement gate on load.
+
+### Portal (`portal.html`)
+
+Unified navigation shell — **main entry point for Wix embedding**. Collapsible sidebar with navigation. Content pages load in inner iframe with auth params forwarded.
 
 ### Wix → HTML Data Handoff
 
@@ -316,11 +272,9 @@ Client-facing pages receive identity data from Wix via:
 
 ### Entitlement System
 
-**Server-side gate** (`entitlements_api.py`): `GET /api/entitlements/summary?email=` (OPS_KEY auth). Returns `can_upload`, `block_reason`. Used by upload APIs.
+**Server-side gate** (`entitlements_api.py`): `GET /api/entitlements/summary?email=` (OPS_KEY auth). Returns `can_upload`, `block_reason`.
 
-**Client-side gate** (`client_api.py`): `GET /api/client/entitlements` (CLIENT_API_KEY auth). Returns role, plan status, credits, plans page URL. Used by Locker Room / Media Room for UX rendering only.
-
-**Subscription lifecycle** (`subscriptions_api.py`): Processes Wix subscription events. Writes to `billing.subscription_event_log` and `billing.subscription_state`. Note: `subscription_state` table is created lazily — the entitlements endpoint handles its absence gracefully.
+**Client-side gate** (`client_api.py`): `GET /api/client/entitlements` (CLIENT_API_KEY auth). Returns role, plan status, credits, plans page URL.
 
 | Condition | Locker Room | Media Room |
 |---|---|---|
@@ -330,50 +284,34 @@ Client-facing pages receive identity data from Wix via:
 | **Account terminated** | Full-screen overlay | Full-screen overlay |
 | **Active, credits > 0** | Normal view | Normal upload flow |
 
-### HTML Templates
-
-Client-facing SPAs are **root-level standalone HTML files** (not in a templates folder):
-- `locker_room.html`, `media_room.html`, `players_enclosure.html`, `backoffice.html` — served by `locker_room_app.py`
-- `templates/ui/upload.html` — legacy admin UI template (served by `ui_app.py` Blueprint)
-
-### Admin UI (`ui_app.py`)
-
-Flask Blueprint mounted at `/upload`. Provides:
-- Sessions table with per-session ops (reconcile, repair, peek, delete)
-- Read-only SQL runner
-- Diagnostic route `/__which` to verify template paths
-
-### Cron Jobs
-
-- **`cron_capacity_sweep.py`**: Runs periodically. Detects stuck ingests, video trims, and PBI refreshes by checking timestamps against configurable thresholds (default: ingest 30m, trim 30m, PBI 10m). Marks them as `stale_timeout`/`failed`. Also sweeps stale PowerBI capacity leases.
-- **`cron_monthly_refill.py`**: HTTP POST trigger that calls `/api/billing/cron/monthly_refill` on the main app.
-
 ### Auth Pattern
 
-- **Ops endpoints**: `OPS_KEY` via `X-Ops-Key` header or `Authorization: Bearer <key>` (never via query string)
+- **Ops endpoints**: `OPS_KEY` via `X-Ops-Key` header or `Authorization: Bearer <key>`
 - **Video worker**: `VIDEO_WORKER_OPS_KEY` for worker auth, `VIDEO_TRIM_CALLBACK_OPS_KEY` for callback auth (must match main API's `OPS_KEY`)
 - **Client API**: `CLIENT_API_KEY` via `X-Client-Key` header
+- **Coach accept**: token-based (no API key — the invite token IS the auth)
 
 ### Idempotency Patterns
 
 - **Billing consumption**: unique constraint on `task_id`
 - **Entitlement grants**: unique on `(account_id, source, plan_code, external_wix_id)`
 - **Bronze ingest**: advisory locks on `task_id` to prevent concurrent ingests
-- **Wix notify**: checks `wix_notified_at` before sending
+- **Customer notify**: checks `wix_notified_at` before sending (SES + Wix both use this gate)
+- **Coach invite token**: unique partial index on `invite_token WHERE invite_token IS NOT NULL`
 
 ### Required Environment Variables
 
-Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `PLANS_PAGE_URL` (optional, default `https://www.tenfifty5.com/plans`)
+Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `SES_FROM_EMAIL`, `COACH_ACCEPT_BASE_URL`, `PLANS_PAGE_URL` (optional)
 
 Ingest worker: same as main service plus `VIDEO_TRIM_CALLBACK_OPS_KEY` (must match main API's `OPS_KEY`), `INGEST_WORKER_OPS_KEY`
 
 Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `FFMPEG_BIN`, `FFPROBE_BIN`
 
-Hardcoded defaults in `render.yaml`: `SPORT_AI_BASE=https://api.sportai.com`, `S3_PREFIX=wix-uploads`, `AWS_REGION=us-east-1`, `S3_GET_EXPIRES=604800`, `INGEST_REPLACE_EXISTING=1`, `AUTO_INGEST_ON_COMPLETE=1`
+Legacy (Wix transition — remove when Wix is retired): `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`
 
 ### S3 CORS
 
-The S3 bucket (`nextpoint-prod-uploads`) requires CORS configuration for browser-to-S3 multipart uploads (Media Room) and video playback (Locker Room). Configuration:
+The S3 bucket (`nextpoint-prod-uploads`) requires CORS for browser-to-S3 multipart uploads (Media Room) and video playback (Locker Room):
 - **AllowedMethods**: GET, PUT, POST, HEAD
 - **AllowedHeaders**: `*`
 - **ExposeHeaders**: `ETag` (required for multipart upload completion)
@@ -382,19 +320,12 @@ The S3 bucket (`nextpoint-prod-uploads`) requires CORS configuration for browser
 ### Diagnostics
 
 - `GET /__alive` — liveness probe (from `probes.py`)
-- `GET /ops/routes?key=<OPS_KEY>` — list all registered routes (auth required)
+- `GET /ops/routes?key=<OPS_KEY>` — list all registered routes
 - `GET /ops/db-ping?key=<OPS_KEY>` — DB connectivity check
-
-### Future: Post-Wix Cleanup
-
-When Wix is retired, `upload_app.py` can be significantly simplified:
-- Remove: Wix notify flow, old `/upload` HTML form routes, `_upload_entitlement_gate` Wix checks, Wix-specific admin ops
-- Refactor: split monolith into app factory + `sportai_api.py` + `s3_helpers.py` + `trim_callback.py`
-- Consolidate: `_ensure_submission_context_schema` DDL into `db_init.py`
 
 ### Code Organisation
 
-New features **must live in their own subdirectory** (not loose files in the repo root). Examples: `video_pipeline/`, `ml_pipeline/`, `migrations/`. Each directory should be a self-contained package with its own `__init__.py`, `requirements.txt` (if it has extra deps), and `config.py` (if it has tunable parameters). The repo root is for service entry points only (`*_app.py`, `wsgi.py`).
+New features **must live in their own subdirectory** (not loose files in the repo root). Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`. Each directory should be a self-contained package with its own `__init__.py`. The repo root is for service entry points only (`*_app.py`, `wsgi.py`).
 
 ### ML Pipeline (`ml_pipeline/`)
 
@@ -402,148 +333,32 @@ ML inference pipeline for tennis video analysis. Supports both local dev mode an
 
 **Run:**
 ```bash
-# Install ML-specific deps (in addition to main requirements.txt)
 pip install -r ml_pipeline/requirements.txt
-
-# Local mode: analyse a video file
-python -m ml_pipeline <video_path>
-
-# AWS Batch mode: download from S3, process, save to DB + S3
-python -m ml_pipeline --job-id <job_id> --s3-key <s3_key>
-
-# Run test suite
-python -m ml_pipeline.test_pipeline
-
-# Deploy AWS infrastructure (ECR + Batch + Lambda)
-bash ml_pipeline/deploy_aws.sh   # ECR repo, Batch compute/queue/job def
-bash lambda/deploy.sh             # Lambda trigger + S3 event + DLQ
-
-# End-to-end test (requires live AWS)
-bash ml_pipeline/test_e2e.sh <video_path>
+python -m ml_pipeline <video_path>                          # local mode
+python -m ml_pipeline --job-id <job_id> --s3-key <s3_key>  # AWS Batch mode
+python -m ml_pipeline.test_pipeline                         # unit test
+bash ml_pipeline/deploy_aws.sh                              # deploy infra
+bash ml_pipeline/test_e2e.sh <video_path>                   # e2e test
 ```
 
-**Architecture:**
-```
-ml_pipeline/
-  config.py              # All tunable parameters (thresholds, model paths, court dimensions)
-  video_preprocessor.py  # OpenCV frame extraction, generator-based (memory efficient)
-  court_detector.py      # 14 court keypoints → homography matrix → to_court_coords()
-  ball_tracker.py        # TrackNet V2 ball detection, bounce/speed/in-out analysis
-  player_tracker.py      # YOLOv8 person detection + IoU tracking
-  pipeline.py            # Orchestrator: frame-by-frame, produces AnalysisResult + progress callbacks
-  heatmaps.py            # Ball landing + player position heatmaps (matplotlib on 2D court)
-  db_schema.py           # Idempotent DDL for ml_analysis.* tables (called on boot)
-  db_writer.py           # Saves AnalysisResult + progress to PostgreSQL
-  api.py                 # Flask blueprint: /api/analysis/* endpoints (OPS_KEY auth)
-  Dockerfile             # nvidia/cuda:12.2, Python 3.11, FFmpeg, model weights
-  deploy_aws.sh          # ECR + Batch infrastructure setup script
-  test_e2e.sh            # End-to-end test script
-  test_pipeline.py       # Unit test with synthetic video
-  models/                # Pretrained weights (git-ignored, ~135MB total)
-  test_videos/           # Test clips (git-ignored)
-lambda/
-  ml_trigger.py          # S3 ObjectCreated → create job row → submit Batch job
-  deploy.sh              # Lambda deployment + S3 event + DLQ setup
-```
+**Architecture:** `config.py` (tunable params) → `video_preprocessor.py` (OpenCV frames) → `court_detector.py` (14 keypoints → homography) → `ball_tracker.py` (TrackNet V2) → `player_tracker.py` (YOLOv8) → `pipeline.py` (orchestrator) → `heatmaps.py` (matplotlib) → `db_writer.py` (PostgreSQL) → `api.py` (Flask blueprint).
 
-**AWS Resources:**
+**AWS Resources:** ECR (`ten-fifty5-ml-pipeline`), Batch compute (Spot G4dn.xlarge, 0–4 vCPUs), Batch queue (`ten-fifty5-ml-queue`), Batch job def (4 vCPU, 15GB RAM, 1 GPU, 2hr timeout), Lambda trigger (`ten-fifty5-ml-trigger`, S3 `videos/` prefix), DLQ (SQS, 14-day retention). All tagged `Project=TEN-FIFTY5`.
 
-| Resource | Name | Notes |
-|---|---|---|
-| ECR Repository | `ten-fifty5-ml-pipeline` | Lifecycle: keep 5 tagged, delete untagged after 1 day |
-| Batch Compute Env | `ten-fifty5-ml-compute` | Spot G4dn.xlarge, 0–4 vCPUs |
-| Batch Job Queue | `ten-fifty5-ml-queue` | Priority 1 |
-| Batch Job Definition | `ten-fifty5-ml-pipeline` | 4 vCPU, 15GB RAM, 1 GPU, 2hr timeout |
-| Lambda Function | `ten-fifty5-ml-trigger` | S3 videos/ prefix trigger |
-| DLQ | `ten-fifty5-ml-trigger-dlq` | SQS, 14-day retention |
-| CloudWatch Logs | `/aws/batch/ten-fifty5-ml-pipeline` | 30-day retention |
+**Database Schema** (`ml_analysis.*`, managed by `db_schema.py`): `video_analysis_jobs`, `ball_detections`, `player_detections`, `match_analytics`.
 
-All resources tagged: `Project=TEN-FIFTY5`, `Environment=production`.
+**API Endpoints** (OPS_KEY auth): `GET /api/analysis/jobs/<job_id>`, `GET /api/analysis/results/<match_id>`, `GET /api/analysis/heatmap/<job_id>/<type>`, `POST /api/analysis/retry/<job_id>`.
 
-**Job Lifecycle:**
+**Models:** TrackNet V2 (`tracknet_v2.pt`, 41MB), YOLOv8m (`yolov8m.pt`, 50MB), Court detector (`court_keypoints.pth`, 41MB). See `config.py` for download sources.
 
-```
-S3 upload to videos/{task_id}/file.mp4
-  → Lambda creates ml_analysis.video_analysis_jobs row (status=queued)
-  → Lambda submits AWS Batch job
-  → Batch pulls Docker image from ECR, runs on Spot G4dn.xlarge
-  → Pipeline stages: downloading → extracting_frames → detecting_court
-    → tracking_ball → tracking_players → computing_analytics
-    → generating_heatmaps → saving_results → complete
-  → Results saved to ml_analysis.* tables
-  → Heatmaps uploaded to S3: analysis/{job_id}/ball_heatmap.png, player_heatmap_{n}.png
-  → Cost logged (G4dn.xlarge spot ≈ $0.16/hr)
-```
+### Future: Post-Wix Cleanup
 
-Status: `queued` → `processing` → `complete` | `failed`
-
-**Database Schema** (`ml_analysis.*`, managed by `db_schema.py`):
-- `video_analysis_jobs` — one row per pipeline run (status, progress, video metadata, cost, heatmap S3 keys)
-- `ball_detections` — per-frame ball positions (x, y, court coords, speed, bounce, in/out)
-- `player_detections` — per-frame player bounding boxes + court coords
-- `match_analytics` — aggregated stats per job (detection rate, bounces, rallies, serves, speeds)
-
-**S3 Key Structure:**
-- Input: `videos/{task_id}/{filename}.mp4`
-- Heatmaps: `analysis/{job_id}/ball_heatmap.png`, `analysis/{job_id}/player_heatmap_0.png`, `analysis/{job_id}/player_heatmap_1.png`
-
-**API Endpoints** (registered as `ml_analysis_bp` in `upload_app.py`, OPS_KEY auth):
-- `GET /api/analysis/jobs/<job_id>` — full job status and metadata
-- `GET /api/analysis/results/<match_id>` — analysis results by task_id (match_analytics + job data)
-- `GET /api/analysis/heatmap/<job_id>/<type>` — presigned S3 URL for heatmap (1hr expiry). Types: `ball`, `player_0`, `player_1`
-- `POST /api/analysis/retry/<job_id>` — reset failed/complete job, clear old detections, resubmit to Batch
-
-**Models & weights:**
-
-| Model | Architecture | Weights file | Source | Size |
-|---|---|---|---|---|
-| Ball tracker | TrackNet V2 (encoder-decoder CNN, 9→256ch) | `tracknet_v2.pt` | [yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet) (Google Drive) | 41MB |
-| Player tracker | YOLOv8m (COCO pretrained) | `yolov8m.pt` | [ultralytics/assets v8.4.0](https://github.com/ultralytics/assets) | 50MB |
-| Court detector | TrackNet-style CNN (3→15ch, 14 keypoints + center) | `court_keypoints.pth` | [yastrebksv/TennisCourtDetector](https://github.com/yastrebksv/TennisCourtDetector) (Google Drive) | 41MB |
-
-To re-download weights: `python -c "from ultralytics import YOLO; YOLO('yolov8m.pt')"` for YOLO; use `gdown` for TrackNet/court weights (see Google Drive IDs in config.py comments).
-
-**`AnalysisResult` data structure** (returned by `TennisAnalysisPipeline.process()`):
-```python
-@dataclass
-class AnalysisResult:
-    video_path: str
-    video_metadata: VideoMetadata        # duration, fps, resolution, codec
-    total_frames_processed: int
-    processing_time_sec: float
-    ms_per_frame: float
-    court_detected: bool
-    court_confidence: float              # 0.0–1.0
-    court_used_fallback: bool            # True if Hough lines used instead of CNN
-    ball_detections: List[BallDetection] # per-frame: x, y, court_x, court_y, speed_kmh, is_bounce, is_in
-    player_detections: List[PlayerDetection]  # per-frame: player_id (0/1), bbox, center, court coords
-    ball_detection_rate: float           # fraction of frames with ball found
-    bounce_count: int
-    bounces_in: int
-    bounces_out: int
-    max_speed_kmh: float
-    avg_speed_kmh: float
-    rally_count: int
-    avg_rally_length: float              # bounces per rally
-    serve_count: int
-    first_serve_pct: float               # percentage
-    player_count: int                    # distinct player IDs detected
-    frame_errors: int
-```
-
-**Performance (CPU, 640x360 synthetic video):**
-- ~5.5s per frame on CPU (TrackNet + CourtNet + YOLOv8m)
-- Court detection runs every 30 frames (cached between)
-- Player detection runs every 5 frames (reuses last bbox between)
-- On GPU: expect 10–50x speedup (~100–500ms/frame)
-- For production 2-hour videos: GPU is mandatory
-
-**Known limitations:**
-- Ball detection rate will be lower on real footage with fast-moving balls, camera motion, and occlusion. TrackNet V2 was trained on broadcast tennis; performance on amateur/phone footage is unvalidated.
-- Player tracker assigns IDs by vertical position (bottom=player 0, top=player 1) which assumes a fixed camera angle. Moving/tilted cameras will break ID consistency.
-- Court detector CNN is trained on standard tennis court views. Non-standard angles (side-on, close-up) may fail, triggering the Hough line fallback.
-- Speed calculations assume a flat court plane. Ball height is not modelled, so speeds are 2D projections.
-- No GPU auto-detection for mixed CPU/GPU setups — set device explicitly if needed.
+When Wix is retired:
+- Remove: `_notify_wix` flow + all `WIX_NOTIFY_*` env vars from `upload_app.py`
+- Remove: Wix-specific admin ops, `_upload_entitlement_gate` Wix checks
+- Remove: `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY` from Render env
+- Consolidate: `_ensure_submission_context_schema` DDL into `db_init.py`
+- Rename: `wix_notified_at` / `wix_notify_status` columns to generic `notified_at` / `notify_status`
 
 ### Other
 
