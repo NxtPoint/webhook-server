@@ -557,7 +557,7 @@ function render() {
   const isCoach = (entitlements?.role || profile?.role || '').toLowerCase() === 'coach';
   const planActive = entitlements?.plan_active ?? true;
   const accountStatus = entitlements?.account_status || 'active';
-  const plansUrl = entitlements?.plans_page_url || 'https://www.tenfifty5.com/plans';
+  const plansUrl = entitlements?.plans_page_url || 'https://www.ten-fifty5.com/plans';
 
   let html = '';
 
@@ -565,7 +565,7 @@ function render() {
   if (accountStatus === 'terminated' || accountStatus === 'suspended') {
     html += `<div class="block-overlay"><div class="block-overlay-box">
       <h2>Account Suspended</h2>
-      <p>Your account has been suspended. Please contact support at <a href="mailto:support@tenfifty5.com">support@tenfifty5.com</a> for assistance.</p>
+      <p>Your account has been suspended. Please contact support at <a href="mailto:support@ten-fifty5.com">support@ten-fifty5.com</a> for assistance.</p>
     </div></div>`;
     console.warn('Blocked access attempt: account_status=' + accountStatus + ', email=' + EMAIL);
   }

@@ -243,7 +243,7 @@ All transactional emails are sent via AWS SES using `boto3.client('ses')`. The `
 **Env vars:**
 - `SES_FROM_EMAIL` — sender address (default: `noreply@ten-fifty5.com`). Domain must be verified in SES.
 - `COACH_ACCEPT_BASE_URL` — base URL for accept links (default: `https://api.nextpointtennis.com`)
-- `LOCKER_ROOM_BASE_URL` — CTA link in video completion email (default: `https://www.tenfifty5.com/locker-room`)
+- `LOCKER_ROOM_BASE_URL` — CTA link in video completion email (default: `https://www.ten-fifty5.com/locker-room`)
 
 **Transition note**: video completion emails run alongside the legacy Wix notify (`_notify_wix` in `upload_app.py`). Both fire at the same points, guarded by the same idempotency check (`wix_notified_at`). SES fires first, then Wix. Once Wix is retired, remove `_notify_wix` and all `WIX_NOTIFY_*` env vars.
 
@@ -276,7 +276,7 @@ Status bar shows current plan, renewal date, and credit usage. All billing state
 
 Unified navigation shell — **the single frontend entry point**. Collapsible sidebar with navigation. Content pages load in an inner iframe with auth params forwarded.
 
-**Hosting architecture**: The portal is embedded in a Wix page (`https://www.tenfifty5.com/portal`) as an HTML iframe. Wix handles member authentication and passes identity data to the portal via URL params. All SPA pages (dashboard, upload, profile, analytics, pricing, backoffice) are rendered inside the portal's inner iframe. **Wix is no longer used for any page rendering** — only for member login, payment checkout (PayPal via Wix Pricing Plans API), and the coach accept landing page redirect.
+**Hosting architecture**: The portal is embedded in a Wix page (`https://www.ten-fifty5.com/portal`) as an HTML iframe. Wix handles member authentication and passes identity data to the portal via URL params. All SPA pages (dashboard, upload, profile, analytics, pricing, backoffice) are rendered inside the portal's inner iframe. **Wix is no longer used for any page rendering** — only for member login, payment checkout (PayPal via Wix Pricing Plans API), and the coach accept landing page redirect.
 
 **Wix page code** (in Wix Velo): fetches member identity via `wix-members-frontend`, reads `CLIENT_API_KEY` from Wix Secrets Manager via a backend web module (`backend/secrets.web.js`), builds the portal URL with auth params, and listens for `wix-checkout` postMessages to trigger `checkout.startOnlinePurchase()`.
 
@@ -335,7 +335,7 @@ The S3 bucket (`nextpoint-prod-uploads`) requires CORS for browser-to-S3 multipa
 - **AllowedMethods**: GET, PUT, POST, HEAD
 - **AllowedHeaders**: `*`
 - **ExposeHeaders**: `ETag` (required for multipart upload completion)
-- **AllowedOrigins** must include: `https://locker-room-26kd.onrender.com`, tenfifty5.com variants, Wix editor/site domains
+- **AllowedOrigins** must include: `https://locker-room-26kd.onrender.com`, ten-fifty5.com variants, Wix editor/site domains
 
 ### Cron Jobs (Render)
 

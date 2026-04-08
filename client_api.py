@@ -19,7 +19,7 @@ from models_billing import Member
 client_bp = Blueprint("client_api", __name__)
 
 CLIENT_API_KEY = os.environ.get("CLIENT_API_KEY", "").strip()
-PLANS_PAGE_URL = os.environ.get("PLANS_PAGE_URL", "https://www.tenfifty5.com/plans").strip()
+PLANS_PAGE_URL = os.environ.get("PLANS_PAGE_URL", "https://www.ten-fifty5.com/plans").strip()
 
 ADMIN_EMAILS = {"info@ten-fifty5.com", "tomo.stojakovic@gmail.com"}
 

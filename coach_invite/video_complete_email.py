@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 SES_FROM_EMAIL = os.environ.get("SES_FROM_EMAIL", "noreply@ten-fifty5.com").strip()
-LOCKER_ROOM_BASE_URL = os.environ.get("LOCKER_ROOM_BASE_URL", "https://www.tenfifty5.com/locker-room").strip()
+LOCKER_ROOM_BASE_URL = os.environ.get("LOCKER_ROOM_BASE_URL", "https://www.ten-fifty5.com/portal").strip()
 
 
 def _build_html(customer_name: str, player_a: str, player_b: str,

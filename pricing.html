@@ -255,7 +255,7 @@ async function apiFetch(path, opts = {}) {
 // ==================== PLAN CATALOGUE ====================
 // Wix Payment Plan checkout. URL is built from base + planId slug.
 // To update: change the wixPlanId for each plan below.
-const WIX_PLANS_PAGE = 'https://www.tenfifty5.com/plans';
+const WIX_PLANS_PAGE = 'https://www.ten-fifty5.com/plans';
 
 // Build Wix checkout URL from plan ID
 function wixCheckoutUrl(planId) {
@@ -386,7 +386,7 @@ function render() {
   if (accountStatus === 'terminated' || accountStatus === 'suspended') {
     html += `<div class="block-overlay"><div class="block-overlay-box">
       <h2>Account Suspended</h2>
-      <p>Your account has been suspended. Please contact support at <a href="mailto:support@tenfifty5.com">support@tenfifty5.com</a> for assistance.</p>
+      <p>Your account has been suspended. Please contact support at <a href="mailto:support@ten-fifty5.com">support@ten-fifty5.com</a> for assistance.</p>
     </div></div>`;
   }
 
