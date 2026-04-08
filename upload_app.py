@@ -407,7 +407,9 @@ def _upload_entitlement_gate(email: str) -> tuple[bool, str]:
 
     if role == "coach":
         return False, "coach_cannot_upload"
-    if subscription_status != "ACTIVE":
+    # Allow upload if user has an active subscription OR has remaining credits
+    # (PAYG users won't have an active subscription but will have credits)
+    if subscription_status != "ACTIVE" and remaining <= 0:
         return False, "subscription_inactive"
     if remaining <= 0:
         return False, "insufficient_credits"

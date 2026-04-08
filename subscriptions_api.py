@@ -226,6 +226,31 @@ def subscription_event():
             },
         )
 
+        # ── Immediate credit grant on purchase ──────────────────────
+        # When a plan is purchased, grant the matches immediately so the
+        # user can upload right away (don't wait for the monthly refill).
+        # Idempotent: external_wix_id prevents double-granting on retries.
+        grant_id = None
+        if (
+            new_status == "ACTIVE"
+            and event_type == "PLAN_PURCHASED"
+            and plan_code
+            and matches_granted
+            and matches_granted > 0
+        ):
+            source = "wix_subscription" if plan_type == "recurring" else "wix_payg"
+            ext_id = f"purchase:{order_id or ev_id}:{account_id}"
+            grant_id = grant_entitlement(
+                account_id=account_id,
+                source=source,
+                plan_code=plan_code,
+                matches_granted=matches_granted,
+                external_wix_id=ext_id,
+                valid_from=plan_start_dt or datetime.now(timezone.utc),
+                valid_to=plan_end_dt,
+                is_active=True,
+            )
+
         session.commit()
         return jsonify({
             "ok": True,
@@ -234,6 +259,7 @@ def subscription_event():
             "event_id": ev_id,
             "account_id": account_id,
             "status": new_status,
+            "grant_id": grant_id,
         })
 
 
