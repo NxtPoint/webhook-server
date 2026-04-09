@@ -472,6 +472,8 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_status TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ses_notified_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ses_notify_error TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_started_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_finished_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_status TEXT",
@@ -933,11 +935,33 @@ def _notify_ses_completion(task_id: str) -> None:
 
         if result.get("ok"):
             app.logger.info("SES completion email sent task_id=%s", task_id)
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                    SET ses_notified_at = now(), ses_notify_error = NULL
+                    WHERE task_id = :t
+                """), {"t": task_id})
         else:
-            app.logger.warning("SES completion email failed task_id=%s: %s", task_id, result.get("error"))
+            err = result.get("error", "unknown")
+            app.logger.warning("SES completion email failed task_id=%s: %s", task_id, err)
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                    SET ses_notify_error = :e
+                    WHERE task_id = :t
+                """), {"t": task_id, "e": str(err)[:4000]})
 
     except Exception as e:
         app.logger.exception("SES notify error task_id=%s: %s", task_id, e)
+        try:
+            with engine.begin() as conn:
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                    SET ses_notify_error = :e
+                    WHERE task_id = :t
+                """), {"t": task_id, "e": f"{e.__class__.__name__}: {e}"[:4000]})
+        except Exception:
+            pass
 
 
 # ==========================

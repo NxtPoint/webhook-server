@@ -554,6 +554,11 @@ function renderPipeline() {
       : t.pbi_refresh_status
         ? stagePill(t.pbi_refresh_status, t.pbi_refresh_status === 'completed' ? 'Yes' : t.pbi_refresh_status)
         : stagePill(null);
+    const sesPill = t.ses_notified_at
+      ? stagePill('completed', 'Yes')
+      : t.ses_notify_error
+        ? stagePill('failed', 'Error') + errTip(t.ses_notify_error)
+        : stagePill(null);
     const wixPill = wixOk
       ? stagePill('completed', 'Yes')
       : t.wix_notify_error
@@ -573,6 +578,7 @@ function renderPipeline() {
         <td>${silverPill}</td>
         <td>${trimPill}</td>
         <td>${pbiPill}</td>
+        <td>${sesPill}</td>
         <td>${wixPill}</td>
       </tr>
     `;
@@ -593,6 +599,7 @@ function renderPipeline() {
               <th>Silver</th>
               <th>Trim</th>
               <th>PBI</th>
+              <th>Email</th>
               <th>Wix</th>
             </tr>
           </thead>
@@ -657,7 +664,14 @@ function openTaskDetail(taskId) {
       detail: t.pbi_refresh_status ? `Status: ${t.pbi_refresh_status}` : null,
     },
     {
-      name: 'Wix Notification',
+      name: 'Email Notification (SES)',
+      status: t.ses_notified_at ? 'ok' : t.ses_notify_error ? 'fail' : 'pending',
+      icon: t.ses_notified_at ? '&#10003;' : t.ses_notify_error ? '&#10007;' : '&#8212;',
+      time: t.ses_notified_at ? fmtTime(t.ses_notified_at) : '--',
+      error: t.ses_notify_error,
+    },
+    {
+      name: 'Wix Notification (legacy)',
       status: t.wix_notify_status === 'completed' ? 'ok' : t.wix_notify_error ? 'fail' : 'pending',
       icon: t.wix_notify_status === 'completed' ? '&#10003;' : t.wix_notify_error ? '&#10007;' : '&#8212;',
       time: t.wix_notified_at ? fmtTime(t.wix_notified_at) : '--',

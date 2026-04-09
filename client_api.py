@@ -1105,6 +1105,9 @@ def backoffice_pipeline():
                     sc.wix_notify_status,
                     sc.wix_notified_at,
                     sc.wix_notify_error,
+                    -- SES notify stage
+                    sc.ses_notified_at,
+                    sc.ses_notify_error,
                     -- Score
                     sc.player_a_set1_games, sc.player_b_set1_games,
                     sc.player_a_set2_games, sc.player_b_set2_games,
@@ -1154,6 +1157,8 @@ def backoffice_pipeline():
             "wix_notify_status": r["wix_notify_status"],
             "wix_notified_at": _ts(r["wix_notified_at"]),
             "wix_notify_error": r["wix_notify_error"],
+            "ses_notified_at": _ts(r["ses_notified_at"]),
+            "ses_notify_error": r["ses_notify_error"],
             "score": _format_score(r),
         })
 
