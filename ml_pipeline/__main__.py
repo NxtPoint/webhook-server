@@ -143,7 +143,15 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         on_progress("saving_results", 95)
         db.save_job_metadata(job_id, result)
         db.save_ball_detections(job_id, result.ball_detections)
-        db.save_player_detections(job_id, result.player_detections)
+
+        # Only save player positions at frames with ball detections (not every frame)
+        if practice:
+            ball_frames = {d.frame_idx for d in result.ball_detections}
+            filtered_players = [d for d in result.player_detections if d.frame_idx in ball_frames]
+            logger.info(f"Practice mode: filtered player detections {len(result.player_detections)} -> {len(filtered_players)}")
+            db.save_player_detections(job_id, filtered_players)
+        else:
+            db.save_player_detections(job_id, result.player_detections)
 
         # Extract task_id from job row if present
         with engine.begin() as conn:
