@@ -1,9 +1,18 @@
 # inspect_bronze_blobs.py
-# Utility to discover the structure of unextracted JSONB blobs in bronze.
-# Usage:
+# ============================================================
+# CLI diagnostic utility for inspecting unextracted JSONB blobs in the
+# bronze schema. Useful during development to discover what fields are
+# stored in the `data` catch-all column of a bronze table after ingest.
+#
+# Usage (run on Render shell or locally with DATABASE_URL set):
 #   python inspect_bronze_blobs.py <task_id>
 #   python inspect_bronze_blobs.py <task_id> --table team_session
 #   python inspect_bronze_blobs.py --latest
+#
+# Output: prints a summary of keys and value shapes found in the JSONB
+# blob rows for the given task_id and table. Helps identify fields that
+# should be promoted to typed columns in a future schema migration.
+# ============================================================
 
 import json
 import sys

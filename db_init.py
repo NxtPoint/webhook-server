@@ -1,7 +1,27 @@
-# db_init.py — Bronze-only initialization (clean, Nov 2025)
-# - Exposes: `engine`, `bronze_init()`
-# - Creates only the Bronze schema + tables + columns + indexes required by ingest_bronze.py
-# - No Silver, no views, no other schemas.
+# db_init.py — Database engine + idempotent schema bootstrap for Bronze and Gold layers.
+#
+# Exposes: `engine` (shared SQLAlchemy engine), `bronze_init()`, `gold_init()`.
+# Called on service boot by every service that touches the database.
+#
+# Bronze init creates the bronze schema and all tables required by ingest_bronze.py:
+#   - raw_result (JSONB snapshot store), session (task registry)
+#   - Array tables: player, player_swing, rally, ball_position, ball_bounce, player_position, etc.
+#   - Singleton tables: session_confidences, submission_context, team_session, etc.
+#   - Typed columns extracted from JSONB for query performance (player_swing scalars, ball_bounce
+#     court coords, submission_context metadata, etc.)
+#   - Generated columns (STORED) for ball_position x/y/timestamp and ball_bounce court_x/y
+#   - Hot-path indexes on (task_id, timestamp) and (task_id, player_id)
+#
+# Gold init creates gold.vw_client_match_summary — the client-facing view that joins
+# bronze.submission_context with silver.point_detail to produce per-match aggregate stats
+# (points/games/sets won, aces, double faults, rally length, serve %, winners, scores).
+# Player mapping uses first_server to resolve internal player_id → player_a/player_b.
+#
+# Business rules:
+#   - DATABASE_URL is required (falls back to POSTGRES_URL or DB_URL)
+#   - Connection string is normalized to postgresql+psycopg:// for psycopg v3
+#   - All DDL is idempotent (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)
+#   - Pool uses pre_ping=True and recycle=1800 for Render's connection lifecycle
 
 import os
 from sqlalchemy import create_engine, text as sql_text

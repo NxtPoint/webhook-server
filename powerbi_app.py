@@ -1,18 +1,23 @@
 # ==================================================================================================
-# powerbi_app.py  (PRODUCTION BASELINE vNext - ASYNC REFRESH SAFE)
+# powerbi_app.py
 # ==================================================================================================
-# SERVICE: NextPoint Power BI Service (Render)
+# Flask service for Power BI embedding (Render: powerbi-service).
 #
-# DESIGN
-# ------
-# - Refresh endpoints are NON-BLOCKING
-# - No synchronous wait endpoint
-# - No in-memory refresh idempotency as source of truth
-# - Status endpoint returns normalized lifecycle fields
-# - Capacity warmup remains ONLY on:
-#     - POST /capacity/warmup
-#     - POST /embed/token (optional autowarmup gate)
-# - Dashboard readiness is decided in upload_app.py, NOT here
+# Responsibilities:
+#   - Capacity lifecycle: POST /capacity/warmup (resume), POST /capacity/suspend
+#   - Session lease management: POST /session/start, POST /session/heartbeat,
+#     POST /session/end, POST /session/sweep
+#   - Dataset refresh: POST /refresh/trigger (non-blocking 202), GET /refresh/status
+#   - Embed token generation: POST /embed/token (auto-resumes capacity if needed)
+#
+# All endpoints require OPS_KEY auth (X-Ops-Key header).
+#
+# Key design rules:
+#   - Refresh is NON-BLOCKING — no synchronous wait, no in-memory idempotency.
+#   - Capacity warmup only on /capacity/warmup and /embed/token.
+#   - Dashboard readiness is decided in upload_app.py, NOT here.
+#   - Session sweep suspends Azure capacity when active session count = 0
+#     and no refresh is in progress (cost control).
 # ==================================================================================================
 
 import os
@@ -53,7 +58,8 @@ def _env(name: str, default: str = "") -> str:
 def _require_ops_key(req) -> bool:
     expected = _env("OPS_KEY", "")
     sent = (req.headers.get("x-ops-key", "") or "").strip()
-    return bool(expected) and (sent == expected)
+    import hmac
+    return bool(expected) and hmac.compare_digest(sent, expected)
 
 
 def _autowarmup_enabled() -> bool:

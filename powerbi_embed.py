@@ -1,20 +1,21 @@
 # ==================================================================================================
-# powerbi_embed.py  (PRODUCTION BASELINE vNext - SAFE LOGGING / REFRESH NORMALIZATION)
+# powerbi_embed.py
 # ==================================================================================================
-# PURPOSE
-# -------
-# Handles Power BI REST API calls for embedding + refresh.
+# Power BI REST API client. Shared by powerbi_app.py and the main API (upload_app.py).
 #
-# What this module does:
-# - Obtains OAuth access tokens (client credentials flow) for Power BI REST API
-# - Resolves workspace/report/dataset IDs from environment variables
-# - Triggers dataset refresh
-# - Generates embed tokens for Wix (supports RLS identities)
-# - Reads latest dataset refresh status
+# Responsibilities:
+#   - OAuth token caching: client credentials flow against Azure AD; token is
+#     cached in-process and refreshed before expiry.
+#   - ID resolution: reads PBI_WORKSPACE_ID, PBI_REPORT_ID, PBI_DATASET_ID from
+#     env vars (or resolves by name via REST).
+#   - Dataset refresh: POST to Power BI refresh API (non-blocking; caller polls status).
+#   - Refresh status polling: GET latest refresh entry, normalised into a consistent
+#     { status, start_time, end_time, error } dict.
+#   - Embed token generation: generates a short-lived embed token with optional
+#     RLS identity for Wix/portal embedding.
 #
-# What this module does NOT do:
-# - It does NOT talk to Azure Resource Manager (capacity pause/resume is separate).
-# - It does NOT wait synchronously for refresh completion.
+# Does NOT handle Azure capacity pause/resume — that is azure_capacity.py.
+# Does NOT wait synchronously for refresh completion.
 # ==================================================================================================
 
 from __future__ import annotations

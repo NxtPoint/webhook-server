@@ -84,8 +84,10 @@ from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 # ============================================================
 
 def _auth_ok(req) -> bool:
+    import hmac
     auth = (req.headers.get("Authorization") or "").strip()
-    return auth == f"Bearer {INGEST_WORKER_OPS_KEY}"
+    expected = f"Bearer {INGEST_WORKER_OPS_KEY}"
+    return hmac.compare_digest(auth, expected)
 
 
 # ============================================================
@@ -424,6 +426,9 @@ def ingest():
 @app.get("/ingest/status")
 def ingest_status():
     """Lightweight status check — reads from submission_context."""
+    if not _auth_ok(request):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
     task_id = (request.args.get("task_id") or "").strip()
     if not task_id:
         return jsonify({"ok": False, "error": "task_id required"}), 400

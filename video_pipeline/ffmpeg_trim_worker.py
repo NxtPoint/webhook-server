@@ -1,6 +1,22 @@
 # ============================================================
 # ffmpeg_trim_worker.py
 # ============================================================
+# FFmpeg-based video trimming worker. Runs as a detached subprocess
+# spawned by video_worker_app.py after it returns 202 to the caller.
+#
+# Flow:
+#   1. Download source video from S3 (wix-uploads/ prefix) to a temp file.
+#   2. Probe video duration with ffprobe to validate EDL segment bounds.
+#   3. Normalise EDL segments (clamp to [0, duration], discard empties).
+#   4. Re-encode each keep segment with configurable CRF/preset (H.264).
+#   5. Concatenate all clip files into a single review.mp4 via FFmpeg concat.
+#   6. Upload the final file to S3 as trimmed/{task_id}/review.mp4.
+#   7. POST a completion callback to VIDEO_TRIM_CALLBACK_URL with
+#      { task_id, status: "completed"|"failed", output_s3_key }.
+#
+# Main entry: run_ffmpeg_trim(task_id, s3_key, edl, callback_url)
+# Called from video_worker_app.py subprocess launch.
+# ============================================================
 
 from __future__ import annotations
 

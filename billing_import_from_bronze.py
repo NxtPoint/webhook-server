@@ -1,19 +1,17 @@
-#=======================================================================
-# billing_import_from_bronze.py
-#=======================================================================
-
-"""
-Billing import from bronze.submission_context.
-
-Model:
-- 1 SportAI COMPLETED submission (task_id) == 1 match consumed
-- Consumption is written to billing.entitlement_consumption
-- Idempotent by task_id (unique constraint in DB)
-
-Notes:
-- We do NOT calculate money here (Wix/PayPal owns payments)
-- We do NOT use invoices, invoice lines, pricing components, or usage_video
-"""
+# billing_import_from_bronze.py — Syncs completed SportAI tasks into billing consumption records.
+#
+# Called by ingest_worker_app.py (step 5) after silver build completes.
+# Also callable as CLI: python billing_import_from_bronze.py [--dry-run] [--task-id X]
+#
+# Business rules:
+#   - Scans bronze.submission_context for tasks with last_status='completed' that have
+#     no corresponding billing.entitlement_consumption record
+#   - Auto-creates billing.account from email + customer_name if account doesn't exist
+#   - Consumption is idempotent by task_id unique constraint
+#   - sync_usage_for_task_id() processes a single task (used by ingest pipeline)
+#   - sync_all_usage() batch-processes all unsynced tasks (used by CLI/backfill)
+#
+# Note: does not calculate money (Wix/PayPal owns payments); no invoice/pricing logic here.
 
 from typing import Optional, Dict, Any
 

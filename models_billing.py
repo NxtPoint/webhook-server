@@ -1,6 +1,15 @@
-#=======================================================================
-# models_billing.py
-#=======================================================================
+# models_billing.py — SQLAlchemy ORM models and schema bootstrap for the billing schema.
+#
+# Defines the billing.account, billing.member, billing.entitlement_grant, and
+# billing.entitlement_consumption tables plus the billing.vw_customer_usage view.
+# Schema is created idempotently on import via billing_init().
+#
+# Business rules:
+#   - Account: one per customer email, has active flag for termination
+#   - Member: multiple per account (primary + children/coaches), soft-delete via active flag
+#   - EntitlementGrant: credits added — unique on (account_id, source, plan_code, external_wix_id)
+#   - EntitlementConsumption: credits used — unique on task_id (1 task = 1 match consumed)
+#   - vw_customer_usage: view computing matches_granted, matches_consumed, matches_remaining
 
 from sqlalchemy import (
     Column,

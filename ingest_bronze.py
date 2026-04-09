@@ -1,3 +1,33 @@
+# ingest_bronze.py
+# ============================================================
+# Bronze ingest module. Parses SportAI JSON responses into typed
+# bronze schema tables. Registered as a Flask blueprint mounted at
+# the root of upload_app.py.
+#
+# Endpoints:
+#   POST /bronze/ingest-from-url    — fetch SportAI JSON from a URL,
+#                                     persist raw snapshot, fan out to
+#                                     bronze tables.
+#   POST /bronze/ingest-json        — same but JSON payload posted directly.
+#   POST /bronze/reingest-from-raw  — reload the last raw snapshot for a
+#                                     task_id and re-fan-out (re-run only).
+#
+# Bronze schema contract:
+#   - Schema: bronze
+#   - Array tables (one row per item, columns: id, task_id, data, created_at):
+#       player, player_swing, rally, ball_position, ball_bounce,
+#       player_position, unmatched_field, debug_event
+#   - Singleton tables: session_confidences, thumbnail, highlight,
+#       team_session, bounce_heatmap, submission_context
+#   - The `data` JSONB column on each table holds leftover/unmapped keys
+#     only; NULL when nothing is left after typed column extraction.
+#
+# Hardening:
+#   - Idempotent DDL (CREATE TABLE / ADD COLUMN IF NOT EXISTS).
+#   - Transaction-scoped advisory locks on task_id prevent concurrent
+#     ingests for the same task (auto-release on commit/rollback).
+# ============================================================
+# Original header preserved below:
 # ingest_bronze.py — task_id-only bronze ingest (final, Nov 2025)
 # Flow:
 #   1) /bronze/ingest-from-url: fetch SportAI JSON, persist RAW (jsonb or gzip), then fan out to bronze towers
@@ -36,8 +66,9 @@ def _guard() -> bool:
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
+    import hmac
     supplied = (hk or "").strip()
-    return bool(OPS_KEY) and supplied == OPS_KEY
+    return bool(OPS_KEY) and hmac.compare_digest(supplied, OPS_KEY)
 
 def _forbid(): return Response("Forbidden", 403)
 

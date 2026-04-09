@@ -1,15 +1,24 @@
 # cron_capacity_sweep.py
 # ============================================================
-# Render Cron Job — runs every few minutes.
+# Render Cron Job — runs every few minutes via Render's cron service.
 #
 # Responsibilities:
-#   1. PowerBI session sweep (expire stale leases, suspend capacity if idle)
-#   2. Detect stuck PBI refreshes (triggered but never completed)
-#   3. Detect stuck ingests (started but never finished)
-#   4. Detect stuck video trims (accepted but never completed)
+#   1. PBI session sweep: expire stale leases in billing.pbi_sessions,
+#      then suspend Azure capacity if no sessions remain active and no
+#      refresh is in progress (calls POST /session/sweep on powerbi_app).
+#   2. Stuck PBI refresh detection: flags refreshes that were triggered
+#      but have not completed within the expected window.
+#   3. Stuck ingest detection: identifies rows in bronze.submission_context
+#      where ingest_started_at is set but ingest_completed_at is NULL
+#      beyond a timeout threshold.
+#   4. Stuck video trim detection: identifies rows where trim_status is
+#      'accepted' but the trim has not completed within the timeout.
 #
-# This is a lightweight sweeper — it reads/updates submission_context
-# directly and calls the PowerBI service for session sweep.
+# This script reads/updates bronze.submission_context directly and calls
+# the PowerBI service HTTP API for session sweep. It does not import
+# upload_app.py or ingest_worker_app.py.
+#
+# Required env vars: DATABASE_URL, OPS_KEY, PBI_SERVICE_URL (powerbi_app).
 # ============================================================
 
 import json

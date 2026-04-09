@@ -1,6 +1,37 @@
-#==================================
-# members_api.py  (UPDATED)
-#==================================
+# members_api.py — OPS_KEY-authenticated member CRUD and account sync endpoints.
+#
+# Manages billing.member rows (linked players/children on an account) and provides
+# a full account sync operation used during Wix onboarding. Called server-to-server
+# by Wix automations and the registration flow in client_api.py.
+#
+# Endpoints (all OPS_KEY auth via X-Ops-Key or Authorization: Bearer header):
+#   GET  /api/billing/members?email=<email>
+#     — Lists all members (primary + linked) for the account identified by email.
+#     — Returns account_id, email, external_wix_id, and a members array.
+#
+#   POST /api/billing/member/upsert
+#     — Creates a new linked (non-primary) member, or updates an existing one by member_id.
+#     — Cannot update the primary member (use sync_account for that).
+#     — Required fields: email (owner), full_name. Optional: member_id (update), child_email, active.
+#
+#   POST /api/billing/member/deactivate
+#     — Soft-deletes a linked member (sets active=false). Cannot deactivate the primary member.
+#     — Required fields: email (owner), member_id.
+#
+#   POST /api/billing/sync_account
+#     — Full replace: idempotently creates the account + primary member, then replaces all
+#       member rows with the provided snapshot (DELETE + re-INSERT). Used by Wix onboarding.
+#     — Required fields: email, members[] array with at least one is_primary=true entry.
+#     — Also updates external_wix_id on the account if supplied and not yet set.
+#     — Returns current usage summary (matches_granted, consumed, remaining).
+#
+# Auth: OPS_KEY via X-Ops-Key header or Authorization: Bearer <key>
+#
+# Business rules:
+#   - Linked members are always created with role='player_parent' and is_primary=false
+#   - Primary member role is determined from the members[] payload or the top-level 'role' field
+#   - 'player' role input is normalized to 'player_parent'
+#   - sync_account performs a full member replace (not a merge) — all existing rows are deleted
 
 from __future__ import annotations
 
@@ -26,7 +57,8 @@ def _guard() -> bool:
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
-    return bool(OPS_KEY) and (hk or "").strip() == OPS_KEY
+    import hmac
+    return bool(OPS_KEY) and hmac.compare_digest((hk or "").strip(), OPS_KEY)
 
 
 def _forbid():

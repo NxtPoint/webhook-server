@@ -1,4 +1,18 @@
-# bronze_json_schema.py — once-off JSON structure explorer
+# bronze_json_schema.py
+# ============================================================
+# CLI utility for inspecting the raw JSON structure stored in
+# bronze.raw_result. Recursively summarises the keys, value types,
+# and array element shapes found in the SportAI response payload
+# for a given task_id.
+#
+# Usage (run on Render shell or locally with DATABASE_URL set):
+#   python bronze_json_schema.py <task_id>
+#   python bronze_json_schema.py --latest
+#
+# Useful when SportAI adds new fields or changes payload structure —
+# run this before updating ingest_bronze.py typed column mappings.
+# Reads from bronze.raw_result (jsonb or gzip blob).
+# ============================================================
 import json, gzip
 from sqlalchemy import text as sql_text
 from db_init import engine  # uses same engine as bronze

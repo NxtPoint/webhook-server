@@ -1,7 +1,22 @@
-#==================================
-# entitlements_api.py
-# CANONICAL UPLOAD GATE
-#==================================
+# entitlements_api.py — Server-side upload gate: computes and caches entitlement state.
+#
+# Provides a single OPS_KEY-authenticated endpoint used by upload_app.py to decide
+# whether a given email is allowed to submit a new video for analysis.
+#
+# Endpoint:
+#   GET /api/entitlements/summary?email=<email>
+#     — Upserts billing.entitlements (computed from account + subscription + grants + consumption)
+#     — Returns can_upload, block_reason, can_view_dashboards, dashboard_block_reason,
+#       matches_granted, matches_consumed, matches_remaining, role, subscription_status
+#
+# Auth: OPS_KEY via X-Ops-Key header or Authorization: Bearer <key>
+#
+# Business rules:
+#   - can_upload requires: account active + role != 'coach' + subscription ACTIVE + credits > 0
+#   - block_reason values: ACCOUNT_INACTIVE | COACH_VIEW_ONLY | SUBSCRIPTION_INACTIVE | NO_CREDITS
+#   - can_view_dashboards requires: account active + subscription ACTIVE (coaches can view)
+#   - Entitlement state is written to billing.entitlements on every call (upsert, not cached)
+#   - Unknown email returns 404 (account must be registered before upload is possible)
 
 import os
 
@@ -19,7 +34,8 @@ def _guard() -> bool:
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
-    return bool(OPS_KEY) and (hk or "").strip() == OPS_KEY
+    import hmac
+    return bool(OPS_KEY) and hmac.compare_digest((hk or "").strip(), OPS_KEY)
 
 UPSERT_SQL = text("""
 WITH a AS (

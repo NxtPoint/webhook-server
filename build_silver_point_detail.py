@@ -1,5 +1,9 @@
 #================================================================================================================================================
 # build_silver_point_detail.py
+# LEGACY IMPLEMENTATION — kept for reference only.
+# Replaced in production by build_silver_v2.py (5-pass SQL pipeline).
+# Do not call this module from new code.
+#
 # NextPoint Silver: silver.point_detail
 # Phase 1: bronze.player_swing -> core + ball_hit_s + ball_hit_location_x/y
 # Phase 2: bronze.ball_bounce -> type/timestamp/court_x/court_y (first bounce after contact)

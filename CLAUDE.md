@@ -328,13 +328,196 @@ Client-facing pages receive identity data from Wix via URL params passed through
 
 ### Required Environment Variables
 
-Main service: `DATABASE_URL`, `OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `SPORT_AI_TOKEN`, `VIDEO_WORKER_BASE_URL`, `VIDEO_WORKER_OPS_KEY`, `VIDEO_TRIM_CALLBACK_URL`, `CLIENT_API_KEY`, `SES_FROM_EMAIL`, `COACH_ACCEPT_BASE_URL`, `LOCKER_ROOM_BASE_URL`, `PLANS_PAGE_URL` (optional)
+#### Main API (webhook-server)
 
-Ingest worker: same as main service plus `VIDEO_TRIM_CALLBACK_OPS_KEY` (must match main API's `OPS_KEY`), `INGEST_WORKER_OPS_KEY`
+**Required (service will fail without these):**
 
-Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `FFMPEG_BIN`, `FFPROBE_BIN`
+| Env Var | Source File(s) | Notes |
+|---|---|---|
+| `DATABASE_URL` | `db_init.py` | PostgreSQL connection string. Falls back to `POSTGRES_URL` then `DB_URL`. Normalized to `postgresql+psycopg://` |
+| `OPS_KEY` | `upload_app.py`, `probes.py`, `entitlements_api.py`, `members_api.py`, `ingest_bronze.py`, `ui_app.py` | Ops auth key for server-to-server endpoints |
+| `CLIENT_API_KEY` | `client_api.py` | Auth key for all client-facing `/api/client/*` endpoints |
+| `S3_BUCKET` | `upload_app.py`, `client_api.py` | S3 bucket for uploads, profile photos, footage |
+| `AWS_REGION` | `upload_app.py`, `client_api.py`, `coach_invite/email_sender.py`, `coach_invite/video_complete_email.py` | AWS region. Default: `us-east-1` |
+| `AWS_ACCESS_KEY_ID` | implicit (boto3) | AWS credentials for S3 and SES |
+| `AWS_SECRET_ACCESS_KEY` | implicit (boto3) | AWS credentials for S3 and SES |
+| `SPORT_AI_TOKEN` | `upload_app.py` | SportAI API token. RuntimeError on SportAI submit if missing |
+| `INGEST_WORKER_BASE_URL` | `upload_app.py` | URL of the ingest worker service |
+| `INGEST_WORKER_OPS_KEY` | `upload_app.py` | Auth key for ingest worker calls |
 
-Legacy (deprecated, safe to remove from Render env): `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`
+**Required for video trim pipeline:**
+
+| Env Var | Source File(s) | Notes |
+|---|---|---|
+| `VIDEO_WORKER_BASE_URL` | `upload_app.py`, `video_pipeline/video_trim_api.py` | URL of the video trim worker service |
+| `VIDEO_WORKER_OPS_KEY` | `upload_app.py`, `video_pipeline/video_trim_api.py` | Auth key for video worker |
+| `VIDEO_TRIM_CALLBACK_URL` | `video_pipeline/video_trim_api.py` | Callback URL for trim completion |
+| `VIDEO_TRIM_CALLBACK_OPS_KEY` | `video_pipeline/video_trim_api.py` | Auth key for callback (must match main API's `OPS_KEY`) |
+
+**Required for Power BI integration:**
+
+| Env Var | Source File(s) | Notes |
+|---|---|---|
+| `POWERBI_SERVICE_BASE_URL` | `upload_app.py`, `client_api.py` | URL of the Power BI service |
+| `POWERBI_SERVICE_OPS_KEY` | `upload_app.py`, `client_api.py` | Auth key for PBI service. Falls back to `OPS_KEY` |
+| `PBI_TENANT_ID` | `powerbi_embed.py`, `azure_capacity.py` | Azure AD tenant ID |
+| `PBI_CLIENT_ID` | `powerbi_embed.py`, `azure_capacity.py` | Azure AD app client ID |
+| `PBI_CLIENT_SECRET` | `powerbi_embed.py`, `azure_capacity.py` | Azure AD app client secret |
+| `PBI_WORKSPACE_ID` | `powerbi_embed.py` | Power BI workspace GUID |
+| `PBI_REPORT_ID` | `powerbi_embed.py` | Power BI report GUID |
+| `PBI_DATASET_ID` | `powerbi_embed.py` | Power BI dataset GUID |
+
+**Optional (have sensible defaults):**
+
+| Env Var | Default | Source File(s) | Notes |
+|---|---|---|---|
+| `SES_FROM_EMAIL` | `noreply@ten-fifty5.com` | `coach_invite/email_sender.py`, `coach_invite/video_complete_email.py` | SES sender address |
+| `COACH_ACCEPT_BASE_URL` | `https://api.nextpointtennis.com` | `client_api.py` | Base URL for coach accept links |
+| `LOCKER_ROOM_BASE_URL` | `https://www.ten-fifty5.com/portal` | `coach_invite/video_complete_email.py` | CTA link in video completion email |
+| `PLANS_PAGE_URL` | `https://www.ten-fifty5.com/plans` | `client_api.py` | Plans page URL returned in entitlements |
+| `SPORT_AI_BASE` | `https://api.sportai.com` | `upload_app.py` | SportAI API base URL |
+| `SPORT_AI_SUBMIT_PATH` | `/api/statistics/tennis` | `upload_app.py` | SportAI submit endpoint path |
+| `SPORT_AI_STATUS_PATH` | `/api/statistics/tennis/{task_id}/status` | `upload_app.py` | SportAI status endpoint path |
+| `SPORT_AI_CANCEL_PATH` | `/api/tasks/{task_id}/cancel` | `upload_app.py` | SportAI cancel endpoint path |
+| `AUTO_INGEST_ON_COMPLETE` | `1` | `upload_app.py` | Toggle auto-ingest on SportAI completion |
+| `INGEST_REPLACE_EXISTING` | `1` | `upload_app.py` | Replace existing bronze data on re-ingest |
+| `ENABLE_CORS` | `0` | `upload_app.py` | Enable CORS headers on API endpoints |
+| `MAX_CONTENT_MB` | `150` | `upload_app.py` | Max upload size in MB |
+| `MAX_UPLOAD_BYTES` | `20GB` | `upload_app.py` | Max multipart upload size |
+| `MULTIPART_PART_SIZE_MB` | `25` | `upload_app.py` | Multipart chunk size |
+| `S3_PREFIX` | `incoming` | `upload_app.py` | S3 key prefix for uploads |
+| `S3_GET_EXPIRES` | `604800` (7 days) | `upload_app.py` | Presigned GET URL TTL in seconds |
+| `INGEST_WORKER_TIMEOUT_S` | `10` | `upload_app.py` | HTTP timeout for ingest worker calls |
+| `INGEST_STALE_AFTER_S` | `1800` | `upload_app.py` | Stale ingest detection threshold |
+| `PBI_REFRESH_POLL_S` | `15` | `upload_app.py` | PBI refresh poll interval |
+| `PBI_REFRESH_MAX_WAIT_S` | `1800` | `upload_app.py` | Max wait for PBI refresh completion |
+| `PBI_REFRESH_TRIGGER_TIMEOUT_S` | `60` | `upload_app.py` | HTTP timeout for refresh trigger |
+| `PBI_REFRESH_STATUS_TIMEOUT_S` | `60` | `upload_app.py` | HTTP timeout for refresh status check |
+| `PBI_SUSPEND_AFTER_REFRESH` | `1` | `upload_app.py` | Suspend capacity after refresh completes |
+| `BATCH_JOB_QUEUE` | `ten-fifty5-ml-queue` | `upload_app.py` | AWS Batch queue name (T5 pipeline) |
+| `BATCH_JOB_DEF` | `ten-fifty5-ml-pipeline` | `upload_app.py` | AWS Batch job definition (T5 pipeline) |
+| `BILLING_OPS_KEY` | falls back to `OPS_KEY` | `subscriptions_api.py`, `usage_api.py`, `coaches_api.py` | Billing-specific ops key |
+| `VIDEO_WORKER_REQUEST_TIMEOUT_S` | `10` | `video_pipeline/video_trim_api.py` | HTTP timeout for video worker requests |
+
+**Legacy (Wix transition — remove when Wix payment is retired):**
+
+| Env Var | Source File(s) | Notes |
+|---|---|---|
+| `WIX_NOTIFY_UPLOAD_COMPLETE_URL` | `upload_app.py`, `ingest_worker_app.py` | Wix notify webhook URL |
+| `RENDER_TO_WIX_OPS_KEY` | `upload_app.py`, `ingest_worker_app.py` | Wix notify auth key |
+| `WIX_NOTIFY_TIMEOUT_S` | `upload_app.py`, `ingest_worker_app.py` | Default: `15` |
+| `WIX_NOTIFY_RETRIES` | `upload_app.py`, `ingest_worker_app.py` | Default: `3` |
+
+#### Ingest Worker
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `INGEST_WORKER_OPS_KEY` | — | **Required** (startup crash) | Auth for POST /ingest |
+| `DATABASE_URL` | — | **Required** (via `db_init.py`) | — |
+| `OPS_KEY` | `""` | Optional (fallback for PBI service key) | — |
+| `POWERBI_SERVICE_BASE_URL` | `""` | Required for PBI refresh | — |
+| `POWERBI_SERVICE_OPS_KEY` | falls back to `OPS_KEY` | Optional | — |
+| `VIDEO_WORKER_BASE_URL` | `""` | Required for video trim | — |
+| `VIDEO_WORKER_OPS_KEY` | `""` | Required for video trim | — |
+| `INGEST_REPLACE_EXISTING` | `1` | Optional | — |
+| `WIX_NOTIFY_UPLOAD_COMPLETE_URL` | `""` | Optional (legacy) | — |
+| `RENDER_TO_WIX_OPS_KEY` | `""` | Optional (legacy) | — |
+| `WIX_NOTIFY_TIMEOUT_S` | `15` | Optional | — |
+| `WIX_NOTIFY_RETRIES` | `3` | Optional | — |
+
+#### Power BI Service
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `OPS_KEY` | `""` | **Required** (auth fails without) | — |
+| `DATABASE_URL` | — | **Required** (via `db_init.py`) | For session lease store |
+| `PBI_TENANT_ID` | — | **Required** (RuntimeError) | Azure AD tenant |
+| `PBI_CLIENT_ID` | — | **Required** (RuntimeError) | Azure AD app client ID |
+| `PBI_CLIENT_SECRET` | — | **Required** (RuntimeError) | Azure AD app secret |
+| `PBI_WORKSPACE_ID` | — | **Required** (RuntimeError) | Power BI workspace |
+| `PBI_REPORT_ID` | `""` | Required unless fallback enabled | Report GUID |
+| `PBI_DATASET_ID` | `""` | Required unless fallback enabled | Dataset GUID |
+| `AZ_SUBSCRIPTION_ID` | — | **Required** (RuntimeError) | Azure subscription ID |
+| `AZ_RESOURCE_GROUP` | — | **Required** (RuntimeError) | Azure resource group |
+| `AZ_CAPACITY_NAME` | — | **Required** (RuntimeError) | Azure capacity name |
+| `PBI_AUTOWARMUP_ON_EMBED` | `1` | Optional | Auto-resume capacity on embed |
+| `PBI_DEBUG_ENDPOINTS` | `0` | Optional | Enable debug routes |
+| `PBI_SESSION_LEASE_SECONDS` | `180` | Optional | Session lease duration (min 60) |
+| `PBI_ALLOW_FALLBACK_ID_RESOLUTION` | `0` | Optional | Debug: auto-resolve IDs from API |
+| `PBI_REQUIRE_RLS_IDENTITY` | `1` | Optional | Fail-closed RLS identity check |
+| `PBI_HTTP_TIMEOUT_S` | `30` | Optional | HTTP timeout for PBI API calls |
+| `PBI_SCOPE` | `https://analysis.windows.net/powerbi/api/.default` | Optional | OAuth scope |
+| `AZ_CAPACITY_PROVIDER` | `Microsoft.PowerBIDedicated` | Optional | ARM resource provider |
+| `AZ_API_VERSION` | `2021-01-01` | Optional | ARM API version |
+| `AZ_HTTP_TIMEOUT_S` | `30` | Optional | HTTP timeout for ARM calls |
+| `PORT` | `5000` | Optional | Service port |
+
+#### Video Trim Worker (Docker)
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `VIDEO_WORKER_OPS_KEY` | — | **Required** (startup crash) | Worker auth |
+| `S3_BUCKET` | `""` | **Required** | — |
+| `AWS_REGION` | — | **Required** | — |
+| `AWS_ACCESS_KEY_ID` | — | **Required** (implicit, boto3) | — |
+| `AWS_SECRET_ACCESS_KEY` | — | **Required** (implicit, boto3) | — |
+| `FFMPEG_BIN` | `ffmpeg` | Optional | Path to ffmpeg binary |
+| `FFPROBE_BIN` | `ffprobe` | Optional | Path to ffprobe binary |
+| `VIDEO_CRF` | `28` | Optional | FFmpeg CRF quality setting |
+| `VIDEO_PRESET` | `veryfast` | Optional | FFmpeg encoding preset |
+| `AUDIO_BITRATE` | `96k` | Optional | Audio bitrate |
+| `MIN_KEEP_SEGMENT_S` | `0.25` | Optional | Minimum segment length |
+| `FFMPEG_TIMEOUT_S` | `1800` | Optional | FFmpeg process timeout |
+| `FFPROBE_TIMEOUT_S` | `60` | Optional | ffprobe timeout |
+| `TRIM_MIN_DISK_FREE_MB` | `500` | Optional | Minimum free disk space |
+| `VIDEO_TRIM_CALLBACK_TIMEOUT_S` | `20` | Optional | Callback HTTP timeout |
+| `VIDEO_TRIM_CALLBACK_MAX_RETRIES` | `3` | Optional | Callback retry count |
+| `VIDEO_TRIM_CALLBACK_RETRY_BASE_S` | `2.0` | Optional | Callback retry backoff base |
+| `TRIM_LOG_DIR` | `/tmp/trim_logs` | Optional | Log directory |
+
+#### Locker Room
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `PORT` | `5050` | Optional | Service port |
+
+No other env vars — serves static HTML only, no DB or S3 access.
+
+#### Cron Jobs
+
+**`cron_capacity_sweep.py`:**
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `OPS_KEY` | — | **Required** (startup crash) | — |
+| `DATABASE_URL` | — | **Required** | For DB queries |
+| `RENDER_POWERBI_BASE_URL` | `""` | Optional | PBI service URL (sweep skipped if missing) |
+| `PBI_REFRESH_STALE_S` | `600` (10 min) | Optional | Stuck PBI refresh threshold |
+| `INGEST_STALE_S` | `1800` (30 min) | Optional | Stuck ingest threshold |
+| `TRIM_STALE_S` | `1800` (30 min) | Optional | Stuck trim threshold |
+
+**`cron_monthly_refill.py`:**
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `BILLING_OPS_KEY` or `OPS_KEY` | — | **Required** (one must be set) | Auth for refill API call |
+
+#### Lambda (`lambda/ml_trigger.py`)
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `BATCH_JOB_QUEUE` | — | **Required** (KeyError) | AWS Batch queue |
+| `BATCH_JOB_DEF` | — | **Required** (KeyError) | AWS Batch job definition |
+| `DATABASE_URL` | — | **Required** (KeyError) | — |
+
+#### ML Pipeline Docker (`ml_pipeline/__main__.py`)
+
+| Env Var | Default | Required? | Notes |
+|---|---|---|---|
+| `S3_BUCKET` | — | **Required** in Batch mode (KeyError) | — |
+| `DATABASE_URL` | — | **Required** (via `db_schema.py`) | — |
+| `AWS_REGION` | `us-east-1` | Optional | — |
+| `FFMPEG_BIN` | `ffmpeg` | Optional | For local transcode |
 
 ### S3 CORS
 

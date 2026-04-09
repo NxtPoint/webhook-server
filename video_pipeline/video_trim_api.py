@@ -1,6 +1,23 @@
 # ============================================================
 # video_trim_api.py
 # ============================================================
+# Triggers async video trimming for a completed match ingest.
+#
+# Entry point: trigger_video_trim(task_id) — called from ingest_worker_app.py
+# at step 4 of the ingest pipeline.
+#
+# Flow:
+#   1. Check trim_status on bronze.submission_context — skip if already
+#      'completed', 'accepted', or 'queued' (idempotent).
+#   2. Build an EDL (Edit Decision List) by calling
+#      build_video_timeline_from_silver(task_id), which reads silver.point_detail.
+#   3. POST the EDL + source S3 key to the video worker service at
+#      VIDEO_WORKER_BASE_URL/trim (auth: VIDEO_WORKER_OPS_KEY).
+#   4. Update submission_context.trim_status to 'queued' on success.
+#
+# Status lifecycle: queued → accepted (worker ack) → completed / failed.
+# State is stored in bronze.submission_context.trim_status.
+# ============================================================
 
 from __future__ import annotations
 

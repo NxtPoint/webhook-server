@@ -41,6 +41,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from datetime import datetime
@@ -89,7 +90,7 @@ def _guard() -> bool:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
-    return bool(CLIENT_API_KEY) and hk.strip() == CLIENT_API_KEY
+    return bool(CLIENT_API_KEY) and hmac.compare_digest(hk.strip(), CLIENT_API_KEY)
 
 
 def _forbid():

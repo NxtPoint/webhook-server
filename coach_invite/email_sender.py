@@ -1,4 +1,22 @@
-# coach_invite/email_sender.py — Send coach invite email via AWS SES
+# coach_invite/email_sender.py
+# ============================================================
+# AWS SES email sender for coach invitation emails.
+#
+# Sends a branded HTML email to the invited coach containing an
+# "Accept Invitation" CTA button that links to the coach-accept page
+# (COACH_ACCEPT_BASE_URL/coach-accept?token=<token>).
+#
+# Main function: send_invite_email(coach_email, owner_name, token)
+#
+# Env vars used:
+#   SES_FROM_EMAIL   — sender address (domain must be SES-verified)
+#   AWS_REGION       — SES region (eu-north-1 for Stockholm)
+#   COACH_ACCEPT_BASE_URL — base URL for the accept link
+#                          (default: https://api.nextpointtennis.com)
+#
+# Auth: uses the boto3 default credential chain (AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY env vars; IAM user needs ses:SendEmail).
+# ============================================================
 
 from __future__ import annotations
 

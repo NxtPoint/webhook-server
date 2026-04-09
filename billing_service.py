@@ -1,8 +1,23 @@
-#=======================================================================
-# billing_service.py  (FINAL BASELINE v2)
-# - Adds idempotency for entitlement grants (prevents double credits on retries)
-# - Adds helper for monthly no-rollover resets (expire excess via consumption)
-#=======================================================================
+# billing_service.py — Core billing logic for credit-based usage tracking.
+#
+# Provides functions for account/member lifecycle and entitlement management.
+# Called by client_api.py (registration), subscriptions_api.py (Wix webhook),
+# billing_import_from_bronze.py (usage sync), and cron_monthly_refill.py.
+#
+# Key functions:
+#   create_account_with_primary_member() — idempotent account+member creation (by email)
+#   grant_entitlement() — add credits to an account (idempotent by source+plan+external_id)
+#   consume_entitlement() — deduct 1 credit for a task (idempotent by task_id)
+#   subscription_event() — process Wix subscription webhook (PLAN_PURCHASED → immediate grant)
+#   monthly_no_rollover_reset() — expire excess credits at period boundary
+#
+# Business rules:
+#   - Accounts are keyed by email (normalized lowercase, trimmed)
+#   - Roles: 'player_parent' or 'coach' (input 'player' normalized to 'player_parent')
+#   - Entitlement grants are idempotent by (account_id, source, plan_code, external_wix_id)
+#   - Consumption is idempotent by task_id (unique constraint)
+#   - PLAN_PURCHASED + ACTIVE triggers immediate credit grant (not deferred to monthly refill)
+#   - task_id is converted to UUID (deterministic uuid5 from string if not valid UUID)
 
 from __future__ import annotations
 

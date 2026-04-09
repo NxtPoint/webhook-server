@@ -1,6 +1,32 @@
-#==================================
-# subscriptions_api.py  (NEW - FINAL)
-#==================================
+# subscriptions_api.py — Wix subscription webhook handler and monthly credit refill cron.
+#
+# Receives plan lifecycle events from Wix (via server-to-server POST) and maintains
+# billing.subscription_state. Also exposes the monthly refill endpoint called by
+# cron_monthly_refill.py on the 1st of each month.
+#
+# Endpoints:
+#   POST /api/billing/subscription/event  (OPS_KEY auth)
+#     — Accepts Wix subscription lifecycle events: PLAN_PURCHASED, PLAN_CANCELLED,
+#       RECURRING_PAYMENT_CANCELLED
+#     — Writes to billing.subscription_event_log (idempotent via sha256 event_id)
+#     — Upserts billing.subscription_state (status, period dates, plan details)
+#     — On PLAN_PURCHASED + ACTIVE: immediately calls grant_entitlement() so the user
+#       can upload right away without waiting for the monthly refill
+#
+#   POST /api/billing/cron/monthly_refill  (OPS_KEY auth)
+#     — Refills credits for all ACTIVE recurring subscriptions to their plan allowance
+#     — No-rollover rule: after refill, matches_remaining == allowance (excess is expired)
+#     — Idempotent per account per YYYY-MM via billing.monthly_refill_log unique index
+#     — Skips execution unless today is the 1st (overridable with force=true in body)
+#
+# Auth: OPS_KEY via X-Ops-Key header (checks BILLING_OPS_KEY then OPS_KEY env vars)
+#
+# Business rules:
+#   - Events are deduplicated by sha256 of (event_type, email, order_id, plan_id, status,
+#     plan_start, plan_end) — retries from Wix are safe
+#   - PLAN_PURCHASED sets status=ACTIVE; PLAN_CANCELLED / RECURRING_PAYMENT_CANCELLED → CANCELLED
+#   - An ACTIVE status with a past period_end is immediately set to EXPIRED
+#   - Monthly refill: if remaining < allowance → grant delta; if remaining > allowance → expire excess
 
 from __future__ import annotations
 
@@ -46,7 +72,8 @@ def _ops_key_ok() -> bool:
         or ""
     ).strip()
 
-    return provided == ops_key
+    import hmac
+    return hmac.compare_digest(provided, ops_key)
 
 
 def _parse_dt(v):

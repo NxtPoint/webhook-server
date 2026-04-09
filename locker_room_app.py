@@ -1,6 +1,18 @@
-# locker_room_app.py — Minimal Flask server for Locker Room + Players' Enclosure
-# Serves HTML SPAs as static files.
-# No DB connection — all data comes from the webhook-server API.
+# locker_room_app.py — Standalone Flask server for the Locker Room service (Render).
+#
+# Serves nine client-facing HTML SPAs as static files via send_file():
+#   GET /              → locker_room.html   (dashboard: matches, stats, video playback)
+#   GET /register      → players_enclosure.html (onboarding wizard)
+#   GET /media-room    → media_room.html    (video upload wizard)
+#   GET /backoffice    → backoffice.html    (admin dashboard)
+#   GET /analytics     → analytics.html     (Power BI embed)
+#   GET /portal        → portal.html        (unified nav shell, main Wix entry point)
+#   GET /pricing       → pricing.html       (plans & pricing page)
+#   GET /coach-accept  → coach_accept.html  (coach invitation acceptance)
+#
+# No database connection — all data access goes through the webhook-server API.
+# Only installs flask + gunicorn (not full requirements.txt).
+# Start command: gunicorn locker_room_app:app
 
 import os
 from flask import Flask, send_file, jsonify
@@ -61,4 +73,4 @@ def not_found(e):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port, debug=False)

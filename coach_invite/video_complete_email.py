@@ -1,4 +1,21 @@
-# coach_invite/video_complete_email.py — Send video analysis complete email via AWS SES
+# coach_invite/video_complete_email.py
+# ============================================================
+# AWS SES email sender for "Your match analysis is ready" notifications.
+# Sends branded HTML with Portal CTA button to the player/account owner
+# when their video analysis has completed.
+#
+# Main function: send_video_complete_email(to_email, first_name, task_id)
+#
+# Called from: ingest_worker_app.py (step 7) and upload_app.py task-status
+# auto-fire. Both callers are guarded by the wix_notified_at idempotency
+# check so the email fires at most once per task.
+#
+# Env vars: SES_FROM_EMAIL, AWS_REGION,
+#   LOCKER_ROOM_BASE_URL (default: https://www.tenfifty5.com/locker-room)
+#
+# Transition note: runs alongside _notify_wix in upload_app.py.
+# Remove _notify_wix and WIX_NOTIFY_* env vars once Wix is retired.
+# ============================================================
 
 from __future__ import annotations
 

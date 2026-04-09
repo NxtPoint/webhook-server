@@ -1,6 +1,20 @@
 # ============================================================
 # video_worker_app.py
 # ============================================================
+# Flask service for video trimming. Runs in Docker (see Dockerfile.worker).
+# Entry point: video_worker_wsgi.py (Gunicorn).
+#
+# Endpoint: POST /trim
+#   - Validates OPS key against VIDEO_WORKER_OPS_KEY env var.
+#   - Accepts JSON body: { task_id, s3_key, edl, callback_url }.
+#   - Launches a detached subprocess via ffmpeg_trim_worker.run_ffmpeg_trim().
+#   - Returns HTTP 202 immediately (fire-and-forget).
+#   - On completion the subprocess POSTs a callback to VIDEO_TRIM_CALLBACK_URL
+#     with { task_id, status, output_s3_key } so the main API can update
+#     trim_status on bronze.submission_context.
+#
+# Auth: VIDEO_WORKER_OPS_KEY header (X-Ops-Key).
+# ============================================================
 
 from __future__ import annotations
 
@@ -33,8 +47,10 @@ if not VIDEO_WORKER_OPS_KEY:
 
 
 def _auth_ok(req) -> bool:
+    import hmac
     auth = (req.headers.get("Authorization") or "").strip()
-    return auth == f"Bearer {VIDEO_WORKER_OPS_KEY}"
+    expected = f"Bearer {VIDEO_WORKER_OPS_KEY}"
+    return hmac.compare_digest(auth, expected)
 
 
 def _require_non_empty_str(v: Any, field_name: str) -> str:

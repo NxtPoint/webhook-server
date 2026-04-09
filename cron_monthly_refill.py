@@ -1,4 +1,18 @@
 # cron_monthly_refill.py
+# ============================================================
+# Render Cron Job — runs once per month (configured in render.yaml).
+#
+# Triggers the monthly billing entitlement refill by making a single
+# authenticated POST request to:
+#   POST https://api.nextpointtennis.com/api/billing/cron/monthly_refill
+#
+# The main API endpoint (billing_service.py) handles the actual logic:
+# iterating active accounts with monthly plans and topping up their
+# EntitlementGrant credits for the new billing period.
+#
+# Required env vars:
+#   BILLING_OPS_KEY or OPS_KEY — used as X-Ops-Key auth header
+# ============================================================
 import os
 import urllib.request
 

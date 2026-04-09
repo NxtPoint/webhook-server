@@ -1,7 +1,26 @@
 # ============================================================
 # build_video_timeline.py
+# ============================================================
+# Pure Python timeline builder — reads silver.point_detail and produces
+# an EDL (Edit Decision List) consumed by the FFmpeg trim worker.
 #
-# PURPOSE
+# Architecture rule: Python owns all business logic; SQL is only for I/O.
+#
+# Key constants (tunable at module level):
+#   PAD_BEFORE_S  = 2   seconds of context added before each point start
+#   PAD_AFTER_S   = 2   seconds of context added after each point end
+#   MERGE_GAP_S   = 0   adjacent/overlapping segments are always merged
+#   MIN_SEGMENT_S = 2   segments shorter than this are discarded
+#
+# Main function: build_video_timeline_from_silver(task_id, conn)
+#   - Reads point boundaries (ball_hit_s timestamps) from silver.point_detail
+#   - Applies padding and merges overlapping segments
+#   - Returns a list of {start, end} dicts representing the keep windows
+#
+# Also provides: build_video_timeline_from_silver() wrapper that opens its
+# own DB connection, used by video_trim_api.py.
+#
+# Original purpose comment preserved below:
 #   Build a canonical, deterministic "video keep timeline" from Silver.
 #   This timeline is the foundation for:
 #     - MVP1: Trim dead time (FFmpeg worker will consume this EDL)

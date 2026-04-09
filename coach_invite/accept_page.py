@@ -1,4 +1,23 @@
-# coach_invite/accept_page.py — Accept page + public token-based accept endpoint
+# coach_invite/accept_page.py
+# ============================================================
+# Flask blueprint for the coach invitation acceptance flow.
+#
+# Endpoints:
+#   GET  /coach-accept
+#       Serves coach_accept.html (standalone SPA, no auth required).
+#
+#   POST /api/coaches/accept-token
+#       PUBLIC endpoint — the invite token IS the authentication.
+#       Validates the token against billing.coaches_permission
+#       (must be status=INVITED and active=true). On success:
+#         - Sets status = ACCEPTED
+#         - Clears invite_token (token is single-use)
+#         - Returns { coach_email } so the SPA can show login guidance
+#       Returns 400 if token is missing, 404 if not found / already used.
+#
+# Business rule: no OPS_KEY or CLIENT_API_KEY is required for the accept
+# endpoint — possession of a valid token is sufficient proof of identity.
+# ============================================================
 
 from __future__ import annotations
 

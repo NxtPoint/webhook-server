@@ -1,6 +1,27 @@
-#==================================
-# usage_api.py  (NEW - FINAL)
-#==================================
+# usage_api.py — OPS_KEY-authenticated billing read and manual grant endpoints.
+#
+# Provides ops/admin endpoints for querying account usage and manually issuing credit
+# grants. Used by backoffice tooling, Wix webhook handler, and integration scripts.
+#
+# Endpoints:
+#   GET  /api/billing/summary?email=<email>  (OPS_KEY auth)
+#     — Returns matches_granted, matches_consumed, matches_remaining, role,
+#       last_processed_at for the account. Reads from billing.vw_customer_usage.
+#
+#   GET  /api/billing/entitlement/check?email=<email>  (OPS_KEY auth)
+#     — Returns allowed (bool) and reason for the upload gate decision.
+#     — Checks: role != 'coach', subscription_status == 'ACTIVE', matches_remaining > 0
+#     — Reason values: account_not_found | coach_cannot_upload | subscription_inactive |
+#       insufficient_credits
+#
+#   POST /api/billing/entitlement/grant  (OPS_KEY auth)
+#     — Manually grants credits to an account. Used by Wix webhook handler and backfill.
+#     — Resolves account by account_id, external_wix_id, or email (in that order)
+#     — Delegates to billing_service.grant_entitlement() (idempotent by external_wix_id)
+#     — Required fields: matches_granted; at least one of account_id / external_wix_id / email
+#
+# Auth: OPS_KEY via X-Ops-Key header or Authorization: Bearer <key>
+#       (checks BILLING_OPS_KEY then OPS_KEY env vars)
 
 from __future__ import annotations
 
@@ -36,7 +57,8 @@ def _ops_key_ok() -> bool:
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
-    return bool(OPS_KEY) and (hk or "").strip() == OPS_KEY
+    import hmac
+    return bool(OPS_KEY) and hmac.compare_digest((hk or "").strip(), OPS_KEY)
 
 
 def _find_account(session: Session, *, email: str, external_wix_id: Optional[str]) -> Optional[Account]:

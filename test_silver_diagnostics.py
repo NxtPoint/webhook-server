@@ -1,3 +1,17 @@
+# test_silver_diagnostics.py
+# ============================================================
+# CLI diagnostic script for validating silver.point_detail output after
+# a bronze ingest or silver rebuild. Run on the Render shell or locally
+# with DATABASE_URL set.
+#
+# Usage:
+#   python test_silver_diagnostics.py <task_id>
+#
+# Output: prints row counts, distinct point numbers, serve detection
+# results, coordinate normalisation checks, and sample point rows for
+# the given task_id. Used to manually verify that build_silver_v2.py
+# produced correct results before doing Excel / end-to-end validation.
+# ============================================================
 """
 Silver diagnostics — run on Render shell:
     python test_silver_diagnostics.py 992fc5f2-fb7e-4ad6-8ac8-934b71592b2b

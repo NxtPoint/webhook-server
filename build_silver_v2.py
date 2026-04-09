@@ -1,14 +1,62 @@
-# build_silver_v2.py
-# NextPoint Silver: silver.point_detail — rewritten as 5 SQL passes.
+# build_silver_v2.py — Silver layer builder: transforms bronze data into silver.point_detail.
 #
-# Pass 1 (INSERT): bronze.player_swing → silver.point_detail (core fields)
-# Pass 2 (UPDATE): bronze.ball_bounce → bounce coordinates (with geometric guard)
-# Pass 3 (UPDATE): Serve detection → point/game structure → exclusions → outcomes → winners
-# Pass 4 (UPDATE): Zone classification + coordinate normalization
-# Pass 5 (UPDATE): Analytics features (serve buckets, stroke, rally length, aggression, depth)
+# Current production implementation (replaced build_silver_point_detail.py).
+# Runs as a single-transaction 5-pass SQL pipeline per task_id.
 #
-# Business rules are identical to build_silver_point_detail.py phases 1-7.
-# Column names and types are unchanged.
+# Called by:
+#   - ingest_worker_app.py (step 3 of ingest pipeline)
+#   - client_api.py POST /api/client/matches/<task_id>/reprocess
+#   - CLI: python build_silver_v2.py --task-id <id> [--replace]
+#
+# Pass 1 (INSERT) — Load from bronze.player_swing:
+#   - Filters to valid=TRUE, is_in_rally=TRUE swings
+#   - De-ghosts player IDs: top 2 players by swing count kept, extras mapped to player 2
+#   - Optional warmup filter: excludes swings before start_time_s from submission_context
+#   - Idempotent via ON CONFLICT (task_id, id) DO NOTHING
+#
+# Pass 2 (UPDATE) — Bounce matching from bronze.ball_bounce:
+#   - For each swing, finds the first bounce in a time window (hit_s+0.005 to min(next_hit_s, hit_s+2.5))
+#   - Geometric guard (multi-ball defence): non-serve bounces must cross the net
+#     (hitter on near side → bounce must be on far side, and vice versa)
+#   - Prefers floor bounces over other types, then earliest timestamp
+#
+# Pass 3 (UPDATE) — Point context mega-CTE:
+#   - Serve detection: geometric check — overhead swing type + hit position within eps of baseline
+#   - Server end (near/far): which baseline the server hits from, forward-filled
+#   - Serve side (deuce/ad): determined by hit x-position relative to dynamic midline
+#   - Point numbering: increments when serve_side changes OR server player changes
+#   - Serve try (1st/2nd): sequential within point, forward-filled to all rows
+#   - Exclusions: (1) shots before last serve, (2) 5-second gap break, (3) empty non-serve rows
+#   - Game numbering: increments when server player changes at first serves
+#   - Server ID: player of first serve per point, propagated to all rows
+#   - Shot indexing: ROW_NUMBER from last serve onward within point
+#   - Shot phase: Serve/Return/Net/Transition/Rally based on court position
+#   - Shot outcome: last shot per point → Winner if in-bounds on opponent side, else Error
+#   - Ace: serve wins with no opponent return and no double fault
+#   - Double fault: 2nd serve is last shot + bounce out of service box or missing coords
+#   - Service winner: server wins with opponent return being an error
+#   - Point winner: double fault → receiver; winner → last shot hitter; error → opponent
+#   - Game winner: winner of last point in each game
+#   - Set number: derived from bronze.submission_context set score columns
+#   - Serve location (1-8): service box quadrant based on server end, serve side, and bounce x
+#
+# Pass 4 (UPDATE) — Zone classification + coordinate normalization:
+#   - Rally location hit (A-D): court quarter from ball_hit_location, flipped by court half
+#   - Rally location bounce (A-D): court quarter from bounce coords, falls back to hit location
+#   - Invert flags: TRUE when player hits from far side (y > half_y)
+#   - Normalized coordinates: mirrored so all shots appear from the same perspective
+#
+# Pass 5 (UPDATE) — Analytics features:
+#   - Serve bucket (Wide/Body/T): from serve_location (1-8)
+#   - Stroke label (forehand/backhand/overhead etc.): from swing_type
+#   - Rally length: count of non-excluded shots per point
+#   - Rally length bucket: Short (1-4), Medium (5-8), Long (9+)
+#   - Aggression: Aggressive/Neutral/Defensive from volley and shot_phase
+#   - Depth: Deep/Middle/Short from bounce y-coordinate relative to service lines
+#   - Shot quality (shot_q): composite score, shot_key_q = point_key + shot_q
+#
+# Court geometry constants are in SPORT_CONFIG dict (currently tennis_singles only).
+# Quality gate: skips ingest if tracking_confidence < 0.5 (from bronze.session_confidences).
 
 import logging
 from typing import Dict, Optional
@@ -211,6 +259,15 @@ def _resolve_two_players(conn: Connection, task_id: str) -> dict:
 
 # ============================================================
 # PASS 1: Load from bronze (INSERT)
+#
+# Business rules:
+#   - Only valid=TRUE swings are loaded (SportAI quality flag)
+#   - Only is_in_rally=TRUE swings (excludes warm-up swings outside play)
+#   - Player de-ghosting: SportAI sometimes emits 3+ player IDs; we keep top 2
+#     by swing count and map any extras to player 2 (deterministic)
+#   - Optional start_time_s filter excludes swings before the match start
+#     (from submission_context.start_time, converted to seconds)
+#   - Uses ON CONFLICT DO NOTHING for idempotent re-runs
 # ============================================================
 
 def pass1_load(conn: Connection, task_id: str, cfg: dict, start_time_s: Optional[float] = None) -> int:
@@ -265,6 +322,15 @@ def pass1_load(conn: Connection, task_id: str, cfg: dict, start_time_s: Optional
 
 # ============================================================
 # PASS 2: Bounce matching (UPDATE)
+#
+# Business rules:
+#   - Each swing is matched to its FIRST ball bounce in a time window:
+#     (ball_hit_s + 5ms) to min(next_swing_hit_s, ball_hit_s + 2.5s)
+#   - Geometric guard for non-serve shots: the bounce must land on the OPPOSITE
+#     side of the net from the hitter (prevents false matches from multi-ball)
+#   - Serves are exempt from the geometric guard (service box is on receiver's side)
+#   - Prefers floor bounces (type='floor') over other bounce types
+#   - Missing hit coords or bounce coords → guard is bypassed (allow through)
 # ============================================================
 
 def pass2_bounce(conn: Connection, task_id: str, cfg: dict) -> int:
@@ -321,13 +387,37 @@ def pass2_bounce(conn: Connection, task_id: str, cfg: dict) -> int:
 # ============================================================
 # PASS 3: Point context mega-CTE (UPDATE)
 #
-# Single pass that computes ALL of:
-#   serve_d, server_end_d, serve_side_d, point_number,
-#   exclude_d, server_id, shot_ix_in_point, shot_phase_d,
-#   shot_outcome_d, serve_try_ix_in_point, ace_d,
-#   service_winner_d, point_winner_player_id,
-#   game_number, game_winner_player_id,
-#   set_number, set_game_number, point_key, serve_location
+# Single massive SQL CTE chain that computes all structural and outcome columns.
+# This is the core tennis match logic — all business rules for scoring are here.
+#
+# Business rules (in CTE execution order):
+#   1. SERVE DETECTION: a swing is a serve if SportAI flags serve=TRUE AND the
+#      swing_type is an overhead variant AND the hit y-position is within eps
+#      of a baseline (y < 0.3m or y > court_length - 0.3m)
+#   2. SERVER END: 'near' if serving from y > court_length - eps, 'far' if y < eps.
+#      Forward-filled to non-serve rows so all rows in a point know the server end.
+#   3. SERVE SIDE: 'deuce' or 'ad' based on hit x relative to dynamic midline.
+#      Dynamic midline = average x of all serve hits (falls back to singles center).
+#      Near server: x > mid → deuce. Far server: x < mid → deuce.
+#   4. POINT NUMBERING: starts at 1, increments when serve_side changes OR server
+#      player changes between consecutive first serves.
+#   5. SERVE TRY: 1st serve = first serve in point, 2nd = second. Forward-filled.
+#   6. EXCLUSIONS: rows are excluded if (a) they occur before the last serve in the
+#      point, (b) there's a >5-second gap from the previous shot after the last serve,
+#      or (c) it's a non-serve row with no coordinates.
+#   7. GAME NUMBERING: increments when the serving player changes.
+#   8. SHOT INDEXING: ROW_NUMBER from the last serve onward, within each point.
+#   9. SHOT PHASE: Serve → Return → Net/Transition/Rally based on y-position.
+#  10. SHOT OUTCOME: last shot in point → Winner if bounce is in-bounds on opponent's
+#      side; Error otherwise. Non-last shots → 'In'.
+#  11. ACE: serve is last shot + winner outcome + no opponent return + not a double fault.
+#  12. DOUBLE FAULT: 2nd serve is last shot AND bounce is out of service box.
+#  13. SERVICE WINNER: serve hits in + opponent return is an error.
+#  14. POINT WINNER: double fault → receiver wins; winner → last shot hitter;
+#      error → opponent of last shot hitter.
+#  15. GAME WINNER: winner of the last point in each game.
+#  16. SET NUMBER: derived from submission_context score columns (sum of set games).
+#  17. SERVE LOCATION (1-8): service box divided into 4 quadrants per side.
 # ============================================================
 
 def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
@@ -955,6 +1045,18 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
 
 # ============================================================
 # PASS 4: Zones + Normalization (UPDATE)
+#
+# Business rules:
+#   - Rally location hit (A-D): singles court divided into 4 equal vertical lanes.
+#     Mapping flips when hitter is on the far side (y > half_y) so A is always
+#     the hitter's forehand side regardless of court end.
+#   - Rally location bounce (A-D): same quadrant logic applied to bounce coords.
+#     Falls back to hit-based classification when bounce coords are missing.
+#   - Serves are excluded from rally location (set to NULL).
+#   - Invert flags: TRUE when hit/bounce is on the far side — used for coordinate
+#     normalization so all visualizations show shots from the same perspective.
+#   - Normalized coords: x mirrored around court center, y mirrored around net
+#     when invert flag is set, producing a canonical view.
 # ============================================================
 
 def pass4_zones_and_normalize(conn: Connection, task_id: str, cfg: dict) -> int:
@@ -1066,6 +1168,18 @@ def pass4_zones_and_normalize(conn: Connection, task_id: str, cfg: dict) -> int:
 
 # ============================================================
 # PASS 5: Analytics (UPDATE)
+#
+# Business rules:
+#   - Serve bucket: Wide (locations 1,4,5,8), Body (2,3,6,7), T (3,4,5,6).
+#     Maps the 1-8 serve_location to a tactical label.
+#   - Stroke: derived from swing_type — forehand, backhand, overhead, volley variants.
+#   - Rally length: count of non-excluded, non-serve shots per point (shot_ix_in_point-based).
+#   - Rally length point: same count propagated to all rows in the point for aggregation.
+#   - Rally length bucket: Short (1-4 shots), Medium (5-8), Long (9+).
+#   - Aggression: Aggressive (volleys, net approaches), Defensive (deep baseline),
+#     Neutral (everything else). Derived from shot_phase and volley flag.
+#   - Depth: Deep/Middle/Short based on bounce y relative to service lines.
+#   - Shot quality (shot_q): 1-3 composite, shot_key_q = point_key concatenated.
 # ============================================================
 
 def pass5_analytics(conn: Connection, task_id: str, cfg: dict) -> int:

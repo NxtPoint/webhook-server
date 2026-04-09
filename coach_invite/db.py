@@ -1,4 +1,25 @@
-# coach_invite/db.py — Schema migration + token helpers for coach invite flow
+# coach_invite/db.py
+# ============================================================
+# Database helpers for the coach invite token lifecycle.
+#
+# Schema: creates billing.coaches_permission table (columns: id,
+# owner_account_id, coach_account_id, coach_email, status, active,
+# invite_token, created_at, updated_at) and ensures the invite_token
+# column exists (idempotent ALTER TABLE ... ADD COLUMN IF NOT EXISTS).
+#
+# Token operations:
+#   generate_invite_token()  — secrets.token_urlsafe(32), single-use
+#   set_invite_token(...)    — write token + reset status to INVITED
+#   clear_invite_token(...)  — NULL out token on accept or revoke
+#   lookup_by_token(...)     — find an active INVITED row by token
+#
+# Business rules:
+#   - Tokens are single-use: cleared immediately on accept or revoke.
+#   - Unique partial index on invite_token WHERE invite_token IS NOT NULL
+#     prevents token collisions.
+#   - Re-inviting a revoked coach reuses the existing row (new token,
+#     status reset to INVITED).
+# ============================================================
 
 from __future__ import annotations
 

@@ -1,37 +1,35 @@
-# ============================================================
-# coaches_api.py  (PRODUCTION BASELINE - SELF CONTAINED)
+# coaches_api.py — Server-to-server coach permission management (OPS_KEY auth).
 #
-# PURPOSE
-# -------
-# Manage coach permissions (invite / accept / revoke)
-# View-only access for dashboards.
+# Manages the billing.coaches_permission table: creating, accepting, and revoking
+# coach access grants on behalf of player/parent account owners. These are the
+# server-side endpoints called by client_api.py and the coach invite flow.
+# The token-based public accept endpoint lives in coach_invite/accept_page.py.
 #
-# DESIGN PRINCIPLES
-# -----------------
-# - Separate from billing logic (no billing code touched)
-# - Self-contained module (raw SQL; no ORM/FK metadata issues)
-# - Idempotent where practical
-# - Ops-key protected endpoints (server-to-server)
+# Endpoints (all OPS_KEY auth via X-Ops-Key header):
+#   POST /api/coaches/invite
+#     — Creates a new coaches_permission row (status=INVITED) for the given owner + coach email.
+#     — Idempotent: re-inviting a previously invited/revoked coach reuses the existing row
+#       (resets status to INVITED, clears coach_account_id).
+#     — Owner resolved by owner_external_wix_id (preferred) or owner_email.
 #
-# TABLE
-# -----
-# schema: billing
-# table : coaches_permission
+#   POST /api/coaches/accept
+#     — Sets status=ACCEPTED and links coach_account_id (if the coach has a billing account).
+#     — Accepts by permission_id (preferred) or by coach_email if exactly one INVITED row exists.
+#     — Requires invite to be in status=INVITED and active=true.
 #
-# REQUIRED COLUMNS
-# ----------------
-# id BIGSERIAL PK
-# owner_account_id BIGINT NOT NULL  (billing.account.id)
-# coach_account_id BIGINT NULL      (billing.account.id)
-# coach_email TEXT NOT NULL
-# status TEXT NOT NULL              ('INVITED'|'ACCEPTED'|'REVOKED')
-# active BOOLEAN NOT NULL
-# created_at TIMESTAMPTZ NOT NULL
-# updated_at TIMESTAMPTZ NOT NULL
+#   POST /api/coaches/revoke
+#     — Sets status=REVOKED, active=false, clears coach_account_id and invite_token.
+#     — Accepts by permission_id (preferred) or by owner + coach_email pair.
 #
-# Recommended unique index:
-#   (owner_account_id, coach_email)
-# ============================================================
+#   GET /api/coaches/health  — liveness probe, no auth required.
+#
+# Auth: OPS_KEY via X-Ops-Key header (checks BILLING_OPS_KEY then OPS_KEY env vars)
+#
+# Business rules:
+#   - coaches_permission is keyed by (owner_account_id, coach_email) — one row per pair
+#   - coach_account_id is nullable: set when/if the coach registers their own billing account
+#   - invite_token column is managed by coach_invite/db.py (not set here; cleared on revoke)
+#   - This module uses raw SQL only (no ORM) to stay self-contained and avoid FK issues
 
 from __future__ import annotations
 
@@ -84,7 +82,8 @@ def _ops_key_ok() -> bool:
         or h.get("x-OPS-key")
         or ""
     )
-    return bool(ops_key) and (provided == ops_key)
+    import hmac
+    return bool(ops_key) and hmac.compare_digest(provided, ops_key)
 
 
 def _require_ops_key():

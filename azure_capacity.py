@@ -1,43 +1,31 @@
 # ==================================================================================================
 # azure_capacity.py
 # ==================================================================================================
-# SERVICE MODULE: Azure Capacity Control (Power BI Embedded / A1)
+# Azure ARM REST client for pausing and resuming the Power BI Embedded capacity (A1 SKU).
 #
-# PURPOSE
-# -------
-# Control the lifecycle of an Azure Power BI Embedded capacity (e.g., A1) via Azure Resource Manager
-# REST API (NOT Power BI REST APIs).
+# Uses the Azure Resource Manager REST API directly (not the azure-mgmt-powerbidedicated SDK)
+# because the SDK has unstable import paths across versions. Raw REST + AAD token is more
+# reliable in a Render/containerised environment.
 #
-# Why REST (not azure-mgmt-powerbidedicated)?
-# - The azure-mgmt-powerbidedicated SDK has inconsistent import/export paths across versions.
-# - REST + AAD token is stable and avoids dependency/import issues that can crash your service.
+# Authenticates with the same service principal used for Power BI embedding
+# (PBI_TENANT_ID / PBI_CLIENT_ID / PBI_CLIENT_SECRET).
 #
-# WHAT THIS MODULE DOES
-# ---------------------
-# - Authenticates using the same service principal you already use for Power BI embedding:
-#     PBI_TENANT_ID / PBI_CLIENT_ID / PBI_CLIENT_SECRET
-# - Calls Azure ARM endpoints to:
-#     - GET capacity status
-#     - POST resume
-#     - POST suspend
+# Key functions:
+#   get_capacity_status()  — returns current state string (e.g. "Succeeded", "Paused")
+#   resume_capacity()      — POST to ARM resume endpoint; no-op if already running
+#   suspend_capacity()     — POST to ARM suspend endpoint; no-op if already paused
 #
-# REQUIRED ENV VARS (Capacity Control)
-# -----------------------------------
-#   AZ_SUBSCRIPTION_ID   Azure subscription that contains the capacity resource
-#   AZ_RESOURCE_GROUP    Resource group name that contains the capacity
-#   AZ_CAPACITY_NAME     Capacity resource name (e.g., "pbinextpointa1")
+# Required env vars:
+#   AZ_SUBSCRIPTION_ID    Azure subscription containing the capacity
+#   AZ_RESOURCE_GROUP     Resource group name
+#   AZ_CAPACITY_NAME      Capacity resource name (e.g. "pbinextpointa1")
+#   PBI_TENANT_ID         Azure AD tenant ID
+#   PBI_CLIENT_ID         Azure AD app client ID
+#   PBI_CLIENT_SECRET     Azure AD app client secret value
 #
-# REQUIRED ENV VARS (Authentication)
-# ---------------------------------
-#   PBI_TENANT_ID        Azure AD tenant ID
-#   PBI_CLIENT_ID        Azure AD app client ID
-#   PBI_CLIENT_SECRET    Azure AD app secret VALUE (not secret id)
-#
-# OPTIONAL ENV VARS
-# -----------------
-#   AZ_CAPACITY_PROVIDER   Default: "Microsoft.PowerBIDedicated"
-#       (Future-proofing: Fabric capacities use "Microsoft.Fabric", but A1 Embedded uses PowerBIDedicated.)
-#   AZ_API_VERSION         Default: "2021-01-01"
+# Optional env vars:
+#   AZ_CAPACITY_PROVIDER  Default: "Microsoft.PowerBIDedicated"
+#   AZ_API_VERSION        Default: "2021-01-01"
 #   AZ_HTTP_TIMEOUT_S      Default: "30"
 #
 # BEHAVIOR RULES

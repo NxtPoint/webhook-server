@@ -1,28 +1,27 @@
 # ==================================================================================================
 # powerbi_capacity_sessions.py
 # ==================================================================================================
-# PURPOSE
-# -------
-# Server-owned lease/session control for Azure Power BI Embedded capacity.
+# Postgres-backed session lease store for Azure Power BI Embedded capacity cost control.
 #
-# WHY
-# ---
-# Front-end/browser shutdown is not reliable enough for cost control.
-# This module stores active report-viewing leases in Postgres so the backend
-# can decide whether Azure capacity should remain running.
+# Problem: browser/tab close events are unreliable, so the frontend cannot be trusted
+# to signal when a user has stopped viewing a report. This module tracks active
+# viewing sessions server-side so the backend can make authoritative suspend decisions.
 #
-# DESIGN
-# ------
-# - One row per browser/viewing session
-# - Session remains active while heartbeats continue
-# - Session expires automatically after lease timeout
-# - Capacity may suspend ONLY when active session count = 0
-# - Advisory lock used to prevent concurrent suspend/resume races across workers
+# Design:
+#   - One row per browser session in billing.pbi_sessions (created on session/start).
+#   - Sessions stay alive while the frontend sends heartbeats (session/heartbeat).
+#   - Sessions that miss heartbeats expire automatically after a configurable TTL.
+#   - Azure capacity is only suspended when active session count == 0 (sweep).
+#   - An advisory lock prevents concurrent suspend/resume races across Gunicorn workers.
 #
-# DEPENDENCIES
-# ------------
-# - db_init.py must expose `engine`
+# Key functions:
+#   create_session(session_id, email)  — insert new lease row
+#   heartbeat(session_id)              — extend expiry
+#   end_session(session_id)            — mark inactive immediately
+#   sweep_expired()                    — expire stale rows, return active count
+#   active_session_count()             — count non-expired rows
 #
+# Dependency: db_init.py must expose `engine`.
 # ==================================================================================================
 
 from __future__ import annotations

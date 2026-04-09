@@ -1,4 +1,14 @@
 # ui_app.py
+# ============================================================
+# Legacy admin UI blueprint. Provides a simple HTML admin interface
+# for inspecting bronze/silver pipeline state (task list, raw JSON
+# viewer, silver point detail viewer) rendered via render_template_string.
+#
+# Registered in upload_app.py as the `ui` blueprint. Requires OPS_KEY
+# auth on admin routes. Not used by any client-facing SPA — the
+# backoffice.html SPA (served by locker_room_app.py) is the current
+# admin interface. This blueprint is retained for shell/debugging use.
+# ============================================================
 import os
 from flask import Blueprint, render_template_string, request, url_for, jsonify, Response
 from sqlalchemy import text
@@ -25,8 +35,9 @@ def _guard() -> bool:
     auth = request.headers.get("Authorization", "")
     if auth and auth.lower().startswith("bearer "):
         hk = auth.split(" ", 1)[1].strip()
+    import hmac
     supplied = (hk or "").strip()
-    return bool(OPS_KEY) and supplied == OPS_KEY
+    return bool(OPS_KEY) and hmac.compare_digest(supplied, OPS_KEY)
 
 
 def _forbid():
