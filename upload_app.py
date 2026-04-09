@@ -135,25 +135,6 @@ def _require_s3():
     if not (AWS_REGION and S3_BUCKET):
         raise RuntimeError("S3 is required: set AWS_REGION and S3_BUCKET env vars")
 
-# ---------- Wix backend notify (server-side completion email trigger) ----------
-# Render -> Wix backend endpoint. Wix backend validates X-Ops-Key.
-
-WIX_NOTIFY_URL = (
-    os.getenv("WIX_NOTIFY_UPLOAD_COMPLETE_URL")  # NEW (your Render env)
-    or os.getenv("WIX_NOTIFY_URL")               # legacy fallback (safe)
-    or ""
-).strip()
-
-WIX_NOTIFY_KEY = (
-    os.getenv("RENDER_TO_WIX_OPS_KEY")  # NEW (your Render env)
-    or os.getenv("WIX_NOTIFY_KEY")      # legacy fallback (safe)
-    or ""
-).strip()
-
-WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
-WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
-
-
 # ---------- T5 ML Pipeline (AWS Batch) ----------
 BATCH_JOB_QUEUE = os.getenv("BATCH_JOB_QUEUE", "ten-fifty5-ml-queue")
 BATCH_JOB_DEF = os.getenv("BATCH_JOB_DEF", "ten-fifty5-ml-pipeline")
@@ -694,9 +675,6 @@ def _load_submission_context_row(task_id: str) -> dict:
               pbi_refresh_finished_at,
               pbi_refresh_status,
               pbi_refresh_error,
-              wix_notified_at,
-              wix_notify_status,
-              wix_notify_error,
               sport_type
             FROM bronze.submission_context
             WHERE task_id = :t
@@ -806,106 +784,18 @@ def _derive_display_progress_pct(
     return int(sportai_progress_pct or 0)
 
 # ==========================
-# WIX NOTIFY (RENDER → WIX → AUTOMATION)
+# CUSTOMER EMAIL NOTIFICATION (SES)
 # ==========================
-def _wix_payload(task_id: str, status: str, session_id: str | None, result_url: str | None, error: str | None):
-    # Wix automation trigger expects: customer_email, customer_name, task_id
-    # We source email/name from bronze.submission_context for the task_id.
-    customer_email = None
-    customer_name = None
-
+def _notify_ses_completion(task_id: str) -> None:
+    """Send video analysis complete email via SES. Idempotent via ses_notified_at."""
     try:
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             row = conn.execute(sql_text("""
-                SELECT email, customer_name
-                  FROM bronze.submission_context
-                 WHERE task_id = :t
-                 LIMIT 1
+                SELECT ses_notified_at FROM bronze.submission_context
+                WHERE task_id = :t LIMIT 1
             """), {"t": task_id}).mappings().first()
-            if row:
-                customer_email = (row.get("email") or "").strip() or None
-                customer_name = (row.get("customer_name") or "").strip() or None
-    except Exception:
-        pass
-
-    return {
-        "customer_email": customer_email,
-        "customer_name": customer_name,
-        "task_id": task_id,
-    }
-
-def _already_notified(conn, task_id: str, desired_status: str) -> bool:
-    row = conn.execute(sql_text("""
-        SELECT wix_notified_at, wix_notify_status
-          FROM bronze.submission_context
-         WHERE task_id = :t
-         LIMIT 1
-    """), {"t": task_id}).mappings().first()
-    return bool(row and row.get("wix_notified_at") and (row.get("wix_notify_status") == desired_status))
-
-def _mark_wix_notify(conn, task_id: str, status: str, err: str | None):
-    conn.execute(sql_text("""
-        UPDATE bronze.submission_context
-           SET wix_notified_at   = now(),
-               wix_notify_status = :s,
-               wix_notify_error  = :e
-         WHERE task_id = :t
-    """), {"t": task_id, "s": status, "e": err})
-
-def _notify_wix(task_id: str, status: str, session_id: str | None, result_url: str | None, error: str | None) -> None:
-    """
-    Server-side: Render calls Wix backend notify endpoint.
-    Idempotent: prevents spamming via bronze.submission_context(wix_notified_at, wix_notify_status).
-    """
-    if not WIX_NOTIFY_URL:
-        app.logger.warning("WIX_NOTIFY_URL not set; skipping Wix notify task_id=%s", task_id)
-        return
-
-    # Gate idempotency from DB
-    with engine.begin() as conn:
-        _ensure_submission_context_schema(conn)
-        if _already_notified(conn, task_id, status):
-            return
-
-    headers = {"Content-Type": "application/json"}
-    if WIX_NOTIFY_KEY:
-        # Wix handler expects X-Ops-Key (matches your working Postman/Wix setup)
-        headers["X-Ops-Key"] = WIX_NOTIFY_KEY
-
-    payload = _wix_payload(task_id, status, session_id, result_url, error)
-
-    last_err = None
-    for _ in range(max(1, WIX_NOTIFY_RETRIES)):
-        try:
-            r = requests.post(WIX_NOTIFY_URL, headers=headers, json=payload, timeout=WIX_NOTIFY_TIMEOUT_S)
-            if r.status_code >= 400:
-                last_err = f"HTTP {r.status_code}: {r.text}"
-                continue
-
-            with engine.begin() as conn:
-                _ensure_submission_context_schema(conn)
-                _mark_wix_notify(conn, task_id, status, None)
-            return
-
-        except Exception as e:
-            last_err = f"{e.__class__.__name__}: {e}"
-
-    with engine.begin() as conn:
-        _ensure_submission_context_schema(conn)
-        _mark_wix_notify(conn, task_id, status, last_err)
-
-
-def _notify_ses_completion(task_id: str) -> None:
-    """
-    Send video analysis complete email via SES.
-    Runs alongside _notify_wix during transition. Uses the same idempotency
-    gate (wix_notified_at) — if Wix already notified, SES skips too.
-    """
-    try:
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            if _already_notified(conn, task_id, "completed"):
+            if row and row.get("ses_notified_at"):
                 return
 
         # Fetch customer + match details for the email
@@ -1692,21 +1582,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             raise RuntimeError(f"Power BI refresh failed: status={pbi_status} error={pbi_err or 'unknown'}")
 
         # -------------------------
-        # STEP 7: NOTIFY CUSTOMER (SES email + Wix webhook during transition)
+        # STEP 7: NOTIFY CUSTOMER (SES email)
         # -------------------------
         _notify_ses_completion(task_id)
-
-        try:
-            _notify_wix(
-                task_id,
-                status="completed",
-                session_id=sid,
-                result_url=result_url,
-                error=None,
-            )
-        except Exception as e:
-            app.logger.exception("Wix notify failed task_id=%s: %s", task_id, e)
-            raise RuntimeError(f"Wix notify failed: {e}")
 
         # -------------------------
         # STEP 8: FINAL SUCCESS
@@ -2002,8 +1880,6 @@ def ops_env():
         "AWS_REGION": AWS_REGION,
         "S3_BUCKET": S3_BUCKET,
         "S3_PREFIX": S3_PREFIX,
-        "WIX_NOTIFY_URL_SET": bool(WIX_NOTIFY_URL),
-        "WIX_NOTIFY_KEY_SET": bool(WIX_NOTIFY_KEY),
     })
 
 #=============================================================
@@ -2947,17 +2823,6 @@ def api_task_status():
     if dashboard_ready:
         _notify_ses_completion(tid)
 
-        try:
-            _notify_wix(
-                tid,
-                status="completed",
-                session_id=session_id,
-                result_url=result_url,
-                error=None,
-            )
-        except Exception as e:
-            app.logger.exception("WIX NOTIFY FAILED task_id=%s: %s", tid, e)
-
     pipeline_stage = _derive_pipeline_stage(
         sportai_status=status,
         ingest_started=ingest_started,
@@ -3005,9 +2870,6 @@ def api_task_status():
         "ingest_running": ingest_running,
         "ingest_finished": ingest_finished,
 
-        "wix_notified_at": sc.get("wix_notified_at"),
-        "wix_notify_status": sc.get("wix_notify_status"),
-        "wix_notify_error": sc.get("wix_notify_error"),
 
         "pbi_refresh_started": pbi_refresh_started,
         "pbi_refresh_finished": pbi_refresh_finished,
@@ -3063,8 +2925,6 @@ def ops_ingest_task():
                       ingest_error,
                       pbi_refresh_status,
                       pbi_refresh_error,
-                      wix_notify_status,
-                      wix_notify_error,
                       trim_requested_at,
                       trim_finished_at,
                       trim_status,
@@ -3091,8 +2951,6 @@ def ops_ingest_task():
                 "ingest_error": row.get("ingest_error"),
                 "pbi_refresh_status": row.get("pbi_refresh_status"),
                 "pbi_refresh_error": row.get("pbi_refresh_error"),
-                "wix_notify_status": row.get("wix_notify_status"),
-                "wix_notify_error": row.get("wix_notify_error"),
                 "trim_requested_at": row.get("trim_requested_at"),
                 "trim_finished_at": row.get("trim_finished_at"),
                 "trim_status": row.get("trim_status"),
@@ -3144,8 +3002,6 @@ def ops_ingest_task():
             "ingest_error": row.get("ingest_error"),
             "pbi_refresh_status": row.get("pbi_refresh_status"),
             "pbi_refresh_error": row.get("pbi_refresh_error"),
-            "wix_notify_status": row.get("wix_notify_status"),
-            "wix_notify_error": row.get("wix_notify_error"),
             "trim_requested_at": row.get("trim_requested_at"),
             "trim_finished_at": row.get("trim_finished_at"),
             "trim_status": row.get("trim_status"),

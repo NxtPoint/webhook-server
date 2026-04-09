@@ -1,7 +1,4 @@
 # coach_invite/video_complete_email.py — Send video analysis complete email via AWS SES
-#
-# Runs alongside the existing Wix notify (_notify_wix) during the transition period.
-# Once Wix is retired, _notify_wix can be removed and this becomes the sole notification.
 
 from __future__ import annotations
 

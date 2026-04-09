@@ -57,7 +57,7 @@ On upload completion, the system follows this flow:
 3. Main app POSTs to **ingest worker** `/ingest` (returns 202)
 4. Ingest worker runs full pipeline: bronze ingest → silver build → video trim trigger → billing sync → PBI refresh
 5. Video worker trims footage, POSTs callback to `/internal/video_trim_complete` → `trim_status` = `completed`
-6. **Customer notification**: SES email sent (+ Wix webhook during transition) → customer sees "Your match analysis is ready"
+6. **Customer notification**: SES email sent → customer sees "Your match analysis is ready"
 7. **Locker Room** displays match data + trimmed footage playback
 
 Key design: the ingest worker is self-contained — it does NOT import `upload_app.py`. It calls `ingest_bronze_strict()` directly from `ingest_bronze.py` (function call, not HTTP). Worker timeout is 3600s vs main app 1800s.
@@ -252,7 +252,7 @@ All transactional emails are sent via AWS SES using `boto3.client('ses')`. The `
 - `COACH_ACCEPT_BASE_URL` — base URL for accept links (default: `https://api.nextpointtennis.com`)
 - `LOCKER_ROOM_BASE_URL` — CTA link in video completion email (default: `https://www.ten-fifty5.com/portal`)
 
-**Transition note**: video completion emails run alongside the legacy Wix notify (`_notify_wix` in `upload_app.py`). Both fire at the same points, guarded by the same idempotency check (`wix_notified_at`). SES fires first, then Wix. The CTA button in the email links to the portal (`LOCKER_ROOM_BASE_URL`). Once Wix notify is fully retired, remove `_notify_wix` and all `WIX_NOTIFY_*` env vars.
+Video completion emails are sent via AWS SES. Idempotent via `ses_notified_at` column on `bronze.submission_context`. The CTA button links to the portal (`LOCKER_ROOM_BASE_URL`).
 
 ### Locker Room (`locker_room.html`)
 
@@ -334,7 +334,7 @@ Ingest worker: same as main service plus `VIDEO_TRIM_CALLBACK_OPS_KEY` (must mat
 
 Video worker: `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `FFMPEG_BIN`, `FFPROBE_BIN`
 
-Legacy (Wix transition — remove when Wix is retired): `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`
+Legacy (deprecated, safe to remove from Render env): `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`
 
 ### S3 CORS
 
@@ -409,12 +409,11 @@ Wix pages have been retired. The portal (Render-hosted) is the sole frontend. **
 ### Future: Full Wix Removal
 
 When Wix is fully retired (own auth + own payments):
-- Remove: `_notify_wix` flow + all `WIX_NOTIFY_*` env vars from `upload_app.py`
-- Remove: `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY` from Render env
 - Consolidate: `_ensure_submission_context_schema` DDL into `db_init.py`
-- Rename: `wix_notified_at` / `wix_notify_status` columns to generic `notified_at` / `notify_status`
+- Drop: `wix_notified_at` / `wix_notify_status` / `wix_notify_error` columns (no longer written, historical only)
 - Replace: Wix member auth with own auth (e.g., magic link or OAuth)
 - Replace: Wix Pricing Plans with direct PayPal/Stripe integration
+- Remove: `external_wix_id` references once own auth is in place
 
 ### Other
 

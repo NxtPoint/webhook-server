@@ -533,7 +533,6 @@ function renderPipeline() {
     const silverOk = t.silver_built;
     const trimOk = t.trim_status === 'completed';
     const pbiOk = t.pbi_refresh_status === 'completed';
-    const wixOk = t.wix_notify_status === 'completed';
 
     const sportaiPill = stagePill(t.last_status, t.last_status === 'completed' ? 'Yes' : t.last_status);
     const bronzePill = t.ingest_error
@@ -559,12 +558,6 @@ function renderPipeline() {
       : t.ses_notify_error
         ? stagePill('failed', 'Error') + errTip(t.ses_notify_error)
         : stagePill(null);
-    const wixPill = wixOk
-      ? stagePill('completed', 'Yes')
-      : t.wix_notify_error
-        ? stagePill('failed', 'Error') + errTip(t.wix_notify_error)
-        : stagePill(null);
-
     const time = t.created_at ? new Date(t.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
 
     rows += `
@@ -579,7 +572,6 @@ function renderPipeline() {
         <td>${trimPill}</td>
         <td>${pbiPill}</td>
         <td>${sesPill}</td>
-        <td>${wixPill}</td>
       </tr>
     `;
   }
@@ -600,7 +592,6 @@ function renderPipeline() {
               <th>Trim</th>
               <th>PBI</th>
               <th>Email</th>
-              <th>Wix</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -669,13 +660,6 @@ function openTaskDetail(taskId) {
       icon: t.ses_notified_at ? '&#10003;' : t.ses_notify_error ? '&#10007;' : '&#8212;',
       time: t.ses_notified_at ? fmtTime(t.ses_notified_at) : '--',
       error: t.ses_notify_error,
-    },
-    {
-      name: 'Wix Notification (legacy)',
-      status: t.wix_notify_status === 'completed' ? 'ok' : t.wix_notify_error ? 'fail' : 'pending',
-      icon: t.wix_notify_status === 'completed' ? '&#10003;' : t.wix_notify_error ? '&#10007;' : '&#8212;',
-      time: t.wix_notified_at ? fmtTime(t.wix_notified_at) : '--',
-      error: t.wix_notify_error,
     },
   ];
 

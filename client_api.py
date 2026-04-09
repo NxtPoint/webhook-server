@@ -1,5 +1,43 @@
-# client_api.py — Client-facing API for Locker Room + Players' Enclosure
-# Auth: X-Client-Key header (CLIENT_API_KEY env var, separate from OPS_KEY)
+# client_api.py — Client-facing REST API for all Locker Room and Players' Enclosure SPAs.
+#
+# Auth: X-Client-Key header checked against CLIENT_API_KEY env var (separate from OPS_KEY).
+# Admin endpoints additionally require email in ADMIN_EMAILS whitelist.
+#
+# Endpoints:
+#   GET    /api/client/matches              — list matches with stats, scores, trim status
+#   GET    /api/client/matches/<task_id>    — point-level detail from silver.point_detail
+#   PATCH  /api/client/matches/<task_id>    — update match metadata (whitelisted fields only)
+#   POST   /api/client/matches/<task_id>/reprocess — rebuild silver via build_silver_v2
+#   GET    /api/client/players              — distinct player names for autocomplete
+#   GET    /api/client/usage                — account credit usage summary
+#   GET    /api/client/profile              — primary member profile from billing.member
+#   PATCH  /api/client/profile              — update profile fields (whitelisted set)
+#   GET    /api/client/footage-url/<task_id>— presigned S3 URL for trimmed video
+#   GET    /api/client/entitlements         — role, plan, credits, account_status for UI gating
+#   POST   /api/client/register             — onboarding registration (creates account + member)
+#   POST   /api/client/children             — add child member profiles during onboarding
+#   GET    /api/client/profile-photo-upload-url — presigned S3 PUT URL for profile photo
+#   GET    /api/client/members              — all active members on the account
+#   POST   /api/client/members              — add a linked player/coach member
+#   PATCH  /api/client/members/<id>         — update a linked member's profile
+#   DELETE /api/client/members/<id>         — soft-delete (sets active=false, cannot delete primary)
+#   GET    /api/client/coaches              — list coach permissions for the account
+#   POST   /api/client/coach-invite         — invite a coach (creates permission + token + SES email)
+#   POST   /api/client/coach-revoke         — revoke a coach permission
+#   GET    /api/client/pbi-embed            — Power BI embed token (proxies to PBI service)
+#   POST   /api/client/pbi-heartbeat        — keep PBI capacity session alive
+#   POST   /api/client/pbi-session-end      — end PBI capacity session on page unload
+#   GET    /api/client/backoffice/pipeline   — admin: pipeline status table
+#   GET    /api/client/backoffice/customers  — admin: customer list with usage stats
+#   GET    /api/client/backoffice/kpis       — admin: KPI cards
+#
+# Business rules:
+#   - All endpoints require email parameter for tenant isolation
+#   - Match ownership verified before returning data or allowing edits
+#   - Entitlements check merges billing.subscription_state (if table exists) with usage view
+#   - Coach invite reuses existing permission rows on re-invite (idempotent)
+#   - Profile columns are added idempotently on module import via _ensure_member_profile_columns()
+#   - Only EDITABLE_FIELDS / PROFILE_FIELDS / MEMBER_EDITABLE can be written (whitelist pattern)
 
 from __future__ import annotations
 
@@ -1101,10 +1139,6 @@ def backoffice_pipeline():
                     sc.pbi_refresh_started_at,
                     sc.pbi_refresh_finished_at,
                     sc.pbi_refresh_error,
-                    -- Wix notify stage
-                    sc.wix_notify_status,
-                    sc.wix_notified_at,
-                    sc.wix_notify_error,
                     -- SES notify stage
                     sc.ses_notified_at,
                     sc.ses_notify_error,
@@ -1154,9 +1188,6 @@ def backoffice_pipeline():
             "pbi_refresh_started_at": _ts(r["pbi_refresh_started_at"]),
             "pbi_refresh_finished_at": _ts(r["pbi_refresh_finished_at"]),
             "pbi_refresh_error": r["pbi_refresh_error"],
-            "wix_notify_status": r["wix_notify_status"],
-            "wix_notified_at": _ts(r["wix_notified_at"]),
-            "wix_notify_error": r["wix_notify_error"],
             "ses_notified_at": _ts(r["ses_notified_at"]),
             "ses_notify_error": r["ses_notify_error"],
             "score": _format_score(r),

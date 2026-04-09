@@ -1,25 +1,31 @@
 # ============================================================
-# ingest_worker_app.py  —  NextPoint Ingest Worker
+# ingest_worker_app.py — Dedicated ingest worker service (Render, 3600s timeout).
 #
-# Dedicated service for heavy ingest work:
-#   Step 1: Download SportAI result JSON
-#   Step 2: Bronze ingest
-#   Step 3: Silver build
-#   Step 4: Video trim trigger  (fire-and-forget)
-#   Step 5: Billing sync        (fire-and-forget)
-#   Step 6: PBI refresh trigger (fire-and-forget — dashboard concern)
-#   Step 7: Mark complete
+# Receives POST /ingest from upload_app.py, returns 202 immediately, and runs the
+# full ingest pipeline in a background thread. Self-contained — does NOT import upload_app.
 #
-# NOTE: Wix notify is NOT sent by this worker. It fires from
-# upload_app.py when task-status polling detects dashboard_ready=True,
-# ensuring the customer is only notified once their dashboard is viewable.
+# Pipeline steps (sequential, all idempotent):
+#   1. Download SportAI result JSON (gzip-aware, up to 900s timeout)
+#   2. Bronze ingest — parse JSON into typed bronze tables via ingest_bronze_strict()
+#   3. Silver build — run build_silver_v2 to compute point_detail analytics
+#   4. Video trim trigger — fire-and-forget POST to video worker service
+#   5. Billing sync — sync completed task into billing consumption records
+#   6. PBI refresh trigger — fire-and-forget POST to Power BI service (no polling)
+#   7. Mark complete — set ingest_finished_at on submission_context
 #
-# Design rules:
-#   - Self-contained: does NOT import upload_app.py
-#   - Accepts POST /ingest from upload_app, returns 202 immediately
-#   - Runs ingest in a background thread (logs captured, no zombies)
-#   - PBI refresh is fire-and-forget (no 30-min poll loop)
-#   - Wix notify fires after silver build (customer data is ready)
+# Business rules:
+#   - Duplicate prevention: in-memory thread lock prevents concurrent ingests for same task_id
+#   - Wix notify is NOT sent here — it fires from upload_app.py after PBI refresh completes,
+#     ensuring the customer is only notified once their dashboard is actually viewable
+#   - Each step is wrapped in try/except so failures in trim/billing/PBI don't block completion
+#   - Ingest errors are persisted to submission_context.ingest_error for ops visibility
+#   - Auth: requires Authorization: Bearer <INGEST_WORKER_OPS_KEY> header
+#
+# Endpoints:
+#   POST /ingest         — accepts {task_id, result_url}, returns 202
+#   GET  /ingest/status  — lightweight status check from submission_context
+#   GET  /               — service identity
+#   GET  /healthz        — liveness probe
 # ============================================================
 
 from __future__ import annotations
@@ -54,22 +60,6 @@ DEFAULT_REPLACE_ON_INGEST = (
     or os.getenv("DEFAULT_REPLACE_ON_INGEST")
     or "1"
 ).strip().lower() in ("1", "true", "yes", "y")
-
-# Wix notify config
-WIX_NOTIFY_URL = (
-    os.getenv("WIX_NOTIFY_UPLOAD_COMPLETE_URL")
-    or os.getenv("WIX_NOTIFY_URL")
-    or ""
-).strip()
-
-WIX_NOTIFY_KEY = (
-    os.getenv("RENDER_TO_WIX_OPS_KEY")
-    or os.getenv("WIX_NOTIFY_KEY")
-    or ""
-).strip()
-
-WIX_NOTIFY_TIMEOUT_S = int(os.getenv("WIX_NOTIFY_TIMEOUT_S", "15"))
-WIX_NOTIFY_RETRIES = int(os.getenv("WIX_NOTIFY_RETRIES", "3"))
 
 # PBI service config (fire-and-forget trigger only)
 PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
@@ -122,87 +112,6 @@ def _ensure_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_error TEXT",
     ):
         conn.execute(sql_text(ddl))
-
-
-# ============================================================
-# WIX NOTIFY (self-contained)
-# ============================================================
-
-def _notify_wix(task_id: str, session_id: str | None, result_url: str | None) -> None:
-    """Notify Wix backend that analysis is ready. Idempotent."""
-    if not WIX_NOTIFY_URL:
-        app.logger.warning("INGEST WORKER WIX_NOTIFY_URL not set; skipping task_id=%s", task_id)
-        return
-
-    # Idempotency gate
-    with engine.begin() as conn:
-        _ensure_schema(conn)
-        row = conn.execute(sql_text("""
-            SELECT wix_notified_at, wix_notify_status
-              FROM bronze.submission_context
-             WHERE task_id = :t LIMIT 1
-        """), {"t": task_id}).mappings().first()
-        if row and row.get("wix_notified_at") and row.get("wix_notify_status") == "completed":
-            return
-
-    # Fetch customer info for payload
-    customer_email = None
-    customer_name = None
-    try:
-        with engine.begin() as conn:
-            row = conn.execute(sql_text("""
-                SELECT email, customer_name
-                  FROM bronze.submission_context
-                 WHERE task_id = :t LIMIT 1
-            """), {"t": task_id}).mappings().first()
-            if row:
-                customer_email = (row.get("email") or "").strip() or None
-                customer_name = (row.get("customer_name") or "").strip() or None
-    except Exception:
-        pass
-
-    headers = {"Content-Type": "application/json"}
-    if WIX_NOTIFY_KEY:
-        headers["X-Ops-Key"] = WIX_NOTIFY_KEY
-
-    payload = {
-        "customer_email": customer_email,
-        "customer_name": customer_name,
-        "task_id": task_id,
-    }
-
-    last_err = None
-    for _ in range(max(1, WIX_NOTIFY_RETRIES)):
-        try:
-            r = requests.post(WIX_NOTIFY_URL, headers=headers, json=payload, timeout=WIX_NOTIFY_TIMEOUT_S)
-            if r.status_code >= 400:
-                last_err = f"HTTP {r.status_code}: {r.text}"
-                continue
-
-            with engine.begin() as conn:
-                _ensure_schema(conn)
-                conn.execute(sql_text("""
-                    UPDATE bronze.submission_context
-                       SET wix_notified_at = now(),
-                           wix_notify_status = 'completed',
-                           wix_notify_error = NULL
-                     WHERE task_id = :t
-                """), {"t": task_id})
-            return
-
-        except Exception as e:
-            last_err = f"{e.__class__.__name__}: {e}"
-
-    # All retries failed — record error but don't crash ingest
-    with engine.begin() as conn:
-        _ensure_schema(conn)
-        conn.execute(sql_text("""
-            UPDATE bronze.submission_context
-               SET wix_notified_at = now(),
-                   wix_notify_status = 'completed',
-                   wix_notify_error = :e
-             WHERE task_id = :t
-        """), {"t": task_id, "e": last_err})
 
 
 # ============================================================
