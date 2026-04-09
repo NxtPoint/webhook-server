@@ -334,6 +334,10 @@ function renderServeAnalysis() {
       <div class="chart-box"><h3>Deuce / Ad Split</h3><canvas id="chartSide"></canvas></div>
       <div class="chart-box"><h3>Serve Result Timeline</h3><div class="serve-timeline">${renderServeTimeline()}</div></div>
     </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Stroke Type</h3><canvas id="chartStroke"></canvas></div>
+      <div class="chart-box"><h3>Aggression</h3><canvas id="chartAggression"></canvas></div>
+    </div>
   `;
 }
 
@@ -356,6 +360,14 @@ function renderRallyAnalysis() {
     <div class="chart-row">
       <div class="chart-box"><h3>Depth Distribution</h3><canvas id="chartDepth"></canvas></div>
       <div class="chart-box"><h3>Speed Distribution</h3><canvas id="chartSpeed"></canvas></div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Stroke Type</h3><canvas id="chartStroke"></canvas></div>
+      <div class="chart-box"><h3>Aggression</h3><canvas id="chartAggression"></canvas></div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Rally Length Buckets</h3><canvas id="chartRallyBucket"></canvas></div>
+      <div class="chart-box">&nbsp;</div>
     </div>
   `;
 }
@@ -489,6 +501,48 @@ function renderCharts() {
         datasets: [{ label: 'Count', data: [dc.Deep || 0, dc.Middle || 0, dc.Short || 0], backgroundColor: [G, A, R] }]
       }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
     });
+  }
+
+  // Stroke chart (both)
+  const strokeEl = document.getElementById('chartStroke');
+  if (strokeEl) {
+    const sc = sum.stroke_counts || {};
+    chartInstances.stroke = new Chart(strokeEl, {
+      type: 'doughnut', data: {
+        labels: ['Forehand', 'Backhand'],
+        datasets: [{ data: [sc.forehand || 0, sc.backhand || 0], backgroundColor: [G, B] }]
+      }, options: { plugins: { legend: { position: 'bottom' } } }
+    });
+  }
+
+  // Aggression chart (both)
+  const aggEl = document.getElementById('chartAggression');
+  if (aggEl) {
+    const ac = sum.aggression_counts || {};
+    chartInstances.aggression = new Chart(aggEl, {
+      type: 'bar', data: {
+        labels: ['Attack', 'Neutral', 'Defence'],
+        datasets: [{ label: 'Count', data: [ac.Attack || 0, ac.Neutral || 0, ac.Defence || 0], backgroundColor: [G, A, R] }]
+      }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+  }
+
+  // Rally length bucket chart (rally only)
+  if (!isServe) {
+    const bucketEl = document.getElementById('chartRallyBucket');
+    if (bucketEl && selectedDetail?.details) {
+      const buckets = {};
+      selectedDetail.details.filter(d => d.shot_ix === 1 && d.rally_length_bucket_d).forEach(d => {
+        buckets[d.rally_length_bucket_d] = (buckets[d.rally_length_bucket_d] || 0) + 1;
+      });
+      const order = ['0\u20134 shots', '5\u20138 shots', '9+ shots'];
+      chartInstances.rallyBucket = new Chart(bucketEl, {
+        type: 'bar', data: {
+          labels: order,
+          datasets: [{ label: 'Rallies', data: order.map(o => buckets[o] || 0), backgroundColor: [G, A, R] }]
+        }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+      });
+    }
   }
 
   // Speed histogram (both)
