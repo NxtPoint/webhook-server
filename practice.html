@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>TEN-FIFTY5 Practice Analytics</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
 :root {
   --bg: #f5f5f5;
@@ -117,7 +117,7 @@ body {
   font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px;
   text-transform: uppercase; letter-spacing: 0.5px;
 }
-.chart-card canvas { max-height: 220px; }
+.chart-card .echart { height: 220px; width: 100%; }
 .chart-card.full { grid-column: 1 / -1; }
 
 /* Court grid (A-D zones) */
@@ -391,18 +391,18 @@ function renderOverview(sum, isServe) {
       </div>
       <div class="chart-card">
         <h3>Shot Aggression</h3>
-        <canvas id="chartAggOverview"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
 
     <div class="chart-grid">
       <div class="chart-card">
         <h3>Depth Distribution</h3>
-        <canvas id="chartDepthOverview"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3>Speed Distribution</h3>
-        <canvas id="chartSpeedOverview"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
   `;
@@ -451,17 +451,17 @@ function renderPlacement(sum) {
       </div>
       <div class="chart-card">
         <h3>Zone Distribution</h3>
-        <canvas id="chartZonePlacement"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
     <div class="chart-grid">
       <div class="chart-card">
         <h3>Depth by Zone</h3>
-        <canvas id="chartDepthByZone"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3>Stroke by Zone</h3>
-        <canvas id="chartStrokeByZone"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
   `;
@@ -676,11 +676,11 @@ function renderServe(sum) {
     <div class="chart-grid">
       <div class="chart-card">
         <h3>Serve Zone (Wide / Body / T)</h3>
-        <canvas id="chartServeZone"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3>Deuce / Ad Split</h3>
-        <canvas id="chartSide"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
     <div class="chart-grid">
@@ -704,21 +704,21 @@ function renderRally(sum) {
     <div class="chart-grid">
       <div class="chart-card">
         <h3>Rally Length Distribution</h3>
-        <canvas id="chartRallyLen"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3>Rally Length Buckets</h3>
-        <canvas id="chartRallyBucket"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
     <div class="chart-grid">
       <div class="chart-card">
         <h3>Stroke by Rally Length</h3>
-        <canvas id="chartStrokeByRally"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3>Depth by Rally Length</h3>
-        <canvas id="chartDepthByRally"></canvas>
+        <div id="chart\1" class="echart"></div>
       </div>
     </div>
   `;
@@ -809,33 +809,98 @@ function renderServeTimeline() {
 
 // ==================== CHARTS ====================
 function destroyCharts() {
-  Object.values(CI).forEach(c => c.destroy());
+  Object.values(CI).forEach(c => { try { c.dispose(); } catch(e) {} });
   Object.keys(CI).forEach(k => delete CI[k]);
 }
 
-const CHART_DEFAULTS = {
-  plugins: { legend: { display: false } },
-  scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
-  maintainAspectRatio: true,
-  responsive: true,
-};
-
-function bar(el, labels, data, colors, opts = {}) {
+// ECharts helpers
+function ec(id) {
+  const el = document.getElementById(id);
   if (!el) return null;
-  return new Chart(el, {
-    type: 'bar',
-    data: { labels, datasets: [{ label: 'Count', data, backgroundColor: colors }] },
-    options: { ...CHART_DEFAULTS, ...opts },
-  });
+  const existing = echarts.getInstanceByDom(el);
+  if (existing) existing.dispose();
+  return echarts.init(el);
 }
 
-function doughnut(el, labels, data, colors) {
-  if (!el) return null;
-  return new Chart(el, {
-    type: 'doughnut',
-    data: { labels, datasets: [{ data, backgroundColor: colors }] },
-    options: { plugins: { legend: { position: 'bottom', labels: { padding: 16, font: { size: 12 } } } }, responsive: true, maintainAspectRatio: true },
+const TT = { trigger: 'axis', axisPointer: { type: 'shadow' } };
+const TT_ITEM = { trigger: 'item' };
+const ANIM = { animationDuration: 600, animationEasing: 'cubicOut' };
+
+function eBar(id, labels, data, colors, horizontal = false) {
+  const chart = ec(id);
+  if (!chart) return null;
+  const isMultiColor = Array.isArray(colors);
+  chart.setOption({
+    ...ANIM, tooltip: TT, grid: { left: horizontal ? 60 : 40, right: 20, top: 10, bottom: 30, containLabel: false },
+    [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 11 } },
+    [horizontal ? 'xAxis' : 'yAxis']: { type: 'value', minInterval: 1 },
+    series: [{
+      type: 'bar', data: data.map((v, i) => ({
+        value: v,
+        itemStyle: { color: isMultiColor ? colors[i % colors.length] : colors, borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] }
+      })),
+      barMaxWidth: 40,
+    }],
   });
+  CI[id] = chart;
+  return chart;
+}
+
+function eStackedBar(id, labels, seriesData, horizontal = false) {
+  const chart = ec(id);
+  if (!chart) return null;
+  chart.setOption({
+    ...ANIM, tooltip: TT,
+    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 40, right: 20, top: 10, bottom: 40, containLabel: false },
+    [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 11 } },
+    [horizontal ? 'xAxis' : 'yAxis']: { type: 'value', minInterval: 1 },
+    series: seriesData.map(s => ({
+      type: 'bar', name: s.name, stack: 'total', barMaxWidth: 40,
+      data: s.data, itemStyle: { color: s.color, borderRadius: 0 },
+      emphasis: { focus: 'series' },
+    })),
+  });
+  CI[id] = chart;
+  return chart;
+}
+
+function ePie(id, data, colors) {
+  const chart = ec(id);
+  if (!chart) return null;
+  chart.setOption({
+    ...ANIM, tooltip: TT_ITEM,
+    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    series: [{
+      type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'],
+      padAngle: 2, itemStyle: { borderRadius: 6 },
+      label: { show: true, formatter: '{b}\n{d}%', fontSize: 11 },
+      emphasis: { label: { fontSize: 14, fontWeight: 'bold' }, itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.2)' } },
+      data: data.map((d, i) => ({ value: d.value, name: d.name, itemStyle: { color: colors[i] } })),
+    }],
+  });
+  CI[id] = chart;
+  return chart;
+}
+
+function eGauge(id, value, label, max, color) {
+  const chart = ec(id);
+  if (!chart) return null;
+  chart.setOption({
+    ...ANIM,
+    series: [{
+      type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: max,
+      pointer: { show: false },
+      progress: { show: true, width: 14, roundCap: true, itemStyle: { color } },
+      axisLine: { lineStyle: { width: 14, color: [[1, 'rgba(0,0,0,0.08)']] } },
+      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+      title: { offsetCenter: [0, '70%'], fontSize: 12, color: '#6b7280' },
+      detail: { offsetCenter: [0, '30%'], fontSize: 28, fontWeight: 700, color, formatter: '{value}' },
+      data: [{ value, name: label }],
+    }],
+  });
+  CI[id] = chart;
+  return chart;
 }
 
 function renderAllCharts() {
@@ -844,22 +909,15 @@ function renderAllCharts() {
   const details = selectedDetail?.details || [];
   const isServe = selectedSession?.sport_type === 'serve_practice';
 
-  // Overview: aggression
+  // Overview: aggression (horizontal bar)
   const ac = sum.aggression_counts || {};
-  CI.aggO = bar(document.getElementById('chartAggOverview'),
-    ['Attack', 'Neutral', 'Defence'],
-    [ac.Attack||0, ac.Neutral||0, ac.Defence||0],
-    [C_GREEN, C_AMBER, C_RED],
-    { indexAxis: 'y' }
-  );
+  eBar('chartAggOverview', ['Attack', 'Neutral', 'Defence'],
+    [ac.Attack||0, ac.Neutral||0, ac.Defence||0], [C_GREEN, C_AMBER, C_RED], true);
 
   // Overview: depth
   const dc = sum.depth_counts || {};
-  CI.depthO = bar(document.getElementById('chartDepthOverview'),
-    ['Deep', 'Middle', 'Short'],
-    [dc.Deep||0, dc.Middle||0, dc.Short||0],
-    [C_GREEN, C_AMBER, C_RED]
-  );
+  eBar('chartDepthOverview', ['Deep', 'Middle', 'Short'],
+    [dc.Deep||0, dc.Middle||0, dc.Short||0], [C_GREEN, C_AMBER, C_RED]);
 
   // Overview: speed histogram
   const speeds = details.filter(d => d.ball_speed_kmh > 0).map(d => d.ball_speed_kmh);
@@ -867,19 +925,17 @@ function renderAllCharts() {
     const mn = Math.floor(Math.min(...speeds) / 10) * 10;
     const mx = Math.ceil(Math.max(...speeds) / 10) * 10;
     const bkts = {}; for (let b = mn; b < mx; b += 10) bkts[b] = 0;
-    speeds.forEach(s => { bkts[Math.floor(s/10)*10]++; });
-    const lbls = Object.keys(bkts).sort((a,b) => a-b);
-    CI.speedO = bar(document.getElementById('chartSpeedOverview'),
-      lbls.map(l => l + '-' + (parseInt(l)+10) + ' km/h'), lbls.map(l => bkts[l]), lbls.map(() => C_GREEN_L)
-    );
+    speeds.forEach(s => { bkts[Math.floor(s / 10) * 10]++; });
+    const lbls = Object.keys(bkts).sort((a, b) => a - b);
+    eBar('chartSpeedOverview',
+      lbls.map(l => l + '-' + (parseInt(l) + 10)), lbls.map(l => bkts[l]), C_GREEN_L);
   }
 
   // Placement: zone bar
   const zc = sum.zone_counts || {};
-  CI.zoneP = bar(document.getElementById('chartZonePlacement'),
-    ['A','B','C','D'], [zc.A||0, zc.B||0, zc.C||0, zc.D||0],
-    ['rgba(26,92,46,0.6)', 'rgba(37,99,235,0.6)', 'rgba(217,119,6,0.6)', 'rgba(220,38,38,0.6)']
-  );
+  eBar('chartZonePlacement', ['A', 'B', 'C', 'D'],
+    [zc.A||0, zc.B||0, zc.C||0, zc.D||0],
+    ['rgba(26,92,46,0.7)', 'rgba(37,99,235,0.7)', 'rgba(217,119,6,0.7)', 'rgba(220,38,38,0.7)']);
 
   // Placement: depth by zone (stacked)
   const depthByZone = { A: {}, B: {}, C: {}, D: {} };
@@ -888,68 +944,47 @@ function renderAllCharts() {
       depthByZone[d.placement_zone][d.depth_d] = (depthByZone[d.placement_zone][d.depth_d] || 0) + 1;
     }
   });
-  const dbzEl = document.getElementById('chartDepthByZone');
-  if (dbzEl) {
-    CI.dbz = new Chart(dbzEl, {
-      type: 'bar',
-      data: {
-        labels: ['A','B','C','D'],
-        datasets: [
-          { label: 'Deep', data: ['A','B','C','D'].map(z => depthByZone[z].Deep||0), backgroundColor: C_GREEN },
-          { label: 'Middle', data: ['A','B','C','D'].map(z => depthByZone[z].Middle||0), backgroundColor: C_AMBER },
-          { label: 'Short', data: ['A','B','C','D'].map(z => depthByZone[z].Short||0), backgroundColor: C_RED },
-        ],
-      },
-      options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } },
-    });
-  }
+  eStackedBar('chartDepthByZone', ['A', 'B', 'C', 'D'], [
+    { name: 'Deep', data: ['A','B','C','D'].map(z => depthByZone[z].Deep||0), color: C_GREEN },
+    { name: 'Middle', data: ['A','B','C','D'].map(z => depthByZone[z].Middle||0), color: C_AMBER },
+    { name: 'Short', data: ['A','B','C','D'].map(z => depthByZone[z].Short||0), color: C_RED },
+  ]);
 
-  // Placement: stroke by zone
+  // Placement: stroke by zone (stacked)
   const strokeByZone = { A: {}, B: {}, C: {}, D: {} };
   details.forEach(d => {
     if (d.placement_zone && d.stroke_d) {
       strokeByZone[d.placement_zone][d.stroke_d] = (strokeByZone[d.placement_zone][d.stroke_d] || 0) + 1;
     }
   });
-  const sbzEl = document.getElementById('chartStrokeByZone');
-  if (sbzEl) {
-    CI.sbz = new Chart(sbzEl, {
-      type: 'bar',
-      data: {
-        labels: ['A','B','C','D'],
-        datasets: [
-          { label: 'Forehand', data: ['A','B','C','D'].map(z => strokeByZone[z].forehand||0), backgroundColor: C_GREEN },
-          { label: 'Backhand', data: ['A','B','C','D'].map(z => strokeByZone[z].backhand||0), backgroundColor: C_BLUE },
-        ],
-      },
-      options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } },
-    });
-  }
+  eStackedBar('chartStrokeByZone', ['A', 'B', 'C', 'D'], [
+    { name: 'Forehand', data: ['A','B','C','D'].map(z => strokeByZone[z].forehand||0), color: C_GREEN },
+    { name: 'Backhand', data: ['A','B','C','D'].map(z => strokeByZone[z].backhand||0), color: C_BLUE },
+  ]);
 
   // Serve tab
   if (isServe) {
     const szc = sum.serve_zone_counts || {};
-    CI.sz = bar(document.getElementById('chartServeZone'),
-      ['Wide','Body','T'], [szc.wide||0, szc.body||0, szc.T||0], [C_BLUE, C_GREEN, C_AMBER],
-      { indexAxis: 'y' }
-    );
+    eBar('chartServeZone', ['Wide', 'Body', 'T'],
+      [szc.wide||0, szc.body||0, szc.T||0], [C_BLUE, C_GREEN, C_AMBER], true);
+
     const sc = sum.side_counts || {};
-    CI.side = doughnut(document.getElementById('chartSide'),
-      ['Deuce','Ad'], [sc.deuce||0, sc.ad||0], [C_GREEN, C_BLUE]
-    );
+    ePie('chartSide', [
+      { name: 'Deuce', value: sc.deuce||0 },
+      { name: 'Ad', value: sc.ad||0 },
+    ], [C_GREEN, C_BLUE]);
   }
 
   // Rally tab
   if (!isServe) {
-    // Rally length distribution (individual lengths)
+    // Rally length distribution
     const rallyLens = {};
     details.filter(d => d.shot_ix === 1 && d.rally_length).forEach(d => {
       rallyLens[d.rally_length] = (rallyLens[d.rally_length] || 0) + 1;
     });
-    const rlLabels = Object.keys(rallyLens).sort((a,b) => a-b);
-    CI.rl = bar(document.getElementById('chartRallyLen'),
-      rlLabels.map(l => l + ' shots'), rlLabels.map(l => rallyLens[l]), rlLabels.map(() => C_GREEN)
-    );
+    const rlLabels = Object.keys(rallyLens).sort((a, b) => a - b);
+    eBar('chartRallyLen', rlLabels.map(l => l + ' shots'),
+      rlLabels.map(l => rallyLens[l]), C_GREEN);
 
     // Rally buckets
     const bkts = {};
@@ -957,11 +992,9 @@ function renderAllCharts() {
       bkts[d.rally_length_bucket_d] = (bkts[d.rally_length_bucket_d] || 0) + 1;
     });
     const order = ['0\u20134 shots', '5\u20138 shots', '9+ shots'];
-    CI.rb = bar(document.getElementById('chartRallyBucket'),
-      order, order.map(o => bkts[o]||0), [C_GREEN, C_AMBER, C_RED]
-    );
+    eBar('chartRallyBucket', order, order.map(o => bkts[o]||0), [C_GREEN, C_AMBER, C_RED]);
 
-    // Stroke by rally length bucket
+    // Stroke by rally length bucket (stacked)
     const sbrData = { forehand: {}, backhand: {} };
     details.forEach(d => {
       if (d.rally_length_bucket_d && d.stroke_d) {
@@ -969,44 +1002,29 @@ function renderAllCharts() {
         sbrData[d.stroke_d][d.rally_length_bucket_d] = (sbrData[d.stroke_d][d.rally_length_bucket_d] || 0) + 1;
       }
     });
-    const sbrEl = document.getElementById('chartStrokeByRally');
-    if (sbrEl) {
-      CI.sbr = new Chart(sbrEl, {
-        type: 'bar',
-        data: {
-          labels: order,
-          datasets: [
-            { label: 'Forehand', data: order.map(o => (sbrData.forehand||{})[o]||0), backgroundColor: C_GREEN },
-            { label: 'Backhand', data: order.map(o => (sbrData.backhand||{})[o]||0), backgroundColor: C_BLUE },
-          ],
-        },
-        options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } } },
-      });
-    }
+    eStackedBar('chartStrokeByRally', order, [
+      { name: 'Forehand', data: order.map(o => (sbrData.forehand||{})[o]||0), color: C_GREEN },
+      { name: 'Backhand', data: order.map(o => (sbrData.backhand||{})[o]||0), color: C_BLUE },
+    ]);
 
-    // Depth by rally length bucket
+    // Depth by rally length bucket (stacked)
     const dbrData = { Deep: {}, Middle: {}, Short: {} };
     details.forEach(d => {
       if (d.rally_length_bucket_d && d.depth_d) {
         dbrData[d.depth_d][d.rally_length_bucket_d] = (dbrData[d.depth_d][d.rally_length_bucket_d] || 0) + 1;
       }
     });
-    const dbrEl = document.getElementById('chartDepthByRally');
-    if (dbrEl) {
-      CI.dbr = new Chart(dbrEl, {
-        type: 'bar',
-        data: {
-          labels: order,
-          datasets: [
-            { label: 'Deep', data: order.map(o => dbrData.Deep[o]||0), backgroundColor: C_GREEN },
-            { label: 'Middle', data: order.map(o => dbrData.Middle[o]||0), backgroundColor: C_AMBER },
-            { label: 'Short', data: order.map(o => dbrData.Short[o]||0), backgroundColor: C_RED },
-          ],
-        },
-        options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } } },
-      });
-    }
+    eStackedBar('chartDepthByRally', order, [
+      { name: 'Deep', data: order.map(o => dbrData.Deep[o]||0), color: C_GREEN },
+      { name: 'Middle', data: order.map(o => dbrData.Middle[o]||0), color: C_AMBER },
+      { name: 'Short', data: order.map(o => dbrData.Short[o]||0), color: C_RED },
+    ]);
   }
+
+  // Resize handler for responsive
+  window.addEventListener('resize', () => {
+    Object.values(CI).forEach(c => { try { c.resize(); } catch(e) {} });
+  });
 }
 
 // ==================== VIDEO ====================
