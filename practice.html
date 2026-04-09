@@ -28,146 +28,171 @@ html { font-size: 15px; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  padding-bottom: 300px;
+  -webkit-font-smoothing: antialiased; height: 100%; overflow: hidden;
 }
-.container { max-width: 960px; margin: 0 auto; padding: 16px; }
 
-/* Header */
-.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-.page-header h1 { font-size: 1.3rem; font-weight: 600; }
-.page-header .count { font-size: 0.85rem; color: var(--text-sec); }
+/* ========== LAYOUT: SIDEBAR + MAIN ========== */
+.dash-layout {
+  display: grid; grid-template-columns: 280px 1fr; height: 100vh; overflow: hidden;
+}
+.dash-sidebar {
+  background: var(--white); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.dash-sidebar-header {
+  padding: 16px; border-bottom: 1px solid var(--border);
+}
+.dash-sidebar-header h2 { font-size: 1rem; font-weight: 600; }
+.dash-sidebar-header .count { font-size: 0.75rem; color: var(--text-sec); }
+.session-list { flex: 1; overflow-y: auto; padding: 8px; }
+.session-item {
+  padding: 10px 12px; border-radius: var(--radius); cursor: pointer;
+  border: 1px solid transparent; margin-bottom: 4px; transition: all var(--transition);
+}
+.session-item:hover { background: var(--bg); }
+.session-item.active { background: var(--green-bg); border-color: var(--green); }
+.session-item .s-type { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.session-item .s-type.rally { color: var(--amber); }
+.session-item .s-type.serve { color: var(--green); }
+.session-item .s-date { font-size: 0.82rem; font-weight: 500; margin-top: 2px; }
+.session-item .s-meta { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
 
-/* Session cards */
-.session-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
-.session-card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 16px; cursor: pointer; transition: border-color var(--transition);
+/* ========== MAIN DASHBOARD ========== */
+.dash-main { overflow-y: auto; padding: 0; }
+.dash-toolbar {
+  position: sticky; top: 0; z-index: 10; background: var(--white);
+  border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 48px;
 }
-.session-card:hover, .session-card.active { border-color: var(--green); }
-.session-card.active { background: var(--green-bg); }
-.session-info { flex: 1; }
-.session-info .title { font-weight: 500; font-size: 0.95rem; }
-.session-info .meta { font-size: 0.8rem; color: var(--text-sec); margin-top: 2px; }
-.badge {
-  display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 2px 8px;
-  border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+.dash-toolbar h1 { font-size: 1.05rem; font-weight: 600; }
+.dash-toolbar .actions { display: flex; gap: 8px; }
+.btn-watch {
+  padding: 6px 14px; border-radius: var(--radius); border: 1px solid var(--green);
+  background: var(--green); color: var(--white); font-size: 0.78rem; font-weight: 600;
+  cursor: pointer; transition: opacity var(--transition);
 }
-.badge-serve { background: rgba(37,99,235,0.1); color: var(--blue); }
-.badge-rally { background: rgba(217,119,6,0.1); color: var(--amber); }
-.badge-status { margin-left: 8px; }
-.badge-processing { background: rgba(217,119,6,0.1); color: var(--amber); }
-.badge-completed { background: rgba(26,92,46,0.1); color: var(--green); }
-.session-actions { display: flex; gap: 8px; align-items: center; }
-.btn-play {
-  background: var(--green); color: white; border: none; border-radius: var(--radius);
-  padding: 6px 12px; font-size: 0.8rem; cursor: pointer; font-family: inherit;
-}
-.btn-play:hover { background: var(--green-light); }
+.btn-watch:hover { opacity: 0.85; }
 
 /* Tabs */
-.tab-bar {
-  display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 20px;
+.dash-tabs {
+  display: flex; gap: 0; background: var(--white); border-bottom: 1px solid var(--border);
+  padding: 0 24px; position: sticky; top: 48px; z-index: 9;
 }
-.tab-btn {
-  padding: 10px 20px; font-size: 0.85rem; font-weight: 500; cursor: pointer;
-  border: none; background: none; color: var(--text-sec); border-bottom: 2px solid transparent;
-  margin-bottom: -2px; font-family: inherit; transition: color var(--transition);
+.dash-tab {
+  padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: var(--text-sec);
+  cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
+  background: none; border-top: none; border-left: none; border-right: none;
 }
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
-.tab-content { display: none; }
-.tab-content.active { display: block; }
+.dash-tab:hover { color: var(--text); }
+.dash-tab.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
 
-/* KPI cards */
-.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
-.kpi-card {
+/* Dashboard content */
+.dash-content { padding: 20px 24px; padding-bottom: 300px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ========== KPI CARDS (top row) ========== */
+.kpi-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.kpi {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px; text-align: center;
+  padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); text-align: center;
 }
-.kpi-card .value { font-size: 1.6rem; font-weight: 700; color: var(--green); }
-.kpi-card .label { font-size: 0.75rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+.kpi .val { font-size: 1.6rem; font-weight: 700; color: var(--green); line-height: 1.2; }
+.kpi .val.amber { color: var(--amber); }
+.kpi .val.red { color: var(--red); }
+.kpi .lbl { font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 
-/* Chart containers */
-.chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-.chart-box {
+/* ========== CHART CARDS (same as Locker Room) ========== */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.chart-grid.tri { grid-template-columns: 1fr 1fr 1fr; }
+.chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px;
+  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); position: relative;
 }
-.chart-box h3 { font-size: 0.85rem; font-weight: 600; margin-bottom: 12px; }
-.chart-box canvas { max-height: 250px; }
-.chart-box.full { grid-column: 1 / -1; }
+.chart-card h3 {
+  font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.chart-card canvas { max-height: 220px; }
+.chart-card.full { grid-column: 1 / -1; }
 
-/* Court placement grid */
+/* Court grid (A-D zones) */
 .court-grid {
   display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
-  width: 200px; height: 280px; margin: 0 auto; border: 2px solid var(--green);
-  position: relative;
-}
-.court-grid::before {
-  content: ''; position: absolute; top: 50%; left: 10%; right: 10%;
-  height: 1px; background: var(--text-dim);
-}
-.court-grid::after {
-  content: 'NET'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  font-size: 0.6rem; color: var(--text-dim); background: var(--white); padding: 0 4px;
+  gap: 4px; height: 180px; border-radius: var(--radius); overflow: hidden;
 }
 .court-zone {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  border: 1px solid var(--border); font-size: 0.8rem; position: relative;
+  font-weight: 600; position: relative;
 }
-.court-zone .zone-pct { font-size: 1.2rem; font-weight: 700; }
-.court-zone .zone-label { font-size: 0.65rem; color: var(--text-sec); }
-.court-zone-a { background: rgba(37,99,235,0.08); }
-.court-zone-b { background: rgba(26,92,46,0.08); }
-.court-zone-c { background: rgba(217,119,6,0.08); }
-.court-zone-d { background: rgba(220,38,38,0.08); }
+.court-zone-a { background: rgba(26,92,46,0.12); color: var(--green); }
+.court-zone-b { background: rgba(37,99,235,0.10); color: var(--blue); }
+.court-zone-c { background: rgba(217,119,6,0.10); color: var(--amber); }
+.court-zone-d { background: rgba(220,38,38,0.08); color: var(--red); }
+.zone-pct { font-size: 1.5rem; font-weight: 700; }
+.zone-label { font-size: 0.72rem; margin-top: 2px; opacity: 0.7; }
 
-/* Heatmap images */
-.heatmap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.heatmap-grid img { width: 100%; border-radius: var(--radius); border: 1px solid var(--border); }
-.heatmap-grid .label { font-size: 0.8rem; color: var(--text-sec); margin-bottom: 6px; }
-
-/* Video modal */
-.video-modal {
-  display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-  background: rgba(0,0,0,0.87); z-index: 1000; align-items: center; justify-content: center;
-}
-.video-modal.open { display: flex; }
-.video-modal video { max-width: 95%; max-height: 90%; border-radius: 8px; }
-.video-modal .close-btn {
-  position: absolute; top: 16px; right: 20px; color: white; font-size: 2rem;
-  cursor: pointer; z-index: 1001; line-height: 1;
-}
-
-/* Empty state */
-.empty-state {
-  text-align: center; padding: 60px 20px; color: var(--text-sec);
-}
-.empty-state h3 { font-size: 1.1rem; margin-bottom: 8px; color: var(--text); }
-
-/* Serve timeline */
-.serve-timeline { display: flex; flex-wrap: wrap; gap: 4px; }
+/* Serve timeline dots */
+.serve-timeline { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 0; }
 .serve-dot {
-  width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center;
-  justify-content: center; font-size: 0.55rem; font-weight: 600; color: white;
+  width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 0.6rem; font-weight: 700; color: var(--white);
 }
 .serve-dot.in { background: var(--green); }
 .serve-dot.fault { background: var(--red); }
 
+/* Gauge (reused from Locker Room) */
+.gauge-container { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 10px 0; }
+.gauge-number { font-size: 2.4rem; font-weight: 700; color: var(--green); }
+.gauge-label { font-size: 0.82rem; color: var(--text-sec); margin-top: 4px; }
+.gauge-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+.gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+
+/* Heatmap images */
+.heatmap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.heatmap-grid img { width: 100%; border-radius: var(--radius); border: 1px solid var(--border); }
+.heatmap-grid .label { font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* Video modal */
+.video-modal {
+  display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.92);
+  align-items: center; justify-content: center;
+}
+.video-modal.open { display: flex; }
+.video-modal video { max-width: 95vw; max-height: 90vh; border-radius: 8px; }
+.video-modal .close-btn {
+  position: absolute; top: 16px; right: 24px; color: white; font-size: 2rem;
+  cursor: pointer; z-index: 1001; line-height: 1;
+}
+
+/* Loading & empty */
+.loading, .empty-state { display: flex; align-items: center; justify-content: center; height: 100vh; text-align: center; color: var(--text-sec); }
+.empty-state h3 { font-size: 1.1rem; margin-bottom: 8px; }
+.loading .spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* Responsive */
-@media (max-width: 600px) {
-  .chart-row { grid-template-columns: 1fr; }
+@media (max-width: 768px) {
+  .dash-layout { grid-template-columns: 1fr; height: auto; overflow: auto; }
+  .dash-sidebar { max-height: 200px; border-right: none; border-bottom: 1px solid var(--border); }
+  .chart-grid, .chart-grid.tri { grid-template-columns: 1fr; }
+  .kpi-strip { grid-template-columns: repeat(3, 1fr); }
   .heatmap-grid { grid-template-columns: 1fr; }
-  .kpi-row { grid-template-columns: repeat(2, 1fr); }
+  body { overflow: auto; }
+  .dash-main { overflow: visible; }
 }
 </style>
 </head>
 <body>
-<div class="container" id="app">
-  <div style="text-align:center;padding:60px;color:var(--text-sec)">Loading...</div>
-</div>
+<div id="app"><div class="loading"><div><div class="spinner"></div>Loading...</div></div></div>
 
 <!-- Video Modal -->
 <div class="video-modal" id="videoModal">
@@ -190,9 +215,19 @@ function apiFetch(path, opts = {}) {
 let sessions = [];
 let selectedSession = null;
 let selectedDetail = null;
+let activeTab = 'overview';
+const CI = {}; // chart instances
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const chartInstances = {};
 
+// ==================== COLOURS ====================
+const C_GREEN  = 'rgba(26,92,46,0.75)';
+const C_GREEN_L = 'rgba(34,120,60,0.75)';
+const C_BLUE   = 'rgba(37,99,235,0.75)';
+const C_AMBER  = 'rgba(217,119,6,0.75)';
+const C_RED    = 'rgba(220,38,38,0.75)';
+const C_TEAL   = 'rgba(20,184,166,0.75)';
+
+// ==================== INIT ====================
 async function init() {
   if (!EMAIL || !API_KEY) {
     document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key.</p></div>';
@@ -202,191 +237,266 @@ async function init() {
     const res = await apiFetch('/api/client/practice-sessions');
     const data = await res.json();
     sessions = data.ok ? data.sessions : [];
-  } catch (e) { console.warn('fetch failed', e); sessions = []; }
+  } catch (e) { sessions = []; }
 
   if (!sessions.length) {
     document.getElementById('app').innerHTML = '<div class="empty-state"><h3>No Practice Sessions</h3><p>Upload a serve or rally practice video from the Media Room to get started.</p></div>';
     return;
   }
-
-  render();
+  renderLayout();
   selectSession(0);
 }
 
-function render() {
-  const app = document.getElementById('app');
-  app.innerHTML = `
-    <div class="page-header">
-      <h1>Practice Analytics</h1>
-      <span class="count">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
+// ==================== LAYOUT ====================
+function renderLayout() {
+  document.getElementById('app').innerHTML = `
+    <div class="dash-layout">
+      <div class="dash-sidebar">
+        <div class="dash-sidebar-header">
+          <h2>Sessions</h2>
+          <span class="count">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="session-list" id="sessionList">${renderSessionList()}</div>
+      </div>
+      <div class="dash-main" id="dashMain">
+        <div class="dash-toolbar" id="toolbar"></div>
+        <div class="dash-tabs" id="tabStrip"></div>
+        <div class="dash-content" id="dashContent"></div>
+      </div>
     </div>
-    <div class="session-list" id="sessionList">${renderSessionCards()}</div>
-    <div class="tab-bar" id="tabBar"></div>
-    <div id="tabContent"></div>
   `;
 }
 
-function renderSessionCards() {
+function renderSessionList() {
   return sessions.map((s, i) => {
-    const type = s.sport_type === 'serve_practice' ? 'Serve' : 'Rally';
-    const badgeCls = s.sport_type === 'serve_practice' ? 'badge-serve' : 'badge-rally';
-    const date = s.match_date || (s.created_at ? s.created_at.split('T')[0] : 'Unknown');
-    const stat = s.sport_type === 'serve_practice'
-      ? `${s.serve_count} serves`
-      : `${s.rally_count} rallies`;
-    const canPlay = s.trim_status === 'completed' && s.trim_output_s3_key;
-    return `<div class="session-card" id="sc-${i}" onclick="selectSession(${i})">
-      <div class="session-info">
-        <div class="title"><span class="badge ${badgeCls}">${type}</span> ${date}</div>
-        <div class="meta">${stat} &middot; Avg ${s.avg_speed_kmh.toFixed(0)} km/h &middot; Max ${s.max_speed_kmh.toFixed(0)} km/h</div>
-      </div>
-      <div class="session-actions">
-        ${canPlay ? `<button class="btn-play" onclick="event.stopPropagation();playFootage('${s.task_id}')">Watch</button>` : ''}
-      </div>
+    const isServe = s.sport_type === 'serve_practice';
+    const type = isServe ? 'Serve' : 'Rally';
+    const cls = isServe ? 'serve' : 'rally';
+    const date = s.match_date || (s.created_at ? s.created_at.split('T')[0] : '');
+    const stat = isServe ? `${s.serve_count} serves` : `${s.rally_count} rallies`;
+    return `<div class="session-item" id="si-${i}" onclick="selectSession(${i})">
+      <div class="s-type ${cls}">${type}</div>
+      <div class="s-date">${date}</div>
+      <div class="s-meta">${stat}</div>
     </div>`;
   }).join('');
 }
 
+// ==================== SESSION SELECT ====================
 async function selectSession(idx) {
   selectedSession = sessions[idx];
-  document.querySelectorAll('.session-card').forEach((el, i) => el.classList.toggle('active', i === idx));
+  document.querySelectorAll('.session-item').forEach((el, i) => el.classList.toggle('active', i === idx));
 
-  // Load detail
   try {
     const res = await apiFetch('/api/client/practice-detail/' + selectedSession.task_id);
     const data = await res.json();
     selectedDetail = data.ok ? data : null;
-  } catch (e) { console.warn('detail fetch failed', e); selectedDetail = null; }
+  } catch (e) { selectedDetail = null; }
 
-  renderTabs();
+  activeTab = 'overview';
+  renderDashboard();
 }
 
-function renderTabs() {
-  const isServe = selectedSession.sport_type === 'serve_practice';
+// ==================== DASHBOARD RENDER ====================
+function renderDashboard() {
+  if (!selectedSession) return;
+  const s = selectedSession;
+  const isServe = s.sport_type === 'serve_practice';
+  const type = isServe ? 'Serve Practice' : 'Rally Practice';
+  const date = s.match_date || (s.created_at ? s.created_at.split('T')[0] : '');
+  const canPlay = s.trim_status === 'completed' && s.trim_output_s3_key;
+
+  document.getElementById('toolbar').innerHTML = `
+    <h1>${type} &mdash; ${date}</h1>
+    <div class="actions">
+      ${canPlay ? `<button class="btn-watch" onclick="playFootage('${s.task_id}')">Watch Footage</button>` : ''}
+    </div>
+  `;
+
   const tabs = [
     { id: 'overview', label: 'Overview' },
+    { id: 'placement', label: 'Court Placement' },
     isServe ? { id: 'serve', label: 'Serve Analysis' } : { id: 'rally', label: 'Rally Analysis' },
     { id: 'heatmaps', label: 'Heatmaps' },
   ];
 
-  document.getElementById('tabBar').innerHTML = tabs.map((t, i) =>
-    `<button class="tab-btn${i === 0 ? ' active' : ''}" onclick="switchTab('${t.id}')">${t.label}</button>`
+  document.getElementById('tabStrip').innerHTML = tabs.map(t =>
+    `<button class="dash-tab${t.id === activeTab ? ' active' : ''}" onclick="switchTab('${t.id}')">${t.label}</button>`
   ).join('');
 
-  document.getElementById('tabContent').innerHTML = `
-    <div class="tab-content active" id="tab-overview">${renderOverview()}</div>
-    <div class="tab-content" id="tab-serve">${isServe ? renderServeAnalysis() : ''}</div>
-    <div class="tab-content" id="tab-rally">${!isServe ? renderRallyAnalysis() : ''}</div>
-    <div class="tab-content" id="tab-heatmaps">${renderHeatmaps()}</div>
+  const sum = selectedDetail?.summary || {};
+  document.getElementById('dashContent').innerHTML = `
+    <div class="tab-panel${activeTab === 'overview' ? ' active' : ''}" id="p-overview">${renderOverview(sum, isServe)}</div>
+    <div class="tab-panel${activeTab === 'placement' ? ' active' : ''}" id="p-placement">${renderPlacement(sum)}</div>
+    <div class="tab-panel${activeTab === 'serve' ? ' active' : ''}" id="p-serve">${isServe ? renderServe(sum) : ''}</div>
+    <div class="tab-panel${activeTab === 'rally' ? ' active' : ''}" id="p-rally">${!isServe ? renderRally(sum) : ''}</div>
+    <div class="tab-panel${activeTab === 'heatmaps' ? ' active' : ''}" id="p-heatmaps">${renderHeatmaps()}</div>
   `;
 
-  renderCharts();
+  renderAllCharts();
+  if (activeTab === 'heatmaps') loadHeatmaps();
 }
 
 function switchTab(id) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  activeTab = id;
+  document.querySelectorAll('.dash-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   event.target.classList.add('active');
-  const el = document.getElementById('tab-' + id);
+  const el = document.getElementById('p-' + id);
   if (el) el.classList.add('active');
   if (id === 'heatmaps') loadHeatmaps();
 }
 
-// ============ OVERVIEW TAB ============
-
-function renderOverview() {
+// ==================== TAB: OVERVIEW ====================
+function renderOverview(sum, isServe) {
   const s = selectedSession;
-  const sum = selectedDetail?.summary || {};
-  const isServe = s.sport_type === 'serve_practice';
+  const totalShots = sum.total_shots || 0;
+  const sc = sum.stroke_counts || {};
+  const fh = sc.forehand || 0;
+  const bh = sc.backhand || 0;
+  const fhPct = totalShots ? Math.round(100 * fh / totalShots) : 0;
 
   return `
-    <div class="kpi-row">
-      <div class="kpi-card"><div class="value">${isServe ? sum.total_serves || s.serve_count : sum.total_rallies || s.rally_count}</div><div class="label">${isServe ? 'Total Serves' : 'Total Rallies'}</div></div>
-      ${isServe ? `<div class="kpi-card"><div class="value">${sum.first_serve_pct || s.first_serve_pct}%</div><div class="label">In %</div></div>` : `<div class="kpi-card"><div class="value">${sum.avg_rally_length || s.avg_rally_length}</div><div class="label">Avg Rally Length</div></div>`}
-      <div class="kpi-card"><div class="value">${s.max_speed_kmh.toFixed(0)}</div><div class="label">Max Speed (km/h)</div></div>
-      <div class="kpi-card"><div class="value">${s.avg_speed_kmh.toFixed(0)}</div><div class="label">Avg Speed (km/h)</div></div>
-      <div class="kpi-card"><div class="value">${s.bounce_count}</div><div class="label">Total Bounces</div></div>
+    <div class="kpi-strip">
+      <div class="kpi"><div class="val">${isServe ? sum.total_serves || 0 : sum.total_rallies || 0}</div><div class="lbl">${isServe ? 'Serves' : 'Rallies'}</div></div>
+      <div class="kpi"><div class="val">${totalShots}</div><div class="lbl">Total Shots</div></div>
+      ${isServe
+        ? `<div class="kpi"><div class="val">${sum.first_serve_pct || 0}%</div><div class="lbl">In Rate</div></div>`
+        : `<div class="kpi"><div class="val">${sum.avg_rally_length || 0}</div><div class="lbl">Avg Rally Len</div></div>`
+      }
+      <div class="kpi"><div class="val">${sum.max_speed_kmh || 0}</div><div class="lbl">Max Speed</div></div>
+      <div class="kpi"><div class="val">${sum.avg_speed_kmh || 0}</div><div class="lbl">Avg Speed</div></div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Stroke Split</h3>
+        <div class="gauge-container">
+          <div class="gauge-number">${fhPct}<span style="font-size:1rem;color:var(--text-dim);font-weight:400">%</span></div>
+          <div class="gauge-label">Forehand <strong style="color:var(--green)">${fh}</strong> &mdash; Backhand <strong style="color:var(--blue)">${bh}</strong></div>
+          <div class="gauge-bar"><div class="gauge-fill" style="width:${fhPct}%;background:linear-gradient(90deg,var(--green) 0%,var(--green) 100%)"></div></div>
+        </div>
+      </div>
+      <div class="chart-card">
+        <h3>Shot Aggression</h3>
+        <canvas id="chartAggOverview"></canvas>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Depth Distribution</h3>
+        <canvas id="chartDepthOverview"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Speed Distribution</h3>
+        <canvas id="chartSpeedOverview"></canvas>
+      </div>
     </div>
   `;
 }
 
-// ============ SERVE ANALYSIS TAB ============
-
-function renderServeAnalysis() {
-  const sum = selectedDetail?.summary || {};
+// ==================== TAB: COURT PLACEMENT ====================
+function renderPlacement(sum) {
+  const zc = sum.zone_counts || {};
   return `
-    <div class="kpi-row">
-      <div class="kpi-card"><div class="value">${sum.total_serves || 0}</div><div class="label">Total Serves</div></div>
-      <div class="kpi-card"><div class="value" style="color:var(--green)">${sum.serves_in || 0}</div><div class="label">In</div></div>
-      <div class="kpi-card"><div class="value" style="color:var(--red)">${sum.serves_fault || 0}</div><div class="label">Faults</div></div>
-      <div class="kpi-card"><div class="value">${sum.first_serve_pct || 0}%</div><div class="label">In %</div></div>
-      <div class="kpi-card"><div class="value">${sum.max_speed_kmh || 0}</div><div class="label">Max Speed</div></div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Court Zones (A-D)</h3>
+        ${renderCourtGrid(zc)}
+      </div>
+      <div class="chart-card">
+        <h3>Zone Distribution</h3>
+        <canvas id="chartZonePlacement"></canvas>
+      </div>
     </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Serve Zone Distribution</h3><canvas id="chartServeZone"></canvas></div>
-      <div class="chart-box"><h3>Placement Zones</h3>${renderCourtGrid(sum.zone_counts || {})}</div>
-    </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Depth Distribution</h3><canvas id="chartDepth"></canvas></div>
-      <div class="chart-box"><h3>Speed Distribution</h3><canvas id="chartSpeed"></canvas></div>
-    </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Deuce / Ad Split</h3><canvas id="chartSide"></canvas></div>
-      <div class="chart-box"><h3>Serve Result Timeline</h3><div class="serve-timeline">${renderServeTimeline()}</div></div>
-    </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Stroke Type</h3><canvas id="chartStroke"></canvas></div>
-      <div class="chart-box"><h3>Aggression</h3><canvas id="chartAggression"></canvas></div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Depth by Zone</h3>
+        <canvas id="chartDepthByZone"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Stroke by Zone</h3>
+        <canvas id="chartStrokeByZone"></canvas>
+      </div>
     </div>
   `;
 }
 
-// ============ RALLY ANALYSIS TAB ============
-
-function renderRallyAnalysis() {
-  const sum = selectedDetail?.summary || {};
+// ==================== TAB: SERVE ANALYSIS ====================
+function renderServe(sum) {
   return `
-    <div class="kpi-row">
-      <div class="kpi-card"><div class="value">${sum.total_rallies || 0}</div><div class="label">Total Rallies</div></div>
-      <div class="kpi-card"><div class="value">${sum.avg_rally_length || 0}</div><div class="label">Avg Length (shots)</div></div>
-      <div class="kpi-card"><div class="value">${sum.max_rally_length || 0}</div><div class="label">Max Length</div></div>
-      <div class="kpi-card"><div class="value">${sum.avg_duration_s || 0}s</div><div class="label">Avg Duration</div></div>
-      <div class="kpi-card"><div class="value">${sum.max_speed_kmh || 0}</div><div class="label">Max Speed</div></div>
+    <div class="kpi-strip">
+      <div class="kpi"><div class="val">${sum.total_serves || 0}</div><div class="lbl">Total Serves</div></div>
+      <div class="kpi"><div class="val" style="color:var(--green)">${sum.serves_in || 0}</div><div class="lbl">In</div></div>
+      <div class="kpi"><div class="val red">${sum.serves_fault || 0}</div><div class="lbl">Faults</div></div>
+      <div class="kpi"><div class="val">${sum.first_serve_pct || 0}%</div><div class="lbl">In Rate</div></div>
     </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Rally Length Distribution</h3><canvas id="chartRallyLength"></canvas></div>
-      <div class="chart-box"><h3>Placement Zones</h3>${renderCourtGrid(sum.zone_counts || {})}</div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Serve Zone (Wide / Body / T)</h3>
+        <canvas id="chartServeZone"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Deuce / Ad Split</h3>
+        <canvas id="chartSide"></canvas>
+      </div>
     </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Depth Distribution</h3><canvas id="chartDepth"></canvas></div>
-      <div class="chart-box"><h3>Speed Distribution</h3><canvas id="chartSpeed"></canvas></div>
-    </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Stroke Type</h3><canvas id="chartStroke"></canvas></div>
-      <div class="chart-box"><h3>Aggression</h3><canvas id="chartAggression"></canvas></div>
-    </div>
-    <div class="chart-row">
-      <div class="chart-box"><h3>Rally Length Buckets</h3><canvas id="chartRallyBucket"></canvas></div>
-      <div class="chart-box">&nbsp;</div>
+    <div class="chart-grid">
+      <div class="chart-card full">
+        <h3>Serve Result Timeline</h3>
+        <div class="serve-timeline">${renderServeTimeline()}</div>
+      </div>
     </div>
   `;
 }
 
-// ============ HEATMAPS TAB ============
+// ==================== TAB: RALLY ANALYSIS ====================
+function renderRally(sum) {
+  return `
+    <div class="kpi-strip">
+      <div class="kpi"><div class="val">${sum.total_rallies || 0}</div><div class="lbl">Rallies</div></div>
+      <div class="kpi"><div class="val">${sum.avg_rally_length || 0}</div><div class="lbl">Avg Length</div></div>
+      <div class="kpi"><div class="val">${sum.max_rally_length || 0}</div><div class="lbl">Max Length</div></div>
+      <div class="kpi"><div class="val">${sum.avg_duration_s || 0}s</div><div class="lbl">Avg Duration</div></div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Rally Length Distribution</h3>
+        <canvas id="chartRallyLen"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Rally Length Buckets</h3>
+        <canvas id="chartRallyBucket"></canvas>
+      </div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Stroke by Rally Length</h3>
+        <canvas id="chartStrokeByRally"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Depth by Rally Length</h3>
+        <canvas id="chartDepthByRally"></canvas>
+      </div>
+    </div>
+  `;
+}
 
+// ==================== HEATMAPS TAB ====================
 function renderHeatmaps() {
   return `
-    <div class="heatmap-grid" id="heatmapGrid">
-      <div><div class="label">Ball Heatmap</div><div id="heatBall" style="color:var(--text-dim);font-size:0.85rem">Loading...</div></div>
-      <div><div class="label">Player Heatmap</div><div id="heatPlayer" style="color:var(--text-dim);font-size:0.85rem">Loading...</div></div>
+    <div class="chart-grid">
+      <div class="chart-card"><h3>Ball Heatmap</h3><div id="heatBall" style="color:var(--text-dim);font-size:0.85rem">Loading...</div></div>
+      <div class="chart-card"><h3>Player Heatmap</h3><div id="heatPlayer" style="color:var(--text-dim);font-size:0.85rem">Loading...</div></div>
     </div>
   `;
 }
 
 async function loadHeatmaps() {
   if (!selectedSession?.has_heatmaps) {
-    document.getElementById('heatBall').textContent = 'Not available';
-    document.getElementById('heatPlayer').textContent = 'Not available';
+    const b = document.getElementById('heatBall'); if (b) b.textContent = 'Not available';
+    const p = document.getElementById('heatPlayer'); if (p) p.textContent = 'Not available';
     return;
   }
   const tid = selectedSession.task_id;
@@ -395,203 +505,255 @@ async function loadHeatmaps() {
       apiFetch('/api/client/practice-heatmap/' + tid + '/ball').then(r => r.json()),
       apiFetch('/api/client/practice-heatmap/' + tid + '/0').then(r => r.json()),
     ]);
-    document.getElementById('heatBall').innerHTML = bRes.ok
-      ? `<img src="${bRes.url}" alt="Ball heatmap">` : 'Not available';
-    document.getElementById('heatPlayer').innerHTML = pRes.ok
-      ? `<img src="${pRes.url}" alt="Player heatmap">` : 'Not available';
+    const b = document.getElementById('heatBall');
+    if (b) b.innerHTML = bRes.ok ? `<img src="${bRes.url}" alt="Ball heatmap" style="width:100%;border-radius:var(--radius)">` : 'Not available';
+    const p = document.getElementById('heatPlayer');
+    if (p) p.innerHTML = pRes.ok ? `<img src="${pRes.url}" alt="Player heatmap" style="width:100%;border-radius:var(--radius)">` : 'Not available';
   } catch (e) {
-    document.getElementById('heatBall').textContent = 'Error loading';
-    document.getElementById('heatPlayer').textContent = 'Error loading';
+    const b = document.getElementById('heatBall'); if (b) b.textContent = 'Error';
+    const p = document.getElementById('heatPlayer'); if (p) p.textContent = 'Error';
   }
 }
 
-// ============ COURT GRID ============
-
+// ==================== COURT GRID ====================
 function renderCourtGrid(zones) {
-  const total = (zones.A || 0) + (zones.B || 0) + (zones.C || 0) + (zones.D || 0);
-  function pct(z) { return total ? Math.round(100 * (zones[z] || 0) / total) : 0; }
-  return `
-    <div class="court-grid">
-      <div class="court-zone court-zone-a"><span class="zone-pct">${pct('A')}%</span><span class="zone-label">A (${zones.A || 0})</span></div>
-      <div class="court-zone court-zone-b"><span class="zone-pct">${pct('B')}%</span><span class="zone-label">B (${zones.B || 0})</span></div>
-      <div class="court-zone court-zone-c"><span class="zone-pct">${pct('C')}%</span><span class="zone-label">C (${zones.C || 0})</span></div>
-      <div class="court-zone court-zone-d"><span class="zone-pct">${pct('D')}%</span><span class="zone-label">D (${zones.D || 0})</span></div>
-    </div>
-  `;
+  const total = (zones.A||0) + (zones.B||0) + (zones.C||0) + (zones.D||0);
+  function pct(z) { return total ? Math.round(100 * (zones[z]||0) / total) : 0; }
+  return `<div class="court-grid">
+    <div class="court-zone court-zone-a"><span class="zone-pct">${pct('A')}%</span><span class="zone-label">A (${zones.A||0})</span></div>
+    <div class="court-zone court-zone-b"><span class="zone-pct">${pct('B')}%</span><span class="zone-label">B (${zones.B||0})</span></div>
+    <div class="court-zone court-zone-c"><span class="zone-pct">${pct('C')}%</span><span class="zone-label">C (${zones.C||0})</span></div>
+    <div class="court-zone court-zone-d"><span class="zone-pct">${pct('D')}%</span><span class="zone-label">D (${zones.D||0})</span></div>
+  </div>`;
 }
 
-// ============ SERVE TIMELINE ============
-
+// ==================== SERVE TIMELINE ====================
 function renderServeTimeline() {
   if (!selectedDetail?.details) return '<span style="color:var(--text-dim)">No data</span>';
-  const serves = selectedDetail.details.filter(d => d.serve_result);
-  return serves.map(d =>
+  return selectedDetail.details.filter(d => d.serve_result).map(d =>
     `<span class="serve-dot ${d.serve_result === 'in' ? 'in' : 'fault'}" title="Serve ${d.sequence_num}: ${d.serve_result}">${d.sequence_num}</span>`
   ).join('');
 }
 
-// ============ CHARTS ============
-
+// ==================== CHARTS ====================
 function destroyCharts() {
-  Object.values(chartInstances).forEach(c => c.destroy());
-  Object.keys(chartInstances).forEach(k => delete chartInstances[k]);
+  Object.values(CI).forEach(c => c.destroy());
+  Object.keys(CI).forEach(k => delete CI[k]);
 }
 
-function renderCharts() {
+const CHART_DEFAULTS = {
+  plugins: { legend: { display: false } },
+  scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+  maintainAspectRatio: true,
+  responsive: true,
+};
+
+function bar(el, labels, data, colors, opts = {}) {
+  if (!el) return null;
+  return new Chart(el, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: 'Count', data, backgroundColor: colors }] },
+    options: { ...CHART_DEFAULTS, ...opts },
+  });
+}
+
+function doughnut(el, labels, data, colors) {
+  if (!el) return null;
+  return new Chart(el, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: { plugins: { legend: { position: 'bottom', labels: { padding: 16, font: { size: 12 } } } }, responsive: true, maintainAspectRatio: true },
+  });
+}
+
+function renderAllCharts() {
   destroyCharts();
   const sum = selectedDetail?.summary || {};
+  const details = selectedDetail?.details || [];
   const isServe = selectedSession?.sport_type === 'serve_practice';
-  const G = 'rgba(26,92,46,0.7)';
-  const GL = 'rgba(34,120,60,0.7)';
-  const B = 'rgba(37,99,235,0.7)';
-  const A = 'rgba(217,119,6,0.7)';
-  const R = 'rgba(220,38,38,0.7)';
 
-  // Serve zone chart
+  // Overview: aggression
+  const ac = sum.aggression_counts || {};
+  CI.aggO = bar(document.getElementById('chartAggOverview'),
+    ['Attack', 'Neutral', 'Defence'],
+    [ac.Attack||0, ac.Neutral||0, ac.Defence||0],
+    [C_GREEN, C_AMBER, C_RED],
+    { indexAxis: 'y' }
+  );
+
+  // Overview: depth
+  const dc = sum.depth_counts || {};
+  CI.depthO = bar(document.getElementById('chartDepthOverview'),
+    ['Deep', 'Middle', 'Short'],
+    [dc.Deep||0, dc.Middle||0, dc.Short||0],
+    [C_GREEN, C_AMBER, C_RED]
+  );
+
+  // Overview: speed histogram
+  const speeds = details.filter(d => d.ball_speed_kmh > 0).map(d => d.ball_speed_kmh);
+  if (speeds.length) {
+    const mn = Math.floor(Math.min(...speeds) / 10) * 10;
+    const mx = Math.ceil(Math.max(...speeds) / 10) * 10;
+    const bkts = {}; for (let b = mn; b < mx; b += 10) bkts[b] = 0;
+    speeds.forEach(s => { bkts[Math.floor(s/10)*10]++; });
+    const lbls = Object.keys(bkts).sort((a,b) => a-b);
+    CI.speedO = bar(document.getElementById('chartSpeedOverview'),
+      lbls.map(l => l + '-' + (parseInt(l)+10) + ' km/h'), lbls.map(l => bkts[l]), lbls.map(() => C_GREEN_L)
+    );
+  }
+
+  // Placement: zone bar
+  const zc = sum.zone_counts || {};
+  CI.zoneP = bar(document.getElementById('chartZonePlacement'),
+    ['A','B','C','D'], [zc.A||0, zc.B||0, zc.C||0, zc.D||0],
+    ['rgba(26,92,46,0.6)', 'rgba(37,99,235,0.6)', 'rgba(217,119,6,0.6)', 'rgba(220,38,38,0.6)']
+  );
+
+  // Placement: depth by zone (stacked)
+  const depthByZone = { A: {}, B: {}, C: {}, D: {} };
+  details.forEach(d => {
+    if (d.placement_zone && d.depth_d) {
+      depthByZone[d.placement_zone][d.depth_d] = (depthByZone[d.placement_zone][d.depth_d] || 0) + 1;
+    }
+  });
+  const dbzEl = document.getElementById('chartDepthByZone');
+  if (dbzEl) {
+    CI.dbz = new Chart(dbzEl, {
+      type: 'bar',
+      data: {
+        labels: ['A','B','C','D'],
+        datasets: [
+          { label: 'Deep', data: ['A','B','C','D'].map(z => depthByZone[z].Deep||0), backgroundColor: C_GREEN },
+          { label: 'Middle', data: ['A','B','C','D'].map(z => depthByZone[z].Middle||0), backgroundColor: C_AMBER },
+          { label: 'Short', data: ['A','B','C','D'].map(z => depthByZone[z].Short||0), backgroundColor: C_RED },
+        ],
+      },
+      options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } },
+    });
+  }
+
+  // Placement: stroke by zone
+  const strokeByZone = { A: {}, B: {}, C: {}, D: {} };
+  details.forEach(d => {
+    if (d.placement_zone && d.stroke_d) {
+      strokeByZone[d.placement_zone][d.stroke_d] = (strokeByZone[d.placement_zone][d.stroke_d] || 0) + 1;
+    }
+  });
+  const sbzEl = document.getElementById('chartStrokeByZone');
+  if (sbzEl) {
+    CI.sbz = new Chart(sbzEl, {
+      type: 'bar',
+      data: {
+        labels: ['A','B','C','D'],
+        datasets: [
+          { label: 'Forehand', data: ['A','B','C','D'].map(z => strokeByZone[z].forehand||0), backgroundColor: C_GREEN },
+          { label: 'Backhand', data: ['A','B','C','D'].map(z => strokeByZone[z].backhand||0), backgroundColor: C_BLUE },
+        ],
+      },
+      options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } },
+    });
+  }
+
+  // Serve tab
   if (isServe) {
-    const el = document.getElementById('chartServeZone');
-    if (el) {
-      const zc = sum.serve_zone_counts || {};
-      chartInstances.serveZone = new Chart(el, {
-        type: 'bar', data: {
-          labels: ['Wide', 'Body', 'T'],
-          datasets: [{ label: 'Count', data: [zc.wide || 0, zc.body || 0, zc.T || 0], backgroundColor: [B, G, A] }]
-        }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }
-      });
-    }
-    // Side chart
-    const sideEl = document.getElementById('chartSide');
-    if (sideEl) {
-      const sc = sum.side_counts || {};
-      chartInstances.side = new Chart(sideEl, {
-        type: 'doughnut', data: {
-          labels: ['Deuce', 'Ad'],
-          datasets: [{ data: [sc.deuce || 0, sc.ad || 0], backgroundColor: [G, B] }]
-        }, options: { plugins: { legend: { position: 'bottom' } } }
-      });
-    }
+    const szc = sum.serve_zone_counts || {};
+    CI.sz = bar(document.getElementById('chartServeZone'),
+      ['Wide','Body','T'], [szc.wide||0, szc.body||0, szc.T||0], [C_BLUE, C_GREEN, C_AMBER],
+      { indexAxis: 'y' }
+    );
+    const sc = sum.side_counts || {};
+    CI.side = doughnut(document.getElementById('chartSide'),
+      ['Deuce','Ad'], [sc.deuce||0, sc.ad||0], [C_GREEN, C_BLUE]
+    );
   }
 
-  // Rally length chart
+  // Rally tab
   if (!isServe) {
-    const rlEl = document.getElementById('chartRallyLength');
-    if (rlEl && selectedDetail?.details) {
-      const rallies = {};
-      selectedDetail.details.filter(d => d.shot_ix === 1 && d.rally_length).forEach(d => {
-        const bucket = d.rally_length;
-        rallies[bucket] = (rallies[bucket] || 0) + 1;
-      });
-      const labels = Object.keys(rallies).sort((a, b) => a - b);
-      chartInstances.rallyLen = new Chart(rlEl, {
-        type: 'bar', data: {
-          labels: labels.map(l => l + ' shots'),
-          datasets: [{ label: 'Rallies', data: labels.map(l => rallies[l]), backgroundColor: G }]
-        }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
-      });
-    }
-  }
-
-  // Depth chart (both)
-  const depthEl = document.getElementById('chartDepth');
-  if (depthEl) {
-    const dc = sum.depth_counts || {};
-    chartInstances.depth = new Chart(depthEl, {
-      type: 'bar', data: {
-        labels: ['Deep', 'Middle', 'Short'],
-        datasets: [{ label: 'Count', data: [dc.Deep || 0, dc.Middle || 0, dc.Short || 0], backgroundColor: [G, A, R] }]
-      }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    // Rally length distribution (individual lengths)
+    const rallyLens = {};
+    details.filter(d => d.shot_ix === 1 && d.rally_length).forEach(d => {
+      rallyLens[d.rally_length] = (rallyLens[d.rally_length] || 0) + 1;
     });
-  }
+    const rlLabels = Object.keys(rallyLens).sort((a,b) => a-b);
+    CI.rl = bar(document.getElementById('chartRallyLen'),
+      rlLabels.map(l => l + ' shots'), rlLabels.map(l => rallyLens[l]), rlLabels.map(() => C_GREEN)
+    );
 
-  // Stroke chart (both)
-  const strokeEl = document.getElementById('chartStroke');
-  if (strokeEl) {
-    const sc = sum.stroke_counts || {};
-    chartInstances.stroke = new Chart(strokeEl, {
-      type: 'doughnut', data: {
-        labels: ['Forehand', 'Backhand'],
-        datasets: [{ data: [sc.forehand || 0, sc.backhand || 0], backgroundColor: [G, B] }]
-      }, options: { plugins: { legend: { position: 'bottom' } } }
+    // Rally buckets
+    const bkts = {};
+    details.filter(d => d.shot_ix === 1 && d.rally_length_bucket_d).forEach(d => {
+      bkts[d.rally_length_bucket_d] = (bkts[d.rally_length_bucket_d] || 0) + 1;
     });
-  }
+    const order = ['0\u20134 shots', '5\u20138 shots', '9+ shots'];
+    CI.rb = bar(document.getElementById('chartRallyBucket'),
+      order, order.map(o => bkts[o]||0), [C_GREEN, C_AMBER, C_RED]
+    );
 
-  // Aggression chart (both)
-  const aggEl = document.getElementById('chartAggression');
-  if (aggEl) {
-    const ac = sum.aggression_counts || {};
-    chartInstances.aggression = new Chart(aggEl, {
-      type: 'bar', data: {
-        labels: ['Attack', 'Neutral', 'Defence'],
-        datasets: [{ label: 'Count', data: [ac.Attack || 0, ac.Neutral || 0, ac.Defence || 0], backgroundColor: [G, A, R] }]
-      }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    // Stroke by rally length bucket
+    const sbrData = { forehand: {}, backhand: {} };
+    details.forEach(d => {
+      if (d.rally_length_bucket_d && d.stroke_d) {
+        sbrData[d.stroke_d] = sbrData[d.stroke_d] || {};
+        sbrData[d.stroke_d][d.rally_length_bucket_d] = (sbrData[d.stroke_d][d.rally_length_bucket_d] || 0) + 1;
+      }
     });
-  }
-
-  // Rally length bucket chart (rally only)
-  if (!isServe) {
-    const bucketEl = document.getElementById('chartRallyBucket');
-    if (bucketEl && selectedDetail?.details) {
-      const buckets = {};
-      selectedDetail.details.filter(d => d.shot_ix === 1 && d.rally_length_bucket_d).forEach(d => {
-        buckets[d.rally_length_bucket_d] = (buckets[d.rally_length_bucket_d] || 0) + 1;
-      });
-      const order = ['0\u20134 shots', '5\u20138 shots', '9+ shots'];
-      chartInstances.rallyBucket = new Chart(bucketEl, {
-        type: 'bar', data: {
+    const sbrEl = document.getElementById('chartStrokeByRally');
+    if (sbrEl) {
+      CI.sbr = new Chart(sbrEl, {
+        type: 'bar',
+        data: {
           labels: order,
-          datasets: [{ label: 'Rallies', data: order.map(o => buckets[o] || 0), backgroundColor: [G, A, R] }]
-        }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+          datasets: [
+            { label: 'Forehand', data: order.map(o => (sbrData.forehand||{})[o]||0), backgroundColor: C_GREEN },
+            { label: 'Backhand', data: order.map(o => (sbrData.backhand||{})[o]||0), backgroundColor: C_BLUE },
+          ],
+        },
+        options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } } },
       });
     }
-  }
 
-  // Speed histogram (both)
-  const speedEl = document.getElementById('chartSpeed');
-  if (speedEl && selectedDetail?.details) {
-    const speeds = selectedDetail.details.filter(d => d.ball_speed_kmh > 0).map(d => d.ball_speed_kmh);
-    if (speeds.length) {
-      const min = Math.floor(Math.min(...speeds) / 10) * 10;
-      const max = Math.ceil(Math.max(...speeds) / 10) * 10;
-      const buckets = {};
-      for (let b = min; b < max; b += 10) buckets[b] = 0;
-      speeds.forEach(s => { const b = Math.floor(s / 10) * 10; buckets[b] = (buckets[b] || 0) + 1; });
-      const labels = Object.keys(buckets).sort((a, b) => a - b);
-      chartInstances.speed = new Chart(speedEl, {
-        type: 'bar', data: {
-          labels: labels.map(l => l + '-' + (parseInt(l) + 10)),
-          datasets: [{ label: 'Shots', data: labels.map(l => buckets[l]), backgroundColor: GL }]
-        }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    // Depth by rally length bucket
+    const dbrData = { Deep: {}, Middle: {}, Short: {} };
+    details.forEach(d => {
+      if (d.rally_length_bucket_d && d.depth_d) {
+        dbrData[d.depth_d][d.rally_length_bucket_d] = (dbrData[d.depth_d][d.rally_length_bucket_d] || 0) + 1;
+      }
+    });
+    const dbrEl = document.getElementById('chartDepthByRally');
+    if (dbrEl) {
+      CI.dbr = new Chart(dbrEl, {
+        type: 'bar',
+        data: {
+          labels: order,
+          datasets: [
+            { label: 'Deep', data: order.map(o => dbrData.Deep[o]||0), backgroundColor: C_GREEN },
+            { label: 'Middle', data: order.map(o => dbrData.Middle[o]||0), backgroundColor: C_AMBER },
+            { label: 'Short', data: order.map(o => dbrData.Short[o]||0), backgroundColor: C_RED },
+          ],
+        },
+        options: { ...CHART_DEFAULTS, plugins: { legend: { display: true, position: 'bottom' } } },
       });
     }
   }
 }
 
-// ============ VIDEO PLAYER ============
-
+// ==================== VIDEO ====================
 async function playFootage(taskId) {
   try {
     const res = await apiFetch('/api/client/footage-url/' + taskId);
     const data = await res.json();
     if (!data.ok || !data.url) { alert('Footage not available.'); return; }
-    const player = document.getElementById('videoPlayer');
-    player.src = data.url;
+    document.getElementById('videoPlayer').src = data.url;
     document.getElementById('videoModal').classList.add('open');
-    player.play();
-  } catch (e) { alert('Error loading footage: ' + e.message); }
+    document.getElementById('videoPlayer').play();
+  } catch (e) { alert('Error: ' + e.message); }
 }
-
 function closeVideo() {
-  const player = document.getElementById('videoPlayer');
-  player.pause(); player.src = '';
+  document.getElementById('videoPlayer').pause();
+  document.getElementById('videoPlayer').src = '';
   document.getElementById('videoModal').classList.remove('open');
 }
 
-document.getElementById('videoModal').addEventListener('click', function(e) {
-  if (e.target === this) closeVideo();
-});
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeVideo(); });
-
-// ============ INIT ============
 init();
 </script>
 </body>
