@@ -115,12 +115,16 @@ class MLDBWriter:
         logger.info(f"Saved {len(detections)} ball detections for job {job_id}")
 
     def save_player_detections(self, job_id: str, detections, batch_size: int = 5000):
-        """Bulk insert player detections."""
+        """Bulk insert player detections (with optional pose keypoints)."""
         if not detections:
             return
+        import json
         with self.engine.begin() as conn:
             batch = []
             for d in detections:
+                kps_json = None
+                if d.keypoints is not None:
+                    kps_json = json.dumps(d.keypoints.tolist())
                 batch.append({
                     "job_id": job_id,
                     "frame_idx": d.frame_idx,
@@ -133,25 +137,26 @@ class MLDBWriter:
                     "center_y": d.center[1],
                     "court_x": d.court_x,
                     "court_y": d.court_y,
+                    "keypoints": kps_json,
                 })
                 if len(batch) >= batch_size:
                     conn.execute(sql_text("""
                         INSERT INTO ml_analysis.player_detections
                             (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                             center_x, center_y, court_x, court_y)
+                             center_x, center_y, court_x, court_y, keypoints)
                         VALUES
                             (:job_id, :frame_idx, :player_id, :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2,
-                             :center_x, :center_y, :court_x, :court_y)
+                             :center_x, :center_y, :court_x, :court_y, :keypoints)
                     """), batch)
                     batch = []
             if batch:
                 conn.execute(sql_text("""
                     INSERT INTO ml_analysis.player_detections
                         (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                         center_x, center_y, court_x, court_y)
+                         center_x, center_y, court_x, court_y, keypoints)
                     VALUES
                         (:job_id, :frame_idx, :player_id, :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2,
-                         :center_x, :center_y, :court_x, :court_y)
+                         :center_x, :center_y, :court_x, :court_y, :keypoints)
                 """), batch)
         logger.info(f"Saved {len(detections)} player detections for job {job_id}")
 

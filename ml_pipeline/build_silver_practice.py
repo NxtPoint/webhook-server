@@ -380,17 +380,16 @@ def _pass3_analytics(conn, task_id, practice_type):
 
 def _pass3_stroke_inference(conn, task_id):
     """
-    Infer stroke type from ball-x vs player-x, adjusted for court end and handedness.
+    Infer stroke type (forehand/backhand) using two methods:
 
-    Near-side player (court_y < half): facing net (toward higher y).
-      Right-arm side = lower x (bird's eye view).
-    Far-side player (court_y >= half): facing net (toward lower y).
-      Right-arm side = higher x (bird's eye view).
+    1. **Pose keypoints** (preferred): compare the dominant wrist x-position
+       to the player's center. Wrist on the dominant side = forehand.
+    2. **Ball-side heuristic** (fallback): compare ball_x to player_court_x,
+       adjusted for which court end the player is on.
 
-    Right-hander: ball on right-arm side → forehand, other → backhand.
-    Left-hander: flipped.
+    Both methods use dominant_hand from billing.member (default: right).
     """
-    # Look up dominant hand via submission_context email → billing.member
+    # Look up dominant hand
     hand_row = conn.execute(sql_text("""
         SELECT COALESCE(m.dominant_hand, 'right') AS hand
         FROM bronze.submission_context sc
@@ -399,18 +398,79 @@ def _pass3_stroke_inference(conn, task_id):
         WHERE sc.task_id = :tid
         LIMIT 1
     """), {"tid": task_id}).fetchone()
-    is_left = (hand_row[0] if hand_row else "right") == "left"
+    dominant = (hand_row[0] if hand_row else "right")
+    is_left = dominant == "left"
 
-    # For a right-hander on the near side:
-    #   ball_x < player_court_x  →  ball is on their right-arm side  →  forehand
-    # For a right-hander on the far side:
-    #   ball_x > player_court_x  →  ball is on their right-arm side  →  forehand
-    # Left-hander: swap forehand/backhand
     fh = "forehand"
     bh = "backhand"
     if is_left:
         fh, bh = bh, fh
 
+    # Try pose-based inference first: check if any player detections have keypoints
+    has_kps = conn.execute(sql_text("""
+        SELECT count(*) FROM ml_analysis.player_detections
+        WHERE job_id = :tid AND keypoints IS NOT NULL
+        LIMIT 1
+    """), {"tid": task_id}).scalar()
+
+    if has_kps:
+        # Pose method: dominant wrist position relative to player center
+        # Right wrist = keypoints[10], Left wrist = keypoints[9] (COCO order)
+        # For right-hander: use right wrist (index 10)
+        # For left-hander: use left wrist (index 9)
+        wrist_idx = 9 if is_left else 10  # dominant wrist
+        logger.info("Stroke inference: using pose keypoints (wrist_idx=%d, hand=%s)", wrist_idx, dominant)
+
+        # Get practice detail rows with matching player keypoints
+        rows = conn.execute(sql_text("""
+            SELECT pd.id, pd.frame_idx, pd.player_court_x,
+                   p.keypoints, p.center_x
+            FROM silver.practice_detail pd
+            LEFT JOIN LATERAL (
+                SELECT pk.keypoints, pk.center_x
+                FROM ml_analysis.player_detections pk
+                WHERE pk.job_id = :tid AND pk.keypoints IS NOT NULL
+                ORDER BY ABS(pk.frame_idx - pd.frame_idx)
+                LIMIT 1
+            ) p ON TRUE
+            WHERE pd.task_id = :tid
+        """), {"tid": task_id}).fetchall()
+
+        updated = 0
+        for row_id, frame_idx, pcx, kps_json, center_x in rows:
+            if kps_json is None or center_x is None:
+                continue
+            import json
+            kps = json.loads(kps_json) if isinstance(kps_json, str) else kps_json
+            if len(kps) <= wrist_idx:
+                continue
+            wrist_x, wrist_y, wrist_conf = kps[wrist_idx]
+            if wrist_conf < 0.3:
+                continue
+            # Wrist on the right side of center = forehand for right-hander
+            stroke = fh if wrist_x > center_x else bh
+            conn.execute(sql_text("""
+                UPDATE silver.practice_detail SET stroke_d = :s WHERE id = :rid
+            """), {"s": stroke, "rid": row_id})
+            updated += 1
+
+        # Fill any remaining NULLs with ball-side fallback
+        updated += conn.execute(sql_text("""
+            UPDATE silver.practice_detail
+            SET stroke_d = CASE
+                WHEN player_court_y < :hy THEN
+                    CASE WHEN ball_x < player_court_x THEN :fh ELSE :bh END
+                ELSE
+                    CASE WHEN ball_x > player_court_x THEN :fh ELSE :bh END
+            END
+            WHERE task_id = :tid AND stroke_d IS NULL
+              AND ball_x IS NOT NULL AND player_court_x IS NOT NULL
+        """), {"tid": task_id, "hy": HALF_Y, "fh": fh, "bh": bh}).rowcount
+
+        return updated
+
+    # Fallback: ball-side heuristic (no pose data)
+    logger.info("Stroke inference: using ball-side heuristic (no pose keypoints)")
     return conn.execute(sql_text("""
         UPDATE silver.practice_detail
         SET stroke_d = CASE

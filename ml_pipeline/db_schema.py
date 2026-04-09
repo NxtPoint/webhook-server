@@ -140,9 +140,14 @@ def _create_player_detections_table(conn):
             center_y    DOUBLE PRECISION NOT NULL,
             court_x     DOUBLE PRECISION,
             court_y     DOUBLE PRECISION,
+            keypoints   JSONB,
             created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         );
     """))
+    # Idempotent column addition for existing tables
+    conn.execute(sql_text(
+        "ALTER TABLE ml_analysis.player_detections ADD COLUMN IF NOT EXISTS keypoints JSONB"
+    ))
 
 
 def _create_match_analytics_table(conn):

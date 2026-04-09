@@ -14,6 +14,7 @@ MODELS_DIR = os.path.join(ML_PIPELINE_DIR, "models")
 # Model weight files (relative to MODELS_DIR)
 TRACKNET_WEIGHTS = os.path.join(MODELS_DIR, "tracknet_v2.pt")
 YOLO_WEIGHTS = os.path.join(MODELS_DIR, "yolov8m.pt")
+YOLO_POSE_WEIGHTS = os.path.join(MODELS_DIR, "yolov8m-pose.pt")
 COURT_DETECTOR_WEIGHTS = os.path.join(MODELS_DIR, "court_keypoints.pth")
 
 # ---------------------------------------------------------------------------
