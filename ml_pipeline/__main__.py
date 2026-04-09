@@ -65,7 +65,7 @@ def _transcode_to_mp4(source_path: str) -> str:
         ffmpeg_bin, "-y",
         "-i", source_path,
         "-c:v", "libx264",
-        "-preset", "medium",
+        "-preset", "fast",
         "-crf", "23",
         "-c:a", "aac",
         "-b:a", "128k",

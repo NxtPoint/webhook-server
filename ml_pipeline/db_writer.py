@@ -79,7 +79,7 @@ class MLDBWriter:
                 WHERE job_id = :job_id
             """), params)
 
-    def save_ball_detections(self, job_id: str, detections, batch_size: int = 1000):
+    def save_ball_detections(self, job_id: str, detections, batch_size: int = 5000):
         """Bulk insert ball detections."""
         if not detections:
             return
@@ -114,7 +114,7 @@ class MLDBWriter:
                 """), batch)
         logger.info(f"Saved {len(detections)} ball detections for job {job_id}")
 
-    def save_player_detections(self, job_id: str, detections, batch_size: int = 1000):
+    def save_player_detections(self, job_id: str, detections, batch_size: int = 5000):
         """Bulk insert player detections."""
         if not detections:
             return
