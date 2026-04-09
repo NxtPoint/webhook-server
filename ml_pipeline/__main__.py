@@ -68,10 +68,9 @@ def _probe_video_codec(source_path: str) -> str:
 
 def _transcode_to_mp4(source_path: str) -> str:
     """
-    Prepare video for browser playback.
-    If already H.264 MP4, remux (copy streams) — nearly instant.
-    Otherwise, full transcode to H.264.
-    Returns path to the output MP4 file.
+    Compress video for browser streaming.
+    Scales to 720p max height, CRF 28, ultrafast preset for speed.
+    Output is much smaller than source (~80-90% reduction for raw phone footage).
     """
     import subprocess
     out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
@@ -81,30 +80,21 @@ def _transcode_to_mp4(source_path: str) -> str:
     codec = _probe_video_codec(source_path)
     logger.info(f"Source codec: {codec}")
 
-    if codec == "h264":
-        # Already H.264 — just remux into MP4 container (copy, no re-encode)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", source_path,
-            "-c", "copy",
-            "-movflags", "+faststart",
-            out_path,
-        ]
-    else:
-        # Needs transcode (HEVC, ProRes, etc.)
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-i", source_path,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            out_path,
-        ]
+    # Always compress for streaming — scale to 720p, CRF 28 for small file size
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-i", source_path,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-vf", "scale=-2:720",
+        "-c:a", "aac",
+        "-b:a", "96k",
+        "-movflags", "+faststart",
+        out_path,
+    ]
 
-    logger.info(f"{'Remuxing' if codec == 'h264' else 'Transcoding'}: {' '.join(cmd)}")
+    logger.info(f"Compressing for streaming: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg failed (rc={result.returncode}): {result.stderr[-500:]}")
