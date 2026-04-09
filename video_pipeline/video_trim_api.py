@@ -125,8 +125,12 @@ def _load_silver_for_timeline(conn, task_id: str) -> pd.DataFrame:
 
 
 def _load_practice_for_timeline(conn, task_id: str) -> pd.DataFrame:
-    """Load practice data mapped to the same shape as match silver."""
-    return pd.read_sql(
+    """Load practice data mapped to the same shape as match silver.
+
+    For single-shot rallies (duration=0), adds a synthetic second row 1s later
+    so the timeline builder treats them as a real segment (MIN_POINT_DURATION_S=0.5).
+    """
+    df = pd.read_sql(
         text("""
             SELECT
                 task_id,
@@ -141,6 +145,19 @@ def _load_practice_for_timeline(conn, task_id: str) -> pd.DataFrame:
         conn,
         params={"task_id": task_id},
     )
+    if df.empty:
+        return df
+
+    # Pad single-shot rallies with a synthetic end row 1s later
+    durations = df.groupby("point_number")["ball_hit_s"].transform(
+        lambda g: g.max() - g.min()
+    )
+    singles = df.loc[durations < 0.5].copy()
+    if not singles.empty:
+        singles["ball_hit_s"] = singles["ball_hit_s"] + 1.0
+        df = pd.concat([df, singles], ignore_index=True)
+
+    return df
 
 
 def _mark_trim_queued(conn, task_id: str) -> None:

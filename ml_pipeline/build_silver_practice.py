@@ -74,8 +74,20 @@ def build_silver_practice(task_id: str, replace: bool = False,
             return {"ok": False, "error": "job not found"}
 
         practice_type = job_row.get("sport_type") or "serve_practice"
-        fps = job_row.get("video_fps") or 25.0
         job_id = job_row["job_id"]
+
+        # frame_idx in ball_detections is in the ML pipeline's sampled frame
+        # space (e.g. 10fps for practice), NOT the video's native fps (e.g. 30fps).
+        # Derive the effective sampling fps from total_frames / duration.
+        vid_row = conn.execute(sql_text("""
+            SELECT total_frames, video_duration_sec, video_fps
+            FROM ml_analysis.video_analysis_jobs WHERE job_id = :jid
+        """), {"jid": job_id}).mappings().first()
+
+        if vid_row and vid_row["total_frames"] and vid_row["video_duration_sec"]:
+            fps = vid_row["total_frames"] / vid_row["video_duration_sec"]
+        else:
+            fps = job_row.get("video_fps") or 25.0
 
         logger.info("Building practice silver: task_id=%s type=%s fps=%s",
                      task_id, practice_type, fps)
