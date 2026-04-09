@@ -225,7 +225,7 @@ aws batch register-job-definition \
     --type container \
     --container-properties '{
         "image": "'"${ECR_URI}:${IMAGE_TAG}"'",
-        "command": ["python", "-m", "ml_pipeline", "--job-id", "Ref::job_id", "--s3-key", "Ref::s3_key"],
+        "command": ["--job-id", "Ref::job_id", "--s3-key", "Ref::s3_key"],
         "resourceRequirements": [
             {"type": "VCPU", "value": "4"},
             {"type": "MEMORY", "value": "15360"},

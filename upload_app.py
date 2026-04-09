@@ -952,7 +952,6 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
         jobDefinition=BATCH_JOB_DEF,
         containerOverrides={
             "command": [
-                "python", "-m", "ml_pipeline",
                 "--job-id", job_id,
                 "--s3-key", s3_key,
             ],
