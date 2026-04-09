@@ -395,15 +395,13 @@ function renderOverview(sum, isServe) {
       </div>
     </div>
 
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3>Depth Distribution</h3>
-        <div id="chartDepthOverview" class="echart"></div>
-      </div>
-      <div class="chart-card">
-        <h3>Speed Distribution</h3>
-        <div id="chartSpeedOverview" class="echart"></div>
-      </div>
+    <div class="chart-card full">
+      <h3>Depth Distribution</h3>
+      <div id="chartDepthOverview" class="echart"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Speed Distribution</h3>
+      <div id="chartSpeedOverview" class="echart"></div>
     </div>
   `;
 }
@@ -444,25 +442,17 @@ function renderPlacement(sum) {
         <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(220,38,38,0.7);margin-right:4px"></span>Out</span>
       </div>
     </div>
-    <div class="chart-grid" style="margin-top:16px">
-      <div class="chart-card">
-        <h3>Court Zones (A-D)</h3>
-        ${renderCourtGrid(zc)}
-      </div>
-      <div class="chart-card">
-        <h3>Zone Distribution</h3>
-        <div id="chartZonePlacement" class="echart"></div>
-      </div>
+    <div class="chart-card full" style="margin-top:16px">
+      <h3>Zone Distribution</h3>
+      <div id="chartZonePlacement" class="echart"></div>
     </div>
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3>Depth by Zone</h3>
-        <div id="chartDepthByZone" class="echart"></div>
-      </div>
-      <div class="chart-card">
-        <h3>Stroke by Zone</h3>
-        <div id="chartStrokeByZone" class="echart"></div>
-      </div>
+    <div class="chart-card full">
+      <h3>Depth by Zone</h3>
+      <div id="chartDepthByZone" class="echart"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Stroke by Zone</h3>
+      <div id="chartStrokeByZone" class="echart"></div>
     </div>
   `;
 }
@@ -701,25 +691,21 @@ function renderRally(sum) {
       <div class="kpi"><div class="val">${sum.max_rally_length || 0}</div><div class="lbl">Max Length</div></div>
       <div class="kpi"><div class="val">${sum.avg_duration_s || 0}s</div><div class="lbl">Avg Duration</div></div>
     </div>
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3>Rally Length Distribution</h3>
-        <div id="chartRallyLen" class="echart"></div>
-      </div>
-      <div class="chart-card">
-        <h3>Rally Length Buckets</h3>
-        <div id="chartRallyBucket" class="echart"></div>
-      </div>
+    <div class="chart-card full">
+      <h3>Rally Length Distribution</h3>
+      <div id="chartRallyLen" class="echart"></div>
     </div>
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3>Stroke by Rally Length</h3>
-        <div id="chartStrokeByRally" class="echart"></div>
-      </div>
-      <div class="chart-card">
-        <h3>Depth by Rally Length</h3>
-        <div id="chartDepthByRally" class="echart"></div>
-      </div>
+    <div class="chart-card full">
+      <h3>Rally Length Buckets</h3>
+      <div id="chartRallyBucket" class="echart"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Stroke by Rally Length</h3>
+      <div id="chartStrokeByRally" class="echart"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Depth by Rally Length</h3>
+      <div id="chartDepthByRally" class="echart"></div>
     </div>
   `;
 }
