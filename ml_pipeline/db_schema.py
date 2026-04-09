@@ -215,10 +215,15 @@ def _create_practice_detail_table(conn):
             -- Derived analytics
             placement_zone  TEXT,
             depth_d         TEXT,
+            stroke_d        TEXT,
 
             created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         );
     """))
+    # Idempotent column additions for existing tables
+    conn.execute(sql_text(
+        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS stroke_d TEXT"
+    ))
 
 
 def _create_indexes(conn):

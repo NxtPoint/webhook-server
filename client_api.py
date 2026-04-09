@@ -1185,7 +1185,7 @@ def practice_detail(task_id):
             text("""
                 SELECT sequence_num, shot_ix, ball_x, ball_y, ball_speed_kmh,
                        is_in, serve_zone, serve_side, serve_result,
-                       placement_zone, depth_d, timestamp_s,
+                       placement_zone, depth_d, stroke_d, timestamp_s,
                        rally_length, rally_duration_s, player_court_x, player_court_y
                 FROM silver.practice_detail
                 WHERE task_id = :tid
@@ -1198,6 +1198,7 @@ def practice_detail(task_id):
     speeds = []
     zone_counts = {}
     depth_counts = {}
+    stroke_counts = {}
     serve_zone_counts = {}
     side_counts = {}
     results_in = 0
@@ -1218,6 +1219,7 @@ def practice_detail(task_id):
             "serve_result": r["serve_result"],
             "placement_zone": r["placement_zone"],
             "depth_d": r["depth_d"],
+            "stroke_d": r["stroke_d"],
             "timestamp_s": r["timestamp_s"],
             "rally_length": r["rally_length"],
             "rally_duration_s": r["rally_duration_s"],
@@ -1230,6 +1232,8 @@ def practice_detail(task_id):
             zone_counts[r["placement_zone"]] = zone_counts.get(r["placement_zone"], 0) + 1
         if r["depth_d"]:
             depth_counts[r["depth_d"]] = depth_counts.get(r["depth_d"], 0) + 1
+        if r["stroke_d"]:
+            stroke_counts[r["stroke_d"]] = stroke_counts.get(r["stroke_d"], 0) + 1
         if r["serve_zone"]:
             serve_zone_counts[r["serve_zone"]] = serve_zone_counts.get(r["serve_zone"], 0) + 1
         if r["serve_side"]:
@@ -1255,6 +1259,7 @@ def practice_detail(task_id):
         "avg_speed_kmh": round(sum(speeds) / len(speeds), 1) if speeds else 0,
         "zone_counts": zone_counts,
         "depth_counts": depth_counts,
+        "stroke_counts": stroke_counts,
         "serve_zone_counts": serve_zone_counts,
         "side_counts": side_counts,
         "total_rallies": len(rally_lengths),

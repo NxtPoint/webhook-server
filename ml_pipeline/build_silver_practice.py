@@ -371,4 +371,55 @@ def _pass3_analytics(conn, task_id, practice_type):
               AND pd.sequence_num = sub.sequence_num
         """), {"tid": task_id}).rowcount
 
+    # Stroke inference (forehand / backhand) from ball position vs player position
+    # Uses dominant_hand from billing.member (default: right)
+    updated += _pass3_stroke_inference(conn, task_id)
+
     return updated
+
+
+def _pass3_stroke_inference(conn, task_id):
+    """
+    Infer stroke type from ball-x vs player-x, adjusted for court end and handedness.
+
+    Near-side player (court_y < half): facing net (toward higher y).
+      Right-arm side = lower x (bird's eye view).
+    Far-side player (court_y >= half): facing net (toward lower y).
+      Right-arm side = higher x (bird's eye view).
+
+    Right-hander: ball on right-arm side → forehand, other → backhand.
+    Left-hander: flipped.
+    """
+    # Look up dominant hand via submission_context email → billing.member
+    hand_row = conn.execute(sql_text("""
+        SELECT COALESCE(m.dominant_hand, 'right') AS hand
+        FROM bronze.submission_context sc
+        LEFT JOIN billing.member m
+            ON lower(m.email) = lower(sc.email) AND m.is_primary = true
+        WHERE sc.task_id = :tid
+        LIMIT 1
+    """), {"tid": task_id}).fetchone()
+    is_left = (hand_row[0] if hand_row else "right") == "left"
+
+    # For a right-hander on the near side:
+    #   ball_x < player_court_x  →  ball is on their right-arm side  →  forehand
+    # For a right-hander on the far side:
+    #   ball_x > player_court_x  →  ball is on their right-arm side  →  forehand
+    # Left-hander: swap forehand/backhand
+    fh = "forehand"
+    bh = "backhand"
+    if is_left:
+        fh, bh = bh, fh
+
+    return conn.execute(sql_text("""
+        UPDATE silver.practice_detail
+        SET stroke_d = CASE
+            WHEN player_court_y < :hy THEN
+                CASE WHEN ball_x < player_court_x THEN :fh ELSE :bh END
+            ELSE
+                CASE WHEN ball_x > player_court_x THEN :fh ELSE :bh END
+        END
+        WHERE task_id = :tid
+          AND ball_x IS NOT NULL
+          AND player_court_x IS NOT NULL
+    """), {"tid": task_id, "hy": HALF_Y, "fh": fh, "bh": bh}).rowcount
