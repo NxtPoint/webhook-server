@@ -818,14 +818,14 @@ function eBar(id, labels, data, colors, horizontal = false) {
   const isMultiColor = Array.isArray(colors);
   chart.setOption({
     ...ANIM, tooltip: TT, grid: { left: horizontal ? 70 : 40, right: 20, top: 20, bottom: 35, containLabel: true },
-    [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 11 } },
+    [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 13 } },
     [horizontal ? 'xAxis' : 'yAxis']: { type: 'value', minInterval: 1 },
     series: [{
       type: 'bar', data: data.map((v, i) => ({
         value: v,
         itemStyle: { color: isMultiColor ? colors[i % colors.length] : colors, borderRadius: horizontal ? [0, 4, 4, 0] : [4, 4, 0, 0] }
       })),
-      barMaxWidth: 40,
+      barWidth: '50%',
     }],
   });
   CI[id] = chart;
@@ -837,12 +837,12 @@ function eStackedBar(id, labels, seriesData, horizontal = false) {
   if (!chart) return null;
   chart.setOption({
     ...ANIM, tooltip: TT,
-    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    legend: { bottom: 0, textStyle: { fontSize: 13 } },
     grid: { left: 40, right: 20, top: 20, bottom: 45, containLabel: true },
-    [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 11 } },
+    [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 13 } },
     [horizontal ? 'xAxis' : 'yAxis']: { type: 'value', minInterval: 1 },
     series: seriesData.map(s => ({
-      type: 'bar', name: s.name, stack: 'total', barMaxWidth: 40,
+      type: 'bar', name: s.name, stack: 'total', barWidth: '50%',
       data: s.data, itemStyle: { color: s.color, borderRadius: 0 },
       emphasis: { focus: 'series' },
     })),
@@ -856,11 +856,11 @@ function ePie(id, data, colors) {
   if (!chart) return null;
   chart.setOption({
     ...ANIM, tooltip: TT_ITEM,
-    legend: { bottom: 0, textStyle: { fontSize: 11 } },
+    legend: { bottom: 0, textStyle: { fontSize: 13 } },
     series: [{
       type: 'pie', radius: ['40%', '70%'], center: ['50%', '45%'],
       padAngle: 2, itemStyle: { borderRadius: 6 },
-      label: { show: true, formatter: '{b}\n{d}%', fontSize: 11 },
+      label: { show: true, formatter: '{b}\n{d}%', fontSize: 13 },
       emphasis: { label: { fontSize: 14, fontWeight: 'bold' }, itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.2)' } },
       data: data.map((d, i) => ({ value: d.value, name: d.name, itemStyle: { color: colors[i] } })),
     }],
