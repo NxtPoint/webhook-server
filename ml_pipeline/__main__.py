@@ -172,7 +172,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         result = pipeline.process(tmp_path)
 
         # 3. Save results to DB
-        on_progress("saving_results", 95)
+        on_progress("saving_results", 82)
         db.save_job_metadata(job_id, result)
         db.save_ball_detections(job_id, result.ball_detections)
 
@@ -194,7 +194,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         db.save_match_analytics(job_id, result, task_id=task_id)
 
         # 4. Generate and upload heatmaps
-        on_progress("generating_heatmaps", 85)
+        on_progress("generating_heatmaps", 88)
         heatmaps = generate_all_heatmaps(result)
         ball_heatmap_key = None
         player_heatmap_keys = {}
@@ -217,7 +217,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         db.save_heatmap_keys(job_id, ball_heatmap_key, player_heatmap_keys)
 
         # 5. Transcode to MP4 + upload to trimmed/{job_id}/practice.mp4
-        on_progress("transcoding", 90)
+        on_progress("transcoding", 92)
         mp4_path = None
         try:
             mp4_path = _transcode_to_mp4(tmp_path)
