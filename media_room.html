@@ -561,6 +561,16 @@ function goToStep(n) {
 // TASK 3 — STEP 1: GAME TYPE SELECTOR
 // ============================================================
 function renderStep1(el) {
+  const devAccess = EMAIL === 'tomo.stojakovic@gmail.com';
+  const srvOk  = devAccess;
+  const rallyOk = devAccess;
+  const srvCls  = srvOk  ? '' : ' disabled';
+  const rallyCls = rallyOk ? '' : ' disabled';
+  const srvBadge  = srvOk  ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
+  const rallyBadge = rallyOk ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
+  const srvClick  = srvOk  ? ' onclick="selectGameType(\'serve\', this)"' : '';
+  const rallyClick = rallyOk ? ' onclick="selectGameType(\'rally\', this)"' : '';
+
   el.innerHTML = `
     <div class="section-card">
       <div class="section-title">Select Game Type</div>
@@ -576,12 +586,14 @@ function renderStep1(el) {
           <div class="game-card-title">Technique Session</div>
           <div class="game-card-sub">Stroke analysis</div>
         </div>
-        <div class="game-card" onclick="selectGameType('serve', this)" data-type="serve">
+        <div class="game-card${srvCls}"${srvClick} data-type="serve">
+          ${srvBadge}
           <div class="game-card-icon">&#9889;</div>
           <div class="game-card-title">Serve Practice</div>
           <div class="game-card-sub">Serve metrics</div>
         </div>
-        <div class="game-card" onclick="selectGameType('rally', this)" data-type="rally">
+        <div class="game-card${rallyCls}"${rallyClick} data-type="rally">
+          ${rallyBadge}
           <div class="game-card-icon">&#127936;</div>
           <div class="game-card-title">Rally Practice</div>
           <div class="game-card-sub">Rally analysis</div>
