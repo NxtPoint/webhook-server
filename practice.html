@@ -24,11 +24,12 @@
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-html { font-size: 15px; }
+html { font-size: 15px; overflow-x: hidden; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
-  -webkit-font-smoothing: antialiased; height: 100%; overflow: hidden;
+  -webkit-font-smoothing: antialiased; height: 100%; overflow-x: hidden;
+  max-width: 100vw;
 }
 
 /* ========== LAYOUT: SIDEBAR + MAIN ========== */
@@ -190,14 +191,14 @@ body {
 
 /* Responsive */
 @media (max-width: 768px) {
-  .dash-layout { grid-template-columns: 1fr; height: auto; overflow: auto; }
-  .dash-sidebar { max-height: 180px; border-right: none; border-bottom: 1px solid var(--border); }
-  .dash-main { overflow: visible; }
-  .dash-toolbar { padding: 0 12px; height: 44px; }
+  .dash-layout { display: flex; flex-direction: column; height: auto; overflow-x: hidden; width: 100%; }
+  .dash-sidebar { max-height: 160px; border-right: none; border-bottom: 1px solid var(--border); overflow-y: auto; width: 100%; }
+  .dash-main { overflow: visible; width: 100%; }
+  .dash-toolbar { padding: 0 12px; height: 44px; position: static; }
   .dash-toolbar h1 { font-size: 0.9rem; }
-  .dash-tabs { padding: 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; }
-  .dash-tab { padding: 8px 12px; font-size: 0.75rem; white-space: nowrap; }
-  .dash-content { padding: 12px; padding-bottom: 300px; }
+  .dash-tabs { padding: 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; position: static; }
+  .dash-tab { padding: 8px 12px; font-size: 0.75rem; white-space: nowrap; flex-shrink: 0; }
+  .dash-content { padding: 12px; padding-bottom: 300px; overflow-x: hidden; }
   .chart-grid, .chart-grid.tri { grid-template-columns: 1fr; }
   .kpi-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .kpi .val { font-size: 1.3rem; }
