@@ -169,6 +169,15 @@ body {
   cursor: pointer; z-index: 1001; line-height: 1;
 }
 
+/* Court filter buttons */
+.court-filter-btn {
+  padding: 4px 12px; border-radius: 3px; border: 1px solid var(--border);
+  background: var(--white); font-size: 0.75rem; font-weight: 500; color: var(--text-sec);
+  cursor: pointer; transition: all var(--transition);
+}
+.court-filter-btn:hover { border-color: var(--green); color: var(--text); }
+.court-filter-btn.active { background: var(--green); color: var(--white); border-color: var(--green); }
+
 /* Loading & empty */
 .loading, .empty-state { display: flex; align-items: center; justify-content: center; height: 100vh; text-align: center; color: var(--text-sec); }
 .empty-state h3 { font-size: 1.1rem; margin-bottom: 8px; }
@@ -333,6 +342,7 @@ function renderDashboard() {
   `;
 
   renderAllCharts();
+  if (activeTab === 'placement') { courtFilter = 'all'; drawCourt(); }
   if (activeTab === 'heatmaps') loadHeatmaps();
   if (activeTab === 'video') loadVideo();
 }
@@ -344,6 +354,7 @@ function switchTab(id) {
   event.target.classList.add('active');
   const el = document.getElementById('p-' + id);
   if (el) el.classList.add('active');
+  if (id === 'placement') { courtFilter = 'all'; drawCourt(); }
   if (id === 'heatmaps') loadHeatmaps();
   if (id === 'video') loadVideo();
 }
@@ -400,8 +411,40 @@ function renderOverview(sum, isServe) {
 // ==================== TAB: COURT PLACEMENT ====================
 function renderPlacement(sum) {
   const zc = sum.zone_counts || {};
+  const details = selectedDetail?.details || [];
+  const hasCourtData = details.some(d => d.ball_x != null && d.ball_y != null);
+
+  // Filter toggles state
+  const filterHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+      <span style="font-size:0.78rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px">Filter:</span>
+      <button class="court-filter-btn active" onclick="setCourtFilter('all')">All Shots</button>
+      <button class="court-filter-btn" onclick="setCourtFilter('forehand')">Forehand</button>
+      <button class="court-filter-btn" onclick="setCourtFilter('backhand')">Backhand</button>
+      <span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>
+      <button class="court-filter-btn" onclick="setCourtFilter('Deep')">Deep</button>
+      <button class="court-filter-btn" onclick="setCourtFilter('Middle')">Middle</button>
+      <button class="court-filter-btn" onclick="setCourtFilter('Short')">Short</button>
+    </div>
+  `;
+
   return `
-    <div class="chart-grid">
+    ${filterHTML}
+    <div class="chart-card full" style="padding:20px;overflow:visible">
+      <h3>Ball Placement</h3>
+      <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
+        <div style="flex:1;min-width:300px">
+          <canvas id="courtCanvas" width="440" height="560" style="width:100%;max-width:440px;cursor:crosshair"></canvas>
+        </div>
+        <div style="width:200px" id="courtStats"></div>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:12px;font-size:0.75rem;color:var(--text-sec)">
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(26,92,46,0.85);margin-right:4px"></span>Forehand</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(37,99,235,0.85);margin-right:4px"></span>Backhand</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(220,38,38,0.7);margin-right:4px"></span>Out</span>
+      </div>
+    </div>
+    <div class="chart-grid" style="margin-top:16px">
       <div class="chart-card">
         <h3>Court Zones (A-D)</h3>
         ${renderCourtGrid(zc)}
@@ -422,6 +465,203 @@ function renderPlacement(sum) {
       </div>
     </div>
   `;
+}
+
+let courtFilter = 'all';
+function setCourtFilter(f) {
+  courtFilter = f;
+  document.querySelectorAll('.court-filter-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.toLowerCase().includes(f.toLowerCase()) || (f === 'all' && b.textContent === 'All Shots'));
+  });
+  drawCourt();
+}
+
+function drawCourt() {
+  const canvas = document.getElementById('courtCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // Court dimensions in metres
+  const COURT_L = 23.77;
+  const COURT_W = 10.97;
+  const SINGLES_W = 8.23;
+  const SVC_LINE = 6.40;
+  const NET_Y = COURT_L / 2;
+
+  // Padding for labels
+  const PAD = 30;
+  const CW = W - PAD * 2;
+  const CH = H - PAD * 2;
+
+  // Coordinate mapping: court metres → canvas pixels
+  function cx(courtX) { return PAD + (courtX / COURT_W) * CW; }
+  function cy(courtY) { return PAD + (courtY / COURT_L) * CH; }
+
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+
+  // Court surface
+  ctx.fillStyle = '#2d6a4f';
+  ctx.fillRect(PAD, PAD, CW, CH);
+
+  // Lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+
+  // Outer boundary (doubles)
+  ctx.strokeRect(PAD, PAD, CW, CH);
+
+  // Singles sidelines
+  const singleLeft = (COURT_W - SINGLES_W) / 2;
+  const singleRight = singleLeft + SINGLES_W;
+  ctx.beginPath();
+  ctx.moveTo(cx(singleLeft), PAD); ctx.lineTo(cx(singleLeft), PAD + CH);
+  ctx.moveTo(cx(singleRight), PAD); ctx.lineTo(cx(singleRight), PAD + CH);
+  ctx.stroke();
+
+  // Net
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(PAD, cy(NET_Y)); ctx.lineTo(PAD + CW, cy(NET_Y));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Service lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  // Near service line
+  ctx.moveTo(cx(singleLeft), cy(COURT_L - SVC_LINE));
+  ctx.lineTo(cx(singleRight), cy(COURT_L - SVC_LINE));
+  // Far service line
+  ctx.moveTo(cx(singleLeft), cy(SVC_LINE));
+  ctx.lineTo(cx(singleRight), cy(SVC_LINE));
+  ctx.stroke();
+
+  // Centre service line
+  ctx.beginPath();
+  const mid = COURT_W / 2;
+  ctx.moveTo(cx(mid), cy(SVC_LINE));
+  ctx.lineTo(cx(mid), cy(COURT_L - SVC_LINE));
+  ctx.stroke();
+
+  // Centre marks (small ticks on baselines)
+  ctx.beginPath();
+  ctx.moveTo(cx(mid), PAD); ctx.lineTo(cx(mid), PAD + 8);
+  ctx.moveTo(cx(mid), PAD + CH); ctx.lineTo(cx(mid), PAD + CH - 8);
+  ctx.stroke();
+
+  // Depth zone lines (dashed)
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  [3.0, SVC_LINE, COURT_L - SVC_LINE, COURT_L - 3.0].forEach(y => {
+    ctx.beginPath();
+    ctx.moveTo(PAD, cy(y)); ctx.lineTo(PAD + CW, cy(y));
+    ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  // Depth labels
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '10px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('Deep', cx(mid), cy(1.5));
+  ctx.fillText('Middle', cx(mid), cy(4.7));
+  ctx.fillText('Short', cx(mid), cy(NET_Y - 2));
+  ctx.fillText('Short', cx(mid), cy(NET_Y + 2));
+  ctx.fillText('Middle', cx(mid), cy(COURT_L - 4.7));
+  ctx.fillText('Deep', cx(mid), cy(COURT_L - 1.5));
+
+  // Plot bounce dots
+  const details = selectedDetail?.details || [];
+  let filtered = details.filter(d => d.ball_x != null && d.ball_y != null);
+
+  // Apply filter
+  if (courtFilter === 'forehand') filtered = filtered.filter(d => d.stroke_d === 'forehand');
+  else if (courtFilter === 'backhand') filtered = filtered.filter(d => d.stroke_d === 'backhand');
+  else if (courtFilter === 'Deep') filtered = filtered.filter(d => d.depth_d === 'Deep');
+  else if (courtFilter === 'Middle') filtered = filtered.filter(d => d.depth_d === 'Middle');
+  else if (courtFilter === 'Short') filtered = filtered.filter(d => d.depth_d === 'Short');
+
+  // Draw dots
+  filtered.forEach(d => {
+    const px = cx(d.ball_x);
+    const py = cy(d.ball_y);
+
+    // Colour by stroke, red ring if out
+    let colour;
+    if (d.is_in === false) colour = 'rgba(220,38,38,0.7)';
+    else if (d.stroke_d === 'forehand') colour = 'rgba(26,92,46,0.85)';
+    else if (d.stroke_d === 'backhand') colour = 'rgba(37,99,235,0.85)';
+    else colour = 'rgba(255,255,255,0.6)';
+
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fillStyle = colour;
+    ctx.fill();
+
+    // Outer ring for out balls
+    if (d.is_in === false) {
+      ctx.strokeStyle = 'rgba(220,38,38,0.9)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  });
+
+  // Zone stats panel
+  const stats = document.getElementById('courtStats');
+  if (stats) {
+    const zones = { A: 0, B: 0, C: 0, D: 0 };
+    const depths = { Deep: 0, Middle: 0, Short: 0 };
+    const strokes = { forehand: 0, backhand: 0 };
+    filtered.forEach(d => {
+      if (d.placement_zone) zones[d.placement_zone]++;
+      if (d.depth_d) depths[d.depth_d]++;
+      if (d.stroke_d) strokes[d.stroke_d]++;
+    });
+    const total = filtered.length;
+    function pct(n) { return total ? Math.round(100 * n / total) : 0; }
+
+    stats.innerHTML = `
+      <div style="font-size:0.78rem;color:var(--text-sec);margin-bottom:12px">
+        <strong style="color:var(--text);font-size:1.1rem">${total}</strong> shots
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Zones</div>
+        ${['A','B','C','D'].map(z => `
+          <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-bottom:4px">
+            <span>Zone ${z}</span>
+            <span style="font-weight:600">${pct(zones[z])}% <span style="color:var(--text-dim)">(${zones[z]})</span></span>
+          </div>
+        `).join('')}
+      </div>
+      <div style="margin-bottom:16px">
+        <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Depth</div>
+        ${['Deep','Middle','Short'].map(d => `
+          <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-bottom:4px">
+            <span>${d}</span>
+            <span style="font-weight:600">${pct(depths[d])}% <span style="color:var(--text-dim)">(${depths[d]})</span></span>
+          </div>
+        `).join('')}
+      </div>
+      <div>
+        <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Stroke</div>
+        <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-bottom:4px">
+          <span style="color:var(--green)">Forehand</span>
+          <span style="font-weight:600">${pct(strokes.forehand)}% <span style="color:var(--text-dim)">(${strokes.forehand})</span></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:0.82rem;margin-bottom:4px">
+          <span style="color:var(--blue)">Backhand</span>
+          <span style="font-weight:600">${pct(strokes.backhand)}% <span style="color:var(--text-dim)">(${strokes.backhand})</span></span>
+        </div>
+      </div>
+    `;
+  }
 }
 
 // ==================== TAB: SERVE ANALYSIS ====================
