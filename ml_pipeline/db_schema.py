@@ -208,27 +208,36 @@ def _create_practice_detail_table(conn):
             serve_zone      TEXT,
             serve_side      TEXT,
             serve_result    TEXT,
+            serve_location  INTEGER,
+            serve_bucket_d  TEXT,
 
             -- Rally-specific
             rally_length    INTEGER,
             rally_duration_s DOUBLE PRECISION,
+            rally_length_bucket_d TEXT,
 
             -- Player position at this frame
             player_court_x  DOUBLE PRECISION,
             player_court_y  DOUBLE PRECISION,
 
-            -- Derived analytics
+            -- Derived analytics (aligned with match silver conventions)
             placement_zone  TEXT,
             depth_d         TEXT,
             stroke_d        TEXT,
+            aggression_d    TEXT,
 
             created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         );
     """))
     # Idempotent column additions for existing tables
-    conn.execute(sql_text(
-        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS stroke_d TEXT"
-    ))
+    for col_ddl in (
+        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS stroke_d TEXT",
+        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS serve_location INTEGER",
+        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS serve_bucket_d TEXT",
+        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS rally_length_bucket_d TEXT",
+        "ALTER TABLE silver.practice_detail ADD COLUMN IF NOT EXISTS aggression_d TEXT",
+    ):
+        conn.execute(sql_text(col_ddl))
 
 
 def _create_indexes(conn):

@@ -292,26 +292,40 @@ def _pass2_rally_sequences(conn, task_id):
 
 def _pass3_analytics(conn, task_id, practice_type):
     """
-    Compute derived analytics: placement zone, depth, serve zone/result,
-    rally length/duration.
+    Compute derived analytics aligned with match silver (build_silver_v2.py):
+      - Placement zone A-D (4 vertical lanes, flipped by court end — same as match)
+      - Depth (Deep/Middle/Short from nearest baseline)
+      - Serve location 1-8 + serve_bucket_d (Wide/Body/T) — serve practice
+      - Rally length, duration, bucket — rally practice
+      - Aggression (Attack/Neutral/Defence from bounce depth)
     """
     updated = 0
 
-    # Placement zone (A/B/C/D based on court quadrant)
+    # Zone boundaries: 4 equal vertical lanes within singles court
+    # (same as match pass 4: z2, z3, z4)
+    sw4 = COURT_WIDTH_SINGLES_M / 4.0
+    z2 = SINGLES_LEFT_X + sw4             # ~3.43m
+    z3 = SINGLES_LEFT_X + 2.0 * sw4      # ~5.49m (≈ CENTRE_X)
+    z4 = SINGLES_LEFT_X + 3.0 * sw4      # ~7.54m
+
+    # Placement zone A-D (flipped by court end — same as match rally_location_bounce)
     updated += conn.execute(sql_text("""
         UPDATE silver.practice_detail
         SET placement_zone = CASE
-            WHEN ball_x < :cx AND ball_y < :hy THEN 'A'
-            WHEN ball_x >= :cx AND ball_y < :hy THEN 'B'
-            WHEN ball_x < :cx AND ball_y >= :hy THEN 'C'
-            WHEN ball_x >= :cx AND ball_y >= :hy THEN 'D'
+            WHEN ball_y < :hy THEN
+                CASE WHEN ball_x < :z2 THEN 'A'
+                     WHEN ball_x < :z3 THEN 'B'
+                     WHEN ball_x < :z4 THEN 'C' ELSE 'D' END
+            ELSE
+                CASE WHEN ball_x < :z2 THEN 'D'
+                     WHEN ball_x < :z3 THEN 'C'
+                     WHEN ball_x < :z4 THEN 'B' ELSE 'A' END
         END
         WHERE task_id = :tid AND ball_x IS NOT NULL AND ball_y IS NOT NULL
-    """), {"tid": task_id, "cx": CENTRE_X, "hy": HALF_Y}).rowcount
+    """), {"tid": task_id, "hy": HALF_Y,
+           "z2": z2, "z3": z3, "z4": z4}).rowcount
 
-    # Depth classification (from bounce Y relative to nearest baseline)
-    # LEAST(ball_y, court_length - ball_y) = distance from nearest baseline
-    # Deep = within ~3m of baseline, Middle = 3–6.4m, Short = beyond service line
+    # Depth classification (same thresholds as match — from nearest baseline)
     updated += conn.execute(sql_text("""
         UPDATE silver.practice_detail
         SET depth_d = CASE
@@ -323,23 +337,70 @@ def _pass3_analytics(conn, task_id, practice_type):
     """), {"tid": task_id, "cl": COURT_LENGTH_M,
            "deep": 3.0, "mid": SERVICE_LINE_M}).rowcount
 
+    # Aggression (same as match: Attack if close to net, Defence if deep)
+    updated += conn.execute(sql_text("""
+        UPDATE silver.practice_detail
+        SET aggression_d = CASE
+            WHEN LEAST(ball_y, :cl - ball_y) < :deep THEN 'Defence'
+            WHEN LEAST(ball_y, :cl - ball_y) > :mid  THEN 'Attack'
+            ELSE 'Neutral'
+        END
+        WHERE task_id = :tid AND ball_y IS NOT NULL
+    """), {"tid": task_id, "cl": COURT_LENGTH_M,
+           "deep": 3.0, "mid": SERVICE_LINE_M}).rowcount
+
     if practice_type == "serve_practice":
-        # Serve zone: Wide / Body / T (based on bounce X relative to service box)
+        # Serve location 1-8 (same quadrant logic as match build_silver_v2 pass 3)
+        # Deuce side: 1=wide, 2=body-wide, 3=body-T, 4=T
+        # Ad side:    5=T, 6=body-T, 7=body-wide, 8=wide
+        # Service box width boundaries (4 equal bands within half singles court)
+        half_sw = COURT_WIDTH_SINGLES_M / 2.0
+        b1 = half_sw * 0.25
+        b2 = half_sw * 0.50
+        b3 = half_sw * 0.75
+        mid = CENTRE_X
+
         updated += conn.execute(sql_text("""
             UPDATE silver.practice_detail
-            SET serve_zone = CASE
-                WHEN ball_x < :sl + (:sw * 0.33) THEN 'wide'
-                WHEN ball_x > :sr - (:sw * 0.33) THEN 'wide'
-                WHEN ABS(ball_x - :cx) < (:sw * 0.15) THEN 'T'
-                ELSE 'body'
+            SET serve_location = CASE
+                WHEN serve_side = 'deuce' THEN
+                    CASE WHEN (ball_x - :sl) < :b1 THEN 1
+                         WHEN (ball_x - :sl) < :b2 THEN 2
+                         WHEN (ball_x - :sl) < :b3 THEN 3 ELSE 4 END
+                WHEN serve_side = 'ad' THEN
+                    CASE WHEN (ball_x - :mid) < :b1 THEN 5
+                         WHEN (ball_x - :mid) < :b2 THEN 6
+                         WHEN (ball_x - :mid) < :b3 THEN 7 ELSE 8 END
+                ELSE NULL
+            END,
+            serve_bucket_d = CASE
+                WHEN serve_side = 'deuce' THEN
+                    CASE WHEN (ball_x - :sl) < :b1 THEN 'wide'
+                         WHEN (ball_x - :sl) >= :b3 THEN 'T'
+                         ELSE 'body' END
+                WHEN serve_side = 'ad' THEN
+                    CASE WHEN (ball_x - :mid) >= :b3 THEN 'wide'
+                         WHEN (ball_x - :mid) < :b1 THEN 'T'
+                         ELSE 'body' END
+                ELSE NULL
+            END,
+            serve_zone = CASE
+                WHEN serve_side = 'deuce' THEN
+                    CASE WHEN (ball_x - :sl) < :b1 THEN 'wide'
+                         WHEN (ball_x - :sl) >= :b3 THEN 'T'
+                         ELSE 'body' END
+                WHEN serve_side = 'ad' THEN
+                    CASE WHEN (ball_x - :mid) >= :b3 THEN 'wide'
+                         WHEN (ball_x - :mid) < :b1 THEN 'T'
+                         ELSE 'body' END
+                ELSE NULL
             END
             WHERE task_id = :tid AND ball_x IS NOT NULL
         """), {
             "tid": task_id,
             "sl": SINGLES_LEFT_X,
-            "sr": SINGLES_RIGHT_X,
-            "sw": COURT_WIDTH_SINGLES_M,
-            "cx": CENTRE_X,
+            "mid": mid,
+            "b1": b1, "b2": b2, "b3": b3,
         }).rowcount
 
         # Serve result: In / Fault based on is_in
@@ -354,11 +415,16 @@ def _pass3_analytics(conn, task_id, practice_type):
         """), {"tid": task_id}).rowcount
 
     else:
-        # Rally: compute rally_length and rally_duration_s per rally
+        # Rally: compute rally_length, duration, and bucket per rally
         updated += conn.execute(sql_text("""
             UPDATE silver.practice_detail pd
             SET rally_length = sub.cnt,
-                rally_duration_s = sub.dur
+                rally_duration_s = sub.dur,
+                rally_length_bucket_d = CASE
+                    WHEN sub.cnt <= 4 THEN '0–4 shots'
+                    WHEN sub.cnt <= 8 THEN '5–8 shots'
+                    ELSE '9+ shots'
+                END
             FROM (
                 SELECT sequence_num,
                        COUNT(*) AS cnt,
