@@ -138,6 +138,7 @@ def _require_s3():
 # ---------- T5 ML Pipeline (AWS Batch) ----------
 BATCH_JOB_QUEUE = os.getenv("BATCH_JOB_QUEUE", "ten-fifty5-ml-queue")
 BATCH_JOB_DEF = os.getenv("BATCH_JOB_DEF", "ten-fifty5-ml-pipeline")
+BATCH_REGION = os.getenv("BATCH_REGION", "") or AWS_REGION  # override when Batch is in a different region than S3
 T5_SPORT_TYPES = {"serve_practice", "rally_practice"}
 
 # ---------- Ingest worker service ----------
@@ -944,7 +945,7 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
         """), {"job_id": job_id, "s3_key": s3_key})
 
     # 3. Submit AWS Batch job
-    batch = boto3.client("batch", region_name=AWS_REGION)
+    batch = boto3.client("batch", region_name=BATCH_REGION)
     resp = batch.submit_job(
         jobName=f"t5-{sport_type[:5]}-{job_id[:8]}",
         jobQueue=BATCH_JOB_QUEUE,
@@ -1024,7 +1025,7 @@ def _t5_cancel(task_id: str) -> dict:
 
     batch_job_id = row.get("batch_job_id")
     if batch_job_id:
-        batch = boto3.client("batch", region_name=AWS_REGION)
+        batch = boto3.client("batch", region_name=BATCH_REGION)
         batch.terminate_job(jobId=batch_job_id, reason="Cancelled by user")
         app.logger.info("T5 CANCEL batch_job_id=%s task_id=%s", batch_job_id, task_id)
 
