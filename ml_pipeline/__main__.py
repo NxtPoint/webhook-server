@@ -23,16 +23,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def analyse_video(video_path: str, device: str = None):
+def analyse_video(video_path: str, device: str = None, practice: bool = False):
     """Public API: analyse a tennis video and return structured results."""
     from ml_pipeline.pipeline import TennisAnalysisPipeline
-    pipeline = TennisAnalysisPipeline(device=device)
+    pipeline = TennisAnalysisPipeline(device=device, practice=practice)
     return pipeline.process(video_path)
 
 
-def _run_local(video_path: str):
+def _run_local(video_path: str, practice: bool = False):
     """Local dev mode: analyse a file and print stats."""
-    result = analyse_video(video_path)
+    result = analyse_video(video_path, practice=practice)
     print(f"\n{'='*60}")
     print(f"Frames processed:   {result.total_frames_processed}")
     print(f"Ball detection %:   {result.ball_detection_rate*100:.1f}%")
@@ -83,7 +83,7 @@ def _transcode_to_mp4(source_path: str) -> str:
     return out_path
 
 
-def _run_batch(job_id: str, s3_key: str):
+def _run_batch(job_id: str, s3_key: str, practice: bool = False):
     """
     AWS Batch mode: download video from S3, run pipeline, save results to DB,
     upload heatmaps to S3, transcode to MP4, clean up source.
@@ -136,7 +136,7 @@ def _run_batch(job_id: str, s3_key: str):
         logger.info(f"Download complete ({os.path.getsize(tmp_path)} bytes)")
 
         # 2. Run pipeline
-        pipeline = TennisAnalysisPipeline(progress_callback=on_progress)
+        pipeline = TennisAnalysisPipeline(progress_callback=on_progress, practice=practice)
         result = pipeline.process(tmp_path)
 
         # 3. Save results to DB
@@ -242,13 +242,15 @@ if __name__ == "__main__":
     parser.add_argument("video_path", nargs="?", help="Local video file path")
     parser.add_argument("--job-id", help="ML analysis job ID (AWS Batch mode)")
     parser.add_argument("--s3-key", help="S3 object key of the video (AWS Batch mode)")
+    parser.add_argument("--practice", action="store_true",
+                        help="Practice mode: lower FPS + less frequent detection for faster processing")
 
     args = parser.parse_args()
 
     if args.job_id and args.s3_key:
-        _run_batch(args.job_id, args.s3_key)
+        _run_batch(args.job_id, args.s3_key, practice=args.practice)
     elif args.video_path:
-        _run_local(args.video_path)
+        _run_local(args.video_path, practice=args.practice)
     else:
         parser.print_help()
         sys.exit(1)

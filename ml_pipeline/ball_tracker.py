@@ -127,6 +127,10 @@ class BallTracker:
         model.load_state_dict(state)
         model.to(self.device)
         model.eval()
+        # Enable FP16 on CUDA for ~1.5x inference speedup
+        self._use_fp16 = ("cuda" in str(self.device))
+        if self._use_fp16:
+            model = model.half()
         return model
 
     def detect_frame(self, frame: np.ndarray, frame_idx: int) -> Optional[BallDetection]:
@@ -147,6 +151,8 @@ class BallTracker:
         tensor = torch.from_numpy(
             stacked.astype(np.float32) / 255.0
         ).permute(2, 0, 1).unsqueeze(0).to(self.device)
+        if self._use_fp16:
+            tensor = tensor.half()
 
         with torch.no_grad():
             output = self.model(tensor, testing=True)

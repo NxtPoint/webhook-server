@@ -35,6 +35,7 @@ class PlayerTracker:
         self._prev_players: Dict[int, tuple] = {}  # player_id → bbox from prev frame
         self.detections: List[PlayerDetection] = []
         self._last_result: List[PlayerDetection] = []
+        self._detect_interval: int = PLAYER_DETECTION_INTERVAL
         self._last_detect_frame: int = -PLAYER_DETECTION_INTERVAL
 
     def detect_frame(
@@ -43,8 +44,8 @@ class PlayerTracker:
         frame_idx: int,
         court_bbox: Optional[tuple] = None,
     ) -> List[PlayerDetection]:
-        """Detect players. Runs YOLO every PLAYER_DETECTION_INTERVAL frames, reuses last result otherwise."""
-        if (frame_idx - self._last_detect_frame) < PLAYER_DETECTION_INTERVAL and self._last_result:
+        """Detect players. Runs YOLO every N frames, reuses last result otherwise."""
+        if (frame_idx - self._last_detect_frame) < self._detect_interval and self._last_result:
             # Reuse last detection with updated frame_idx
             reused = []
             for d in self._last_result:

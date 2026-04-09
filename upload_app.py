@@ -954,6 +954,7 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
             "command": [
                 "--job-id", job_id,
                 "--s3-key", s3_key,
+                "--practice",
             ],
         },
         tags={

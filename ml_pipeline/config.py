@@ -19,7 +19,8 @@ COURT_DETECTOR_WEIGHTS = os.path.join(MODELS_DIR, "court_keypoints.pth")
 # ---------------------------------------------------------------------------
 # Video preprocessing
 # ---------------------------------------------------------------------------
-FRAME_SAMPLE_FPS = 25          # Extract frames at this rate
+FRAME_SAMPLE_FPS = 25          # Extract frames at this rate (match analysis)
+FRAME_SAMPLE_FPS_PRACTICE = 10 # Lower FPS for practice — bounces still captured, 2.5x faster
 SUPPORTED_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv")
 
 # ---------------------------------------------------------------------------
@@ -45,7 +46,8 @@ BALL_MAX_DIST_GAP = 80             # px — gap bridging filter
 # ---------------------------------------------------------------------------
 COURT_INPUT_SIZE = 224             # ResNet50 expects 224x224
 COURT_NUM_KEYPOINTS = 14           # 14 standard tennis court keypoints
-COURT_DETECTION_INTERVAL = 30      # Run court detection every N frames
+COURT_DETECTION_INTERVAL = 30      # Run court detection every N frames (match)
+COURT_DETECTION_INTERVAL_PRACTICE = 60  # Less frequent for practice (court is static)
 COURT_CONFIDENCE_THRESHOLD = 0.5   # Below this → fall back to Hough lines
 COURT_IMAGENET_MEAN = [0.485, 0.456, 0.406]
 COURT_IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -90,7 +92,8 @@ YOLO_CONFIDENCE = 0.5              # Minimum detection confidence
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
 PLAYER_IOU_THRESHOLD = 0.3        # IoU threshold for frame-to-frame tracking
 PLAYER_COURT_MARGIN_PX = 50       # Pixels outside court bbox to still accept
-PLAYER_DETECTION_INTERVAL = 5     # Run YOLO every N frames (reuse last result between)
+PLAYER_DETECTION_INTERVAL = 5     # Run YOLO every N frames (match)
+PLAYER_DETECTION_INTERVAL_PRACTICE = 10  # Less frequent for practice
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestration

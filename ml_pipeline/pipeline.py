@@ -12,9 +12,12 @@ from typing import List, Optional, Callable
 from ml_pipeline.config import (
     PROGRESS_LOG_INTERVAL,
     FRAME_SAMPLE_FPS,
+    FRAME_SAMPLE_FPS_PRACTICE,
     COURT_LENGTH_M,
     COURT_WIDTH_SINGLES_M,
     BOUNCE_MIN_DIRECTION_CHANGE,
+    COURT_DETECTION_INTERVAL_PRACTICE,
+    PLAYER_DETECTION_INTERVAL_PRACTICE,
 )
 from ml_pipeline.video_preprocessor import VideoPreprocessor, VideoMetadata
 from ml_pipeline.court_detector import CourtDetector
@@ -80,18 +83,28 @@ class AnalysisResult:
 
 class TennisAnalysisPipeline:
     def __init__(self, device: str = None,
-                 progress_callback: Callable[[str, int], None] = None):
+                 progress_callback: Callable[[str, int], None] = None,
+                 practice: bool = False):
         """
         Args:
             device: 'cuda' or 'cpu'
             progress_callback: optional fn(stage: str, progress_pct: int) called at each stage
+            practice: if True, use optimised settings (lower FPS, less frequent detection)
         """
         self.device = device or ("cuda" if __import__("torch").cuda.is_available() else "cpu")
         self._progress_cb = progress_callback
-        logger.info(f"Initialising pipeline on device: {self.device}")
+        self.practice = practice
+        self.target_fps = FRAME_SAMPLE_FPS_PRACTICE if practice else FRAME_SAMPLE_FPS
+        logger.info(f"Initialising pipeline on device: {self.device} (practice={practice}, fps={self.target_fps})")
         self.court_detector = CourtDetector(device=self.device)
         self.ball_tracker = BallTracker(device=self.device)
         self.player_tracker = PlayerTracker(device=self.device)
+
+        # Apply practice-mode intervals
+        if practice:
+            from ml_pipeline import config
+            self.court_detector._detect_interval = COURT_DETECTION_INTERVAL_PRACTICE
+            self.player_tracker._detect_interval = PLAYER_DETECTION_INTERVAL_PRACTICE
 
     def _report_progress(self, stage: str, pct: int = None):
         """Report progress to callback and log."""
@@ -112,7 +125,7 @@ class TennisAnalysisPipeline:
         self._report_progress("extracting_frames")
 
         # Setup video
-        preprocessor = VideoPreprocessor(video_path)
+        preprocessor = VideoPreprocessor(video_path, target_fps=self.target_fps)
         result.video_metadata = preprocessor.metadata
         expected_frames = preprocessor.frame_count_at_target_fps()
         logger.info(

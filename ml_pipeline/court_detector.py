@@ -111,6 +111,7 @@ class CourtDetector:
         self.model = self._load_model(weights_path)
         self.ref_keypoints = np.array(COURT_REFERENCE_KEYPOINTS, dtype=np.float32)
         self._last_detection: Optional[CourtDetection] = None
+        self._detect_interval: int = COURT_DETECTION_INTERVAL
         self._last_frame_idx: int = -COURT_DETECTION_INTERVAL
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
@@ -122,8 +123,8 @@ class CourtDetector:
         return model
 
     def detect(self, frame: np.ndarray, frame_idx: int = 0) -> CourtDetection:
-        """Detect court keypoints. Uses cached result if within COURT_DETECTION_INTERVAL."""
-        if (frame_idx - self._last_frame_idx) < COURT_DETECTION_INTERVAL and self._last_detection is not None:
+        """Detect court keypoints. Uses cached result if within detection interval."""
+        if (frame_idx - self._last_frame_idx) < self._detect_interval and self._last_detection is not None:
             return self._last_detection
 
         detection = self._detect_cnn(frame)
