@@ -427,28 +427,26 @@ function renderPerformance(sum, isServe) {
   const deepPct = Math.round(100 * (dc.Deep || 0) / total);
 
   return `
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3>Performance Radar</h3>
-        <div id="chartRadar" class="echart" style="height:320px"></div>
-      </div>
-      <div class="chart-card">
-        <h3>Shot Metrics</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 0">
-          <div id="gaugeAttack" class="echart" style="height:150px"></div>
-          <div id="gaugeDeep" class="echart" style="height:150px"></div>
-          <div id="gaugeFhIn" class="echart" style="height:150px"></div>
-          <div id="gaugeBhIn" class="echart" style="height:150px"></div>
-        </div>
+    <div class="chart-card full">
+      <h3>Performance Radar</h3>
+      <div id="chartRadar" class="echart" style="height:400px"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Shot Metrics</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:10px 0">
+        <div id="gaugeAttack" style="height:180px"></div>
+        <div id="gaugeDeep" style="height:180px"></div>
+        <div id="gaugeFhIn" style="height:180px"></div>
+        <div id="gaugeBhIn" style="height:180px"></div>
       </div>
     </div>
     <div class="chart-card full">
       <h3>Court Heatmap</h3>
-      <div id="chartHeatmap" class="echart" style="height:400px"></div>
+      <div id="chartHeatmap" class="echart" style="height:450px"></div>
     </div>
     <div class="chart-card full">
       <h3>Speed by Stroke</h3>
-      <div id="chartSpeedBox" class="echart" style="height:300px"></div>
+      <div id="chartSpeedBox" class="echart" style="height:320px"></div>
     </div>
   `;
 }
@@ -1153,9 +1151,11 @@ function renderAllCharts() {
           { name: 'Rally Length', max: 100 },
           { name: 'Consistency', max: 100 },
         ],
+        center: ['50%', '50%'],
+        radius: '65%',
         shape: 'circle',
         splitNumber: 4,
-        axisName: { color: '#6b7280', fontSize: 12 },
+        axisName: { color: '#6b7280', fontSize: 13, padding: [3, 5] },
         splitArea: { areaStyle: { color: ['rgba(26,92,46,0.03)', 'rgba(26,92,46,0.06)', 'rgba(26,92,46,0.09)', 'rgba(26,92,46,0.12)'] } },
         splitLine: { lineStyle: { color: 'rgba(0,0,0,0.08)' } },
         axisLine: { lineStyle: { color: 'rgba(0,0,0,0.1)' } },
@@ -1235,8 +1235,8 @@ function renderAllCharts() {
 
     const chart = ec('chartHeatmap');
     chart.setOption({
-      ...ANIM, tooltip: { position: 'top', formatter: (p) => `Zone: ${p.value[2]} shots` },
-      grid: { left: 50, right: 30, top: 20, bottom: 40 },
+      ...ANIM, tooltip: { position: 'top', formatter: (p) => `${p.value[2]} shots` },
+      grid: { left: 60, right: 40, top: 20, bottom: 60, containLabel: false },
       xAxis: {
         type: 'category', data: Array.from({ length: GRID_X }, (_, i) => (i * COURT_W / GRID_X).toFixed(1) + 'm'),
         axisLabel: { fontSize: 10, color: '#9ca3af' }, axisTick: { show: false },
