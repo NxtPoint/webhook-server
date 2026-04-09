@@ -356,6 +356,10 @@ function switchTab(id) {
   event.target.classList.add('active');
   const el = document.getElementById('p-' + id);
   if (el) el.classList.add('active');
+  // ECharts needs resize after tab becomes visible (was display:none → zero width)
+  setTimeout(() => {
+    Object.values(CI).forEach(c => { try { c.resize(); } catch(e) {} });
+  }, 50);
   if (id === 'placement') { courtFilter = 'all'; drawCourt(); }
   if (id === 'heatmaps') loadHeatmaps();
   if (id === 'video') loadVideo();
