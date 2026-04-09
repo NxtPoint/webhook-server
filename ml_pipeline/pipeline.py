@@ -149,23 +149,14 @@ class TennisAnalysisPipeline:
 
             frame_idx += 1
 
-            # Report sub-stages based on progress through frames
+            # Map frame progress to overall pipeline progress (10-80%)
             pct_done = frame_idx / expected_frames if expected_frames > 0 else 0
-            if not court_reported and pct_done >= 0.05:
-                self._report_progress("detecting_court")
-                court_reported = True
-            elif not ball_reported and pct_done >= 0.2:
-                self._report_progress("tracking_ball")
-                ball_reported = True
-            elif not player_reported and pct_done >= 0.5:
-                self._report_progress("tracking_players")
-                player_reported = True
+            overall_pct = 10 + int(pct_done * 70)
 
             if frame_idx % PROGRESS_LOG_INTERVAL == 0:
                 elapsed = time.time() - t0
                 fps_actual = frame_idx / elapsed if elapsed > 0 else 0
-                # Map frame progress to overall pipeline progress (10-70%)
-                overall_pct = 10 + int(pct_done * 60)
+                self._report_progress("processing", overall_pct)
                 logger.info(f"Progress: {frame_idx}/{expected_frames} frames ({fps_actual:.1f} fps)")
 
         result.total_frames_processed = frame_idx
