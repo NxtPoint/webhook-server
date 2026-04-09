@@ -117,7 +117,7 @@ body {
   font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px;
   text-transform: uppercase; letter-spacing: 0.5px;
 }
-.chart-card .echart { height: 220px; width: 100%; }
+.chart-card .echart { height: 280px; width: 100%; }
 .chart-card.full { grid-column: 1 / -1; }
 
 /* Court grid (A-D zones) */
@@ -831,7 +831,7 @@ function eBar(id, labels, data, colors, horizontal = false) {
   if (!chart) return null;
   const isMultiColor = Array.isArray(colors);
   chart.setOption({
-    ...ANIM, tooltip: TT, grid: { left: horizontal ? 60 : 40, right: 20, top: 10, bottom: 30, containLabel: false },
+    ...ANIM, tooltip: TT, grid: { left: horizontal ? 70 : 40, right: 20, top: 20, bottom: 35, containLabel: true },
     [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 11 } },
     [horizontal ? 'xAxis' : 'yAxis']: { type: 'value', minInterval: 1 },
     series: [{
@@ -852,7 +852,7 @@ function eStackedBar(id, labels, seriesData, horizontal = false) {
   chart.setOption({
     ...ANIM, tooltip: TT,
     legend: { bottom: 0, textStyle: { fontSize: 11 } },
-    grid: { left: 40, right: 20, top: 10, bottom: 40, containLabel: false },
+    grid: { left: 40, right: 20, top: 20, bottom: 45, containLabel: true },
     [horizontal ? 'yAxis' : 'xAxis']: { type: 'category', data: labels, axisLabel: { fontSize: 11 } },
     [horizontal ? 'xAxis' : 'yAxis']: { type: 'value', minInterval: 1 },
     series: seriesData.map(s => ({
