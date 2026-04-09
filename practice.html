@@ -118,7 +118,7 @@ body {
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 .chart-card .echart { height: 280px; width: 100%; }
-.chart-card.full { grid-column: 1 / -1; }
+.chart-card.full { grid-column: 1 / -1; width: 100%; }
 
 /* Court grid (A-D zones) */
 .court-grid {
@@ -356,13 +356,14 @@ function switchTab(id) {
   event.target.classList.add('active');
   const el = document.getElementById('p-' + id);
   if (el) el.classList.add('active');
-  // ECharts needs resize after tab becomes visible (was display:none → zero width)
+  // ECharts needs re-init after tab becomes visible (display:none → zero width)
+  // Dispose and re-render all charts so they pick up the correct container size
   setTimeout(() => {
-    Object.values(CI).forEach(c => { try { c.resize(); } catch(e) {} });
+    renderAllCharts();
+    if (id === 'placement') { courtFilter = 'all'; drawCourt(); }
+    if (id === 'heatmaps') loadHeatmaps();
+    if (id === 'video') loadVideo();
   }, 50);
-  if (id === 'placement') { courtFilter = 'all'; drawCourt(); }
-  if (id === 'heatmaps') loadHeatmaps();
-  if (id === 'video') loadVideo();
 }
 
 // ==================== TAB: OVERVIEW ====================
