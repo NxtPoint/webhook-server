@@ -549,7 +549,8 @@ async function init() {
     safeFetch('/api/client/members'),
     safeFetch('/api/client/coaches'),
   ]);
-  matches = mData.ok ? mData.matches : [];
+  const PRACTICE_TYPES = ['serve_practice', 'rally_practice'];
+  matches = (mData.ok ? mData.matches : []).filter(m => !PRACTICE_TYPES.includes(m.sport_type));
   usage = uData.ok ? uData.usage : null;
   players = pData.ok ? pData.players : [];
   profile = prData.ok ? prData.profile : null;

@@ -1815,6 +1815,12 @@ def analytics():
     return send_file("analytics.html")
 
 
+@app.get("/practice")
+def practice_page():
+    from flask import send_file
+    return send_file("practice.html")
+
+
 # ==========================
 # PORTAL (unified nav shell — entry point for Wix)
 # ==========================

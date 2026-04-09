@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>TEN-FIFTY5 Practice Analytics</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  padding-bottom: 300px;
+}
+.container { max-width: 960px; margin: 0 auto; padding: 16px; }
+
+/* Header */
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.page-header h1 { font-size: 1.3rem; font-weight: 600; }
+.page-header .count { font-size: 0.85rem; color: var(--text-sec); }
+
+/* Session cards */
+.session-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
+.session-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 16px; cursor: pointer; transition: border-color var(--transition);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.session-card:hover, .session-card.active { border-color: var(--green); }
+.session-card.active { background: var(--green-bg); }
+.session-info { flex: 1; }
+.session-info .title { font-weight: 500; font-size: 0.95rem; }
+.session-info .meta { font-size: 0.8rem; color: var(--text-sec); margin-top: 2px; }
+.badge {
+  display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 2px 8px;
+  border-radius: 10px; text-transform: uppercase; letter-spacing: 0.03em;
+}
+.badge-serve { background: rgba(37,99,235,0.1); color: var(--blue); }
+.badge-rally { background: rgba(217,119,6,0.1); color: var(--amber); }
+.badge-status { margin-left: 8px; }
+.badge-processing { background: rgba(217,119,6,0.1); color: var(--amber); }
+.badge-completed { background: rgba(26,92,46,0.1); color: var(--green); }
+.session-actions { display: flex; gap: 8px; align-items: center; }
+.btn-play {
+  background: var(--green); color: white; border: none; border-radius: var(--radius);
+  padding: 6px 12px; font-size: 0.8rem; cursor: pointer; font-family: inherit;
+}
+.btn-play:hover { background: var(--green-light); }
+
+/* Tabs */
+.tab-bar {
+  display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 20px;
+}
+.tab-btn {
+  padding: 10px 20px; font-size: 0.85rem; font-weight: 500; cursor: pointer;
+  border: none; background: none; color: var(--text-sec); border-bottom: 2px solid transparent;
+  margin-bottom: -2px; font-family: inherit; transition: color var(--transition);
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--green); border-bottom-color: var(--green); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* KPI cards */
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.kpi-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; text-align: center;
+}
+.kpi-card .value { font-size: 1.6rem; font-weight: 700; color: var(--green); }
+.kpi-card .label { font-size: 0.75rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+
+/* Chart containers */
+.chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+.chart-box {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px;
+}
+.chart-box h3 { font-size: 0.85rem; font-weight: 600; margin-bottom: 12px; }
+.chart-box canvas { max-height: 250px; }
+.chart-box.full { grid-column: 1 / -1; }
+
+/* Court placement grid */
+.court-grid {
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  width: 200px; height: 280px; margin: 0 auto; border: 2px solid var(--green);
+  position: relative;
+}
+.court-grid::before {
+  content: ''; position: absolute; top: 50%; left: 10%; right: 10%;
+  height: 1px; background: var(--text-dim);
+}
+.court-grid::after {
+  content: 'NET'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  font-size: 0.6rem; color: var(--text-dim); background: var(--white); padding: 0 4px;
+}
+.court-zone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 1px solid var(--border); font-size: 0.8rem; position: relative;
+}
+.court-zone .zone-pct { font-size: 1.2rem; font-weight: 700; }
+.court-zone .zone-label { font-size: 0.65rem; color: var(--text-sec); }
+.court-zone-a { background: rgba(37,99,235,0.08); }
+.court-zone-b { background: rgba(26,92,46,0.08); }
+.court-zone-c { background: rgba(217,119,6,0.08); }
+.court-zone-d { background: rgba(220,38,38,0.08); }
+
+/* Heatmap images */
+.heatmap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.heatmap-grid img { width: 100%; border-radius: var(--radius); border: 1px solid var(--border); }
+.heatmap-grid .label { font-size: 0.8rem; color: var(--text-sec); margin-bottom: 6px; }
+
+/* Video modal */
+.video-modal {
+  display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+  background: rgba(0,0,0,0.87); z-index: 1000; align-items: center; justify-content: center;
+}
+.video-modal.open { display: flex; }
+.video-modal video { max-width: 95%; max-height: 90%; border-radius: 8px; }
+.video-modal .close-btn {
+  position: absolute; top: 16px; right: 20px; color: white; font-size: 2rem;
+  cursor: pointer; z-index: 1001; line-height: 1;
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center; padding: 60px 20px; color: var(--text-sec);
+}
+.empty-state h3 { font-size: 1.1rem; margin-bottom: 8px; color: var(--text); }
+
+/* Serve timeline */
+.serve-timeline { display: flex; flex-wrap: wrap; gap: 4px; }
+.serve-dot {
+  width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 0.55rem; font-weight: 600; color: white;
+}
+.serve-dot.in { background: var(--green); }
+.serve-dot.fault { background: var(--red); }
+
+/* Responsive */
+@media (max-width: 600px) {
+  .chart-row { grid-template-columns: 1fr; }
+  .heatmap-grid { grid-template-columns: 1fr; }
+  .kpi-row { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="container" id="app">
+  <div style="text-align:center;padding:60px;color:var(--text-sec)">Loading...</div>
+</div>
+
+<!-- Video Modal -->
+<div class="video-modal" id="videoModal">
+  <span class="close-btn" onclick="closeVideo()">&times;</span>
+  <video id="videoPlayer" controls playsinline></video>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+
+function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
+  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
+}
+
+let sessions = [];
+let selectedSession = null;
+let selectedDetail = null;
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const chartInstances = {};
+
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key.</p></div>';
+    return;
+  }
+  try {
+    const res = await apiFetch('/api/client/practice-sessions');
+    const data = await res.json();
+    sessions = data.ok ? data.sessions : [];
+  } catch (e) { console.warn('fetch failed', e); sessions = []; }
+
+  if (!sessions.length) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>No Practice Sessions</h3><p>Upload a serve or rally practice video from the Media Room to get started.</p></div>';
+    return;
+  }
+
+  render();
+  selectSession(0);
+}
+
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="page-header">
+      <h1>Practice Analytics</h1>
+      <span class="count">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
+    </div>
+    <div class="session-list" id="sessionList">${renderSessionCards()}</div>
+    <div class="tab-bar" id="tabBar"></div>
+    <div id="tabContent"></div>
+  `;
+}
+
+function renderSessionCards() {
+  return sessions.map((s, i) => {
+    const type = s.sport_type === 'serve_practice' ? 'Serve' : 'Rally';
+    const badgeCls = s.sport_type === 'serve_practice' ? 'badge-serve' : 'badge-rally';
+    const date = s.match_date || (s.created_at ? s.created_at.split('T')[0] : 'Unknown');
+    const stat = s.sport_type === 'serve_practice'
+      ? `${s.serve_count} serves`
+      : `${s.rally_count} rallies`;
+    const canPlay = s.trim_status === 'completed' && s.trim_output_s3_key;
+    return `<div class="session-card" id="sc-${i}" onclick="selectSession(${i})">
+      <div class="session-info">
+        <div class="title"><span class="badge ${badgeCls}">${type}</span> ${date}</div>
+        <div class="meta">${stat} &middot; Avg ${s.avg_speed_kmh.toFixed(0)} km/h &middot; Max ${s.max_speed_kmh.toFixed(0)} km/h</div>
+      </div>
+      <div class="session-actions">
+        ${canPlay ? `<button class="btn-play" onclick="event.stopPropagation();playFootage('${s.task_id}')">Watch</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function selectSession(idx) {
+  selectedSession = sessions[idx];
+  document.querySelectorAll('.session-card').forEach((el, i) => el.classList.toggle('active', i === idx));
+
+  // Load detail
+  try {
+    const res = await apiFetch('/api/client/practice-detail/' + selectedSession.task_id);
+    const data = await res.json();
+    selectedDetail = data.ok ? data : null;
+  } catch (e) { console.warn('detail fetch failed', e); selectedDetail = null; }
+
+  renderTabs();
+}
+
+function renderTabs() {
+  const isServe = selectedSession.sport_type === 'serve_practice';
+  const tabs = [
+    { id: 'overview', label: 'Overview' },
+    isServe ? { id: 'serve', label: 'Serve Analysis' } : { id: 'rally', label: 'Rally Analysis' },
+    { id: 'heatmaps', label: 'Heatmaps' },
+  ];
+
+  document.getElementById('tabBar').innerHTML = tabs.map((t, i) =>
+    `<button class="tab-btn${i === 0 ? ' active' : ''}" onclick="switchTab('${t.id}')">${t.label}</button>`
+  ).join('');
+
+  document.getElementById('tabContent').innerHTML = `
+    <div class="tab-content active" id="tab-overview">${renderOverview()}</div>
+    <div class="tab-content" id="tab-serve">${isServe ? renderServeAnalysis() : ''}</div>
+    <div class="tab-content" id="tab-rally">${!isServe ? renderRallyAnalysis() : ''}</div>
+    <div class="tab-content" id="tab-heatmaps">${renderHeatmaps()}</div>
+  `;
+
+  renderCharts();
+}
+
+function switchTab(id) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  const el = document.getElementById('tab-' + id);
+  if (el) el.classList.add('active');
+  if (id === 'heatmaps') loadHeatmaps();
+}
+
+// ============ OVERVIEW TAB ============
+
+function renderOverview() {
+  const s = selectedSession;
+  const sum = selectedDetail?.summary || {};
+  const isServe = s.sport_type === 'serve_practice';
+
+  return `
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="value">${isServe ? sum.total_serves || s.serve_count : sum.total_rallies || s.rally_count}</div><div class="label">${isServe ? 'Total Serves' : 'Total Rallies'}</div></div>
+      ${isServe ? `<div class="kpi-card"><div class="value">${sum.first_serve_pct || s.first_serve_pct}%</div><div class="label">In %</div></div>` : `<div class="kpi-card"><div class="value">${sum.avg_rally_length || s.avg_rally_length}</div><div class="label">Avg Rally Length</div></div>`}
+      <div class="kpi-card"><div class="value">${s.max_speed_kmh.toFixed(0)}</div><div class="label">Max Speed (km/h)</div></div>
+      <div class="kpi-card"><div class="value">${s.avg_speed_kmh.toFixed(0)}</div><div class="label">Avg Speed (km/h)</div></div>
+      <div class="kpi-card"><div class="value">${s.bounce_count}</div><div class="label">Total Bounces</div></div>
+    </div>
+  `;
+}
+
+// ============ SERVE ANALYSIS TAB ============
+
+function renderServeAnalysis() {
+  const sum = selectedDetail?.summary || {};
+  return `
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="value">${sum.total_serves || 0}</div><div class="label">Total Serves</div></div>
+      <div class="kpi-card"><div class="value" style="color:var(--green)">${sum.serves_in || 0}</div><div class="label">In</div></div>
+      <div class="kpi-card"><div class="value" style="color:var(--red)">${sum.serves_fault || 0}</div><div class="label">Faults</div></div>
+      <div class="kpi-card"><div class="value">${sum.first_serve_pct || 0}%</div><div class="label">In %</div></div>
+      <div class="kpi-card"><div class="value">${sum.max_speed_kmh || 0}</div><div class="label">Max Speed</div></div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Serve Zone Distribution</h3><canvas id="chartServeZone"></canvas></div>
+      <div class="chart-box"><h3>Placement Zones</h3>${renderCourtGrid(sum.zone_counts || {})}</div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Depth Distribution</h3><canvas id="chartDepth"></canvas></div>
+      <div class="chart-box"><h3>Speed Distribution</h3><canvas id="chartSpeed"></canvas></div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Deuce / Ad Split</h3><canvas id="chartSide"></canvas></div>
+      <div class="chart-box"><h3>Serve Result Timeline</h3><div class="serve-timeline">${renderServeTimeline()}</div></div>
+    </div>
+  `;
+}
+
+// ============ RALLY ANALYSIS TAB ============
+
+function renderRallyAnalysis() {
+  const sum = selectedDetail?.summary || {};
+  return `
+    <div class="kpi-row">
+      <div class="kpi-card"><div class="value">${sum.total_rallies || 0}</div><div class="label">Total Rallies</div></div>
+      <div class="kpi-card"><div class="value">${sum.avg_rally_length || 0}</div><div class="label">Avg Length (shots)</div></div>
+      <div class="kpi-card"><div class="value">${sum.max_rally_length || 0}</div><div class="label">Max Length</div></div>
+      <div class="kpi-card"><div class="value">${sum.avg_duration_s || 0}s</div><div class="label">Avg Duration</div></div>
+      <div class="kpi-card"><div class="value">${sum.max_speed_kmh || 0}</div><div class="label">Max Speed</div></div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Rally Length Distribution</h3><canvas id="chartRallyLength"></canvas></div>
+      <div class="chart-box"><h3>Placement Zones</h3>${renderCourtGrid(sum.zone_counts || {})}</div>
+    </div>
+    <div class="chart-row">
+      <div class="chart-box"><h3>Depth Distribution</h3><canvas id="chartDepth"></canvas></div>
+      <div class="chart-box"><h3>Speed Distribution</h3><canvas id="chartSpeed"></canvas></div>
+    </div>
+  `;
+}
+
+// ============ HEATMAPS TAB ============
+
+function renderHeatmaps() {
+  return `
+    <div class="heatmap-grid" id="heatmapGrid">
+      <div><div class="label">Ball Heatmap</div><div id="heatBall" style="color:var(--text-dim);font-size:0.85rem">Loading...</div></div>
+      <div><div class="label">Player Heatmap</div><div id="heatPlayer" style="color:var(--text-dim);font-size:0.85rem">Loading...</div></div>
+    </div>
+  `;
+}
+
+async function loadHeatmaps() {
+  if (!selectedSession?.has_heatmaps) {
+    document.getElementById('heatBall').textContent = 'Not available';
+    document.getElementById('heatPlayer').textContent = 'Not available';
+    return;
+  }
+  const tid = selectedSession.task_id;
+  try {
+    const [bRes, pRes] = await Promise.all([
+      apiFetch('/api/client/practice-heatmap/' + tid + '/ball').then(r => r.json()),
+      apiFetch('/api/client/practice-heatmap/' + tid + '/0').then(r => r.json()),
+    ]);
+    document.getElementById('heatBall').innerHTML = bRes.ok
+      ? `<img src="${bRes.url}" alt="Ball heatmap">` : 'Not available';
+    document.getElementById('heatPlayer').innerHTML = pRes.ok
+      ? `<img src="${pRes.url}" alt="Player heatmap">` : 'Not available';
+  } catch (e) {
+    document.getElementById('heatBall').textContent = 'Error loading';
+    document.getElementById('heatPlayer').textContent = 'Error loading';
+  }
+}
+
+// ============ COURT GRID ============
+
+function renderCourtGrid(zones) {
+  const total = (zones.A || 0) + (zones.B || 0) + (zones.C || 0) + (zones.D || 0);
+  function pct(z) { return total ? Math.round(100 * (zones[z] || 0) / total) : 0; }
+  return `
+    <div class="court-grid">
+      <div class="court-zone court-zone-a"><span class="zone-pct">${pct('A')}%</span><span class="zone-label">A (${zones.A || 0})</span></div>
+      <div class="court-zone court-zone-b"><span class="zone-pct">${pct('B')}%</span><span class="zone-label">B (${zones.B || 0})</span></div>
+      <div class="court-zone court-zone-c"><span class="zone-pct">${pct('C')}%</span><span class="zone-label">C (${zones.C || 0})</span></div>
+      <div class="court-zone court-zone-d"><span class="zone-pct">${pct('D')}%</span><span class="zone-label">D (${zones.D || 0})</span></div>
+    </div>
+  `;
+}
+
+// ============ SERVE TIMELINE ============
+
+function renderServeTimeline() {
+  if (!selectedDetail?.details) return '<span style="color:var(--text-dim)">No data</span>';
+  const serves = selectedDetail.details.filter(d => d.serve_result);
+  return serves.map(d =>
+    `<span class="serve-dot ${d.serve_result === 'in' ? 'in' : 'fault'}" title="Serve ${d.sequence_num}: ${d.serve_result}">${d.sequence_num}</span>`
+  ).join('');
+}
+
+// ============ CHARTS ============
+
+function destroyCharts() {
+  Object.values(chartInstances).forEach(c => c.destroy());
+  Object.keys(chartInstances).forEach(k => delete chartInstances[k]);
+}
+
+function renderCharts() {
+  destroyCharts();
+  const sum = selectedDetail?.summary || {};
+  const isServe = selectedSession?.sport_type === 'serve_practice';
+  const G = 'rgba(26,92,46,0.7)';
+  const GL = 'rgba(34,120,60,0.7)';
+  const B = 'rgba(37,99,235,0.7)';
+  const A = 'rgba(217,119,6,0.7)';
+  const R = 'rgba(220,38,38,0.7)';
+
+  // Serve zone chart
+  if (isServe) {
+    const el = document.getElementById('chartServeZone');
+    if (el) {
+      const zc = sum.serve_zone_counts || {};
+      chartInstances.serveZone = new Chart(el, {
+        type: 'bar', data: {
+          labels: ['Wide', 'Body', 'T'],
+          datasets: [{ label: 'Count', data: [zc.wide || 0, zc.body || 0, zc.T || 0], backgroundColor: [B, G, A] }]
+        }, options: { indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }
+      });
+    }
+    // Side chart
+    const sideEl = document.getElementById('chartSide');
+    if (sideEl) {
+      const sc = sum.side_counts || {};
+      chartInstances.side = new Chart(sideEl, {
+        type: 'doughnut', data: {
+          labels: ['Deuce', 'Ad'],
+          datasets: [{ data: [sc.deuce || 0, sc.ad || 0], backgroundColor: [G, B] }]
+        }, options: { plugins: { legend: { position: 'bottom' } } }
+      });
+    }
+  }
+
+  // Rally length chart
+  if (!isServe) {
+    const rlEl = document.getElementById('chartRallyLength');
+    if (rlEl && selectedDetail?.details) {
+      const rallies = {};
+      selectedDetail.details.filter(d => d.shot_ix === 1 && d.rally_length).forEach(d => {
+        const bucket = d.rally_length;
+        rallies[bucket] = (rallies[bucket] || 0) + 1;
+      });
+      const labels = Object.keys(rallies).sort((a, b) => a - b);
+      chartInstances.rallyLen = new Chart(rlEl, {
+        type: 'bar', data: {
+          labels: labels.map(l => l + ' shots'),
+          datasets: [{ label: 'Rallies', data: labels.map(l => rallies[l]), backgroundColor: G }]
+        }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+      });
+    }
+  }
+
+  // Depth chart (both)
+  const depthEl = document.getElementById('chartDepth');
+  if (depthEl) {
+    const dc = sum.depth_counts || {};
+    chartInstances.depth = new Chart(depthEl, {
+      type: 'bar', data: {
+        labels: ['Deep', 'Middle', 'Short'],
+        datasets: [{ label: 'Count', data: [dc.Deep || 0, dc.Middle || 0, dc.Short || 0], backgroundColor: [G, A, R] }]
+      }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+  }
+
+  // Speed histogram (both)
+  const speedEl = document.getElementById('chartSpeed');
+  if (speedEl && selectedDetail?.details) {
+    const speeds = selectedDetail.details.filter(d => d.ball_speed_kmh > 0).map(d => d.ball_speed_kmh);
+    if (speeds.length) {
+      const min = Math.floor(Math.min(...speeds) / 10) * 10;
+      const max = Math.ceil(Math.max(...speeds) / 10) * 10;
+      const buckets = {};
+      for (let b = min; b < max; b += 10) buckets[b] = 0;
+      speeds.forEach(s => { const b = Math.floor(s / 10) * 10; buckets[b] = (buckets[b] || 0) + 1; });
+      const labels = Object.keys(buckets).sort((a, b) => a - b);
+      chartInstances.speed = new Chart(speedEl, {
+        type: 'bar', data: {
+          labels: labels.map(l => l + '-' + (parseInt(l) + 10)),
+          datasets: [{ label: 'Shots', data: labels.map(l => buckets[l]), backgroundColor: GL }]
+        }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+      });
+    }
+  }
+}
+
+// ============ VIDEO PLAYER ============
+
+async function playFootage(taskId) {
+  try {
+    const res = await apiFetch('/api/client/footage-url/' + taskId);
+    const data = await res.json();
+    if (!data.ok || !data.url) { alert('Footage not available.'); return; }
+    const player = document.getElementById('videoPlayer');
+    player.src = data.url;
+    document.getElementById('videoModal').classList.add('open');
+    player.play();
+  } catch (e) { alert('Error loading footage: ' + e.message); }
+}
+
+function closeVideo() {
+  const player = document.getElementById('videoPlayer');
+  player.pause(); player.src = '';
+  document.getElementById('videoModal').classList.remove('open');
+}
+
+document.getElementById('videoModal').addEventListener('click', function(e) {
+  if (e.target === this) closeVideo();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeVideo(); });
+
+// ============ INIT ============
+init();
+</script>
+</body>
+</html>

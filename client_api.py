@@ -1093,6 +1093,235 @@ def _admin_guard() -> bool:
 
 
 # ----------------------------
+# GET /api/client/practice-sessions
+# ----------------------------
+
+@client_bp.route("/api/client/practice-sessions", methods=["GET", "OPTIONS"])
+def practice_sessions():
+    """List all practice sessions with aggregate stats."""
+    if not _guard():
+        return _forbid()
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT sc.task_id, sc.sport_type, sc.match_date, sc.location,
+                       sc.player_a_name, sc.last_status, sc.created_at,
+                       sc.trim_status, sc.trim_output_s3_key,
+                       a.bounce_count, a.bounces_in, a.bounces_out,
+                       a.max_speed_kmh, a.avg_speed_kmh,
+                       a.rally_count, a.avg_rally_length,
+                       a.serve_count, a.first_serve_pct,
+                       j.job_id, j.ball_heatmap_s3_key, j.player_heatmap_s3_keys,
+                       j.processing_time_sec
+                FROM bronze.submission_context sc
+                LEFT JOIN ml_analysis.video_analysis_jobs j ON j.task_id = sc.task_id
+                LEFT JOIN ml_analysis.match_analytics a ON a.job_id = j.job_id
+                WHERE sc.email = :email
+                  AND sc.sport_type IN ('serve_practice', 'rally_practice')
+                ORDER BY sc.match_date DESC NULLS LAST, sc.created_at DESC
+            """),
+            {"email": email},
+        ).mappings().all()
+
+    sessions = []
+    for r in rows:
+        sessions.append({
+            "task_id": r["task_id"],
+            "sport_type": r["sport_type"],
+            "match_date": str(r["match_date"]) if r["match_date"] else None,
+            "location": r["location"],
+            "player_name": r["player_a_name"],
+            "last_status": r["last_status"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "trim_status": r["trim_status"],
+            "trim_output_s3_key": r["trim_output_s3_key"],
+            "bounce_count": int(r["bounce_count"] or 0),
+            "bounces_in": int(r["bounces_in"] or 0),
+            "bounces_out": int(r["bounces_out"] or 0),
+            "max_speed_kmh": float(r["max_speed_kmh"] or 0),
+            "avg_speed_kmh": float(r["avg_speed_kmh"] or 0),
+            "rally_count": int(r["rally_count"] or 0),
+            "avg_rally_length": float(r["avg_rally_length"] or 0),
+            "serve_count": int(r["serve_count"] or 0),
+            "first_serve_pct": float(r["first_serve_pct"] or 0),
+            "job_id": r["job_id"],
+            "has_heatmaps": bool(r["ball_heatmap_s3_key"]),
+            "processing_time_sec": float(r["processing_time_sec"] or 0),
+        })
+
+    return jsonify({"ok": True, "sessions": sessions})
+
+
+# ----------------------------
+# GET /api/client/practice-detail/<task_id>
+# ----------------------------
+
+@client_bp.route("/api/client/practice-detail/<task_id>", methods=["GET", "OPTIONS"])
+def practice_detail(task_id):
+    """Return practice detail rows + computed summary for a session."""
+    if not _guard():
+        return _forbid()
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    # Ownership check
+    with engine.connect() as conn:
+        owner = conn.execute(
+            text("SELECT email, sport_type FROM bronze.submission_context WHERE task_id = :tid"),
+            {"tid": task_id},
+        ).mappings().first()
+    if not owner or _norm_email(owner["email"]) != email:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    practice_type = owner["sport_type"]
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT sequence_num, shot_ix, ball_x, ball_y, ball_speed_kmh,
+                       is_in, serve_zone, serve_side, serve_result,
+                       placement_zone, depth_d, timestamp_s,
+                       rally_length, rally_duration_s, player_court_x, player_court_y
+                FROM silver.practice_detail
+                WHERE task_id = :tid
+                ORDER BY sequence_num, shot_ix
+            """),
+            {"tid": task_id},
+        ).mappings().all()
+
+    details = []
+    speeds = []
+    zone_counts = {}
+    depth_counts = {}
+    serve_zone_counts = {}
+    side_counts = {}
+    results_in = 0
+    results_fault = 0
+    rally_lengths = []
+    rally_durations = []
+
+    for r in rows:
+        d = {
+            "sequence_num": r["sequence_num"],
+            "shot_ix": r["shot_ix"],
+            "ball_x": r["ball_x"],
+            "ball_y": r["ball_y"],
+            "ball_speed_kmh": r["ball_speed_kmh"],
+            "is_in": r["is_in"],
+            "serve_zone": r["serve_zone"],
+            "serve_side": r["serve_side"],
+            "serve_result": r["serve_result"],
+            "placement_zone": r["placement_zone"],
+            "depth_d": r["depth_d"],
+            "timestamp_s": r["timestamp_s"],
+            "rally_length": r["rally_length"],
+            "rally_duration_s": r["rally_duration_s"],
+        }
+        details.append(d)
+
+        if r["ball_speed_kmh"]:
+            speeds.append(float(r["ball_speed_kmh"]))
+        if r["placement_zone"]:
+            zone_counts[r["placement_zone"]] = zone_counts.get(r["placement_zone"], 0) + 1
+        if r["depth_d"]:
+            depth_counts[r["depth_d"]] = depth_counts.get(r["depth_d"], 0) + 1
+        if r["serve_zone"]:
+            serve_zone_counts[r["serve_zone"]] = serve_zone_counts.get(r["serve_zone"], 0) + 1
+        if r["serve_side"]:
+            side_counts[r["serve_side"]] = side_counts.get(r["serve_side"], 0) + 1
+        if r["serve_result"] == "in":
+            results_in += 1
+        elif r["serve_result"] == "fault":
+            results_fault += 1
+        if r["rally_length"] and r["shot_ix"] == 1:
+            rally_lengths.append(int(r["rally_length"]))
+        if r["rally_duration_s"] and r["shot_ix"] == 1:
+            rally_durations.append(float(r["rally_duration_s"]))
+
+    total_serves = results_in + results_fault
+    summary = {
+        "practice_type": practice_type,
+        "total_shots": len(details),
+        "total_serves": total_serves,
+        "serves_in": results_in,
+        "serves_fault": results_fault,
+        "first_serve_pct": round(100.0 * results_in / total_serves, 1) if total_serves else 0,
+        "max_speed_kmh": round(max(speeds), 1) if speeds else 0,
+        "avg_speed_kmh": round(sum(speeds) / len(speeds), 1) if speeds else 0,
+        "zone_counts": zone_counts,
+        "depth_counts": depth_counts,
+        "serve_zone_counts": serve_zone_counts,
+        "side_counts": side_counts,
+        "total_rallies": len(rally_lengths),
+        "avg_rally_length": round(sum(rally_lengths) / len(rally_lengths), 1) if rally_lengths else 0,
+        "max_rally_length": max(rally_lengths) if rally_lengths else 0,
+        "avg_duration_s": round(sum(rally_durations) / len(rally_durations), 1) if rally_durations else 0,
+        "max_duration_s": round(max(rally_durations), 1) if rally_durations else 0,
+    }
+
+    return jsonify({"ok": True, "task_id": task_id, "summary": summary, "details": details})
+
+
+# ----------------------------
+# GET /api/client/practice-heatmap/<task_id>/<heatmap_type>
+# ----------------------------
+
+@client_bp.route("/api/client/practice-heatmap/<task_id>/<heatmap_type>", methods=["GET", "OPTIONS"])
+def practice_heatmap(task_id, heatmap_type):
+    """Return a presigned S3 URL for a practice heatmap image."""
+    if not _guard():
+        return _forbid()
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    # Ownership check
+    with engine.connect() as conn:
+        owner = conn.execute(
+            text("SELECT email FROM bronze.submission_context WHERE task_id = :tid"),
+            {"tid": task_id},
+        ).mappings().first()
+    if not owner or _norm_email(owner["email"]) != email:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT ball_heatmap_s3_key, player_heatmap_s3_keys
+                FROM ml_analysis.video_analysis_jobs
+                WHERE task_id = :tid
+                ORDER BY created_at DESC LIMIT 1
+            """),
+            {"tid": task_id},
+        ).mappings().first()
+
+    if not row:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    if heatmap_type == "ball":
+        s3_key = row["ball_heatmap_s3_key"]
+    else:
+        keys = row["player_heatmap_s3_keys"] or {}
+        s3_key = keys.get(f"player_heatmap_{heatmap_type}.png") or keys.get(heatmap_type)
+
+    if not s3_key:
+        return jsonify({"ok": False, "error": "heatmap_not_available"}), 404
+
+    try:
+        from upload_app import _s3_presigned_get_url
+        url = _s3_presigned_get_url(s3_key, expires=3600)
+        return jsonify({"ok": True, "url": url})
+    except Exception:
+        log.exception("heatmap presigned url failed task_id=%s type=%s", task_id, heatmap_type)
+        return jsonify({"ok": False, "error": "url_generation_failed"}), 500
+
+
+# ----------------------------
 # GET /api/client/backoffice/pipeline
 # ----------------------------
 

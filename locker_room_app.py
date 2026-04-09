@@ -45,6 +45,11 @@ def analytics():
     return send_file("analytics.html")
 
 
+@app.get("/practice")
+def practice():
+    return send_file("practice.html")
+
+
 @app.get("/portal")
 def portal():
     return send_file("portal.html")
