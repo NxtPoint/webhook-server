@@ -191,12 +191,39 @@ body {
 /* Responsive */
 @media (max-width: 768px) {
   .dash-layout { grid-template-columns: 1fr; height: auto; overflow: auto; }
-  .dash-sidebar { max-height: 200px; border-right: none; border-bottom: 1px solid var(--border); }
-  .chart-grid, .chart-grid.tri { grid-template-columns: 1fr; }
-  .kpi-strip { grid-template-columns: repeat(3, 1fr); }
-  .heatmap-grid { grid-template-columns: 1fr; }
-  body { overflow: auto; }
+  .dash-sidebar { max-height: 180px; border-right: none; border-bottom: 1px solid var(--border); }
   .dash-main { overflow: visible; }
+  .dash-toolbar { padding: 0 12px; height: 44px; }
+  .dash-toolbar h1 { font-size: 0.9rem; }
+  .dash-tabs { padding: 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; }
+  .dash-tab { padding: 8px 12px; font-size: 0.75rem; white-space: nowrap; }
+  .dash-content { padding: 12px; padding-bottom: 300px; }
+  .chart-grid, .chart-grid.tri { grid-template-columns: 1fr; }
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .kpi .val { font-size: 1.3rem; }
+  .kpi .lbl { font-size: 0.65rem; }
+  .chart-card { padding: 12px; }
+  .chart-card .echart { height: 240px; }
+  .chart-card h3 { font-size: 0.75rem; }
+  .heatmap-grid { grid-template-columns: 1fr; }
+  .court-grid { height: 140px; }
+  .zone-pct { font-size: 1.2rem; }
+  .gauge-number { font-size: 2rem; }
+  .serve-timeline { gap: 3px; }
+  .serve-dot { width: 18px; height: 18px; font-size: 0.55rem; }
+  .court-filter-btn { padding: 3px 8px; font-size: 0.7rem; }
+  body { overflow: auto; }
+  /* Gauges row: 2x2 on mobile instead of 4-col */
+  #p-performance .chart-card div[style*="grid-template-columns: 1fr 1fr 1fr 1fr"] {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}
+
+@media (max-width: 400px) {
+  .kpi-strip { grid-template-columns: 1fr; }
+  .dash-sidebar { max-height: 140px; }
+  .session-item .s-date { font-size: 0.75rem; }
+  .session-item .s-meta { font-size: 0.65rem; }
 }
 </style>
 </head>
@@ -477,10 +504,10 @@ function renderPlacement(sum) {
     <div class="chart-card full" style="padding:20px;overflow:visible">
       <h3>Ball Placement</h3>
       <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap">
-        <div style="flex:1;min-width:300px">
+        <div style="flex:1;min-width:260px">
           <canvas id="courtCanvas" width="440" height="560" style="width:100%;max-width:440px;cursor:crosshair"></canvas>
         </div>
-        <div style="width:200px" id="courtStats"></div>
+        <div style="min-width:160px;flex:0 0 200px" id="courtStats"></div>
       </div>
       <div style="display:flex;gap:16px;margin-top:12px;font-size:0.75rem;color:var(--text-sec)">
         <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(26,92,46,0.85);margin-right:4px"></span>Forehand</span>
