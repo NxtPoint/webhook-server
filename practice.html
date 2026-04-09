@@ -308,9 +308,6 @@ function renderDashboard() {
 
   document.getElementById('toolbar').innerHTML = `
     <h1>${type} &mdash; ${date}</h1>
-    <div class="actions">
-      ${canPlay ? `<button class="btn-watch" onclick="playFootage('${s.task_id}')">Watch Footage</button>` : ''}
-    </div>
   `;
 
   const tabs = [
@@ -318,6 +315,7 @@ function renderDashboard() {
     { id: 'placement', label: 'Court Placement' },
     isServe ? { id: 'serve', label: 'Serve Analysis' } : { id: 'rally', label: 'Rally Analysis' },
     { id: 'heatmaps', label: 'Heatmaps' },
+    { id: 'video', label: 'Video' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -331,10 +329,12 @@ function renderDashboard() {
     <div class="tab-panel${activeTab === 'serve' ? ' active' : ''}" id="p-serve">${isServe ? renderServe(sum) : ''}</div>
     <div class="tab-panel${activeTab === 'rally' ? ' active' : ''}" id="p-rally">${!isServe ? renderRally(sum) : ''}</div>
     <div class="tab-panel${activeTab === 'heatmaps' ? ' active' : ''}" id="p-heatmaps">${renderHeatmaps()}</div>
+    <div class="tab-panel${activeTab === 'video' ? ' active' : ''}" id="p-video">${renderVideoTab()}</div>
   `;
 
   renderAllCharts();
   if (activeTab === 'heatmaps') loadHeatmaps();
+  if (activeTab === 'video') loadVideo();
 }
 
 function switchTab(id) {
@@ -345,6 +345,7 @@ function switchTab(id) {
   const el = document.getElementById('p-' + id);
   if (el) el.classList.add('active');
   if (id === 'heatmaps') loadHeatmaps();
+  if (id === 'video') loadVideo();
 }
 
 // ==================== TAB: OVERVIEW ====================
@@ -512,6 +513,37 @@ async function loadHeatmaps() {
   } catch (e) {
     const b = document.getElementById('heatBall'); if (b) b.textContent = 'Error';
     const p = document.getElementById('heatPlayer'); if (p) p.textContent = 'Error';
+  }
+}
+
+// ==================== VIDEO TAB ====================
+function renderVideoTab() {
+  const s = selectedSession;
+  const canPlay = s && s.trim_status === 'completed' && s.trim_output_s3_key;
+  if (!canPlay) {
+    return `<div class="chart-card full" style="text-align:center;padding:60px 20px">
+      <h3>Video Footage</h3>
+      <p style="color:var(--text-dim);margin-top:12px">Footage is being processed. Check back shortly.</p>
+    </div>`;
+  }
+  return `<div class="chart-card full" style="padding:0;overflow:hidden">
+    <video id="inlinePlayer" controls playsinline style="width:100%;border-radius:var(--radius);display:block;background:#000"></video>
+  </div>`;
+}
+
+async function loadVideo() {
+  const player = document.getElementById('inlinePlayer');
+  if (!player || !selectedSession) return;
+  try {
+    const res = await apiFetch('/api/client/footage-url/' + selectedSession.task_id);
+    const data = await res.json();
+    if (data.ok && data.url) {
+      player.src = data.url;
+    } else {
+      player.parentElement.innerHTML = '<div style="padding:60px;text-align:center;color:var(--text-dim)">Footage not available</div>';
+    }
+  } catch (e) {
+    player.parentElement.innerHTML = '<div style="padding:60px;text-align:center;color:var(--text-dim)">Error loading footage</div>';
   }
 }
 
