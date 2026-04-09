@@ -51,9 +51,26 @@ def _run_local(video_path: str, practice: bool = False):
     print(f"{'='*60}")
 
 
+def _probe_video_codec(source_path: str) -> str:
+    """Return the video codec name (e.g. 'h264', 'hevc', 'prores')."""
+    import subprocess
+    ffprobe_bin = os.environ.get("FFPROBE_BIN", "ffprobe")
+    try:
+        result = subprocess.run(
+            [ffprobe_bin, "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "csv=p=0", source_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return result.stdout.strip().lower()
+    except Exception:
+        return "unknown"
+
+
 def _transcode_to_mp4(source_path: str) -> str:
     """
-    Transcode video to compressed H.264 MP4 using FFmpeg.
+    Prepare video for browser playback.
+    If already H.264 MP4, remux (copy streams) — nearly instant.
+    Otherwise, full transcode to H.264.
     Returns path to the output MP4 file.
     """
     import subprocess
@@ -61,25 +78,40 @@ def _transcode_to_mp4(source_path: str) -> str:
     os.close(out_fd)
 
     ffmpeg_bin = os.environ.get("FFMPEG_BIN", "ffmpeg")
-    cmd = [
-        ffmpeg_bin, "-y",
-        "-i", source_path,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        out_path,
-    ]
-    logger.info(f"Transcoding: {' '.join(cmd)}")
+    codec = _probe_video_codec(source_path)
+    logger.info(f"Source codec: {codec}")
+
+    if codec == "h264":
+        # Already H.264 — just remux into MP4 container (copy, no re-encode)
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", source_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+    else:
+        # Needs transcode (HEVC, ProRes, etc.)
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-i", source_path,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+
+    logger.info(f"{'Remuxing' if codec == 'h264' else 'Transcoding'}: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg failed (rc={result.returncode}): {result.stderr[-500:]}")
 
     src_size = os.path.getsize(source_path)
     out_size = os.path.getsize(out_path)
-    logger.info(f"Transcode complete: {src_size} → {out_size} bytes ({out_size/src_size*100:.0f}%)")
+    logger.info(f"Complete: {src_size} → {out_size} bytes ({out_size/src_size*100:.0f}%)")
     return out_path
 
 
