@@ -3,12 +3,15 @@ BallTracker — TrackNet V2 based ball detection with bounce/speed analysis.
 Sliding window of 3 frames → heatmap → (x,y). Linear interpolation for small gaps.
 """
 
+import logging
 import numpy as np
 import cv2
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 from ml_pipeline.config import (
     TRACKNET_WEIGHTS,
