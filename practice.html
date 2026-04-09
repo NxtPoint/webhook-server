@@ -321,6 +321,7 @@ function renderDashboard() {
 
   const tabs = [
     { id: 'overview', label: 'Overview' },
+    { id: 'performance', label: 'Performance' },
     { id: 'placement', label: 'Court Placement' },
     isServe ? { id: 'serve', label: 'Serve Analysis' } : { id: 'rally', label: 'Rally Analysis' },
     { id: 'heatmaps', label: 'Heatmaps' },
@@ -334,6 +335,7 @@ function renderDashboard() {
   const sum = selectedDetail?.summary || {};
   document.getElementById('dashContent').innerHTML = `
     <div class="tab-panel${activeTab === 'overview' ? ' active' : ''}" id="p-overview">${renderOverview(sum, isServe)}</div>
+    <div class="tab-panel${activeTab === 'performance' ? ' active' : ''}" id="p-performance">${renderPerformance(sum, isServe)}</div>
     <div class="tab-panel${activeTab === 'placement' ? ' active' : ''}" id="p-placement">${renderPlacement(sum)}</div>
     <div class="tab-panel${activeTab === 'serve' ? ' active' : ''}" id="p-serve">${isServe ? renderServe(sum) : ''}</div>
     <div class="tab-panel${activeTab === 'rally' ? ' active' : ''}" id="p-rally">${!isServe ? renderRally(sum) : ''}</div>
@@ -402,6 +404,47 @@ function renderOverview(sum, isServe) {
     <div class="chart-card full">
       <h3>Speed Distribution</h3>
       <div id="chartSpeedOverview" class="echart"></div>
+    </div>
+  `;
+}
+
+// ==================== TAB: PERFORMANCE ====================
+function renderPerformance(sum, isServe) {
+  const details = selectedDetail?.details || [];
+  const sc = sum.stroke_counts || {};
+  const ac = sum.aggression_counts || {};
+  const dc = sum.depth_counts || {};
+  const total = sum.total_shots || 1;
+  const fhIn = details.filter(d => d.stroke_d === 'forehand' && d.is_in === true).length;
+  const fhTotal = sc.forehand || 1;
+  const bhIn = details.filter(d => d.stroke_d === 'backhand' && d.is_in === true).length;
+  const bhTotal = sc.backhand || 1;
+  const attackPct = Math.round(100 * (ac.Attack || 0) / total);
+  const deepPct = Math.round(100 * (dc.Deep || 0) / total);
+
+  return `
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Performance Radar</h3>
+        <div id="chartRadar" class="echart" style="height:320px"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Shot Metrics</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 0">
+          <div id="gaugeAttack" class="echart" style="height:150px"></div>
+          <div id="gaugeDeep" class="echart" style="height:150px"></div>
+          <div id="gaugeFhIn" class="echart" style="height:150px"></div>
+          <div id="gaugeBhIn" class="echart" style="height:150px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="chart-card full">
+      <h3>Court Heatmap</h3>
+      <div id="chartHeatmap" class="echart" style="height:400px"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Speed by Stroke</h3>
+      <div id="chartSpeedBox" class="echart" style="height:300px"></div>
     </div>
   `;
 }
@@ -1073,6 +1116,193 @@ function renderAllCharts() {
       { name: 'Middle', data: order.map(o => dbrData.Middle[o]||0), color: C_AMBER },
       { name: 'Short', data: order.map(o => dbrData.Short[o]||0), color: C_RED },
     ]);
+  }
+
+  // ========== PERFORMANCE TAB ==========
+
+  // Radar chart
+  const radarEl = document.getElementById('chartRadar');
+  if (radarEl) {
+    const sc = sum.stroke_counts || {};
+    const ac = sum.aggression_counts || {};
+    const dc = sum.depth_counts || {};
+    const total = sum.total_shots || 1;
+    const fhPct = Math.round(100 * (sc.forehand || 0) / total);
+    const attackPct = Math.round(100 * (ac.Attack || 0) / total);
+    const deepPct = Math.round(100 * (dc.Deep || 0) / total);
+    const midPct = Math.round(100 * (dc.Middle || 0) / total);
+    const maxSpd = sum.max_speed_kmh || 0;
+    const avgRally = sum.avg_rally_length || 0;
+    // Normalise speed to 0-100 (assume 100 km/h = 100%)
+    const spdNorm = Math.min(100, Math.round(maxSpd * 100 / 100));
+    const rallyNorm = Math.min(100, Math.round(avgRally * 100 / 15));
+
+    const chart = ec('chartRadar');
+    chart.setOption({
+      ...ANIM, tooltip: TT_ITEM,
+      radar: {
+        indicator: [
+          { name: 'Forehand %', max: 100 },
+          { name: 'Attack %', max: 100 },
+          { name: 'Deep %', max: 100 },
+          { name: 'Max Speed', max: 100 },
+          { name: 'Rally Length', max: 100 },
+          { name: 'Consistency', max: 100 },
+        ],
+        shape: 'circle',
+        splitNumber: 4,
+        axisName: { color: '#6b7280', fontSize: 12 },
+        splitArea: { areaStyle: { color: ['rgba(26,92,46,0.03)', 'rgba(26,92,46,0.06)', 'rgba(26,92,46,0.09)', 'rgba(26,92,46,0.12)'] } },
+        splitLine: { lineStyle: { color: 'rgba(0,0,0,0.08)' } },
+        axisLine: { lineStyle: { color: 'rgba(0,0,0,0.1)' } },
+      },
+      series: [{
+        type: 'radar',
+        data: [{
+          value: [fhPct, attackPct, deepPct, spdNorm, rallyNorm, midPct + deepPct],
+          name: 'Performance',
+          symbol: 'circle', symbolSize: 8,
+          lineStyle: { width: 2, color: C_GREEN },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(26,92,46,0.35)' },
+            { offset: 1, color: 'rgba(26,92,46,0.05)' },
+          ]) },
+          itemStyle: { color: C_GREEN, borderColor: '#fff', borderWidth: 2 },
+        }],
+      }],
+    });
+  }
+
+  // Gauge charts
+  function miniGauge(id, value, label, max, color) {
+    const chart = ec(id);
+    if (!chart) return;
+    chart.setOption({
+      ...ANIM,
+      series: [{
+        type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: max,
+        pointer: { show: false },
+        progress: { show: true, width: 12, roundCap: true, itemStyle: { color } },
+        axisLine: { lineStyle: { width: 12, color: [[1, 'rgba(0,0,0,0.06)']] } },
+        axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+        title: { offsetCenter: [0, '75%'], fontSize: 11, color: '#6b7280', fontWeight: 500 },
+        detail: {
+          offsetCenter: [0, '20%'], fontSize: 24, fontWeight: 700, color: color,
+          formatter: '{value}%',
+        },
+        data: [{ value, name: label }],
+      }],
+    });
+  }
+
+  const attackPctG = Math.round(100 * ((sum.aggression_counts || {}).Attack || 0) / (sum.total_shots || 1));
+  const deepPctG = Math.round(100 * ((sum.depth_counts || {}).Deep || 0) / (sum.total_shots || 1));
+  const fhInG = details.filter(d => d.stroke_d === 'forehand' && d.is_in === true).length;
+  const fhTotG = (sum.stroke_counts || {}).forehand || 1;
+  const bhInG = details.filter(d => d.stroke_d === 'backhand' && d.is_in === true).length;
+  const bhTotG = (sum.stroke_counts || {}).backhand || 1;
+
+  miniGauge('gaugeAttack', attackPctG, 'Attack Rate', 100, '#1a5c2e');
+  miniGauge('gaugeDeep', deepPctG, 'Deep Shots', 100, '#2563eb');
+  miniGauge('gaugeFhIn', Math.round(100 * fhInG / fhTotG), 'FH In Rate', 100, '#22783c');
+  miniGauge('gaugeBhIn', Math.round(100 * bhInG / bhTotG), 'BH In Rate', 100, '#2563eb');
+
+  // Court heatmap
+  const heatmapEl = document.getElementById('chartHeatmap');
+  if (heatmapEl && details.length) {
+    const GRID_X = 12, GRID_Y = 12;
+    const COURT_W = 10.97, COURT_L = 23.77;
+    const heatData = [];
+    const grid = Array.from({ length: GRID_Y }, () => Array(GRID_X).fill(0));
+
+    details.forEach(d => {
+      if (d.ball_x == null || d.ball_y == null) return;
+      const gx = Math.min(GRID_X - 1, Math.max(0, Math.floor(d.ball_x / COURT_W * GRID_X)));
+      const gy = Math.min(GRID_Y - 1, Math.max(0, Math.floor(d.ball_y / COURT_L * GRID_Y)));
+      grid[gy][gx]++;
+    });
+
+    for (let y = 0; y < GRID_Y; y++) {
+      for (let x = 0; x < GRID_X; x++) {
+        if (grid[y][x] > 0) heatData.push([x, y, grid[y][x]]);
+      }
+    }
+    const maxVal = Math.max(...heatData.map(d => d[2]), 1);
+
+    const chart = ec('chartHeatmap');
+    chart.setOption({
+      ...ANIM, tooltip: { position: 'top', formatter: (p) => `Zone: ${p.value[2]} shots` },
+      grid: { left: 50, right: 30, top: 20, bottom: 40 },
+      xAxis: {
+        type: 'category', data: Array.from({ length: GRID_X }, (_, i) => (i * COURT_W / GRID_X).toFixed(1) + 'm'),
+        axisLabel: { fontSize: 10, color: '#9ca3af' }, axisTick: { show: false },
+        splitArea: { show: true, areaStyle: { color: ['rgba(255,255,255,0)', 'rgba(0,0,0,0.02)'] } },
+      },
+      yAxis: {
+        type: 'category', data: Array.from({ length: GRID_Y }, (_, i) => (i * COURT_L / GRID_Y).toFixed(1) + 'm'),
+        axisLabel: { fontSize: 10, color: '#9ca3af' }, axisTick: { show: false },
+      },
+      visualMap: {
+        min: 0, max: maxVal, calculable: true, orient: 'horizontal', left: 'center', bottom: 0,
+        inRange: { color: ['#f0fdf4', '#86efac', '#22c55e', '#15803d', '#14532d'] },
+        textStyle: { fontSize: 11 },
+      },
+      series: [{
+        type: 'heatmap', data: heatData,
+        label: { show: true, fontSize: 11, fontWeight: 600, color: '#374151', formatter: (p) => p.value[2] > 0 ? p.value[2] : '' },
+        emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)' } },
+      }],
+    });
+  }
+
+  // Speed by stroke (scatter / boxplot style)
+  const speedBoxEl = document.getElementById('chartSpeedBox');
+  if (speedBoxEl && details.length) {
+    const fhSpeeds = details.filter(d => d.stroke_d === 'forehand' && d.ball_speed_kmh > 0).map(d => d.ball_speed_kmh);
+    const bhSpeeds = details.filter(d => d.stroke_d === 'backhand' && d.ball_speed_kmh > 0).map(d => d.ball_speed_kmh);
+
+    const chart = ec('chartSpeedBox');
+    chart.setOption({
+      ...ANIM, tooltip: TT_ITEM,
+      legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'circle' },
+      grid: { left: 50, right: 30, top: 30, bottom: 50 },
+      xAxis: {
+        type: 'category', data: ['Forehand', 'Backhand'],
+        axisLabel: { fontSize: 13, color: '#6b7280' },
+        axisLine: { lineStyle: { color: '#e5e5e5' } }, axisTick: { show: false },
+      },
+      yAxis: {
+        type: 'value', name: 'km/h', nameTextStyle: { fontSize: 11, color: '#9ca3af' },
+        axisLabel: { fontSize: 12, color: '#9ca3af' },
+        splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+        axisLine: { show: false }, axisTick: { show: false },
+      },
+      series: [
+        {
+          type: 'scatter', name: 'Forehand',
+          data: fhSpeeds.map((s, i) => [0 + (Math.random() - 0.5) * 0.4, s]),
+          itemStyle: { color: C_GREEN, opacity: 0.6 }, symbolSize: 10,
+          emphasis: { itemStyle: { opacity: 1, shadowBlur: 6 } },
+        },
+        {
+          type: 'scatter', name: 'Backhand',
+          data: bhSpeeds.map((s, i) => [1 + (Math.random() - 0.5) * 0.4, s]),
+          itemStyle: { color: C_BLUE, opacity: 0.6 }, symbolSize: 10,
+          emphasis: { itemStyle: { opacity: 1, shadowBlur: 6 } },
+        },
+        {
+          type: 'line', data: [
+            fhSpeeds.length ? [0, fhSpeeds.reduce((a, b) => a + b, 0) / fhSpeeds.length] : null,
+            bhSpeeds.length ? [1, bhSpeeds.reduce((a, b) => a + b, 0) / bhSpeeds.length] : null,
+          ].filter(Boolean),
+          symbol: 'diamond', symbolSize: 14,
+          lineStyle: { width: 0 },
+          itemStyle: { color: '#dc2626', borderWidth: 2, borderColor: '#fff' },
+          label: { show: true, position: 'top', formatter: (p) => p.value[1].toFixed(1) + ' avg', fontSize: 12, fontWeight: 600, color: '#dc2626' },
+          z: 10,
+        },
+      ],
+    });
   }
 
   // Resize handler for responsive
