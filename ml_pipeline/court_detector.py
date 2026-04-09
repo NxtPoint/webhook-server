@@ -114,6 +114,7 @@ class CourtDetector:
         self.model = self._load_model(weights_path)
         self.ref_keypoints = np.array(COURT_REFERENCE_KEYPOINTS, dtype=np.float32)
         self._last_detection: Optional[CourtDetection] = None
+        self._last_good_detection: Optional[CourtDetection] = None  # last with valid homography
         self._detect_interval: int = COURT_DETECTION_INTERVAL
         self._last_frame_idx: int = -COURT_DETECTION_INTERVAL
 
@@ -137,6 +138,8 @@ class CourtDetector:
                 detection = fallback
 
         self._last_detection = detection
+        if detection.homography is not None:
+            self._last_good_detection = detection
         self._last_frame_idx = frame_idx
         return detection
 
@@ -273,17 +276,23 @@ class CourtDetector:
     _coord_log_count = 0
 
     def to_court_coords(self, pixel_x: float, pixel_y: float) -> Optional[tuple]:
-        """Convert pixel coordinates to real-world court coordinates (metres)."""
-        if self._last_detection is None or self._last_detection.homography is None:
+        """Convert pixel coordinates to real-world court coordinates (metres).
+
+        Uses the most recent detection with a valid homography — not necessarily
+        _last_detection, which may have a failed homography on the final frame.
+        """
+        # Prefer _last_detection if it has homography, fall back to _last_good_detection
+        det = self._last_detection
+        if det is None or det.homography is None:
+            det = self._last_good_detection
+        if det is None or det.homography is None:
             if self._coord_log_count < 3:
                 logger.warning(
-                    "to_court_coords: returning None — detection=%s, homography=%s",
-                    self._last_detection is not None,
-                    self._last_detection.homography is not None if self._last_detection else "N/A",
+                    "to_court_coords: returning None — no valid homography available",
                 )
                 self._coord_log_count += 1
             return None
-        H = self._last_detection.homography
+        H = det.homography
         pt = np.array([pixel_x, pixel_y, 1.0])
         court_pt = H @ pt
         if abs(court_pt[2]) < 1e-10:
