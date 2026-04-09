@@ -260,24 +260,36 @@ class BallTracker:
                                 0 <= cy <= COURT_LENGTH_M
                             )
 
-    def compute_speeds(self, court_detector=None):
+    def compute_speeds(self, court_detector=None, fps: float = None):
         """Compute ball speed in km/h using court-coordinate distances between frames."""
         if court_detector is None or len(self.detections) < 2:
             return
+        sample_fps = fps or FRAME_SAMPLE_FPS
+        none_count = 0
+        ok_count = 0
         for i in range(1, len(self.detections)):
             d_prev = self.detections[i - 1]
             d_curr = self.detections[i]
             c_prev = court_detector.to_court_coords(d_prev.x, d_prev.y)
             c_curr = court_detector.to_court_coords(d_curr.x, d_curr.y)
             if c_prev is None or c_curr is None:
+                none_count += 1
                 continue
+            ok_count += 1
             dist_m = np.hypot(c_curr[0] - c_prev[0], c_curr[1] - c_prev[1])
-            dt_sec = (d_curr.frame_idx - d_prev.frame_idx) / FRAME_SAMPLE_FPS
+            dt_sec = (d_curr.frame_idx - d_prev.frame_idx) / sample_fps
             if dt_sec > 0:
                 speed_ms = dist_m / dt_sec
                 d_curr.speed_kmh = speed_ms * 3.6
                 d_curr.court_x = c_curr[0]
                 d_curr.court_y = c_curr[1]
+        if none_count > 0:
+            logger.warning(
+                "compute_speeds: %d/%d pairs had None court coords (homography=%s)",
+                none_count, none_count + ok_count,
+                court_detector._last_detection.homography is not None
+                if court_detector._last_detection else "no_detection",
+            )
 
     def reset(self):
         self._frame_buffer.clear()

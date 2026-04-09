@@ -5,12 +5,15 @@ Runs every COURT_DETECTION_INTERVAL frames; returns cached result between runs.
 Falls back to Hough line detection if confidence is below threshold.
 """
 
+import logging
 import numpy as np
 import cv2
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from ml_pipeline.config import (
     COURT_DETECTOR_WEIGHTS,
@@ -186,13 +189,20 @@ class CourtDetector:
             valid_mask = detected_kps[:, 0] >= 0
         n_valid = int(valid_mask.sum())
         if n_valid < 4:
+            logger.warning("_compute_homography: only %d valid keypoints (need 4)", n_valid)
             return None
         src = detected_kps[valid_mask].astype(np.float32)
         dst = self.ref_keypoints[valid_mask[:len(self.ref_keypoints)]].astype(np.float32)
         n = min(len(src), len(dst))
         if n < 4:
+            logger.warning("_compute_homography: src/dst mismatch — src=%d dst=%d", len(src), len(dst))
             return None
         H, mask = cv2.findHomography(src[:n], dst[:n], cv2.RANSAC, 5.0)
+        if H is None:
+            logger.warning("_compute_homography: findHomography returned None with %d points", n)
+        else:
+            logger.info("_compute_homography: success with %d points, H diag=[%.2f, %.2f, %.2f]",
+                         n, H[0, 0], H[1, 1], H[2, 2])
         return H
 
     def _detect_hough(self, frame: np.ndarray) -> Optional[CourtDetection]:
@@ -260,9 +270,18 @@ class CourtDetector:
         py = y1 + t * (y2 - y1)
         return np.array([px, py], dtype=np.float32)
 
+    _coord_log_count = 0
+
     def to_court_coords(self, pixel_x: float, pixel_y: float) -> Optional[tuple]:
         """Convert pixel coordinates to real-world court coordinates (metres)."""
         if self._last_detection is None or self._last_detection.homography is None:
+            if self._coord_log_count < 3:
+                logger.warning(
+                    "to_court_coords: returning None — detection=%s, homography=%s",
+                    self._last_detection is not None,
+                    self._last_detection.homography is not None if self._last_detection else "N/A",
+                )
+                self._coord_log_count += 1
             return None
         H = self._last_detection.homography
         pt = np.array([pixel_x, pixel_y, 1.0])

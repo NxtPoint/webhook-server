@@ -117,8 +117,50 @@ def _pass1_extract_bounces(conn, task_id, job_id, practice_type, fps):
     """
     Extract bounce detections from ml_analysis.ball_detections,
     join nearest player position, insert into silver.practice_detail.
+
+    Uses court_x/court_y when available from the ML pipeline.
+    Falls back to pixel-to-court estimation when court coords are missing
+    (known issue: ML pipeline may not propagate court coords despite
+    successful court detection).
     """
-    result = conn.execute(sql_text("""
+    # Check if bronze has court coords — if not, estimate from pixels
+    has_coords = conn.execute(sql_text("""
+        SELECT count(*) FROM ml_analysis.ball_detections
+        WHERE job_id = :job_id AND is_bounce = TRUE AND court_x IS NOT NULL
+    """), {"job_id": job_id}).scalar()
+
+    if has_coords > 0:
+        # Bronze has court coords — use them directly
+        ball_x_expr = "b.court_x"
+        ball_y_expr = "b.court_y"
+        speed_expr  = "b.speed_kmh"
+        coord_filter = "AND b.court_x IS NOT NULL AND b.court_y IS NOT NULL"
+        player_x_expr = "p.court_x"
+        player_y_expr = "p.court_y"
+        logger.info("Pass 1: using bronze court coords (%d bounces with coords)", has_coords)
+    else:
+        # Fallback: estimate court coords from pixel positions
+        # Get video dimensions for mapping
+        vid = conn.execute(sql_text("""
+            SELECT video_width, video_height
+            FROM ml_analysis.video_analysis_jobs WHERE job_id = :job_id
+        """), {"job_id": job_id}).mappings().first()
+        vw = float((vid or {}).get("video_width") or 1280)
+        vh = float((vid or {}).get("video_height") or 720)
+        logger.warning(
+            "Pass 1: NO court coords in bronze — estimating from pixels (%dx%d)",
+            int(vw), int(vh),
+        )
+        # Map pixel x → court width (doubles width for full frame)
+        # Map pixel y → court length (flipped: top of frame = far baseline)
+        ball_x_expr = f"(b.x / {vw}) * {COURT_WIDTH_DOUBLES_M}"
+        ball_y_expr = f"(b.y / {vh}) * {COURT_LENGTH_M}"
+        speed_expr  = "NULL"  # can't compute speed without real court coords
+        coord_filter = ""     # accept all bounces
+        player_x_expr = f"(p.center_x / {vw}) * {COURT_WIDTH_DOUBLES_M}"
+        player_y_expr = f"(p.center_y / {vh}) * {COURT_LENGTH_M}"
+
+    result = conn.execute(sql_text(f"""
         INSERT INTO silver.practice_detail
             (task_id, practice_type, frame_idx, timestamp_s,
              ball_x, ball_y, ball_speed_kmh, is_bounce, is_in,
@@ -129,29 +171,27 @@ def _pass1_extract_bounces(conn, task_id, job_id, practice_type, fps):
             :practice_type,
             b.frame_idx,
             b.frame_idx / :fps,
-            b.court_x,
-            b.court_y,
-            b.speed_kmh,
+            {ball_x_expr},
+            {ball_y_expr},
+            {speed_expr},
             TRUE,
             b.is_in,
             p.player_id,
-            p.court_x,
-            p.court_y,
-            0,    -- placeholder, set in pass 2
-            0     -- placeholder, set in pass 2
+            {player_x_expr},
+            {player_y_expr},
+            0,
+            0
         FROM ml_analysis.ball_detections b
         LEFT JOIN LATERAL (
-            SELECT pd.player_id, pd.court_x, pd.court_y
+            SELECT pd.player_id, pd.court_x, pd.court_y, pd.center_x, pd.center_y
             FROM ml_analysis.player_detections pd
             WHERE pd.job_id = :job_id
-              AND pd.frame_idx = b.frame_idx
-            ORDER BY pd.player_id
+            ORDER BY ABS(pd.frame_idx - b.frame_idx), pd.player_id
             LIMIT 1
         ) p ON TRUE
         WHERE b.job_id = :job_id
           AND b.is_bounce = TRUE
-          AND b.court_x IS NOT NULL
-          AND b.court_y IS NOT NULL
+          {coord_filter}
         ORDER BY b.frame_idx
     """), {
         "task_id": task_id,
@@ -257,17 +297,19 @@ def _pass3_analytics(conn, task_id, practice_type):
         WHERE task_id = :tid AND ball_x IS NOT NULL AND ball_y IS NOT NULL
     """), {"tid": task_id, "cx": CENTRE_X, "hy": HALF_Y}).rowcount
 
-    # Depth classification (from bounce Y relative to baseline)
-    # Normalize: distance from nearest baseline
+    # Depth classification (from bounce Y relative to nearest baseline)
+    # LEAST(ball_y, court_length - ball_y) = distance from nearest baseline
+    # Deep = within ~3m of baseline, Middle = 3–6.4m, Short = beyond service line
     updated += conn.execute(sql_text("""
         UPDATE silver.practice_detail
         SET depth_d = CASE
-            WHEN LEAST(ball_y, :cl - ball_y) > (:cl * 0.84) THEN 'Deep'
-            WHEN LEAST(ball_y, :cl - ball_y) > (:cl * 0.76) THEN 'Middle'
+            WHEN LEAST(ball_y, :cl - ball_y) < :deep THEN 'Deep'
+            WHEN LEAST(ball_y, :cl - ball_y) < :mid  THEN 'Middle'
             ELSE 'Short'
         END
         WHERE task_id = :tid AND ball_y IS NOT NULL
-    """), {"tid": task_id, "cl": COURT_LENGTH_M}).rowcount
+    """), {"tid": task_id, "cl": COURT_LENGTH_M,
+           "deep": 3.0, "mid": SERVICE_LINE_M}).rowcount
 
     if practice_type == "serve_practice":
         # Serve zone: Wide / Body / T (based on bounce X relative to service box)

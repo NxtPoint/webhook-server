@@ -611,9 +611,12 @@ All post-processing steps are non-fatal — ML results are saved even if transco
 - `match_analytics` — aggregate stats: bounce counts, speeds, rally counts, serve %
 
 **Known data quality issues** (as of 2026-04-09):
-- `ball_speed_kmh` may not propagate correctly from ML detections to `silver.practice_detail` — needs investigation
-- Court coordinate mapping (`court_x`, `court_y`) quality depends on court detection confidence
-- `is_in` / `is_bounce` classification accuracy not yet validated against ground truth
+- **Court coords NULL in bronze**: `court_x`, `court_y`, `speed_kmh`, and `is_in` are all NULL for every ball detection across all 3 completed jobs, despite `court_detected=True` and `court_confidence=1.0`. Root cause: `to_court_coords()` returns None for all pixel inputs — likely `findHomography()` returns None in the Docker/GPU runtime despite working locally. Diagnostic logging added. **Workaround**: silver builder falls back to pixel-to-court estimation when court coords are missing.
+- `ball_speed_kmh` is NULL in silver (cannot compute from pixel coords alone — needs real homography). Speed charts will be empty until bronze is fixed.
+- `is_in` is NULL in silver (same root cause — no court boundary check without homography).
+- `compute_speeds` FPS bug fixed: was hardcoded to 25fps, now uses actual `target_fps` (10fps for practice).
+- Depth classification bug fixed: thresholds were unreachable (everything was "Short"). Now uses real distances: Deep < 3m, Middle < 6.4m from baseline.
+- Player position JOIN bug fixed: was exact frame match (NULL for most rows in practice mode). Now uses nearest frame.
 
 **API Endpoints** (OPS_KEY auth): `GET /api/analysis/jobs/<job_id>`, `GET /api/analysis/results/<match_id>`, `GET /api/analysis/heatmap/<job_id>/<type>`, `POST /api/analysis/retry/<job_id>`.
 
@@ -662,70 +665,232 @@ When Wix is fully retired (own auth + own payments):
 This is the foundation upon which silver views and frontend charts are built. Every subsequent step depends on bronze data being correct and complete. Use the completed rally practice job `65439372-752b-4471-848a-5ed2083dbee1` as the reference dataset.
 
 **1. Audit bronze data (`ml_analysis.*`) for the reference job:**
-- Query `ml_analysis.ball_detections WHERE job_id = '65439372-...'` — check:
-  - How many rows? Expected ~965 (ball detections at 10fps for 32-min video)
-  - `speed_kmh` column: is it populated? Many NULLs? What's the distribution?
-  - `court_x`, `court_y`: populated? Reasonable values (0–23.77m length, 0–10.97m width)?
-  - `is_bounce`: how many TRUE vs FALSE? Expected hundreds of bounces for 32-min rally practice
-  - `is_in`: populated or all NULL?
-  - `x`, `y` (pixel coords): reasonable for 1280x720 video?
-- Query `ml_analysis.player_detections WHERE job_id = '65439372-...'` — check:
-  - How many rows? (Should be ~1925 after practice filter)
-  - `court_x`, `court_y`: populated?
-  - `player_id`: are there 1 or 2 distinct players?
-- Query `ml_analysis.match_analytics WHERE job_id = '65439372-...'` — check:
-  - `bounce_count`, `bounces_in`, `bounces_out`: sensible numbers?
-  - `max_speed_kmh`, `avg_speed_kmh`: populated and realistic (tennis ball 50–200 km/h)?
-  - `rally_count`, `avg_rally_length`, `serve_count`, `first_serve_pct`: populated?
-- Query `ml_analysis.video_analysis_jobs WHERE job_id = '65439372-...'` — check:
-  - `ball_heatmap_s3_key`, `player_heatmap_s3_keys`: populated?
-  - `processing_time_sec`, `estimated_cost_usd`: populated?
+
+```sql
+-- Ball detections: row count, speed coverage, bounce/in coverage
+SELECT count(*) AS total,
+       count(speed_kmh) AS speed_populated, avg(speed_kmh) AS avg_speed, max(speed_kmh) AS max_speed,
+       count(*) filter (where speed_kmh IS NULL) AS speed_null,
+       count(*) filter (where is_bounce) AS bounces_true,
+       count(*) filter (where NOT is_bounce) AS bounces_false,
+       count(*) filter (where is_bounce IS NULL) AS bounces_null,
+       count(*) filter (where is_in) AS in_true,
+       count(*) filter (where NOT is_in) AS in_false,
+       count(*) filter (where is_in IS NULL) AS in_null,
+       count(court_x) AS court_x_populated, count(court_y) AS court_y_populated,
+       min(court_x) AS court_x_min, max(court_x) AS court_x_max,
+       min(court_y) AS court_y_min, max(court_y) AS court_y_max,
+       min(x) AS px_x_min, max(x) AS px_x_max,
+       min(y) AS px_y_min, max(y) AS px_y_max
+FROM ml_analysis.ball_detections
+WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
+-- Expected: ~965 rows, pixel coords within 1280x720, court coords 0–23.77m (length) / 0–10.97m (width)
+
+-- Player detections: row count, court coord coverage, distinct players
+SELECT count(*) AS total,
+       count(DISTINCT player_id) AS distinct_players,
+       count(court_x) AS court_x_populated, count(court_y) AS court_y_populated,
+       min(court_x) AS court_x_min, max(court_x) AS court_x_max,
+       min(court_y) AS court_y_min, max(court_y) AS court_y_max
+FROM ml_analysis.player_detections
+WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
+-- Expected: ~1925 rows (filtered from 36159 in practice mode), 1–2 players
+
+-- Match analytics: aggregate stats sanity check
+SELECT bounce_count, bounces_in, bounces_out,
+       max_speed_kmh, avg_speed_kmh,
+       rally_count, avg_rally_length, serve_count, first_serve_pct
+FROM ml_analysis.match_analytics
+WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
+-- Speeds should be 50–200 km/h for tennis; bounce_count should be hundreds for 32-min rally
+
+-- Job metadata: heatmaps, timing, cost
+SELECT status, progress, court_detected, court_confidence,
+       ball_heatmap_s3_key, player_heatmap_s3_keys,
+       processing_time_sec, estimated_cost_usd
+FROM ml_analysis.video_analysis_jobs
+WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
+```
 
 **2. Trace the data pipeline for gaps:**
-- `ball_tracker.py` `detect_frame()` → `BallDetection` dataclass → what populates `speed_kmh`?
-  - `compute_speeds()` in `ball_tracker.py` — does it run? Check the `_postprocess()` call in `pipeline.py`
-  - Speed requires court detector homography to convert pixel distance → real-world metres → km/h
-  - If `court_detected = False` or low confidence, speeds will be 0/NULL
-- `ball_tracker.py` `detect_bounces()` — what populates `is_bounce` and `is_in`?
-  - Bounce detection uses velocity direction change (config: `BOUNCE_MIN_DIRECTION_CHANGE = 25`)
-  - `is_in` requires court boundaries from court detector — if court not detected, all NULL
-- `player_tracker.py` `map_to_court()` — populates `court_x`, `court_y` on player detections
-  - Requires court detector homography matrix
-- `db_writer.py` `save_ball_detections()` / `save_player_detections()` — verify the INSERT statements include all columns, no silent drops
+
+The data quality chain flows: court detector → ball tracker → player tracker → db writer → silver builder. Each stage depends on the one before it.
+
+- **Speed** (`ball_speed_kmh`):
+  - Originates in `ball_tracker.py` `compute_speeds()` — converts pixel distance between consecutive detections to real-world km/h using the court detector's homography matrix
+  - Called from `pipeline.py` `_postprocess()` — verify this call exists and runs
+  - **Break point**: if `court_detected = False` or low confidence, the homography is missing/wrong → speeds will be 0 or NULL
+  - Speed requires: valid pixel coords (x,y) + valid homography → court coords → distance/time → km/h
+
+- **Bounces** (`is_bounce`):
+  - Originates in `ball_tracker.py` `detect_bounces()` — detects velocity direction change
+  - Config threshold: `BOUNCE_MIN_DIRECTION_CHANGE = 25` (degrees)
+  - **Break point**: if ball tracking has gaps (interpolated segments), direction changes may be artificial
+
+- **In/Out** (`is_in`):
+  - Originates in `ball_tracker.py` `detect_bounces()` — checks if bounce point falls within court boundaries
+  - Requires court detector's court polygon boundaries
+  - **Break point**: if court not detected, all `is_in` values will be NULL
+
+- **Court coords** (`court_x`, `court_y`) on ball detections:
+  - `ball_tracker.py` applies `court_detector.pixel_to_court()` to each detection's pixel (x,y)
+  - **Break point**: bad homography → all court coords are wrong (but non-NULL), leading to wrong zones/depth in silver
+
+- **Player court coords** (`court_x`, `court_y`) on player detections:
+  - `player_tracker.py` `map_to_court()` — uses same homography from court detector
+  - **Break point**: same as ball — bad homography = bad player positions
+
+- **DB writer** (`db_writer.py`):
+  - `save_ball_detections()` — INSERT into `ml_analysis.ball_detections`. Verify all columns from the `BallDetection` dataclass are included (no silent drops)
+  - `save_player_detections()` — INSERT into `ml_analysis.player_detections`. Same check
+  - `save_match_analytics()` — INSERT into `ml_analysis.match_analytics`. Check that speed/bounce/rally aggregates are computed correctly before writing
 
 **3. Audit silver data (`silver.practice_detail`) for the reference job:**
-- Query `silver.practice_detail WHERE task_id = '65439372-...'` — check:
-  - Total rows? How many with `practice_type = 'rally_practice'`?
-  - `ball_speed_kmh`: populated or NULL? This is the known issue
-  - `serve_zone`, `serve_side`, `serve_result`: should be NULL for rally practice
-  - `rally_length`, `rally_duration_s`: populated for shot_ix = 1 rows?
-  - `placement_zone` (A/B/C/D): populated?
-  - `depth_d` (Deep/Middle/Short): populated?
-  - `ball_x`, `ball_y`: court coordinates present?
-  - `player_court_x`, `player_court_y`: present?
-- Trace `build_silver_practice.py` pass by pass:
-  - Pass 1 (lines 116-162): extracts bounces from `ml_analysis.ball_detections` + joins player positions. Check: is the JOIN correct? Does it match on `job_id` and nearest `frame_idx`?
-  - Pass 2 (lines 165-238): sequence detection. For rally practice, groups bounces into rallies by frame gap (`RALLY_GAP_FRAMES = 25`). Check: are `sequence_num` and `shot_ix` populated correctly?
-  - Pass 3 (lines 241-320): analytics. Computes `placement_zone`, `depth_d`, `serve_zone`, etc. Check: do the court geometry constants match the homography output from the pipeline?
+
+```sql
+-- Overall coverage check
+SELECT count(*) AS total,
+       count(*) filter (where practice_type = 'rally_practice') AS rally_rows,
+       count(*) filter (where practice_type = 'serve_practice') AS serve_rows,
+       count(ball_speed_kmh) AS speed_populated,
+       count(*) filter (where ball_speed_kmh IS NULL) AS speed_null,
+       count(placement_zone) AS zone_populated,
+       count(depth_d) AS depth_populated,
+       count(ball_x) AS ball_x_populated,
+       count(ball_y) AS ball_y_populated,
+       count(player_court_x) AS player_x_populated,
+       count(player_court_y) AS player_y_populated
+FROM silver.practice_detail
+WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1';
+
+-- Serve fields should be NULL for rally practice
+SELECT count(serve_zone) AS serve_zone_populated,
+       count(serve_side) AS serve_side_populated,
+       count(serve_result) AS serve_result_populated
+FROM silver.practice_detail
+WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1';
+-- Expected: all 0 for rally practice
+
+-- Rally structure: rally_length and duration on first shots
+SELECT sequence_num, shot_ix, rally_length, rally_duration_s
+FROM silver.practice_detail
+WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1'
+  AND shot_ix = 1
+ORDER BY sequence_num
+LIMIT 20;
+-- rally_length and rally_duration_s should be populated on shot_ix=1 rows
+
+-- Zone and depth distribution (sanity)
+SELECT placement_zone, count(*) FROM silver.practice_detail
+WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1' GROUP BY 1 ORDER BY 1;
+
+SELECT depth_d, count(*) FROM silver.practice_detail
+WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1' GROUP BY 1 ORDER BY 1;
+```
+
+Trace `build_silver_practice.py` pass by pass:
+- **Pass 1** (extract bounces): reads `ml_analysis.ball_detections` WHERE `is_bounce = true`, JOINs nearest `player_detections` by `job_id` and closest `frame_idx`. Check: is the JOIN correct? Does it match on `job_id` and nearest `frame_idx`? Are `ball_x`/`ball_y` populated from `court_x`/`court_y`?
+- **Pass 2** (sequence detection): for rally practice, groups bounces into rallies by frame gap (`RALLY_GAP_FRAMES = 25`), numbers shots within each. Check: are `sequence_num` and `shot_ix` populated correctly?
+- **Pass 3** (analytics): computes `placement_zone` (A/B/C/D quadrant), `depth_d` (Deep/Middle/Short), `serve_zone` (Wide/Body/T), `serve_result` (In/Fault). Check: do the court geometry constants match the homography output from the pipeline?
 
 **4. Verify the court detector output:**
-- The entire data quality chain depends on `court_detector.py` correctly mapping pixel coordinates to court coordinates
-- Check `ml_analysis.video_analysis_jobs.court_detected` and `court_confidence` for the reference job
-- If court detection failed or used fallback (Hough lines), all court-based analytics (speed, is_in, zones, depth) will be wrong or NULL
-- The court detector's homography matrix transforms pixel (x,y) → court metres. If this is off, ball_x/ball_y in silver will be wrong
 
-**5. Fix any gaps found — priority order:**
-1. Court detection confidence → affects everything downstream
-2. `speed_kmh` propagation → needed for speed charts
-3. `is_bounce` / `is_in` accuracy → needed for serve analysis
-4. `court_x` / `court_y` mapping → needed for zone/depth classification
-5. Silver builder field population → needed for frontend charts
+The entire data quality chain depends on `court_detector.py` correctly mapping pixel coordinates to court coordinates.
+
+```sql
+-- Check court detection status for reference job
+SELECT court_detected, court_confidence
+FROM ml_analysis.video_analysis_jobs
+WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
+```
+
+- If `court_detected = false` or confidence is low: all court-based analytics (speed, is_in, zones, depth) will be wrong or NULL
+- The court detector outputs 14 keypoints → homography matrix. This matrix transforms pixel (x,y) → court metres
+- If using fallback (Hough lines), accuracy drops significantly
+- Check `court_detector.py`: `detect()`, `pixel_to_court()`, `get_homography()`
+- The homography quality determines whether `court_x`/`court_y` values are sensible (length 0–23.77m, width 0–10.97m) or garbage
+
+**5. Fix priorities — ordered by downstream impact:**
+
+1. **Court detection confidence** → affects everything downstream (speeds, bounces, zones, depth, player positions). If this is broken, nothing else matters.
+2. **`speed_kmh` propagation** → needed for speed histogram and serve timeline charts in practice dashboard
+3. **`is_bounce` / `is_in` accuracy** → needed for serve analysis (In/Fault counts) and bounce heatmaps
+4. **`court_x` / `court_y` mapping** → needed for zone classification (A/B/C/D) and depth classification (Deep/Middle/Short)
+5. **Silver builder field population** → needed for all frontend charts; if bronze is correct but silver isn't populating, the charts show blanks
 
 **6. Validate fixes:**
-- After any pipeline code changes: rebuild Docker image, push to ECR, resubmit the same rally video
-- Compare bronze row counts and value distributions before/after
-- Verify silver practice_detail has all fields populated
-- Check practice dashboard (`/practice`) shows real data in all charts
+
+After any pipeline code changes:
+1. Rebuild Docker image: `docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .`
+2. Push to ECR (both regions)
+3. Resubmit the same rally video via AWS Batch
+4. Compare bronze row counts and value distributions before/after
+5. Rebuild silver: rerun `_do_ingest_t5()` or call `build_silver_practice.py` directly
+6. Verify `silver.practice_detail` has all fields populated
+7. Check practice dashboard (`/practice`) shows real data in all charts
+
+**7. Reference job + diagnostic queries:**
+
+- **Job ID**: `65439372-752b-4471-848a-5ed2083dbee1`
+- **Task ID**: same (job_id = task_id for T5 jobs)
+- **Sport type**: `rally_practice`
+- **Video**: 32 min, 1280x720, ~19K frames at 10fps
+- **Pipeline time**: 994.5s (16.6 min)
+- **Ball detections**: 965 rows
+- **Player detections**: 1925 rows (filtered from 36159)
+- **S3 heatmaps**: `analysis/65439372-.../ball_heatmap.png`, `player_heatmap_0.png`, `player_heatmap_1.png`
+- **Trimmed video**: `trimmed/65439372-.../practice.mp4`
+
+**Paste into Render shell** (webhook-server → Shell tab):
+```bash
+python -c "
+from db_init import engine
+from sqlalchemy import text
+with engine.connect() as c:
+    # Bronze: ball detections
+    r = c.execute(text(\"\"\"
+        SELECT count(*) AS total, count(speed_kmh) AS speed_pop, avg(speed_kmh)::numeric(6,1) AS avg_spd,
+               max(speed_kmh)::numeric(6,1) AS max_spd, count(*) filter (where is_bounce) AS bounces,
+               count(*) filter (where is_in) AS in_count, count(*) filter (where is_in IS NULL) AS in_null,
+               count(court_x) AS cx_pop, count(court_y) AS cy_pop
+        FROM ml_analysis.ball_detections WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
+    \"\"\")).fetchone()
+    print('BALL:', dict(r._mapping))
+
+    # Bronze: player detections
+    r = c.execute(text(\"\"\"
+        SELECT count(*) AS total, count(DISTINCT player_id) AS players,
+               count(court_x) AS cx_pop, count(court_y) AS cy_pop
+        FROM ml_analysis.player_detections WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
+    \"\"\")).fetchone()
+    print('PLAYER:', dict(r._mapping))
+
+    # Bronze: match analytics
+    r = c.execute(text(\"\"\"
+        SELECT bounce_count, bounces_in, bounces_out, max_speed_kmh::numeric(6,1),
+               avg_speed_kmh::numeric(6,1), rally_count, avg_rally_length, serve_count
+        FROM ml_analysis.match_analytics WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
+    \"\"\")).fetchone()
+    print('ANALYTICS:', dict(r._mapping) if r else 'NO ROW')
+
+    # Court detection
+    r = c.execute(text(\"\"\"
+        SELECT court_detected, court_confidence
+        FROM ml_analysis.video_analysis_jobs WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
+    \"\"\")).fetchone()
+    print('COURT:', dict(r._mapping))
+
+    # Silver: practice_detail coverage
+    r = c.execute(text(\"\"\"
+        SELECT count(*) AS total, count(ball_speed_kmh) AS speed_pop,
+               count(placement_zone) AS zone_pop, count(depth_d) AS depth_pop,
+               count(ball_x) AS bx_pop, count(player_court_x) AS px_pop,
+               count(rally_length) filter (where shot_ix = 1) AS rally_len_pop
+        FROM silver.practice_detail WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1'
+    \"\"\")).fetchone()
+    print('SILVER:', dict(r._mapping))
+"
+```
 
 **Key files to investigate:**
 - `ml_pipeline/ball_tracker.py` — `compute_speeds()`, `detect_bounces()`, `interpolate_gaps()`
@@ -735,30 +900,3 @@ This is the foundation upon which silver views and frontend charts are built. Ev
 - `ml_pipeline/db_writer.py` — `save_ball_detections()`, `save_player_detections()`, `save_match_analytics()`
 - `ml_pipeline/build_silver_practice.py` — 3-pass silver builder
 - `ml_pipeline/db_schema.py` — table definitions (verify columns match what pipeline writes)
-
-**Reference data for validation:**
-- Job ID: `65439372-752b-4471-848a-5ed2083dbee1`
-- Task ID: same (job_id = task_id for T5 jobs)
-- Sport type: `rally_practice`
-- Video: 32 min, 1280x720, ~19K frames at 10fps
-- Pipeline time: 994.5s (16.6 min)
-- Ball detections: 965 rows
-- Player detections: 1925 rows (filtered from 36159)
-- S3 heatmaps: `analysis/65439372-.../ball_heatmap.png`, `player_heatmap_0.png`, `player_heatmap_1.png`
-- Trimmed video: `trimmed/65439372-.../practice.mp4`
-
-**Connect to the DB from Render shell** to run diagnostic queries:
-```bash
-# On Render → webhook-server service → Shell tab:
-python -c "
-from db_init import engine
-from sqlalchemy import text
-with engine.connect() as c:
-    rows = c.execute(text(\"\"\"
-        SELECT count(*), count(speed_kmh), avg(speed_kmh), max(speed_kmh),
-               count(*) filter (where is_bounce), count(*) filter (where is_in)
-        FROM ml_analysis.ball_detections WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
-    \"\"\")).fetchone()
-    print(rows)
-"
-```

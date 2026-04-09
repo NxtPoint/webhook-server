@@ -191,7 +191,7 @@ class TennisAnalysisPipeline:
         # Ball post-processing
         self.ball_tracker.interpolate_gaps()
         self.ball_tracker.detect_bounces(court_detector=self.court_detector)
-        self.ball_tracker.compute_speeds(court_detector=self.court_detector)
+        self.ball_tracker.compute_speeds(court_detector=self.court_detector, fps=self.target_fps)
         result.ball_detections = self.ball_tracker.detections
 
         # Player post-processing
