@@ -1751,9 +1751,15 @@ def _do_ingest_t5(task_id: str) -> bool:
         except Exception as e:
             app.logger.warning("T5 INGEST task_id=%s silver build failed (non-fatal): %s", task_id, e)
 
-        # Skip: video trim (no trim for practice v1)
+        # Video trim: reuse match trim pipeline to cut dead time from practice.mp4
+        try:
+            from video_pipeline.video_trim_api import trigger_video_trim
+            trim_result = trigger_video_trim(task_id)
+            app.logger.info("T5 INGEST task_id=%s trim triggered: %s", task_id, trim_result)
+        except Exception as e:
+            app.logger.warning("T5 INGEST task_id=%s trim failed (non-fatal): %s", task_id, e)
+
         # Skip: billing (practice is free — no credit consumption)
-        app.logger.info("T5 INGEST task_id=%s skipped billing/trim (practice mode)", task_id)
 
         # PBI refresh (when dataset exists for practice data)
         if PBI_SERVICE_BASE:

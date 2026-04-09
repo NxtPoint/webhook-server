@@ -94,7 +94,8 @@ def _get_submission_context_row(conn, task_id: str) -> Optional[Dict[str, Any]]:
                 s3_bucket,
                 s3_key,
                 trim_status,
-                trim_output_s3_key
+                trim_output_s3_key,
+                sport_type
             FROM bronze.submission_context
             WHERE task_id = :task_id
             LIMIT 1
@@ -117,6 +118,25 @@ def _load_silver_for_timeline(conn, task_id: str) -> pd.DataFrame:
             WHERE task_id = :task_id
               AND ball_hit_s IS NOT NULL
               AND point_number IS NOT NULL
+        """),
+        conn,
+        params={"task_id": task_id},
+    )
+
+
+def _load_practice_for_timeline(conn, task_id: str) -> pd.DataFrame:
+    """Load practice data mapped to the same shape as match silver."""
+    return pd.read_sql(
+        text("""
+            SELECT
+                task_id,
+                sequence_num  AS point_number,
+                timestamp_s   AS ball_hit_s,
+                FALSE         AS exclude_d
+            FROM silver.practice_detail
+            WHERE task_id = :task_id
+              AND timestamp_s IS NOT NULL
+              AND sequence_num IS NOT NULL
         """),
         conn,
         params={"task_id": task_id},
@@ -178,9 +198,18 @@ def _mark_trim_accepted(conn, task_id: str) -> None:
 # Public API
 # ============================================================
 
+_PRACTICE_SPORT_TYPES = {"serve_practice", "rally_practice"}
+
+
 def trigger_video_trim(task_id: str) -> dict:
     """
     Fire-and-forget trigger for the external video worker service.
+
+    Works for both match (silver.point_detail) and practice (silver.practice_detail)
+    jobs — sport_type on submission_context determines the silver source.
+
+    For practice: the ML pipeline already produces a compressed practice.mp4,
+    so we re-trim that (cutting dead time between rallies) to produce review.mp4.
 
     Non-negotiable behavior:
       - Must not block ingest beyond a short outbound HTTP trigger
@@ -202,11 +231,19 @@ def trigger_video_trim(task_id: str) -> dict:
         if not row:
             raise ValueError(f"submission_context not found for task_id={task_id}")
 
+        sport_type = str(row.get("sport_type") or "").strip()
+        is_practice = sport_type in _PRACTICE_SPORT_TYPES
+
         trim_status = str(row.get("trim_status") or "").strip().lower()
         trim_output_s3_key = str(row.get("trim_output_s3_key") or "").strip()
 
-        # Idempotent skip: already completed
-        if trim_status == "completed" and trim_output_s3_key:
+        if is_practice and trim_status == "completed" and trim_output_s3_key:
+            # Practice: ML pipeline set trim_status=completed for the full video.
+            # We re-trim that to cut dead time → use it as source, reset status.
+            s3_bucket = str(row.get("s3_bucket") or "").strip() or S3_BUCKET
+            s3_key = trim_output_s3_key
+        elif trim_status == "completed" and trim_output_s3_key:
+            # Match: already trimmed — skip
             return {
                 "ok": True,
                 "accepted": False,
@@ -214,6 +251,9 @@ def trigger_video_trim(task_id: str) -> dict:
                 "status": "already_completed",
                 "output_s3_key": trim_output_s3_key,
             }
+        else:
+            s3_bucket = str(row.get("s3_bucket") or "").strip() or S3_BUCKET
+            s3_key = str(row.get("s3_key") or "").strip()
 
         # Idempotent skip: already in flight
         if trim_status in {"queued", "accepted", "processing"}:
@@ -224,17 +264,20 @@ def trigger_video_trim(task_id: str) -> dict:
                 "status": f"already_{trim_status}",
             }
 
-        s3_bucket = str(row.get("s3_bucket") or "").strip() or S3_BUCKET
-        s3_key = str(row.get("s3_key") or "").strip()
-
         if not s3_bucket:
             raise ValueError("submission_context missing s3_bucket and S3_BUCKET env var not set")
         if not s3_key:
             raise ValueError("submission_context missing s3_key")
 
-        df_silver = _load_silver_for_timeline(conn, task_id)
-        if df_silver.empty:
-            raise ValueError(f"No silver.point_detail rows found for task_id={task_id}")
+        # Load silver data — practice or match
+        if is_practice:
+            df_silver = _load_practice_for_timeline(conn, task_id)
+            if df_silver.empty:
+                raise ValueError(f"No silver.practice_detail rows for task_id={task_id}")
+        else:
+            df_silver = _load_silver_for_timeline(conn, task_id)
+            if df_silver.empty:
+                raise ValueError(f"No silver.point_detail rows for task_id={task_id}")
 
         df_timeline = build_video_timeline_from_silver(df_silver, task_id=task_id)
         if df_timeline.empty:
