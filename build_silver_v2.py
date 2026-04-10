@@ -273,7 +273,7 @@ def _resolve_two_players(conn: Connection, task_id: str) -> dict:
         rows = conn.execute(text(f"""
             SELECT player_id, COUNT(*) AS n
             FROM {SILVER_SCHEMA}.{TABLE}
-            WHERE task_id = :tid::uuid
+            WHERE task_id = CAST(:tid AS uuid)
               AND player_id IS NOT NULL
             GROUP BY player_id
             ORDER BY n DESC, player_id
