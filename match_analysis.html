@@ -306,8 +306,8 @@ function apiFetch(path, opts = {}) {
 let matches = [];
 let selectedMatch = null;
 let selectedData = null;  // { match, points }
-let activeModule = 'analytics';  // 'analytics' | 'heatmaps'
-let activeTab = 'summary';
+let activeModule = params.get('module') || 'analytics';  // 'analytics' | 'heatmaps'
+let activeTab = (params.get('module') === 'heatmaps') ? 'serve-placement' : 'summary';
 let filterPlayer = 'both';  // 'both' | 'a' | 'b'
 let filterSet = 'all';  // 'all' | '1' | '2' | '3'
 const CI = {};
@@ -330,7 +330,7 @@ async function init() {
   try {
     const res = await apiFetch('/api/client/matches');
     const data = await res.json();
-    matches = data.ok ? data.matches.filter(m => m.sport_type === 'tennis_singles' && m.total_points > 0) : [];
+    matches = data.ok ? data.matches.filter(m => (m.sport_type === 'tennis_singles' || m.sport_type === 'tennis_singles_t5') && m.total_points > 0) : [];
   } catch (e) { matches = []; }
 
   if (!matches.length) {

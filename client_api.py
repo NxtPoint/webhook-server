@@ -1380,7 +1380,7 @@ def match_analysis(task_id):
                     rally_length, rally_length_point, rally_length_bucket_d,
                     stroke_d, aggression_d, depth_d,
                     serve_bucket_d, serve_location, serve_side_d, serve_try_ix_in_point,
-                    service_winner_d, serve_d,
+                    service_winner_d,
                     rally_location_hit, rally_location_bounce,
                     ball_hit_x_norm, ball_hit_y_norm,
                     ball_bounce_x_norm, ball_bounce_y_norm,

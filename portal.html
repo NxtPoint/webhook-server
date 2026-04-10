@@ -121,6 +121,22 @@ body {
 }
 .sidebar.expanded .nav-section { opacity: 1; }
 
+/* Sub-nav items */
+.nav-sub-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 16px 7px 50px; margin: 1px 6px;
+  border-radius: var(--radius);
+  font-size: 0.78rem; font-weight: 500;
+  color: var(--text-dim); cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap; overflow: hidden;
+  border: none; background: none; width: calc(100% - 12px);
+  text-align: left; font-family: inherit;
+}
+.nav-sub-item:hover { background: var(--green-bg); color: var(--green); }
+.nav-sub-item.active { color: var(--green); font-weight: 600; background: var(--green-bg); }
+.sidebar:not(.expanded) .nav-sub-item { display: none; }
+
 /* Sidebar footer */
 .sidebar-footer {
   padding: 10px 12px; border-top: 1px solid var(--border);
@@ -316,6 +332,10 @@ const ADMIN_NAV_ITEMS = [
     label: 'T5 Match Analysis',
     path: '/match-analysis',
     icon: '<svg viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" fill="none" stroke="currentColor" stroke-width="2"/><polyline points="7.5 4.21 12 6.81 16.5 4.21" fill="none" stroke="currentColor" stroke-width="2"/><line x1="12" y1="22" x2="12" y2="6.81" stroke="currentColor" stroke-width="2"/></svg>',
+    children: [
+      { id: 'ma-analytics', label: 'Match Analytics', module: 'analytics' },
+      { id: 'ma-heatmaps', label: 'Placement Heatmaps', module: 'heatmaps' },
+    ],
   },
 ];
 
@@ -351,6 +371,20 @@ function renderNav() {
         <span class="nav-label">${item.label}${badge}</span>
       </button>
     `;
+
+    // Render sub-items if present
+    if (item.children) {
+      for (const child of item.children) {
+        const subActive = currentPage === child.id ? ' active' : '';
+        html += `
+          <button class="nav-sub-item${subActive}" data-page="${child.id}"
+            onclick="navigateToModule('${item.id}', '${child.module}')"
+            title="${child.label}">
+            ${child.label}
+          </button>
+        `;
+      }
+    }
   }
   nav.innerHTML = html;
 }
@@ -373,6 +407,25 @@ function navigateTo(pageId) {
   contentEl.innerHTML = `<iframe src="${pagePath}" id="contentFrame" title="${item.label}"></iframe>`;
 
   // Close mobile sidebar
+  document.getElementById('sidebar').classList.remove('mobile-open');
+  document.getElementById('mobileOverlay').classList.remove('open');
+}
+
+function navigateToModule(parentId, module) {
+  const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
+  const parent = allItems.find(i => i.id === parentId);
+  if (!parent) return;
+
+  const child = (parent.children || []).find(c => c.module === module);
+  currentPage = child ? child.id : parentId;
+  renderNav();
+
+  window.location.hash = parentId + '/' + module;
+
+  const contentEl = document.getElementById('content');
+  const pagePath = parent.path + (parent.path.includes('?') ? '&' : '?') + authParams() + '&module=' + module;
+  contentEl.innerHTML = `<iframe src="${pagePath}" id="contentFrame" title="${child ? child.label : parent.label}"></iframe>`;
+
   document.getElementById('sidebar').classList.remove('mobile-open');
   document.getElementById('mobileOverlay').classList.remove('open');
 }
