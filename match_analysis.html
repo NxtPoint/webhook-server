@@ -687,6 +687,25 @@ function renderSummary(pts) {
     </div>`;
   }
 
+  // Speed stats by stroke type — per player
+  function speedStats(playerId, strokeFilter) {
+    const shots = pts.filter(p => p.player_id === playerId && p.ball_speed > 0
+      && (strokeFilter ? p.stroke_d === strokeFilter : true)
+      && (strokeFilter === null ? p.serve_d : true));
+    if (!shots.length) return { avg: 0, max: 0, count: 0 };
+    const speeds = shots.map(s => s.ball_speed);
+    return { avg: Math.round(speeds.reduce((a,b) => a+b, 0) / speeds.length), max: Math.round(Math.max(...speeds)), count: speeds.length };
+  }
+  function serveSpeedStats(playerId) {
+    const shots = pts.filter(p => p.player_id === playerId && p.serve_d && p.ball_speed > 0);
+    if (!shots.length) return { avg: 0, max: 0 };
+    const speeds = shots.map(s => s.ball_speed);
+    return { avg: Math.round(speeds.reduce((a,b) => a+b, 0) / speeds.length), max: Math.round(Math.max(...speeds)) };
+  }
+  const srvSpdA = serveSpeedStats(paId), srvSpdB = serveSpeedStats(pbId);
+  const fhSpdA = speedStats(paId, 'forehand'), fhSpdB = speedStats(pbId, 'forehand');
+  const bhSpdA = speedStats(paId, 'backhand'), bhSpdB = speedStats(pbId, 'backhand');
+
   return `
     ${renderScoreBox()}
     <div class="kpi-strip">
@@ -712,6 +731,35 @@ function renderSummary(pts) {
       ${compareBar('Double Faults', dfA, dfB, dfA, dfB, true)}
       ${compareBar('Winners', winnersA, winnersB, winnersA, winnersB)}
       ${compareBar('Errors', errorsA, errorsB, errorsA, errorsB, true)}
+      ${compareBar('Avg Serve Speed', srvSpdA.avg || '—', srvSpdB.avg || '—', srvSpdA.avg, srvSpdB.avg)}
+      ${compareBar('Max Serve Speed', srvSpdA.max || '—', srvSpdB.max || '—', srvSpdA.max, srvSpdB.max)}
+      ${compareBar('Avg FH Speed', fhSpdA.avg || '—', fhSpdB.avg || '—', fhSpdA.avg, fhSpdB.avg)}
+      ${compareBar('Avg BH Speed', bhSpdA.avg || '—', bhSpdB.avg || '—', bhSpdA.avg, bhSpdB.avg)}
+    </div>
+
+    <div class="chart-card full" style="padding:20px">
+      <h3>Speed Profile</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+        <div>
+          <div style="font-weight:600;color:${PA_COLOR};margin-bottom:12px;font-size:0.85rem">${pa}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div id="gaugeSrvA" style="height:180px"></div>
+            <div id="gaugeFhA" style="height:180px"></div>
+            <div id="gaugeBhA" style="height:180px"></div>
+          </div>
+        </div>
+        <div>
+          <div style="font-weight:600;color:${PB_COLOR};margin-bottom:12px;font-size:0.85rem">${pb}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            <div id="gaugeSrvB" style="height:180px"></div>
+            <div id="gaugeFhB" style="height:180px"></div>
+            <div id="gaugeBhB" style="height:180px"></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:24px;justify-content:center;margin-top:8px;font-size:0.72rem;color:var(--text-dim)">
+        <span>Avg speed (km/h) &bull; Max shown on arc</span>
+      </div>
     </div>
 
     <div class="chart-grid">
@@ -812,15 +860,22 @@ function renderServeDetail(pts) {
 
     html += `
       <h3 style="color:${color};margin-bottom:12px;font-size:1rem">${pName} — Serve Performance</h3>
-      <div class="kpi-strip">
-        <div class="kpi"><div class="val">${serves.length}</div><div class="lbl">Total Serves</div></div>
-        <div class="kpi"><div class="val">${fsPct}%</div><div class="lbl">1st Serve In</div></div>
-        <div class="kpi"><div class="val">${ssPct}%</div><div class="lbl">2nd Serve In</div></div>
-        <div class="kpi"><div class="val">${svcWonPct}%</div><div class="lbl">Svc Pts Won</div></div>
-        <div class="kpi"><div class="val">${aces}</div><div class="lbl">Aces</div></div>
-        <div class="kpi"><div class="val red">${doubleFaults}</div><div class="lbl">Double Faults</div></div>
-        <div class="kpi"><div class="val">${unreturned}</div><div class="lbl">Unreturned</div></div>
-      </div>
+      ${(() => {
+        const srvSpds = serves.filter(s => s.ball_speed > 0).map(s => s.ball_speed);
+        const avgSrv = srvSpds.length ? Math.round(srvSpds.reduce((a,b)=>a+b,0)/srvSpds.length) : '—';
+        const maxSrv = srvSpds.length ? Math.round(Math.max(...srvSpds)) : '—';
+        return `<div class="kpi-strip">
+          <div class="kpi"><div class="val">${serves.length}</div><div class="lbl">Total Serves</div></div>
+          <div class="kpi"><div class="val">${fsPct}%</div><div class="lbl">1st Serve In</div></div>
+          <div class="kpi"><div class="val">${ssPct}%</div><div class="lbl">2nd Serve In</div></div>
+          <div class="kpi"><div class="val">${svcWonPct}%</div><div class="lbl">Svc Pts Won</div></div>
+          <div class="kpi"><div class="val">${aces}</div><div class="lbl">Aces</div></div>
+          <div class="kpi"><div class="val red">${doubleFaults}</div><div class="lbl">Double Faults</div></div>
+          <div class="kpi"><div class="val">${unreturned}</div><div class="lbl">Unreturned</div></div>
+          <div class="kpi"><div class="val blue">${avgSrv}</div><div class="lbl">Avg Serve Speed</div></div>
+          <div class="kpi"><div class="val">${maxSrv}</div><div class="lbl">Max Serve Speed</div></div>
+        </div>`;
+      })()}
 
       <div class="chart-grid">
         <div class="chart-card">
@@ -1056,9 +1111,23 @@ function renderRallyDetail(pts) {
     const depthShort = pShots.filter(p => p.depth_d === 'Short').length;
     const fh = pShots.filter(p => p.stroke_d === 'forehand').length;
     const bh = pShots.filter(p => p.stroke_d === 'backhand').length;
+    const fhSpds = pShots.filter(p => p.stroke_d === 'forehand' && p.ball_speed > 0).map(s => s.ball_speed);
+    const bhSpds = pShots.filter(p => p.stroke_d === 'backhand' && p.ball_speed > 0).map(s => s.ball_speed);
+    const avgFh = fhSpds.length ? Math.round(fhSpds.reduce((a,b)=>a+b,0)/fhSpds.length) : '—';
+    const maxFh = fhSpds.length ? Math.round(Math.max(...fhSpds)) : '—';
+    const avgBh = bhSpds.length ? Math.round(bhSpds.reduce((a,b)=>a+b,0)/bhSpds.length) : '—';
+    const maxBh = bhSpds.length ? Math.round(Math.max(...bhSpds)) : '—';
 
     html += `
       <h3 style="color:${color};margin:20px 0 12px;font-size:1rem">${pName} — Rally Breakdown</h3>
+      <div class="kpi-strip">
+        <div class="kpi"><div class="val">${fh}</div><div class="lbl">Forehands</div></div>
+        <div class="kpi"><div class="val">${avgFh}</div><div class="lbl">Avg FH Speed</div></div>
+        <div class="kpi"><div class="val">${maxFh}</div><div class="lbl">Max FH Speed</div></div>
+        <div class="kpi"><div class="val blue">${bh}</div><div class="lbl">Backhands</div></div>
+        <div class="kpi"><div class="val blue">${avgBh}</div><div class="lbl">Avg BH Speed</div></div>
+        <div class="kpi"><div class="val blue">${maxBh}</div><div class="lbl">Max BH Speed</div></div>
+      </div>
       <div class="chart-grid tri">
         <div class="chart-card">
           <h3>Aggression</h3>
@@ -1603,6 +1672,64 @@ function renderAllCharts() {
       const keys = Object.keys(lengths).sort((a, b) => a - b);
       eBar('chartRallyDist', keys.map(k => k + ' shots'), keys.map(k => lengths[k]), C_GREEN);
     }
+
+    // Speed gauges — per player, per stroke (serve / forehand / backhand)
+    function speedGauge(id, avgVal, maxVal, label, color) {
+      const chart = ec(id);
+      if (!chart) return;
+      const gaugeMax = Math.max(maxVal, avgVal, 1);
+      chart.setOption({
+        ...ANIM,
+        series: [{
+          type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: Math.ceil(gaugeMax / 10) * 10,
+          pointer: { show: false },
+          progress: { show: true, width: 14, roundCap: true, itemStyle: { color } },
+          axisLine: { lineStyle: { width: 14, color: [[1, 'rgba(0,0,0,0.08)']] } },
+          axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+          title: { offsetCenter: [0, '75%'], fontSize: 11, color: '#6b7280', fontWeight: 500 },
+          detail: {
+            offsetCenter: [0, '25%'], fontSize: 26, fontWeight: 700, color,
+            formatter: avgVal > 0 ? avgVal + '' : '—',
+          },
+          data: [{ value: avgVal, name: label }],
+          markPoint: maxVal > 0 ? {
+            data: [{ name: 'max', value: maxVal }],
+          } : undefined,
+        }],
+      });
+      // Overlay max speed text below the average
+      if (maxVal > 0) {
+        const dom = document.getElementById(id);
+        let maxLabel = dom?.querySelector('.gauge-max-label');
+        if (!maxLabel) {
+          maxLabel = document.createElement('div');
+          maxLabel.className = 'gauge-max-label';
+          maxLabel.style.cssText = 'position:absolute;bottom:22%;width:100%;text-align:center;font-size:0.68rem;color:#9ca3af;pointer-events:none';
+          if (dom) { dom.style.position = 'relative'; dom.appendChild(maxLabel); }
+        }
+        if (maxLabel) maxLabel.textContent = 'max ' + maxVal;
+      }
+      CI[id] = chart;
+    }
+
+    // Compute speeds per player per stroke
+    function getSpd(pid, filter) {
+      let shots;
+      if (filter === 'serve') shots = pts.filter(p => p.serve_d && p.player_id === pid && p.ball_speed > 0);
+      else shots = pts.filter(p => p.stroke_d === filter && p.player_id === pid && p.ball_speed > 0);
+      if (!shots.length) return { avg: 0, max: 0 };
+      const spds = shots.map(s => s.ball_speed);
+      return { avg: Math.round(spds.reduce((a,b)=>a+b,0)/spds.length), max: Math.round(Math.max(...spds)) };
+    }
+    const sA = getSpd(paId,'serve'), fA = getSpd(paId,'forehand'), bA = getSpd(paId,'backhand');
+    const sB = getSpd(pbId,'serve'), fB = getSpd(pbId,'forehand'), bB = getSpd(pbId,'backhand');
+
+    speedGauge('gaugeSrvA', sA.avg, sA.max, 'Serve', PA_COLOR);
+    speedGauge('gaugeFhA', fA.avg, fA.max, 'Forehand', '#22783c');
+    speedGauge('gaugeBhA', bA.avg, bA.max, 'Backhand', '#2563eb');
+    speedGauge('gaugeSrvB', sB.avg, sB.max, 'Serve', PB_COLOR);
+    speedGauge('gaugeFhB', fB.avg, fB.max, 'Forehand', '#22783c');
+    speedGauge('gaugeBhB', bB.avg, bB.max, 'Backhand', '#2563eb');
   }
 
   // ===== SERVE TAB =====
