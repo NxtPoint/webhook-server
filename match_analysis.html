@@ -155,21 +155,21 @@ body {
 .compare-divider { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 16px; }
 .compare-divider .vs { font-size: 0.75rem; font-weight: 600; color: var(--text-dim); }
 .compare-row { display: flex; align-items: center; margin-bottom: 6px; }
-.compare-row .stat-label {
+.stat-label {
   font-size: 0.7rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
-  white-space: nowrap; width: 120px; text-align: center; flex-shrink: 0; padding: 0 8px;
+  white-space: nowrap; width: 120px; text-align: center; flex-shrink: 0; padding: 0 6px;
 }
-.compare-bar-wrap { flex: 1; display: flex; align-items: center; }
 .compare-bar {
-  height: 28px; border-radius: 4px; transition: width 0.5s ease;
-  display: flex; align-items: center; min-width: 28px;
+  height: 24px; border-radius: 4px; transition: width 0.5s ease;
+  min-width: 4px;
 }
-.compare-bar .bar-val {
-  font-size: 0.8rem; font-weight: 700; padding: 0 10px; white-space: nowrap;
+.compare-val {
+  font-size: 0.82rem; font-weight: 700; white-space: nowrap; min-width: 44px;
+  padding: 0 6px;
 }
-.compare-half { display: flex; align-items: center; }
-.compare-half.left { flex: 1; justify-content: flex-end; }
-.compare-half.right { flex: 1; justify-content: flex-start; }
+.compare-half { display: flex; align-items: center; flex: 1; gap: 6px; }
+.compare-half.left { justify-content: flex-end; }
+.compare-half.right { justify-content: flex-start; }
 
 /* Score box */
 .score-box {
@@ -665,23 +665,24 @@ function renderSummary(pts) {
     const aWins = invertWinner ? numA < numB : numA > numB;
     const bWins = invertWinner ? numB < numA : numB > numA;
     const tied = numA === numB;
-    const aOpacity = aWins ? '1' : tied ? '0.5' : '0.3';
-    const bOpacity = bWins ? '1' : tied ? '0.5' : '0.3';
-    const aTextCol = aWins ? '#fff' : PA_COLOR;
-    const bTextCol = bWins ? '#fff' : PB_COLOR;
+    const aBarOp = aWins ? '1' : tied ? '0.5' : '0.25';
+    const bBarOp = bWins ? '1' : tied ? '0.5' : '0.25';
+    const aValStyle = aWins ? `color:${PA_COLOR};font-weight:800` : `color:var(--text-dim);font-weight:600`;
+    const bValStyle = bWins ? `color:${PB_COLOR};font-weight:800` : `color:var(--text-dim);font-weight:600`;
     const pA = rawA || 1;
     const pB = rawB || 1;
+    const total = pA + pB;
+    const wA = Math.max(8, Math.round(100 * pA / total));
+    const wB = Math.max(8, Math.round(100 * pB / total));
     return `<div class="compare-row">
       <div class="compare-half left">
-        <div class="compare-bar" style="width:${Math.round(100*pA/(pA+pB))}%;background:${PA_COLOR};opacity:${aOpacity};justify-content:flex-end">
-          <span class="bar-val" style="color:${aTextCol}">${valA}</span>
-        </div>
+        <span class="compare-val" style="${aValStyle};text-align:right">${valA}</span>
+        <div class="compare-bar" style="width:${wA}%;background:${PA_COLOR};opacity:${aBarOp}"></div>
       </div>
       <span class="stat-label">${label}</span>
       <div class="compare-half right">
-        <div class="compare-bar" style="width:${Math.round(100*pB/(pA+pB))}%;background:${PB_COLOR};opacity:${bOpacity}">
-          <span class="bar-val" style="color:${bTextCol}">${valB}</span>
-        </div>
+        <div class="compare-bar" style="width:${wB}%;background:${PB_COLOR};opacity:${bBarOp}"></div>
+        <span class="compare-val" style="${bValStyle}">${valB}</span>
       </div>
     </div>`;
   }
