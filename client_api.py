@@ -1393,7 +1393,7 @@ def match_analysis(task_id):
                         ball_bounce_x_norm, ball_bounce_y_norm,
                         court_x, court_y, point_key
                     FROM silver.point_detail
-                    WHERE task_id = :tid::uuid
+                    WHERE task_id = CAST(:tid AS uuid)
                       AND COALESCE(exclude_d, FALSE) = FALSE
                     ORDER BY point_number, shot_ix_in_point
                 """),
