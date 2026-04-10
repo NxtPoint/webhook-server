@@ -1357,7 +1357,10 @@ def match_analysis(task_id):
                 SELECT email, player_a_name, player_b_name,
                        player_a_utr, player_b_utr,
                        match_date, location, first_server, sport_type,
-                       trim_status, trim_output_s3_key
+                       trim_status, trim_output_s3_key,
+                       player_a_set1_games, player_b_set1_games,
+                       player_a_set2_games, player_b_set2_games,
+                       player_a_set3_games, player_b_set3_games
                 FROM bronze.submission_context WHERE task_id = :tid
             """),
             {"tid": task_id},
@@ -1407,6 +1410,12 @@ def match_analysis(task_id):
         "sport_type": meta["sport_type"],
         "trim_status": meta["trim_status"],
         "trim_output_s3_key": meta["trim_output_s3_key"],
+        "player_a_set1_games": meta["player_a_set1_games"],
+        "player_b_set1_games": meta["player_b_set1_games"],
+        "player_a_set2_games": meta["player_a_set2_games"],
+        "player_b_set2_games": meta["player_b_set2_games"],
+        "player_a_set3_games": meta["player_a_set3_games"],
+        "player_b_set3_games": meta["player_b_set3_games"],
     }
 
     return jsonify({"ok": True, "match": match_meta, "points": points})

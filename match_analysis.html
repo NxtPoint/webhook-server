@@ -344,22 +344,62 @@ async function init() {
 }
 
 // ==================== HELPERS ====================
-function getPlayerAId() { return selectedData?.match?.first_server || getDistinctPlayers()[0] || ''; }
-function getDistinctPlayers() {
-  if (!selectedData?.points) return [];
+// Player-role mapping.
+// submission_context.first_server = 'player_a' or 'player_b' (set by Media Room PATCH).
+// This tells us whether player_a (the client) served or received on the first point.
+// We find the server_id of the very first point in the match, then:
+//   - if first_server = 'player_a', that server_id IS player_a
+//   - if first_server = 'player_b', that server_id IS player_b (so the other is player_a)
+let _pidA = null, _pidB = null;
+
+function resolvePlayerIds() {
+  _pidA = null; _pidB = null;
+  if (!selectedData?.points?.length) return;
+
+  const pts = selectedData.points;
   const ids = new Set();
-  selectedData.points.forEach(p => { if (p.player_id) ids.add(p.player_id); });
-  return [...ids];
+  pts.forEach(p => { if (p.player_id) ids.add(p.player_id); });
+  const allIds = [...ids].sort();
+  if (allIds.length < 2) { _pidA = allIds[0] || ''; _pidB = ''; return; }
+
+  // Find the server_id of the first point in the match (game 1, point 1)
+  const firstPoint = pts.find(p => p.server_id);
+  const firstServerId = firstPoint?.server_id;
+
+  const fs = selectedData?.match?.first_server;  // 'player_a' | 'player_b' | 'S' | 'R' | null
+
+  if (firstServerId) {
+    const otherId = allIds.find(id => id !== firstServerId) || allIds[1];
+    if (fs === 'player_a' || fs === 'S') {
+      // Client (player_a) served first → first server_id = player_a
+      _pidA = firstServerId;
+      _pidB = otherId;
+    } else if (fs === 'player_b' || fs === 'R') {
+      // Client (player_a) received first → first server_id = player_b
+      _pidB = firstServerId;
+      _pidA = otherId;
+    } else {
+      // No first_server info — fall back to deterministic order
+      _pidA = allIds[0];
+      _pidB = allIds[1];
+    }
+  } else {
+    _pidA = allIds[0];
+    _pidB = allIds[1];
+  }
 }
+
+function playerAId() { return _pidA || ''; }
+function playerBId() { return _pidB || ''; }
+
 function getPlayerName(pid) {
   if (!selectedData?.match) return pid || '?';
-  const players = getDistinctPlayers();
-  const m = selectedData.match;
-  if (players.indexOf(pid) === 0) return m.player_a_name || 'Player A';
-  return m.player_b_name || 'Player B';
+  if (pid === playerAId()) return selectedData.match.player_a_name || 'Player A';
+  if (pid === playerBId()) return selectedData.match.player_b_name || 'Player B';
+  return pid || '?';
 }
-function playerAId() { return getDistinctPlayers()[0] || ''; }
-function playerBId() { return getDistinctPlayers()[1] || ''; }
+// All demographic data (names, UTR, date, location, score) from submission_context
+function meta() { return selectedData?.match || {}; }
 
 function filteredPoints() {
   if (!selectedData?.points) return [];
@@ -419,6 +459,9 @@ async function selectMatch(idx) {
     selectedData = data.ok ? data : null;
   } catch (e) { selectedData = null; }
 
+  // Resolve player_id → player_a/player_b using first_server from submission_context
+  resolvePlayerIds();
+
   filterPlayer = 'both';
   filterSet = 'all';
   activeModule = 'analytics';
@@ -429,10 +472,10 @@ async function selectMatch(idx) {
 // ==================== DASHBOARD RENDER ====================
 function renderDashboard() {
   if (!selectedMatch || !selectedData) return;
-  const m = selectedMatch;
-  const date = m.match_date || '';
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const date = sc.match_date || '';
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
 
   document.getElementById('toolbar').innerHTML = `<h1>${pa} vs ${pb} &mdash; ${date}</h1>`;
 
@@ -522,9 +565,9 @@ function switchTab(id) {
 
 // ==================== SUMMARY TAB ====================
 function renderSummary(pts) {
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
   const paId = playerAId();
   const pbId = playerBId();
 
@@ -643,13 +686,14 @@ function renderSummary(pts) {
 }
 
 function renderScoreBox() {
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  // All demographic data from submission_context (via selectedData.match)
+  const sc = selectedData.match;
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
   let setsHTML = '';
   for (let i = 1; i <= 3; i++) {
-    const a = m[`player_a_set${i}_games`];
-    const b = m[`player_b_set${i}_games`];
+    const a = sc[`player_a_set${i}_games`];
+    const b = sc[`player_b_set${i}_games`];
     if (a == null || b == null) continue;
     const aWin = a > b;
     setsHTML += `<div class="score-set">
@@ -664,21 +708,21 @@ function renderScoreBox() {
   return `<div class="score-box">
     <div class="score-player">
       <div class="name" style="color:${PA_COLOR}">${pa}</div>
-      ${m.player_a_utr ? `<div class="utr">UTR ${m.player_a_utr}</div>` : ''}
+      ${sc.player_a_utr ? `<div class="utr">UTR ${sc.player_a_utr}</div>` : ''}
     </div>
     <div class="score-sets">${setsHTML}</div>
     <div class="score-player">
       <div class="name" style="color:${PB_COLOR}">${pb}</div>
-      ${m.player_b_utr ? `<div class="utr">UTR ${m.player_b_utr}</div>` : ''}
+      ${sc.player_b_utr ? `<div class="utr">UTR ${sc.player_b_utr}</div>` : ''}
     </div>
   </div>`;
 }
 
 // ==================== SERVE DETAIL TAB ====================
 function renderServeDetail(pts) {
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
   const paId = playerAId();
   const pbId = playerBId();
 
@@ -838,9 +882,9 @@ function buildServeStrategy(pts, serverId) {
 
 // ==================== RETURN DETAIL TAB ====================
 function renderReturnDetail(pts) {
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
   const paId = playerAId();
   const pbId = playerBId();
 
@@ -916,9 +960,9 @@ function renderReturnDetail(pts) {
 
 // ==================== RALLY DETAIL TAB ====================
 function renderRallyDetail(pts) {
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
   const paId = playerAId();
   const pbId = playerBId();
 
@@ -1026,9 +1070,9 @@ function setHeatmapFilter(key, val) {
 }
 
 function renderHeatmapContent() {
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
   const paId = playerAId();
   const pbId = playerBId();
   const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
@@ -1418,9 +1462,9 @@ function renderAllCharts() {
   const pts = filteredPoints();
   const paId = playerAId();
   const pbId = playerBId();
-  const m = selectedMatch;
-  const pa = m.player_a_name || 'Player A';
-  const pb = m.player_b_name || 'Player B';
+  const sc = meta();
+  const pa = sc.player_a_name || 'Player A';
+  const pb = sc.player_b_name || 'Player B';
 
   // ===== SUMMARY TAB =====
   if (activeTab === 'summary') {
