@@ -255,7 +255,8 @@ def ensure_schema(conn: Connection):
 
 
 def _resolve_two_players(conn: Connection, task_id: str) -> dict:
-    """Find top 2 players by swing count. Fail if < 2."""
+    """Find top 2 players by swing count. Checks bronze.player_swing first,
+    falls back to silver.point_detail (for T5 where bronze.player_swing has no rows)."""
     rows = conn.execute(text("""
         SELECT player_id, COUNT(*) AS n
         FROM bronze.player_swing
@@ -266,6 +267,18 @@ def _resolve_two_players(conn: Connection, task_id: str) -> dict:
         ORDER BY n DESC, player_id
         LIMIT 10
     """), {"tid": task_id}).fetchall()
+
+    # Fallback: resolve from silver.point_detail (T5 rows already inserted by pass 1)
+    if len(rows) < 2:
+        rows = conn.execute(text(f"""
+            SELECT player_id, COUNT(*) AS n
+            FROM {SILVER_SCHEMA}.{TABLE}
+            WHERE task_id = :tid::uuid
+              AND player_id IS NOT NULL
+            GROUP BY player_id
+            ORDER BY n DESC, player_id
+            LIMIT 10
+        """), {"tid": task_id}).fetchall()
 
     if len(rows) < 2:
         raise ValueError(f"Cannot resolve 2 players for task_id={task_id} (found {len(rows)})")
