@@ -307,11 +307,13 @@ def gold_init():
         conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS gold;"))
         conn.execute(sql_text("""
             CREATE OR REPLACE VIEW gold.vw_client_match_summary AS
-            WITH player_ids AS (
-                -- Find the two distinct player_ids per task
+            WITH player_map AS (
+                -- Map internal player_id → player_a / player_b using first_server
                 SELECT
                     sc.task_id,
                     sc.first_server,
+                    -- first_server is 'player_a'/'player_b' or 'S'/'R'
+                    -- We find the two distinct player_ids per task from silver
                     MIN(pd.player_id) AS pid_min,
                     MAX(pd.player_id) AS pid_max
                 FROM bronze.submission_context sc
@@ -319,40 +321,14 @@ def gold_init():
                 WHERE pd.player_id IS NOT NULL
                 GROUP BY sc.task_id, sc.first_server
             ),
-            first_server_id AS (
-                -- Find the server_id from the very first point of the match
-                SELECT DISTINCT ON (pd.task_id)
-                    pd.task_id,
-                    pd.server_id
-                FROM silver.point_detail pd
-                WHERE pd.server_id IS NOT NULL
-                  AND pd.exclude_d IS NOT TRUE
-                ORDER BY pd.task_id, pd.game_number, pd.point_number, pd.shot_ix_in_point
-            ),
             mapped AS (
-                -- Map player_id → player_a / player_b using first_server role.
-                -- first_server = 'player_a' or 'S' means the client served first,
-                -- so the server_id from the first point IS player_a.
-                -- first_server = 'player_b' or 'R' means the client received first,
-                -- so the server_id from the first point IS player_b (the other is player_a).
                 SELECT
-                    p.task_id,
-                    CASE
-                        WHEN p.first_server IN ('player_a', 'S')
-                            THEN COALESCE(fs.server_id, p.pid_min)
-                        WHEN p.first_server IN ('player_b', 'R')
-                            THEN CASE WHEN fs.server_id = p.pid_min THEN p.pid_max ELSE p.pid_min END
-                        ELSE p.pid_min
-                    END AS player_a_pid,
-                    CASE
-                        WHEN p.first_server IN ('player_a', 'S')
-                            THEN CASE WHEN fs.server_id = p.pid_min THEN p.pid_max ELSE p.pid_min END
-                        WHEN p.first_server IN ('player_b', 'R')
-                            THEN COALESCE(fs.server_id, p.pid_max)
-                        ELSE p.pid_max
-                    END AS player_b_pid
-                FROM player_ids p
-                LEFT JOIN first_server_id fs ON fs.task_id = p.task_id::uuid
+                    task_id,
+                    -- If first_server matches pid_min, then pid_min=player_a, pid_max=player_b
+                    -- Otherwise pid_max=player_a, pid_min=player_b
+                    CASE WHEN first_server = pid_min THEN pid_min ELSE pid_max END AS player_a_pid,
+                    CASE WHEN first_server = pid_min THEN pid_max ELSE pid_min END AS player_b_pid
+                FROM player_map
             ),
             stats AS (
                 SELECT

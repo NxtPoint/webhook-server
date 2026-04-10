@@ -118,14 +118,8 @@ SPORTAI_STATUS_PATHS = [
 ]
 
 # ---------- DB engine / bronze ingest ----------
-from db_init import engine, gold_init  # noqa: E402
+from db_init import engine  # noqa: E402
 from ingest_bronze import ingest_bronze, ingest_bronze_strict, _run_bronze_init  # noqa: E402
-
-# Ensure gold views are up to date on boot (idempotent CREATE OR REPLACE)
-try:
-    gold_init()
-except Exception:
-    log.warning("gold_init() failed on boot — gold views may be stale", exc_info=True)
 from build_silver_v2 import build_silver_v2 as build_silver_point_detail, DEFAULT_SPORT_TYPE  # noqa: E402
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
