@@ -139,7 +139,7 @@ def _require_s3():
 BATCH_JOB_QUEUE = os.getenv("BATCH_JOB_QUEUE", "ten-fifty5-ml-queue")
 BATCH_JOB_DEF = os.getenv("BATCH_JOB_DEF", "ten-fifty5-ml-pipeline")
 BATCH_REGION = os.getenv("BATCH_REGION", "") or AWS_REGION  # override when Batch is in a different region than S3
-T5_SPORT_TYPES = {"serve_practice", "rally_practice"}
+T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
 
 # ---------- Ingest worker service ----------
 INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
@@ -945,18 +945,17 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
         """), {"job_id": job_id, "s3_key": s3_key})
 
     # 3. Submit AWS Batch job
+    is_practice = sport_type in {"serve_practice", "rally_practice"}
+    cmd = ["--job-id", job_id, "--s3-key", s3_key]
+    if is_practice:
+        cmd.append("--practice")
+
     batch = boto3.client("batch", region_name=BATCH_REGION)
     resp = batch.submit_job(
         jobName=f"t5-{sport_type[:5]}-{job_id[:8]}",
         jobQueue=BATCH_JOB_QUEUE,
         jobDefinition=BATCH_JOB_DEF,
-        containerOverrides={
-            "command": [
-                "--job-id", job_id,
-                "--s3-key", s3_key,
-                "--practice",
-            ],
-        },
+        containerOverrides={"command": cmd},
         tags={
             "Project": "TEN-FIFTY5",
             "Environment": "production",
@@ -1741,17 +1740,30 @@ def _do_ingest_t5(task_id: str) -> bool:
             """), {"t": task_id, "task_id": task_id})
 
         # Skip: bronze ingest (data already in ml_analysis.*)
-        # Silver: build practice_detail from ml_analysis detections
-        try:
-            from ml_pipeline.build_silver_practice import build_silver_practice
-            silver_result = build_silver_practice(task_id=task_id, replace=True, engine=engine)
-            app.logger.info("T5 INGEST task_id=%s silver practice built: %s", task_id, silver_result)
-        except ImportError:
-            app.logger.warning("T5 INGEST task_id=%s silver builder not available (ml deps missing)", task_id)
-        except Exception as e:
-            app.logger.warning("T5 INGEST task_id=%s silver build failed (non-fatal): %s", task_id, e)
+        # Determine sport type for routing
+        with engine.connect() as conn:
+            _st = conn.execute(sql_text(
+                "SELECT sport_type FROM bronze.submission_context WHERE task_id = :t"
+            ), {"t": task_id}).scalar() or ""
 
-        # Video trim: reuse match trim pipeline to cut dead time from practice.mp4
+        is_practice = _st in {"serve_practice", "rally_practice"}
+        is_singles_t5 = _st == "tennis_singles_t5"
+
+        # Silver: build from ml_analysis detections
+        if is_practice:
+            try:
+                from ml_pipeline.build_silver_practice import build_silver_practice
+                silver_result = build_silver_practice(task_id=task_id, replace=True, engine=engine)
+                app.logger.info("T5 INGEST task_id=%s silver practice built: %s", task_id, silver_result)
+            except ImportError:
+                app.logger.warning("T5 INGEST task_id=%s silver builder not available (ml deps missing)", task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s silver build failed (non-fatal): %s", task_id, e)
+        elif is_singles_t5:
+            # TODO: build_silver_match_t5 — point detection, serve detection, game structure
+            app.logger.info("T5 INGEST task_id=%s singles_t5 — silver match builder TODO (bronze data saved)", task_id)
+
+        # Video trim: reuse match trim pipeline
         try:
             from video_pipeline.video_trim_api import trigger_video_trim
             trim_result = trigger_video_trim(task_id)
@@ -1759,7 +1771,7 @@ def _do_ingest_t5(task_id: str) -> bool:
         except Exception as e:
             app.logger.warning("T5 INGEST task_id=%s trim failed (non-fatal): %s", task_id, e)
 
-        # Skip: billing (practice is free — no credit consumption)
+        # Skip: billing (T5 is free — no credit consumption for now)
 
         # PBI refresh (when dataset exists for practice data)
         if PBI_SERVICE_BASE:
@@ -2647,6 +2659,7 @@ def api_submit_s3_task():
     game_type = (body.get("gameType") or "singles").strip().lower()
     SPORT_TYPE_MAP = {
         "singles": "tennis_singles",
+        "singles_t5": "tennis_singles_t5",
         "serve": "serve_practice",
         "serve_practice": "serve_practice",
         "rally": "rally_practice",

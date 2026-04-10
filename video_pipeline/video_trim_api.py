@@ -215,7 +215,7 @@ def _mark_trim_accepted(conn, task_id: str) -> None:
 # Public API
 # ============================================================
 
-_PRACTICE_SPORT_TYPES = {"serve_practice", "rally_practice"}
+_PRACTICE_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
 
 
 def trigger_video_trim(task_id: str) -> dict:

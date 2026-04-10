@@ -562,6 +562,7 @@ function goToStep(n) {
 // ============================================================
 function renderStep1(el) {
   const devAccess = EMAIL === 'tomo.stojakovic@gmail.com';
+  const singlesT5Ok = devAccess;
   const srvOk  = devAccess;
   const rallyOk = devAccess;
   const srvCls  = srvOk  ? '' : ' disabled';
@@ -580,11 +581,11 @@ function renderStep1(el) {
           <div class="game-card-title">Singles</div>
           <div class="game-card-sub">Full match analysis</div>
         </div>
-        <div class="game-card disabled" data-type="technique">
-          <div class="coming-soon-badge">Coming Soon</div>
-          <div class="game-card-icon">&#127919;</div>
-          <div class="game-card-title">Technique Session</div>
-          <div class="game-card-sub">Stroke analysis</div>
+        <div class="game-card${singlesT5Ok ? '' : ' disabled'}"${singlesT5Ok ? ' onclick="selectGameType(\'singles_t5\', this)"' : ''} data-type="singles_t5">
+          ${singlesT5Ok ? '' : '<div class="coming-soon-badge">Coming Soon</div>'}
+          <div class="game-card-icon">&#129309;</div>
+          <div class="game-card-title">Singles (T5)</div>
+          <div class="game-card-sub">ML match analysis</div>
         </div>
         <div class="game-card${srvCls}"${srvClick} data-type="serve">
           ${srvBadge}
@@ -617,7 +618,7 @@ function renderStep1(el) {
 }
 
 function selectGameType(type, card) {
-  const allowed = ['singles', 'serve', 'rally'];
+  const allowed = ['singles', 'singles_t5', 'serve', 'rally'];
   if (!allowed.includes(type)) return;
   STATE.gameType = type;
   document.querySelectorAll('.game-card').forEach(c => c.classList.remove('selected'));

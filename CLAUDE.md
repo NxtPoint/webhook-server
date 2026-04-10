@@ -589,7 +589,7 @@ Base image: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. PyTorch installed f
 
 **AWS Batch Infrastructure:**
 - **Primary: us-east-1** (GPU Spot + On-Demand quota approved). Render env: `BATCH_REGION=us-east-1`
-- **Pending: eu-north-1** (GPU Spot + On-Demand quota pending — request "All G and VT Spot Instance Requests" >= 4 vCPUs + "Running On-Demand G and VT instances" >= 4 vCPUs in Service Quotas → Amazon EC2).
+- **Secondary: eu-north-1** (GPU Spot approved, On-Demand pending). Infrastructure ready (ECR, Batch compute, queue, job def). Switch to primary when On-Demand approved: change `BATCH_REGION=eu-north-1` on Render.
 - us-east-1 has: ECR, Batch compute (`ten-fifty5-ml-compute`, Spot G4dn.xlarge+G4dn.2xlarge, 0–4 vCPUs, **bid 100%**), Batch compute (`ten-fifty5-ml-ondemand`, On-Demand G4dn.xlarge, disabled by default — enable as fallback when Spot is unavailable), Batch queue (`ten-fifty5-ml-queue`), Batch job def (`ten-fifty5-ml-pipeline`), CloudWatch logs (`/aws/batch/ten-fifty5-ml-pipeline`, 30-day retention)
 - IAM roles (global): `ten-fifty5-ml-instance-role`, `ten-fifty5-ml-job-role` (S3 + CloudWatch), `aws-ec2-spot-fleet-tagging-role`
 - All tagged `Project=TEN-FIFTY5`
@@ -624,6 +624,51 @@ All post-processing steps are non-fatal — ML results are saved even if transco
 **API Endpoints** (OPS_KEY auth): `GET /api/analysis/jobs/<job_id>`, `GET /api/analysis/results/<match_id>`, `GET /api/analysis/heatmap/<job_id>/<type>`, `POST /api/analysis/retry/<job_id>`.
 
 **Models:** TrackNet V2 (`tracknet_v2.pt`, 41MB), YOLOv8m-pose (`yolov8m-pose.pt`, 53MB — 17 body keypoints + bounding box), YOLOv8m (`yolov8m.pt`, 50MB — detection-only fallback), Court detector (`court_keypoints.pth`, 41MB). All pre-trained, no training required. See `config.py` for download sources. Player tracker auto-selects pose model if available, falls back to detection-only.
+
+### T5 Singles Match Flow (Future — SportAI Replacement)
+
+**Goal**: Run the same T5 ML pipeline on singles match footage, producing data that can be compared side-by-side with SportAI output. Eventually replace SportAI entirely.
+
+**Architecture decision**: Use `ml_analysis.*` bronze tables (same as practice) — NOT the SportAI `bronze.player_swing` / `bronze.raw_result` tables. Build a parallel silver path (`silver.t5_point_detail` or extend `silver.point_detail` with a `source` column). This allows A/B comparison: same `task_id`, SportAI silver vs T5 silver.
+
+**What T5 gives us today (no training needed):**
+- Ball tracking: position, speed, court coords, bounces, in/out
+- Player tracking: position, pose keypoints (17 COCO), bounding boxes
+- Court detection: 14 keypoints, homography
+- Stroke classification: forehand/backhand from pose
+- Rally structure: bounce grouping by frame gap
+
+**What needs to be INFERRED (logic on existing data, no new models):**
+1. **Serve detection**: first bounce after a long gap (>5s) that lands in the service box area
+2. **Point structure**: serve → rally → point end. A point ends when: consecutive bounces on the same court half (double bounce), ball out after bounce (is_in=false + gap), or long gap (>10s = dead time)
+3. **Point winner**: last player to hit before point-ending event. Infer from ball trajectory direction + bounce location
+4. **Game/set scoring**: pure counting logic on points (0-15-30-40-game, 6 games = set)
+5. **Volley detection**: player_court_y within 4m of net at time of nearest ball contact
+6. **Ace/unreturned serve**: serve bounce with no subsequent opponent contact before next serve
+
+**What needs TRAINING (future, for quality improvement):**
+- Shot sub-classification (topspin vs flat vs slice) — needs labelled clips
+- Winner vs forced error vs unforced error — needs point outcome labelling
+- Shot quality scoring (1-10) — needs annotated dataset with quality labels
+- Spin detection (RPM) — no off-the-shelf model exists
+
+**Recipe for creating a custom ML model on T5:**
+1. **Collect labelled data**: run T5 pipeline on 50+ matches, export `ml_analysis.*` data
+2. **Label tool**: use the practice dashboard's Video tab to review footage frame-by-frame, add labels (stroke type, shot outcome, point winner) via a simple annotation UI
+3. **Training data format**: CSV with columns `frame_idx, ball_x, ball_y, player_keypoints, label`
+4. **Model architecture**: lightweight classifier (MLP or small CNN) on top of pose keypoints — NOT a new vision model. Input: 17 keypoints (x,y,conf) + ball position + player position → output: stroke class / shot outcome
+5. **Training**: PyTorch, train on GPU, export as `.pt` weights file
+6. **Integration**: add model to `ml_pipeline/models/`, load in `pipeline.py`, run inference per-frame during `_postprocess()`
+7. **Docker**: rebuild + push to ECR with new weights
+
+**Implementation steps for T5 singles (no training, inference only):**
+1. Frontend: route "Singles" to T5 when user is `tomo.stojakovic@gmail.com` (A/B test)
+2. Submit: `_t5_submit()` with `gameType: "singles"` → `sport_type = "tennis_singles_t5"`
+3. Pipeline: run in match mode (25fps, not practice) — already supported
+4. Bronze: same `ml_analysis.*` tables (ball_detections, player_detections with keypoints)
+5. Silver: new `build_silver_match_t5.py` — point detection from bounce patterns, serve detection, game structure, reuse practice analytics (zones, depth, stroke, aggression)
+6. Video trim: reuse existing pipeline (already supports any silver source)
+7. Dashboard: extend practice dashboard or build separate match dashboard
 
 ### Practice Analytics Dashboard (`practice.html`)
 
