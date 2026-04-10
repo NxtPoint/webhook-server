@@ -283,11 +283,16 @@ def match_detail(task_id: str):
 def _serialize(v):
     if v is None:
         return None
-    if isinstance(v, (datetime,)):
-        return v.isoformat()
     if isinstance(v, bool):
         return v
-    return v
+    if isinstance(v, (datetime,)):
+        return v.isoformat()
+    if isinstance(v, (int, float, str)):
+        return v
+    # Decimal, UUID, etc.
+    if hasattr(v, '__float__'):
+        return float(v)
+    return str(v)
 
 
 # ----------------------------

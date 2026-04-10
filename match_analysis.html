@@ -449,23 +449,48 @@ function renderMatchList() {
 }
 
 // ==================== MATCH SELECT ====================
+let _firstLoad = true;
+
 async function selectMatch(idx) {
   selectedMatch = matches[idx];
   document.querySelectorAll('.session-item').forEach((el, i) => el.classList.toggle('active', i === idx));
 
+  // Show loading state in content area
+  const content = document.getElementById('dashContent');
+  if (content) content.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-sec)"><div class="spinner" style="width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px"></div>Loading match data...</div>';
+
   try {
     const res = await apiFetch('/api/client/match-analysis/' + selectedMatch.task_id);
     const data = await res.json();
-    selectedData = data.ok ? data : null;
-  } catch (e) { selectedData = null; }
+    if (!data.ok) {
+      console.error('match-analysis API error:', data);
+      selectedData = null;
+    } else {
+      selectedData = data;
+    }
+  } catch (e) {
+    console.error('match-analysis fetch error:', e);
+    selectedData = null;
+  }
+
+  if (!selectedData) {
+    if (content) content.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-sec)"><strong>Could not load match data.</strong><br>The analysis may still be processing.</div>';
+    return;
+  }
 
   // Resolve player_id → player_a/player_b using first_server from submission_context
   resolvePlayerIds();
 
   filterPlayer = 'both';
   filterSet = 'all';
-  activeModule = 'analytics';
-  activeTab = 'summary';
+  // Preserve module from URL param on first load
+  if (_firstLoad) {
+    _firstLoad = false;
+    // activeModule and activeTab already set from URL params
+  } else {
+    activeModule = 'analytics';
+    activeTab = 'summary';
+  }
   renderDashboard();
 }
 
