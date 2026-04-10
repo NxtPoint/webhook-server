@@ -309,7 +309,9 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         # Player position as ball_hit_location (where the hitter was)
         hit_x = hitter.get("court_x") if hitter else None
         hit_y = hitter.get("court_y") if hitter else None
-        hitter_pid = hitter["player_id"] if hitter else str(top_pids[0])
+        # Assign player_id based on court side — guarantees 2 distinct players
+        # even when ML tracker only detected 1 player_id
+        hitter_pid = str(top_pids[0]) if hitter_on_near else str(top_pids[1])
 
         rows_to_insert.append({
             "id": i + 1,
