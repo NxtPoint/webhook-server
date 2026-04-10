@@ -745,7 +745,7 @@ function renderSummary(pts) {
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
             <div id="gaugeSrvA" style="height:180px"></div>
             <div id="gaugeFhA" style="height:180px"></div>
-            <div id="gaugeBhA" style="height:180px"></div>
+            <div id="gaugeBhA" style="height:200px"></div>
           </div>
         </div>
         <div>
@@ -753,7 +753,7 @@ function renderSummary(pts) {
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
             <div id="gaugeSrvB" style="height:180px"></div>
             <div id="gaugeFhB" style="height:180px"></div>
-            <div id="gaugeBhB" style="height:180px"></div>
+            <div id="gaugeBhB" style="height:200px"></div>
           </div>
         </div>
       </div>
@@ -1674,41 +1674,89 @@ function renderAllCharts() {
     }
 
     // Speed gauges — per player, per stroke (serve / forehand / backhand)
-    function speedGauge(id, avgVal, maxVal, label, color) {
+    // Power BI-style semicircular speedometer gauge
+    function speedGauge(id, avgVal, maxVal, minVal, label, color) {
       const chart = ec(id);
       if (!chart) return;
-      const gaugeMax = Math.max(maxVal, avgVal, 1);
+      if (!avgVal && !maxVal) {
+        CI[id] = chart;
+        chart.setOption({ ...ANIM, title: { text: label, left: 'center', top: 'center', textStyle: { fontSize: 13, color: '#9ca3af' } } });
+        return;
+      }
+      // Scale: range from minVal rounded down to maxVal rounded up (in 10s)
+      const scaleMin = Math.floor((minVal || 0) / 10) * 10;
+      const scaleMax = Math.ceil((maxVal || avgVal) / 10) * 10 + 10;
+
       chart.setOption({
         ...ANIM,
         series: [{
-          type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: Math.ceil(gaugeMax / 10) * 10,
-          pointer: { show: false },
-          progress: { show: true, width: 14, roundCap: true, itemStyle: { color } },
-          axisLine: { lineStyle: { width: 14, color: [[1, 'rgba(0,0,0,0.08)']] } },
-          axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
-          title: { offsetCenter: [0, '75%'], fontSize: 11, color: '#6b7280', fontWeight: 500 },
-          detail: {
-            offsetCenter: [0, '25%'], fontSize: 26, fontWeight: 700, color,
-            formatter: avgVal > 0 ? avgVal + '' : '—',
+          type: 'gauge',
+          startAngle: 180,
+          endAngle: 0,
+          center: ['50%', '70%'],
+          radius: '90%',
+          min: scaleMin,
+          max: scaleMax,
+          // Coloured arc with gradient segments
+          axisLine: {
+            lineStyle: {
+              width: 18,
+              color: [
+                [0.3, 'rgba(0,0,0,0.06)'],
+                [0.7, color.replace(')', ',0.5)').replace('rgb', 'rgba')],
+                [1, color],
+              ],
+            },
           },
-          data: [{ value: avgVal, name: label }],
-          markPoint: maxVal > 0 ? {
-            data: [{ name: 'max', value: maxVal }],
-          } : undefined,
+          // Pointer needle
+          pointer: {
+            show: true,
+            length: '60%',
+            width: 4,
+            itemStyle: { color: '#374151' },
+          },
+          // Tick marks
+          axisTick: {
+            distance: -18,
+            length: 6,
+            lineStyle: { color: 'rgba(0,0,0,0.15)', width: 1 },
+            splitNumber: 2,
+          },
+          splitLine: {
+            distance: -18,
+            length: 12,
+            lineStyle: { color: 'rgba(0,0,0,0.2)', width: 2 },
+          },
+          // Min/max labels on arc
+          axisLabel: {
+            distance: -32,
+            fontSize: 10,
+            color: '#9ca3af',
+            formatter: function(v) {
+              if (v === scaleMin || v === scaleMax) return v;
+              return '';
+            },
+          },
+          // Average value — big number
+          detail: {
+            offsetCenter: [0, '-10%'],
+            fontSize: 28,
+            fontWeight: 700,
+            color: color,
+            formatter: '{value}',
+          },
+          // Label below
+          title: {
+            offsetCenter: [0, '25%'],
+            fontSize: 11,
+            color: '#6b7280',
+            fontWeight: 500,
+          },
+          data: [{ value: avgVal, name: label + '\nmax ' + maxVal }],
+          animationDuration: 1200,
+          animationEasing: 'cubicOut',
         }],
       });
-      // Overlay max speed text below the average
-      if (maxVal > 0) {
-        const dom = document.getElementById(id);
-        let maxLabel = dom?.querySelector('.gauge-max-label');
-        if (!maxLabel) {
-          maxLabel = document.createElement('div');
-          maxLabel.className = 'gauge-max-label';
-          maxLabel.style.cssText = 'position:absolute;bottom:22%;width:100%;text-align:center;font-size:0.68rem;color:#9ca3af;pointer-events:none';
-          if (dom) { dom.style.position = 'relative'; dom.appendChild(maxLabel); }
-        }
-        if (maxLabel) maxLabel.textContent = 'max ' + maxVal;
-      }
       CI[id] = chart;
     }
 
@@ -1717,19 +1765,19 @@ function renderAllCharts() {
       let shots;
       if (filter === 'serve') shots = pts.filter(p => p.serve_d && p.player_id === pid && p.ball_speed > 0);
       else shots = pts.filter(p => p.stroke_d === filter && p.player_id === pid && p.ball_speed > 0);
-      if (!shots.length) return { avg: 0, max: 0 };
+      if (!shots.length) return { avg: 0, max: 0, min: 0 };
       const spds = shots.map(s => s.ball_speed);
-      return { avg: Math.round(spds.reduce((a,b)=>a+b,0)/spds.length), max: Math.round(Math.max(...spds)) };
+      return { avg: Math.round(spds.reduce((a,b)=>a+b,0)/spds.length), max: Math.round(Math.max(...spds)), min: Math.round(Math.min(...spds)) };
     }
     const sA = getSpd(paId,'serve'), fA = getSpd(paId,'forehand'), bA = getSpd(paId,'backhand');
     const sB = getSpd(pbId,'serve'), fB = getSpd(pbId,'forehand'), bB = getSpd(pbId,'backhand');
 
-    speedGauge('gaugeSrvA', sA.avg, sA.max, 'Serve', PA_COLOR);
-    speedGauge('gaugeFhA', fA.avg, fA.max, 'Forehand', '#22783c');
-    speedGauge('gaugeBhA', bA.avg, bA.max, 'Backhand', '#2563eb');
-    speedGauge('gaugeSrvB', sB.avg, sB.max, 'Serve', PB_COLOR);
-    speedGauge('gaugeFhB', fB.avg, fB.max, 'Forehand', '#22783c');
-    speedGauge('gaugeBhB', bB.avg, bB.max, 'Backhand', '#2563eb');
+    speedGauge('gaugeSrvA', sA.avg, sA.max, sA.min, 'Serve', PA_COLOR);
+    speedGauge('gaugeFhA', fA.avg, fA.max, fA.min, 'Forehand', '#22783c');
+    speedGauge('gaugeBhA', bA.avg, bA.max, bA.min, 'Backhand', '#2563eb');
+    speedGauge('gaugeSrvB', sB.avg, sB.max, sB.min, 'Serve', PB_COLOR);
+    speedGauge('gaugeFhB', fB.avg, fB.max, fB.min, 'Forehand', '#22783c');
+    speedGauge('gaugeBhB', bB.avg, bB.max, bB.min, 'Backhand', '#2563eb');
   }
 
   // ===== SERVE TAB =====
