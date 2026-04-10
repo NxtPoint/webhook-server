@@ -1374,23 +1374,43 @@ def match_analysis(task_id):
         if not meta or _norm_email(meta["email"]) != email:
             return jsonify({"ok": False, "error": "not_found"}), 404
 
+        # Discover which columns actually exist on the table
+        existing_cols = set()
+        col_rows = conn.execute(text("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'silver' AND table_name = 'point_detail'
+        """)).scalars().all()
+        existing_cols = {c.lower() for c in col_rows}
+
+        # Desired columns — only select those that exist on the live table
+        wanted = [
+            "id", "point_number", "player_id", "serve_d", "swing_type", "volley",
+            "ball_speed", "ball_hit_s", "ball_hit_location_x", "ball_hit_location_y",
+            "shot_ix_in_point", "shot_phase_d", "shot_outcome_d",
+            "point_winner_player_id", "game_number", "game_winner_player_id",
+            "server_id", "set_number", "set_game_number", "ace_d",
+            "rally_length", "rally_length_point", "rally_length_bucket_d",
+            "stroke_d", "aggression_d", "depth_d",
+            "serve_bucket_d", "serve_location", "serve_side_d", "serve_try_ix_in_point",
+            "service_winner_d",
+            "rally_location_hit", "rally_location_bounce",
+            "ball_hit_x_norm", "ball_hit_y_norm",
+            "ball_bounce_x_norm", "ball_bounce_y_norm",
+            "court_x", "court_y",
+            "point_key", "shot_q", "exclude_d", "model",
+        ]
+        # type is a reserved word — alias it
+        select_cols = []
+        for c in wanted:
+            if c in existing_cols:
+                select_cols.append(c)
+        if "type" in existing_cols:
+            select_cols.append('type AS bounce_type')
+
+        col_expr = ", ".join(select_cols)
         rows = conn.execute(
-            text("""
-                SELECT
-                    id, point_number, player_id, serve_d, swing_type, volley,
-                    ball_speed, ball_hit_s, ball_hit_location_x, ball_hit_location_y,
-                    shot_ix_in_point, shot_phase_d, shot_outcome_d,
-                    point_winner_player_id, game_number, game_winner_player_id,
-                    server_id, set_number, set_game_number, ace_d,
-                    rally_length, rally_length_point, rally_length_bucket_d,
-                    stroke_d, aggression_d, depth_d,
-                    serve_bucket_d, serve_location, serve_side_d, serve_try_ix_in_point,
-                    service_winner_d,
-                    rally_location_hit, rally_location_bounce,
-                    ball_hit_x_norm, ball_hit_y_norm,
-                    ball_bounce_x_norm, ball_bounce_y_norm,
-                    court_x, court_y, type AS bounce_type,
-                    point_key, shot_q, exclude_d, model
+            text(f"""
+                SELECT {col_expr}
                 FROM silver.point_detail
                 WHERE task_id = :tid::uuid
                   AND COALESCE(exclude_d, FALSE) = FALSE
