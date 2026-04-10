@@ -154,13 +154,22 @@ body {
 .player-utr { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 12px; }
 .compare-divider { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 16px; }
 .compare-divider .vs { font-size: 0.75rem; font-weight: 600; color: var(--text-dim); }
-.compare-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.compare-row .stat-label { font-size: 0.75rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; min-width: 100px; text-align: center; }
-.compare-bar-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
-.compare-bar { height: 8px; border-radius: 4px; transition: width 0.5s ease; }
-.compare-val { font-size: 0.85rem; font-weight: 600; min-width: 40px; }
-.compare-val.left { text-align: right; }
-.compare-val.right { text-align: left; }
+.compare-row { display: flex; align-items: center; margin-bottom: 6px; }
+.compare-row .stat-label {
+  font-size: 0.7rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
+  white-space: nowrap; width: 120px; text-align: center; flex-shrink: 0; padding: 0 8px;
+}
+.compare-bar-wrap { flex: 1; display: flex; align-items: center; }
+.compare-bar {
+  height: 28px; border-radius: 4px; transition: width 0.5s ease;
+  display: flex; align-items: center; min-width: 28px;
+}
+.compare-bar .bar-val {
+  font-size: 0.8rem; font-weight: 700; padding: 0 10px; white-space: nowrap;
+}
+.compare-half { display: flex; align-items: center; }
+.compare-half.left { flex: 1; justify-content: flex-end; }
+.compare-half.right { flex: 1; justify-content: flex-start; }
 
 /* Score box */
 .score-box {
@@ -649,19 +658,31 @@ function renderSummary(pts) {
   const avgRally = rallyLengths.length ? (rallyLengths.reduce((a,b) => a+b, 0) / rallyLengths.length).toFixed(1) : '0';
 
   function pct(n, total) { return total ? Math.round(100 * n / total) : 0; }
-  function compareBar(label, valA, valB, pctA, pctB) {
+  function compareBar(label, valA, valB, rawA, rawB, invertWinner) {
+    // invertWinner: true for stats where lower is better (errors, double faults)
+    const numA = parseFloat(String(valA).replace('%','')) || 0;
+    const numB = parseFloat(String(valB).replace('%','')) || 0;
+    const aWins = invertWinner ? numA < numB : numA > numB;
+    const bWins = invertWinner ? numB < numA : numB > numA;
+    const tied = numA === numB;
+    const aOpacity = aWins ? '1' : tied ? '0.5' : '0.3';
+    const bOpacity = bWins ? '1' : tied ? '0.5' : '0.3';
+    const aTextCol = aWins ? '#fff' : PA_COLOR;
+    const bTextCol = bWins ? '#fff' : PB_COLOR;
+    const pA = rawA || 1;
+    const pB = rawB || 1;
     return `<div class="compare-row">
-      <span class="compare-val left" style="color:${PA_COLOR}">${valA}</span>
-      <div class="compare-bar-wrap">
-        <div style="flex:${pctA || 1};display:flex;justify-content:flex-end">
-          <div class="compare-bar" style="width:100%;background:${PA_COLOR};opacity:0.75"></div>
-        </div>
-        <span class="compare-row stat-label">${label}</span>
-        <div style="flex:${pctB || 1};display:flex;justify-content:flex-start">
-          <div class="compare-bar" style="width:100%;background:${PB_COLOR};opacity:0.75"></div>
+      <div class="compare-half left">
+        <div class="compare-bar" style="width:${Math.round(100*pA/(pA+pB))}%;background:${PA_COLOR};opacity:${aOpacity};justify-content:flex-end">
+          <span class="bar-val" style="color:${aTextCol}">${valA}</span>
         </div>
       </div>
-      <span class="compare-val right" style="color:${PB_COLOR}">${valB}</span>
+      <span class="stat-label">${label}</span>
+      <div class="compare-half right">
+        <div class="compare-bar" style="width:${Math.round(100*pB/(pA+pB))}%;background:${PB_COLOR};opacity:${bOpacity}">
+          <span class="bar-val" style="color:${bTextCol}">${valB}</span>
+        </div>
+      </div>
     </div>`;
   }
 
@@ -682,14 +703,14 @@ function renderSummary(pts) {
         <div style="font-weight:700;color:${PB_COLOR}">${pb}</div>
       </div>
       ${compareBar('Points Won', `${pct(paPointsWon,totalPoints)}%`, `${pct(pbPointsWon,totalPoints)}%`, paPointsWon, pbPointsWon)}
-      ${compareBar('Service Pts Won', `${pct(svcWonA,servePointsA.length)}%`, `${pct(svcWonB,servePointsB.length)}%`, svcWonA || 1, svcWonB || 1)}
-      ${compareBar('Return Pts Won', `${pct(retWonA,retPointsA.length)}%`, `${pct(retWonB,retPointsB.length)}%`, retWonA || 1, retWonB || 1)}
-      ${compareBar('Rally Pts Won', `${pct(rallyWonA,rallyPoints.length)}%`, `${pct(rallyWonB,rallyPoints.length)}%`, rallyWonA || 1, rallyWonB || 1)}
-      ${compareBar('1st Serve %', `${fsPctA}%`, `${fsPctB}%`, fsPctA || 1, fsPctB || 1)}
-      ${compareBar('Aces', acesA, acesB, acesA || 1, acesB || 1)}
-      ${compareBar('Double Faults', dfA, dfB, dfA || 1, dfB || 1)}
-      ${compareBar('Winners', winnersA, winnersB, winnersA || 1, winnersB || 1)}
-      ${compareBar('Errors', errorsA, errorsB, errorsA || 1, errorsB || 1)}
+      ${compareBar('Service Pts Won', `${pct(svcWonA,servePointsA.length)}%`, `${pct(svcWonB,servePointsB.length)}%`, svcWonA, svcWonB)}
+      ${compareBar('Return Pts Won', `${pct(retWonA,retPointsA.length)}%`, `${pct(retWonB,retPointsB.length)}%`, retWonA, retWonB)}
+      ${compareBar('Rally Pts Won', `${pct(rallyWonA,rallyPoints.length)}%`, `${pct(rallyWonB,rallyPoints.length)}%`, rallyWonA, rallyWonB)}
+      ${compareBar('1st Serve %', `${fsPctA}%`, `${fsPctB}%`, fsPctA, fsPctB)}
+      ${compareBar('Aces', acesA, acesB, acesA, acesB)}
+      ${compareBar('Double Faults', dfA, dfB, dfA, dfB, true)}
+      ${compareBar('Winners', winnersA, winnersB, winnersA, winnersB)}
+      ${compareBar('Errors', errorsA, errorsB, errorsA, errorsB, true)}
     </div>
 
     <div class="chart-grid">
