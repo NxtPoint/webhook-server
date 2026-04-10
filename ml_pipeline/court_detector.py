@@ -22,6 +22,7 @@ from ml_pipeline.config import (
     COURT_CONFIDENCE_THRESHOLD,
     COURT_REFERENCE_KEYPOINTS,
     COURT_LENGTH_M,
+    COURT_WIDTH_DOUBLES_M,
     COURT_WIDTH_SINGLES_M,
     TRACKNET_INPUT_WIDTH,
     TRACKNET_INPUT_HEIGHT,
@@ -305,7 +306,7 @@ class CourtDetector:
         if ref_w == 0 or ref_h == 0:
             return None
 
-        mx = (court_pt[0] - ref[0][0]) / ref_w * COURT_WIDTH_SINGLES_M
+        mx = (court_pt[0] - ref[0][0]) / ref_w * COURT_WIDTH_DOUBLES_M
         my = (court_pt[1] - ref[0][1]) / ref_h * COURT_LENGTH_M
         return (float(mx), float(my))
 

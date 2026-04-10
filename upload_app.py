@@ -1760,8 +1760,14 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s silver build failed (non-fatal): %s", task_id, e)
         elif is_singles_t5:
-            # TODO: build_silver_match_t5 — point detection, serve detection, game structure
-            app.logger.info("T5 INGEST task_id=%s singles_t5 — silver match builder TODO (bronze data saved)", task_id)
+            try:
+                from ml_pipeline.build_silver_match_t5 import build_silver_match_t5
+                silver_result = build_silver_match_t5(task_id=task_id, replace=True, engine=engine)
+                app.logger.info("T5 INGEST task_id=%s silver match built: %s", task_id, silver_result)
+            except ImportError:
+                app.logger.warning("T5 INGEST task_id=%s silver match builder not available (ml deps missing)", task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s silver match build failed (non-fatal): %s", task_id, e)
 
         # Video trim: reuse match trim pipeline
         try:
@@ -1773,7 +1779,7 @@ def _do_ingest_t5(task_id: str) -> bool:
 
         # Skip: billing (T5 is free — no credit consumption for now)
 
-        # PBI refresh (when dataset exists for practice data)
+        # PBI refresh (fire-and-forget for T5)
         if PBI_SERVICE_BASE:
             try:
                 _pbi_post("/dataset/refresh_once", json={"task_id": task_id}, timeout=60)
@@ -1781,15 +1787,25 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s PBI refresh failed (non-fatal): %s", task_id, e)
 
-        # Mark complete
+        # Mark complete — set PBI columns so dashboard_ready evaluates correctly
+        # (T5 doesn't block on PBI, but the task-status endpoint needs these for email)
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                 SET ingest_finished_at = now(),
-                    ingest_error = NULL
+                    ingest_error = NULL,
+                    pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now()),
+                    pbi_refresh_finished_at = COALESCE(pbi_refresh_finished_at, now()),
+                    pbi_refresh_status = COALESCE(pbi_refresh_status, 'completed')
                 WHERE task_id = :t
             """), {"t": task_id})
+
+        # Customer notification (same email as SportAI — idempotent via ses_notified_at)
+        try:
+            _notify_ses_completion(task_id)
+        except Exception as e:
+            app.logger.warning("T5 INGEST task_id=%s email notify failed (non-fatal): %s", task_id, e)
 
         app.logger.info("T5 INGEST COMPLETE task_id=%s", task_id)
         return True
@@ -1837,6 +1853,12 @@ def analytics():
 def practice_page():
     from flask import send_file
     return send_file("practice.html")
+
+
+@app.get("/match-analysis")
+def match_analysis_page():
+    from flask import send_file
+    return send_file("match_analysis.html")
 
 
 # ==========================

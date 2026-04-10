@@ -1,6 +1,6 @@
 # locker_room_app.py — Standalone Flask server for the Locker Room service (Render).
 #
-# Serves nine client-facing HTML SPAs as static files via send_file():
+# Serves client-facing HTML SPAs as static files via send_file():
 #   GET /              → locker_room.html   (dashboard: matches, stats, video playback)
 #   GET /register      → players_enclosure.html (onboarding wizard)
 #   GET /media-room    → media_room.html    (video upload wizard)
@@ -48,6 +48,11 @@ def analytics():
 @app.get("/practice")
 def practice():
     return send_file("practice.html")
+
+
+@app.get("/match-analysis")
+def match_analysis():
+    return send_file("match_analysis.html")
 
 
 @app.get("/portal")

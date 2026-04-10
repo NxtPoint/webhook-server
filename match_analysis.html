@@ -1,0 +1,1693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>TEN-FIFTY5 Match Analysis</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --blue: #2563eb;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; overflow-x: hidden; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased; height: 100%; overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* ========== LAYOUT: SIDEBAR + MAIN ========== */
+.dash-layout {
+  display: grid; grid-template-columns: 280px 1fr; height: 100vh; overflow: hidden;
+}
+.dash-sidebar {
+  background: var(--white); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.dash-sidebar-header {
+  padding: 16px; border-bottom: 1px solid var(--border);
+}
+.dash-sidebar-header h2 { font-size: 1rem; font-weight: 600; }
+.dash-sidebar-header .count { font-size: 0.75rem; color: var(--text-sec); }
+.session-list { flex: 1; overflow-y: auto; padding: 8px; }
+.session-item {
+  padding: 10px 12px; border-radius: var(--radius); cursor: pointer;
+  border: 1px solid transparent; margin-bottom: 4px; transition: all var(--transition);
+}
+.session-item:hover { background: var(--bg); }
+.session-item.active { background: var(--green-bg); border-color: var(--green); }
+.session-item .s-type { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--green); }
+.session-item .s-date { font-size: 0.82rem; font-weight: 500; margin-top: 2px; }
+.session-item .s-meta { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
+.session-item .s-score { font-size: 0.78rem; font-weight: 600; color: var(--text); margin-top: 3px; }
+
+/* ========== MAIN DASHBOARD ========== */
+.dash-main { overflow-y: auto; padding: 0; }
+.dash-toolbar {
+  position: sticky; top: 0; z-index: 10; background: var(--white);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 48px;
+}
+.dash-toolbar h1 { font-size: 1.05rem; font-weight: 600; }
+.dash-toolbar .actions { display: flex; gap: 8px; }
+
+/* Module tabs (top level) */
+.module-tabs {
+  display: flex; gap: 0; background: var(--green); padding: 0 24px;
+}
+.module-tab {
+  padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: rgba(255,255,255,0.65);
+  cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
+  background: none; border-top: none; border-left: none; border-right: none;
+}
+.module-tab:hover { color: rgba(255,255,255,0.9); }
+.module-tab.active { color: #fff; border-bottom-color: #fff; font-weight: 600; }
+
+/* Sub-tabs */
+.dash-tabs {
+  display: flex; gap: 0; background: var(--white); border-bottom: 1px solid var(--border);
+  padding: 0 24px; position: sticky; top: 48px; z-index: 9;
+}
+.dash-tab {
+  padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: var(--text-sec);
+  cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
+  background: none; border-top: none; border-left: none; border-right: none;
+}
+.dash-tab:hover { color: var(--text); }
+.dash-tab.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
+
+/* Filter bar */
+.filter-bar {
+  display: flex; gap: 12px; align-items: center; padding: 10px 24px;
+  background: var(--white); border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.filter-bar label { font-size: 0.75rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; }
+.filter-bar select {
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.8rem; font-family: inherit; background: var(--white); color: var(--text);
+  cursor: pointer;
+}
+.filter-bar select:focus { outline: none; border-color: var(--green); }
+
+/* Dashboard content */
+.dash-content { padding: 20px 24px; padding-bottom: 300px; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ========== KPI CARDS ========== */
+.kpi-strip {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.kpi {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); text-align: center;
+}
+.kpi .val { font-size: 1.6rem; font-weight: 700; color: var(--green); line-height: 1.2; }
+.kpi .val.amber { color: var(--amber); }
+.kpi .val.red { color: var(--red); }
+.kpi .val.blue { color: var(--blue); }
+.kpi .lbl { font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+/* ========== CHART CARDS ========== */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.chart-grid.tri { grid-template-columns: 1fr 1fr 1fr; }
+.chart-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); position: relative;
+}
+.chart-card h3 {
+  font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.chart-card .echart { height: 280px; width: 100%; }
+.chart-card.full { grid-column: 1 / -1; width: 100%; }
+
+/* ========== PLAYER COMPARISON ========== */
+.player-compare {
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; margin-bottom: 20px;
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.player-col { text-align: center; }
+.player-col.left { text-align: right; }
+.player-col.right { text-align: left; }
+.player-name { font-size: 0.95rem; font-weight: 700; margin-bottom: 8px; }
+.player-utr { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 12px; }
+.compare-divider { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 16px; }
+.compare-divider .vs { font-size: 0.75rem; font-weight: 600; color: var(--text-dim); }
+.compare-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.compare-row .stat-label { font-size: 0.75rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; min-width: 100px; text-align: center; }
+.compare-bar-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
+.compare-bar { height: 8px; border-radius: 4px; transition: width 0.5s ease; }
+.compare-val { font-size: 0.85rem; font-weight: 600; min-width: 40px; }
+.compare-val.left { text-align: right; }
+.compare-val.right { text-align: left; }
+
+/* Score box */
+.score-box {
+  display: flex; align-items: center; justify-content: center; gap: 24px;
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.score-player { text-align: center; }
+.score-player .name { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
+.score-player .utr { font-size: 0.72rem; color: var(--text-dim); }
+.score-sets { display: flex; gap: 12px; }
+.score-set { text-align: center; padding: 4px 12px; }
+.score-set .set-label { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.score-set .set-val { display: flex; gap: 8px; font-size: 1.4rem; font-weight: 700; justify-content: center; }
+.score-set .set-val .winner { color: var(--green); }
+.score-set .set-val .loser { color: var(--text-dim); }
+
+/* Serve strategy table */
+.strategy-table {
+  width: 100%; border-collapse: collapse; font-size: 0.82rem;
+}
+.strategy-table th {
+  text-align: left; padding: 8px 12px; font-size: 0.72rem; font-weight: 600;
+  color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border);
+}
+.strategy-table td {
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.strategy-table tr:last-child td { border-bottom: none; }
+.strategy-table .highlight { background: rgba(26,92,46,0.06); }
+.strategy-table .bar-cell { position: relative; }
+.strategy-table .bar-bg {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  height: 6px; border-radius: 3px; transition: width 0.5s ease;
+}
+
+/* Court filter buttons */
+.court-filter-btn {
+  padding: 4px 12px; border-radius: 3px; border: 1px solid var(--border);
+  background: var(--white); font-size: 0.75rem; font-weight: 500; color: var(--text-sec);
+  cursor: pointer; transition: all var(--transition);
+}
+.court-filter-btn:hover { border-color: var(--green); color: var(--text); }
+.court-filter-btn.active { background: var(--green); color: var(--white); border-color: var(--green); }
+
+/* Toggle group (ATP-style) */
+.toggle-group {
+  display: flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden;
+}
+.toggle-btn {
+  padding: 6px 14px; font-size: 0.75rem; font-weight: 500; color: var(--text-sec);
+  cursor: pointer; border: none; background: var(--white); transition: all var(--transition);
+  border-right: 1px solid var(--border);
+}
+.toggle-btn:last-child { border-right: none; }
+.toggle-btn:hover { background: var(--bg); }
+.toggle-btn.active { background: var(--green); color: var(--white); }
+
+/* Gauge (reused from practice) */
+.gauge-container { display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 10px 0; }
+.gauge-number { font-size: 2.4rem; font-weight: 700; color: var(--green); }
+.gauge-label { font-size: 0.82rem; color: var(--text-sec); margin-top: 4px; }
+.gauge-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+.gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+
+/* Video modal */
+.video-modal {
+  display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.92);
+  align-items: center; justify-content: center;
+}
+.video-modal.open { display: flex; }
+.video-modal video { max-width: 95vw; max-height: 90vh; border-radius: 8px; }
+.video-modal .close-btn {
+  position: absolute; top: 16px; right: 24px; color: white; font-size: 2rem;
+  cursor: pointer; z-index: 1001; line-height: 1;
+}
+
+/* Loading & empty */
+.loading, .empty-state { display: flex; align-items: center; justify-content: center; height: 100vh; text-align: center; color: var(--text-sec); }
+.empty-state h3 { font-size: 1.1rem; margin-bottom: 8px; }
+.loading .spinner {
+  width: 32px; height: 32px; border: 3px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite; margin: 0 auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .dash-layout { display: flex; flex-direction: column; height: auto; overflow-x: hidden; width: 100%; }
+  .dash-sidebar { max-height: 160px; border-right: none; border-bottom: 1px solid var(--border); overflow-y: auto; width: 100%; }
+  .dash-main { overflow: visible; width: 100%; }
+  .dash-toolbar { padding: 0 12px; height: 44px; position: static; }
+  .dash-toolbar h1 { font-size: 0.9rem; }
+  .module-tabs { padding: 0 8px; flex-wrap: wrap; }
+  .module-tab { padding: 8px 12px; font-size: 0.72rem; }
+  .dash-tabs { padding: 4px 8px; flex-wrap: wrap; gap: 2px; position: static; }
+  .dash-tab { padding: 6px 10px; font-size: 0.72rem; white-space: nowrap; }
+  .dash-content { padding: 12px; padding-bottom: 300px; overflow-x: hidden; }
+  .chart-grid, .chart-grid.tri { grid-template-columns: 1fr; }
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .kpi .val { font-size: 1.3rem; }
+  .kpi .lbl { font-size: 0.65rem; }
+  .chart-card { padding: 12px; }
+  .chart-card .echart { height: 240px; }
+  .chart-card h3 { font-size: 0.75rem; }
+  .score-box { flex-direction: column; gap: 12px; }
+  .player-compare { grid-template-columns: 1fr; }
+  .compare-divider { display: none; }
+  .filter-bar { padding: 8px 12px; }
+  .gauge-number { font-size: 2rem; }
+  body { overflow: auto; }
+}
+@media (max-width: 400px) {
+  .kpi-strip { grid-template-columns: 1fr; }
+  .dash-sidebar { max-height: 140px; }
+}
+</style>
+</head>
+<body>
+<div id="app"><div class="loading"><div><div class="spinner"></div>Loading...</div></div></div>
+
+<!-- Video Modal -->
+<div class="video-modal" id="videoModal">
+  <span class="close-btn" onclick="closeVideo()">&times;</span>
+  <video id="videoPlayer" controls playsinline></video>
+</div>
+
+<script>
+const params = new URLSearchParams(window.location.search);
+const EMAIL = (params.get('email') || '').trim().toLowerCase();
+const API_KEY = params.get('key') || '';
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+
+function apiFetch(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
+  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(EMAIL), { ...opts, headers });
+}
+
+let matches = [];
+let selectedMatch = null;
+let selectedData = null;  // { match, points }
+let activeModule = 'analytics';  // 'analytics' | 'heatmaps'
+let activeTab = 'summary';
+let filterPlayer = 'both';  // 'both' | 'a' | 'b'
+let filterSet = 'all';  // 'all' | '1' | '2' | '3'
+const CI = {};
+
+const C_GREEN  = 'rgba(26,92,46,0.75)';
+const C_GREEN_L = 'rgba(34,120,60,0.75)';
+const C_BLUE   = 'rgba(37,99,235,0.75)';
+const C_AMBER  = 'rgba(217,119,6,0.75)';
+const C_RED    = 'rgba(220,38,38,0.75)';
+const C_TEAL   = 'rgba(20,184,166,0.75)';
+const PA_COLOR = '#1a5c2e';
+const PB_COLOR = '#2563eb';
+
+// ==================== INIT ====================
+async function init() {
+  if (!EMAIL || !API_KEY) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>Configuration Required</h3><p>Missing email or API key.</p></div>';
+    return;
+  }
+  try {
+    const res = await apiFetch('/api/client/matches');
+    const data = await res.json();
+    matches = data.ok ? data.matches.filter(m => m.sport_type === 'tennis_singles' && m.total_points > 0) : [];
+  } catch (e) { matches = []; }
+
+  if (!matches.length) {
+    document.getElementById('app').innerHTML = '<div class="empty-state"><h3>No Match Data</h3><p>Upload a singles match from the Media Room to get started.</p></div>';
+    return;
+  }
+  // Reverse so newest first
+  matches.reverse();
+  renderLayout();
+  selectMatch(0);
+}
+
+// ==================== HELPERS ====================
+function getPlayerAId() { return selectedData?.match?.first_server || getDistinctPlayers()[0] || ''; }
+function getDistinctPlayers() {
+  if (!selectedData?.points) return [];
+  const ids = new Set();
+  selectedData.points.forEach(p => { if (p.player_id) ids.add(p.player_id); });
+  return [...ids];
+}
+function getPlayerName(pid) {
+  if (!selectedData?.match) return pid || '?';
+  const players = getDistinctPlayers();
+  const m = selectedData.match;
+  if (players.indexOf(pid) === 0) return m.player_a_name || 'Player A';
+  return m.player_b_name || 'Player B';
+}
+function playerAId() { return getDistinctPlayers()[0] || ''; }
+function playerBId() { return getDistinctPlayers()[1] || ''; }
+
+function filteredPoints() {
+  if (!selectedData?.points) return [];
+  let pts = selectedData.points;
+  if (filterSet !== 'all') pts = pts.filter(p => String(p.set_number) === filterSet);
+  return pts;
+}
+function playerPoints(playerId) {
+  return filteredPoints().filter(p => p.player_id === playerId);
+}
+
+// ==================== LAYOUT ====================
+function renderLayout() {
+  document.getElementById('app').innerHTML = `
+    <div class="dash-layout">
+      <div class="dash-sidebar">
+        <div class="dash-sidebar-header">
+          <h2>Matches</h2>
+          <span class="count">${matches.length} match${matches.length !== 1 ? 'es' : ''}</span>
+        </div>
+        <div class="session-list" id="sessionList">${renderMatchList()}</div>
+      </div>
+      <div class="dash-main" id="dashMain">
+        <div class="dash-toolbar" id="toolbar"></div>
+        <div class="module-tabs" id="moduleStrip"></div>
+        <div id="filterBar"></div>
+        <div class="dash-tabs" id="tabStrip"></div>
+        <div class="dash-content" id="dashContent"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMatchList() {
+  return matches.map((m, i) => {
+    const date = m.match_date || '';
+    const pa = m.player_a_name || 'Player A';
+    const pb = m.player_b_name || 'Player B';
+    const score = m.score || '';
+    return `<div class="session-item" id="mi-${i}" onclick="selectMatch(${i})">
+      <div class="s-type">Singles</div>
+      <div class="s-date">${date}</div>
+      <div class="s-meta">${pa} vs ${pb}</div>
+      ${score ? `<div class="s-score">${score}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ==================== MATCH SELECT ====================
+async function selectMatch(idx) {
+  selectedMatch = matches[idx];
+  document.querySelectorAll('.session-item').forEach((el, i) => el.classList.toggle('active', i === idx));
+
+  try {
+    const res = await apiFetch('/api/client/match-analysis/' + selectedMatch.task_id);
+    const data = await res.json();
+    selectedData = data.ok ? data : null;
+  } catch (e) { selectedData = null; }
+
+  filterPlayer = 'both';
+  filterSet = 'all';
+  activeModule = 'analytics';
+  activeTab = 'summary';
+  renderDashboard();
+}
+
+// ==================== DASHBOARD RENDER ====================
+function renderDashboard() {
+  if (!selectedMatch || !selectedData) return;
+  const m = selectedMatch;
+  const date = m.match_date || '';
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+
+  document.getElementById('toolbar').innerHTML = `<h1>${pa} vs ${pb} &mdash; ${date}</h1>`;
+
+  // Module tabs
+  document.getElementById('moduleStrip').innerHTML = `
+    <button class="module-tab${activeModule === 'analytics' ? ' active' : ''}" onclick="switchModule('analytics')">Match Analytics</button>
+    <button class="module-tab${activeModule === 'heatmaps' ? ' active' : ''}" onclick="switchModule('heatmaps')">Placement Heatmaps</button>
+  `;
+
+  // Filter bar
+  const sets = getAvailableSets();
+  document.getElementById('filterBar').innerHTML = `
+    <div class="filter-bar">
+      <label>Player</label>
+      <select id="filterPlayer" onchange="onFilterChange()">
+        <option value="both"${filterPlayer === 'both' ? ' selected' : ''}>Both Players</option>
+        <option value="a"${filterPlayer === 'a' ? ' selected' : ''}>${pa}</option>
+        <option value="b"${filterPlayer === 'b' ? ' selected' : ''}>${pb}</option>
+      </select>
+      <label>Set</label>
+      <select id="filterSet" onchange="onFilterChange()">
+        <option value="all"${filterSet === 'all' ? ' selected' : ''}>All Sets</option>
+        ${sets.map(s => `<option value="${s}"${filterSet === String(s) ? ' selected' : ''}>Set ${s}</option>`).join('')}
+      </select>
+    </div>
+  `;
+
+  if (activeModule === 'analytics') renderAnalyticsModule();
+  else renderHeatmapsModule();
+}
+
+function getAvailableSets() {
+  if (!selectedData?.points) return [];
+  const s = new Set();
+  selectedData.points.forEach(p => { if (p.set_number) s.add(p.set_number); });
+  return [...s].sort();
+}
+
+function switchModule(mod) {
+  activeModule = mod;
+  if (mod === 'analytics') activeTab = 'summary';
+  else activeTab = 'serve-placement';
+  renderDashboard();
+}
+
+function onFilterChange() {
+  filterPlayer = document.getElementById('filterPlayer').value;
+  filterSet = document.getElementById('filterSet').value;
+  renderDashboard();
+}
+
+// ====================================================================
+//  MODULE 1: MATCH ANALYTICS
+// ====================================================================
+function renderAnalyticsModule() {
+  const tabs = [
+    { id: 'summary', label: 'Match Summary' },
+    { id: 'serve', label: 'Serve Detail' },
+    { id: 'return', label: 'Return Detail' },
+    { id: 'rally', label: 'Rally Detail' },
+  ];
+
+  document.getElementById('tabStrip').innerHTML = tabs.map(t =>
+    `<button class="dash-tab${t.id === activeTab ? ' active' : ''}" onclick="switchTab('${t.id}')">${t.label}</button>`
+  ).join('');
+
+  const pts = filteredPoints();
+  document.getElementById('dashContent').innerHTML = `
+    <div class="tab-panel${activeTab === 'summary' ? ' active' : ''}" id="p-summary">${renderSummary(pts)}</div>
+    <div class="tab-panel${activeTab === 'serve' ? ' active' : ''}" id="p-serve">${renderServeDetail(pts)}</div>
+    <div class="tab-panel${activeTab === 'return' ? ' active' : ''}" id="p-return">${renderReturnDetail(pts)}</div>
+    <div class="tab-panel${activeTab === 'rally' ? ' active' : ''}" id="p-rally">${renderRallyDetail(pts)}</div>
+  `;
+
+  setTimeout(() => renderAllCharts(), 50);
+}
+
+function switchTab(id) {
+  activeTab = id;
+  document.querySelectorAll('.dash-tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  const el = document.getElementById('p-' + id);
+  if (el) el.classList.add('active');
+  setTimeout(() => renderAllCharts(), 50);
+}
+
+// ==================== SUMMARY TAB ====================
+function renderSummary(pts) {
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+  const paId = playerAId();
+  const pbId = playerBId();
+
+  // Points won (unique points, not shots)
+  const pointMap = {};
+  pts.forEach(p => {
+    const key = p.point_key || `${p.game_number}:${p.point_number}`;
+    if (!pointMap[key]) pointMap[key] = p;
+  });
+  const uniquePoints = Object.values(pointMap);
+  const totalPoints = uniquePoints.length;
+  const paPointsWon = uniquePoints.filter(p => p.point_winner_player_id === paId).length;
+  const pbPointsWon = totalPoints - paPointsWon;
+
+  // Service points
+  const servePointsA = uniquePoints.filter(p => p.server_id === paId);
+  const servePointsB = uniquePoints.filter(p => p.server_id === pbId);
+  const svcWonA = servePointsA.filter(p => p.point_winner_player_id === paId).length;
+  const svcWonB = servePointsB.filter(p => p.point_winner_player_id === pbId).length;
+
+  // Return points
+  const retPointsA = uniquePoints.filter(p => p.server_id === pbId);
+  const retPointsB = uniquePoints.filter(p => p.server_id === paId);
+  const retWonA = retPointsA.filter(p => p.point_winner_player_id === paId).length;
+  const retWonB = retPointsB.filter(p => p.point_winner_player_id === pbId).length;
+
+  // Rally points (rally_length > 4)
+  const rallyPoints = uniquePoints.filter(p => (p.rally_length_point || 0) > 4);
+  const rallyWonA = rallyPoints.filter(p => p.point_winner_player_id === paId).length;
+  const rallyWonB = rallyPoints.filter(p => p.point_winner_player_id === pbId).length;
+
+  // Aces and double faults
+  const acesA = pts.filter(p => p.ace_d && p.server_id === paId).length;
+  const acesB = pts.filter(p => p.ace_d && p.server_id === pbId).length;
+  const dfA = pts.filter(p => p.serve_d && p.serve_try_ix_in_point === '2nd' && p.shot_outcome_d === 'Error' && p.server_id === paId).length;
+  const dfB = pts.filter(p => p.serve_d && p.serve_try_ix_in_point === '2nd' && p.shot_outcome_d === 'Error' && p.server_id === pbId).length;
+
+  // Winners and errors
+  const winnersA = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Winner').length;
+  const winnersB = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'Winner').length;
+  const errorsA = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Error').length;
+  const errorsB = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'Error').length;
+
+  // 1st serve %
+  const serves1A = pts.filter(p => p.serve_d && p.server_id === paId && p.serve_try_ix_in_point === '1st');
+  const serves1InA = serves1A.filter(p => p.shot_outcome_d !== 'Error').length;
+  const serves1B = pts.filter(p => p.serve_d && p.server_id === pbId && p.serve_try_ix_in_point === '1st');
+  const serves1InB = serves1B.filter(p => p.shot_outcome_d !== 'Error').length;
+  const fsPctA = serves1A.length ? Math.round(100 * serves1InA / serves1A.length) : 0;
+  const fsPctB = serves1B.length ? Math.round(100 * serves1InB / serves1B.length) : 0;
+
+  // Avg rally length
+  const rallyLengths = uniquePoints.map(p => p.rally_length_point || 0).filter(l => l > 0);
+  const avgRally = rallyLengths.length ? (rallyLengths.reduce((a,b) => a+b, 0) / rallyLengths.length).toFixed(1) : '0';
+
+  function pct(n, total) { return total ? Math.round(100 * n / total) : 0; }
+  function compareBar(label, valA, valB, pctA, pctB) {
+    return `<div class="compare-row">
+      <span class="compare-val left" style="color:${PA_COLOR}">${valA}</span>
+      <div class="compare-bar-wrap">
+        <div style="flex:${pctA || 1};display:flex;justify-content:flex-end">
+          <div class="compare-bar" style="width:100%;background:${PA_COLOR};opacity:0.75"></div>
+        </div>
+        <span class="compare-row stat-label">${label}</span>
+        <div style="flex:${pctB || 1};display:flex;justify-content:flex-start">
+          <div class="compare-bar" style="width:100%;background:${PB_COLOR};opacity:0.75"></div>
+        </div>
+      </div>
+      <span class="compare-val right" style="color:${PB_COLOR}">${valB}</span>
+    </div>`;
+  }
+
+  return `
+    ${renderScoreBox()}
+    <div class="kpi-strip">
+      <div class="kpi"><div class="val">${totalPoints}</div><div class="lbl">Total Points</div></div>
+      <div class="kpi"><div class="val">${avgRally}</div><div class="lbl">Avg Rally Length</div></div>
+      <div class="kpi"><div class="val">${Math.max(...rallyLengths, 0)}</div><div class="lbl">Max Rally Length</div></div>
+      <div class="kpi"><div class="val">${acesA + acesB}</div><div class="lbl">Total Aces</div></div>
+      <div class="kpi"><div class="val red">${dfA + dfB}</div><div class="lbl">Double Faults</div></div>
+    </div>
+
+    <div class="chart-card full" style="padding:20px">
+      <h3>Head to Head</h3>
+      <div style="display:flex;justify-content:space-between;margin-bottom:16px">
+        <div style="font-weight:700;color:${PA_COLOR}">${pa}</div>
+        <div style="font-weight:700;color:${PB_COLOR}">${pb}</div>
+      </div>
+      ${compareBar('Points Won', `${pct(paPointsWon,totalPoints)}%`, `${pct(pbPointsWon,totalPoints)}%`, paPointsWon, pbPointsWon)}
+      ${compareBar('Service Pts Won', `${pct(svcWonA,servePointsA.length)}%`, `${pct(svcWonB,servePointsB.length)}%`, svcWonA || 1, svcWonB || 1)}
+      ${compareBar('Return Pts Won', `${pct(retWonA,retPointsA.length)}%`, `${pct(retWonB,retPointsB.length)}%`, retWonA || 1, retWonB || 1)}
+      ${compareBar('Rally Pts Won', `${pct(rallyWonA,rallyPoints.length)}%`, `${pct(rallyWonB,rallyPoints.length)}%`, rallyWonA || 1, rallyWonB || 1)}
+      ${compareBar('1st Serve %', `${fsPctA}%`, `${fsPctB}%`, fsPctA || 1, fsPctB || 1)}
+      ${compareBar('Aces', acesA, acesB, acesA || 1, acesB || 1)}
+      ${compareBar('Double Faults', dfA, dfB, dfA || 1, dfB || 1)}
+      ${compareBar('Winners', winnersA, winnersB, winnersA || 1, winnersB || 1)}
+      ${compareBar('Errors', errorsA, errorsB, errorsA || 1, errorsB || 1)}
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3>Points Won by Phase</h3>
+        <div id="chartPhasePoints" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Shot Outcome Distribution</h3>
+        <div id="chartOutcomes" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-card full">
+      <h3>Rally Length Distribution</h3>
+      <div id="chartRallyDist" class="echart"></div>
+    </div>
+  `;
+}
+
+function renderScoreBox() {
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+  let setsHTML = '';
+  for (let i = 1; i <= 3; i++) {
+    const a = m[`player_a_set${i}_games`];
+    const b = m[`player_b_set${i}_games`];
+    if (a == null || b == null) continue;
+    const aWin = a > b;
+    setsHTML += `<div class="score-set">
+      <div class="set-label">Set ${i}</div>
+      <div class="set-val">
+        <span class="${aWin ? 'winner' : 'loser'}">${a}</span>
+        <span style="color:var(--text-dim);font-weight:400">-</span>
+        <span class="${!aWin ? 'winner' : 'loser'}">${b}</span>
+      </div>
+    </div>`;
+  }
+  return `<div class="score-box">
+    <div class="score-player">
+      <div class="name" style="color:${PA_COLOR}">${pa}</div>
+      ${m.player_a_utr ? `<div class="utr">UTR ${m.player_a_utr}</div>` : ''}
+    </div>
+    <div class="score-sets">${setsHTML}</div>
+    <div class="score-player">
+      <div class="name" style="color:${PB_COLOR}">${pb}</div>
+      ${m.player_b_utr ? `<div class="utr">UTR ${m.player_b_utr}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+// ==================== SERVE DETAIL TAB ====================
+function renderServeDetail(pts) {
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+  const paId = playerAId();
+  const pbId = playerBId();
+
+  // We show for the filtered player or both
+  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+
+  let html = '';
+  for (const pid of showPlayers) {
+    const pName = getPlayerName(pid);
+    const isA = pid === paId;
+    const color = isA ? PA_COLOR : PB_COLOR;
+
+    const serves = pts.filter(p => p.serve_d && p.server_id === pid);
+    const serves1st = serves.filter(p => p.serve_try_ix_in_point === '1st');
+    const serves2nd = serves.filter(p => p.serve_try_ix_in_point === '2nd');
+    const serves1stIn = serves1st.filter(p => p.shot_outcome_d !== 'Error');
+    const serves2ndIn = serves2nd.filter(p => p.shot_outcome_d !== 'Error');
+    const aces = serves.filter(p => p.ace_d).length;
+    const doubleFaults = serves2nd.filter(p => p.shot_outcome_d === 'Error').length;
+
+    // Service points (unique points where this player served)
+    const pointMap = {};
+    pts.forEach(p => {
+      if (p.server_id !== pid) return;
+      const key = p.point_key || `${p.game_number}:${p.point_number}`;
+      if (!pointMap[key]) pointMap[key] = p;
+    });
+    const servicePoints = Object.values(pointMap);
+    const svcPtsWon = servicePoints.filter(p => p.point_winner_player_id === pid).length;
+
+    // Unreturned serves (service_winner_d)
+    const unreturned = serves.filter(p => p.service_winner_d).length;
+
+    // Serve direction strategy - THE KEY INSIGHT TABLE
+    const strategyData = buildServeStrategy(pts, pid);
+
+    const fsPct = serves1st.length ? Math.round(100 * serves1stIn.length / serves1st.length) : 0;
+    const ssPct = serves2nd.length ? Math.round(100 * serves2ndIn.length / serves2nd.length) : 0;
+    const svcWonPct = servicePoints.length ? Math.round(100 * svcPtsWon / servicePoints.length) : 0;
+
+    html += `
+      <h3 style="color:${color};margin-bottom:12px;font-size:1rem">${pName} — Serve Performance</h3>
+      <div class="kpi-strip">
+        <div class="kpi"><div class="val">${serves.length}</div><div class="lbl">Total Serves</div></div>
+        <div class="kpi"><div class="val">${fsPct}%</div><div class="lbl">1st Serve In</div></div>
+        <div class="kpi"><div class="val">${ssPct}%</div><div class="lbl">2nd Serve In</div></div>
+        <div class="kpi"><div class="val">${svcWonPct}%</div><div class="lbl">Svc Pts Won</div></div>
+        <div class="kpi"><div class="val">${aces}</div><div class="lbl">Aces</div></div>
+        <div class="kpi"><div class="val red">${doubleFaults}</div><div class="lbl">Double Faults</div></div>
+        <div class="kpi"><div class="val">${unreturned}</div><div class="lbl">Unreturned</div></div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>Serve Direction — ${pName}</h3>
+          <div id="chartServeDir_${pid}" class="echart"></div>
+        </div>
+        <div class="chart-card">
+          <h3>1st vs 2nd Serve Points Won</h3>
+          <div id="chartServe12_${pid}" class="echart"></div>
+        </div>
+      </div>
+
+      <div class="chart-card full" style="margin-bottom:24px">
+        <h3>Serve Direction Strategy & Win Rate — ${pName}</h3>
+        <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:12px">Shows where serves were targeted, how often, and the resulting point win percentage. High win % with low usage = opportunity to exploit.</p>
+        <table class="strategy-table">
+          <thead>
+            <tr>
+              <th>Side</th>
+              <th>Direction</th>
+              <th>Serves</th>
+              <th>% of Total</th>
+              <th style="width:120px">Distribution</th>
+              <th>Points Won</th>
+              <th>Win %</th>
+              <th>Unreturned</th>
+            </tr>
+          </thead>
+          <tbody>${strategyData.map(r => {
+            const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+            const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
+            return `<tr${highlight}>
+              <td>${r.side}</td>
+              <td style="font-weight:600">${r.direction}</td>
+              <td>${r.count}</td>
+              <td>${r.pctOfTotal}%</td>
+              <td class="bar-cell" style="position:relative;padding-right:60px">
+                <div class="bar-bg" style="width:${r.pctOfTotal}%;background:${color};opacity:0.3"></div>
+              </td>
+              <td>${r.pointsWon} / ${r.pointsPlayed}</td>
+              <td style="font-weight:700;color:${winColor}">${r.winPct}%</td>
+              <td>${r.unreturned}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    `;
+  }
+  return html;
+}
+
+function buildServeStrategy(pts, serverId) {
+  const paId = playerAId();
+  const serves = pts.filter(p => p.serve_d && p.server_id === serverId);
+  const totalServes = serves.length;
+  if (!totalServes) return [];
+
+  // Group by side + direction
+  const groups = {};
+  serves.forEach(s => {
+    const side = s.serve_side_d || 'Unknown';
+    const dir = s.serve_bucket_d || 'Unknown';
+    const key = `${side}|${dir}`;
+    if (!groups[key]) groups[key] = { side, direction: dir, serves: [], pointKeys: new Set() };
+    groups[key].serves.push(s);
+    const pk = s.point_key || `${s.game_number}:${s.point_number}`;
+    groups[key].pointKeys.add(pk);
+  });
+
+  // For each group, find point outcomes
+  const pointMap = {};
+  pts.forEach(p => {
+    const key = p.point_key || `${p.game_number}:${p.point_number}`;
+    if (!pointMap[key]) pointMap[key] = p;
+  });
+
+  const rows = [];
+  for (const [, g] of Object.entries(groups)) {
+    let pointsPlayed = 0, pointsWon = 0, unreturned = 0;
+    for (const pk of g.pointKeys) {
+      const pp = pointMap[pk];
+      if (!pp) continue;
+      pointsPlayed++;
+      if (pp.point_winner_player_id === serverId) pointsWon++;
+    }
+    unreturned = g.serves.filter(s => s.service_winner_d).length;
+    rows.push({
+      side: g.side,
+      direction: g.direction,
+      count: g.serves.length,
+      pctOfTotal: Math.round(100 * g.serves.length / totalServes),
+      pointsPlayed,
+      pointsWon,
+      winPct: pointsPlayed ? Math.round(100 * pointsWon / pointsPlayed) : 0,
+      unreturned,
+    });
+  }
+
+  // Sort: deuce first, then by count desc
+  rows.sort((a, b) => {
+    if (a.side !== b.side) return a.side === 'deuce' ? -1 : 1;
+    return b.count - a.count;
+  });
+  return rows;
+}
+
+// ==================== RETURN DETAIL TAB ====================
+function renderReturnDetail(pts) {
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+  const paId = playerAId();
+  const pbId = playerBId();
+
+  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+
+  let html = '';
+  for (const pid of showPlayers) {
+    const pName = getPlayerName(pid);
+    const opponentId = pid === paId ? pbId : paId;
+    const isA = pid === paId;
+    const color = isA ? PA_COLOR : PB_COLOR;
+
+    // Return shots = shots where opponent served and this player returns
+    const returns = pts.filter(p => p.shot_phase_d === 'Return' && p.player_id === pid);
+    const returnWinners = returns.filter(p => p.shot_outcome_d === 'Winner').length;
+    const returnErrors = returns.filter(p => p.shot_outcome_d === 'Error').length;
+    const returnInPlay = returns.filter(p => p.shot_outcome_d === 'InPlay').length;
+
+    // Return points: unique points where opponent served
+    const pointMap = {};
+    pts.forEach(p => {
+      if (p.server_id !== opponentId) return;
+      const key = p.point_key || `${p.game_number}:${p.point_number}`;
+      if (!pointMap[key]) pointMap[key] = p;
+    });
+    const returnPoints = Object.values(pointMap);
+    const retPtsWon = returnPoints.filter(p => p.point_winner_player_id === pid).length;
+
+    // Returns made (not error on return)
+    const retMade = returns.filter(p => p.shot_outcome_d !== 'Error').length;
+
+    // Return depth
+    const retDeep = returns.filter(p => p.depth_d === 'Deep').length;
+    const retMid = returns.filter(p => p.depth_d === 'Middle').length;
+    const retShort = returns.filter(p => p.depth_d === 'Short').length;
+
+    // Return stroke
+    const retFH = returns.filter(p => p.stroke_d === 'forehand').length;
+    const retBH = returns.filter(p => p.stroke_d === 'backhand').length;
+
+    const retMadePct = returns.length ? Math.round(100 * retMade / returns.length) : 0;
+    const retWonPct = returnPoints.length ? Math.round(100 * retPtsWon / returnPoints.length) : 0;
+
+    html += `
+      <h3 style="color:${color};margin-bottom:12px;font-size:1rem">${pName} — Return Performance</h3>
+      <div class="kpi-strip">
+        <div class="kpi"><div class="val">${returns.length}</div><div class="lbl">Returns Played</div></div>
+        <div class="kpi"><div class="val">${retMadePct}%</div><div class="lbl">Returns Made</div></div>
+        <div class="kpi"><div class="val">${retWonPct}%</div><div class="lbl">Return Pts Won</div></div>
+        <div class="kpi"><div class="val">${returnWinners}</div><div class="lbl">Return Winners</div></div>
+        <div class="kpi"><div class="val red">${returnErrors}</div><div class="lbl">Return Errors</div></div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <h3>Return Depth — ${pName}</h3>
+          <div id="chartRetDepth_${pid}" class="echart"></div>
+        </div>
+        <div class="chart-card">
+          <h3>Return Stroke — ${pName}</h3>
+          <div id="chartRetStroke_${pid}" class="echart"></div>
+        </div>
+      </div>
+
+      <div class="chart-card full" style="margin-bottom:24px">
+        <h3>Return Outcome — ${pName}</h3>
+        <div id="chartRetOutcome_${pid}" class="echart"></div>
+      </div>
+    `;
+  }
+  return html;
+}
+
+// ==================== RALLY DETAIL TAB ====================
+function renderRallyDetail(pts) {
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+  const paId = playerAId();
+  const pbId = playerBId();
+
+  // Rally shots = phase Rally or Transition
+  const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition');
+
+  // Rally points
+  const pointMap = {};
+  pts.forEach(p => {
+    const key = p.point_key || `${p.game_number}:${p.point_number}`;
+    if (!pointMap[key]) pointMap[key] = p;
+  });
+  const uniquePoints = Object.values(pointMap);
+  const rallyPoints = uniquePoints.filter(p => (p.rally_length_point || 0) > 4);
+
+  // Shots by aggression
+  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+
+  let html = `
+    <div class="kpi-strip">
+      <div class="kpi"><div class="val">${rallyShots.length}</div><div class="lbl">Rally Shots</div></div>
+      <div class="kpi"><div class="val">${rallyPoints.length}</div><div class="lbl">Rally Points (5+ shots)</div></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Rally Length Distribution</h3>
+      <div id="chartRallyLen" class="echart" style="height:300px"></div>
+    </div>
+    <div class="chart-card full">
+      <h3>Rally Points Won by Length Bucket</h3>
+      <div id="chartRallyBucketWin" class="echart" style="height:300px"></div>
+    </div>
+  `;
+
+  for (const pid of showPlayers) {
+    const pName = getPlayerName(pid);
+    const isA = pid === paId;
+    const color = isA ? PA_COLOR : PB_COLOR;
+    const pShots = rallyShots.filter(p => p.player_id === pid);
+    const aggAttack = pShots.filter(p => p.aggression_d === 'Aggressive').length;
+    const aggNeutral = pShots.filter(p => p.aggression_d === 'Neutral').length;
+    const aggDefensive = pShots.filter(p => p.aggression_d === 'Defensive').length;
+    const depthDeep = pShots.filter(p => p.depth_d === 'Deep').length;
+    const depthMid = pShots.filter(p => p.depth_d === 'Middle').length;
+    const depthShort = pShots.filter(p => p.depth_d === 'Short').length;
+    const fh = pShots.filter(p => p.stroke_d === 'forehand').length;
+    const bh = pShots.filter(p => p.stroke_d === 'backhand').length;
+
+    html += `
+      <h3 style="color:${color};margin:20px 0 12px;font-size:1rem">${pName} — Rally Breakdown</h3>
+      <div class="chart-grid tri">
+        <div class="chart-card">
+          <h3>Aggression</h3>
+          <div id="chartAgg_${pid}" class="echart"></div>
+        </div>
+        <div class="chart-card">
+          <h3>Depth</h3>
+          <div id="chartDepth_${pid}" class="echart"></div>
+        </div>
+        <div class="chart-card">
+          <h3>Stroke Split</h3>
+          <div id="chartStroke_${pid}" class="echart"></div>
+        </div>
+      </div>
+    `;
+  }
+  return html;
+}
+
+// ====================================================================
+//  MODULE 2: PLACEMENT HEATMAPS (ATP-STYLE)
+// ====================================================================
+let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
+
+function renderHeatmapsModule() {
+  const tabs = [
+    { id: 'serve-placement', label: 'Serve Placement' },
+    { id: 'return-placement', label: 'Return Placement' },
+    { id: 'groundstroke', label: 'Groundstrokes' },
+    { id: 'rally-depth', label: 'Rally Depth' },
+  ];
+
+  document.getElementById('tabStrip').innerHTML = tabs.map(t =>
+    `<button class="dash-tab${t.id === activeTab ? ' active' : ''}" onclick="switchHeatmapTab('${t.id}')">${t.label}</button>`
+  ).join('');
+
+  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
+  document.getElementById('dashContent').innerHTML = `
+    <div class="tab-panel active" id="p-heatmap-content"></div>
+  `;
+  renderHeatmapContent();
+}
+
+function switchHeatmapTab(id) {
+  activeTab = id;
+  document.querySelectorAll('.dash-tab').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
+  renderHeatmapContent();
+}
+
+function setHeatmapFilter(key, val) {
+  heatmapFilter[key] = val;
+  document.querySelectorAll(`.hf-${key}`).forEach(b => b.classList.toggle('active', b.dataset.val === val));
+  renderHeatmapCourts();
+}
+
+function renderHeatmapContent() {
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+  const paId = playerAId();
+  const pbId = playerBId();
+  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+
+  let togglesHTML = '';
+
+  if (activeTab === 'serve-placement') {
+    togglesHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Serve:</span>
+        <div class="toggle-group">
+          <button class="toggle-btn hf-serve active" data-val="all" onclick="setHeatmapFilter('serve','all')">All</button>
+          <button class="toggle-btn hf-serve" data-val="1st" onclick="setHeatmapFilter('serve','1st')">1st Serve</button>
+          <button class="toggle-btn hf-serve" data-val="2nd" onclick="setHeatmapFilter('serve','2nd')">2nd Serve</button>
+        </div>
+        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;margin-left:8px">Outcome:</span>
+        <div class="toggle-group">
+          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
+          <button class="toggle-btn hf-outcome" data-val="Winner" onclick="setHeatmapFilter('outcome','Winner')">Winners</button>
+          <button class="toggle-btn hf-outcome" data-val="Error" onclick="setHeatmapFilter('outcome','Error')">Errors</button>
+        </div>
+      </div>
+    `;
+  } else if (activeTab === 'return-placement') {
+    togglesHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Outcome:</span>
+        <div class="toggle-group">
+          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
+          <button class="toggle-btn hf-outcome" data-val="Winner" onclick="setHeatmapFilter('outcome','Winner')">Winners</button>
+          <button class="toggle-btn hf-outcome" data-val="Error" onclick="setHeatmapFilter('outcome','Error')">Errors</button>
+          <button class="toggle-btn hf-outcome" data-val="InPlay" onclick="setHeatmapFilter('outcome','InPlay')">In Play</button>
+        </div>
+      </div>
+    `;
+  } else if (activeTab === 'groundstroke') {
+    togglesHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Stroke:</span>
+        <div class="toggle-group">
+          <button class="toggle-btn hf-stroke active" data-val="all" onclick="setHeatmapFilter('stroke','all')">All</button>
+          <button class="toggle-btn hf-stroke" data-val="forehand" onclick="setHeatmapFilter('stroke','forehand')">Forehand</button>
+          <button class="toggle-btn hf-stroke" data-val="backhand" onclick="setHeatmapFilter('stroke','backhand')">Backhand</button>
+        </div>
+        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;margin-left:8px">Outcome:</span>
+        <div class="toggle-group">
+          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
+          <button class="toggle-btn hf-outcome" data-val="Winner" onclick="setHeatmapFilter('outcome','Winner')">Winners</button>
+          <button class="toggle-btn hf-outcome" data-val="Error" onclick="setHeatmapFilter('outcome','Error')">Errors</button>
+          <button class="toggle-btn hf-outcome" data-val="InPlay" onclick="setHeatmapFilter('outcome','InPlay')">In Play</button>
+        </div>
+      </div>
+    `;
+  } else {
+    togglesHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Depth:</span>
+        <div class="toggle-group">
+          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
+          <button class="toggle-btn hf-outcome" data-val="Deep" onclick="setHeatmapFilter('outcome','Deep')">Deep</button>
+          <button class="toggle-btn hf-outcome" data-val="Middle" onclick="setHeatmapFilter('outcome','Middle')">Middle</button>
+          <button class="toggle-btn hf-outcome" data-val="Short" onclick="setHeatmapFilter('outcome','Short')">Short</button>
+        </div>
+      </div>
+    `;
+  }
+
+  const panel = document.getElementById('p-heatmap-content');
+  let courtsHTML = togglesHTML;
+
+  if (showPlayers.length === 2) {
+    courtsHTML += `<div class="chart-grid" id="heatmapCourts">
+      <div class="chart-card" style="padding:20px">
+        <h3 style="color:${PA_COLOR}">${pa}</h3>
+        <canvas id="courtA" width="440" height="560" style="width:100%;max-width:440px"></canvas>
+        <div id="courtStatsA" style="margin-top:8px;font-size:0.78rem;color:var(--text-sec)"></div>
+      </div>
+      <div class="chart-card" style="padding:20px">
+        <h3 style="color:${PB_COLOR}">${pb}</h3>
+        <canvas id="courtB" width="440" height="560" style="width:100%;max-width:440px"></canvas>
+        <div id="courtStatsB" style="margin-top:8px;font-size:0.78rem;color:var(--text-sec)"></div>
+      </div>
+    </div>`;
+  } else {
+    const pid = showPlayers[0];
+    const pName = getPlayerName(pid);
+    const color = pid === paId ? PA_COLOR : PB_COLOR;
+    courtsHTML += `<div id="heatmapCourts">
+      <div class="chart-card full" style="padding:20px;max-width:500px">
+        <h3 style="color:${color}">${pName}</h3>
+        <canvas id="courtA" width="440" height="560" style="width:100%;max-width:440px"></canvas>
+        <div id="courtStatsA" style="margin-top:8px;font-size:0.78rem;color:var(--text-sec)"></div>
+      </div>
+    </div>`;
+  }
+
+  // Legend
+  courtsHTML += `<div style="display:flex;gap:16px;margin-top:12px;font-size:0.75rem;color:var(--text-sec)">
+    <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(26,92,46,0.85);margin-right:4px"></span>Winner / In</span>
+    <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(220,38,38,0.7);margin-right:4px"></span>Error / Out</span>
+    <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(37,99,235,0.6);margin-right:4px"></span>In Play</span>
+  </div>`;
+
+  panel.innerHTML = courtsHTML;
+  renderHeatmapCourts();
+}
+
+function renderHeatmapCourts() {
+  const paId = playerAId();
+  const pbId = playerBId();
+  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+  const pts = filteredPoints();
+
+  showPlayers.forEach((pid, idx) => {
+    const canvasId = idx === 0 ? 'courtA' : 'courtB';
+    const statsId = idx === 0 ? 'courtStatsA' : 'courtStatsB';
+    const shots = getHeatmapShots(pts, pid);
+    drawHeatmapCourt(canvasId, shots, statsId);
+  });
+}
+
+function getHeatmapShots(pts, playerId) {
+  const paId = playerAId();
+  let shots;
+
+  if (activeTab === 'serve-placement') {
+    shots = pts.filter(p => p.serve_d && p.server_id === playerId);
+    if (heatmapFilter.serve !== 'all') shots = shots.filter(p => p.serve_try_ix_in_point === heatmapFilter.serve);
+    if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
+  } else if (activeTab === 'return-placement') {
+    shots = pts.filter(p => p.shot_phase_d === 'Return' && p.player_id === playerId);
+    if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
+  } else if (activeTab === 'groundstroke') {
+    shots = pts.filter(p => (p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition') && p.player_id === playerId);
+    if (heatmapFilter.stroke !== 'all') shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
+    if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
+  } else {
+    // Rally depth: show bounce locations
+    shots = pts.filter(p => p.player_id === playerId && (p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Return'));
+    if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.depth_d === heatmapFilter.outcome);
+  }
+
+  return shots;
+}
+
+function drawHeatmapCourt(canvasId, shots, statsId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SVC_LINE = 6.40, NET_Y = COURT_L / 2;
+  const PAD = 30;
+  const CW = W - PAD * 2, CH = H - PAD * 2;
+
+  function cx(courtX) { return PAD + (courtX / COURT_W) * CW; }
+  function cy(courtY) { return PAD + (courtY / COURT_L) * CH; }
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Court surface
+  ctx.fillStyle = '#2d6a4f';
+  ctx.fillRect(PAD, PAD, CW, CH);
+
+  // Lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(PAD, PAD, CW, CH);
+
+  const singleLeft = (COURT_W - SINGLES_W) / 2;
+  const singleRight = singleLeft + SINGLES_W;
+  ctx.beginPath();
+  ctx.moveTo(cx(singleLeft), PAD); ctx.lineTo(cx(singleLeft), PAD + CH);
+  ctx.moveTo(cx(singleRight), PAD); ctx.lineTo(cx(singleRight), PAD + CH);
+  ctx.stroke();
+
+  // Net
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(PAD, cy(NET_Y)); ctx.lineTo(PAD + CW, cy(NET_Y));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Service lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx(singleLeft), cy(COURT_L - SVC_LINE));
+  ctx.lineTo(cx(singleRight), cy(COURT_L - SVC_LINE));
+  ctx.moveTo(cx(singleLeft), cy(SVC_LINE));
+  ctx.lineTo(cx(singleRight), cy(SVC_LINE));
+  ctx.stroke();
+
+  // Centre service line
+  const mid = COURT_W / 2;
+  ctx.beginPath();
+  ctx.moveTo(cx(mid), cy(SVC_LINE));
+  ctx.lineTo(cx(mid), cy(COURT_L - SVC_LINE));
+  ctx.stroke();
+
+  // Centre marks
+  ctx.beginPath();
+  ctx.moveTo(cx(mid), PAD); ctx.lineTo(cx(mid), PAD + 8);
+  ctx.moveTo(cx(mid), PAD + CH); ctx.lineTo(cx(mid), PAD + CH - 8);
+  ctx.stroke();
+
+  // Plot shots
+  let winnersCount = 0, errorsCount = 0, inPlayCount = 0;
+
+  shots.forEach(s => {
+    // Use bounce coords if available, else hit coords (normalized or raw)
+    let bx = s.ball_bounce_x_norm ?? s.ball_hit_x_norm ?? s.court_x ?? s.ball_hit_location_x;
+    let by = s.ball_bounce_y_norm ?? s.ball_hit_y_norm ?? s.court_y ?? s.ball_hit_location_y;
+    if (bx == null || by == null) return;
+
+    // Clamp to court
+    bx = Math.max(0, Math.min(COURT_W, bx));
+    by = Math.max(0, Math.min(COURT_L, by));
+
+    const px = cx(bx), py = cy(by);
+    let colour;
+    if (s.shot_outcome_d === 'Winner') { colour = 'rgba(26,92,46,0.85)'; winnersCount++; }
+    else if (s.shot_outcome_d === 'Error') { colour = 'rgba(220,38,38,0.7)'; errorsCount++; }
+    else { colour = 'rgba(37,99,235,0.6)'; inPlayCount++; }
+
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fillStyle = colour;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+
+  // Stats
+  const statsEl = document.getElementById(statsId);
+  if (statsEl) {
+    const total = winnersCount + errorsCount + inPlayCount;
+    statsEl.innerHTML = `<strong>${total}</strong> shots &mdash;
+      <span style="color:var(--green)">${winnersCount} winners</span>,
+      <span style="color:var(--red)">${errorsCount} errors</span>,
+      <span style="color:var(--blue)">${inPlayCount} in play</span>`;
+  }
+}
+
+// ====================================================================
+//  ECHARTS RENDERING
+// ====================================================================
+function destroyCharts() {
+  Object.values(CI).forEach(c => { try { c.dispose(); } catch(e) {} });
+  Object.keys(CI).forEach(k => delete CI[k]);
+}
+
+function ec(id) {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const existing = echarts.getInstanceByDom(el);
+  if (existing) existing.dispose();
+  return echarts.init(el);
+}
+
+const TT = {
+  trigger: 'axis', axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(0,0,0,0.04)' } },
+  backgroundColor: 'rgba(255,255,255,0.96)', borderColor: '#e5e5e5', borderWidth: 1,
+  textStyle: { color: '#1a1a1a', fontSize: 13 }, padding: [10, 14],
+};
+const TT_ITEM = {
+  trigger: 'item',
+  backgroundColor: 'rgba(255,255,255,0.96)', borderColor: '#e5e5e5', borderWidth: 1,
+  textStyle: { color: '#1a1a1a', fontSize: 13 }, padding: [10, 14],
+};
+const ANIM = { animationDuration: 800, animationEasing: 'elasticOut', animationDelay: (idx) => idx * 50 };
+
+function eBar(id, labels, data, colors, horizontal = false) {
+  const chart = ec(id);
+  if (!chart) return null;
+  const isMultiColor = Array.isArray(colors);
+  chart.setOption({
+    ...ANIM, tooltip: TT,
+    grid: { left: horizontal ? 80 : 40, right: 30, top: 30, bottom: 35, containLabel: true },
+    [horizontal ? 'yAxis' : 'xAxis']: {
+      type: 'category', data: labels,
+      axisLabel: { fontSize: 13, color: '#6b7280' },
+      axisLine: { lineStyle: { color: '#e5e5e5' } },
+      axisTick: { show: false },
+    },
+    [horizontal ? 'xAxis' : 'yAxis']: {
+      type: 'value', minInterval: 1,
+      axisLabel: { fontSize: 12, color: '#9ca3af' },
+      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: [{
+      type: 'bar', barWidth: '55%',
+      label: { show: true, position: horizontal ? 'right' : 'top', fontSize: 12, fontWeight: 600, color: '#374151' },
+      data: data.map((v, i) => {
+        const c = isMultiColor ? colors[i % colors.length] : colors;
+        return {
+          value: v,
+          itemStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: c.replace('0.7', '0.9').replace('0.75', '0.95') },
+              { offset: 1, color: c },
+            ]),
+            borderRadius: horizontal ? [0, 6, 6, 0] : [6, 6, 0, 0],
+          },
+        };
+      }),
+      emphasis: { itemStyle: { shadowBlur: 12, shadowColor: 'rgba(0,0,0,0.15)' } },
+    }],
+  });
+  CI[id] = chart;
+  return chart;
+}
+
+function eStackedBar(id, labels, seriesData, horizontal = false) {
+  const chart = ec(id);
+  if (!chart) return null;
+  chart.setOption({
+    ...ANIM, tooltip: { ...TT, trigger: 'axis' },
+    legend: { bottom: 0, textStyle: { fontSize: 13 }, itemGap: 20, icon: 'roundRect' },
+    grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+    [horizontal ? 'yAxis' : 'xAxis']: {
+      type: 'category', data: labels,
+      axisLabel: { fontSize: 13, color: '#6b7280' },
+      axisLine: { lineStyle: { color: '#e5e5e5' } },
+      axisTick: { show: false },
+    },
+    [horizontal ? 'xAxis' : 'yAxis']: {
+      type: 'value', minInterval: 1,
+      axisLabel: { fontSize: 12, color: '#9ca3af' },
+      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: seriesData.map((s, si) => ({
+      type: 'bar', name: s.name, stack: 'total', barWidth: '55%',
+      data: s.data,
+      itemStyle: {
+        color: s.color,
+        borderRadius: si === seriesData.length - 1 ? [6, 6, 0, 0] : 0,
+      },
+      emphasis: { focus: 'series', blurScope: 'coordinateSystem' },
+      label: {
+        show: true, position: 'inside', fontSize: 11, fontWeight: 600, color: '#fff',
+        formatter: (p) => p.value > 0 ? p.value : '',
+      },
+    })),
+  });
+  CI[id] = chart;
+  return chart;
+}
+
+function ePie(id, data, colors) {
+  const chart = ec(id);
+  if (!chart) return null;
+  chart.setOption({
+    ...ANIM, tooltip: TT_ITEM,
+    legend: { bottom: 0, textStyle: { fontSize: 13 }, itemGap: 20, icon: 'circle' },
+    series: [{
+      type: 'pie', radius: ['45%', '75%'], center: ['50%', '45%'],
+      padAngle: 3,
+      itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
+      label: {
+        show: true,
+        formatter: (p) => `{name|${p.name}}\n{pct|${p.percent.toFixed(0)}%}  {cnt|(${p.value})}`,
+        rich: {
+          name: { fontSize: 13, fontWeight: 600, color: '#374151', lineHeight: 20 },
+          pct: { fontSize: 18, fontWeight: 700, color: '#1a5c2e', lineHeight: 24 },
+          cnt: { fontSize: 12, color: '#9ca3af' },
+        },
+      },
+      emphasis: {
+        label: { fontSize: 15, fontWeight: 'bold' },
+        itemStyle: { shadowBlur: 20, shadowColor: 'rgba(0,0,0,0.2)' },
+        scaleSize: 8,
+      },
+      data: data.map((d, i) => ({ value: d.value, name: d.name, itemStyle: { color: colors[i] } })),
+    }],
+  });
+  CI[id] = chart;
+  return chart;
+}
+
+function renderAllCharts() {
+  destroyCharts();
+  if (activeModule === 'heatmaps') return;
+  const pts = filteredPoints();
+  const paId = playerAId();
+  const pbId = playerBId();
+  const m = selectedMatch;
+  const pa = m.player_a_name || 'Player A';
+  const pb = m.player_b_name || 'Player B';
+
+  // ===== SUMMARY TAB =====
+  if (activeTab === 'summary') {
+    // Points won by phase (grouped bar)
+    const phaseEl = document.getElementById('chartPhasePoints');
+    if (phaseEl) {
+      const pointMap = {};
+      pts.forEach(p => {
+        const key = p.point_key || `${p.game_number}:${p.point_number}`;
+        if (!pointMap[key]) pointMap[key] = p;
+      });
+      const uPts = Object.values(pointMap);
+      const serveA = uPts.filter(p => p.server_id === paId);
+      const serveB = uPts.filter(p => p.server_id === pbId);
+      const retA = uPts.filter(p => p.server_id === pbId);
+      const retB = uPts.filter(p => p.server_id === paId);
+      const rally = uPts.filter(p => (p.rally_length_point || 0) > 4);
+
+      const chart = ec('chartPhasePoints');
+      chart.setOption({
+        ...ANIM, tooltip: TT,
+        legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'roundRect' },
+        grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+        xAxis: { type: 'category', data: ['Serve', 'Return', 'Rally (5+)'],
+          axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
+          axisLine: { lineStyle: { color: '#e5e5e5' } }
+        },
+        yAxis: { type: 'value', minInterval: 1,
+          axisLabel: { fontSize: 12, color: '#9ca3af' },
+          splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+          axisLine: { show: false }, axisTick: { show: false },
+        },
+        series: [
+          {
+            type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
+            data: [
+              serveA.filter(p => p.point_winner_player_id === paId).length,
+              retA.filter(p => p.point_winner_player_id === paId).length,
+              rally.filter(p => p.point_winner_player_id === paId).length,
+            ],
+            itemStyle: { color: PA_COLOR, borderRadius: [6, 6, 0, 0] },
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR },
+          },
+          {
+            type: 'bar', name: pb, barWidth: '25%',
+            data: [
+              serveB.filter(p => p.point_winner_player_id === pbId).length,
+              retB.filter(p => p.point_winner_player_id === pbId).length,
+              rally.filter(p => p.point_winner_player_id === pbId).length,
+            ],
+            itemStyle: { color: PB_COLOR, borderRadius: [6, 6, 0, 0] },
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR },
+          },
+        ],
+      });
+      CI['chartPhasePoints'] = chart;
+    }
+
+    // Shot outcome distribution (stacked)
+    const outcomeEl = document.getElementById('chartOutcomes');
+    if (outcomeEl) {
+      const aW = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Winner').length;
+      const aE = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Error').length;
+      const aI = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'InPlay').length;
+      const bW = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'Winner').length;
+      const bE = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'Error').length;
+      const bI = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'InPlay').length;
+
+      eStackedBar('chartOutcomes', [pa, pb], [
+        { name: 'Winners', data: [aW, bW], color: C_GREEN },
+        { name: 'Errors', data: [aE, bE], color: C_RED },
+        { name: 'In Play', data: [aI, bI], color: C_BLUE },
+      ]);
+    }
+
+    // Rally length distribution
+    const rallyDistEl = document.getElementById('chartRallyDist');
+    if (rallyDistEl) {
+      const pointMap = {};
+      pts.forEach(p => {
+        const key = p.point_key || `${p.game_number}:${p.point_number}`;
+        if (!pointMap[key]) pointMap[key] = p;
+      });
+      const lengths = {};
+      Object.values(pointMap).forEach(p => {
+        const rl = p.rally_length_point || 0;
+        if (rl > 0) lengths[rl] = (lengths[rl] || 0) + 1;
+      });
+      const keys = Object.keys(lengths).sort((a, b) => a - b);
+      eBar('chartRallyDist', keys.map(k => k + ' shots'), keys.map(k => lengths[k]), C_GREEN);
+    }
+  }
+
+  // ===== SERVE TAB =====
+  if (activeTab === 'serve') {
+    const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+    for (const pid of showPlayers) {
+      const serves = pts.filter(p => p.serve_d && p.server_id === pid);
+
+      // Serve direction bar
+      const dirCounts = {};
+      serves.forEach(s => { const d = s.serve_bucket_d || 'Unknown'; dirCounts[d] = (dirCounts[d] || 0) + 1; });
+      const dirs = ['Wide', 'Body', 'T'].filter(d => dirCounts[d]);
+      eBar('chartServeDir_' + pid, dirs, dirs.map(d => dirCounts[d] || 0), [C_BLUE, C_GREEN, C_AMBER], true);
+
+      // 1st vs 2nd serve points won
+      const s1 = serves.filter(s => s.serve_try_ix_in_point === '1st' && s.shot_outcome_d !== 'Error');
+      const s2 = serves.filter(s => s.serve_try_ix_in_point === '2nd' && s.shot_outcome_d !== 'Error');
+      // Find corresponding points
+      const pointMap = {};
+      pts.forEach(p => {
+        const key = p.point_key || `${p.game_number}:${p.point_number}`;
+        if (!pointMap[key]) pointMap[key] = p;
+      });
+      const s1keys = new Set(s1.map(s => s.point_key || `${s.game_number}:${s.point_number}`));
+      const s2keys = new Set(s2.map(s => s.point_key || `${s.game_number}:${s.point_number}`));
+      const s1won = [...s1keys].filter(k => pointMap[k]?.point_winner_player_id === pid).length;
+      const s2won = [...s2keys].filter(k => pointMap[k]?.point_winner_player_id === pid).length;
+
+      eStackedBar('chartServe12_' + pid, ['1st Serve', '2nd Serve'], [
+        { name: 'Won', data: [s1won, s2won], color: C_GREEN },
+        { name: 'Lost', data: [s1keys.size - s1won, s2keys.size - s2won], color: C_RED },
+      ]);
+    }
+  }
+
+  // ===== RETURN TAB =====
+  if (activeTab === 'return') {
+    const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+    for (const pid of showPlayers) {
+      const returns = pts.filter(p => p.shot_phase_d === 'Return' && p.player_id === pid);
+
+      // Depth
+      eBar('chartRetDepth_' + pid, ['Deep', 'Middle', 'Short'], [
+        returns.filter(p => p.depth_d === 'Deep').length,
+        returns.filter(p => p.depth_d === 'Middle').length,
+        returns.filter(p => p.depth_d === 'Short').length,
+      ], [C_GREEN, C_AMBER, C_RED]);
+
+      // Stroke
+      ePie('chartRetStroke_' + pid, [
+        { name: 'Forehand', value: returns.filter(p => p.stroke_d === 'forehand').length },
+        { name: 'Backhand', value: returns.filter(p => p.stroke_d === 'backhand').length },
+      ], [C_GREEN, C_BLUE]);
+
+      // Outcome
+      eBar('chartRetOutcome_' + pid, ['Winner', 'In Play', 'Error'], [
+        returns.filter(p => p.shot_outcome_d === 'Winner').length,
+        returns.filter(p => p.shot_outcome_d === 'InPlay').length,
+        returns.filter(p => p.shot_outcome_d === 'Error').length,
+      ], [C_GREEN, C_BLUE, C_RED]);
+    }
+  }
+
+  // ===== RALLY TAB =====
+  if (activeTab === 'rally') {
+    // Rally length distribution
+    const pointMap = {};
+    pts.forEach(p => {
+      const key = p.point_key || `${p.game_number}:${p.point_number}`;
+      if (!pointMap[key]) pointMap[key] = p;
+    });
+    const uPts = Object.values(pointMap);
+    const lengths = {};
+    uPts.forEach(p => {
+      const rl = p.rally_length_point || 0;
+      if (rl > 0) lengths[rl] = (lengths[rl] || 0) + 1;
+    });
+    const keys = Object.keys(lengths).sort((a, b) => a - b);
+    eBar('chartRallyLen', keys.map(k => k + ' shots'), keys.map(k => lengths[k]), C_GREEN);
+
+    // Rally bucket win comparison
+    const buckets = ['Short 1\u20134', 'Medium 5\u20138', 'Long 9+'];
+    function getBucket(rl) {
+      if (rl <= 4) return buckets[0];
+      if (rl <= 8) return buckets[1];
+      return buckets[2];
+    }
+    const paWins = [0, 0, 0], pbWins = [0, 0, 0];
+    uPts.forEach(p => {
+      const rl = p.rally_length_point || 0;
+      if (rl <= 0) return;
+      const bi = rl <= 4 ? 0 : rl <= 8 ? 1 : 2;
+      if (p.point_winner_player_id === paId) paWins[bi]++;
+      else if (p.point_winner_player_id === pbId) pbWins[bi]++;
+    });
+
+    const bucketEl = document.getElementById('chartRallyBucketWin');
+    if (bucketEl) {
+      const chart = ec('chartRallyBucketWin');
+      chart.setOption({
+        ...ANIM, tooltip: TT,
+        legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'roundRect' },
+        grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+        xAxis: { type: 'category', data: buckets,
+          axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
+          axisLine: { lineStyle: { color: '#e5e5e5' } }
+        },
+        yAxis: { type: 'value', minInterval: 1,
+          axisLabel: { fontSize: 12, color: '#9ca3af' },
+          splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+          axisLine: { show: false }, axisTick: { show: false },
+        },
+        series: [
+          {
+            type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
+            data: paWins, itemStyle: { color: PA_COLOR, borderRadius: [6, 6, 0, 0] },
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR },
+          },
+          {
+            type: 'bar', name: pb, barWidth: '25%',
+            data: pbWins, itemStyle: { color: PB_COLOR, borderRadius: [6, 6, 0, 0] },
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR },
+          },
+        ],
+      });
+      CI['chartRallyBucketWin'] = chart;
+    }
+
+    // Per-player aggression, depth, stroke
+    const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+    const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition');
+
+    for (const pid of showPlayers) {
+      const pShots = rallyShots.filter(p => p.player_id === pid);
+
+      eBar('chartAgg_' + pid, ['Attack', 'Neutral', 'Defence'], [
+        pShots.filter(p => p.aggression_d === 'Aggressive').length,
+        pShots.filter(p => p.aggression_d === 'Neutral').length,
+        pShots.filter(p => p.aggression_d === 'Defensive').length,
+      ], [C_GREEN, C_AMBER, C_RED], true);
+
+      eBar('chartDepth_' + pid, ['Deep', 'Middle', 'Short'], [
+        pShots.filter(p => p.depth_d === 'Deep').length,
+        pShots.filter(p => p.depth_d === 'Middle').length,
+        pShots.filter(p => p.depth_d === 'Short').length,
+      ], [C_GREEN, C_AMBER, C_RED]);
+
+      ePie('chartStroke_' + pid, [
+        { name: 'Forehand', value: pShots.filter(p => p.stroke_d === 'forehand').length },
+        { name: 'Backhand', value: pShots.filter(p => p.stroke_d === 'backhand').length },
+      ], [C_GREEN, C_BLUE]);
+    }
+  }
+
+  // Resize handler
+  window.addEventListener('resize', () => {
+    Object.values(CI).forEach(c => { try { c.resize(); } catch(e) {} });
+  });
+}
+
+// ==================== VIDEO ====================
+function playFootage(taskId) {
+  apiFetch('/api/client/footage-url/' + taskId).then(r => r.json()).then(data => {
+    if (!data.ok || !data.url) { alert('Footage not available.'); return; }
+    document.getElementById('videoPlayer').src = data.url;
+    document.getElementById('videoModal').classList.add('open');
+    document.getElementById('videoPlayer').play();
+  }).catch(e => alert('Error: ' + e.message));
+}
+function closeVideo() {
+  document.getElementById('videoPlayer').pause();
+  document.getElementById('videoPlayer').src = '';
+  document.getElementById('videoModal').classList.remove('open');
+}
+
+init();
+</script>
+</body>
+</html>

@@ -215,7 +215,11 @@ def _mark_trim_accepted(conn, task_id: str) -> None:
 # Public API
 # ============================================================
 
-_PRACTICE_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
+_PRACTICE_SPORT_TYPES = {"serve_practice", "rally_practice"}
+
+# All T5 sport types — ML pipeline pre-compresses video + deletes raw source,
+# so the trim step must re-trim the compressed video (not skip as "already done").
+_T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
 
 
 def trigger_video_trim(task_id: str) -> dict:
@@ -250,13 +254,14 @@ def trigger_video_trim(task_id: str) -> dict:
 
         sport_type = str(row.get("sport_type") or "").strip()
         is_practice = sport_type in _PRACTICE_SPORT_TYPES
+        is_t5 = sport_type in _T5_SPORT_TYPES
 
         trim_status = str(row.get("trim_status") or "").strip().lower()
         trim_output_s3_key = str(row.get("trim_output_s3_key") or "").strip()
 
-        if is_practice and trim_status == "completed" and trim_output_s3_key:
-            # Practice: ML pipeline set trim_status=completed for the full video.
-            # We re-trim that to cut dead time → use it as source, reset status.
+        if is_t5 and trim_status == "completed" and trim_output_s3_key:
+            # T5 (practice + match): ML pipeline compressed the full video and
+            # deleted the raw source. Re-trim the compressed video to cut dead time.
             s3_bucket = str(row.get("s3_bucket") or "").strip() or S3_BUCKET
             s3_key = trim_output_s3_key
         elif trim_status == "completed" and trim_output_s3_key:

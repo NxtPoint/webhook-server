@@ -14,7 +14,7 @@ This repo defines five Render services (see `render.yaml`). All are Python 3.12.
 | Video trim worker | Docker (see `Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` → `video_pipeline/video_worker_app.py` |
 | Locker Room | `gunicorn locker_room_app:app` | `locker_room_app.py` (serves HTML SPAs, no DB) |
 
-The Locker Room service serves nine pages:
+The Locker Room service serves eleven pages:
 - `GET /` → `locker_room.html` (dashboard)
 - `GET /media-room` → `media_room.html` (video upload)
 - `GET /register` → `players_enclosure.html` (onboarding wizard)
@@ -23,8 +23,10 @@ The Locker Room service serves nine pages:
 - `GET /portal` → `portal.html` (unified nav shell — main entry point for Wix)
 - `GET /pricing` → `pricing.html` (plans & pricing page)
 - `GET /coach-accept` → `coach_accept.html` (coach invitation acceptance)
+- `GET /practice` → `practice.html` (practice analytics dashboard)
+- `GET /match-analysis` → `match_analysis.html` (T5 match analysis dashboard)
 
-The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, `/portal`, `/pricing`, and `/coach-accept` as same-origin backups for API access.
+The main webhook-server also serves `/media-room`, `/backoffice`, `/analytics`, `/portal`, `/pricing`, `/coach-accept`, `/practice`, and `/match-analysis` as same-origin backups for API access.
 
 Note: The Locker Room service only installs `flask` + `gunicorn` (not full `requirements.txt`).
 
@@ -620,55 +622,69 @@ All post-processing steps are non-fatal — ML results are saved even if transco
 - **Silver builder resilience**: falls back to pixel-to-court estimation when bronze court coords are missing (older jobs). New jobs have real court coords.
 - `compute_speeds` uses correct `target_fps` (10fps for practice, was hardcoded to 25fps).
 - Player position JOIN uses nearest frame (was exact match, NULL for most rows in practice mode).
+- **Speed coordinate fix (2026-04-10)**: `to_court_coords()` was mapping reference keypoint width (doubles sidelines) to `COURT_WIDTH_SINGLES_M` (8.23m) instead of `COURT_WIDTH_DOUBLES_M` (10.97m), compressing all X-axis distances by 0.75x. Fixed to use doubles width. Speeds may still need further investigation — this fix corrects X-axis but user reports speeds ~50% low (X compression alone explains ~12-25% depending on shot angle).
 
 **API Endpoints** (OPS_KEY auth): `GET /api/analysis/jobs/<job_id>`, `GET /api/analysis/results/<match_id>`, `GET /api/analysis/heatmap/<job_id>/<type>`, `POST /api/analysis/retry/<job_id>`.
 
 **Models:** TrackNet V2 (`tracknet_v2.pt`, 41MB), YOLOv8m-pose (`yolov8m-pose.pt`, 53MB — 17 body keypoints + bounding box), YOLOv8m (`yolov8m.pt`, 50MB — detection-only fallback), Court detector (`court_keypoints.pth`, 41MB). All pre-trained, no training required. See `config.py` for download sources. Player tracker auto-selects pose model if available, falls back to detection-only.
 
-### T5 Singles Match Flow (Future — SportAI Replacement)
+### T5 Singles Match Flow (Live — SportAI A/B Testing)
 
-**Goal**: Run the same T5 ML pipeline on singles match footage, producing data that can be compared side-by-side with SportAI output. Eventually replace SportAI entirely.
+**Goal**: Run the same T5 ML pipeline on singles match footage, producing data in `silver.point_detail` that can be compared side-by-side with SportAI output. Eventually replace SportAI entirely.
 
-**Architecture decision**: Use `ml_analysis.*` bronze tables (same as practice) — NOT the SportAI `bronze.player_swing` / `bronze.raw_result` tables. Build a parallel silver path (`silver.t5_point_detail` or extend `silver.point_detail` with a `source` column). This allows A/B comparison: same `task_id`, SportAI silver vs T5 silver.
+**Architecture**: Two bronze sources, one silver table. The `model` column on `silver.point_detail` distinguishes `'sportai'` vs `'t5'` rows. Both models produce the same 18 base fields; the same derivation logic (passes 3-5 of `build_silver_v2.py`) computes all derived columns.
 
-**What T5 gives us today (no training needed):**
-- Ball tracking: position, speed, court coords, bounces, in/out
-- Player tracking: position, pose keypoints (17 COCO), bounding boxes
-- Court detection: 14 keypoints, homography
-- Stroke classification: forehand/backhand from pose
-- Rally structure: bounce grouping by frame gap
+```
+SportAI JSON ──→ bronze.player_swing ──┐
+                 bronze.ball_bounce ────┤
+                                        ├──→ silver.point_detail (model='sportai')
+                                        │      Pass 1: load from SportAI bronze
+                                        │      Pass 2: join bounce data
+                                        │      Passes 3-5: shared derivation
+                                        │
+T5 ML Pipeline ──→ ml_analysis.* ──────┤
+   (ball_detections,                    ├──→ silver.point_detail (model='t5')
+    player_detections)                  │      T5 Pass 1: transform + infer base fields
+                                        │      Passes 3-5: SAME shared derivation
+```
 
-**What needs to be INFERRED (logic on existing data, no new models):**
-1. **Serve detection**: first bounce after a long gap (>5s) that lands in the service box area
-2. **Point structure**: serve → rally → point end. A point ends when: consecutive bounces on the same court half (double bounce), ball out after bounce (is_in=false + gap), or long gap (>10s = dead time)
-3. **Point winner**: last player to hit before point-ending event. Infer from ball trajectory direction + bounce location
-4. **Game/set scoring**: pure counting logic on points (0-15-30-40-game, 6 games = set)
-5. **Volley detection**: player_court_y within 4m of net at time of nearest ball contact
-6. **Ace/unreturned serve**: serve bounce with no subsequent opponent contact before next serve
+**The 18 bronze base fields** (the "contract" both models must produce):
+
+| # | Field | SportAI Source | T5 Inference |
+|---|---|---|---|
+| 1 | `id` | player_swing.id | Sequential integer |
+| 2 | `task_id` | player_swing.task_id | job_id |
+| 3 | `player_id` | player_swing.player_id | Ball direction (opposite side from bounce) |
+| 4 | `valid` | player_swing.valid | Always TRUE |
+| 5 | `serve` | player_swing.serve | Gap >5s + service box geometry |
+| 6 | `swing_type` | player_swing.swing_type | Pose keypoints (fh/bh/overhead/other) |
+| 7 | `volley` | player_swing.volley | Player within 4m of net |
+| 8 | `is_in_rally` | player_swing.is_in_rally | Always TRUE |
+| 9 | `ball_player_distance` | player_swing.ball_player_distance | Computed from positions |
+| 10 | `ball_speed` | player_swing.ball_speed (m/s) | speed_kmh / 3.6 |
+| 11 | `ball_impact_type` | player_swing.ball_impact_type | NULL |
+| 12 | `ball_hit_s` | player_swing.ball_hit_s | frame_idx / effective_fps |
+| 13 | `ball_hit_location_x` | player_swing.ball_hit_location_x | Hitter's court_x |
+| 14 | `ball_hit_location_y` | player_swing.ball_hit_location_y | Hitter's court_y |
+| 15 | `type` | ball_bounce.type | 'floor' |
+| 16 | `timestamp` | ball_bounce.timestamp | Bounce timestamp |
+| 17 | `court_x` | ball_bounce.court_x | Ball bounce position |
+| 18 | `court_y` | ball_bounce.court_y | Ball bounce position |
+
+**T5 match builder**: `ml_pipeline/build_silver_match_t5.py`. Calls `build_silver_v2.pass3_point_context()`, `pass4_zones_and_normalize()`, `pass5_analytics()` directly — same derivation code as SportAI.
+
+**T5 inference methods** (MVP1 — will improve with iteration):
+- **Player assignment**: bounce on near half → hitter was far player (and vice versa). Players identified from `player_detections` by median court_y.
+- **Serve detection**: gap >5s from previous bounce + bounce lands in service box. First bounce in match is also a serve candidate.
+- **Swing type**: pose keypoints (wrist position vs center for fh/bh), overhead for serves. Falls back to ball-side heuristic.
+- **Volley**: player court_y within 4m of net at nearest detection.
 
 **What needs TRAINING (future, for quality improvement):**
 - Shot sub-classification (topspin vs flat vs slice) — needs labelled clips
 - Winner vs forced error vs unforced error — needs point outcome labelling
 - Shot quality scoring (1-10) — needs annotated dataset with quality labels
-- Spin detection (RPM) — no off-the-shelf model exists
 
-**Recipe for creating a custom ML model on T5:**
-1. **Collect labelled data**: run T5 pipeline on 50+ matches, export `ml_analysis.*` data
-2. **Label tool**: use the practice dashboard's Video tab to review footage frame-by-frame, add labels (stroke type, shot outcome, point winner) via a simple annotation UI
-3. **Training data format**: CSV with columns `frame_idx, ball_x, ball_y, player_keypoints, label`
-4. **Model architecture**: lightweight classifier (MLP or small CNN) on top of pose keypoints — NOT a new vision model. Input: 17 keypoints (x,y,conf) + ball position + player position → output: stroke class / shot outcome
-5. **Training**: PyTorch, train on GPU, export as `.pt` weights file
-6. **Integration**: add model to `ml_pipeline/models/`, load in `pipeline.py`, run inference per-frame during `_postprocess()`
-7. **Docker**: rebuild + push to ECR with new weights
-
-**Implementation steps for T5 singles (no training, inference only):**
-1. Frontend: route "Singles" to T5 when user is `tomo.stojakovic@gmail.com` (A/B test)
-2. Submit: `_t5_submit()` with `gameType: "singles"` → `sport_type = "tennis_singles_t5"`
-3. Pipeline: run in match mode (25fps, not practice) — already supported
-4. Bronze: same `ml_analysis.*` tables (ball_detections, player_detections with keypoints)
-5. Silver: new `build_silver_match_t5.py` — point detection from bounce patterns, serve detection, game structure, reuse practice analytics (zones, depth, stroke, aggression)
-6. Video trim: reuse existing pipeline (already supports any silver source)
-7. Dashboard: extend practice dashboard or build separate match dashboard
+**Frontend**: "Singles (T5)" card in Media Room (dev-only: `tomo.stojakovic@gmail.com`). Routes to T5 Batch pipeline in match mode (25fps).
 
 ### Practice Analytics Dashboard (`practice.html`)
 

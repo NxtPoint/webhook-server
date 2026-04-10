@@ -154,6 +154,8 @@ ALL_COLS = OrderedDict({
     "shot_key_q":            "text",
     "aggression_d":          "text",
     "depth_d":               "text",
+    # Model source discriminator — allows SportAI and T5 rows to coexist
+    "model":                 "text DEFAULT 'sportai'",
 })
 
 
@@ -190,10 +192,25 @@ def ensure_schema(conn: Connection):
         _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task ON {SILVER_SCHEMA}.{TABLE}(task_id);")
         _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task_id ON {SILVER_SCHEMA}.{TABLE}(task_id, id);")
 
-    # Unique constraint
+    # Unique constraint — includes model to allow SportAI + T5 rows for same task
     _exec(conn, f"""
     DO $$
     BEGIN
+      -- Migrate old constraint (task_id, id) → (task_id, id, model)
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = '{SILVER_SCHEMA}' AND t.relname = '{TABLE}'
+          AND c.conname = 'uq_point_detail_task_id'
+      ) THEN
+        -- Check if it's the old 2-column constraint (not yet model-aware)
+        IF (SELECT count(*) FROM information_schema.constraint_column_usage
+            WHERE table_schema = '{SILVER_SCHEMA}' AND table_name = '{TABLE}'
+              AND constraint_name = 'uq_point_detail_task_id') = 2 THEN
+          ALTER TABLE {SILVER_SCHEMA}.{TABLE} DROP CONSTRAINT uq_point_detail_task_id;
+        END IF;
+      END IF;
       IF NOT EXISTS (
         SELECT 1 FROM pg_constraint c
         JOIN pg_class t ON t.oid = c.conrelid
@@ -202,7 +219,7 @@ def ensure_schema(conn: Connection):
           AND c.conname = 'uq_point_detail_task_id'
       ) THEN
         ALTER TABLE {SILVER_SCHEMA}.{TABLE}
-        ADD CONSTRAINT uq_point_detail_task_id UNIQUE (task_id, id);
+        ADD CONSTRAINT uq_point_detail_task_id UNIQUE (task_id, id, model);
       END IF;
     END $$;
     """)
@@ -212,6 +229,10 @@ def ensure_schema(conn: Connection):
     for col, typ in ALL_COLS.items():
         if col.lower() not in existing:
             _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
+
+    # Backfill model column for existing rows
+    if "model" not in existing:
+        _exec(conn, f"UPDATE {SILVER_SCHEMA}.{TABLE} SET model = 'sportai' WHERE model IS NULL;")
 
     # Schema repair: game_winner_player_id must be TEXT
     _exec(conn, f"""
@@ -293,7 +314,8 @@ def pass1_load(conn: Connection, task_id: str, cfg: dict, start_time_s: Optional
     INSERT INTO {SILVER_SCHEMA}.{TABLE} (
       id, task_id, player_id, valid, serve, swing_type, volley, is_in_rally,
       ball_player_distance, ball_speed, ball_impact_type,
-      ball_hit_s, ball_hit_location_x, ball_hit_location_y
+      ball_hit_s, ball_hit_location_x, ball_hit_location_y,
+      model
     )
     SELECT
       s.id::bigint,
@@ -309,13 +331,14 @@ def pass1_load(conn: Connection, task_id: str, cfg: dict, start_time_s: Optional
       s.ball_impact_type,
       s.ball_hit_s,
       s.ball_hit_location_x,
-      s.ball_hit_location_y
+      s.ball_hit_location_y,
+      'sportai'
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) = TRUE
       AND COALESCE(s.is_in_rally, TRUE) = TRUE
       {warmup_clause}
-    ON CONFLICT (task_id, id) DO NOTHING;
+    ON CONFLICT (task_id, id, model) DO NOTHING;
     """
     return conn.execute(text(sql), params).rowcount or 0
 
@@ -1337,7 +1360,7 @@ def build_silver_v2(task_id: str, replace: bool = False) -> Dict:
 
         # Clean slate
         if replace:
-            _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid", {"tid": task_id})
+            _exec(conn, f"DELETE FROM {SILVER_SCHEMA}.{TABLE} WHERE task_id=:tid AND COALESCE(model,'sportai')='sportai'", {"tid": task_id})
 
         out["pass1_rows"] = pass1_load(conn, task_id, cfg, start_time_s=start_time_s)
         out["pass2_rows"] = pass2_bounce(conn, task_id, cfg)
