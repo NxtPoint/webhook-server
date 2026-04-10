@@ -1355,95 +1355,80 @@ def match_analysis(task_id):
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
 
-    with engine.connect() as conn:
-        # Ownership + metadata
-        meta = conn.execute(
-            text("""
-                SELECT email, player_a_name, player_b_name,
-                       player_a_utr, player_b_utr,
-                       match_date, location, first_server, sport_type,
-                       trim_status, trim_output_s3_key,
-                       player_a_set1_games, player_b_set1_games,
-                       player_a_set2_games, player_b_set2_games,
-                       player_a_set3_games, player_b_set3_games
-                FROM bronze.submission_context WHERE task_id = :tid
-            """),
-            {"tid": task_id},
-        ).mappings().first()
+    try:
+        with engine.connect() as conn:
+            # Ownership + metadata from submission_context
+            meta = conn.execute(
+                text("""
+                    SELECT email, player_a_name, player_b_name,
+                           player_a_utr, player_b_utr,
+                           match_date, location, first_server, sport_type,
+                           trim_status, trim_output_s3_key,
+                           player_a_set1_games, player_b_set1_games,
+                           player_a_set2_games, player_b_set2_games,
+                           player_a_set3_games, player_b_set3_games
+                    FROM bronze.submission_context WHERE task_id = :tid
+                """),
+                {"tid": task_id},
+            ).mappings().first()
 
-        if not meta or _norm_email(meta["email"]) != email:
-            return jsonify({"ok": False, "error": "not_found"}), 404
+            if not meta or _norm_email(meta["email"]) != email:
+                return jsonify({"ok": False, "error": "not_found"}), 404
 
-        # Discover which columns actually exist on the table
-        existing_cols = set()
-        col_rows = conn.execute(text("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_schema = 'silver' AND table_name = 'point_detail'
-        """)).scalars().all()
-        existing_cols = {c.lower() for c in col_rows}
+            # Use the same proven column list as the existing match_detail endpoint,
+            # plus coordinate columns that are known to exist from build_silver_v2
+            rows = conn.execute(
+                text("""
+                    SELECT
+                        point_number, player_id, serve_d, swing_type, volley,
+                        ball_speed, shot_ix_in_point, shot_phase_d, shot_outcome_d,
+                        point_winner_player_id, game_number, game_winner_player_id,
+                        server_id, set_number, set_game_number, ace_d,
+                        rally_length_point, stroke_d, aggression_d, depth_d,
+                        serve_bucket_d, rally_location_hit, rally_location_bounce,
+                        serve_try_ix_in_point, service_winner_d, exclude_d,
+                        serve_side_d, serve_location, rally_length, rally_length_bucket_d,
+                        ball_hit_location_x, ball_hit_location_y,
+                        ball_hit_x_norm, ball_hit_y_norm,
+                        ball_bounce_x_norm, ball_bounce_y_norm,
+                        court_x, court_y, point_key
+                    FROM silver.point_detail
+                    WHERE task_id = :tid::uuid
+                      AND COALESCE(exclude_d, FALSE) = FALSE
+                    ORDER BY point_number, shot_ix_in_point
+                """),
+                {"tid": task_id},
+            ).mappings().all()
 
-        # Desired columns — only select those that exist on the live table
-        wanted = [
-            "id", "point_number", "player_id", "serve_d", "swing_type", "volley",
-            "ball_speed", "ball_hit_s", "ball_hit_location_x", "ball_hit_location_y",
-            "shot_ix_in_point", "shot_phase_d", "shot_outcome_d",
-            "point_winner_player_id", "game_number", "game_winner_player_id",
-            "server_id", "set_number", "set_game_number", "ace_d",
-            "rally_length", "rally_length_point", "rally_length_bucket_d",
-            "stroke_d", "aggression_d", "depth_d",
-            "serve_bucket_d", "serve_location", "serve_side_d", "serve_try_ix_in_point",
-            "service_winner_d",
-            "rally_location_hit", "rally_location_bounce",
-            "ball_hit_x_norm", "ball_hit_y_norm",
-            "ball_bounce_x_norm", "ball_bounce_y_norm",
-            "court_x", "court_y",
-            "point_key", "shot_q", "exclude_d", "model",
-        ]
-        # type is a reserved word — alias it
-        select_cols = []
-        for c in wanted:
-            if c in existing_cols:
-                select_cols.append(c)
-        if "type" in existing_cols:
-            select_cols.append('type AS bounce_type')
+        points = []
+        for r in rows:
+            points.append({k: _serialize(v) for k, v in r.items()})
 
-        col_expr = ", ".join(select_cols)
-        rows = conn.execute(
-            text(f"""
-                SELECT {col_expr}
-                FROM silver.point_detail
-                WHERE task_id = :tid::uuid
-                  AND COALESCE(exclude_d, FALSE) = FALSE
-                ORDER BY point_number, shot_ix_in_point
-            """),
-            {"tid": task_id},
-        ).mappings().all()
+        match_meta = {
+            "task_id": task_id,
+            "player_a_name": meta["player_a_name"],
+            "player_b_name": meta["player_b_name"],
+            "player_a_utr": _serialize(meta["player_a_utr"]),
+            "player_b_utr": _serialize(meta["player_b_utr"]),
+            "match_date": str(meta["match_date"]) if meta["match_date"] else None,
+            "location": meta["location"],
+            "first_server": meta["first_server"],
+            "sport_type": meta["sport_type"],
+            "trim_status": meta["trim_status"],
+            "trim_output_s3_key": meta["trim_output_s3_key"],
+            "player_a_set1_games": _serialize(meta["player_a_set1_games"]),
+            "player_b_set1_games": _serialize(meta["player_b_set1_games"]),
+            "player_a_set2_games": _serialize(meta["player_a_set2_games"]),
+            "player_b_set2_games": _serialize(meta["player_b_set2_games"]),
+            "player_a_set3_games": _serialize(meta["player_a_set3_games"]),
+            "player_b_set3_games": _serialize(meta["player_b_set3_games"]),
+        }
 
-    points = []
-    for r in rows:
-        points.append({k: _serialize(v) for k, v in r.items()})
+        return jsonify({"ok": True, "match": match_meta, "points": points})
 
-    match_meta = {
-        "task_id": task_id,
-        "player_a_name": meta["player_a_name"],
-        "player_b_name": meta["player_b_name"],
-        "player_a_utr": meta["player_a_utr"],
-        "player_b_utr": meta["player_b_utr"],
-        "match_date": str(meta["match_date"]) if meta["match_date"] else None,
-        "location": meta["location"],
-        "first_server": meta["first_server"],
-        "sport_type": meta["sport_type"],
-        "trim_status": meta["trim_status"],
-        "trim_output_s3_key": meta["trim_output_s3_key"],
-        "player_a_set1_games": meta["player_a_set1_games"],
-        "player_b_set1_games": meta["player_b_set1_games"],
-        "player_a_set2_games": meta["player_a_set2_games"],
-        "player_b_set2_games": meta["player_b_set2_games"],
-        "player_a_set3_games": meta["player_a_set3_games"],
-        "player_b_set3_games": meta["player_b_set3_games"],
-    }
-
-    return jsonify({"ok": True, "match": match_meta, "points": points})
+    except Exception:
+        log.exception("match_analysis failed task_id=%s", task_id)
+        return jsonify({"ok": False, "error": "internal_error"}), 500
 
 
 # ----------------------------
