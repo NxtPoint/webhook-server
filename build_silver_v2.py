@@ -192,7 +192,18 @@ def ensure_schema(conn: Connection):
         _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task ON {SILVER_SCHEMA}.{TABLE}(task_id);")
         _exec(conn, f"CREATE INDEX IF NOT EXISTS ix_pd_task_id ON {SILVER_SCHEMA}.{TABLE}(task_id, id);")
 
+    # Ensure all columns exist FIRST (idempotent) — must come before constraint migration
+    existing = _columns_types(conn, SILVER_SCHEMA, TABLE)
+    for col, typ in ALL_COLS.items():
+        if col.lower() not in existing:
+            _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
+
+    # Backfill model column for existing rows
+    if "model" not in existing:
+        _exec(conn, f"UPDATE {SILVER_SCHEMA}.{TABLE} SET model = 'sportai' WHERE model IS NULL;")
+
     # Unique constraint — includes model to allow SportAI + T5 rows for same task
+    # Must run AFTER model column is added above
     _exec(conn, f"""
     DO $$
     BEGIN
@@ -223,16 +234,6 @@ def ensure_schema(conn: Connection):
       END IF;
     END $$;
     """)
-
-    # Ensure all columns exist (idempotent)
-    existing = _columns_types(conn, SILVER_SCHEMA, TABLE)
-    for col, typ in ALL_COLS.items():
-        if col.lower() not in existing:
-            _exec(conn, f"ALTER TABLE {SILVER_SCHEMA}.{TABLE} ADD COLUMN {col} {typ};")
-
-    # Backfill model column for existing rows
-    if "model" not in existing:
-        _exec(conn, f"UPDATE {SILVER_SCHEMA}.{TABLE} SET model = 'sportai' WHERE model IS NULL;")
 
     # Schema repair: game_winner_player_id must be TEXT
     _exec(conn, f"""
