@@ -19,9 +19,12 @@ from ml_pipeline.config import (
     YOLO_POSE_WEIGHTS_FALLBACK,
     YOLO_CONFIDENCE,
     YOLO_IMGSZ,
+    YOLO_COURT_CROP_INFERENCE,
+    YOLO_COURT_CROP_MARGIN_PX,
     YOLO_PERSON_CLASS_ID,
     PLAYER_IOU_THRESHOLD,
     PLAYER_COURT_MARGIN_PX,
+    PLAYER_OUTSIDE_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
     DEBUG_FRAME_INTERVAL,
 )
@@ -99,54 +102,62 @@ class PlayerTracker:
             self.detections.extend(reused)
             return reused
         self._last_detect_frame = frame_idx
-        if self.has_pose:
-            results = self.model.predict(
-                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ, verbose=False,
-            )
-        else:
-            results = self.model.predict(
-                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ,
-                classes=[YOLO_PERSON_CLASS_ID], verbose=False,
-            )
-        boxes = results[0].boxes if results else []
-        kps_data = results[0].keypoints if (results and self.has_pose) else None
-        n_yolo_boxes = len(boxes)
 
-        # SKIP court bbox filtering entirely if PLAYER_COURT_MARGIN_PX >= 1000.
-        # This is the safest mode when court detection is unreliable.
-        skip_court_filter = PLAYER_COURT_MARGIN_PX >= 1000
+        # ── Pass 1: Full-frame YOLO ──
+        # Catches close/foreground players easily
+        full_boxes_list, full_kps_list = self._run_yolo(frame)
 
+        # ── Pass 2: Court-cropped + upscaled YOLO ──
+        # Catches DISTANT players by giving them more pixels.
+        # We crop to the court region (with margin), then YOLO's internal
+        # letterboxing upscales it to imgsz=1280, making the far player
+        # 2-3x bigger pixel-wise than they are in the full frame.
+        crop_boxes_list, crop_kps_list = [], []
+        if YOLO_COURT_CROP_INFERENCE and court_bbox is not None:
+            try:
+                crop_boxes_list, crop_kps_list = self._run_yolo_court_crop(frame, court_bbox)
+            except Exception as e:
+                logger.warning("court-crop YOLO pass failed: %s", e)
+
+        # ── Combine all detections (full + crop), deduplicate via IoU ──
+        all_boxes = full_boxes_list + crop_boxes_list
+        all_kps = full_kps_list + crop_kps_list
+        deduped_boxes, deduped_kps = self._dedupe_iou(all_boxes, all_kps, iou_thresh=0.5)
+        n_yolo_boxes = len(deduped_boxes)
+
+        # ── Court area filter ──
+        # Reject detections far from the court (ball persons, spectators, umpires).
+        # Only applies when court_bbox is reliable (we now use _last_good_detection).
         candidates = []
         candidate_kps = []
         n_filtered_out = 0
-        for bi, box in enumerate(boxes):
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+        skip_court_filter = (court_bbox is None) or (PLAYER_OUTSIDE_COURT_MARGIN_PX >= 1000)
+        for bi, (x1, y1, x2, y2) in enumerate(deduped_boxes):
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            # Filter: must be within court bbox + margin (unless skipped)
-            if not skip_court_filter and court_bbox is not None:
+            if not skip_court_filter:
                 cb_x1, cb_y1, cb_x2, cb_y2 = court_bbox
-                if not (cb_x1 - PLAYER_COURT_MARGIN_PX <= cx <= cb_x2 + PLAYER_COURT_MARGIN_PX and
-                        cb_y1 - PLAYER_COURT_MARGIN_PX <= cy <= cb_y2 + PLAYER_COURT_MARGIN_PX):
+                margin = PLAYER_OUTSIDE_COURT_MARGIN_PX
+                if not (cb_x1 - margin <= cx <= cb_x2 + margin and
+                        cb_y1 - margin <= cy <= cb_y2 + margin):
                     n_filtered_out += 1
                     continue
             candidates.append((float(x1), float(y1), float(x2), float(y2)))
-            if kps_data is not None and bi < len(kps_data.data):
-                candidate_kps.append(kps_data.data[bi].cpu().numpy())  # (17, 3)
-            else:
-                candidate_kps.append(None)
+            candidate_kps.append(deduped_kps[bi])
 
         # Diagnostic logging — every 30 frames
         if frame_idx % 30 == 0:
             logger.info(
-                "player_tracker frame=%d yolo_boxes=%d filtered_out=%d kept=%d skip_filter=%s",
-                frame_idx, n_yolo_boxes, n_filtered_out, len(candidates), skip_court_filter,
+                "player_tracker frame=%d full=%d crop=%d deduped=%d filtered_out=%d kept=%d",
+                frame_idx, len(full_boxes_list), len(crop_boxes_list),
+                n_yolo_boxes, n_filtered_out, len(candidates),
             )
 
         # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
-        # so we can visually inspect what YOLO is seeing vs missing
         if DEBUG_FRAME_INTERVAL > 0 and frame_idx % DEBUG_FRAME_INTERVAL == 0:
             try:
-                self._save_debug_frame(frame, frame_idx, boxes)
+                self._save_debug_frame_v2(
+                    frame, frame_idx, deduped_boxes, candidates,
+                )
             except Exception as e:
                 logger.warning("debug frame save failed: %s", e)
 
@@ -164,6 +175,130 @@ class PlayerTracker:
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
         return frame_detections
+
+    def _run_yolo(self, frame: np.ndarray):
+        """Run YOLO on a full frame. Returns (boxes_list, kps_list).
+
+        boxes_list: list of (x1, y1, x2, y2) tuples in frame coordinates
+        kps_list: list of (17, 3) numpy arrays or None per detection
+        """
+        if self.has_pose:
+            results = self.model.predict(
+                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ, verbose=False,
+            )
+        else:
+            results = self.model.predict(
+                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ,
+                classes=[YOLO_PERSON_CLASS_ID], verbose=False,
+            )
+        boxes = results[0].boxes if results else []
+        kps_data = results[0].keypoints if (results and self.has_pose) else None
+
+        out_boxes = []
+        out_kps = []
+        for bi, box in enumerate(boxes):
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            out_boxes.append((float(x1), float(y1), float(x2), float(y2)))
+            if kps_data is not None and bi < len(kps_data.data):
+                out_kps.append(kps_data.data[bi].cpu().numpy())
+            else:
+                out_kps.append(None)
+        return out_boxes, out_kps
+
+    def _run_yolo_court_crop(self, frame: np.ndarray, court_bbox: tuple):
+        """Run YOLO on the court-cropped region. Returns (boxes_list, kps_list)
+        with coordinates translated back to the FULL frame.
+
+        Cropping focuses YOLO on the court area and effectively upscales
+        distant players (since YOLO resizes the smaller crop to imgsz=1280
+        instead of the full 1920x1080 frame).
+        """
+        cb_x1, cb_y1, cb_x2, cb_y2 = court_bbox
+        h, w = frame.shape[:2]
+        margin = YOLO_COURT_CROP_MARGIN_PX
+        x1 = max(0, int(cb_x1 - margin))
+        y1 = max(0, int(cb_y1 - margin))
+        x2 = min(w, int(cb_x2 + margin))
+        y2 = min(h, int(cb_y2 + margin))
+
+        if x2 <= x1 or y2 <= y1:
+            return [], []
+
+        cropped = frame[y1:y2, x1:x2]
+        if cropped.size == 0:
+            return [], []
+
+        crop_boxes, crop_kps = self._run_yolo(cropped)
+
+        # Translate crop coords → full frame coords
+        out_boxes = []
+        out_kps = []
+        for (cx1, cy1, cx2, cy2), kp in zip(crop_boxes, crop_kps):
+            out_boxes.append((cx1 + x1, cy1 + y1, cx2 + x1, cy2 + y1))
+            if kp is not None:
+                kp_shifted = kp.copy()
+                kp_shifted[:, 0] += x1
+                kp_shifted[:, 1] += y1
+                out_kps.append(kp_shifted)
+            else:
+                out_kps.append(None)
+        return out_boxes, out_kps
+
+    def _dedupe_iou(self, boxes_list, kps_list, iou_thresh: float = 0.5):
+        """Remove overlapping boxes via greedy IoU deduplication.
+
+        When the full-frame and crop passes both detect the same player, we
+        get duplicates. Keeps the FIRST occurrence, drops subsequent boxes
+        with IoU > iou_thresh.
+        """
+        if not boxes_list:
+            return [], []
+        kept_boxes = []
+        kept_kps = []
+        for box, kp in zip(boxes_list, kps_list):
+            duplicate = False
+            for existing in kept_boxes:
+                if self._compute_iou(box, existing) > iou_thresh:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept_boxes.append(box)
+                kept_kps.append(kp)
+        return kept_boxes, kept_kps
+
+    def _save_debug_frame_v2(self, frame, frame_idx: int, all_boxes, kept_boxes) -> None:
+        """Save a frame with YOLO bboxes drawn on it for visual debugging.
+
+        Draws ALL detections (red = filtered out as outside court, green = kept).
+        """
+        os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
+        img = frame.copy()
+        kept_set = set(
+            (round(b[0], 1), round(b[1], 1), round(b[2], 1), round(b[3], 1))
+            for b in kept_boxes
+        )
+        for box in all_boxes:
+            x1, y1, x2, y2 = [int(v) for v in box]
+            key = (round(box[0], 1), round(box[1], 1), round(box[2], 1), round(box[3], 1))
+            color = (0, 255, 0) if key in kept_set else (0, 0, 255)
+            label = "KEPT" if key in kept_set else "FILTER"
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
+            cv2.putText(
+                img, label, (x1, y1 - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2,
+            )
+        header = (f"frame={frame_idx} all={len(all_boxes)} kept={len(kept_boxes)} "
+                  f"crop_inf={YOLO_COURT_CROP_INFERENCE} imgsz={YOLO_IMGSZ}")
+        cv2.putText(
+            img, header, (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2,
+        )
+        out_path = os.path.join(
+            DEBUG_FRAMES_DIR, f"frame_{frame_idx:06d}_n{len(kept_boxes)}.jpg"
+        )
+        cv2.imwrite(out_path, img)
+        logger.info("debug frame saved: %s (kept=%d/%d)",
+                     out_path, len(kept_boxes), len(all_boxes))
 
     def _save_debug_frame(self, frame, frame_idx: int, boxes) -> None:
         """Save a frame with YOLO bboxes drawn on it for visual debugging.

@@ -94,6 +94,9 @@ COURT_REFERENCE_KEYPOINTS = [
 # ---------------------------------------------------------------------------
 YOLO_CONFIDENCE = 0.25             # Sane production value with YOLOv8x-pose (bigger model = more confident)
 YOLO_IMGSZ = 1280                  # Input resolution. Default 640 → too small for distant players. 1280 = 2x = 4x pixels per object
+YOLO_COURT_CROP_INFERENCE = True   # Run a SECOND YOLO pass on the court-cropped+upscaled region (catches distant players)
+YOLO_COURT_CROP_MARGIN_PX = 80     # Pixels of margin around court when cropping for the second YOLO pass
+PLAYER_OUTSIDE_COURT_MARGIN_PX = 120  # Pixel margin for "is this player inside the court area?" filter (rejects ball persons)
 
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
 # every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg
