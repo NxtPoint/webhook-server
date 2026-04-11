@@ -222,6 +222,65 @@ body {
 .gauge-bar { width: 100%; height: 8px; background: var(--border); border-radius: 4px; margin-top: 12px; overflow: hidden; }
 .gauge-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
 
+/* ========== COACH TAB ========== */
+.coach-card {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.coach-card-skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e5e5e5 50%, #f0f0f0 75%);
+  background-size: 200% 100%; animation: coach-skel 1.4s ease-in-out infinite;
+  border-radius: var(--radius); min-height: 120px;
+}
+@keyframes coach-skel {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.coach-cat {
+  font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.coach-title { font-size: 0.95rem; font-weight: 700; color: var(--text); }
+.coach-body { font-size: 0.82rem; color: var(--text-sec); line-height: 1.5; }
+.coach-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  background: var(--green-bg); color: var(--green); font-weight: 700; font-size: 0.75rem;
+  margin: 0 2px;
+}
+.coach-prompt-row {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.coach-quick-btn {
+  padding: 6px 12px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--white); font-size: 0.78rem; font-weight: 500; color: var(--text-sec);
+  cursor: pointer; transition: all var(--transition); font-family: inherit;
+}
+.coach-quick-btn:hover { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+.coach-input-row { display: flex; gap: 8px; }
+.coach-input {
+  flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.85rem; font-family: inherit; background: var(--white);
+}
+.coach-input:focus { outline: none; border-color: var(--green); }
+.coach-response { margin-top: 14px; min-height: 40px; }
+.coach-answer {
+  background: var(--green-bg); border-left: 3px solid var(--green); padding: 12px 16px;
+  border-radius: 0 var(--radius) var(--radius) 0; font-size: 0.88rem; line-height: 1.6;
+  color: var(--text); white-space: pre-wrap;
+}
+.coach-loading {
+  display: flex; align-items: center; gap: 10px; padding: 16px;
+  font-size: 0.82rem; color: var(--text-sec);
+}
+.coach-loading .spinner {
+  width: 18px; height: 18px; border: 2px solid var(--border);
+  border-top-color: var(--green); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.coach-empty {
+  padding: 16px; text-align: center; font-size: 0.82rem; color: var(--text-dim);
+}
+
 /* Video modal */
 .video-modal {
   display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.92);
@@ -412,6 +471,10 @@ async function selectMatch(idx) {
   selectedMatch = matches[idx];
   document.querySelectorAll('.session-item').forEach((el, i) => el.classList.toggle('active', i === idx));
 
+  // Reset coach cache — different match, different insights
+  coachCardsCache = null;
+  coachLastTaskId = null;
+
   // Show loading state
   const content = document.getElementById('dashContent');
   if (content) {
@@ -497,6 +560,7 @@ function renderAnalyticsModule() {
     { id: 'serve', label: 'Serve Detail' },
     { id: 'return', label: 'Return Detail' },
     { id: 'rally', label: 'Rally Detail' },
+    { id: 'coach', label: 'Coach \u2728' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -508,9 +572,13 @@ function renderAnalyticsModule() {
     <div class="tab-panel${activeTab === 'serve' ? ' active' : ''}" id="p-serve">${renderServeDetail()}</div>
     <div class="tab-panel${activeTab === 'return' ? ' active' : ''}" id="p-return">${renderReturnDetail()}</div>
     <div class="tab-panel${activeTab === 'rally' ? ' active' : ''}" id="p-rally">${renderRallyDetail()}</div>
+    <div class="tab-panel${activeTab === 'coach' ? ' active' : ''}" id="p-coach">${renderCoachTab()}</div>
   `;
 
-  setTimeout(() => renderAllCharts(), 50);
+  setTimeout(() => {
+    renderAllCharts();
+    if (activeTab === 'coach') loadCoachCards();
+  }, 50);
 }
 
 function switchTab(id) {
@@ -520,7 +588,10 @@ function switchTab(id) {
   event.target.classList.add('active');
   const el = document.getElementById('p-' + id);
   if (el) el.classList.add('active');
-  setTimeout(() => renderAllCharts(), 50);
+  setTimeout(() => {
+    renderAllCharts();
+    if (id === 'coach') loadCoachCards();
+  }, 50);
 }
 
 // ==================== SUMMARY TAB ====================
@@ -933,6 +1004,149 @@ function renderRallyDetail() {
     </div>
   `;
 }
+
+// ====================================================================
+//  COACH TAB (LLM Tennis Coach)
+// ====================================================================
+// Reads pre-generated insight cards from /api/client/coach/cards and
+// handles freeform questions via /api/client/coach/analyze.
+// Claude responses embed stats in brackets like [54%] — rendered as pills.
+
+// Per-match cache so tab switching doesn't re-fetch
+let coachCardsCache = null;
+let coachLastTaskId = null;
+let coachBusy = false;
+
+function renderCoachTab() {
+  return `
+    <div class="chart-card full" id="coachCardsHost" style="padding:14px">
+      <h3>Coach Insights</h3>
+      <div id="coachCardsRow" class="chart-grid tri">
+        <div class="coach-card-skeleton"></div>
+        <div class="coach-card-skeleton"></div>
+        <div class="coach-card-skeleton"></div>
+      </div>
+    </div>
+
+    <div class="chart-card full" style="padding:14px">
+      <h3>Ask The Coach</h3>
+      <div class="coach-prompt-row">
+        <button class="coach-quick-btn" onclick="askCoachPreset('serve_analysis')">Analyze my serve</button>
+        <button class="coach-quick-btn" onclick="askCoachPreset('weakness')">Biggest weakness</button>
+        <button class="coach-quick-btn" onclick="askCoachPreset('tactics')">Adjust tactics</button>
+      </div>
+      <div class="coach-input-row">
+        <input type="text" id="coachInput" class="coach-input" placeholder="Ask anything about this match…"
+               onkeydown="if(event.key==='Enter'){askCoachFreeform();}" />
+        <button class="btn-watch" onclick="askCoachFreeform()">Send &rarr;</button>
+      </div>
+      <div id="coachResponse" class="coach-response"></div>
+    </div>
+  `;
+}
+
+async function loadCoachCards() {
+  const tid = selectedMatch?.task_id;
+  if (!tid) return;
+
+  // Use cache if same match
+  if (coachCardsCache && coachLastTaskId === tid) {
+    renderCoachCards(coachCardsCache);
+    return;
+  }
+
+  try {
+    const res = await apiFetch('/api/client/coach/cards/' + tid);
+    const data = await res.json();
+    if (data.ok && data.cards && data.cards.length) {
+      coachCardsCache = data.cards;
+      coachLastTaskId = tid;
+      renderCoachCards(data.cards);
+    } else if (data.ok && data.status === 'generating') {
+      // Server is generating — poll briefly
+      setTimeout(loadCoachCards, 2000);
+      renderCoachCards([], 'Generating insights…');
+    } else {
+      renderCoachCards([], data.error || 'Could not load insights');
+    }
+  } catch (e) {
+    console.error('coach cards fetch failed:', e);
+    renderCoachCards([], 'Error loading insights');
+  }
+}
+
+function renderCoachCards(cards, emptyMsg) {
+  const host = document.getElementById('coachCardsRow');
+  if (!host) return;
+  if (!cards.length) {
+    host.innerHTML = `<div class="coach-empty">${emptyMsg || 'No insights yet'}</div>`;
+    return;
+  }
+  host.innerHTML = cards.map((c, i) => {
+    const body = highlightStats(c.body || '');
+    const cat = (c.category || 'tactics').toLowerCase();
+    const catColor = cat === 'serve' ? PA_COLOR : cat === 'return' ? PB_COLOR : cat === 'rally' ? '#22783c' : 'var(--amber)';
+    return `<div class="coach-card">
+      <div class="coach-cat" style="color:${catColor}">${cat}</div>
+      <div class="coach-title">${escapeHtml(c.title || 'Insight ' + (i+1))}</div>
+      <div class="coach-body">${body}</div>
+    </div>`;
+  }).join('');
+}
+
+// Turn bracketed stats like [54%] or [3.2] into green pill badges
+function highlightStats(text) {
+  const escaped = escapeHtml(text);
+  return escaped.replace(/\[([^\]]+)\]/g, '<span class="coach-pill">$1</span>');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function askCoachPreset(promptKey) {
+  const tid = selectedMatch?.task_id;
+  if (!tid || coachBusy) return;
+  await callCoachAnalyze({ task_id: tid, email: EMAIL, prompt_key: promptKey });
+}
+
+async function askCoachFreeform() {
+  const tid = selectedMatch?.task_id;
+  if (!tid || coachBusy) return;
+  const input = document.getElementById('coachInput');
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  await callCoachAnalyze({ task_id: tid, email: EMAIL, prompt_key: 'freeform', freeform_text: q });
+}
+
+async function callCoachAnalyze(body) {
+  const respEl = document.getElementById('coachResponse');
+  if (!respEl) return;
+  coachBusy = true;
+  respEl.innerHTML = '<div class="coach-loading"><div class="spinner"></div>Coach thinking…</div>';
+  try {
+    const res = await apiFetch('/api/client/coach/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      respEl.innerHTML = `<div class="coach-answer">${highlightStats(data.response || '')}</div>`;
+    } else if (data.error === 'daily_limit_reached') {
+      respEl.innerHTML = '<div class="coach-empty">Daily coach limit reached. Come back tomorrow.</div>';
+    } else {
+      respEl.innerHTML = `<div class="coach-empty">${escapeHtml(data.error || 'Something went wrong')}</div>`;
+    }
+  } catch (e) {
+    console.error('coach analyze failed:', e);
+    respEl.innerHTML = '<div class="coach-empty">Network error</div>';
+  } finally {
+    coachBusy = false;
+  }
+}
+
 
 // ====================================================================
 //  MODULE 2: PLACEMENT HEATMAPS (ATP-STYLE)
