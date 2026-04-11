@@ -196,6 +196,10 @@ class TennisAnalysisPipeline:
 
         # Player post-processing
         self.player_tracker.map_to_court(self.court_detector)
+        # Temporal stability filter: reject "players" whose pixel position
+        # barely changes over time (these are ball persons / spectators /
+        # fixed objects, not real moving players).
+        self._filter_stationary_players()
         result.player_detections = self.player_tracker.detections
 
         # Court stats
@@ -234,6 +238,63 @@ class TennisAnalysisPipeline:
         # Player stats
         pids = set(d.player_id for d in result.player_detections)
         result.player_count = len(pids)
+
+    def _filter_stationary_players(self) -> None:
+        """Reject 'players' whose pixel position is nearly stationary over time.
+
+        Ball persons, spectators, umpires, scoreboards etc are detected by YOLO
+        as people but they don't move much. Real tennis players move 10s of
+        meters during a match. We compute the std-dev of each player_id's
+        bounding box centers; if both x AND y std-dev are below a threshold,
+        the 'player' is rejected as stationary.
+
+        Threshold tuned for 1080p video — a real player's centers vary by
+        100s of pixels; a stationary person varies by < 30 pixels.
+        """
+        from collections import defaultdict
+        import numpy as _np
+
+        STATIONARY_STD_PX = 50  # below this in BOTH x and y → stationary
+
+        if not self.player_tracker.detections:
+            return
+
+        groups = defaultdict(list)
+        for d in self.player_tracker.detections:
+            cx, cy = d.center
+            groups[d.player_id].append((float(cx), float(cy)))
+
+        rejected_ids = set()
+        for pid, centers in groups.items():
+            if len(centers) < 5:
+                continue  # not enough samples to judge
+            xs = _np.array([c[0] for c in centers])
+            ys = _np.array([c[1] for c in centers])
+            std_x = float(_np.std(xs))
+            std_y = float(_np.std(ys))
+            if std_x < STATIONARY_STD_PX and std_y < STATIONARY_STD_PX:
+                logger.info(
+                    "_filter_stationary_players: REJECT player_id=%s "
+                    "n=%d std_x=%.1f std_y=%.1f (likely ball person/spectator)",
+                    pid, len(centers), std_x, std_y,
+                )
+                rejected_ids.add(pid)
+            else:
+                logger.info(
+                    "_filter_stationary_players: KEEP player_id=%s "
+                    "n=%d std_x=%.1f std_y=%.1f",
+                    pid, len(centers), std_x, std_y,
+                )
+
+        if rejected_ids:
+            self.player_tracker.detections = [
+                d for d in self.player_tracker.detections
+                if d.player_id not in rejected_ids
+            ]
+            logger.info(
+                "_filter_stationary_players: removed %d player_ids, %d detections remain",
+                len(rejected_ids), len(self.player_tracker.detections),
+            )
 
     def _compute_rallies(self, bounces: List[BallDetection]) -> List[List[BallDetection]]:
         """Split bounces into rallies. A gap > BOUNCE_MIN_DIRECTION_CHANGE frames starts a new rally."""

@@ -290,13 +290,13 @@ class BallTracker:
         ys = np.array([d.y for d in self.detections])
         vel = np.convolve(np.diff(ys), np.ones(BOUNCE_VELOCITY_WINDOW) / BOUNCE_VELOCITY_WINDOW, mode="valid")
 
-        # Minimum magnitude for a real bounce (px/frame). Lowered from 2.0 to
-        # 1.0 to catch slower/softer bounces (returns, dinks, slices).
-        MIN_VEL_MAG = 1.0
-        # Minimum frame spacing between bounces (frames). Lowered from 8 to 5
-        # since we now detect more bounces — the ~5-frame minimum spacing is
-        # still enough to reject double-counting on the same impact.
-        MIN_BOUNCE_SPACING = 5
+        # Minimum magnitude for a real bounce (px/frame). 2.0 = ignore slow
+        # rolls/noise. Lowered to 1.0 broke detection (more false positives
+        # disrupted velocity smoothing).
+        MIN_VEL_MAG = 2.0
+        # Minimum frame spacing between bounces — rejects double-counting on
+        # the same impact event.
+        MIN_BOUNCE_SPACING = 8
 
         last_bounce_idx = -MIN_BOUNCE_SPACING  # allow first bounce
         bounce_count = 0
