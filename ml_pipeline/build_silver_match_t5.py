@@ -129,6 +129,68 @@ def _is_serve_geometric(
     return False
 
 
+def _is_overhead_pose(keypoints, is_left_handed: bool) -> bool:
+    """Check if pose keypoints show an overhead motion (serve).
+
+    A real overhead requires:
+      - Dominant wrist ABOVE both shoulders (smaller pixel y)
+      - Dominant wrist ABOVE the nose (above face/head)
+      - Sufficient confidence on the relevant keypoints
+
+    COCO keypoint order:
+      0=nose, 5=left_shoulder, 6=right_shoulder,
+      9=left_wrist, 10=right_wrist
+    Each keypoint is (x, y, conf).
+    """
+    if keypoints is None:
+        return False
+
+    # Parse if string (sometimes JSONB comes through as str)
+    if isinstance(keypoints, str):
+        try:
+            keypoints = json.loads(keypoints)
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    # Need at least 17 keypoints
+    if len(keypoints) < 11:
+        return False
+
+    try:
+        nose = keypoints[0]
+        l_shoulder = keypoints[5]
+        r_shoulder = keypoints[6]
+        l_wrist = keypoints[9]
+        r_wrist = keypoints[10]
+    except (IndexError, KeyError, TypeError):
+        return False
+
+    MIN_CONF = 0.3
+    dominant_wrist = l_wrist if is_left_handed else r_wrist
+
+    # All keypoints we use must have decent confidence
+    if dominant_wrist[2] < MIN_CONF or nose[2] < MIN_CONF:
+        return False
+
+    # At least one shoulder must be confident
+    use_l_shoulder = l_shoulder[2] >= MIN_CONF
+    use_r_shoulder = r_shoulder[2] >= MIN_CONF
+    if not (use_l_shoulder or use_r_shoulder):
+        return False
+
+    if use_l_shoulder and use_r_shoulder:
+        avg_shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
+    elif use_l_shoulder:
+        avg_shoulder_y = l_shoulder[1]
+    else:
+        avg_shoulder_y = r_shoulder[1]
+
+    # Lower pixel y = higher in image (image origin is top-left)
+    # Wrist must be above shoulders AND above nose
+    wrist_y = dominant_wrist[1]
+    return wrist_y < avg_shoulder_y and wrist_y < nose[1]
+
+
 def _infer_swing_type_from_keypoints(
     keypoints: Optional[list],
     center_x: Optional[float],
@@ -373,20 +435,31 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                     "_synthesized": True,
                 }
 
-        # Serve detection: TWO independent triggers, BOTH gated by minimum
-        # time interval since the last detected serve (real points last 5-20s,
-        # so consecutive serves can't be too close together).
-        # 1. Time-based: gap > threshold (start of new point) + bounce in service box
-        # 2. Geometric: hitter at baseline + bounce on opposite side of net
+        # Serve detection: combines GEOMETRY + POSE for high precision.
+        # A real serve requires:
+        #   - Hitter at baseline (geometric)
+        #   - Bounce on opposite side of net (geometric)
+        #   - Dominant wrist above shoulders + nose (pose = overhead motion)
+        # Plus an 8s cooldown to prevent over-firing on consecutive bounces.
         is_serve = False
         is_geometric_serve = (
             hitter is not None and
             _is_serve_geometric(hitter.get("court_y"), cx, cy)
         )
+        is_overhead = (
+            hitter is not None and
+            _is_overhead_pose(hitter.get("keypoints"), is_left_handed)
+        )
         ts_since_last_serve = ts - last_serve_ts
-        if is_geometric_serve and ts_since_last_serve >= MIN_SERVE_INTERVAL_S:
+        cooldown_ok = ts_since_last_serve >= MIN_SERVE_INTERVAL_S
+
+        # Primary trigger: geometric AND pose AND cooldown
+        if is_geometric_serve and is_overhead and cooldown_ok:
             is_serve = True
-        if (gap_s > SERVE_GAP_S or i == 0) and _is_in_service_box(cx, cy):
+
+        # Secondary trigger (kept as safety net): time-based with strict
+        # service box check. Useful when pose data is missing.
+        if (gap_s > SERVE_GAP_S or i == 0) and _is_in_service_box(cx, cy) and cooldown_ok:
             is_serve = True
 
         if is_serve:
