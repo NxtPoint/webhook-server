@@ -326,13 +326,14 @@ body {
 .hm-dot {
   display: inline-block; width: 10px; height: 10px; border-radius: 50%;
 }
-/* Court — wide, fills the frame */
+/* Court — fills the card width, aspect ratio pinned so height stays sensible */
 .heatmap-court-wrap {
-  display: flex; flex-direction: column; align-items: center;
+  display: flex; flex-direction: column; align-items: stretch;
+  width: 100%;
 }
 .heatmap-court-wrap canvas {
-  width: 100%; height: auto; border-radius: 6px;
-  max-width: 520px;
+  display: block; width: 100%; height: auto;
+  border-radius: 6px;
 }
 /* Split table — ad on left, deuce on right */
 .heatmap-split-tables {
@@ -1360,7 +1361,7 @@ function renderHeatmapContent() {
         <h3>Serve Received — How opponent served you</h3>
         <div id="heatmapStatsReceived" class="heatmap-stats-row"></div>
         <div class="heatmap-court-wrap">
-          <canvas id="courtReceived" width="560" height="720"></canvas>
+          <canvas id="courtReceived" width="1200" height="780"></canvas>
         </div>
         <div class="heatmap-split-tables" id="heatmapTableReceived"></div>
       </div>
@@ -1368,7 +1369,7 @@ function renderHeatmapContent() {
         <h3>Return Placement — Where you hit your return</h3>
         <div id="heatmapStatsPlaced" class="heatmap-stats-row"></div>
         <div class="heatmap-court-wrap">
-          <canvas id="courtPlaced" width="560" height="720"></canvas>
+          <canvas id="courtPlaced" width="1200" height="780"></canvas>
         </div>
         <div class="heatmap-split-tables" id="heatmapTablePlaced"></div>
       </div>
@@ -1379,7 +1380,7 @@ function renderHeatmapContent() {
       <div class="chart-card full" style="padding:16px">
         <div id="heatmapStats" class="heatmap-stats-row"></div>
         <div class="heatmap-court-wrap">
-          <canvas id="heatmapCourt" width="560" height="720"></canvas>
+          <canvas id="heatmapCourt" width="1200" height="780"></canvas>
         </div>
         <h3 id="heatmapTableTitle" style="margin-top:18px">Placement Summary</h3>
         <div class="heatmap-split-tables" id="heatmapTable"></div>
@@ -1690,34 +1691,38 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  // High-DPI canvas: scale for sharpness on retina / 4k displays
   const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
   const W = canvas.width, H = canvas.height;
-  // Ensure the backing store matches css pixels (we set canvas.width to our drawing coord)
-  // The internal logical coord system stays W x H — just set CSS for crispness.
 
-  // Court dimensions (metres)
+  // Court dimensions (metres). The court is non-proportionally stretched
+  // to fill the canvas drawing area so it fills the card width. Dots
+  // and lines are all computed through cx()/cy() so relative positions
+  // remain perfect — just visually wider than a real court.
   const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SVC_LINE = 6.40, NET_Y = COURT_L / 2;
-  const PAD_X = 28, PAD_Y = 30;
+  // Scale padding with canvas size so it stays proportional at any resolution
+  const PAD_X = Math.round(W * 0.025);
+  const PAD_Y = Math.round(H * 0.035);
   const CW = W - PAD_X * 2, CH = H - PAD_Y * 2;
 
-  // Use 0.5 pixel offset for crisp 1px-wide antialiased lines
+  // Line widths scale with canvas width
+  const LW_THIN  = Math.max(2, Math.round(W / 400));
+  const LW_NET   = Math.max(3, Math.round(W / 280));
+  const LW_OUTER = Math.max(3, Math.round(W / 320));
   const half = 0.5;
 
-  // Court → canvas coordinate helpers (always plotted in metres)
+  // Court → canvas coordinate helpers
   function cx(courtX) { return PAD_X + (courtX / COURT_W) * CW; }
   function cy(courtY) { return PAD_Y + (courtY / COURT_L) * CH; }
 
   ctx.clearRect(0, 0, W, H);
 
-  // Court surface (full bounds)
+  // Court surface
   ctx.fillStyle = '#2d6a4f';
   ctx.fillRect(PAD_X, PAD_Y, CW, CH);
 
-  // Outer doubles boundary — exact court metres
+  // Outer doubles boundary
   ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = LW_OUTER;
   ctx.beginPath();
   ctx.rect(cx(0) + half, cy(0) + half, cx(COURT_W) - cx(0) - 1, cy(COURT_L) - cy(0) - 1);
   ctx.stroke();
@@ -1725,6 +1730,7 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   // Singles sidelines
   const singleLeft = (COURT_W - SINGLES_W) / 2;
   const singleRight = singleLeft + SINGLES_W;
+  ctx.lineWidth = LW_THIN;
   ctx.beginPath();
   ctx.moveTo(cx(singleLeft) + half, cy(0));
   ctx.lineTo(cx(singleLeft) + half, cy(COURT_L));
@@ -1733,9 +1739,9 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   ctx.stroke();
 
   // Net (middle, dashed)
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 3;
-  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = LW_NET;
+  ctx.setLineDash([10, 6]);
   ctx.beginPath();
   ctx.moveTo(cx(0), cy(NET_Y) + half);
   ctx.lineTo(cx(COURT_W), cy(NET_Y) + half);
@@ -1744,17 +1750,15 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
 
   // Service lines (near + far)
   ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = LW_THIN;
   ctx.beginPath();
-  // Near service line — 6.4m from far baseline, so at COURT_L - SVC_LINE
   ctx.moveTo(cx(singleLeft),  cy(COURT_L - SVC_LINE) + half);
   ctx.lineTo(cx(singleRight), cy(COURT_L - SVC_LINE) + half);
-  // Far service line
   ctx.moveTo(cx(singleLeft),  cy(SVC_LINE) + half);
   ctx.lineTo(cx(singleRight), cy(SVC_LINE) + half);
   ctx.stroke();
 
-  // Centre service line (connects the two service lines through the net)
+  // Centre service line
   const mid = COURT_W / 2;
   ctx.beginPath();
   ctx.moveTo(cx(mid) + half, cy(SVC_LINE));
@@ -1764,9 +1768,9 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   // Baseline centre ticks
   ctx.beginPath();
   ctx.moveTo(cx(mid) + half, cy(0));
-  ctx.lineTo(cx(mid) + half, cy(0.3));
+  ctx.lineTo(cx(mid) + half, cy(0.4));
   ctx.moveTo(cx(mid) + half, cy(COURT_L));
-  ctx.lineTo(cx(mid) + half, cy(COURT_L - 0.3));
+  ctx.lineTo(cx(mid) + half, cy(COURT_L - 0.4));
   ctx.stroke();
 
   // Determine whose shots we're rendering (win/loss perspective)
@@ -1806,15 +1810,19 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
       unknownCount++;
     }
 
+    // Dot radius scales with canvas width
+    const rOuter = Math.max(8, Math.round(W / 140));
+    const rInner = Math.max(5, Math.round(W / 200));
+
     // Outer white halo for contrast on the dark court
     ctx.beginPath();
-    ctx.arc(px, py, 7, 0, Math.PI * 2);
+    ctx.arc(px, py, rOuter, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255,255,255,0.28)';
     ctx.fill();
 
     // Main dot
     ctx.beginPath();
-    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.arc(px, py, rInner, 0, Math.PI * 2);
     ctx.fillStyle = colour;
     ctx.fill();
   });
