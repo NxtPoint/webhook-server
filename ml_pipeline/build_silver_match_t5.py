@@ -85,39 +85,29 @@ def _is_in_service_box(court_x: float, court_y: float) -> bool:
     return in_x and (near_box or far_box)
 
 
-def _is_serve_geometric(
+def _serve_geometric_check(
     hitter_court_y: Optional[float],
     bounce_court_x: Optional[float],
     bounce_court_y: Optional[float],
     ball_player_distance: Optional[float] = None,
-) -> bool:
-    """Detect a serve by geometry — empirically tuned from 24 SportAI ground truth serves.
+) -> Tuple[bool, str]:
+    """Detect a serve by geometry — returns (is_serve, reason).
 
     Empirical observations from sportai_4a194ff3_serves.csv:
-      - Far baseline server: hit_y in [24.42, 24.47] (avg 24.45, ~0.7m past 23.77)
-      - Near baseline server: hit_y in [-2.58, -1.61] (avg -2.13, ~2m past 0)
+      - Far baseline server: hit_y in [24.42, 24.47]
+      - Near baseline server: hit_y in [-2.58, -1.61]
       - Ball-player distance ALWAYS < 1.10m (avg 0.41m) — strongest universal signal
-      - Far server bounces: by in [3.69, 10.93] (within ~2m of service box)
-      - Near server bounces: by in [15.24, 18.62] (within ~2m of service box)
-      - Bounce x in [1.91, 10.77] (singles + small alley overlap)
+      - Bounce on the opposite side of the net from the hitter
 
-    We use generous thresholds because T5 court_y has a ~5m systematic offset
-    vs SportAI. The ball_player_distance signal is the single best discriminator.
+    NOTE: We do NOT require bounce in the strict service box — T5's court_y
+    has a ~5m systematic offset vs SportAI.
     """
     if hitter_court_y is None or bounce_court_x is None or bounce_court_y is None:
-        return False
+        return False, "null_coords"
 
-    # ───── Strongest signal: ball-player distance ─────
-    # All 24 ground truth serves had distance < 1.10m. We use 1.5m as a
-    # generous threshold (1.4x max observed). When distance is unknown,
-    # we don't reject — we just don't get this confidence boost.
     if ball_player_distance is not None and ball_player_distance > 1.5:
-        return False
+        return False, "fail_no_dist"
 
-    # ───── Hitter must be PAST a baseline (not just close to it) ─────
-    # Generous tolerances to handle T5 coordinate errors:
-    #   - Past far baseline: hit_y in [22.0, COURT_LENGTH_M + 6] = [22, 29.77]
-    #   - Past near baseline: hit_y in [-6, 1.5]
     HITTER_FAR_MIN = 22.0
     HITTER_FAR_MAX = COURT_LENGTH_M + 6.0   # 29.77
     HITTER_NEAR_MIN = -6.0
@@ -127,25 +117,33 @@ def _is_serve_geometric(
     hitter_at_near = HITTER_NEAR_MIN <= hitter_court_y <= HITTER_NEAR_MAX
 
     if not (hitter_at_far or hitter_at_near):
-        return False
+        return False, "fail_hitter_y"
 
-    # ───── Bounce x roughly in singles + small alley ─────
     if not (-1.0 <= bounce_court_x <= COURT_WIDTH_DOUBLES_M + 1.0):
-        return False
+        return False, "fail_bounce_x"
 
-    # ───── Bounce y in OPPOSITE service box area (with tolerance) ─────
-    # Far server (hit_y > HALF_Y) → bounce should be on side A (between
-    # the y=0 baseline and the net). The service box on side A is
-    # SERVICE_LINE_M (6.40) to HALF_Y (11.885). Allow 2m tolerance below
-    # the service line to catch deep serves and coordinate noise.
-    SERVE_BOX_TOL = 2.5
     if hitter_at_far:
-        # Bounce should be in side A service box area: 4-14 with tolerance
-        return (SERVICE_LINE_M - SERVE_BOX_TOL) <= bounce_court_y <= (HALF_Y + 0.5)
+        if bounce_court_y < HALF_Y:
+            return True, "pass"
+        return False, "fail_wrong_side"
     if hitter_at_near:
-        # Bounce should be in side B service box area: 11-19 with tolerance
-        return (HALF_Y - 0.5) <= bounce_court_y <= (FAR_SERVICE_LINE_M + SERVE_BOX_TOL)
-    return False
+        if bounce_court_y > HALF_Y:
+            return True, "pass"
+        return False, "fail_wrong_side"
+    return False, "fail_hitter_y"
+
+
+def _is_serve_geometric(
+    hitter_court_y: Optional[float],
+    bounce_court_x: Optional[float],
+    bounce_court_y: Optional[float],
+    ball_player_distance: Optional[float] = None,
+) -> bool:
+    """Boolean wrapper around _serve_geometric_check (kept for compatibility)."""
+    ok, _ = _serve_geometric_check(
+        hitter_court_y, bounce_court_x, bounce_court_y, ball_player_distance
+    )
+    return ok
 
 
 def _is_overhead_pose(keypoints, is_left_handed: bool) -> bool:
@@ -399,6 +397,22 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     last_serve_ts = -999.0  # for serve cooldown
     MIN_SERVE_INTERVAL_S = 8.0  # minimum seconds between consecutive serves
 
+    # Diagnostic counters — why serves are accepted/rejected
+    serve_diag = {
+        "total_bounces": 0,
+        "no_hitter": 0,
+        "geometric_pass": 0,
+        "geometric_fail_no_dist": 0,   # ball_player_distance > 1.5
+        "geometric_fail_hitter_y": 0,  # hitter not past baseline
+        "geometric_fail_bounce_x": 0,  # bounce_x out of range
+        "geometric_fail_wrong_side": 0, # bounce on same side as hitter
+        "pose_pass": 0,
+        "pose_no_keypoints": 0,
+        "cooldown_block": 0,
+        "fired_primary": 0,
+        "fired_secondary": 0,
+    }
+
     for i, b in enumerate(bounces):
         frame_idx, px, py, cx, cy, speed_kmh, is_in = b
 
@@ -465,34 +479,55 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             )
 
         # Serve detection: combines GEOMETRY + POSE + DISTANCE for high precision.
-        # Empirically tuned from 24 SportAI ground truth serves:
-        #   - Hitter past a baseline (hit_y outside [0, 23.77])
-        #   - Bounce in opposite service box area (with 2.5m tolerance)
-        #   - ball_player_distance < 1.5m (player just hit the ball)
-        #   - Dominant wrist above shoulders + nose (pose = overhead motion)
-        # Plus an 8s cooldown to prevent over-firing.
+        serve_diag["total_bounces"] += 1
         is_serve = False
-        is_geometric_serve = (
-            hitter is not None and
-            _is_serve_geometric(hitter.get("court_y"), cx, cy, ball_player_dist)
-        )
-        is_overhead = (
-            hitter is not None and
-            _is_overhead_pose(hitter.get("keypoints"), is_left_handed)
-        )
+
+        if hitter is None:
+            serve_diag["no_hitter"] += 1
+            geom_ok, geom_reason = False, "no_hitter"
+            is_overhead = False
+        else:
+            geom_ok, geom_reason = _serve_geometric_check(
+                hitter.get("court_y"), cx, cy, ball_player_dist,
+            )
+            if geom_ok:
+                serve_diag["geometric_pass"] += 1
+            else:
+                key = f"geometric_{geom_reason}"
+                if key in serve_diag:
+                    serve_diag[key] += 1
+            is_overhead = _is_overhead_pose(hitter.get("keypoints"), is_left_handed)
+            if is_overhead:
+                serve_diag["pose_pass"] += 1
+            elif hitter.get("keypoints") is None:
+                serve_diag["pose_no_keypoints"] += 1
+
         ts_since_last_serve = ts - last_serve_ts
         cooldown_ok = ts_since_last_serve >= MIN_SERVE_INTERVAL_S
 
-        # Primary trigger: geometric AND pose AND cooldown
-        if is_geometric_serve and is_overhead and cooldown_ok:
-            is_serve = True
+        # Per-candidate trace: log every bounce that passes the geometric gate
+        # so we can see exactly where serves are being accepted/rejected.
+        if geom_ok and logger.isEnabledFor(logging.INFO):
+            hy = hitter.get("court_y") if hitter else None
+            logger.info(
+                "T5 serve cand frame=%d ts=%.2f hy=%.2f bx=%.2f by=%.2f dist=%s overhead=%s cooldown_ok=%s (since_last=%.1fs)",
+                frame_idx, ts,
+                hy if hy is not None else float("nan"),
+                cx, cy,
+                f"{ball_player_dist:.2f}" if ball_player_dist is not None else "None",
+                is_overhead, cooldown_ok, ts_since_last_serve,
+            )
 
-        # Secondary trigger (kept as safety net for when pose is missing):
-        # geometric without pose, requires cooldown.
-        if is_geometric_serve and cooldown_ok and not is_overhead:
-            # Only fire if pose data is genuinely missing (not just no overhead)
-            if hitter and hitter.get("keypoints") is None:
-                is_serve = True
+        # Primary trigger: geometric AND pose AND cooldown
+        if geom_ok and is_overhead and cooldown_ok:
+            is_serve = True
+            serve_diag["fired_primary"] += 1
+        # Secondary trigger (safety net): geometric + cooldown when pose missing
+        elif geom_ok and cooldown_ok and hitter and hitter.get("keypoints") is None:
+            is_serve = True
+            serve_diag["fired_secondary"] += 1
+        elif geom_ok and not cooldown_ok:
+            serve_diag["cooldown_block"] += 1
 
         if is_serve:
             last_serve_ts = ts
@@ -547,6 +582,9 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         })
 
         prev_ts = ts
+
+    # Log serve detection diagnostics — shows where the filter is rejecting
+    logger.info("T5 serve diagnostics: %s", serve_diag)
 
     if not rows_to_insert:
         logger.warning("T5 Pass 1: no valid rows to insert")
