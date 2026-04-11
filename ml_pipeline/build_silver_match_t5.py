@@ -212,10 +212,15 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         else:
             pid_map[pid] = str(top_pids[1])
 
-    # Build player detection index for fast nearest-frame lookup
-    # Separate by court half for direction-based assignment
-    near_dets = []  # player detections on near half (court_y > HALF_Y)
-    far_dets = []   # player detections on far half (court_y < HALF_Y)
+    # Build player detection index for fast nearest-frame lookup.
+    # Three lists:
+    #   near_dets: players with court_y > HALF_Y AND valid coords
+    #   far_dets:  players with court_y < HALF_Y AND valid coords
+    #   any_with_coords: ALL players with valid coords (used as ultimate fallback
+    #                    when side-specific lookup returns nothing usable)
+    near_dets = []
+    far_dets = []
+    any_with_coords = []
     for pd in player_dets:
         frame_idx, pid, cx, cy, centerx, centery, kps = pd
         mapped_pid = pid_map.get(pid, str(pid))
@@ -226,19 +231,24 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             "center_x": centerx, "center_y": centery,
             "keypoints": kps,
         }
-        if cy is not None:
+        if cy is not None and cx is not None:
+            any_with_coords.append(entry)
             if cy > HALF_Y:
                 near_dets.append(entry)
             else:
                 far_dets.append(entry)
-        else:
-            # No court_y — add to both for fallback
-            near_dets.append(entry)
-            far_dets.append(entry)
+        # Note: entries with NULL court coords are NOT useful for hit_x/y
+        # so we don't add them to any list. The fallback uses any_with_coords.
 
     # Pre-build frame indices for binary search
     near_frames, near_dets = _build_detection_index(near_dets)
     far_frames, far_dets = _build_detection_index(far_dets)
+    any_frames, any_dets = _build_detection_index(any_with_coords)
+
+    logger.info(
+        "T5 Pass 1: player buckets — near=%d far=%d any_with_coords=%d (of %d total)",
+        len(near_dets), len(far_dets), len(any_dets), len(player_dets),
+    )
 
     # ---- Step 4: Look up dominant hand ----
     hand_row = conn.execute(sql_text("""
@@ -267,30 +277,36 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             continue
 
         # Determine hitter: ball bounced on one side → hitter was on the OTHER side
-        hitter_on_near = cy < HALF_Y   # bounce on far half → hitter was near
-        h_frames = near_frames if hitter_on_near else far_frames
-        h_dets = near_dets if hitter_on_near else far_dets
+        # of the net (in tennis the ball crosses the net after being hit).
+        # near_dets contains players with court_y > HALF_Y
+        # far_dets  contains players with court_y < HALF_Y
+        bounce_on_top = cy < HALF_Y  # cy=0 is one baseline, cy=23.77 is the other
+        # When bounce is on top half, hitter was on bottom (near_dets)
+        h_frames = near_frames if bounce_on_top else far_frames
+        h_dets = near_dets if bounce_on_top else far_dets
 
         # Find nearest player detection on the hitter's side
         hitter = _find_nearest_detection(h_frames, h_dets, frame_idx)
 
-        # Fallback: if no player on the hitter's side (e.g., ML only tracked 1
-        # player), use the player from the OTHER side as a position proxy.
-        # This is hacky but ensures we never have NULL hit_x/y, which is
-        # critical for serve detection (needs hit_y near baseline) and silver
-        # pass 3 to produce point/game structure at all.
-        if hitter is None:
-            other_frames = far_frames if hitter_on_near else near_frames
-            other_dets = far_dets if hitter_on_near else near_dets
-            other = _find_nearest_detection(other_frames, other_dets, frame_idx)
+        # Fallback: if no player on the hitter's side, use ANY player with
+        # valid coords and mirror them to the hitter's side. This handles the
+        # case where ML only tracks one player (always on one side).
+        if hitter is None and any_dets:
+            other = _find_nearest_detection(any_frames, any_dets, frame_idx)
             if other is not None:
-                # Mirror the position to the hitter's side of the net
-                mirror_y = (COURT_LENGTH_M - other["court_y"]
-                            if other.get("court_y") is not None else None)
+                # Determine which side the "other" player is on
+                other_on_top = (other["court_y"] is not None and other["court_y"] < HALF_Y)
+                # If they're on the wrong side relative to where the hitter
+                # should be, mirror to the correct side
+                hitter_should_be_on_top = not bounce_on_top
+                if other_on_top != hitter_should_be_on_top:
+                    mirror_y = COURT_LENGTH_M - other["court_y"]
+                else:
+                    mirror_y = other["court_y"]
                 hitter = {
                     "frame_idx": other["frame_idx"],
                     "player_id": other["player_id"],
-                    "court_x": other.get("court_x"),
+                    "court_x": other["court_x"],
                     "court_y": mirror_y,
                     "center_x": other.get("center_x"),
                     "center_y": other.get("center_y"),
@@ -335,7 +351,8 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         hit_y = hitter.get("court_y") if hitter else None
         # Assign player_id based on court side — guarantees 2 distinct players
         # even when ML tracker only detected 1 player_id
-        hitter_pid = str(top_pids[0]) if hitter_on_near else str(top_pids[1])
+        # If bounce on top half (cy < HALF_Y), hitter was on bottom (player[0])
+        hitter_pid = str(top_pids[0]) if bounce_on_top else str(top_pids[1])
 
         rows_to_insert.append({
             "id": i + 1,
