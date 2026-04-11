@@ -521,14 +521,23 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                 is_overhead, cooldown_ok, ts_since_last_serve,
             )
 
-        # Primary trigger: geometric AND pose AND cooldown
-        if geom_ok and is_overhead and cooldown_ok:
+        # Primary trigger: geometric + cooldown.
+        #
+        # Pose is intentionally NOT required: the actual serve motion happens
+        # ~0.5-1.0s BEFORE the bounce frame, so by the time we look at the
+        # hitter's pose at the bounce, they're already in follow-through and
+        # the wrist-above-shoulders test always fails. We tracked this with
+        # diagnostics on task 911f0dce: 21 geometric_pass, 0 fired_primary.
+        #
+        # The geometric gate (hitter past a baseline + bounce on opposite half
+        # of net + bounce_x in singles+alley) is precise enough on its own —
+        # rally shots are almost never struck from past the baseline.
+        if geom_ok and cooldown_ok:
             is_serve = True
             serve_diag["fired_primary"] += 1
-        # Secondary trigger (safety net): geometric + cooldown when pose missing
-        elif geom_ok and cooldown_ok and hitter and hitter.get("keypoints") is None:
-            is_serve = True
-            serve_diag["fired_secondary"] += 1
+            if is_overhead:
+                # Bonus signal — track for diagnostics, doesn't change outcome
+                serve_diag["fired_secondary"] += 1
         elif geom_ok and not cooldown_ok:
             serve_diag["cooldown_block"] += 1
 
