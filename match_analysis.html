@@ -522,16 +522,19 @@ function renderDashboard() {
     <button class="module-tab${activeModule === 'heatmaps' ? ' active' : ''}" onclick="switchModule('heatmaps')">Placement Heatmaps</button>
   `;
 
-  // Filter bar
+  // Filter bar — player filter only on heatmaps module (analytics always shows both)
   const sets = getAvailableSets();
+  const showPlayerFilter = activeModule === 'heatmaps';
   document.getElementById('filterBar').innerHTML = `
     <div class="filter-bar">
-      <label>Player</label>
-      <select id="filterPlayer" onchange="onFilterChange()">
-        <option value="both"${filterPlayer === 'both' ? ' selected' : ''}>Both Players</option>
-        <option value="a"${filterPlayer === 'a' ? ' selected' : ''}>${pa}</option>
-        <option value="b"${filterPlayer === 'b' ? ' selected' : ''}>${pb}</option>
-      </select>
+      ${showPlayerFilter ? `
+        <label>Player</label>
+        <select id="filterPlayer" onchange="onFilterChange()">
+          <option value="both"${filterPlayer === 'both' ? ' selected' : ''}>Both Players</option>
+          <option value="a"${filterPlayer === 'a' ? ' selected' : ''}>${pa}</option>
+          <option value="b"${filterPlayer === 'b' ? ' selected' : ''}>${pb}</option>
+        </select>
+      ` : ''}
       <label>Set</label>
       <select id="filterSet" onchange="onFilterChange()">
         <option value="all"${filterSet === 'all' ? ' selected' : ''}>All Sets</option>
@@ -559,8 +562,10 @@ function switchModule(mod) {
 }
 
 function onFilterChange() {
-  filterPlayer = document.getElementById('filterPlayer').value;
-  filterSet = document.getElementById('filterSet').value;
+  const fp = document.getElementById('filterPlayer');
+  if (fp) filterPlayer = fp.value;
+  const fs = document.getElementById('filterSet');
+  if (fs) filterSet = fs.value;
   renderDashboard();
 }
 
@@ -804,15 +809,7 @@ function renderServeDetail(pts) {
   const paId = playerAId();
   const pbId = playerBId();
 
-  // We show for the filtered player or both
-  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
-
-  let html = '';
-  for (const pid of showPlayers) {
-    const pName = getPlayerName(pid);
-    const isA = pid === paId;
-    const color = isA ? PA_COLOR : PB_COLOR;
-
+  function serveStatsFor(pid) {
     const serves = pts.filter(p => p.serve_d && p.server_id === pid);
     const serves1st = serves.filter(p => p.serve_try_ix_in_point === '1st');
     const serves2nd = serves.filter(p => p.serve_try_ix_in_point === '2nd');
@@ -820,8 +817,6 @@ function renderServeDetail(pts) {
     const serves2ndIn = serves2nd.filter(p => p.shot_outcome_d !== 'Error');
     const aces = serves.filter(p => p.ace_d).length;
     const doubleFaults = serves2nd.filter(p => p.shot_outcome_d === 'Error').length;
-
-    // Service points (unique points where this player served)
     const pointMap = {};
     pts.forEach(p => {
       if (p.server_id !== pid) return;
@@ -830,84 +825,104 @@ function renderServeDetail(pts) {
     });
     const servicePoints = Object.values(pointMap);
     const svcPtsWon = servicePoints.filter(p => p.point_winner_player_id === pid).length;
-
-    // Unreturned serves (service_winner_d)
     const unreturned = serves.filter(p => p.service_winner_d).length;
-
-    // Serve direction strategy - THE KEY INSIGHT TABLE
-    const strategyData = buildServeStrategy(pts, pid);
-
-    const fsPct = serves1st.length ? Math.round(100 * serves1stIn.length / serves1st.length) : 0;
-    const ssPct = serves2nd.length ? Math.round(100 * serves2ndIn.length / serves2nd.length) : 0;
-    const svcWonPct = servicePoints.length ? Math.round(100 * svcPtsWon / servicePoints.length) : 0;
-
-    html += `
-      <h3 style="color:${color};margin-bottom:12px;font-size:1rem">${pName} — Serve Performance</h3>
-      ${(() => {
-        const srvSpds = serves.filter(s => s.ball_speed > 0).map(s => s.ball_speed);
-        const avgSrv = srvSpds.length ? Math.round(srvSpds.reduce((a,b)=>a+b,0)/srvSpds.length) : '—';
-        const maxSrv = srvSpds.length ? Math.round(Math.max(...srvSpds)) : '—';
-        return `<div class="kpi-strip">
-          <div class="kpi"><div class="val">${serves.length}</div><div class="lbl">Total Serves</div></div>
-          <div class="kpi"><div class="val">${fsPct}%</div><div class="lbl">1st Serve In</div></div>
-          <div class="kpi"><div class="val">${ssPct}%</div><div class="lbl">2nd Serve In</div></div>
-          <div class="kpi"><div class="val">${svcWonPct}%</div><div class="lbl">Svc Pts Won</div></div>
-          <div class="kpi"><div class="val">${aces}</div><div class="lbl">Aces</div></div>
-          <div class="kpi"><div class="val red">${doubleFaults}</div><div class="lbl">Double Faults</div></div>
-          <div class="kpi"><div class="val">${unreturned}</div><div class="lbl">Unreturned</div></div>
-          <div class="kpi"><div class="val blue">${avgSrv}</div><div class="lbl">Avg Serve Speed</div></div>
-          <div class="kpi"><div class="val">${maxSrv}</div><div class="lbl">Max Serve Speed</div></div>
-        </div>`;
-      })()}
-
-      <div class="chart-grid">
-        <div class="chart-card">
-          <h3>Serve Direction — ${pName}</h3>
-          <div id="chartServeDir_${pid}" class="echart"></div>
-        </div>
-        <div class="chart-card">
-          <h3>1st vs 2nd Serve Points Won</h3>
-          <div id="chartServe12_${pid}" class="echart"></div>
-        </div>
-      </div>
-
-      <div class="chart-card full" style="margin-bottom:24px">
-        <h3>Serve Direction Strategy & Win Rate — ${pName}</h3>
-        <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:12px">Shows where serves were targeted, how often, and the resulting point win percentage. High win % with low usage = opportunity to exploit.</p>
-        <table class="strategy-table">
-          <thead>
-            <tr>
-              <th>Side</th>
-              <th>Direction</th>
-              <th>Serves</th>
-              <th>% of Total</th>
-              <th style="width:120px">Distribution</th>
-              <th>Points Won</th>
-              <th>Win %</th>
-              <th>Unreturned</th>
-            </tr>
-          </thead>
-          <tbody>${strategyData.map(r => {
-            const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
-            const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
-            return `<tr${highlight}>
-              <td>${r.side}</td>
-              <td style="font-weight:600">${r.direction}</td>
-              <td>${r.count}</td>
-              <td>${r.pctOfTotal}%</td>
-              <td class="bar-cell" style="position:relative;padding-right:60px">
-                <div class="bar-bg" style="width:${r.pctOfTotal}%;background:${color};opacity:0.3"></div>
-              </td>
-              <td>${r.pointsWon} / ${r.pointsPlayed}</td>
-              <td style="font-weight:700;color:${winColor}">${r.winPct}%</td>
-              <td>${r.unreturned}</td>
-            </tr>`;
-          }).join('')}</tbody>
-        </table>
-      </div>
-    `;
+    const srvSpds = serves.filter(s => s.ball_speed > 0).map(s => s.ball_speed);
+    return {
+      total: serves.length,
+      fsPct: serves1st.length ? Math.round(100 * serves1stIn.length / serves1st.length) : 0,
+      ssPct: serves2nd.length ? Math.round(100 * serves2ndIn.length / serves2nd.length) : 0,
+      svcWonPct: servicePoints.length ? Math.round(100 * svcPtsWon / servicePoints.length) : 0,
+      aces, doubleFaults, unreturned,
+      avgSpd: srvSpds.length ? Math.round(srvSpds.reduce((a,b)=>a+b,0)/srvSpds.length) : 0,
+      maxSpd: srvSpds.length ? Math.round(Math.max(...srvSpds)) : 0,
+    };
   }
-  return html;
+
+  const sA = serveStatsFor(paId), sB = serveStatsFor(pbId);
+  const stratA = buildServeStrategy(pts, paId);
+  const stratB = buildServeStrategy(pts, pbId);
+
+  function statCard(label, valA, valB, invert) {
+    const aWins = invert ? valA < valB : valA > valB;
+    const bWins = invert ? valB < valA : valB > valA;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--border)">
+      <span style="font-size:0.78rem;font-weight:${aWins ? '700' : '500'};color:${aWins ? PA_COLOR : 'var(--text-dim)'};min-width:50px;text-align:right">${valA}</span>
+      <span style="font-size:0.62rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.3px;font-weight:600">${label}</span>
+      <span style="font-size:0.78rem;font-weight:${bWins ? '700' : '500'};color:${bWins ? PB_COLOR : 'var(--text-dim)'};min-width:50px;text-align:left">${valB}</span>
+    </div>`;
+  }
+
+  function strategyTable(data, color) {
+    if (!data.length) return '<div style="text-align:center;color:var(--text-dim);font-size:0.72rem;padding:20px">No serve data</div>';
+    return `<table class="strategy-table" style="font-size:0.7rem">
+      <thead><tr>
+        <th style="padding:4px 6px">Side</th>
+        <th style="padding:4px 6px">Dir</th>
+        <th style="padding:4px 6px">N</th>
+        <th style="padding:4px 6px">%</th>
+        <th style="padding:4px 6px">Won</th>
+        <th style="padding:4px 6px">Win %</th>
+      </tr></thead>
+      <tbody>${data.map(r => {
+        const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+        const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
+        return `<tr${highlight}>
+          <td style="padding:3px 6px">${r.side}</td>
+          <td style="padding:3px 6px;font-weight:600">${r.direction}</td>
+          <td style="padding:3px 6px">${r.count}</td>
+          <td style="padding:3px 6px">${r.pctOfTotal}%</td>
+          <td style="padding:3px 6px">${r.pointsWon}/${r.pointsPlayed}</td>
+          <td style="padding:3px 6px;font-weight:700;color:${winColor}">${r.winPct}%</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  }
+
+  return `
+    <div class="chart-card full" style="padding:10px 14px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px">
+        <div style="text-align:right;font-weight:700;color:${PA_COLOR};font-size:0.9rem">${pa}</div>
+        <div style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px">Serve Head-to-Head</div>
+        <div style="text-align:left;font-weight:700;color:${PB_COLOR};font-size:0.9rem">${pb}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+        <div>
+          ${statCard('Total Serves', sA.total, sB.total)}
+          ${statCard('1st Serve In %', sA.fsPct + '%', sB.fsPct + '%')}
+          ${statCard('2nd Serve In %', sA.ssPct + '%', sB.ssPct + '%')}
+          ${statCard('Svc Pts Won %', sA.svcWonPct + '%', sB.svcWonPct + '%')}
+        </div>
+        <div>
+          ${statCard('Aces', sA.aces, sB.aces)}
+          ${statCard('Double Faults', sA.doubleFaults, sB.doubleFaults, true)}
+          ${statCard('Avg Speed', sA.avgSpd || '—', sB.avgSpd || '—')}
+          ${statCard('Max Speed', sA.maxSpd || '—', sB.maxSpd || '—')}
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Serve Direction</h3>
+        <div id="chartServeDir_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Serve Direction</h3>
+        <div id="chartServeDir_${pbId}" class="echart sm"></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Serve Strategy &amp; Win Rate</h3>
+        ${strategyTable(stratA, PA_COLOR)}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Serve Strategy &amp; Win Rate</h3>
+        ${strategyTable(stratB, PB_COLOR)}
+      </div>
+    </div>
+  `;
 }
 
 function buildServeStrategy(pts, serverId) {
@@ -973,22 +988,12 @@ function renderReturnDetail(pts) {
   const paId = playerAId();
   const pbId = playerBId();
 
-  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
-
-  let html = '';
-  for (const pid of showPlayers) {
-    const pName = getPlayerName(pid);
+  function retStatsFor(pid) {
     const opponentId = pid === paId ? pbId : paId;
-    const isA = pid === paId;
-    const color = isA ? PA_COLOR : PB_COLOR;
-
-    // Return shots = shots where opponent served and this player returns
     const returns = pts.filter(p => p.shot_phase_d === 'Return' && p.player_id === pid);
     const returnWinners = returns.filter(p => p.shot_outcome_d === 'Winner').length;
     const returnErrors = returns.filter(p => p.shot_outcome_d === 'Error').length;
-    const returnInPlay = returns.filter(p => p.shot_outcome_d === 'InPlay').length;
-
-    // Return points: unique points where opponent served
+    const retMade = returns.filter(p => p.shot_outcome_d !== 'Error').length;
     const pointMap = {};
     pts.forEach(p => {
       if (p.server_id !== opponentId) return;
@@ -997,50 +1002,113 @@ function renderReturnDetail(pts) {
     });
     const returnPoints = Object.values(pointMap);
     const retPtsWon = returnPoints.filter(p => p.point_winner_player_id === pid).length;
-
-    // Returns made (not error on return)
-    const retMade = returns.filter(p => p.shot_outcome_d !== 'Error').length;
-
-    // Return depth
-    const retDeep = returns.filter(p => p.depth_d === 'Deep').length;
-    const retMid = returns.filter(p => p.depth_d === 'Middle').length;
-    const retShort = returns.filter(p => p.depth_d === 'Short').length;
-
-    // Return stroke
-    const retFH = returns.filter(p => p.stroke_d === 'forehand').length;
-    const retBH = returns.filter(p => p.stroke_d === 'backhand').length;
-
-    const retMadePct = returns.length ? Math.round(100 * retMade / returns.length) : 0;
-    const retWonPct = returnPoints.length ? Math.round(100 * retPtsWon / returnPoints.length) : 0;
-
-    html += `
-      <h3 style="color:${color};margin-bottom:12px;font-size:1rem">${pName} — Return Performance</h3>
-      <div class="kpi-strip">
-        <div class="kpi"><div class="val">${returns.length}</div><div class="lbl">Returns Played</div></div>
-        <div class="kpi"><div class="val">${retMadePct}%</div><div class="lbl">Returns Made</div></div>
-        <div class="kpi"><div class="val">${retWonPct}%</div><div class="lbl">Return Pts Won</div></div>
-        <div class="kpi"><div class="val">${returnWinners}</div><div class="lbl">Return Winners</div></div>
-        <div class="kpi"><div class="val red">${returnErrors}</div><div class="lbl">Return Errors</div></div>
-      </div>
-
-      <div class="chart-grid">
-        <div class="chart-card">
-          <h3>Return Depth — ${pName}</h3>
-          <div id="chartRetDepth_${pid}" class="echart"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Return Stroke — ${pName}</h3>
-          <div id="chartRetStroke_${pid}" class="echart"></div>
-        </div>
-      </div>
-
-      <div class="chart-card full" style="margin-bottom:24px">
-        <h3>Return Outcome — ${pName}</h3>
-        <div id="chartRetOutcome_${pid}" class="echart"></div>
-      </div>
-    `;
+    return {
+      played: returns.length,
+      madePct: returns.length ? Math.round(100 * retMade / returns.length) : 0,
+      wonPct: returnPoints.length ? Math.round(100 * retPtsWon / returnPoints.length) : 0,
+      winners: returnWinners,
+      errors: returnErrors,
+      vs1stPct: 0, vs2ndPct: 0,
+    };
   }
-  return html;
+
+  // Return performance split by 1st vs 2nd serve
+  function retVsServe(pid, serveType) {
+    const opponentId = pid === paId ? pbId : paId;
+    const returns = pts.filter(p =>
+      p.shot_phase_d === 'Return' && p.player_id === pid
+    );
+    // Find the serve that preceded this return
+    const returnsVs = returns.filter(r => {
+      const serveInPoint = pts.find(p =>
+        p.serve_d && p.server_id === opponentId &&
+        p.point_key === r.point_key && p.serve_try_ix_in_point === serveType
+      );
+      return !!serveInPoint;
+    });
+    if (!returnsVs.length) return { pct: 0, won: 0, played: 0 };
+    const pointMap = {};
+    returnsVs.forEach(r => {
+      const key = r.point_key || `${r.game_number}:${r.point_number}`;
+      pointMap[key] = r;
+    });
+    const unique = Object.values(pointMap);
+    const won = unique.filter(r => {
+      const fullPoint = pts.find(p => p.point_key === r.point_key);
+      return fullPoint && fullPoint.point_winner_player_id === pid;
+    }).length;
+    return { pct: unique.length ? Math.round(100 * won / unique.length) : 0, won, played: unique.length };
+  }
+
+  const rA = retStatsFor(paId), rB = retStatsFor(pbId);
+  rA.vs1st = retVsServe(paId, '1st');
+  rA.vs2nd = retVsServe(paId, '2nd');
+  rB.vs1st = retVsServe(pbId, '1st');
+  rB.vs2nd = retVsServe(pbId, '2nd');
+
+  function statCard(label, valA, valB, invert) {
+    const aWins = invert ? valA < valB : valA > valB;
+    const bWins = invert ? valB < valA : valB > valA;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--border)">
+      <span style="font-size:0.78rem;font-weight:${aWins ? '700' : '500'};color:${aWins ? PA_COLOR : 'var(--text-dim)'};min-width:50px;text-align:right">${valA}</span>
+      <span style="font-size:0.62rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.3px;font-weight:600">${label}</span>
+      <span style="font-size:0.78rem;font-weight:${bWins ? '700' : '500'};color:${bWins ? PB_COLOR : 'var(--text-dim)'};min-width:50px;text-align:left">${valB}</span>
+    </div>`;
+  }
+
+  return `
+    <div class="chart-card full" style="padding:10px 14px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px">
+        <div style="text-align:right;font-weight:700;color:${PA_COLOR};font-size:0.9rem">${pa}</div>
+        <div style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px">Return Head-to-Head</div>
+        <div style="text-align:left;font-weight:700;color:${PB_COLOR};font-size:0.9rem">${pb}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+        <div>
+          ${statCard('Returns Played', rA.played, rB.played)}
+          ${statCard('Returns Made %', rA.madePct + '%', rB.madePct + '%')}
+          ${statCard('Return Pts Won %', rA.wonPct + '%', rB.wonPct + '%')}
+          ${statCard('Return Winners', rA.winners, rB.winners)}
+        </div>
+        <div>
+          ${statCard('Return Errors', rA.errors, rB.errors, true)}
+          ${statCard('vs 1st Serve %', rA.vs1st.pct + '%', rB.vs1st.pct + '%')}
+          ${statCard('vs 2nd Serve %', rA.vs2nd.pct + '%', rB.vs2nd.pct + '%')}
+          ${statCard('Break Opportunity', `${rA.vs1st.won + rA.vs2nd.won}`, `${rB.vs1st.won + rB.vs2nd.won}`)}
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Depth</h3>
+        <div id="chartRetDepth_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Depth</h3>
+        <div id="chartRetDepth_${pbId}" class="echart sm"></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Stroke</h3>
+        <div id="chartRetStroke_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Outcome</h3>
+        <div id="chartRetOutcome_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Stroke</h3>
+        <div id="chartRetStroke_${pbId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Outcome</h3>
+        <div id="chartRetOutcome_${pbId}" class="echart sm"></div>
+      </div>
+    </div>
+  `;
 }
 
 // ==================== RALLY DETAIL TAB ====================
@@ -1051,10 +1119,7 @@ function renderRallyDetail(pts) {
   const paId = playerAId();
   const pbId = playerBId();
 
-  // Rally shots = phase Rally or Transition
   const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition');
-
-  // Rally points
   const pointMap = {};
   pts.forEach(p => {
     const key = p.point_key || `${p.game_number}:${p.point_number}`;
@@ -1063,71 +1128,101 @@ function renderRallyDetail(pts) {
   const uniquePoints = Object.values(pointMap);
   const rallyPoints = uniquePoints.filter(p => (p.rally_length_point || 0) > 4);
 
-  // Shots by aggression
-  const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
-
-  let html = `
-    <div class="kpi-strip">
-      <div class="kpi"><div class="val">${rallyShots.length}</div><div class="lbl">Rally Shots</div></div>
-      <div class="kpi"><div class="val">${rallyPoints.length}</div><div class="lbl">Rally Points (5+ shots)</div></div>
-    </div>
-    <div class="chart-card full">
-      <h3>Rally Length Distribution</h3>
-      <div id="chartRallyLen" class="echart" style="height:300px"></div>
-    </div>
-    <div class="chart-card full">
-      <h3>Rally Points Won by Length Bucket</h3>
-      <div id="chartRallyBucketWin" class="echart" style="height:300px"></div>
-    </div>
-  `;
-
-  for (const pid of showPlayers) {
-    const pName = getPlayerName(pid);
-    const isA = pid === paId;
-    const color = isA ? PA_COLOR : PB_COLOR;
+  function rallyStatsFor(pid) {
     const pShots = rallyShots.filter(p => p.player_id === pid);
-    const aggAttack = pShots.filter(p => p.aggression_d === 'Aggressive').length;
-    const aggNeutral = pShots.filter(p => p.aggression_d === 'Neutral').length;
-    const aggDefensive = pShots.filter(p => p.aggression_d === 'Defensive').length;
-    const depthDeep = pShots.filter(p => p.depth_d === 'Deep').length;
-    const depthMid = pShots.filter(p => p.depth_d === 'Middle').length;
-    const depthShort = pShots.filter(p => p.depth_d === 'Short').length;
     const fh = pShots.filter(p => p.stroke_d === 'forehand').length;
     const bh = pShots.filter(p => p.stroke_d === 'backhand').length;
     const fhSpds = pShots.filter(p => p.stroke_d === 'forehand' && p.ball_speed > 0).map(s => s.ball_speed);
     const bhSpds = pShots.filter(p => p.stroke_d === 'backhand' && p.ball_speed > 0).map(s => s.ball_speed);
-    const avgFh = fhSpds.length ? Math.round(fhSpds.reduce((a,b)=>a+b,0)/fhSpds.length) : '—';
-    const maxFh = fhSpds.length ? Math.round(Math.max(...fhSpds)) : '—';
-    const avgBh = bhSpds.length ? Math.round(bhSpds.reduce((a,b)=>a+b,0)/bhSpds.length) : '—';
-    const maxBh = bhSpds.length ? Math.round(Math.max(...bhSpds)) : '—';
-
-    html += `
-      <h3 style="color:${color};margin:20px 0 12px;font-size:1rem">${pName} — Rally Breakdown</h3>
-      <div class="kpi-strip">
-        <div class="kpi"><div class="val">${fh}</div><div class="lbl">Forehands</div></div>
-        <div class="kpi"><div class="val">${avgFh}</div><div class="lbl">Avg FH Speed</div></div>
-        <div class="kpi"><div class="val">${maxFh}</div><div class="lbl">Max FH Speed</div></div>
-        <div class="kpi"><div class="val blue">${bh}</div><div class="lbl">Backhands</div></div>
-        <div class="kpi"><div class="val blue">${avgBh}</div><div class="lbl">Avg BH Speed</div></div>
-        <div class="kpi"><div class="val blue">${maxBh}</div><div class="lbl">Max BH Speed</div></div>
-      </div>
-      <div class="chart-grid tri">
-        <div class="chart-card">
-          <h3>Aggression</h3>
-          <div id="chartAgg_${pid}" class="echart"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Depth</h3>
-          <div id="chartDepth_${pid}" class="echart"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Stroke Split</h3>
-          <div id="chartStroke_${pid}" class="echart"></div>
-        </div>
-      </div>
-    `;
+    const rallyWon = rallyPoints.filter(p => p.point_winner_player_id === pid).length;
+    const winners = pShots.filter(p => p.shot_outcome_d === 'Winner').length;
+    const errors = pShots.filter(p => p.shot_outcome_d === 'Error').length;
+    return {
+      shots: pShots.length,
+      fh, bh,
+      avgFh: fhSpds.length ? Math.round(fhSpds.reduce((a,b)=>a+b,0)/fhSpds.length) : 0,
+      maxFh: fhSpds.length ? Math.round(Math.max(...fhSpds)) : 0,
+      avgBh: bhSpds.length ? Math.round(bhSpds.reduce((a,b)=>a+b,0)/bhSpds.length) : 0,
+      maxBh: bhSpds.length ? Math.round(Math.max(...bhSpds)) : 0,
+      rallyWonPct: rallyPoints.length ? Math.round(100 * rallyWon / rallyPoints.length) : 0,
+      winners, errors,
+      wErr: errors ? (winners / errors).toFixed(2) : winners.toFixed(2),
+    };
   }
-  return html;
+
+  const rA = rallyStatsFor(paId), rB = rallyStatsFor(pbId);
+
+  function statCard(label, valA, valB, invert) {
+    const aWins = invert ? valA < valB : valA > valB;
+    const bWins = invert ? valB < valA : valB > valA;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--border)">
+      <span style="font-size:0.78rem;font-weight:${aWins ? '700' : '500'};color:${aWins ? PA_COLOR : 'var(--text-dim)'};min-width:50px;text-align:right">${valA}</span>
+      <span style="font-size:0.62rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.3px;font-weight:600">${label}</span>
+      <span style="font-size:0.78rem;font-weight:${bWins ? '700' : '500'};color:${bWins ? PB_COLOR : 'var(--text-dim)'};min-width:50px;text-align:left">${valB}</span>
+    </div>`;
+  }
+
+  return `
+    <div class="chart-card full" style="padding:10px 14px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:16px">
+        <div style="text-align:right;font-weight:700;color:${PA_COLOR};font-size:0.9rem">${pa}</div>
+        <div style="font-size:0.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px">Rally Head-to-Head</div>
+        <div style="text-align:left;font-weight:700;color:${PB_COLOR};font-size:0.9rem">${pb}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+        <div>
+          ${statCard('Rally Shots', rA.shots, rB.shots)}
+          ${statCard('Rally Pts Won %', rA.rallyWonPct + '%', rB.rallyWonPct + '%')}
+          ${statCard('Winners', rA.winners, rB.winners)}
+          ${statCard('Errors', rA.errors, rB.errors, true)}
+        </div>
+        <div>
+          ${statCard('W:E Ratio', rA.wErr, rB.wErr)}
+          ${statCard('Forehands', rA.fh, rB.fh)}
+          ${statCard('Avg FH Speed', rA.avgFh || '—', rB.avgFh || '—')}
+          ${statCard('Avg BH Speed', rA.avgBh || '—', rB.avgBh || '—')}
+        </div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+      <div class="chart-card">
+        <h3>Rally Length Distribution</h3>
+        <div id="chartRallyLen" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Rally Points Won by Length</h3>
+        <div id="chartRallyBucketWin" class="echart sm"></div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:8px">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Aggression</h3>
+        <div id="chartAgg_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Depth</h3>
+        <div id="chartDepth_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Stroke</h3>
+        <div id="chartStroke_${paId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Aggression</h3>
+        <div id="chartAgg_${pbId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Depth</h3>
+        <div id="chartDepth_${pbId}" class="echart sm"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Stroke</h3>
+        <div id="chartStroke_${pbId}" class="echart sm"></div>
+      </div>
+    </div>
+  `;
 }
 
 // ====================================================================
@@ -1765,8 +1860,8 @@ function renderAllCharts() {
 
   // ===== SERVE TAB =====
   if (activeTab === 'serve') {
-    const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
-    for (const pid of showPlayers) {
+    // Always render for both players (side-by-side layout)
+    for (const pid of [paId, pbId]) {
       const serves = pts.filter(p => p.serve_d && p.server_id === pid);
 
       // Serve direction bar
@@ -1774,48 +1869,25 @@ function renderAllCharts() {
       serves.forEach(s => { const d = s.serve_bucket_d || 'Unknown'; dirCounts[d] = (dirCounts[d] || 0) + 1; });
       const dirs = ['Wide', 'Body', 'T'].filter(d => dirCounts[d]);
       eBar('chartServeDir_' + pid, dirs, dirs.map(d => dirCounts[d] || 0), [C_BLUE, C_GREEN, C_AMBER], true);
-
-      // 1st vs 2nd serve points won
-      const s1 = serves.filter(s => s.serve_try_ix_in_point === '1st' && s.shot_outcome_d !== 'Error');
-      const s2 = serves.filter(s => s.serve_try_ix_in_point === '2nd' && s.shot_outcome_d !== 'Error');
-      // Find corresponding points
-      const pointMap = {};
-      pts.forEach(p => {
-        const key = p.point_key || `${p.game_number}:${p.point_number}`;
-        if (!pointMap[key]) pointMap[key] = p;
-      });
-      const s1keys = new Set(s1.map(s => s.point_key || `${s.game_number}:${s.point_number}`));
-      const s2keys = new Set(s2.map(s => s.point_key || `${s.game_number}:${s.point_number}`));
-      const s1won = [...s1keys].filter(k => pointMap[k]?.point_winner_player_id === pid).length;
-      const s2won = [...s2keys].filter(k => pointMap[k]?.point_winner_player_id === pid).length;
-
-      eStackedBar('chartServe12_' + pid, ['1st Serve', '2nd Serve'], [
-        { name: 'Won', data: [s1won, s2won], color: C_GREEN },
-        { name: 'Lost', data: [s1keys.size - s1won, s2keys.size - s2won], color: C_RED },
-      ]);
     }
   }
 
   // ===== RETURN TAB =====
   if (activeTab === 'return') {
-    const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
-    for (const pid of showPlayers) {
+    for (const pid of [paId, pbId]) {
       const returns = pts.filter(p => p.shot_phase_d === 'Return' && p.player_id === pid);
 
-      // Depth
       eBar('chartRetDepth_' + pid, ['Deep', 'Middle', 'Short'], [
         returns.filter(p => p.depth_d === 'Deep').length,
         returns.filter(p => p.depth_d === 'Middle').length,
         returns.filter(p => p.depth_d === 'Short').length,
       ], [C_GREEN, C_AMBER, C_RED]);
 
-      // Stroke
       ePie('chartRetStroke_' + pid, [
         { name: 'Forehand', value: returns.filter(p => p.stroke_d === 'forehand').length },
         { name: 'Backhand', value: returns.filter(p => p.stroke_d === 'backhand').length },
       ], [C_GREEN, C_BLUE]);
 
-      // Outcome
       eBar('chartRetOutcome_' + pid, ['Winner', 'In Play', 'Error'], [
         returns.filter(p => p.shot_outcome_d === 'Winner').length,
         returns.filter(p => p.shot_outcome_d === 'InPlay').length,
@@ -1889,11 +1961,10 @@ function renderAllCharts() {
       CI['chartRallyBucketWin'] = chart;
     }
 
-    // Per-player aggression, depth, stroke
-    const showPlayers = filterPlayer === 'a' ? [paId] : filterPlayer === 'b' ? [pbId] : [paId, pbId];
+    // Per-player aggression, depth, stroke — always both players
     const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition');
 
-    for (const pid of showPlayers) {
+    for (const pid of [paId, pbId]) {
       const pShots = rallyShots.filter(p => p.player_id === pid);
 
       eBar('chartAgg_' + pid, ['Attack', 'Neutral', 'Defence'], [
