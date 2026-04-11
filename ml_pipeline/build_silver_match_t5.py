@@ -42,8 +42,9 @@ CENTRE_X = COURT_WIDTH_DOUBLES_M / 2                            # 5.485m
 EPS_BASELINE_M = 0.30
 
 # Thresholds for match analysis
-SERVE_GAP_S = 5.0       # seconds gap before a bounce to consider it a serve
+SERVE_GAP_S = 3.0       # seconds gap before a bounce to consider it a serve (was 5.0 — too strict for sparse bounce data)
 VOLLEY_NET_DISTANCE_M = 4.0  # player within 4m of net = volley
+SERVE_BOX_TOLERANCE_M = 1.5  # extra tolerance for service box check (real wide serves bounce in doubles alley)
 
 # build_silver_v2 sport config (used when calling shared passes)
 SPORT_CONFIG_SINGLES = {
@@ -67,14 +68,20 @@ TABLE = "point_detail"
 # ============================================================
 
 def _is_in_service_box(court_x: float, court_y: float) -> bool:
-    """Check if a bounce position is within either service box."""
+    """Check if a bounce position is within either service box.
+
+    Uses SERVE_BOX_TOLERANCE_M extra slack on each side because:
+    - Real wide serves bounce just outside the singles line (in the doubles alley)
+    - Court coordinate accuracy isn't perfect (~1m error common)
+    """
     if court_x is None or court_y is None:
         return False
-    in_x = SINGLES_LEFT_X <= court_x <= SINGLES_RIGHT_X
-    # Near service box: between net and near service line
-    near_box = HALF_Y < court_y <= FAR_SERVICE_LINE_M
-    # Far service box: between far service line and net
-    far_box = SERVICE_LINE_M <= court_y < HALF_Y
+    tol = SERVE_BOX_TOLERANCE_M
+    in_x = (SINGLES_LEFT_X - tol) <= court_x <= (SINGLES_RIGHT_X + tol)
+    # Near service box: between net and near service line (with tolerance)
+    near_box = (HALF_Y - tol) < court_y <= (FAR_SERVICE_LINE_M + tol)
+    # Far service box: between far service line and net (with tolerance)
+    far_box = (SERVICE_LINE_M - tol) <= court_y < (HALF_Y + tol)
     return in_x and (near_box or far_box)
 
 
@@ -303,6 +310,12 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                     mirror_y = COURT_LENGTH_M - other["court_y"]
                 else:
                     mirror_y = other["court_y"]
+                # Clamp to court bounds [0, COURT_LENGTH_M]. If a player is
+                # past their baseline (e.g. y=-3.94), mirroring gives 27.71
+                # which is past the FAR baseline. Clamping to 23.77 puts the
+                # synthetic hitter AT the baseline, where serves originate.
+                if mirror_y is not None:
+                    mirror_y = max(0.0, min(COURT_LENGTH_M, mirror_y))
                 hitter = {
                     "frame_idx": other["frame_idx"],
                     "player_id": other["player_id"],
