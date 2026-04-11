@@ -34,16 +34,16 @@ TRACKNET_INPUT_WIDTH = 640
 TRACKNET_INPUT_HEIGHT = 360
 TRACKNET_NUM_INPUT_FRAMES = 3   # Sliding window of 3 consecutive frames
 TRACKNET_OUTPUT_CHANNELS = 256
-TRACKNET_HEATMAP_THRESHOLD = 127  # Binary threshold for heatmap
+TRACKNET_HEATMAP_THRESHOLD = 100  # Was 127 — lower threshold accepts dimmer ball signals
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
 TRACKNET_HOUGH_PARAM2 = 2
-TRACKNET_HOUGH_MIN_RADIUS = 1   # Was 2 — allow smaller ball circles (serves/fast balls)
-TRACKNET_HOUGH_MAX_RADIUS = 10  # Was 7 — allow larger ball circles (slow/zoomed)
-BALL_MAX_INTERPOLATION_GAP = 5   # Was 3 — bridge longer occlusions
-BALL_MAX_DIST_BETWEEN_FRAMES = 150  # Was 100 — allow faster ball movement
-BALL_MAX_DIST_GAP = 150            # Was 80 — allow fast serves to bridge gaps
+TRACKNET_HOUGH_MIN_RADIUS = 1   # Allow smaller ball circles (serves/fast balls)
+TRACKNET_HOUGH_MAX_RADIUS = 10  # Allow larger ball circles (slow/zoomed)
+BALL_MAX_INTERPOLATION_GAP = 10  # Was 5 — bridge longer occlusions (cross-rally gaps)
+BALL_MAX_DIST_BETWEEN_FRAMES = 200  # Was 150 — allow faster ball movement
+BALL_MAX_DIST_GAP = 200            # Was 150 — allow fast serves to bridge larger gaps
 
 # ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)

@@ -175,10 +175,22 @@ class BallTracker:
         return det
 
     def _postprocess_heatmap(self, feature_map: np.ndarray):
-        """Convert heatmap to (x, y) via Hough circle detection."""
+        """Convert heatmap to (x, y) via Hough circle detection.
+
+        Three-tier strategy:
+        1. Try Hough circles — if any found, use the strongest one
+        2. Fallback: largest connected component centroid in the binary mask
+        3. Final fallback: argmax of the heatmap
+
+        Previous version REQUIRED exactly 1 circle, dropping frames where
+        Hough found 2+ candidates — that was throwing away ~30-40% of valid
+        ball detections. The new version uses ANY signal we can find.
+        """
         fm = (feature_map * 255).astype(np.uint8)
         fm = fm.reshape((TRACKNET_INPUT_HEIGHT, TRACKNET_INPUT_WIDTH))
         _, binary = cv2.threshold(fm, TRACKNET_HEATMAP_THRESHOLD, 255, cv2.THRESH_BINARY)
+
+        # Tier 1: Hough circles (use strongest if any found)
         circles = cv2.HoughCircles(
             binary, cv2.HOUGH_GRADIENT,
             dp=TRACKNET_HOUGH_DP,
@@ -188,8 +200,35 @@ class BallTracker:
             minRadius=TRACKNET_HOUGH_MIN_RADIUS,
             maxRadius=TRACKNET_HOUGH_MAX_RADIUS,
         )
-        if circles is not None and len(circles) == 1:
+        if circles is not None and len(circles) > 0 and len(circles[0]) > 0:
+            # circles[0] is sorted by accumulator strength descending — first is best
             return float(circles[0][0][0]), float(circles[0][0][1])
+
+        # Tier 2: Connected component centroid (largest blob in the binary mask)
+        # This catches cases where the ball is in the heatmap but doesn't form
+        # a clean circle (motion blur, partial occlusion, edge of frame).
+        try:
+            n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                binary, connectivity=8,
+            )
+            if n_labels > 1:  # 0 is background
+                # Find largest component (excluding background at index 0)
+                largest_idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+                area = stats[largest_idx, cv2.CC_STAT_AREA]
+                # Sanity check: ball blob should be small but not tiny
+                if 2 <= area <= 200:
+                    cx, cy = centroids[largest_idx]
+                    return float(cx), float(cy)
+        except Exception:
+            pass
+
+        # Tier 3: Heatmap argmax (any signal at all)
+        # Only used when binary mask has no significant blobs
+        if fm.max() > TRACKNET_HEATMAP_THRESHOLD:
+            flat_idx = int(fm.argmax())
+            cy, cx = divmod(flat_idx, TRACKNET_INPUT_WIDTH)
+            return float(cx), float(cy)
+
         return None, None
 
     def interpolate_gaps(self):
@@ -251,10 +290,13 @@ class BallTracker:
         ys = np.array([d.y for d in self.detections])
         vel = np.convolve(np.diff(ys), np.ones(BOUNCE_VELOCITY_WINDOW) / BOUNCE_VELOCITY_WINDOW, mode="valid")
 
-        # Minimum magnitude for a real bounce (px/frame)
-        MIN_VEL_MAG = 2.0
-        # Minimum frame spacing between bounces (frames)
-        MIN_BOUNCE_SPACING = 8
+        # Minimum magnitude for a real bounce (px/frame). Lowered from 2.0 to
+        # 1.0 to catch slower/softer bounces (returns, dinks, slices).
+        MIN_VEL_MAG = 1.0
+        # Minimum frame spacing between bounces (frames). Lowered from 8 to 5
+        # since we now detect more bounces — the ~5-frame minimum spacing is
+        # still enough to reject double-counting on the same impact.
+        MIN_BOUNCE_SPACING = 5
 
         last_bounce_idx = -MIN_BOUNCE_SPACING  # allow first bounce
         bounce_count = 0
