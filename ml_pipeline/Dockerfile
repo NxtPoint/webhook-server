@@ -47,6 +47,7 @@ COPY ml_pipeline/player_tracker.py /app/ml_pipeline/
 COPY ml_pipeline/heatmaps.py /app/ml_pipeline/
 COPY ml_pipeline/db_schema.py /app/ml_pipeline/
 COPY ml_pipeline/db_writer.py /app/ml_pipeline/
+COPY ml_pipeline/bronze_export.py /app/ml_pipeline/
 
 # Copy package entry point
 COPY ml_pipeline/__main__.py /app/ml_pipeline/__main__.py
