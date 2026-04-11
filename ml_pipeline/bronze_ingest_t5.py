@@ -83,7 +83,11 @@ def _bulk_insert_ball_detections(conn_raw, job_id: str, rows: list) -> int:
 
 
 def _bulk_insert_player_detections(conn_raw, job_id: str, rows: list) -> int:
-    """Bulk insert player detections using psycopg COPY (fast)."""
+    """Bulk insert player detections using psycopg COPY (fast).
+
+    Reconstructs nested keypoints from flat [x,y,c,x,y,c,...] back to
+    [[x,y,c],[x,y,c],...] to match the JSONB schema used by stroke inference.
+    """
     if not rows:
         return 0
 
@@ -95,8 +99,12 @@ def _bulk_insert_player_detections(conn_raw, job_id: str, rows: list) -> int:
             "FROM STDIN"
         ) as copy:
             for r in rows:
-                kp = r.get("keypoints")
-                kp_json = json.dumps(kp) if kp is not None else None
+                kp_flat = r.get("keypoints")
+                kp_json = None
+                if kp_flat is not None and len(kp_flat) >= 51:
+                    # Reconstruct 17 × 3 nested array
+                    nested = [[kp_flat[i*3], kp_flat[i*3 + 1], kp_flat[i*3 + 2]] for i in range(17)]
+                    kp_json = json.dumps(nested)
                 copy.write_row([
                     job_id,
                     r.get("frame_idx"),

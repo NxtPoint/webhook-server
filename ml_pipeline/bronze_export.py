@@ -44,21 +44,26 @@ def _ball_detection_to_dict(d) -> Dict[str, Any]:
 
 
 def _player_detection_to_dict(d) -> Dict[str, Any]:
-    """Convert PlayerDetection dataclass → plain dict for JSON serialization."""
+    """Convert PlayerDetection dataclass → plain dict for JSON serialization.
+
+    Keypoints stored as flat array [x1,y1,c1,x2,y2,c2,...] (17 keypoints × 3 = 51 floats).
+    This is ~30% smaller than nested arrays in JSON.
+    """
     bbox = d.bbox if hasattr(d, "bbox") else (None, None, None, None)
     center = d.center if hasattr(d, "center") else (None, None)
 
-    # Keypoints: numpy array (17, 3) → nested list
-    keypoints = None
+    # Keypoints: numpy array (17, 3) → flat list of 51 floats
+    keypoints_flat = None
     if getattr(d, "keypoints", None) is not None:
         try:
             kp = d.keypoints
-            if hasattr(kp, "tolist"):
-                keypoints = kp.tolist()
+            if hasattr(kp, "flatten"):
+                keypoints_flat = [float(v) for v in kp.flatten()]
             else:
-                keypoints = list(kp)
+                # Already a list — flatten manually
+                keypoints_flat = [float(v) for row in kp for v in row]
         except Exception:
-            keypoints = None
+            keypoints_flat = None
 
     return {
         "frame_idx": int(d.frame_idx),
@@ -71,7 +76,7 @@ def _player_detection_to_dict(d) -> Dict[str, Any]:
         "center_y": float(center[1]) if center[1] is not None else None,
         "court_x": float(d.court_x) if d.court_x is not None else None,
         "court_y": float(d.court_y) if d.court_y is not None else None,
-        "keypoints": keypoints,
+        "keypoints": keypoints_flat,
     }
 
 
@@ -80,37 +85,43 @@ def build_bronze_payload(
     task_id: Optional[str],
     result,
     practice: bool = False,
-    filter_players_to_ball_frames: Optional[bool] = None,
+    player_window_frames: int = 5,
 ) -> Dict[str, Any]:
     """
     Build the complete bronze JSON payload from ML pipeline result.
 
+    Optimization: SportAI sends ~5K rows total in 14MB. We're aggressively
+    filtered to match — most non-bounce frames are useless to the silver builder.
+    Strategy:
+      - ball_detections: keep ALL (small ~70 bytes/row, useful for trajectory)
+      - player_detections: keep only those within ±N frames of any bounce
+        (the silver builder only needs nearest-player to each bounce)
+
     Args:
         job_id: ML job identifier
         task_id: Associated task_id (usually same as job_id for T5)
-        result: TennisAnalysisPipeline result object with ball_detections,
-                player_detections, match_analytics, and metadata attributes
-        practice: practice mode flag (filters player detections if True by default)
-        filter_players_to_ball_frames: if True, only keep player detections at frames
-            where a ball was detected. Defaults to the value of `practice`.
+        result: TennisAnalysisPipeline result object
+        practice: practice mode flag
+        player_window_frames: keep player detections within ±N frames of bounces (default 5)
 
     Returns:
         Dict ready for JSON serialization.
     """
-    if filter_players_to_ball_frames is None:
-        filter_players_to_ball_frames = practice
-
     ball_dets = list(result.ball_detections or [])
-    player_dets = list(result.player_detections or [])
+    player_dets_full = list(result.player_detections or [])
 
-    if filter_players_to_ball_frames:
-        ball_frames = {d.frame_idx for d in ball_dets}
-        before = len(player_dets)
-        player_dets = [d for d in player_dets if d.frame_idx in ball_frames]
-        logger.info(
-            "bronze_export: filtered player detections %d -> %d (practice/ball-frame mode)",
-            before, len(player_dets),
-        )
+    # Filter player detections to a window around each bounce
+    bounce_frames = sorted({d.frame_idx for d in ball_dets if d.is_bounce})
+    keep_frames = set()
+    for bf in bounce_frames:
+        for offset in range(-player_window_frames, player_window_frames + 1):
+            keep_frames.add(bf + offset)
+
+    player_dets = [d for d in player_dets_full if d.frame_idx in keep_frames]
+    logger.info(
+        "bronze_export: filtered player_detections %d -> %d (±%d frames around %d bounces)",
+        len(player_dets_full), len(player_dets), player_window_frames, len(bounce_frames),
+    )
 
     # Pipeline video metadata (from VideoMetadata dataclass)
     vm = getattr(result, "video_metadata", None)
