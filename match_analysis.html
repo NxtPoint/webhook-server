@@ -299,10 +299,48 @@ body {
 }
 
 /* ========== HEATMAPS (MODULE 2) ========== */
-/* Constrain heatmap cards so court + tables have the same width and
-   the whole thing fits on one viewport on desktop + tablet. */
+/* Layout: main heatmap card + optional right-side info panel */
+.heatmap-layout {
+  display: grid; grid-template-columns: 1fr; gap: 14px;
+  max-width: 1320px; margin: 0 auto;
+}
+.heatmap-layout.with-info {
+  grid-template-columns: 1fr 280px;
+}
+.heatmap-main { min-width: 0; }  /* prevent grid blowout */
+.heatmap-info-panel {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  position: relative; font-size: 0.78rem; color: var(--text-sec); line-height: 1.55;
+  align-self: start; max-height: calc(100vh - 200px); overflow-y: auto;
+}
+.heatmap-info-panel h4 {
+  font-size: 0.85rem; font-weight: 700; color: var(--text);
+  margin-bottom: 8px; padding-right: 24px;
+}
+.heatmap-info-panel p { margin-bottom: 10px; }
+.heatmap-info-panel strong { color: var(--text); font-weight: 600; }
+.heatmap-info-panel .info-dot {
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+.heatmap-info-panel .info-close {
+  position: absolute; top: 8px; right: 10px; background: none; border: none;
+  cursor: pointer; font-size: 1rem; color: var(--text-dim); line-height: 1;
+  padding: 2px 6px; border-radius: 3px;
+}
+.heatmap-info-panel .info-close:hover { background: var(--bg); color: var(--text); }
+.info-toggle {
+  margin-left: auto; padding: 6px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--white); color: var(--text-sec);
+  font-size: 0.72rem; font-weight: 500; font-family: inherit; cursor: pointer;
+  transition: all var(--transition);
+}
+.info-toggle:hover { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+
+/* Constrain heatmap cards so court + tables have the same width */
 .heatmap-card {
-  max-width: 1200px; margin: 0 auto 10px; padding: 14px 16px !important;
+  margin: 0 auto 0; padding: 14px 16px !important;
 }
 /* Stats row sits above the court — compact */
 .heatmap-stats-row {
@@ -360,12 +398,21 @@ body {
   font-size: 0.62rem; font-weight: 600; color: var(--text-sec);
   text-transform: uppercase; letter-spacing: 0.5px; margin-right: 2px;
 }
-/* Player toggle buttons — ensure full names fit */
+/* Player toggle buttons — ensure full names fit, consistent player colours */
 .toggle-btn.hp-btn {
-  white-space: nowrap; padding: 6px 16px; min-width: 80px;
+  white-space: nowrap; padding: 6px 16px; min-width: 90px; max-width: 220px;
+  text-overflow: ellipsis; overflow: hidden;
 }
-.toggle-btn.hp-btn.active.player-a { background: var(--green); border-color: var(--green); color: #fff; }
-.toggle-btn.hp-btn.active.player-b { background: var(--blue); border-color: var(--blue); color: #fff; }
+/* Player A always green when active, Player B always blue when active.
+   When inactive, name is in player colour to reinforce the convention. */
+.toggle-btn.hp-btn.player-a { color: var(--green); }
+.toggle-btn.hp-btn.player-b { color: var(--blue); }
+.toggle-btn.hp-btn.player-a.active {
+  background: var(--green); border-color: var(--green); color: #fff;
+}
+.toggle-btn.hp-btn.player-b.active {
+  background: var(--blue); border-color: var(--blue); color: #fff;
+}
 
 /* Video modal */
 .video-modal {
@@ -418,6 +465,8 @@ body {
   .hm-stat-big { font-size: 2.2rem; }
   .heatmap-split-tables { grid-template-columns: 1fr; }
   .heatmap-stats-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .heatmap-layout.with-info { grid-template-columns: 1fr; }
+  .heatmap-info-panel { max-height: none; }
   body { overflow: auto; }
 }
 
@@ -585,6 +634,10 @@ async function selectMatch(idx) {
   // Reset coach cache — different match, different insights
   coachCardsCache = null;
   coachLastTaskId = null;
+
+  // Reset heatmap filters to defaults for new match
+  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
+  heatmapPlayer = 'player_a';
 
   // Show loading state
   const content = document.getElementById('dashContent');
@@ -1267,22 +1320,26 @@ async function callCoachAnalyze(body) {
 // which serve placements actually worked vs which ones leaked points.
 // Summary table below the court breaks down by side × direction with win %.
 
-let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
-let heatmapPlayer = 'player_a';  // which player's shots we're showing
+// Heatmap filter state persists across tabs (cross-filter)
+// Defaults reset only when a new match is selected
+let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
+let heatmapPlayer = 'player_a';
+let heatmapInfoOpen = false;  // side info panel collapsed by default
 
 function renderHeatmapsModule() {
   const tabs = [
-    { id: 'serve-placement', label: 'Serve Placement' },
+    { id: 'serve-placement',  label: 'Serve Placement' },
     { id: 'return-placement', label: 'Return Placement' },
-    { id: 'groundstroke', label: 'Groundstrokes' },
-    { id: 'rally-depth', label: 'Rally Depth' },
+    { id: 'return-received',  label: 'Returns Received' },
+    { id: 'groundstroke',     label: 'Groundstrokes' },
+    { id: 'rally-depth',      label: 'Rally Depth' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
     `<button class="dash-tab${t.id === activeTab ? ' active' : ''}" onclick="switchHeatmapTab('${t.id}')">${t.label}</button>`
   ).join('');
 
-  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
+  // Don't reset filters — keep them across tab switches (cross-filter)
   document.getElementById('dashContent').innerHTML = `
     <div class="tab-panel active" id="p-heatmap-content"></div>
   `;
@@ -1293,42 +1350,55 @@ function switchHeatmapTab(id) {
   activeTab = id;
   document.querySelectorAll('.dash-tab').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
-  heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
+  // Filters persist — cross-filter across tabs
   renderHeatmapContent();
 }
 
 function setHeatmapFilter(key, val) {
   heatmapFilter[key] = val;
-  document.querySelectorAll(`.hf-${key}`).forEach(b => b.classList.toggle('active', b.dataset.val === val));
-  renderHeatmapCourts();
+  // Refresh entire content (not just courts) so toggle active classes update
+  renderHeatmapContent();
 }
 
 function setHeatmapPlayer(role) {
   heatmapPlayer = role;
-  document.querySelectorAll('.hp-btn').forEach(b => b.classList.toggle('active', b.dataset.role === role));
-  renderHeatmapCourts();
+  renderHeatmapContent();
+}
+
+function toggleHeatmapInfo() {
+  heatmapInfoOpen = !heatmapInfoOpen;
+  renderHeatmapContent();
+}
+
+// Distinct set numbers present in the current match's placement rows
+function availableSets() {
+  const all = selectedData?.placement || [];
+  const sets = new Set();
+  all.forEach(p => { if (p.set_number != null) sets.add(p.set_number); });
+  return [...sets].sort((a, b) => a - b);
 }
 
 function renderHeatmapContent() {
   const k = kpi();
   const pa = k.player_a_name || 'Player A';
   const pb = k.player_b_name || 'Player B';
+  const sets = availableSets();
 
-  // Build the unified toggle row: Player | tab-specific filter
-  function toggleGroup(labelText, groupClass, options, currentVal, onclick) {
+  // Reusable toggle group
+  function toggleGroup(labelText, optClass, options, currentVal, onclickFn) {
     return `
       <div class="heatmap-toggle-group">
         <span class="hm-lbl">${labelText}</span>
         <div class="toggle-group">
           ${options.map(o =>
-            `<button class="toggle-btn ${groupClass}${currentVal === o.val ? ' active' : ''}" data-val="${o.val}" onclick="${onclick}('${o.val}')">${o.label}</button>`
+            `<button class="toggle-btn ${optClass}${currentVal === o.val ? ' active' : ''}" onclick="${onclickFn}('${o.val}')">${escapeHtml(o.label)}</button>`
           ).join('')}
         </div>
       </div>
     `;
   }
 
-  const playerOptions = [{val:'player_a',label:pa},{val:'player_b',label:pb}];
+  // Player toggle — name in player colour, active state has filled background
   const playerToggleHTML = `
     <div class="heatmap-toggle-group">
       <span class="hm-lbl">Player</span>
@@ -1339,101 +1409,135 @@ function renderHeatmapContent() {
     </div>
   `;
 
+  // Set filter — appears on every tab if there are 2+ sets
+  let setToggleHTML = '';
+  if (sets.length > 1) {
+    const setOpts = [{val:'all', label:'All Sets'}, ...sets.map(s => ({val:String(s), label:'Set '+s}))];
+    setToggleHTML = toggleGroup('Set', 'hf-set', setOpts, heatmapFilter.setNum, 'setHeatmapFilterSet');
+  }
+
+  // Tab-specific toggles (serve type / stroke / depth)
   let tabTogglesHTML = '';
   if (activeTab === 'serve-placement') {
     tabTogglesHTML = toggleGroup('Serve', 'hf-serve', [
       {val:'all',label:'All'},{val:'1st',label:'1st'},{val:'2nd',label:'2nd'}
-    ], heatmapFilter.serve, "setHeatmapFilterServe");
-  } else if (activeTab === 'groundstroke') {
+    ], heatmapFilter.serve, 'setHeatmapFilterServe');
+  } else if (activeTab === 'return-placement' || activeTab === 'return-received' || activeTab === 'groundstroke') {
     tabTogglesHTML = toggleGroup('Stroke', 'hf-stroke', [
       {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
-    ], heatmapFilter.stroke, "setHeatmapFilterStroke");
+    ], heatmapFilter.stroke, 'setHeatmapFilterStroke');
   } else if (activeTab === 'rally-depth') {
     tabTogglesHTML = toggleGroup('Depth', 'hf-outcome', [
       {val:'all',label:'All'},{val:'Deep',label:'Deep'},{val:'Middle',label:'Middle'},{val:'Short',label:'Short'}
-    ], heatmapFilter.outcome, "setHeatmapFilterOutcome");
+    ], heatmapFilter.outcome, 'setHeatmapFilterOutcome');
   }
 
-  const toggleRow = `<div class="heatmap-toggle-row">${playerToggleHTML}${tabTogglesHTML}</div>`;
+  const toggleRow = `<div class="heatmap-toggle-row">${playerToggleHTML}${setToggleHTML}${tabTogglesHTML}<button class="info-toggle" onclick="toggleHeatmapInfo()" title="How to read this page">${heatmapInfoOpen ? '✕ Close info' : 'ⓘ How to read this'}</button></div>`;
+
+  // Right-side info panel content per tab
+  const infoContent = {
+    'serve-placement': `
+      <h4>Serve Placement</h4>
+      <p>Each dot is a serve, plotted at the bounce location on the opponent's service box.</p>
+      <p><span class="info-dot" style="background:rgba(26,92,46,0.9)"></span>Green = the point was won.
+         <span class="info-dot" style="background:rgba(220,38,38,0.85)"></span>Red = the point was lost.</p>
+      <p>Use the <strong>1st / 2nd</strong> filter to compare your first vs second serve patterns.</p>
+      <p>The Ad / Deuce table below splits serves by service court and direction (Wide / Body / T) with win % per cell — find your highest-win-rate placement and use it more.</p>
+    `,
+    'return-placement': `
+      <h4>Return Placement</h4>
+      <p>Each dot is your return shot, plotted at the bounce location on the opponent's court (your return placement).</p>
+      <p>Filter by stroke (Forehand / Backhand) to see where each wing tends to land.</p>
+      <p>Tables below split by which side you were returning from (Ad / Deuce).</p>
+    `,
+    'return-received': `
+      <h4>Returns Received</h4>
+      <p>Shows the opponent's serves coming AT you. Each dot is a serve they hit at you, win/loss is from your perspective (returner).</p>
+      <p>Tables split by where the serve came from — answer "how did I do against deuce-side wide serves vs body serves?".</p>
+    `,
+    'groundstroke': `
+      <h4>Groundstrokes</h4>
+      <p>Every shot during a rally (excluding serves and returns). Filter by stroke type to see forehand vs backhand placement separately.</p>
+      <p>Win % = the point ended up being won by this player. Use it to find which shot patterns actually convert to points.</p>
+    `,
+    'rally-depth': `
+      <h4>Rally Depth</h4>
+      <p>Bounces during rally exchanges, classified by depth (Deep / Middle / Short).</p>
+      <p>A "Deep" bounce near the baseline is generally a winning pattern. Compare your win % per depth bucket to see if you push opponents back effectively.</p>
+    `,
+  }[activeTab] || '';
+
+  const infoPanel = heatmapInfoOpen ? `
+    <aside class="heatmap-info-panel">
+      <button class="info-close" onclick="toggleHeatmapInfo()" aria-label="Close">✕</button>
+      ${infoContent}
+    </aside>
+  ` : '';
 
   const panel = document.getElementById('p-heatmap-content');
 
-  // Return tab has TWO stacked sections (Received + Placed). Others have ONE.
-  if (activeTab === 'return-placement') {
-    panel.innerHTML = `
-      ${toggleRow}
-      <div class="chart-card full heatmap-card">
-        <h3>Serve Received — How opponent served you</h3>
-        <div id="heatmapStatsReceived" class="heatmap-stats-row"></div>
-        <div class="heatmap-court-wrap">
-          <canvas id="courtReceived" width="1200" height="380"></canvas>
+  // Title and subtitle for the current tab
+  const tabTitle = {
+    'serve-placement':  'Serve Placement',
+    'return-placement': 'Return Placement — Where you hit your return',
+    'return-received':  'Returns Received — How opponent served you',
+    'groundstroke':     'Groundstrokes',
+    'rally-depth':      'Rally Depth',
+  }[activeTab] || '';
+
+  panel.innerHTML = `
+    ${toggleRow}
+    <div class="heatmap-layout${heatmapInfoOpen ? ' with-info' : ''}">
+      <div class="heatmap-main">
+        <div class="chart-card full heatmap-card">
+          <h3>${tabTitle}</h3>
+          <div id="heatmapStats" class="heatmap-stats-row"></div>
+          <div class="heatmap-court-wrap">
+            <canvas id="heatmapCourt" width="1200" height="760"></canvas>
+          </div>
+          <h3 id="heatmapTableTitle" style="margin-top:12px;margin-bottom:4px">Placement Summary</h3>
+          <div class="heatmap-split-tables" id="heatmapTable"></div>
         </div>
-        <div class="heatmap-split-tables" id="heatmapTableReceived"></div>
       </div>
-      <div class="chart-card full heatmap-card">
-        <h3>Return Placement — Where you hit your return</h3>
-        <div id="heatmapStatsPlaced" class="heatmap-stats-row"></div>
-        <div class="heatmap-court-wrap">
-          <canvas id="courtPlaced" width="1200" height="380"></canvas>
-        </div>
-        <div class="heatmap-split-tables" id="heatmapTablePlaced"></div>
-      </div>
-    `;
-  } else {
-    panel.innerHTML = `
-      ${toggleRow}
-      <div class="chart-card full heatmap-card">
-        <div id="heatmapStats" class="heatmap-stats-row"></div>
-        <div class="heatmap-court-wrap">
-          <canvas id="heatmapCourt" width="1200" height="380"></canvas>
-        </div>
-        <h3 id="heatmapTableTitle" style="margin-top:12px;margin-bottom:4px">Placement Summary</h3>
-        <div class="heatmap-split-tables" id="heatmapTable"></div>
-      </div>
-    `;
-  }
+      ${infoPanel}
+    </div>
+  `;
   renderHeatmapCourts();
 }
 
-// Convenience wrappers so the onclick strings in HTML are simple
+// Onclick wrappers for filter buttons
 function setHeatmapFilterServe(val)   { setHeatmapFilter('serve', val); }
 function setHeatmapFilterStroke(val)  { setHeatmapFilter('stroke', val); }
 function setHeatmapFilterOutcome(val) { setHeatmapFilter('outcome', val); }
+function setHeatmapFilterSet(val)     { setHeatmapFilter('setNum', val); }
 
 function renderHeatmapCourts() {
-  if (activeTab === 'return-placement') {
-    // Two courts: what you received + what you placed
-    const receivedShots = getReturnReceivedShots(heatmapPlayer);
-    const placedShots = getReturnPlacedShots(heatmapPlayer);
-    drawHeatmapCourt('courtReceived', receivedShots, 'heatmapStatsReceived');
-    drawHeatmapCourt('courtPlaced', placedShots, 'heatmapStatsPlaced');
-    renderReturnTables(receivedShots, placedShots);
-  } else {
-    const shots = getHeatmapShots(heatmapPlayer);
-    drawHeatmapCourt('heatmapCourt', shots, 'heatmapStats');
-    renderHeatmapSummaryTable(shots);
-  }
+  const shots = getHeatmapShots(heatmapPlayer);
+  drawHeatmapCourt('heatmapCourt', shots, 'heatmapStats');
+  renderHeatmapSummaryTable(shots);
 }
 
-// Returns the opponent's serves directed AT this player (what they had to handle)
-function getReturnReceivedShots(playerRole) {
-  const all = selectedData.placement || [];
-  const opponentRole = playerRole === 'player_a' ? 'player_b' : 'player_a';
-  // Filter: opponent's serves, but win/loss should still be from the returner's perspective
-  return rowsForRole(all, opponentRole).filter(p => p.serve_d === true);
-}
-
-// Returns the player's return shots (shot 2 of the point, hit by this player)
-function getReturnPlacedShots(playerRole) {
-  const all = selectedData.placement || [];
-  return rowsForRole(all, playerRole).filter(p => p.shot_phase_d === 'Return');
-}
-
-// Read shots from gold.match_shot_placement, filter by tab + toggles
+// Read shots from gold.match_shot_placement, filter by active tab + toggles + set
 function getHeatmapShots(playerRole) {
   const all = selectedData.placement || [];
-  let shots = rowsForRole(all, playerRole);
 
+  // Apply player filter
+  let shots;
+  if (activeTab === 'return-received') {
+    // For "returns received" we show OPPONENT's serves at this player
+    const oppRole = playerRole === 'player_a' ? 'player_b' : 'player_a';
+    shots = rowsForRole(all, oppRole).filter(p => p.serve_d === true);
+  } else {
+    shots = rowsForRole(all, playerRole);
+  }
+
+  // Apply set filter (cross-cutting across tabs)
+  if (heatmapFilter.setNum && heatmapFilter.setNum !== 'all') {
+    const sn = parseInt(heatmapFilter.setNum, 10);
+    shots = shots.filter(p => Number(p.set_number) === sn);
+  }
+
+  // Apply tab-specific filters
   if (activeTab === 'serve-placement') {
     shots = shots.filter(p => p.serve_d === true);
     if (heatmapFilter.serve !== 'all') {
@@ -1441,6 +1545,21 @@ function getHeatmapShots(playerRole) {
     }
   } else if (activeTab === 'return-placement') {
     shots = shots.filter(p => p.shot_phase_d === 'Return');
+    if (heatmapFilter.stroke !== 'all') {
+      shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
+    }
+  } else if (activeTab === 'return-received') {
+    // Opponent serves at you — already filtered above
+    if (heatmapFilter.stroke !== 'all') {
+      // For returns received, "stroke" filter means YOUR return stroke
+      // Need to look at the corresponding return shot (shot_ix_in_point=2) by this player
+      // Build a set of point_keys where YOUR return used the filtered stroke
+      const yourReturns = rowsForRole(all, playerRole).filter(r =>
+        r.shot_phase_d === 'Return' && r.stroke_d === heatmapFilter.stroke
+      );
+      const allowedPointKeys = new Set(yourReturns.map(r => r.point_key));
+      shots = shots.filter(s => allowedPointKeys.has(s.point_key));
+    }
   } else if (activeTab === 'groundstroke') {
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net'
@@ -1449,7 +1568,7 @@ function getHeatmapShots(playerRole) {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
   } else {
-    // Rally depth: bounce locations across all non-serve shots
+    // Rally depth
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'
     );
@@ -1613,82 +1732,47 @@ function renderHeatmapSummaryTable(shots) {
   const k = kpi();
   const playerId = heatmapPlayer === 'player_a' ? k.player_a_id : k.player_b_id;
 
+  // Helper: group return-side shots by the side the serve came from
+  function groupByReceivedSide(returnShots, oppServes) {
+    const serveSideByPoint = {};
+    oppServes.forEach(s => {
+      if (s.point_key) serveSideByPoint[s.point_key] = normaliseSide(s.serve_side_d);
+    });
+    return returnShots.map(p => ({
+      ...p,
+      _received_side: serveSideByPoint[p.point_key] || 'Unknown',
+    }));
+  }
+
   if (activeTab === 'serve-placement') {
     if (titleEl) titleEl.textContent = 'Serve Placement by Side × Direction';
     const bySide = groupShotsBySideDirection(shots, 'serve_side_d', 'serve_bucket_d', playerId);
-    host.innerHTML = buildSideTable(bySide.Ad, 'Ad Side') + buildSideTable(bySide.Deuce, 'Deuce Side');
+    // Deuce on LEFT, Ad on RIGHT — matches where dots land on the court
+    // (deuce serves go to the receiver's deuce box which is the LEFT half from the viewer)
+    host.innerHTML = buildSideTable(bySide.Deuce, 'Deuce Side') + buildSideTable(bySide.Ad, 'Ad Side');
+
+  } else if (activeTab === 'return-received') {
+    if (titleEl) titleEl.textContent = 'Returns Received by Side × Direction';
+    const bySide = groupShotsBySideDirection(shots, 'serve_side_d', 'serve_bucket_d', playerId);
+    host.innerHTML = buildSideTable(bySide.Deuce, 'Received on Deuce') + buildSideTable(bySide.Ad, 'Received on Ad');
+
+  } else if (activeTab === 'return-placement') {
+    if (titleEl) titleEl.textContent = 'Return Placement by Received Side × Stroke';
+    // Need to know which side each return was received from
+    const oppRole = heatmapPlayer === 'player_a' ? 'player_b' : 'player_a';
+    const oppServes = rowsForRole(selectedData.placement || [], oppRole).filter(p => p.serve_d === true);
+    const enriched = groupByReceivedSide(shots, oppServes);
+    const bySide = groupShotsBySideDirection(enriched, '_received_side', 'stroke_d', playerId);
+    host.innerHTML = buildSideTable(bySide.Deuce, 'Returning from Deuce') + buildSideTable(bySide.Ad, 'Returning from Ad');
+
   } else if (activeTab === 'groundstroke') {
     if (titleEl) titleEl.textContent = 'Groundstroke Placement — Stroke × Depth';
     host.innerHTML = buildGenericTable(shots, 'stroke_d', 'depth_d', playerId, 'Stroke');
+
   } else {
     // Rally depth
     if (titleEl) titleEl.textContent = 'Rally Depth — Win Rate by Depth';
     host.innerHTML = buildGenericTable(shots, 'depth_d', null, playerId, 'Depth');
-  }
-}
-
-// Render the two return tables: Received (split by serve side × direction)
-// and Placed (split by received serve side × return stroke direction).
-function renderReturnTables(receivedShots, placedShots) {
-  const k = kpi();
-  const playerId = heatmapPlayer === 'player_a' ? k.player_a_id : k.player_b_id;
-
-  // Table 1 — serves you received, grouped by side × direction.
-  // "Won" = you (the returner) won the point. "Returns made" =
-  // shots where shot_outcome_d on the serve was not Error (i.e. serve was in).
-  // For simplicity we use point win here since that's our primary metric.
-  const receivedHost = document.getElementById('heatmapTableReceived');
-  if (receivedHost) {
-    const bySide = groupShotsBySideDirection(receivedShots, 'serve_side_d', 'serve_bucket_d', playerId);
-    receivedHost.innerHTML = buildSideTable(bySide.Ad, 'Received on Ad Side') + buildSideTable(bySide.Deuce, 'Received on Deuce Side');
-  }
-
-  // Table 2 — your return placement, grouped by the side the serve came from
-  // (so you can see "on deuce returns, where did I hit it"). Direction here is
-  // the stroke or depth of your return.
-  // Join each return to the preceding serve to get the side.
-  // We approximate this by matching on point_key — the opponent's serve with
-  // the same point_key tells us the side.
-  const placedHost = document.getElementById('heatmapTablePlaced');
-  if (placedHost) {
-    // Build a lookup: point_key → serve_side_d from the opponent's serves
-    const serveSideByPoint = {};
-    receivedShots.forEach(s => {
-      if (s.point_key) serveSideByPoint[s.point_key] = normaliseSide(s.serve_side_d);
-    });
-
-    // Enrich placed shots with inferred side of receipt
-    const enriched = placedShots.map(p => ({
-      ...p,
-      received_side: serveSideByPoint[p.point_key] || 'Unknown',
-    }));
-
-    // Group by received_side × stroke_d
-    const groups = {};
-    enriched.forEach(s => {
-      const side = s.received_side;
-      const dir = s.stroke_d || 'Unknown';
-      const key = `${side}|${dir}`;
-      if (!groups[key]) groups[key] = { side, direction: dir, count: 0, won: 0 };
-      groups[key].count++;
-      if (s.point_winner_player_id === playerId) groups[key].won++;
-    });
-    const bySide = { Deuce: [], Ad: [], Unknown: [] };
-    const totalBySide = { Deuce: 0, Ad: 0, Unknown: 0 };
-    Object.values(groups).forEach(g => {
-      bySide[g.side].push(g);
-      totalBySide[g.side] += g.count;
-    });
-    Object.keys(bySide).forEach(side => {
-      bySide[side] = bySide[side]
-        .map(g => ({
-          ...g,
-          pct: totalBySide[side] > 0 ? Math.round(100 * g.count / totalBySide[side]) : 0,
-          winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0,
-        }))
-        .sort((a, b) => b.count - a.count);
-    });
-    placedHost.innerHTML = buildSideTable(bySide.Ad, 'Returning from Ad') + buildSideTable(bySide.Deuce, 'Returning from Deuce');
   }
 }
 
@@ -1789,6 +1873,15 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   // opponent's court, which is where it actually goes for serves and returns.
   let wonCount = 0, lostCount = 0, unknownCount = 0;
 
+  // Dot radius scales with canvas width — computed once outside the loop
+  const rOuter = Math.max(8, Math.round(W / 140));
+  const rInner = Math.max(5, Math.round(W / 200));
+  // Inset bounds — keep dots visually inside the drawn court boundary
+  const insetX = rOuter + 2;
+  const insetY = rOuter + 2;
+  const minX = cx(0) + insetX, maxX = cx(COURT_W) - insetX;
+  const minY = cy(0) + insetY, maxY = cy(COURT_L) - insetY;
+
   shots.forEach(s => {
     // Use bounce coords first (where the ball landed), fall back to hit coords
     let bx = s.ball_bounce_x_norm ?? s.ball_hit_x_norm ?? s.court_x ?? s.ball_hit_location_x;
@@ -1798,10 +1891,14 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     bx = Math.max(0, Math.min(COURT_W, bx));
     by = Math.max(0, Math.min(COURT_L, by));
 
-    // Mirror to far side
+    // Mirror to far side so the ball lands at the top of the canvas
+    // (visually where it should be from the player's perspective).
     const byDisplay = COURT_L - by;
 
-    const px = cx(bx), py = cy(byDisplay);
+    // Project to canvas pixels and clamp inside the inset bounds
+    let px = cx(bx), py = cy(byDisplay);
+    px = Math.max(minX, Math.min(maxX, px));
+    py = Math.max(minY, Math.min(maxY, py));
 
     let colour;
     if (s.point_winner_player_id === ownerId) {
@@ -1814,10 +1911,6 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
       colour = 'rgba(180,180,180,0.55)';
       unknownCount++;
     }
-
-    // Dot radius scales with canvas width
-    const rOuter = Math.max(8, Math.round(W / 140));
-    const rInner = Math.max(5, Math.round(W / 200));
 
     // Outer white halo for contrast on the dark court
     ctx.beginPath();
