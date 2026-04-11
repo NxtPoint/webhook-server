@@ -206,34 +206,58 @@ class CourtDetector:
             logger.warning("_compute_homography: findHomography returned None with %d points", n)
             return None
 
-        # ── Validation: project detected keypoints back via H, check error ──
-        # A correctly-computed homography should map src points close to dst points.
-        # Reject if mean reprojection error > MAX_REPROJ_ERROR_PX (in reference space).
-        MAX_REPROJ_ERROR_PX = 80.0  # reference space is ~1100x2400px, 80px is generous
+        # ── Validation strategy ──
+        # 1. RANSAC inlier count: need at least MIN_INLIERS good points
+        # 2. Scale factor sanity: |H[0][0]| and |H[1][1]| should be < 50
+        #    (A reasonable image-to-reference court mapping has scale ~0.5-10)
+        # 3. Inlier-only mean reprojection error: should be small by RANSAC
+        #    construction, but double-check it's < 10px
+        MIN_INLIERS = 6  # need at least 6 inliers (out of 14 keypoints)
+        MAX_SCALE = 50.0
+        MAX_INLIER_ERR_PX = 15.0
+
+        n_inliers = int(mask.sum()) if mask is not None else 0
+
+        if n_inliers < MIN_INLIERS:
+            logger.warning(
+                "_compute_homography: REJECTED low inliers n_inliers=%d (need %d) H_diag=[%.2f, %.2f]",
+                n_inliers, MIN_INLIERS, H[0, 0], H[1, 1],
+            )
+            return None
+
+        if abs(H[0, 0]) > MAX_SCALE or abs(H[1, 1]) > MAX_SCALE or not np.isfinite(H).all():
+            logger.warning(
+                "_compute_homography: REJECTED bad scale H_diag=[%.2f, %.2f] (max %.0f)",
+                H[0, 0], H[1, 1], MAX_SCALE,
+            )
+            return None
+
+        # Inlier-only reprojection check
         try:
-            src_homog = np.hstack([src[:n], np.ones((n, 1), dtype=np.float32)])
-            projected = (H @ src_homog.T).T  # (n, 3)
-            # Normalize homogeneous coords
+            inlier_mask = mask.flatten().astype(bool)
+            in_src = src[:n][inlier_mask]
+            in_dst = dst[:n][inlier_mask]
+            in_src_h = np.hstack([in_src, np.ones((len(in_src), 1), dtype=np.float32)])
+            projected = (H @ in_src_h.T).T
             w = projected[:, 2:3]
             w = np.where(np.abs(w) < 1e-10, 1.0, w)
             projected_2d = projected[:, :2] / w
-            errors = np.linalg.norm(projected_2d - dst[:n], axis=1)
-            mean_err = float(np.mean(errors))
-            max_err = float(np.max(errors))
+            inlier_errs = np.linalg.norm(projected_2d - in_dst, axis=1)
+            inlier_mean_err = float(np.mean(inlier_errs))
         except Exception as e:
-            logger.warning("_compute_homography: reprojection error check failed: %s", e)
-            return None
+            logger.warning("_compute_homography: inlier reproj check failed: %s", e)
+            inlier_mean_err = 0.0
 
-        if mean_err > MAX_REPROJ_ERROR_PX or not np.isfinite(mean_err):
+        if inlier_mean_err > MAX_INLIER_ERR_PX:
             logger.warning(
-                "_compute_homography: REJECTED bad H — mean_err=%.1f max_err=%.1f H_diag=[%.2f, %.2f, %.2f]",
-                mean_err, max_err, H[0, 0], H[1, 1], H[2, 2],
+                "_compute_homography: REJECTED inlier_err=%.1f H_diag=[%.2f, %.2f]",
+                inlier_mean_err, H[0, 0], H[1, 1],
             )
             return None
 
         logger.info(
-            "_compute_homography: OK n=%d mean_err=%.1f H_diag=[%.2f, %.2f, %.2f]",
-            n, mean_err, H[0, 0], H[1, 1], H[2, 2],
+            "_compute_homography: OK inliers=%d/%d inlier_err=%.1f H_diag=[%.2f, %.2f]",
+            n_inliers, n, inlier_mean_err, H[0, 0], H[1, 1],
         )
         return H
 
