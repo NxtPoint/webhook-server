@@ -133,7 +133,16 @@ try:
     from gold_init import gold_init_presentation  # noqa: E402
     gold_init_presentation()
 except Exception:
-    log.exception("gold_init_presentation() failed on boot — gold views may be stale")
+    app.logger.exception("gold_init_presentation() failed on boot — gold views may be stale")
+
+# ---------- LLM Tennis Coach (idempotent on boot) ----------
+try:
+    from tennis_coach.coach_api import coach_bp
+    from tennis_coach.init import init_tennis_coach
+    init_tennis_coach()
+    app.register_blueprint(coach_bp)
+except Exception:
+    app.logger.exception("tennis_coach init failed on boot")
 
 
 # ---------- S3 config (MANDATORY) ----------
