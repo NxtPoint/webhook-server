@@ -204,9 +204,37 @@ class CourtDetector:
         H, mask = cv2.findHomography(src[:n], dst[:n], cv2.RANSAC, 5.0)
         if H is None:
             logger.warning("_compute_homography: findHomography returned None with %d points", n)
-        else:
-            logger.info("_compute_homography: success with %d points, H diag=[%.2f, %.2f, %.2f]",
-                         n, H[0, 0], H[1, 1], H[2, 2])
+            return None
+
+        # ── Validation: project detected keypoints back via H, check error ──
+        # A correctly-computed homography should map src points close to dst points.
+        # Reject if mean reprojection error > MAX_REPROJ_ERROR_PX (in reference space).
+        MAX_REPROJ_ERROR_PX = 80.0  # reference space is ~1100x2400px, 80px is generous
+        try:
+            src_homog = np.hstack([src[:n], np.ones((n, 1), dtype=np.float32)])
+            projected = (H @ src_homog.T).T  # (n, 3)
+            # Normalize homogeneous coords
+            w = projected[:, 2:3]
+            w = np.where(np.abs(w) < 1e-10, 1.0, w)
+            projected_2d = projected[:, :2] / w
+            errors = np.linalg.norm(projected_2d - dst[:n], axis=1)
+            mean_err = float(np.mean(errors))
+            max_err = float(np.max(errors))
+        except Exception as e:
+            logger.warning("_compute_homography: reprojection error check failed: %s", e)
+            return None
+
+        if mean_err > MAX_REPROJ_ERROR_PX or not np.isfinite(mean_err):
+            logger.warning(
+                "_compute_homography: REJECTED bad H — mean_err=%.1f max_err=%.1f H_diag=[%.2f, %.2f, %.2f]",
+                mean_err, max_err, H[0, 0], H[1, 1], H[2, 2],
+            )
+            return None
+
+        logger.info(
+            "_compute_homography: OK n=%d mean_err=%.1f H_diag=[%.2f, %.2f, %.2f]",
+            n, mean_err, H[0, 0], H[1, 1], H[2, 2],
+        )
         return H
 
     def _detect_hough(self, frame: np.ndarray) -> Optional[CourtDetection]:
@@ -308,13 +336,31 @@ class CourtDetector:
 
         mx = (court_pt[0] - ref[0][0]) / ref_w * COURT_WIDTH_DOUBLES_M
         my = (court_pt[1] - ref[0][1]) / ref_h * COURT_LENGTH_M
+
+        # Sanity check: court is 10.97m x 23.77m. Allow ±5m of slop for balls
+        # outside the lines, but reject anything wildly outside (e.g. -50, 300).
+        # This catches the case where the homography passed validation but produces
+        # garbage on certain pixel inputs.
+        if not (-5.0 <= mx <= COURT_WIDTH_DOUBLES_M + 5.0 and
+                -5.0 <= my <= COURT_LENGTH_M + 5.0):
+            return None
+
         return (float(mx), float(my))
 
     def get_court_bbox_pixels(self) -> Optional[tuple]:
-        """Return (x_min, y_min, x_max, y_max) bounding box of detected court."""
-        if self._last_detection is None:
+        """Return (x_min, y_min, x_max, y_max) bounding box of detected court.
+
+        Prefers the last detection with a VALID homography — falls back to
+        _last_good_detection if the most recent detection had bad/no homography.
+        This prevents bad keypoints from one frame poisoning the player filter
+        on subsequent frames.
+        """
+        det = self._last_detection
+        if det is None or det.homography is None:
+            det = self._last_good_detection
+        if det is None:
             return None
-        kps = self._last_detection.keypoints
+        kps = det.keypoints
         valid = kps[kps[:, 0] >= 0]
         if len(valid) == 0:
             return None
