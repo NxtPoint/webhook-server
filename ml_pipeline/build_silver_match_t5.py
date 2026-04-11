@@ -105,8 +105,11 @@ def _serve_geometric_check(
     if hitter_court_y is None or bounce_court_x is None or bounce_court_y is None:
         return False, "null_coords"
 
-    if ball_player_distance is not None and ball_player_distance > 1.5:
-        return False, "fail_no_dist"
+    # NOTE: We do NOT use ball_player_distance for serve detection.
+    # SportAI's ground-truth distance is measured at the HIT moment (~0.4m).
+    # Our T5 distance is measured at the BOUNCE moment (~12m across the net),
+    # so the SportAI threshold doesn't apply. Param kept for API compatibility.
+    _ = ball_player_distance
 
     HITTER_FAR_MIN = 22.0
     HITTER_FAR_MAX = COURT_LENGTH_M + 6.0   # 29.77
