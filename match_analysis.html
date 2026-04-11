@@ -281,6 +281,42 @@ body {
   padding: 16px; text-align: center; font-size: 0.82rem; color: var(--text-dim);
 }
 
+/* ========== HEATMAPS (MODULE 2) ========== */
+.heatmap-layout {
+  display: grid; grid-template-columns: minmax(320px, 440px) 1fr; gap: 24px;
+  align-items: flex-start;
+}
+.heatmap-court-wrap {
+  display: flex; flex-direction: column; align-items: center;
+}
+.heatmap-court-wrap canvas {
+  width: 100%; max-width: 440px; height: auto;
+  border-radius: 6px;
+}
+.heatmap-legend {
+  display: flex; gap: 18px; margin-top: 10px;
+  font-size: 0.75rem; color: var(--text-sec);
+}
+.heatmap-legend span { display: inline-flex; align-items: center; }
+.hm-dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 6px;
+}
+.heatmap-side-stats {
+  display: flex; flex-direction: column; padding: 8px 4px;
+}
+.hm-stat-big {
+  font-size: 3.2rem; font-weight: 700; line-height: 1; color: var(--green);
+}
+.hm-stat-lbl {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-sec); margin-top: 4px;
+}
+.hm-stat-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.82rem; color: var(--text-sec); margin-top: 4px;
+}
+
 /* Video modal */
 .video-modal {
   display: none; position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.92);
@@ -328,6 +364,9 @@ body {
   .stat-label { width: 100px; font-size: 0.65rem; }
   .compare-val { font-size: 0.72rem; min-width: 38px; }
   .gauge-number { font-size: 2rem; }
+  /* Heatmaps: stack court above stats, shrink the big win % */
+  .heatmap-layout { grid-template-columns: 1fr; gap: 14px; }
+  .hm-stat-big { font-size: 2.4rem; }
   body { overflow: auto; }
 }
 
@@ -1151,7 +1190,13 @@ async function callCoachAnalyze(body) {
 // ====================================================================
 //  MODULE 2: PLACEMENT HEATMAPS (ATP-STYLE)
 // ====================================================================
+// Single big court with a player toggle. Each dot coloured by whether
+// the POINT was won (green) or lost (red) — so you can instantly see
+// which serve placements actually worked vs which ones leaked points.
+// Summary table below the court breaks down by side × direction with win %.
+
 let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all' };
+let heatmapPlayer = 'player_a';  // which player's shots we're showing
 
 function renderHeatmapsModule() {
   const tabs = [
@@ -1186,13 +1231,29 @@ function setHeatmapFilter(key, val) {
   renderHeatmapCourts();
 }
 
+function setHeatmapPlayer(role) {
+  heatmapPlayer = role;
+  document.querySelectorAll('.hp-btn').forEach(b => b.classList.toggle('active', b.dataset.role === role));
+  renderHeatmapCourts();
+}
+
 function renderHeatmapContent() {
   const k = kpi();
   const pa = k.player_a_name || 'Player A';
   const pb = k.player_b_name || 'Player B';
 
-  let togglesHTML = '';
+  // Player toggle (one-and-only dropdown-like switcher at top)
+  const playerToggle = `
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:10px">
+      <span style="font-size:0.62rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px">Player</span>
+      <div class="toggle-group">
+        <button class="toggle-btn hp-btn${heatmapPlayer === 'player_a' ? ' active' : ''}" data-role="player_a" onclick="setHeatmapPlayer('player_a')" style="${heatmapPlayer === 'player_a' ? 'background:'+PA_COLOR+';border-color:'+PA_COLOR : ''}">${pa}</button>
+        <button class="toggle-btn hp-btn${heatmapPlayer === 'player_b' ? ' active' : ''}" data-role="player_b" onclick="setHeatmapPlayer('player_b')" style="${heatmapPlayer === 'player_b' ? 'background:'+PB_COLOR+';border-color:'+PB_COLOR : ''}">${pb}</button>
+      </div>
+    </div>
+  `;
 
+  // Tab-specific toggles
   function toggleSection(label, groupClass, options, currentKey) {
     return `<span style="font-size:0.62rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px">${label}</span>
       <div class="toggle-group">
@@ -1202,74 +1263,64 @@ function renderHeatmapContent() {
       </div>`;
   }
 
+  let togglesHTML = '';
   if (activeTab === 'serve-placement') {
-    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+    togglesHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
       ${toggleSection('Serve', 'serve', [
         {val:'all',label:'All'},{val:'1st',label:'1st'},{val:'2nd',label:'2nd'}
       ], 'serve')}
-      ${toggleSection('Outcome', 'outcome', [
-        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'}
-      ], 'outcome')}
     </div>`;
   } else if (activeTab === 'return-placement') {
-    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
-      ${toggleSection('Outcome', 'outcome', [
-        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'In',label:'In Play'}
-      ], 'outcome')}
-    </div>`;
+    togglesHTML = '';
   } else if (activeTab === 'groundstroke') {
-    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+    togglesHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
       ${toggleSection('Stroke', 'stroke', [
         {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
       ], 'stroke')}
-      ${toggleSection('Outcome', 'outcome', [
-        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'In',label:'In Play'}
-      ], 'outcome')}
     </div>`;
   } else {
-    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+    togglesHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
       ${toggleSection('Depth', 'outcome', [
         {val:'all',label:'All'},{val:'Deep',label:'Deep'},{val:'Middle',label:'Middle'},{val:'Short',label:'Short'}
       ], 'outcome')}
     </div>`;
   }
 
+  // Single large court layout — split into:
+  //   [court canvas] [summary table]
+  // Below: win-rate breakdown table
   const panel = document.getElementById('p-heatmap-content');
-  let courtsHTML = togglesHTML;
+  const html = `
+    ${playerToggle}
+    ${togglesHTML}
 
-  courtsHTML += `<div class="chart-grid">
-    <div class="chart-card" style="display:flex;flex-direction:column;align-items:center">
-      <h3 style="color:${PA_COLOR};align-self:flex-start">${pa}</h3>
-      <canvas id="courtA" width="340" height="440" style="width:100%;max-width:340px"></canvas>
-      <div id="courtStatsA" style="margin-top:8px;font-size:0.75rem;color:var(--text-sec);text-align:center"></div>
+    <div class="chart-card full" style="padding:16px">
+      <div class="heatmap-layout">
+        <div class="heatmap-court-wrap">
+          <canvas id="heatmapCourt" width="420" height="540"></canvas>
+          <div class="heatmap-legend">
+            <span><span class="hm-dot" style="background:rgba(26,92,46,0.85)"></span>Point Won</span>
+            <span><span class="hm-dot" style="background:rgba(220,38,38,0.8)"></span>Point Lost</span>
+          </div>
+        </div>
+        <div class="heatmap-side-stats" id="heatmapSideStats"></div>
+      </div>
     </div>
-    <div class="chart-card" style="display:flex;flex-direction:column;align-items:center">
-      <h3 style="color:${PB_COLOR};align-self:flex-start">${pb}</h3>
-      <canvas id="courtB" width="340" height="440" style="width:100%;max-width:340px"></canvas>
-      <div id="courtStatsB" style="margin-top:8px;font-size:0.75rem;color:var(--text-sec);text-align:center"></div>
+
+    <div class="chart-card full" style="padding:16px">
+      <h3 id="heatmapTableTitle">Placement Summary</h3>
+      <div id="heatmapTable"></div>
     </div>
-  </div>`;
+  `;
 
-  // Legend
-  courtsHTML += `<div style="display:flex;gap:14px;margin-top:8px;font-size:0.68rem;color:var(--text-sec);justify-content:center">
-    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:rgba(26,92,46,0.85);margin-right:4px"></span>Winner / In</span>
-    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:rgba(220,38,38,0.7);margin-right:4px"></span>Error / Out</span>
-    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:rgba(37,99,235,0.6);margin-right:4px"></span>In Play</span>
-  </div>`;
-
-  panel.innerHTML = courtsHTML;
+  panel.innerHTML = html;
   renderHeatmapCourts();
 }
 
 function renderHeatmapCourts() {
-  // Both players always rendered side-by-side
-  const roles = ['player_a', 'player_b'];
-  roles.forEach((role, idx) => {
-    const canvasId = idx === 0 ? 'courtA' : 'courtB';
-    const statsId = idx === 0 ? 'courtStatsA' : 'courtStatsB';
-    const shots = getHeatmapShots(role);
-    drawHeatmapCourt(canvasId, shots, statsId);
-  });
+  const shots = getHeatmapShots(heatmapPlayer);
+  drawHeatmapCourt('heatmapCourt', shots, 'heatmapSideStats');
+  renderHeatmapSummaryTable(shots);
 }
 
 // Read shots from gold.match_shot_placement, filter by tab + toggles
@@ -1282,14 +1333,8 @@ function getHeatmapShots(playerRole) {
     if (heatmapFilter.serve !== 'all') {
       shots = shots.filter(p => p.serve_try_ix_in_point === heatmapFilter.serve);
     }
-    if (heatmapFilter.outcome !== 'all') {
-      shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
-    }
   } else if (activeTab === 'return-placement') {
     shots = shots.filter(p => p.shot_phase_d === 'Return');
-    if (heatmapFilter.outcome !== 'all') {
-      shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
-    }
   } else if (activeTab === 'groundstroke') {
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net'
@@ -1297,11 +1342,8 @@ function getHeatmapShots(playerRole) {
     if (heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
-    if (heatmapFilter.outcome !== 'all') {
-      shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
-    }
   } else {
-    // Rally depth: show bounce locations across all non-serve shots
+    // Rally depth: bounce locations across all non-serve shots
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'
     );
@@ -1313,6 +1355,149 @@ function getHeatmapShots(playerRole) {
   return shots;
 }
 
+// Build win-rate breakdown table. Groups depend on active tab.
+function renderHeatmapSummaryTable(shots) {
+  const host = document.getElementById('heatmapTable');
+  const titleEl = document.getElementById('heatmapTableTitle');
+  if (!host) return;
+
+  // Determine the player_id we're analysing (to know if "point won by this player")
+  const k = kpi();
+  const playerId = heatmapPlayer === 'player_a' ? k.player_a_id : k.player_b_id;
+
+  if (activeTab === 'serve-placement') {
+    titleEl.textContent = 'Serve Placement — Win Rate by Side × Direction';
+    // Group by serve_side_d × serve_bucket_d
+    const groups = {};
+    shots.forEach(s => {
+      const side = s.serve_side_d || 'Unknown';
+      const dir = s.serve_bucket_d || 'Unknown';
+      const key = `${side}|${dir}`;
+      if (!groups[key]) groups[key] = { side, direction: dir, count: 0, won: 0 };
+      groups[key].count++;
+      if (s.point_winner_player_id === playerId) groups[key].won++;
+    });
+    const total = shots.length || 1;
+    const rows = Object.values(groups).map(g => ({
+      ...g,
+      pct: Math.round(100 * g.count / total),
+      winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0,
+    }));
+    // Sort deuce first then by count
+    rows.sort((a, b) => {
+      const aSide = String(a.side).toLowerCase();
+      const bSide = String(b.side).toLowerCase();
+      if (aSide !== bSide) return aSide.startsWith('d') ? -1 : 1;
+      return b.count - a.count;
+    });
+    host.innerHTML = buildPlacementTable(rows, ['Side', 'Direction'], ['side', 'direction']);
+
+  } else if (activeTab === 'return-placement') {
+    titleEl.textContent = 'Return Placement — Win Rate by Depth × Stroke';
+    const groups = {};
+    shots.forEach(s => {
+      const depth = s.depth_d || 'Unknown';
+      const stroke = s.stroke_d || 'Unknown';
+      const key = `${depth}|${stroke}`;
+      if (!groups[key]) groups[key] = { side: depth, direction: stroke, count: 0, won: 0 };
+      groups[key].count++;
+      if (s.point_winner_player_id === playerId) groups[key].won++;
+    });
+    const total = shots.length || 1;
+    const rows = Object.values(groups).map(g => ({
+      ...g,
+      pct: Math.round(100 * g.count / total),
+      winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0,
+    }));
+    rows.sort((a, b) => b.count - a.count);
+    host.innerHTML = buildPlacementTable(rows, ['Depth', 'Stroke'], ['side', 'direction']);
+
+  } else if (activeTab === 'groundstroke') {
+    titleEl.textContent = 'Groundstroke Placement — Win Rate by Stroke × Depth';
+    const groups = {};
+    shots.forEach(s => {
+      const stroke = s.stroke_d || 'Unknown';
+      const depth = s.depth_d || 'Unknown';
+      const key = `${stroke}|${depth}`;
+      if (!groups[key]) groups[key] = { side: stroke, direction: depth, count: 0, won: 0 };
+      groups[key].count++;
+      if (s.point_winner_player_id === playerId) groups[key].won++;
+    });
+    const total = shots.length || 1;
+    const rows = Object.values(groups).map(g => ({
+      ...g,
+      pct: Math.round(100 * g.count / total),
+      winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0,
+    }));
+    rows.sort((a, b) => b.count - a.count);
+    host.innerHTML = buildPlacementTable(rows, ['Stroke', 'Depth'], ['side', 'direction']);
+
+  } else {
+    // Rally depth: just group by depth
+    titleEl.textContent = 'Rally Depth — Win Rate by Depth';
+    const groups = {};
+    shots.forEach(s => {
+      const depth = s.depth_d || 'Unknown';
+      if (!groups[depth]) groups[depth] = { side: depth, direction: '—', count: 0, won: 0 };
+      groups[depth].count++;
+      if (s.point_winner_player_id === playerId) groups[depth].won++;
+    });
+    const total = shots.length || 1;
+    const order = ['Deep', 'Middle', 'Short'];
+    const rows = order.map(d => groups[d]).filter(Boolean).map(g => ({
+      ...g,
+      pct: Math.round(100 * g.count / total),
+      winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0,
+    }));
+    host.innerHTML = buildPlacementTable(rows, ['Depth', ''], ['side', 'direction']);
+  }
+}
+
+// Render placement table — shared between serve/return/groundstroke/depth tabs
+function buildPlacementTable(rows, colLabels, colKeys) {
+  if (!rows.length) return '<div style="text-align:center;color:var(--text-dim);font-size:0.8rem;padding:20px">No data for current filter</div>';
+  const totalCount = rows.reduce((s, r) => s + r.count, 0);
+  const totalWon = rows.reduce((s, r) => s + r.won, 0);
+  const overallWinPct = totalCount > 0 ? Math.round(100 * totalWon / totalCount) : 0;
+
+  return `<table class="strategy-table" style="font-size:0.82rem">
+    <thead><tr>
+      <th>${colLabels[0]}</th>
+      ${colLabels[1] ? `<th>${colLabels[1]}</th>` : ''}
+      <th style="text-align:right">Count</th>
+      <th style="text-align:right">% of Total</th>
+      <th style="width:140px">Distribution</th>
+      <th style="text-align:right">Points Won</th>
+      <th style="text-align:right">Win %</th>
+    </tr></thead>
+    <tbody>${rows.map(r => {
+      const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+      const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
+      return `<tr${highlight}>
+        <td>${r[colKeys[0]]}</td>
+        ${colLabels[1] ? `<td style="font-weight:600">${r[colKeys[1]]}</td>` : ''}
+        <td style="text-align:right">${r.count}</td>
+        <td style="text-align:right">${r.pct}%</td>
+        <td class="bar-cell" style="position:relative">
+          <div class="bar-bg" style="width:${r.pct}%;background:var(--green);opacity:0.25;height:10px"></div>
+        </td>
+        <td style="text-align:right">${r.won} / ${r.count}</td>
+        <td style="text-align:right;font-weight:700;color:${winColor}">${r.winPct}%</td>
+      </tr>`;
+    }).join('')}
+    <tr style="border-top:2px solid var(--border);font-weight:700">
+      <td>Total</td>
+      ${colLabels[1] ? '<td></td>' : ''}
+      <td style="text-align:right">${totalCount}</td>
+      <td style="text-align:right">100%</td>
+      <td></td>
+      <td style="text-align:right">${totalWon} / ${totalCount}</td>
+      <td style="text-align:right;color:var(--green)">${overallWinPct}%</td>
+    </tr>
+    </tbody>
+  </table>`;
+}
+
 function drawHeatmapCourt(canvasId, shots, statsId) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
@@ -1320,7 +1505,7 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const W = canvas.width, H = canvas.height;
 
   const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SVC_LINE = 6.40, NET_Y = COURT_L / 2;
-  const PAD = 30;
+  const PAD = 32;
   const CW = W - PAD * 2, CH = H - PAD * 2;
 
   function cx(courtX) { return PAD + (courtX / COURT_W) * CW; }
@@ -1332,11 +1517,12 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   ctx.fillStyle = '#2d6a4f';
   ctx.fillRect(PAD, PAD, CW, CH);
 
-  // Lines
+  // Outer boundary
   ctx.strokeStyle = 'rgba(255,255,255,0.9)';
   ctx.lineWidth = 2;
   ctx.strokeRect(PAD, PAD, CW, CH);
 
+  // Singles sidelines
   const singleLeft = (COURT_W - SINGLES_W) / 2;
   const singleRight = singleLeft + SINGLES_W;
   ctx.beginPath();
@@ -1345,7 +1531,7 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   ctx.stroke();
 
   // Net
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
   ctx.lineWidth = 3;
   ctx.setLineDash([6, 4]);
   ctx.beginPath();
@@ -1376,8 +1562,12 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   ctx.moveTo(cx(mid), PAD + CH); ctx.lineTo(cx(mid), PAD + CH - 8);
   ctx.stroke();
 
-  // Plot shots
-  let winnersCount = 0, errorsCount = 0, inPlayCount = 0;
+  // Determine whose shots we're rendering (to compare to point winner)
+  const k = kpi();
+  const ownerId = heatmapPlayer === 'player_a' ? k.player_a_id : k.player_b_id;
+
+  // Plot shots — green = point won by this player, red = point lost
+  let wonCount = 0, lostCount = 0, unknownCount = 0;
 
   shots.forEach(s => {
     // Use bounce coords if available, else hit coords (normalized or raw)
@@ -1385,31 +1575,59 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     let by = s.ball_bounce_y_norm ?? s.ball_hit_y_norm ?? s.court_y ?? s.ball_hit_location_y;
     if (bx == null || by == null) return;
 
-    // Clamp to court
     bx = Math.max(0, Math.min(COURT_W, bx));
     by = Math.max(0, Math.min(COURT_L, by));
-
     const px = cx(bx), py = cy(by);
-    let colour;
-    if (s.shot_outcome_d === 'Winner') { colour = 'rgba(26,92,46,0.85)'; winnersCount++; }
-    else if (s.shot_outcome_d === 'Error') { colour = 'rgba(220,38,38,0.7)'; errorsCount++; }
-    else { colour = 'rgba(37,99,235,0.6)'; inPlayCount++; }
 
+    let colour, won = null;
+    if (s.point_winner_player_id === ownerId) {
+      colour = 'rgba(26,92,46,0.85)';  // green — point won
+      won = true;
+      wonCount++;
+    } else if (s.point_winner_player_id) {
+      colour = 'rgba(220,38,38,0.8)';  // red — point lost
+      won = false;
+      lostCount++;
+    } else {
+      colour = 'rgba(180,180,180,0.55)'; // grey — unknown outcome
+      unknownCount++;
+    }
+
+    // Outer glow for visibility on dark court
+    ctx.beginPath();
+    ctx.arc(px, py, 7, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.fill();
+
+    // Main dot
     ctx.beginPath();
     ctx.arc(px, py, 5, 0, Math.PI * 2);
     ctx.fillStyle = colour;
     ctx.fill();
-    ctx.globalAlpha = 1;
   });
 
-  // Stats
+  // Side stats panel — single big win % + counts
   const statsEl = document.getElementById(statsId);
   if (statsEl) {
-    const total = winnersCount + errorsCount + inPlayCount;
-    statsEl.innerHTML = `<strong>${total}</strong> shots &mdash;
-      <span style="color:var(--green)">${winnersCount} winners</span>,
-      <span style="color:var(--red)">${errorsCount} errors</span>,
-      <span style="color:var(--blue)">${inPlayCount} in play</span>`;
+    const total = wonCount + lostCount;
+    const winPct = total > 0 ? Math.round(100 * wonCount / total) : 0;
+    const winColour = winPct >= 60 ? 'var(--green)' : winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+    statsEl.innerHTML = `
+      <div class="hm-stat-big" style="color:${winColour}">${winPct}%</div>
+      <div class="hm-stat-lbl">Win rate on current filter</div>
+      <div class="hm-stat-row" style="margin-top:14px">
+        <span class="hm-dot" style="background:rgba(26,92,46,0.85)"></span>
+        <strong>${wonCount}</strong>&nbsp;points won
+      </div>
+      <div class="hm-stat-row">
+        <span class="hm-dot" style="background:rgba(220,38,38,0.8)"></span>
+        <strong>${lostCount}</strong>&nbsp;points lost
+      </div>
+      ${unknownCount ? `<div class="hm-stat-row"><span class="hm-dot" style="background:rgba(180,180,180,0.55)"></span><strong>${unknownCount}</strong>&nbsp;no outcome</div>` : ''}
+      <div class="hm-stat-row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <strong style="color:var(--text)">${total + unknownCount}</strong>&nbsp;shots total
+      </div>
+    `;
   }
 }
 
