@@ -1,0 +1,4 @@
+{
+  "_comment": "Golden datasets for regression testing. Use 'python -m ml_pipeline.harness golden-snapshot <task_id> --name <name>' to add new entries. Use 'golden-check <name>' to validate against a snapshot.",
+  "goldens": []
+}
