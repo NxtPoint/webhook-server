@@ -110,6 +110,10 @@ def _create_jobs_table(conn):
         "ALTER TABLE ml_analysis.video_analysis_jobs "
         "ADD COLUMN IF NOT EXISTS bronze_s3_key TEXT"
     ))
+    conn.execute(sql_text(
+        "ALTER TABLE ml_analysis.video_analysis_jobs "
+        "ADD COLUMN IF NOT EXISTS submitted_region TEXT"
+    ))
 
 
 def _create_ball_detections_table(conn):

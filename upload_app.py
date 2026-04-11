@@ -138,7 +138,22 @@ def _require_s3():
 # ---------- T5 ML Pipeline (AWS Batch) ----------
 BATCH_JOB_QUEUE = os.getenv("BATCH_JOB_QUEUE", "ten-fifty5-ml-queue")
 BATCH_JOB_DEF = os.getenv("BATCH_JOB_DEF", "ten-fifty5-ml-pipeline")
-BATCH_REGION = os.getenv("BATCH_REGION", "") or AWS_REGION  # override when Batch is in a different region than S3
+BATCH_REGION = os.getenv("BATCH_REGION", "") or AWS_REGION  # primary Batch region
+
+# Region failover priority for T5 Batch submission.
+# Override via BATCH_REGIONS_PRIORITY env var (comma-separated, e.g. "eu-north-1,us-east-1").
+# Default: primary BATCH_REGION first, then us-east-1 as fallback.
+def _resolve_batch_regions_priority() -> list:
+    raw = os.getenv("BATCH_REGIONS_PRIORITY", "").strip()
+    if raw:
+        return [r.strip() for r in raw.split(",") if r.strip()]
+    fallbacks = []
+    if BATCH_REGION:
+        fallbacks.append(BATCH_REGION)
+    if "us-east-1" not in fallbacks:
+        fallbacks.append("us-east-1")
+    return fallbacks
+BATCH_REGIONS_PRIORITY = _resolve_batch_regions_priority()
 T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
 
 # ---------- Ingest worker service ----------
@@ -944,37 +959,56 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
             ON CONFLICT (job_id) DO NOTHING
         """), {"job_id": job_id, "s3_key": s3_key})
 
-    # 3. Submit AWS Batch job
+    # 3. Submit AWS Batch job — try regions in priority order (eu-north-1 first by default)
     is_practice = sport_type in {"serve_practice", "rally_practice"}
     cmd = ["--job-id", job_id, "--s3-key", s3_key]
     if is_practice:
         cmd.append("--practice")
 
-    batch = boto3.client("batch", region_name=BATCH_REGION)
-    resp = batch.submit_job(
-        jobName=f"t5-{sport_type[:5]}-{job_id[:8]}",
-        jobQueue=BATCH_JOB_QUEUE,
-        jobDefinition=BATCH_JOB_DEF,
-        containerOverrides={"command": cmd},
-        tags={
-            "Project": "TEN-FIFTY5",
-            "Environment": "production",
-            "JobId": job_id,
-            "SportType": sport_type,
-        },
-    )
-    batch_job_id = resp["jobId"]
+    batch_job_id = None
+    used_region = None
+    last_error = None
+    for region in BATCH_REGIONS_PRIORITY:
+        try:
+            batch = boto3.client("batch", region_name=region)
+            resp = batch.submit_job(
+                jobName=f"t5-{sport_type[:5]}-{job_id[:8]}",
+                jobQueue=BATCH_JOB_QUEUE,
+                jobDefinition=BATCH_JOB_DEF,
+                containerOverrides={"command": cmd},
+                tags={
+                    "Project": "TEN-FIFTY5",
+                    "Environment": "production",
+                    "JobId": job_id,
+                    "SportType": sport_type,
+                },
+            )
+            batch_job_id = resp["jobId"]
+            used_region = region
+            app.logger.info("T5 SUBMIT region=%s OK job_id=%s batch_job_id=%s",
+                             region, job_id, batch_job_id)
+            break
+        except Exception as e:
+            last_error = e
+            app.logger.warning("T5 SUBMIT region=%s FAILED job_id=%s err=%s — trying next region",
+                                region, job_id, e)
+            continue
 
-    # 4. Store Batch job ID
+    if batch_job_id is None:
+        raise RuntimeError(
+            f"T5 SUBMIT failed across all regions {BATCH_REGIONS_PRIORITY}: {last_error}"
+        )
+
+    # 4. Store Batch job ID + region
     with engine.begin() as conn:
         conn.execute(sql_text("""
             UPDATE ml_analysis.video_analysis_jobs
-            SET batch_job_id = :bid, updated_at = now()
+            SET batch_job_id = :bid, submitted_region = :region, updated_at = now()
             WHERE job_id = :jid
-        """), {"jid": job_id, "bid": batch_job_id})
+        """), {"jid": job_id, "bid": batch_job_id, "region": used_region})
 
-    app.logger.info("T5 SUBMIT job_id=%s batch_job_id=%s s3_key=%s sport_type=%s",
-                     job_id, batch_job_id, s3_key, sport_type)
+    app.logger.info("T5 SUBMIT job_id=%s batch_job_id=%s region=%s s3_key=%s sport_type=%s",
+                     job_id, batch_job_id, used_region, s3_key, sport_type)
     return job_id
 
 
@@ -1011,10 +1045,10 @@ def _t5_status(task_id: str) -> dict:
 
 
 def _t5_cancel(task_id: str) -> dict:
-    """Cancel a T5 AWS Batch job."""
+    """Cancel a T5 AWS Batch job — checks the region the job was actually submitted to."""
     with engine.connect() as conn:
         row = conn.execute(sql_text("""
-            SELECT job_id, batch_job_id FROM ml_analysis.video_analysis_jobs
+            SELECT job_id, batch_job_id, submitted_region FROM ml_analysis.video_analysis_jobs
             WHERE job_id = :jid OR task_id = :jid
             ORDER BY created_at DESC LIMIT 1
         """), {"jid": task_id}).mappings().first()
@@ -1023,10 +1057,12 @@ def _t5_cancel(task_id: str) -> dict:
         raise RuntimeError(f"T5 job not found for task_id={task_id}")
 
     batch_job_id = row.get("batch_job_id")
+    # Use the region the job was submitted to, fall back to first priority region
+    region = row.get("submitted_region") or (BATCH_REGIONS_PRIORITY[0] if BATCH_REGIONS_PRIORITY else BATCH_REGION)
     if batch_job_id:
-        batch = boto3.client("batch", region_name=BATCH_REGION)
+        batch = boto3.client("batch", region_name=region)
         batch.terminate_job(jobId=batch_job_id, reason="Cancelled by user")
-        app.logger.info("T5 CANCEL batch_job_id=%s task_id=%s", batch_job_id, task_id)
+        app.logger.info("T5 CANCEL batch_job_id=%s task_id=%s region=%s", batch_job_id, task_id, region)
 
     with engine.begin() as conn:
         conn.execute(sql_text("""

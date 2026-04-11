@@ -224,13 +224,8 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                            ExtraArgs={"ContentType": "video/mp4"})
             logger.info(f"Uploaded trimmed: s3://{s3_bucket}/{trimmed_key}")
 
-            # Update job row with trimmed key
-            with engine.begin() as conn:
-                conn.execute(sql_text("""
-                    UPDATE ml_analysis.video_analysis_jobs
-                    SET compute_env = :tkey, updated_at = now()
-                    WHERE job_id = :jid
-                """), {"jid": job_id, "tkey": trimmed_key})
+            # (trimmed key is recorded in submission_context below — no need to
+            # duplicate it on video_analysis_jobs)
 
             # Also update submission_context so Locker Room can find the footage
             with engine.begin() as conn:
