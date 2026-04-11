@@ -64,44 +64,6 @@ On upload completion, the system follows this flow:
 
 Key design: the ingest worker is self-contained — it does NOT import `upload_app.py`. It calls `ingest_bronze_strict()` directly from `ingest_bronze.py` (function call, not HTTP). Worker timeout is 3600s vs main app 1800s.
 
-### T5 Pipeline (Serve Practice / Rally Practice)
-
-Parallel analysis path for practice sessions, using the in-house T5 ML pipeline instead of SportAI. The routing is based on `gameType` sent from the Media Room frontend.
-
-**Game type → pipeline routing:**
-
-| Game Type | `sport_type` (DB) | Pipeline | Billing |
-|---|---|---|---|
-| Singles | `tennis_singles` | SportAI | 1 credit |
-| Serve Practice | `serve_practice` | T5 (AWS Batch GPU) | Free |
-| Rally Practice | `rally_practice` | T5 (AWS Batch GPU) | Free |
-| Technique | TBD | TBD | TBD |
-| Doubles | TBD | TBD | TBD |
-
-**T5 flow** (same UX as SportAI, different backend):
-1. **Media Room** user selects "Serve Practice" or "Rally Practice", uploads video to S3 (same `wix-uploads/` prefix)
-2. `POST /api/submit_s3_task` with `gameType: "serve"` → `_t5_submit()` creates `ml_analysis.video_analysis_jobs` row + submits AWS Batch job
-3. `GET /upload/api/task-status` detects `sport_type` in `T5_SPORT_TYPES` → `_t5_status()` polls `ml_analysis.video_analysis_jobs` (DB query, not external API)
-4. Batch job completes → `_t5_status` returns `status=completed` + sentinel `result_url=t5://complete/{id}`
-5. Auto-ingest detects sentinel URL → `_do_ingest_t5()` runs lightweight ingest: mark started, skip bronze/silver/billing/trim, trigger PBI refresh, mark done
-6. Frontend shows completion
-
-**Key differences from SportAI path:**
-- Submit: `_t5_submit()` → AWS Batch (vs `_sportai_submit()` → external API)
-- Status poll: DB query on `ml_analysis.video_analysis_jobs` (vs SportAI HTTP call)
-- Cancel: `_t5_cancel()` → terminates Batch job (vs `_sportai_cancel()` → external API)
-- Ingest: `_do_ingest_t5()` — lightweight, skips bronze/silver/billing/trim (data already in `ml_analysis.*`)
-- Billing: no credit consumed for practice sessions
-- Result URL resolution: `_resolve_result_url_for_task()` checks `sport_type` and uses `_t5_status()` for practice jobs (not SportAI)
-
-**Cancel / unhappy path routing**: the cancel endpoint (`/upload/api/cancel-task`) and `_resolve_result_url_for_task()` both check `sport_type in T5_SPORT_TYPES` before deciding whether to call SportAI or T5 functions. All new endpoints that interact with analysis jobs must do the same check.
-
-**Required env vars** (for T5 routing in upload_app.py): `BATCH_JOB_QUEUE` (default: `ten-fifty5-ml-queue`), `BATCH_JOB_DEF` (default: `ten-fifty5-ml-pipeline`)
-
-**`sport_type` field**: stored on `bronze.submission_context.sport_type`. Determines which pipeline path is used for status polling and ingest. The `T5_SPORT_TYPES` set in `upload_app.py` controls routing.
-
-**Strategic note**: serve + rally practice are designed so that combining them produces match-level analysis — if SportAI becomes unavailable, only the orchestration layer needs to change.
-
 ### Data Layers (PostgreSQL)
 
 - **Bronze** (`bronze.*`): Raw SportAI JSON ingested verbatim. `db_init.py` owns schema creation (idempotent, called on boot). Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
@@ -561,88 +523,24 @@ New features **must live in their own subdirectory** (not loose files in the rep
 
 **iOS iframe CSS rules**: All pages run inside a nested iframe (Wix → portal → page). On iOS Safari, `100vh` refers to the outer viewport, not the iframe. Portal uses `height: 100%` (not `vh`). All inner pages use `viewport-fit=cover` meta tag, `padding-bottom: 300px` on mobile, and no `min-height: 100vh` on body. Autofill inputs use `-webkit-box-shadow` override to replace browser blue with `var(--bg)`.
 
-### ML Pipeline (`ml_pipeline/`)
+### T5 ML Pipeline (`ml_pipeline/`) — Singles Match + Practice Analysis
 
-ML inference pipeline for tennis video analysis. Supports both local dev mode and AWS Batch production mode (S3 input → GPU processing → PostgreSQL + S3 output).
+In-house ML pipeline for tennis video analysis. Runs on AWS Batch GPU (Spot G4dn.xlarge). Same pipeline handles three sport types — `tennis_singles_t5` (match analysis), `serve_practice`, `rally_practice`.
 
-**Run:**
-```bash
-pip install -r ml_pipeline/requirements.txt
-python -m ml_pipeline <video_path>                          # local mode
-python -m ml_pipeline <video_path> --practice               # practice mode (10fps, faster)
-python -m ml_pipeline --job-id <job_id> --s3-key <s3_key> --practice  # AWS Batch practice mode
-python -m ml_pipeline.test_pipeline                         # unit test
-bash ml_pipeline/deploy_aws.sh                              # deploy infra
-bash ml_pipeline/test_e2e.sh <video_path>                   # e2e test
-```
+**Game type → pipeline routing** (`upload_app.py`):
 
-**Docker build & deploy** (from repo root):
-```bash
-docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
-# Push to both ECR regions:
-ACCOUNT=696793787014
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
-docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-docker push $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-# Repeat for eu-north-1
-```
-Base image: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. PyTorch installed from `--extra-index-url https://download.pytorch.org/whl/cu121` to use system CUDA. `.dockerignore` excludes `.venv/`, `.git/`, etc. Model weights (`ml_pipeline/models/`, ~135MB, git-ignored) must be present on disk at build time. Dockerfile ENTRYPOINT is `python -m ml_pipeline` — job definition command should be **args only** (`--job-id`, `--s3-key`, `--practice`), not the full python command.
+| Game Type (frontend) | `sport_type` (DB) | Pipeline | Builds | Billing |
+|---|---|---|---|---|
+| Singles | `tennis_singles` | SportAI | `silver.point_detail` (model='sportai') | 1 credit |
+| Singles (T5) | `tennis_singles_t5` | T5 (Batch GPU) | `silver.point_detail` (model='t5') | Free (dev) |
+| Serve Practice | `serve_practice` | T5 (Batch GPU) | `silver.practice_detail` | Free |
+| Rally Practice | `rally_practice` | T5 (Batch GPU) | `silver.practice_detail` | Free |
 
-**Architecture:** `config.py` (tunable params) → `video_preprocessor.py` (OpenCV frames) → `court_detector.py` (14 keypoints → homography) → `ball_tracker.py` (TrackNet V2, FP16 on GPU) → `player_tracker.py` (YOLOv8-pose, 17 body keypoints) → `pipeline.py` (orchestrator) → `heatmaps.py` (matplotlib) → `db_writer.py` (PostgreSQL) → `api.py` (Flask blueprint).
+**Frontend gate**: All T5 game types are dev-only (`tomo.stojakovic@gmail.com`) — controlled in `media_room.html`.
 
-**Practice mode optimisations** (`--practice` flag):
-- Frame sampling: 10fps (vs 25fps match) — 2.5x fewer frames
-- TrackNet inference: FP16 half-precision on CUDA (~1.5x speedup)
-- YOLO player detection: every 10 frames (vs 5 for match)
-- Court detection: every 60 frames (vs 30 for match)
-- Player detections saved: only at ball-detection frames (~2K rows vs ~38K)
-- Video output: compressed 720p CRF 28 ultrafast (vs full resolution)
-- **Result: ~20 min total for a 32-min video at ~$0.06/video on Spot**
+#### Architecture: two bronze sources, one silver
 
-**AWS Batch Infrastructure:**
-- **Primary: us-east-1** (GPU Spot + On-Demand quota approved). Render env: `BATCH_REGION=us-east-1`
-- **Secondary: eu-north-1** (GPU Spot approved, On-Demand pending). Infrastructure ready (ECR, Batch compute, queue, job def). Switch to primary when On-Demand approved: change `BATCH_REGION=eu-north-1` on Render.
-- us-east-1 has: ECR, Batch compute (`ten-fifty5-ml-compute`, Spot G4dn.xlarge+G4dn.2xlarge, 0–4 vCPUs, **bid 100%**), Batch compute (`ten-fifty5-ml-ondemand`, On-Demand G4dn.xlarge, disabled by default — enable as fallback when Spot is unavailable), Batch queue (`ten-fifty5-ml-queue`), Batch job def (`ten-fifty5-ml-pipeline`), CloudWatch logs (`/aws/batch/ten-fifty5-ml-pipeline`, 30-day retention)
-- IAM roles (global): `ten-fifty5-ml-instance-role`, `ten-fifty5-ml-job-role` (S3 + CloudWatch), `aws-ec2-spot-fleet-tagging-role`
-- All tagged `Project=TEN-FIFTY5`
-- **Spot reclaim risk**: Spot instances can be reclaimed mid-job. Bid is at 100% to minimise this. If reclaimed, resubmit from Media Room. Enable on-demand fallback for guaranteed capacity: `aws batch update-compute-environment --compute-environment ten-fifty5-ml-ondemand --state ENABLED` + update queue order.
-
-**Batch job post-processing** (`__main__.py`): after ML pipeline completes:
-1. Save ball detections, player detections (filtered in practice mode), match analytics to DB
-2. Generate + upload heatmaps to `analysis/{job_id}/` in S3
-3. Compress video to 720p CRF 28 ultrafast → upload to `trimmed/{job_id}/practice.mp4`
-4. Update `bronze.submission_context.trim_output_s3_key` + `trim_status='completed'`
-5. Delete raw source from S3 (storage cleanup)
-6. Record estimated cost (`G4dn.xlarge Spot ≈ $0.18/hr`)
-All post-processing steps are non-fatal — ML results are saved even if transcode fails.
-
-**Progress reporting**: smooth 10→80% during ML (per 100 frames), then 82% saving → 88% heatmaps → 92% transcode → 100% complete. Never goes backwards.
-
-**`deploy_aws.sh` on Windows/Git Bash**: paths starting with `/` get mangled by MSYS2. Prefix commands with `MSYS_NO_PATHCONV=1` or run the Batch/CloudWatch steps manually.
-
-**Database Schema** (`ml_analysis.*`, managed by `db_schema.py`):
-- `video_analysis_jobs` — job tracking: status, progress, batch IDs, video metadata, heatmap S3 keys, cost
-- `ball_detections` — per-frame ball position (x, y, court_x, court_y, speed_kmh, is_bounce, is_in)
-- `player_detections` — per-frame player bounding boxes + court positions + **keypoints JSONB** (17 COCO body keypoints from YOLOv8-pose: nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles)
-- `match_analytics` — aggregate stats: bounce counts, speeds, rally counts, serve %
-
-**Bronze data quality** (as of 2026-04-10):
-- **Court coords, speed, is_in: FIXED and populating.** Root cause was: the final court detection frame had degenerate keypoints → `findHomography` returned None → `_last_detection.homography` was None during post-processing → all 964 coord transforms failed. Fix: `court_detector.py` now tracks `_last_good_detection` (most recent with valid homography) and falls back to it in `to_court_coords()`.
-- **Pose keypoints: populating.** YOLOv8-pose produces 17 body keypoints per player per frame, stored as JSONB in `player_detections.keypoints`. Used for stroke inference (wrist position vs center).
-- **Silver builder resilience**: falls back to pixel-to-court estimation when bronze court coords are missing (older jobs). New jobs have real court coords.
-- `compute_speeds` uses correct `target_fps` (10fps for practice, was hardcoded to 25fps).
-- Player position JOIN uses nearest frame (was exact match, NULL for most rows in practice mode).
-- **Speed coordinate fix (2026-04-10)**: `to_court_coords()` was mapping reference keypoint width (doubles sidelines) to `COURT_WIDTH_SINGLES_M` (8.23m) instead of `COURT_WIDTH_DOUBLES_M` (10.97m), compressing all X-axis distances by 0.75x. Fixed to use doubles width. Speeds may still need further investigation — this fix corrects X-axis but user reports speeds ~50% low (X compression alone explains ~12-25% depending on shot angle).
-
-**API Endpoints** (OPS_KEY auth): `GET /api/analysis/jobs/<job_id>`, `GET /api/analysis/results/<match_id>`, `GET /api/analysis/heatmap/<job_id>/<type>`, `POST /api/analysis/retry/<job_id>`.
-
-**Models:** TrackNet V2 (`tracknet_v2.pt`, 41MB), YOLOv8m-pose (`yolov8m-pose.pt`, 53MB — 17 body keypoints + bounding box), YOLOv8m (`yolov8m.pt`, 50MB — detection-only fallback), Court detector (`court_keypoints.pth`, 41MB). All pre-trained, no training required. See `config.py` for download sources. Player tracker auto-selects pose model if available, falls back to detection-only.
-
-### T5 Singles Match Flow (Live — SportAI A/B Testing)
-
-**Goal**: Run the same T5 ML pipeline on singles match footage, producing data in `silver.point_detail` that can be compared side-by-side with SportAI output. Eventually replace SportAI entirely.
-
-**Architecture**: Two bronze sources, one silver table. The `model` column on `silver.point_detail` distinguishes `'sportai'` vs `'t5'` rows. Both models produce the same 18 base fields; the same derivation logic (passes 3-5 of `build_silver_v2.py`) computes all derived columns.
+The strategic goal is to enable side-by-side A/B comparison between SportAI and T5 on `silver.point_detail`. The `model` column distinguishes rows. Both pipelines produce the same 18 base fields; the same Pass 3-5 derivation logic computes all derived columns.
 
 ```
 SportAI JSON ──→ bronze.player_swing ──┐
@@ -658,16 +556,16 @@ T5 ML Pipeline ──→ ml_analysis.* ──────┤
                                         │      Passes 3-5: SAME shared derivation
 ```
 
-**The 18 bronze base fields** (the "contract" both models must produce):
+**The 18 bronze base fields** (the contract both models must produce):
 
-| # | Field | SportAI Source | T5 Inference |
+| # | Field | SportAI source | T5 inference |
 |---|---|---|---|
 | 1 | `id` | player_swing.id | Sequential integer |
 | 2 | `task_id` | player_swing.task_id | job_id |
 | 3 | `player_id` | player_swing.player_id | Ball direction (opposite side from bounce) |
 | 4 | `valid` | player_swing.valid | Always TRUE |
-| 5 | `serve` | player_swing.serve | Gap >5s + service box geometry |
-| 6 | `swing_type` | player_swing.swing_type | Pose keypoints (fh/bh/overhead/other) |
+| 5 | `serve` | player_swing.serve | Geometric (hitter at baseline + bounce on opposite side) + 8s cooldown |
+| 6 | `swing_type` | player_swing.swing_type | Pose keypoints (fh/bh), 'overhead' for serves |
 | 7 | `volley` | player_swing.volley | Player within 4m of net |
 | 8 | `is_in_rally` | player_swing.is_in_rally | Always TRUE |
 | 9 | `ball_player_distance` | player_swing.ball_player_distance | Computed from positions |
@@ -681,57 +579,152 @@ T5 ML Pipeline ──→ ml_analysis.* ──────┤
 | 17 | `court_x` | ball_bounce.court_x | Ball bounce position |
 | 18 | `court_y` | ball_bounce.court_y | Ball bounce position |
 
-**T5 match builder**: `ml_pipeline/build_silver_match_t5.py`. Calls `build_silver_v2.pass3_point_context()`, `pass4_zones_and_normalize()`, `pass5_analytics()` directly — same derivation code as SportAI.
+**T5 silver builders**:
+- `ml_pipeline/build_silver_match_t5.py` — for `tennis_singles_t5`. Calls `build_silver_v2.pass3_point_context()`, `pass4_zones_and_normalize()`, `pass5_analytics()` directly.
+- `ml_pipeline/build_silver_practice.py` — for serve/rally practice. Writes to `silver.practice_detail` (3-pass: extract bounces → sequence detection → analytics).
 
-**T5 inference methods** (MVP1 — will improve with iteration):
-- **Player assignment**: bounce on near half → hitter was far player (and vice versa). Players identified from `player_detections` by median court_y.
-- **Serve detection**: gap >5s from previous bounce + bounce lands in service box. First bounce in match is also a serve candidate.
-- **Swing type**: pose keypoints (wrist position vs center for fh/bh), overhead for serves. Falls back to ball-side heuristic.
-- **Volley**: player court_y within 4m of net at nearest detection.
+#### T5 flow (same UX as SportAI, different backend)
 
-**What needs TRAINING (future, for quality improvement):**
-- Shot sub-classification (topspin vs flat vs slice) — needs labelled clips
-- Winner vs forced error vs unforced error — needs point outcome labelling
-- Shot quality scoring (1-10) — needs annotated dataset with quality labels
+1. **Media Room** uploads video to S3
+2. `POST /api/submit_s3_task` → `_t5_submit()` creates `ml_analysis.video_analysis_jobs` row + submits AWS Batch job
+3. **Region failover**: `_t5_submit()` tries `BATCH_REGIONS_PRIORITY` in order (default: `eu-north-1` first, `us-east-1` fallback). The actual region is stored on `submitted_region` column.
+4. `GET /upload/api/task-status` polls `ml_analysis.video_analysis_jobs` via `_t5_status()`
+5. Batch job completes → status returns `t5://complete/{id}` sentinel
+6. Auto-ingest detects sentinel → `_do_ingest_t5()`:
+   - Downloads gzipped JSON from S3 via `bronze_ingest_t5.py` (psycopg COPY bulk insert, same region as DB = fast)
+   - Builds silver via `build_silver_match_t5` or `build_silver_practice`
+   - Triggers video trim
+   - **Self-healing**: only sets `session_id` if silver build succeeds, so failed ingests retry on next task-status poll
+7. Customer notification email sent (same as SportAI, idempotent via `ses_notified_at`)
 
-**Frontend**: "Singles (T5)" card in Media Room (dev-only: `tomo.stojakovic@gmail.com`). Routes to T5 Batch pipeline in match mode (25fps).
+**Cancel routing**: `_t5_cancel()` reads `submitted_region` from `ml_analysis.video_analysis_jobs` to terminate the Batch job in the correct region.
 
-### Practice Analytics Dashboard (`practice.html`)
+#### Pipeline architecture (`ml_pipeline/`)
 
-Full PBI-style analytics dashboard for practice sessions. Uses **Apache ECharts** for all visualisations (not Chart.js). Design inspired by ATP Insights dashboard.
+`config.py` (tunable params) → `video_preprocessor.py` (OpenCV frames) → `court_detector.py` (14 keypoints → homography) → `ball_tracker.py` (TrackNet V2) → `player_tracker.py` (YOLOv8x-pose) → `pipeline.py` (orchestrator) → `bronze_export.py` (gzip JSON to S3) → `heatmaps.py` → video transcode
 
-**Route**: `GET /practice` (served by `locker_room_app.py` + same-origin backup on `upload_app.py`)
+**Bronze data delivery (S3 gzip JSON, not direct DB writes)**:
+- Batch container builds a single gzipped JSON via `bronze_export.py`, uploads to `s3://{bucket}/analysis/{job_id}/bronze.json.gz`
+- Render-side `bronze_ingest_t5.py` downloads + bulk-inserts via psycopg `COPY` (same region as DB)
+- This eliminates the previous cross-region write bottleneck (was 22 min for 13K rows; now ~10s)
+- Player detections filtered to ±5 frames around each bounce to keep payload small
+- Keypoints stored as flat array `[x,y,c,x,y,c,...]` for compactness
 
-**Layout**: Left sidebar (session list) + main area with sticky toolbar + tab strip. Fully responsive — stacks vertically on mobile with wrapping tabs.
+**Court detector** (`court_detector.py`):
+- 14 keypoints → homography via `findHomography(RANSAC)`
+- Validation: requires ≥4 inliers, |H[0][0]| and |H[1][1]| < 20, inlier reprojection error < 15px
+- `_last_good_detection` fallback: when current frame fails validation, falls back to most recent valid homography
+- `to_court_coords()` clamps outputs to [-5, COURT_WIDTH_DOUBLES_M+5] x [-5, COURT_LENGTH_M+5] (rejects garbage)
+- **Width fix**: maps reference keypoints to `COURT_WIDTH_DOUBLES_M` (10.97m), not singles (was a bug — caused 0.75x X compression)
 
-**Tabs:**
-- **Overview**: KPI strip (serves/rallies, shots, speed), stroke split gauge (forehand/backhand % bar), aggression bar, depth bar, speed histogram
-- **Performance**: radar/spider chart (6-axis player profile), 4 gauge rings (Attack Rate, Deep %, FH In Rate, BH In Rate), court heatmap (12x12 ECharts grid), speed-by-stroke scatter
-- **Court Placement**: canvas-drawn tennis court (bird's eye) with coloured bounce dots (green=FH, blue=BH, red=out), interactive filter buttons (All/Forehand/Backhand/Deep/Middle/Short), stats panel, zone grid (A-D), stacked depth-by-zone + stroke-by-zone charts
-- **Serve/Rally Analysis**: serve KPIs + Wide/Body/T bar + deuce/ad doughnut + serve timeline dots (serve); rally KPIs + length distribution + bucket bars + stacked stroke/depth by rally (rally)
-- **Heatmaps**: ML-generated ball + player heatmap images from S3
-- **Video**: inline video player for practice footage
+**Ball tracker** (`ball_tracker.py`, TrackNet V2):
+- Three-tier ball position extraction in `_postprocess_heatmap()`:
+  1. Hough circles (use strongest match — was a bug requiring exactly 1 circle, dropping ~30-40% of frames)
+  2. Connected component centroid (largest blob in binary mask)
+  3. Heatmap argmax (any signal)
+- Bounce detection: velocity reversal in y, requires `MIN_VEL_MAG=1.0` magnitude on both sides + min 5-frame spacing between bounces
+- Interpolation gap: 10 frames (bridges occlusions)
+- `is_in` check uses `COURT_WIDTH_DOUBLES_M` (was a bug — using SINGLES caused false out-of-bounds)
 
-**Client API endpoints** (CLIENT_API_KEY auth):
-- `GET /api/client/practice-sessions?email=` — list sessions with aggregate stats from `ml_analysis.match_analytics`
-- `GET /api/client/practice-detail/<task_id>?email=` — full `silver.practice_detail` rows + computed summary (zone_counts, depth_counts, stroke_counts, aggression_counts, serve_zone_counts, side_counts, rally lengths)
-- `GET /api/client/practice-heatmap/<task_id>/<type>?email=` — presigned S3 URL for heatmap images
+**Player tracker** (`player_tracker.py`, YOLOv8x-pose @ imgsz=1280):
+- **Dual-pass YOLO**: full frame + court-cropped (cropped for distant player upscaling)
+- Crop pass: crops to court bbox + 80px margin, runs YOLO at imgsz=1280 → distant players get 2-3x more pixels
+- Combined detections deduplicated via IoU > 0.5
+- **Court area filter**: rejects detections > 120px outside court bbox (filters ball persons / spectators)
+- 17 COCO body keypoints stored as JSONB → used for stroke inference (forehand/backhand from wrist position)
+- `PLAYER_DETECTION_INTERVAL=3` (runs YOLO every 3 frames, reuses for 2)
 
-**Silver practice analytics** (aligned with match `build_silver_v2.py`):
-- Placement zone A-D: 4 equal vertical lanes, flipped by court end (same as match `rally_location_bounce`)
-- Serve location 1-8: service box quadrants per side (deuce 1-4, ad 5-8) + `serve_bucket_d` (Wide/Body/T)
-- Depth: Deep < 3m from baseline, Middle < 6.4m (service line), Short beyond
-- Aggression: Attack/Neutral/Defence from bounce depth
-- Stroke: forehand/backhand inferred from pose keypoints (dominant wrist position vs player center), falls back to ball-side heuristic when pose data unavailable. Uses `dominant_hand` from `billing.member`.
-- Rally length buckets: 0-4 / 5-8 / 9+ shots
-- Rally duration: max(timestamp) - min(timestamp) per sequence
-- Timestamps: `frame_idx / effective_sampling_fps` (derived from `total_frames / video_duration_sec`)
+**T5 inference methods** (silver builder):
+- **Player assignment**: bounce on top half (cy < HALF_Y) → hitter was on bottom half. Falls back to mirrored "any-with-coords" player when side-specific lookup fails.
+- **Mirror clamp**: mirrored hit_y clamped to `[0, COURT_LENGTH_M]` to handle players past their baseline.
+- **Serve detection**: TWO triggers (both gated by 8s minimum cooldown):
+  1. Time-based: gap > `SERVE_GAP_S` (3s) + bounce in service box
+  2. Geometric: hitter near baseline (3m tolerance) + bounce on opposite side of net
+- **Swing type**: `_infer_swing_type_from_keypoints()` (wrist vs center) → fallback to `_infer_swing_type_from_position()` → 'other'
 
-**Video trim for practice**: reuses the match trim pipeline. `_load_practice_for_timeline()` maps `sequence_num → point_number`, `timestamp_s → ball_hit_s`, `FALSE → exclude_d`. Single-shot rallies padded with synthetic +1s end row. `trigger_video_trim()` detects `sport_type` and uses practice.mp4 as source (re-trims to cut dead time between rallies).
+#### AWS Batch infrastructure
 
-**Media Room game type gate**: Serve Practice and Rally Practice show as "Coming Soon" (disabled) for all users except `tomo.stojakovic@gmail.com`. Controlled by `EMAIL` check in `renderStep1()` of `media_room.html`.
+- **Primary: eu-north-1 (Stockholm)** — Render env `BATCH_REGION=eu-north-1`. GPU Spot quota approved.
+- **Fallback: us-east-1 (Virginia)** — used if eu submission fails. Tried automatically by `_t5_submit()`.
+- Both regions have: ECR repo, Batch compute env (`ten-fifty5-ml-compute`, Spot G4dn.xlarge, **bid 100%**), Batch queue (`ten-fifty5-ml-queue`), Batch job def (`ten-fifty5-ml-pipeline`), CloudWatch logs (`/aws/batch/ten-fifty5-ml-pipeline`).
+- **us-east-1 only**: secondary on-demand compute env (`ten-fifty5-ml-ondemand`, disabled by default — enable via `aws batch update-compute-environment` if Spot is unavailable).
+- IAM roles (global): `ten-fifty5-ml-instance-role`, `ten-fifty5-ml-job-role`, `aws-ec2-spot-fleet-tagging-role`. All tagged `Project=TEN-FIFTY5`.
+- **Spot reclaim risk**: If reclaimed mid-job, resubmit from Media Room.
 
-**Locker Room integration**: practice sessions filtered out of match history (`sport_type` check in `locker_room.html` init). Practice has its own page.
+**Database schema** (`ml_analysis.*`, managed by `db_schema.py`):
+- `video_analysis_jobs` — job tracking: status, progress, batch IDs, video metadata, heatmap S3 keys, `bronze_s3_key`, `submitted_region`
+- `ball_detections` — per-frame ball position (x, y, court_x, court_y, speed_kmh, is_bounce, is_in)
+- `player_detections` — per-frame player bbox + court positions + keypoints JSONB
+- `match_analytics` — aggregate stats (singleton per job)
+
+**Docker build & deploy** (from repo root):
+```bash
+docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
+ACCOUNT=696793787014
+# Push to BOTH regions:
+aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com
+docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+docker push $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+# Repeat for us-east-1
+```
+Base: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. Model weights in `ml_pipeline/models/` (~270MB total, git-ignored, must be present at build time): TrackNet V2, **YOLOv8x-pose** (133MB — primary), YOLOv8m-pose (53MB — fallback), YOLOv8m, court_keypoints.pth.
+
+#### Test harness (`ml_pipeline/harness.py`)
+
+Single CLI entry point. Run from Render shell. Replaces all the earlier copy-paste-python diagnostics:
+
+```bash
+python -m ml_pipeline.harness validate <task_id>           # bronze + silver quality checks
+python -m ml_pipeline.harness validate-bronze <job_id>     # ml_analysis.* sanity
+python -m ml_pipeline.harness validate-silver <task_id>    # silver.point_detail sanity
+python -m ml_pipeline.harness reconcile [s_tid t5_tid]     # SportAI vs T5 side-by-side
+python -m ml_pipeline.harness reconcile --mode=summary|coverage|distributions|speed|rows
+python -m ml_pipeline.harness list-jobs [--limit 20]
+python -m ml_pipeline.harness list-matches [--source sportai|t5]
+python -m ml_pipeline.harness rerun-silver <task_id>       # rebuild silver from existing bronze
+python -m ml_pipeline.harness rerun-ingest <task_id>       # re-download bronze + rebuild silver
+python -m ml_pipeline.harness golden-snapshot <task_id> --name N   # capture regression baseline
+python -m ml_pipeline.harness golden-check <name>          # validate against snapshot
+python -m ml_pipeline.harness golden-list
+```
+
+Goldens stored in `ml_pipeline/golden_datasets.json` (version-controlled).
+
+#### Debug frame export
+
+When investigating "what is YOLO actually seeing?", set `DEBUG_FRAME_INTERVAL > 0` in config. Saves a sampled frame every N frames with bounding boxes drawn (green = kept, red = filtered out). Uploaded to `s3://{bucket}/debug/{job_id}/frame_*.jpg` by `__main__.py` post-processing.
+
+```bash
+aws s3 sync s3://nextpoint-prod-uploads/debug/{job_id}/ ./debug_frames/ --region eu-north-1
+```
+
+#### Practice Analytics Dashboard (`practice.html`)
+
+Full PBI-style analytics dashboard for serve/rally practice sessions. Apache ECharts visualisations. Route: `GET /practice` (served by `locker_room_app.py`).
+
+Tabs: Overview (KPIs + stroke split + speed histogram), Performance (radar + gauges + court heatmap), Court Placement (canvas-drawn court with bounce dots, filterable), Serve/Rally Analysis, Heatmaps (S3-rendered), Video.
+
+Client API:
+- `GET /api/client/practice-sessions?email=` — list sessions
+- `GET /api/client/practice-detail/<task_id>?email=` — `silver.practice_detail` rows + summary
+- `GET /api/client/practice-heatmap/<task_id>/<type>?email=` — presigned S3 URL
+
+#### T5 outstanding issues / next steps
+
+**Data quality (the 50-vs-88 gap)**:
+- Ball detection rate ~7% (1100 detections in 15300 frames). SportAI reaches 30-50%. The Hough bug fix + centroid/argmax fallbacks are deployed but full impact still being measured.
+- Court_y has a ~5m systematic offset vs SportAI (homography accuracy issue). Bounces appear at the back baseline area instead of in the service box. Geometric serve detection has been relaxed to compensate (no service box requirement).
+- `player_id` is always 0 for one court side and 1 for the other (assigned by court side from `top_pids` in T5 Pass 1). This means `point_number` increment in pass3 only fires on `serve_side` change, not on `server_id` change — under-detects games.
+- Speed calculation underestimates (~50% of expected). The `to_court_coords()` doubles-width fix corrected ~12-25% of this; remaining gap unexplained.
+
+**Reconciliation reference** (current target):
+- SportAI: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves)
+- T5: latest task ID (track in `golden_datasets.json` once metrics are stable)
+
+**Future training** (not in current scope):
+- Shot sub-classification (topspin / flat / slice) — needs labelled clips
+- Winner / forced error / unforced error — needs point outcome labelling
+- Shot quality scoring 1-10 — needs annotated dataset
 
 ### Wix Remaining Dependencies
 
@@ -740,15 +733,6 @@ Wix pages have been retired. The portal (Render-hosted) is the sole frontend. **
 - **Payment checkout**: `checkout.startOnlinePurchase(planId)` via Wix Pricing Plans API / PayPal
 - **Subscription event webhook**: Wix fires `POST /api/billing/subscription/event` after payment
 
-### Future: Full Wix Removal
-
-When Wix is fully retired (own auth + own payments):
-- Consolidate: `_ensure_submission_context_schema` DDL into `db_init.py`
-- Drop: `wix_notified_at` / `wix_notify_status` / `wix_notify_error` columns (no longer written, historical only)
-- Replace: Wix member auth with own auth (e.g., magic link or OAuth)
-- Replace: Wix Pricing Plans with direct PayPal/Stripe integration
-- Remove: `external_wix_id` references once own auth is in place
-
 ### Other
 
 - **`superset/`**: Optional Superset BI deployment config (Power BI is primary). Not in `render.yaml`.
@@ -756,243 +740,3 @@ When Wix is fully retired (own auth + own payments):
 - **`_archive/`**: Deprecated/replaced code kept for reference.
 - **`lambda/`**: AWS Lambda function source (e.g., S3 trigger for ML pipeline).
 
-### Next Task: Practice Data Quality (Step 1 — Foundation)
-
-This is the foundation upon which silver views and frontend charts are built. Every subsequent step depends on bronze data being correct and complete. Use the completed rally practice job `65439372-752b-4471-848a-5ed2083dbee1` as the reference dataset.
-
-**1. Audit bronze data (`ml_analysis.*`) for the reference job:**
-
-```sql
--- Ball detections: row count, speed coverage, bounce/in coverage
-SELECT count(*) AS total,
-       count(speed_kmh) AS speed_populated, avg(speed_kmh) AS avg_speed, max(speed_kmh) AS max_speed,
-       count(*) filter (where speed_kmh IS NULL) AS speed_null,
-       count(*) filter (where is_bounce) AS bounces_true,
-       count(*) filter (where NOT is_bounce) AS bounces_false,
-       count(*) filter (where is_bounce IS NULL) AS bounces_null,
-       count(*) filter (where is_in) AS in_true,
-       count(*) filter (where NOT is_in) AS in_false,
-       count(*) filter (where is_in IS NULL) AS in_null,
-       count(court_x) AS court_x_populated, count(court_y) AS court_y_populated,
-       min(court_x) AS court_x_min, max(court_x) AS court_x_max,
-       min(court_y) AS court_y_min, max(court_y) AS court_y_max,
-       min(x) AS px_x_min, max(x) AS px_x_max,
-       min(y) AS px_y_min, max(y) AS px_y_max
-FROM ml_analysis.ball_detections
-WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
--- Expected: ~965 rows, pixel coords within 1280x720, court coords 0–23.77m (length) / 0–10.97m (width)
-
--- Player detections: row count, court coord coverage, distinct players
-SELECT count(*) AS total,
-       count(DISTINCT player_id) AS distinct_players,
-       count(court_x) AS court_x_populated, count(court_y) AS court_y_populated,
-       min(court_x) AS court_x_min, max(court_x) AS court_x_max,
-       min(court_y) AS court_y_min, max(court_y) AS court_y_max
-FROM ml_analysis.player_detections
-WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
--- Expected: ~1925 rows (filtered from 36159 in practice mode), 1–2 players
-
--- Match analytics: aggregate stats sanity check
-SELECT bounce_count, bounces_in, bounces_out,
-       max_speed_kmh, avg_speed_kmh,
-       rally_count, avg_rally_length, serve_count, first_serve_pct
-FROM ml_analysis.match_analytics
-WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
--- Speeds should be 50–200 km/h for tennis; bounce_count should be hundreds for 32-min rally
-
--- Job metadata: heatmaps, timing, cost
-SELECT status, progress, court_detected, court_confidence,
-       ball_heatmap_s3_key, player_heatmap_s3_keys,
-       processing_time_sec, estimated_cost_usd
-FROM ml_analysis.video_analysis_jobs
-WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
-```
-
-**2. Trace the data pipeline for gaps:**
-
-The data quality chain flows: court detector → ball tracker → player tracker → db writer → silver builder. Each stage depends on the one before it.
-
-- **Speed** (`ball_speed_kmh`):
-  - Originates in `ball_tracker.py` `compute_speeds()` — converts pixel distance between consecutive detections to real-world km/h using the court detector's homography matrix
-  - Called from `pipeline.py` `_postprocess()` — verify this call exists and runs
-  - **Break point**: if `court_detected = False` or low confidence, the homography is missing/wrong → speeds will be 0 or NULL
-  - Speed requires: valid pixel coords (x,y) + valid homography → court coords → distance/time → km/h
-
-- **Bounces** (`is_bounce`):
-  - Originates in `ball_tracker.py` `detect_bounces()` — detects velocity direction change
-  - Config threshold: `BOUNCE_MIN_DIRECTION_CHANGE = 25` (degrees)
-  - **Break point**: if ball tracking has gaps (interpolated segments), direction changes may be artificial
-
-- **In/Out** (`is_in`):
-  - Originates in `ball_tracker.py` `detect_bounces()` — checks if bounce point falls within court boundaries
-  - Requires court detector's court polygon boundaries
-  - **Break point**: if court not detected, all `is_in` values will be NULL
-
-- **Court coords** (`court_x`, `court_y`) on ball detections:
-  - `ball_tracker.py` applies `court_detector.pixel_to_court()` to each detection's pixel (x,y)
-  - **Break point**: bad homography → all court coords are wrong (but non-NULL), leading to wrong zones/depth in silver
-
-- **Player court coords** (`court_x`, `court_y`) on player detections:
-  - `player_tracker.py` `map_to_court()` — uses same homography from court detector
-  - **Break point**: same as ball — bad homography = bad player positions
-
-- **DB writer** (`db_writer.py`):
-  - `save_ball_detections()` — INSERT into `ml_analysis.ball_detections`. Verify all columns from the `BallDetection` dataclass are included (no silent drops)
-  - `save_player_detections()` — INSERT into `ml_analysis.player_detections`. Same check
-  - `save_match_analytics()` — INSERT into `ml_analysis.match_analytics`. Check that speed/bounce/rally aggregates are computed correctly before writing
-
-**3. Audit silver data (`silver.practice_detail`) for the reference job:**
-
-```sql
--- Overall coverage check
-SELECT count(*) AS total,
-       count(*) filter (where practice_type = 'rally_practice') AS rally_rows,
-       count(*) filter (where practice_type = 'serve_practice') AS serve_rows,
-       count(ball_speed_kmh) AS speed_populated,
-       count(*) filter (where ball_speed_kmh IS NULL) AS speed_null,
-       count(placement_zone) AS zone_populated,
-       count(depth_d) AS depth_populated,
-       count(ball_x) AS ball_x_populated,
-       count(ball_y) AS ball_y_populated,
-       count(player_court_x) AS player_x_populated,
-       count(player_court_y) AS player_y_populated
-FROM silver.practice_detail
-WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1';
-
--- Serve fields should be NULL for rally practice
-SELECT count(serve_zone) AS serve_zone_populated,
-       count(serve_side) AS serve_side_populated,
-       count(serve_result) AS serve_result_populated
-FROM silver.practice_detail
-WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1';
--- Expected: all 0 for rally practice
-
--- Rally structure: rally_length and duration on first shots
-SELECT sequence_num, shot_ix, rally_length, rally_duration_s
-FROM silver.practice_detail
-WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1'
-  AND shot_ix = 1
-ORDER BY sequence_num
-LIMIT 20;
--- rally_length and rally_duration_s should be populated on shot_ix=1 rows
-
--- Zone and depth distribution (sanity)
-SELECT placement_zone, count(*) FROM silver.practice_detail
-WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1' GROUP BY 1 ORDER BY 1;
-
-SELECT depth_d, count(*) FROM silver.practice_detail
-WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1' GROUP BY 1 ORDER BY 1;
-```
-
-Trace `build_silver_practice.py` pass by pass:
-- **Pass 1** (extract bounces): reads `ml_analysis.ball_detections` WHERE `is_bounce = true`, JOINs nearest `player_detections` by `job_id` and closest `frame_idx`. Check: is the JOIN correct? Does it match on `job_id` and nearest `frame_idx`? Are `ball_x`/`ball_y` populated from `court_x`/`court_y`?
-- **Pass 2** (sequence detection): for rally practice, groups bounces into rallies by frame gap (`RALLY_GAP_FRAMES = 25`), numbers shots within each. Check: are `sequence_num` and `shot_ix` populated correctly?
-- **Pass 3** (analytics): computes `placement_zone` (A/B/C/D quadrant), `depth_d` (Deep/Middle/Short), `serve_zone` (Wide/Body/T), `serve_result` (In/Fault). Check: do the court geometry constants match the homography output from the pipeline?
-
-**4. Verify the court detector output:**
-
-The entire data quality chain depends on `court_detector.py` correctly mapping pixel coordinates to court coordinates.
-
-```sql
--- Check court detection status for reference job
-SELECT court_detected, court_confidence
-FROM ml_analysis.video_analysis_jobs
-WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1';
-```
-
-- If `court_detected = false` or confidence is low: all court-based analytics (speed, is_in, zones, depth) will be wrong or NULL
-- The court detector outputs 14 keypoints → homography matrix. This matrix transforms pixel (x,y) → court metres
-- If using fallback (Hough lines), accuracy drops significantly
-- Check `court_detector.py`: `detect()`, `pixel_to_court()`, `get_homography()`
-- The homography quality determines whether `court_x`/`court_y` values are sensible (length 0–23.77m, width 0–10.97m) or garbage
-
-**5. Fix priorities — ordered by downstream impact:**
-
-1. **Court detection confidence** → affects everything downstream (speeds, bounces, zones, depth, player positions). If this is broken, nothing else matters.
-2. **`speed_kmh` propagation** → needed for speed histogram and serve timeline charts in practice dashboard
-3. **`is_bounce` / `is_in` accuracy** → needed for serve analysis (In/Fault counts) and bounce heatmaps
-4. **`court_x` / `court_y` mapping** → needed for zone classification (A/B/C/D) and depth classification (Deep/Middle/Short)
-5. **Silver builder field population** → needed for all frontend charts; if bronze is correct but silver isn't populating, the charts show blanks
-
-**6. Validate fixes:**
-
-After any pipeline code changes:
-1. Rebuild Docker image: `docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .`
-2. Push to ECR (both regions)
-3. Resubmit the same rally video via AWS Batch
-4. Compare bronze row counts and value distributions before/after
-5. Rebuild silver: rerun `_do_ingest_t5()` or call `build_silver_practice.py` directly
-6. Verify `silver.practice_detail` has all fields populated
-7. Check practice dashboard (`/practice`) shows real data in all charts
-
-**7. Reference job + diagnostic queries:**
-
-- **Job ID**: `65439372-752b-4471-848a-5ed2083dbee1`
-- **Task ID**: same (job_id = task_id for T5 jobs)
-- **Sport type**: `rally_practice`
-- **Video**: 32 min, 1280x720, ~19K frames at 10fps
-- **Pipeline time**: 994.5s (16.6 min)
-- **Ball detections**: 965 rows
-- **Player detections**: 1925 rows (filtered from 36159)
-- **S3 heatmaps**: `analysis/65439372-.../ball_heatmap.png`, `player_heatmap_0.png`, `player_heatmap_1.png`
-- **Trimmed video**: `trimmed/65439372-.../practice.mp4`
-
-**Paste into Render shell** (webhook-server → Shell tab):
-```bash
-python -c "
-from db_init import engine
-from sqlalchemy import text
-with engine.connect() as c:
-    # Bronze: ball detections
-    r = c.execute(text(\"\"\"
-        SELECT count(*) AS total, count(speed_kmh) AS speed_pop, avg(speed_kmh)::numeric(6,1) AS avg_spd,
-               max(speed_kmh)::numeric(6,1) AS max_spd, count(*) filter (where is_bounce) AS bounces,
-               count(*) filter (where is_in) AS in_count, count(*) filter (where is_in IS NULL) AS in_null,
-               count(court_x) AS cx_pop, count(court_y) AS cy_pop
-        FROM ml_analysis.ball_detections WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
-    \"\"\")).fetchone()
-    print('BALL:', dict(r._mapping))
-
-    # Bronze: player detections
-    r = c.execute(text(\"\"\"
-        SELECT count(*) AS total, count(DISTINCT player_id) AS players,
-               count(court_x) AS cx_pop, count(court_y) AS cy_pop
-        FROM ml_analysis.player_detections WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
-    \"\"\")).fetchone()
-    print('PLAYER:', dict(r._mapping))
-
-    # Bronze: match analytics
-    r = c.execute(text(\"\"\"
-        SELECT bounce_count, bounces_in, bounces_out, max_speed_kmh::numeric(6,1),
-               avg_speed_kmh::numeric(6,1), rally_count, avg_rally_length, serve_count
-        FROM ml_analysis.match_analytics WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
-    \"\"\")).fetchone()
-    print('ANALYTICS:', dict(r._mapping) if r else 'NO ROW')
-
-    # Court detection
-    r = c.execute(text(\"\"\"
-        SELECT court_detected, court_confidence
-        FROM ml_analysis.video_analysis_jobs WHERE job_id = '65439372-752b-4471-848a-5ed2083dbee1'
-    \"\"\")).fetchone()
-    print('COURT:', dict(r._mapping))
-
-    # Silver: practice_detail coverage
-    r = c.execute(text(\"\"\"
-        SELECT count(*) AS total, count(ball_speed_kmh) AS speed_pop,
-               count(placement_zone) AS zone_pop, count(depth_d) AS depth_pop,
-               count(ball_x) AS bx_pop, count(player_court_x) AS px_pop,
-               count(rally_length) filter (where shot_ix = 1) AS rally_len_pop
-        FROM silver.practice_detail WHERE task_id = '65439372-752b-4471-848a-5ed2083dbee1'
-    \"\"\")).fetchone()
-    print('SILVER:', dict(r._mapping))
-"
-```
-
-**Key files to investigate:**
-- `ml_pipeline/ball_tracker.py` — `compute_speeds()`, `detect_bounces()`, `interpolate_gaps()`
-- `ml_pipeline/court_detector.py` — `detect()`, `pixel_to_court()`, `get_homography()`
-- `ml_pipeline/player_tracker.py` — `map_to_court()`
-- `ml_pipeline/pipeline.py` — `_postprocess()` — orchestrates all post-processing
-- `ml_pipeline/db_writer.py` — `save_ball_detections()`, `save_player_detections()`, `save_match_analytics()`
-- `ml_pipeline/build_silver_practice.py` — 3-pass silver builder
-- `ml_pipeline/db_schema.py` — table definitions (verify columns match what pipeline writes)
