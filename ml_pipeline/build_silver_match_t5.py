@@ -90,39 +90,41 @@ def _is_serve_geometric(
     bounce_court_x: Optional[float],
     bounce_court_y: Optional[float],
 ) -> bool:
-    """Detect a serve purely by geometry.
+    """Detect a serve purely by geometry — generous version.
 
     A serve has these characteristics:
-      - Hitter is at or behind a baseline (court_y near 0 or near 23.77, or beyond)
-      - Ball bounces in the OPPOSITE service box
-      - Hit is overhead (handled separately by setting swing_type='overhead')
+      - Hitter is at or behind a baseline (within 3m of either, or beyond)
+      - Ball bounces on the OPPOSITE side of the net
+      - Optionally: bounce x is roughly in the singles court width
 
-    This complements the time-gap heuristic in pass1: when bounce data is
-    sparse, gaps aren't reliable indicators of point boundaries, so we use
-    pure geometric features instead.
+    NOTE: We deliberately do NOT require bounce in the strict service box
+    because T5's court_y coordinates have a known ~5m systematic offset
+    vs SportAI. Service-box-strict detection finds 0 serves; relaxed
+    detection finds many. We trade precision for recall on the assumption
+    that pass3 will filter further via swing_type and serve flag.
     """
     if hitter_court_y is None or bounce_court_x is None or bounce_court_y is None:
         return False
 
-    # Hitter at FAR baseline (court_y >= 23.77 - 0.5, or beyond past it)
-    HITTER_BASELINE_TOL = 1.0  # generous: 1m of slack
+    # Hitter near a baseline — generous 3m tolerance to handle T5 coord errors
+    HITTER_BASELINE_TOL = 3.0
     hitter_at_far = hitter_court_y >= (COURT_LENGTH_M - HITTER_BASELINE_TOL)
     hitter_at_near = hitter_court_y <= HITTER_BASELINE_TOL
 
     if not (hitter_at_far or hitter_at_near):
         return False
 
-    if not _is_in_service_box(bounce_court_x, bounce_court_y):
+    # Bounce x roughly inside the doubles court (with slack for wide serves)
+    if not (-2.0 <= bounce_court_x <= COURT_WIDTH_DOUBLES_M + 2.0):
         return False
 
-    # If hitter is at FAR baseline, the bounce should be on the NEAR side
-    # (between net and far service line) and vice versa.
+    # Bounce must be on the OPPOSITE side of the net from the hitter
     bounce_on_near_half = bounce_court_y > HALF_Y
     bounce_on_far_half = bounce_court_y < HALF_Y
 
-    if hitter_at_far and bounce_on_near_half:
+    if hitter_at_far and bounce_on_far_half:
         return True
-    if hitter_at_near and bounce_on_far_half:
+    if hitter_at_near and bounce_on_near_half:
         return True
     return False
 
