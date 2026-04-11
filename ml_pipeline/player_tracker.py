@@ -96,23 +96,37 @@ class PlayerTracker:
             )
         boxes = results[0].boxes if results else []
         kps_data = results[0].keypoints if (results and self.has_pose) else None
+        n_yolo_boxes = len(boxes)
+
+        # SKIP court bbox filtering entirely if PLAYER_COURT_MARGIN_PX >= 1000.
+        # This is the safest mode when court detection is unreliable.
+        skip_court_filter = PLAYER_COURT_MARGIN_PX >= 1000
 
         candidates = []
         candidate_kps = []
+        n_filtered_out = 0
         for bi, box in enumerate(boxes):
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            # Filter: must be within court bbox + margin
-            if court_bbox is not None:
+            # Filter: must be within court bbox + margin (unless skipped)
+            if not skip_court_filter and court_bbox is not None:
                 cb_x1, cb_y1, cb_x2, cb_y2 = court_bbox
                 if not (cb_x1 - PLAYER_COURT_MARGIN_PX <= cx <= cb_x2 + PLAYER_COURT_MARGIN_PX and
                         cb_y1 - PLAYER_COURT_MARGIN_PX <= cy <= cb_y2 + PLAYER_COURT_MARGIN_PX):
+                    n_filtered_out += 1
                     continue
             candidates.append((float(x1), float(y1), float(x2), float(y2)))
             if kps_data is not None and bi < len(kps_data.data):
                 candidate_kps.append(kps_data.data[bi].cpu().numpy())  # (17, 3)
             else:
                 candidate_kps.append(None)
+
+        # Diagnostic logging — every 30 frames
+        if frame_idx % 30 == 0:
+            logger.info(
+                "player_tracker frame=%d yolo_boxes=%d filtered_out=%d kept=%d skip_filter=%s",
+                frame_idx, n_yolo_boxes, n_filtered_out, len(candidates), skip_court_filter,
+            )
 
         if not candidates:
             return []

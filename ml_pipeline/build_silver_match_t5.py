@@ -274,6 +274,30 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         # Find nearest player detection on the hitter's side
         hitter = _find_nearest_detection(h_frames, h_dets, frame_idx)
 
+        # Fallback: if no player on the hitter's side (e.g., ML only tracked 1
+        # player), use the player from the OTHER side as a position proxy.
+        # This is hacky but ensures we never have NULL hit_x/y, which is
+        # critical for serve detection (needs hit_y near baseline) and silver
+        # pass 3 to produce point/game structure at all.
+        if hitter is None:
+            other_frames = far_frames if hitter_on_near else near_frames
+            other_dets = far_dets if hitter_on_near else near_dets
+            other = _find_nearest_detection(other_frames, other_dets, frame_idx)
+            if other is not None:
+                # Mirror the position to the hitter's side of the net
+                mirror_y = (COURT_LENGTH_M - other["court_y"]
+                            if other.get("court_y") is not None else None)
+                hitter = {
+                    "frame_idx": other["frame_idx"],
+                    "player_id": other["player_id"],
+                    "court_x": other.get("court_x"),
+                    "court_y": mirror_y,
+                    "center_x": other.get("center_x"),
+                    "center_y": other.get("center_y"),
+                    "keypoints": other.get("keypoints"),
+                    "_synthesized": True,
+                }
+
         # Serve detection: gap > threshold AND bounce in service box
         is_serve = False
         if (gap_s > SERVE_GAP_S or i == 0) and _is_in_service_box(cx, cy):
