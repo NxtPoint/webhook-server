@@ -189,6 +189,7 @@ class TennisAnalysisPipeline:
     def _postprocess(self, result: AnalysisResult):
         """Run interpolation, bounce detection, speed calc, and aggregate stats."""
         # Ball post-processing
+        self.ball_tracker.log_diagnostics()
         self.ball_tracker.interpolate_gaps()
         self.ball_tracker.detect_bounces(court_detector=self.court_detector)
         self.ball_tracker.compute_speeds(court_detector=self.court_detector, fps=self.target_fps)

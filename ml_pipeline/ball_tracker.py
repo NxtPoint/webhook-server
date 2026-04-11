@@ -124,6 +124,20 @@ class BallTracker:
         self.scale_y = 1.0
         self._frame_buffer: list = []  # last 3 frames (resized)
         self.detections: List[BallDetection] = []
+        # Diagnostics — counters only, no behavior change. Used to diagnose
+        # the 7% detection rate on T5 runs. Reported via log_diagnostics().
+        self._diag = {
+            "frames_inferred": 0,
+            "heatmap_empty": 0,            # fm.max() below threshold
+            "mask_nonzero_sum": 0,         # total pixels above threshold (all frames)
+            "tier1_hough": 0,
+            "tier2_cc": 0,
+            "tier2_cc_rejected_size": 0,   # CC fired but area outside [2,200]
+            "tier3_argmax": 0,
+            "none_returned": 0,
+            "fm_max_hist": [0] * 8,        # 8 buckets: 0-31, 32-63, ..., 224-255
+            "fm_raw_max_hist": [0] * 8,    # same, but for raw argmax output BEFORE the *255
+        }
 
     def _load_model(self, weights_path: str) -> BallTrackerNet:
         model = BallTrackerNet()
@@ -186,9 +200,24 @@ class BallTracker:
         Hough found 2+ candidates — that was throwing away ~30-40% of valid
         ball detections. The new version uses ANY signal we can find.
         """
+        self._diag["frames_inferred"] += 1
+
+        # Record raw argmax-class-index max BEFORE the *255 transform, so we
+        # can tell whether the model is producing signal at all, independent
+        # of any postprocess arithmetic.
+        raw_max = int(feature_map.max())
+        self._diag["fm_raw_max_hist"][min(raw_max // 32, 7)] += 1
+
         fm = (feature_map * 255).astype(np.uint8)
         fm = fm.reshape((TRACKNET_INPUT_HEIGHT, TRACKNET_INPUT_WIDTH))
+
+        fm_max_after = int(fm.max())
+        self._diag["fm_max_hist"][min(fm_max_after // 32, 7)] += 1
+        if fm_max_after < TRACKNET_HEATMAP_THRESHOLD:
+            self._diag["heatmap_empty"] += 1
+
         _, binary = cv2.threshold(fm, TRACKNET_HEATMAP_THRESHOLD, 255, cv2.THRESH_BINARY)
+        self._diag["mask_nonzero_sum"] += int((binary > 0).sum())
 
         # Tier 1: Hough circles (use strongest if any found)
         circles = cv2.HoughCircles(
@@ -202,6 +231,7 @@ class BallTracker:
         )
         if circles is not None and len(circles) > 0 and len(circles[0]) > 0:
             # circles[0] is sorted by accumulator strength descending — first is best
+            self._diag["tier1_hough"] += 1
             return float(circles[0][0][0]), float(circles[0][0][1])
 
         # Tier 2: Connected component centroid (largest blob in the binary mask)
@@ -218,7 +248,10 @@ class BallTracker:
                 # Sanity check: ball blob should be small but not tiny
                 if 2 <= area <= 200:
                     cx, cy = centroids[largest_idx]
+                    self._diag["tier2_cc"] += 1
                     return float(cx), float(cy)
+                else:
+                    self._diag["tier2_cc_rejected_size"] += 1
         except Exception:
             pass
 
@@ -227,9 +260,54 @@ class BallTracker:
         if fm.max() > TRACKNET_HEATMAP_THRESHOLD:
             flat_idx = int(fm.argmax())
             cy, cx = divmod(flat_idx, TRACKNET_INPUT_WIDTH)
+            self._diag["tier3_argmax"] += 1
             return float(cx), float(cy)
 
+        self._diag["none_returned"] += 1
         return None, None
+
+    def log_diagnostics(self):
+        """Dump cumulative ball-detection diagnostics. Call once post-inference.
+
+        Read this to diagnose the 7% detection rate. What to look for:
+        - If `heatmap_empty` is high (>80%), the model is producing nothing —
+          likely an input issue (BGR/RGB, resolution, normalization).
+        - If `fm_raw_max_hist` is bottom-heavy (most frames in bucket 0-31)
+          but `fm_max_hist` is distributed, the `*255` transform is mangling
+          signal (modular wrap).
+        - If `tier1_hough` >> `tier2_cc` + `tier3_argmax`, Hough is carrying
+          the load — good.
+        - If `tier2_cc_rejected_size` >> `tier2_cc`, CC is finding big blobs
+          (noise, not balls) — a sign of postprocess problems.
+        """
+        d = self._diag
+        total = d["frames_inferred"]
+        if total == 0:
+            logger.info("BallTracker diagnostics: no frames inferred")
+            return
+
+        def pct(n):
+            return 100.0 * n / total
+
+        logger.info("=== BallTracker diagnostics ===")
+        logger.info("frames_inferred: %d", total)
+        logger.info("heatmap_empty (fm_max < threshold): %d (%.1f%%)",
+                    d["heatmap_empty"], pct(d["heatmap_empty"]))
+        logger.info("avg mask nonzero pixels per frame: %.1f",
+                    d["mask_nonzero_sum"] / total)
+        logger.info("tier1_hough:         %d (%.1f%%)", d["tier1_hough"], pct(d["tier1_hough"]))
+        logger.info("tier2_cc:            %d (%.1f%%)", d["tier2_cc"], pct(d["tier2_cc"]))
+        logger.info("tier2_cc_rejected:   %d (%.1f%%)", d["tier2_cc_rejected_size"], pct(d["tier2_cc_rejected_size"]))
+        logger.info("tier3_argmax:        %d (%.1f%%)", d["tier3_argmax"], pct(d["tier3_argmax"]))
+        logger.info("none_returned:       %d (%.1f%%)", d["none_returned"], pct(d["none_returned"]))
+        logger.info("fm_raw_max histogram (argmax class index, PRE *255):")
+        for i, c in enumerate(d["fm_raw_max_hist"]):
+            lo, hi = i * 32, (i + 1) * 32 - 1
+            logger.info("  [%3d-%3d]: %6d (%5.1f%%)", lo, hi, c, pct(c))
+        logger.info("fm_max histogram (uint8 value, POST *255):")
+        for i, c in enumerate(d["fm_max_hist"]):
+            lo, hi = i * 32, (i + 1) * 32 - 1
+            logger.info("  [%3d-%3d]: %6d (%5.1f%%)", lo, hi, c, pct(c))
 
     def interpolate_gaps(self):
         """Fill missing detections with linear interpolation for gaps <= BALL_MAX_INTERPOLATION_GAP."""
@@ -370,3 +448,8 @@ class BallTracker:
     def reset(self):
         self._frame_buffer.clear()
         self.detections.clear()
+        for k in self._diag:
+            if isinstance(self._diag[k], list):
+                self._diag[k] = [0] * len(self._diag[k])
+            else:
+                self._diag[k] = 0
