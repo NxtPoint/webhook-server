@@ -1776,24 +1776,26 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
 def _do_ingest_t5(task_id: str) -> bool:
     """
     Lightweight ingest for T5 ML pipeline jobs.
-    Results are already in ml_analysis.* tables — skip bronze/silver/billing.
-    Steps: mark started → (skip heavy ingest) → PBI refresh → mark done.
+    Steps: mark started → bronze ingest → silver build → trim → PBI → email → mark done.
+    session_id is only set when silver build succeeds, so failed ingests can be
+    retried by the task-status auto-ingest gate.
     """
     try:
         app.logger.info("T5 INGEST START task_id=%s", task_id)
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
+            # Mark started but DO NOT set session_id yet — we set that only after
+            # silver build succeeds, so failed ingests can be retried.
             conn.execute(sql_text("""
                 UPDATE bronze.submission_context
                 SET ingest_started_at = COALESCE(ingest_started_at, now()),
                     ingest_finished_at = NULL,
                     ingest_error = NULL,
-                    session_id = :task_id,
                     last_status = 'completed',
                     last_status_at = now()
                 WHERE task_id = :t
-            """), {"t": task_id, "task_id": task_id})
+            """), {"t": task_id})
 
         # Bronze ingest: download gzipped JSON from S3 and bulk-load into ml_analysis.*
         # Mirrors SportAI's pattern — same region as DB, fast COPY bulk insert.
@@ -1813,12 +1815,15 @@ def _do_ingest_t5(task_id: str) -> bool:
         is_practice = _st in {"serve_practice", "rally_practice"}
         is_singles_t5 = _st == "tennis_singles_t5"
 
-        # Silver: build from ml_analysis detections
+        # Silver: build from ml_analysis detections. Track success — we only
+        # set session_id below if silver actually built, so failures retry.
+        silver_built = False
         if is_practice:
             try:
                 from ml_pipeline.build_silver_practice import build_silver_practice
                 silver_result = build_silver_practice(task_id=task_id, replace=True, engine=engine)
                 app.logger.info("T5 INGEST task_id=%s silver practice built: %s", task_id, silver_result)
+                silver_built = True
             except ImportError:
                 app.logger.warning("T5 INGEST task_id=%s silver builder not available (ml deps missing)", task_id)
             except Exception as e:
@@ -1828,6 +1833,7 @@ def _do_ingest_t5(task_id: str) -> bool:
                 from ml_pipeline.build_silver_match_t5 import build_silver_match_t5
                 silver_result = build_silver_match_t5(task_id=task_id, replace=True, engine=engine)
                 app.logger.info("T5 INGEST task_id=%s silver match built: %s", task_id, silver_result)
+                silver_built = True
             except ImportError:
                 app.logger.warning("T5 INGEST task_id=%s silver match builder not available (ml deps missing)", task_id)
             except Exception as e:
@@ -1851,28 +1857,46 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s PBI refresh failed (non-fatal): %s", task_id, e)
 
-        # Mark complete — set PBI columns so dashboard_ready evaluates correctly
-        # (T5 doesn't block on PBI, but the task-status endpoint needs these for email)
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                SET ingest_finished_at = now(),
-                    ingest_error = NULL,
-                    pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now()),
-                    pbi_refresh_finished_at = COALESCE(pbi_refresh_finished_at, now()),
-                    pbi_refresh_status = COALESCE(pbi_refresh_status, 'completed')
-                WHERE task_id = :t
-            """), {"t": task_id})
+        # Only mark complete (and set session_id) if silver actually built.
+        # Otherwise leave session_id NULL so the next task-status poll re-fires
+        # the ingest. This makes T5 ingest self-healing on transient failures.
+        if silver_built:
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                    SET session_id = :task_id,
+                        ingest_finished_at = now(),
+                        ingest_error = NULL,
+                        pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now()),
+                        pbi_refresh_finished_at = COALESCE(pbi_refresh_finished_at, now()),
+                        pbi_refresh_status = COALESCE(pbi_refresh_status, 'completed')
+                    WHERE task_id = :t
+                """), {"t": task_id, "task_id": task_id})
 
-        # Customer notification (same email as SportAI — idempotent via ses_notified_at)
-        try:
-            _notify_ses_completion(task_id)
-        except Exception as e:
-            app.logger.warning("T5 INGEST task_id=%s email notify failed (non-fatal): %s", task_id, e)
+            # Customer notification (only when silver is built — otherwise email
+            # tells the user their match is "ready" when it actually isn't)
+            try:
+                _notify_ses_completion(task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s email notify failed (non-fatal): %s", task_id, e)
 
-        app.logger.info("T5 INGEST COMPLETE task_id=%s", task_id)
-        return True
+            app.logger.info("T5 INGEST COMPLETE task_id=%s", task_id)
+            return True
+        else:
+            # Silver build failed — leave ingest_finished_at NULL so the next
+            # task-status poll re-fires the ingest. Stale check kicks in after
+            # INGEST_STALE_AFTER_S seconds (default 1800).
+            with engine.begin() as conn:
+                _ensure_submission_context_schema(conn)
+                conn.execute(sql_text("""
+                    UPDATE bronze.submission_context
+                    SET ingest_error = 'silver_build_failed',
+                        ingest_finished_at = NULL
+                    WHERE task_id = :t
+                """), {"t": task_id})
+            app.logger.warning("T5 INGEST INCOMPLETE task_id=%s — silver build failed, will retry", task_id)
+            return False
 
     except Exception as e:
         app.logger.exception("T5 INGEST FAILED task_id=%s", task_id)
