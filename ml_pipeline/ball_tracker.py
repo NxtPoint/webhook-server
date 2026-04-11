@@ -33,6 +33,7 @@ from ml_pipeline.config import (
     BOUNCE_MIN_DIRECTION_CHANGE,
     COURT_LENGTH_M,
     COURT_WIDTH_SINGLES_M,
+    COURT_WIDTH_DOUBLES_M,
     FRAME_SAMPLE_FPS,
 )
 
@@ -236,7 +237,13 @@ class BallTracker:
         self.detections = filtered
 
     def detect_bounces(self, court_detector=None):
-        """Detect bounces via velocity reversal in y-coordinate. Optionally map to court coords."""
+        """Detect bounces via velocity reversal in y-coordinate. Optionally map to court coords.
+
+        A valid bounce requires:
+          1. Sign change in y-velocity (direction flip)
+          2. Minimum velocity magnitude on both sides (reject gentle rolls/noise)
+          3. Minimum spacing from the previous bounce (reject double-counting)
+        """
         if len(self.detections) < BOUNCE_VELOCITY_WINDOW * 2:
             return
 
@@ -244,24 +251,48 @@ class BallTracker:
         ys = np.array([d.y for d in self.detections])
         vel = np.convolve(np.diff(ys), np.ones(BOUNCE_VELOCITY_WINDOW) / BOUNCE_VELOCITY_WINDOW, mode="valid")
 
+        # Minimum magnitude for a real bounce (px/frame)
+        MIN_VEL_MAG = 2.0
+        # Minimum frame spacing between bounces (frames)
+        MIN_BOUNCE_SPACING = 8
+
+        last_bounce_idx = -MIN_BOUNCE_SPACING  # allow first bounce
+        bounce_count = 0
+
         for i in range(len(vel) - 1):
-            if (vel[i] > 0 and vel[i + 1] < 0) or (vel[i] < 0 and vel[i + 1] > 0):
-                det_idx = i + BOUNCE_VELOCITY_WINDOW
-                if det_idx < len(self.detections):
-                    self.detections[det_idx].is_bounce = True
-                    # In/out detection via court boundary
-                    if court_detector is not None:
-                        coords = court_detector.to_court_coords(
-                            self.detections[det_idx].x, self.detections[det_idx].y
-                        )
-                        if coords is not None:
-                            cx, cy = coords
-                            self.detections[det_idx].court_x = cx
-                            self.detections[det_idx].court_y = cy
-                            self.detections[det_idx].is_in = (
-                                0 <= cx <= COURT_WIDTH_SINGLES_M and
-                                0 <= cy <= COURT_LENGTH_M
-                            )
+            sign_flip = (vel[i] > 0 and vel[i + 1] < 0) or (vel[i] < 0 and vel[i + 1] > 0)
+            if not sign_flip:
+                continue
+            # Require minimum magnitude on both sides — rejects slow rolls
+            if abs(vel[i]) < MIN_VEL_MAG or abs(vel[i + 1]) < MIN_VEL_MAG:
+                continue
+
+            det_idx = i + BOUNCE_VELOCITY_WINDOW
+            if det_idx >= len(self.detections):
+                continue
+
+            # Minimum spacing — rejects double-counting on the same bounce
+            if det_idx - last_bounce_idx < MIN_BOUNCE_SPACING:
+                continue
+            last_bounce_idx = det_idx
+
+            self.detections[det_idx].is_bounce = True
+            bounce_count += 1
+
+            # In/out detection via court boundary (doubles court, matches homography)
+            if court_detector is not None:
+                coords = court_detector.to_court_coords(
+                    self.detections[det_idx].x, self.detections[det_idx].y
+                )
+                if coords is not None:
+                    cx, cy = coords
+                    self.detections[det_idx].court_x = cx
+                    self.detections[det_idx].court_y = cy
+                    self.detections[det_idx].is_in = (
+                        0 <= cx <= COURT_WIDTH_DOUBLES_M and
+                        0 <= cy <= COURT_LENGTH_M
+                    )
+        logger.info("detect_bounces: found %d bounces (after validation)", bounce_count)
 
     def compute_speeds(self, court_detector=None, fps: float = None):
         """Compute ball speed in km/h using court-coordinate distances between frames."""

@@ -105,6 +105,11 @@ def _create_jobs_table(conn):
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         );
     """))
+    # Idempotent column additions for existing tables
+    conn.execute(sql_text(
+        "ALTER TABLE ml_analysis.video_analysis_jobs "
+        "ADD COLUMN IF NOT EXISTS bronze_s3_key TEXT"
+    ))
 
 
 def _create_ball_detections_table(conn):

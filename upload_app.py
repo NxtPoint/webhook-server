@@ -1739,7 +1739,15 @@ def _do_ingest_t5(task_id: str) -> bool:
                 WHERE task_id = :t
             """), {"t": task_id, "task_id": task_id})
 
-        # Skip: bronze ingest (data already in ml_analysis.*)
+        # Bronze ingest: download gzipped JSON from S3 and bulk-load into ml_analysis.*
+        # Mirrors SportAI's pattern — same region as DB, fast COPY bulk insert.
+        try:
+            from ml_pipeline.bronze_ingest_t5 import ingest_bronze_t5
+            bronze_result = ingest_bronze_t5(job_id=task_id, engine=engine, replace=True)
+            app.logger.info("T5 INGEST task_id=%s bronze loaded: %s", task_id, bronze_result)
+        except Exception as e:
+            app.logger.warning("T5 INGEST task_id=%s bronze load failed (non-fatal): %s", task_id, e)
+
         # Determine sport type for routing
         with engine.connect() as conn:
             _st = conn.execute(sql_text(

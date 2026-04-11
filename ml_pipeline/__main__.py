@@ -116,6 +116,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
     from ml_pipeline.db_writer import MLDBWriter
     from ml_pipeline.pipeline import TennisAnalysisPipeline
     from ml_pipeline.heatmaps import generate_all_heatmaps
+    from ml_pipeline.bronze_export import export_bronze_to_s3
 
     s3_bucket = os.environ["S3_BUCKET"]
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
@@ -161,19 +162,11 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         pipeline = TennisAnalysisPipeline(progress_callback=on_progress, practice=practice)
         result = pipeline.process(tmp_path)
 
-        # 3. Save results to DB
+        # 3. Export results to S3 as gzipped JSON (fast — single PUT)
+        # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads
+        # and bulk-inserts into ml_analysis.* in the same region as the DB.
         on_progress("saving_results", 82)
         db.save_job_metadata(job_id, result)
-        db.save_ball_detections(job_id, result.ball_detections)
-
-        # Only save player positions at frames with ball detections (not every frame)
-        if practice:
-            ball_frames = {d.frame_idx for d in result.ball_detections}
-            filtered_players = [d for d in result.player_detections if d.frame_idx in ball_frames]
-            logger.info(f"Practice mode: filtered player detections {len(result.player_detections)} -> {len(filtered_players)}")
-            db.save_player_detections(job_id, filtered_players)
-        else:
-            db.save_player_detections(job_id, result.player_detections)
 
         # Extract task_id from job row if present
         with engine.begin() as conn:
@@ -181,7 +174,22 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                 "SELECT task_id FROM ml_analysis.video_analysis_jobs WHERE job_id = :jid"
             ), {"jid": job_id}).fetchone()
             task_id = row[0] if row else None
-        db.save_match_analytics(job_id, result, task_id=task_id)
+
+        bronze_s3_key = export_bronze_to_s3(
+            job_id=job_id,
+            task_id=task_id,
+            result=result,
+            s3_client=s3,
+            s3_bucket=s3_bucket,
+            practice=practice,
+        )
+        # Record the S3 key on the job row so the ingest worker can find it
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE ml_analysis.video_analysis_jobs
+                SET bronze_s3_key = :bkey, updated_at = now()
+                WHERE job_id = :jid
+            """), {"jid": job_id, "bkey": bronze_s3_key})
 
         # 4. Generate and upload heatmaps
         on_progress("generating_heatmaps", 88)

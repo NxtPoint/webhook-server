@@ -36,11 +36,11 @@ TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
 TRACKNET_HOUGH_PARAM2 = 2
-TRACKNET_HOUGH_MIN_RADIUS = 2
-TRACKNET_HOUGH_MAX_RADIUS = 7
-BALL_MAX_INTERPOLATION_GAP = 3   # Interpolate gaps of <= N frames
-BALL_MAX_DIST_BETWEEN_FRAMES = 100  # px — outlier filter
-BALL_MAX_DIST_GAP = 80             # px — gap bridging filter
+TRACKNET_HOUGH_MIN_RADIUS = 1   # Was 2 — allow smaller ball circles (serves/fast balls)
+TRACKNET_HOUGH_MAX_RADIUS = 10  # Was 7 — allow larger ball circles (slow/zoomed)
+BALL_MAX_INTERPOLATION_GAP = 5   # Was 3 — bridge longer occlusions
+BALL_MAX_DIST_BETWEEN_FRAMES = 150  # Was 100 — allow faster ball movement
+BALL_MAX_DIST_GAP = 150            # Was 80 — allow fast serves to bridge gaps
 
 # ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)
@@ -89,11 +89,11 @@ COURT_REFERENCE_KEYPOINTS = [
 # ---------------------------------------------------------------------------
 # Player tracker (YOLOv8)
 # ---------------------------------------------------------------------------
-YOLO_CONFIDENCE = 0.5              # Minimum detection confidence
+YOLO_CONFIDENCE = 0.4              # Was 0.5 — catch more player detections (esp. partial)
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
-PLAYER_IOU_THRESHOLD = 0.3        # IoU threshold for frame-to-frame tracking
-PLAYER_COURT_MARGIN_PX = 50       # Pixels outside court bbox to still accept
-PLAYER_DETECTION_INTERVAL = 5     # Run YOLO every N frames (match)
+PLAYER_IOU_THRESHOLD = 0.2         # Was 0.3 — more lenient IoU matching (handles movement)
+PLAYER_COURT_MARGIN_PX = 100       # Was 50 — accept players further outside court bbox
+PLAYER_DETECTION_INTERVAL = 3      # Was 5 — run YOLO more often for stable tracking
 PLAYER_DETECTION_INTERVAL_PRACTICE = 10  # Less frequent for practice
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,6 @@ PROGRESS_LOG_INTERVAL = 100        # Log progress every N frames
 # ---------------------------------------------------------------------------
 # Bounce / speed detection
 # ---------------------------------------------------------------------------
-BOUNCE_VELOCITY_WINDOW = 5         # Rolling window for velocity smoothing
-BOUNCE_MIN_DIRECTION_CHANGE = 25   # Minimum frames of sustained direction change
+BOUNCE_VELOCITY_WINDOW = 3         # Was 5 — shorter window, catches quick bounces
+BOUNCE_MIN_DIRECTION_CHANGE = 25   # Minimum frames of sustained direction change (rally split)
 SPEED_SMOOTHING_WINDOW = 3         # Frames to average for speed calc
