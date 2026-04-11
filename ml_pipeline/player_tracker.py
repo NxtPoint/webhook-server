@@ -89,6 +89,21 @@ class PlayerTracker:
         self._debug_s3_bucket = None
         self._debug_job_id = None
 
+        # Diagnostics — counters only, reported via log_diagnostics(). Used to
+        # diagnose the ball-boy / bench-sitter mis-mapping where a non-player
+        # near the net gets locked into pid=1 because YOLO occasionally misses
+        # the real far player. See commit log for detailed analysis.
+        self._diag = {
+            "frames_yolo_ran": 0,
+            "candidates_total": 0,
+            "candidates_hist": [0] * 7,          # buckets: 0, 1, 2, 3, 4, 5, 6+
+            "choose2_kept_2": 0,
+            "choose2_kept_1_span_fail": 0,       # 2+ cands, span too small → dropped top
+            "choose2_kept_1_single": 0,          # only 1 candidate to begin with
+            "choose2_kept_0": 0,
+            "choose2_dropped_middle": 0,         # 3+ cands, dropped middle ones
+        }
+
     def set_debug_upload_context(self, s3_client, s3_bucket: str, job_id: str) -> None:
         """Enable live debug frame upload to S3 (called from __main__.py)."""
         self._debug_s3_client = s3_client
@@ -183,14 +198,24 @@ class PlayerTracker:
             except Exception as e:
                 logger.warning("debug frame save failed: %s", e)
 
+        # Diagnostic accounting — one bucket per frame, by candidate count.
+        self._diag["frames_yolo_ran"] += 1
+        self._diag["candidates_total"] += len(candidates)
+        self._diag["candidates_hist"][min(len(candidates), 6)] += 1
+
         if not candidates:
+            self._diag["choose2_kept_0"] += 1
             return []
 
-        # Pick the 2 players closest to the court (by bbox area = closer player is bigger)
-        if len(candidates) > 2:
-            candidates, candidate_kps = self._choose_two_players(
-                candidates, candidate_kps, court_bbox, frame.shape[:2],
-            )
+        # Always run _choose_two_players — previously gated on len>2, but the
+        # 2-candidate case is exactly the bench-sitter mis-mapping failure
+        # mode: when YOLO misses the real far player, {real_near, bench_sitter}
+        # pass straight through to _assign_ids and bench_sitter gets locked
+        # into pid=1. _choose_two_players now enforces a y-span check to
+        # reject this case.
+        candidates, candidate_kps = self._choose_two_players(
+            candidates, candidate_kps, court_bbox, frame.shape[:2],
+        )
 
         # Assign player_id via IoU matching with previous frame
         frame_detections = self._assign_ids(candidates, frame_idx, candidate_kps)
@@ -373,61 +398,77 @@ class PlayerTracker:
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape) -> tuple:
-        """Select up to 2 players: one closest to top of frame, one closest to bottom.
+        """Select up to 2 players: one at the top y-extreme, one at the bottom.
 
-        BASELINE-SEEKING strategy. Tennis camera angles always show the two
-        players at opposite vertical extremes of the frame:
+        BASELINE-SEEKING strategy. Tennis camera angles show the two players
+        at opposite vertical extremes of the frame:
           - Far player → small pixel y (top of frame, far baseline)
           - Near player → large pixel y (bottom of frame, near baseline)
 
-        Ball persons / spectators / umpires / scoreboards are typically in the
-        MIDDLE horizontal band (around the net level). Picking the two y-extremes
-        naturally excludes them.
+        Y-SPAN REQUIREMENT — the core ball-boy defence. A valid pair of players
+        must span at least MIN_Y_SEPARATION_RATIO of the frame height. If the
+        two best candidates don't span that much, ONE of them is almost
+        certainly not a real player (bench sitter, umpire, ball boy, spectator
+        in the middle band).
 
-        Edge case: if all candidates are clustered at similar y (no meaningful
-        separation), fall back to picking by bbox area (closer/bigger = more
-        likely to be a real player).
+        When span fails we drop the TOP candidate and keep the BOTTOM. The
+        near-side player is detected more reliably (bigger pixels, clearer
+        pose) and is the safer retention. Returning 1 candidate propagates
+        correctly through _assign_ids.
+
+        Runs UNCONDITIONALLY (no len<=2 early return) — the 2-candidate case
+        is exactly the pathological "near player + bench sitter" situation
+        we need to catch.
         """
-        if len(candidates) <= 2:
+        # Minimum fraction of frame height the two players must span. 35%
+        # empirically covers normal play (near player mid-court, far player
+        # near far baseline) and rejects the "{real_near, bench_sitter}"
+        # pattern seen in debug frames where the bench sitter sits at ~24%
+        # from top and the real near player sits at ~52% from top — only
+        # 28% span, below this threshold.
+        MIN_Y_SEPARATION_RATIO = 0.35
+
+        if len(candidates) == 0:
+            self._diag["choose2_kept_0"] += 1
+            return [], []
+
+        if len(candidates) == 1:
+            self._diag["choose2_kept_1_single"] += 1
             return candidates, candidate_kps
 
-        # Tag each candidate with its bbox center y
+        frame_h = frame_shape[0]
+        min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
+
+        # Tag each candidate with bbox center y, sort ascending (top first)
         paired = []
         for box, kps in zip(candidates, candidate_kps):
             cy = (box[1] + box[3]) / 2
             paired.append((cy, box, kps))
-
-        # Sort by cy (top of frame first)
         paired.sort(key=lambda p: p[0])
 
-        # Need a meaningful y-spread between top and bottom candidates,
-        # otherwise they're on the same side of the court.
-        MIN_Y_SEPARATION_PX = 100
         top_cand = paired[0]
         bot_cand = paired[-1]
+        span = bot_cand[0] - top_cand[0]
 
-        if (bot_cand[0] - top_cand[0]) >= MIN_Y_SEPARATION_PX:
-            # Pick the y-extremes (top + bottom of frame)
-            chosen = [top_cand, bot_cand]
+        if span >= min_span_px:
+            # Valid pair — drop anything in the middle if 3+ candidates.
+            if len(candidates) > 2:
+                self._diag["choose2_dropped_middle"] += 1
+            self._diag["choose2_kept_2"] += 1
             logger.debug(
-                "_choose_two_players: baseline-seek picked top_cy=%.1f bot_cy=%.1f from %d candidates",
-                top_cand[0], bot_cand[0], len(candidates),
+                "_choose_two_players: kept 2, top_cy=%.1f bot_cy=%.1f span=%.1f (from %d)",
+                top_cand[0], bot_cand[0], span, len(candidates),
             )
-        else:
-            # All candidates clustered on the same side — fall back to area
-            # (largest bboxes = closest to camera = most likely real players)
-            paired_by_area = sorted(
-                paired,
-                key=lambda p: (p[1][2] - p[1][0]) * (p[1][3] - p[1][1]),
-                reverse=True,
-            )
-            chosen = paired_by_area[:2]
-            logger.debug(
-                "_choose_two_players: y-cluster (separation=%.1f), fell back to bbox area",
-                bot_cand[0] - top_cand[0],
-            )
+            return [top_cand[1], bot_cand[1]], [top_cand[2], bot_cand[2]]
 
-        return [c[1] for c in chosen], [c[2] for c in chosen]
+        # Span too small → one (or more) candidates is not a real player.
+        # Keep the bottom candidate only (near player is more reliable).
+        self._diag["choose2_kept_1_span_fail"] += 1
+        logger.debug(
+            "_choose_two_players: span=%.1f < min=%.1f, dropping top (from %d cands)",
+            span, min_span_px, len(candidates),
+        )
+        return [bot_cand[1]], [bot_cand[2]]
 
     def _assign_ids(self, bboxes: list, frame_idx: int,
                     kps_list: list = None) -> List[PlayerDetection]:
@@ -512,6 +553,47 @@ class PlayerTracker:
             if coords is not None:
                 det.court_x, det.court_y = coords
 
+    def log_diagnostics(self):
+        """Dump cumulative player-detection diagnostics. Call once post-inference.
+
+        What to look for:
+        - candidates_hist: if the '2' bucket is huge and '3+' is small, YOLO
+          is missing the far player often — which is exactly when the
+          bench-sitter mis-mapping triggers.
+        - choose2_kept_1_span_fail: how many frames the new y-span check
+          rejected a bench-sitter-like scenario. If > 0 on a run that
+          previously had ball-boy mis-mapping, the fix is firing.
+        - choose2_kept_2 should dominate; kept_0 should be near zero.
+        - choose2_dropped_middle shows how often 3+ candidates were culled.
+        """
+        d = self._diag
+        total = d["frames_yolo_ran"]
+        if total == 0:
+            logger.info("PlayerTracker diagnostics: no frames inferred")
+            return
+
+        def pct(n):
+            return 100.0 * n / total
+
+        logger.info("=== PlayerTracker diagnostics ===")
+        logger.info("frames_yolo_ran: %d", total)
+        logger.info("avg candidates/frame: %.2f", d["candidates_total"] / total)
+        logger.info("candidates_hist:")
+        for i, c in enumerate(d["candidates_hist"]):
+            label = str(i) if i < 6 else "6+"
+            logger.info("  %s: %6d (%5.1f%%)", label, c, pct(c))
+        logger.info("_choose_two_players outcomes:")
+        logger.info("  kept_2:                %6d (%5.1f%%)", d["choose2_kept_2"], pct(d["choose2_kept_2"]))
+        logger.info("  kept_1_span_fail:      %6d (%5.1f%%)", d["choose2_kept_1_span_fail"], pct(d["choose2_kept_1_span_fail"]))
+        logger.info("  kept_1_single_cand:    %6d (%5.1f%%)", d["choose2_kept_1_single"], pct(d["choose2_kept_1_single"]))
+        logger.info("  kept_0:                %6d (%5.1f%%)", d["choose2_kept_0"], pct(d["choose2_kept_0"]))
+        logger.info("  dropped_middle (3+):   %6d (%5.1f%%)", d["choose2_dropped_middle"], pct(d["choose2_dropped_middle"]))
+
     def reset(self):
         self._prev_players.clear()
         self.detections.clear()
+        for k in self._diag:
+            if isinstance(self._diag[k], list):
+                self._diag[k] = [0] * len(self._diag[k])
+            else:
+                self._diag[k] = 0

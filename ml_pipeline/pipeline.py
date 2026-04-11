@@ -196,6 +196,7 @@ class TennisAnalysisPipeline:
         result.ball_detections = self.ball_tracker.detections
 
         # Player post-processing
+        self.player_tracker.log_diagnostics()
         self.player_tracker.map_to_court(self.court_detector)
         # Temporal stability filter: reject "players" whose pixel position
         # barely changes over time (these are ball persons / spectators /
@@ -243,48 +244,80 @@ class TennisAnalysisPipeline:
     def _filter_stationary_players(self) -> None:
         """Reject 'players' whose pixel position is nearly stationary over time.
 
-        Ball persons, spectators, umpires, scoreboards etc are detected by YOLO
-        as people but they don't move much. Real tennis players move 10s of
-        meters during a match. We compute the std-dev of each player_id's
-        bounding box centers; if both x AND y std-dev are below a threshold,
-        the 'player' is rejected as stationary.
+        Two-signal rejection — reject if EITHER is true:
+
+        1. STD-DEV filter (original): both std_x and std_y below 50 px. Catches
+           objects that are fully planted (scoreboards, fixed cameras).
+        2. PATH-LENGTH filter (new): cumulative pixel distance between
+           consecutive detections below MIN_PATH_LENGTH_PX. A real tennis
+           player accumulates tens of thousands of pixels of travel across
+           a match. A bench sitter / ball person accumulates very little
+           even if they occasionally stand up or shift (which can spoof
+           the std filter since std only captures spread, not total motion).
+
+        The path-length filter exists because of the bench-sitter failure mode
+        documented in the player_tracker patch: a pid slot occasionally
+        occupied by a non-player can have high std (because the REAL player
+        occupies the same slot most of the time) but the *subset* of frames
+        that belong to the bench sitter still contributes very little total
+        path length. We can't easily partition the slot per-identity without
+        a real tracker, so path length is a coarse but directionally correct
+        backstop.
 
         Threshold tuned for 1080p video — a real player's centers vary by
-        100s of pixels; a stationary person varies by < 30 pixels.
+        100s of pixels per frame transition; a stationary person varies by
+        < 5 pixels. Over ~5000 detection frames in a 10-min match, a real
+        player's path length is typically > 30,000 px.
         """
         from collections import defaultdict
         import numpy as _np
 
-        STATIONARY_STD_PX = 50  # below this in BOTH x and y → stationary
+        STATIONARY_STD_PX = 50         # both x and y below this → stationary
+        MIN_PATH_LENGTH_PX = 10000     # cumulative path length across match
 
         if not self.player_tracker.detections:
             return
 
+        # Group by (pid, frame_idx) and keep only unique frames per pid, then
+        # sort so path length reflects temporal motion.
         groups = defaultdict(list)
         for d in self.player_tracker.detections:
             cx, cy = d.center
-            groups[d.player_id].append((float(cx), float(cy)))
+            groups[d.player_id].append((d.frame_idx, float(cx), float(cy)))
 
         rejected_ids = set()
-        for pid, centers in groups.items():
-            if len(centers) < 5:
+        for pid, entries in groups.items():
+            if len(entries) < 5:
                 continue  # not enough samples to judge
-            xs = _np.array([c[0] for c in centers])
-            ys = _np.array([c[1] for c in centers])
+            entries.sort(key=lambda e: e[0])
+            xs = _np.array([e[1] for e in entries])
+            ys = _np.array([e[2] for e in entries])
             std_x = float(_np.std(xs))
             std_y = float(_np.std(ys))
-            if std_x < STATIONARY_STD_PX and std_y < STATIONARY_STD_PX:
+            dx = _np.diff(xs)
+            dy = _np.diff(ys)
+            path_len = float(_np.sum(_np.sqrt(dx * dx + dy * dy)))
+
+            stationary_by_std = (std_x < STATIONARY_STD_PX and std_y < STATIONARY_STD_PX)
+            stationary_by_path = (path_len < MIN_PATH_LENGTH_PX)
+
+            if stationary_by_std or stationary_by_path:
+                reason = []
+                if stationary_by_std:
+                    reason.append("std")
+                if stationary_by_path:
+                    reason.append("path")
                 logger.info(
-                    "_filter_stationary_players: REJECT player_id=%s "
-                    "n=%d std_x=%.1f std_y=%.1f (likely ball person/spectator)",
-                    pid, len(centers), std_x, std_y,
+                    "_filter_stationary_players: REJECT pid=%s n=%d "
+                    "std_x=%.1f std_y=%.1f path_len=%.0f reason=%s",
+                    pid, len(entries), std_x, std_y, path_len, "+".join(reason),
                 )
                 rejected_ids.add(pid)
             else:
                 logger.info(
-                    "_filter_stationary_players: KEEP player_id=%s "
-                    "n=%d std_x=%.1f std_y=%.1f",
-                    pid, len(centers), std_x, std_y,
+                    "_filter_stationary_players: KEEP pid=%s n=%d "
+                    "std_x=%.1f std_y=%.1f path_len=%.0f",
+                    pid, len(entries), std_x, std_y, path_len,
                 )
 
         if rejected_ids:
