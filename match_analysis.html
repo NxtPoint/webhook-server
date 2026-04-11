@@ -299,50 +299,55 @@ body {
 }
 
 /* ========== HEATMAPS (MODULE 2) ========== */
-.heatmap-section {
-  display: flex; flex-direction: column; gap: 0;
+/* Constrain heatmap cards so court + tables have the same width and
+   the whole thing fits on one viewport on desktop + tablet. */
+.heatmap-card {
+  max-width: 1200px; margin: 0 auto 10px; padding: 14px 16px !important;
 }
-/* Stats row sits above the court */
+/* Stats row sits above the court — compact */
 .heatmap-stats-row {
-  display: flex; gap: 24px; align-items: center; justify-content: space-between;
-  padding: 8px 4px 16px; flex-wrap: wrap;
+  display: flex; gap: 20px; align-items: center; justify-content: space-between;
+  padding: 0 2px 8px; flex-wrap: wrap;
 }
 .heatmap-stats-left {
-  display: flex; align-items: baseline; gap: 12px;
+  display: flex; align-items: baseline; gap: 10px;
 }
 .heatmap-stats-right {
-  display: flex; gap: 18px; font-size: 0.82rem; color: var(--text-sec);
+  display: flex; gap: 14px; font-size: 0.78rem; color: var(--text-sec);
 }
 .hm-stat-big {
-  font-size: 3rem; font-weight: 700; line-height: 1;
+  font-size: 2.3rem; font-weight: 700; line-height: 1;
 }
 .hm-stat-lbl {
-  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px;
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--text-sec);
 }
 .hm-stat-row {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 5px;
 }
 .hm-dot {
-  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  display: inline-block; width: 9px; height: 9px; border-radius: 50%;
 }
-/* Court — fills the card width, aspect ratio pinned so height stays sensible */
+/* Court — fills the card width, landscape aspect so height stays manageable */
 .heatmap-court-wrap {
   display: flex; flex-direction: column; align-items: stretch;
   width: 100%;
 }
 .heatmap-court-wrap canvas {
-  display: block; width: 100%; height: auto;
-  border-radius: 6px;
+  display: block; width: 100%; height: auto; border-radius: 6px;
 }
-/* Split table — ad on left, deuce on right */
+/* Split table — ad on left, deuce on right — compact */
 .heatmap-split-tables {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;
 }
 .heatmap-split-tables h4 {
-  font-size: 0.7rem; font-weight: 600; color: var(--text-sec);
-  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
+  font-size: 0.68rem; font-weight: 600; color: var(--text-sec);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
   padding-bottom: 4px; border-bottom: 1px solid var(--border);
+}
+.heatmap-split-tables table.strategy-table th,
+.heatmap-split-tables table.strategy-table td {
+  padding: 4px 8px;
 }
 /* Toggle row — player + filter side by side */
 .heatmap-toggle-row {
@@ -1357,19 +1362,19 @@ function renderHeatmapContent() {
   if (activeTab === 'return-placement') {
     panel.innerHTML = `
       ${toggleRow}
-      <div class="chart-card full" style="padding:16px;margin-bottom:10px">
+      <div class="chart-card full heatmap-card">
         <h3>Serve Received — How opponent served you</h3>
         <div id="heatmapStatsReceived" class="heatmap-stats-row"></div>
         <div class="heatmap-court-wrap">
-          <canvas id="courtReceived" width="1200" height="780"></canvas>
+          <canvas id="courtReceived" width="1200" height="380"></canvas>
         </div>
         <div class="heatmap-split-tables" id="heatmapTableReceived"></div>
       </div>
-      <div class="chart-card full" style="padding:16px">
+      <div class="chart-card full heatmap-card">
         <h3>Return Placement — Where you hit your return</h3>
         <div id="heatmapStatsPlaced" class="heatmap-stats-row"></div>
         <div class="heatmap-court-wrap">
-          <canvas id="courtPlaced" width="1200" height="780"></canvas>
+          <canvas id="courtPlaced" width="1200" height="380"></canvas>
         </div>
         <div class="heatmap-split-tables" id="heatmapTablePlaced"></div>
       </div>
@@ -1377,12 +1382,12 @@ function renderHeatmapContent() {
   } else {
     panel.innerHTML = `
       ${toggleRow}
-      <div class="chart-card full" style="padding:16px">
+      <div class="chart-card full heatmap-card">
         <div id="heatmapStats" class="heatmap-stats-row"></div>
         <div class="heatmap-court-wrap">
-          <canvas id="heatmapCourt" width="1200" height="780"></canvas>
+          <canvas id="heatmapCourt" width="1200" height="380"></canvas>
         </div>
-        <h3 id="heatmapTableTitle" style="margin-top:18px">Placement Summary</h3>
+        <h3 id="heatmapTableTitle" style="margin-top:12px;margin-bottom:4px">Placement Summary</h3>
         <div class="heatmap-split-tables" id="heatmapTable"></div>
       </div>
     `;
