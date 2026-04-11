@@ -105,11 +105,21 @@ Parallel analysis path for practice sessions, using the in-house T5 ML pipeline 
 ### Data Layers (PostgreSQL)
 
 - **Bronze** (`bronze.*`): Raw SportAI JSON ingested verbatim. `db_init.py` owns schema creation (idempotent, called on boot). Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
-- **Silver** (`silver.*`): Structured/normalized data. `silver.point_detail` is the key match table consumed by the video timeline and client API. Built by `build_silver_v2.py` (5-pass SQL approach). `silver.practice_detail` is the practice table for serve/rally sessions. Built by `ml_pipeline/build_silver_practice.py` (3-pass: extract bounces → sequence detection → analytics). Legacy: `build_silver_point_detail.py` (Python-based, kept for reference).
-- **Gold**: Materialized view tables (`point_log_tbl`, `point_summary_tbl`) built on demand via `/ops/build-gold`. `gold.vw_client_match_summary` is consumed by the Locker Room client API.
+- **Silver** (`silver.*`): Structured/normalized analytical data. `silver.point_detail` is the single source of truth for match-level analytics — one row per shot with derived fields (serve zones, rally locations, aggression, depth, stroke, outcome, ace/DF detection). Built by `build_silver_v2.py` (5-pass SQL approach). `silver.practice_detail` is the practice equivalent, built by `ml_pipeline/build_silver_practice.py`. Legacy: `build_silver_point_detail.py` (Python-based, kept for reference).
+- **Gold** (`gold.*`): Presentation layer. Thin views — one per dashboard chart — that aggregate silver into exactly the shape the frontend needs. **No Python aggregation downstream of gold.** The dashboards and LLM coach both read the same gold views, guaranteeing consistent numbers.
+  - `gold.vw_client_match_summary` — match list endpoint (created in `db_init.py`, legacy)
+  - `gold.vw_player` — dim: resolves `first_server` S/R flag into `player_a_id`/`player_b_id`, generates `session_id`
+  - `gold.vw_point` — fact: silver.point_detail flattened and joined to vw_player (adds `player_role`, `player_name`, `serve_point_type_d`, `serve_result_d`)
+  - `gold.match_kpi` — 1 row per match, every top-level KPI for both players (Summary tab)
+  - `gold.match_serve_breakdown` — serve direction × side × win rate (Serve Detail strategy table)
+  - `gold.match_return_breakdown` — return stats with vs-1st/vs-2nd split (Return Detail tab)
+  - `gold.match_rally_breakdown` — aggression/depth/stroke counts + speeds per player (Rally Detail)
+  - `gold.match_rally_length` — rally length distribution with per-player wins
+  - `gold.match_shot_placement` — shot-level coordinates + outcome for heatmaps
+  - All views created idempotently on boot by `gold_init.py::gold_init_presentation()`. DROP + CREATE pattern avoids column-type replace errors. Each view is individually try/except'd so one failure can't block the service.
 - **Billing** (`billing.*`): Separate schema for credit-based usage tracking. See Billing System below.
 
-Architecture rule: **Python owns all business logic; SQL is only for I/O** (enforced in `build_video_timeline.py`).
+Architecture rule: **Python owns business logic, SQL is for I/O** (enforced in `build_video_timeline.py`). For the gold layer specifically: **SQL views own aggregation, Python API endpoints are thin passthroughs** (see `/api/client/match/*` endpoints in `client_api.py`). Never aggregate in Python or JavaScript if a view can do it once.
 
 ### Silver V2 (`build_silver_v2.py`)
 

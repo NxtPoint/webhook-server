@@ -124,6 +124,17 @@ from build_silver_v2 import build_silver_v2 as build_silver_point_detail, DEFAUL
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
 
+# ---------- Gold presentation views (idempotent on boot) ----------
+# Creates gold.vw_player, gold.vw_point, and all match_* presentation views
+# used by the match analysis dashboards and the upcoming LLM coach.
+# Each view is individually try/except'd inside gold_init_presentation() so
+# a single failure cannot kill the service.
+try:
+    from gold_init import gold_init_presentation  # noqa: E402
+    gold_init_presentation()
+except Exception:
+    log.exception("gold_init_presentation() failed on boot — gold views may be stale")
+
 
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None

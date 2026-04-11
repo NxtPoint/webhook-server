@@ -6,7 +6,15 @@
 # Endpoints:
 #   GET    /api/client/matches              — list matches with stats, scores, trim status
 #   GET    /api/client/matches/<task_id>    — point-level detail from silver.point_detail
-#   GET    /api/client/match-analysis/<task_id> — full silver.point_detail with coordinates for analysis dashboards
+#   GET    /api/client/match-analysis/<task_id> — full silver.point_detail with coordinates [LEGACY]
+#
+#   GOLD presentation endpoints (thin passthrough to gold.* views):
+#   GET    /api/client/match/kpi/<task_id>              — gold.match_kpi (1 row, H2H card)
+#   GET    /api/client/match/serve-breakdown/<task_id>  — gold.match_serve_breakdown (strategy table)
+#   GET    /api/client/match/return-breakdown/<task_id> — gold.match_return_breakdown (return stats)
+#   GET    /api/client/match/rally-breakdown/<task_id>  — gold.match_rally_breakdown (rally stats)
+#   GET    /api/client/match/rally-length/<task_id>     — gold.match_rally_length (length distribution)
+#   GET    /api/client/match/shot-placement/<task_id>   — gold.match_shot_placement (heatmap data)
 #   PATCH  /api/client/matches/<task_id>    — update match metadata (whitelisted fields only)
 #   POST   /api/client/matches/<task_id>/reprocess — rebuild silver via build_silver_v2
 #   GET    /api/client/players              — distinct player names for autocomplete
@@ -1342,8 +1350,93 @@ def practice_heatmap(task_id, heatmap_type):
         return jsonify({"ok": False, "error": "url_generation_failed"}), 500
 
 
+# ============================================================================
+# GOLD PRESENTATION ENDPOINTS
+# Thin passthrough to gold.* views. No aggregation in Python — the view does it.
+# Used by match_analysis.html and the LLM coach (both read the same numbers).
+# ============================================================================
+
+def _owns_task(conn, task_id, email):
+    """Return True if the given email owns the given task_id."""
+    owner = conn.execute(
+        text("SELECT email FROM bronze.submission_context WHERE task_id = :tid"),
+        {"tid": task_id},
+    ).scalar_one_or_none()
+    return owner is not None and _norm_email(owner) == email
+
+
+def _gold_one(view_name, task_id):
+    """Fetch all rows from a gold view filtered by task_id. Serializes Decimal/UUID."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(f"SELECT * FROM gold.{view_name} WHERE task_id = CAST(:tid AS uuid)"),
+            {"tid": task_id},
+        ).mappings().all()
+    return [{k: _serialize(v) for k, v in r.items()} for r in rows]
+
+
+def _gold_guard_and_fetch(view_name, task_id):
+    """Shared guard + fetch pattern. Returns (status_code, payload_dict)."""
+    if not _guard():
+        return 403, {"ok": False, "error": "forbidden"}
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return 400, {"ok": False, "error": "email required"}
+    try:
+        with engine.connect() as conn:
+            if not _owns_task(conn, task_id, email):
+                return 404, {"ok": False, "error": "not_found"}
+        rows = _gold_one(view_name, task_id)
+        return 200, {"ok": True, "task_id": task_id, "rows": rows}
+    except Exception:
+        log.exception("gold endpoint failed view=%s task_id=%s", view_name, task_id)
+        return 500, {"ok": False, "error": "internal_error"}
+
+
+@client_bp.route("/api/client/match/kpi/<task_id>", methods=["GET", "OPTIONS"])
+def gold_match_kpi(task_id):
+    """Single-row match KPIs for both players (Summary tab head-to-head)."""
+    code, payload = _gold_guard_and_fetch("match_kpi", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/match/serve-breakdown/<task_id>", methods=["GET", "OPTIONS"])
+def gold_match_serve_breakdown(task_id):
+    """Serve direction × side × win rate (Serve Detail strategy table)."""
+    code, payload = _gold_guard_and_fetch("match_serve_breakdown", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/match/return-breakdown/<task_id>", methods=["GET", "OPTIONS"])
+def gold_match_return_breakdown(task_id):
+    """Return stats per player with vs-1st/vs-2nd split (Return Detail tab)."""
+    code, payload = _gold_guard_and_fetch("match_return_breakdown", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/match/rally-breakdown/<task_id>", methods=["GET", "OPTIONS"])
+def gold_match_rally_breakdown(task_id):
+    """Per-player rally stats: aggression/depth/stroke + speeds (Rally Detail tab)."""
+    code, payload = _gold_guard_and_fetch("match_rally_breakdown", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/match/rally-length/<task_id>", methods=["GET", "OPTIONS"])
+def gold_match_rally_length(task_id):
+    """Rally length distribution with per-player wins (Rally Detail length chart)."""
+    code, payload = _gold_guard_and_fetch("match_rally_length", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/match/shot-placement/<task_id>", methods=["GET", "OPTIONS"])
+def gold_match_shot_placement(task_id):
+    """Thin shot-level data for heatmaps (Placement Heatmaps module)."""
+    code, payload = _gold_guard_and_fetch("match_shot_placement", task_id)
+    return jsonify(payload), code
+
+
 # ----------------------------
-# GET /api/client/match-analysis/<task_id>
+# GET /api/client/match-analysis/<task_id>  [LEGACY — to be retired]
 # ----------------------------
 
 @client_bp.route("/api/client/match-analysis/<task_id>", methods=["GET", "OPTIONS"])
