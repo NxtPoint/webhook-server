@@ -336,20 +336,61 @@ class PlayerTracker:
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape) -> tuple:
-        """Select 2 most likely players from candidates. Returns (bboxes, kps)."""
-        # Build paired list so keypoints stay aligned with bboxes
-        paired = list(zip(candidates, candidate_kps))
-        if court_bbox is not None:
-            court_cx = (court_bbox[0] + court_bbox[2]) / 2
-            court_cy = (court_bbox[1] + court_bbox[3]) / 2
-            paired.sort(key=lambda p: np.hypot(
-                (p[0][0] + p[0][2]) / 2 - court_cx,
-                (p[0][1] + p[0][3]) / 2 - court_cy,
-            ))
+        """Select up to 2 players: one closest to top of frame, one closest to bottom.
+
+        BASELINE-SEEKING strategy. Tennis camera angles always show the two
+        players at opposite vertical extremes of the frame:
+          - Far player → small pixel y (top of frame, far baseline)
+          - Near player → large pixel y (bottom of frame, near baseline)
+
+        Ball persons / spectators / umpires / scoreboards are typically in the
+        MIDDLE horizontal band (around the net level). Picking the two y-extremes
+        naturally excludes them.
+
+        Edge case: if all candidates are clustered at similar y (no meaningful
+        separation), fall back to picking by bbox area (closer/bigger = more
+        likely to be a real player).
+        """
+        if len(candidates) <= 2:
+            return candidates, candidate_kps
+
+        # Tag each candidate with its bbox center y
+        paired = []
+        for box, kps in zip(candidates, candidate_kps):
+            cy = (box[1] + box[3]) / 2
+            paired.append((cy, box, kps))
+
+        # Sort by cy (top of frame first)
+        paired.sort(key=lambda p: p[0])
+
+        # Need a meaningful y-spread between top and bottom candidates,
+        # otherwise they're on the same side of the court.
+        MIN_Y_SEPARATION_PX = 100
+        top_cand = paired[0]
+        bot_cand = paired[-1]
+
+        if (bot_cand[0] - top_cand[0]) >= MIN_Y_SEPARATION_PX:
+            # Pick the y-extremes (top + bottom of frame)
+            chosen = [top_cand, bot_cand]
+            logger.debug(
+                "_choose_two_players: baseline-seek picked top_cy=%.1f bot_cy=%.1f from %d candidates",
+                top_cand[0], bot_cand[0], len(candidates),
+            )
         else:
-            paired.sort(key=lambda p: (p[0][2] - p[0][0]) * (p[0][3] - p[0][1]), reverse=True)
-        top2 = paired[:2]
-        return [p[0] for p in top2], [p[1] for p in top2]
+            # All candidates clustered on the same side — fall back to area
+            # (largest bboxes = closest to camera = most likely real players)
+            paired_by_area = sorted(
+                paired,
+                key=lambda p: (p[1][2] - p[1][0]) * (p[1][3] - p[1][1]),
+                reverse=True,
+            )
+            chosen = paired_by_area[:2]
+            logger.debug(
+                "_choose_two_players: y-cluster (separation=%.1f), fell back to bbox area",
+                bot_cand[0] - top_cand[0],
+            )
+
+        return [c[1] for c in chosen], [c[2] for c in chosen]
 
     def _assign_ids(self, bboxes: list, frame_idx: int,
                     kps_list: list = None) -> List[PlayerDetection]:
