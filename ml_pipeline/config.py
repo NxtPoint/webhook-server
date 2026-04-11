@@ -94,6 +94,11 @@ COURT_REFERENCE_KEYPOINTS = [
 # ---------------------------------------------------------------------------
 YOLO_CONFIDENCE = 0.25             # Sane production value with YOLOv8x-pose (bigger model = more confident)
 YOLO_IMGSZ = 1280                  # Input resolution. Default 640 → too small for distant players. 1280 = 2x = 4x pixels per object
+
+# Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
+# every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg
+# by __main__.py post-processing. Set to 0 to disable.
+DEBUG_FRAME_INTERVAL = 1000
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
 PLAYER_IOU_THRESHOLD = 0.2         # More lenient IoU matching (handles movement)
 PLAYER_COURT_MARGIN_PX = 9999      # Effectively DISABLED — court bbox can be wrong, trust YOLO

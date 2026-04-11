@@ -214,6 +214,33 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
 
         db.save_heatmap_keys(job_id, ball_heatmap_key, player_heatmap_keys)
 
+        # 4b. Upload debug frames (YOLO bbox overlays) for visual inspection
+        debug_dir = "/tmp/debug_frames"
+        if os.path.exists(debug_dir):
+            try:
+                debug_files = sorted(os.listdir(debug_dir))
+                logger.info(f"Uploading {len(debug_files)} debug frames to S3")
+                for fname in debug_files:
+                    local_path = os.path.join(debug_dir, fname)
+                    if not fname.endswith(".jpg"):
+                        continue
+                    s3_debug_key = f"debug/{job_id}/{fname}"
+                    try:
+                        s3.upload_file(
+                            local_path, s3_bucket, s3_debug_key,
+                            ExtraArgs={"ContentType": "image/jpeg"},
+                        )
+                    except Exception as e:
+                        logger.warning(f"Debug frame upload failed {fname}: {e}")
+                    # Clean up local file
+                    try:
+                        os.unlink(local_path)
+                    except Exception:
+                        pass
+                logger.info(f"Debug frames uploaded to s3://{s3_bucket}/debug/{job_id}/")
+            except Exception as e:
+                logger.warning(f"Debug frame upload step failed (non-fatal): {e}")
+
         # 5. Transcode to MP4 + upload to trimmed/{job_id}/practice.mp4
         on_progress("transcoding", 92)
         mp4_path = None

@@ -11,6 +11,8 @@ from ultralytics import YOLO
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 
+import cv2
+
 from ml_pipeline.config import (
     YOLO_WEIGHTS,
     YOLO_POSE_WEIGHTS,
@@ -21,7 +23,10 @@ from ml_pipeline.config import (
     PLAYER_IOU_THRESHOLD,
     PLAYER_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
+    DEBUG_FRAME_INTERVAL,
 )
+
+DEBUG_FRAMES_DIR = "/tmp/debug_frames"
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +142,14 @@ class PlayerTracker:
                 frame_idx, n_yolo_boxes, n_filtered_out, len(candidates), skip_court_filter,
             )
 
+        # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
+        # so we can visually inspect what YOLO is seeing vs missing
+        if DEBUG_FRAME_INTERVAL > 0 and frame_idx % DEBUG_FRAME_INTERVAL == 0:
+            try:
+                self._save_debug_frame(frame, frame_idx, boxes)
+            except Exception as e:
+                logger.warning("debug frame save failed: %s", e)
+
         if not candidates:
             return []
 
@@ -151,6 +164,40 @@ class PlayerTracker:
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
         return frame_detections
+
+    def _save_debug_frame(self, frame, frame_idx: int, boxes) -> None:
+        """Save a frame with YOLO bboxes drawn on it for visual debugging.
+
+        Output: /tmp/debug_frames/frame_{idx:06d}_n{count}.jpg
+        Uploaded to S3 by __main__.py post-processing.
+        """
+        os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
+        img = frame.copy()
+        n_boxes = len(boxes)
+        for box in boxes:
+            try:
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                conf = float(box.conf[0].cpu().numpy())
+                # Color: green if conf >= 0.5, yellow otherwise
+                color = (0, 255, 0) if conf >= 0.5 else (0, 255, 255)
+                cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), color, 3)
+                cv2.putText(
+                    img, f"{conf:.2f}", (int(x1), int(y1) - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2,
+                )
+            except Exception:
+                continue
+        # Header banner
+        header = f"frame={frame_idx} yolo_boxes={n_boxes} conf>={YOLO_CONFIDENCE} imgsz={YOLO_IMGSZ}"
+        cv2.putText(
+            img, header, (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2,
+        )
+        out_path = os.path.join(
+            DEBUG_FRAMES_DIR, f"frame_{frame_idx:06d}_n{n_boxes}.jpg"
+        )
+        cv2.imwrite(out_path, img)
+        logger.info("debug frame saved: %s (n_boxes=%d)", out_path, n_boxes)
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape) -> tuple:
