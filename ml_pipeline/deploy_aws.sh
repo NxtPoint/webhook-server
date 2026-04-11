@@ -193,7 +193,7 @@ aws batch create-compute-environment \
         "subnets": ["'"$(echo ${SUBNET_IDS} | sed 's/,/","/g')"'"],
         "securityGroupIds": ["'"${SG_ID}"'"],
         "instanceRole": "'"${INSTANCE_PROFILE_ARN}"'",
-        "bidPercentage": 60,
+        "bidPercentage": 100,
         "spotIamFleetRole": "arn:aws:iam::'"${ACCOUNT_ID}"':role/aws-ec2-spot-fleet-tagging-role",
         "tags": {
             "Project": "TEN-FIFTY5",
