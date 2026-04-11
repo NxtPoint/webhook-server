@@ -85,6 +85,48 @@ def _is_in_service_box(court_x: float, court_y: float) -> bool:
     return in_x and (near_box or far_box)
 
 
+def _is_serve_geometric(
+    hitter_court_y: Optional[float],
+    bounce_court_x: Optional[float],
+    bounce_court_y: Optional[float],
+) -> bool:
+    """Detect a serve purely by geometry.
+
+    A serve has these characteristics:
+      - Hitter is at or behind a baseline (court_y near 0 or near 23.77, or beyond)
+      - Ball bounces in the OPPOSITE service box
+      - Hit is overhead (handled separately by setting swing_type='overhead')
+
+    This complements the time-gap heuristic in pass1: when bounce data is
+    sparse, gaps aren't reliable indicators of point boundaries, so we use
+    pure geometric features instead.
+    """
+    if hitter_court_y is None or bounce_court_x is None or bounce_court_y is None:
+        return False
+
+    # Hitter at FAR baseline (court_y >= 23.77 - 0.5, or beyond past it)
+    HITTER_BASELINE_TOL = 1.0  # generous: 1m of slack
+    hitter_at_far = hitter_court_y >= (COURT_LENGTH_M - HITTER_BASELINE_TOL)
+    hitter_at_near = hitter_court_y <= HITTER_BASELINE_TOL
+
+    if not (hitter_at_far or hitter_at_near):
+        return False
+
+    if not _is_in_service_box(bounce_court_x, bounce_court_y):
+        return False
+
+    # If hitter is at FAR baseline, the bounce should be on the NEAR side
+    # (between net and far service line) and vice versa.
+    bounce_on_near_half = bounce_court_y > HALF_Y
+    bounce_on_far_half = bounce_court_y < HALF_Y
+
+    if hitter_at_far and bounce_on_near_half:
+        return True
+    if hitter_at_near and bounce_on_far_half:
+        return True
+    return False
+
+
 def _infer_swing_type_from_keypoints(
     keypoints: Optional[list],
     center_x: Optional[float],
@@ -327,8 +369,18 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                     "_synthesized": True,
                 }
 
-        # Serve detection: gap > threshold AND bounce in service box
+        # Serve detection: TWO independent triggers
+        # 1. Time-based: gap > threshold (start of new point) + bounce in service box
+        # 2. Geometric: hitter at baseline + bounce in opposite service box
+        # The geometric check is essential when bounce data is sparse and gaps
+        # don't align with point boundaries.
         is_serve = False
+        is_geometric_serve = (
+            hitter is not None and
+            _is_serve_geometric(hitter.get("court_y"), cx, cy)
+        )
+        if is_geometric_serve:
+            is_serve = True
         if (gap_s > SERVE_GAP_S or i == 0) and _is_in_service_box(cx, cy):
             is_serve = True
 
