@@ -16,6 +16,7 @@ from ml_pipeline.config import (
     YOLO_POSE_WEIGHTS,
     YOLO_POSE_WEIGHTS_FALLBACK,
     YOLO_CONFIDENCE,
+    YOLO_IMGSZ,
     YOLO_PERSON_CLASS_ID,
     PLAYER_IOU_THRESHOLD,
     PLAYER_COURT_MARGIN_PX,
@@ -94,11 +95,13 @@ class PlayerTracker:
             return reused
         self._last_detect_frame = frame_idx
         if self.has_pose:
-            results = self.model.predict(frame, conf=YOLO_CONFIDENCE, verbose=False)
+            results = self.model.predict(
+                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ, verbose=False,
+            )
         else:
             results = self.model.predict(
-                frame, conf=YOLO_CONFIDENCE, classes=[YOLO_PERSON_CLASS_ID],
-                verbose=False,
+                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ,
+                classes=[YOLO_PERSON_CLASS_ID], verbose=False,
             )
         boxes = results[0].boxes if results else []
         kps_data = results[0].keypoints if (results and self.has_pose) else None

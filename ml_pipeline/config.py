@@ -93,6 +93,7 @@ COURT_REFERENCE_KEYPOINTS = [
 # Player tracker (YOLOv8)
 # ---------------------------------------------------------------------------
 YOLO_CONFIDENCE = 0.25             # Sane production value with YOLOv8x-pose (bigger model = more confident)
+YOLO_IMGSZ = 1280                  # Input resolution. Default 640 → too small for distant players. 1280 = 2x = 4x pixels per object
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
 PLAYER_IOU_THRESHOLD = 0.2         # More lenient IoU matching (handles movement)
 PLAYER_COURT_MARGIN_PX = 9999      # Effectively DISABLED — court bbox can be wrong, trust YOLO
