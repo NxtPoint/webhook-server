@@ -1513,13 +1513,16 @@ function setHeatmapFilterSet(val)     { setHeatmapFilter('setNum', val); }
 
 function renderHeatmapCourts() {
   const shots = getHeatmapShots(heatmapPlayer);
+  // Diagnostic — helps debug "no data" issues
+  const rawPlacement = (selectedData?.placement || []).length;
+  console.log(`[heatmap] tab=${activeTab} player=${heatmapPlayer} filters=${JSON.stringify(heatmapFilter)} → ${shots.length} shots (of ${rawPlacement} total in placement)`);
   drawHeatmapCourt('heatmapCourt', shots, 'heatmapStats');
   renderHeatmapSummaryTable(shots);
 }
 
 // Read shots from gold.match_shot_placement, filter by active tab + toggles + set
 function getHeatmapShots(playerRole) {
-  const all = selectedData.placement || [];
+  const all = selectedData?.placement || [];
 
   // Apply player filter
   let shots;
@@ -1532,28 +1535,28 @@ function getHeatmapShots(playerRole) {
   }
 
   // Apply set filter (cross-cutting across tabs)
+  // Compare as strings to avoid numeric/string mismatch issues
   if (heatmapFilter.setNum && heatmapFilter.setNum !== 'all') {
-    const sn = parseInt(heatmapFilter.setNum, 10);
-    shots = shots.filter(p => Number(p.set_number) === sn);
+    const target = String(heatmapFilter.setNum);
+    shots = shots.filter(p => String(p.set_number) === target);
   }
 
   // Apply tab-specific filters
   if (activeTab === 'serve-placement') {
     shots = shots.filter(p => p.serve_d === true);
-    if (heatmapFilter.serve !== 'all') {
+    if (heatmapFilter.serve && heatmapFilter.serve !== 'all') {
       shots = shots.filter(p => p.serve_try_ix_in_point === heatmapFilter.serve);
     }
   } else if (activeTab === 'return-placement') {
     shots = shots.filter(p => p.shot_phase_d === 'Return');
-    if (heatmapFilter.stroke !== 'all') {
+    if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
   } else if (activeTab === 'return-received') {
     // Opponent serves at you — already filtered above
-    if (heatmapFilter.stroke !== 'all') {
+    if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       // For returns received, "stroke" filter means YOUR return stroke
-      // Need to look at the corresponding return shot (shot_ix_in_point=2) by this player
-      // Build a set of point_keys where YOUR return used the filtered stroke
+      // Filter to point_keys where YOUR return on that point used the selected stroke
       const yourReturns = rowsForRole(all, playerRole).filter(r =>
         r.shot_phase_d === 'Return' && r.stroke_d === heatmapFilter.stroke
       );
@@ -1564,15 +1567,14 @@ function getHeatmapShots(playerRole) {
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net'
     );
-    if (heatmapFilter.stroke !== 'all') {
+    if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
-  } else {
-    // Rally depth
+  } else if (activeTab === 'rally-depth') {
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'
     );
-    if (heatmapFilter.outcome !== 'all') {
+    if (heatmapFilter.outcome && heatmapFilter.outcome !== 'all') {
       shots = shots.filter(p => p.depth_d === heatmapFilter.outcome);
     }
   }
