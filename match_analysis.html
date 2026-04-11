@@ -58,150 +58,128 @@ body {
 .session-item .s-score { font-size: 0.78rem; font-weight: 600; color: var(--text); margin-top: 3px; }
 
 /* ========== MAIN DASHBOARD ========== */
-.dash-main { overflow: hidden; padding: 0; display: flex; flex-direction: column; }
+.dash-main { overflow-y: auto; padding: 0; }
 .dash-toolbar {
-  flex-shrink: 0; background: var(--white);
+  position: sticky; top: 0; z-index: 10; background: var(--white);
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 20px; height: 40px;
+  padding: 0 24px; height: 48px;
 }
-.dash-toolbar h1 { font-size: 0.95rem; font-weight: 600; }
+.dash-toolbar h1 { font-size: 1.05rem; font-weight: 600; }
 .dash-toolbar .actions { display: flex; gap: 8px; }
 
-/* Module tabs (top level) */
+/* Module tabs (top level — match analysis specific) */
 .module-tabs {
-  flex-shrink: 0; display: flex; gap: 0; background: var(--green); padding: 0 20px;
+  display: flex; gap: 0; background: var(--green);
+  padding: 0 24px; position: sticky; top: 48px; z-index: 10;
 }
 .module-tab {
-  padding: 8px 18px; font-size: 0.78rem; font-weight: 500; color: rgba(255,255,255,0.65);
+  padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: rgba(255,255,255,0.65);
   cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
   background: none; border-top: none; border-left: none; border-right: none;
 }
 .module-tab:hover { color: rgba(255,255,255,0.9); }
 .module-tab.active { color: #fff; border-bottom-color: #fff; font-weight: 600; }
 
-/* Sub-tabs */
+/* Sub-tabs — identical to practice.html */
 .dash-tabs {
-  flex-shrink: 0; display: flex; gap: 0; background: var(--white);
-  border-bottom: 1px solid var(--border); padding: 0 20px;
+  display: flex; gap: 0; background: var(--white); border-bottom: 1px solid var(--border);
+  padding: 0 24px; position: sticky; top: 88px; z-index: 9;
 }
 .dash-tab {
-  padding: 8px 18px; font-size: 0.78rem; font-weight: 500; color: var(--text-sec);
+  padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: var(--text-sec);
   cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
   background: none; border-top: none; border-left: none; border-right: none;
 }
 .dash-tab:hover { color: var(--text); }
 .dash-tab.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
 
-/* Filter bar */
+/* Filter bar (match analysis specific) */
 .filter-bar {
-  flex-shrink: 0; display: flex; gap: 12px; align-items: center; padding: 6px 20px;
+  display: flex; gap: 12px; align-items: center; padding: 10px 24px;
   background: var(--white); border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
-.filter-bar label { font-size: 0.68rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; }
+.filter-bar label { font-size: 0.75rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; }
 .filter-bar select {
-  padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--radius);
-  font-size: 0.75rem; font-family: inherit; background: var(--white); color: var(--text);
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.8rem; font-family: inherit; background: var(--white); color: var(--text);
   cursor: pointer;
 }
 .filter-bar select:focus { outline: none; border-color: var(--green); }
 
-/* Dashboard content — single-screen canvas, no scroll */
-.dash-content { padding: 12px 20px; flex: 1; overflow-y: auto; overflow-x: hidden; }
+/* Dashboard content — identical to practice.html */
+.dash-content { padding: 20px 24px; padding-bottom: 300px; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-/* ========== KPI CARDS ========== */
+/* ========== KPI CARDS — identical to practice.html ========== */
 .kpi-strip {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 8px; margin-bottom: 12px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px; margin-bottom: 20px;
 }
 .kpi {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); text-align: center;
+  padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); text-align: center;
 }
-.kpi .val { font-size: 1.35rem; font-weight: 700; color: var(--green); line-height: 1.2; }
+.kpi .val { font-size: 1.6rem; font-weight: 700; color: var(--green); line-height: 1.2; }
 .kpi .val.amber { color: var(--amber); }
 .kpi .val.red { color: var(--red); }
 .kpi .val.blue { color: var(--blue); }
-.kpi .lbl { font-size: 0.65rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+.kpi .lbl { font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 
-/* ========== CHART CARDS ========== */
-.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+/* ========== CHART CARDS — identical to practice.html ========== */
+.chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
 .chart-grid.tri { grid-template-columns: 1fr 1fr 1fr; }
-.chart-grid.quad { grid-template-columns: 1fr 1fr 1fr 1fr; }
 .chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 10px 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); position: relative;
+  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); position: relative;
 }
 .chart-card h3 {
-  font-size: 0.72rem; font-weight: 600; color: var(--text-sec); margin-bottom: 6px;
+  font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px;
   text-transform: uppercase; letter-spacing: 0.5px;
 }
-.chart-card .echart { height: 200px; width: 100%; }
-.chart-card .echart.sm { height: 160px; }
-.chart-card .echart.lg { height: 260px; }
+.chart-card .echart { height: 280px; width: 100%; }
 .chart-card.full { grid-column: 1 / -1; width: 100%; }
 
-/* ========== PLAYER COMPARISON ========== */
-.player-compare {
-  display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; margin-bottom: 20px;
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-.player-col { text-align: center; }
-.player-col.left { text-align: right; }
-.player-col.right { text-align: left; }
-.player-name { font-size: 0.95rem; font-weight: 700; margin-bottom: 8px; }
-.player-utr { font-size: 0.72rem; color: var(--text-dim); margin-bottom: 12px; }
-.compare-divider { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 16px; }
-.compare-divider .vs { font-size: 0.75rem; font-weight: 600; color: var(--text-dim); }
-.compare-row { display: flex; align-items: center; margin-bottom: 3px; }
+/* ========== HEAD-TO-HEAD BARS (match analysis specific) ========== */
+.compare-row { display: flex; align-items: center; margin-bottom: 6px; }
 .stat-label {
-  font-size: 0.65rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
-  white-space: nowrap; width: 115px; text-align: center; flex-shrink: 0; padding: 0 6px;
+  font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
+  white-space: nowrap; width: 130px; text-align: center; flex-shrink: 0; padding: 0 8px;
 }
-.compare-bar {
-  height: 18px; border-radius: 3px; transition: width 0.5s ease;
-  min-width: 4px;
-}
+.compare-bar { height: 22px; border-radius: 4px; transition: width 0.5s ease; min-width: 4px; }
 .compare-val {
-  font-size: 0.75rem; font-weight: 700; white-space: nowrap; min-width: 38px;
-  padding: 0 5px;
+  font-size: 0.82rem; font-weight: 700; white-space: nowrap; min-width: 46px; padding: 0 6px;
 }
-.compare-half { display: flex; align-items: center; flex: 1; gap: 5px; }
+.compare-half { display: flex; align-items: center; flex: 1; gap: 6px; }
 .compare-half.left { justify-content: flex-end; }
 .compare-half.right { justify-content: flex-start; }
 
-/* Score box — compact for single-canvas */
+/* Score box */
 .score-box {
-  display: flex; align-items: center; justify-content: center; gap: 20px;
+  display: flex; align-items: center; justify-content: center; gap: 24px;
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  padding: 16px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .score-player { text-align: center; }
-.score-player .name { font-size: 0.78rem; font-weight: 600; margin-bottom: 2px; }
-.score-player .utr { font-size: 0.68rem; color: var(--text-dim); }
-.score-sets { display: flex; gap: 6px; }
-.score-set { text-align: center; padding: 2px 10px; }
-.score-set .set-label { font-size: 0.6rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-.score-set .set-val { display: flex; gap: 6px; font-size: 1.15rem; font-weight: 700; justify-content: center; line-height: 1.1; }
+.score-player .name { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
+.score-player .utr { font-size: 0.72rem; color: var(--text-dim); }
+.score-sets { display: flex; gap: 12px; }
+.score-set { text-align: center; padding: 4px 12px; }
+.score-set .set-label { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.score-set .set-val { display: flex; gap: 8px; font-size: 1.4rem; font-weight: 700; justify-content: center; }
 .score-set .set-val .winner { color: var(--green); }
 .score-set .set-val .loser { color: var(--text-dim); }
 
 /* Serve strategy table */
-.strategy-table {
-  width: 100%; border-collapse: collapse; font-size: 0.82rem;
-}
+.strategy-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .strategy-table th {
   text-align: left; padding: 8px 12px; font-size: 0.72rem; font-weight: 600;
   color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
   border-bottom: 2px solid var(--border);
 }
-.strategy-table td {
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
-}
+.strategy-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .strategy-table tr:last-child td { border-bottom: none; }
 .strategy-table .highlight { background: rgba(26,92,46,0.06); }
 .strategy-table .bar-cell { position: relative; }
@@ -262,17 +240,18 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Responsive */
+/* Responsive — IDENTICAL to practice.html mobile rules */
 @media (max-width: 768px) {
   .dash-layout { display: flex; flex-direction: column; height: auto; overflow-x: hidden; width: 100%; }
   .dash-sidebar { max-height: 160px; border-right: none; border-bottom: 1px solid var(--border); overflow-y: auto; width: 100%; }
   .dash-main { overflow: visible; width: 100%; }
   .dash-toolbar { padding: 0 12px; height: 44px; position: static; }
   .dash-toolbar h1 { font-size: 0.9rem; }
-  .module-tabs { padding: 0 8px; flex-wrap: wrap; }
+  .module-tabs { padding: 0 8px; flex-wrap: wrap; position: static; }
   .module-tab { padding: 8px 12px; font-size: 0.72rem; }
   .dash-tabs { padding: 4px 8px; flex-wrap: wrap; gap: 2px; position: static; }
   .dash-tab { padding: 6px 10px; font-size: 0.72rem; white-space: nowrap; }
+  .filter-bar { padding: 8px 12px; }
   .dash-content { padding: 12px; padding-bottom: 300px; overflow-x: hidden; }
   .chart-grid, .chart-grid.tri { grid-template-columns: 1fr; }
   .kpi-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; }
@@ -282,15 +261,21 @@ body {
   .chart-card .echart { height: 240px; }
   .chart-card h3 { font-size: 0.75rem; }
   .score-box { flex-direction: column; gap: 12px; }
-  .player-compare { grid-template-columns: 1fr; }
-  .compare-divider { display: none; }
-  .filter-bar { padding: 8px 12px; }
+  .stat-label { width: 100px; font-size: 0.65rem; }
+  .compare-val { font-size: 0.72rem; min-width: 38px; }
   .gauge-number { font-size: 2rem; }
   body { overflow: auto; }
+  /* Speed profile: 6 gauges → 2x3 grid on mobile */
+  .chart-card div[style*="grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr"] {
+    grid-template-columns: 1fr 1fr 1fr !important;
+  }
 }
+
 @media (max-width: 400px) {
   .kpi-strip { grid-template-columns: 1fr; }
   .dash-sidebar { max-height: 140px; }
+  .session-item .s-date { font-size: 0.75rem; }
+  .session-item .s-meta { font-size: 0.65rem; }
 }
 </style>
 </head>
@@ -644,8 +629,8 @@ function renderSummary(pts) {
   // Aces and double faults
   const acesA = pts.filter(p => p.ace_d && p.server_id === paId).length;
   const acesB = pts.filter(p => p.ace_d && p.server_id === pbId).length;
-  const dfA = pts.filter(p => p.serve_d && p.serve_try_ix_in_point === '2nd' && p.shot_outcome_d === 'Error' && p.server_id === paId).length;
-  const dfB = pts.filter(p => p.serve_d && p.serve_try_ix_in_point === '2nd' && p.shot_outcome_d === 'Error' && p.server_id === pbId).length;
+  const dfA = pts.filter(p => p.serve_d && p.serve_try_ix_in_point === 'Double' && p.server_id === paId).length;
+  const dfB = pts.filter(p => p.serve_d && p.serve_try_ix_in_point === 'Double' && p.server_id === pbId).length;
 
   // Winners and errors
   const winnersA = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Winner').length;
@@ -711,8 +696,8 @@ function renderSummary(pts) {
     return { avg: Math.round(speeds.reduce((a,b) => a+b, 0) / speeds.length), max: Math.round(Math.max(...speeds)) };
   }
   const srvSpdA = serveSpeedStats(paId), srvSpdB = serveSpeedStats(pbId);
-  const fhSpdA = speedStats(paId, 'forehand'), fhSpdB = speedStats(pbId, 'forehand');
-  const bhSpdA = speedStats(paId, 'backhand'), bhSpdB = speedStats(pbId, 'backhand');
+  const fhSpdA = speedStats(paId, 'Forehand'), fhSpdB = speedStats(pbId, 'Forehand');
+  const bhSpdA = speedStats(paId, 'Backhand'), bhSpdB = speedStats(pbId, 'Backhand');
 
   return `
     ${renderScoreBox()}
@@ -755,14 +740,18 @@ function renderSummary(pts) {
     </div>
 
     <div class="chart-card full">
-      <h3>Speed Profile — Avg / Max km/h</h3>
-      <div style="display:grid;grid-template-columns:repeat(6, 1fr);gap:4px">
-        <div><div style="text-align:center;font-size:0.62rem;font-weight:600;color:${PA_COLOR};text-transform:uppercase">${pa} · Serve</div><div id="gaugeSrvA" style="height:150px"></div></div>
-        <div><div style="text-align:center;font-size:0.62rem;font-weight:600;color:${PA_COLOR};text-transform:uppercase">${pa} · FH</div><div id="gaugeFhA" style="height:150px"></div></div>
-        <div><div style="text-align:center;font-size:0.62rem;font-weight:600;color:${PA_COLOR};text-transform:uppercase">${pa} · BH</div><div id="gaugeBhA" style="height:150px"></div></div>
-        <div><div style="text-align:center;font-size:0.62rem;font-weight:600;color:${PB_COLOR};text-transform:uppercase">${pb} · Serve</div><div id="gaugeSrvB" style="height:150px"></div></div>
-        <div><div style="text-align:center;font-size:0.62rem;font-weight:600;color:${PB_COLOR};text-transform:uppercase">${pb} · FH</div><div id="gaugeFhB" style="height:150px"></div></div>
-        <div><div style="text-align:center;font-size:0.62rem;font-weight:600;color:${PB_COLOR};text-transform:uppercase">${pb} · BH</div><div id="gaugeBhB" style="height:150px"></div></div>
+      <h3>Speed Profile — Average km/h</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr 1fr;gap:8px;padding:10px 0">
+        <div id="gaugeSrvA" style="height:180px"></div>
+        <div id="gaugeFhA"  style="height:180px"></div>
+        <div id="gaugeBhA"  style="height:180px"></div>
+        <div id="gaugeSrvB" style="height:180px"></div>
+        <div id="gaugeFhB"  style="height:180px"></div>
+        <div id="gaugeBhB"  style="height:180px"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.72rem;color:var(--text-sec);text-align:center;margin-top:4px">
+        <div style="color:${PA_COLOR};font-weight:600">${pa}</div>
+        <div style="color:${PB_COLOR};font-weight:600">${pb}</div>
       </div>
     </div>
   `;
@@ -812,11 +801,13 @@ function renderServeDetail(pts) {
   function serveStatsFor(pid) {
     const serves = pts.filter(p => p.serve_d && p.server_id === pid);
     const serves1st = serves.filter(p => p.serve_try_ix_in_point === '1st');
-    const serves2nd = serves.filter(p => p.serve_try_ix_in_point === '2nd');
+    const serves2nd = serves.filter(p => p.serve_try_ix_in_point === '2nd' || p.serve_try_ix_in_point === 'Double');
+    // "In" means the serve went in (didn't fault). First serve is in if shot_outcome != 'Error'.
+    // For 2nd serves, 'Double' means double-fault (2nd also faulted).
     const serves1stIn = serves1st.filter(p => p.shot_outcome_d !== 'Error');
-    const serves2ndIn = serves2nd.filter(p => p.shot_outcome_d !== 'Error');
+    const serves2ndIn = serves2nd.filter(p => p.serve_try_ix_in_point === '2nd' && p.shot_outcome_d !== 'Error');
     const aces = serves.filter(p => p.ace_d).length;
-    const doubleFaults = serves2nd.filter(p => p.shot_outcome_d === 'Error').length;
+    const doubleFaults = serves.filter(p => p.serve_try_ix_in_point === 'Double').length;
     const pointMap = {};
     pts.forEach(p => {
       if (p.server_id !== pid) return;
@@ -1119,7 +1110,7 @@ function renderRallyDetail(pts) {
   const paId = playerAId();
   const pbId = playerBId();
 
-  const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition');
+  const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net');
   const pointMap = {};
   pts.forEach(p => {
     const key = p.point_key || `${p.game_number}:${p.point_number}`;
@@ -1130,10 +1121,10 @@ function renderRallyDetail(pts) {
 
   function rallyStatsFor(pid) {
     const pShots = rallyShots.filter(p => p.player_id === pid);
-    const fh = pShots.filter(p => p.stroke_d === 'forehand').length;
-    const bh = pShots.filter(p => p.stroke_d === 'backhand').length;
-    const fhSpds = pShots.filter(p => p.stroke_d === 'forehand' && p.ball_speed > 0).map(s => s.ball_speed);
-    const bhSpds = pShots.filter(p => p.stroke_d === 'backhand' && p.ball_speed > 0).map(s => s.ball_speed);
+    const fh = pShots.filter(p => p.stroke_d === 'Forehand').length;
+    const bh = pShots.filter(p => p.stroke_d === 'Backhand').length;
+    const fhSpds = pShots.filter(p => p.stroke_d === 'Forehand' && p.ball_speed > 0).map(s => s.ball_speed);
+    const bhSpds = pShots.filter(p => p.stroke_d === 'Backhand' && p.ball_speed > 0).map(s => s.ball_speed);
     const rallyWon = rallyPoints.filter(p => p.point_winner_player_id === pid).length;
     const winners = pShots.filter(p => p.shot_outcome_d === 'Winner').length;
     const errors = pShots.filter(p => p.shot_outcome_d === 'Error').length;
@@ -1294,16 +1285,16 @@ function renderHeatmapContent() {
   } else if (activeTab === 'return-placement') {
     togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
       ${toggleSection('Outcome', 'outcome', [
-        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'InPlay',label:'In Play'}
+        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'In',label:'In Play'}
       ], 'outcome')}
     </div>`;
   } else if (activeTab === 'groundstroke') {
     togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
       ${toggleSection('Stroke', 'stroke', [
-        {val:'all',label:'All'},{val:'forehand',label:'Forehand'},{val:'backhand',label:'Backhand'}
+        {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
       ], 'stroke')}
       ${toggleSection('Outcome', 'outcome', [
-        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'InPlay',label:'In Play'}
+        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'In',label:'In Play'}
       ], 'outcome')}
     </div>`;
   } else {
@@ -1380,12 +1371,12 @@ function getHeatmapShots(pts, playerId) {
     shots = pts.filter(p => p.shot_phase_d === 'Return' && p.player_id === playerId);
     if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
   } else if (activeTab === 'groundstroke') {
-    shots = pts.filter(p => (p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition') && p.player_id === playerId);
+    shots = pts.filter(p => (p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net') && p.player_id === playerId);
     if (heatmapFilter.stroke !== 'all') shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.shot_outcome_d === heatmapFilter.outcome);
   } else {
     // Rally depth: show bounce locations
-    shots = pts.filter(p => p.player_id === playerId && (p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Return'));
+    shots = pts.filter(p => p.player_id === playerId && (p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'));
     if (heatmapFilter.outcome !== 'all') shots = shots.filter(p => p.depth_d === heatmapFilter.outcome);
   }
 
@@ -1630,6 +1621,27 @@ function ePie(id, data, colors) {
   return chart;
 }
 
+// Ring gauge — identical to practice.html (gold standard)
+function eGauge(id, value, label, max, color) {
+  const chart = ec(id);
+  if (!chart) return null;
+  chart.setOption({
+    ...ANIM,
+    series: [{
+      type: 'gauge', startAngle: 220, endAngle: -40, min: 0, max: max,
+      pointer: { show: false },
+      progress: { show: true, width: 14, roundCap: true, itemStyle: { color } },
+      axisLine: { lineStyle: { width: 14, color: [[1, 'rgba(0,0,0,0.08)']] } },
+      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+      title: { offsetCenter: [0, '70%'], fontSize: 12, color: '#6b7280' },
+      detail: { offsetCenter: [0, '30%'], fontSize: 28, fontWeight: 700, color, formatter: '{value}' },
+      data: [{ value, name: label }],
+    }],
+  });
+  CI[id] = chart;
+  return chart;
+}
+
 function renderAllCharts() {
   destroyCharts();
   if (activeModule === 'heatmaps') return;
@@ -1702,10 +1714,10 @@ function renderAllCharts() {
     if (outcomeEl) {
       const aW = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Winner').length;
       const aE = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'Error').length;
-      const aI = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'InPlay').length;
+      const aI = pts.filter(p => p.player_id === paId && p.shot_outcome_d === 'In').length;
       const bW = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'Winner').length;
       const bE = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'Error').length;
-      const bI = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'InPlay').length;
+      const bI = pts.filter(p => p.player_id === pbId && p.shot_outcome_d === 'In').length;
 
       eStackedBar('chartOutcomes', [pa, pb], [
         { name: 'Winners', data: [aW, bW], color: C_GREEN },
@@ -1733,109 +1745,28 @@ function renderAllCharts() {
 
     // Speed gauges — per player, per stroke (serve / forehand / backhand)
     // Power BI-style semicircular speedometer gauge
-    function speedGauge(id, avgVal, maxVal, minVal, label, color) {
-      const chart = ec(id);
-      if (!chart) return;
-      if (!avgVal && !maxVal) {
-        CI[id] = chart;
-        chart.setOption({ ...ANIM, title: { text: label, left: 'center', top: 'center', textStyle: { fontSize: 13, color: '#9ca3af' } } });
-        return;
-      }
-      // Scale: range from minVal rounded down to maxVal rounded up (in 10s)
-      const scaleMin = Math.floor((minVal || 0) / 10) * 10;
-      const scaleMax = Math.ceil((maxVal || avgVal) / 10) * 10 + 10;
-
-      chart.setOption({
-        ...ANIM,
-        series: [{
-          type: 'gauge',
-          startAngle: 180,
-          endAngle: 0,
-          center: ['50%', '70%'],
-          radius: '90%',
-          min: scaleMin,
-          max: scaleMax,
-          // Coloured arc with gradient segments
-          axisLine: {
-            lineStyle: {
-              width: 18,
-              color: [
-                [0.3, 'rgba(0,0,0,0.06)'],
-                [0.7, color.replace(')', ',0.5)').replace('rgb', 'rgba')],
-                [1, color],
-              ],
-            },
-          },
-          // Pointer needle
-          pointer: {
-            show: true,
-            length: '60%',
-            width: 4,
-            itemStyle: { color: '#374151' },
-          },
-          // Tick marks
-          axisTick: {
-            distance: -18,
-            length: 6,
-            lineStyle: { color: 'rgba(0,0,0,0.15)', width: 1 },
-            splitNumber: 2,
-          },
-          splitLine: {
-            distance: -18,
-            length: 12,
-            lineStyle: { color: 'rgba(0,0,0,0.2)', width: 2 },
-          },
-          // Min/max labels on arc
-          axisLabel: {
-            distance: -32,
-            fontSize: 10,
-            color: '#9ca3af',
-            formatter: function(v) {
-              if (v === scaleMin || v === scaleMax) return v;
-              return '';
-            },
-          },
-          // Average value — big number
-          detail: {
-            offsetCenter: [0, '-10%'],
-            fontSize: 28,
-            fontWeight: 700,
-            color: color,
-            formatter: '{value}',
-          },
-          // Label below
-          title: {
-            offsetCenter: [0, '25%'],
-            fontSize: 11,
-            color: '#6b7280',
-            fontWeight: 500,
-          },
-          data: [{ value: avgVal, name: label + '\nmax ' + maxVal }],
-          animationDuration: 1200,
-          animationEasing: 'cubicOut',
-        }],
-      });
-      CI[id] = chart;
-    }
-
-    // Compute speeds per player per stroke
+    // Speed ring gauges — practice.html gold standard (eGauge)
     function getSpd(pid, filter) {
       let shots;
       if (filter === 'serve') shots = pts.filter(p => p.serve_d && p.player_id === pid && p.ball_speed > 0);
       else shots = pts.filter(p => p.stroke_d === filter && p.player_id === pid && p.ball_speed > 0);
-      if (!shots.length) return { avg: 0, max: 0, min: 0 };
+      if (!shots.length) return { avg: 0, max: 0 };
       const spds = shots.map(s => s.ball_speed);
-      return { avg: Math.round(spds.reduce((a,b)=>a+b,0)/spds.length), max: Math.round(Math.max(...spds)), min: Math.round(Math.min(...spds)) };
+      return { avg: Math.round(spds.reduce((a,b)=>a+b,0)/spds.length), max: Math.round(Math.max(...spds)) };
     }
-    const sA = getSpd(paId,'serve'), fA = getSpd(paId,'forehand'), bA = getSpd(paId,'backhand');
-    const sB = getSpd(pbId,'serve'), fB = getSpd(pbId,'forehand'), bB = getSpd(pbId,'backhand');
+    const sA = getSpd(paId,'serve'), fA = getSpd(paId,'Forehand'), bA = getSpd(paId,'Backhand');
+    const sB = getSpd(pbId,'serve'), fB = getSpd(pbId,'Forehand'), bB = getSpd(pbId,'Backhand');
 
-    speedGauge('gaugeSrvA', sA.avg, sA.max, sA.min, 'Serve', PA_COLOR);
-    speedGauge('gaugeFhA', fA.avg, fA.max, fA.min, 'Forehand', '#22783c');
-    speedGauge('gaugeBhA', bA.avg, bA.max, bA.min, 'Backhand', '#2563eb');
-    speedGauge('gaugeSrvB', sB.avg, sB.max, sB.min, 'Serve', PB_COLOR);
-    speedGauge('gaugeFhB', fB.avg, fB.max, fB.min, 'Forehand', '#22783c');
-    speedGauge('gaugeBhB', bB.avg, bB.max, bB.min, 'Backhand', '#2563eb');
+    // Shared scale across all gauges so comparisons are visually meaningful
+    const maxAll = Math.max(sA.max, sB.max, fA.max, fB.max, bA.max, bB.max, 100);
+    const scale = Math.ceil(maxAll / 20) * 20;
+
+    eGauge('gaugeSrvA', sA.avg, 'Serve · max ' + (sA.max || '—'), scale, PA_COLOR);
+    eGauge('gaugeFhA',  fA.avg, 'Forehand · max ' + (fA.max || '—'), scale, '#22783c');
+    eGauge('gaugeBhA',  bA.avg, 'Backhand · max ' + (bA.max || '—'), scale, '#2563eb');
+    eGauge('gaugeSrvB', sB.avg, 'Serve · max ' + (sB.max || '—'), scale, PB_COLOR);
+    eGauge('gaugeFhB',  fB.avg, 'Forehand · max ' + (fB.max || '—'), scale, '#22783c');
+    eGauge('gaugeBhB',  bB.avg, 'Backhand · max ' + (bB.max || '—'), scale, '#2563eb');
   }
 
   // ===== SERVE TAB =====
@@ -1864,13 +1795,13 @@ function renderAllCharts() {
       ], [C_GREEN, C_AMBER, C_RED]);
 
       ePie('chartRetStroke_' + pid, [
-        { name: 'Forehand', value: returns.filter(p => p.stroke_d === 'forehand').length },
-        { name: 'Backhand', value: returns.filter(p => p.stroke_d === 'backhand').length },
+        { name: 'Forehand', value: returns.filter(p => p.stroke_d === 'Forehand').length },
+        { name: 'Backhand', value: returns.filter(p => p.stroke_d === 'Backhand').length },
       ], [C_GREEN, C_BLUE]);
 
       eBar('chartRetOutcome_' + pid, ['Winner', 'In Play', 'Error'], [
         returns.filter(p => p.shot_outcome_d === 'Winner').length,
-        returns.filter(p => p.shot_outcome_d === 'InPlay').length,
+        returns.filter(p => p.shot_outcome_d === 'In').length,
         returns.filter(p => p.shot_outcome_d === 'Error').length,
       ], [C_GREEN, C_BLUE, C_RED]);
     }
@@ -1942,15 +1873,15 @@ function renderAllCharts() {
     }
 
     // Per-player aggression, depth, stroke — always both players
-    const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition');
+    const rallyShots = pts.filter(p => p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net');
 
     for (const pid of [paId, pbId]) {
       const pShots = rallyShots.filter(p => p.player_id === pid);
 
       eBar('chartAgg_' + pid, ['Attack', 'Neutral', 'Defence'], [
-        pShots.filter(p => p.aggression_d === 'Aggressive').length,
+        pShots.filter(p => p.aggression_d === 'Attack').length,
         pShots.filter(p => p.aggression_d === 'Neutral').length,
-        pShots.filter(p => p.aggression_d === 'Defensive').length,
+        pShots.filter(p => p.aggression_d === 'Defence').length,
       ], [C_GREEN, C_AMBER, C_RED], true);
 
       eBar('chartDepth_' + pid, ['Deep', 'Middle', 'Short'], [
@@ -1960,8 +1891,8 @@ function renderAllCharts() {
       ], [C_GREEN, C_AMBER, C_RED]);
 
       ePie('chartStroke_' + pid, [
-        { name: 'Forehand', value: pShots.filter(p => p.stroke_d === 'forehand').length },
-        { name: 'Backhand', value: pShots.filter(p => p.stroke_d === 'backhand').length },
+        { name: 'Forehand', value: pShots.filter(p => p.stroke_d === 'Forehand').length },
+        { name: 'Backhand', value: pShots.filter(p => p.stroke_d === 'Backhand').length },
       ], [C_GREEN, C_BLUE]);
     }
   }
