@@ -14,7 +14,10 @@ MODELS_DIR = os.path.join(ML_PIPELINE_DIR, "models")
 # Model weight files (relative to MODELS_DIR)
 TRACKNET_WEIGHTS = os.path.join(MODELS_DIR, "tracknet_v2.pt")
 YOLO_WEIGHTS = os.path.join(MODELS_DIR, "yolov8m.pt")
-YOLO_POSE_WEIGHTS = os.path.join(MODELS_DIR, "yolov8m-pose.pt")
+# Player detection: prefer the larger YOLOv8x-pose model (~133MB) for better
+# small-object detection. Falls back to yolov8m-pose if x is missing.
+YOLO_POSE_WEIGHTS = os.path.join(MODELS_DIR, "yolov8x-pose.pt")
+YOLO_POSE_WEIGHTS_FALLBACK = os.path.join(MODELS_DIR, "yolov8m-pose.pt")
 COURT_DETECTOR_WEIGHTS = os.path.join(MODELS_DIR, "court_keypoints.pth")
 
 # ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ COURT_REFERENCE_KEYPOINTS = [
 # ---------------------------------------------------------------------------
 # Player tracker (YOLOv8)
 # ---------------------------------------------------------------------------
-YOLO_CONFIDENCE = 0.10             # Very low — diagnostic mode to see if YOLO can find 2nd player at all
+YOLO_CONFIDENCE = 0.25             # Sane production value with YOLOv8x-pose (bigger model = more confident)
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
 PLAYER_IOU_THRESHOLD = 0.2         # More lenient IoU matching (handles movement)
 PLAYER_COURT_MARGIN_PX = 9999      # Effectively DISABLED — court bbox can be wrong, trust YOLO

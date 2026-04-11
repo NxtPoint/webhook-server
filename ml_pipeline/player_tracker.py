@@ -14,6 +14,7 @@ from typing import Optional, List, Dict
 from ml_pipeline.config import (
     YOLO_WEIGHTS,
     YOLO_POSE_WEIGHTS,
+    YOLO_POSE_WEIGHTS_FALLBACK,
     YOLO_CONFIDENCE,
     YOLO_PERSON_CLASS_ID,
     PLAYER_IOU_THRESHOLD,
@@ -50,16 +51,21 @@ class PlayerDetection:
 class PlayerTracker:
     def __init__(self, weights_path: str = None, device: str = None):
         self.device = device or ("cuda:0" if __import__("torch").cuda.is_available() else "cpu")
-        # Prefer pose model if available, fall back to detection-only
+        # Prefer the larger YOLOv8x-pose model, then fall back to yolov8m-pose,
+        # then to plain yolov8m (detection-only).
         if weights_path is None:
             if os.path.exists(YOLO_POSE_WEIGHTS):
                 weights_path = YOLO_POSE_WEIGHTS
                 self.has_pose = True
-                logger.info("Using YOLOv8-pose model: %s", weights_path)
+                logger.info("Using YOLO pose model (preferred): %s", weights_path)
+            elif os.path.exists(YOLO_POSE_WEIGHTS_FALLBACK):
+                weights_path = YOLO_POSE_WEIGHTS_FALLBACK
+                self.has_pose = True
+                logger.info("Using YOLO pose model (fallback): %s", weights_path)
             else:
                 weights_path = YOLO_WEIGHTS
                 self.has_pose = False
-                logger.info("Pose model not found, using detection-only: %s", weights_path)
+                logger.info("No pose model found, using detection-only: %s", weights_path)
         else:
             self.has_pose = "pose" in weights_path
         self.model = YOLO(weights_path)
