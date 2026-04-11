@@ -89,7 +89,7 @@ COURT_REFERENCE_KEYPOINTS = [
 # ---------------------------------------------------------------------------
 # Player tracker (YOLOv8)
 # ---------------------------------------------------------------------------
-YOLO_CONFIDENCE = 0.35             # Catch partial player detections
+YOLO_CONFIDENCE = 0.10             # Very low — diagnostic mode to see if YOLO can find 2nd player at all
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
 PLAYER_IOU_THRESHOLD = 0.2         # More lenient IoU matching (handles movement)
 PLAYER_COURT_MARGIN_PX = 9999      # Effectively DISABLED — court bbox can be wrong, trust YOLO
