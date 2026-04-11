@@ -84,6 +84,17 @@ class PlayerTracker:
         self._detect_interval: int = PLAYER_DETECTION_INTERVAL
         self._last_detect_frame: int = -PLAYER_DETECTION_INTERVAL
 
+        # Debug frame upload context — set by __main__.py for live S3 streaming
+        self._debug_s3_client = None
+        self._debug_s3_bucket = None
+        self._debug_job_id = None
+
+    def set_debug_upload_context(self, s3_client, s3_bucket: str, job_id: str) -> None:
+        """Enable live debug frame upload to S3 (called from __main__.py)."""
+        self._debug_s3_client = s3_client
+        self._debug_s3_bucket = s3_bucket
+        self._debug_job_id = job_id
+
     def detect_frame(
         self,
         frame: np.ndarray,
@@ -152,8 +163,19 @@ class PlayerTracker:
                 n_yolo_boxes, n_filtered_out, len(candidates),
             )
 
-        # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
-        if DEBUG_FRAME_INTERVAL > 0 and frame_idx % DEBUG_FRAME_INTERVAL == 0:
+        # Debug frame export with EARLY-RUN BIAS so user can verify mid-job
+        # and cancel bad runs without waiting full 35min:
+        #   - First 600 frames: every 50 frames → 12 frames in first ~80sec
+        #   - After that: every DEBUG_FRAME_INTERVAL frames (default 1000)
+        # Each frame uploaded directly to S3 if context is set.
+        should_save = False
+        if frame_idx > 0:
+            if frame_idx <= 600 and frame_idx % 50 == 0:
+                should_save = True
+            elif DEBUG_FRAME_INTERVAL > 0 and frame_idx % DEBUG_FRAME_INTERVAL == 0:
+                should_save = True
+
+        if should_save:
             try:
                 self._save_debug_frame_v2(
                     frame, frame_idx, deduped_boxes, candidates,
@@ -267,9 +289,10 @@ class PlayerTracker:
         return kept_boxes, kept_kps
 
     def _save_debug_frame_v2(self, frame, frame_idx: int, all_boxes, kept_boxes) -> None:
-        """Save a frame with YOLO bboxes drawn on it for visual debugging.
+        """Save a frame with YOLO bboxes drawn on it. Uploads to S3 immediately
+        if upload context is set, so the user can inspect mid-run.
 
-        Draws ALL detections (red = filtered out as outside court, green = kept).
+        Draws ALL detections (red = filtered, green = kept).
         """
         os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
         img = frame.copy()
@@ -293,12 +316,26 @@ class PlayerTracker:
             img, header, (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2,
         )
-        out_path = os.path.join(
-            DEBUG_FRAMES_DIR, f"frame_{frame_idx:06d}_n{len(kept_boxes)}.jpg"
-        )
+        fname = f"frame_{frame_idx:06d}_n{len(kept_boxes)}.jpg"
+        out_path = os.path.join(DEBUG_FRAMES_DIR, fname)
         cv2.imwrite(out_path, img)
         logger.info("debug frame saved: %s (kept=%d/%d)",
                      out_path, len(kept_boxes), len(all_boxes))
+
+        # Upload directly to S3 if context is set (LIVE upload, no waiting
+        # for post-processing). User can inspect mid-run and cancel bad jobs.
+        if (self._debug_s3_client is not None and
+                self._debug_s3_bucket and self._debug_job_id):
+            try:
+                s3_key = f"debug/{self._debug_job_id}/{fname}"
+                self._debug_s3_client.upload_file(
+                    out_path, self._debug_s3_bucket, s3_key,
+                    ExtraArgs={"ContentType": "image/jpeg"},
+                )
+                logger.info("debug frame uploaded: s3://%s/%s",
+                             self._debug_s3_bucket, s3_key)
+            except Exception as e:
+                logger.warning("debug frame S3 upload failed: %s", e)
 
     def _save_debug_frame(self, frame, frame_idx: int, boxes) -> None:
         """Save a frame with YOLO bboxes drawn on it for visual debugging.

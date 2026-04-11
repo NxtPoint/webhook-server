@@ -158,8 +158,11 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         s3.download_file(s3_bucket, s3_key, tmp_path)
         logger.info(f"Download complete ({os.path.getsize(tmp_path)} bytes)")
 
-        # 2. Run pipeline
+        # 2. Run pipeline (with live debug frame S3 upload context)
         pipeline = TennisAnalysisPipeline(progress_callback=on_progress, practice=practice)
+        # Enable LIVE debug frame upload — user can inspect frames mid-run
+        # and cancel bad runs without waiting for full ML processing
+        pipeline.player_tracker.set_debug_upload_context(s3, s3_bucket, job_id)
         result = pipeline.process(tmp_path)
 
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
