@@ -212,8 +212,8 @@ class CourtDetector:
         #    (A reasonable image-to-reference court mapping has scale ~0.5-10)
         # 3. Inlier-only mean reprojection error: should be small by RANSAC
         #    construction, but double-check it's < 10px
-        MIN_INLIERS = 6  # need at least 6 inliers (out of 14 keypoints)
-        MAX_SCALE = 50.0
+        MIN_INLIERS = 4  # mathematical minimum for findHomography
+        MAX_SCALE = 20.0  # reasonable image-to-reference court mapping is 1-10
         MAX_INLIER_ERR_PX = 15.0
 
         n_inliers = int(mask.sum()) if mask is not None else 0
