@@ -315,6 +315,8 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     # ---- Step 5: Process each bounce → build row ----
     rows_to_insert = []
     prev_ts = -999.0
+    last_serve_ts = -999.0  # for serve cooldown
+    MIN_SERVE_INTERVAL_S = 8.0  # minimum seconds between consecutive serves
 
     for i, b in enumerate(bounces):
         frame_idx, px, py, cx, cy, speed_kmh, is_in = b
@@ -371,20 +373,24 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                     "_synthesized": True,
                 }
 
-        # Serve detection: TWO independent triggers
+        # Serve detection: TWO independent triggers, BOTH gated by minimum
+        # time interval since the last detected serve (real points last 5-20s,
+        # so consecutive serves can't be too close together).
         # 1. Time-based: gap > threshold (start of new point) + bounce in service box
-        # 2. Geometric: hitter at baseline + bounce in opposite service box
-        # The geometric check is essential when bounce data is sparse and gaps
-        # don't align with point boundaries.
+        # 2. Geometric: hitter at baseline + bounce on opposite side of net
         is_serve = False
         is_geometric_serve = (
             hitter is not None and
             _is_serve_geometric(hitter.get("court_y"), cx, cy)
         )
-        if is_geometric_serve:
+        ts_since_last_serve = ts - last_serve_ts
+        if is_geometric_serve and ts_since_last_serve >= MIN_SERVE_INTERVAL_S:
             is_serve = True
         if (gap_s > SERVE_GAP_S or i == 0) and _is_in_service_box(cx, cy):
             is_serve = True
+
+        if is_serve:
+            last_serve_ts = ts
 
         # Swing type inference
         swing_type = "other"
