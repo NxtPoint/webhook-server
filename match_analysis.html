@@ -342,6 +342,17 @@ body {
 .heatmap-card {
   margin: 0 auto 0; padding: 14px 16px !important;
 }
+/* Sparse data warning banner */
+.sparse-warn {
+  background: rgba(217,119,6,0.08); border: 1px solid rgba(217,119,6,0.3);
+  border-left: 4px solid var(--amber); padding: 12px 16px; border-radius: var(--radius);
+  color: var(--text); font-size: 0.82rem; line-height: 1.5;
+}
+.sparse-warn strong { color: var(--amber); }
+.sparse-warn code {
+  font-family: ui-monospace, monospace; font-size: 0.78rem;
+  background: var(--bg); padding: 1px 6px; border-radius: 3px;
+}
 /* Stats row sits above the court — compact */
 .heatmap-stats-row {
   display: flex; gap: 20px; align-items: center; justify-content: space-between;
@@ -1487,6 +1498,7 @@ function renderHeatmapContent() {
 
   panel.innerHTML = `
     ${toggleRow}
+    <div id="heatmapSparseBanner" style="display:none;max-width:1200px;margin:0 auto 10px"></div>
     <div class="heatmap-layout${heatmapInfoOpen ? ' with-info' : ''}">
       <div class="heatmap-main">
         <div class="chart-card full heatmap-card">
@@ -1516,6 +1528,24 @@ function renderHeatmapCourts() {
   // Diagnostic — helps debug "no data" issues
   const rawPlacement = (selectedData?.placement || []).length;
   console.log(`[heatmap] tab=${activeTab} player=${heatmapPlayer} filters=${JSON.stringify(heatmapFilter)} → ${shots.length} shots (of ${rawPlacement} total in placement)`);
+
+  // Show a helpful banner when the match has very sparse data
+  const banner = document.getElementById('heatmapSparseBanner');
+  if (banner) {
+    if (rawPlacement < 50) {
+      banner.style.display = 'block';
+      banner.innerHTML = `
+        <div class="sparse-warn">
+          <strong>⚠ Limited data for this match</strong>
+          Only <strong>${rawPlacement}</strong> shots recorded in <code>gold.match_shot_placement</code> for this task.
+          A typical singles match has 400-800. Try selecting a different match in the sidebar, or check if this is a T5 analysis — T5 currently has lower detection rates than SportAI.
+        </div>
+      `;
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
   drawHeatmapCourt('heatmapCourt', shots, 'heatmapStats');
   renderHeatmapSummaryTable(shots);
 }
