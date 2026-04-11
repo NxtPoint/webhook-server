@@ -1273,101 +1273,81 @@ function renderHeatmapContent() {
 
   let togglesHTML = '';
 
+  function toggleSection(label, groupClass, options, currentKey) {
+    return `<span style="font-size:0.62rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px">${label}</span>
+      <div class="toggle-group">
+        ${options.map(o =>
+          `<button class="toggle-btn hf-${groupClass}${heatmapFilter[currentKey] === o.val ? ' active' : ''}" data-val="${o.val}" onclick="setHeatmapFilter('${currentKey}','${o.val}')">${o.label}</button>`
+        ).join('')}
+      </div>`;
+  }
+
   if (activeTab === 'serve-placement') {
-    togglesHTML = `
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
-        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Serve:</span>
-        <div class="toggle-group">
-          <button class="toggle-btn hf-serve active" data-val="all" onclick="setHeatmapFilter('serve','all')">All</button>
-          <button class="toggle-btn hf-serve" data-val="1st" onclick="setHeatmapFilter('serve','1st')">1st Serve</button>
-          <button class="toggle-btn hf-serve" data-val="2nd" onclick="setHeatmapFilter('serve','2nd')">2nd Serve</button>
-        </div>
-        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;margin-left:8px">Outcome:</span>
-        <div class="toggle-group">
-          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
-          <button class="toggle-btn hf-outcome" data-val="Winner" onclick="setHeatmapFilter('outcome','Winner')">Winners</button>
-          <button class="toggle-btn hf-outcome" data-val="Error" onclick="setHeatmapFilter('outcome','Error')">Errors</button>
-        </div>
-      </div>
-    `;
+    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+      ${toggleSection('Serve', 'serve', [
+        {val:'all',label:'All'},{val:'1st',label:'1st'},{val:'2nd',label:'2nd'}
+      ], 'serve')}
+      ${toggleSection('Outcome', 'outcome', [
+        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'}
+      ], 'outcome')}
+    </div>`;
   } else if (activeTab === 'return-placement') {
-    togglesHTML = `
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
-        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Outcome:</span>
-        <div class="toggle-group">
-          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
-          <button class="toggle-btn hf-outcome" data-val="Winner" onclick="setHeatmapFilter('outcome','Winner')">Winners</button>
-          <button class="toggle-btn hf-outcome" data-val="Error" onclick="setHeatmapFilter('outcome','Error')">Errors</button>
-          <button class="toggle-btn hf-outcome" data-val="InPlay" onclick="setHeatmapFilter('outcome','InPlay')">In Play</button>
-        </div>
-      </div>
-    `;
+    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+      ${toggleSection('Outcome', 'outcome', [
+        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'InPlay',label:'In Play'}
+      ], 'outcome')}
+    </div>`;
   } else if (activeTab === 'groundstroke') {
-    togglesHTML = `
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
-        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Stroke:</span>
-        <div class="toggle-group">
-          <button class="toggle-btn hf-stroke active" data-val="all" onclick="setHeatmapFilter('stroke','all')">All</button>
-          <button class="toggle-btn hf-stroke" data-val="forehand" onclick="setHeatmapFilter('stroke','forehand')">Forehand</button>
-          <button class="toggle-btn hf-stroke" data-val="backhand" onclick="setHeatmapFilter('stroke','backhand')">Backhand</button>
-        </div>
-        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;margin-left:8px">Outcome:</span>
-        <div class="toggle-group">
-          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
-          <button class="toggle-btn hf-outcome" data-val="Winner" onclick="setHeatmapFilter('outcome','Winner')">Winners</button>
-          <button class="toggle-btn hf-outcome" data-val="Error" onclick="setHeatmapFilter('outcome','Error')">Errors</button>
-          <button class="toggle-btn hf-outcome" data-val="InPlay" onclick="setHeatmapFilter('outcome','InPlay')">In Play</button>
-        </div>
-      </div>
-    `;
+    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+      ${toggleSection('Stroke', 'stroke', [
+        {val:'all',label:'All'},{val:'forehand',label:'Forehand'},{val:'backhand',label:'Backhand'}
+      ], 'stroke')}
+      ${toggleSection('Outcome', 'outcome', [
+        {val:'all',label:'All'},{val:'Winner',label:'Winners'},{val:'Error',label:'Errors'},{val:'InPlay',label:'In Play'}
+      ], 'outcome')}
+    </div>`;
   } else {
-    togglesHTML = `
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
-        <span style="font-size:0.75rem;font-weight:600;color:var(--text-sec);text-transform:uppercase">Depth:</span>
-        <div class="toggle-group">
-          <button class="toggle-btn hf-outcome active" data-val="all" onclick="setHeatmapFilter('outcome','all')">All</button>
-          <button class="toggle-btn hf-outcome" data-val="Deep" onclick="setHeatmapFilter('outcome','Deep')">Deep</button>
-          <button class="toggle-btn hf-outcome" data-val="Middle" onclick="setHeatmapFilter('outcome','Middle')">Middle</button>
-          <button class="toggle-btn hf-outcome" data-val="Short" onclick="setHeatmapFilter('outcome','Short')">Short</button>
-        </div>
-      </div>
-    `;
+    togglesHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;align-items:center">
+      ${toggleSection('Depth', 'outcome', [
+        {val:'all',label:'All'},{val:'Deep',label:'Deep'},{val:'Middle',label:'Middle'},{val:'Short',label:'Short'}
+      ], 'outcome')}
+    </div>`;
   }
 
   const panel = document.getElementById('p-heatmap-content');
   let courtsHTML = togglesHTML;
 
   if (showPlayers.length === 2) {
-    courtsHTML += `<div class="chart-grid" id="heatmapCourts">
-      <div class="chart-card" style="padding:20px">
-        <h3 style="color:${PA_COLOR}">${pa}</h3>
-        <canvas id="courtA" width="440" height="560" style="width:100%;max-width:440px"></canvas>
-        <div id="courtStatsA" style="margin-top:8px;font-size:0.78rem;color:var(--text-sec)"></div>
+    courtsHTML += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="chart-card" style="padding:10px 14px;display:flex;flex-direction:column;align-items:center">
+        <h3 style="color:${PA_COLOR};align-self:flex-start">${pa}</h3>
+        <canvas id="courtA" width="340" height="440" style="width:100%;max-width:340px"></canvas>
+        <div id="courtStatsA" style="margin-top:6px;font-size:0.7rem;color:var(--text-sec);text-align:center"></div>
       </div>
-      <div class="chart-card" style="padding:20px">
-        <h3 style="color:${PB_COLOR}">${pb}</h3>
-        <canvas id="courtB" width="440" height="560" style="width:100%;max-width:440px"></canvas>
-        <div id="courtStatsB" style="margin-top:8px;font-size:0.78rem;color:var(--text-sec)"></div>
+      <div class="chart-card" style="padding:10px 14px;display:flex;flex-direction:column;align-items:center">
+        <h3 style="color:${PB_COLOR};align-self:flex-start">${pb}</h3>
+        <canvas id="courtB" width="340" height="440" style="width:100%;max-width:340px"></canvas>
+        <div id="courtStatsB" style="margin-top:6px;font-size:0.7rem;color:var(--text-sec);text-align:center"></div>
       </div>
     </div>`;
   } else {
     const pid = showPlayers[0];
     const pName = getPlayerName(pid);
     const color = pid === paId ? PA_COLOR : PB_COLOR;
-    courtsHTML += `<div id="heatmapCourts">
-      <div class="chart-card full" style="padding:20px;max-width:500px">
-        <h3 style="color:${color}">${pName}</h3>
-        <canvas id="courtA" width="440" height="560" style="width:100%;max-width:440px"></canvas>
-        <div id="courtStatsA" style="margin-top:8px;font-size:0.78rem;color:var(--text-sec)"></div>
+    courtsHTML += `<div style="display:flex;justify-content:center">
+      <div class="chart-card" style="padding:10px 14px;max-width:460px;display:flex;flex-direction:column;align-items:center">
+        <h3 style="color:${color};align-self:flex-start">${pName}</h3>
+        <canvas id="courtA" width="400" height="520" style="width:100%;max-width:400px"></canvas>
+        <div id="courtStatsA" style="margin-top:6px;font-size:0.72rem;color:var(--text-sec);text-align:center"></div>
       </div>
     </div>`;
   }
 
   // Legend
-  courtsHTML += `<div style="display:flex;gap:16px;margin-top:12px;font-size:0.75rem;color:var(--text-sec)">
-    <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(26,92,46,0.85);margin-right:4px"></span>Winner / In</span>
-    <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(220,38,38,0.7);margin-right:4px"></span>Error / Out</span>
-    <span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:rgba(37,99,235,0.6);margin-right:4px"></span>In Play</span>
+  courtsHTML += `<div style="display:flex;gap:14px;margin-top:8px;font-size:0.68rem;color:var(--text-sec);justify-content:center">
+    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:rgba(26,92,46,0.85);margin-right:4px"></span>Winner / In</span>
+    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:rgba(220,38,38,0.7);margin-right:4px"></span>Error / Out</span>
+    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:rgba(37,99,235,0.6);margin-right:4px"></span>In Play</span>
   </div>`;
 
   panel.innerHTML = courtsHTML;
