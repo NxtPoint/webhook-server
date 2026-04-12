@@ -79,6 +79,14 @@ class PlayerTracker:
         else:
             self.has_pose = "pose" in weights_path
         self.model = YOLO(weights_path)
+        # Detection-only model for far-baseline Pass 3. YOLOv8-pose suppresses
+        # small detections (~30-40px) because keypoints can't be resolved at
+        # that size. The detection-only model reliably detects people down to
+        # ~20-30px. We only need bbox (not keypoints) for far-player assignment.
+        self._det_model = None
+        if os.path.exists(YOLO_WEIGHTS):
+            self._det_model = YOLO(YOLO_WEIGHTS)
+            logger.info("Loaded detection-only model for far-baseline pass: %s", YOLO_WEIGHTS)
         self._prev_players: Dict[int, tuple] = {}  # player_id → bbox from prev frame
         self.detections: List[PlayerDetection] = []
         self._last_result: List[PlayerDetection] = []
@@ -326,29 +334,23 @@ class PlayerTracker:
         return out_boxes, out_kps
 
     def _run_yolo_far_baseline(self, frame: np.ndarray):
-        """Run YOLO on a tight crop of the far-baseline court area.
+        """Run DETECTION-ONLY YOLO on a tight crop of the far-baseline area.
 
-        The far player is ~30-40px tall in 1080p. Previous attempts with
-        a 30% height crop and full width didn't work — the crop was too
-        large (not enough upscaling) and too wide (spectators, scoreboards,
-        ads on the sides generated false positives at low confidence).
+        KEY INSIGHT (from research): YOLOv8-pose SUPPRESSES small detections
+        (~30-40px) because the pose NMS requires resolvable keypoints. The
+        far player is 30-40px — well above the detection-only floor (~20px)
+        but below the pose floor (~60-80px). Using yolov8m (detection-only)
+        instead of yolov8x-pose for this pass is the fix.
 
-        This version uses a TIGHT crop:
-        - Top 20% of frame height (far baseline zone only)
-        - Central 70% of frame width (court area, excludes side noise)
-        - This gives ~6x upscaling (1280 / ~216px = 5.9x)
-        - A 30px player becomes ~180px — solidly in YOLO's range
-        - conf=0.08 (aggressive) — safe because the tight spatial crop
-          limits candidates to the court, and the midline-distance
-          threshold in _choose_two_players rejects anyone near the net
-
-        Coordinates translated back to full-frame space.
+        Crop: top 28% height × central 70% width, conf=0.15.
+        Confidence raised from 0.05 to 0.15 because the detection-only model
+        produces higher-confidence detections on small people (no keypoint
+        suppression). This reduces false positives from the aggressive 0.05.
         """
+        if self._det_model is None:
+            return [], []
+
         h, w = frame.shape[:2]
-        # Crop: top 28% height (far player feet at ~24% from top in typical
-        # tennis camera), central 70% width (court only, no side spectators).
-        # Previous 20% cut off the far player's body. Previous 30% full-width
-        # generated noise from spectators/scoreboards. This is the sweet spot.
         y1 = 0
         y2 = int(h * 0.28)
         x1 = int(w * 0.15)
@@ -361,7 +363,18 @@ class PlayerTracker:
         if cropped.size == 0:
             return [], []
 
-        crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.05)
+        # Use detection-only model (yolov8m) — NOT the pose model
+        results = self._det_model.predict(
+            cropped, conf=0.15, imgsz=YOLO_IMGSZ,
+            classes=[YOLO_PERSON_CLASS_ID], verbose=False,
+        )
+        boxes = results[0].boxes if results else []
+        crop_boxes = []
+        crop_kps = []
+        for box in boxes:
+            bx1, by1, bx2, by2 = box.xyxy[0].cpu().numpy()
+            crop_boxes.append((float(bx1), float(by1), float(bx2), float(by2)))
+            crop_kps.append(None)  # no keypoints from detection-only model
         # Log every detection with coordinates — need to see whether the
         # far player is detected but lost in dedup, or genuinely not seen.
         for bi, (bx1, by1, bx2, by2) in enumerate(crop_boxes):
