@@ -297,6 +297,8 @@ def _serialize(v):
         return v.isoformat()
     if isinstance(v, (int, float, str)):
         return v
+    if isinstance(v, (list, tuple)):
+        return [_serialize(x) for x in v]
     # Decimal, UUID, etc.
     if hasattr(v, '__float__'):
         return float(v)
@@ -1451,7 +1453,11 @@ def gold_player_performance():
             ).mappings().all()
         serialized = [{k: _serialize(v) for k, v in r.items()} for r in rows]
         return jsonify({"ok": True, "rows": serialized})
-    except Exception:
+    except Exception as e:
+        err_msg = str(e)
+        if "does not exist" in err_msg:
+            log.warning("player_performance view not yet created email=%s", email)
+            return jsonify({"ok": True, "rows": []})
         log.exception("player_performance endpoint failed email=%s", email)
         return jsonify({"ok": False, "error": "internal_error"}), 500
 

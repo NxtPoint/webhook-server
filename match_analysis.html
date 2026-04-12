@@ -2752,14 +2752,14 @@ async function renderPerformanceModule() {
   if (!performanceFetched) {
     document.getElementById('dashContent').innerHTML = '<div class="loading" style="height:300px"><div><div class="spinner"></div>Loading performance data...</div></div>';
     try {
-      const res = await apiFetch('/api/client/player/performance').then(r => r.json());
-      performanceData = res.ok ? res.rows : [];
-      performanceFetched = true;
+      const raw = await apiFetch('/api/client/player/performance');
+      const res = await raw.json();
+      performanceData = (res.ok && res.rows) ? res.rows : [];
     } catch (e) {
       console.error('performance fetch error:', e);
       performanceData = [];
-      performanceFetched = true;
     }
+    performanceFetched = true;
   }
 
   if (!performanceData || !performanceData.length) {
