@@ -124,7 +124,7 @@ body {
 /* Sub-nav items */
 .nav-sub-item {
   display: flex; align-items: center; gap: 10px;
-  padding: 7px 16px 7px 50px; margin: 1px 6px;
+  padding: 7px 16px 7px 46px; margin: 0 6px;
   border-radius: var(--radius);
   font-size: 0.78rem; font-weight: 500;
   color: var(--text-dim); cursor: pointer;
@@ -132,9 +132,23 @@ body {
   white-space: nowrap; overflow: hidden;
   border: none; background: none; width: calc(100% - 12px);
   text-align: left; font-family: inherit;
+  position: relative;
 }
+.nav-sub-item::before {
+  content: '';
+  position: absolute; left: 28px; top: 0; bottom: 0; width: 1px;
+  background: var(--border);
+}
+.nav-sub-item::after {
+  content: '';
+  position: absolute; left: 28px; top: 50%; width: 10px; height: 1px;
+  background: var(--border);
+}
+.nav-sub-item:first-of-type::before { top: 50%; }
+.nav-sub-item:last-of-type::before { bottom: 50%; }
 .nav-sub-item:hover { background: var(--green-bg); color: var(--green); }
 .nav-sub-item.active { color: var(--green); font-weight: 600; background: var(--green-bg); }
+.nav-sub-item.active::after { background: var(--green); height: 2px; }
 .sidebar:not(.expanded) .nav-sub-item { display: none; }
 
 /* Sidebar footer */
