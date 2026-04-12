@@ -162,6 +162,17 @@ class PlayerTracker:
         all_kps = full_kps_list + crop_kps_list + far_kps_list
         deduped_boxes, deduped_kps = self._dedupe_iou(all_boxes, all_kps, iou_thresh=0.5)
         n_yolo_boxes = len(deduped_boxes)
+        # Log dedup details every 150 frames to diagnose far-player loss
+        if frame_idx % 150 == 0:
+            logger.info(
+                "dedup_detail frame=%d: full=%d crop=%d far=%d → deduped=%d",
+                frame_idx, len(full_boxes_list), len(crop_boxes_list),
+                len(far_boxes_list), len(deduped_boxes),
+            )
+            for bi, (bx1, by1, bx2, by2) in enumerate(deduped_boxes):
+                cy = (by1 + by2) / 2
+                logger.info("  deduped[%d] box=(%.0f,%.0f,%.0f,%.0f) cy=%.0f",
+                           bi, bx1, by1, bx2, by2, cy)
 
         # ── Court area filter ──
         # Reject detections far from the court (ball persons, spectators, umpires).
@@ -351,6 +362,16 @@ class PlayerTracker:
             return [], []
 
         crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.05)
+        # Log every detection with coordinates — need to see whether the
+        # far player is detected but lost in dedup, or genuinely not seen.
+        for bi, (bx1, by1, bx2, by2) in enumerate(crop_boxes):
+            bw, bh = bx2 - bx1, by2 - by1
+            logger.info(
+                "far_baseline_pass: det[%d] crop_box=(%.0f,%.0f,%.0f,%.0f) "
+                "size=%.0fx%.0f frame_box=(%.0f,%.0f,%.0f,%.0f)",
+                bi, bx1, by1, bx2, by2, bw, bh,
+                bx1 + x1, by1 + y1, bx2 + x1, by2 + y1,
+            )
         logger.info(
             "far_baseline_pass: crop=%dx%d found=%d conf=0.05",
             x2 - x1, y2, len(crop_boxes),
