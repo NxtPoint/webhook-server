@@ -511,14 +511,13 @@ class PlayerTracker:
         frame_h = frame_shape[0]
         min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
 
-        # Score each candidate by distance from court midline.
-        # When court_bbox is available, midline = center of court bbox.
-        # When not, midline = center of frame (reasonable approximation).
-        if court_bbox is not None:
-            cb_y1, cb_y2 = court_bbox[1], court_bbox[3]
-            midline_y = (cb_y1 + cb_y2) / 2
-        else:
-            midline_y = frame_h / 2
+        # Score each candidate by distance from midline.
+        # ALWAYS use frame center as midline — NOT court_bbox center.
+        # Court_bbox is unreliable (far baseline keypoints often missing →
+        # truncated bbox → shifted midline → real mid-court players appear
+        # "close to net" and get mis-ranked). Frame center is stable and
+        # produces consistent scoring across all frames.
+        midline_y = frame_h / 2
 
         # Tag each candidate: (cy, distance_from_midline, half, box, kps)
         # half: "far" = above midline (small y), "near" = below (large y)
@@ -540,32 +539,16 @@ class PlayerTracker:
         best_far = far_candidates[0] if far_candidates else None
         best_near = near_candidates[0] if near_candidates else None
 
-        # Minimum distance from midline to qualify as a real player at a
-        # baseline. Someone right AT the midline (the net) is an umpire,
-        # bench sitter, or ball boy — never a baseline player. Without
-        # this check, the sole candidate in a half gets picked by default
-        # regardless of how close to the net they are.
-        MIN_MIDLINE_DIST_RATIO = 0.15  # 15% of frame height
-        min_midline_dist_px = MIN_MIDLINE_DIST_RATIO * frame_h
-
-        # Build result pair — reject candidates too close to midline
+        # Build result pair — midline distance is used ONLY for ranking
+        # (prefer candidates further from net), NEVER for rejection.
+        # Previous versions had a hard MIN_MIDLINE_DIST_RATIO threshold
+        # that rejected real players during mid-court rallies. Removed —
+        # the span check + stationary filter handle bench sitters instead.
         chosen = []
-        if best_far and best_far[0] >= min_midline_dist_px:
+        if best_far:
             chosen.append(best_far)
-        elif best_far:
-            logger.debug(
-                "_choose_two_players: rejected far cand cy=%.1f dist_from_mid=%.1f "
-                "< min=%.1f (too close to net)",
-                best_far[1], best_far[0], min_midline_dist_px,
-            )
-        if best_near and best_near[0] >= min_midline_dist_px:
+        if best_near:
             chosen.append(best_near)
-        elif best_near:
-            logger.debug(
-                "_choose_two_players: rejected near cand cy=%.1f dist_from_mid=%.1f "
-                "< min=%.1f (too close to net)",
-                best_near[1], best_near[0], min_midline_dist_px,
-            )
 
         if len(chosen) == 2:
             span = abs(chosen[0][1] - chosen[1][1])
