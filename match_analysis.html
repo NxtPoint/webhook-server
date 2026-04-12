@@ -823,34 +823,61 @@ function renderSummary() {
     <div class="chart-grid tri">
       <div class="chart-card">
         <h3>Free Points (Unreturned Serves)</h3>
+        <div style="font-size:0.72rem;font-weight:700;text-align:center;color:${PA_COLOR};margin-bottom:2px">${pa}</div>
         <div id="chartFreePoints_a" class="echart" style="height:200px"></div>
+        <div style="font-size:0.72rem;font-weight:700;text-align:center;color:${PB_COLOR};margin:4px 0 2px">${pb}</div>
         <div id="chartFreePoints_b" class="echart" style="height:200px"></div>
       </div>
       <div class="chart-card">
         <h3>Return Points Won</h3>
+        <div style="font-size:0.72rem;font-weight:700;text-align:center;color:${PA_COLOR};margin-bottom:2px">${pa}</div>
         <div id="chartRetPtsWon_a" class="echart" style="height:200px"></div>
+        <div style="font-size:0.72rem;font-weight:700;text-align:center;color:${PB_COLOR};margin:4px 0 2px">${pb}</div>
         <div id="chartRetPtsWon_b" class="echart" style="height:200px"></div>
       </div>
       <div class="chart-card">
         <h3>Rally Points Won</h3>
+        <div style="font-size:0.72rem;font-weight:700;text-align:center;color:${PA_COLOR};margin-bottom:2px">${pa}</div>
         <div id="chartRallyPtsWon_a" class="echart" style="height:200px"></div>
+        <div style="font-size:0.72rem;font-weight:700;text-align:center;color:${PB_COLOR};margin:4px 0 2px">${pb}</div>
         <div id="chartRallyPtsWon_b" class="echart" style="height:200px"></div>
       </div>
     </div>
 
-    <div class="chart-card full">
-      <h3>Speed Profile — Average km/h</h3>
-      <div class="chart-grid hex" style="margin-bottom:0;padding:10px 0">
-        <div id="gaugeSrvA" style="height:180px"></div>
-        <div id="gaugeFhA"  style="height:180px"></div>
-        <div id="gaugeBhA"  style="height:180px"></div>
-        <div id="gaugeSrvB" style="height:180px"></div>
-        <div id="gaugeFhB"  style="height:180px"></div>
-        <div id="gaugeBhB"  style="height:180px"></div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Speed Profile</h3>
+        <div class="chart-grid tri" style="margin-bottom:0;padding:10px 0">
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Serve</div>
+            <div id="gaugeSrvA" style="height:180px"></div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Forehand</div>
+            <div id="gaugeFhA" style="height:180px"></div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Backhand</div>
+            <div id="gaugeBhA" style="height:180px"></div>
+          </div>
+        </div>
       </div>
-      <div class="chart-grid" style="margin-top:4px;margin-bottom:0;font-size:0.72rem;color:var(--text-sec);text-align:center">
-        <div style="color:${PA_COLOR};font-weight:600">${pa}</div>
-        <div style="color:${PB_COLOR};font-weight:600">${pb}</div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Speed Profile</h3>
+        <div class="chart-grid tri" style="margin-bottom:0;padding:10px 0">
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Serve</div>
+            <div id="gaugeSrvB" style="height:180px"></div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Forehand</div>
+            <div id="gaugeFhB" style="height:180px"></div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Backhand</div>
+            <div id="gaugeBhB" style="height:180px"></div>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -883,6 +910,14 @@ function compareBar(label, valA, valB, rawA, rawB, invertWinner) {
       <div class="compare-bar" style="width:${wB}%;background:${PB_COLOR};opacity:${bBarOp}"></div>
       <span class="compare-val" style="${bValStyle}">${valB}</span>
     </div>
+  </div>`;
+}
+
+// Player name header row for H2H stat tables — left player A, right player B
+function h2hPlayerHeader(pa, pb) {
+  return `<div style="display:flex;justify-content:space-between;padding:0 10px 8px;border-bottom:2px solid var(--border);margin-bottom:4px">
+    <span style="font-size:0.82rem;font-weight:700;color:${PA_COLOR}">${pa}</span>
+    <span style="font-size:0.82rem;font-weight:700;color:${PB_COLOR}">${pb}</span>
   </div>`;
 }
 
@@ -948,6 +983,7 @@ function renderServePerfTab() {
   return `
     <div class="chart-card full">
       <h3>Serve Comparison</h3>
+      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('UTR', k.player_a_utr || '—', k.player_b_utr || '—')}
@@ -1064,6 +1100,7 @@ function renderServeDetailTab() {
   return `
     <div class="chart-card full">
       <h3>Serve Stats Head-to-Head</h3>
+      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('Svc Points Played', k.pa_service_points || 0, k.pb_service_points || 0)}
@@ -1158,28 +1195,40 @@ function buildServeStrategyFromView(playerRole) {
 
 function strategyTable(data) {
   if (!data.length) return '<div style="text-align:center;color:var(--text-dim);font-size:0.72rem;padding:20px">No serve data</div>';
-  return `<table class="strategy-table" style="font-size:0.7rem">
-    <thead><tr>
-      <th style="padding:4px 6px">Side</th>
-      <th style="padding:4px 6px">Dir</th>
-      <th style="padding:4px 6px">N</th>
-      <th style="padding:4px 6px">%</th>
-      <th style="padding:4px 6px">Won</th>
-      <th style="padding:4px 6px">Win %</th>
-    </tr></thead>
-    <tbody>${data.map(r => {
-      const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
-      const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
-      return `<tr${highlight}>
-        <td style="padding:3px 6px">${r.side}</td>
-        <td style="padding:3px 6px;font-weight:600">${r.direction}</td>
-        <td style="padding:3px 6px">${r.count}</td>
-        <td style="padding:3px 6px">${r.pctOfTotal}%</td>
-        <td style="padding:3px 6px">${r.pointsWon}/${r.pointsPlayed}</td>
-        <td style="padding:3px 6px;font-weight:700;color:${winColor}">${r.winPct}%</td>
-      </tr>`;
-    }).join('')}</tbody>
-  </table>`;
+
+  function sideTable(sideLabel, rows) {
+    if (!rows.length) return `<div><h4>${sideLabel}</h4><div style="text-align:center;color:var(--text-dim);font-size:0.72rem;padding:14px">No data</div></div>`;
+    const totalCount = rows.reduce((s, r) => s + r.count, 0);
+    const totalWon = rows.reduce((s, r) => s + r.pointsWon, 0);
+    const totalPlayed = rows.reduce((s, r) => s + r.pointsPlayed, 0);
+    const overallWinPct = totalPlayed > 0 ? Math.round(100 * totalWon / totalPlayed) : 0;
+    const overallColor = overallWinPct >= 60 ? 'var(--green)' : overallWinPct >= 40 ? 'var(--amber)' : 'var(--red)';
+    return `<div>
+      <h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">${sideLabel}</h4>
+      <table class="strategy-table" style="font-size:0.78rem">
+        <thead><tr><th>Direction</th><th style="text-align:right">N</th><th style="text-align:right">%</th><th style="text-align:right">Won</th><th style="text-align:right">Win %</th></tr></thead>
+        <tbody>${rows.map(r => {
+          const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+          const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
+          return `<tr${highlight}>
+            <td style="font-weight:600">${r.direction}</td>
+            <td style="text-align:right">${r.count}</td>
+            <td style="text-align:right">${r.pctOfTotal}%</td>
+            <td style="text-align:right">${r.pointsWon}/${r.pointsPlayed}</td>
+            <td style="text-align:right;font-weight:700;color:${winColor}">${r.winPct}%</td>
+          </tr>`;
+        }).join('')}
+        <tr style="border-top:2px solid var(--border);font-weight:700">
+          <td>Total</td><td style="text-align:right">${totalCount}</td><td style="text-align:right">100%</td>
+          <td style="text-align:right">${totalWon}/${totalPlayed}</td><td style="text-align:right;color:${overallColor}">${overallWinPct}%</td>
+        </tr></tbody>
+      </table>
+    </div>`;
+  }
+
+  const deuce = data.filter(r => String(r.side).toLowerCase().startsWith('d'));
+  const ad = data.filter(r => String(r.side).toLowerCase().startsWith('a'));
+  return `<div class="heatmap-split-tables">${sideTable('Deuce Side', deuce)}${sideTable('Ad Side', ad)}</div>`;
 }
 
 // ==================== RETURN SUMMARY TAB ====================
@@ -1208,6 +1257,7 @@ function renderReturnSummaryTab() {
   return `
     <div class="chart-card full">
       <h3>Return Comparison</h3>
+      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('Return Pts Played', rA.returns_played || 0, rB.returns_played || 0)}
@@ -1272,6 +1322,7 @@ function renderReturnDetail() {
   return `
     <div class="chart-card full">
       <h3>Return Head-to-Head</h3>
+      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('Returns Played', rA.returns_played || 0, rB.returns_played || 0)}
@@ -1382,6 +1433,7 @@ function renderRallySummaryTab() {
   return `
     <div class="chart-card full">
       <h3>Rally Comparison</h3>
+      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('Rally Pts Played', totalRallyPts, totalRallyPts)}
@@ -1438,6 +1490,7 @@ function renderRallyDetail() {
   return `
     <div class="chart-card full">
       <h3>Rally Head-to-Head</h3>
+      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('Rally Shots', rA.rally_shots || 0, rB.rally_shots || 0)}
@@ -2354,9 +2407,10 @@ function renderReturnOutcomeStackedBar(chartId, playerRole, groupKey) {
 // Build serve direction outcome stacked bar (Won vs Lost) from serve_breakdown
 function renderServeDirOutcomeBar(chartId, playerRole) {
   const rows = rowsForRole(selectedData.serve || [], playerRole);
+  const dirMap = { wide: 'Wide', body: 'Body', t: 'T' };
   const agg = {};
   rows.forEach(r => {
-    const d = r.serve_bucket_d || 'Unknown';
+    const d = dirMap[(r.serve_bucket_d||'').toLowerCase()] || 'Unknown';
     if (!agg[d]) agg[d] = { won: 0, lost: 0, unret: 0 };
     agg[d].won  += r.points_won    || 0;
     agg[d].lost += ((r.points_played || 0) - (r.points_won || 0));
@@ -2373,9 +2427,10 @@ function renderServeDirOutcomeBar(chartId, playerRole) {
 // Build serve direction unreturned bar from serve_breakdown
 function renderServeUnretBar(chartId, playerRole) {
   const rows = rowsForRole(selectedData.serve || [], playerRole);
+  const dirMap = { wide: 'Wide', body: 'Body', t: 'T' };
   const agg = {};
   rows.forEach(r => {
-    const d = r.serve_bucket_d || 'Unknown';
+    const d = dirMap[(r.serve_bucket_d||'').toLowerCase()] || 'Unknown';
     if (!agg[d]) agg[d] = { unret: 0, total: 0 };
     agg[d].unret += r.unreturned   || 0;
     agg[d].total += r.points_played || 0;
@@ -2420,9 +2475,10 @@ function renderServeUnretBar(chartId, playerRole) {
 function renderServeTryBar(chartId, playerRole, tryVal) {
   const rows = rowsForRole(selectedData.serve || [], playerRole)
     .filter(r => r.serve_try_ix_in_point === tryVal);
+  const dirMap = { wide: 'Wide', body: 'Body', t: 'T' };
   const agg = {};
   rows.forEach(r => {
-    const d = r.serve_bucket_d || 'Unknown';
+    const d = dirMap[(r.serve_bucket_d||'').toLowerCase()] || 'Unknown';
     if (!agg[d]) agg[d] = { count: 0, inCount: 0, won: 0, played: 0 };
     agg[d].count   += r.serve_count   || 0;
     agg[d].inCount += r.serves_in     || 0;
@@ -2711,12 +2767,12 @@ function renderAllCharts() {
       k.pa_bh_speed_max || 0, k.pb_bh_speed_max || 0, 100
     );
     const scale = Math.ceil(maxAll / 20) * 20;
-    eGauge('gaugeSrvA', Math.round(k.pa_serve_speed_avg || 0), 'Serve · max ' + (k.pa_serve_speed_max || '—'), scale, PA_COLOR);
-    eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg  || 0), 'Forehand · max ' + (k.pa_fh_speed_max  || '—'), scale, '#22783c');
-    eGauge('gaugeBhA',  Math.round(k.pa_bh_speed_avg  || 0), 'Backhand · max ' + (k.pa_bh_speed_max  || '—'), scale, '#2563eb');
-    eGauge('gaugeSrvB', Math.round(k.pb_serve_speed_avg || 0), 'Serve · max ' + (k.pb_serve_speed_max || '—'), scale, PB_COLOR);
-    eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg  || 0), 'Forehand · max ' + (k.pb_fh_speed_max  || '—'), scale, '#22783c');
-    eGauge('gaugeBhB',  Math.round(k.pb_bh_speed_avg  || 0), 'Backhand · max ' + (k.pb_bh_speed_max  || '—'), scale, '#2563eb');
+    eGauge('gaugeSrvA', Math.round(k.pa_serve_speed_avg || 0), 'max ' + (k.pa_serve_speed_max || '—'), scale, PA_COLOR);
+    eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg  || 0), 'max ' + (k.pa_fh_speed_max  || '—'), scale, '#22783c');
+    eGauge('gaugeBhA',  Math.round(k.pa_bh_speed_avg  || 0), 'max ' + (k.pa_bh_speed_max  || '—'), scale, '#2563eb');
+    eGauge('gaugeSrvB', Math.round(k.pb_serve_speed_avg || 0), 'max ' + (k.pb_serve_speed_max || '—'), scale, PB_COLOR);
+    eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg  || 0), 'max ' + (k.pb_fh_speed_max  || '—'), scale, '#22783c');
+    eGauge('gaugeBhB',  Math.round(k.pb_bh_speed_avg  || 0), 'max ' + (k.pb_bh_speed_max  || '—'), scale, '#2563eb');
   }
 
   // ===== SERVE PERFORMANCE TAB =====
@@ -2724,7 +2780,8 @@ function renderAllCharts() {
     for (const role of ['player_a', 'player_b']) {
       const rows = rowsForRole(selectedData.serve, role);
       const dirCounts = { Wide: 0, Body: 0, T: 0 };
-      rows.forEach(r => { const d = r.serve_bucket_d; if (d && d in dirCounts) dirCounts[d] += r.serve_count || 0; });
+      const dirMap = { wide: 'Wide', body: 'Body', t: 'T' };
+      rows.forEach(r => { const d = dirMap[(r.serve_bucket_d||'').toLowerCase()]; if (d) dirCounts[d] += r.serve_count || 0; });
       const dirs = ['Wide', 'Body', 'T'].filter(d => dirCounts[d] > 0);
       const sfx = role === 'player_a' ? 'a' : 'b';
       eBar('chartServeDir_' + sfx, dirs, dirs.map(d => dirCounts[d]), [C_BLUE, C_GREEN, C_AMBER], true);
