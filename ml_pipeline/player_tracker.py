@@ -511,26 +511,21 @@ class PlayerTracker:
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape) -> tuple:
-        """Select up to 2 players using court-geometry baseline-proximity scoring.
+        """Select up to 2 players using three-tier priority scoring.
 
-        COURT-GEOMETRY strategy. Uses the court bounding box to score each
-        candidate by how close they are to a baseline. Real tennis players
-        spend most of their time near the far or near baseline. Non-players
-        (bench sitters, umpires, ball boys) sit near the net (court midline).
+        THREE-TIER PRIORITY (user's design):
+          Priority 1: INSIDE the court bbox → strongest signal, always prefer
+          Priority 2: OUTSIDE court but near a baseline → next best
+          Priority 3: Anyone else (spectators on the sides, behind stands)
 
-        Scoring per candidate:
-          1. Compute distance from candidate center-y to the court midline
-             (midline = halfway between court_bbox top and bottom edges).
-          2. Higher distance from midline = closer to a baseline = better.
-          3. Assign each candidate to a HALF: "far" (above midline) or
-             "near" (below midline).
-          4. Pick the best-scoring candidate from each half.
+        Within each tier, candidates are ranked by distance from frame midline
+        (further = closer to a baseline = better). One candidate selected from
+        each half (far/near) of the frame.
 
-        Falls back to pixel-y extremes when court_bbox is unavailable.
-
-        Y-SPAN REQUIREMENT still enforced as a safety net — if the chosen
-        pair doesn't span at least 35% of the frame height, drop the one
-        closer to the midline.
+        This prevents spectators BEHIND the baseline from outranking players
+        ON the court — previously, the furthest-from-midline candidate won,
+        which was often a spectator behind the far baseline, not the actual
+        far player standing on the court.
         """
         MIN_Y_SEPARATION_RATIO = 0.35
 
@@ -543,41 +538,61 @@ class PlayerTracker:
             return candidates, candidate_kps
 
         frame_h = frame_shape[0]
+        frame_w = frame_shape[1] if len(frame_shape) > 1 else 1920
         min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
-
-        # Score each candidate by distance from midline.
-        # ALWAYS use frame center as midline — NOT court_bbox center.
-        # Court_bbox is unreliable (far baseline keypoints often missing →
-        # truncated bbox → shifted midline → real mid-court players appear
-        # "close to net" and get mis-ranked). Frame center is stable and
-        # produces consistent scoring across all frames.
         midline_y = frame_h / 2
 
-        # Tag each candidate: (cy, distance_from_midline, half, box, kps)
-        # half: "far" = above midline (small y), "near" = below (large y)
+        # Score each candidate with three-tier priority.
+        # score = (tier_bonus, dist_from_midline) — sorted descending,
+        # so tier 1 (in-court) always beats tier 2 (near baseline) which
+        # always beats tier 3 (spectator).
         scored = []
         for box, kps in zip(candidates, candidate_kps):
+            cx = (box[0] + box[2]) / 2
             cy = (box[1] + box[3]) / 2
             dist_from_mid = abs(cy - midline_y)
             half = "far" if cy < midline_y else "near"
-            scored.append((dist_from_mid, cy, half, box, kps))
 
-        # Pick best (highest midline distance) from each half
+            # Tier assignment based on court_bbox
+            if court_bbox is not None:
+                cb_x1, cb_y1, cb_x2, cb_y2 = court_bbox
+                in_court_x = cb_x1 <= cx <= cb_x2
+                in_court_y = cb_y1 <= cy <= cb_y2
+                if in_court_x and in_court_y:
+                    tier = 3  # highest — inside court (tier bonus = 3)
+                elif in_court_x:
+                    # Correct x (on court width) but outside y (behind baseline)
+                    tier = 2  # near baseline area
+                else:
+                    tier = 1  # side spectator / off-court
+            else:
+                # No court_bbox — fall back to midline distance only
+                tier = 2  # neutral tier for all
+
+            # Compound score: tier dominates, then midline distance as tiebreaker
+            score = tier * frame_h + dist_from_mid
+            scored.append((score, cy, half, box, kps, tier))
+
+        # Pick best (highest score) from each half
         far_candidates = [s for s in scored if s[2] == "far"]
         near_candidates = [s for s in scored if s[2] == "near"]
-
-        # Sort by dist_from_mid descending (furthest from net = best)
         far_candidates.sort(key=lambda s: s[0], reverse=True)
         near_candidates.sort(key=lambda s: s[0], reverse=True)
 
         best_far = far_candidates[0] if far_candidates else None
         best_near = near_candidates[0] if near_candidates else None
 
-        # Build result pair — midline distance is used ONLY for ranking
-        # (prefer candidates further from net), NEVER for rejection.
-        # Previous versions had a hard MIN_MIDLINE_DIST_RATIO threshold
-        # that rejected real players during mid-court rallies. Removed —
-        # the span check + stationary filter handle bench sitters instead.
+        if best_far:
+            logger.debug(
+                "_choose_two_players: best_far cy=%.0f tier=%d score=%.0f",
+                best_far[1], best_far[5], best_far[0],
+            )
+        if best_near:
+            logger.debug(
+                "_choose_two_players: best_near cy=%.0f tier=%d score=%.0f",
+                best_near[1], best_near[5], best_near[0],
+            )
+
         chosen = []
         if best_far:
             chosen.append(best_far)
