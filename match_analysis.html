@@ -738,8 +738,9 @@ function renderAnalyticsModule() {
     { id: 'return-summary',label: 'Return Summary' },
     { id: 'return-detail', label: 'Return Detail' },
     { id: 'rally-summary', label: 'Rally Summary' },
-    { id: 'rally-detail',  label: 'Rally Detail' },
-    { id: 'coach',         label: 'Coach \u2728' },
+    { id: 'rally-detail',    label: 'Rally Detail' },
+    { id: 'point-analysis',  label: 'Point Analysis' },
+    { id: 'coach',           label: 'Coach \u2728' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -753,8 +754,9 @@ function renderAnalyticsModule() {
     <div class="tab-panel${activeTab === 'return-summary' ? ' active' : ''}" id="p-return-summary">${renderReturnSummaryTab()}</div>
     <div class="tab-panel${activeTab === 'return-detail'  ? ' active' : ''}" id="p-return-detail">${renderReturnDetail()}</div>
     <div class="tab-panel${activeTab === 'rally-summary'  ? ' active' : ''}" id="p-rally-summary">${renderRallySummaryTab()}</div>
-    <div class="tab-panel${activeTab === 'rally-detail'   ? ' active' : ''}" id="p-rally-detail">${renderRallyDetail()}</div>
-    <div class="tab-panel${activeTab === 'coach'          ? ' active' : ''}" id="p-coach">${renderCoachTab()}</div>
+    <div class="tab-panel${activeTab === 'rally-detail'    ? ' active' : ''}" id="p-rally-detail">${renderRallyDetail()}</div>
+    <div class="tab-panel${activeTab === 'point-analysis'  ? ' active' : ''}" id="p-point-analysis">${renderPointAnalysis()}</div>
+    <div class="tab-panel${activeTab === 'coach'           ? ' active' : ''}" id="p-coach">${renderCoachTab()}</div>
   `;
 
   setTimeout(() => {
@@ -808,6 +810,9 @@ function renderSummary() {
       ${compareBar('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, k.pa_double_faults, k.pb_double_faults, true)}
       ${compareBar('Winners', k.pa_winners || 0, k.pb_winners || 0, k.pa_winners, k.pb_winners)}
       ${compareBar('Errors', k.pa_errors || 0, k.pb_errors || 0, k.pa_errors, k.pb_errors, true)}
+      ${compareBar('Games Won', k.pa_games_won || 0, k.pb_games_won || 0, k.pa_games_won, k.pb_games_won)}
+      ${compareBar('Service Games Won', (k.pa_service_games_won||0)+'/'+(k.pa_service_games||0), (k.pb_service_games_won||0)+'/'+(k.pb_service_games||0), k.pa_service_games_won, k.pb_service_games_won)}
+      ${compareBar('Return Games Won', (k.pa_return_games_won||0)+'/'+(k.pb_service_games||0), (k.pb_return_games_won||0)+'/'+(k.pa_service_games||0), k.pa_return_games_won, k.pb_return_games_won)}
     </div>
 
     <div class="chart-grid">
@@ -845,13 +850,31 @@ function renderSummary() {
       </div>
     </div>
 
+    <div class="chart-card full">
+      <h3>Aggression Profile</h3>
+      <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:0.72rem;font-weight:700;color:${PA_COLOR};margin-bottom:6px">${pa}</div>
+          <div id="chartAggBar_a" class="echart" style="height:60px"></div>
+        </div>
+        <div style="flex:1;min-width:200px">
+          <div style="font-size:0.72rem;font-weight:700;color:${PB_COLOR};margin-bottom:6px">${pb}</div>
+          <div id="chartAggBar_b" class="echart" style="height:60px"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="chart-grid">
       <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Speed Profile</h3>
-        <div class="chart-grid tri" style="margin-bottom:0;padding:10px 0">
+        <div class="chart-grid quad" style="margin-bottom:0;padding:10px 0">
           <div style="text-align:center">
-            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Serve</div>
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">1st Serve</div>
             <div id="gaugeSrvA" style="height:180px"></div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">2nd Serve</div>
+            <div id="gauge2ndA" style="height:180px"></div>
           </div>
           <div style="text-align:center">
             <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Forehand</div>
@@ -865,10 +888,14 @@ function renderSummary() {
       </div>
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Speed Profile</h3>
-        <div class="chart-grid tri" style="margin-bottom:0;padding:10px 0">
+        <div class="chart-grid quad" style="margin-bottom:0;padding:10px 0">
           <div style="text-align:center">
-            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Serve</div>
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">1st Serve</div>
             <div id="gaugeSrvB" style="height:180px"></div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">2nd Serve</div>
+            <div id="gauge2ndB" style="height:180px"></div>
           </div>
           <div style="text-align:center">
             <div style="font-size:0.72rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Forehand</div>
@@ -1557,6 +1584,160 @@ function renderRallyDetail() {
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Overall Rally Outcomes</h3>
         <div id="chartRallyOutcome_b" class="echart"></div>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== POINT ANALYSIS TAB ====================
+function renderPointAnalysis() {
+  const k = kpi();
+  const pa = k.player_a_name || 'Player A';
+  const pb = k.player_b_name || 'Player B';
+  const rA = byRole(selectedData.rally, 'player_a') || {};
+  const rB = byRole(selectedData.rally, 'player_b') || {};
+
+  // Net point differential
+  const paWon = k.pa_points_won || 0, pbWon = k.pb_points_won || 0;
+  const total  = k.total_points  || 0;
+  const net    = paWon - pbWon;
+  const netStr = net > 0 ? `+${net}` : String(net);
+  const netCol = net > 0 ? 'var(--green)' : net < 0 ? 'var(--red)' : 'var(--text-sec)';
+  const matchWinner = net > 0 ? pa : net < 0 ? pb : 'Tied';
+
+  // Phase table
+  const svcPtsPlayed = k.pa_service_points || ((k.pa_svc_pts_won || 0) + (k.pb_ret_pts_won || 0));
+  const retPtsPlayed = k.pa_return_points || ((k.pa_ret_pts_won || 0) + (k.pb_svc_pts_won || 0));
+  const rallyPts     = (k.pa_rally_pts_won || 0) + (k.pb_rally_pts_won || 0);
+
+  function phaseRow(label, won, played) {
+    const lost = Math.max(0, (played || 0) - (won || 0));
+    const winPct = played > 0 ? Math.round(100 * won / played) : 0;
+    const netVal = won - lost;
+    const netDisplay = netVal > 0 ? `+${netVal}` : String(netVal);
+    const wc = winPct >= 60 ? 'var(--green)' : winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+    const nc = netVal > 0 ? 'var(--green)' : netVal < 0 ? 'var(--red)' : 'var(--text-sec)';
+    return `<tr>
+      <td style="font-weight:600">${label}</td>
+      <td style="text-align:right">${won}</td>
+      <td style="text-align:right">${lost}</td>
+      <td style="text-align:right;font-weight:700;color:${nc}">${netDisplay}</td>
+      <td style="text-align:right;font-weight:700;color:${wc}">${winPct}%</td>
+    </tr>`;
+  }
+
+  // Stroke table — from rally_breakdown
+  function strokeRows(r) {
+    const strokes = [
+      { name: 'Forehand', w: r.winner_stroke_forehand || 0, e: r.error_stroke_forehand || 0 },
+      { name: 'Backhand', w: r.winner_stroke_backhand || 0, e: r.error_stroke_backhand || 0 },
+      { name: 'Volley',   w: r.winner_stroke_volley   || 0, e: r.error_stroke_volley   || 0 },
+      { name: 'Slice',    w: r.winner_stroke_slice    || 0, e: r.error_stroke_slice    || 0 },
+    ].filter(s => (s.w + s.e) > 0);
+    if (!strokes.length) return '<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">No stroke data</td></tr>';
+    return strokes.map(s => {
+      const ratio = s.e > 0 ? (s.w / s.e).toFixed(2) : (s.w > 0 ? '∞' : '—');
+      const net = s.w - s.e;
+      const netStr = net > 0 ? `+${net}` : String(net);
+      const nc = net > 0 ? 'var(--green)' : net < 0 ? 'var(--red)' : 'var(--text-sec)';
+      return `<tr>
+        <td style="font-weight:600">${s.name}</td>
+        <td style="text-align:right">${s.w}</td>
+        <td style="text-align:right">${s.e}</td>
+        <td style="text-align:right">${ratio}</td>
+        <td style="text-align:right;font-weight:700;color:${nc}">${netStr}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Zone table — all phases, player A
+  const placementA = rowsForRole(selectedData.placement || [], 'player_a');
+  const ownerId = k.player_a_id;
+
+  function zoneEffTable(shots, zoneKey, title) {
+    if (!shots.length) return `<div style="color:var(--text-dim);font-size:0.8rem;padding:12px 0">No data</div>`;
+    return buildGenericTable(shots, zoneKey, null, ownerId, title);
+  }
+
+  return `
+    <!-- Section 1: Match Result -->
+    <div class="kpi-strip">
+      <div class="kpi"><div class="val">${total}</div><div class="lbl">Total Points</div></div>
+      <div class="kpi"><div class="val">${paWon}</div><div class="lbl">${pa} Won</div></div>
+      <div class="kpi"><div class="val">${pbWon}</div><div class="lbl">${pb} Won</div></div>
+      <div class="kpi"><div class="val" style="color:${netCol}">${netStr}</div><div class="lbl">Point Differential</div></div>
+    </div>
+
+    <!-- Section 2+3: How Points Were Won / Lost -->
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · How Points Were Won</h3>
+        <div id="chartPAWon" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · How Points Were Lost</h3>
+        <div id="chartPALost" class="echart"></div>
+      </div>
+    </div>
+
+    <!-- Section 4: Net Position by Phase -->
+    <div class="chart-card full">
+      <h3>Net Position by Phase — ${pa}</h3>
+      <table class="strategy-table">
+        <thead><tr>
+          <th>Phase</th>
+          <th style="text-align:right">Won</th>
+          <th style="text-align:right">Lost</th>
+          <th style="text-align:right">Net</th>
+          <th style="text-align:right">Win %</th>
+        </tr></thead>
+        <tbody>
+          ${phaseRow('Serve', k.pa_svc_pts_won || 0, svcPtsPlayed)}
+          ${phaseRow('Return', k.pa_ret_pts_won || 0, retPtsPlayed)}
+          ${phaseRow('Rally (5+)', k.pa_rally_pts_won || 0, rallyPts)}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Section 5: Net Position by Stroke -->
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Winners &amp; Errors by Stroke</h3>
+        <table class="strategy-table">
+          <thead><tr>
+            <th>Stroke</th>
+            <th style="text-align:right">Winners</th>
+            <th style="text-align:right">Errors</th>
+            <th style="text-align:right">W:E</th>
+            <th style="text-align:right">Net</th>
+          </tr></thead>
+          <tbody>${strokeRows(rA)}</tbody>
+        </table>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Winners &amp; Errors by Stroke</h3>
+        <table class="strategy-table">
+          <thead><tr>
+            <th>Stroke</th>
+            <th style="text-align:right">Winners</th>
+            <th style="text-align:right">Errors</th>
+            <th style="text-align:right">W:E</th>
+            <th style="text-align:right">Net</th>
+          </tr></thead>
+          <tbody>${strokeRows(rB)}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Section 6: Positioning Summary -->
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Zone Effectiveness (Hit Location)</h3>
+        ${zoneEffTable(placementA, 'rally_location_hit', 'Zone')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Zone Effectiveness (Bounce Location)</h3>
+        ${zoneEffTable(placementA, 'rally_location_bounce', 'Zone')}
       </div>
     </div>
   `;
@@ -2767,16 +2948,54 @@ function renderAllCharts() {
     // Speed ring gauges
     const maxAll = Math.max(
       k.pa_serve_speed_max || 0, k.pb_serve_speed_max || 0,
+      k.pa_first_serve_speed_max || 0, k.pb_first_serve_speed_max || 0,
+      k.pa_second_serve_speed_max || 0, k.pb_second_serve_speed_max || 0,
       k.pa_fh_speed_max || 0, k.pb_fh_speed_max || 0,
       k.pa_bh_speed_max || 0, k.pb_bh_speed_max || 0, 100
     );
     const scale = Math.ceil(maxAll / 20) * 20;
-    eGauge('gaugeSrvA', Math.round(k.pa_serve_speed_avg || 0), 'max ' + (k.pa_serve_speed_max || '—'), scale, PA_COLOR);
+    eGauge('gaugeSrvA', Math.round(k.pa_first_serve_speed_avg || k.pa_serve_speed_avg || 0), 'max ' + (k.pa_first_serve_speed_max || k.pa_serve_speed_max || '—'), scale, PA_COLOR);
+    eGauge('gauge2ndA', Math.round(k.pa_second_serve_speed_avg || 0), 'max ' + (k.pa_second_serve_speed_max || '—'), scale, '#4a7c5c');
     eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg  || 0), 'max ' + (k.pa_fh_speed_max  || '—'), scale, '#22783c');
     eGauge('gaugeBhA',  Math.round(k.pa_bh_speed_avg  || 0), 'max ' + (k.pa_bh_speed_max  || '—'), scale, '#2563eb');
-    eGauge('gaugeSrvB', Math.round(k.pb_serve_speed_avg || 0), 'max ' + (k.pb_serve_speed_max || '—'), scale, PB_COLOR);
+    eGauge('gaugeSrvB', Math.round(k.pb_first_serve_speed_avg || k.pb_serve_speed_avg || 0), 'max ' + (k.pb_first_serve_speed_max || k.pb_serve_speed_max || '—'), scale, PB_COLOR);
+    eGauge('gauge2ndB', Math.round(k.pb_second_serve_speed_avg || 0), 'max ' + (k.pb_second_serve_speed_max || '—'), scale, '#4a7c5c');
     eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg  || 0), 'max ' + (k.pb_fh_speed_max  || '—'), scale, '#22783c');
     eGauge('gaugeBhB',  Math.round(k.pb_bh_speed_avg  || 0), 'max ' + (k.pb_bh_speed_max  || '—'), scale, '#2563eb');
+
+    // In Attack % comparison bars
+    for (const role of ['player_a', 'player_b']) {
+      const r = byRole(selectedData.rally, role) || {};
+      const total = (r.aggression_attack||0) + (r.aggression_neutral||0) + (r.aggression_defence||0);
+      const sfx = role === 'player_a' ? 'a' : 'b';
+      if (total > 0) {
+        const chart = ec('chartAggBar_' + sfx);
+        if (chart) {
+          chart.setOption({
+            ...ANIM,
+            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, ...TT },
+            grid: { left: 0, right: 0, top: 0, bottom: 0 },
+            xAxis: { type: 'value', max: 100, show: false },
+            yAxis: { type: 'category', data: [''], show: false },
+            series: [
+              { type: 'bar', stack: 'total', name: 'Attack', data: [Math.round(100*r.aggression_attack/total)],
+                itemStyle: { color: C_GREEN }, barWidth: '100%',
+                label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
+                  formatter: p => p.value > 5 ? 'Attack ' + p.value + '%' : '' } },
+              { type: 'bar', stack: 'total', name: 'Neutral', data: [Math.round(100*r.aggression_neutral/total)],
+                itemStyle: { color: C_AMBER }, barWidth: '100%',
+                label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
+                  formatter: p => p.value > 5 ? 'Neutral ' + p.value + '%' : '' } },
+              { type: 'bar', stack: 'total', name: 'Defence', data: [Math.round(100*r.aggression_defence/total)],
+                itemStyle: { color: C_RED }, barWidth: '100%',
+                label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
+                  formatter: p => p.value > 5 ? 'Defence ' + p.value + '%' : '' } },
+            ],
+          });
+          CI['chartAggBar_' + sfx] = chart;
+        }
+      }
+    }
   }
 
   // ===== SERVE PERFORMANCE TAB =====
@@ -2894,6 +3113,55 @@ function renderAllCharts() {
         { name: 'Error',  value: rE },
         { name: 'In Play',value: rI },
       ], [C_GREEN, C_RED, C_BLUE]);
+    }
+  }
+
+  // ===== POINT ANALYSIS TAB =====
+  if (activeTab === 'point-analysis') {
+    const k2 = kpi();
+    const rA2 = byRole(selectedData.rally, 'player_a') || {};
+    const placement = selectedData.placement || [];
+    const ownerId = k2.player_a_id;
+    const oppId   = k2.player_b_id;
+
+    // How Player A won points: Aces, Winners, Opponent Errors
+    const placementA = rowsForRole(placement, 'player_a');
+    const placementB = rowsForRole(placement, 'player_b');
+
+    // Points won by Player A
+    const acesA    = k2.pa_aces || 0;
+    const winnersA = k2.pa_winners || 0;
+    // Opponent errors that gave Player A the point: Player B shots where outcome=Error and point winner = A
+    const oppErrGivingA = placementB.filter(s =>
+      s.shot_outcome_d === 'Error' && s.point_winner_player_id === ownerId
+    ).length;
+    const wonByA = (k2.pa_points_won || 0);
+
+    if (document.getElementById('chartPAWon')) {
+      ePie('chartPAWon', [
+        { name: 'Aces', value: acesA },
+        { name: 'Winners', value: Math.max(0, winnersA - acesA) },
+        { name: 'Opp Errors', value: oppErrGivingA },
+        { name: 'Other', value: Math.max(0, wonByA - acesA - Math.max(0, winnersA - acesA) - oppErrGivingA) },
+      ].filter(d => d.value > 0), [C_GREEN, C_GREEN_L, C_AMBER, C_TEAL]);
+    }
+
+    // How Player A lost points: DFs, Own Errors, Opponent Winners
+    const dfA      = k2.pa_double_faults || 0;
+    const errorsA  = k2.pa_errors || 0;
+    // Opponent winners that beat Player A
+    const oppWinnersBeatingA = placementB.filter(s =>
+      s.shot_outcome_d === 'Winner' && s.point_winner_player_id === oppId
+    ).length;
+    const lostByA  = k2.pb_points_won || 0;
+
+    if (document.getElementById('chartPALost')) {
+      ePie('chartPALost', [
+        { name: 'Double Faults', value: dfA },
+        { name: 'Own Errors',    value: Math.max(0, errorsA - dfA) },
+        { name: 'Opp Winners',   value: oppWinnersBeatingA },
+        { name: 'Other',         value: Math.max(0, lostByA - dfA - Math.max(0, errorsA - dfA) - oppWinnersBeatingA) },
+      ].filter(d => d.value > 0), [C_RED, '#e57373', C_BLUE, C_AMBER]);
     }
   }
 

@@ -212,6 +212,31 @@ point_stats AS (
     LEFT JOIN points_dedup p ON p.task_id = pl.task_id
     GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
 ),
+games_dedup AS (
+    SELECT DISTINCT ON (task_id, game_number)
+        task_id, game_number, game_winner_player_id, server_id
+    FROM silver.point_detail
+    WHERE exclude_d IS NOT TRUE AND game_number IS NOT NULL
+    ORDER BY task_id, game_number, shot_ix_in_point DESC NULLS LAST
+),
+game_stats AS (
+    SELECT
+        pl.task_id,
+        COUNT(g.game_number) AS total_games,
+        COUNT(*) FILTER (WHERE g.game_winner_player_id = pl.player_a_id) AS pa_games_won,
+        COUNT(*) FILTER (WHERE g.game_winner_player_id = pl.player_b_id) AS pb_games_won,
+        -- Service games: games where this player served
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_a_id) AS pa_service_games,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_a_id AND g.game_winner_player_id = pl.player_a_id) AS pa_service_games_won,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_b_id) AS pb_service_games,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_b_id AND g.game_winner_player_id = pl.player_b_id) AS pb_service_games_won,
+        -- Return games: games where this player returned (opponent served)
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_b_id AND g.game_winner_player_id = pl.player_a_id) AS pa_return_games_won,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_a_id AND g.game_winner_player_id = pl.player_b_id) AS pb_return_games_won
+    FROM gold.vw_player pl
+    LEFT JOIN games_dedup g ON g.task_id = pl.task_id
+    GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
+),
 shot_stats AS (
     SELECT
         pl.task_id,
@@ -228,11 +253,21 @@ shot_stats AS (
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS pa_first_serves_in,
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.player_id = pl.player_b_id) AS pb_first_serves_total,
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_b_id) AS pb_first_serves_in,
-        -- Serve speed
+        -- Serve speed (overall)
         AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_serve_speed_avg,
         MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_serve_speed_max,
         AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_serve_speed_avg,
         MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_serve_speed_max,
+        -- 1st serve speed
+        AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_first_serve_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_first_serve_speed_max,
+        AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_first_serve_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '1st' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_first_serve_speed_max,
+        -- 2nd serve speed
+        AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_second_serve_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_second_serve_speed_max,
+        AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_second_serve_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_second_serve_speed_max,
         -- Forehand speed
         AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_fh_speed_avg,
         MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_fh_speed_max,
@@ -405,9 +440,30 @@ SELECT
     ss.pa_rally_winners,
     ss.pb_rally_winners,
     ss.pa_rally_errors,
-    ss.pb_rally_errors
+    ss.pb_rally_errors,
+    -- Games
+    gs.total_games,
+    gs.pa_games_won,
+    gs.pb_games_won,
+    gs.pa_service_games,
+    gs.pa_service_games_won,
+    gs.pb_service_games,
+    gs.pb_service_games_won,
+    gs.pa_return_games_won,
+    gs.pb_return_games_won,
+    -- 1st serve speed
+    ss.pa_first_serve_speed_avg,
+    ss.pa_first_serve_speed_max,
+    ss.pb_first_serve_speed_avg,
+    ss.pb_first_serve_speed_max,
+    -- 2nd serve speed
+    ss.pa_second_serve_speed_avg,
+    ss.pa_second_serve_speed_max,
+    ss.pb_second_serve_speed_avg,
+    ss.pb_second_serve_speed_max
 FROM gold.vw_player pl
 LEFT JOIN point_stats ps ON ps.task_id = pl.task_id
+LEFT JOIN game_stats gs ON gs.task_id = pl.task_id
 LEFT JOIN shot_stats ss ON ss.task_id = pl.task_id
 LEFT JOIN serve_win_stats sws ON sws.task_id = pl.task_id
 """
