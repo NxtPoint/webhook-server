@@ -448,6 +448,25 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ========== PLAYER PERFORMANCE (MODULE 3) ========== */
+.perf-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.perf-table th {
+  text-align: left; padding: 8px 12px; font-size: 0.72rem; font-weight: 600;
+  color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--border); white-space: nowrap;
+}
+.perf-table td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+.perf-table .cat-divider td {
+  background: var(--bg); font-size: 0.7rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-sec);
+  padding: 5px 12px; border-bottom: 1px solid var(--border);
+}
+.perf-notice {
+  background: rgba(37,99,235,0.06); border: 1px solid rgba(37,99,235,0.2);
+  border-left: 4px solid var(--blue); padding: 10px 16px; border-radius: var(--radius);
+  font-size: 0.82rem; color: var(--text-sec); margin-bottom: 16px;
+}
+
 /* Responsive — IDENTICAL to practice.html mobile rules */
 @media (max-width: 768px) {
   .dash-layout { display: flex; flex-direction: column; height: auto; overflow-x: hidden; width: 100%; }
@@ -646,6 +665,7 @@ async function selectMatch(idx) {
   // Reset coach cache — different match, different insights
   coachCardsCache = null;
   coachLastTaskId = null;
+  performanceFetched = false;
 
   // Reset heatmap filters to defaults for new match
   heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
@@ -711,19 +731,25 @@ function renderDashboard() {
   document.getElementById('moduleStrip').innerHTML = `
     <button class="module-tab${activeModule === 'analytics' ? ' active' : ''}" onclick="switchModule('analytics')">Match Analytics</button>
     <button class="module-tab${activeModule === 'heatmaps' ? ' active' : ''}" onclick="switchModule('heatmaps')">Placement Heatmaps</button>
+    <button class="module-tab${activeModule === 'performance' ? ' active' : ''}" onclick="switchModule('performance')">Player Performance</button>
+    <button class="module-tab${activeModule === 'coach' ? ' active' : ''}" onclick="switchModule('coach')">AI Coach</button>
   `;
 
   // No filter bar yet — set filtering will come later via per-set views
   document.getElementById('filterBar').innerHTML = '';
 
   if (activeModule === 'analytics') renderAnalyticsModule();
-  else renderHeatmapsModule();
+  else if (activeModule === 'heatmaps') renderHeatmapsModule();
+  else if (activeModule === 'performance') renderPerformanceModule();
+  else if (activeModule === 'coach') renderCoachModule();
 }
 
 function switchModule(mod) {
   activeModule = mod;
   if (mod === 'analytics') activeTab = 'summary';
-  else activeTab = 'serve-placement';
+  else if (mod === 'heatmaps') activeTab = 'serve-placement';
+  else if (mod === 'performance') activeTab = 'scorecard';
+  else if (mod === 'coach') activeTab = 'coach';
   renderDashboard();
 }
 
@@ -740,7 +766,6 @@ function renderAnalyticsModule() {
     { id: 'rally-summary', label: 'Rally Summary' },
     { id: 'rally-detail',    label: 'Rally Detail' },
     { id: 'point-analysis',  label: 'Point Analysis' },
-    { id: 'coach',           label: 'Coach \u2728' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -756,12 +781,10 @@ function renderAnalyticsModule() {
     <div class="tab-panel${activeTab === 'rally-summary'  ? ' active' : ''}" id="p-rally-summary">${renderRallySummaryTab()}</div>
     <div class="tab-panel${activeTab === 'rally-detail'    ? ' active' : ''}" id="p-rally-detail">${renderRallyDetail()}</div>
     <div class="tab-panel${activeTab === 'point-analysis'  ? ' active' : ''}" id="p-point-analysis">${renderPointAnalysis()}</div>
-    <div class="tab-panel${activeTab === 'coach'           ? ' active' : ''}" id="p-coach">${renderCoachTab()}</div>
   `;
 
   setTimeout(() => {
     renderAllCharts();
-    if (activeTab === 'coach') loadCoachCards();
   }, 50);
 }
 
@@ -774,7 +797,6 @@ function switchTab(id) {
   if (el) el.classList.add('active');
   setTimeout(() => {
     renderAllCharts();
-    if (id === 'coach') loadCoachCards();
   }, 50);
 }
 
@@ -1899,6 +1921,8 @@ async function callCoachAnalyze(body) {
 let heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
 let heatmapPlayer = 'player_a';
 let heatmapInfoOpen = false;  // side info panel collapsed by default
+let performanceData = null;
+let performanceFetched = false;
 
 function renderHeatmapsModule() {
   const tabs = [
@@ -2707,6 +2731,264 @@ function renderServeTryBar(chartId, playerRole, tryVal) {
     ],
   });
   CI[chartId] = chart;
+}
+
+// ====================================================================
+//  MODULE 3: PLAYER PERFORMANCE (cross-match KPI tracking)
+// ====================================================================
+
+async function renderPerformanceModule() {
+  const tabs = [
+    { id: 'scorecard',   label: 'KPI Scorecard' },
+    { id: 'trends',      label: 'Trend Charts' },
+    { id: 'last-vs-avg', label: 'Last Match vs Average' },
+  ];
+
+  document.getElementById('tabStrip').innerHTML = tabs.map(t =>
+    `<button class="dash-tab${t.id === activeTab ? ' active' : ''}" onclick="switchPerfTab('${t.id}')">${t.label}</button>`
+  ).join('');
+
+  // Lazy fetch performance data (email-scoped, not task-scoped)
+  if (!performanceFetched) {
+    document.getElementById('dashContent').innerHTML = '<div class="loading" style="height:300px"><div><div class="spinner"></div>Loading performance data...</div></div>';
+    try {
+      const res = await apiFetch('/api/client/player/performance').then(r => r.json());
+      performanceData = res.ok ? res.rows : [];
+      performanceFetched = true;
+    } catch (e) {
+      console.error('performance fetch error:', e);
+      performanceData = [];
+      performanceFetched = true;
+    }
+  }
+
+  if (!performanceData || !performanceData.length) {
+    document.getElementById('dashContent').innerHTML = `
+      <div class="tab-panel active">
+        <div class="perf-notice">Upload and analyse more matches to build your performance profile. Your KPI scorecard will appear here once you have match data.</div>
+      </div>`;
+    return;
+  }
+
+  const playerName = performanceData[0]?.player_name || 'Player';
+  const totalMatches = performanceData[0]?.total_matches || 0;
+
+  document.getElementById('dashContent').innerHTML = `
+    <div class="tab-panel active" id="p-perf-content">
+      ${activeTab === 'scorecard' ? renderScorecard(playerName, totalMatches) : ''}
+      ${activeTab === 'trends' ? renderTrendCharts(playerName) : ''}
+      ${activeTab === 'last-vs-avg' ? renderLastVsAvg(playerName) : ''}
+    </div>
+  `;
+
+  if (activeTab === 'trends') {
+    setTimeout(() => renderTrendECharts(), 50);
+  }
+  if (activeTab === 'last-vs-avg') {
+    setTimeout(() => renderLastVsAvgChart(), 50);
+  }
+}
+
+function switchPerfTab(id) {
+  activeTab = id;
+  renderPerformanceModule();
+}
+
+// Sparkline SVG renderer — pure inline SVG, no ECharts
+function renderSparkline(values, status) {
+  if (!values || values.length < 2) return '<span style="color:var(--text-dim)">—</span>';
+  const nums = values.filter(v => v != null).map(Number);
+  if (nums.length < 2) return '<span style="color:var(--text-dim)">—</span>';
+  const min = Math.min(...nums), max = Math.max(...nums);
+  const range = max - min || 1;
+  const W = 70, H = 24, pad = 2;
+  const pts = nums.map((v, i) => {
+    const x = pad + (i / (nums.length - 1)) * (W - pad*2);
+    const y = H - pad - ((v - min) / range) * (H - pad*2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const color = status === 'green' ? '#1a5c2e' : status === 'amber' ? '#d97706' : status === 'red' ? '#dc2626' : '#9ca3af';
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+
+function renderScorecard(playerName, totalMatches) {
+  const rows = performanceData;
+  let lastCat = '';
+
+  const notice = totalMatches < 3
+    ? `<div class="perf-notice">You have <strong>${totalMatches}</strong> match${totalMatches !== 1 ? 'es' : ''} analysed. Trend data requires at least 3 matches.</div>`
+    : '';
+
+  let tableRows = '';
+  rows.forEach(r => {
+    // Category divider
+    if (r.category !== lastCat) {
+      lastCat = r.category;
+      tableRows += `<tr class="cat-divider"><td colspan="7">${escapeHtml(r.category)}</td></tr>`;
+    }
+
+    const val = r.avg_last_5 != null ? Number(r.avg_last_5).toFixed(1) : '—';
+    const bench = r.benchmark != null ? Number(r.benchmark).toFixed(1) : '—';
+    const delta = r.delta_vs_benchmark != null ? Number(r.delta_vs_benchmark).toFixed(1) : '—';
+    const deltaColor = r.delta_vs_benchmark == null ? 'var(--text-dim)'
+      : (r.higher_is_better ? (r.delta_vs_benchmark >= 0 ? 'var(--green)' : 'var(--red)')
+        : (r.delta_vs_benchmark <= 0 ? 'var(--green)' : 'var(--red)'));
+    const deltaPrefix = r.delta_vs_benchmark != null && r.delta_vs_benchmark > 0 ? '+' : '';
+
+    const statusDot = r.status === 'green' ? '#1a5c2e' : r.status === 'amber' ? '#d97706' : r.status === 'red' ? '#dc2626' : '#9ca3af';
+    const trendArrow = r.trend_direction === 'improving' ? '<span style="color:var(--green)">&#9650;</span>'
+      : r.trend_direction === 'declining' ? '<span style="color:var(--red)">&#9660;</span>'
+      : '<span style="color:var(--text-dim)">&#9654;</span>';
+
+    const sparkline = renderSparkline(r.sparkline_values, r.status);
+
+    tableRows += `<tr>
+      <td style="font-weight:500">${escapeHtml(r.display_label)}</td>
+      <td style="text-align:right;color:var(--text-sec)">${bench}${r.unit === '%' ? '%' : ''}</td>
+      <td style="text-align:right;font-weight:600">${val}${r.unit === '%' ? '%' : ''}</td>
+      <td style="text-align:right;color:${deltaColor};font-weight:600">${deltaPrefix}${delta}</td>
+      <td style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusDot}"></span></td>
+      <td style="text-align:center">${trendArrow}</td>
+      <td style="text-align:center">${sparkline}</td>
+    </tr>`;
+  });
+
+  return `
+    ${notice}
+    <div class="chart-card full">
+      <h3>${escapeHtml(playerName)} · Performance Scorecard</h3>
+      <div style="font-size:0.72rem;color:var(--text-sec);margin-bottom:12px">Based on ${totalMatches} match${totalMatches !== 1 ? 'es' : ''} · Rolling avg of last 5</div>
+      <div style="overflow-x:auto">
+        <table class="perf-table">
+          <thead><tr>
+            <th>KPI</th>
+            <th style="text-align:right">Target</th>
+            <th style="text-align:right">Avg (Last 5)</th>
+            <th style="text-align:right">Delta</th>
+            <th style="text-align:center">Status</th>
+            <th style="text-align:center">Trend</th>
+            <th style="text-align:center">Trendline</th>
+          </tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderTrendCharts(playerName) {
+  // Group KPIs by category
+  const cats = {};
+  performanceData.forEach(r => {
+    if (!cats[r.category]) cats[r.category] = [];
+    cats[r.category].push(r);
+  });
+
+  let html = `<div class="chart-card full"><h3>${escapeHtml(playerName)} · KPI Trends</h3>
+    <div style="font-size:0.72rem;color:var(--text-sec);margin-bottom:12px">Performance across your last 10 matches</div></div>`;
+
+  const catNames = Object.keys(cats);
+  html += '<div class="chart-grid">';
+  catNames.forEach(cat => {
+    const kpis = cats[cat];
+    kpis.forEach(r => {
+      html += `<div class="chart-card">
+        <h3>${escapeHtml(r.display_label)}</h3>
+        <div id="trendChart_${r.kpi_name}" class="echart" style="height:220px"></div>
+      </div>`;
+    });
+  });
+  html += '</div>';
+  return html;
+}
+
+function renderTrendECharts() {
+  performanceData.forEach(r => {
+    const el = document.getElementById('trendChart_' + r.kpi_name);
+    if (!el) return;
+    const vals = (r.sparkline_values || []).filter(v => v != null).map(Number);
+    const dates = (r.sparkline_dates || []).map(d => d || '');
+    if (vals.length < 1) return;
+
+    const chart = ec('trendChart_' + r.kpi_name);
+    if (!chart) return;
+    chart.setOption({
+      ...ANIM, tooltip: TT,
+      grid: { left: 50, right: 20, top: 30, bottom: 35, containLabel: false },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, color: '#9ca3af', rotate: 30 },
+        axisTick: { show: false }, axisLine: { lineStyle: { color: '#e5e5e5' } } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 11, color: '#9ca3af' },
+        splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+        axisLine: { show: false }, axisTick: { show: false } },
+      series: [
+        { type: 'line', data: vals, smooth: true, symbol: 'circle', symbolSize: 6,
+          lineStyle: { color: PA_COLOR, width: 2.5 },
+          itemStyle: { color: PA_COLOR },
+          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(26,92,46,0.15)' }, { offset: 1, color: 'rgba(26,92,46,0.02)' }
+          ]) },
+          markLine: { silent: true, symbol: 'none',
+            data: [{ yAxis: Number(r.benchmark), label: { formatter: 'Target', fontSize: 10, color: '#d97706' },
+              lineStyle: { color: '#d97706', type: 'dashed', width: 1.5 } }],
+          },
+        },
+      ],
+    });
+    CI['trendChart_' + r.kpi_name] = chart;
+  });
+}
+
+function renderLastVsAvg(playerName) {
+  const lastDate = performanceData[0]?.last_match_date || '';
+  return `
+    <div class="chart-card full">
+      <h3>${escapeHtml(playerName)} · Last Match (${lastDate}) vs 5-Match Average</h3>
+      <div id="chartLastVsAvg" class="echart" style="height:${Math.max(400, performanceData.length * 32)}px"></div>
+    </div>
+  `;
+}
+
+function renderLastVsAvgChart() {
+  const chart = ec('chartLastVsAvg');
+  if (!chart) return;
+
+  const labels = performanceData.map(r => r.display_label).reverse();
+  const lastVals = performanceData.map(r => Number(r.last_match_value) || 0).reverse();
+  const avgVals = performanceData.map(r => Number(r.avg_last_5) || 0).reverse();
+
+  chart.setOption({
+    ...ANIM, tooltip: TT,
+    legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'roundRect' },
+    grid: { left: 140, right: 40, top: 20, bottom: 50, containLabel: false },
+    yAxis: { type: 'category', data: labels,
+      axisLabel: { fontSize: 12, color: '#6b7280', width: 130, overflow: 'truncate' },
+      axisTick: { show: false }, axisLine: { lineStyle: { color: '#e5e5e5' } } },
+    xAxis: { type: 'value',
+      axisLabel: { fontSize: 11, color: '#9ca3af' },
+      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+      axisLine: { show: false }, axisTick: { show: false } },
+    series: [
+      { type: 'bar', name: 'Last Match', barWidth: '35%', barGap: '10%',
+        data: lastVals, itemStyle: { color: PA_COLOR, borderRadius: [0, 6, 6, 0] },
+        label: { show: true, position: 'right', fontSize: 11, fontWeight: 600, color: PA_COLOR } },
+      { type: 'bar', name: '5-Match Avg', barWidth: '35%',
+        data: avgVals, itemStyle: { color: 'rgba(26,92,46,0.3)', borderRadius: [0, 6, 6, 0] },
+        label: { show: true, position: 'right', fontSize: 11, fontWeight: 600, color: '#9ca3af' } },
+    ],
+  });
+  CI['chartLastVsAvg'] = chart;
+}
+
+// ====================================================================
+//  MODULE 4: AI COACH
+// ====================================================================
+
+function renderCoachModule() {
+  document.getElementById('tabStrip').innerHTML = '';
+  document.getElementById('dashContent').innerHTML = `
+    <div class="tab-panel active">${renderCoachTab()}</div>
+  `;
+  setTimeout(() => loadCoachCards(), 50);
 }
 
 // ====================================================================

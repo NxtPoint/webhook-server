@@ -1435,6 +1435,27 @@ def gold_match_shot_placement(task_id):
     return jsonify(payload), code
 
 
+@client_bp.route("/api/client/player/performance", methods=["GET", "OPTIONS"])
+def gold_player_performance():
+    """Cross-match KPI scorecard for Player A (the customer). Email-scoped."""
+    if not _guard():
+        return _forbid()
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT * FROM gold.player_performance WHERE email = :email ORDER BY category, kpi_name"),
+                {"email": email},
+            ).mappings().all()
+        serialized = [{k: _serialize(v) for k, v in r.items()} for r in rows]
+        return jsonify({"ok": True, "rows": serialized})
+    except Exception:
+        log.exception("player_performance endpoint failed email=%s", email)
+        return jsonify({"ok": False, "error": "internal_error"}), 500
+
+
 # ----------------------------
 # GET /api/client/match-analysis/<task_id>  [LEGACY — to be retired]
 # ----------------------------

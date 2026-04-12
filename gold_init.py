@@ -678,6 +678,226 @@ WHERE s.exclude_d IS NOT TRUE
 
 
 # ============================================================================
+# LAYER 3 — PLAYER PERFORMANCE (cross-match KPI tracking)
+# ============================================================================
+
+# gold.player_match_kpis — one row per (email, task_id) with all Player A KPIs.
+# Intermediate view — consumed by gold.player_performance for rolling averages.
+PLAYER_MATCH_KPIS_SQL = """
+CREATE VIEW gold.player_match_kpis AS
+WITH
+points_dedup AS (
+    SELECT DISTINCT ON (pd.task_id, pd.game_number, pd.point_number)
+        pd.task_id, pd.point_number, pd.game_number,
+        pd.point_winner_player_id, pd.server_id, pd.rally_length_point
+    FROM silver.point_detail pd
+    WHERE pd.exclude_d IS NOT TRUE AND pd.point_number IS NOT NULL
+    ORDER BY pd.task_id, pd.game_number, pd.point_number, pd.shot_ix_in_point DESC NULLS LAST
+),
+serve_pts AS (
+    SELECT DISTINCT ON (pd.task_id, pd.point_key)
+        pd.task_id, pd.player_id AS server_id,
+        pd.serve_try_ix_in_point, pd.point_winner_player_id
+    FROM silver.point_detail pd
+    WHERE pd.serve_d = TRUE AND pd.shot_ix_in_point = 1
+      AND pd.exclude_d IS NOT TRUE AND pd.point_key IS NOT NULL
+    ORDER BY pd.task_id, pd.point_key
+),
+games_dedup AS (
+    SELECT DISTINCT ON (task_id, game_number)
+        task_id, game_number, game_winner_player_id, server_id
+    FROM silver.point_detail
+    WHERE exclude_d IS NOT TRUE AND game_number IS NOT NULL
+    ORDER BY task_id, game_number, shot_ix_in_point DESC NULLS LAST
+),
+shot_agg AS (
+    SELECT
+        pl.task_id,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = '1st' AND s.player_id = pl.player_a_id) AS first_serves_attempted,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = '1st' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS first_serves_in,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = '2nd' AND s.player_id = pl.player_a_id) AS second_serves_attempted,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_a_id) AS double_faults,
+        COUNT(*) FILTER (WHERE s.ace_d AND s.player_id = pl.player_a_id) AS aces,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.player_id = pl.player_a_id) AS total_serves,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.service_winner_d AND s.player_id = pl.player_a_id) AS unreturned_serves,
+        COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.player_id = pl.player_a_id) AS return_attempts,
+        COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS returns_made,
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_a_id) AS rally_winners,
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_a_id) AS rally_errors,
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id) AS rally_shots_total,
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS fh_speed_avg,
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS bh_speed_avg,
+        AVG(s.ball_speed) FILTER (WHERE s.serve_d AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS serve_speed_avg
+    FROM gold.vw_player pl
+    LEFT JOIN silver.point_detail s ON s.task_id = pl.task_id AND s.exclude_d IS NOT TRUE
+    GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
+),
+point_agg AS (
+    SELECT
+        pl.task_id,
+        COUNT(p.point_number) AS total_points,
+        COUNT(*) FILTER (WHERE p.server_id = pl.player_a_id AND p.point_winner_player_id = pl.player_a_id) AS svc_pts_won,
+        COUNT(*) FILTER (WHERE p.server_id = pl.player_a_id) AS svc_pts_played,
+        COUNT(*) FILTER (WHERE p.server_id = pl.player_b_id AND p.point_winner_player_id = pl.player_a_id) AS ret_pts_won,
+        COUNT(*) FILTER (WHERE p.server_id = pl.player_b_id) AS ret_pts_played,
+        COUNT(*) FILTER (WHERE p.rally_length_point >= 5 AND p.point_winner_player_id = pl.player_a_id) AS rally_pts_won,
+        COUNT(*) FILTER (WHERE p.rally_length_point >= 5) AS rally_pts_total,
+        AVG(p.rally_length_point)::numeric(5,1) AS avg_rally_length
+    FROM gold.vw_player pl
+    LEFT JOIN points_dedup p ON p.task_id = pl.task_id
+    GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
+),
+serve_win_agg AS (
+    SELECT
+        pl.task_id,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point = '1st' AND sp.server_id = pl.player_a_id AND sp.point_winner_player_id = pl.player_a_id) AS first_serve_pts_won,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point = '1st' AND sp.server_id = pl.player_a_id) AS first_serve_pts_played,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point IN ('2nd','Double') AND sp.server_id = pl.player_a_id AND sp.point_winner_player_id = pl.player_a_id) AS second_serve_pts_won,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point IN ('2nd','Double') AND sp.server_id = pl.player_a_id) AS second_serve_pts_played
+    FROM gold.vw_player pl
+    LEFT JOIN serve_pts sp ON sp.task_id = pl.task_id
+    GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
+),
+game_agg AS (
+    SELECT
+        pl.task_id,
+        COUNT(*) FILTER (WHERE g.game_winner_player_id = pl.player_a_id) AS games_won,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_a_id) AS service_games,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_a_id AND g.game_winner_player_id = pl.player_a_id) AS service_games_won,
+        COUNT(*) FILTER (WHERE g.server_id = pl.player_b_id AND g.game_winner_player_id = pl.player_a_id) AS return_games_won,
+        COUNT(g.game_number) AS total_games
+    FROM gold.vw_player pl
+    LEFT JOIN games_dedup g ON g.task_id = pl.task_id
+    GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
+)
+SELECT
+    pl.task_id, pl.session_id, pl.email, pl.match_date, pl.created_at, pl.player_a_name,
+    -- Serve KPIs
+    ROUND(100.0 * sa.first_serves_in / NULLIF(sa.first_serves_attempted, 0), 1) AS kpi_first_serve_in_pct,
+    ROUND(100.0 * sw.first_serve_pts_won / NULLIF(sw.first_serve_pts_played, 0), 1) AS kpi_first_serve_win_pct,
+    ROUND(100.0 * sw.second_serve_pts_won / NULLIF(sw.second_serve_pts_played, 0), 1) AS kpi_second_serve_win_pct,
+    CASE WHEN sa.second_serves_attempted >= 3
+         THEN ROUND(100.0 * sa.double_faults / sa.second_serves_attempted, 1) END AS kpi_double_fault_pct,
+    ROUND(100.0 * sa.aces / NULLIF(sa.first_serves_attempted, 0), 1) AS kpi_ace_pct,
+    sa.serve_speed_avg AS kpi_serve_speed_avg,
+    ROUND(100.0 * sa.unreturned_serves / NULLIF(sa.total_serves, 0), 1) AS kpi_unreturned_serve_pct,
+    -- Return KPIs
+    ROUND(100.0 * sa.returns_made / NULLIF(sa.return_attempts, 0), 1) AS kpi_return_made_pct,
+    ROUND(100.0 * pa.ret_pts_won / NULLIF(pa.ret_pts_played, 0), 1) AS kpi_return_pts_won_pct,
+    -- Rally KPIs
+    pa.avg_rally_length AS kpi_avg_rally_length,
+    ROUND(100.0 * sa.rally_errors / NULLIF(sa.rally_shots_total, 0), 1) AS kpi_rally_error_pct,
+    ROUND(100.0 * sa.rally_winners / NULLIF(sa.rally_shots_total, 0), 1) AS kpi_rally_winner_pct,
+    ROUND(sa.rally_winners::numeric / NULLIF(sa.rally_errors, 0), 2) AS kpi_rally_we_ratio,
+    ROUND(100.0 * pa.rally_pts_won / NULLIF(pa.rally_pts_total, 0), 1) AS kpi_rally_pts_won_pct,
+    -- Speed KPIs
+    sa.fh_speed_avg AS kpi_fh_speed_avg,
+    sa.bh_speed_avg AS kpi_bh_speed_avg,
+    -- Game KPIs
+    ROUND(100.0 * ga.service_games_won / NULLIF(ga.service_games, 0), 1) AS kpi_service_games_won_pct,
+    ROUND(100.0 * ga.return_games_won / NULLIF(ga.total_games - ga.service_games, 0), 1) AS kpi_return_games_won_pct
+FROM gold.vw_player pl
+LEFT JOIN shot_agg sa ON sa.task_id = pl.task_id
+LEFT JOIN point_agg pa ON pa.task_id = pl.task_id
+LEFT JOIN serve_win_agg sw ON sw.task_id = pl.task_id
+LEFT JOIN game_agg ga ON ga.task_id = pl.task_id
+"""
+
+
+# gold.player_performance — one row per (email, kpi_name) with rolling avg, trend, status.
+# Feeds: Player Performance module scorecard.
+PLAYER_PERFORMANCE_SQL = """
+CREATE VIEW gold.player_performance AS
+WITH
+match_kpis AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY email ORDER BY COALESCE(match_date, created_at::date), created_at) AS match_seq,
+           COUNT(*) OVER (PARTITION BY email) AS total_matches
+    FROM gold.player_match_kpis
+),
+unpivoted AS (
+    SELECT
+        m.email, m.task_id, m.match_seq, m.total_matches, m.match_date, m.created_at, m.player_a_name,
+        k.kpi_name, k.kpi_value, k.benchmark, k.higher_is_better, k.category, k.display_label, k.unit
+    FROM match_kpis m
+    CROSS JOIN LATERAL (VALUES
+        ('kpi_first_serve_in_pct',   m.kpi_first_serve_in_pct,   60.0,  TRUE,  'Serve',  '1st Serve In%',        '%'),
+        ('kpi_first_serve_win_pct',  m.kpi_first_serve_win_pct,  65.0,  TRUE,  'Serve',  '1st Serve Win%',       '%'),
+        ('kpi_second_serve_win_pct', m.kpi_second_serve_win_pct, 50.0,  TRUE,  'Serve',  '2nd Serve Win%',       '%'),
+        ('kpi_double_fault_pct',     m.kpi_double_fault_pct,     10.0,  FALSE, 'Serve',  'Double Fault%',        '%'),
+        ('kpi_ace_pct',              m.kpi_ace_pct,               5.0,  TRUE,  'Serve',  'Ace%',                 '%'),
+        ('kpi_serve_speed_avg',      m.kpi_serve_speed_avg,     130.0,  TRUE,  'Serve',  'Avg Serve Speed',    'km/h'),
+        ('kpi_unreturned_serve_pct', m.kpi_unreturned_serve_pct, 15.0,  TRUE,  'Serve',  'Unreturned Serve%',    '%'),
+        ('kpi_return_made_pct',      m.kpi_return_made_pct,      75.0,  TRUE,  'Return', 'Return Made%',         '%'),
+        ('kpi_return_pts_won_pct',   m.kpi_return_pts_won_pct,   35.0,  TRUE,  'Return', 'Return Pts Won%',      '%'),
+        ('kpi_avg_rally_length',     m.kpi_avg_rally_length,      4.5,  TRUE,  'Rally',  'Avg Rally Length',  'shots'),
+        ('kpi_rally_error_pct',      m.kpi_rally_error_pct,      20.0,  FALSE, 'Rally',  'Rally Error%',         '%'),
+        ('kpi_rally_winner_pct',     m.kpi_rally_winner_pct,     10.0,  TRUE,  'Rally',  'Rally Winner%',        '%'),
+        ('kpi_rally_we_ratio',       m.kpi_rally_we_ratio,        0.8,  TRUE,  'Rally',  'Rally W:E Ratio',     'x'),
+        ('kpi_rally_pts_won_pct',    m.kpi_rally_pts_won_pct,    45.0,  TRUE,  'Rally',  'Rally Pts Won%',       '%'),
+        ('kpi_fh_speed_avg',         m.kpi_fh_speed_avg,        100.0,  TRUE,  'Speed',  'FH Avg Speed',      'km/h'),
+        ('kpi_bh_speed_avg',         m.kpi_bh_speed_avg,         85.0,  TRUE,  'Speed',  'BH Avg Speed',      'km/h'),
+        ('kpi_service_games_won_pct', m.kpi_service_games_won_pct, 70.0, TRUE, 'Games',  'Service Games Won%',   '%'),
+        ('kpi_return_games_won_pct', m.kpi_return_games_won_pct, 25.0,  TRUE,  'Games',  'Return Games Won%',    '%')
+    ) AS k(kpi_name, kpi_value, benchmark, higher_is_better, category, display_label, unit)
+    WHERE k.kpi_value IS NOT NULL
+),
+ranked AS (
+    SELECT *,
+           RANK() OVER (PARTITION BY email, kpi_name ORDER BY match_seq DESC) AS recency_rank
+    FROM unpivoted
+),
+windowed AS (
+    SELECT
+        email, kpi_name, benchmark, higher_is_better, category, display_label, unit, total_matches,
+        MAX(player_a_name) FILTER (WHERE recency_rank = 1) AS player_name,
+        MAX(kpi_value) FILTER (WHERE recency_rank = 1) AS last_match_value,
+        MAX(match_date) FILTER (WHERE recency_rank = 1) AS last_match_date,
+        MAX(task_id::text) FILTER (WHERE recency_rank = 1) AS last_task_id,
+        AVG(kpi_value) FILTER (WHERE recency_rank <= 5)::numeric(6,1) AS avg_last_5,
+        AVG(kpi_value) FILTER (WHERE recency_rank BETWEEN 6 AND 10)::numeric(6,1) AS avg_prev_5,
+        AVG(kpi_value)::numeric(6,1) AS avg_all_time,
+        JSON_AGG(kpi_value ORDER BY match_seq ASC) FILTER (WHERE recency_rank <= 10) AS sparkline_values,
+        JSON_AGG(match_date ORDER BY match_seq ASC) FILTER (WHERE recency_rank <= 10) AS sparkline_dates
+    FROM ranked
+    GROUP BY email, kpi_name, benchmark, higher_is_better, category, display_label, unit, total_matches
+)
+SELECT
+    email, category, kpi_name, display_label, unit, benchmark, higher_is_better,
+    total_matches, player_name, last_match_date, last_task_id, last_match_value,
+    avg_last_5, avg_prev_5, avg_all_time,
+    ROUND(avg_last_5 - benchmark::numeric, 1) AS delta_vs_benchmark,
+    ROUND(last_match_value - avg_last_5, 1) AS delta_last_vs_avg,
+    CASE
+        WHEN avg_prev_5 IS NULL THEN 'neutral'
+        WHEN ABS(COALESCE(avg_last_5,0) - COALESCE(avg_prev_5,0)) < 0.5 THEN 'neutral'
+        WHEN higher_is_better AND avg_last_5 > avg_prev_5 THEN 'improving'
+        WHEN NOT higher_is_better AND avg_last_5 < avg_prev_5 THEN 'improving'
+        WHEN higher_is_better AND avg_last_5 < avg_prev_5 THEN 'declining'
+        WHEN NOT higher_is_better AND avg_last_5 > avg_prev_5 THEN 'declining'
+        ELSE 'neutral'
+    END AS trend_direction,
+    CASE
+        WHEN avg_last_5 IS NULL THEN 'no_data'
+        WHEN higher_is_better THEN
+            CASE WHEN avg_last_5 >= benchmark THEN 'green'
+                 WHEN avg_last_5 >= benchmark * 0.85 THEN 'amber'
+                 ELSE 'red' END
+        ELSE
+            CASE WHEN avg_last_5 <= benchmark THEN 'green'
+                 WHEN avg_last_5 <= benchmark * 1.15 THEN 'amber'
+                 ELSE 'red' END
+    END AS status,
+    sparkline_values,
+    sparkline_dates
+FROM windowed
+ORDER BY
+    CASE category WHEN 'Serve' THEN 1 WHEN 'Return' THEN 2 WHEN 'Rally' THEN 3 WHEN 'Games' THEN 4 WHEN 'Speed' THEN 5 END,
+    kpi_name
+"""
+
+
+# ============================================================================
 # ORCHESTRATION
 # ============================================================================
 
@@ -685,13 +905,16 @@ _VIEWS = [
     # Base dim + fact
     ("gold.vw_player", VW_PLAYER_SQL),
     ("gold.vw_point", VW_POINT_SQL),
-    # Presentation (5 + rally_length)
+    # Presentation (per-match)
     ("gold.match_kpi", MATCH_KPI_SQL),
     ("gold.match_serve_breakdown", MATCH_SERVE_BREAKDOWN_SQL),
     ("gold.match_return_breakdown", MATCH_RETURN_BREAKDOWN_SQL),
     ("gold.match_rally_breakdown", MATCH_RALLY_BREAKDOWN_SQL),
     ("gold.match_rally_length", MATCH_RALLY_LENGTH_SQL),
     ("gold.match_shot_placement", MATCH_SHOT_PLACEMENT_SQL),
+    # Player performance (cross-match) — order matters: kpis before performance
+    ("gold.player_match_kpis", PLAYER_MATCH_KPIS_SQL),
+    ("gold.player_performance", PLAYER_PERFORMANCE_SQL),
 ]
 
 
@@ -719,7 +942,7 @@ def gold_init_presentation():
     for name, sql in _VIEWS:
         try:
             with engine.begin() as conn:
-                conn.execute(text(f"DROP VIEW IF EXISTS {name}"))
+                conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
                 conn.execute(text(sql))
             created.append(name)
             log.info("[gold_init] created %s", name)
