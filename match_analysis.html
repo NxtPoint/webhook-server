@@ -2203,15 +2203,16 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
 
-  // Court dimensions (metres). The court is non-proportionally stretched
-  // to fill the canvas drawing area so it fills the card width. Dots
-  // and lines are all computed through cx()/cy() so relative positions
-  // remain perfect — just visually wider than a real court.
+  // Court dimensions (metres) with surround padding
   const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SVC_LINE = 6.40, NET_Y = COURT_L / 2;
-  // Scale padding with canvas size so it stays proportional at any resolution
-  const PAD_X = Math.round(W * 0.025);
-  const PAD_Y = Math.round(H * 0.035);
-  const CW = W - PAD_X * 2, CH = H - PAD_Y * 2;
+  const SURROUND_X = 2.0;  // ~2m each side outside doubles lines
+  const SURROUND_Y = 4.0;  // ~4m behind each baseline
+  const TOTAL_W = COURT_W + SURROUND_X * 2;
+  const TOTAL_L = COURT_L + SURROUND_Y * 2;
+
+  // Canvas padding (small pixel margin)
+  const PAD = Math.round(W * 0.01);
+  const CW = W - PAD * 2, CH = H - PAD * 2;
 
   // Line widths scale with canvas width
   const LW_THIN  = Math.max(2, Math.round(W / 400));
@@ -2219,15 +2220,19 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const LW_OUTER = Math.max(3, Math.round(W / 320));
   const half = 0.5;
 
-  // Court → canvas coordinate helpers
-  function cx(courtX) { return PAD_X + (courtX / COURT_W) * CW; }
-  function cy(courtY) { return PAD_Y + (courtY / COURT_L) * CH; }
+  // Total area → canvas coordinate helpers (includes surround)
+  function cx(courtX) { return PAD + ((courtX + SURROUND_X) / TOTAL_W) * CW; }
+  function cy(courtY) { return PAD + ((courtY + SURROUND_Y) / TOTAL_L) * CH; }
 
   ctx.clearRect(0, 0, W, H);
 
-  // Court surface
+  // Green surround (full canvas)
   ctx.fillStyle = '#2d6a4f';
-  ctx.fillRect(PAD_X, PAD_Y, CW, CH);
+  ctx.fillRect(0, 0, W, H);
+
+  // Blue court surface (inside doubles lines)
+  ctx.fillStyle = '#1a4a8a';
+  ctx.fillRect(cx(0), cy(0), cx(COURT_W) - cx(0), cy(COURT_L) - cy(0));
 
   // Outer doubles boundary
   ctx.strokeStyle = 'rgba(255,255,255,0.95)';
@@ -2287,10 +2292,7 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const ownerId = heatmapPlayer === 'player_a' ? k.player_a_id : k.player_b_id;
 
   // Plot shots — green = point won, red = point lost, grey = unknown
-  // Y is mirrored: y_display = COURT_L - y_norm.
-  // Silver normalises all bounces to the near side (y in [0, 11.885]).
-  // Mirroring puts them on the FAR side — visually the ball lands on the
-  // opponent's court, which is where it actually goes for serves and returns.
+  // Normalised coords place bounces on the near side of the court.
   let wonCount = 0, lostCount = 0, unknownCount = 0;
 
   // Dot radius scales with canvas width — computed once outside the loop
