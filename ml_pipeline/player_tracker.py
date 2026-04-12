@@ -146,9 +146,20 @@ class PlayerTracker:
             except Exception as e:
                 logger.warning("court-crop YOLO pass failed: %s", e)
 
-        # ── Combine all detections (full + crop), deduplicate via IoU ──
-        all_boxes = full_boxes_list + crop_boxes_list
-        all_kps = full_kps_list + crop_kps_list
+        # ── Pass 3: Far-baseline dedicated crop ──
+        # The far player is often ~30-40px tall in 1080p — too small even
+        # for the court crop. This pass takes just the top 30% of the frame
+        # (where the far baseline always is) and runs YOLO at very low
+        # confidence. The tight crop gives ~3x upscaling on the far player.
+        far_boxes_list, far_kps_list = [], []
+        try:
+            far_boxes_list, far_kps_list = self._run_yolo_far_baseline(frame)
+        except Exception as e:
+            logger.warning("far-baseline YOLO pass failed: %s", e)
+
+        # ── Combine all detections (full + crop + far), deduplicate via IoU ──
+        all_boxes = full_boxes_list + crop_boxes_list + far_boxes_list
+        all_kps = full_kps_list + crop_kps_list + far_kps_list
         deduped_boxes, deduped_kps = self._dedupe_iou(all_boxes, all_kps, iou_thresh=0.5)
         n_yolo_boxes = len(deduped_boxes)
 
@@ -301,6 +312,37 @@ class PlayerTracker:
                 out_kps.append(kp_shifted)
             else:
                 out_kps.append(None)
+        return out_boxes, out_kps
+
+    def _run_yolo_far_baseline(self, frame: np.ndarray):
+        """Run YOLO on just the top 30% of the frame at very low confidence.
+
+        The far player is typically ~30-40px tall in 1080p. Even the court
+        crop (which covers ~60-80% of the frame) doesn't upscale them enough.
+        This dedicated pass crops to just the top 30% of the frame and lets
+        YOLO's letterboxing upscale the far player to ~3x their full-frame
+        size. Uses conf=0.10 since the far player is tiny and produces
+        low-confidence detections.
+
+        Coordinates are translated back to full-frame space.
+        """
+        h, w = frame.shape[:2]
+        y2 = int(h * 0.30)
+        if y2 <= 0:
+            return [], []
+
+        cropped = frame[0:y2, :]
+        if cropped.size == 0:
+            return [], []
+
+        crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.10)
+
+        # Translate crop coords → full frame coords (x unchanged, y offset = 0)
+        out_boxes = []
+        out_kps = []
+        for (cx1, cy1, cx2, cy2), kp in zip(crop_boxes, crop_kps):
+            out_boxes.append((cx1, cy1, cx2, cy2))  # y offset is 0 (top of frame)
+            out_kps.append(kp)  # keypoints also start at y=0, no shift needed
         return out_boxes, out_kps
 
     def _dedupe_iou(self, boxes_list, kps_list, iou_thresh: float = 0.5):
@@ -473,12 +515,32 @@ class PlayerTracker:
         best_far = far_candidates[0] if far_candidates else None
         best_near = near_candidates[0] if near_candidates else None
 
-        # Build result pair
+        # Minimum distance from midline to qualify as a real player at a
+        # baseline. Someone right AT the midline (the net) is an umpire,
+        # bench sitter, or ball boy — never a baseline player. Without
+        # this check, the sole candidate in a half gets picked by default
+        # regardless of how close to the net they are.
+        MIN_MIDLINE_DIST_RATIO = 0.15  # 15% of frame height
+        min_midline_dist_px = MIN_MIDLINE_DIST_RATIO * frame_h
+
+        # Build result pair — reject candidates too close to midline
         chosen = []
-        if best_far:
+        if best_far and best_far[0] >= min_midline_dist_px:
             chosen.append(best_far)
-        if best_near:
+        elif best_far:
+            logger.debug(
+                "_choose_two_players: rejected far cand cy=%.1f dist_from_mid=%.1f "
+                "< min=%.1f (too close to net)",
+                best_far[1], best_far[0], min_midline_dist_px,
+            )
+        if best_near and best_near[0] >= min_midline_dist_px:
             chosen.append(best_near)
+        elif best_near:
+            logger.debug(
+                "_choose_two_players: rejected near cand cy=%.1f dist_from_mid=%.1f "
+                "< min=%.1f (too close to net)",
+                best_near[1], best_near[0], min_midline_dist_px,
+            )
 
         if len(chosen) == 2:
             span = abs(chosen[0][1] - chosen[1][1])
