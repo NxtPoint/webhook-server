@@ -334,9 +334,12 @@ class PlayerTracker:
         Coordinates translated back to full-frame space.
         """
         h, w = frame.shape[:2]
-        # Tight crop: top 20% height, central 70% width
+        # Crop: top 28% height (far player feet at ~24% from top in typical
+        # tennis camera), central 70% width (court only, no side spectators).
+        # Previous 20% cut off the far player's body. Previous 30% full-width
+        # generated noise from spectators/scoreboards. This is the sweet spot.
         y1 = 0
-        y2 = int(h * 0.20)
+        y2 = int(h * 0.28)
         x1 = int(w * 0.15)
         x2 = int(w * 0.85)
 
@@ -347,7 +350,11 @@ class PlayerTracker:
         if cropped.size == 0:
             return [], []
 
-        crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.08)
+        crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.05)
+        logger.info(
+            "far_baseline_pass: crop=%dx%d found=%d conf=0.05",
+            x2 - x1, y2, len(crop_boxes),
+        )
 
         # Translate crop coords → full frame coords
         out_boxes = []
