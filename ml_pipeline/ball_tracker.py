@@ -20,6 +20,7 @@ from ml_pipeline.config import (
     TRACKNET_NUM_INPUT_FRAMES,
     TRACKNET_OUTPUT_CHANNELS,
     TRACKNET_HEATMAP_THRESHOLD,
+    TRACKNET_BGR2RGB,
     TRACKNET_HOUGH_DP,
     TRACKNET_HOUGH_MIN_DIST,
     TRACKNET_HOUGH_PARAM1,
@@ -158,6 +159,8 @@ class BallTracker:
         self.scale_y = h / TRACKNET_INPUT_HEIGHT
 
         resized = cv2.resize(frame, (TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT))
+        if TRACKNET_BGR2RGB:
+            resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         self._frame_buffer.append(resized)
         if len(self._frame_buffer) > TRACKNET_NUM_INPUT_FRAMES:
             self._frame_buffer.pop(0)
@@ -208,7 +211,13 @@ class BallTracker:
         raw_max = int(feature_map.max())
         self._diag["fm_raw_max_hist"][min(raw_max // 32, 7)] += 1
 
-        fm = (feature_map * 255).astype(np.uint8)
+        # feature_map is the argmax class index in [0, 255] (int64 from torch).
+        # Previous code did (feature_map * 255).astype(np.uint8) which caused
+        # modular wrap: class 255 (strongest ball signal) → uint8 1, class 1
+        # (weakest) → uint8 255. This inverted the heatmap. Diagnostic run
+        # 5672962e confirmed: 5584 frames with raw_max in [128-255] had their
+        # ball signal destroyed by the wrap while noise from class 1 became hot.
+        fm = feature_map.astype(np.uint8)
         fm = fm.reshape((TRACKNET_INPUT_HEIGHT, TRACKNET_INPUT_WIDTH))
 
         fm_max_after = int(fm.max())

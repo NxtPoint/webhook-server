@@ -35,6 +35,10 @@ TRACKNET_INPUT_HEIGHT = 360
 TRACKNET_NUM_INPUT_FRAMES = 3   # Sliding window of 3 consecutive frames
 TRACKNET_OUTPUT_CHANNELS = 256
 TRACKNET_HEATMAP_THRESHOLD = 127  # Standard threshold (lowering to 100 broke ball detection)
+TRACKNET_BGR2RGB = True            # Convert BGR→RGB before TrackNet inference. cv2 loads BGR;
+                                   # many TrackNet V2 weights were trained on RGB (PIL). Diagnostic
+                                   # run showed 59% empty heatmaps — channel swap is a hypothesis.
+                                   # Set False to test without conversion.
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
