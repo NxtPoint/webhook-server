@@ -10,14 +10,11 @@
 #   3. Silver build — run build_silver_v2 to compute point_detail analytics
 #   4. Video trim trigger — fire-and-forget POST to video worker service
 #   5. Billing sync — sync completed task into billing consumption records
-#   6. PBI refresh trigger — fire-and-forget POST to Power BI service (no polling)
-#   7. Mark complete — set ingest_finished_at on submission_context
+#   6. Mark complete — set ingest_finished_at on submission_context
 #
 # Business rules:
 #   - Duplicate prevention: in-memory thread lock prevents concurrent ingests for same task_id
-#   - Wix notify is NOT sent here — it fires from upload_app.py after PBI refresh completes,
-#     ensuring the customer is only notified once their dashboard is actually viewable
-#   - Each step is wrapped in try/except so failures in trim/billing/PBI don't block completion
+#   - Each step is wrapped in try/except so failures in trim/billing don't block completion
 #   - Ingest errors are persisted to submission_context.ingest_error for ops visibility
 #   - Auth: requires Authorization: Bearer <INGEST_WORKER_OPS_KEY> header
 #
@@ -60,10 +57,6 @@ DEFAULT_REPLACE_ON_INGEST = (
     or os.getenv("DEFAULT_REPLACE_ON_INGEST")
     or "1"
 ).strip().lower() in ("1", "true", "yes", "y")
-
-# PBI service config (fire-and-forget trigger only)
-PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
-PBI_SERVICE_OPS_KEY = (os.getenv("POWERBI_SERVICE_OPS_KEY") or OPS_KEY or "").strip()
 
 # Video worker config
 VIDEO_WORKER_BASE_URL = (os.getenv("VIDEO_WORKER_BASE_URL") or "").strip().rstrip("/")
@@ -108,61 +101,8 @@ def _ensure_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_status TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_started_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_finished_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_status TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_error TEXT",
     ):
         conn.execute(sql_text(ddl))
-
-
-# ============================================================
-# PBI REFRESH (fire-and-forget trigger only)
-# ============================================================
-
-def _trigger_pbi_refresh(task_id: str) -> None:
-    """Trigger PBI dataset refresh — fire and forget. Do NOT poll."""
-    if not PBI_SERVICE_BASE:
-        app.logger.warning("INGEST WORKER PBI_SERVICE_BASE not set; skipping refresh task_id=%s", task_id)
-        return
-
-    headers = {"Content-Type": "application/json", "x-ops-key": PBI_SERVICE_OPS_KEY}
-
-    try:
-        r = requests.post(
-            f"{PBI_SERVICE_BASE}/dataset/refresh_once",
-            headers=headers,
-            json={"task_id": task_id},
-            timeout=60,
-        )
-        out = r.json() if r.text else {}
-        app.logger.info(
-            "INGEST WORKER PBI refresh triggered task_id=%s status=%s ok=%s",
-            task_id, r.status_code, out.get("ok"),
-        )
-
-        # Mark refresh as started in submission_context (no waiting for terminal)
-        with engine.begin() as conn:
-            _ensure_schema(conn)
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now()),
-                       pbi_refresh_status = 'triggered',
-                       pbi_refresh_error = NULL
-                 WHERE task_id = :t
-            """), {"t": task_id})
-
-    except Exception as e:
-        app.logger.exception("INGEST WORKER PBI refresh trigger failed task_id=%s: %s", task_id, e)
-        with engine.begin() as conn:
-            _ensure_schema(conn)
-            conn.execute(sql_text("""
-                UPDATE bronze.submission_context
-                   SET pbi_refresh_started_at = now(),
-                       pbi_refresh_status = 'trigger_failed',
-                       pbi_refresh_error = :e
-                 WHERE task_id = :t
-            """), {"t": task_id, "e": str(e)[:4000]})
 
 
 # ============================================================
@@ -194,8 +134,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
       4. Video trim trigger        (fire-and-forget)
       5. Billing sync              (fire-and-forget)
       6. Wix notify                (data is ready after silver)
-      7. PBI refresh trigger       (fire-and-forget — dashboard concern)
-      8. Mark complete
+      7. Mark complete
     """
     sid = None
 
@@ -294,21 +233,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             app.logger.exception("INGEST STEP task_id=%s billing_sync_failed: %s", task_id, e)
 
         # -------------------------
-        # STEP 6: PBI REFRESH TRIGGER (fire-and-forget — no polling)
-        # Dashboard will refresh independently. Capacity sweep cron
-        # handles auto-suspend after refresh completes.
-        #
-        # NOTE: Wix notify is NOT sent here. It fires from upload_app.py
-        # when task-status polling detects dashboard_ready=True (i.e. PBI
-        # refresh completed). This ensures the customer is only notified
-        # once their dashboard is actually viewable.
-        # -------------------------
-        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_trigger_start", task_id)
-        _trigger_pbi_refresh(task_id)
-        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_trigger_done", task_id)
-
-        # -------------------------
-        # STEP 7: FINAL SUCCESS
+        # STEP 6: FINAL SUCCESS
         # -------------------------
         with engine.begin() as conn:
             _ensure_schema(conn)
@@ -441,8 +366,6 @@ def ingest_status():
               ingest_started_at,
               ingest_finished_at,
               ingest_error,
-              pbi_refresh_status,
-              pbi_refresh_error,
               wix_notify_status,
               trim_status,
               trim_error,
@@ -480,7 +403,6 @@ def ingest_status():
         "active_in_worker": active_here,
         "session_id": row.get("session_id"),
         "ingest_error": ingest_error,
-        "pbi_refresh_status": row.get("pbi_refresh_status"),
         "wix_notify_status": row.get("wix_notify_status"),
         "trim_status": row.get("trim_status"),
     })

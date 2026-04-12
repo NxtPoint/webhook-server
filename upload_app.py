@@ -181,14 +181,6 @@ INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rst
 INGEST_WORKER_OPS_KEY = (os.getenv("INGEST_WORKER_OPS_KEY") or "").strip()
 INGEST_WORKER_TIMEOUT_S = int(os.getenv("INGEST_WORKER_TIMEOUT_S", "10"))
 
-# ---------- Power BI service ----------
-PBI_SERVICE_BASE = (os.getenv("POWERBI_SERVICE_BASE_URL") or "").strip().rstrip("/")
-PBI_SERVICE_OPS_KEY = (os.getenv("POWERBI_SERVICE_OPS_KEY") or OPS_KEY or "").strip()
-PBI_REFRESH_POLL_S = int(os.getenv("PBI_REFRESH_POLL_S", "15"))
-PBI_REFRESH_MAX_WAIT_S = int(os.getenv("PBI_REFRESH_MAX_WAIT_S", "1800"))
-PBI_REFRESH_TRIGGER_TIMEOUT_S = int(os.getenv("PBI_REFRESH_TRIGGER_TIMEOUT_S", "60"))
-PBI_REFRESH_STATUS_TIMEOUT_S = int(os.getenv("PBI_REFRESH_STATUS_TIMEOUT_S", "60"))
-PBI_SUSPEND_AFTER_REFRESH = os.getenv("PBI_SUSPEND_AFTER_REFRESH", "1").lower() in ("1","true","yes","y")
 INGEST_STALE_AFTER_S = int(os.getenv("INGEST_STALE_AFTER_S", "1800"))  # 30 min
 
 # ==========================
@@ -227,157 +219,6 @@ def _sql_exec_to_json(q: str):
         cols = list(res.keys())
         rows = [dict(zip(cols, r)) for r in res.fetchall()]
     return {"ok": True, "columns": cols, "rows": rows, "rowcount": len(rows)}
-
-def _pbi_headers():
-    if not PBI_SERVICE_BASE:
-        raise RuntimeError("POWERBI_SERVICE_BASE_URL not set")
-    if not PBI_SERVICE_OPS_KEY:
-        raise RuntimeError("POWERBI_SERVICE_OPS_KEY/OPS_KEY not set")
-    return {
-        "Content-Type": "application/json",
-        "x-ops-key": PBI_SERVICE_OPS_KEY,
-    }
-
-
-def _pbi_post(path: str, body: dict | None = None, timeout: int = 60) -> dict:
-    url = f"{PBI_SERVICE_BASE}{path}"
-    r = requests.post(url, headers=_pbi_headers(), json=(body or {}), timeout=timeout)
-    if r.status_code >= 400:
-        raise RuntimeError(f"PBI POST failed {path}: HTTP {r.status_code}: {r.text}")
-    return r.json() if r.text else {}
-
-def _pbi_get(path: str, timeout: int = 60) -> dict:
-    url = f"{PBI_SERVICE_BASE}{path}"
-    r = requests.get(url, headers=_pbi_headers(), timeout=timeout)
-    if r.status_code >= 400:
-        raise RuntimeError(f"PBI GET failed {path}: HTTP {r.status_code}: {r.text}")
-    return r.json() if r.text else {}
-
-def _poll_powerbi_refresh_until_terminal(task_id: str) -> dict:
-    """
-    Async-safe refresh orchestration:
-    - trigger refresh once
-    - poll latest status in short-lived HTTP calls
-    - persist state changes into bronze.submission_context
-    - always attempt suspend after terminal state
-    """
-    trigger_out = _pbi_post(
-        "/dataset/refresh_once",
-        {"task_id": task_id},
-        timeout=PBI_REFRESH_TRIGGER_TIMEOUT_S,
-    )
-    trigger_started_at_epoch = time.time()
-
-    app.logger.info("PBI refresh trigger accepted task_id=%s out=%s", task_id, {
-        "ok": trigger_out.get("ok"),
-        "accepted": trigger_out.get("accepted"),
-        "status": trigger_out.get("status"),
-        "triggered_at": trigger_out.get("triggered_at"),
-    })
-
-    poll_started_at = time.time()
-    deadline = poll_started_at + PBI_REFRESH_MAX_WAIT_S
-    last_status = None
-    last_out = None
-
-    try:
-        while time.time() < deadline:
-            out = _pbi_get("/dataset/refresh_status", timeout=PBI_REFRESH_STATUS_TIMEOUT_S) or {}
-            last_out = out
-
-            status = str(out.get("status") or "").strip().lower()
-            is_terminal = bool(out.get("is_terminal"))
-            error_message = (out.get("error_message") or "").strip() or None
-            started_at_raw = out.get("started_at")
-
-            started_at_epoch = None
-            if started_at_raw:
-                try:
-                    started_at_epoch = datetime.fromisoformat(
-                        str(started_at_raw).replace("Z", "+00:00")
-                    ).timestamp()
-                except Exception:
-                    started_at_epoch = None
-
-            if started_at_epoch is not None and started_at_epoch < (trigger_started_at_epoch - 10):
-                time.sleep(3)
-                continue
-
-            should_persist = (
-                status != last_status
-                or is_terminal
-                or bool(error_message)
-            )
-
-            if should_persist:
-                with engine.begin() as conn:
-                    _ensure_submission_context_schema(conn)
-                    _set_pbi_refresh_state(
-                        conn,
-                        task_id,
-                        status=status or "unknown",
-                        error=error_message,
-                        started=True,
-                        finished=is_terminal,
-                        clear_error=not error_message,
-                    )
-
-            if status != last_status:
-                app.logger.info(
-                    "PBI refresh status change task_id=%s status=%s terminal=%s",
-                    task_id, status, is_terminal
-                )
-                last_status = status
-
-            if is_terminal:
-                return {
-                    "ok": bool(out.get("is_success") is True),
-                    "status": status,
-                    "terminal": True,
-                    "error": error_message,
-                    "raw": out,
-                }
-
-            elapsed = time.time() - poll_started_at
-
-            if elapsed < 15:
-                sleep_s = 2
-            elif elapsed < 30:
-                sleep_s = 3
-            elif elapsed < 60:
-                sleep_s = 5
-            else:
-                sleep_s = max(8, PBI_REFRESH_POLL_S)
-
-            time.sleep(sleep_s)
-
-        with engine.begin() as conn:
-            _ensure_submission_context_schema(conn)
-            _set_pbi_refresh_state(
-                conn,
-                task_id,
-                status="timeout",
-                error=f"refresh_timeout after {PBI_REFRESH_MAX_WAIT_S}s",
-                started=True,
-                finished=True,
-                clear_error=False,
-            )
-
-        return {
-            "ok": False,
-            "status": "timeout",
-            "terminal": True,
-            "error": f"refresh_timeout after {PBI_REFRESH_MAX_WAIT_S}s",
-            "raw": last_out,
-        }
-
-    finally:
-        if PBI_SUSPEND_AFTER_REFRESH:
-            try:
-                _pbi_post("/capacity/suspend", {}, timeout=60)
-                app.logger.info("PBI capacity suspend ok task_id=%s", task_id)
-            except Exception as e:
-                app.logger.exception("PBI capacity suspend failed task_id=%s: %s", task_id, e)
 
 # ==========================
 # BILLING + ROLE GATE (RENDER SSoT)
@@ -463,12 +304,6 @@ def _ensure_submission_context_schema(conn):
           ingest_finished_at TIMESTAMPTZ,
           ingest_error       TEXT,
 
-          -- Power BI refresh audit
-          pbi_refresh_started_at  TIMESTAMPTZ,
-          pbi_refresh_finished_at TIMESTAMPTZ,
-          pbi_refresh_status      TEXT,
-          pbi_refresh_error       TEXT,
-                                          
           -- Wix notify audit (server-side completion email)
           wix_notified_at    TIMESTAMPTZ,
           wix_notify_status  TEXT,
@@ -491,10 +326,6 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ses_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS ses_notify_error TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_started_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_finished_at TIMESTAMPTZ",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_status TEXT",
-        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS pbi_refresh_error TEXT",
 
         # --- NEW: typed score + timing + SR fields (idempotent) ---
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_a_set1_games INT",
@@ -657,45 +488,6 @@ def _set_status_cache(conn, task_id: str, status: str | None, result_url: str | 
          WHERE task_id = :t
     """), {"t": task_id, "s": status, "r": result_url})
 
-def _set_pbi_refresh_state(
-    conn,
-    task_id: str,
-    status: str | None = None,
-    error: str | None = None,
-    started: bool = False,
-    finished: bool = False,
-    clear_error: bool = False,
-):
-    sets = []
-    params = {"t": task_id}
-
-    if started:
-        sets.append("pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now())")
-        if not finished:
-            sets.append("pbi_refresh_finished_at = NULL")
-
-    if finished:
-        sets.append("pbi_refresh_finished_at = now()")
-
-    if status is not None:
-        sets.append("pbi_refresh_status = :s")
-        params["s"] = status
-
-    if clear_error:
-        sets.append("pbi_refresh_error = NULL")
-    elif error is not None:
-        sets.append("pbi_refresh_error = :e")
-        params["e"] = error
-
-    if not sets:
-        return
-
-    conn.execute(sql_text(f"""
-        UPDATE bronze.submission_context
-           SET {", ".join(sets)}
-         WHERE task_id = :t
-    """), params)
-
 def _load_submission_context_row(task_id: str) -> dict:
     with engine.begin() as conn:
         _ensure_submission_context_schema(conn)
@@ -707,10 +499,6 @@ def _load_submission_context_row(task_id: str) -> dict:
               ingest_started_at,
               ingest_finished_at,
               ingest_error,
-              pbi_refresh_started_at,
-              pbi_refresh_finished_at,
-              pbi_refresh_status,
-              pbi_refresh_error,
               sport_type
             FROM bronze.submission_context
             WHERE task_id = :t
@@ -754,10 +542,6 @@ def _derive_pipeline_stage(
     ingest_started: bool,
     ingest_finished: bool,
     ingest_error: str | None,
-    pbi_refresh_started: bool,
-    pbi_refresh_finished: bool,
-    pbi_refresh_status: str | None,
-    pbi_refresh_error: str | None,
     dashboard_ready: bool,
 ) -> str:
     s = _normalize_sportai_status(sportai_status)
@@ -773,9 +557,6 @@ def _derive_pipeline_stage(
 
     if ingest_error:
         return "failed"
-
-    if pbi_refresh_started and not dashboard_ready:
-        return "refreshing_dashboard"
 
     if ingest_started and not ingest_finished:
         return "building_analytics"
@@ -1619,26 +1400,7 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
             app.logger.exception("Billing consume failed task_id=%s: %s", task_id, e)
 
         # -------------------------
-        # STEP 6: POWER BI REFRESH (WAIT TO TERMINAL)
-        # -------------------------
-        app.logger.info("INGEST STEP task_id=%s step=pbi_refresh_wait_start", task_id)
-
-        refresh_out = _poll_powerbi_refresh_until_terminal(task_id)
-
-        pbi_ok = bool(refresh_out.get("ok"))
-        pbi_status = str(refresh_out.get("status") or "").strip().lower()
-        pbi_err = (refresh_out.get("error") or "").strip() or None
-
-        app.logger.info(
-            "INGEST STEP task_id=%s step=pbi_refresh_wait_done ok=%s status=%s error=%s",
-            task_id, pbi_ok, pbi_status, pbi_err
-        )
-
-        if not pbi_ok:
-            raise RuntimeError(f"Power BI refresh failed: status={pbi_status} error={pbi_err or 'unknown'}")
-
-        # -------------------------
-        # STEP 7: NOTIFY CUSTOMER (SES email)
+        # STEP 6: NOTIFY CUSTOMER (SES email)
         # -------------------------
         _notify_ses_completion(task_id)
 
@@ -1776,7 +1538,7 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
 def _do_ingest_t5(task_id: str) -> bool:
     """
     Lightweight ingest for T5 ML pipeline jobs.
-    Steps: mark started → bronze ingest → silver build → trim → PBI → email → mark done.
+    Steps: mark started → bronze ingest → silver build → trim → email → mark done.
     session_id is only set when silver build succeeds, so failed ingests can be
     retried by the task-status auto-ingest gate.
     """
@@ -1849,14 +1611,6 @@ def _do_ingest_t5(task_id: str) -> bool:
 
         # Skip: billing (T5 is free — no credit consumption for now)
 
-        # PBI refresh (fire-and-forget for T5)
-        if PBI_SERVICE_BASE:
-            try:
-                _pbi_post("/dataset/refresh_once", json={"task_id": task_id}, timeout=60)
-                app.logger.info("T5 INGEST task_id=%s PBI refresh triggered", task_id)
-            except Exception as e:
-                app.logger.warning("T5 INGEST task_id=%s PBI refresh failed (non-fatal): %s", task_id, e)
-
         # Only mark complete (and set session_id) if silver actually built.
         # Otherwise leave session_id NULL so the next task-status poll re-fires
         # the ingest. This makes T5 ingest self-healing on transient failures.
@@ -1867,10 +1621,7 @@ def _do_ingest_t5(task_id: str) -> bool:
                     UPDATE bronze.submission_context
                     SET session_id = :task_id,
                         ingest_finished_at = now(),
-                        ingest_error = NULL,
-                        pbi_refresh_started_at = COALESCE(pbi_refresh_started_at, now()),
-                        pbi_refresh_finished_at = COALESCE(pbi_refresh_finished_at, now()),
-                        pbi_refresh_status = COALESCE(pbi_refresh_status, 'completed')
+                        ingest_error = NULL
                     WHERE task_id = :t
                 """), {"t": task_id, "task_id": task_id})
 
@@ -1931,11 +1682,6 @@ def backoffice():
 # ==========================
 # ANALYTICS (Power BI embed)
 # ==========================
-@app.get("/analytics")
-def analytics():
-    from flask import send_file
-    return send_file("analytics.html")
-
 
 @app.get("/practice")
 def practice_page():
@@ -2897,62 +2643,10 @@ def api_task_status():
 
     auto_ingested = bool(session_id and ingest_finished and not ingest_error)
 
-    pbi_refresh_started = sc.get("pbi_refresh_started_at") is not None
-    pbi_refresh_finished = sc.get("pbi_refresh_finished_at") is not None
-    pbi_refresh_status = sc.get("pbi_refresh_status")
-    pbi_refresh_error = sc.get("pbi_refresh_error")
-    pbi_status_norm = str(pbi_refresh_status or "").lower().strip()
-
-    # Lightweight PBI status sync: if refresh was triggered but not yet
-    # terminal, do a single quick GET to check if it finished.
-    # This replaces the old 30-min blocking poll — one fast check per
-    # client poll cycle (~5s) until PBI reports terminal.
-    if (
-        pbi_refresh_started
-        and not pbi_refresh_finished
-        and pbi_status_norm in {"triggered", "running", "queued", "unknown"}
-        and PBI_SERVICE_BASE
-    ):
-        try:
-            pbi_out = _pbi_get("/dataset/refresh_status", timeout=PBI_REFRESH_STATUS_TIMEOUT_S)
-            pbi_live_status = str(pbi_out.get("status") or "").strip().lower()
-            pbi_is_terminal = bool(pbi_out.get("is_terminal"))
-            pbi_error_msg = (pbi_out.get("error_message") or "").strip() or None
-
-            if pbi_live_status and pbi_live_status != pbi_status_norm:
-                with engine.begin() as conn:
-                    _ensure_submission_context_schema(conn)
-                    _set_pbi_refresh_state(
-                        conn, tid,
-                        status=pbi_live_status,
-                        error=pbi_error_msg,
-                        started=True,
-                        finished=pbi_is_terminal,
-                        clear_error=not pbi_error_msg,
-                    )
-                pbi_refresh_status = pbi_live_status
-                pbi_status_norm = pbi_live_status
-                pbi_refresh_error = pbi_error_msg
-                if pbi_is_terminal:
-                    pbi_refresh_finished = True
-
-                    # Auto-suspend capacity after terminal
-                    if PBI_SUSPEND_AFTER_REFRESH:
-                        try:
-                            _pbi_post("/capacity/suspend", {}, timeout=60)
-                        except Exception:
-                            pass
-
-        except Exception as e:
-            app.logger.debug("PBI status check failed task_id=%s: %s", tid, e)
-
     dashboard_ready = bool(
         session_id
         and ingest_finished
         and not ingest_error
-        and pbi_refresh_finished
-        and pbi_status_norm == "completed"
-        and not pbi_refresh_error
     )
 
     # Auto-fire notify once dashboard is ready (idempotent)
@@ -2964,10 +2658,6 @@ def api_task_status():
         ingest_started=ingest_started,
         ingest_finished=ingest_finished,
         ingest_error=ingest_error,
-        pbi_refresh_started=pbi_refresh_started,
-        pbi_refresh_finished=pbi_refresh_finished,
-        pbi_refresh_status=pbi_refresh_status,
-        pbi_refresh_error=pbi_refresh_error,
         dashboard_ready=dashboard_ready,
     )
 
@@ -3006,13 +2696,7 @@ def api_task_status():
         "ingest_running": ingest_running,
         "ingest_finished": ingest_finished,
 
-
-        "pbi_refresh_started": pbi_refresh_started,
-        "pbi_refresh_finished": pbi_refresh_finished,
-        "pbi_refresh_status": pbi_refresh_status,
-        "pbi_refresh_error": pbi_refresh_error,
-
-        "dashboard_ready": dashboard_ready,        
+        "dashboard_ready": dashboard_ready,
     }), 200
 
 
@@ -3059,8 +2743,6 @@ def ops_ingest_task():
                       ingest_started_at,
                       ingest_finished_at,
                       ingest_error,
-                      pbi_refresh_status,
-                      pbi_refresh_error,
                       trim_requested_at,
                       trim_finished_at,
                       trim_status,
@@ -3085,8 +2767,6 @@ def ops_ingest_task():
                 "ingest_started_at": row.get("ingest_started_at"),
                 "ingest_finished_at": row.get("ingest_finished_at"),
                 "ingest_error": row.get("ingest_error"),
-                "pbi_refresh_status": row.get("pbi_refresh_status"),
-                "pbi_refresh_error": row.get("pbi_refresh_error"),
                 "trim_requested_at": row.get("trim_requested_at"),
                 "trim_finished_at": row.get("trim_finished_at"),
                 "trim_status": row.get("trim_status"),
@@ -3109,8 +2789,6 @@ def ops_ingest_task():
                   ingest_started_at,
                   ingest_finished_at,
                   ingest_error,
-                  pbi_refresh_status,
-                  pbi_refresh_error,
                   wix_notify_status,
                   wix_notify_error,
                   trim_requested_at,
@@ -3136,8 +2814,6 @@ def ops_ingest_task():
             "ingest_started_at": row.get("ingest_started_at"),
             "ingest_finished_at": row.get("ingest_finished_at"),
             "ingest_error": row.get("ingest_error"),
-            "pbi_refresh_status": row.get("pbi_refresh_status"),
-            "pbi_refresh_error": row.get("pbi_refresh_error"),
             "trim_requested_at": row.get("trim_requested_at"),
             "trim_finished_at": row.get("trim_finished_at"),
             "trim_status": row.get("trim_status"),

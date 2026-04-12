@@ -5,7 +5,7 @@
 #   GET /register      → players_enclosure.html (onboarding wizard)
 #   GET /media-room    → media_room.html    (video upload wizard)
 #   GET /backoffice    → backoffice.html    (admin dashboard)
-#   GET /analytics     → analytics.html     (Power BI embed)
+#   GET /match-analysis → match_analysis.html (match analytics dashboard)
 #   GET /portal        → portal.html        (unified nav shell, main Wix entry point)
 #   GET /pricing       → pricing.html       (plans & pricing page)
 #   GET /coach-accept  → coach_accept.html  (coach invitation acceptance)
@@ -39,10 +39,6 @@ def media_room():
 def backoffice():
     return send_file("backoffice.html")
 
-
-@app.get("/analytics")
-def analytics():
-    return send_file("analytics.html")
 
 
 @app.get("/practice")

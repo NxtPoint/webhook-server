@@ -538,7 +538,7 @@ async function init() {
   try {
     const res = await apiFetch('/api/client/matches');
     const data = await res.json();
-    matches = data.ok ? data.matches.filter(m => (m.sport_type === 'tennis_singles' || m.sport_type === 'tennis_singles_t5') && m.total_points > 0) : [];
+    matches = data.ok ? data.matches.filter(m => m.sport_type === 'tennis_singles' && m.total_points > 0) : [];
   } catch (e) { matches = []; }
 
   if (!matches.length) {
@@ -731,11 +731,14 @@ function switchModule(mod) {
 // ====================================================================
 function renderAnalyticsModule() {
   const tabs = [
-    { id: 'summary', label: 'Match Summary' },
-    { id: 'serve', label: 'Serve Detail' },
-    { id: 'return', label: 'Return Detail' },
-    { id: 'rally', label: 'Rally Detail' },
-    { id: 'coach', label: 'Coach \u2728' },
+    { id: 'summary',       label: 'Match Summary' },
+    { id: 'serve-perf',    label: 'Serve Performance' },
+    { id: 'serve-detail',  label: 'Serve Detail' },
+    { id: 'return-summary',label: 'Return Summary' },
+    { id: 'return-detail', label: 'Return Detail' },
+    { id: 'rally-summary', label: 'Rally Summary' },
+    { id: 'rally-detail',  label: 'Rally Detail' },
+    { id: 'coach',         label: 'Coach \u2728' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -743,11 +746,14 @@ function renderAnalyticsModule() {
   ).join('');
 
   document.getElementById('dashContent').innerHTML = `
-    <div class="tab-panel${activeTab === 'summary' ? ' active' : ''}" id="p-summary">${renderSummary()}</div>
-    <div class="tab-panel${activeTab === 'serve' ? ' active' : ''}" id="p-serve">${renderServeDetail()}</div>
-    <div class="tab-panel${activeTab === 'return' ? ' active' : ''}" id="p-return">${renderReturnDetail()}</div>
-    <div class="tab-panel${activeTab === 'rally' ? ' active' : ''}" id="p-rally">${renderRallyDetail()}</div>
-    <div class="tab-panel${activeTab === 'coach' ? ' active' : ''}" id="p-coach">${renderCoachTab()}</div>
+    <div class="tab-panel${activeTab === 'summary'        ? ' active' : ''}" id="p-summary">${renderSummary()}</div>
+    <div class="tab-panel${activeTab === 'serve-perf'     ? ' active' : ''}" id="p-serve-perf">${renderServePerfTab()}</div>
+    <div class="tab-panel${activeTab === 'serve-detail'   ? ' active' : ''}" id="p-serve-detail">${renderServeDetailTab()}</div>
+    <div class="tab-panel${activeTab === 'return-summary' ? ' active' : ''}" id="p-return-summary">${renderReturnSummaryTab()}</div>
+    <div class="tab-panel${activeTab === 'return-detail'  ? ' active' : ''}" id="p-return-detail">${renderReturnDetail()}</div>
+    <div class="tab-panel${activeTab === 'rally-summary'  ? ' active' : ''}" id="p-rally-summary">${renderRallySummaryTab()}</div>
+    <div class="tab-panel${activeTab === 'rally-detail'   ? ' active' : ''}" id="p-rally-detail">${renderRallyDetail()}</div>
+    <div class="tab-panel${activeTab === 'coach'          ? ' active' : ''}" id="p-coach">${renderCoachTab()}</div>
   `;
 
   setTimeout(() => {
@@ -811,6 +817,24 @@ function renderSummary() {
       <div class="chart-card">
         <h3>Shot Outcome Distribution</h3>
         <div id="chartOutcomes" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid tri">
+      <div class="chart-card">
+        <h3>Free Points (Unreturned Serves)</h3>
+        <div id="chartFreePoints_a" class="echart" style="height:200px"></div>
+        <div id="chartFreePoints_b" class="echart" style="height:200px"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Return Points Won</h3>
+        <div id="chartRetPtsWon_a" class="echart" style="height:200px"></div>
+        <div id="chartRetPtsWon_b" class="echart" style="height:200px"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Rally Points Won</h3>
+        <div id="chartRallyPtsWon_a" class="echart" style="height:200px"></div>
+        <div id="chartRallyPtsWon_b" class="echart" style="height:200px"></div>
       </div>
     </div>
 
@@ -897,50 +921,46 @@ function renderScoreBox() {
   </div>`;
 }
 
-// ==================== SERVE DETAIL TAB ====================
-function renderServeDetail() {
+// ==================== SERVE PERFORMANCE TAB ====================
+function renderServePerfTab() {
   const k = kpi();
   const pa = k.player_a_name || 'Player A';
   const pb = k.player_b_name || 'Player B';
 
-  // Build per-player summary from kpi (pre-computed)
-  const sA = {
-    total: (k.pa_first_serves_total || 0) + (k.pa_double_faults || 0),  // approx: 1st attempts + DFs
-    fsPct: k.pa_first_serve_pct || 0,
-    svcWonPct: k.pa_svc_pts_won_pct || 0,
-    aces: k.pa_aces || 0,
-    doubleFaults: k.pa_double_faults || 0,
-    avgSpd: k.pa_serve_speed_avg || 0,
-    maxSpd: k.pa_serve_speed_max || 0,
-  };
-  const sB = {
-    total: (k.pb_first_serves_total || 0) + (k.pb_double_faults || 0),
-    fsPct: k.pb_first_serve_pct || 0,
-    svcWonPct: k.pb_svc_pts_won_pct || 0,
-    aces: k.pb_aces || 0,
-    doubleFaults: k.pb_double_faults || 0,
-    avgSpd: k.pb_serve_speed_avg || 0,
-    maxSpd: k.pb_serve_speed_max || 0,
-  };
+  // Aggregate direction counts from serve_breakdown (already summed across serve_try by buildServeStrategyFromView)
+  function dirCounts(role) {
+    const rows = rowsForRole(selectedData.serve || [], role);
+    const agg = {};
+    rows.forEach(r => {
+      const d = r.serve_bucket_d || 'Unknown';
+      if (!agg[d]) agg[d] = { count: 0, won: 0, unreturned: 0, played: 0 };
+      agg[d].count       += r.serve_count   || 0;
+      agg[d].won         += r.points_won    || 0;
+      agg[d].played      += r.points_played || 0;
+      agg[d].unreturned  += r.unreturned    || 0;
+    });
+    return agg;
+  }
 
-  // Serve strategy tables from gold.match_serve_breakdown
   const stratA = buildServeStrategyFromView('player_a');
   const stratB = buildServeStrategyFromView('player_b');
 
   return `
     <div class="chart-card full">
-      <h3>Serve Head-to-Head</h3>
+      <h3>Serve Comparison</h3>
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
-          ${statCard('Total Serves', sA.total, sB.total)}
-          ${statCard('1st Serve In %', sA.fsPct + '%', sB.fsPct + '%')}
-          ${statCard('Svc Pts Won %', sA.svcWonPct + '%', sB.svcWonPct + '%')}
-          ${statCard('Aces', sA.aces, sB.aces)}
+          ${statCard('UTR', k.player_a_utr || '—', k.player_b_utr || '—')}
+          ${statCard('Total Serves', k.pa_total_serves || 0, k.pb_total_serves || 0)}
+          ${statCard('Svc Pts Won', k.pa_svc_pts_won || 0, k.pb_svc_pts_won || 0)}
+          ${statCard('1st Serve In %', (k.pa_first_serve_pct || 0) + '%', (k.pb_first_serve_pct || 0) + '%')}
+          ${statCard('Svc Pts Won %', (k.pa_svc_pts_won_pct || 0) + '%', (k.pb_svc_pts_won_pct || 0) + '%')}
         </div>
         <div>
-          ${statCard('Double Faults', sA.doubleFaults, sB.doubleFaults, true)}
-          ${statCard('Avg Speed', sA.avgSpd || '—', sB.avgSpd || '—')}
-          ${statCard('Max Speed', sA.maxSpd || '—', sB.maxSpd || '—')}
+          ${statCard('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, true)}
+          ${statCard('Unreturned Svc Pts', k.pa_unreturned_serves || 0, k.pb_unreturned_serves || 0)}
+          ${statCard('Avg Serve Speed', k.pa_serve_speed_avg || '—', k.pb_serve_speed_avg || '—')}
+          ${statCard('Fastest Serve', k.pa_serve_speed_max || '—', k.pb_serve_speed_max || '—')}
         </div>
       </div>
     </div>
@@ -958,12 +978,131 @@ function renderServeDetail() {
 
     <div class="chart-grid">
       <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Outcomes by Direction</h3>
+        <div id="chartServeDirOut_a" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Outcomes by Direction</h3>
+        <div id="chartServeDirOut_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Unreturned Serves by Direction</h3>
+        <div id="chartServeUnret_a" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Unreturned Serves by Direction</h3>
+        <div id="chartServeUnret_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Serve Strategy &amp; Win Rate</h3>
         ${strategyTable(stratA)}
       </div>
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Serve Strategy &amp; Win Rate</h3>
         ${strategyTable(stratB)}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== SERVE DETAIL TAB ====================
+function renderServeDetailTab() {
+  const k = kpi();
+  const pa = k.player_a_name || 'Player A';
+  const pb = k.player_b_name || 'Player B';
+
+  // Build 1st/2nd serve direction data from serve_breakdown rows by serve_try
+  function serveByTry(role, tryVal) {
+    const rows = rowsForRole(selectedData.serve || [], role).filter(r => r.serve_try_ix_in_point === tryVal);
+    const agg = {};
+    rows.forEach(r => {
+      const d = r.serve_bucket_d || 'Unknown';
+      if (!agg[d]) agg[d] = { count: 0, won: 0, played: 0, inCount: 0 };
+      agg[d].count   += r.serve_count   || 0;
+      agg[d].won     += r.points_won    || 0;
+      agg[d].played  += r.points_played || 0;
+      agg[d].inCount += r.serves_in     || 0;
+    });
+    return agg;
+  }
+
+  function tryTable(role, tryLabel, tryVal) {
+    const agg = serveByTry(role, tryVal);
+    const dirs = ['Wide', 'Body', 'T'];
+    const rows = dirs.map(d => agg[d] || { count: 0, won: 0, played: 0, inCount: 0 });
+    const total = rows.reduce((s, r) => s + r.count, 0) || 1;
+    return `<table class="strategy-table" style="font-size:0.78rem">
+      <thead><tr>
+        <th>${tryLabel}</th>
+        <th style="text-align:right">In%</th>
+        <th style="text-align:right">N</th>
+        <th style="text-align:right">Won</th>
+        <th style="text-align:right">Win%</th>
+      </tr></thead>
+      <tbody>${dirs.map((d, i) => {
+        const r = rows[i];
+        const inPct  = r.count > 0 ? Math.round(100 * r.inCount / r.count) : 0;
+        const winPct = r.played > 0 ? Math.round(100 * r.won / r.played) : 0;
+        const wc = winPct >= 60 ? 'var(--green)' : winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+        return `<tr>
+          <td style="font-weight:600">${d}</td>
+          <td style="text-align:right">${inPct}%</td>
+          <td style="text-align:right">${r.count}</td>
+          <td style="text-align:right">${r.won}</td>
+          <td style="text-align:right;font-weight:700;color:${wc}">${winPct}%</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+  }
+
+  return `
+    <div class="chart-card full">
+      <h3>Serve Stats Head-to-Head</h3>
+      <div class="chart-grid" style="margin-bottom:0;gap:12px">
+        <div>
+          ${statCard('Svc Points Played', k.pa_service_points || 0, k.pb_service_points || 0)}
+          ${statCard('Svc Points Won', k.pa_svc_pts_won || 0, k.pb_svc_pts_won || 0)}
+          ${statCard('Svc Pts Won %', (k.pa_svc_pts_won_pct || 0) + '%', (k.pb_svc_pts_won_pct || 0) + '%')}
+          ${statCard('1st Serve In %', (k.pa_first_serve_pct || 0) + '%', (k.pb_first_serve_pct || 0) + '%')}
+        </div>
+        <div>
+          ${statCard('1st Serve Win %', (k.pa_first_serve_won_pct || 0) + '%', (k.pb_first_serve_won_pct || 0) + '%')}
+          ${statCard('2nd Serve In %', (k.pa_second_serve_pct || 0) + '%', (k.pb_second_serve_pct || 0) + '%')}
+          ${statCard('2nd Serve Win %', (k.pa_second_serve_won_pct || 0) + '%', (k.pb_second_serve_won_pct || 0) + '%')}
+          ${statCard('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, true)}
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · 1st Serve Location &amp; Win Rate</h3>
+        <div id="chartServe1st_a" class="echart"></div>
+        ${tryTable('player_a', '1st Serve', '1st')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · 1st Serve Location &amp; Win Rate</h3>
+        <div id="chartServe1st_b" class="echart"></div>
+        ${tryTable('player_b', '1st Serve', '1st')}
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · 2nd Serve Location &amp; Win Rate</h3>
+        <div id="chartServe2nd_a" class="echart"></div>
+        ${tryTable('player_a', '2nd Serve', '2nd')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · 2nd Serve Location &amp; Win Rate</h3>
+        <div id="chartServe2nd_b" class="echart"></div>
+        ${tryTable('player_b', '2nd Serve', '2nd')}
       </div>
     </div>
   `;
@@ -983,22 +1122,32 @@ function statCard(label, valA, valB, invert) {
 }
 
 // Build serve strategy table rows for a player_role from gold.match_serve_breakdown
+// Aggregates across serve_try_ix_in_point (view now has this in GROUP BY)
 function buildServeStrategyFromView(playerRole) {
   const rows = rowsForRole(selectedData.serve || [], playerRole);
   if (!rows.length) return [];
-  const totalServes = rows.reduce((s, r) => s + (r.serve_count || 0), 0) || 1;
-
-  const out = rows.map(r => ({
-    side: r.serve_side_d,
-    direction: r.serve_bucket_d,
-    count: r.serve_count || 0,
-    pctOfTotal: Math.round(100 * (r.serve_count || 0) / totalServes),
-    pointsPlayed: r.points_played || 0,
-    pointsWon: r.points_won || 0,
-    winPct: (r.points_played || 0) > 0 ? Math.round(100 * (r.points_won || 0) / r.points_played) : 0,
-    unreturned: r.unreturned || 0,
+  // Aggregate across serve_try so we get one row per (side, direction)
+  const agg = {};
+  rows.forEach(r => {
+    const key = `${r.serve_side_d}|${r.serve_bucket_d}`;
+    if (!agg[key]) agg[key] = { side: r.serve_side_d, direction: r.serve_bucket_d, serve_count: 0, serves_in: 0, points_played: 0, points_won: 0, unreturned: 0 };
+    agg[key].serve_count   += r.serve_count   || 0;
+    agg[key].serves_in     += r.serves_in     || 0;
+    agg[key].points_played += r.points_played || 0;
+    agg[key].points_won    += r.points_won    || 0;
+    agg[key].unreturned    += r.unreturned    || 0;
+  });
+  const totalServes = Object.values(agg).reduce((s, r) => s + r.serve_count, 0) || 1;
+  const out = Object.values(agg).map(r => ({
+    side: r.side,
+    direction: r.direction,
+    count: r.serve_count,
+    pctOfTotal: Math.round(100 * r.serve_count / totalServes),
+    pointsPlayed: r.points_played,
+    pointsWon: r.points_won,
+    winPct: r.points_played > 0 ? Math.round(100 * r.points_won / r.points_played) : 0,
+    unreturned: r.unreturned,
   }));
-
   // Sort: deuce first, then by count desc
   out.sort((a, b) => {
     if (a.side !== b.side) return String(a.side).toLowerCase().startsWith('d') ? -1 : 1;
@@ -1031,6 +1180,72 @@ function strategyTable(data) {
       </tr>`;
     }).join('')}</tbody>
   </table>`;
+}
+
+// ==================== RETURN SUMMARY TAB ====================
+function renderReturnSummaryTab() {
+  const k = kpi();
+  const pa = k.player_a_name || 'Player A';
+  const pb = k.player_b_name || 'Player B';
+  const rA = byRole(selectedData.return, 'player_a') || {};
+  const rB = byRole(selectedData.return, 'player_b') || {};
+
+  const madeA = rA.returns_played > 0 ? Math.round(100 * (rA.returns_made || 0) / rA.returns_played) : 0;
+  const madeB = rB.returns_played > 0 ? Math.round(100 * (rB.returns_made || 0) / rB.returns_played) : 0;
+  const unretA = rA.returns_played > 0 ? Math.round(100 * ((rA.returns_played || 0) - (rA.returns_made || 0)) / rA.returns_played) : 0;
+  const unretB = rB.returns_played > 0 ? Math.round(100 * ((rB.returns_played || 0) - (rB.returns_made || 0)) / rB.returns_played) : 0;
+  const wonA  = rA.returns_played > 0 ? Math.round(100 * ((rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0)) / rA.returns_played) : 0;
+  const wonB  = rB.returns_played > 0 ? Math.round(100 * ((rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0)) / rB.returns_played) : 0;
+
+  // Zone effectiveness from shot_placement
+  function zoneTable(role, zoneKey, title) {
+    const shots = rowsForRole(selectedData.placement || [], role).filter(s => s.shot_phase_d === 'Return');
+    const ownerId = role === 'player_a' ? k.player_a_id : k.player_b_id;
+    if (!shots.length) return `<div style="color:var(--text-dim);font-size:0.8rem;padding:12px 0">No return data</div>`;
+    return buildGenericTable(shots, zoneKey, null, ownerId, title);
+  }
+
+  return `
+    <div class="chart-card full">
+      <h3>Return Comparison</h3>
+      <div class="chart-grid" style="margin-bottom:0;gap:12px">
+        <div>
+          ${statCard('Return Pts Played', rA.returns_played || 0, rB.returns_played || 0)}
+          ${statCard('Returns Made', rA.returns_made || 0, rB.returns_made || 0)}
+          ${statCard('Return Errors', rA.return_errors || 0, rB.return_errors || 0, true)}
+          ${statCard('Return Pts Won', (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0), (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0))}
+        </div>
+        <div>
+          ${statCard('Unreturned %', unretA + '%', unretB + '%', true)}
+          ${statCard('Made %', madeA + '%', madeB + '%')}
+          ${statCard('Won %', wonA + '%', wonB + '%')}
+          ${statCard('Return Winners', rA.return_winners || 0, rB.return_winners || 0)}
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Effectiveness by Hit Zone</h3>
+        ${zoneTable('player_a', 'rally_location_hit', 'Zone')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Effectiveness by Hit Zone</h3>
+        ${zoneTable('player_b', 'rally_location_hit', 'Zone')}
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Points Won by Bounce Zone</h3>
+        ${zoneTable('player_a', 'rally_location_bounce', 'Zone')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Points Won by Bounce Zone</h3>
+        ${zoneTable('player_b', 'rally_location_bounce', 'Zone')}
+      </div>
+    </div>
+  `;
 }
 
 // ==================== RETURN DETAIL TAB ====================
@@ -1100,6 +1315,108 @@ function renderReturnDetail() {
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Outcome</h3>
         <div id="chartRetOutcome_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Outcomes by Serve Try</h3>
+        <div id="chartRetByTry_a" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Outcomes by Serve Try</h3>
+        <div id="chartRetByTry_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Outcomes by Stroke</h3>
+        <div id="chartRetByStroke_a" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Outcomes by Stroke</h3>
+        <div id="chartRetByStroke_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Outcomes by Serve Location</h3>
+        <div id="chartRetByServeLoc_a" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Outcomes by Serve Location</h3>
+        <div id="chartRetByServeLoc_b" class="echart"></div>
+      </div>
+    </div>
+  `;
+}
+
+// ==================== RALLY SUMMARY TAB ====================
+function renderRallySummaryTab() {
+  const k = kpi();
+  const pa = k.player_a_name || 'Player A';
+  const pb = k.player_b_name || 'Player B';
+  const rA = byRole(selectedData.rally, 'player_a') || {};
+  const rB = byRole(selectedData.rally, 'player_b') || {};
+
+  const totalRallyPts = (k.pa_rally_pts_won || 0) + (k.pb_rally_pts_won || 0);
+  const weA = rA.errors > 0 ? (rA.winners / rA.errors).toFixed(2) : (rA.winners || 0).toFixed(2);
+  const weB = rB.errors > 0 ? (rB.winners / rB.errors).toFixed(2) : (rB.winners || 0).toFixed(2);
+  const winnerPctA = rA.rally_shots > 0 ? Math.round(100 * (rA.winners || 0) / rA.rally_shots) : 0;
+  const winnerPctB = rB.rally_shots > 0 ? Math.round(100 * (rB.winners || 0) / rB.rally_shots) : 0;
+  const errorPctA  = rA.rally_shots > 0 ? Math.round(100 * (rA.errors || 0) / rA.rally_shots) : 0;
+  const errorPctB  = rB.rally_shots > 0 ? Math.round(100 * (rB.errors || 0) / rB.rally_shots) : 0;
+
+  // Zone effectiveness from placement — rally phases
+  function zoneTable(role, zoneKey, title) {
+    const shots = rowsForRole(selectedData.placement || [], role).filter(s =>
+      s.shot_phase_d === 'Rally' || s.shot_phase_d === 'Transition' || s.shot_phase_d === 'Net'
+    );
+    const ownerId = role === 'player_a' ? k.player_a_id : k.player_b_id;
+    if (!shots.length) return `<div style="color:var(--text-dim);font-size:0.8rem;padding:12px 0">No rally data</div>`;
+    return buildGenericTable(shots, zoneKey, null, ownerId, title);
+  }
+
+  return `
+    <div class="chart-card full">
+      <h3>Rally Comparison</h3>
+      <div class="chart-grid" style="margin-bottom:0;gap:12px">
+        <div>
+          ${statCard('Rally Pts Played', totalRallyPts, totalRallyPts)}
+          ${statCard('Rally Pts Won', k.pa_rally_pts_won || 0, k.pb_rally_pts_won || 0)}
+          ${statCard('Rally Pts Lost', k.pb_rally_pts_won || 0, k.pa_rally_pts_won || 0, true)}
+          ${statCard('Rally Pts Won %', (k.pa_rally_pts_won_pct || 0) + '%', (k.pb_rally_pts_won_pct || 0) + '%')}
+        </div>
+        <div>
+          ${statCard('Winner %', winnerPctA + '%', winnerPctB + '%')}
+          ${statCard('Error %', errorPctA + '%', errorPctB + '%', true)}
+          ${statCard('W:E Ratio', weA, weB)}
+          ${statCard('Rally Shots', rA.rally_shots || 0, rB.rally_shots || 0)}
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Rally Effectiveness by Zone (Hit)</h3>
+        ${zoneTable('player_a', 'rally_location_hit', 'Zone')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Rally Effectiveness by Zone (Hit)</h3>
+        ${zoneTable('player_b', 'rally_location_hit', 'Zone')}
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Rally Effectiveness by Zone (Bounce)</h3>
+        ${zoneTable('player_a', 'rally_location_bounce', 'Zone')}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Rally Effectiveness by Zone (Bounce)</h3>
+        ${zoneTable('player_b', 'rally_location_bounce', 'Zone')}
       </div>
     </div>
   `;
@@ -1175,6 +1492,17 @@ function renderRallyDetail() {
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Stroke</h3>
         <div id="chartStroke_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Overall Rally Outcomes</h3>
+        <div id="chartRallyOutcome_a" class="echart"></div>
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Overall Rally Outcomes</h3>
+        <div id="chartRallyOutcome_b" class="echart"></div>
       </div>
     </div>
   `;
@@ -1339,11 +1667,12 @@ let heatmapInfoOpen = false;  // side info panel collapsed by default
 
 function renderHeatmapsModule() {
   const tabs = [
-    { id: 'serve-placement',  label: 'Serve Placement' },
-    { id: 'return-placement', label: 'Return Placement' },
-    { id: 'return-received',  label: 'Returns Received' },
-    { id: 'groundstroke',     label: 'Groundstrokes' },
-    { id: 'rally-depth',      label: 'Rally Depth' },
+    { id: 'serve-placement',     label: 'Serve Placement' },
+    { id: 'player-return-pos',   label: 'Player Return Position' },
+    { id: 'return-ball-pos',     label: 'Return Ball Position' },
+    { id: 'groundstroke',        label: 'Groundstrokes' },
+    { id: 'rally-player-pos',    label: 'Rally Player Position' },
+    { id: 'ball-depth',          label: 'Ball Depth' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -1433,11 +1762,15 @@ function renderHeatmapContent() {
     tabTogglesHTML = toggleGroup('Serve', 'hf-serve', [
       {val:'all',label:'All'},{val:'1st',label:'1st'},{val:'2nd',label:'2nd'}
     ], heatmapFilter.serve, 'setHeatmapFilterServe');
-  } else if (activeTab === 'return-placement' || activeTab === 'return-received' || activeTab === 'groundstroke') {
+  } else if (activeTab === 'player-return-pos' || activeTab === 'return-ball-pos' || activeTab === 'groundstroke') {
     tabTogglesHTML = toggleGroup('Stroke', 'hf-stroke', [
       {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
     ], heatmapFilter.stroke, 'setHeatmapFilterStroke');
-  } else if (activeTab === 'rally-depth') {
+  } else if (activeTab === 'rally-player-pos') {
+    tabTogglesHTML = toggleGroup('Aggression', 'hf-stroke', [
+      {val:'all',label:'All'},{val:'Attack',label:'Attack'},{val:'Neutral',label:'Neutral'},{val:'Defence',label:'Defence'}
+    ], heatmapFilter.stroke, 'setHeatmapFilterStroke');
+  } else if (activeTab === 'ball-depth') {
     tabTogglesHTML = toggleGroup('Depth', 'hf-outcome', [
       {val:'all',label:'All'},{val:'Deep',label:'Deep'},{val:'Middle',label:'Middle'},{val:'Short',label:'Short'}
     ], heatmapFilter.outcome, 'setHeatmapFilterOutcome');
@@ -1453,28 +1786,34 @@ function renderHeatmapContent() {
       <p><span class="info-dot" style="background:rgba(26,92,46,0.9)"></span>Green = the point was won.
          <span class="info-dot" style="background:rgba(220,38,38,0.85)"></span>Red = the point was lost.</p>
       <p>Use the <strong>1st / 2nd</strong> filter to compare your first vs second serve patterns.</p>
-      <p>The Ad / Deuce table below splits serves by service court and direction (Wide / Body / T) with win % per cell — find your highest-win-rate placement and use it more.</p>
+      <p>The Ad / Deuce table below splits serves by service court and direction (Wide / Body / T) with win % per cell.</p>
     `,
-    'return-placement': `
-      <h4>Return Placement</h4>
-      <p>Each dot is your return shot, plotted at the bounce location on the opponent's court (your return placement).</p>
-      <p>Filter by stroke (Forehand / Backhand) to see where each wing tends to land.</p>
+    'player-return-pos': `
+      <h4>Player Return Position</h4>
+      <p>Shows where YOU were standing when you hit each return — plotted at your position on the court (hit coordinates).</p>
+      <p>Filter by stroke (Forehand / Backhand) to compare positioning per wing.</p>
+      <p>A cluster near the baseline indicates a confident return position; further back may suggest difficulty reading the serve.</p>
+    `,
+    'return-ball-pos': `
+      <h4>Return Ball Position</h4>
+      <p>Each dot is your return shot, plotted at the ball's bounce location on the opponent's court.</p>
+      <p>Filter by stroke (Forehand / Backhand) to see where each wing tends to place the ball.</p>
       <p>Tables below split by which side you were returning from (Ad / Deuce).</p>
-    `,
-    'return-received': `
-      <h4>Returns Received</h4>
-      <p>Shows the opponent's serves coming AT you. Each dot is a serve they hit at you, win/loss is from your perspective (returner).</p>
-      <p>Tables split by where the serve came from — answer "how did I do against deuce-side wide serves vs body serves?".</p>
     `,
     'groundstroke': `
       <h4>Groundstrokes</h4>
       <p>Every shot during a rally (excluding serves and returns). Filter by stroke type to see forehand vs backhand placement separately.</p>
       <p>Win % = the point ended up being won by this player. Use it to find which shot patterns actually convert to points.</p>
     `,
-    'rally-depth': `
-      <h4>Rally Depth</h4>
-      <p>Bounces during rally exchanges, classified by depth (Deep / Middle / Short).</p>
-      <p>A "Deep" bounce near the baseline is generally a winning pattern. Compare your win % per depth bucket to see if you push opponents back effectively.</p>
+    'rally-player-pos': `
+      <h4>Rally Player Position</h4>
+      <p>Shows where you were on court when you struck each rally shot — your footwork and positioning pattern during rallies.</p>
+      <p>Filter by Aggression (Attack / Neutral / Defence) to see how court position changes with shot intent.</p>
+    `,
+    'ball-depth': `
+      <h4>Ball Depth</h4>
+      <p>Bounce locations of all rally and return shots, classified by depth (Deep / Middle / Short).</p>
+      <p>A "Deep" bounce near the baseline is generally a winning pattern. Compare win % per depth bucket to see if you push opponents back effectively.</p>
     `,
   }[activeTab] || '';
 
@@ -1489,11 +1828,12 @@ function renderHeatmapContent() {
 
   // Title and subtitle for the current tab
   const tabTitle = {
-    'serve-placement':  'Serve Placement',
-    'return-placement': 'Return Placement — Where you hit your return',
-    'return-received':  'Returns Received — How opponent served you',
-    'groundstroke':     'Groundstrokes',
-    'rally-depth':      'Rally Depth',
+    'serve-placement':   'Serve Placement',
+    'player-return-pos': 'Player Return Position — Where you stood to return',
+    'return-ball-pos':   'Return Ball Position — Where your return landed',
+    'groundstroke':      'Groundstrokes',
+    'rally-player-pos':  'Rally Player Position — Where you stood during rallies',
+    'ball-depth':        'Ball Depth — Rally &amp; Return Bounce Depth',
   }[activeTab] || '';
 
   panel.innerHTML = `
@@ -1553,19 +1893,9 @@ function renderHeatmapCourts() {
 // Read shots from gold.match_shot_placement, filter by active tab + toggles + set
 function getHeatmapShots(playerRole) {
   const all = selectedData?.placement || [];
-
-  // Apply player filter
-  let shots;
-  if (activeTab === 'return-received') {
-    // For "returns received" we show OPPONENT's serves at this player
-    const oppRole = playerRole === 'player_a' ? 'player_b' : 'player_a';
-    shots = rowsForRole(all, oppRole).filter(p => p.serve_d === true);
-  } else {
-    shots = rowsForRole(all, playerRole);
-  }
+  let shots = rowsForRole(all, playerRole);
 
   // Apply set filter (cross-cutting across tabs)
-  // Compare as strings to avoid numeric/string mismatch issues
   if (heatmapFilter.setNum && heatmapFilter.setNum !== 'all') {
     const target = String(heatmapFilter.setNum);
     shots = shots.filter(p => String(p.set_number) === target);
@@ -1577,21 +1907,15 @@ function getHeatmapShots(playerRole) {
     if (heatmapFilter.serve && heatmapFilter.serve !== 'all') {
       shots = shots.filter(p => p.serve_try_ix_in_point === heatmapFilter.serve);
     }
-  } else if (activeTab === 'return-placement') {
+  } else if (activeTab === 'player-return-pos') {
     shots = shots.filter(p => p.shot_phase_d === 'Return');
     if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
-  } else if (activeTab === 'return-received') {
-    // Opponent serves at you — already filtered above
+  } else if (activeTab === 'return-ball-pos') {
+    shots = shots.filter(p => p.shot_phase_d === 'Return');
     if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
-      // For returns received, "stroke" filter means YOUR return stroke
-      // Filter to point_keys where YOUR return on that point used the selected stroke
-      const yourReturns = rowsForRole(all, playerRole).filter(r =>
-        r.shot_phase_d === 'Return' && r.stroke_d === heatmapFilter.stroke
-      );
-      const allowedPointKeys = new Set(yourReturns.map(r => r.point_key));
-      shots = shots.filter(s => allowedPointKeys.has(s.point_key));
+      shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
   } else if (activeTab === 'groundstroke') {
     shots = shots.filter(p =>
@@ -1600,9 +1924,17 @@ function getHeatmapShots(playerRole) {
     if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
-  } else if (activeTab === 'rally-depth') {
+  } else if (activeTab === 'rally-player-pos') {
     shots = shots.filter(p =>
-      p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'
+      p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net'
+    );
+    if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
+      shots = shots.filter(p => p.aggression_d === heatmapFilter.stroke);
+    }
+  } else if (activeTab === 'ball-depth') {
+    shots = shots.filter(p =>
+      p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' ||
+      p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'
     );
     if (heatmapFilter.outcome && heatmapFilter.outcome !== 'all') {
       shots = shots.filter(p => p.depth_d === heatmapFilter.outcome);
@@ -1779,18 +2111,14 @@ function renderHeatmapSummaryTable(shots) {
   if (activeTab === 'serve-placement') {
     if (titleEl) titleEl.textContent = 'Serve Placement by Side × Direction';
     const bySide = groupShotsBySideDirection(shots, 'serve_side_d', 'serve_bucket_d', playerId);
-    // Deuce on LEFT, Ad on RIGHT — matches where dots land on the court
-    // (deuce serves go to the receiver's deuce box which is the LEFT half from the viewer)
     host.innerHTML = buildSideTable(bySide.Deuce, 'Deuce Side') + buildSideTable(bySide.Ad, 'Ad Side');
 
-  } else if (activeTab === 'return-received') {
-    if (titleEl) titleEl.textContent = 'Returns Received by Side × Direction';
-    const bySide = groupShotsBySideDirection(shots, 'serve_side_d', 'serve_bucket_d', playerId);
-    host.innerHTML = buildSideTable(bySide.Deuce, 'Received on Deuce') + buildSideTable(bySide.Ad, 'Received on Ad');
+  } else if (activeTab === 'player-return-pos') {
+    if (titleEl) titleEl.textContent = 'Return Position by Stroke';
+    host.innerHTML = buildGenericTable(shots, 'stroke_d', null, playerId, 'Stroke');
 
-  } else if (activeTab === 'return-placement') {
-    if (titleEl) titleEl.textContent = 'Return Placement by Received Side × Stroke';
-    // Need to know which side each return was received from
+  } else if (activeTab === 'return-ball-pos') {
+    if (titleEl) titleEl.textContent = 'Return Ball Position by Side × Direction';
     const oppRole = heatmapPlayer === 'player_a' ? 'player_b' : 'player_a';
     const oppServes = rowsForRole(selectedData.placement || [], oppRole).filter(p => p.serve_d === true);
     const enriched = groupByReceivedSide(shots, oppServes);
@@ -1801,9 +2129,13 @@ function renderHeatmapSummaryTable(shots) {
     if (titleEl) titleEl.textContent = 'Groundstroke Placement — Stroke × Depth';
     host.innerHTML = buildGenericTable(shots, 'stroke_d', 'depth_d', playerId, 'Stroke');
 
+  } else if (activeTab === 'rally-player-pos') {
+    if (titleEl) titleEl.textContent = 'Rally Position by Aggression';
+    host.innerHTML = buildGenericTable(shots, 'aggression_d', null, playerId, 'Aggression');
+
   } else {
-    // Rally depth
-    if (titleEl) titleEl.textContent = 'Rally Depth — Win Rate by Depth';
+    // ball-depth
+    if (titleEl) titleEl.textContent = 'Ball Depth — Win Rate by Depth';
     host.innerHTML = buildGenericTable(shots, 'depth_d', null, playerId, 'Depth');
   }
 }
@@ -1914,10 +2246,19 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const minX = cx(0) + insetX, maxX = cx(COURT_W) - insetX;
   const minY = cy(0) + insetY, maxY = cy(COURT_L) - insetY;
 
+  // For player-position tabs, use where the player was standing (hit coords)
+  // For all other tabs, use where the ball bounced (bounce coords)
+  const useHitCoords = (activeTab === 'player-return-pos' || activeTab === 'rally-player-pos');
+
   shots.forEach(s => {
-    // Use bounce coords first (where the ball landed), fall back to hit coords
-    let bx = s.ball_bounce_x_norm ?? s.ball_hit_x_norm ?? s.court_x ?? s.ball_hit_location_x;
-    let by = s.ball_bounce_y_norm ?? s.ball_hit_y_norm ?? s.court_y ?? s.ball_hit_location_y;
+    let bx, by;
+    if (useHitCoords) {
+      bx = s.ball_hit_x_norm ?? s.court_x ?? null;
+      by = s.ball_hit_y_norm ?? s.court_y ?? null;
+    } else {
+      bx = s.ball_bounce_x_norm ?? s.ball_hit_x_norm ?? s.court_x ?? s.ball_hit_location_x;
+      by = s.ball_bounce_y_norm ?? s.ball_hit_y_norm ?? s.court_y ?? s.ball_hit_location_y;
+    }
     if (bx == null || by == null) return;
 
     bx = Math.max(0, Math.min(COURT_W, bx));
@@ -1977,6 +2318,154 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
       </div>
     `;
   }
+}
+
+// ====================================================================
+//  CROSS-TAB HELPERS (shot_placement derived stats)
+// ====================================================================
+
+// Get return outcomes from shot_placement grouped by a key field
+function getReturnOutcomes(playerRole, groupKey) {
+  const shots = rowsForRole(selectedData.placement || [], playerRole)
+    .filter(s => s.shot_phase_d === 'Return');
+  const groups = {};
+  shots.forEach(s => {
+    const key = s[groupKey] || 'Unknown';
+    if (!groups[key]) groups[key] = { error: 0, inPlay: 0, winner: 0 };
+    if (s.shot_outcome_d === 'Error')  groups[key].error++;
+    else if (s.shot_outcome_d === 'Winner') groups[key].winner++;
+    else groups[key].inPlay++;
+  });
+  return groups;
+}
+
+// Build a stacked bar chart showing Error/InPlay/Winner per category key
+function renderReturnOutcomeStackedBar(chartId, playerRole, groupKey) {
+  const groups = getReturnOutcomes(playerRole, groupKey);
+  const keys = Object.keys(groups).sort();
+  if (!keys.length) return;
+  eStackedBar(chartId, keys, [
+    { name: 'Error',   data: keys.map(k => groups[k].error),  color: C_RED   },
+    { name: 'In Play', data: keys.map(k => groups[k].inPlay), color: C_BLUE  },
+    { name: 'Winner',  data: keys.map(k => groups[k].winner), color: C_GREEN },
+  ]);
+}
+
+// Build serve direction outcome stacked bar (Won vs Lost) from serve_breakdown
+function renderServeDirOutcomeBar(chartId, playerRole) {
+  const rows = rowsForRole(selectedData.serve || [], playerRole);
+  const agg = {};
+  rows.forEach(r => {
+    const d = r.serve_bucket_d || 'Unknown';
+    if (!agg[d]) agg[d] = { won: 0, lost: 0, unret: 0 };
+    agg[d].won  += r.points_won    || 0;
+    agg[d].lost += ((r.points_played || 0) - (r.points_won || 0));
+    agg[d].unret += r.unreturned   || 0;
+  });
+  const dirs = ['Wide', 'Body', 'T'].filter(d => agg[d] && (agg[d].won + agg[d].lost) > 0);
+  if (!dirs.length) return;
+  eStackedBar(chartId, dirs, [
+    { name: 'Won',  data: dirs.map(d => agg[d].won),  color: C_GREEN },
+    { name: 'Lost', data: dirs.map(d => agg[d].lost), color: C_RED   },
+  ]);
+}
+
+// Build serve direction unreturned bar from serve_breakdown
+function renderServeUnretBar(chartId, playerRole) {
+  const rows = rowsForRole(selectedData.serve || [], playerRole);
+  const agg = {};
+  rows.forEach(r => {
+    const d = r.serve_bucket_d || 'Unknown';
+    if (!agg[d]) agg[d] = { unret: 0, total: 0 };
+    agg[d].unret += r.unreturned   || 0;
+    agg[d].total += r.points_played || 0;
+  });
+  const dirs = ['Wide', 'Body', 'T'].filter(d => agg[d] && agg[d].total > 0);
+  if (!dirs.length) return;
+  const chart = ec(chartId);
+  if (!chart) return;
+  chart.setOption({
+    ...ANIM, tooltip: TT,
+    grid: { left: 40, right: 40, top: 20, bottom: 35, containLabel: true },
+    xAxis: {
+      type: 'category', data: dirs,
+      axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
+      axisLine: { lineStyle: { color: '#e5e5e5' } },
+    },
+    yAxis: {
+      type: 'value', minInterval: 1,
+      axisLabel: { fontSize: 12, color: '#9ca3af' },
+      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: [{
+      type: 'bar', barWidth: '55%',
+      data: dirs.map(d => agg[d].unret),
+      itemStyle: { color: C_TEAL, borderRadius: [6, 6, 0, 0] },
+      label: {
+        show: true, position: 'top', fontSize: 12, fontWeight: 600,
+        formatter: (p) => {
+          const t = agg[dirs[p.dataIndex]].total;
+          const pct = t > 0 ? Math.round(100 * p.value / t) : 0;
+          return p.value + ' (' + pct + '%)';
+        },
+        color: '#374151',
+      },
+    }],
+  });
+  CI[chartId] = chart;
+}
+
+// Build serve 1st/2nd try bar showing In% and Win% grouped per direction
+function renderServeTryBar(chartId, playerRole, tryVal) {
+  const rows = rowsForRole(selectedData.serve || [], playerRole)
+    .filter(r => r.serve_try_ix_in_point === tryVal);
+  const agg = {};
+  rows.forEach(r => {
+    const d = r.serve_bucket_d || 'Unknown';
+    if (!agg[d]) agg[d] = { count: 0, inCount: 0, won: 0, played: 0 };
+    agg[d].count   += r.serve_count   || 0;
+    agg[d].inCount += r.serves_in     || 0;
+    agg[d].won     += r.points_won    || 0;
+    agg[d].played  += r.points_played || 0;
+  });
+  const dirs = ['Wide', 'Body', 'T'].filter(d => agg[d] && agg[d].count > 0);
+  if (!dirs.length) return;
+  const chart = ec(chartId);
+  if (!chart) return;
+  chart.setOption({
+    ...ANIM, tooltip: TT,
+    legend: { bottom: 0, textStyle: { fontSize: 12 }, itemGap: 16, icon: 'roundRect' },
+    grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+    xAxis: {
+      type: 'category', data: dirs,
+      axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
+      axisLine: { lineStyle: { color: '#e5e5e5' } },
+    },
+    yAxis: {
+      type: 'value', max: 100,
+      axisLabel: { fontSize: 12, color: '#9ca3af', formatter: '{value}%' },
+      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: [
+      {
+        type: 'bar', name: 'In %', barWidth: '25%', barGap: '20%',
+        data: dirs.map(d => agg[d].count > 0 ? Math.round(100 * agg[d].inCount / agg[d].count) : 0),
+        itemStyle: { color: C_BLUE, borderRadius: [6, 6, 0, 0] },
+        label: { show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#374151',
+          formatter: (p) => p.value + '%' },
+      },
+      {
+        type: 'bar', name: 'Win %', barWidth: '25%',
+        data: dirs.map(d => agg[d].played > 0 ? Math.round(100 * agg[d].won / agg[d].played) : 0),
+        itemStyle: { color: C_GREEN, borderRadius: [6, 6, 0, 0] },
+        label: { show: true, position: 'top', fontSize: 11, fontWeight: 600, color: '#374151',
+          formatter: (p) => p.value + '%' },
+      },
+    ],
+  });
+  CI[chartId] = chart;
 }
 
 // ====================================================================
@@ -2148,8 +2637,7 @@ function renderAllCharts() {
   // ===== SUMMARY TAB =====
   if (activeTab === 'summary') {
     // Points won by phase (Serve / Return / Rally) — from kpi directly
-    const phaseEl = document.getElementById('chartPhasePoints');
-    if (phaseEl) {
+    if (document.getElementById('chartPhasePoints')) {
       const chart = ec('chartPhasePoints');
       chart.setOption({
         ...ANIM, tooltip: TT,
@@ -2165,120 +2653,137 @@ function renderAllCharts() {
           axisLine: { show: false }, axisTick: { show: false },
         },
         series: [
-          {
-            type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
+          { type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
             data: [k.pa_svc_pts_won || 0, k.pa_ret_pts_won || 0, k.pa_rally_pts_won || 0],
             itemStyle: { color: PA_COLOR, borderRadius: [6, 6, 0, 0] },
-            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR },
-          },
-          {
-            type: 'bar', name: pb, barWidth: '25%',
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR } },
+          { type: 'bar', name: pb, barWidth: '25%',
             data: [k.pb_svc_pts_won || 0, k.pb_ret_pts_won || 0, k.pb_rally_pts_won || 0],
             itemStyle: { color: PB_COLOR, borderRadius: [6, 6, 0, 0] },
-            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR },
-          },
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR } },
         ],
       });
       CI['chartPhasePoints'] = chart;
     }
 
-    // Shot outcome distribution (stacked — from kpi)
-    const outcomeEl = document.getElementById('chartOutcomes');
-    if (outcomeEl) {
-      // We don't store 'In' count directly — derive from rally breakdown totals minus winners/errors
+    // Shot outcome distribution
+    if (document.getElementById('chartOutcomes')) {
       const rA = byRole(selectedData.rally, 'player_a') || {};
       const rB = byRole(selectedData.rally, 'player_b') || {};
-      const aW = k.pa_winners || 0;
-      const aE = k.pa_errors || 0;
+      const aW = k.pa_winners || 0, aE = k.pa_errors || 0;
       const aI = Math.max(0, (rA.rally_shots || 0) - aW - aE);
-      const bW = k.pb_winners || 0;
-      const bE = k.pb_errors || 0;
+      const bW = k.pb_winners || 0, bE = k.pb_errors || 0;
       const bI = Math.max(0, (rB.rally_shots || 0) - bW - bE);
-
       eStackedBar('chartOutcomes', [pa, pb], [
         { name: 'Winners', data: [aW, bW], color: C_GREEN },
-        { name: 'Errors', data: [aE, bE], color: C_RED },
-        { name: 'In Play', data: [aI, bI], color: C_BLUE },
+        { name: 'Errors',  data: [aE, bE], color: C_RED   },
+        { name: 'In Play', data: [aI, bI], color: C_BLUE  },
       ]);
     }
 
-    // Speed ring gauges — read straight from kpi
+    // Free Points / Return Pts Won / Rally Pts Won donut pairs
+    function miniDonut(idA, idB, aVal, aTotal, bVal, bTotal, winLabel, lossLabel) {
+      for (const [chartId, val, total, color] of [
+        [idA, aVal, aTotal, PA_COLOR],
+        [idB, bVal, bTotal, PB_COLOR],
+      ]) {
+        const won = val || 0, lost = Math.max(0, (total || 0) - won);
+        ePie(chartId, [
+          { name: winLabel, value: won },
+          { name: lossLabel, value: lost },
+        ], [color, 'rgba(180,180,180,0.4)']);
+      }
+    }
+    const svcA = k.pa_service_points || (k.pa_svc_pts_won || 0) + (k.pb_ret_pts_won || 0);
+    const svcB = k.pb_service_points || (k.pb_svc_pts_won || 0) + (k.pa_ret_pts_won || 0);
+    miniDonut('chartFreePoints_a', 'chartFreePoints_b',
+      k.pa_unreturned_serves, svcA, k.pb_unreturned_serves, svcB, 'Unreturned', 'Returned');
+    miniDonut('chartRetPtsWon_a', 'chartRetPtsWon_b',
+      k.pa_ret_pts_won, svcB, k.pb_ret_pts_won, svcA, 'Won', 'Lost');
+    const totalRallyPts = (k.pa_rally_pts_won || 0) + (k.pb_rally_pts_won || 0);
+    miniDonut('chartRallyPtsWon_a', 'chartRallyPtsWon_b',
+      k.pa_rally_pts_won, totalRallyPts, k.pb_rally_pts_won, totalRallyPts, 'Won', 'Lost');
+
+    // Speed ring gauges
     const maxAll = Math.max(
       k.pa_serve_speed_max || 0, k.pb_serve_speed_max || 0,
       k.pa_fh_speed_max || 0, k.pb_fh_speed_max || 0,
-      k.pa_bh_speed_max || 0, k.pb_bh_speed_max || 0,
-      100
+      k.pa_bh_speed_max || 0, k.pb_bh_speed_max || 0, 100
     );
     const scale = Math.ceil(maxAll / 20) * 20;
-
     eGauge('gaugeSrvA', Math.round(k.pa_serve_speed_avg || 0), 'Serve · max ' + (k.pa_serve_speed_max || '—'), scale, PA_COLOR);
-    eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg || 0), 'Forehand · max ' + (k.pa_fh_speed_max || '—'), scale, '#22783c');
-    eGauge('gaugeBhA',  Math.round(k.pa_bh_speed_avg || 0), 'Backhand · max ' + (k.pa_bh_speed_max || '—'), scale, '#2563eb');
+    eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg  || 0), 'Forehand · max ' + (k.pa_fh_speed_max  || '—'), scale, '#22783c');
+    eGauge('gaugeBhA',  Math.round(k.pa_bh_speed_avg  || 0), 'Backhand · max ' + (k.pa_bh_speed_max  || '—'), scale, '#2563eb');
     eGauge('gaugeSrvB', Math.round(k.pb_serve_speed_avg || 0), 'Serve · max ' + (k.pb_serve_speed_max || '—'), scale, PB_COLOR);
-    eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg || 0), 'Forehand · max ' + (k.pb_fh_speed_max || '—'), scale, '#22783c');
-    eGauge('gaugeBhB',  Math.round(k.pb_bh_speed_avg || 0), 'Backhand · max ' + (k.pb_bh_speed_max || '—'), scale, '#2563eb');
+    eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg  || 0), 'Forehand · max ' + (k.pb_fh_speed_max  || '—'), scale, '#22783c');
+    eGauge('gaugeBhB',  Math.round(k.pb_bh_speed_avg  || 0), 'Backhand · max ' + (k.pb_bh_speed_max  || '—'), scale, '#2563eb');
   }
 
-  // ===== SERVE TAB =====
-  if (activeTab === 'serve') {
-    // Serve direction bar per player — from gold.match_serve_breakdown
+  // ===== SERVE PERFORMANCE TAB =====
+  if (activeTab === 'serve-perf') {
     for (const role of ['player_a', 'player_b']) {
       const rows = rowsForRole(selectedData.serve, role);
-      // Sum counts across sides (deuce + ad) by direction
       const dirCounts = { Wide: 0, Body: 0, T: 0 };
-      rows.forEach(r => {
-        const d = r.serve_bucket_d;
-        if (d && dirCounts.hasOwnProperty(d)) dirCounts[d] += r.serve_count || 0;
-      });
+      rows.forEach(r => { const d = r.serve_bucket_d; if (d && d in dirCounts) dirCounts[d] += r.serve_count || 0; });
       const dirs = ['Wide', 'Body', 'T'].filter(d => dirCounts[d] > 0);
-      const idSuffix = role === 'player_a' ? 'a' : 'b';
-      eBar('chartServeDir_' + idSuffix, dirs, dirs.map(d => dirCounts[d]), [C_BLUE, C_GREEN, C_AMBER], true);
+      const sfx = role === 'player_a' ? 'a' : 'b';
+      eBar('chartServeDir_' + sfx, dirs, dirs.map(d => dirCounts[d]), [C_BLUE, C_GREEN, C_AMBER], true);
+      renderServeDirOutcomeBar('chartServeDirOut_' + sfx, role);
+      renderServeUnretBar('chartServeUnret_' + sfx, role);
     }
   }
 
-  // ===== RETURN TAB =====
-  if (activeTab === 'return') {
+  // ===== SERVE DETAIL TAB =====
+  if (activeTab === 'serve-detail') {
+    for (const role of ['player_a', 'player_b']) {
+      const sfx = role === 'player_a' ? 'a' : 'b';
+      renderServeTryBar('chartServe1st_' + sfx, role, '1st');
+      renderServeTryBar('chartServe2nd_' + sfx, role, '2nd');
+    }
+  }
+
+  // ===== RETURN DETAIL TAB =====
+  if (activeTab === 'return-detail') {
     for (const role of ['player_a', 'player_b']) {
       const r = byRole(selectedData.return, role) || {};
-      const idSuffix = role === 'player_a' ? 'a' : 'b';
+      const sfx = role === 'player_a' ? 'a' : 'b';
 
-      eBar('chartRetDepth_' + idSuffix, ['Deep', 'Middle', 'Short'], [
-        r.returns_deep || 0, r.returns_middle || 0, r.returns_short || 0,
-      ], [C_GREEN, C_AMBER, C_RED]);
+      eBar('chartRetDepth_' + sfx, ['Deep', 'Middle', 'Short'],
+        [r.returns_deep || 0, r.returns_middle || 0, r.returns_short || 0],
+        [C_GREEN, C_AMBER, C_RED]);
 
-      ePie('chartRetStroke_' + idSuffix, [
+      ePie('chartRetStroke_' + sfx, [
         { name: 'Forehand', value: r.returns_forehand || 0 },
         { name: 'Backhand', value: r.returns_backhand || 0 },
       ], [C_GREEN, C_BLUE]);
 
-      // Outcome: Winners / In Play / Errors
       const inPlay = Math.max(0, (r.returns_made || 0) - (r.return_winners || 0));
-      eBar('chartRetOutcome_' + idSuffix, ['Winner', 'In Play', 'Error'], [
-        r.return_winners || 0, inPlay, r.return_errors || 0,
-      ], [C_GREEN, C_BLUE, C_RED]);
+      eBar('chartRetOutcome_' + sfx, ['Winner', 'In Play', 'Error'],
+        [r.return_winners || 0, inPlay, r.return_errors || 0],
+        [C_GREEN, C_BLUE, C_RED]);
+
+      // New cross-tab charts from shot_placement
+      renderReturnOutcomeStackedBar('chartRetByTry_' + sfx,       role, 'serve_try_ix_in_point');
+      renderReturnOutcomeStackedBar('chartRetByStroke_' + sfx,    role, 'stroke_d');
+      renderReturnOutcomeStackedBar('chartRetByServeLoc_' + sfx,  role, 'serve_bucket_d');
     }
   }
 
-  // ===== RALLY TAB =====
-  if (activeTab === 'rally') {
-    // Rally length distribution — from gold.match_rally_length
-    const lenRows = (selectedData.rallyLength || []).slice().sort((a, b) => (a.rally_length_point || 0) - (b.rally_length_point || 0));
-    const labels = lenRows.map(r => r.rally_length_point + ' shots');
-    const counts = lenRows.map(r => r.points || 0);
-    eBar('chartRallyLen', labels, counts, C_GREEN);
+  // ===== RALLY DETAIL TAB =====
+  if (activeTab === 'rally-detail') {
+    const lenRows = (selectedData.rallyLength || []).slice()
+      .sort((a, b) => (a.rally_length_point || 0) - (b.rally_length_point || 0));
+    eBar('chartRallyLen',
+      lenRows.map(r => r.rally_length_point + ' shots'),
+      lenRows.map(r => r.points || 0), C_GREEN);
 
-    // Rally bucket win comparison — aggregate by length_bucket
     const buckets = ['Short (1-4)', 'Medium (5-8)', 'Long (9+)'];
     const paWins = [0, 0, 0], pbWins = [0, 0, 0];
     (selectedData.rallyLength || []).forEach(r => {
       const i = buckets.indexOf(r.length_bucket);
-      if (i < 0) return;
-      paWins[i] += r.pa_points_won || 0;
-      pbWins[i] += r.pb_points_won || 0;
+      if (i >= 0) { paWins[i] += r.pa_points_won || 0; pbWins[i] += r.pb_points_won || 0; }
     });
-
-    const bucketEl = document.getElementById('chartRallyBucketWin');
-    if (bucketEl) {
+    if (document.getElementById('chartRallyBucketWin')) {
       const chart = ec('chartRallyBucketWin');
       chart.setOption({
         ...ANIM, tooltip: TT,
@@ -2286,53 +2791,58 @@ function renderAllCharts() {
         grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
         xAxis: { type: 'category', data: buckets,
           axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
-          axisLine: { lineStyle: { color: '#e5e5e5' } }
-        },
+          axisLine: { lineStyle: { color: '#e5e5e5' } } },
         yAxis: { type: 'value', minInterval: 1,
           axisLabel: { fontSize: 12, color: '#9ca3af' },
           splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-          axisLine: { show: false }, axisTick: { show: false },
-        },
+          axisLine: { show: false }, axisTick: { show: false } },
         series: [
-          {
-            type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
+          { type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
             data: paWins, itemStyle: { color: PA_COLOR, borderRadius: [6, 6, 0, 0] },
-            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR },
-          },
-          {
-            type: 'bar', name: pb, barWidth: '25%',
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR } },
+          { type: 'bar', name: pb, barWidth: '25%',
             data: pbWins, itemStyle: { color: PB_COLOR, borderRadius: [6, 6, 0, 0] },
-            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR },
-          },
+            label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR } },
         ],
       });
       CI['chartRallyBucketWin'] = chart;
     }
 
-    // Per-player aggression, depth, stroke — from gold.match_rally_breakdown
     for (const role of ['player_a', 'player_b']) {
       const r = byRole(selectedData.rally, role) || {};
-      const idSuffix = role === 'player_a' ? 'a' : 'b';
+      const sfx = role === 'player_a' ? 'a' : 'b';
 
-      eBar('chartAgg_' + idSuffix, ['Attack', 'Neutral', 'Defence'], [
-        r.aggression_attack || 0, r.aggression_neutral || 0, r.aggression_defence || 0,
-      ], [C_GREEN, C_AMBER, C_RED], true);
+      eBar('chartAgg_' + sfx, ['Attack', 'Neutral', 'Defence'],
+        [r.aggression_attack || 0, r.aggression_neutral || 0, r.aggression_defence || 0],
+        [C_GREEN, C_AMBER, C_RED], true);
 
-      eBar('chartDepth_' + idSuffix, ['Deep', 'Middle', 'Short'], [
-        r.depth_deep || 0, r.depth_middle || 0, r.depth_short || 0,
-      ], [C_GREEN, C_AMBER, C_RED]);
+      eBar('chartDepth_' + sfx, ['Deep', 'Middle', 'Short'],
+        [r.depth_deep || 0, r.depth_middle || 0, r.depth_short || 0],
+        [C_GREEN, C_AMBER, C_RED]);
 
-      ePie('chartStroke_' + idSuffix, [
+      ePie('chartStroke_' + sfx, [
         { name: 'Forehand', value: r.stroke_forehand || 0 },
         { name: 'Backhand', value: r.stroke_backhand || 0 },
       ], [C_GREEN, C_BLUE]);
+
+      // Rally outcome donut
+      const rW = r.winners || 0, rE = r.errors || 0;
+      const rI = Math.max(0, (r.rally_shots || 0) - rW - rE);
+      ePie('chartRallyOutcome_' + sfx, [
+        { name: 'Winner', value: rW },
+        { name: 'Error',  value: rE },
+        { name: 'In Play',value: rI },
+      ], [C_GREEN, C_RED, C_BLUE]);
     }
   }
 
-  // Resize handler
-  window.addEventListener('resize', () => {
-    Object.values(CI).forEach(c => { try { c.resize(); } catch(e) {} });
-  });
+  // Resize handler (idempotent — add once)
+  if (!renderAllCharts._resizeAdded) {
+    window.addEventListener('resize', () => {
+      Object.values(CI).forEach(c => { try { c.resize(); } catch(e) {} });
+    });
+    renderAllCharts._resizeAdded = true;
+  }
 }
 
 // ==================== VIDEO ====================

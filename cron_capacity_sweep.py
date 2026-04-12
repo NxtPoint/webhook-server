@@ -3,34 +3,25 @@
 # Render Cron Job — runs every few minutes via Render's cron service.
 #
 # Responsibilities:
-#   1. PBI session sweep: expire stale leases in billing.pbi_sessions,
-#      then suspend Azure capacity if no sessions remain active and no
-#      refresh is in progress (calls POST /session/sweep on powerbi_app).
-#   2. Stuck PBI refresh detection: flags refreshes that were triggered
-#      but have not completed within the expected window.
-#   3. Stuck ingest detection: identifies rows in bronze.submission_context
+#   1. Stuck ingest detection: identifies rows in bronze.submission_context
 #      where ingest_started_at is set but ingest_completed_at is NULL
 #      beyond a timeout threshold.
-#   4. Stuck video trim detection: identifies rows where trim_status is
+#   2. Stuck video trim detection: identifies rows where trim_status is
 #      'accepted' but the trim has not completed within the timeout.
 #
-# This script reads/updates bronze.submission_context directly and calls
-# the PowerBI service HTTP API for session sweep. It does not import
-# upload_app.py or ingest_worker_app.py.
+# This script reads/updates bronze.submission_context directly. It does
+# not import upload_app.py or ingest_worker_app.py.
 #
-# Required env vars: DATABASE_URL, OPS_KEY, PBI_SERVICE_URL (powerbi_app).
+# Required env vars: DATABASE_URL, OPS_KEY.
 # ============================================================
 
-import json
 import os
 import sys
-import urllib.request
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-POWERBI_BASE_URL = (os.environ.get("RENDER_POWERBI_BASE_URL") or "").strip().rstrip("/")
 OPS_KEY = (os.environ.get("OPS_KEY") or "").strip()
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -38,41 +29,12 @@ if not OPS_KEY:
     raise RuntimeError("Missing OPS_KEY")
 
 # Thresholds (seconds)
-PBI_REFRESH_STALE_S = int(os.environ.get("PBI_REFRESH_STALE_S", "600"))     # 10 min
 INGEST_STALE_S = int(os.environ.get("INGEST_STALE_S", "1800"))              # 30 min
 TRIM_STALE_S = int(os.environ.get("TRIM_STALE_S", "1800"))                  # 30 min
 
 
 # ============================================================
-# 1. POWERBI SESSION SWEEP (existing behavior)
-# ============================================================
-
-def sweep_powerbi_sessions():
-    if not POWERBI_BASE_URL:
-        print("SWEEP: RENDER_POWERBI_BASE_URL not set — skipping PowerBI session sweep")
-        return
-
-    url = f"{POWERBI_BASE_URL}/session/sweep"
-    req = urllib.request.Request(
-        url,
-        data=b"{}",
-        headers={
-            "Content-Type": "application/json",
-            "X-Ops-Key": OPS_KEY,
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = resp.read().decode("utf-8")
-            print(f"SWEEP: PowerBI session sweep ok: {body}")
-    except Exception as e:
-        print(f"SWEEP: PowerBI session sweep failed: {e}", file=sys.stderr)
-
-
-# ============================================================
-# 2. STALE STATE DETECTION (DB direct)
+# STALE STATE DETECTION (DB direct)
 # ============================================================
 
 def sweep_stale_states():
@@ -80,7 +42,6 @@ def sweep_stale_states():
         print("SWEEP: DATABASE_URL not set — skipping stale state sweep")
         return
 
-    # Late import so cron still works if psycopg not installed
     try:
         from sqlalchemy import create_engine, text as sql_text
     except ImportError:
@@ -96,22 +57,6 @@ def sweep_stale_states():
     engine = create_engine(db_url, pool_pre_ping=True)
 
     with engine.begin() as conn:
-        # --- Stuck PBI refreshes ---
-        result = conn.execute(sql_text("""
-            UPDATE bronze.submission_context
-               SET pbi_refresh_status = 'stale_timeout',
-                   pbi_refresh_error = 'Cron sweep: refresh stuck in triggered/running for too long',
-                   pbi_refresh_finished_at = now()
-             WHERE pbi_refresh_started_at IS NOT NULL
-               AND pbi_refresh_finished_at IS NULL
-               AND pbi_refresh_status IN ('triggered', 'running', 'queued')
-               AND pbi_refresh_started_at < now() - make_interval(secs => :pbi_s)
-            RETURNING task_id
-        """), {"pbi_s": PBI_REFRESH_STALE_S})
-        pbi_stale = [r[0] for r in result.fetchall()]
-        if pbi_stale:
-            print(f"SWEEP: Marked {len(pbi_stale)} stuck PBI refreshes as stale_timeout: {pbi_stale}")
-
         # --- Stuck ingests ---
         result = conn.execute(sql_text("""
             UPDATE bronze.submission_context
@@ -143,7 +88,7 @@ def sweep_stale_states():
         if trim_stale:
             print(f"SWEEP: Marked {len(trim_stale)} stuck video trims as failed: {trim_stale}")
 
-        if not pbi_stale and not ingest_stale and not trim_stale:
+        if not ingest_stale and not trim_stale:
             print("SWEEP: No stale states found — all clean")
 
     engine.dispose()
@@ -154,7 +99,6 @@ def sweep_stale_states():
 # ============================================================
 
 if __name__ == "__main__":
-    print("SWEEP: Starting capacity + stale state sweep")
-    sweep_powerbi_sessions()
+    print("SWEEP: Starting stale state sweep")
     sweep_stale_states()
     print("SWEEP: Done")

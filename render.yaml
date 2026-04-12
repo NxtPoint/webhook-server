@@ -44,11 +44,6 @@ services:
       - key: DATABASE_URL
         sync: false
 
-      - key: POWERBI_SERVICE_BASE_URL
-        value: "https://powerbi-service.onrender.com"
-      - key: POWERBI_SERVICE_OPS_KEY
-        sync: false
-
       - key: INGEST_WORKER_BASE_URL
         value: "https://ingest-worker.onrender.com"
       - key: INGEST_WORKER_OPS_KEY
@@ -68,45 +63,7 @@ services:
         sync: false
 
   # =========================================
-  # 2) Power BI embed/refresh service
-  # =========================================
-  - type: web
-    name: powerbi-service
-    env: python
-    pythonVersion: 3.12.3
-    plan: starter
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "gunicorn powerbi_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 1800"
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.3"
-
-      - key: OPS_KEY
-        sync: false
-
-      - key: PBI_TENANT_ID
-        sync: false
-      - key: PBI_CLIENT_ID
-        sync: false
-      - key: PBI_CLIENT_SECRET
-        sync: false
-
-      - key: PBI_WORKSPACE_ID
-        sync: false
-      - key: PBI_REPORT_ID
-        sync: false
-      - key: PBI_DATASET_ID
-        sync: false
-
-      - key: AZ_SUBSCRIPTION_ID
-        sync: false
-      - key: AZ_RESOURCE_GROUP
-        sync: false
-      - key: AZ_CAPACITY_NAME
-        sync: false
-
-  # =========================================
-  # 3) Ingest worker service
+  # 2) Ingest worker service
   # =========================================
   - type: web
     name: ingest-worker
@@ -143,11 +100,6 @@ services:
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY
-        sync: false
-
-      - key: POWERBI_SERVICE_BASE_URL
-        value: "https://powerbi-service.onrender.com"
-      - key: POWERBI_SERVICE_OPS_KEY
         sync: false
 
       - key: WIX_NOTIFY_UPLOAD_COMPLETE_URL

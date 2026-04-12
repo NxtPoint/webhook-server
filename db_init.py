@@ -435,5 +435,6 @@ def gold_init():
 
             FROM bronze.submission_context sc
             LEFT JOIN stats s ON s.task_id = sc.task_id::uuid
-            WHERE sc.email IS NOT NULL;
+            WHERE sc.email IS NOT NULL
+              AND sc.sport_type = 'tennis_singles';
         """))

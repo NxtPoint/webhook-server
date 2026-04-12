@@ -47,6 +47,7 @@ WITH sc AS (
         sc.player_b_utr,
         sc.first_server
     FROM bronze.submission_context sc
+    WHERE sc.sport_type = 'tennis_singles'
 ),
 players_per_task AS (
     SELECT DISTINCT pd.task_id, pd.player_id
@@ -241,10 +242,54 @@ shot_stats AS (
         AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_bh_speed_avg,
         MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_bh_speed_max,
         AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_avg,
-        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_max
+        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_max,
+        -- Total serves (all serve_d shots per player)
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.player_id = pl.player_a_id) AS pa_total_serves,
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.player_id = pl.player_b_id) AS pb_total_serves,
+        -- Unreturned serves (service winners)
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.service_winner_d = true AND s.player_id = pl.player_a_id) AS pa_unreturned_serves,
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.service_winner_d = true AND s.player_id = pl.player_b_id) AS pb_unreturned_serves,
+        -- Second serve attempts and in
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.player_id = pl.player_a_id) AS pa_second_serves_total,
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS pa_second_serves_in,
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.player_id = pl.player_b_id) AS pb_second_serves_total,
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_b_id) AS pb_second_serves_in,
+        -- Return errors
+        COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_a_id) AS pa_return_errors,
+        COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_b_id) AS pb_return_errors,
+        -- Rally outcomes (Rally/Transition/Net phases)
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_a_id) AS pa_rally_winners,
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_b_id) AS pb_rally_winners,
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_a_id) AS pa_rally_errors,
+        COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_b_id) AS pb_rally_errors
     FROM gold.vw_player pl
     LEFT JOIN silver.point_detail s
         ON s.task_id = pl.task_id AND s.exclude_d IS NOT TRUE
+    GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
+),
+serve_win_stats AS (
+    WITH serve_points AS (
+        SELECT DISTINCT ON (s.task_id, s.point_key)
+            s.task_id, s.point_key, s.player_id AS server_id,
+            s.serve_try_ix_in_point,
+            s.point_winner_player_id
+        FROM silver.point_detail s
+        WHERE s.serve_d = true AND s.shot_ix_in_point = 1
+          AND s.exclude_d IS NOT TRUE AND s.point_key IS NOT NULL
+        ORDER BY s.task_id, s.point_key
+    )
+    SELECT
+        pl.task_id,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point = '1st' AND sp.server_id = pl.player_a_id) AS pa_first_serve_pts_played,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point = '1st' AND sp.server_id = pl.player_a_id AND sp.point_winner_player_id = pl.player_a_id) AS pa_first_serve_pts_won,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point = '1st' AND sp.server_id = pl.player_b_id) AS pb_first_serve_pts_played,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point = '1st' AND sp.server_id = pl.player_b_id AND sp.point_winner_player_id = pl.player_b_id) AS pb_first_serve_pts_won,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point IN ('2nd','Double') AND sp.server_id = pl.player_a_id) AS pa_second_serve_pts_played,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point IN ('2nd','Double') AND sp.server_id = pl.player_a_id AND sp.point_winner_player_id = pl.player_a_id) AS pa_second_serve_pts_won,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point IN ('2nd','Double') AND sp.server_id = pl.player_b_id) AS pb_second_serve_pts_played,
+        COUNT(*) FILTER (WHERE sp.serve_try_ix_in_point IN ('2nd','Double') AND sp.server_id = pl.player_b_id AND sp.point_winner_player_id = pl.player_b_id) AS pb_second_serve_pts_won
+    FROM gold.vw_player pl
+    LEFT JOIN serve_points sp ON sp.task_id = pl.task_id
     GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
 )
 SELECT
@@ -319,10 +364,52 @@ SELECT
     ss.pa_bh_speed_avg,
     ss.pa_bh_speed_max,
     ss.pb_bh_speed_avg,
-    ss.pb_bh_speed_max
+    ss.pb_bh_speed_max,
+    -- Total serves
+    ss.pa_total_serves,
+    ss.pb_total_serves,
+    -- Unreturned serves
+    ss.pa_unreturned_serves,
+    ss.pb_unreturned_serves,
+    -- Second serve %
+    ss.pa_second_serves_total,
+    ss.pa_second_serves_in,
+    ss.pb_second_serves_total,
+    ss.pb_second_serves_in,
+    CASE WHEN ss.pa_second_serves_total > 0
+         THEN ROUND(100.0 * ss.pa_second_serves_in / ss.pa_second_serves_total, 1) ELSE NULL END AS pa_second_serve_pct,
+    CASE WHEN ss.pb_second_serves_total > 0
+         THEN ROUND(100.0 * ss.pb_second_serves_in / ss.pb_second_serves_total, 1) ELSE NULL END AS pb_second_serve_pct,
+    -- First serve win %
+    sws.pa_first_serve_pts_played,
+    sws.pa_first_serve_pts_won,
+    sws.pb_first_serve_pts_played,
+    sws.pb_first_serve_pts_won,
+    CASE WHEN sws.pa_first_serve_pts_played > 0
+         THEN ROUND(100.0 * sws.pa_first_serve_pts_won / sws.pa_first_serve_pts_played, 1) ELSE NULL END AS pa_first_serve_won_pct,
+    CASE WHEN sws.pb_first_serve_pts_played > 0
+         THEN ROUND(100.0 * sws.pb_first_serve_pts_won / sws.pb_first_serve_pts_played, 1) ELSE NULL END AS pb_first_serve_won_pct,
+    -- Second serve win %
+    sws.pa_second_serve_pts_played,
+    sws.pa_second_serve_pts_won,
+    sws.pb_second_serve_pts_played,
+    sws.pb_second_serve_pts_won,
+    CASE WHEN sws.pa_second_serve_pts_played > 0
+         THEN ROUND(100.0 * sws.pa_second_serve_pts_won / sws.pa_second_serve_pts_played, 1) ELSE NULL END AS pa_second_serve_won_pct,
+    CASE WHEN sws.pb_second_serve_pts_played > 0
+         THEN ROUND(100.0 * sws.pb_second_serve_pts_won / sws.pb_second_serve_pts_played, 1) ELSE NULL END AS pb_second_serve_won_pct,
+    -- Return errors
+    ss.pa_return_errors,
+    ss.pb_return_errors,
+    -- Rally outcomes
+    ss.pa_rally_winners,
+    ss.pb_rally_winners,
+    ss.pa_rally_errors,
+    ss.pb_rally_errors
 FROM gold.vw_player pl
 LEFT JOIN point_stats ps ON ps.task_id = pl.task_id
 LEFT JOIN shot_stats ss ON ss.task_id = pl.task_id
+LEFT JOIN serve_win_stats sws ON sws.task_id = pl.task_id
 """
 
 
@@ -338,6 +425,7 @@ SELECT
     CASE WHEN s.player_id = pl.player_a_id THEN pl.player_a_name ELSE pl.player_b_name END AS player_name,
     s.serve_side_d,
     s.serve_bucket_d,
+    s.serve_try_ix_in_point,
     COUNT(*) AS serve_count,
     COUNT(*) FILTER (WHERE s.shot_outcome_d <> 'Error') AS serves_in,
     COUNT(DISTINCT s.point_key) AS points_played,
@@ -354,7 +442,8 @@ GROUP BY
     pl.task_id, pl.session_id, s.player_id,
     pl.player_a_id, pl.player_b_id,
     pl.player_a_name, pl.player_b_name,
-    s.serve_side_d, s.serve_bucket_d
+    s.serve_side_d, s.serve_bucket_d,
+    s.serve_try_ix_in_point
 """
 
 

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Power BI is DEPRECATED.** The custom-built dashboards (`match_analysis.html`, `practice.html`) on the gold presentation layer are the single source of truth for all analytics. Do not add new PBI features. The `powerbi-service` Render service, `powerbi_embed.py`, `azure_capacity.py`, `cron_capacity_sweep.py`'s PBI sweep, `gold.vw_client_match_summary` is kept (wired to match list), and all `PBI_*` / `AZ_*` env vars are scheduled for deletion once the custom dashboards fully supersede PBI. Isolated enough to remove in one PR.
+> **Power BI has been REMOVED.** The custom-built dashboards (`match_analysis.html`, `practice.html`) on the gold presentation layer are the single source of truth for all analytics. The `powerbi-service` Render service, `powerbi_app.py`, `powerbi_embed.py`, `azure_capacity.py`, `powerbi_capacity_sessions.py`, and `analytics.html` have been deleted. All `PBI_*` / `AZ_*` env vars should be removed from Render environment settings. The `pbi_refresh_*` columns remain in `bronze.submission_context` (harmless, no code writes to them). `gold.vw_client_match_summary` is still live (feeds match list sidebar).
 
 ## Services and How to Run
 
@@ -14,7 +14,7 @@ Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 | **Ingest worker** | `gunicorn ingest_worker_app:app` | `ingest_worker_app.py` | Active |
 | **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` | Active |
 | **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` | Active |
-| ~~Power BI service~~ | ~~`gunicorn powerbi_app:app`~~ | ~~`powerbi_app.py`~~ | **DEPRECATED** |
+| ~~Power BI service~~ | ~~deleted~~ | ~~deleted~~ | **REMOVED** |
 
 The Locker Room service serves eleven HTML SPAs via `send_file()`. No DB access — only Flask + gunicorn installed, not the full `requirements.txt`:
 
@@ -27,7 +27,7 @@ The Locker Room service serves eleven HTML SPAs via `send_file()`. No DB access 
 - `GET /coach-accept` → `coach_accept.html`
 - `GET /practice` → `practice.html` (practice analytics dashboard)
 - `GET /match-analysis` → `match_analysis.html` (**the primary match dashboard**)
-- ~~`GET /analytics` → `analytics.html`~~ (PBI embed — deprecated, kept live for now)
+- ~~`GET /analytics`~~ (PBI embed — **REMOVED**)
 
 The main webhook-server also serves all of these as same-origin backups (for API access from within iframes).
 
