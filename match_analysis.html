@@ -91,9 +91,10 @@ body {
   padding: 0 24px; position: sticky; top: 48px; z-index: 10;
 }
 .module-tab {
-  padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: rgba(255,255,255,0.65);
-  cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
+  padding: 10px 20px 4px; font-size: 0.82rem; font-weight: 500; color: rgba(255,255,255,0.65);
+  cursor: pointer; border-bottom: 3px solid transparent; transition: all var(--transition);
   background: none; border-top: none; border-left: none; border-right: none;
+  margin-bottom: 4px;
 }
 .module-tab:hover { color: rgba(255,255,255,0.9); }
 .module-tab.active { color: #fff; border-bottom-color: #fff; font-weight: 600; }
@@ -1725,7 +1726,6 @@ function renderHeatmapsModule() {
     { id: 'return-ball-pos',     label: 'Return Ball Position' },
     { id: 'groundstroke',        label: 'Groundstrokes' },
     { id: 'rally-player-pos',    label: 'Rally Player Position' },
-    { id: 'ball-depth',          label: 'Ball Depth' },
   ];
 
   document.getElementById('tabStrip').innerHTML = tabs.map(t =>
@@ -1815,18 +1815,21 @@ function renderHeatmapContent() {
     tabTogglesHTML = toggleGroup('Serve', 'hf-serve', [
       {val:'all',label:'All'},{val:'1st',label:'1st'},{val:'2nd',label:'2nd'}
     ], heatmapFilter.serve, 'setHeatmapFilterServe');
-  } else if (activeTab === 'player-return-pos' || activeTab === 'return-ball-pos' || activeTab === 'groundstroke') {
+  } else if (activeTab === 'player-return-pos' || activeTab === 'return-ball-pos') {
     tabTogglesHTML = toggleGroup('Stroke', 'hf-stroke', [
       {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
     ], heatmapFilter.stroke, 'setHeatmapFilterStroke');
+  } else if (activeTab === 'groundstroke') {
+    tabTogglesHTML = toggleGroup('Stroke', 'hf-stroke', [
+      {val:'all',label:'All'},{val:'Forehand',label:'Forehand'},{val:'Backhand',label:'Backhand'}
+    ], heatmapFilter.stroke, 'setHeatmapFilterStroke')
+    + toggleGroup('Depth', 'hf-outcome', [
+      {val:'all',label:'All'},{val:'Deep',label:'Deep'},{val:'Middle',label:'Middle'},{val:'Short',label:'Short'}
+    ], heatmapFilter.outcome, 'setHeatmapFilterOutcome');
   } else if (activeTab === 'rally-player-pos') {
     tabTogglesHTML = toggleGroup('Aggression', 'hf-stroke', [
       {val:'all',label:'All'},{val:'Attack',label:'Attack'},{val:'Neutral',label:'Neutral'},{val:'Defence',label:'Defence'}
     ], heatmapFilter.stroke, 'setHeatmapFilterStroke');
-  } else if (activeTab === 'ball-depth') {
-    tabTogglesHTML = toggleGroup('Depth', 'hf-outcome', [
-      {val:'all',label:'All'},{val:'Deep',label:'Deep'},{val:'Middle',label:'Middle'},{val:'Short',label:'Short'}
-    ], heatmapFilter.outcome, 'setHeatmapFilterOutcome');
   }
 
   const toggleRow = `<div class="heatmap-toggle-row">${playerToggleHTML}${setToggleHTML}${tabTogglesHTML}<button class="info-toggle" onclick="toggleHeatmapInfo()" title="How to read this page">${heatmapInfoOpen ? '✕ Close info' : 'ⓘ How to read this'}</button></div>`;
@@ -1855,18 +1858,14 @@ function renderHeatmapContent() {
     `,
     'groundstroke': `
       <h4>Groundstrokes</h4>
-      <p>Every shot during a rally (excluding serves and returns). Filter by stroke type to see forehand vs backhand placement separately.</p>
+      <p>Every shot during a rally (excluding serves and returns). Filter by stroke type to see forehand vs backhand placement, and by depth to focus on Deep / Middle / Short bounces.</p>
       <p>Win % = the point ended up being won by this player. Use it to find which shot patterns actually convert to points.</p>
+      <p>A "Deep" bounce near the baseline is generally a winning pattern. Compare your win % per depth to see if you push opponents back effectively.</p>
     `,
     'rally-player-pos': `
       <h4>Rally Player Position</h4>
       <p>Shows where you were on court when you struck each rally shot — your footwork and positioning pattern during rallies.</p>
       <p>Filter by Aggression (Attack / Neutral / Defence) to see how court position changes with shot intent.</p>
-    `,
-    'ball-depth': `
-      <h4>Ball Depth</h4>
-      <p>Bounce locations of all rally and return shots, classified by depth (Deep / Middle / Short).</p>
-      <p>A "Deep" bounce near the baseline is generally a winning pattern. Compare win % per depth bucket to see if you push opponents back effectively.</p>
     `,
   }[activeTab] || '';
 
@@ -1884,9 +1883,8 @@ function renderHeatmapContent() {
     'serve-placement':   'Serve Placement',
     'player-return-pos': 'Player Return Position — Where you stood to return',
     'return-ball-pos':   'Return Ball Position — Where your return landed',
-    'groundstroke':      'Groundstrokes',
+    'groundstroke':      'Groundstrokes &amp; Ball Depth',
     'rally-player-pos':  'Rally Player Position — Where you stood during rallies',
-    'ball-depth':        'Ball Depth — Rally &amp; Return Bounce Depth',
   }[activeTab] || '';
 
   panel.innerHTML = `
@@ -1977,20 +1975,15 @@ function getHeatmapShots(playerRole) {
     if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.stroke_d === heatmapFilter.stroke);
     }
+    if (heatmapFilter.outcome && heatmapFilter.outcome !== 'all') {
+      shots = shots.filter(p => p.depth_d === heatmapFilter.outcome);
+    }
   } else if (activeTab === 'rally-player-pos') {
     shots = shots.filter(p =>
       p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' || p.shot_phase_d === 'Net'
     );
     if (heatmapFilter.stroke && heatmapFilter.stroke !== 'all') {
       shots = shots.filter(p => p.aggression_d === heatmapFilter.stroke);
-    }
-  } else if (activeTab === 'ball-depth') {
-    shots = shots.filter(p =>
-      p.shot_phase_d === 'Rally' || p.shot_phase_d === 'Transition' ||
-      p.shot_phase_d === 'Net' || p.shot_phase_d === 'Return'
-    );
-    if (heatmapFilter.outcome && heatmapFilter.outcome !== 'all') {
-      shots = shots.filter(p => p.depth_d === heatmapFilter.outcome);
     }
   }
 
@@ -2167,8 +2160,12 @@ function renderHeatmapSummaryTable(shots) {
     host.innerHTML = buildSideTable(bySide.Deuce, 'Deuce Side') + buildSideTable(bySide.Ad, 'Ad Side');
 
   } else if (activeTab === 'player-return-pos') {
-    if (titleEl) titleEl.textContent = 'Return Position by Stroke';
-    host.innerHTML = buildGenericTable(shots, 'stroke_d', null, playerId, 'Stroke');
+    if (titleEl) titleEl.textContent = 'Return Position by Received Side × Stroke';
+    const oppRole = heatmapPlayer === 'player_a' ? 'player_b' : 'player_a';
+    const oppServes = rowsForRole(selectedData.placement || [], oppRole).filter(p => p.serve_d === true);
+    const enriched = groupByReceivedSide(shots, oppServes);
+    const bySide = groupShotsBySideDirection(enriched, '_received_side', 'stroke_d', playerId);
+    host.innerHTML = buildSideTable(bySide.Deuce, 'Returning from Deuce') + buildSideTable(bySide.Ad, 'Returning from Ad');
 
   } else if (activeTab === 'return-ball-pos') {
     if (titleEl) titleEl.textContent = 'Return Ball Position by Side × Direction';
@@ -2179,17 +2176,23 @@ function renderHeatmapSummaryTable(shots) {
     host.innerHTML = buildSideTable(bySide.Deuce, 'Returning from Deuce') + buildSideTable(bySide.Ad, 'Returning from Ad');
 
   } else if (activeTab === 'groundstroke') {
-    if (titleEl) titleEl.textContent = 'Groundstroke Placement — Stroke × Depth';
-    host.innerHTML = buildGenericTable(shots, 'stroke_d', 'depth_d', playerId, 'Stroke');
+    if (titleEl) titleEl.textContent = 'Groundstroke Placement — by Depth';
+    // Split into three side-by-side tables: Deep | Middle | Short
+    function buildDepthColumn(depthLabel, depthShots) {
+      return buildGenericTable(depthShots, 'stroke_d', null, playerId, 'Stroke');
+    }
+    const deepShots = shots.filter(s => s.depth_d === 'Deep');
+    const midShots  = shots.filter(s => s.depth_d === 'Middle');
+    const shortShots = shots.filter(s => s.depth_d === 'Short');
+    host.innerHTML = `<div class="heatmap-split-tables" style="grid-template-columns:1fr 1fr 1fr">
+      <div><h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">Deep (${deepShots.length})</h4>${buildDepthColumn('Deep', deepShots)}</div>
+      <div><h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">Middle (${midShots.length})</h4>${buildDepthColumn('Middle', midShots)}</div>
+      <div><h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">Short (${shortShots.length})</h4>${buildDepthColumn('Short', shortShots)}</div>
+    </div>`;
 
   } else if (activeTab === 'rally-player-pos') {
     if (titleEl) titleEl.textContent = 'Rally Position by Aggression';
     host.innerHTML = buildGenericTable(shots, 'aggression_d', null, playerId, 'Aggression');
-
-  } else {
-    // ball-depth
-    if (titleEl) titleEl.textContent = 'Ball Depth — Win Rate by Depth';
-    host.innerHTML = buildGenericTable(shots, 'depth_d', null, playerId, 'Depth');
   }
 }
 
@@ -2317,12 +2320,11 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     bx = Math.max(0, Math.min(COURT_W, bx));
     by = Math.max(0, Math.min(COURT_L, by));
 
-    // Mirror to far side so the ball lands at the top of the canvas
-    // (visually where it should be from the player's perspective).
-    const byDisplay = COURT_L - by;
+    // Plot on near side (bottom of court) — normalised coords already
+    // place bounces in [0, ~12] range (near half of the court).
 
     // Project to canvas pixels and clamp inside the inset bounds
-    let px = cx(bx), py = cy(byDisplay);
+    let px = cx(bx), py = cy(by);
     px = Math.max(minX, Math.min(maxX, px));
     py = Math.max(minY, Math.min(maxY, py));
 
