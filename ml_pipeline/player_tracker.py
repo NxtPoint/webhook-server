@@ -315,34 +315,52 @@ class PlayerTracker:
         return out_boxes, out_kps
 
     def _run_yolo_far_baseline(self, frame: np.ndarray):
-        """Run YOLO on just the top 30% of the frame at very low confidence.
+        """Run YOLO on a tight crop of the far-baseline court area.
 
-        The far player is typically ~30-40px tall in 1080p. Even the court
-        crop (which covers ~60-80% of the frame) doesn't upscale them enough.
-        This dedicated pass crops to just the top 30% of the frame and lets
-        YOLO's letterboxing upscale the far player to ~3x their full-frame
-        size. Uses conf=0.10 since the far player is tiny and produces
-        low-confidence detections.
+        The far player is ~30-40px tall in 1080p. Previous attempts with
+        a 30% height crop and full width didn't work — the crop was too
+        large (not enough upscaling) and too wide (spectators, scoreboards,
+        ads on the sides generated false positives at low confidence).
 
-        Coordinates are translated back to full-frame space.
+        This version uses a TIGHT crop:
+        - Top 20% of frame height (far baseline zone only)
+        - Central 70% of frame width (court area, excludes side noise)
+        - This gives ~6x upscaling (1280 / ~216px = 5.9x)
+        - A 30px player becomes ~180px — solidly in YOLO's range
+        - conf=0.08 (aggressive) — safe because the tight spatial crop
+          limits candidates to the court, and the midline-distance
+          threshold in _choose_two_players rejects anyone near the net
+
+        Coordinates translated back to full-frame space.
         """
         h, w = frame.shape[:2]
-        y2 = int(h * 0.30)
-        if y2 <= 0:
+        # Tight crop: top 20% height, central 70% width
+        y1 = 0
+        y2 = int(h * 0.20)
+        x1 = int(w * 0.15)
+        x2 = int(w * 0.85)
+
+        if y2 <= y1 or x2 <= x1:
             return [], []
 
-        cropped = frame[0:y2, :]
+        cropped = frame[y1:y2, x1:x2]
         if cropped.size == 0:
             return [], []
 
-        crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.10)
+        crop_boxes, crop_kps = self._run_yolo(cropped, conf=0.08)
 
-        # Translate crop coords → full frame coords (x unchanged, y offset = 0)
+        # Translate crop coords → full frame coords
         out_boxes = []
         out_kps = []
         for (cx1, cy1, cx2, cy2), kp in zip(crop_boxes, crop_kps):
-            out_boxes.append((cx1, cy1, cx2, cy2))  # y offset is 0 (top of frame)
-            out_kps.append(kp)  # keypoints also start at y=0, no shift needed
+            out_boxes.append((cx1 + x1, cy1 + y1, cx2 + x1, cy2 + y1))
+            if kp is not None:
+                kp_shifted = kp.copy()
+                kp_shifted[:, 0] += x1
+                kp_shifted[:, 1] += y1
+                out_kps.append(kp_shifted)
+            else:
+                out_kps.append(None)
         return out_boxes, out_kps
 
     def _dedupe_iou(self, boxes_list, kps_list, iou_thresh: float = 0.5):
