@@ -175,6 +175,7 @@ def _resolve_batch_regions_priority() -> list:
     return fallbacks
 BATCH_REGIONS_PRIORITY = _resolve_batch_regions_priority()
 T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
+AUTO_DUAL_SUBMIT_T5 = os.getenv("AUTO_DUAL_SUBMIT_T5", "0").lower() in ("1", "true", "yes", "y")
 
 # ---------- Ingest worker service ----------
 INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
@@ -1480,6 +1481,174 @@ def _delegate_to_ingest_worker(task_id: str, result_url: str) -> dict:
     return resp.json() if resp.content else {}
 
 
+def _auto_dual_submit_t5(task_id: str) -> None:
+    """
+    Fire-and-forget: submit the same video as a T5 job after SportAI ingest is triggered.
+
+    Guards:
+    - AUTO_DUAL_SUBMIT_T5 env flag must be enabled (default OFF).
+    - Only for sport_type='tennis_singles' — never practice or T5 jobs.
+    - Idempotent: skips if a T5 job already exists for this s3_key in ml_analysis.video_analysis_jobs.
+
+    Errors are logged but never propagate — must not affect the SportAI ingest flow.
+    """
+    if not AUTO_DUAL_SUBMIT_T5:
+        return
+
+    try:
+        with engine.begin() as conn:
+            _ensure_submission_context_schema(conn)
+            row = conn.execute(sql_text("""
+                SELECT s3_key, sport_type, email, player_a_name, player_b_name
+                  FROM bronze.submission_context
+                 WHERE task_id = :t
+                 LIMIT 1
+            """), {"t": task_id}).mappings().first()
+
+        if not row:
+            app.logger.warning(
+                "AUTO_DUAL_SUBMIT_T5 task_id=%s — no submission_context row found, skipping", task_id
+            )
+            return
+
+        sport_type = row.get("sport_type") or ""
+        s3_key = row.get("s3_key") or ""
+        email = row.get("email") or ""
+
+        if sport_type != "tennis_singles":
+            app.logger.debug(
+                "AUTO_DUAL_SUBMIT_T5 task_id=%s — sport_type=%s is not tennis_singles, skipping",
+                task_id, sport_type,
+            )
+            return
+
+        if not s3_key:
+            app.logger.warning(
+                "AUTO_DUAL_SUBMIT_T5 task_id=%s — no s3_key in submission_context, skipping", task_id
+            )
+            return
+
+        t5_job_id = _manual_dual_submit_t5_core(s3_key, email, row.get("player_a_name"), row.get("player_b_name"))
+        if t5_job_id:
+            app.logger.info(
+                "AUTO_DUAL_SUBMIT_T5 task_id=%s — T5 job submitted t5_job_id=%s", task_id, t5_job_id
+            )
+
+    except Exception as e:
+        app.logger.exception(
+            "AUTO_DUAL_SUBMIT_T5 task_id=%s — error during dual-submit (SportAI flow unaffected): %s",
+            task_id, e,
+        )
+
+
+def _manual_dual_submit_t5_core(
+    s3_key: str,
+    email: str,
+    player_a_name: str | None = None,
+    player_b_name: str | None = None,
+) -> str | None:
+    """
+    Shared logic for auto and manual dual-submit:
+    1. Idempotency check — skip if a T5 job already exists for this s3_key.
+    2. Submit Batch job via _t5_submit().
+    3. Create submission_context row for the T5 job so auto-ingest can fire.
+
+    Returns the new T5 task_id (job_id), or None if skipped.
+    """
+    # Idempotency: skip if a T5 job already exists for this s3_key
+    try:
+        with engine.connect() as conn:
+            existing = conn.execute(sql_text("""
+                SELECT job_id FROM ml_analysis.video_analysis_jobs
+                 WHERE s3_key = :key
+                 LIMIT 1
+            """), {"key": s3_key}).mappings().first()
+    except Exception:
+        # ml_analysis schema might not exist yet — treat as no existing job
+        existing = None
+
+    if existing:
+        app.logger.info(
+            "DUAL_SUBMIT_T5 s3_key=%s — T5 job already exists (job_id=%s), skipping",
+            s3_key, existing["job_id"],
+        )
+        return None
+
+    app.logger.info("DUAL_SUBMIT_T5 s3_key=%s email=%s — submitting to T5 pipeline", s3_key, email)
+    t5_job_id = _t5_submit(s3_key, sport_type="tennis_singles_t5")
+
+    # Build a minimal meta dict so _store_submission_context can copy player names
+    meta = {}
+    if player_a_name:
+        meta["player_a_name"] = player_a_name
+    if player_b_name:
+        meta["player_b_name"] = player_b_name
+
+    _store_submission_context(
+        task_id=t5_job_id,
+        email=email,
+        meta=meta,
+        video_url=s3_key,   # no separate video_url for T5 dual-submit
+        share_url=s3_key,
+        s3_bucket=S3_BUCKET,
+        s3_key=s3_key,
+        sport_type="tennis_singles_t5",
+    )
+
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        _set_status_cache(conn, t5_job_id, "queued", None)
+
+    app.logger.info(
+        "DUAL_SUBMIT_T5 s3_key=%s — submission_context created for t5_job_id=%s", s3_key, t5_job_id
+    )
+    return t5_job_id
+
+
+def _manual_dual_submit_t5(sportai_task_id: str) -> dict:
+    """
+    Manually trigger a T5 dual-submit for an existing SportAI task_id.
+    Reads the s3_key and player names from the SportAI submission_context,
+    then calls _manual_dual_submit_t5_core().
+
+    Returns a dict with keys: status ('submitted' or 'skipped'), t5_task_id (if submitted),
+    reason (if skipped), or raises on error.
+    """
+    with engine.connect() as conn:
+        _ensure_submission_context_schema(conn)
+        row = conn.execute(sql_text("""
+            SELECT s3_key, sport_type, email, player_a_name, player_b_name
+              FROM bronze.submission_context
+             WHERE task_id = :t
+             LIMIT 1
+        """), {"t": sportai_task_id}).mappings().first()
+
+    if not row:
+        return {"status": "skipped", "reason": "no submission_context row for that task_id"}
+
+    sport_type = row.get("sport_type") or ""
+    s3_key = row.get("s3_key") or ""
+    email = row.get("email") or ""
+
+    if sport_type != "tennis_singles":
+        return {
+            "status": "skipped",
+            "reason": f"sport_type={sport_type!r} is not tennis_singles",
+        }
+
+    if not s3_key:
+        return {"status": "skipped", "reason": "no s3_key in submission_context"}
+
+    t5_task_id = _manual_dual_submit_t5_core(
+        s3_key, email, row.get("player_a_name"), row.get("player_b_name")
+    )
+
+    if t5_task_id is None:
+        return {"status": "skipped", "reason": "T5 job already exists for this s3_key"}
+
+    return {"status": "submitted", "t5_task_id": t5_task_id}
+
+
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """
     Delegate ingest to the ingest-worker service.
@@ -1522,6 +1691,7 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
             "INGEST DELEGATED task_id=%s worker_response=%s",
             task_id, out,
         )
+        threading.Thread(target=_auto_dual_submit_t5, args=(task_id,), daemon=True).start()
         return True
 
     except Exception as e:
@@ -1532,6 +1702,7 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
         # Fallback: run in-process so ingest still happens
         ok = _do_ingest(task_id, result_url)
         app.logger.info("INGEST FALLBACK DONE task_id=%s ok=%s", task_id, ok)
+        threading.Thread(target=_auto_dual_submit_t5, args=(task_id,), daemon=True).start()
         return True
 
 
@@ -2829,6 +3000,34 @@ def ops_ingest_task():
         app.logger.exception("OPS INGEST FAILED task_id=%s mode=%s", tid, mode)
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
     
+# ==========================
+# DUAL-SUBMIT T5 OPS ENDPOINT
+# ==========================
+@app.post("/ops/dual-submit-t5")
+def ops_dual_submit_t5():
+    """
+    Manually trigger a T5 dual-submit for an existing SportAI match.
+    Useful for running T5 against historical videos without re-running SportAI.
+
+    Body: {"sportai_task_id": "<task_id>"}
+    Response: {"status": "submitted", "t5_task_id": "..."} or {"status": "skipped", "reason": "..."}
+    """
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    body = request.get_json(silent=True) or {}
+    sportai_task_id = (body.get("sportai_task_id") or "").strip()
+    if not sportai_task_id:
+        return jsonify({"ok": False, "error": "sportai_task_id required"}), 400
+
+    try:
+        result = _manual_dual_submit_t5(sportai_task_id)
+        return jsonify({"ok": True, **result}), 200
+    except Exception as e:
+        app.logger.exception("OPS DUAL-SUBMIT-T5 failed sportai_task_id=%s", sportai_task_id)
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
 # ==========================

@@ -33,6 +33,7 @@ Operational:
     list-matches [--limit 20] [--source sportai|t5]  — recent silver matches
     rerun-silver <task_id>               — rebuild silver from existing bronze
     rerun-ingest <task_id>               — re-download bronze from S3 + rebuild silver
+    dual-submit <sportai_task_id>        — submit existing SportAI video to T5 pipeline
 
 Regression / golden datasets:
     golden-list                          — list registered golden snapshots
@@ -603,6 +604,55 @@ def cmd_training_bench(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Dual-submit T5
+# ============================================================
+
+def cmd_dual_submit(args: argparse.Namespace) -> int:
+    """
+    Trigger a T5 dual-submit for an existing SportAI task_id.
+
+    Reads the s3_key / email / player names from bronze.submission_context,
+    submits a new T5 Batch job, and creates the submission_context row so
+    auto-ingest can fire when the job completes.
+
+    This calls upload_app._manual_dual_submit_t5() directly (no HTTP needed)
+    when run on the Render shell (same process has DB access via db_init.engine).
+    """
+    hr(f"DUAL SUBMIT T5  sportai_task_id={args.sportai_task_id}")
+
+    try:
+        # Import from upload_app to reuse the same logic as the ops endpoint
+        from upload_app import _manual_dual_submit_t5
+        result = _manual_dual_submit_t5(args.sportai_task_id)
+    except ImportError:
+        # upload_app not importable (e.g. missing env vars) — call ops endpoint via HTTP
+        import requests as _req
+        ops_key = os.environ.get("OPS_KEY", "")
+        base = os.environ.get("API_BASE_URL", "http://localhost:8000")
+        resp = _req.post(
+            f"{base}/ops/dual-submit-t5",
+            json={"sportai_task_id": args.sportai_task_id},
+            headers={"Authorization": f"Bearer {ops_key}"},
+            timeout=30,
+        )
+        result = resp.json()
+
+    status = result.get("status")
+    if status == "submitted":
+        print(f"  {PASS} submitted — t5_task_id={result.get('t5_task_id')}")
+        print()
+        print("  Next: poll task-status or run:")
+        print(f"    python -m ml_pipeline.harness validate {result.get('t5_task_id')}")
+        return 0
+    elif status == "skipped":
+        print(f"  {WARN} skipped — reason: {result.get('reason')}")
+        return 0
+    else:
+        print(f"  {FAIL} unexpected result: {result}")
+        return 1
+
+
+# ============================================================
 # CLI dispatch
 # ============================================================
 
@@ -637,6 +687,9 @@ def main():
 
     p_ri = sub.add_parser("rerun-ingest")
     p_ri.add_argument("task_id")
+
+    p_ds = sub.add_parser("dual-submit")
+    p_ds.add_argument("sportai_task_id", help="Existing SportAI task_id to dual-submit to T5")
 
     p_gl = sub.add_parser("golden-list")
 
@@ -689,6 +742,8 @@ def main():
         return cmd_rerun_silver(args)
     if args.cmd == "rerun-ingest":
         return cmd_rerun_ingest(args)
+    if args.cmd == "dual-submit":
+        return cmd_dual_submit(args)
     if args.cmd == "golden-list":
         return cmd_golden_list(args)
     if args.cmd == "golden-snapshot":
