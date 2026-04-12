@@ -53,7 +53,10 @@ BALL_MAX_DIST_GAP = 150
 # ---------------------------------------------------------------------------
 COURT_INPUT_SIZE = 224             # ResNet50 expects 224x224
 COURT_NUM_KEYPOINTS = 14           # 14 standard tennis court keypoints
-COURT_DETECTION_INTERVAL = 30      # Run court detection every N frames (match)
+COURT_DETECTION_INTERVAL = 30      # Run court detection every N frames (during calibration)
+COURT_CALIBRATION_FRAMES = 300     # Number of frames to search for the best court detection.
+                                   # After this, the best homography is LOCKED for the rest of
+                                   # the video. Fixed indoor camera = court doesn't move.
 COURT_DETECTION_INTERVAL_PRACTICE = 60  # Less frequent for practice (court is static)
 COURT_CONFIDENCE_THRESHOLD = 0.5   # Below this → fall back to Hough lines
 COURT_IMAGENET_MEAN = [0.485, 0.456, 0.406]

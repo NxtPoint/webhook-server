@@ -19,6 +19,7 @@ from ml_pipeline.config import (
     COURT_DETECTOR_WEIGHTS,
     COURT_NUM_KEYPOINTS,
     COURT_DETECTION_INTERVAL,
+    COURT_CALIBRATION_FRAMES,
     COURT_CONFIDENCE_THRESHOLD,
     COURT_REFERENCE_KEYPOINTS,
     COURT_LENGTH_M,
@@ -118,6 +119,13 @@ class CourtDetector:
         self._last_good_detection: Optional[CourtDetection] = None  # last with valid homography
         self._detect_interval: int = COURT_DETECTION_INTERVAL
         self._last_frame_idx: int = -COURT_DETECTION_INTERVAL
+        # Calibration lock — fixed camera means court geometry is constant.
+        # During the first COURT_CALIBRATION_FRAMES frames, run CNN normally
+        # and track the best detection (highest inlier count). After that,
+        # lock the best and stop re-computing. Eliminates the constant
+        # "REJECTED bad scale" cascade and wasted GPU cycles.
+        self._locked_detection: Optional[CourtDetection] = None
+        self._best_calibration_inliers: int = 0
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
         model = CourtKeypointNet(in_channels=3, out_channels=15)
@@ -128,7 +136,19 @@ class CourtDetector:
         return model
 
     def detect(self, frame: np.ndarray, frame_idx: int = 0) -> CourtDetection:
-        """Detect court keypoints. Uses cached result if within detection interval."""
+        """Detect court keypoints with calibration-lock strategy.
+
+        Fixed indoor camera = court geometry is constant across the video.
+        Strategy:
+        1. First COURT_CALIBRATION_FRAMES: run CNN, track best detection
+        2. After calibration: LOCK the best detection, stop running CNN
+        3. All subsequent frames reuse the locked homography (zero cost)
+        """
+        # If locked, always return locked detection (post-calibration)
+        if self._locked_detection is not None:
+            return self._locked_detection
+
+        # Within detection interval, return cached
         if (frame_idx - self._last_frame_idx) < self._detect_interval and self._last_detection is not None:
             return self._last_detection
 
@@ -141,7 +161,34 @@ class CourtDetector:
         self._last_detection = detection
         if detection.homography is not None:
             self._last_good_detection = detection
+            # Track best calibration detection by inlier count
+            valid_mask = detection.keypoints[:, 0] >= 0
+            n_inliers = int(valid_mask.sum())
+            if n_inliers > self._best_calibration_inliers:
+                self._best_calibration_inliers = n_inliers
+                logger.info(
+                    "court_calibration: new best detection at frame=%d "
+                    "inliers=%d confidence=%.2f",
+                    frame_idx, n_inliers, detection.confidence,
+                )
         self._last_frame_idx = frame_idx
+
+        # Check if calibration period is over
+        if frame_idx >= COURT_CALIBRATION_FRAMES and self._locked_detection is None:
+            if self._last_good_detection is not None:
+                self._locked_detection = self._last_good_detection
+                logger.info(
+                    "court_calibration: LOCKED best detection after %d frames "
+                    "(inliers=%d). No more CNN runs for remaining video.",
+                    frame_idx, self._best_calibration_inliers,
+                )
+            else:
+                logger.warning(
+                    "court_calibration: no valid detection found in %d frames, "
+                    "continuing CNN attempts",
+                    frame_idx,
+                )
+
         return detection
 
     def _detect_cnn(self, frame: np.ndarray) -> CourtDetection:

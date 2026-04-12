@@ -124,6 +124,7 @@ class BallTracker:
         self.scale_x = 1.0
         self.scale_y = 1.0
         self._frame_buffer: list = []  # last 3 frames (resized)
+        self._prev_gray: Optional[np.ndarray] = None  # for frame-delta ball fallback
         self.detections: List[BallDetection] = []
         # Diagnostics — counters only, no behavior change. Used to diagnose
         # the 7% detection rate on T5 runs. Reported via log_diagnostics().
@@ -181,7 +182,14 @@ class BallTracker:
 
         x, y = self._postprocess_heatmap(heatmap)
         if x is None:
-            return None
+            # TrackNet failed — try frame-delta Hough fallback.
+            # On 63.5% of frames TrackNet produces nothing. Frame differencing
+            # detects ANY moving circular object (the ball) regardless of size.
+            x, y = self._detect_ball_frame_delta(frame)
+            if x is not None:
+                self._diag["delta_fallback_hits"] = self._diag.get("delta_fallback_hits", 0) + 1
+            else:
+                return None
 
         det = BallDetection(
             frame_idx=frame_idx,
@@ -309,6 +317,8 @@ class BallTracker:
         logger.info("tier2_cc_rejected:   %d (%.1f%%)", d["tier2_cc_rejected_size"], pct(d["tier2_cc_rejected_size"]))
         logger.info("tier3_argmax:        %d (%.1f%%)", d["tier3_argmax"], pct(d["tier3_argmax"]))
         logger.info("none_returned:       %d (%.1f%%)", d["none_returned"], pct(d["none_returned"]))
+        logger.info("delta_fallback_hits: %d (%.1f%%)", d.get("delta_fallback_hits", 0),
+                    pct(d.get("delta_fallback_hits", 0)))
         logger.info("fm_raw_max histogram (argmax class index, PRE *255):")
         for i, c in enumerate(d["fm_raw_max_hist"]):
             lo, hi = i * 32, (i + 1) * 32 - 1
@@ -317,6 +327,52 @@ class BallTracker:
         for i, c in enumerate(d["fm_max_hist"]):
             lo, hi = i * 32, (i + 1) * 32 - 1
             logger.info("  [%3d-%3d]: %6d (%5.1f%%)", lo, hi, c, pct(c))
+
+    def _detect_ball_frame_delta(self, frame: np.ndarray):
+        """Fallback ball detection via frame differencing + Hough circles.
+
+        When TrackNet produces no output (63.5% of frames), this method
+        detects the ball from the difference between consecutive frames.
+        The ball is the primary small moving circular object on court.
+
+        Works well for fixed indoor cameras where the background is static.
+        The frame delta eliminates background, leaving only moving objects.
+        Hough circles then finds the ball-sized circle in the delta.
+
+        Returns (x, y) in TrackNet input coordinates (640×360), or (None, None).
+        """
+        resized = cv2.resize(frame, (TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT))
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+
+        if self._prev_gray is None:
+            self._prev_gray = gray
+            return None, None
+
+        # Frame difference — highlights moving objects
+        delta = cv2.absdiff(gray, self._prev_gray)
+        self._prev_gray = gray
+
+        # Threshold the delta to get a binary mask of motion
+        _, motion_mask = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)
+
+        # Blur to merge nearby motion pixels into blobs
+        motion_mask = cv2.GaussianBlur(motion_mask, (5, 5), 0)
+        _, motion_mask = cv2.threshold(motion_mask, 15, 255, cv2.THRESH_BINARY)
+
+        # Find circles in the motion mask — ball is small and round
+        circles = cv2.HoughCircles(
+            motion_mask, cv2.HOUGH_GRADIENT,
+            dp=1, minDist=30,
+            param1=50, param2=5,
+            minRadius=2, maxRadius=15,
+        )
+
+        if circles is not None and len(circles) > 0 and len(circles[0]) > 0:
+            # Take the strongest circle
+            x, y, r = circles[0][0]
+            return float(x), float(y)
+
+        return None, None
 
     def interpolate_gaps(self):
         """Fill missing detections with linear interpolation for gaps <= BALL_MAX_INTERPOLATION_GAP."""
