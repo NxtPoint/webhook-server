@@ -443,7 +443,12 @@ class BallTracker:
             dt_sec = (d_curr.frame_idx - d_prev.frame_idx) / sample_fps
             if dt_sec > 0:
                 speed_ms = dist_m / dt_sec
-                d_curr.speed_kmh = speed_ms * 3.6
+                speed_kmh = speed_ms * 3.6
+                # Clamp impossible speeds — TrackNet position glitches can
+                # produce 800+ km/h. Fastest recorded serve is ~263 km/h;
+                # 250 km/h is a generous ceiling for any ball movement.
+                if speed_kmh <= 250:
+                    d_curr.speed_kmh = speed_kmh
                 d_curr.court_x = c_curr[0]
                 d_curr.court_y = c_curr[1]
         if none_count > 0:

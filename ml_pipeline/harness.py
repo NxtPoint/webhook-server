@@ -18,6 +18,16 @@ Reconciliation:
     reconcile <sportai_tid> <t5_tid>     — explicit task IDs
     reconcile <sportai_tid> <t5_tid> --mode=summary|coverage|distributions|speed|rows
 
+Training bench (event-level alignment + feature analysis):
+    training-bench align [sportai_tid] [t5_tid] [--window 1.0]
+                                         — match events by timestamp, report coverage
+    training-bench serves [sportai_tid] [t5_tid] [--window 1.0]
+                                         — serve detection recall/precision vs ground truth
+    training-bench features [sportai_tid] [t5_tid] [--window 1.0]
+                                         — field-by-field agreement + numeric correlation
+    training-bench extract-serves [sportai_tid] [t5_tid] [--window 1.0] [--csv PATH]
+                                         — raw ml_analysis.* data at each serve timestamp
+
 Operational:
     list-jobs [--limit 20]               — recent T5 batch jobs
     list-matches [--limit 20] [--source sportai|t5]  — recent silver matches
@@ -545,6 +555,54 @@ def cmd_golden_check(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Training bench
+# ============================================================
+
+def cmd_training_bench(args: argparse.Namespace) -> int:
+    """Dispatch training-bench subcommands to ml_pipeline.training_bench."""
+    from ml_pipeline import training_bench as tb
+
+    sportai = args.sportai_tid or tb.DEFAULT_SPORTAI
+    t5 = args.t5_tid or tb.DEFAULT_T5
+    window = args.window
+
+    print(f"SPORTAI : {sportai}")
+    print(f"T5      : {t5}")
+    print(f"WINDOW  : {window}s")
+
+    engine = get_engine()
+
+    if args.tb_cmd == "align":
+        with engine.connect() as conn:
+            result = tb.align_events(conn, sportai, t5, window)
+        tb.print_align(result)
+        return 0
+
+    if args.tb_cmd == "serves":
+        with engine.connect() as conn:
+            result = tb.analyze_serves(conn, sportai, t5, window)
+        tb.print_serves(result)
+        return 0
+
+    if args.tb_cmd == "features":
+        with engine.connect() as conn:
+            result = tb.feature_report(conn, sportai, t5, window)
+        tb.print_features(result)
+        return 0
+
+    if args.tb_cmd == "extract-serves":
+        with engine.connect() as conn:
+            rows = tb.extract_features(conn, sportai, t5, window, serves_only=True)
+        tb.print_extract(rows)
+        if args.csv:
+            tb.export_csv(rows, args.csv)
+        return 0
+
+    print(f"Unknown training-bench subcommand: {args.tb_cmd}")
+    return 1
+
+
+# ============================================================
 # CLI dispatch
 # ============================================================
 
@@ -589,6 +647,30 @@ def main():
     p_gc = sub.add_parser("golden-check")
     p_gc.add_argument("name")
 
+    # Training bench — event-level alignment + feature analysis
+    p_tb = sub.add_parser("training-bench")
+    tb_sub = p_tb.add_subparsers(dest="tb_cmd", required=True)
+
+    def _add_tb_base(sp):
+        sp.add_argument("sportai_tid", nargs="?", default=None)
+        sp.add_argument("t5_tid", nargs="?", default=None)
+        sp.add_argument("--window", type=float, default=1.0,
+                        help="Alignment window in seconds (default 1.0)")
+
+    p_tb_align = tb_sub.add_parser("align")
+    _add_tb_base(p_tb_align)
+
+    p_tb_serves = tb_sub.add_parser("serves")
+    _add_tb_base(p_tb_serves)
+
+    p_tb_feat = tb_sub.add_parser("features")
+    _add_tb_base(p_tb_feat)
+
+    p_tb_extract = tb_sub.add_parser("extract-serves")
+    _add_tb_base(p_tb_extract)
+    p_tb_extract.add_argument("--csv", default=None, metavar="PATH",
+                              help="Write output to CSV file at PATH")
+
     args = p.parse_args()
 
     if args.cmd == "validate-bronze":
@@ -613,6 +695,8 @@ def main():
         return cmd_golden_snapshot(args)
     if args.cmd == "golden-check":
         return cmd_golden_check(args)
+    if args.cmd == "training-bench":
+        return cmd_training_bench(args)
 
     return 1
 

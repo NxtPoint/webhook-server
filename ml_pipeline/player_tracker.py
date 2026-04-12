@@ -18,6 +18,7 @@ from ml_pipeline.config import (
     YOLO_POSE_WEIGHTS,
     YOLO_POSE_WEIGHTS_FALLBACK,
     YOLO_CONFIDENCE,
+    YOLO_COURT_CROP_CONFIDENCE,
     YOLO_IMGSZ,
     YOLO_COURT_CROP_INFERENCE,
     YOLO_COURT_CROP_MARGIN_PX,
@@ -178,26 +179,6 @@ class PlayerTracker:
                 n_yolo_boxes, n_filtered_out, len(candidates),
             )
 
-        # Debug frame export with EARLY-RUN BIAS so user can verify mid-job
-        # and cancel bad runs without waiting full 35min:
-        #   - First 600 frames: every 50 frames → 12 frames in first ~80sec
-        #   - After that: every DEBUG_FRAME_INTERVAL frames (default 1000)
-        # Each frame uploaded directly to S3 if context is set.
-        should_save = False
-        if frame_idx > 0:
-            if frame_idx <= 600 and frame_idx % 50 == 0:
-                should_save = True
-            elif DEBUG_FRAME_INTERVAL > 0 and frame_idx % DEBUG_FRAME_INTERVAL == 0:
-                should_save = True
-
-        if should_save:
-            try:
-                self._save_debug_frame_v2(
-                    frame, frame_idx, deduped_boxes, candidates,
-                )
-            except Exception as e:
-                logger.warning("debug frame save failed: %s", e)
-
         # Diagnostic accounting — one bucket per frame, by candidate count.
         self._diag["frames_yolo_ran"] += 1
         self._diag["candidates_total"] += len(candidates)
@@ -217,25 +198,47 @@ class PlayerTracker:
             candidates, candidate_kps, court_bbox, frame.shape[:2],
         )
 
+        # Debug frame export AFTER _choose_two_players so the image shows
+        # the true final kept set (bench sitter rejected, real players kept).
+        # Previously drawn before the span check — misleadingly showed
+        # rejected candidates as KEPT.
+        # EARLY-RUN BIAS: dense sampling in first 600 frames so user can
+        # verify mid-job and cancel bad runs without waiting full 35min.
+        should_save = False
+        if frame_idx > 0:
+            if frame_idx <= 600 and frame_idx % 50 == 0:
+                should_save = True
+            elif DEBUG_FRAME_INTERVAL > 0 and frame_idx % DEBUG_FRAME_INTERVAL == 0:
+                should_save = True
+
+        if should_save:
+            try:
+                self._save_debug_frame_v2(
+                    frame, frame_idx, deduped_boxes, candidates,
+                )
+            except Exception as e:
+                logger.warning("debug frame save failed: %s", e)
+
         # Assign player_id via IoU matching with previous frame
         frame_detections = self._assign_ids(candidates, frame_idx, candidate_kps)
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
         return frame_detections
 
-    def _run_yolo(self, frame: np.ndarray):
+    def _run_yolo(self, frame: np.ndarray, conf: float = None):
         """Run YOLO on a full frame. Returns (boxes_list, kps_list).
 
         boxes_list: list of (x1, y1, x2, y2) tuples in frame coordinates
         kps_list: list of (17, 3) numpy arrays or None per detection
         """
+        confidence = conf or YOLO_CONFIDENCE
         if self.has_pose:
             results = self.model.predict(
-                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ, verbose=False,
+                frame, conf=confidence, imgsz=YOLO_IMGSZ, verbose=False,
             )
         else:
             results = self.model.predict(
-                frame, conf=YOLO_CONFIDENCE, imgsz=YOLO_IMGSZ,
+                frame, conf=confidence, imgsz=YOLO_IMGSZ,
                 classes=[YOLO_PERSON_CLASS_ID], verbose=False,
             )
         boxes = results[0].boxes if results else []
@@ -275,7 +278,7 @@ class PlayerTracker:
         if cropped.size == 0:
             return [], []
 
-        crop_boxes, crop_kps = self._run_yolo(cropped)
+        crop_boxes, crop_kps = self._run_yolo(cropped, conf=YOLO_COURT_CROP_CONFIDENCE)
 
         # Translate crop coords → full frame coords
         out_boxes = []
@@ -398,34 +401,27 @@ class PlayerTracker:
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape) -> tuple:
-        """Select up to 2 players: one at the top y-extreme, one at the bottom.
+        """Select up to 2 players using court-geometry baseline-proximity scoring.
 
-        BASELINE-SEEKING strategy. Tennis camera angles show the two players
-        at opposite vertical extremes of the frame:
-          - Far player → small pixel y (top of frame, far baseline)
-          - Near player → large pixel y (bottom of frame, near baseline)
+        COURT-GEOMETRY strategy. Uses the court bounding box to score each
+        candidate by how close they are to a baseline. Real tennis players
+        spend most of their time near the far or near baseline. Non-players
+        (bench sitters, umpires, ball boys) sit near the net (court midline).
 
-        Y-SPAN REQUIREMENT — the core ball-boy defence. A valid pair of players
-        must span at least MIN_Y_SEPARATION_RATIO of the frame height. If the
-        two best candidates don't span that much, ONE of them is almost
-        certainly not a real player (bench sitter, umpire, ball boy, spectator
-        in the middle band).
+        Scoring per candidate:
+          1. Compute distance from candidate center-y to the court midline
+             (midline = halfway between court_bbox top and bottom edges).
+          2. Higher distance from midline = closer to a baseline = better.
+          3. Assign each candidate to a HALF: "far" (above midline) or
+             "near" (below midline).
+          4. Pick the best-scoring candidate from each half.
 
-        When span fails we drop the TOP candidate and keep the BOTTOM. The
-        near-side player is detected more reliably (bigger pixels, clearer
-        pose) and is the safer retention. Returning 1 candidate propagates
-        correctly through _assign_ids.
+        Falls back to pixel-y extremes when court_bbox is unavailable.
 
-        Runs UNCONDITIONALLY (no len<=2 early return) — the 2-candidate case
-        is exactly the pathological "near player + bench sitter" situation
-        we need to catch.
+        Y-SPAN REQUIREMENT still enforced as a safety net — if the chosen
+        pair doesn't span at least 35% of the frame height, drop the one
+        closer to the midline.
         """
-        # Minimum fraction of frame height the two players must span. 35%
-        # empirically covers normal play (near player mid-court, far player
-        # near far baseline) and rejects the "{real_near, bench_sitter}"
-        # pattern seen in debug frames where the bench sitter sits at ~24%
-        # from top and the real near player sits at ~52% from top — only
-        # 28% span, below this threshold.
         MIN_Y_SEPARATION_RATIO = 0.35
 
         if len(candidates) == 0:
@@ -439,36 +435,75 @@ class PlayerTracker:
         frame_h = frame_shape[0]
         min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
 
-        # Tag each candidate with bbox center y, sort ascending (top first)
-        paired = []
+        # Score each candidate by distance from court midline.
+        # When court_bbox is available, midline = center of court bbox.
+        # When not, midline = center of frame (reasonable approximation).
+        if court_bbox is not None:
+            cb_y1, cb_y2 = court_bbox[1], court_bbox[3]
+            midline_y = (cb_y1 + cb_y2) / 2
+        else:
+            midline_y = frame_h / 2
+
+        # Tag each candidate: (cy, distance_from_midline, half, box, kps)
+        # half: "far" = above midline (small y), "near" = below (large y)
+        scored = []
         for box, kps in zip(candidates, candidate_kps):
             cy = (box[1] + box[3]) / 2
-            paired.append((cy, box, kps))
-        paired.sort(key=lambda p: p[0])
+            dist_from_mid = abs(cy - midline_y)
+            half = "far" if cy < midline_y else "near"
+            scored.append((dist_from_mid, cy, half, box, kps))
 
-        top_cand = paired[0]
-        bot_cand = paired[-1]
-        span = bot_cand[0] - top_cand[0]
+        # Pick best (highest midline distance) from each half
+        far_candidates = [s for s in scored if s[2] == "far"]
+        near_candidates = [s for s in scored if s[2] == "near"]
 
-        if span >= min_span_px:
-            # Valid pair — drop anything in the middle if 3+ candidates.
-            if len(candidates) > 2:
-                self._diag["choose2_dropped_middle"] += 1
-            self._diag["choose2_kept_2"] += 1
-            logger.debug(
-                "_choose_two_players: kept 2, top_cy=%.1f bot_cy=%.1f span=%.1f (from %d)",
-                top_cand[0], bot_cand[0], span, len(candidates),
-            )
-            return [top_cand[1], bot_cand[1]], [top_cand[2], bot_cand[2]]
+        # Sort by dist_from_mid descending (furthest from net = best)
+        far_candidates.sort(key=lambda s: s[0], reverse=True)
+        near_candidates.sort(key=lambda s: s[0], reverse=True)
 
-        # Span too small → one (or more) candidates is not a real player.
-        # Keep the bottom candidate only (near player is more reliable).
-        self._diag["choose2_kept_1_span_fail"] += 1
-        logger.debug(
-            "_choose_two_players: span=%.1f < min=%.1f, dropping top (from %d cands)",
-            span, min_span_px, len(candidates),
-        )
-        return [bot_cand[1]], [bot_cand[2]]
+        best_far = far_candidates[0] if far_candidates else None
+        best_near = near_candidates[0] if near_candidates else None
+
+        # Build result pair
+        chosen = []
+        if best_far:
+            chosen.append(best_far)
+        if best_near:
+            chosen.append(best_near)
+
+        if len(chosen) == 2:
+            span = abs(chosen[0][1] - chosen[1][1])
+            if span >= min_span_px:
+                if len(candidates) > 2:
+                    self._diag["choose2_dropped_middle"] += 1
+                self._diag["choose2_kept_2"] += 1
+                logger.debug(
+                    "_choose_two_players: kept 2, far_cy=%.1f near_cy=%.1f "
+                    "span=%.1f midline=%.1f (from %d)",
+                    best_far[1], best_near[1], span, midline_y, len(candidates),
+                )
+                return [c[3] for c in chosen], [c[4] for c in chosen]
+            else:
+                # Span too small — the "far" candidate is probably not a real
+                # far player (bench sitter near net). Keep only the near one
+                # (larger, more reliably detected).
+                self._diag["choose2_kept_1_span_fail"] += 1
+                logger.debug(
+                    "_choose_two_players: span=%.1f < min=%.1f, dropping far "
+                    "(far_cy=%.1f near_cy=%.1f midline=%.1f, from %d cands)",
+                    span, min_span_px, best_far[1], best_near[1],
+                    midline_y, len(candidates),
+                )
+                return [best_near[3]], [best_near[4]]
+
+        # Only one half has candidates
+        pick = chosen[0] if chosen else None
+        if pick:
+            self._diag["choose2_kept_1_single"] += 1
+            return [pick[3]], [pick[4]]
+
+        self._diag["choose2_kept_0"] += 1
+        return [], []
 
     def _assign_ids(self, bboxes: list, frame_idx: int,
                     kps_list: list = None) -> List[PlayerDetection]:

@@ -35,10 +35,9 @@ TRACKNET_INPUT_HEIGHT = 360
 TRACKNET_NUM_INPUT_FRAMES = 3   # Sliding window of 3 consecutive frames
 TRACKNET_OUTPUT_CHANNELS = 256
 TRACKNET_HEATMAP_THRESHOLD = 127  # Standard threshold (lowering to 100 broke ball detection)
-TRACKNET_BGR2RGB = True            # Convert BGR→RGB before TrackNet inference. cv2 loads BGR;
-                                   # many TrackNet V2 weights were trained on RGB (PIL). Diagnostic
-                                   # run showed 59% empty heatmaps — channel swap is a hypothesis.
-                                   # Set False to test without conversion.
+TRACKNET_BGR2RGB = False           # DO NOT convert BGR→RGB. Empirically confirmed on run 33f952b9:
+                                   # BGR→RGB dropped detection from 41% to 28% — this TrackNet V2
+                                   # checkpoint was trained on BGR (cv2 convention). Keep False.
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
@@ -97,9 +96,13 @@ COURT_REFERENCE_KEYPOINTS = [
 # Player tracker (YOLOv8)
 # ---------------------------------------------------------------------------
 YOLO_CONFIDENCE = 0.25             # Sane production value with YOLOv8x-pose (bigger model = more confident)
+YOLO_COURT_CROP_CONFIDENCE = 0.15  # Lower threshold for the court-crop pass — distant players are small
+                                   # and produce lower-confidence detections. Safe to be permissive here
+                                   # because _choose_two_players span check filters non-players downstream.
 YOLO_IMGSZ = 1280                  # Input resolution. Default 640 → too small for distant players. 1280 = 2x = 4x pixels per object
 YOLO_COURT_CROP_INFERENCE = True   # Run a SECOND YOLO pass on the court-cropped+upscaled region (catches distant players)
-YOLO_COURT_CROP_MARGIN_PX = 80     # Pixels of margin around court when cropping for the second YOLO pass
+YOLO_COURT_CROP_MARGIN_PX = 120    # Pixels of margin around court when cropping (was 80 — widened to
+                                   # include more of the far baseline area where distant players stand)
 PLAYER_OUTSIDE_COURT_MARGIN_PX = 120  # Pixel margin for "is this player inside the court area?" filter (rejects ball persons)
 
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
