@@ -103,7 +103,10 @@ YOLO_IMGSZ = 1280                  # Input resolution. Default 640 → too small
 YOLO_COURT_CROP_INFERENCE = True   # Run a SECOND YOLO pass on the court-cropped+upscaled region (catches distant players)
 YOLO_COURT_CROP_MARGIN_PX = 120    # Pixels of margin around court when cropping (was 80 — widened to
                                    # include more of the far baseline area where distant players stand)
-PLAYER_OUTSIDE_COURT_MARGIN_PX = 120  # Pixel margin for "is this player inside the court area?" filter (rejects ball persons)
+PLAYER_OUTSIDE_COURT_MARGIN_PX = 9999 # DISABLED — court-area filter was rejecting real players when court
+                                      # keypoints missed the far baseline (bbox only covered near court).
+                                      # _choose_two_players court-geometry scoring + path-length filter
+                                      # now handle non-player rejection. Was 120.
 
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
 # every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg

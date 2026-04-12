@@ -262,12 +262,21 @@ class PlayerTracker:
         Cropping focuses YOLO on the court area and effectively upscales
         distant players (since YOLO resizes the smaller crop to imgsz=1280
         instead of the full 1920x1080 frame).
+
+        IMPORTANT: y1 is clamped to at most 10% of frame height. The court
+        keypoint model often misses far-baseline keypoints (too small at
+        camera distance), causing court_bbox to only cover the near court.
+        Without this clamp, the crop excludes the far baseline entirely —
+        the far player is never seen by the crop pass. The 10% floor
+        ensures the far baseline area is always included.
         """
         cb_x1, cb_y1, cb_x2, cb_y2 = court_bbox
         h, w = frame.shape[:2]
         margin = YOLO_COURT_CROP_MARGIN_PX
         x1 = max(0, int(cb_x1 - margin))
-        y1 = max(0, int(cb_y1 - margin))
+        # Clamp y1 to at most 10% from top — guarantees far baseline is in crop
+        y1_from_bbox = max(0, int(cb_y1 - margin))
+        y1 = min(y1_from_bbox, int(h * 0.10))
         x2 = min(w, int(cb_x2 + margin))
         y2 = min(h, int(cb_y2 + margin))
 
