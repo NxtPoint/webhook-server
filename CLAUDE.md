@@ -141,50 +141,71 @@ The primary analytics experience. Custom-built ECharts + canvas dashboards that 
 
 Single-page app at `/match-analysis`. Loaded inside the portal iframe with `?email=&key=&api=` auth params.
 
-**Match Analytics module** (5 tabs):
-1. **Match Summary** — score box, KPI strip, head-to-head bars (points won, service pts, return pts, rally pts, 1st serve %, aces, DFs, winners, errors), speed profile with 6 ring gauges (serve/FH/BH per player), points-by-phase chart, outcome distribution
-2. **Serve Detail** — per-player head-to-head card, serve direction charts, serve strategy table (side × direction with win %)
-3. **Return Detail** — per-player head-to-head card with vs-1st/vs-2nd split, depth + stroke + outcome charts
-4. **Rally Detail** — rally length distribution, per-length win comparison, aggression/depth/stroke per player
-5. **Coach ✨** — LLM coach tab (see [LLM Coach](#llm-tennis-coach) below)
+Four modules, selectable via the green module strip at the top:
+
+**Match Analytics module** (9 tabs):
+1. **Match Summary** — score box, KPI strip, head-to-head comparison bars (points won, service/return/rally pts won, 1st serve %, aces, DFs, winners, errors, games won, service/return games won), free points + return pts won + rally pts won donut pairs, aggression profile (Attack/Neutral/Defence horizontal stacked bar per player), speed profile (1st Serve / 2nd Serve / FH / BH quad gauge per player), points-by-phase chart, outcome distribution
+2. **Serve Performance** — full comparison table (UTR, total serves, svc pts won, serve in%, won%, DFs, unreturned, avg/fastest speed), serve direction bars, outcomes by direction (won/lost stacked), unreturned by direction, Deuce/Ad strategy tables
+3. **Serve Detail** — per-player compare bars (svc pts played/won/won%, 1st/2nd serve in%/win%, DFs), 1st serve location × win rate grouped bars, 2nd serve location × win rate grouped bars
+4. **Return Summary** — full comparison table, return effectiveness by hit zone (A/B/C/D), return points won by bounce zone (A/B/C/D)
+5. **Return Detail** — per-player H2H card, depth bars, stroke pies, outcome bars, return outcomes by serve try / stroke / serve location (stacked bars from shot_placement)
+6. **Rally Summary** — full comparison table (pts played/won/lost/won%/lost%/winner%/error%/W:E), rally effectiveness by zone
+7. **Rally Detail** — rally H2H card, length distribution, bucket win comparison, aggression/depth/stroke per player, overall rally outcome donuts, depth distribution pies
+8. **Point Analysis** — match result summary, how points won/lost pie charts (aces/winners/errors/DFs), net position by phase table, winners & errors by stroke table, zone effectiveness tables
+9. *(Coach moved to own module)*
 
 **Placement Heatmaps module** (5 tabs):
-1. **Serve Placement** — single large court, dots coloured by point-won (green) / point-lost (red), filter 1st/2nd serve, table below splits by side (Deuce left / Ad right) × direction (Wide/Body/T) with win %
-2. **Return Placement** — where the player's returns landed; table splits by received-side × return stroke
-3. **Returns Received** — opponent's serves at the player; table splits by side × direction
-4. **Groundstrokes** — all rally shots; filter by stroke; table by stroke × depth
-5. **Rally Depth** — bounce depth distribution
+1. **Serve Placement** — blue court with green surround, dots on near side coloured by point outcome (green=won, red=lost), filter 1st/2nd serve, Deuce/Ad strategy tables
+2. **Player Return Position** — hit coordinates (where player stood), Deuce/Ad split table by received side × stroke
+3. **Return Ball Position** — bounce coordinates (where return landed), received side × stroke table
+4. **Groundstrokes** — rally shots with stroke + depth filters, depth split into Deep/Middle/Short column tables
+5. **Rally Player Position** — hit coordinates with aggression filter, aggression breakdown table
 
 Each heatmap tab has:
 - **Player toggle** (Player A = green, Player B = blue — enforced convention)
 - **Set filter** (appears when match has 2+ sets; cross-filters across tabs)
-- **Tab-specific filter** (1st/2nd serve, stroke, depth as appropriate)
-- **Right-side info panel** ("How to read this") — collapsed by default, pure static text (no LLM calls)
-- **Y-axis mirrored** so shots always appear on the far side of the court (from the player's POV)
-- **Dot clamping** keeps halos inside the court lines for visual cleanliness
-- **Canvas buffer 1200×760** — court is drawn stretched to fill the card width (non-physical aspect but dots land correctly via uniform `cx()`/`cy()` math)
+- **Tab-specific filters** (serve try, stroke, depth, aggression as appropriate)
+- **Right-side info panel** ("How to read this") — collapsed by default
+- **Near-side plotting** — dots plot on the near half of the court using normalised coordinates
+- **Blue court surface** (`#1a4a8a`) with green surround (`#2d6a4f`), ~2m side / ~4m baseline padding
 
-**Cross-filter persistence**: Player, Set, and filter selections persist when switching tabs within the heatmaps module. Reset only on match change.
+**Player Performance module** (3 tabs):
+1. **KPI Scorecard** — 18 KPIs across 5 categories (Serve 7, Return 2, Rally 4, Games 2, Speed 2). Each row shows: KPI name, benchmark target, rolling 5-match avg, delta vs benchmark, status dot (green/amber/red), trend arrow (improving/neutral/declining), SVG sparkline trendline. Expert-judgment benchmarks for club-level players.
+2. **Trend Charts** — ECharts line chart per KPI with benchmark target dashed line. Shows last 10 matches.
+3. **Last Match vs Average** — horizontal grouped bar chart comparing last match values to 5-match rolling average.
+Player A only (the customer). Focus is improvement, not winning/losing. Data from `gold.player_performance` (email-scoped, cross-match).
 
-**Sidebar collapse**: the match list sidebar has a chevron toggle to collapse from 280px → 46px. Default collapsed on tablet (<1200px width). State persisted to localStorage as `match_analysis_sidebar`.
+**AI Coach module** (standalone):
+Elevated from a tab inside Match Analytics to its own top-level module. See [LLM Coach](#llm-tennis-coach) below.
+
+**Cross-module features:**
+- **Sidebar** — match list with collapse toggle (280px → 46px). Default collapsed on tablet (<1200px).
+- **Cross-filter persistence** — Player, Set, and filter selections persist within heatmaps. Reset on match change.
+- **T5 filtering** — `gold.vw_player` and `gold.vw_client_match_summary` filter to `sport_type = 'tennis_singles'` only. T5 dev matches excluded from customer-facing views.
 
 ### Gold Presentation Views
 
-Created idempotently on boot by `gold_init.py::gold_init_presentation()` (DROP + CREATE pattern per view, each try/except-wrapped).
+Created idempotently on boot by `gold_init.py::gold_init_presentation()` (`DROP VIEW IF EXISTS ... CASCADE` + `CREATE VIEW` per view, each try/except-wrapped).
 
-**Base layer** (dim + fact — ported from legacy `ss_` schema):
-- `gold.vw_player` — dim. Resolves `bronze.submission_context.first_server` (S/R flag) → `player_a_id` / `player_b_id` mapping. Generates monotonic `session_id` via `row_number()` for display.
-- `gold.vw_point` — fact. `silver.point_detail` flattened + joined to `vw_player`. Adds `player_role` (`'player_a'`/`'player_b'`), `player_name`, `serve_point_type_d`, `serve_result_d`.
+**Base layer** (dim + fact):
+- `gold.vw_player` — dim. Resolves `first_server` → `player_a_id` / `player_b_id`. Filtered to `sport_type = 'tennis_singles'` (excludes T5 dev matches). Generates monotonic `session_id`.
+- `gold.vw_point` — fact. `silver.point_detail` flattened + joined to `vw_player`.
 
-**Presentation layer** (one view per chart/table):
+**Per-match presentation layer** (one view per chart/table):
 | View | Feeds | Shape |
 |---|---|---|
-| `gold.match_kpi` | Summary tab, speed gauges, head-to-head | 1 row per match, both players in `pa_*` / `pb_*` columns |
-| `gold.match_serve_breakdown` | Serve Detail strategy table, Serve Placement table, Returns Received table | 1 row per (task, player, side, direction) |
-| `gold.match_return_breakdown` | Return Detail tab | 1 row per player, with returns made/won/depth/stroke/vs-1st/vs-2nd |
-| `gold.match_rally_breakdown` | Rally Detail per-player charts | 1 row per player, aggression/depth/stroke/speed counts |
+| `gold.match_kpi` | Summary tab, speed gauges, head-to-head, point analysis | 1 row per match, both players in `pa_*` / `pb_*` columns. ~120 columns including games won, 1st/2nd serve win%, unreturned serves, serve speed split, rally outcomes |
+| `gold.match_serve_breakdown` | Serve Performance/Detail tabs, Serve Placement table | 1 row per (task, player, side, direction, serve_try) |
+| `gold.match_return_breakdown` | Return Summary/Detail tabs | 1 row per player, with returns made/won/depth/stroke/vs-1st/vs-2nd |
+| `gold.match_rally_breakdown` | Rally Summary/Detail tabs, aggression profile | 1 row per player, aggression/depth/stroke/speed counts |
 | `gold.match_rally_length` | Rally Detail length distribution + length-bucket win comparison | 1 row per (task, length_bucket) with pa/pb wins |
-| `gold.match_shot_placement` | All Placement Heatmap tabs | 1 row per shot — coords, outcome, stroke, phase |
+| `gold.match_shot_placement` | All Placement Heatmap tabs + Point Analysis zone tables + return/rally cross-tab charts | 1 row per shot — coords, outcome, stroke, phase |
+
+**Cross-match performance layer** (Player A only):
+| View | Feeds | Shape |
+|---|---|---|
+| `gold.player_match_kpis` | Intermediate — consumed by `player_performance` | 1 row per (email, task_id) with 18 KPIs for Player A |
+| `gold.player_performance` | Player Performance module scorecard | 1 row per (email, kpi_name) with benchmark, rolling avg, delta, trend, status, sparkline |
 
 **Coach-specific views** (created by `tennis_coach/coach_views.py::init_coach_views()`):
 - `gold.coach_rally_patterns` — per (task, player, stroke, depth, aggression) error/winner rates
@@ -205,17 +226,18 @@ All under `/api/client/match/*`, CLIENT_API_KEY auth, `email` query param for te
 | `GET /api/client/match/rally-breakdown/<task_id>` | `gold.match_rally_breakdown` |
 | `GET /api/client/match/rally-length/<task_id>` | `gold.match_rally_length` |
 | `GET /api/client/match/shot-placement/<task_id>` | `gold.match_shot_placement` |
+| `GET /api/client/player/performance` | `gold.player_performance` (email-scoped, not task_id) |
 
-On load, `match_analysis.html::selectMatch()` fires all six in parallel via `Promise.all()` and caches as `selectedData.kpi / .serve / .return / .rally / .rallyLength / .placement`.
+On load, `match_analysis.html::selectMatch()` fires all six match endpoints in parallel via `Promise.all()` and caches as `selectedData.kpi / .serve / .return / .rally / .rallyLength / .placement`. The performance endpoint is fetched lazily when the Player Performance module is first opened.
 
-Legacy endpoints (retained but not used by new dashboard):
-- `/api/client/matches` — match list for sidebar (uses `gold.vw_client_match_summary`)
+Other dashboard endpoints:
+- `/api/client/matches` — match list for sidebar (uses `gold.vw_client_match_summary`, filtered to `sport_type = 'tennis_singles'`)
 - `/api/client/matches/<task_id>` — legacy raw silver.point_detail fetch
 - `/api/client/match-analysis/<task_id>` — legacy full silver fetch
 
 ### LLM Tennis Coach
 
-Package: `tennis_coach/`. Blueprint registered on webhook-server. Documented in `docs/llm_coach_design.md`.
+Package: `tennis_coach/`. Blueprint registered on webhook-server. Documented in `docs/llm_coach_design.md`. Elevated to its own module in the dashboard (4th module tab, after Player Performance).
 
 **Endpoints** (CLIENT_API_KEY auth):
 - `POST /api/client/coach/analyze` — named prompt or freeform question. Body: `{task_id, email, prompt_key, freeform_text?}`. Returns Claude's response + `data_snapshot` (the JSON passed to Claude, for trust validation).
@@ -240,7 +262,11 @@ Package: `tennis_coach/`. Blueprint registered on webhook-server. Documented in 
 
 **Required env var**: `ANTHROPIC_API_KEY` on webhook-server.
 
+**Player-only guardrails**: System prompt restricts coaching to Player A only. The coach NEVER analyses the opponent's game, weaknesses, or how to "beat" them. If asked about the opponent, it redirects: "My job is to make YOU better — let's focus on what you can control." The tactics prompt was rewritten from "exploit opponent weaknesses" to "what should you improve." Both the standard and cards system prompts enforce this.
+
 **Anti-hallucination**: data is pre-aggregated SQL numbers (not raw rows), small-sample suppression, low temperature, system prompt forbids fabrication. The `/debug/<task_id>` endpoint lets us verify the data shape Claude sees matches the dashboard.
+
+**Credit integration**: NOT yet implemented. Currently rate-limited only (5/day per match, 20/day per email). Credit burn-down per coach interaction is planned — will require `billing_service.consume_entitlement()` integration.
 
 ### Practice Analytics Dashboard (`practice.html`)
 
@@ -331,9 +357,9 @@ All auth via URL params forwarded through the portal: `?email=&firstName=&surnam
 - **Locker Room** (`/`): dashboard. Header tabs (Account / My Details / Linked Players / Invite Coach), charts (matches per month, usage gauge), match history.
 - **Media Room** (`/media-room`): 4-step upload wizard (game type → upload → details → progress).
 - **Pricing** (`/pricing`): fetches entitlements, renders one of three views (new plan / top-up only / coach view). Sends `postMessage({ type: 'wix-checkout', planId })` up to Wix for PayPal checkout.
-- **Portal** (`/portal`): **entry point**. Collapsible sidebar, inner iframe with auth params forwarded. Embedded in Wix page `https://www.ten-fifty5.com/portal`.
+- **Portal** (`/portal`): **entry point**. Collapsible sidebar, inner iframe with auth params forwarded. Embedded in Wix page `https://www.ten-fifty5.com/portal`. Main nav: Dashboard, Upload Match, My Profile, **Analytics** (with sub-items: Match Analytics, Placement Heatmaps), Plans & Pricing. Admin section: Backoffice, Practice (WIP). Sub-nav items show tree-line connectors.
 - **Practice** (`/practice`): practice analytics (see Dashboards section).
-- **Match Analysis** (`/match-analysis`): match analytics (see Dashboards section).
+- **Match Analysis** (`/match-analysis`): match analytics — 4 modules: Match Analytics, Placement Heatmaps, Player Performance, AI Coach (see Dashboards section).
 
 **Wix remaining dependencies** (everything else has been retired):
 1. Member authentication (Wix login → portal URL params)
