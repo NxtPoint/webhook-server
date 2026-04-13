@@ -450,88 +450,45 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 
 ---
 
-## T5 ML Pipeline (`ml_pipeline/`) — Singles Match + Practice Analysis
+## T5 ML Pipeline (`ml_pipeline/`)
 
-In-house ML pipeline for tennis video analysis. Runs on AWS Batch GPU (Spot G4dn.xlarge). Same pipeline handles three sport types — `tennis_singles_t5` (match), `serve_practice`, `rally_practice`.
+In-house ML pipeline for tennis video analysis. Runs on AWS Batch GPU (Spot G4dn.xlarge). Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
 
-**Game type → pipeline routing** (`upload_app.py`):
-
-| Game Type (frontend) | `sport_type` (DB) | Pipeline | Builds | Billing |
-|---|---|---|---|---|
-| Singles | `tennis_singles` | SportAI | `silver.point_detail` (model='sportai') | 1 credit |
-| Singles (T5) | `tennis_singles_t5` | T5 (Batch GPU) | `silver.point_detail` (model='t5') | Free (dev) |
-| Serve Practice | `serve_practice` | T5 (Batch GPU) | `silver.practice_detail` | Free |
-| Rally Practice | `rally_practice` | T5 (Batch GPU) | `silver.practice_detail` | Free |
-
-**Frontend gate**: All T5 game types are dev-only (`tomo.stojakovic@gmail.com`) — gated in `media_room.html`.
-
-### Architecture: two bronze sources, one silver
-
-Strategic goal: enable A/B comparison between SportAI and T5 on `silver.point_detail`. The `model` column distinguishes rows. Both pipelines produce the same 18 base fields; same Pass 3-5 derivation logic computes all derived columns.
+### Architecture
 
 ```
-SportAI JSON ──→ bronze.player_swing ──┐
-                 bronze.ball_bounce ────┤
-                                        ├──→ silver.point_detail (model='sportai')
-T5 ML Pipeline ──→ ml_analysis.* ──────┤
-                                        ├──→ silver.point_detail (model='t5')
+SportAI JSON ──→ bronze.player_swing ──→ silver.point_detail (model='sportai')
+T5 ML Pipeline ──→ ml_analysis.* ──────→ silver.point_detail (model='t5')
 ```
 
-Both go through passes 3-5 (shared in `build_silver_v2.py`).
-
-**T5 silver builders**:
-- `ml_pipeline/build_silver_match_t5.py` — for `tennis_singles_t5`
-- `ml_pipeline/build_silver_practice.py` — for serve/rally practice
+Both share passes 3-5 in `build_silver_v2.py`. T5 silver builders: `build_silver_match_t5.py` (match), `build_silver_practice.py` (practice).
 
 ### T5 flow
 
-1. **Media Room** uploads video to S3
-2. `POST /api/submit_s3_task` → `_t5_submit()` creates `ml_analysis.video_analysis_jobs` + AWS Batch job
-3. **Region failover**: tries `BATCH_REGIONS_PRIORITY` in order (default eu-north-1 → us-east-1). Stored on `submitted_region`.
-4. `GET /upload/api/task-status` polls via `_t5_status()`
-5. Batch job completes → sentinel `t5://complete/{id}`
-6. Auto-ingest detects sentinel → `_do_ingest_t5()`:
-   - Downloads gzipped JSON from S3 via `bronze_ingest_t5.py` (psycopg `COPY`, same region as DB)
-   - Builds silver
-   - Triggers video trim
-   - **Self-healing**: only sets `session_id` if silver build succeeds → failed ingests retry
-7. Customer notification email
+Media Room → S3 upload → `_t5_submit()` → AWS Batch job → sentinel `t5://complete/{id}` → auto-ingest (`bronze_ingest_t5.py` COPY → silver build → video trim → SES notification). Region failover: eu-north-1 → us-east-1.
 
-**Cancel routing**: `_t5_cancel()` reads `submitted_region` to terminate in correct region.
+### Pipeline components (`ml_pipeline/`)
 
-### Pipeline architecture (`ml_pipeline/`)
+**`court_detector.py`** — CNN (14 keypoints) + Hough-lines fallback. CNN keypoints extracted via threshold 170 + Hough circles + `refine_kps()` line-intersection snap (matching yastrebksv/TennisProject reference). Calibration lock: best detection in first 300 frames, then frozen. `get_court_corners_pixels()` returns 4 baseline corners for player scoring geometry.
 
-`config.py` → `video_preprocessor.py` → `court_detector.py` → `ball_tracker.py` → `player_tracker.py` → `pipeline.py` → `bronze_export.py` (gzip JSON to S3) → `heatmaps.py` → video transcode
+**`ball_tracker.py`** — TrackNet V2 (3-frame, 9ch) with frame-delta Hough fallback for missed frames. V2 detects ~36% of frames; delta fallback recovers ~63%. Three-tier heatmap extraction: Hough circles → CC centroid → argmax. TrackNetV3 architecture ported in `tracknet_v3.py` (U-Net, 8-frame + background median = 27ch, sigmoid output) — activates when `models/tracknet_v3.pt` exists.
 
-**Bronze delivery**: single gzipped JSON to `s3://{bucket}/analysis/{job_id}/bronze.json.gz`, Render-side bulk insert via `COPY`. Eliminates the cross-region write bottleneck (was 22 min for 13K rows; now ~10s).
+**`player_tracker.py`** — Multi-strategy detection + three-tier court-geometry scoring:
+- **Detection**: SAHI tiled inference (416×416 overlapping tiles, `sahi==0.11.18`) + full-frame YOLOv8x-pose + detection-only YOLOv8m for far baseline. Falls back to manual 3-pass if SAHI unavailable.
+- **Scoring** (`_choose_two_players`): One player from each half (near/far). When court corners available:
+  - Tier 1 (3000): Inside court quadrilateral (`cv2.pointPolygonTest`)
+  - Tier 2 (2000): Behind baseline, within sideline extensions (±20% depth, ±15% width)
+  - Tier 3 (1000): Near sideline corridor (baseline-to-net)
+  - Tier 0: Off-court
+  - Tiebreakers: MOG2 motion (+500), bbox area (0-200, bigger = closer to camera), center-line proximity (0-100)
+  - Falls back to centering + motion heuristic when no court corners
+- **MOG2 background subtraction** (`pipeline.py`): foreground mask fed every frame, motion ratio computed per candidate bbox. Moving player > stationary spectator.
 
-**Court detector**: 14 keypoints → homography via `findHomography(RANSAC)`. Validation: ≥4 inliers, |H[0][0]| / |H[1][1]| < 20, inlier reprojection error < 15px. `_last_good_detection` fallback when current frame fails. `to_court_coords()` clamps outputs to `[-5, COURT_WIDTH_DOUBLES_M+5] × [-5, COURT_LENGTH_M+5]`.
+**`pipeline.py`** — Orchestrates court → ball → MOG2 → player per frame. Post-processing: interpolation, bounce detection, speed calc, stationary player filter.
 
-**Ball tracker** (TrackNet V2): three-tier extraction — Hough circles (strongest match) → connected component centroid → heatmap argmax. Bounce detection: y-velocity reversal with `MIN_VEL_MAG=1.0`, min 5-frame spacing. `is_in` uses `COURT_WIDTH_DOUBLES_M` (not singles — previous bug).
+### AWS Batch & Docker
 
-**Player tracker** (YOLOv8x-pose @ imgsz=1280): dual-pass YOLO (full frame + court crop for distant player upscaling). Combined detections deduplicated via IoU > 0.5. Court area filter: rejects > 120px outside court bbox (filters ball persons / spectators). 17 COCO body keypoints stored as JSONB for stroke inference.
-
-**T5 inference**:
-- Player assignment: bounce on top half → hitter on bottom half
-- Serve detection: 2 triggers (both gated by 8s cooldown) — time gap > 3s + bounce in service box, OR hitter near baseline + bounce on opposite side
-- Swing type: pose keypoints (wrist vs center) → fallback to position heuristic → 'other'
-
-### AWS Batch infrastructure
-
-- **Primary: eu-north-1 (Stockholm)** — Render env `BATCH_REGION=eu-north-1`
-- **Fallback: us-east-1 (Virginia)**
-- Both regions: ECR, Batch compute (Spot G4dn.xlarge, **bid 100%**), queue, job def, CloudWatch logs
-- us-east-1 also has a disabled on-demand compute env for Spot unavailability
-- IAM roles: `ten-fifty5-ml-instance-role`, `ten-fifty5-ml-job-role`, `aws-ec2-spot-fleet-tagging-role`. All tagged `Project=TEN-FIFTY5`.
-
-### Database schema (`ml_analysis.*`)
-
-- `video_analysis_jobs` — job tracking: status, progress, batch IDs, video metadata, heatmap S3 keys, `bronze_s3_key`, `submitted_region`
-- `ball_detections` — per-frame ball position
-- `player_detections` — per-frame bbox + court coords + keypoints JSONB
-- `match_analytics` — aggregate stats (singleton)
-
-### Docker build & deploy
+Primary: eu-north-1, fallback: us-east-1. Spot G4dn.xlarge, bid 100%. Base image: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`.
 
 ```bash
 docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
@@ -542,43 +499,60 @@ docker push $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:lat
 # Repeat for us-east-1
 ```
 
-Base: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. Weights in `ml_pipeline/models/` (~270MB, git-ignored): TrackNet V2, YOLOv8x-pose (133MB primary), YOLOv8m-pose (53MB fallback), YOLOv8m, court_keypoints.pth.
+Weights in `ml_pipeline/models/` (~270MB, git-ignored): TrackNet V2, YOLOv8x-pose, YOLOv8m-pose, YOLOv8m, court_keypoints.pth.
 
-### Test harness (`ml_pipeline/harness.py`)
+### Database (`ml_analysis.*`)
+
+`video_analysis_jobs` (job tracking), `ball_detections` (per-frame), `player_detections` (per-frame bbox + court coords + keypoints JSONB), `match_analytics` (aggregate).
+
+### Test harness & eval (`ml_pipeline/harness.py`)
 
 ```bash
+# Validation & comparison
 python -m ml_pipeline.harness validate <task_id>
-python -m ml_pipeline.harness reconcile [s_tid t5_tid]
-python -m ml_pipeline.harness list-jobs [--limit 20]
-python -m ml_pipeline.harness rerun-silver <task_id>
-python -m ml_pipeline.harness rerun-ingest <task_id>
+python -m ml_pipeline.harness reconcile <sportai_tid> <t5_tid>
 python -m ml_pipeline.harness golden-snapshot <task_id> --name N
 python -m ml_pipeline.harness golden-check <name>
+
+# Per-component evaluation (persisted to eval_history.jsonl)
+python -m ml_pipeline.harness eval-ball <task_id>      # detection rate, bounces, speed
+python -m ml_pipeline.harness eval-player <task_id>    # player count, coord variance, path length
+python -m ml_pipeline.harness eval-court <task_id>     # confidence, homography success
+python -m ml_pipeline.harness eval-history [--last N]
+
+# Training data
+python -m ml_pipeline.harness export-ball-labels <task_id> <out.json>
+python -m ml_pipeline.harness export-sportai-labels <task_id> <out.json>
+python -m ml_pipeline.harness extract-frames <video_or_s3> <out_dir> [--fps 25]
 ```
 
-Goldens stored in `ml_pipeline/golden_datasets.json` (version-controlled).
+`ml_pipeline/eval_store.py` persists eval results to `ml_pipeline/eval_history.jsonl`.
 
-### Debug frame export
+### Training pipeline (`ml_pipeline/training/`)
 
-Set `DEBUG_FRAME_INTERVAL > 0` in config. Saves sampled frames with bounding boxes (green = kept, red = filtered). Uploads to `s3://{bucket}/debug/{job_id}/frame_*.jpg`.
+Fine-tune TrackNet V2 on own footage using SportAI ground truth as labels:
+- `export_labels.py` — extract ball labels from DB (T5 detections + SportAI hits)
+- `tracknet_dataset.py` — PyTorch Dataset: 3-frame windows → Gaussian heatmap labels (σ=2.5px)
+- `train_tracknet.py` — freeze encoder (conv1-10), train decoder, BCELoss pos_weight=100, Adam lr=1e-4
+- `extract_frames.py` — extract frames from video/S3 matching `ml_analysis.ball_detections` frame indices
 
-```bash
-aws s3 sync s3://nextpoint-prod-uploads/debug/{job_id}/ ./debug_frames/ --region eu-north-1
-```
+Every dual-submit pair (SportAI + T5 on same video) produces free training labels.
 
-### T5 outstanding issues / next steps
+### Debug frames
 
-**Data quality (the 50-vs-88 gap)**:
-- Ball detection rate ~7% (1100 / 15300 frames). SportAI reaches 30-50%. Hough bug fix + centroid/argmax fallbacks deployed.
-- Court_y has ~5m systematic offset (homography accuracy). Bounces at back baseline area instead of service box. Geometric serve detection relaxed to compensate.
-- `player_id` is court-side assigned (not tracking-id). Under-detects games because `point_number` only increments on `serve_side` change.
-- Speed calculation underestimates ~50%. Doubles-width fix corrected 12-25% of this; remaining gap unexplained.
+`DEBUG_FRAME_INTERVAL > 0` in config. Green = KEPT, red = FILTERED. Uploaded live to `s3://{bucket}/debug/{job_id}/frame_*.jpg`.
 
-**Reconciliation reference**:
+### Reconciliation reference
+
 - SportAI: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves)
-- T5: track in `golden_datasets.json` once metrics are stable
+- T5 baseline: track in `golden_datasets.json` once metrics stable
 
-**Future training** (not in scope): shot sub-classification, winner/forced-error/UFE labelling, shot quality scoring, spin detection.
+### Known gaps
+
+- Ball delta fallback quality unvalidated (may detect player movement, not just ball)
+- TrackNetV3 weights not yet available (architecture ready, needs training or download)
+- Stroke classification mostly "Volley"/"Other" — needs better swing-type inference
+- Speed calculation underestimates ~50% vs SportAI
 
 ---
 
