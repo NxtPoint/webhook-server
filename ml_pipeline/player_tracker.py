@@ -545,33 +545,32 @@ class PlayerTracker:
         # Score each candidate with three-tier priority.
         # score = (tier_bonus, dist_from_midline) — sorted descending,
         # so tier 1 (in-court) always beats tier 2 (near baseline) which
-        # always beats tier 3 (spectator).
+        # FEET-ON-COURT scoring. The key insight: a player standing ON the
+        # court has their feet (bbox bottom = y2) at the court surface level.
+        # A spectator BEHIND the baseline has their feet at a SMALLER pixel-y
+        # (higher up, further from camera). So within each half:
+        #   Far half: prefer LARGEST y2 (feet closest to camera = on court)
+        #   Near half: prefer SMALLEST y1 (feet closest to camera = on court)
+        # This is independent of court_bbox reliability.
         scored = []
         for box, kps in zip(candidates, candidate_kps):
             cx = (box[0] + box[2]) / 2
             cy = (box[1] + box[3]) / 2
-            dist_from_mid = abs(cy - midline_y)
+            y2 = box[3]  # bottom of bbox = feet
+            y1 = box[1]  # top of bbox = head
             half = "far" if cy < midline_y else "near"
 
-            # Tier assignment based on court_bbox
-            if court_bbox is not None:
-                cb_x1, cb_y1, cb_x2, cb_y2 = court_bbox
-                in_court_x = cb_x1 <= cx <= cb_x2
-                in_court_y = cb_y1 <= cy <= cb_y2
-                if in_court_x and in_court_y:
-                    tier = 3  # highest — inside court (tier bonus = 3)
-                elif in_court_x:
-                    # Correct x (on court width) but outside y (behind baseline)
-                    tier = 2  # near baseline area
-                else:
-                    tier = 1  # side spectator / off-court
+            if half == "far":
+                # Far half: prefer largest y2 (feet on court surface, not in stands)
+                # Player on far baseline: y2 ≈ 270 in 1080p
+                # Spectator behind baseline: y2 ≈ 120 in 1080p
+                score = y2
             else:
-                # No court_bbox — fall back to midline distance only
-                tier = 2  # neutral tier for all
+                # Near half: prefer largest cy (closest to near baseline)
+                # This is the original behavior — near player is easy to detect
+                score = cy
 
-            # Compound score: tier dominates, then midline distance as tiebreaker
-            score = tier * frame_h + dist_from_mid
-            scored.append((score, cy, half, box, kps, tier))
+            scored.append((score, cy, half, box, kps))
 
         # Pick best (highest score) from each half
         far_candidates = [s for s in scored if s[2] == "far"]
@@ -584,13 +583,13 @@ class PlayerTracker:
 
         if best_far:
             logger.debug(
-                "_choose_two_players: best_far cy=%.0f tier=%d score=%.0f",
-                best_far[1], best_far[5], best_far[0],
+                "_choose_two_players: best_far cy=%.0f feet_y=%.0f score=%.0f",
+                best_far[1], best_far[3][3], best_far[0],
             )
         if best_near:
             logger.debug(
-                "_choose_two_players: best_near cy=%.0f tier=%d score=%.0f",
-                best_near[1], best_near[5], best_near[0],
+                "_choose_two_players: best_near cy=%.0f score=%.0f",
+                best_near[1], best_near[0],
             )
 
         chosen = []
