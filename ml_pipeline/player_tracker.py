@@ -651,6 +651,15 @@ class PlayerTracker:
         min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
         midline_y = frame_h / 2
 
+        # Court center x — the playing court is always centered in the frame.
+        # The far player stands at ~30-70% of frame width. Bench/sideline
+        # people are at <20% or >80%. We penalize far-half candidates whose
+        # cx is far from center, which prevents sideline persons from winning.
+        court_center_x = frame_w / 2
+        # Maximum acceptable distance from center (fraction of frame width).
+        # Beyond this, the candidate is almost certainly off-court.
+        COURT_X_BAND = 0.30  # ±30% of frame width from center
+
         scored = []
         for box, kps in zip(candidates, candidate_kps):
             cx = (box[0] + box[2]) / 2
@@ -664,10 +673,22 @@ class PlayerTracker:
                 motion_ratio = self._compute_motion_ratio(box, motion_mask)
 
             if half == "far":
-                # PRIMARY: motion bonus (moving player >> stationary spectator)
-                # TIEBREAKER: y2 (feet-on-court, higher y2 = closer to camera = on court)
+                # THREE SIGNALS for far-half candidates:
+                #   1. Motion bonus (moving player >> stationary spectator)
+                #   2. Horizontal centering — court is in the center of the frame.
+                #      Sideline/bench people are far left or right. Penalize candidates
+                #      whose cx deviates from frame center.
+                #   3. y2 tiebreaker (feet-on-court)
                 motion_bonus = MOG2_MOTION_SCORE_WEIGHT if motion_ratio >= MOG2_MIN_MOTION_RATIO else 0
-                score = motion_bonus + y2
+
+                # Centering: 1.0 at center, 0.0 at ±COURT_X_BAND edges, 0.0 beyond
+                x_offset = abs(cx - court_center_x) / frame_w
+                centering = max(0.0, 1.0 - x_offset / COURT_X_BAND)
+                # Centering bonus: up to 500 points (dominates y2 tiebreaker,
+                # but weaker than motion bonus so a moving centered player always wins)
+                centering_bonus = centering * 500
+
+                score = motion_bonus + centering_bonus + y2
             else:
                 # Near half: prefer largest cy (closest to near baseline)
                 score = cy
