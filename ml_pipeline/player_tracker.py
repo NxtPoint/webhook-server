@@ -28,6 +28,8 @@ from ml_pipeline.config import (
     PLAYER_OUTSIDE_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
     DEBUG_FRAME_INTERVAL,
+    MOG2_MIN_MOTION_RATIO,
+    MOG2_MOTION_SCORE_WEIGHT,
 )
 
 DEBUG_FRAMES_DIR = "/tmp/debug_frames"
@@ -124,8 +126,15 @@ class PlayerTracker:
         frame: np.ndarray,
         frame_idx: int,
         court_bbox: Optional[tuple] = None,
+        motion_mask: Optional[np.ndarray] = None,
     ) -> List[PlayerDetection]:
-        """Detect players. Runs YOLO every N frames, reuses last result otherwise."""
+        """Detect players. Runs YOLO every N frames, reuses last result otherwise.
+
+        Args:
+            motion_mask: MOG2 foreground mask (same size as frame). 255 = foreground
+                (moving), 0 = background (static). Used in _choose_two_players to
+                prefer moving candidates over stationary ones in the far half.
+        """
         if (frame_idx - self._last_detect_frame) < self._detect_interval and self._last_result:
             # Reuse last detection with updated frame_idx
             reused = []
@@ -226,6 +235,7 @@ class PlayerTracker:
         # reject this case.
         candidates, candidate_kps = self._choose_two_players(
             candidates, candidate_kps, court_bbox, frame.shape[:2],
+            motion_mask=motion_mask,
         )
 
         # Debug frame export AFTER _choose_two_players so the image shows
@@ -404,6 +414,28 @@ class PlayerTracker:
                 out_kps.append(None)
         return out_boxes, out_kps
 
+    @staticmethod
+    def _compute_motion_ratio(box: tuple, motion_mask: np.ndarray) -> float:
+        """Compute fraction of bbox pixels that are foreground (moving) in the MOG2 mask.
+
+        Returns 0.0-1.0. A moving player typically scores 0.05-0.15;
+        a seated spectator scores 0.00-0.01.
+        """
+        mask_h, mask_w = motion_mask.shape[:2]
+        x1 = max(0, int(box[0]))
+        y1 = max(0, int(box[1]))
+        x2 = min(mask_w, int(box[2]))
+        y2 = min(mask_h, int(box[3]))
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        roi = motion_mask[y1:y2, x1:x2]
+        total_pixels = roi.size
+        if total_pixels == 0:
+            return 0.0
+        # MOG2 mask: 255 = foreground, 0 = background
+        fg_pixels = int((roi > 127).sum())
+        return fg_pixels / total_pixels
+
     def _dedupe_iou(self, boxes_list, kps_list, iou_thresh: float = 0.5):
         """Remove overlapping boxes via greedy IoU deduplication.
 
@@ -510,22 +542,21 @@ class PlayerTracker:
         logger.info("debug frame saved: %s (n_boxes=%d)", out_path, n_boxes)
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
-                            court_bbox, frame_shape) -> tuple:
-        """Select up to 2 players using three-tier priority scoring.
+                            court_bbox, frame_shape,
+                            motion_mask: Optional[np.ndarray] = None) -> tuple:
+        """Select up to 2 players using motion-aware scoring.
 
-        THREE-TIER PRIORITY (user's design):
-          Priority 1: INSIDE the court bbox → strongest signal, always prefer
-          Priority 2: OUTSIDE court but near a baseline → next best
-          Priority 3: Anyone else (spectators on the sides, behind stands)
+        SCORING STRATEGY:
+          For the NEAR half: easy — prefer largest cy (closest to near baseline).
+          For the FAR half: use MOG2 motion mask as the PRIMARY signal.
+            - A playing tennis player MOVES during rallies → high foreground pixels
+            - A seated spectator behind the baseline does NOT → near-zero foreground
+            - motion_ratio = fraction of bbox pixels that are foreground (moving)
+            - If motion_ratio >= MOG2_MIN_MOTION_RATIO → add MOG2_MOTION_SCORE_WEIGHT
+              bonus, which dominates the y2-based tiebreaker
+            - Fallback: if no motion mask available, use y2 (feet-on-court) alone
 
-        Within each tier, candidates are ranked by distance from frame midline
-        (further = closer to a baseline = better). One candidate selected from
-        each half (far/near) of the frame.
-
-        This prevents spectators BEHIND the baseline from outranking players
-        ON the court — previously, the furthest-from-midline candidate won,
-        which was often a spectator behind the far baseline, not the actual
-        far player standing on the court.
+        One candidate selected from each half (far/near) of the frame.
         """
         MIN_Y_SEPARATION_RATIO = 0.35
 
@@ -542,35 +573,28 @@ class PlayerTracker:
         min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
         midline_y = frame_h / 2
 
-        # Score each candidate with three-tier priority.
-        # score = (tier_bonus, dist_from_midline) — sorted descending,
-        # so tier 1 (in-court) always beats tier 2 (near baseline) which
-        # FEET-ON-COURT scoring. The key insight: a player standing ON the
-        # court has their feet (bbox bottom = y2) at the court surface level.
-        # A spectator BEHIND the baseline has their feet at a SMALLER pixel-y
-        # (higher up, further from camera). So within each half:
-        #   Far half: prefer LARGEST y2 (feet closest to camera = on court)
-        #   Near half: prefer SMALLEST y1 (feet closest to camera = on court)
-        # This is independent of court_bbox reliability.
         scored = []
         for box, kps in zip(candidates, candidate_kps):
             cx = (box[0] + box[2]) / 2
             cy = (box[1] + box[3]) / 2
             y2 = box[3]  # bottom of bbox = feet
-            y1 = box[1]  # top of bbox = head
             half = "far" if cy < midline_y else "near"
 
+            # Compute motion ratio from MOG2 foreground mask
+            motion_ratio = 0.0
+            if motion_mask is not None:
+                motion_ratio = self._compute_motion_ratio(box, motion_mask)
+
             if half == "far":
-                # Far half: prefer largest y2 (feet on court surface, not in stands)
-                # Player on far baseline: y2 ≈ 270 in 1080p
-                # Spectator behind baseline: y2 ≈ 120 in 1080p
-                score = y2
+                # PRIMARY: motion bonus (moving player >> stationary spectator)
+                # TIEBREAKER: y2 (feet-on-court, higher y2 = closer to camera = on court)
+                motion_bonus = MOG2_MOTION_SCORE_WEIGHT if motion_ratio >= MOG2_MIN_MOTION_RATIO else 0
+                score = motion_bonus + y2
             else:
                 # Near half: prefer largest cy (closest to near baseline)
-                # This is the original behavior — near player is easy to detect
                 score = cy
 
-            scored.append((score, cy, half, box, kps))
+            scored.append((score, cy, half, box, kps, motion_ratio))
 
         # Pick best (highest score) from each half
         far_candidates = [s for s in scored if s[2] == "far"]
@@ -583,9 +607,18 @@ class PlayerTracker:
 
         if best_far:
             logger.debug(
-                "_choose_two_players: best_far cy=%.0f feet_y=%.0f score=%.0f",
-                best_far[1], best_far[3][3], best_far[0],
+                "_choose_two_players: best_far cy=%.0f feet_y=%.0f score=%.0f motion=%.3f",
+                best_far[1], best_far[3][3], best_far[0], best_far[5],
             )
+            # Log all far candidates with motion ratios every 150 frames
+            if len(far_candidates) > 1:
+                self._diag["far_multi_candidate_frames"] = self._diag.get("far_multi_candidate_frames", 0) + 1
+                # Log top 3 far candidates for debugging
+                for i, fc in enumerate(far_candidates[:3]):
+                    logger.debug(
+                        "  far_cand[%d] cy=%.0f y2=%.0f motion=%.3f score=%.0f",
+                        i, fc[1], fc[3][3], fc[5], fc[0],
+                    )
         if best_near:
             logger.debug(
                 "_choose_two_players: best_near cy=%.0f score=%.0f",
@@ -606,14 +639,12 @@ class PlayerTracker:
                 self._diag["choose2_kept_2"] += 1
                 logger.debug(
                     "_choose_two_players: kept 2, far_cy=%.1f near_cy=%.1f "
-                    "span=%.1f midline=%.1f (from %d)",
-                    best_far[1], best_near[1], span, midline_y, len(candidates),
+                    "span=%.1f midline=%.1f far_motion=%.3f (from %d)",
+                    best_far[1], best_near[1], span, midline_y,
+                    best_far[5], len(candidates),
                 )
                 return [c[3] for c in chosen], [c[4] for c in chosen]
             else:
-                # Span too small — the "far" candidate is probably not a real
-                # far player (bench sitter near net). Keep only the near one
-                # (larger, more reliably detected).
                 self._diag["choose2_kept_1_span_fail"] += 1
                 logger.debug(
                     "_choose_two_players: span=%.1f < min=%.1f, dropping far "
@@ -750,6 +781,7 @@ class PlayerTracker:
         logger.info("  kept_1_single_cand:    %6d (%5.1f%%)", d["choose2_kept_1_single"], pct(d["choose2_kept_1_single"]))
         logger.info("  kept_0:                %6d (%5.1f%%)", d["choose2_kept_0"], pct(d["choose2_kept_0"]))
         logger.info("  dropped_middle (3+):   %6d (%5.1f%%)", d["choose2_dropped_middle"], pct(d["choose2_dropped_middle"]))
+        logger.info("  far_multi_cand_frames: %6d", d.get("far_multi_candidate_frames", 0))
 
     def reset(self):
         self._prev_players.clear()

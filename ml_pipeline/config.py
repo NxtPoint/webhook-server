@@ -32,12 +32,19 @@ SUPPORTED_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv")
 # ---------------------------------------------------------------------------
 TRACKNET_INPUT_WIDTH = 640
 TRACKNET_INPUT_HEIGHT = 360
-TRACKNET_NUM_INPUT_FRAMES = 3   # Sliding window of 3 consecutive frames
+TRACKNET_NUM_INPUT_FRAMES = 3   # Sliding window of 3 consecutive frames (TrackNet V2)
 TRACKNET_OUTPUT_CHANNELS = 256
 TRACKNET_HEATMAP_THRESHOLD = 127  # Standard threshold (lowering to 100 broke ball detection)
 TRACKNET_BGR2RGB = False           # DO NOT convert BGR→RGB. Empirically confirmed on run 33f952b9:
                                    # BGR→RGB dropped detection from 41% to 28% — this TrackNet V2
                                    # checkpoint was trained on BGR (cv2 convention). Keep False.
+
+# TrackNet V3 — drop-in upgrade with 5-frame context window.
+# 5 frames gives more temporal context for ball trajectory prediction,
+# especially for fast serves and occluded frames. Auto-detected by
+# BallTracker based on which weights file exists.
+TRACKNET_V3_WEIGHTS = os.path.join(MODELS_DIR, "tracknet_v3.pt")
+TRACKNET_V3_NUM_INPUT_FRAMES = 5  # 5-frame sliding window
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
@@ -120,6 +127,27 @@ PLAYER_IOU_THRESHOLD = 0.2         # More lenient IoU matching (handles movement
 PLAYER_COURT_MARGIN_PX = 9999      # Effectively DISABLED — court bbox can be wrong, trust YOLO
 PLAYER_DETECTION_INTERVAL = 3      # Run YOLO more often for stable tracking
 PLAYER_DETECTION_INTERVAL_PRACTICE = 10  # Less frequent for practice
+
+# ---------------------------------------------------------------------------
+# MOG2 background subtraction (far-player motion scoring)
+# ---------------------------------------------------------------------------
+# MOG2 separates moving objects (players) from static background (spectators).
+# The foreground mask is used in _choose_two_players to prefer moving candidates
+# in the far half — a player on court MOVES, a spectator in the stands does NOT.
+MOG2_HISTORY = 200                 # frames of history for background model
+MOG2_VAR_THRESHOLD = 50            # variance threshold for foreground detection
+                                   # Higher = less sensitive (fewer false positives)
+MOG2_DETECT_SHADOWS = False        # Don't detect shadows (adds complexity, no benefit here)
+MOG2_LEARNING_RATE = 0.005         # How fast the background adapts. Lower = more stable
+                                   # background model. 0.005 = ~200 frames to fully learn.
+MOG2_MIN_MOTION_RATIO = 0.03      # Minimum fraction of bbox pixels that must be foreground
+                                   # to consider a candidate as "moving". A moving player
+                                   # typically has 5-15% foreground pixels; a seated spectator
+                                   # has 0-1%. 3% is a safe threshold.
+MOG2_MOTION_SCORE_WEIGHT = 1000   # Bonus added to far-half candidate score when motion is
+                                   # above MOG2_MIN_MOTION_RATIO. Must dominate the y2-based
+                                   # score (~0-1080) so a moving candidate always beats a
+                                   # stationary one regardless of y2 position.
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestration

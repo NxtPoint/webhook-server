@@ -6,6 +6,7 @@ Produces a structured AnalysisResult with detections + aggregate stats.
 import time
 import logging
 import numpy as np
+import cv2
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
@@ -18,6 +19,10 @@ from ml_pipeline.config import (
     BOUNCE_MIN_DIRECTION_CHANGE,
     COURT_DETECTION_INTERVAL_PRACTICE,
     PLAYER_DETECTION_INTERVAL_PRACTICE,
+    MOG2_HISTORY,
+    MOG2_VAR_THRESHOLD,
+    MOG2_DETECT_SHADOWS,
+    MOG2_LEARNING_RATE,
 )
 from ml_pipeline.video_preprocessor import VideoPreprocessor, VideoMetadata
 from ml_pipeline.court_detector import CourtDetector
@@ -99,6 +104,15 @@ class TennisAnalysisPipeline:
         self.court_detector = CourtDetector(device=self.device)
         self.ball_tracker = BallTracker(device=self.device)
         self.player_tracker = PlayerTracker(device=self.device)
+
+        # MOG2 background subtractor — separates moving players from static
+        # spectators. Fed every frame; foreground mask passed to player tracker
+        # for motion-based scoring in _choose_two_players.
+        self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=MOG2_HISTORY,
+            varThreshold=MOG2_VAR_THRESHOLD,
+            detectShadows=MOG2_DETECT_SHADOWS,
+        )
 
         # Apply practice-mode intervals
         if practice:
@@ -182,9 +196,17 @@ class TennisAnalysisPipeline:
         # 2. Ball tracking
         self.ball_tracker.detect_frame(frame, frame_idx)
 
-        # 3. Player tracking
+        # 3. MOG2 foreground mask — feed every frame so the background model
+        #    learns. The mask is passed to player tracker for motion scoring.
+        motion_mask = self._bg_subtractor.apply(
+            frame, learningRate=MOG2_LEARNING_RATE,
+        )
+
+        # 4. Player tracking (with motion mask for far-player scoring)
         court_bbox = self.court_detector.get_court_bbox_pixels()
-        self.player_tracker.detect_frame(frame, frame_idx, court_bbox=court_bbox)
+        self.player_tracker.detect_frame(
+            frame, frame_idx, court_bbox=court_bbox, motion_mask=motion_mask,
+        )
 
     def _postprocess(self, result: AnalysisResult):
         """Run interpolation, bounce detection, speed calc, and aggregate stats."""
@@ -351,3 +373,8 @@ class TennisAnalysisPipeline:
         self.player_tracker.reset()
         self.court_detector._last_detection = None
         self.court_detector._last_frame_idx = -30
+        self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(
+            history=MOG2_HISTORY,
+            varThreshold=MOG2_VAR_THRESHOLD,
+            detectShadows=MOG2_DETECT_SHADOWS,
+        )

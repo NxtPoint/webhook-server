@@ -13,8 +13,12 @@ from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
+import os
+
 from ml_pipeline.config import (
     TRACKNET_WEIGHTS,
+    TRACKNET_V3_WEIGHTS,
+    TRACKNET_V3_NUM_INPUT_FRAMES,
     TRACKNET_INPUT_WIDTH,
     TRACKNET_INPUT_HEIGHT,
     TRACKNET_NUM_INPUT_FRAMES,
@@ -55,11 +59,11 @@ class _ConvBlock(nn.Module):
 
 
 class BallTrackerNet(nn.Module):
-    def __init__(self, out_channels=TRACKNET_OUTPUT_CHANNELS):
+    def __init__(self, in_channels=9, out_channels=TRACKNET_OUTPUT_CHANNELS):
         super().__init__()
         self.out_channels = out_channels
-        # Encoder
-        self.conv1 = _ConvBlock(9, 64)
+        # Encoder — in_channels = num_frames * 3 (9 for V2, 15 for V3)
+        self.conv1 = _ConvBlock(in_channels, 64)
         self.conv2 = _ConvBlock(64, 64)
         self.pool1 = nn.MaxPool2d(2, 2)
         self.conv3 = _ConvBlock(64, 128)
@@ -118,12 +122,32 @@ class BallDetection:
 # ── BallTracker ─────────────────────────────────────────────────────────────
 
 class BallTracker:
-    def __init__(self, weights_path: str = TRACKNET_WEIGHTS, device: str = None):
+    def __init__(self, weights_path: str = None, device: str = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # Auto-detect TrackNetV3 (5-frame) vs V2 (3-frame)
+        if weights_path is None:
+            if os.path.exists(TRACKNET_V3_WEIGHTS):
+                weights_path = TRACKNET_V3_WEIGHTS
+                self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES
+                self._in_channels = TRACKNET_V3_NUM_INPUT_FRAMES * 3  # 15
+                logger.info("Using TrackNet V3 (5-frame context): %s", weights_path)
+            else:
+                weights_path = TRACKNET_WEIGHTS
+                self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
+                self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3  # 9
+                logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
+        else:
+            # Explicit path — detect version from filename
+            if "v3" in weights_path.lower():
+                self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES
+                self._in_channels = TRACKNET_V3_NUM_INPUT_FRAMES * 3
+            else:
+                self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
+                self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3
         self.model = self._load_model(weights_path)
         self.scale_x = 1.0
         self.scale_y = 1.0
-        self._frame_buffer: list = []  # last 3 frames (resized)
+        self._frame_buffer: list = []  # last N frames (resized)
         self._prev_gray: Optional[np.ndarray] = None  # for frame-delta ball fallback
         self.detections: List[BallDetection] = []
         # Diagnostics — counters only, no behavior change. Used to diagnose
@@ -142,7 +166,7 @@ class BallTracker:
         }
 
     def _load_model(self, weights_path: str) -> BallTrackerNet:
-        model = BallTrackerNet()
+        model = BallTrackerNet(in_channels=self._in_channels)
         state = torch.load(weights_path, map_location=self.device, weights_only=True)
         model.load_state_dict(state)
         model.to(self.device)
@@ -163,9 +187,9 @@ class BallTracker:
         if TRACKNET_BGR2RGB:
             resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         self._frame_buffer.append(resized)
-        if len(self._frame_buffer) > TRACKNET_NUM_INPUT_FRAMES:
+        if len(self._frame_buffer) > self._num_input_frames:
             self._frame_buffer.pop(0)
-        if len(self._frame_buffer) < TRACKNET_NUM_INPUT_FRAMES:
+        if len(self._frame_buffer) < self._num_input_frames:
             return None
 
         # Stack 3 frames → 9 channels

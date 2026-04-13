@@ -153,10 +153,19 @@ class CourtDetector:
             return self._last_detection
 
         detection = self._detect_cnn(frame)
-        if detection.confidence < COURT_CONFIDENCE_THRESHOLD:
-            fallback = self._detect_hough(frame)
-            if fallback is not None:
-                detection = fallback
+        # During calibration, always TRY Hough as well — the CNN often fails
+        # on far-baseline keypoints while Hough can find all 4 baselines.
+        # Keep whichever has more valid keypoints (= better homography).
+        hough_det = self._detect_hough(frame)
+        if hough_det is not None:
+            hough_valid = int((hough_det.keypoints[:, 0] >= 0).sum())
+            cnn_valid = int((detection.keypoints[:, 0] >= 0).sum()) if detection.homography is not None else 0
+            if detection.confidence < COURT_CONFIDENCE_THRESHOLD or hough_valid > cnn_valid:
+                logger.info(
+                    "court_detect: preferring hough (valid=%d) over cnn (valid=%d, conf=%.2f)",
+                    hough_valid, cnn_valid, detection.confidence,
+                )
+                detection = hough_det
 
         self._last_detection = detection
         if detection.homography is not None:
@@ -309,57 +318,219 @@ class CourtDetector:
         return H
 
     def _detect_hough(self, frame: np.ndarray) -> Optional[CourtDetection]:
-        """Fallback: use Hough line detection to find court lines."""
+        """Robust fallback: detect white court lines via color mask + Hough.
+
+        Strategy for a fixed indoor camera on a blue court:
+        1. Extract white pixels (court lines are white on blue/green surface)
+        2. Find line segments via HoughLinesP
+        3. Cluster lines by angle: near-horizontal and near-vertical
+        4. Cluster horizontal lines by y-position → identify up to 4 lines
+           (far baseline, far service line, near service line, near baseline)
+        5. Cluster vertical lines by x-position → identify sidelines + center
+        6. Compute intersections to get keypoint positions
+        7. Build homography from all identified keypoints
+        """
+        h, w = frame.shape[:2]
+
+        # Step 1: White line mask — court lines are bright white
+        # Use HSV: low saturation + high value = white
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Also use grayscale brightness as a second signal
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
+        # White: S < 50, V > 180 (generous for indoor lighting)
+        white_mask = cv2.inRange(hsv, (0, 0, 180), (180, 50, 255))
+        # Also include very bright pixels from grayscale
+        _, bright_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        combined = cv2.bitwise_or(white_mask, bright_mask)
+        # Morphological close to connect broken line segments
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 2))
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+
+        # Step 2: Hough lines on the white mask
         lines = cv2.HoughLinesP(
-            edges, HOUGH_RHO, np.pi / HOUGH_THETA_DIVISOR,
-            HOUGH_THRESHOLD, minLineLength=HOUGH_MIN_LINE_LENGTH, maxLineGap=HOUGH_MAX_LINE_GAP,
+            combined, HOUGH_RHO, np.pi / HOUGH_THETA_DIVISOR,
+            HOUGH_THRESHOLD, minLineLength=HOUGH_MIN_LINE_LENGTH,
+            maxLineGap=HOUGH_MAX_LINE_GAP,
         )
         if lines is None or len(lines) < 4:
             return None
 
+        # Step 3: Classify by angle — perspective means "horizontal" lines
+        # aren't truly horizontal, so use a wider angle tolerance
         h_lines, v_lines = [], []
         for line in lines:
             x1, y1, x2, y2 = line[0]
-            angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
-            if angle < 30 or angle > 150:
+            angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
+            abs_angle = abs(angle)
+            length = np.hypot(x2 - x1, y2 - y1)
+            if length < 50:
+                continue  # skip short fragments
+            if abs_angle < 45 or abs_angle > 135:
                 h_lines.append(line[0])
-            elif 60 < angle < 120:
+            elif 45 <= abs_angle <= 135:
                 v_lines.append(line[0])
 
         if len(h_lines) < 2 or len(v_lines) < 2:
             return None
 
-        h_lines.sort(key=lambda l: (l[1] + l[3]) / 2)
-        v_lines.sort(key=lambda l: (l[0] + l[2]) / 2)
+        # Step 4: Cluster horizontal lines by average y-position
+        h_clusters = self._cluster_lines_by_position(
+            h_lines, axis="y", min_separation=h * 0.03,
+        )
+        # Step 5: Cluster vertical lines by average x-position
+        v_clusters = self._cluster_lines_by_position(
+            v_lines, axis="x", min_separation=w * 0.03,
+        )
 
-        corners = []
-        for hl in [h_lines[0], h_lines[-1]]:
-            for vl in [v_lines[0], v_lines[-1]]:
-                pt = self._line_intersection(hl, vl)
-                if pt is not None:
-                    corners.append(pt)
-
-        if len(corners) < 4:
+        if len(h_clusters) < 2 or len(v_clusters) < 2:
             return None
 
-        keypoints = np.zeros((COURT_NUM_KEYPOINTS, 2), dtype=np.float32)
-        keypoints[0] = corners[0]
-        keypoints[1] = corners[1]
-        keypoints[2] = corners[2]
-        keypoints[3] = corners[3]
-        for i in range(4, COURT_NUM_KEYPOINTS):
-            t = (i - 4) / max(COURT_NUM_KEYPOINTS - 5, 1)
-            keypoints[i] = (1 - t) * keypoints[0] + t * keypoints[3]
+        # Sort horizontal clusters top-to-bottom (by avg y)
+        h_clusters.sort(key=lambda c: np.mean([(l[1] + l[3]) / 2 for l in c]))
+        # Sort vertical clusters left-to-right (by avg x)
+        v_clusters.sort(key=lambda c: np.mean([(l[0] + l[2]) / 2 for l in c]))
 
-        homography = self._compute_homography(keypoints)
+        # Step 6: Build representative lines from clusters (average endpoints)
+        h_reps = [self._cluster_representative(c) for c in h_clusters]
+        v_reps = [self._cluster_representative(c) for c in v_clusters]
+
+        # We need at least the 2 baselines and 2 outer sidelines
+        top_baseline = h_reps[0]
+        bot_baseline = h_reps[-1]
+        left_sideline = v_reps[0]
+        right_sideline = v_reps[-1]
+
+        # Compute the 4 corner intersections (baseline × sideline)
+        kp0 = self._line_intersection(top_baseline, left_sideline)   # top-left
+        kp1 = self._line_intersection(top_baseline, right_sideline)  # top-right
+        kp2 = self._line_intersection(bot_baseline, left_sideline)   # bottom-left
+        kp3 = self._line_intersection(bot_baseline, right_sideline)  # bottom-right
+
+        if any(p is None for p in [kp0, kp1, kp2, kp3]):
+            return None
+
+        keypoints = np.full((COURT_NUM_KEYPOINTS, 2), -1.0, dtype=np.float32)
+        keypoints[0] = kp0  # baseline top L
+        keypoints[1] = kp1  # baseline top R
+        keypoints[2] = kp2  # baseline bottom L
+        keypoints[3] = kp3  # baseline bottom R
+
+        # Helper: assign intersection result to keypoint only if non-None
+        def _set_kp(idx, line_a, line_b):
+            pt = self._line_intersection(line_a, line_b)
+            if pt is not None:
+                keypoints[idx] = pt
+
+        # Try to identify inner sidelines (singles lines) if we have 4+ vertical clusters
+        if len(v_reps) >= 4:
+            _set_kp(4, top_baseline, v_reps[1])   # left inner top
+            _set_kp(5, bot_baseline, v_reps[1])   # left inner bot
+            _set_kp(6, top_baseline, v_reps[-2])  # right inner top
+            _set_kp(7, bot_baseline, v_reps[-2])  # right inner bot
+
+        # Try to identify service lines if we have 4+ horizontal clusters
+        if len(h_reps) >= 4:
+            # 4 horizontal: far baseline, far service, near service, near baseline
+            far_svc = h_reps[1]
+            near_svc = h_reps[-2]
+            _set_kp(8,  far_svc,  left_sideline)
+            _set_kp(9,  far_svc,  right_sideline)
+            _set_kp(10, near_svc, left_sideline)
+            _set_kp(11, near_svc, right_sideline)
+
+            # Center service line — if we have a middle vertical line
+            if len(v_reps) >= 3:
+                center_v = v_reps[len(v_reps) // 2]
+                _set_kp(12, far_svc,  center_v)
+                _set_kp(13, near_svc, center_v)
+
+        valid_mask = keypoints[:, 0] >= 0
+        n_valid = int(valid_mask.sum())
+        confidence = n_valid / COURT_NUM_KEYPOINTS
+        logger.info(
+            "_detect_hough: found %d/%d keypoints from %d h_clusters × %d v_clusters",
+            n_valid, COURT_NUM_KEYPOINTS, len(h_clusters), len(v_clusters),
+        )
+
+        homography = None
+        if n_valid >= 4:
+            homography = self._compute_homography(keypoints, valid_mask)
+
+        if homography is None:
+            return None
+
         return CourtDetection(
             keypoints=keypoints,
             homography=homography,
-            confidence=0.3,
+            confidence=confidence,
             used_fallback=True,
         )
+
+    @staticmethod
+    def _cluster_lines_by_position(lines: list, axis: str, min_separation: float) -> list:
+        """Cluster line segments by their average position on the given axis.
+
+        Groups lines whose average position differs by less than min_separation.
+        Returns a list of clusters, each cluster being a list of line segments.
+        """
+        if not lines:
+            return []
+
+        def avg_pos(line):
+            x1, y1, x2, y2 = line
+            if axis == "y":
+                return (y1 + y2) / 2
+            return (x1 + x2) / 2
+
+        sorted_lines = sorted(lines, key=avg_pos)
+        clusters = [[sorted_lines[0]]]
+        for line in sorted_lines[1:]:
+            pos = avg_pos(line)
+            cluster_pos = np.mean([avg_pos(l) for l in clusters[-1]])
+            if abs(pos - cluster_pos) < min_separation:
+                clusters[-1].append(line)
+            else:
+                clusters.append([line])
+        return clusters
+
+    @staticmethod
+    def _cluster_representative(cluster: list) -> tuple:
+        """Compute a representative line from a cluster of line segments.
+
+        Returns (x1, y1, x2, y2) — the average of all segment endpoints,
+        extended to span the full range of the cluster.
+        """
+        all_points = []
+        for x1, y1, x2, y2 in cluster:
+            all_points.append((x1, y1))
+            all_points.append((x2, y2))
+        pts = np.array(all_points, dtype=np.float32)
+        # Fit a line through all points using least squares
+        if len(pts) < 2:
+            return tuple(cluster[0])
+        # Sort by x for near-horizontal, by y for near-vertical
+        x_range = pts[:, 0].max() - pts[:, 0].min()
+        y_range = pts[:, 1].max() - pts[:, 1].min()
+        if x_range >= y_range:
+            # Near-horizontal: parameterize by x
+            sorted_pts = pts[pts[:, 0].argsort()]
+            x_min, x_max = sorted_pts[0, 0], sorted_pts[-1, 0]
+            if x_max - x_min < 1:
+                return tuple(cluster[0])
+            coeffs = np.polyfit(pts[:, 0], pts[:, 1], 1)
+            y_min = np.polyval(coeffs, x_min)
+            y_max = np.polyval(coeffs, x_max)
+            return (float(x_min), float(y_min), float(x_max), float(y_max))
+        else:
+            # Near-vertical: parameterize by y
+            sorted_pts = pts[pts[:, 1].argsort()]
+            y_min, y_max = sorted_pts[0, 1], sorted_pts[-1, 1]
+            if y_max - y_min < 1:
+                return tuple(cluster[0])
+            coeffs = np.polyfit(pts[:, 1], pts[:, 0], 1)
+            x_min = np.polyval(coeffs, y_min)
+            x_max = np.polyval(coeffs, y_max)
+            return (float(x_min), float(y_min), float(x_max), float(y_max))
 
     @staticmethod
     def _line_intersection(line1, line2):
