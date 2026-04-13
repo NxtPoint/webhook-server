@@ -48,6 +48,12 @@ Per-component evaluation:
     eval-player <task_id>                — player detection: IDs, coord variance, path
     eval-court <task_id>                 — court detection: homography success, keypoints
 
+Training pipeline (TrackNet fine-tuning):
+    export-ball-labels <task_id> <out.json>   — export T5 ball detections as training labels
+    export-sportai-labels <task_id> <out.json> — export SportAI hit positions as training labels
+    extract-frames <video_or_s3> <output_dir> [--fps 25]
+                                         — extract JPEG frames from video for training
+
 Exit codes:
     0 = all checks passed
     1 = one or more checks failed
@@ -1084,6 +1090,60 @@ def cmd_eval_court(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Training pipeline subcommands
+# ============================================================
+
+def cmd_export_ball_labels(args: argparse.Namespace) -> int:
+    """Export T5 ball detections from ml_analysis.ball_detections."""
+    hr(f"EXPORT BALL LABELS  task_id={args.task_id[:8]}")
+    from ml_pipeline.training.export_labels import export_ball_labels
+    try:
+        labels = export_ball_labels(args.task_id, args.output)
+        print(f"  {PASS} exported {len(labels)} ball labels -> {args.output}")
+        return 0
+    except ValueError as exc:
+        print(f"  {FAIL} {exc}")
+        return 1
+
+
+def cmd_export_sportai_labels(args: argparse.Namespace) -> int:
+    """Export SportAI hit positions from bronze.player_swing."""
+    hr(f"EXPORT SPORTAI LABELS  task_id={args.task_id[:8]}")
+    from ml_pipeline.training.export_labels import export_sportai_labels
+    try:
+        labels = export_sportai_labels(args.task_id, args.output)
+        print(f"  {PASS} exported {len(labels)} SportAI hit labels -> {args.output}")
+        return 0
+    except ValueError as exc:
+        print(f"  {FAIL} {exc}")
+        return 1
+
+
+def cmd_extract_frames(args: argparse.Namespace) -> int:
+    """Extract video frames to JPEG files for training."""
+    hr(f"EXTRACT FRAMES  src={args.video[:60]}  out={args.output_dir}")
+    import os
+    from ml_pipeline.training.extract_frames import extract_frames, extract_frames_s3
+    try:
+        video = args.video
+        if video.startswith("s3://") or (getattr(args, "bucket", None) and not os.path.isfile(video)):
+            n = extract_frames_s3(
+                s3_key=video,
+                output_dir=args.output_dir,
+                fps=args.fps,
+                bucket=getattr(args, "bucket", None),
+                region=getattr(args, "region", None),
+            )
+        else:
+            n = extract_frames(video, args.output_dir, fps=args.fps)
+        print(f"  {PASS} extracted {n} frames -> {args.output_dir}")
+        return 0
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"  {FAIL} {exc}")
+        return 1
+
+
+# ============================================================
 # CLI dispatch
 # ============================================================
 
@@ -1168,6 +1228,31 @@ def main():
     p_ec = sub.add_parser("eval-court")
     p_ec.add_argument("task_id")
 
+    # Training pipeline — label export + frame extraction
+    p_ebl = sub.add_parser(
+        "export-ball-labels",
+        help="Export T5 ball detections from ml_analysis.ball_detections",
+    )
+    p_ebl.add_argument("task_id", help="Task UUID")
+    p_ebl.add_argument("output", help="Output JSON path")
+
+    p_esl = sub.add_parser(
+        "export-sportai-labels",
+        help="Export SportAI hit positions from bronze.player_swing",
+    )
+    p_esl.add_argument("task_id", help="Task UUID")
+    p_esl.add_argument("output", help="Output JSON path")
+
+    p_ef = sub.add_parser(
+        "extract-frames",
+        help="Extract video frames to JPEG files for TrackNet training",
+    )
+    p_ef.add_argument("video", help="Local video path or s3://bucket/key")
+    p_ef.add_argument("output_dir", help="Directory for frame_*.jpg output")
+    p_ef.add_argument("--fps", type=float, default=25.0, help="Extraction FPS (default 25)")
+    p_ef.add_argument("--bucket", default=None, help="S3 bucket (if video is a bare S3 key)")
+    p_ef.add_argument("--region", default=None, help="AWS region for S3 download")
+
     args = p.parse_args()
 
     if args.cmd == "validate-bronze":
@@ -1204,6 +1289,12 @@ def main():
         return cmd_eval_player(args)
     if args.cmd == "eval-court":
         return cmd_eval_court(args)
+    if args.cmd == "export-ball-labels":
+        return cmd_export_ball_labels(args)
+    if args.cmd == "export-sportai-labels":
+        return cmd_export_sportai_labels(args)
+    if args.cmd == "extract-frames":
+        return cmd_extract_frames(args)
 
     return 1
 
