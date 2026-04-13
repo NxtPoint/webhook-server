@@ -687,6 +687,32 @@ class CourtDetector:
 
         return (float(mx), float(my))
 
+    def get_court_corners_pixels(self) -> Optional[list]:
+        """Return the 4 baseline corner keypoints as pixel coordinates.
+
+        Returns [(x,y), (x,y), (x,y), (x,y)] in order:
+          [0] far baseline left   (top-left in image)
+          [1] far baseline right  (top-right)
+          [2] near baseline left  (bottom-left)
+          [3] near baseline right (bottom-right)
+
+        Returns None if fewer than 4 corners are detected.
+        """
+        det = self._last_detection
+        if det is None or det.homography is None:
+            det = self._last_good_detection
+        if det is None:
+            return None
+        kps = det.keypoints
+        # Keypoints 0-3 are the 4 baseline corners
+        corners = []
+        for i in range(4):
+            if kps[i][0] >= 0 and kps[i][1] >= 0:
+                corners.append((float(kps[i][0]), float(kps[i][1])))
+            else:
+                return None  # need all 4
+        return corners
+
     def get_court_bbox_pixels(self) -> Optional[tuple]:
         """Return (x_min, y_min, x_max, y_max) bounding box of detected court.
 

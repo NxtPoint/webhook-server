@@ -156,6 +156,7 @@ class PlayerTracker:
         frame_idx: int,
         court_bbox: Optional[tuple] = None,
         motion_mask: Optional[np.ndarray] = None,
+        court_corners: Optional[list] = None,
     ) -> List[PlayerDetection]:
         """Detect players. Runs YOLO every N frames, reuses last result otherwise.
 
@@ -163,6 +164,8 @@ class PlayerTracker:
             motion_mask: MOG2 foreground mask (same size as frame). 255 = foreground
                 (moving), 0 = background (static). Used in _choose_two_players to
                 prefer moving candidates over stationary ones in the far half.
+            court_corners: 4 baseline corner pixel coords [(x,y),...] from court
+                detector. Used for three-tier court-geometry scoring.
         """
         if (frame_idx - self._last_detect_frame) < self._detect_interval and self._last_result:
             # Reuse last detection with updated frame_idx
@@ -266,7 +269,7 @@ class PlayerTracker:
         # reject this case.
         candidates, candidate_kps = self._choose_two_players(
             candidates, candidate_kps, court_bbox, frame.shape[:2],
-            motion_mask=motion_mask,
+            motion_mask=motion_mask, court_corners=court_corners,
         )
 
         # Debug frame export AFTER _choose_two_players so the image shows
@@ -621,18 +624,21 @@ class PlayerTracker:
 
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape,
-                            motion_mask: Optional[np.ndarray] = None) -> tuple:
-        """Select up to 2 players using motion-aware scoring.
+                            motion_mask: Optional[np.ndarray] = None,
+                            court_corners: Optional[list] = None) -> tuple:
+        """Select up to 2 players using three-tier court-geometry scoring.
 
-        SCORING STRATEGY:
-          For the NEAR half: easy — prefer largest cy (closest to near baseline).
-          For the FAR half: use MOG2 motion mask as the PRIMARY signal.
-            - A playing tennis player MOVES during rallies → high foreground pixels
-            - A seated spectator behind the baseline does NOT → near-zero foreground
-            - motion_ratio = fraction of bbox pixels that are foreground (moving)
-            - If motion_ratio >= MOG2_MIN_MOTION_RATIO → add MOG2_MOTION_SCORE_WEIGHT
-              bonus, which dominates the y2-based tiebreaker
-            - Fallback: if no motion mask available, use y2 (feet-on-court) alone
+        THREE-TIER PRIORITY (per half — near and far scored independently):
+          Tier 1 (3000): INSIDE the court quadrilateral — strongest signal
+          Tier 2 (2000): Behind the baseline, within sideline extensions —
+                         take closest to baseline
+          Tier 3 (1000): Near the sideline corridor (baseline-to-net) —
+                         covers players running wide
+
+        Within each tier, MOG2 motion adds +500 bonus (moving > stationary).
+        Final tiebreaker: proximity to court center.
+
+        Falls back to centering + motion heuristic when court corners unavailable.
 
         One candidate selected from each half (far/near) of the frame.
         """
@@ -651,14 +657,28 @@ class PlayerTracker:
         min_span_px = MIN_Y_SEPARATION_RATIO * frame_h
         midline_y = frame_h / 2
 
-        # Court center x — the playing court is always centered in the frame.
-        # The far player stands at ~30-70% of frame width. Bench/sideline
-        # people are at <20% or >80%. We penalize far-half candidates whose
-        # cx is far from center, which prevents sideline persons from winning.
-        court_center_x = frame_w / 2
-        # Maximum acceptable distance from center (fraction of frame width).
-        # Beyond this, the candidate is almost certainly off-court.
-        COURT_X_BAND = 0.30  # ±30% of frame width from center
+        # Build court polygon and geometry if corners are available
+        court_poly = None       # cv2 polygon for point-in-court test
+        far_baseline_y = None   # pixel y of far baseline (top of court)
+        near_baseline_y = None  # pixel y of near baseline (bottom of court)
+        left_sideline_x = None  # left boundary
+        right_sideline_x = None # right boundary
+        court_center_x = frame_w / 2  # fallback
+
+        if court_corners is not None and len(court_corners) == 4:
+            # corners: [far_left, far_right, near_left, near_right]
+            fl, fr, nl, nr = court_corners
+            court_poly = np.array([fl, fr, nr, nl], dtype=np.float32)
+            far_baseline_y = (fl[1] + fr[1]) / 2
+            near_baseline_y = (nl[1] + nr[1]) / 2
+            left_sideline_x = min(fl[0], nl[0])
+            right_sideline_x = max(fr[0], nr[0])
+            court_center_x = (left_sideline_x + right_sideline_x) / 2
+            # Extend sidelines by 15% for "near sideline" corridor (wide runs)
+            sideline_margin = (right_sideline_x - left_sideline_x) * 0.15
+            # Extend baselines by 20% of court depth for "behind baseline" zone
+            court_depth = abs(near_baseline_y - far_baseline_y)
+            baseline_margin = court_depth * 0.20
 
         scored = []
         for box, kps in zip(candidates, candidate_kps):
@@ -671,27 +691,55 @@ class PlayerTracker:
             motion_ratio = 0.0
             if motion_mask is not None:
                 motion_ratio = self._compute_motion_ratio(box, motion_mask)
+            motion_bonus = 500 if motion_ratio >= MOG2_MIN_MOTION_RATIO else 0
 
-            if half == "far":
-                # THREE SIGNALS for far-half candidates:
-                #   1. Motion bonus (moving player >> stationary spectator)
-                #   2. Horizontal centering — court is in the center of the frame.
-                #      Sideline/bench people are far left or right. Penalize candidates
-                #      whose cx deviates from frame center.
-                #   3. y2 tiebreaker (feet-on-court)
-                motion_bonus = MOG2_MOTION_SCORE_WEIGHT if motion_ratio >= MOG2_MIN_MOTION_RATIO else 0
+            # ── Court-geometry scoring (when court corners available) ────
+            if court_poly is not None:
+                # Point-in-polygon test using feet position (cx, y2)
+                in_court = cv2.pointPolygonTest(court_poly, (cx, y2), False) >= 0
 
-                # Centering: 1.0 at center, 0.0 at ±COURT_X_BAND edges, 0.0 beyond
-                x_offset = abs(cx - court_center_x) / frame_w
-                centering = max(0.0, 1.0 - x_offset / COURT_X_BAND)
-                # Centering bonus: up to 500 points (dominates y2 tiebreaker,
-                # but weaker than motion bonus so a moving centered player always wins)
-                centering_bonus = centering * 500
+                # Behind baseline check: within sideline extensions, behind baseline
+                in_sideline_band = (left_sideline_x - sideline_margin <= cx
+                                    <= right_sideline_x + sideline_margin)
 
-                score = motion_bonus + centering_bonus + y2
+                if half == "far":
+                    behind_baseline = (y2 < far_baseline_y and
+                                       y2 >= far_baseline_y - baseline_margin and
+                                       in_sideline_band)
+                    near_sideline = (not in_court and not behind_baseline and
+                                     in_sideline_band and
+                                     far_baseline_y <= cy <= near_baseline_y)
+                else:
+                    behind_baseline = (y2 > near_baseline_y and
+                                       y2 <= near_baseline_y + baseline_margin and
+                                       in_sideline_band)
+                    near_sideline = (not in_court and not behind_baseline and
+                                     in_sideline_band and
+                                     far_baseline_y <= cy <= near_baseline_y)
+
+                if in_court:
+                    tier = 3000
+                elif behind_baseline:
+                    tier = 2000
+                elif near_sideline:
+                    tier = 1000
+                else:
+                    tier = 0  # off-court, off-sideline — spectator/bench
+
+                # Proximity to court center as tiebreaker within tier (0-100)
+                court_width = right_sideline_x - left_sideline_x
+                if court_width > 0:
+                    proximity = max(0, 1.0 - abs(cx - court_center_x) / (court_width * 0.6)) * 100
+                else:
+                    proximity = 0
+
+                score = tier + motion_bonus + proximity
+
             else:
-                # Near half: prefer largest cy (closest to near baseline)
-                score = cy
+                # ── Fallback: centering + motion (no court geometry) ────
+                x_offset = abs(cx - court_center_x) / frame_w
+                centering = max(0.0, 1.0 - x_offset / 0.30) * 500
+                score = motion_bonus + centering + y2
 
             scored.append((score, cy, half, box, kps, motion_ratio))
 

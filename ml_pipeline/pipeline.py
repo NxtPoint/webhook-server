@@ -202,10 +202,12 @@ class TennisAnalysisPipeline:
             frame, learningRate=MOG2_LEARNING_RATE,
         )
 
-        # 4. Player tracking (with motion mask for far-player scoring)
+        # 4. Player tracking (with motion mask + court geometry for scoring)
         court_bbox = self.court_detector.get_court_bbox_pixels()
+        court_corners = self.court_detector.get_court_corners_pixels()
         self.player_tracker.detect_frame(
             frame, frame_idx, court_bbox=court_bbox, motion_mask=motion_mask,
+            court_corners=court_corners,
         )
 
     def _postprocess(self, result: AnalysisResult):
