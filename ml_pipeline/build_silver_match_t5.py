@@ -449,7 +449,7 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
 
     # ---- Step 2: Fetch all player detections (for nearest-player lookup) ----
     player_dets = conn.execute(sql_text("""
-        SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints
+        SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, stroke_class
         FROM ml_analysis.player_detections
         WHERE job_id = :jid
         ORDER BY frame_idx
@@ -485,7 +485,7 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     far_dets = []
     any_with_coords = []
     for pd in player_dets:
-        frame_idx, pid, cx, cy, centerx, centery, kps = pd
+        frame_idx, pid, cx, cy, centerx, centery, kps, stroke_cls = pd
         mapped_pid = pid_map.get(pid, str(pid))
         entry = {
             "frame_idx": frame_idx,
@@ -493,6 +493,7 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             "court_x": cx, "court_y": cy,
             "center_x": centerx, "center_y": centery,
             "keypoints": kps,
+            "stroke_class": stroke_cls,
         }
         if cy is not None and cx is not None:
             any_with_coords.append(entry)
@@ -674,7 +675,10 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         if is_serve:
             last_serve_ts = ts
 
-        # Swing type inference
+        # Swing type inference — three-tier cascade:
+        # 1. Pose keypoints (near player, 200-400px, high confidence)
+        # 2. Optical flow classifier (far player, stored in stroke_class)
+        # 3. Position-based fallback (ball vs player side → fh/bh)
         swing_type = "other"
         if hitter:
             swing_type = _infer_swing_type_from_keypoints(
@@ -683,10 +687,15 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                 court_y=hitter.get("court_y"),
             )
             if swing_type == "other" and not is_serve:
-                swing_type = _infer_swing_type_from_position(
-                    cx, hitter.get("court_x"), hitter.get("court_y"),
-                    is_serve, is_left_handed,
-                )
+                # Try optical flow classification (far player)
+                flow_class = hitter.get("stroke_class")
+                if flow_class and flow_class != "other":
+                    swing_type = flow_class
+                else:
+                    swing_type = _infer_swing_type_from_position(
+                        cx, hitter.get("court_x"), hitter.get("court_y"),
+                        is_serve, is_left_handed,
+                    )
 
         # Volley detection: hitter within VOLLEY_NET_DISTANCE_M of net
         is_volley = False

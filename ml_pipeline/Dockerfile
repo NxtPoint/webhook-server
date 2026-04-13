@@ -50,6 +50,9 @@ COPY ml_pipeline/db_schema.py /app/ml_pipeline/
 COPY ml_pipeline/db_writer.py /app/ml_pipeline/
 COPY ml_pipeline/bronze_export.py /app/ml_pipeline/
 
+# Stroke classifier (optical flow for far player)
+COPY ml_pipeline/stroke_classifier/ /app/ml_pipeline/stroke_classifier/
+
 # Copy package entry point
 COPY ml_pipeline/__main__.py /app/ml_pipeline/__main__.py
 

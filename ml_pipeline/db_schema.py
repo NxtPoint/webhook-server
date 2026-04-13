@@ -157,6 +157,9 @@ def _create_player_detections_table(conn):
     conn.execute(sql_text(
         "ALTER TABLE ml_analysis.player_detections ADD COLUMN IF NOT EXISTS keypoints JSONB"
     ))
+    conn.execute(sql_text(
+        "ALTER TABLE ml_analysis.player_detections ADD COLUMN IF NOT EXISTS stroke_class TEXT"
+    ))
 
 
 def _create_match_analytics_table(conn):

@@ -68,6 +68,7 @@ class PlayerDetection:
     court_y: Optional[float] = None  # metres
     keypoints: Optional[np.ndarray] = field(default=None, repr=False)
     # keypoints: (17, 3) array — x, y, confidence per COCO keypoint
+    stroke_class: Optional[str] = None  # optical flow classification for far player
 
 
 class PlayerTracker:

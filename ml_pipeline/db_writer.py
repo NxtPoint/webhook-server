@@ -138,25 +138,26 @@ class MLDBWriter:
                     "court_x": d.court_x,
                     "court_y": d.court_y,
                     "keypoints": kps_json,
+                    "stroke_class": getattr(d, 'stroke_class', None),
                 })
                 if len(batch) >= batch_size:
                     conn.execute(sql_text("""
                         INSERT INTO ml_analysis.player_detections
                             (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                             center_x, center_y, court_x, court_y, keypoints)
+                             center_x, center_y, court_x, court_y, keypoints, stroke_class)
                         VALUES
                             (:job_id, :frame_idx, :player_id, :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2,
-                             :center_x, :center_y, :court_x, :court_y, :keypoints)
+                             :center_x, :center_y, :court_x, :court_y, :keypoints, :stroke_class)
                     """), batch)
                     batch = []
             if batch:
                 conn.execute(sql_text("""
                     INSERT INTO ml_analysis.player_detections
                         (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                         center_x, center_y, court_x, court_y, keypoints)
+                         center_x, center_y, court_x, court_y, keypoints, stroke_class)
                     VALUES
                         (:job_id, :frame_idx, :player_id, :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2,
-                         :center_x, :center_y, :court_x, :court_y, :keypoints)
+                         :center_x, :center_y, :court_x, :court_y, :keypoints, :stroke_class)
                 """), batch)
         logger.info(f"Saved {len(detections)} player detections for job {job_id}")
 

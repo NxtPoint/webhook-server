@@ -2,19 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Power BI has been REMOVED.** The custom-built dashboards (`match_analysis.html`, `practice.html`) on the gold presentation layer are the single source of truth for all analytics. The `powerbi-service` Render service, `powerbi_app.py`, `powerbi_embed.py`, `azure_capacity.py`, `powerbi_capacity_sessions.py`, and `analytics.html` have been deleted. All `PBI_*` / `AZ_*` env vars should be removed from Render environment settings. The `pbi_refresh_*` columns remain in `bronze.submission_context` (harmless, no code writes to them). `gold.vw_client_match_summary` is still live (feeds match list sidebar).
-
 ## Services and How to Run
 
 Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 
-| Service | Start command | Entry point | Status |
-|---|---|---|---|
-| **Main API** (`webhook-server`) | `gunicorn wsgi:app` | `wsgi.py` → `upload_app.py` | Active |
-| **Ingest worker** | `gunicorn ingest_worker_app:app` | `ingest_worker_app.py` | Active |
-| **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` | Active |
-| **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` | Active |
-| ~~Power BI service~~ | ~~deleted~~ | ~~deleted~~ | **REMOVED** |
+| Service | Start command | Entry point |
+|---|---|---|
+| **Main API** (`webhook-server`) | `gunicorn wsgi:app` | `wsgi.py` → `upload_app.py` |
+| **Ingest worker** | `gunicorn ingest_worker_app:app` | `ingest_worker_app.py` |
+| **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` |
+| **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` |
 
 The Locker Room service serves eleven HTML SPAs via `send_file()`. No DB access — only Flask + gunicorn installed, not the full `requirements.txt`:
 
@@ -27,8 +24,6 @@ The Locker Room service serves eleven HTML SPAs via `send_file()`. No DB access 
 - `GET /coach-accept` → `coach_accept.html`
 - `GET /practice` → `practice.html` (practice analytics dashboard)
 - `GET /match-analysis` → `match_analysis.html` (**the primary match dashboard**)
-- ~~`GET /analytics`~~ (PBI embed — **REMOVED**)
-
 The main webhook-server also serves all of these as same-origin backups (for API access from within iframes).
 
 **Local dev:**
@@ -72,7 +67,7 @@ bronze.*  →  silver.*  →  gold.*  →  API  →  Dashboards + LLM Coach
 - `silver.point_detail` — one row per shot. Derived fields: serve zones (`serve_side_d`, `serve_bucket_d`), rally locations (A-D), aggression (`Attack`/`Neutral`/`Defence`), depth (`Deep`/`Middle`/`Short`), stroke (`Forehand`/`Backhand`/`Serve`/`Volley`/`Slice`/`Overhead`/`Other`), outcome (`Winner`/`Error`/`In`), serve try (`1st`/`2nd`/`Double`), ace/DF detection, normalised coordinates. Built by `build_silver_v2.py` (5-pass SQL). `model` column distinguishes `'sportai'` vs `'t5'` rows so both pipelines coexist.
 - `silver.practice_detail` — practice equivalent. Built by `ml_pipeline/build_silver_practice.py` (3-pass).
 
-**Gold** (`gold.*`): Presentation layer. Thin views — **one per chart or one per widget** — that aggregate silver into exactly the shape the frontend needs. No Python/JS aggregation downstream. Same views feed dashboards, LLM coach, and legacy PBI.
+**Gold** (`gold.*`): Presentation layer. Thin views — **one per chart or one per widget** — that aggregate silver into exactly the shape the frontend needs. No Python/JS aggregation downstream. Same views feed dashboards and LLM coach.
 
 See [Dashboards & Gold Views](#dashboards--gold-views) below for the full catalogue.
 
@@ -135,7 +130,7 @@ For practice: trim source is `trim_output_s3_key` (the ML-produced practice.mp4)
 
 ## Dashboards & Gold Views
 
-The primary analytics experience. Custom-built ECharts + canvas dashboards that read from thin SQL views. Replaces Power BI entirely.
+The primary analytics experience. Custom-built ECharts + canvas dashboards that read from thin SQL views.
 
 ### The Dashboard (`match_analysis.html`)
 
@@ -346,7 +341,6 @@ Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMI
 | `GET /api/client/backoffice/pipeline` | Admin pipeline status |
 | `GET /api/client/backoffice/customers` | Admin customer list |
 | `GET /api/client/backoffice/kpis` | Admin KPI cards |
-| ~~`GET /api/client/pbi-embed` / `pbi-heartbeat` / `pbi-session-end`~~ | **DEPRECATED** (PBI retirement) |
 
 ## Locker Room SPAs
 
@@ -416,14 +410,12 @@ All auth via URL params forwarded through the portal: `?email=&firstName=&surnam
 **Legacy (Wix payment transition — remove when own payment auth is built):**
 `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`, `WIX_NOTIFY_TIMEOUT_S`, `WIX_NOTIFY_RETRIES`
 
-**Legacy (Power BI — to be removed)**: `POWERBI_SERVICE_BASE_URL`, `POWERBI_SERVICE_OPS_KEY`, `PBI_TENANT_ID`, `PBI_CLIENT_ID`, `PBI_CLIENT_SECRET`, `PBI_WORKSPACE_ID`, `PBI_REPORT_ID`, `PBI_DATASET_ID`, and all `AZ_*` vars on the `powerbi-service` service. Delete when `powerbi-service` is removed from `render.yaml`.
-
 ### Other Services
 
-- **Ingest Worker**: `INGEST_WORKER_OPS_KEY` (required — startup crash), `DATABASE_URL`, `VIDEO_WORKER_*` for trim trigger. PBI-related vars no longer needed (service no longer triggers PBI refresh).
+- **Ingest Worker**: `INGEST_WORKER_OPS_KEY` (required — startup crash), `DATABASE_URL`, `VIDEO_WORKER_*` for trim trigger.
 - **Video Trim Worker** (Docker): `VIDEO_WORKER_OPS_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS credentials. FFmpeg tunables: `VIDEO_CRF=28`, `VIDEO_PRESET=veryfast`, `FFMPEG_TIMEOUT_S=1800`.
 - **Locker Room**: `PORT=5050` only. No DB or S3.
-- **Cron `cron_capacity_sweep.py`**: `OPS_KEY`, `DATABASE_URL`, `INGEST_STALE_S=1800`, `TRIM_STALE_S=1800`. PBI sweep (`PBI_REFRESH_STALE_S`) becomes a no-op once PBI is removed.
+- **Cron `cron_capacity_sweep.py`**: `OPS_KEY`, `DATABASE_URL`, `INGEST_STALE_S=1800`, `TRIM_STALE_S=1800`.
 - **Cron `cron_monthly_refill.py`**: `BILLING_OPS_KEY` or `OPS_KEY`.
 - **Lambda `lambda/ml_trigger.py`**: `BATCH_JOB_QUEUE`, `BATCH_JOB_DEF`, `DATABASE_URL`.
 - **ML Pipeline Docker** (`ml_pipeline/__main__.py`): `S3_BUCKET`, `DATABASE_URL`, `AWS_REGION=us-east-1`.
@@ -551,13 +543,27 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 
 **Near player** (200-400px, has pose keypoints): Four-tier heuristic from COCO keypoints — serve (arm raised at baseline), overhead (arm raised mid-court), volley (near net + compact arm), forehand/backhand (wrist position relative to shoulders, three signal tiers). Handles both handedness.
 
-**Far player** (30-40px, no pose): Currently defaults to "Other". Planned: optical flow classifier on bbox crop ±5 frames around hit events, trained on SportAI labels from dual-submit pairs. Research recommends OpenCV Farneback flow → small CNN, targeting 75-85% accuracy. See `memory/project_far_player_stroke_research.md`.
+**Far player** (30-40px, no pose): Optical flow classifier in `ml_pipeline/stroke_classifier/`. Three-tier cascade in silver builder: keypoints → optical flow → position fallback.
+
+- `flow_extractor.py` — Farneback dense optical flow on bbox crop ±5 frames around hit events, resized to canonical 64×48
+- `model.py` — StrokeFlowCNN: lightweight 3D-CNN (~50K params), 5-class (fh/bh/serve/volley/other). Runs on CPU <5ms/hit
+- `train.py` — Training script with augmentation (temporal flip, mirror, magnitude scaling)
+- `export_training_data.py` — Aligns SportAI ground truth with T5 player detections from dual-submit pairs
+
+**Pipeline integration**: After bounce detection, `pipeline.py::_classify_far_player_strokes()` re-reads video at bounce frames ±5, extracts flow, classifies, stores `stroke_class` on `PlayerDetection` → persisted to `ml_analysis.player_detections.stroke_class`. Silver builder reads it as tier 2 in the cascade.
+
+**Training workflow**:
+```bash
+python -m ml_pipeline.harness export-stroke-data --sportai-task <id> --t5-task <id> --video <path> --output <dir>
+python -m ml_pipeline.harness train-stroke --data <dir> --epochs 50
+```
+Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `StrokeClassifier` at pipeline runtime. Target: 75-85% accuracy on 200+ labeled examples from dual-submit pairs.
 
 ### Known gaps
 
 - Ball delta fallback quality unvalidated (may detect player movement, not just ball)
 - TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
-- Far-player stroke classification not yet implemented (optical flow approach planned)
+- Stroke classifier weights not yet trained (architecture + pipeline ready, needs dual-submit data)
 - Speed calculation underestimates ~50% vs SportAI
 
 ---

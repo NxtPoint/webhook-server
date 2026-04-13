@@ -3,6 +3,7 @@ TennisAnalysisPipeline — Orchestrates all three ML models frame-by-frame.
 Produces a structured AnalysisResult with detections + aggregate stats.
 """
 
+import os
 import time
 import logging
 import numpy as np
@@ -261,6 +262,9 @@ class TennisAnalysisPipeline:
             serves_in = sum(1 for b in first_bounces if b.is_in is True)
             result.first_serve_pct = (serves_in / len(first_bounces) * 100) if first_bounces else 0
 
+        # Stroke classification for far player via optical flow
+        self._classify_far_player_strokes(result)
+
         # Player stats
         pids = set(d.player_id for d in result.player_detections)
         result.player_count = len(pids)
@@ -353,6 +357,126 @@ class TennisAnalysisPipeline:
                 "_filter_stationary_players: removed %d player_ids, %d detections remain",
                 len(rejected_ids), len(self.player_tracker.detections),
             )
+
+    def _classify_far_player_strokes(self, result: AnalysisResult):
+        """Classify far-player strokes using optical flow.
+
+        After bounce detection, identifies hits where the far player (player_id=1)
+        was the hitter, extracts optical flow from the video around those frames,
+        and runs the stroke classifier. Results are stored on each PlayerDetection's
+        stroke_class field.
+
+        Gracefully skips if:
+          - No trained model weights available (stroke_classifier.pt)
+          - No bounces detected
+          - Video path not accessible for re-reading
+        """
+        try:
+            from ml_pipeline.stroke_classifier.model import StrokeClassifier
+            from ml_pipeline.stroke_classifier.flow_extractor import (
+                extract_flow_features, flow_to_input_tensor, HitEvent, FLOW_WINDOW,
+            )
+        except ImportError:
+            logger.debug("Stroke classifier not available — skipping")
+            return
+
+        classifier = StrokeClassifier(device=self.device)
+        if not classifier.available:
+            logger.info("Stroke classifier weights not found — skipping far-player classification")
+            return
+
+        # Find bounce frames (hit events)
+        bounces = [d for d in result.ball_detections if d.is_bounce]
+        if not bounces:
+            return
+
+        # Build a map: frame_idx → far player detection (player_id=1)
+        far_dets = {}
+        for pd in result.player_detections:
+            if pd.player_id == 1:
+                far_dets[pd.frame_idx] = pd
+
+        # Build HitEvent list for far-player bounces
+        hit_events = []
+        hit_to_frame = {}
+        for bounce in bounces:
+            fi = bounce.frame_idx
+            det = far_dets.get(fi)
+            if det is None:
+                # Search nearby frames
+                for offset in range(1, 6):
+                    det = far_dets.get(fi + offset) or far_dets.get(fi - offset)
+                    if det:
+                        break
+            if det is None:
+                continue
+
+            hit = HitEvent(
+                frame_idx=fi,
+                player_id=1,
+                bbox=det.bbox,
+            )
+            hit_events.append(hit)
+            hit_to_frame[fi] = det
+
+        if not hit_events:
+            return
+
+        # Determine which frames we need from the video
+        needed_frames = set()
+        for hit in hit_events:
+            for i in range(hit.frame_idx - FLOW_WINDOW, hit.frame_idx + FLOW_WINDOW + 1):
+                if i >= 0:
+                    needed_frames.add(i)
+
+        # Second pass over video to extract only needed frames
+        video_path = result.video_path
+        if not video_path or not os.path.exists(video_path):
+            logger.warning("Video not accessible for stroke classification")
+            return
+
+        logger.info(f"Stroke classification: extracting {len(needed_frames)} frames "
+                     f"for {len(hit_events)} far-player hits")
+        frames = {}
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.warning(f"Cannot reopen video for stroke classification: {video_path}")
+            return
+
+        try:
+            fi = 0
+            max_needed = max(needed_frames) if needed_frames else 0
+            while fi <= max_needed:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if fi in needed_frames:
+                    frames[fi] = frame
+                fi += 1
+        finally:
+            cap.release()
+
+        # Extract optical flow features
+        flow_features = extract_flow_features(frames, hit_events)
+        if not flow_features:
+            return
+
+        # Classify in batch
+        flow_tensors = [flow_to_input_tensor(ff) for ff in flow_features]
+        predictions = classifier.classify_batch(flow_tensors)
+
+        # Assign stroke_class to the corresponding PlayerDetection
+        classified = 0
+        for ff, (stroke_class, confidence) in zip(flow_features, predictions):
+            if confidence < 0.4:
+                continue  # low confidence → keep as "other"
+            det = hit_to_frame.get(ff.hit.frame_idx)
+            if det:
+                det.stroke_class = stroke_class
+                classified += 1
+
+        logger.info(f"Stroke classification: classified {classified}/{len(hit_events)} "
+                     f"far-player hits")
 
     def _compute_rallies(self, bounces: List[BallDetection]) -> List[List[BallDetection]]:
         """Split bounces into rallies. A gap > BOUNCE_MIN_DIRECTION_CHANGE frames starts a new rally."""
