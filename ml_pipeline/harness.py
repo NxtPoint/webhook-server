@@ -40,6 +40,14 @@ Regression / golden datasets:
     golden-snapshot <task_id> --name N   — capture a known-good baseline
     golden-check <name>                  — validate current data against snapshot
 
+Eval store:
+    eval-history [--last N]              — show recent evaluation history
+
+Per-component evaluation:
+    eval-ball <task_id>                  — ball detection quality: rate, speed, bounces
+    eval-player <task_id>                — player detection: IDs, coord variance, path
+    eval-court <task_id>                 — court detection: homography success, keypoints
+
 Exit codes:
     0 = all checks passed
     1 = one or more checks failed
@@ -653,6 +661,429 @@ def cmd_dual_submit(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Eval store history
+# ============================================================
+
+def cmd_eval_history(args: argparse.Namespace) -> int:
+    from ml_pipeline.eval_store import show_history
+    show_history(last_n=args.last)
+    return 0
+
+
+# ============================================================
+# Per-component evaluation — ball
+# ============================================================
+
+# Thresholds for ball eval
+_BALL_MIN_DETECTION_RATE_PCT = 5.0      # at least 5% of frames have ball detected
+_BALL_MIN_BOUNCES = 5                   # need at least a few bounces to be useful
+_BALL_MIN_COURT_COORD_PCT = 50.0        # at least half of detected balls have court coords
+_BALL_MIN_SPEED_POP_PCT = 20.0          # at least 20% have a valid speed reading
+_BALL_MAX_SPEED_KMH = 300.0             # sanity cap
+
+
+def cmd_eval_ball(args: argparse.Namespace) -> int:
+    """
+    Evaluate ball detection quality for a T5 job.
+
+    Looks up the job_id for the given task_id, then analyses
+    ml_analysis.ball_detections and ml_analysis.video_analysis_jobs.
+    """
+    task_id = args.task_id
+    hr(f"EVAL BALL  task_id={task_id[:8]}")
+    engine = get_engine()
+    all_ok = True
+
+    with engine.connect() as conn:
+        # Resolve task_id -> job_id (T5 job)
+        job = conn.execute(text("""
+            SELECT job_id::text AS job_id, total_frames, video_fps, video_duration_sec
+            FROM ml_analysis.video_analysis_jobs
+            WHERE task_id = CAST(:t AS uuid)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"t": task_id}).mappings().first()
+
+        if not job:
+            print(f"  {FAIL} no T5 job found for task_id={task_id}")
+            return 1
+
+        job_id = job["job_id"]
+        total_frames = job["total_frames"] or 0
+        print(f"  {INFO} job_id={job_id[:8]}  total_frames={total_frames}  fps={job['video_fps']}")
+
+        # Ball detection stats
+        ball = conn.execute(text("""
+            SELECT
+                count(*)                                         AS detected_frames,
+                count(*) FILTER (WHERE is_bounce IS TRUE)        AS bounce_count,
+                count(court_x)                                   AS court_coord_pop,
+                count(speed_kmh)                                 AS speed_pop,
+                round(avg(speed_kmh)::numeric, 1)               AS speed_avg_kmh,
+                round(percentile_cont(0.5) WITHIN GROUP
+                      (ORDER BY speed_kmh)::numeric, 1)          AS speed_median_kmh,
+                round(max(speed_kmh)::numeric, 1)               AS speed_max_kmh,
+                round(min(speed_kmh)::numeric, 1)               AS speed_min_kmh,
+                min(court_x)                                     AS court_x_min,
+                max(court_x)                                     AS court_x_max,
+                min(court_y)                                     AS court_y_min,
+                max(court_y)                                     AS court_y_max
+            FROM ml_analysis.ball_detections
+            WHERE job_id = CAST(:j AS uuid)
+        """), {"j": job_id}).mappings().first()
+
+    detected = int(ball["detected_frames"] or 0)
+    bounces = int(ball["bounce_count"] or 0)
+    court_pop = int(ball["court_coord_pop"] or 0)
+    speed_pop = int(ball["speed_pop"] or 0)
+    speed_avg = ball["speed_avg_kmh"]
+    speed_median = ball["speed_median_kmh"]
+    speed_max = ball["speed_max_kmh"]
+
+    # Detection rate
+    det_rate_pct = (detected / total_frames * 100) if total_frames > 0 else 0.0
+    court_pct = (court_pop / detected * 100) if detected > 0 else 0.0
+    speed_pct = (speed_pop / detected * 100) if detected > 0 else 0.0
+
+    sub("detection coverage")
+    all_ok &= check(
+        f"detection_rate_>={_BALL_MIN_DETECTION_RATE_PCT}%",
+        det_rate_pct >= _BALL_MIN_DETECTION_RATE_PCT,
+        f"{det_rate_pct:.1f}%  ({detected}/{total_frames} frames)",
+    )
+    all_ok &= check(
+        f"bounce_count_>={_BALL_MIN_BOUNCES}",
+        bounces >= _BALL_MIN_BOUNCES,
+        bounces,
+    )
+    all_ok &= check(
+        f"court_coord_pct_>={_BALL_MIN_COURT_COORD_PCT}%",
+        court_pct >= _BALL_MIN_COURT_COORD_PCT,
+        f"{court_pct:.1f}%  ({court_pop}/{detected})",
+    )
+    all_ok &= check(
+        f"speed_pop_pct_>={_BALL_MIN_SPEED_POP_PCT}%",
+        speed_pct >= _BALL_MIN_SPEED_POP_PCT,
+        f"{speed_pct:.1f}%  ({speed_pop}/{detected})",
+    )
+
+    sub("speed distribution")
+    speed_ok = (speed_max is None) or (0 < speed_max <= _BALL_MAX_SPEED_KMH)
+    all_ok &= check(
+        f"speed_max_<={_BALL_MAX_SPEED_KMH}km/h",
+        speed_ok,
+        f"max={speed_max}  avg={speed_avg}  median={speed_median} (km/h)",
+    )
+
+    sub("court coordinate range")
+    cx_ok = ball["court_x_min"] is None or (
+        float(ball["court_x_min"]) >= -2.0 and float(ball["court_x_max"]) <= 13.0
+    )
+    cy_ok = ball["court_y_min"] is None or (
+        float(ball["court_y_min"]) >= -2.0 and float(ball["court_y_max"]) <= 26.0
+    )
+    all_ok &= check(
+        "court_x_in_range[-2..13]",
+        cx_ok,
+        f"[{ball['court_x_min']}, {ball['court_x_max']}]",
+    )
+    all_ok &= check(
+        "court_y_in_range[-2..26]",
+        cy_ok,
+        f"[{ball['court_y_min']}, {ball['court_y_max']}]",
+    )
+
+    # Persist to eval store
+    metrics = {
+        "detection_rate_pct": round(det_rate_pct, 2),
+        "detected_frames": detected,
+        "total_frames": total_frames,
+        "bounce_count": bounces,
+        "court_coord_pct": round(court_pct, 2),
+        "speed_pop_pct": round(speed_pct, 2),
+        "speed_avg_kmh": float(speed_avg) if speed_avg is not None else None,
+        "speed_median_kmh": float(speed_median) if speed_median is not None else None,
+        "speed_max_kmh": float(speed_max) if speed_max is not None else None,
+    }
+    from ml_pipeline.eval_store import record_component_eval
+    record_component_eval(task_id=task_id, component="ball", passed=all_ok, metrics=metrics)
+
+    print()
+    print(f"BALL EVAL: {'PASS' if all_ok else 'FAIL'}")
+    return 0 if all_ok else 1
+
+
+# ============================================================
+# Per-component evaluation — player
+# ============================================================
+
+# Thresholds for player eval
+_PLAYER_EXPECTED_IDS = 2
+_PLAYER_MIN_FRAMES_PER_PLAYER = 50       # each player should appear in >=50 frames
+_PLAYER_MIN_COORD_VARIANCE = 0.5         # court_x variance — too low = fixed coords bug
+_PLAYER_MAX_COORD_VARIANCE = 200.0       # sanity cap — extremely noisy tracking
+
+
+def cmd_eval_player(args: argparse.Namespace) -> int:
+    """
+    Evaluate player detection quality for a T5 job.
+
+    Checks: unique player IDs, frames per player, coordinate variance
+    (a very low variance signals the "fixed coordinates" bug), path length.
+    """
+    task_id = args.task_id
+    hr(f"EVAL PLAYER  task_id={task_id[:8]}")
+    engine = get_engine()
+    all_ok = True
+
+    with engine.connect() as conn:
+        job = conn.execute(text("""
+            SELECT job_id::text AS job_id, total_frames
+            FROM ml_analysis.video_analysis_jobs
+            WHERE task_id = CAST(:t AS uuid)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"t": task_id}).mappings().first()
+
+        if not job:
+            print(f"  {FAIL} no T5 job found for task_id={task_id}")
+            return 1
+
+        job_id = job["job_id"]
+        total_frames = job["total_frames"] or 0
+        print(f"  {INFO} job_id={job_id[:8]}  total_frames={total_frames}")
+
+        # Per-player stats
+        per_player = conn.execute(text("""
+            SELECT
+                player_id,
+                count(*)                                  AS frame_count,
+                round(var_pop(court_x)::numeric, 3)       AS var_x,
+                round(var_pop(court_y)::numeric, 3)       AS var_y,
+                round(avg(court_x)::numeric, 2)           AS avg_x,
+                round(avg(court_y)::numeric, 2)           AS avg_y,
+                count(court_x)                            AS court_x_pop,
+                count(keypoints)                          AS kp_pop
+            FROM ml_analysis.player_detections
+            WHERE job_id = CAST(:j AS uuid)
+            GROUP BY player_id
+            ORDER BY player_id
+        """), {"j": job_id}).mappings().all()
+
+        # Overall summary
+        summary = conn.execute(text("""
+            SELECT
+                count(DISTINCT player_id)                 AS unique_players,
+                count(*)                                  AS total_detections,
+                count(court_x)                            AS court_pop,
+                count(keypoints)                          AS kp_pop
+            FROM ml_analysis.player_detections
+            WHERE job_id = CAST(:j AS uuid)
+        """), {"j": job_id}).mappings().first()
+
+    unique_players = int(summary["unique_players"] or 0)
+    total_detections = int(summary["total_detections"] or 0)
+    court_pop = int(summary["court_pop"] or 0)
+    kp_pop = int(summary["kp_pop"] or 0)
+
+    sub("player ID coverage")
+    all_ok &= check(
+        f"unique_player_ids_=={_PLAYER_EXPECTED_IDS}",
+        unique_players == _PLAYER_EXPECTED_IDS,
+        unique_players,
+        expected=_PLAYER_EXPECTED_IDS,
+    )
+    all_ok &= check("total_detections_>0", total_detections > 0, total_detections)
+    court_pct = (court_pop / total_detections * 100) if total_detections > 0 else 0.0
+    all_ok &= check("court_coord_pop_>0", court_pop > 0, f"{court_pct:.1f}% ({court_pop}/{total_detections})")
+    all_ok &= check("keypoints_pop_>0", kp_pop > 0, kp_pop)
+
+    sub("per-player detail")
+    variance_values = []
+    for p in per_player:
+        pid = p["player_id"]
+        frames = int(p["frame_count"] or 0)
+        vx = float(p["var_x"] or 0)
+        vy = float(p["var_y"] or 0)
+        coord_var = round((vx + vy) / 2, 3)
+        variance_values.append(coord_var)
+
+        frames_ok = frames >= _PLAYER_MIN_FRAMES_PER_PLAYER
+        # Coord variance: low = fixed coords bug, very high = noisy tracking
+        var_ok = _PLAYER_MIN_COORD_VARIANCE <= coord_var <= _PLAYER_MAX_COORD_VARIANCE
+        all_ok &= check(
+            f"player_{pid}_frames_>={_PLAYER_MIN_FRAMES_PER_PLAYER}",
+            frames_ok,
+            f"{frames} frames  avg_x={p['avg_x']} avg_y={p['avg_y']}",
+        )
+        all_ok &= check(
+            f"player_{pid}_coord_variance_in_range",
+            var_ok,
+            f"var_avg={coord_var}  (var_x={vx} var_y={vy})",
+        )
+
+    coord_variance_avg = round(sum(variance_values) / len(variance_values), 3) if variance_values else 0.0
+
+    # Persist to eval store
+    metrics = {
+        "unique_player_ids": unique_players,
+        "total_detections": total_detections,
+        "total_frames": total_frames,
+        "court_coord_pop": court_pop,
+        "keypoints_pop": kp_pop,
+        "coord_variance_avg": coord_variance_avg,
+        "per_player": [
+            {
+                "player_id": str(p["player_id"]),
+                "frame_count": int(p["frame_count"] or 0),
+                "var_x": float(p["var_x"] or 0),
+                "var_y": float(p["var_y"] or 0),
+                "avg_x": float(p["avg_x"] or 0),
+                "avg_y": float(p["avg_y"] or 0),
+            }
+            for p in per_player
+        ],
+    }
+    from ml_pipeline.eval_store import record_component_eval
+    record_component_eval(task_id=task_id, component="player", passed=all_ok, metrics=metrics)
+
+    print()
+    print(f"PLAYER EVAL: {'PASS' if all_ok else 'FAIL'}")
+    return 0 if all_ok else 1
+
+
+# ============================================================
+# Per-component evaluation — court
+# ============================================================
+
+# Thresholds for court eval
+_COURT_MIN_SUCCESS_RATE_PCT = 30.0      # at least 30% of frames have valid homography
+_COURT_MIN_AVG_KEYPOINTS = 4.0          # on average at least 4 keypoints detected
+_COURT_MAX_REPROJ_ERROR = 15.0          # reprojection error threshold (pixels)
+
+
+def cmd_eval_court(args: argparse.Namespace) -> int:
+    """
+    Evaluate court detection quality for a T5 job.
+
+    Uses ml_analysis.video_analysis_jobs (job-level court stats).
+    Player court coords are a proxy for homography quality: if they exist
+    the homography was applied successfully.
+    """
+    task_id = args.task_id
+    hr(f"EVAL COURT  task_id={task_id[:8]}")
+    engine = get_engine()
+    all_ok = True
+
+    with engine.connect() as conn:
+        job = conn.execute(text("""
+            SELECT job_id::text AS job_id,
+                   total_frames,
+                   court_detected,
+                   court_confidence,
+                   processing_time_sec,
+                   bronze_s3_key
+            FROM ml_analysis.video_analysis_jobs
+            WHERE task_id = CAST(:t AS uuid)
+            ORDER BY created_at DESC
+            LIMIT 1
+        """), {"t": task_id}).mappings().first()
+
+        if not job:
+            print(f"  {FAIL} no T5 job found for task_id={task_id}")
+            return 1
+
+        job_id = job["job_id"]
+        total_frames = job["total_frames"] or 0
+        court_detected = bool(job["court_detected"])
+        court_confidence = float(job["court_confidence"] or 0)
+        print(f"  {INFO} job_id={job_id[:8]}  total_frames={total_frames}")
+        print(f"  {INFO} court_detected={court_detected}  court_confidence={court_confidence:.3f}")
+
+        # Use player_detections as a proxy for frame-level homography success:
+        # frames where court_x IS NOT NULL had a valid homography applied
+        proxy = conn.execute(text("""
+            SELECT
+                count(*)                                              AS total_player_frames,
+                count(court_x) FILTER (WHERE court_x IS NOT NULL)    AS frames_with_court_coords,
+                round(avg(
+                    CASE WHEN court_x IS NOT NULL
+                    THEN array_length(
+                        ARRAY(
+                            SELECT jsonb_array_elements_text(keypoints)
+                        ), 1)
+                    END
+                )::numeric, 1)                                        AS avg_kp_elements
+            FROM ml_analysis.player_detections
+            WHERE job_id = CAST(:j AS uuid)
+        """), {"j": job_id}).mappings().first()
+
+        # Ball detections provide another signal: how many have court coords
+        ball_proxy = conn.execute(text("""
+            SELECT
+                count(*)           AS total_ball_frames,
+                count(court_x)     AS ball_with_court_coords
+            FROM ml_analysis.ball_detections
+            WHERE job_id = CAST(:j AS uuid)
+        """), {"j": job_id}).mappings().first()
+
+    total_player_frames = int(proxy["total_player_frames"] or 0)
+    frames_with_coords = int(proxy["frames_with_court_coords"] or 0)
+    total_ball_frames = int(ball_proxy["total_ball_frames"] or 0)
+    ball_with_coords = int(ball_proxy["ball_with_court_coords"] or 0)
+
+    # Homography success rate: player frames with court coords / total player frames
+    homography_rate_pct = (
+        frames_with_coords / total_player_frames * 100
+    ) if total_player_frames > 0 else 0.0
+
+    ball_coord_pct = (
+        ball_with_coords / total_ball_frames * 100
+    ) if total_ball_frames > 0 else 0.0
+
+    sub("job-level court detection")
+    all_ok &= check("court_detected", court_detected, court_detected)
+    all_ok &= check(
+        "court_confidence_>=0.5",
+        court_confidence >= 0.5,
+        f"{court_confidence:.3f}",
+    )
+
+    sub("frame-level homography quality (player coord proxy)")
+    all_ok &= check(
+        f"homography_success_>={_COURT_MIN_SUCCESS_RATE_PCT}%",
+        homography_rate_pct >= _COURT_MIN_SUCCESS_RATE_PCT,
+        f"{homography_rate_pct:.1f}%  ({frames_with_coords}/{total_player_frames} player frames)",
+    )
+
+    sub("ball court coord coverage")
+    print(
+        f"  {INFO} ball_coord_coverage                  "
+        f"{ball_coord_pct:.1f}%  ({ball_with_coords}/{total_ball_frames})"
+    )
+
+    # Persist to eval store
+    metrics = {
+        "court_detected": court_detected,
+        "court_confidence": court_confidence,
+        "homography_success_rate_pct": round(homography_rate_pct, 2),
+        "frames_with_court_coords": frames_with_coords,
+        "total_player_frames": total_player_frames,
+        "ball_coord_pct": round(ball_coord_pct, 2),
+        "total_frames": total_frames,
+        # avg_keypoint_count not easily computed without unnesting JSONB here;
+        # store None so the field exists in the schema for future use
+        "avg_keypoint_count": None,
+    }
+    from ml_pipeline.eval_store import record_component_eval
+    record_component_eval(task_id=task_id, component="court", passed=all_ok, metrics=metrics)
+
+    print()
+    print(f"COURT EVAL: {'PASS' if all_ok else 'FAIL'}")
+    return 0 if all_ok else 1
+
+
+# ============================================================
 # CLI dispatch
 # ============================================================
 
@@ -724,6 +1155,19 @@ def main():
     p_tb_extract.add_argument("--csv", default=None, metavar="PATH",
                               help="Write output to CSV file at PATH")
 
+    p_eh = sub.add_parser("eval-history")
+    p_eh.add_argument("--last", type=int, default=10,
+                      help="Number of most recent entries to show (default 10)")
+
+    p_eb = sub.add_parser("eval-ball")
+    p_eb.add_argument("task_id")
+
+    p_ep = sub.add_parser("eval-player")
+    p_ep.add_argument("task_id")
+
+    p_ec = sub.add_parser("eval-court")
+    p_ec.add_argument("task_id")
+
     args = p.parse_args()
 
     if args.cmd == "validate-bronze":
@@ -752,6 +1196,14 @@ def main():
         return cmd_golden_check(args)
     if args.cmd == "training-bench":
         return cmd_training_bench(args)
+    if args.cmd == "eval-history":
+        return cmd_eval_history(args)
+    if args.cmd == "eval-ball":
+        return cmd_eval_ball(args)
+    if args.cmd == "eval-player":
+        return cmd_eval_player(args)
+    if args.cmd == "eval-court":
+        return cmd_eval_court(args)
 
     return 1
 
