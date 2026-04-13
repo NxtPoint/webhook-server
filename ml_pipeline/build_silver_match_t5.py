@@ -211,43 +211,173 @@ def _is_overhead_pose(keypoints, is_left_handed: bool) -> bool:
     return wrist_y < avg_shoulder_y and wrist_y < nose[1]
 
 
+def _parse_keypoints(keypoints) -> Optional[list]:
+    """Normalise keypoints to a list of [x, y, conf] triplets, or return None.
+
+    The DB stores keypoints as a JSONB flat array [x1,y1,c1,x2,y2,c2,...] (51
+    floats) OR as a nested list [[x,y,c], ...] (17 entries). Either form is
+    accepted; missing/malformed input returns None.
+    """
+    if keypoints is None:
+        return None
+    if isinstance(keypoints, str):
+        try:
+            keypoints = json.loads(keypoints)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(keypoints, (list, tuple)) or len(keypoints) == 0:
+        return None
+    # Flat list of 51 floats → reshape to 17 × 3
+    if isinstance(keypoints[0], (int, float)):
+        if len(keypoints) < 51:
+            return None
+        return [[keypoints[i * 3], keypoints[i * 3 + 1], keypoints[i * 3 + 2]]
+                for i in range(17)]
+    # Already nested
+    if len(keypoints) < 11:
+        return None
+    return keypoints
+
+
 def _infer_swing_type_from_keypoints(
     keypoints: Optional[list],
     center_x: Optional[float],
     is_serve: bool,
     is_left_handed: bool,
+    court_y: Optional[float] = None,
 ) -> str:
     """Infer swing type from COCO pose keypoints.
 
-    Returns one of: 'overhead', 'fh', 'bh', 'other'
+    Returns one of: 'overhead', 'volley', 'fh', 'bh', 'other'
+
+    Decision hierarchy (each level falls through to next if confidence too low):
+
+    1. Serve (is_serve=True)  → 'overhead'  (serve detection is geometric, trusted)
+    2. Overhead/smash pose    → 'overhead'  (arm raised, player near net / mid-court)
+    3. Volley pose            → 'volley'    (compact arm + player within VOLLEY_NET_DISTANCE_M)
+    4. Forehand/Backhand      → 'fh' / 'bh' (dominant wrist vs opposite-side shoulder)
+    5. Fallback               → 'other'
+
+    COCO keypoint indices used:
+      0=nose, 5=left_shoulder, 6=right_shoulder,
+      7=left_elbow, 8=right_elbow,
+      9=left_wrist, 10=right_wrist
+    All coordinates are in pixel space (y increases downward).
     """
+    MIN_CONF = 0.3
+
+    # --- 1. Serve is already known from geometry ---
     if is_serve:
         return "overhead"
 
-    if keypoints is None or center_x is None:
+    # --- Parse keypoints ---
+    kps = _parse_keypoints(keypoints)
+    if kps is None:
         return "other"
 
-    # Parse keypoints if string
-    if isinstance(keypoints, str):
-        try:
-            keypoints = json.loads(keypoints)
-        except (json.JSONDecodeError, TypeError):
-            return "other"
+    def kp(idx):
+        """Return (x, y, conf) for keypoint idx, or (None, None, 0) if missing."""
+        if idx >= len(kps):
+            return None, None, 0.0
+        row = kps[idx]
+        if len(row) < 3:
+            return None, None, 0.0
+        return float(row[0]), float(row[1]), float(row[2])
 
-    # COCO: right_wrist=10, left_wrist=9
-    wrist_idx = 9 if is_left_handed else 10
-    if len(keypoints) <= wrist_idx:
-        return "other"
+    l_shoulder_x, l_shoulder_y, l_shoulder_c = kp(5)
+    r_shoulder_x, r_shoulder_y, r_shoulder_c = kp(6)
+    dom_wrist_x, dom_wrist_y, dom_wrist_c = kp(9 if is_left_handed else 10)
+    off_wrist_x, off_wrist_y, off_wrist_c = kp(10 if is_left_handed else 9)
+    dom_elbow_x, dom_elbow_y, dom_elbow_c = kp(7 if is_left_handed else 8)
 
-    wrist_x, _, wrist_conf = keypoints[wrist_idx]
-    if wrist_conf < 0.3:
-        return "other"
+    # Shoulder anchor: prefer the same-side shoulder, fall back to the other
+    dom_shoulder_x  = (l_shoulder_x  if is_left_handed else r_shoulder_x)
+    dom_shoulder_y  = (l_shoulder_y  if is_left_handed else r_shoulder_y)
+    dom_shoulder_c  = (l_shoulder_c  if is_left_handed else r_shoulder_c)
+    off_shoulder_x  = (r_shoulder_x  if is_left_handed else l_shoulder_x)
+    off_shoulder_y  = (r_shoulder_y  if is_left_handed else l_shoulder_y)
+    off_shoulder_c  = (r_shoulder_c  if is_left_handed else l_shoulder_c)
 
-    # Wrist on dominant side of center = forehand
-    if is_left_handed:
-        return "fh" if wrist_x < center_x else "bh"
-    else:
-        return "fh" if wrist_x > center_x else "bh"
+    have_dom_wrist   = dom_wrist_c   >= MIN_CONF and dom_wrist_x   is not None
+    have_dom_shoulder = dom_shoulder_c >= MIN_CONF and dom_shoulder_x is not None
+    have_off_shoulder = off_shoulder_c >= MIN_CONF and off_shoulder_x is not None
+    have_dom_elbow   = dom_elbow_c   >= MIN_CONF and dom_elbow_x   is not None
+
+    # --- 2. Overhead / smash detection ---
+    # Arm fully raised: dominant wrist above both shoulders in pixel coords
+    # (lower pixel y = higher in frame). Player must NOT be at the baseline
+    # (otherwise it would be a serve, already handled above).
+    if have_dom_wrist and (have_dom_shoulder or have_off_shoulder):
+        # Use the average shoulder y when both are visible
+        shoulder_ys = []
+        if have_dom_shoulder:
+            shoulder_ys.append(dom_shoulder_y)
+        if have_off_shoulder:
+            shoulder_ys.append(off_shoulder_y)
+        avg_shoulder_y = sum(shoulder_ys) / len(shoulder_ys)
+        # Wrist must be well above the shoulder line (at least 20% of inter-
+        # shoulder width as a tolerance — avoids firing on neutral stance)
+        shoulder_width_px = abs((dom_shoulder_x or 0) - (off_shoulder_x or dom_shoulder_x or 1))
+        overhead_margin = max(10.0, shoulder_width_px * 0.2)
+        if dom_wrist_y < avg_shoulder_y - overhead_margin:
+            # Distinguish overhead from serve: serve hitter is past baseline
+            # (handled by is_serve=True above). Any overhead here is mid-court.
+            return "overhead"
+
+    # --- 3. Volley detection ---
+    # Player is close to the net AND arm is compact (wrist near the shoulder,
+    # not extended for a full groundstroke swing).
+    near_net = (
+        court_y is not None
+        and abs(court_y - HALF_Y) < VOLLEY_NET_DISTANCE_M
+    )
+    if near_net and have_dom_wrist and have_dom_shoulder:
+        # Compact arm: wrist is close to shoulder height (within 30% of
+        # shoulder-width tolerance). A real volley punch has the wrist roughly
+        # in front of the shoulder, not dropped or raised like a groundstroke.
+        wrist_height_diff = abs(dom_wrist_y - dom_shoulder_y)
+        shoulder_width_px = max(
+            20.0,
+            abs((dom_shoulder_x or 0) - (off_shoulder_x or dom_shoulder_x or 1)),
+        )
+        if wrist_height_diff < shoulder_width_px * 0.8:
+            return "volley"
+
+    # --- 4. Forehand / Backhand ---
+    # Backhand: dominant wrist crosses to the non-dominant side of the body.
+    # The clearest signal is: wrist x is past the OFF-side shoulder.
+    # Forehand: dominant wrist is on the dominant side of the DOMINANT shoulder.
+    #
+    # We also accept a weaker signal using center_x when shoulder coords are
+    # unavailable — wrist on the dominant side of body centre = forehand.
+    if have_dom_wrist:
+        # Strong signal: compare wrist to both shoulder anchors
+        if have_dom_shoulder and have_off_shoulder:
+            if is_left_handed:
+                # Left-handed: dominant wrist crosses right of right shoulder → BH
+                crossed_body = dom_wrist_x > off_shoulder_x
+            else:
+                # Right-handed: dominant wrist crosses left of left shoulder → BH
+                crossed_body = dom_wrist_x < off_shoulder_x
+            return "bh" if crossed_body else "fh"
+
+        # Medium signal: compare to dominant shoulder only
+        if have_dom_shoulder:
+            if is_left_handed:
+                # Left wrist extends left of left shoulder → FH
+                return "fh" if dom_wrist_x < dom_shoulder_x else "bh"
+            else:
+                # Right wrist extends right of right shoulder → FH
+                return "fh" if dom_wrist_x > dom_shoulder_x else "bh"
+
+        # Weak signal: wrist vs body centre_x (original fallback)
+        if center_x is not None:
+            if is_left_handed:
+                return "fh" if dom_wrist_x < center_x else "bh"
+            else:
+                return "fh" if dom_wrist_x > center_x else "bh"
+
+    return "other"
 
 
 def _infer_swing_type_from_position(
@@ -550,6 +680,7 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             swing_type = _infer_swing_type_from_keypoints(
                 hitter.get("keypoints"), hitter.get("center_x"),
                 is_serve, is_left_handed,
+                court_y=hitter.get("court_y"),
             )
             if swing_type == "other" and not is_serve:
                 swing_type = _infer_swing_type_from_position(
