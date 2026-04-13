@@ -23,6 +23,22 @@ from db_init import engine
 from tennis_coach.claude_client import call_claude
 from tennis_coach.data_fetcher import fetch_match_data
 from tennis_coach.db import cache_get, cache_put, freeform_key
+
+# Technique analysis data fetcher (lazy import to avoid boot-time circular deps)
+def _fetch_data_for_task(task_id: str) -> dict:
+    """Route to match or technique data fetcher based on sport_type."""
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT sport_type FROM bronze.submission_context WHERE task_id = :t"),
+                {"t": task_id},
+            ).mappings().first()
+        if row and row.get("sport_type") == "technique_analysis":
+            from technique.coach_data_fetcher import fetch_technique_data
+            return fetch_technique_data(task_id)
+    except Exception:
+        pass  # Fall through to match fetcher
+    return fetch_match_data(task_id)
 from tennis_coach.prompt_builder import (
     build_cards_prompt,
     build_freeform_prompt,
@@ -176,7 +192,7 @@ def analyze():
 
     # Fetch match data
     try:
-        match_data = fetch_match_data(task_id)
+        match_data = _fetch_data_for_task(task_id)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 404
     except Exception:
@@ -251,7 +267,7 @@ def get_cards(task_id: str):
 
     # Generate synchronously
     try:
-        match_data = fetch_match_data(task_id)
+        match_data = _fetch_data_for_task(task_id)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 404
     except Exception:
@@ -321,7 +337,7 @@ def debug_payload(task_id: str):
         return _forbid()
 
     try:
-        match_data = fetch_match_data(task_id)
+        match_data = _fetch_data_for_task(task_id)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 404
     except Exception:

@@ -1463,6 +1463,82 @@ def gold_player_performance():
 
 
 # ----------------------------
+# TECHNIQUE ANALYSIS ENDPOINTS
+# ----------------------------
+
+def _technique_guard_and_fetch(view_name, task_id):
+    """Shared guard + fetch for technique gold views (TEXT task_id, not UUID)."""
+    if not _guard():
+        return 403, {"ok": False, "error": "forbidden"}
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return 400, {"ok": False, "error": "email required"}
+    try:
+        with engine.connect() as conn:
+            if not _owns_task(conn, task_id, email):
+                return 404, {"ok": False, "error": "not_found"}
+            rows = conn.execute(
+                text(f"SELECT * FROM gold.{view_name} WHERE task_id = :tid"),
+                {"tid": task_id},
+            ).mappings().all()
+        serialized = [{k: _serialize(v) for k, v in r.items()} for r in rows]
+        return 200, {"ok": True, "task_id": task_id, "rows": serialized}
+    except Exception as e:
+        err_msg = str(e)
+        if "does not exist" in err_msg:
+            log.warning("technique view %s not yet created", view_name)
+            return 200, {"ok": True, "task_id": task_id, "rows": []}
+        log.exception("technique endpoint failed view=%s task_id=%s", view_name, task_id)
+        return 500, {"ok": False, "error": "internal_error"}
+
+
+@client_bp.route("/api/client/technique/report/<task_id>", methods=["GET", "OPTIONS"])
+def gold_technique_report(task_id):
+    """Complete technique report per analysis."""
+    code, payload = _technique_guard_and_fetch("technique_report", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/technique/comparison/<task_id>", methods=["GET", "OPTIONS"])
+def gold_technique_comparison(task_id):
+    """Player vs benchmark by level."""
+    code, payload = _technique_guard_and_fetch("technique_comparison", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/technique/kinetic-chain/<task_id>", methods=["GET", "OPTIONS"])
+def gold_technique_kinetic_chain(task_id):
+    """Simplified kinetic chain insights."""
+    code, payload = _technique_guard_and_fetch("technique_kinetic_chain_summary", task_id)
+    return jsonify(payload), code
+
+
+@client_bp.route("/api/client/technique/progression", methods=["GET", "OPTIONS"])
+def gold_technique_progression():
+    """Player technique improvement dashboard (email-scoped, cross-session)."""
+    if not _guard():
+        return _forbid()
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT * FROM gold.technique_progression WHERE email = :email"),
+                {"email": email},
+            ).mappings().all()
+        serialized = [{k: _serialize(v) for k, v in r.items()} for r in rows]
+        return jsonify({"ok": True, "rows": serialized})
+    except Exception as e:
+        err_msg = str(e)
+        if "does not exist" in err_msg:
+            log.warning("technique_progression view not yet created email=%s", email)
+            return jsonify({"ok": True, "rows": []})
+        log.exception("technique_progression endpoint failed email=%s", email)
+        return jsonify({"ok": False, "error": "internal_error"}), 500
+
+
+# ----------------------------
 # GET /api/client/match-analysis/<task_id>  [LEGACY — to be retired]
 # ----------------------------
 

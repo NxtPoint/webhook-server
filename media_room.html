@@ -565,12 +565,16 @@ function renderStep1(el) {
   const singlesT5Ok = devAccess;
   const srvOk  = devAccess;
   const rallyOk = devAccess;
+  const techniqueOk = devAccess;
   const srvCls  = srvOk  ? '' : ' disabled';
   const rallyCls = rallyOk ? '' : ' disabled';
+  const techniqueCls = techniqueOk ? '' : ' disabled';
   const srvBadge  = srvOk  ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
   const rallyBadge = rallyOk ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
+  const techniqueBadge = techniqueOk ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
   const srvClick  = srvOk  ? ' onclick="selectGameType(\'serve\', this)"' : '';
   const rallyClick = rallyOk ? ' onclick="selectGameType(\'rally\', this)"' : '';
+  const techniqueClick = techniqueOk ? ' onclick="selectGameType(\'technique\', this)"' : '';
 
   el.innerHTML = `
     <div class="section-card">
@@ -599,8 +603,8 @@ function renderStep1(el) {
           <div class="game-card-title">Rally Practice</div>
           <div class="game-card-sub">Rally analysis</div>
         </div>
-        <div class="game-card disabled" data-type="technique">
-          <div class="coming-soon-badge">Coming Soon</div>
+        <div class="game-card${techniqueCls}"${techniqueClick} data-type="technique">
+          ${techniqueBadge}
           <div class="game-card-icon">&#127919;</div>
           <div class="game-card-title">Technique Session</div>
           <div class="game-card-sub">Stroke analysis</div>
@@ -618,7 +622,7 @@ function renderStep1(el) {
 }
 
 function selectGameType(type, card) {
-  const allowed = ['singles', 'singles_t5', 'serve', 'rally'];
+  const allowed = ['singles', 'singles_t5', 'serve', 'rally', 'technique'];
   if (!allowed.includes(type)) return;
   STATE.gameType = type;
   document.querySelectorAll('.game-card').forEach(c => c.classList.remove('selected'));
@@ -1083,7 +1087,9 @@ function getFormConfig(gameType) {
   if (gameType === 'serve' || gameType === 'rally') {
     return { type: gameType, formRenderer: renderPracticeForm };
   }
-  // Future game types will return their own config here
+  if (gameType === 'technique') {
+    return { type: 'technique', formRenderer: renderTechniqueForm };
+  }
   return { type: gameType, formRenderer: renderSinglesForm };
 }
 
@@ -1242,6 +1248,99 @@ function renderPracticeForm(el) {
   `;
 }
 
+function renderTechniqueForm(el) {
+  // Player dropdown from account members
+  const primaryMember = STATE.members.find(m => m.is_primary);
+  const defaultPlayerA = primaryMember ? primaryMember.full_name : '';
+  const playerOpts = STATE.members.filter(m => m.full_name).map(m => {
+    const display = m.full_name + (m.surname ? ' ' + m.surname : '');
+    return `<option value="${esc(m.full_name)}" ${m.full_name === defaultPlayerA ? 'selected' : ''}>${esc(display)}</option>`;
+  }).join('');
+
+  // Swing type options — populated dynamically from API in future,
+  // but seeded with known tennis swing types for now.
+  const swingTypes = [
+    { value: 'forehand_drive', label: 'Forehand Drive' },
+    { value: 'backhand_drive', label: 'Backhand Drive' },
+    { value: 'forehand_topspin', label: 'Forehand Topspin' },
+    { value: 'backhand_topspin', label: 'Backhand Topspin' },
+    { value: 'forehand_slice', label: 'Forehand Slice' },
+    { value: 'backhand_slice', label: 'Backhand Slice' },
+    { value: 'serve_flat', label: 'Serve (Flat)' },
+    { value: 'serve_slice', label: 'Serve (Slice)' },
+    { value: 'serve_kick', label: 'Serve (Kick)' },
+    { value: 'volley_forehand', label: 'Volley (Forehand)' },
+    { value: 'volley_backhand', label: 'Volley (Backhand)' },
+    { value: 'overhead', label: 'Overhead / Smash' },
+  ];
+  const swingOpts = swingTypes.map(s =>
+    `<option value="${s.value}">${esc(s.label)}</option>`
+  ).join('');
+
+  el.innerHTML = `
+    <div class="section-card">
+      <div class="section-title">Technique Analysis Details</div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player</label>
+        <select class="edit-input" id="fd-player_a_name">
+          ${playerOpts}
+        </select>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Sport</label>
+        <select class="edit-input" id="fd-technique-sport">
+          <option value="tennis" selected>Tennis</option>
+        </select>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Swing / Technique Type</label>
+        <select class="edit-input" id="fd-technique-swing-type">
+          ${swingOpts}
+        </select>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Dominant Hand</label>
+        <div class="toggle-group">
+          <button class="toggle-btn active" id="toggle-hand-right" onclick="setDominantHand('right')">Right</button>
+          <button class="toggle-btn" id="toggle-hand-left" onclick="setDominantHand('left')">Left</button>
+        </div>
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Player Height (cm)</label>
+        <input class="edit-input" type="number" step="1" min="100" max="230" id="fd-technique-height-cm" placeholder="e.g. 180">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Date</label>
+        <input class="edit-input" type="date" id="fd-match_date" value="${new Date().toISOString().split('T')[0]}">
+      </div>
+
+      <div class="edit-field">
+        <label class="edit-label">Venue / Location</label>
+        <input class="edit-input" type="text" id="fd-location" placeholder="e.g. Wimbledon Club Court 3">
+      </div>
+
+      <button class="btn-primary" id="btnSubmitDetails" onclick="submitMatchDetails()">Submit &amp; Start Analysis &rarr;</button>
+      <button class="btn-secondary" onclick="goToStep(2)">&larr; Back</button>
+      <div class="msg-bar" id="detailsMsg"></div>
+    </div>
+  `;
+
+  // Store dominant hand default
+  STATE._dominantHand = 'right';
+}
+
+function setDominantHand(val) {
+  STATE._dominantHand = val;
+  document.getElementById('toggle-hand-right').classList.toggle('active', val === 'right');
+  document.getElementById('toggle-hand-left').classList.toggle('active', val === 'left');
+}
+
 function showDetailsMsg(type, text) {
   const bar = document.getElementById('detailsMsg');
   if (!bar) return;
@@ -1276,6 +1375,7 @@ async function submitMatchDetails() {
   try {
     // Call /api/submit_s3_task
     const isPractice = ['serve', 'rally'].includes(STATE.gameType);
+    const isTechnique = STATE.gameType === 'technique';
     const body = {
       s3_key: STATE.upload.key,
       email: EMAIL,
@@ -1286,8 +1386,17 @@ async function submitMatchDetails() {
       startTime: startTime || undefined,
     };
 
+    // Technique-specific fields
+    if (isTechnique) {
+      body.sport = val('fd-technique-sport') || 'tennis';
+      body.swing_type = val('fd-technique-swing-type') || 'forehand_drive';
+      body.dominant_hand = STATE._dominantHand || 'right';
+      const heightCm = parseInt(val('fd-technique-height-cm') || '180', 10);
+      body.player_height_mm = heightCm * 10;  // convert cm to mm
+    }
+
     // Singles-only fields (opponent, score, first server)
-    if (!isPractice) {
+    if (!isPractice && !isTechnique) {
       body.opponentName = playerB || undefined;
       body.playerUTR = playerAUtr || undefined;
       body.opponentUtr = playerBUtr || undefined;
@@ -1385,6 +1494,13 @@ const STAGE_LABELS_BY_TYPE = {
     'match_analysis_in_progress': 'Analysing your match',
     'building_analytics': 'Building your match report',
     'refreshing_dashboard': 'Updating your dashboards',
+    'complete': 'Complete', 'failed': 'Failed', 'canceled': 'Cancelled',
+  },
+  technique: {
+    'queued_for_analysis': 'Preparing technique analysis',
+    'match_analysis_in_progress': 'Analysing your technique',
+    'building_analytics': 'Building your technique report',
+    'refreshing_dashboard': 'Finalising results',
     'complete': 'Complete', 'failed': 'Failed', 'canceled': 'Cancelled',
   },
   serve: {

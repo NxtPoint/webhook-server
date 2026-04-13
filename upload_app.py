@@ -3,7 +3,7 @@
 # - On status=completed: fetch result_url JSON and ingest via ingest_bronze_strict (task_id-only)
 # - Uses bronze.submission_context keyed by task_id (no public schema)
 
-import os, json, time, socket, sys, hashlib, re, threading, subprocess
+import os, json, time, socket, sys, hashlib, re, threading, subprocess, uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -95,6 +95,11 @@ SPORTAI_TOKEN       = os.getenv("SPORT_AI_TOKEN", "").strip()
 SPORTAI_CHECK_PATH  = os.getenv("SPORT_AI_CHECK_PATH",  "/api/videos/check").strip()
 SPORTAI_CANCEL_PATH = os.getenv("SPORT_AI_CANCEL_PATH", "/api/tasks/{task_id}/cancel").strip()
 
+# ---------- Technique API config ----------
+TECHNIQUE_API_BASE = (os.getenv("TECHNIQUE_API_BASE") or "").strip().rstrip("/")
+TECHNIQUE_API_TOKEN = (os.getenv("TECHNIQUE_API_TOKEN") or "").strip()
+TECHNIQUE_API_TIMEOUT_S = int(os.getenv("TECHNIQUE_API_TIMEOUT_S", "300"))
+
 # Auto-ingest once completed
 AUTO_INGEST_ON_COMPLETE = os.getenv("AUTO_INGEST_ON_COMPLETE", "1").lower() in ("1","true","yes","y")
 DEFAULT_REPLACE_ON_INGEST = (
@@ -144,6 +149,17 @@ try:
 except Exception:
     app.logger.exception("tennis_coach init failed on boot")
 
+# ---------- Technique Analysis (idempotent on boot) ----------
+try:
+    from technique.db_schema import technique_bronze_init
+    from technique.silver_technique import ensure_silver_schema
+    from technique.gold_technique import init_technique_gold_views
+    technique_bronze_init(engine)
+    ensure_silver_schema(engine)
+    init_technique_gold_views()
+except Exception:
+    app.logger.exception("technique init failed on boot")
+
 
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
@@ -175,6 +191,7 @@ def _resolve_batch_regions_priority() -> list:
     return fallbacks
 BATCH_REGIONS_PRIORITY = _resolve_batch_regions_priority()
 T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
+TECHNIQUE_SPORT_TYPES = {"technique_analysis"}
 AUTO_DUAL_SUBMIT_T5 = os.getenv("AUTO_DUAL_SUBMIT_T5", "0").lower() in ("1", "true", "yes", "y")
 
 # ---------- Ingest worker service ----------
@@ -510,10 +527,15 @@ def _load_submission_context_row(task_id: str) -> dict:
 def _resolve_result_url_for_task(task_id: str) -> str | None:
     """
     Resolve result_url in the safest order:
+    - Technique jobs: check submission_context status, return sentinel URL
     - T5 jobs: check ml_analysis status, return sentinel URL
     - SportAI jobs: fresh status lookup, then cached DB value
     """
     sc = _load_submission_context_row(task_id)
+
+    # Technique jobs don't use result_url — the background thread handles everything.
+    if sc.get("sport_type") in TECHNIQUE_SPORT_TYPES:
+        return None
 
     if sc.get("sport_type") in T5_SPORT_TYPES:
         live = _t5_status(task_id)
@@ -874,6 +896,231 @@ def _t5_cancel(task_id: str) -> dict:
         """), {"jid": row["job_id"]})
 
     return {"status": "cancelled", "batch_job_id": batch_job_id}
+
+
+# ==========================
+# TECHNIQUE API
+# ==========================
+
+def _technique_submit(s3_key: str, email: str = None, meta: dict = None) -> str:
+    """
+    Submit a technique analysis job. Creates a task_id, then spawns a single
+    background thread that runs the entire pipeline end-to-end:
+    download video → call technique API → bronze → silver → gold → trim → notify.
+
+    Same pattern as _do_ingest_t5: one background thread, no intermediate S3 storage,
+    status tracked via bronze.submission_context (same columns as SportAI/T5).
+    """
+    task_id = str(uuid.uuid4())
+
+    m = meta or {}
+    technique_meta = {
+        "sport": m.get("sport") or "tennis",
+        "swing_type": m.get("swing_type") or "forehand_drive",
+        "dominant_hand": m.get("dominant_hand") or "right",
+        "player_height_mm": int(m.get("player_height_mm") or 1800),
+    }
+
+    def _worker():
+        try:
+            _technique_run_pipeline(task_id, s3_key, technique_meta)
+        except Exception as e:
+            app.logger.exception("TECHNIQUE PIPELINE FAILED task_id=%s: %s", task_id, e)
+            try:
+                with engine.begin() as conn:
+                    _ensure_submission_context_schema(conn)
+                    conn.execute(sql_text("""
+                        UPDATE bronze.submission_context
+                        SET last_status = 'failed', last_status_at = now(),
+                            ingest_error = :err, ingest_finished_at = now()
+                        WHERE task_id = :t
+                    """), {"t": task_id, "err": f"{e.__class__.__name__}: {e}"[:4000]})
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_worker, name=f"technique-{task_id[:8]}", daemon=True)
+    t.start()
+
+    app.logger.info(
+        "TECHNIQUE SUBMIT task_id=%s s3_key=%s sport=%s swing_type=%s",
+        task_id, s3_key, technique_meta["sport"], technique_meta["swing_type"],
+    )
+    return task_id
+
+
+def _technique_run_pipeline(task_id: str, s3_key: str, technique_meta: dict):
+    """
+    Single background thread that runs the full technique pipeline.
+    Mirrors the SportAI ingest pattern: API call → bronze → silver → trim → notify.
+    No intermediate S3 storage — the JSON payload stays in memory.
+    """
+    from technique.api_client import call_technique_api
+
+    # Mark started
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        conn.execute(sql_text("""
+            UPDATE bronze.submission_context
+            SET last_status = 'processing', last_status_at = now(),
+                ingest_started_at = COALESCE(ingest_started_at, now()),
+                ingest_finished_at = NULL, ingest_error = NULL
+            WHERE task_id = :t
+        """), {"t": task_id})
+
+    # ── STEP 1: Download video from S3 ────────────────────────
+    app.logger.info("TECHNIQUE task_id=%s step=download_video", task_id)
+    s3 = _s3_client()
+    s3_obj = s3.get_object(Bucket=S3_BUCKET, Key=s3_key)
+    video_bytes = s3_obj["Body"].read()
+    filename = s3_key.rsplit("/", 1)[-1] if "/" in s3_key else s3_key
+
+    # ── STEP 2: Call technique API (streaming, 30-120s) ───────
+    app.logger.info("TECHNIQUE task_id=%s step=call_api file_size=%d", task_id, len(video_bytes))
+    payload = call_technique_api(
+        video_bytes=video_bytes,
+        filename=filename,
+        uid=task_id,
+        **technique_meta,
+    )
+    del video_bytes  # free memory
+
+    api_status = (payload.get("status") or "").lower()
+    if api_status in ("failed", "error"):
+        errors = payload.get("errors") or []
+        err_msg = "; ".join(str(e) for e in errors) or "technique API returned failure"
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                SET last_status = 'failed', last_status_at = now(),
+                    ingest_error = :err, ingest_finished_at = now()
+                WHERE task_id = :t
+            """), {"t": task_id, "err": err_msg[:4000]})
+        return
+
+    # ── STEP 3: Bronze ingest (same pattern as ingest_bronze_strict) ──
+    app.logger.info("TECHNIQUE task_id=%s step=bronze_ingest", task_id)
+    from technique.bronze_ingest_technique import ingest_technique_bronze
+    with engine.begin() as conn:
+        ingest_technique_bronze(conn, payload, task_id=task_id, replace=True)
+
+    # Store technique-specific metadata from the request
+    with engine.begin() as conn:
+        conn.execute(sql_text("""
+            UPDATE bronze.technique_analysis_metadata
+            SET sport = :sport, swing_type = :swing_type,
+                dominant_hand = :hand, player_height_mm = :height
+            WHERE task_id = :t
+        """), {
+            "t": task_id,
+            "sport": technique_meta["sport"],
+            "swing_type": technique_meta["swing_type"],
+            "hand": technique_meta["dominant_hand"],
+            "height": technique_meta["player_height_mm"],
+        })
+
+    del payload  # free memory
+
+    # ── STEP 4: Silver build (same pattern as build_silver_v2) ──
+    app.logger.info("TECHNIQUE task_id=%s step=silver_build", task_id)
+    from technique.silver_technique import build_silver_technique
+    build_silver_technique(task_id=task_id, engine=engine, replace=True)
+
+    # ── STEP 5: Video — copy to trim folder (fire-and-forget) ──
+    try:
+        _technique_store_footage(task_id)
+    except Exception as e:
+        app.logger.warning("TECHNIQUE task_id=%s trim failed (non-fatal): %s", task_id, e)
+
+    # ── STEP 6: Mark complete ─────────────────────────────────
+    with engine.begin() as conn:
+        _ensure_submission_context_schema(conn)
+        conn.execute(sql_text("""
+            UPDATE bronze.submission_context
+            SET session_id = :task_id,
+                last_status = 'completed', last_status_at = now(),
+                ingest_finished_at = now(), ingest_error = NULL
+            WHERE task_id = :t
+        """), {"t": task_id, "task_id": task_id})
+
+    # ── STEP 7: Customer notification (same as SportAI) ───────
+    try:
+        _notify_ses_completion(task_id)
+    except Exception as e:
+        app.logger.warning("TECHNIQUE task_id=%s notify failed (non-fatal): %s", task_id, e)
+
+    app.logger.info("TECHNIQUE PIPELINE COMPLETE task_id=%s", task_id)
+
+
+def _technique_status(task_id: str) -> dict:
+    """
+    Poll technique job status from bronze.submission_context.
+    Same columns as SportAI/T5 — no separate tracking table needed.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(sql_text("""
+            SELECT last_status, ingest_error, session_id, ingest_finished_at
+            FROM bronze.submission_context
+            WHERE task_id = :t
+        """), {"t": task_id}).mappings().first()
+
+    if not row:
+        return {"status": "unknown", "sportai_progress_pct": None, "result_url": None}
+
+    status = _normalize_sportai_status(row.get("last_status")) or "unknown"
+
+    # Technique doesn't use result_url — the background thread handles everything.
+    # But dashboard_ready is derived from session_id + ingest_finished_at,
+    # so we don't need result_url for the auto-ingest gate.
+    return {
+        "task_id": task_id,
+        "status": status,
+        "result_url": None,
+        "sportai_progress_pct": 100 if status == "completed" else (50 if status == "processing" else 0),
+        "message": row.get("ingest_error"),
+    }
+
+
+def _technique_cancel(task_id: str) -> dict:
+    """Cancel a technique analysis job."""
+    with engine.begin() as conn:
+        conn.execute(sql_text("""
+            UPDATE bronze.submission_context
+            SET last_status = 'failed', last_status_at = now(),
+                ingest_error = 'Cancelled by user'
+            WHERE task_id = :t
+        """), {"t": task_id})
+    return {"status": "cancelled"}
+
+
+def _technique_store_footage(task_id: str):
+    """Copy the original technique video to the trim folder for online storage."""
+    with engine.connect() as conn:
+        row = conn.execute(sql_text("""
+            SELECT s3_bucket, s3_key FROM bronze.submission_context WHERE task_id = :t
+        """), {"t": task_id}).mappings().first()
+
+    if not row or not row.get("s3_key"):
+        return
+
+    src_key = row["s3_key"]
+    bucket = row.get("s3_bucket") or S3_BUCKET
+    dest_key = f"trimmed/{task_id}/technique.mp4"
+
+    s3 = _s3_client()
+    s3.copy_object(
+        Bucket=bucket,
+        Key=dest_key,
+        CopySource={"Bucket": bucket, "Key": src_key},
+    )
+    with engine.begin() as conn:
+        conn.execute(sql_text("""
+            UPDATE bronze.submission_context
+            SET trim_status = 'completed',
+                trim_output_s3_key = :dest,
+                trim_finished_at = now()
+            WHERE task_id = :t
+        """), {"t": task_id, "dest": dest_key})
+    app.logger.info("TECHNIQUE FOOTAGE STORED task_id=%s dest=%s", task_id, dest_key)
 
 
 def _normalize_sportai_status(v: str | None) -> str | None:
@@ -2361,7 +2608,9 @@ def api_cancel_task():
         return jsonify({"ok": False, "error": "task_id required"}), 400
     try:
         sc = _load_submission_context_row(tid)
-        if sc.get("sport_type") in T5_SPORT_TYPES:
+        if sc.get("sport_type") in TECHNIQUE_SPORT_TYPES:
+            out = _technique_cancel(str(tid))
+        elif sc.get("sport_type") in T5_SPORT_TYPES:
             out = _t5_cancel(str(tid))
         else:
             out = _sportai_cancel(str(tid))
@@ -2682,6 +2931,19 @@ def api_submit_s3_task():
         }
     }
 
+    # Technique-specific metadata (sport, swing type, dominant hand, height)
+    if body.get("sport"):
+        meta["sport"] = body["sport"]
+    if body.get("swing_type"):
+        meta["swing_type"] = body["swing_type"]
+    if body.get("dominant_hand"):
+        meta["dominant_hand"] = body["dominant_hand"]
+    if body.get("player_height_mm"):
+        try:
+            meta["player_height_mm"] = int(body["player_height_mm"])
+        except (ValueError, TypeError):
+            pass
+
     # ── Route to T5 or SportAI based on game type ──
     game_type = (body.get("gameType") or "singles").strip().lower()
     SPORT_TYPE_MAP = {
@@ -2691,12 +2953,17 @@ def api_submit_s3_task():
         "serve_practice": "serve_practice",
         "rally": "rally_practice",
         "rally_practice": "rally_practice",
+        "technique": "technique_analysis",
+        "technique_analysis": "technique_analysis",
     }
     sport_type = SPORT_TYPE_MAP.get(game_type, "tennis_singles")
     is_t5 = sport_type in T5_SPORT_TYPES
+    is_technique = sport_type in TECHNIQUE_SPORT_TYPES
 
     try:
-        if is_t5:
+        if is_technique:
+            task_id = _technique_submit(s3_key, email=email, meta=meta)
+        elif is_t5:
             task_id = _t5_submit(s3_key, email=email, meta=meta, sport_type=sport_type)
         else:
             task_id = _sportai_submit(s3_video_url, email=email, meta=meta)
@@ -2716,15 +2983,16 @@ def api_submit_s3_task():
             _ensure_submission_context_schema(conn)
             _set_status_cache(conn, task_id, "queued", None)
 
+        pipeline = "technique" if is_technique else ("t5" if is_t5 else "sportai")
         return jsonify({
             "ok": True,
             "task_id": task_id,
-            "pipeline": "t5" if is_t5 else "sportai",
+            "pipeline": pipeline,
             "s3_verified": True,
             "s3_meta": obj_meta
         })
     except Exception as e:
-        label = "T5" if is_t5 else "SportAI"
+        label = "Technique" if is_technique else ("T5" if is_t5 else "SportAI")
         return jsonify({"ok": False, "error": f"{label} submit failed: {e}"}), 502
 
 # ==========================
@@ -2751,9 +3019,12 @@ def api_task_status():
     # Load submission context first to determine pipeline type
     sc = _load_submission_context_row(tid)
     is_t5 = sc.get("sport_type") in T5_SPORT_TYPES
+    is_technique = sc.get("sport_type") in TECHNIQUE_SPORT_TYPES
 
     try:
-        if is_t5:
+        if is_technique:
+            live = _technique_status(tid)
+        elif is_t5:
             live = _t5_status(tid)
         else:
             live = _sportai_status(tid)
