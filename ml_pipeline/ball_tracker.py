@@ -19,6 +19,7 @@ from ml_pipeline.config import (
     TRACKNET_WEIGHTS,
     TRACKNET_V3_WEIGHTS,
     TRACKNET_V3_NUM_INPUT_FRAMES,
+    TRACKNET_V3_IN_CHANNELS,
     TRACKNET_INPUT_WIDTH,
     TRACKNET_INPUT_HEIGHT,
     TRACKNET_NUM_INPUT_FRAMES,
@@ -124,26 +125,26 @@ class BallDetection:
 class BallTracker:
     def __init__(self, weights_path: str = None, device: str = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        # Auto-detect TrackNetV3 (5-frame) vs V2 (3-frame)
+        # TrackNet version selection.
+        # V3 (qaz812345/TrackNetV3) is NOT compatible with BallTrackerNet —
+        # it uses 8 frames + background median = 27 channels and a different
+        # U-Net architecture with skip connections. V3 integration requires
+        # porting the full model architecture. For now, only V2 is supported.
         if weights_path is None:
             if os.path.exists(TRACKNET_V3_WEIGHTS):
-                weights_path = TRACKNET_V3_WEIGHTS
-                self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES
-                self._in_channels = TRACKNET_V3_NUM_INPUT_FRAMES * 3  # 15
-                logger.info("Using TrackNet V3 (5-frame context): %s", weights_path)
-            else:
-                weights_path = TRACKNET_WEIGHTS
-                self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
-                self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3  # 9
-                logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
+                logger.warning(
+                    "TrackNet V3 weights found at %s but V3 architecture is NOT "
+                    "yet ported (requires 8-frame + background, 27 channels, "
+                    "U-Net with skip connections). Falling back to V2.",
+                    TRACKNET_V3_WEIGHTS,
+                )
+            weights_path = TRACKNET_WEIGHTS
+            self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
+            self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3  # 9
+            logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
         else:
-            # Explicit path — detect version from filename
-            if "v3" in weights_path.lower():
-                self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES
-                self._in_channels = TRACKNET_V3_NUM_INPUT_FRAMES * 3
-            else:
-                self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
-                self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3
+            self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
+            self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3
         self.model = self._load_model(weights_path)
         self.scale_x = 1.0
         self.scale_y = 1.0

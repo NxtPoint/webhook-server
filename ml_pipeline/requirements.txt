@@ -22,3 +22,4 @@ matplotlib==3.9.0
 seaborn==0.13.2
 sqlalchemy==2.0.31
 psycopg[binary]==3.1.19
+sahi==0.11.18

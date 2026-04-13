@@ -30,7 +30,17 @@ from ml_pipeline.config import (
     DEBUG_FRAME_INTERVAL,
     MOG2_MIN_MOTION_RATIO,
     MOG2_MOTION_SCORE_WEIGHT,
+    SAHI_ENABLED,
+    SAHI_SLICE_HEIGHT,
+    SAHI_SLICE_WIDTH,
+    SAHI_OVERLAP_RATIO,
+    SAHI_CONFIDENCE,
+    SAHI_POSTPROCESS_TYPE,
+    SAHI_POSTPROCESS_MATCH_THRESHOLD,
 )
+
+# SAHI — lazy import to avoid startup cost when disabled
+_sahi_detection_model = None
 
 DEBUG_FRAMES_DIR = "/tmp/debug_frames"
 
@@ -89,6 +99,25 @@ class PlayerTracker:
         if os.path.exists(YOLO_WEIGHTS):
             self._det_model = YOLO(YOLO_WEIGHTS)
             logger.info("Loaded detection-only model for far-baseline pass: %s", YOLO_WEIGHTS)
+
+        # SAHI tiled inference model — lazy init on first use.
+        # Uses the detection-only model (yolov8m) for systematic small-object
+        # detection via overlapping tiles. Replaces manual 3-pass when enabled.
+        self._sahi_model = None
+        if SAHI_ENABLED and os.path.exists(YOLO_WEIGHTS):
+            try:
+                from sahi import AutoDetectionModel
+                self._sahi_model = AutoDetectionModel.from_pretrained(
+                    model_type="yolov8",
+                    model_path=YOLO_WEIGHTS,
+                    confidence_threshold=SAHI_CONFIDENCE,
+                    device=self.device,
+                )
+                logger.info("SAHI tiled inference enabled with %s", YOLO_WEIGHTS)
+            except ImportError:
+                logger.warning("SAHI not installed (pip install sahi), falling back to 3-pass")
+            except Exception as e:
+                logger.warning("SAHI init failed: %s, falling back to 3-pass", e)
         self._prev_players: Dict[int, tuple] = {}  # player_id → bbox from prev frame
         self.detections: List[PlayerDetection] = []
         self._last_result: List[PlayerDetection] = []
@@ -147,36 +176,38 @@ class PlayerTracker:
             return reused
         self._last_detect_frame = frame_idx
 
-        # ── Pass 1: Full-frame YOLO ──
-        # Catches close/foreground players easily
-        full_boxes_list, full_kps_list = self._run_yolo(frame)
+        # ── Detection strategy: SAHI (systematic) or manual 3-pass (legacy) ──
+        if SAHI_ENABLED and self._sahi_model is not None:
+            # SAHI: systematic tiled inference that automatically handles
+            # small distant objects. Replaces the manual 3-pass approach.
+            sahi_boxes, sahi_kps = self._run_sahi(frame)
+            # Also run full-frame YOLO for near player with pose keypoints
+            full_boxes_list, full_kps_list = self._run_yolo(frame)
+            all_boxes = full_boxes_list + sahi_boxes
+            all_kps = full_kps_list + sahi_kps
+        else:
+            # ── Pass 1: Full-frame YOLO ──
+            full_boxes_list, full_kps_list = self._run_yolo(frame)
 
-        # ── Pass 2: Court-cropped + upscaled YOLO ──
-        # Catches DISTANT players by giving them more pixels.
-        # We crop to the court region (with margin), then YOLO's internal
-        # letterboxing upscales it to imgsz=1280, making the far player
-        # 2-3x bigger pixel-wise than they are in the full frame.
-        crop_boxes_list, crop_kps_list = [], []
-        if YOLO_COURT_CROP_INFERENCE and court_bbox is not None:
+            # ── Pass 2: Court-cropped + upscaled YOLO ──
+            crop_boxes_list, crop_kps_list = [], []
+            if YOLO_COURT_CROP_INFERENCE and court_bbox is not None:
+                try:
+                    crop_boxes_list, crop_kps_list = self._run_yolo_court_crop(frame, court_bbox)
+                except Exception as e:
+                    logger.warning("court-crop YOLO pass failed: %s", e)
+
+            # ── Pass 3: Far-baseline dedicated crop ──
+            far_boxes_list, far_kps_list = [], []
             try:
-                crop_boxes_list, crop_kps_list = self._run_yolo_court_crop(frame, court_bbox)
+                far_boxes_list, far_kps_list = self._run_yolo_far_baseline(frame)
             except Exception as e:
-                logger.warning("court-crop YOLO pass failed: %s", e)
+                logger.warning("far-baseline YOLO pass failed: %s", e)
 
-        # ── Pass 3: Far-baseline dedicated crop ──
-        # The far player is often ~30-40px tall in 1080p — too small even
-        # for the court crop. This pass takes just the top 30% of the frame
-        # (where the far baseline always is) and runs YOLO at very low
-        # confidence. The tight crop gives ~3x upscaling on the far player.
-        far_boxes_list, far_kps_list = [], []
-        try:
-            far_boxes_list, far_kps_list = self._run_yolo_far_baseline(frame)
-        except Exception as e:
-            logger.warning("far-baseline YOLO pass failed: %s", e)
+            all_boxes = full_boxes_list + crop_boxes_list + far_boxes_list
+            all_kps = full_kps_list + crop_kps_list + far_kps_list
 
-        # ── Combine all detections (full + crop + far), deduplicate via IoU ──
-        all_boxes = full_boxes_list + crop_boxes_list + far_boxes_list
-        all_kps = full_kps_list + crop_kps_list + far_kps_list
+        # ── Deduplicate via IoU ──
         deduped_boxes, deduped_kps = self._dedupe_iou(all_boxes, all_kps, iou_thresh=0.5)
         n_yolo_boxes = len(deduped_boxes)
         # Log dedup details every 150 frames to diagnose far-player loss
@@ -413,6 +444,53 @@ class PlayerTracker:
             else:
                 out_kps.append(None)
         return out_boxes, out_kps
+
+    def _run_sahi(self, frame: np.ndarray):
+        """Run SAHI tiled inference for systematic small-object person detection.
+
+        SAHI slices the frame into overlapping 416×416 tiles, runs YOLO on each
+        tile independently, then merges results via NMS. This gives the far
+        player (~30-40px in 1080p) much higher resolution within its tile than
+        full-frame inference provides.
+
+        Returns (boxes_list, kps_list) in full-frame coordinates.
+        """
+        if self._sahi_model is None:
+            return [], []
+
+        try:
+            from sahi.predict import get_sliced_prediction
+
+            result = get_sliced_prediction(
+                frame,
+                self._sahi_model,
+                slice_height=SAHI_SLICE_HEIGHT,
+                slice_width=SAHI_SLICE_WIDTH,
+                overlap_height_ratio=SAHI_OVERLAP_RATIO,
+                overlap_width_ratio=SAHI_OVERLAP_RATIO,
+                postprocess_type=SAHI_POSTPROCESS_TYPE,
+                postprocess_match_threshold=SAHI_POSTPROCESS_MATCH_THRESHOLD,
+                verbose=0,
+            )
+
+            boxes = []
+            kps = []
+            for pred in result.object_prediction_list:
+                # Filter to person class only (COCO class 0)
+                if pred.category.id != YOLO_PERSON_CLASS_ID:
+                    continue
+                bbox = pred.bbox
+                x1, y1, x2, y2 = bbox.minx, bbox.miny, bbox.maxx, bbox.maxy
+                boxes.append((float(x1), float(y1), float(x2), float(y2)))
+                kps.append(None)  # SAHI uses detection-only, no keypoints
+
+            logger.debug("sahi_pass: found %d persons in %d tiles",
+                        len(boxes), len(result.object_prediction_list))
+            return boxes, kps
+
+        except Exception as e:
+            logger.warning("SAHI inference failed: %s", e)
+            return [], []
 
     @staticmethod
     def _compute_motion_ratio(box: tuple, motion_mask: np.ndarray) -> float:

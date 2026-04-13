@@ -201,6 +201,15 @@ class CourtDetector:
         return detection
 
     def _detect_cnn(self, frame: np.ndarray) -> CourtDetection:
+        """Detect court keypoints from CNN heatmaps.
+
+        Follows yastrebksv/TennisProject reference implementation:
+        1. Run CNN → 15-channel heatmap (14 keypoints + center)
+        2. For each channel: threshold at 170, find peak via Hough circles
+        3. Refine keypoints by cropping around peak, finding lines, snapping
+           to their intersection (sub-pixel accuracy)
+        4. Compute homography from detected keypoints
+        """
         h, w = frame.shape[:2]
         resized = cv2.resize(frame, (TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT))
         tensor = torch.from_numpy(
@@ -221,13 +230,37 @@ class CourtDetector:
         detected_count = 0
         for i in range(COURT_NUM_KEYPOINTS):  # first 14 channels
             hm = heatmaps[i]
-            peak_val = hm.max()
-            if peak_val > 0.01:  # minimal threshold for peak existence
-                peak_idx = np.unravel_index(hm.argmax(), hm.shape)
-                keypoints[i] = [peak_idx[1] * scale_x, peak_idx[0] * scale_y]
-                detected_count += 1
-            else:
+            # Convert to uint8 for Hough detection — reference uses threshold 170
+            hm_uint8 = (hm * 255).clip(0, 255).astype(np.uint8)
+            peak_val = int(hm_uint8.max())
+
+            if peak_val < 170:
                 keypoints[i] = [-1, -1]
+                continue
+
+            # Threshold + Hough circles (reference: minRadius=10, maxRadius=25)
+            _, binary = cv2.threshold(hm_uint8, 170, 255, cv2.THRESH_BINARY)
+            circles = cv2.HoughCircles(
+                binary, cv2.HOUGH_GRADIENT,
+                dp=1, minDist=20,
+                param1=50, param2=2,
+                minRadius=10, maxRadius=25,
+            )
+
+            if circles is not None and len(circles) > 0 and len(circles[0]) > 0:
+                cx, cy = float(circles[0][0][0]), float(circles[0][0][1])
+            else:
+                # Fallback: argmax if Hough fails but peak is above threshold
+                peak_idx = np.unravel_index(hm_uint8.argmax(), hm_uint8.shape)
+                cx, cy = float(peak_idx[1]), float(peak_idx[0])
+
+            # Refine keypoint via line intersection in a local crop
+            refined = self._refine_kp(resized, cx, cy)
+            if refined is not None:
+                cx, cy = refined
+
+            keypoints[i] = [cx * scale_x, cy * scale_y]
+            detected_count += 1
 
         confidence = detected_count / COURT_NUM_KEYPOINTS
 
@@ -243,6 +276,71 @@ class CourtDetector:
             confidence=confidence,
             used_fallback=False,
         )
+
+    @staticmethod
+    def _refine_kp(frame: np.ndarray, cx: float, cy: float,
+                   crop_size: int = 40) -> Optional[tuple]:
+        """Refine a keypoint by finding line intersections in a local crop.
+
+        Reference: yastrebksv/TennisCourtDetector postprocess.py::refine_kps()
+        Court keypoints sit at line intersections. Crop around the initial
+        detection, find lines via Hough, compute their intersection for
+        sub-pixel accuracy.
+        """
+        h, w = frame.shape[:2]
+        x1 = max(0, int(cx - crop_size))
+        y1 = max(0, int(cy - crop_size))
+        x2 = min(w, int(cx + crop_size))
+        y2 = min(h, int(cy + crop_size))
+        if x2 - x1 < 10 or y2 - y1 < 10:
+            return None
+
+        crop = frame[y1:y2, x1:x2]
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        lines = cv2.HoughLinesP(
+            binary, 1, np.pi / 180, 20,
+            minLineLength=10, maxLineGap=5,
+        )
+        if lines is None or len(lines) < 2:
+            return None
+
+        # Find two dominant lines (most different angles)
+        line_list = [tuple(l[0]) for l in lines]
+        if len(line_list) < 2:
+            return None
+
+        # Pick the two lines with the most different angles
+        best_pair = None
+        best_angle_diff = 0
+        for i in range(len(line_list)):
+            a1 = np.arctan2(line_list[i][3] - line_list[i][1],
+                            line_list[i][2] - line_list[i][0])
+            for j in range(i + 1, len(line_list)):
+                a2 = np.arctan2(line_list[j][3] - line_list[j][1],
+                                line_list[j][2] - line_list[j][0])
+                diff = abs(a1 - a2) % np.pi
+                if diff > best_angle_diff:
+                    best_angle_diff = diff
+                    best_pair = (line_list[i], line_list[j])
+
+        if best_pair is None or best_angle_diff < np.pi / 6:  # need >30° angle
+            return None
+
+        # Compute intersection
+        l1, l2 = best_pair
+        denom = (l1[0] - l1[2]) * (l2[1] - l2[3]) - (l1[1] - l1[3]) * (l2[0] - l2[2])
+        if abs(denom) < 1e-10:
+            return None
+        t = ((l1[0] - l2[0]) * (l2[1] - l2[3]) - (l1[1] - l2[1]) * (l2[0] - l2[2])) / denom
+        ix = l1[0] + t * (l1[2] - l1[0]) + x1
+        iy = l1[1] + t * (l1[3] - l1[1]) + y1
+
+        # Sanity: refined point should be close to original
+        if abs(ix - cx) > crop_size or abs(iy - cy) > crop_size:
+            return None
+
+        return (float(ix), float(iy))
 
     def _compute_homography(self, detected_kps: np.ndarray, valid_mask: np.ndarray = None) -> Optional[np.ndarray]:
         if valid_mask is None:

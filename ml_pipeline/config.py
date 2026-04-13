@@ -39,12 +39,23 @@ TRACKNET_BGR2RGB = False           # DO NOT convert BGR→RGB. Empirically confi
                                    # BGR→RGB dropped detection from 41% to 28% — this TrackNet V2
                                    # checkpoint was trained on BGR (cv2 convention). Keep False.
 
-# TrackNet V3 — drop-in upgrade with 5-frame context window.
-# 5 frames gives more temporal context for ball trajectory prediction,
-# especially for fast serves and occluded frames. Auto-detected by
-# BallTracker based on which weights file exists.
+# TrackNet V3 (qaz812345/TrackNetV3) — NOT a drop-in V2 upgrade.
+# V3 uses 8 input frames + a background median image = 27 input channels,
+# a U-Net architecture with skip connections, and a separate rectification
+# module for occluded trajectory repair. This is a fundamentally different
+# model from V2 (3 frames, 9 channels, encoder-decoder without skips).
+#
+# To use V3:
+#   1. Clone https://github.com/qaz812345/TrackNetV3
+#   2. Generate background median images from match footage
+#   3. Either use their inference script directly, or port the architecture
+#   4. V3 weights are NOT compatible with BallTrackerNet — different model
+#
+# For now, V2 remains the active model. The path below is a placeholder
+# for when V3 integration is complete.
 TRACKNET_V3_WEIGHTS = os.path.join(MODELS_DIR, "tracknet_v3.pt")
-TRACKNET_V3_NUM_INPUT_FRAMES = 5  # 5-frame sliding window
+TRACKNET_V3_NUM_INPUT_FRAMES = 8  # V3 uses 8-frame sliding window
+TRACKNET_V3_IN_CHANNELS = 27      # 8 frames × 3 channels + 3 background = 27
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
@@ -117,6 +128,21 @@ PLAYER_OUTSIDE_COURT_MARGIN_PX = 9999 # DISABLED — court-area filter was rejec
                                       # keypoints missed the far baseline (bbox only covered near court).
                                       # _choose_two_players court-geometry scoring + path-length filter
                                       # now handle non-player rejection. Was 120.
+
+# ---------------------------------------------------------------------------
+# SAHI tiled inference (small-object person detection)
+# ---------------------------------------------------------------------------
+# SAHI (Slicing Aided Hyper Inference) systematically slices the frame into
+# overlapping tiles, runs YOLO on each tile, then merges results via NMS.
+# Replaces the manual 3-pass approach (full frame + court crop + far baseline)
+# with a principled method. Particularly effective for the far player (~30-40px).
+SAHI_ENABLED = True                # Enable SAHI for player detection
+SAHI_SLICE_HEIGHT = 416            # Tile height in pixels
+SAHI_SLICE_WIDTH = 416             # Tile width in pixels
+SAHI_OVERLAP_RATIO = 0.2           # 20% overlap between adjacent tiles
+SAHI_CONFIDENCE = 0.15             # Low confidence for small distant players
+SAHI_POSTPROCESS_TYPE = "NMS"      # Non-Maximum Suppression for dedup
+SAHI_POSTPROCESS_MATCH_THRESHOLD = 0.5  # IoU threshold for NMS merge
 
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
 # every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg
