@@ -726,14 +726,25 @@ class PlayerTracker:
                 else:
                     tier = 0  # off-court, off-sideline — spectator/bench
 
-                # Proximity to court center as tiebreaker within tier (0-100)
+                # Tiebreaker 1: Bbox area — the actual player is CLOSER to the
+                # camera than a spectator behind them, so their bbox is BIGGER.
+                # Normalise to 0-200 range (a 50×100px box scores ~100).
+                bbox_w = box[2] - box[0]
+                bbox_h = box[3] - box[1]
+                bbox_area = bbox_w * bbox_h
+                bbox_score = min(200, bbox_area / 25.0)  # 5000px² → 200
+
+                # Tiebreaker 2: Proximity to court CENTER LINE (midpoint of
+                # sidelines). Players stand near the center line; spectators
+                # sit on the sidelines. Normalise to 0-100.
                 court_width = right_sideline_x - left_sideline_x
                 if court_width > 0:
-                    proximity = max(0, 1.0 - abs(cx - court_center_x) / (court_width * 0.6)) * 100
+                    center_dist = abs(cx - court_center_x) / (court_width / 2)
+                    proximity = max(0, 1.0 - center_dist) * 100
                 else:
                     proximity = 0
 
-                score = tier + motion_bonus + proximity
+                score = tier + motion_bonus + bbox_score + proximity
 
             else:
                 # ── Fallback: centering + motion (no court geometry) ────
