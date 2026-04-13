@@ -547,11 +547,17 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 - SportAI: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves)
 - T5 baseline: track in `golden_datasets.json` once metrics stable
 
+### Stroke classification (`build_silver_match_t5.py`)
+
+**Near player** (200-400px, has pose keypoints): Four-tier heuristic from COCO keypoints — serve (arm raised at baseline), overhead (arm raised mid-court), volley (near net + compact arm), forehand/backhand (wrist position relative to shoulders, three signal tiers). Handles both handedness.
+
+**Far player** (30-40px, no pose): Currently defaults to "Other". Planned: optical flow classifier on bbox crop ±5 frames around hit events, trained on SportAI labels from dual-submit pairs. Research recommends OpenCV Farneback flow → small CNN, targeting 75-85% accuracy. See `memory/project_far_player_stroke_research.md`.
+
 ### Known gaps
 
 - Ball delta fallback quality unvalidated (may detect player movement, not just ball)
-- TrackNetV3 weights not yet available (architecture ready, needs training or download)
-- Stroke classification mostly "Volley"/"Other" — needs better swing-type inference
+- TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
+- Far-player stroke classification not yet implemented (optical flow approach planned)
 - Speed calculation underestimates ~50% vs SportAI
 
 ---
