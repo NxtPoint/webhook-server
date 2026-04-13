@@ -45,17 +45,23 @@ TRACKNET_BGR2RGB = False           # DO NOT convert BGR→RGB. Empirically confi
 # module for occluded trajectory repair. This is a fundamentally different
 # model from V2 (3 frames, 9 channels, encoder-decoder without skips).
 #
-# To use V3:
-#   1. Clone https://github.com/qaz812345/TrackNetV3
-#   2. Generate background median images from match footage
-#   3. Either use their inference script directly, or port the architecture
-#   4. V3 weights are NOT compatible with BallTrackerNet — different model
+# Architecture is ported in ml_pipeline/tracknet_v3.py (TrackNetV3 class).
+# BallTracker auto-selects V3 when tracknet_v3.pt exists in the models dir.
+# V2 (tracknet_v2.pt) remains the default when V3 weights are absent.
 #
-# For now, V2 remains the active model. The path below is a placeholder
-# for when V3 integration is complete.
+# To activate V3:
+#   1. Train or obtain V3 weights (qaz812345/TrackNetV3 training pipeline)
+#   2. Place the .pt file at ml_pipeline/models/tracknet_v3.pt
+#   3. No code changes needed — BallTracker detects and loads V3 automatically
 TRACKNET_V3_WEIGHTS = os.path.join(MODELS_DIR, "tracknet_v3.pt")
 TRACKNET_V3_NUM_INPUT_FRAMES = 8  # V3 uses 8-frame sliding window
 TRACKNET_V3_IN_CHANNELS = 27      # 8 frames × 3 channels + 3 background = 27
+# Number of frames sampled from the start of a video to compute the per-pixel
+# median background for V3 input. More frames → more stable; 200 at 25 fps
+# = ~8 s of warmup. During warmup the 8-frame buffer fills but detections are
+# still returned (background is force-computed on the first full window if not
+# yet ready).
+TRACKNET_V3_BACKGROUND_WARMUP_FRAMES = 200
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50

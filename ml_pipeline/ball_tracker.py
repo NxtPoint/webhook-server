@@ -20,6 +20,7 @@ from ml_pipeline.config import (
     TRACKNET_V3_WEIGHTS,
     TRACKNET_V3_NUM_INPUT_FRAMES,
     TRACKNET_V3_IN_CHANNELS,
+    TRACKNET_V3_BACKGROUND_WARMUP_FRAMES,
     TRACKNET_INPUT_WIDTH,
     TRACKNET_INPUT_HEIGHT,
     TRACKNET_NUM_INPUT_FRAMES,
@@ -42,6 +43,7 @@ from ml_pipeline.config import (
     COURT_WIDTH_DOUBLES_M,
     FRAME_SAMPLE_FPS,
 )
+from ml_pipeline.tracknet_v3 import TrackNetV3, BackgroundEstimator
 
 
 # ── TrackNet V2 Architecture (from yastrebksv/TrackNet) ────────────────────
@@ -125,31 +127,62 @@ class BallDetection:
 class BallTracker:
     def __init__(self, weights_path: str = None, device: str = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        # TrackNet version selection.
-        # V3 (qaz812345/TrackNetV3) is NOT compatible with BallTrackerNet —
-        # it uses 8 frames + background median = 27 channels and a different
-        # U-Net architecture with skip connections. V3 integration requires
-        # porting the full model architecture. For now, only V2 is supported.
+
+        # ── TrackNet version selection ──────────────────────────────────────
+        # V3 is automatically preferred when its weights file exists and no
+        # explicit weights_path override is supplied. V2 remains the default
+        # when only tracknet_v2.pt is present.
+        #
+        # V3 differences (qaz812345/TrackNetV3):
+        #   - 8-frame sliding window (vs 3 in V2)
+        #   - Background median image prepended → 27 input channels (3+8×3)
+        #   - U-Net with skip connections (V2 has none)
+        #   - Sigmoid output — one heatmap per frame (vs softmax argmax in V2)
         if weights_path is None:
             if os.path.exists(TRACKNET_V3_WEIGHTS):
-                logger.warning(
-                    "TrackNet V3 weights found at %s but V3 architecture is NOT "
-                    "yet ported (requires 8-frame + background, 27 channels, "
-                    "U-Net with skip connections). Falling back to V2.",
-                    TRACKNET_V3_WEIGHTS,
+                self._use_v3 = True
+                weights_path = TRACKNET_V3_WEIGHTS
+                self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES    # 8
+                self._in_channels = TRACKNET_V3_IN_CHANNELS              # 27
+                logger.info(
+                    "TrackNet V3 weights found — loading V3 architecture "
+                    "(%d-frame + background, %d channels, U-Net with skips): %s",
+                    self._num_input_frames, self._in_channels, weights_path,
                 )
-            weights_path = TRACKNET_WEIGHTS
-            self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
-            self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3  # 9
-            logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
+            else:
+                self._use_v3 = False
+                weights_path = TRACKNET_WEIGHTS
+                self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES       # 3
+                self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3        # 9
+                logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
         else:
-            self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
-            self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3
+            # Explicit override — detect from channel count
+            self._use_v3 = (weights_path == TRACKNET_V3_WEIGHTS) or (
+                TRACKNET_V3_IN_CHANNELS == 27 and "v3" in weights_path.lower()
+            )
+            if self._use_v3:
+                self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES
+                self._in_channels = TRACKNET_V3_IN_CHANNELS
+            else:
+                self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
+                self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3
+
         self.model = self._load_model(weights_path)
         self.scale_x = 1.0
         self.scale_y = 1.0
-        self._frame_buffer: list = []  # last N frames (resized)
+        self._frame_buffer: list = []  # last N BGR frames (resized to model input dims)
         self._prev_gray: Optional[np.ndarray] = None  # for frame-delta ball fallback
+
+        # V3-specific: background estimator and cached tensor
+        self._bg_estimator: Optional[BackgroundEstimator] = None
+        self._bg_tensor: Optional[torch.Tensor] = None   # (1, 3, H, W) on device
+        if self._use_v3:
+            self._bg_estimator = BackgroundEstimator(
+                warmup_frames=TRACKNET_V3_BACKGROUND_WARMUP_FRAMES,
+                target_w=TRACKNET_INPUT_WIDTH,
+                target_h=TRACKNET_INPUT_HEIGHT,
+            )
+
         self.detections: List[BallDetection] = []
         # Diagnostics — counters only, no behavior change. Used to diagnose
         # the 7% detection rate on T5 runs. Reported via log_diagnostics().
@@ -166,8 +199,20 @@ class BallTracker:
             "fm_raw_max_hist": [0] * 8,    # same, but for raw argmax output BEFORE the *255
         }
 
-    def _load_model(self, weights_path: str) -> BallTrackerNet:
-        model = BallTrackerNet(in_channels=self._in_channels)
+    def _load_model(self, weights_path: str):
+        """Load the appropriate model class based on which TrackNet version is active.
+
+        V2: BallTrackerNet (encoder-decoder, no skip connections, 9 channels)
+        V3: TrackNetV3    (U-Net with skip connections, 27 channels, sigmoid output)
+        """
+        if self._use_v3:
+            model = TrackNetV3(
+                in_dim=self._in_channels,           # 27
+                out_dim=TRACKNET_V3_NUM_INPUT_FRAMES,  # 8 — one heatmap per frame
+            )
+        else:
+            model = BallTrackerNet(in_channels=self._in_channels)
+
         state = torch.load(weights_path, map_location=self.device, weights_only=True)
         model.load_state_dict(state)
         model.to(self.device)
@@ -176,39 +221,52 @@ class BallTracker:
         self._use_fp16 = ("cuda" in str(self.device))
         if self._use_fp16:
             model = model.half()
+        logger.info(
+            "BallTracker: loaded %s from %s  device=%s fp16=%s",
+            "TrackNetV3" if self._use_v3 else "BallTrackerNet (V2)",
+            weights_path, self.device, self._use_fp16,
+        )
         return model
 
     def detect_frame(self, frame: np.ndarray, frame_idx: int) -> Optional[BallDetection]:
-        """Feed one frame. Returns detection once 3-frame window is filled."""
+        """Feed one BGR frame. Returns a BallDetection once the sliding window is full.
+
+        V2 path: 3-frame window → 9 channels → softmax argmax heatmap.
+        V3 path: 8-frame window + background median → 27 channels → sigmoid heatmap
+                 (last frame's channel is used for detection).
+
+        For V3, background estimation runs automatically during the warmup period.
+        If the background is not ready when the window is first filled, we force-
+        compute from however many frames have been collected so detection can start.
+        """
         h, w = frame.shape[:2]
         self.scale_x = w / TRACKNET_INPUT_WIDTH
         self.scale_y = h / TRACKNET_INPUT_HEIGHT
 
+        # ── Resize + colour conversion ───────────────────────────────────────
         resized = cv2.resize(frame, (TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT))
         if TRACKNET_BGR2RGB:
             resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+
+        # ── V3: feed raw BGR frame into background estimator ─────────────────
+        if self._use_v3 and self._bg_estimator is not None and not self._bg_estimator.ready:
+            self._bg_estimator.update(frame)
+
         self._frame_buffer.append(resized)
         if len(self._frame_buffer) > self._num_input_frames:
             self._frame_buffer.pop(0)
         if len(self._frame_buffer) < self._num_input_frames:
             return None
 
-        # Stack 3 frames → 9 channels
-        stacked = np.concatenate(self._frame_buffer, axis=2)  # (H, W, 9)
-        tensor = torch.from_numpy(
-            stacked.astype(np.float32) / 255.0
-        ).permute(2, 0, 1).unsqueeze(0).to(self.device)
-        if self._use_fp16:
-            tensor = tensor.half()
+        # ── Build model input tensor ─────────────────────────────────────────
+        if self._use_v3:
+            x, y = self._detect_frame_v3()
+        else:
+            x, y = self._detect_frame_v2()
 
-        with torch.no_grad():
-            output = self.model(tensor, testing=True)
-        heatmap = output.argmax(dim=1).squeeze().cpu().numpy()
-
-        x, y = self._postprocess_heatmap(heatmap)
         if x is None:
-            # TrackNet failed — try frame-delta Hough fallback.
-            # On 63.5% of frames TrackNet produces nothing. Frame differencing
+            # Model produced no output — try frame-delta Hough fallback.
+            # On 63.5% of V2 frames TrackNet produces nothing. Frame differencing
             # detects ANY moving circular object (the ball) regardless of size.
             x, y = self._detect_ball_frame_delta(frame)
             if x is not None:
@@ -223,6 +281,65 @@ class BallTracker:
         )
         self.detections.append(det)
         return det
+
+    def _detect_frame_v2(self):
+        """Run V2 inference on the current 3-frame buffer. Returns (x, y) or (None, None)."""
+        # Stack 3 frames → (H, W, 9)
+        stacked = np.concatenate(self._frame_buffer, axis=2)
+        tensor = torch.from_numpy(
+            stacked.astype(np.float32) / 255.0
+        ).permute(2, 0, 1).unsqueeze(0).to(self.device)
+        if self._use_fp16:
+            tensor = tensor.half()
+
+        with torch.no_grad():
+            output = self.model(tensor, testing=True)
+        heatmap = output.argmax(dim=1).squeeze().cpu().numpy()
+        return self._postprocess_heatmap(heatmap)
+
+    def _detect_frame_v3(self):
+        """Run V3 inference on the current 8-frame buffer + background. Returns (x, y) or (None, None).
+
+        Input layout (27 channels):
+          [0:3]    background median  (3 ch, normalised)
+          [3:27]   8 frames × 3 ch   (24 ch, normalised)
+
+        Output: (N=1, 8, H, W) sigmoid heatmaps.  We use channel index -1 (last
+        frame) to match V2's convention of detecting the most recent frame.
+        """
+        # Ensure background is ready
+        if not self._bg_estimator.ready:
+            self._bg_estimator.force_compute()
+        if self._bg_tensor is None:
+            self._bg_tensor = self._bg_estimator.as_tensor(self.device, self._use_fp16)
+
+        # Build frame tensor (8, 3, H, W) → (1, 24, H, W) then cat with bg
+        frames_chw = []
+        for f in self._frame_buffer:
+            # f is (H, W, 3) uint8 RGB (or BGR if TRACKNET_BGR2RGB is False)
+            arr = f.astype(np.float32) / 255.0
+            frames_chw.append(torch.from_numpy(arr).permute(2, 0, 1))   # (3, H, W)
+
+        frames_tensor = torch.stack(frames_chw, dim=0)                  # (8, 3, H, W)
+        frames_tensor = frames_tensor.view(1, -1,
+                                           TRACKNET_INPUT_HEIGHT,
+                                           TRACKNET_INPUT_WIDTH)         # (1, 24, H, W)
+        frames_tensor = frames_tensor.to(self.device)
+        if self._use_fp16:
+            frames_tensor = frames_tensor.half()
+
+        # Prepend background: (1, 3, H, W) + (1, 24, H, W) → (1, 27, H, W)
+        tensor = torch.cat([self._bg_tensor, frames_tensor], dim=1)
+
+        with torch.no_grad():
+            output = self.model(tensor)                                  # (1, 8, H, W)
+
+        # Use the last channel — heatmap for the most recent frame
+        heatmap_f32 = output[0, -1].cpu().float().numpy()               # (H, W) in [0, 1]
+
+        # Convert to uint8 in [0, 255] for _postprocess_heatmap (threshold at 127)
+        heatmap_u8 = (heatmap_f32 * 255.0).clip(0, 255).astype(np.uint8)
+        return self._postprocess_heatmap(heatmap_u8)
 
     def _postprocess_heatmap(self, feature_map: np.ndarray):
         """Convert heatmap to (x, y) via Hough circle detection.
@@ -543,8 +660,17 @@ class BallTracker:
     def reset(self):
         self._frame_buffer.clear()
         self.detections.clear()
+        self._prev_gray = None
         for k in self._diag:
             if isinstance(self._diag[k], list):
                 self._diag[k] = [0] * len(self._diag[k])
             else:
                 self._diag[k] = 0
+        # V3: reset background estimator so a new video gets a fresh median
+        if self._use_v3 and self._bg_estimator is not None:
+            self._bg_tensor = None
+            self._bg_estimator = BackgroundEstimator(
+                warmup_frames=TRACKNET_V3_BACKGROUND_WARMUP_FRAMES,
+                target_w=TRACKNET_INPUT_WIDTH,
+                target_h=TRACKNET_INPUT_HEIGHT,
+            )
