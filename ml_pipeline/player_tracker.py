@@ -190,22 +190,18 @@ class PlayerTracker:
         # ── Detection strategy: SAHI (systematic) or manual 3-pass (legacy) ──
         if SAHI_ENABLED and self._sahi_model is not None:
             # Full-frame YOLO first — catches the near player (large, ~400px)
-            # easily and also finds the far player when they're visible enough.
+            # easily and occasionally the far player when they're visible.
             full_boxes_list, full_kps_list = self._run_yolo(frame)
 
-            # Conditional SAHI: if full-frame YOLO already found at least one
-            # candidate in each half of the frame, skip SAHI. SAHI is the
-            # expensive step (~20-30 YOLO calls per frame on the court ROI);
-            # running it only when we actually need it cuts runtime
-            # significantly on frames where both players are clearly visible.
-            midline_y = frame.shape[0] / 2
-            has_far = any((b[1] + b[3]) / 2 < midline_y for b in full_boxes_list)
-            has_near = any((b[1] + b[3]) / 2 >= midline_y for b in full_boxes_list)
-            if has_far and has_near:
-                sahi_boxes, sahi_kps = [], []
-            else:
-                # SAHI on court ROI only — crowd stands never contain players.
-                sahi_boxes, sahi_kps = self._run_sahi(frame, court_bbox=court_bbox)
+            # Always run SAHI on the court ROI — this is how we reliably find
+            # the far player (~30-40px, easily missed by full-frame YOLO).
+            # Court-cropped SAHI is 40-60% cheaper than full-frame SAHI (we
+            # skip tiling the crowd stands). We do NOT skip SAHI when YOLO
+            # finds both halves, because YOLO can find the UMPIRE in the far
+            # half instead of the real far player — court-metre scoring
+            # deprioritises the umpire but only if the real player is in the
+            # candidate pool, which requires SAHI to find them.
+            sahi_boxes, sahi_kps = self._run_sahi(frame, court_bbox=court_bbox)
 
             all_boxes = full_boxes_list + sahi_boxes
             all_kps = full_kps_list + sahi_kps
