@@ -249,12 +249,16 @@ class PlayerTracker:
         # ── Deduplicate via IoU ──
         deduped_boxes, deduped_kps = self._dedupe_iou(all_boxes, all_kps, iou_thresh=0.5)
         n_yolo_boxes = len(deduped_boxes)
-        # Log dedup details every 150 frames to diagnose far-player loss
+        # Log dedup details every 150 frames to diagnose far-player loss.
+        # crop_boxes_list / far_boxes_list only exist in the legacy 3-pass
+        # code path. When SAHI is enabled we have sahi_boxes instead.
         if frame_idx % 150 == 0:
+            crop_n = len(crop_boxes_list) if 'crop_boxes_list' in locals() else 0
+            far_n = len(far_boxes_list) if 'far_boxes_list' in locals() else 0
+            sahi_n = len(sahi_boxes) if 'sahi_boxes' in locals() else 0
             logger.info(
-                "dedup_detail frame=%d: full=%d crop=%d far=%d → deduped=%d",
-                frame_idx, len(full_boxes_list), len(crop_boxes_list),
-                len(far_boxes_list), len(deduped_boxes),
+                "dedup_detail frame=%d: full=%d sahi=%d crop=%d far=%d → deduped=%d",
+                frame_idx, len(full_boxes_list), sahi_n, crop_n, far_n, len(deduped_boxes),
             )
             for bi, (bx1, by1, bx2, by2) in enumerate(deduped_boxes):
                 cy = (by1 + by2) / 2
