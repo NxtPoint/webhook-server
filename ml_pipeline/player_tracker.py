@@ -193,15 +193,34 @@ class PlayerTracker:
             # easily and occasionally the far player when they're visible.
             full_boxes_list, full_kps_list = self._run_yolo(frame)
 
-            # Always run SAHI on the court ROI — this is how we reliably find
-            # the far player (~30-40px, easily missed by full-frame YOLO).
-            # Court-cropped SAHI is 40-60% cheaper than full-frame SAHI (we
-            # skip tiling the crowd stands). We do NOT skip SAHI when YOLO
-            # finds both halves, because YOLO can find the UMPIRE in the far
-            # half instead of the real far player — court-metre scoring
-            # deprioritises the umpire but only if the real player is in the
-            # candidate pool, which requires SAHI to find them.
-            sahi_boxes, sahi_kps = self._run_sahi(frame, court_bbox=court_bbox)
+            # Smart conditional SAHI: skip SAHI ONLY when full-frame YOLO has
+            # already found a candidate AT THE FAR BASELINE (court_y ≤ 5).
+            # The far baseline is at court_y=0 in our system, so a real far
+            # player is at y ≤ ~5 (baseline + some depth during rallies).
+            # The umpire at the net is at y ≈ 11, which FAILS this check —
+            # so we correctly keep running SAHI when only the umpire is in
+            # the far half. Skipping SAHI on frames where the real far
+            # player IS visible at the baseline saves the biggest time sink.
+            skip_sahi = False
+            if to_court_coords is not None:
+                for box in full_boxes_list:
+                    cx = (box[0] + box[2]) / 2
+                    y2 = box[3]  # feet position
+                    try:
+                        pt = to_court_coords(cx, y2)
+                    except Exception:
+                        pt = None
+                    if pt is not None and -5.0 <= pt[1] <= 5.0:
+                        skip_sahi = True
+                        break
+
+            if skip_sahi:
+                sahi_boxes, sahi_kps = [], []
+                if frame_idx % 150 == 0:
+                    logger.info("sahi_skipped frame=%d — full-frame YOLO has far-baseline candidate", frame_idx)
+            else:
+                # SAHI on court ROI only — crowd stands never contain players
+                sahi_boxes, sahi_kps = self._run_sahi(frame, court_bbox=court_bbox)
 
             all_boxes = full_boxes_list + sahi_boxes
             all_kps = full_kps_list + sahi_kps

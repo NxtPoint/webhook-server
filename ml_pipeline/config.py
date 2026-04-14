@@ -143,9 +143,10 @@ PLAYER_OUTSIDE_COURT_MARGIN_PX = 9999 # DISABLED — court-area filter was rejec
 # Replaces the manual 3-pass approach (full frame + court crop + far baseline)
 # with a principled method. Particularly effective for the far player (~30-40px).
 SAHI_ENABLED = True                # Enable SAHI for player detection
-SAHI_SLICE_HEIGHT = 416            # Tile height in pixels
-SAHI_SLICE_WIDTH = 416             # Tile width in pixels
-SAHI_OVERLAP_RATIO = 0.2           # 20% overlap between adjacent tiles
+SAHI_SLICE_HEIGHT = 640            # Tile height (was 416 — larger = fewer tiles)
+SAHI_SLICE_WIDTH = 640             # Tile width (was 416)
+SAHI_OVERLAP_RATIO = 0.15          # 15% overlap (was 20% — small stability tradeoff
+                                   # for ~10% fewer tiles; edges are still well covered)
 SAHI_CONFIDENCE = 0.15             # Low confidence for small distant players
 SAHI_POSTPROCESS_TYPE = "NMS"      # Non-Maximum Suppression for dedup
 SAHI_POSTPROCESS_MATCH_THRESHOLD = 0.5  # IoU threshold for NMS merge
@@ -157,7 +158,10 @@ DEBUG_FRAME_INTERVAL = 1000
 YOLO_PERSON_CLASS_ID = 0           # COCO class ID for 'person'
 PLAYER_IOU_THRESHOLD = 0.2         # More lenient IoU matching (handles movement)
 PLAYER_COURT_MARGIN_PX = 9999      # Effectively DISABLED — court bbox can be wrong, trust YOLO
-PLAYER_DETECTION_INTERVAL = 3      # Run YOLO more often for stable tracking
+PLAYER_DETECTION_INTERVAL = 5      # Was 3 — increased to 5 (200ms between detections at 25fps,
+                                   # well within the window where a player's position barely
+                                   # changes). Cuts detection work by 40%. Further increases
+                                   # risk missing serve impact positions.
 PLAYER_DETECTION_INTERVAL_PRACTICE = 10  # Less frequent for practice
 
 # ---------------------------------------------------------------------------
