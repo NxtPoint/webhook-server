@@ -326,9 +326,44 @@ class PlayerTracker:
             try:
                 self._save_debug_frame_v2(
                     frame, frame_idx, deduped_boxes, candidates,
+                    to_court_coords=to_court_coords,
                 )
             except Exception as e:
                 logger.warning("debug frame save failed: %s", e)
+
+            # DIAGNOSTIC: log per-candidate court_y for far-half candidates.
+            # Needed to diagnose why far-baseline player (should be at y=0-5)
+            # is never detected there. Runs only on debug-frame intervals so
+            # doesn't spam logs.
+            if to_court_coords is not None:
+                midline_y_px = frame.shape[0] / 2
+                far_half_diag = []
+                for bi, box in enumerate(deduped_boxes):
+                    cx = (box[0] + box[2]) / 2
+                    cy = (box[1] + box[3]) / 2
+                    y2 = box[3]
+                    if cy >= midline_y_px:
+                        continue  # near half — skip
+                    try:
+                        pt = to_court_coords(cx, y2)
+                    except Exception:
+                        pt = None
+                    in_kept = any(
+                        abs(box[0] - kb[0]) < 1 and abs(box[1] - kb[1]) < 1
+                        for kb in candidates
+                    )
+                    court_y = pt[1] if pt else None
+                    far_half_diag.append({
+                        "bbox": [round(v, 0) for v in box],
+                        "y2_px": round(y2, 0),
+                        "court_y": round(court_y, 2) if court_y is not None else None,
+                        "kept": in_kept,
+                    })
+                if far_half_diag:
+                    logger.info(
+                        "far_diag frame=%d far_half_candidates=%d: %s",
+                        frame_idx, len(far_half_diag), far_half_diag,
+                    )
 
         # Assign player_id via IoU matching with previous frame
         frame_detections = self._assign_ids(candidates, frame_idx, candidate_kps)
@@ -598,11 +633,15 @@ class PlayerTracker:
                 kept_kps.append(kp)
         return kept_boxes, kept_kps
 
-    def _save_debug_frame_v2(self, frame, frame_idx: int, all_boxes, kept_boxes) -> None:
+    def _save_debug_frame_v2(self, frame, frame_idx: int, all_boxes, kept_boxes,
+                              to_court_coords=None) -> None:
         """Save a frame with YOLO bboxes drawn on it. Uploads to S3 immediately
         if upload context is set, so the user can inspect mid-run.
 
-        Draws ALL detections (red = filtered, green = kept).
+        Draws ALL detections (red = filtered, green = kept). When
+        to_court_coords is provided, also annotates each bbox with its
+        projected court_y value so we can diagnose whether the far-baseline
+        player is being detected but projected wrong.
         """
         os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
         img = frame.copy()
@@ -615,9 +654,19 @@ class PlayerTracker:
             key = (round(box[0], 1), round(box[1], 1), round(box[2], 1), round(box[3], 1))
             color = (0, 255, 0) if key in kept_set else (0, 0, 255)
             label = "KEPT" if key in kept_set else "FILTER"
+            # Compute court_y if homography available — visualise on bbox
+            court_label = ""
+            if to_court_coords is not None:
+                cx = (box[0] + box[2]) / 2
+                try:
+                    pt = to_court_coords(cx, box[3])  # bbox bottom (feet)
+                except Exception:
+                    pt = None
+                if pt is not None:
+                    court_label = f" y={pt[1]:.1f}"
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
             cv2.putText(
-                img, label, (x1, y1 - 8),
+                img, label + court_label, (x1, y1 - 8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2,
             )
         header = (f"frame={frame_idx} all={len(all_boxes)} kept={len(kept_boxes)} "
