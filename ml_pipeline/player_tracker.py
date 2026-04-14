@@ -284,11 +284,17 @@ class PlayerTracker:
             candidates.append((float(x1), float(y1), float(x2), float(y2)))
             candidate_kps.append(deduped_kps[bi])
 
-        # Diagnostic logging — every 30 frames
+        # Diagnostic logging — every 30 frames.
+        # crop_boxes_list only exists in the legacy 3-pass code path; in the
+        # SAHI path we have sahi_boxes instead. Fall back to 0 / sahi count.
         if frame_idx % 30 == 0:
+            alt_n = (len(sahi_boxes) if 'sahi_boxes' in locals()
+                     else len(crop_boxes_list) if 'crop_boxes_list' in locals()
+                     else 0)
+            alt_label = "sahi" if 'sahi_boxes' in locals() else "crop"
             logger.info(
-                "player_tracker frame=%d full=%d crop=%d deduped=%d filtered_out=%d kept=%d",
-                frame_idx, len(full_boxes_list), len(crop_boxes_list),
+                "player_tracker frame=%d full=%d %s=%d deduped=%d filtered_out=%d kept=%d",
+                frame_idx, len(full_boxes_list), alt_label, alt_n,
                 n_yolo_boxes, n_filtered_out, len(candidates),
             )
 
