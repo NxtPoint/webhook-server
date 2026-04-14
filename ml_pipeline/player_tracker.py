@@ -9,7 +9,7 @@ import os
 import numpy as np
 from ultralytics import YOLO
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Callable
 
 import cv2
 
@@ -160,6 +160,7 @@ class PlayerTracker:
         court_bbox: Optional[tuple] = None,
         motion_mask: Optional[np.ndarray] = None,
         court_corners: Optional[list] = None,
+        to_court_coords: Optional[Callable] = None,
     ) -> List[PlayerDetection]:
         """Detect players. Runs YOLO every N frames, reuses last result otherwise.
 
@@ -169,6 +170,10 @@ class PlayerTracker:
                 prefer moving candidates over stationary ones in the far half.
             court_corners: 4 baseline corner pixel coords [(x,y),...] from court
                 detector. Used for three-tier court-geometry scoring.
+            to_court_coords: callable (pixel_x, pixel_y) -> (court_x, court_y)
+                in metres, or None. When provided, candidate scoring uses
+                court metres for the zone test instead of pixel-space
+                approximations.
         """
         if (frame_idx - self._last_detect_frame) < self._detect_interval and self._last_result:
             # Reuse last detection with updated frame_idx
@@ -286,6 +291,7 @@ class PlayerTracker:
         candidates, candidate_kps = self._choose_two_players(
             candidates, candidate_kps, court_bbox, frame.shape[:2],
             motion_mask=motion_mask, court_corners=court_corners,
+            to_court_coords=to_court_coords,
         )
 
         # Debug frame export AFTER _choose_two_players so the image shows
@@ -663,22 +669,28 @@ class PlayerTracker:
     def _choose_two_players(self, candidates: list, candidate_kps: list,
                             court_bbox, frame_shape,
                             motion_mask: Optional[np.ndarray] = None,
-                            court_corners: Optional[list] = None) -> tuple:
-        """Select up to 2 players using three-tier court-geometry scoring.
+                            court_corners: Optional[list] = None,
+                            to_court_coords: Optional[Callable] = None) -> tuple:
+        """Select up to 2 players — one per half — using court-metre zoning.
 
-        THREE-TIER PRIORITY (per half — near and far scored independently):
-          Tier 1 (3000): INSIDE the court quadrilateral — strongest signal
-          Tier 2 (2000): Behind the baseline, within sideline extensions —
-                         take closest to baseline
-          Tier 3 (1000): Near the sideline corridor (baseline-to-net) —
-                         covers players running wide
+        TWO-RULE PRIORITY (per half, when to_court_coords is available):
+          Rule 1 (3000): INSIDE doubles court — 0 <= x <= 10.97, 0 <= y <= 23.77
+          Rule 2 (2000): EXTENDED box around court — -3 <= x <= 13.97,
+                         -4 <= y <= 27.77, and outside Rule 1
+          Tier 0:        Outside the extended box (spectator, umpire chair,
+                         coach, bench)
+
+        Closest-to-baseline tiebreaker (0-500 pts within any tier): candidates
+        whose feet are near a baseline score higher. A candidate at the net
+        (far from both baselines) scores the lowest. This rewards the correct
+        entity — real players hug baselines during serves/rallies, while
+        umpires and commentators sit at net level.
 
         Within each tier, MOG2 motion adds +500 bonus (moving > stationary).
-        Final tiebreaker: proximity to court center.
 
-        Falls back to centering + motion heuristic when court corners unavailable.
-
-        One candidate selected from each half (far/near) of the frame.
+        Falls back to the legacy pixel-space geometry when to_court_coords
+        is unavailable (pre-calibration frames). One candidate selected from
+        each half (far/near) of the frame.
         """
         MIN_Y_SEPARATION_RATIO = 0.35
 
@@ -737,27 +749,66 @@ class PlayerTracker:
                 motion_ratio = self._compute_motion_ratio(box, motion_mask)
             motion_bonus = 500 if motion_ratio >= MOG2_MIN_MOTION_RATIO else 0
 
-            # ── Court-geometry scoring (when court corners available) ────
-            # Three-tier priority system (per half — near and far scored
-            # independently):
-            #   Tier 1 (3000): INSIDE the doubles court polygon (singles + alleys)
-            #   Tier 2 (2000): Behind own baseline within 3m
-            #   Tier 3 (1000): Wide of doubles sideline BUT within the
-            #                  baseline-to-baseline band, NOT behind baseline.
-            #                  Rare — a player running wide once or twice per
-            #                  match. Excludes the umpire/commentator zone at
-            #                  the net level because umpires sit outside the
-            #                  court length band.
-            # Tiebreaker across tiers: closest-to-baseline wins.
-            if court_poly is not None:
-                # Point-in-polygon test using feet position (cx, y2)
+            # ── Court-metre scoring (preferred when homography available) ──
+            # Rule 1 (3000): 0<=x<=10.97, 0<=y<=23.77 — inside doubles court
+            # Rule 2 (2000): -3<=x<=13.97, -4<=y<=27.77 (and outside Rule 1) —
+            #                the "considerable" extended zone
+            # Tier 0:        Outside extended zone — spectator/umpire/bench
+            # Baseline-closeness tiebreaker (0-500): prefer feet near any
+            # baseline; net position (y=11.88) scores lowest.
+            court_xy = None
+            if to_court_coords is not None:
+                try:
+                    court_xy = to_court_coords(cx, y2)
+                except Exception:
+                    court_xy = None
+
+            if court_xy is not None:
+                court_x_m, court_y_m = court_xy
+                NET_Y = COURT_LENGTH_M / 2  # 11.885
+                # Rule 1: inside doubles court
+                in_court = (
+                    0.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M
+                    and 0.0 <= court_y_m <= COURT_LENGTH_M
+                )
+                # Rule 2: extended box (3m lateral, 4m longitudinal)
+                in_extended = (
+                    -3.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 3.0
+                    and -4.0 <= court_y_m <= COURT_LENGTH_M + 4.0
+                )
+
+                if in_court:
+                    tier = 3000
+                elif in_extended:
+                    tier = 2000
+                else:
+                    tier = 0  # off-court
+
+                # Baseline-closeness: distance to nearer baseline, in metres.
+                # At y=0 or y=23.77 → dist=0 → full 500 points.
+                # At y=11.88 (net) → dist=11.88 → 0 points.
+                # Normalise by NET_Y so net gives exactly 0.
+                dist_to_nearest_baseline = min(
+                    abs(court_y_m - 0.0),
+                    abs(court_y_m - COURT_LENGTH_M),
+                )
+                baseline_closeness = max(
+                    0.0, 1.0 - dist_to_nearest_baseline / NET_Y
+                ) * 500
+
+                # Bbox area: real players are closer to camera than spectators
+                # behind them and thus have larger bboxes. Normalise to 0-200.
+                bbox_w = box[2] - box[0]
+                bbox_h = box[3] - box[1]
+                bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
+
+                score = tier + motion_bonus + baseline_closeness + bbox_score
+
+            elif court_poly is not None:
+                # ── Fallback: legacy pixel-space geometry (no homography) ──
+                # Used on frames before court calibration completes.
                 in_court = cv2.pointPolygonTest(court_poly, (cx, y2), False) >= 0
-
-                # Candidate's "home baseline" is the one for their half
                 home_baseline_y = far_baseline_y if half == "far" else near_baseline_y
-
-                # Tier 2 — behind own baseline within 3m, allowing wide stance
-                # (sideline margin = 3m lateral slack for serve stance)
                 lateral_slack = court_width_px * (3.0 / COURT_WIDTH_DOUBLES_M)
                 in_lateral_band = (left_sideline_x - lateral_slack <= cx
                                    <= right_sideline_x + lateral_slack)
@@ -774,49 +825,20 @@ class PlayerTracker:
                         and in_lateral_band
                     )
 
-                # Tier 3 — wide of the doubles sideline, within the
-                # baseline-to-baseline y-band, but NOT behind a baseline.
-                # This catches a player running wide for a shot. Umpires
-                # at the net are also in this y-band, so we additionally
-                # require being outside the court polygon AND outside
-                # the narrow sideline band — i.e. clearly outside the
-                # doubles tramlines by up to 2m.
-                wide_left = left_sideline_x - wide_margin <= cx < left_sideline_x
-                wide_right = right_sideline_x < cx <= right_sideline_x + wide_margin
-                in_length_band = (
-                    far_baseline_y <= y2 <= near_baseline_y
-                )
-                wide_of_doubles = (
-                    (wide_left or wide_right)
-                    and in_length_band
-                    and not in_court
-                    and not behind_own_baseline
-                )
-
                 if in_court:
                     tier = 3000
                 elif behind_own_baseline:
                     tier = 2000
-                elif wide_of_doubles:
-                    tier = 1000
                 else:
-                    tier = 0  # off-court (spectator, umpire, bench)
+                    tier = 0
 
-                # Closest-to-baseline tiebreaker: within any tier, prefer
-                # candidates whose feet are closest to their own baseline.
-                # Score 0-400 (doesn't cross tier boundaries — tier delta
-                # is 1000).
                 dist_to_baseline_px = abs(y2 - home_baseline_y)
                 baseline_closeness = max(
                     0.0, 1.0 - (dist_to_baseline_px / court_depth)
-                ) * 400
-
-                # Bbox area: real players are closer to camera than spectators
-                # behind them and thus have larger bboxes. Normalise to 0-200.
+                ) * 500
                 bbox_w = box[2] - box[0]
                 bbox_h = box[3] - box[1]
                 bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
-
                 score = tier + motion_bonus + baseline_closeness + bbox_score
 
             else:
