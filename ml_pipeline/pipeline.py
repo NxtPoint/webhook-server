@@ -246,9 +246,19 @@ class TennisAnalysisPipeline:
         result.bounces_in = sum(1 for b in bounces if b.is_in is True)
         result.bounces_out = sum(1 for b in bounces if b.is_in is False)
 
-        speeds = [d.speed_kmh for d in result.ball_detections if d.speed_kmh is not None and d.speed_kmh > 0]
-        result.max_speed_kmh = max(speeds) if speeds else 0
-        result.avg_speed_kmh = float(np.mean(speeds)) if speeds else 0
+        # Speed aggregates: exclude slow ball rolls (mis-hits, warmup, post-point
+        # ball bouncing, ball rolling on court). A real tennis shot is >= 30 km/h
+        # at the slowest (soft drop shots, short approaches). Anything below is
+        # almost certainly ball-in-transit-not-in-play and dilutes the average.
+        MIN_REAL_SHOT_KMH = 30.0
+        real_speeds = [
+            d.speed_kmh for d in result.ball_detections
+            if d.speed_kmh is not None and d.speed_kmh >= MIN_REAL_SHOT_KMH
+        ]
+        # Max speed: use all non-zero speeds (max shouldn't be affected by slow balls)
+        all_speeds = [d.speed_kmh for d in result.ball_detections if d.speed_kmh is not None and d.speed_kmh > 0]
+        result.max_speed_kmh = max(all_speeds) if all_speeds else 0
+        result.avg_speed_kmh = float(np.mean(real_speeds)) if real_speeds else 0
 
         # Rally analysis: a rally = sequence of bounces separated by < BOUNCE_MIN_DIRECTION_CHANGE frames
         if bounces:

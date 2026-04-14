@@ -37,6 +37,8 @@ from ml_pipeline.config import (
     SAHI_CONFIDENCE,
     SAHI_POSTPROCESS_TYPE,
     SAHI_POSTPROCESS_MATCH_THRESHOLD,
+    COURT_LENGTH_M,
+    COURT_WIDTH_DOUBLES_M,
 )
 
 # SAHI — lazy import to avoid startup cost when disabled
@@ -182,11 +184,24 @@ class PlayerTracker:
 
         # ── Detection strategy: SAHI (systematic) or manual 3-pass (legacy) ──
         if SAHI_ENABLED and self._sahi_model is not None:
-            # SAHI: systematic tiled inference that automatically handles
-            # small distant objects. Replaces the manual 3-pass approach.
-            sahi_boxes, sahi_kps = self._run_sahi(frame)
-            # Also run full-frame YOLO for near player with pose keypoints
+            # Full-frame YOLO first — catches the near player (large, ~400px)
+            # easily and also finds the far player when they're visible enough.
             full_boxes_list, full_kps_list = self._run_yolo(frame)
+
+            # Conditional SAHI: if full-frame YOLO already found at least one
+            # candidate in each half of the frame, skip SAHI. SAHI is the
+            # expensive step (~20-30 YOLO calls per frame on the court ROI);
+            # running it only when we actually need it cuts runtime
+            # significantly on frames where both players are clearly visible.
+            midline_y = frame.shape[0] / 2
+            has_far = any((b[1] + b[3]) / 2 < midline_y for b in full_boxes_list)
+            has_near = any((b[1] + b[3]) / 2 >= midline_y for b in full_boxes_list)
+            if has_far and has_near:
+                sahi_boxes, sahi_kps = [], []
+            else:
+                # SAHI on court ROI only — crowd stands never contain players.
+                sahi_boxes, sahi_kps = self._run_sahi(frame, court_bbox=court_bbox)
+
             all_boxes = full_boxes_list + sahi_boxes
             all_kps = full_kps_list + sahi_kps
         else:
@@ -449,13 +464,18 @@ class PlayerTracker:
                 out_kps.append(None)
         return out_boxes, out_kps
 
-    def _run_sahi(self, frame: np.ndarray):
+    def _run_sahi(self, frame: np.ndarray, court_bbox=None):
         """Run SAHI tiled inference for systematic small-object person detection.
 
         SAHI slices the frame into overlapping 416×416 tiles, runs YOLO on each
         tile independently, then merges results via NMS. This gives the far
         player (~30-40px in 1080p) much higher resolution within its tile than
         full-frame inference provides.
+
+        Optimisation: when a court_bbox is provided, we only tile the court
+        region (with a generous margin) rather than the full frame. The crowd
+        stands never contain players, so tiling them is wasted compute.
+        Tile count drops ~40-60% depending on camera framing.
 
         Returns (boxes_list, kps_list) in full-frame coordinates.
         """
@@ -465,8 +485,23 @@ class PlayerTracker:
         try:
             from sahi.predict import get_sliced_prediction
 
+            # Crop to court region with 10% margin — real players are always
+            # within this. Spectator stands outside are wasted SAHI tiles.
+            roi_x, roi_y = 0, 0
+            target = frame
+            if court_bbox is not None:
+                h, w = frame.shape[:2]
+                cx1, cy1, cx2, cy2 = court_bbox
+                margin_x = int((cx2 - cx1) * 0.10)
+                margin_y = int((cy2 - cy1) * 0.10)
+                roi_x = max(0, int(cx1) - margin_x)
+                roi_y = max(0, int(cy1) - margin_y)
+                roi_x2 = min(w, int(cx2) + margin_x)
+                roi_y2 = min(h, int(cy2) + margin_y)
+                target = frame[roi_y:roi_y2, roi_x:roi_x2]
+
             result = get_sliced_prediction(
-                frame,
+                target,
                 self._sahi_model,
                 slice_height=SAHI_SLICE_HEIGHT,
                 slice_width=SAHI_SLICE_WIDTH,
@@ -484,7 +519,9 @@ class PlayerTracker:
                 if pred.category.id != YOLO_PERSON_CLASS_ID:
                     continue
                 bbox = pred.bbox
-                x1, y1, x2, y2 = bbox.minx, bbox.miny, bbox.maxx, bbox.maxy
+                # Offset back to full-frame coords (no-op when no cropping)
+                x1, y1 = bbox.minx + roi_x, bbox.miny + roi_y
+                x2, y2 = bbox.maxx + roi_x, bbox.maxy + roi_y
                 boxes.append((float(x1), float(y1), float(x2), float(y2)))
                 kps.append(None)  # SAHI uses detection-only, no keypoints
 
@@ -667,7 +704,9 @@ class PlayerTracker:
         court_center_x = frame_w / 2  # fallback
 
         if court_corners is not None and len(court_corners) == 4:
-            # corners: [far_left, far_right, near_left, near_right]
+            # corners: [far_left, far_right, near_left, near_right].
+            # These are DOUBLES baseline corners (keypoints 0-3 of the
+            # court keypoint model), so court_poly covers singles + alleys.
             fl, fr, nl, nr = court_corners
             court_poly = np.array([fl, fr, nr, nl], dtype=np.float32)
             far_baseline_y = (fl[1] + fr[1]) / 2
@@ -675,11 +714,15 @@ class PlayerTracker:
             left_sideline_x = min(fl[0], nl[0])
             right_sideline_x = max(fr[0], nr[0])
             court_center_x = (left_sideline_x + right_sideline_x) / 2
-            # Extend sidelines by 15% for "near sideline" corridor (wide runs)
-            sideline_margin = (right_sideline_x - left_sideline_x) * 0.15
-            # Extend baselines by 20% of court depth for "behind baseline" zone
             court_depth = abs(near_baseline_y - far_baseline_y)
-            baseline_margin = court_depth * 0.20
+            court_width_px = right_sideline_x - left_sideline_x
+            # 3m behind baseline (core serve position zone). 3m / 23.77m court
+            # length ≈ 12.6% of court depth.
+            baseline_margin = court_depth * (3.0 / COURT_LENGTH_M)
+            # Wide-of-doubles tolerance for tier-3: up to 2m off the doubles
+            # sideline, and only when within the baseline-to-baseline band.
+            # Real players run wide like this maybe 1-2× per match.
+            wide_margin = court_width_px * (2.0 / COURT_WIDTH_DOUBLES_M)
 
         scored = []
         for box, kps in zip(candidates, candidate_kps):
@@ -695,57 +738,86 @@ class PlayerTracker:
             motion_bonus = 500 if motion_ratio >= MOG2_MIN_MOTION_RATIO else 0
 
             # ── Court-geometry scoring (when court corners available) ────
+            # Three-tier priority system (per half — near and far scored
+            # independently):
+            #   Tier 1 (3000): INSIDE the doubles court polygon (singles + alleys)
+            #   Tier 2 (2000): Behind own baseline within 3m
+            #   Tier 3 (1000): Wide of doubles sideline BUT within the
+            #                  baseline-to-baseline band, NOT behind baseline.
+            #                  Rare — a player running wide once or twice per
+            #                  match. Excludes the umpire/commentator zone at
+            #                  the net level because umpires sit outside the
+            #                  court length band.
+            # Tiebreaker across tiers: closest-to-baseline wins.
             if court_poly is not None:
                 # Point-in-polygon test using feet position (cx, y2)
                 in_court = cv2.pointPolygonTest(court_poly, (cx, y2), False) >= 0
 
-                # Behind baseline check: within sideline extensions, behind baseline
-                in_sideline_band = (left_sideline_x - sideline_margin <= cx
-                                    <= right_sideline_x + sideline_margin)
+                # Candidate's "home baseline" is the one for their half
+                home_baseline_y = far_baseline_y if half == "far" else near_baseline_y
 
+                # Tier 2 — behind own baseline within 3m, allowing wide stance
+                # (sideline margin = 3m lateral slack for serve stance)
+                lateral_slack = court_width_px * (3.0 / COURT_WIDTH_DOUBLES_M)
+                in_lateral_band = (left_sideline_x - lateral_slack <= cx
+                                   <= right_sideline_x + lateral_slack)
                 if half == "far":
-                    behind_baseline = (y2 < far_baseline_y and
-                                       y2 >= far_baseline_y - baseline_margin and
-                                       in_sideline_band)
-                    near_sideline = (not in_court and not behind_baseline and
-                                     in_sideline_band and
-                                     far_baseline_y <= cy <= near_baseline_y)
+                    behind_own_baseline = (
+                        y2 < far_baseline_y
+                        and (far_baseline_y - y2) <= baseline_margin
+                        and in_lateral_band
+                    )
                 else:
-                    behind_baseline = (y2 > near_baseline_y and
-                                       y2 <= near_baseline_y + baseline_margin and
-                                       in_sideline_band)
-                    near_sideline = (not in_court and not behind_baseline and
-                                     in_sideline_band and
-                                     far_baseline_y <= cy <= near_baseline_y)
+                    behind_own_baseline = (
+                        y2 > near_baseline_y
+                        and (y2 - near_baseline_y) <= baseline_margin
+                        and in_lateral_band
+                    )
+
+                # Tier 3 — wide of the doubles sideline, within the
+                # baseline-to-baseline y-band, but NOT behind a baseline.
+                # This catches a player running wide for a shot. Umpires
+                # at the net are also in this y-band, so we additionally
+                # require being outside the court polygon AND outside
+                # the narrow sideline band — i.e. clearly outside the
+                # doubles tramlines by up to 2m.
+                wide_left = left_sideline_x - wide_margin <= cx < left_sideline_x
+                wide_right = right_sideline_x < cx <= right_sideline_x + wide_margin
+                in_length_band = (
+                    far_baseline_y <= y2 <= near_baseline_y
+                )
+                wide_of_doubles = (
+                    (wide_left or wide_right)
+                    and in_length_band
+                    and not in_court
+                    and not behind_own_baseline
+                )
 
                 if in_court:
                     tier = 3000
-                elif behind_baseline:
+                elif behind_own_baseline:
                     tier = 2000
-                elif near_sideline:
+                elif wide_of_doubles:
                     tier = 1000
                 else:
-                    tier = 0  # off-court, off-sideline — spectator/bench
+                    tier = 0  # off-court (spectator, umpire, bench)
 
-                # Tiebreaker 1: Bbox area — the actual player is CLOSER to the
-                # camera than a spectator behind them, so their bbox is BIGGER.
-                # Normalise to 0-200 range (a 50×100px box scores ~100).
+                # Closest-to-baseline tiebreaker: within any tier, prefer
+                # candidates whose feet are closest to their own baseline.
+                # Score 0-400 (doesn't cross tier boundaries — tier delta
+                # is 1000).
+                dist_to_baseline_px = abs(y2 - home_baseline_y)
+                baseline_closeness = max(
+                    0.0, 1.0 - (dist_to_baseline_px / court_depth)
+                ) * 400
+
+                # Bbox area: real players are closer to camera than spectators
+                # behind them and thus have larger bboxes. Normalise to 0-200.
                 bbox_w = box[2] - box[0]
                 bbox_h = box[3] - box[1]
-                bbox_area = bbox_w * bbox_h
-                bbox_score = min(200, bbox_area / 25.0)  # 5000px² → 200
+                bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
 
-                # Tiebreaker 2: Proximity to court CENTER LINE (midpoint of
-                # sidelines). Players stand near the center line; spectators
-                # sit on the sidelines. Normalise to 0-100.
-                court_width = right_sideline_x - left_sideline_x
-                if court_width > 0:
-                    center_dist = abs(cx - court_center_x) / (court_width / 2)
-                    proximity = max(0, 1.0 - center_dist) * 100
-                else:
-                    proximity = 0
-
-                score = tier + motion_bonus + bbox_score + proximity
+                score = tier + motion_bonus + baseline_closeness + bbox_score
 
             else:
                 # ── Fallback: centering + motion (no court geometry) ────
