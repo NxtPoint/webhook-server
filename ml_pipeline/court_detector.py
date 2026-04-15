@@ -207,6 +207,25 @@ class CourtDetector:
             # ship bad data.
             if self._best_validated_detection is None:
                 any_inliers = self._best_calibration_inliers
+                # Before aborting, dump keypoints of the best-any detection
+                # so we can diagnose WHY validation failed (net mis-detected,
+                # sponsor banner picked up, far-baseline missing, etc).
+                if self._best_detection is not None:
+                    kp_names = [
+                        "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
+                        "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
+                        "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
+                        "ctr_top",  "ctr_bot",
+                    ]
+                    logger.info("court_calibration: FAILURE DIAGNOSTICS (best-any keypoints):")
+                    for i, name in enumerate(kp_names):
+                        px = self._best_detection.keypoints[i]
+                        ref = self.ref_keypoints[i]
+                        det_str = f"({px[0]:.0f},{px[1]:.0f})" if px[0] >= 0 else "(MISSING)"
+                        logger.info(
+                            "court_kps[%02d] %s detected=%s ref=(%d,%d)",
+                            i, name, det_str, ref[0], ref[1],
+                        )
                 raise RuntimeError(
                     f"court_calibration: FAILED after {frame_idx} frames — "
                     f"no homography passed geometry validation "
