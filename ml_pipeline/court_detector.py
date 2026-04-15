@@ -169,74 +169,97 @@ class CourtDetector:
         detection = self._detect_cnn(frame)
         # During calibration, always TRY Hough as well — the CNN often fails
         # on far-baseline keypoints while Hough can find all 4 baselines.
-        # Keep whichever has more valid keypoints (= better homography).
+        # Prefer CNN in almost all cases — Hough is only a fallback for when
+        # the CNN fully fails (zero valid keypoints). Previously we switched
+        # to Hough whenever it had MORE keypoints, but Hough systematically
+        # mis-labels keypoints on wide-angle indoor footage (picks sponsor
+        # banner / logo edges as "baselines"), producing a high keypoint
+        # count that's actually all wrong.
         hough_det = self._detect_hough(frame)
-        if hough_det is not None:
+        cnn_kps_count = int((detection.keypoints[:, 0] >= 0).sum())
+        if hough_det is not None and cnn_kps_count == 0:
             hough_valid = int((hough_det.keypoints[:, 0] >= 0).sum())
-            cnn_valid = int((detection.keypoints[:, 0] >= 0).sum()) if detection.homography is not None else 0
-            if detection.confidence < COURT_CONFIDENCE_THRESHOLD or hough_valid > cnn_valid:
-                logger.info(
-                    "court_detect: preferring hough (valid=%d) over cnn (valid=%d, conf=%.2f)",
-                    hough_valid, cnn_valid, detection.confidence,
-                )
-                detection = hough_det
+            logger.info(
+                "court_detect: using hough fallback (valid=%d) because CNN returned 0 keypoints",
+                hough_valid,
+            )
+            detection = hough_det
 
         self._last_detection = detection
-        if detection.homography is not None:
-            self._last_good_detection = detection
-            valid_mask = detection.keypoints[:, 0] >= 0
-            n_inliers = int(valid_mask.sum())
+        valid_mask = detection.keypoints[:, 0] >= 0
+        n_kps = int(valid_mask.sum())
+
+        # Accumulate calibration observations based on KEYPOINTS alone —
+        # the per-frame homography may be rejected (e.g. by the inlier
+        # reprojection check) but well-distributed keypoints are still
+        # valid input for the calibration solver, which runs its own
+        # RANSAC + bundle adjustment across multiple frames.
+        if n_kps >= 8:
             geom_ok = self._validate_homography_geometry(
                 detection.keypoints, valid_mask,
                 frame_h=frame.shape[0], frame_idx=frame_idx,
             )
+            if geom_ok:
+                self._calibration_observations.append(detection.keypoints.copy())
+        else:
+            geom_ok = False
+
+        if detection.homography is not None:
+            self._last_good_detection = detection
 
             # Track best-any (highest inliers regardless of geometry)
-            if n_inliers > self._best_calibration_inliers:
-                self._best_calibration_inliers = n_inliers
+            if n_kps > self._best_calibration_inliers:
+                self._best_calibration_inliers = n_kps
                 self._best_detection = detection
                 logger.info(
                     "court_calibration: new best-ANY at frame=%d "
                     "inliers=%d confidence=%.2f geometry=%s",
-                    frame_idx, n_inliers, detection.confidence,
+                    frame_idx, n_kps, detection.confidence,
                     "PASS" if geom_ok else "FAIL",
                 )
             # Track best-validated (only those passing geometry)
-            if geom_ok and n_inliers > self._best_validated_inliers:
-                self._best_validated_inliers = n_inliers
+            if geom_ok and n_kps > self._best_validated_inliers:
+                self._best_validated_inliers = n_kps
                 self._best_validated_detection = detection
                 logger.info(
                     "court_calibration: new best-VALIDATED at frame=%d "
                     "inliers=%d confidence=%.2f",
-                    frame_idx, n_inliers, detection.confidence,
+                    frame_idx, n_kps, detection.confidence,
                 )
-            # Accumulate geometry-validated observations for lens calibration.
-            # Only geometry-validated detections are used so the calibration
-            # solver sees consistent, trustworthy keypoint positions.
-            if geom_ok:
-                self._calibration_observations.append(detection.keypoints.copy())
         self._last_frame_idx = frame_idx
 
         # Check if calibration period is over
         if frame_idx >= COURT_CALIBRATION_FRAMES and self._locked_detection is None:
-            # FAIL-FAST: only a geometry-validated homography is acceptable.
-            # No silent fallback — a bad homography corrupts every downstream
-            # metric (coordinates, speed, stroke classification, serve gate).
-            # Surface the failure so we can fix the root cause rather than
-            # ship bad data.
-            if self._best_validated_detection is None:
-                any_inliers = self._best_calibration_inliers
-                # Before aborting, dump keypoints of the best-any detection
-                # so we can diagnose WHY validation failed (net mis-detected,
-                # sponsor banner picked up, far-baseline missing, etc).
+            # Pick the best detection to lock (used for post-lock early-return
+            # path, court polygon, and as a homography fallback for
+            # to_court_coords if lens calibration fails). Priority: validated
+            # geometry > any homography > last detection with any homography.
+            best = (self._best_validated_detection
+                    or self._best_detection
+                    or self._last_good_detection)
+
+            # Lens calibration runs from keypoint observations independently
+            # of the per-frame homography's success — many observations can
+            # be useful even if the per-frame H was rejected by the
+            # reprojection check.
+            if self._calibration_observations:
+                self._calibration = fit_calibration(
+                    self._calibration_observations,
+                    img_shape=frame.shape[:2],
+                    rms_threshold_px=5.0,
+                )
+
+            # FAIL-FAST: abort only if we have NO way to project pixel→metric.
+            # If we got a lock or a calibration, we can proceed.
+            if best is None and self._calibration is None:
+                kp_names = [
+                    "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
+                    "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
+                    "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
+                    "ctr_top",  "ctr_bot",
+                ]
+                logger.info("court_calibration: FAILURE DIAGNOSTICS (no best detection, no calibration):")
                 if self._best_detection is not None:
-                    kp_names = [
-                        "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
-                        "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
-                        "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
-                        "ctr_top",  "ctr_bot",
-                    ]
-                    logger.info("court_calibration: FAILURE DIAGNOSTICS (best-any keypoints):")
                     for i, name in enumerate(kp_names):
                         px = self._best_detection.keypoints[i]
                         ref = self.ref_keypoints[i]
@@ -247,22 +270,23 @@ class CourtDetector:
                         )
                 raise RuntimeError(
                     f"court_calibration: FAILED after {frame_idx} frames — "
-                    f"no homography passed geometry validation "
-                    f"(best-any inliers={any_inliers}). "
-                    f"Aborting job; investigate CNN/Hough detection on this video."
+                    f"no detection and no calibration could be produced. "
+                    f"Investigate CNN/Hough detection on this video."
                 )
-            self._locked_detection = self._best_validated_detection
-            locked_inliers = int((self._locked_detection.keypoints[:, 0] >= 0).sum())
-            logger.info(
-                "court_calibration: LOCKED VALIDATED detection after %d frames "
-                "(inliers=%d, confidence=%.2f). No more CNN runs.",
-                frame_idx, locked_inliers, self._locked_detection.confidence,
-            )
-            self._calibration = fit_calibration(
-                self._calibration_observations,
-                img_shape=frame.shape[:2],
-                rms_threshold_px=5.0,
-            )
+
+            self._locked_detection = best
+            if best is not None:
+                locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
+                lock_source = (
+                    "VALIDATED" if best is self._best_validated_detection
+                    else "ANY-BEST" if best is self._best_detection
+                    else "LAST-GOOD"
+                )
+                logger.info(
+                    "court_calibration: LOCKED %s detection after %d frames "
+                    "(inliers=%d, confidence=%.2f). No more CNN runs.",
+                    lock_source, frame_idx, locked_inliers, best.confidence,
+                )
             if self._calibration is not None:
                 logger.info(
                     "court_calibration: lens calibration locked — mode=%s rms=%.4f px "
@@ -305,25 +329,25 @@ class CourtDetector:
                     "from %d observations — falling back to single homography",
                     len(self._calibration_observations),
                 )
-            best = self._locked_detection
-            # Log the detected pixel positions of every keypoint so we
-            # can diagnose mis-labeled keypoints (e.g. net mistaken for
-            # far baseline). Pair each with its reference position for
-            # side-by-side sanity.
-            kp_names = [
-                "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
-                "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
-                "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
-                "ctr_top",  "ctr_bot",
-            ]
-            for i, name in enumerate(kp_names):
-                px = best.keypoints[i]
-                ref = self.ref_keypoints[i]
-                det_str = f"({px[0]:.0f},{px[1]:.0f})" if px[0] >= 0 else "(MISSING)"
-                logger.info(
-                    "court_kps[%02d] %s detected=%s ref=(%d,%d)",
-                    i, name, det_str, ref[0], ref[1],
-                )
+            if self._locked_detection is not None:
+                # Log the detected pixel positions of every keypoint so we
+                # can diagnose mis-labeled keypoints (e.g. net mistaken for
+                # far baseline). Pair each with its reference position for
+                # side-by-side sanity.
+                kp_names = [
+                    "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
+                    "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
+                    "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
+                    "ctr_top",  "ctr_bot",
+                ]
+                for i, name in enumerate(kp_names):
+                    px = self._locked_detection.keypoints[i]
+                    ref = self.ref_keypoints[i]
+                    det_str = f"({px[0]:.0f},{px[1]:.0f})" if px[0] >= 0 else "(MISSING)"
+                    logger.info(
+                        "court_kps[%02d] %s detected=%s ref=(%d,%d)",
+                        i, name, det_str, ref[0], ref[1],
+                    )
 
         return detection
 
@@ -561,12 +585,13 @@ class CourtDetector:
 
         # ── Validation strategy ──
         # 1. RANSAC inlier count: need at least MIN_INLIERS good points
-        # 2. Scale factor sanity: |H[0][0]| and |H[1][1]| should be < 50
-        #    (A reasonable image-to-reference court mapping has scale ~0.5-10)
-        # 3. Inlier-only mean reprojection error: should be small by RANSAC
-        #    construction, but double-check it's < 10px
-        MIN_INLIERS = 4  # mathematical minimum; stability is enforced by "lock highest-inlier" during calibration
-        MAX_SCALE = 20.0  # reasonable image-to-reference court mapping is 1-10
+        # 2. Inlier-only mean reprojection error < MAX_INLIER_ERR_PX
+        # 3. Sanity-only finite-values check on H (filters NaN/Inf blowups)
+        # Previously had a MAX_SCALE=20 diagonal check, removed because
+        # wide-angle indoor cameras legitimately produce H_diag > 20 and it
+        # was rejecting valid CNN detections; reprojection error is the
+        # correct quality gate.
+        MIN_INLIERS = 4
         MAX_INLIER_ERR_PX = 15.0
 
         n_inliers = int(mask.sum()) if mask is not None else 0
@@ -578,10 +603,9 @@ class CourtDetector:
             )
             return None
 
-        if abs(H[0, 0]) > MAX_SCALE or abs(H[1, 1]) > MAX_SCALE or not np.isfinite(H).all():
+        if not np.isfinite(H).all():
             logger.warning(
-                "_compute_homography: REJECTED bad scale H_diag=[%.2f, %.2f] (max %.0f)",
-                H[0, 0], H[1, 1], MAX_SCALE,
+                "_compute_homography: REJECTED non-finite H (NaN or Inf values)",
             )
             return None
 
