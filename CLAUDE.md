@@ -13,18 +13,7 @@ Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 | **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` |
 | **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` |
 
-The Locker Room service serves eleven HTML SPAs via `send_file()`. No DB access — only Flask + gunicorn installed, not the full `requirements.txt`:
-
-- `GET /` → `locker_room.html` (dashboard)
-- `GET /media-room` → `media_room.html` (video upload wizard)
-- `GET /register` → `players_enclosure.html` (onboarding)
-- `GET /backoffice` → `backoffice.html` (admin)
-- `GET /portal` → `portal.html` (unified nav shell — the **entry point** for Wix)
-- `GET /pricing` → `pricing.html`
-- `GET /coach-accept` → `coach_accept.html`
-- `GET /practice` → `practice.html` (practice analytics dashboard)
-- `GET /match-analysis` → `match_analysis.html` (**the primary match dashboard**)
-The main webhook-server also serves all of these as same-origin backups (for API access from within iframes).
+The Locker Room service serves HTML SPAs via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard). The main webhook-server serves all of them as same-origin backups for API access from within iframes.
 
 **Local dev:**
 ```bash
@@ -86,34 +75,23 @@ Court geometry constants live in `SPORT_CONFIG` at the top. T5 silver builders c
 
 ### Service Topology & Data Flow
 
-On upload completion:
-1. **Media Room** uploads video to S3, submits via `POST /api/submit_s3_task`
-2. **Main app** routes to SportAI or T5 based on `gameType` → `sport_type`
-3. Main app polls status until complete
-4. On completion, main app POSTs to **ingest worker** `/ingest` (returns 202)
-5. Ingest worker runs: bronze ingest → silver build → video trim trigger → billing sync
-6. **Video worker** trims footage → callback updates `trim_status`
-7. **Customer notification**: SES email → "Your match analysis is ready" (idempotent via `ses_notified_at`)
-8. User opens `/portal` → `/match-analysis` → gold views serve pre-aggregated data
+Media Room uploads video to S3 → `POST /api/submit_s3_task` → main app routes by `sport_type`:
+- **SportAI** (`tennis_singles`): async submit → poll status → delegate to ingest worker → bronze ingest → silver build → video trim → SES notify
+- **T5** (`*_practice`, `tennis_singles_t5`): AWS Batch job → sentinel `t5://complete/{id}` → in-process `_do_ingest_t5` → bronze (from ml_analysis) → silver → trim → notify
+- **Technique** (`technique_analysis`): single background thread → call technique API → bronze → silver → trim → notify (no auto-ingest routing, no sentinel URL)
 
 **Key design**: the ingest worker is self-contained — it does NOT import `upload_app.py`. It calls `ingest_bronze_strict()` directly. Worker timeout 3600s vs main app 1800s.
 
 ### Main App (`upload_app.py`)
 
-Primary service. Responsibilities:
-- S3 presigned URL generation (single-part + multipart upload/GET)
-- S3 multipart lifecycle
-- SportAI + T5 Batch submission — routed by `sport_type`
-- Task status orchestration, auto-ingest triggering
-- Video trim callback
-- Customer notification (SES + Wix legacy)
-- CORS preflight for all `/api/client/*` paths
+Primary service. Responsibilities: S3 presigned URLs + multipart lifecycle, SportAI/T5/Technique submission (routed by `sport_type`), task status orchestration, auto-ingest triggering, video trim callback, SES notification, CORS preflight for `/api/client/*`.
 
 **Registered blueprints**: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, `coach_accept`, `ml_analysis_bp`, `ingest_bronze`, `tennis_coach.coach_api`.
 
 **On-boot init** (idempotent, each try/except-wrapped so one failure can't kill the service):
-1. `gold_init_presentation()` — creates gold.vw_player, gold.vw_point, gold.match_* views
-2. `init_tennis_coach()` — creates gold.coach_* views + tennis_coach.coach_cache table
+1. `gold_init_presentation()` — `gold.vw_player`, `gold.vw_point`, `gold.match_*`, `gold.player_performance`
+2. `init_tennis_coach()` — `gold.coach_*` views + `tennis_coach.coach_cache`
+3. `technique_bronze_init()` + `ensure_silver_schema()` + `init_technique_gold_views()` — bronze/silver tables + `gold.technique_*` views
 
 ### Video Trim Pipeline
 
@@ -136,47 +114,14 @@ The primary analytics experience. Custom-built ECharts + canvas dashboards that 
 
 Single-page app at `/match-analysis`. Loaded inside the portal iframe with `?email=&key=&api=` auth params.
 
-Four modules, selectable via the green module strip at the top:
+Four modules selectable via the top green strip:
 
-**Match Analytics module** (9 tabs):
-1. **Match Summary** — score box, KPI strip, head-to-head comparison bars (points won, service/return/rally pts won, 1st serve %, aces, DFs, winners, errors, games won, service/return games won), free points + return pts won + rally pts won donut pairs, aggression profile (Attack/Neutral/Defence horizontal stacked bar per player), speed profile (1st Serve / 2nd Serve / FH / BH quad gauge per player), points-by-phase chart, outcome distribution
-2. **Serve Performance** — full comparison table (UTR, total serves, svc pts won, serve in%, won%, DFs, unreturned, avg/fastest speed), serve direction bars, outcomes by direction (won/lost stacked), unreturned by direction, Deuce/Ad strategy tables
-3. **Serve Detail** — per-player compare bars (svc pts played/won/won%, 1st/2nd serve in%/win%, DFs), 1st serve location × win rate grouped bars, 2nd serve location × win rate grouped bars
-4. **Return Summary** — full comparison table, return effectiveness by hit zone (A/B/C/D), return points won by bounce zone (A/B/C/D)
-5. **Return Detail** — per-player H2H card, depth bars, stroke pies, outcome bars, return outcomes by serve try / stroke / serve location (stacked bars from shot_placement)
-6. **Rally Summary** — full comparison table (pts played/won/lost/won%/lost%/winner%/error%/W:E), rally effectiveness by zone
-7. **Rally Detail** — rally H2H card, length distribution, bucket win comparison, aggression/depth/stroke per player, overall rally outcome donuts, depth distribution pies
-8. **Point Analysis** — match result summary, how points won/lost pie charts (aces/winners/errors/DFs), net position by phase table, winners & errors by stroke table, zone effectiveness tables
-9. *(Coach moved to own module)*
+1. **Match Analytics** (8 tabs) — Summary (KPI strip + H2H bars + speed gauges), Serve Performance, Serve Detail, Return Summary, Return Detail, Rally Summary, Rally Detail, Point Analysis. Reads `gold.match_kpi` + breakdowns.
+2. **Placement Heatmaps** (5 tabs) — Serve Placement, Player Return Position, Return Ball Position, Groundstrokes, Rally Player Position. All tabs have: Player A/B toggle (green/blue convention), Set filter, tab-specific filters (serve try, stroke, depth, aggression). Blue court `#1a4a8a` on green `#2d6a4f`, near-side plotting with normalised coords. Reads `gold.match_shot_placement`.
+3. **Player Performance** (3 tabs, Player A only) — KPI Scorecard (18 KPIs across Serve/Return/Rally/Games/Speed, rolling 5-match avg vs benchmark, sparkline), Trend Charts, Last Match vs Average. Reads `gold.player_performance` (email-scoped).
+4. **AI Coach** — standalone module. See [LLM Coach](#llm-tennis-coach) below.
 
-**Placement Heatmaps module** (5 tabs):
-1. **Serve Placement** — blue court with green surround, dots on near side coloured by point outcome (green=won, red=lost), filter 1st/2nd serve, Deuce/Ad strategy tables
-2. **Player Return Position** — hit coordinates (where player stood), Deuce/Ad split table by received side × stroke
-3. **Return Ball Position** — bounce coordinates (where return landed), received side × stroke table
-4. **Groundstrokes** — rally shots with stroke + depth filters, depth split into Deep/Middle/Short column tables
-5. **Rally Player Position** — hit coordinates with aggression filter, aggression breakdown table
-
-Each heatmap tab has:
-- **Player toggle** (Player A = green, Player B = blue — enforced convention)
-- **Set filter** (appears when match has 2+ sets; cross-filters across tabs)
-- **Tab-specific filters** (serve try, stroke, depth, aggression as appropriate)
-- **Right-side info panel** ("How to read this") — collapsed by default
-- **Near-side plotting** — dots plot on the near half of the court using normalised coordinates
-- **Blue court surface** (`#1a4a8a`) with green surround (`#2d6a4f`), ~2m side / ~4m baseline padding
-
-**Player Performance module** (3 tabs):
-1. **KPI Scorecard** — 18 KPIs across 5 categories (Serve 7, Return 2, Rally 4, Games 2, Speed 2). Each row shows: KPI name, benchmark target, rolling 5-match avg, delta vs benchmark, status dot (green/amber/red), trend arrow (improving/neutral/declining), SVG sparkline trendline. Expert-judgment benchmarks for club-level players.
-2. **Trend Charts** — ECharts line chart per KPI with benchmark target dashed line. Shows last 10 matches.
-3. **Last Match vs Average** — horizontal grouped bar chart comparing last match values to 5-match rolling average.
-Player A only (the customer). Focus is improvement, not winning/losing. Data from `gold.player_performance` (email-scoped, cross-match).
-
-**AI Coach module** (standalone):
-Elevated from a tab inside Match Analytics to its own top-level module. See [LLM Coach](#llm-tennis-coach) below.
-
-**Cross-module features:**
-- **Sidebar** — match list with collapse toggle (280px → 46px). Default collapsed on tablet (<1200px).
-- **Cross-filter persistence** — Player, Set, and filter selections persist within heatmaps. Reset on match change.
-- **T5 filtering** — `gold.vw_player` and `gold.vw_client_match_summary` filter to `sport_type = 'tennis_singles'` only. T5 dev matches excluded from customer-facing views.
+**Cross-module**: collapsible match list sidebar (280px → 46px, auto-collapse <1200px), filter persistence within module, `gold.vw_player` / `gold.vw_client_match_summary` filter to `sport_type = 'tennis_singles'` (excludes T5/technique dev matches).
 
 ### Gold Presentation Views
 
@@ -222,6 +167,10 @@ All under `/api/client/match/*`, CLIENT_API_KEY auth, `email` query param for te
 | `GET /api/client/match/rally-length/<task_id>` | `gold.match_rally_length` |
 | `GET /api/client/match/shot-placement/<task_id>` | `gold.match_shot_placement` |
 | `GET /api/client/player/performance` | `gold.player_performance` (email-scoped, not task_id) |
+| `GET /api/client/technique/report/<task_id>` | `gold.technique_report` |
+| `GET /api/client/technique/comparison/<task_id>` | `gold.technique_comparison` |
+| `GET /api/client/technique/kinetic-chain/<task_id>` | `gold.technique_kinetic_chain_summary` |
+| `GET /api/client/technique/progression` | `gold.technique_progression` (email-scoped) |
 
 On load, `match_analysis.html::selectMatch()` fires all six match endpoints in parallel via `Promise.all()` and caches as `selectedData.kpi / .serve / .return / .rally / .rallyLength / .placement`. The performance endpoint is fetched lazily when the Player Performance module is first opened.
 
@@ -232,36 +181,25 @@ Other dashboard endpoints:
 
 ### LLM Tennis Coach
 
-Package: `tennis_coach/`. Blueprint registered on webhook-server. Documented in `docs/llm_coach_design.md`. Elevated to its own module in the dashboard (4th module tab, after Player Performance).
+Package: `tennis_coach/`. Design doc: `docs/llm_coach_design.md`. Its own dashboard module.
 
 **Endpoints** (CLIENT_API_KEY auth):
-- `POST /api/client/coach/analyze` — named prompt or freeform question. Body: `{task_id, email, prompt_key, freeform_text?}`. Returns Claude's response + `data_snapshot` (the JSON passed to Claude, for trust validation).
-- `GET /api/client/coach/cards/<task_id>?email=` — pre-generated 3-card insight summary for the match. Cached forever per (task, email). First call generates, subsequent calls are free.
+- `POST /api/client/coach/analyze` — named prompt or freeform. Returns `{response, data_snapshot, cached, tokens_used}`.
+- `GET /api/client/coach/cards/<task_id>?email=` — pre-generated 3-card insight summary. Cached forever per (task, email).
 - `GET /api/client/coach/status/<task_id>?email=` — poll for card generation status.
-- `GET /api/client/coach/debug/<task_id>?email=` — **admin only**. Returns the raw JSON payload the data fetcher would send to Claude, without calling Claude. Critical for trust validation ("does my dashboard match what Claude sees").
+- `GET /api/client/coach/debug/<task_id>?email=` — **admin only**. Raw payload Claude sees, without calling Claude.
 
-**Data flow**:
-1. `tennis_coach/data_fetcher.py::fetch_match_data(task_id)` reads from `gold.match_kpi`, `gold.match_serve_breakdown`, `gold.match_rally_breakdown`, `gold.match_return_breakdown`, `gold.coach_rally_patterns`. Assembles a compact nested dict.
-2. Suppresses any dimension where shot count < 5 (MIN_SAMPLE) — prevents Claude from citing unreliable stats.
-3. `tennis_coach/prompt_builder.py` builds the (messages, system) tuple for one of 5 templates (serve_analysis / weakness / tactics / cards / freeform).
-4. `tennis_coach/claude_client.py` calls Anthropic SDK: `claude-sonnet-4-6`, temperature 0.3, max 600 output tokens.
-5. Response cached in `tennis_coach.coach_cache` table keyed on (task_id, email, prompt_key).
+**Data flow**: `coach_api.py::_fetch_data_for_task()` auto-routes by `sport_type`:
+- Match tasks → `tennis_coach/data_fetcher.py` → reads `gold.match_kpi`, `gold.match_*_breakdown`, `gold.coach_rally_patterns`
+- Technique tasks → `technique/coach_data_fetcher.py` → reads `gold.technique_report`, `gold.technique_kinetic_chain_summary`, `gold.technique_comparison`
 
-**Rate limits** (`tennis_coach/rate_limiter.py`):
-- 5 freeform calls per (email, task_id) per calendar day
-- 20 freeform calls per email per day across all matches
-- Cards excluded from rate limits (one-shot per match, cached forever)
-- 429 with `resets_at` on limit hit
+Then `prompt_builder.py` builds one of 5 templates (serve_analysis / weakness / tactics / cards / freeform) → `claude_client.py` calls Anthropic SDK (`claude-sonnet-4-6`, temp 0.3, max 600 tokens) → response cached in `tennis_coach.coach_cache` keyed on (task_id, email, prompt_key).
 
-**Cost**: ~$0.01 per call (Claude Sonnet 4.6: $3/M input + $15/M output). ~1,200-1,500 tokens per call. Realistic usage: $5-20/month.
+**Guardrails**: Player-A-only coaching (never analyses opponents). Small-sample suppression (MIN_SAMPLE=5) drops dimensions with too few shots. Rate limits: 5 freeform calls per (email, task_id) per day, 20 per email per day; cards excluded.
 
-**Required env var**: `ANTHROPIC_API_KEY` on webhook-server.
+**Cost**: ~$0.01 per call, ~1.2-1.5k tokens. Realistic usage: $5-20/month. Requires `ANTHROPIC_API_KEY`.
 
-**Player-only guardrails**: System prompt restricts coaching to Player A only. The coach NEVER analyses the opponent's game, weaknesses, or how to "beat" them. If asked about the opponent, it redirects: "My job is to make YOU better — let's focus on what you can control." The tactics prompt was rewritten from "exploit opponent weaknesses" to "what should you improve." Both the standard and cards system prompts enforce this.
-
-**Anti-hallucination**: data is pre-aggregated SQL numbers (not raw rows), small-sample suppression, low temperature, system prompt forbids fabrication. The `/debug/<task_id>` endpoint lets us verify the data shape Claude sees matches the dashboard.
-
-**Credit integration**: NOT yet implemented. Currently rate-limited only (5/day per match, 20/day per email). Credit burn-down per coach interaction is planned — will require `billing_service.consume_entitlement()` integration.
+**Credit integration**: NOT yet implemented — rate-limited only. Will require `billing_service.consume_entitlement()` integration.
 
 ### Practice Analytics Dashboard (`practice.html`)
 
@@ -349,7 +287,7 @@ All auth via URL params forwarded through the portal: `?email=&firstName=&surnam
 **Design system**: all pages share CSS variables, Inter font, green/amber/red palette, `.toggle-group` / `.toggle-btn` buttons, ECharts helpers (`eBar`, `eStackedBar`, `ePie`, `eGauge`) defined identically in every file.
 
 - **Locker Room** (`/`): dashboard. Header tabs (Account / My Details / Linked Players / Invite Coach), charts (matches per month, usage gauge), match history.
-- **Media Room** (`/media-room`): 4-step upload wizard (game type → upload → details → progress).
+- **Media Room** (`/media-room`): 4-step upload wizard (game type → upload → details → progress). Game types: Singles (SportAI, prod), Singles T5 / Serve / Rally / Technique (dev-only, gated to `tomo.stojakovic@gmail.com`).
 - **Pricing** (`/pricing`): fetches entitlements, renders one of three views (new plan / top-up only / coach view). Sends `postMessage({ type: 'wix-checkout', planId })` up to Wix for PayPal checkout.
 - **Portal** (`/portal`): **entry point**. Collapsible sidebar, inner iframe with auth params forwarded. Embedded in Wix page `https://www.ten-fifty5.com/portal`. Main nav: Dashboard, Upload Match, My Profile, **Analytics** (with sub-items: Match Analytics, Placement Heatmaps), Plans & Pricing. Admin section: Backoffice, Practice (WIP). Sub-nav items show tree-line connectors.
 - **Practice** (`/practice`): practice analytics (see Dashboards section).
@@ -394,6 +332,8 @@ All auth via URL params forwarded through the portal: `?email=&firstName=&surnam
 | `AWS_REGION` | Default `us-east-1`. Actual: `eu-north-1` |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | implicit boto3 |
 | `SPORT_AI_TOKEN` | SportAI API |
+| `TECHNIQUE_API_BASE` | **Technique Analysis** — base URL, required when technique module used |
+| `TECHNIQUE_API_TOKEN` | Optional bearer token for Technique API (if auth-protected) |
 | `INGEST_WORKER_BASE_URL` + `INGEST_WORKER_OPS_KEY` | Worker calls |
 | `VIDEO_WORKER_BASE_URL` + `VIDEO_WORKER_OPS_KEY` | Video trim |
 | `VIDEO_TRIM_CALLBACK_URL` + `VIDEO_TRIM_CALLBACK_OPS_KEY` | Trim callback (must match main API `OPS_KEY`) |
@@ -565,6 +505,76 @@ Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `St
 - TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
 - Stroke classifier weights not yet trained (architecture + pipeline ready, needs dual-submit data)
 - Speed calculation underestimates ~50% vs SportAI
+
+---
+
+## Technique Analysis (`technique/`)
+
+Biomechanics stroke analysis via the external SportAI Technique API. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`. Sport type: `technique_analysis`.
+
+### Flow
+
+Unlike SportAI (async + URL polling) and T5 (AWS Batch + sentinel URL), the Technique API is **synchronous streaming**. A single background thread in `upload_app.py::_technique_run_pipeline()` does everything end-to-end:
+
+```
+Media Room → /api/submit_s3_task {gameType: 'technique'}
+  → _technique_submit() creates task_id, spawns daemon thread:
+    1. Download video from S3 (in memory, no intermediate storage)
+    2. POST multipart/form-data to TECHNIQUE_API_BASE/process
+    3. Read streaming JSON lines until status=done
+    4. Bronze ingest → bronze.technique_* tables
+    5. Silver build → silver.technique_* tables
+    6. Copy video → trimmed/{task_id}/technique.mp4
+    7. Mark complete (session_id + ingest_finished_at on submission_context)
+    8. SES notify via existing _notify_ses_completion
+```
+
+Status tracked via standard `bronze.submission_context` columns (same as SportAI/T5). No in-memory tracker, no sentinel URL, no auto-ingest routing — `_technique_status()` just reads the DB.
+
+### Tables
+
+**Bronze** (`bronze.technique_*`, created by `technique/db_schema.py::technique_bronze_init()`):
+- `technique_analysis_metadata` (1 row per task: uid, status, sport, swing_type, dominant_hand, height, warnings, errors)
+- `technique_features` (1 row per feature: name, level, score, value, observation, suggestion, ranges, highlight_joints/limbs)
+- `technique_feature_categories` (category → score, feature_names)
+- `technique_kinetic_chain` (per body segment: peak_speed, peak_timestamp, plot_values)
+- `technique_wrist_speed` (raw wrist_speed JSON, 1 row per task)
+- `technique_pose_2d` / `technique_pose_3d` (full pose JSON blob, 1 row per task)
+
+**Silver** (`silver.technique_*`, built by `technique/silver_technique.py::build_silver_technique()`):
+- `technique_summary` — per-analysis: overall_score, level, top_strength, top_improvement
+- `technique_features_enriched` — features joined with category scores + score_vs_category delta
+- `technique_kinetic_chain_analysis` — peak ordering/sequencing, speed/time deltas between segments, is_sequential flag
+- `technique_pose_timeline` — per-frame 2D+3D consolidated with confidence extraction
+- `technique_trends` — cross-session (email-scoped): feature score history per (email, swing_type, feature_name, task_id)
+
+**Gold** (`gold.technique_*`, created by `technique/gold_technique.py::init_technique_gold_views()` — DROP+CREATE pattern like `gold_init.py`):
+- `technique_report` — per-analysis complete report (overall_score, category_scores, top_strengths/improvements, all_features as JSON arrays)
+- `technique_comparison` — per-feature benchmarks (beginner/intermediate/advanced/professional ranges)
+- `technique_kinetic_chain_summary` — simplified: chain_sequence, fastest/slowest segment, duration, is_sequential
+- `technique_progression` — cross-session improvement (rolling_avg_5, delta_vs_prev, trend: improving/declining/stable)
+
+### Key files
+
+| File | Purpose |
+|---|---|
+| `technique/api_client.py` | `call_technique_api(video_bytes, metadata)` — streaming POST, reads JSON lines until status=done/failed |
+| `technique/db_schema.py` | Bronze table DDL, idempotent |
+| `technique/bronze_ingest_technique.py` | `ingest_technique_bronze(conn, payload, task_id, replace=True)` — extracts JSON into bronze tables |
+| `technique/silver_technique.py` | Silver builder — same pattern as `build_silver_v2.py` |
+| `technique/gold_technique.py` | Gold view DDL + `init_technique_gold_views()` |
+| `technique/coach_data_fetcher.py` | Assembles technique data for LLM Coach (reads gold views) |
+
+### Frontend
+
+Media Room Step 3 `renderTechniqueForm()` collects: sport (currently tennis-only), swing type (12 dropdown options: forehand/backhand drive/topspin/slice, 3 serve types, 2 volleys, overhead), dominant hand toggle, height in cm (converted to mm on submit), date, location.
+
+### Notes
+
+- Unlike SportAI, **no intermediate S3 storage of the JSON result** — the payload stays in memory and goes straight into bronze ingest.
+- Swing type list in the form is currently hardcoded; spec says to fetch dynamically from API when available.
+- Pickleball sport is recognised by the API but out of scope for this build.
+- Video trim is a simple `s3.copy_object` to `trimmed/{task_id}/technique.mp4` — no EDL, no FFmpeg (technique videos are 3-10s).
 
 ---
 
