@@ -139,6 +139,7 @@ class CourtDetector:
         self._best_validated_inliers: int = 0
         self._calibration: Optional[CalibrationResult] = None
         self._calibration_observations: list[np.ndarray] = []
+        self._geom_fail_log_count: int = 0
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
         model = CourtKeypointNet(in_channels=3, out_channels=15)
@@ -186,7 +187,8 @@ class CourtDetector:
             valid_mask = detection.keypoints[:, 0] >= 0
             n_inliers = int(valid_mask.sum())
             geom_ok = self._validate_homography_geometry(
-                detection.keypoints, valid_mask, frame_h=frame.shape[0],
+                detection.keypoints, valid_mask,
+                frame_h=frame.shape[0], frame_idx=frame_idx,
             )
 
             # Track best-any (highest inliers regardless of geometry)
@@ -469,7 +471,8 @@ class CourtDetector:
 
     def _validate_homography_geometry(self, keypoints: np.ndarray,
                                        valid_mask: np.ndarray,
-                                       frame_h: int = 0) -> bool:
+                                       frame_h: int = 0,
+                                       frame_idx: int = -1) -> bool:
         """Sanity-check detected keypoints for valid tennis-court perspective.
 
         Guards against two known failure modes:
@@ -501,27 +504,36 @@ class CourtDetector:
         far_y = float(np.mean([keypoints[i, 1] for i in far_detected]))
         near_y = float(np.mean([keypoints[i, 1] for i in near_detected]))
 
+        def _reject(reason: str) -> bool:
+            if frame_idx >= 0 and self._geom_fail_log_count < 20:
+                logger.info("geom_fail frame=%d: %s", frame_idx, reason)
+                self._geom_fail_log_count += 1
+            return False
+
         if far_y >= near_y:
-            return False
+            return _reject(f"far_y({far_y:.0f}) >= near_y({near_y:.0f})")
         if (near_y - far_y) < 150:
-            return False
+            return _reject(f"span({near_y - far_y:.0f}px) < 150")
 
         if len(far_detected) == 2 and len(near_detected) == 2:
             far_w = abs(keypoints[1, 0] - keypoints[0, 0])
             near_w = abs(keypoints[3, 0] - keypoints[2, 0])
-            if far_w >= near_w * 0.75:
-                return False
+            # 0.85 threshold: wide-angle indoor courts can have a cropped far
+            # baseline where far_w is closer to near_w than on broadcast TV
+            # tennis. 0.75 was too strict — rejected real courts.
+            if far_w >= near_w * 0.85:
+                return _reject(f"perspective far_w={far_w:.0f} >= 0.85*near_w={near_w * 0.85:.0f}")
 
         if frame_h > 0:
             span = near_y - far_y
             if span > frame_h * 0.70:
-                return False  # baselines span > 70% of frame — banner+logo
+                return _reject(f"span {span:.0f}px > 70% of frame_h {frame_h}")
             if span < frame_h * 0.25:
-                return False  # baselines compressed — likely net+baseline
+                return _reject(f"span {span:.0f}px < 25% of frame_h {frame_h}")
             if far_y < frame_h * 0.08:
-                return False  # far baseline in scoreboard/banner region
+                return _reject(f"far_y {far_y:.0f} in top 8% ({int(frame_h * 0.08)})")
             if near_y > frame_h * 0.95:
-                return False  # near baseline at logo/bottom-border region
+                return _reject(f"near_y {near_y:.0f} in bottom 5% ({int(frame_h * 0.95)})")
 
         return True
 

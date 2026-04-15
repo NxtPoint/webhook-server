@@ -84,6 +84,51 @@ def _build_point_lists(
     return object_points, image_points
 
 
+def _drop_outlier_keypoints(
+    object_points: list,
+    image_points: list,
+    inlier_threshold_px: float = 3.0,
+) -> tuple[list, list]:
+    """RANSAC homography on the aggregated planar keypoints to identify
+    and drop outliers. Returns per-frame object/image point lists with
+    outliers removed. A frame that loses too many points (<6) is dropped
+    entirely.
+    """
+    frame_sizes = [len(p) for p in image_points]
+    all_img = np.concatenate(image_points, axis=0).reshape(-1, 2).astype(np.float32)
+    all_world = np.concatenate(object_points, axis=0).reshape(-1, 3)[:, :2].astype(np.float32)
+
+    H, mask = cv2.findHomography(all_img, all_world, cv2.RANSAC, inlier_threshold_px)
+    if H is None or mask is None:
+        logger.warning("RANSAC pre-filter: findHomography returned None")
+        return object_points, image_points
+
+    mask = mask.ravel().astype(bool)
+    n_kept = int(mask.sum())
+    n_total = len(mask)
+    if n_kept < n_total:
+        logger.info(
+            "RANSAC pre-filter: kept %d/%d keypoints (dropped %d outliers)",
+            n_kept, n_total, n_total - n_kept,
+        )
+
+    out_obj: list = []
+    out_img: list = []
+    offset = 0
+    for size in frame_sizes:
+        frame_mask = mask[offset:offset + size]
+        kept_img = all_img[offset:offset + size][frame_mask]
+        kept_world = all_world[offset:offset + size][frame_mask]
+        offset += size
+        if len(kept_img) >= 6:
+            world_3d = np.concatenate(
+                [kept_world, np.zeros((len(kept_world), 1), dtype=np.float32)], axis=1,
+            )
+            out_obj.append(world_3d.reshape(-1, 1, 3))
+            out_img.append(kept_img.reshape(-1, 1, 2))
+    return out_obj, out_img
+
+
 def _option_a(
     keypoint_observations: list[np.ndarray],
     img_shape: tuple[int, int],
@@ -96,6 +141,18 @@ def _option_a(
     object_points, image_points = _build_point_lists(keypoint_observations)
     if not object_points:
         logger.warning("Option A: no frames with >=6 keypoints; skipping")
+        return None
+
+    # Pre-filter outlier keypoints via RANSAC homography across all
+    # aggregated observations. Single outliers like sv_top_L with 5m error
+    # otherwise blow up calibrateCamera's bundle-adjusted RMS. findHomography
+    # identifies consistent inliers on the planar court; we drop the rest
+    # before calibrateCamera sees them.
+    object_points, image_points = _drop_outlier_keypoints(
+        object_points, image_points, inlier_threshold_px=3.0,
+    )
+    if not object_points:
+        logger.warning("Option A: no inlier points after RANSAC pre-filter; skipping")
         return None
 
     h, w = img_shape
@@ -265,6 +322,22 @@ def _reprojection_rms(H: np.ndarray, img_pts: np.ndarray, world_pts: np.ndarray)
     return float(np.sqrt(np.mean(errors))) if errors else 0.0
 
 
+def _mirror_homography(H: np.ndarray, centre_x_px: float) -> np.ndarray:
+    """Reflect a zone homography across the court's vertical centre line.
+    Produces the right-half H from a left-half H (and vice versa) by
+    composing input-pixel-mirror ∘ H ∘ output-metric-mirror.
+    """
+    M_pixel = np.array(
+        [[-1.0, 0.0, 2.0 * centre_x_px], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    M_metric = np.array(
+        [[-1.0, 0.0, COURT_WIDTH_DOUBLES_M], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    return M_metric @ H @ M_pixel
+
+
 def _option_c(
     keypoint_observations: list[np.ndarray],
 ) -> Optional[CalibrationResult]:
@@ -334,6 +407,19 @@ def _option_c(
             cv2.RANSAC,
             3.0,
         )
+
+    # Mirror-fallback: if a zone is unfit but its left/right pair is fit,
+    # derive the missing zone's H by reflecting across the court's vertical
+    # centre line. Tennis courts are symmetric — this is legitimate prior.
+    # Zone pairs: (FL=0, FR=1), (NL=2, NR=3).
+    for z, paired in [(1, 0), (0, 1), (3, 2), (2, 3)]:
+        if zone_homographies[z] is None and zone_homographies[paired] is not None:
+            zone_homographies[z] = _mirror_homography(
+                zone_homographies[paired], centre_x_px,
+            )
+            logger.info(
+                "Option C zone %d: mirrored from zone %d (court symmetry)", z, paired,
+            )
 
     for z in range(4):
         if zone_homographies[z] is None:
