@@ -373,7 +373,7 @@ class CourtDetector:
         #    (A reasonable image-to-reference court mapping has scale ~0.5-10)
         # 3. Inlier-only mean reprojection error: should be small by RANSAC
         #    construction, but double-check it's < 10px
-        MIN_INLIERS = 8  # require majority of 14 kps — 4 is mathematically valid but geometrically unstable
+        MIN_INLIERS = 4  # mathematical minimum; stability is enforced by "lock highest-inlier" during calibration
         MAX_SCALE = 20.0  # reasonable image-to-reference court mapping is 1-10
         MAX_INLIER_ERR_PX = 15.0
 
@@ -651,14 +651,21 @@ class CourtDetector:
 
     _coord_log_count = 0
 
-    def to_court_coords(self, pixel_x: float, pixel_y: float) -> Optional[tuple]:
+    def to_court_coords(self, pixel_x: float, pixel_y: float,
+                         strict: bool = True) -> Optional[tuple]:
         """Convert pixel coordinates to real-world court coordinates (metres).
 
-        Uses the most recent detection with a valid homography — not necessarily
-        _last_detection, which may have a failed homography on the final frame.
+        Priority: _locked_detection (post-calibration, deterministic) →
+        _last_detection (if homography valid) → _last_good_detection.
+
+        strict=True (default) applies a ±5m sanity bounds check. Pipeline
+        downstream (player scoring, bounce classification, speed) uses strict.
+        Debug annotations pass strict=False so we still see the numeric court_y
+        for off-court candidates, which is diagnostically useful.
         """
-        # Prefer _last_detection if it has homography, fall back to _last_good_detection
-        det = self._last_detection
+        det = self._locked_detection
+        if det is None or det.homography is None:
+            det = self._last_detection
         if det is None or det.homography is None:
             det = self._last_good_detection
         if det is None or det.homography is None:
@@ -684,12 +691,8 @@ class CourtDetector:
         mx = (court_pt[0] - ref[0][0]) / ref_w * COURT_WIDTH_DOUBLES_M
         my = (court_pt[1] - ref[0][1]) / ref_h * COURT_LENGTH_M
 
-        # Sanity check: court is 10.97m x 23.77m. Allow ±5m of slop for balls
-        # outside the lines, but reject anything wildly outside (e.g. -50, 300).
-        # This catches the case where the homography passed validation but produces
-        # garbage on certain pixel inputs.
-        if not (-5.0 <= mx <= COURT_WIDTH_DOUBLES_M + 5.0 and
-                -5.0 <= my <= COURT_LENGTH_M + 5.0):
+        if strict and not (-5.0 <= mx <= COURT_WIDTH_DOUBLES_M + 5.0 and
+                           -5.0 <= my <= COURT_LENGTH_M + 5.0):
             return None
 
         return (float(mx), float(my))

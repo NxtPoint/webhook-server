@@ -669,7 +669,9 @@ class PlayerTracker:
             if to_court_coords is not None:
                 cx = (box[0] + box[2]) / 2
                 try:
-                    pt = to_court_coords(cx, box[3])  # bbox bottom (feet)
+                    pt = to_court_coords(cx, box[3], strict=False)
+                except TypeError:
+                    pt = to_court_coords(cx, box[3])
                 except Exception:
                     pt = None
                 if pt is not None:
