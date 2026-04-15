@@ -129,30 +129,58 @@ def _drop_outlier_keypoints(
     return out_obj, out_img
 
 
-def _option_a(
+def _mark_kp_indices_missing(
+    observations: list[np.ndarray], bad_indices: set,
+) -> list[np.ndarray]:
+    """Return observations with the given keypoint indices (0-13) marked
+    as (-1, -1) across ALL frames. Used to drop systematically-wrong
+    keypoints (e.g., the CNN collapses far-baseline + far-service into
+    the same pixel on wide-angle footage)."""
+    cleaned = []
+    for obs in observations:
+        obs_copy = obs.copy()
+        for idx in bad_indices:
+            if 0 <= idx < len(obs_copy):
+                obs_copy[idx] = [-1.0, -1.0]
+        cleaned.append(obs_copy)
+    return cleaned
+
+
+def _build_radial_result(
+    K, dist, rms, rvec, tvec, H_undist, img_shape,
+) -> CalibrationResult:
+    """Build a CalibrationResult from raw calibration outputs. Extracted so
+    we can evaluate intermediate fits during iterative refinement."""
+    h, w = img_shape
+    new_K, _ = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=0.0)
+    map1, map2 = cv2.initUndistortRectifyMap(
+        K, dist, None, new_K, (w, h), cv2.CV_16SC2,
+    )
+    return CalibrationResult(
+        mode="radial",
+        rms_px=float(rms),
+        K=K, dist=dist, new_K=new_K, map1=map1, map2=map2,
+        homography_undistorted=H_undist,
+        rvec=rvec, tvec=tvec,
+    )
+
+
+def _option_a_single_pass(
     keypoint_observations: list[np.ndarray],
     img_shape: tuple[int, int],
-    rms_threshold_px: float,
-) -> Optional[CalibrationResult]:
-    """Attempt Brown-Conrady radial calibration via cv2.calibrateCamera.
-
-    Returns CalibrationResult on success (rms <= threshold), None otherwise.
+) -> Optional[tuple]:
+    """Single-pass Option A calibration (no refinement). Returns a tuple
+    of (rms, K, dist, rvec, tvec, H_undist) on success, or None.
     """
     object_points, image_points = _build_point_lists(keypoint_observations)
     if not object_points:
-        logger.warning("Option A: no frames with >=6 keypoints; skipping")
         return None
 
-    # Pre-filter outlier keypoints via RANSAC homography across all
-    # aggregated observations. Single outliers like sv_top_L with 5m error
-    # otherwise blow up calibrateCamera's bundle-adjusted RMS. findHomography
-    # identifies consistent inliers on the planar court; we drop the rest
-    # before calibrateCamera sees them.
+    # RANSAC pre-filter: drop individual outlier point observations
     object_points, image_points = _drop_outlier_keypoints(
         object_points, image_points, inlier_threshold_px=3.0,
     )
     if not object_points:
-        logger.warning("Option A: no inlier points after RANSAC pre-filter; skipping")
         return None
 
     h, w = img_shape
@@ -182,28 +210,14 @@ def _option_a(
         logger.warning("Option A: cv2.calibrateCamera failed: %s", exc)
         return None
 
-    logger.info("Option A RMS: %.4f px (threshold %.2f)", rms, rms_threshold_px)
-
-    if rms > rms_threshold_px:
-        logger.info("Option A RMS exceeds threshold; will fall back to Option C")
-        return None
-
-    new_K, _ = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=0.0)
-    map1, map2 = cv2.initUndistortRectifyMap(
-        K, dist, None, new_K, (w, h), cv2.CV_16SC2
-    )
-
     # Homography from undistorted pixels → metric court coordinates.
-    # Use the frame that contributed the most keypoints so the homography
-    # is as well-conditioned as possible.
+    new_K, _ = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), alpha=0.0)
     best_idx = int(np.argmax([len(p) for p in image_points]))
     img_pts = image_points[best_idx].reshape(-1, 1, 2)
     world_pts_2d = object_points[best_idx].reshape(-1, 3)[:, :2]
-
     img_pts_undist = cv2.undistortPoints(img_pts, K, dist, P=new_K).reshape(-1, 2)
     H_undist, _ = cv2.findHomography(img_pts_undist, world_pts_2d, cv2.RANSAC, 3.0)
     if H_undist is None:
-        logger.warning("Option A: findHomography returned None after undistortion")
         return None
 
     # rvec/tvec for the best frame so project_metres_to_pixel can invert.
@@ -211,21 +225,79 @@ def _option_a(
     img_pts_best = image_points[best_idx].reshape(-1, 1, 2)
     ok, rvec, tvec = cv2.solvePnP(obj_pts_best, img_pts_best, K, dist)
     if not ok:
-        logger.warning("Option A: solvePnP failed for inverse projection; skipping")
         return None
 
-    return CalibrationResult(
-        mode="radial",
-        rms_px=float(rms),
-        K=K,
-        dist=dist,
-        new_K=new_K,
-        map1=map1,
-        map2=map2,
-        homography_undistorted=H_undist,
-        rvec=rvec,
-        tvec=tvec,
-    )
+    return (float(rms), K, dist, rvec, tvec, H_undist)
+
+
+def _option_a(
+    keypoint_observations: list[np.ndarray],
+    img_shape: tuple[int, int],
+    rms_threshold_px: float,
+    max_refinement_iters: int = 3,
+    bad_kp_error_m: float = 1.0,
+) -> Optional[CalibrationResult]:
+    """Brown-Conrady radial calibration with iterative outlier-keypoint
+    rejection. The CNN can systematically mis-detect specific keypoint
+    indices (e.g. collapse far-baseline + far-service into the same pixel
+    on wide-angle footage). After each fit, any keypoint index whose
+    per-keypoint error exceeds bad_kp_error_m metres is marked missing
+    across all observations and we refit.
+    """
+    observations = keypoint_observations
+    last_result = None
+
+    for iteration in range(max_refinement_iters):
+        fit = _option_a_single_pass(observations, img_shape)
+        if fit is None:
+            logger.info("Option A iter %d: single-pass fit failed", iteration)
+            return last_result  # return best previous if any
+
+        rms, K, dist, rvec, tvec, H_undist = fit
+        tentative = _build_radial_result(K, dist, rms, rvec, tvec, H_undist, img_shape)
+
+        # Per-keypoint-index error check (metric world space)
+        errors_m = evaluate_calibration(tentative, observations)
+        valid = ~np.isnan(errors_m)
+        if not valid.any():
+            return tentative if rms <= rms_threshold_px else None
+
+        bad_indices = {
+            int(i) for i in range(14)
+            if valid[i] and errors_m[i] > bad_kp_error_m
+        }
+        max_err = float(np.nanmax(errors_m))
+
+        logger.info(
+            "Option A iter %d: rms=%.4f max_kp_err=%.3fm bad_indices=%s",
+            iteration, rms, max_err, sorted(bad_indices),
+        )
+
+        # Accept if within threshold AND no bad keypoints remain
+        if rms <= rms_threshold_px and not bad_indices:
+            return tentative
+
+        # Keep best candidate so far (lowest RMS)
+        if last_result is None or tentative.rms_px < last_result.rms_px:
+            last_result = tentative
+
+        # Drop bad keypoints and retry, unless nothing to drop
+        if not bad_indices:
+            return tentative if rms <= rms_threshold_px else None
+
+        observations = _mark_kp_indices_missing(observations, bad_indices)
+        # Ensure enough keypoints remain
+        remaining = sum(int((obs[:, 0] >= 0).sum()) for obs in observations)
+        if remaining < 8 * len(observations):
+            # Average < 8 kps per frame after drop; abort refinement.
+            # Already-saved last_result may still be returned.
+            logger.info("Option A: too few keypoints after drop, stopping refinement")
+            break
+
+    # Hit max iterations. Return the last_result only if its RMS is below threshold.
+    if last_result is not None and last_result.rms_px <= rms_threshold_px:
+        return last_result
+    return None
 
 
 def _best_frame_kps(keypoint_observations: list[np.ndarray]) -> np.ndarray:
@@ -437,6 +509,34 @@ def _option_c(
     )
 
 
+def _probe_bad_keypoint_indices(
+    observations: list[np.ndarray],
+    img_shape: tuple[int, int],
+    bad_kp_error_m: float = 1.0,
+) -> set:
+    """One-shot probe calibration to identify systematically-wrong keypoint
+    indices before the main fit. Uses a loose RMS threshold so we can
+    probe even on noisy data; returns the set of keypoint indices whose
+    per-keypoint error exceeds bad_kp_error_m metres."""
+    fit = _option_a_single_pass(observations, img_shape)
+    if fit is None:
+        return set()
+    rms, K, dist, rvec, tvec, H_undist = fit
+    probe_result = _build_radial_result(K, dist, rms, rvec, tvec, H_undist, img_shape)
+    errors_m = evaluate_calibration(probe_result, observations)
+    valid = ~np.isnan(errors_m)
+    bad = {
+        int(i) for i in range(14)
+        if valid[i] and errors_m[i] > bad_kp_error_m
+    }
+    if bad:
+        logger.info(
+            "Probe: bad keypoint indices (err > %.1fm): %s",
+            bad_kp_error_m, sorted(bad),
+        )
+    return bad
+
+
 def fit_calibration(
     keypoint_observations: list[np.ndarray],
     img_shape: tuple[int, int],  # (h, w)
@@ -444,19 +544,22 @@ def fit_calibration(
 ) -> Optional[CalibrationResult]:
     """Top-level entry point.
 
-    Tries Option A (radial distortion) first. Falls back to Option C
-    (piecewise) if A's RMS exceeds rms_threshold_px or A fails to converge.
+    1. Probe fit → identify systematically-wrong keypoint indices (e.g. the
+       CNN collapses far-baseline + far-service into the same pixel on
+       wide-angle footage).
+    2. Drop those indices from all observations.
+    3. Try Option A (radial distortion) with its own iterative refinement.
+    4. Fall back to Option C (piecewise) on the cleaned observations if A
+       can't converge.
 
-    Args:
-        keypoint_observations: list of (14, 2) float arrays. Each row is a
-            keypoint pixel position or (-1, -1) if missing. Typically accumulated
-            across 5-10 calibration frames. At least one observation required.
-        img_shape: (h, w) of the input frames.
-        rms_threshold_px: A-to-C fallback trigger.
-
-    Returns:
-        CalibrationResult or None if both options fail.
+    Returns CalibrationResult or None if both options fail.
     """
+    bad_indices = _probe_bad_keypoint_indices(keypoint_observations, img_shape)
+    if bad_indices:
+        keypoint_observations = _mark_kp_indices_missing(
+            keypoint_observations, bad_indices,
+        )
+
     result_a = _option_a(keypoint_observations, img_shape, rms_threshold_px)
     if result_a is not None:
         logger.info("Calibration: using Option A (radial), RMS=%.4f", result_a.rms_px)
