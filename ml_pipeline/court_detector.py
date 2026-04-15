@@ -246,7 +246,7 @@ class CourtDetector:
                 self._calibration = fit_calibration(
                     self._calibration_observations,
                     img_shape=frame.shape[:2],
-                    rms_threshold_px=5.0,
+                    rms_threshold_px=10.0,
                 )
 
             # FAIL-FAST: abort only if we have NO way to project pixel→metric.
