@@ -200,48 +200,44 @@ class CourtDetector:
 
         # Check if calibration period is over
         if frame_idx >= COURT_CALIBRATION_FRAMES and self._locked_detection is None:
-            # Priority: geometry-validated best → highest-inliers best →
-            # last detection with any homography. User preferred fallback
-            # over abort if nothing passes validation.
-            best = (self._best_validated_detection
-                    or self._best_detection
-                    or self._last_good_detection)
-            if best is not None:
-                self._locked_detection = best
-                locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
-                source = (
-                    "VALIDATED" if best is self._best_validated_detection
-                    else "FALLBACK-ANY" if best is self._best_detection
-                    else "FALLBACK-LAST"
+            # FAIL-FAST: only a geometry-validated homography is acceptable.
+            # No silent fallback — a bad homography corrupts every downstream
+            # metric (coordinates, speed, stroke classification, serve gate).
+            # Surface the failure so we can fix the root cause rather than
+            # ship bad data.
+            if self._best_validated_detection is None:
+                any_inliers = self._best_calibration_inliers
+                raise RuntimeError(
+                    f"court_calibration: FAILED after {frame_idx} frames — "
+                    f"no homography passed geometry validation "
+                    f"(best-any inliers={any_inliers}). "
+                    f"Aborting job; investigate CNN/Hough detection on this video."
                 )
+            self._locked_detection = self._best_validated_detection
+            locked_inliers = int((self._locked_detection.keypoints[:, 0] >= 0).sum())
+            logger.info(
+                "court_calibration: LOCKED VALIDATED detection after %d frames "
+                "(inliers=%d, confidence=%.2f). No more CNN runs.",
+                frame_idx, locked_inliers, self._locked_detection.confidence,
+            )
+            best = self._locked_detection
+            # Log the detected pixel positions of every keypoint so we
+            # can diagnose mis-labeled keypoints (e.g. net mistaken for
+            # far baseline). Pair each with its reference position for
+            # side-by-side sanity.
+            kp_names = [
+                "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
+                "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
+                "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
+                "ctr_top",  "ctr_bot",
+            ]
+            for i, name in enumerate(kp_names):
+                px = best.keypoints[i]
+                ref = self.ref_keypoints[i]
+                det_str = f"({px[0]:.0f},{px[1]:.0f})" if px[0] >= 0 else "(MISSING)"
                 logger.info(
-                    "court_calibration: LOCKED %s detection after %d frames "
-                    "(inliers=%d, confidence=%.2f). No more CNN runs.",
-                    source, frame_idx, locked_inliers, best.confidence,
-                )
-                # Log the detected pixel positions of every keypoint so we
-                # can diagnose mis-labeled keypoints (e.g. net mistaken for
-                # far baseline). Pair each with its reference position for
-                # side-by-side sanity.
-                kp_names = [
-                    "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
-                    "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
-                    "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
-                    "ctr_top",  "ctr_bot",
-                ]
-                for i, name in enumerate(kp_names):
-                    px = best.keypoints[i]
-                    ref = self.ref_keypoints[i]
-                    det_str = f"({px[0]:.0f},{px[1]:.0f})" if px[0] >= 0 else "(MISSING)"
-                    logger.info(
-                        "court_kps[%02d] %s detected=%s ref=(%d,%d)",
-                        i, name, det_str, ref[0], ref[1],
-                    )
-            else:
-                logger.warning(
-                    "court_calibration: no valid detection found in %d frames, "
-                    "continuing CNN attempts",
-                    frame_idx,
+                    "court_kps[%02d] %s detected=%s ref=(%d,%d)",
+                    i, name, det_str, ref[0], ref[1],
                 )
 
         return detection
