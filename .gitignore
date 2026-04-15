@@ -25,3 +25,22 @@ ml_pipeline/models/*.onnx
 
 # Test video clips
 ml_pipeline/test_videos/
+
+# Claude Code tool local artefacts (debug outputs, task locks, worktrees,
+# local settings). The .claude/ folder itself is tracked because handover
+# docs live there — but these per-run artefacts shouldn't be.
+.claude/debug_frames_*/
+.claude/eval_*.txt
+.claude/reconcile_*.txt
+.claude/run_status_*.md
+.claude/silver_rebuild_*.txt
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.claude/worktrees/
+
+# Eval history (per-machine; grown incrementally by harness)
+ml_pipeline/eval_history.jsonl
+
+# Ad-hoc user files at repo root (PDFs, screenshots, quick notes)
+/*.pdf
+/*.png
