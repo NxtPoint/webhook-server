@@ -749,20 +749,26 @@ class PlayerTracker:
                             to_court_coords: Optional[Callable] = None) -> tuple:
         """Select up to 2 players — one per half — using court-metre zoning.
 
-        TWO-RULE PRIORITY (per half, when to_court_coords is available):
-          Rule 1 (3000): INSIDE doubles court — 0 <= x <= 10.97, 0 <= y <= 23.77
-          Rule 2 (2000): EXTENDED box around court — -3 <= x <= 13.97,
-                         -4 <= y <= 27.77, and outside Rule 1
-          Tier 0:        Outside the extended box (spectator, umpire chair,
-                         coach, bench)
+        THREE-TIER PRIORITY (per half, when to_court_coords is available):
+          Priority 1 (3000): INSIDE doubles court
+              0 <= x <= 10.97, 0 <= y <= 23.77
+          Priority 2 (2000): BEHIND own baseline — max 4m deep, 3m off each
+              doubles sideline. Covers serving stance + baseline recovery.
+              -3 <= x <= 13.97, (-4 <= y < 0) OR (23.77 < y <= 27.77)
+          Priority 3 (1000): WIDE ALLEY corridor — 1m off each doubles
+              sideline, baseline-to-baseline. Real players run wide like
+              this 1-2x per match; anything wider is noise.
+              (-1 <= x < 0 OR 10.97 < x <= 11.97) AND 0 <= y <= 23.77
+          Tier 0: Everything else (umpire, spectator, coach, bench sitter)
 
-        Closest-to-baseline tiebreaker (0-500 pts within any tier): candidates
+        Baseline-closeness tiebreaker (0-500 pts within any tier): candidates
         whose feet are near a baseline score higher. A candidate at the net
         (far from both baselines) scores the lowest. This rewards the correct
         entity — real players hug baselines during serves/rallies, while
         umpires and commentators sit at net level.
 
-        Within each tier, MOG2 motion adds +500 bonus (moving > stationary).
+        MOG2 motion adds +500 bonus (moving > stationary). Bbox area adds
+        0-200 (larger bbox = closer to camera = more likely a real player).
 
         Falls back to the legacy pixel-space geometry when to_court_coords
         is unavailable (pre-calibration frames). One candidate selected from
@@ -842,23 +848,41 @@ class PlayerTracker:
             if court_xy is not None:
                 court_x_m, court_y_m = court_xy
                 NET_Y = COURT_LENGTH_M / 2  # 11.885
-                # Rule 1: inside doubles court
+
+                # Priority 1 (3000): inside doubles court
                 in_court = (
                     0.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
-                # Rule 2: extended box (3m lateral, 4m longitudinal)
-                in_extended = (
+                # Priority 2 (2000): behind own baseline — max 4m deep,
+                # 3m off each doubles sideline. Covers serving stance and
+                # recovery steps behind the baseline.
+                behind_baseline = (
                     -3.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 3.0
-                    and -4.0 <= court_y_m <= COURT_LENGTH_M + 4.0
+                    and (
+                        -4.0 <= court_y_m < 0.0
+                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 4.0
+                    )
+                )
+                # Priority 3 (1000): wide-alley corridor — 1m off each
+                # doubles sideline, baseline-to-baseline. Real players run
+                # this wide maybe 1-2x per match; anything wider is noise.
+                wide_alley = (
+                    (
+                        -1.0 <= court_x_m < 0.0
+                        or COURT_WIDTH_DOUBLES_M < court_x_m <= COURT_WIDTH_DOUBLES_M + 1.0
+                    )
+                    and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
 
                 if in_court:
                     tier = 3000
-                elif in_extended:
+                elif behind_baseline:
                     tier = 2000
+                elif wide_alley:
+                    tier = 1000
                 else:
-                    tier = 0  # off-court
+                    tier = 0  # off-court (umpire, spectator, coach)
 
                 # Baseline-closeness: distance to nearer baseline, in metres.
                 # At y=0 or y=23.77 → dist=0 → full 500 points.
