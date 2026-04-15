@@ -175,7 +175,9 @@ class CourtDetector:
             self._last_good_detection = detection
             valid_mask = detection.keypoints[:, 0] >= 0
             n_inliers = int(valid_mask.sum())
-            geom_ok = self._validate_homography_geometry(detection.keypoints, valid_mask)
+            geom_ok = self._validate_homography_geometry(
+                detection.keypoints, valid_mask, frame_h=frame.shape[0],
+            )
 
             # Track best-any (highest inliers regardless of geometry)
             if n_inliers > self._best_calibration_inliers:
@@ -404,20 +406,27 @@ class CourtDetector:
         return (float(ix), float(iy))
 
     def _validate_homography_geometry(self, keypoints: np.ndarray,
-                                       valid_mask: np.ndarray) -> bool:
+                                       valid_mask: np.ndarray,
+                                       frame_h: int = 0) -> bool:
         """Sanity-check detected keypoints for valid tennis-court perspective.
 
-        Guards against the "net mis-detected as far baseline" failure mode,
-        where the CNN labels net-line pixels as baseline keypoints. The
-        resulting homography compresses the court vertically — stands behind
-        the real far baseline project to y=0, real far baseline to y~12.
+        Guards against two known failure modes:
+          A. "Net mis-detected as far baseline" — CNN labels net-line pixels
+             as baseline keypoints → compressed homography.
+          B. "Banner + logo mis-detected as baselines" — Hough fallback
+             finds horizontal clusters at the scoreboard top and the
+             MATCHI TV logo bottom → baselines span 90%+ of frame height.
 
         Rules (pixel-space):
           1. Far baseline (kps 0-1) must sit ABOVE near baseline (kps 2-3)
           2. Vertical separation must be meaningful (>= 150 pixels @ 1080p)
           3. If all 4 baseline corners detected: far baseline must be
-             NARROWER than near baseline (perspective) — else the "far"
-             is probably the net line, which is nearly as wide.
+             narrower than near baseline (perspective). 0.75 threshold
+             catches the "net line as far baseline" case.
+          4. Baseline span must be 25-70% of frame height (when frame_h
+             given). Real tennis courts don't fill the whole image.
+          5. Far baseline must not be in the top 8% (scoreboard/banner).
+          6. Near baseline must not be in the bottom 5% (logo/border).
 
         Returns True if geometry looks valid OR we don't have enough
         baseline keypoints to judge. False only if geometry is clearly wrong.
@@ -438,11 +447,19 @@ class CourtDetector:
         if len(far_detected) == 2 and len(near_detected) == 2:
             far_w = abs(keypoints[1, 0] - keypoints[0, 0])
             near_w = abs(keypoints[3, 0] - keypoints[2, 0])
-            # Real tennis court perspective: far baseline ~60-70% of near
-            # baseline pixel width. 0.75 cut rejects the "net line labeled
-            # as far baseline" failure mode where far_w ≈ 0.80 * near_w.
             if far_w >= near_w * 0.75:
                 return False
+
+        if frame_h > 0:
+            span = near_y - far_y
+            if span > frame_h * 0.70:
+                return False  # baselines span > 70% of frame — banner+logo
+            if span < frame_h * 0.25:
+                return False  # baselines compressed — likely net+baseline
+            if far_y < frame_h * 0.08:
+                return False  # far baseline in scoreboard/banner region
+            if near_y > frame_h * 0.95:
+                return False  # near baseline at logo/bottom-border region
 
         return True
 
