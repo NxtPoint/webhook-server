@@ -555,15 +555,20 @@ class PlayerTracker:
         try:
             from sahi.predict import get_sliced_prediction
 
-            # Crop to court region with 10% margin — real players are always
-            # within this. Spectator stands outside are wasted SAHI tiles.
+            # Crop to court region with 30% margin. The court_bbox comes
+            # from raw CNN keypoints which on wide-angle footage often put
+            # the "far baseline" at a pixel y much LOWER than the real far
+            # baseline (CNN collapses baseline + service line into the
+            # same visual feature). With a 10% margin, SAHI's crop started
+            # at pixel y~230 while the real far player was at pixel y~150-200,
+            # entirely outside the crop. 30% covers the gap.
             roi_x, roi_y = 0, 0
             target = frame
             if court_bbox is not None:
                 h, w = frame.shape[:2]
                 cx1, cy1, cx2, cy2 = court_bbox
-                margin_x = int((cx2 - cx1) * 0.10)
-                margin_y = int((cy2 - cy1) * 0.10)
+                margin_x = int((cx2 - cx1) * 0.30)
+                margin_y = int((cy2 - cy1) * 0.30)
                 roi_x = max(0, int(cx1) - margin_x)
                 roi_y = max(0, int(cy1) - margin_y)
                 roi_x2 = min(w, int(cx2) + margin_x)
@@ -915,14 +920,17 @@ class PlayerTracker:
                     0.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
-                # Priority 2 (2000): behind own baseline — max 4m deep,
-                # 3m off each doubles sideline. Covers serving stance and
-                # recovery steps behind the baseline.
+                # Priority 2 (2000): behind own baseline. Near side allows
+                # up to 8m past because radial calibration extrapolates
+                # conservatively at the image's extreme bottom edge and a
+                # player physically 3m past the baseline can project to
+                # metric y ~28-30. Far side stays 4m (extrapolation near
+                # the top of the image is better-constrained).
                 behind_baseline = (
                     -3.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 3.0
                     and (
                         -4.0 <= court_y_m < 0.0
-                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 4.0
+                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 8.0
                     )
                 )
                 # Priority 3 (1000): wide-alley corridor — 1m off each
@@ -986,7 +994,14 @@ class PlayerTracker:
                 bbox_h = box[3] - box[1]
                 bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
 
-                score = tier + motion_bonus + baseline_closeness + bbox_score
+                # Tier 0 = off-court (spectator, umpire, linesperson).
+                # Zero the bonuses so they can't accidentally outscore a
+                # real player in another frame. If no tier>0 candidate
+                # exists for a half, the half is correctly left empty.
+                if tier == 0:
+                    score = 0.0
+                else:
+                    score = tier + motion_bonus + baseline_closeness + bbox_score
 
             elif to_court_coords is not None:
                 # Calibration exists but THIS candidate's projection failed
