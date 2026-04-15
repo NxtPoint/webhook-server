@@ -675,7 +675,7 @@ class PlayerTracker:
                 except Exception:
                     pt = None
                 if pt is not None:
-                    court_label = f" y={pt[1]:.1f}"
+                    court_label = f" x={pt[0]:.1f} y={pt[1]:.1f}"
             cv2.rectangle(img, (x1, y1), (x2, y2), color, 3)
             cv2.putText(
                 img, label + court_label, (x1, y1 - 8),
