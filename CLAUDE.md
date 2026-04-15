@@ -401,29 +401,46 @@ Media Room → S3 upload → `_t5_submit()` → AWS Batch job → sentinel `t5:/
 
 ### Pipeline components (`ml_pipeline/`)
 
-**`court_detector.py`** — CNN (14 keypoints) + Hough-lines fallback + geometry-validated calibration lock.
+**`court_detector.py`** — CNN (14 keypoints) + Hough-lines fallback + geometry-validated calibration lock + lens calibration integration.
 - CNN keypoints via threshold 170 + Hough circles + `refine_kps()` (matches yastrebksv/TennisProject).
-- **Calibration (frames 0-299)**: CNN runs every 30 frames; each candidate homography is geometry-validated.
-- **Geometry validator** (`_validate_homography_geometry`): far baseline above near baseline; vertical span 25-70% of frame height; far baseline below top 8% (scoreboard region); near baseline above bottom 5% (logo region); far width < 0.75 × near width (perspective). Guards against the "banner+logo as baselines" failure mode where Hough picks sponsor lines.
-- **Lock @ frame 300**: prefer highest-inlier geometry-validated detection; **fail-fast** if none passed validation — raises `RuntimeError`, `__main__.py` catches and calls `db.mark_failed()`. No silent fallback.
-- **`to_court_coords(px, py, strict=True)`**: priority `_locked_detection` → `_last_detection` → `_last_good_detection`. Debug annotations pass `strict=False` to see out-of-bounds projections.
-- Keypoint pixel positions are logged at lock/fail time for diagnostics (`court_kps[NN] bl_top_L detected=(X,Y) ref=(286,561)`).
+- **Calibration (frames 0-299)**: CNN runs every 30 frames; each candidate homography is geometry-validated. Hough fallback only when CNN returns zero valid keypoints (`cnn_kps_count == 0`) — Hough is otherwise unreliable on wide-angle indoor footage where it picks up sponsor-banner and logo edges as "baselines".
+- **Geometry validator** (`_validate_homography_geometry`): far baseline above near baseline; vertical span **25-90%** of frame height (90% upper bound — wide-angle indoor cameras legitimately have courts filling 80%+ of frame); far baseline below top 4%; near baseline above bottom 2%; far width < **0.85 × near width**; logs specific rejection reason per frame.
+- **Lock @ frame 300**: prefer highest-inlier geometry-validated detection, fallback to any-best, then last-good. Fail-fast only if no detection at all AND no calibration produced.
+- **Lens calibration** (new Apr 15, see `camera_calibration.py`): at lock time, pipes accumulated keypoint observations into `fit_calibration(observations, img_shape, rms_threshold_px=10.0)`. Result stored on `self._calibration`.
+- **`to_court_coords(px, py, strict=True)`**: when `self._calibration` is set, routes through `project_pixel_to_metres` (radial or piecewise). Otherwise falls back to `_locked_detection.homography`. Strict=True applies ±5m slop bounds; debug annotations pass `strict=False`.
+- **`to_pixel_coords(mx, my)`**: inverse projection — metric → raw pixel via `cv2.projectPoints(rvec, tvec, K, dist)`. Used by debug grid overlay.
+- **`get_court_corners_pixels()`**: when calibration is set, projects `(0,0), (10.97,0), (0,23.77), (10.97,23.77)` metric corners through calibration. Otherwise returns raw keypoint corners. This gives the pixel-polygon gate a polygon matching the real court lines.
+- Keypoint pixel positions + per-keypoint error (metres) logged at lock for diagnostics (`court_kp_err[NN] bl_top_L err=0.132m`).
+
+**`camera_calibration.py`** — Lens distortion calibration for wide-angle MATCHI indoor cameras. Single module implementing **both Option A (primary) and Option C (fallback)**.
+- `fit_calibration(observations, img_shape, rms_threshold_px=10.0)` top-level entry.
+- **Probe step**: one-shot fit on raw observations identifies keypoint indices with per-keypoint error > 1m (typical failure mode: CNN collapses `bl_top_L`/`sg_top_L`/`sv_top_L` into the same pixel on wide-angle footage). Those indices are marked missing across all observations before the main fit.
+- **Option A (radial, Brown-Conrady k1/k2)**: `cv2.calibrateCamera` with `CALIB_FIX_PRINCIPAL_POINT | CALIB_FIX_ASPECT_RATIO | CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3 | CALIB_USE_INTRINSIC_GUESS`. Pre-filter via RANSAC `findHomography(threshold=3px)` drops per-point outliers before bundle adjustment. **Iterative refinement** up to 3 passes: fit → evaluate per-keypoint error → drop indices with error > 1m → refit. Returns `CalibrationResult(mode='radial', ...)` on RMS ≤ 10 px. Working RMS on MATCHI footage: **6.26 px** (≈15cm metric error across the 23.77m court).
+- **Option C (piecewise)**: 4-zone homographies split at `net_y_px × centre_x_px`. Each zone gets 3-4 keypoints. Mirror-fallback: if FR zone is unfit but FL has keypoints, derive FR from FL reflection across the centre line. Inverse-distance blend within 80 px of zone boundaries. Used when Option A fails to converge.
+- `project_pixel_to_metres(px, py, calib)` — raw-pixel → metre. Radial mode does `undistortPoints` + `homography_undistorted`; piecewise applies the zone's H directly.
+- `project_metres_to_pixel(mx, my, calib)` — inverse, via `cv2.projectPoints` (radial) or inverse zone H (piecewise). Used for debug grid overlay and court-corner polygon.
+- `evaluate_calibration(calib, observations)` — per-keypoint metric error. Used at lock for self-check and iteratively during refinement.
+- `undistort_frame(frame, calib)` — kept in module but **not used at runtime** (pipeline.py doesn't remap frames). Per-point undistortion at projection time keeps all pixel-space geometry (court polygon, bboxes, motion masks) in a single coordinate space.
 
 **`ball_tracker.py`** — TrackNet V2 (3-frame, 9ch) + frame-delta Hough fallback. V2 detects ~36% of frames; delta recovers ~63%. Three-tier heatmap extraction: Hough circles → CC centroid → argmax. TrackNetV3 architecture ported in `tracknet_v3.py` — activates when `models/tracknet_v3.pt` exists.
 
-**`player_tracker.py`** — Multi-strategy detection + three-tier court-metre scoring:
-- **Detection**: SAHI tiled inference (640×640 tiles, 15% overlap, `sahi==0.11.18`) + full-frame YOLOv8x-pose + detection-only YOLOv8m for far baseline. Conditional SAHI skip when far-half candidate already found at `court_y ≤ 5`.
-- **Scoring** (`_choose_two_players`): one player from each pixel-half (near/far).
+**`player_tracker.py`** — Multi-strategy detection + three-tier court-metre scoring.
+- **Detection**: SAHI tiled inference (640×640 tiles, 15% overlap, `sahi==0.11.18`) + full-frame YOLOv8x-pose + detection-only YOLOv8m for far baseline. Conditional SAHI skip when full-frame YOLO already has a far-baseline candidate (`court_y ≤ 5`). **SAHI crop margin: 30%** (was 10% — raised because `court_bbox` from raw keypoints on wide-angle footage cropped out the real far baseline; 30% covers the gap).
+- **Scoring** (`_choose_two_players`): one player from each pixel-half (near/far). Three zones based on calibrated metric coords:
   - Tier 1 (3000): INSIDE doubles court — `0 ≤ x ≤ 10.97, 0 ≤ y ≤ 23.77`
-  - Tier 2 (2000): BEHIND baseline — `-3 ≤ x ≤ 13.97, -4 ≤ y < 0 OR 23.77 < y ≤ 27.77`
+  - Tier 2 (2000): BEHIND baseline — `-3 ≤ x ≤ 13.97, -4 ≤ y < 0 OR 23.77 < y ≤ 31.77` (**near-side +8m** to cover calibration extrapolation slack at the extreme bottom of the frame)
   - Tier 3 (1000): WIDE alley — `-1 ≤ x < 0 OR 10.97 < x ≤ 11.97, 0 ≤ y ≤ 23.77`
   - Tier 0: Everything else (umpire, spectator, coach, bench)
-  - Tiebreakers: MOG2 motion bonus (+500), baseline-closeness (0-500), bbox area (0-200)
-  - **Pixel-polygon gate** (Fix B): feet > 150 px outside detected court polygon → tier 0; 50-150 px outside → tier capped at 1000. Defends against bad homography mapping spectators to valid metric zones.
+  - Bonuses: MOG2 motion (+500), baseline-closeness (0-500), bbox area (0-200)
+  - **tier 0 → score = 0 (no bonuses)**. Spectators/linespeople can't accidentally win a half by stacking bonuses when no real player is in the candidate list.
+- **`MIN_SELECTABLE_SCORE = 1000`**: a candidate must score ≥ tier-3 floor to be picked. If no candidate in a half meets this, the half is correctly left empty — no "best of a bad lot" selection.
+- **Pixel-polygon gate**: feet > 300 px outside detected court polygon → tier 0. Previously 150 px but the polygon is a 4-corner straight-line quadrilateral while real baselines curve at the edges on wide-angle cameras; 150 was rejecting legitimate detections. With correct calibration, metric tier rules are the primary filter; pixel gate is a safety net for extreme outliers.
+- **Null-projection handling**: when calibration exists and `to_court_coords` returns None (strict bounds failed), tier 0 and `score = motion_bonus only` — no legacy pixel-space fallback (which had been over-scoring spectators).
+- **Debug frames**: `x=` and `y=` labels per bbox. **Metric grid overlay**: yellow (outer — baselines, net, sidelines) and cyan (inner — service lines, centre service) projected from metric space via `to_pixel_coords`. Frame-accurate visual calibration check.
+- **Legacy pixel-space branch** (pre-calibration fallback): also applies `tier==0 → score=0` for symmetry.
 - **MOG2 background subtraction** (`pipeline.py`): foreground mask fed every frame, motion ratio per candidate bbox.
-- Debug frames annotated with both `x=` and `y=` per bbox when homography available.
 
-**`pipeline.py`** — Orchestrates court → ball → MOG2 → player per frame. Post-processing: interpolation, bounce detection, speed calc, stationary player filter, optical-flow stroke classification (second video pass at bounce frames).
+**`pipeline.py`** — Orchestrates court → ball → MOG2 → player per frame. Raw (distorted) frames pass through unchanged — per-point undistortion happens inside `project_pixel_to_metres`. Post-processing: interpolation, bounce detection, speed calc, stationary player filter, optical-flow stroke classification (second video pass at bounce frames).
 
 ### AWS Batch & Docker
 
@@ -484,12 +501,17 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 ### Reconciliation reference
 
 - SportAI ground truth: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves; ball speed avg 358 km/h)
-- Latest T5 reference run: `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 162 rows, 1 point, 1 serve, ball speed avg 30 km/h. Known-wrong due to lens distortion compressing court projection (ball y range `[10.69, 24.29]` — far half not projectable).
-- T5 golden baseline: track in `golden_datasets.json` once lens-distortion fix lands.
+- Latest T5 reference run (pre-calibration, known-wrong): `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 162 rows, 1 point, 1 serve, ball speed avg 30 km/h (ball y range `[10.69, 24.29]`).
+- **First clean T5 run with radial calibration** (Apr 15 evening): `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` — first run producing correctly-calibrated bronze/silver. Lock: `mode=radial rms=6.26 px from 11 observations`. Near + far player detection both working visually. Eval-ball / reconcile numbers captured in `project_t5_apr15_breakthrough.md` memory.
+- T5 golden baseline: take a snapshot from the first fully-clean run.
 
 ### Deployment
 
-Job definition `ten-fifty5-ml-pipeline` **revision 13** is current. Rev 13 = rev 12 image (`sha256:2397c93b...` — tighter geometry validator + keypoint diagnostics + x= debug annotations + fail-fast) plus auto-retry on `Host EC2*` status reasons (Spot interruption, up to 3 attempts). Job queue has on-demand fallback at priority 2.
+Job definition revisions — **eu-north-1 revision 23**, **us-east-1 revision 12**. Both point to digest `sha256:4170a5fb...` (three scoring fixes: tier 0 → score 0 in metric branch, near-side +8m behind_baseline, SAHI crop margin 30%). Retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
+
+**Queued but not yet deployed** (commit `f97690e`): legacy branch tier 0 → score 0, plus `MIN_SELECTABLE_SCORE = 1000` gate in `_choose_two_players`. Deploy on next build cycle.
+
+**Compute environment reality**: account has **zero on-demand G-family vCPU quota** in both regions (confirmed via `VcpuLimitExceeded` error). Production is Spot-only despite on-demand being listed as fallback in the job queue. When Spot capacity is tight (Stockholm was flat all day Apr 15), manual failover between regions via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:12 ...`. Quota increase request recommended for operational resilience.
 
 ### Stroke classification (`build_silver_match_t5.py`)
 
@@ -513,18 +535,32 @@ Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `St
 
 ### Known gaps + current focus
 
-**P0 — Wide-angle lens distortion (in progress, Apr 15)**. Root cause of every downstream metric being wrong on MATCHI-style indoor footage. The near baseline visibly curves in the image = barrel distortion from a wide-angle lens. Single homography can't represent non-linear distortion → players at image edges project 4-5m off in court-metre space. Every symptom traces back to this: speed 10× under (pixel-to-metre scale compressed), 105/162 "Volley" classifications (hitters land near mis-projected "net"), 1 serve detected (hitter baseline gate fails), etc.
+**SOLVED Apr 15 — Lens distortion**. Primary blocker for weeks is now fixed. Radial calibration locks at RMS 6.26 px (≈15cm metric error) on MATCHI wide-angle footage. Yellow grid overlay on debug frames traces the real court lines. See `project_t5_apr15_breakthrough.md` memory for full chronology.
 
-**Fix plan (approved Apr 15)**:
-- **Option A (primary)**: fit `[k1, k2]` radial distortion coefficients alongside homography using the 14 court keypoints as planar correspondences. `cv2.calibrateCamera` with `CALIB_FIX_PRINCIPAL_POINT | CALIB_FIX_ASPECT_RATIO | CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3 | CALIB_USE_INTRINSIC_GUESS` flags. Precompute undistort maps via `initUndistortRectifyMap`, apply with `remap` per frame before CNN/ball/player detection.
-- **Option C (fallback)**: 4-zone piecewise homography split at net-y × centre-x, one homography per quadrant, inverse-distance blend within 80px of zone boundaries. Used when Option A fails (RMS > 1.5 px after calibration).
+**SOLVED Apr 15 — Player detection cascade**:
+- Far player detected in >95% of frames post-calibration (was 0% at the low point)
+- Near player full-body bbox stable (previous head-only-KEPT artifact resolved by raising near-side behind_baseline to +8m and pixel-gate tolerance to 300 px)
+- Side spectators, linespeople, umpires filtered (tier 0 → score 0 + MIN_SELECTABLE_SCORE 1000)
 
-**Other gaps**:
-- Ball delta fallback quality unvalidated (may detect player movement, not just ball)
+**NEXT, in order**:
+
+1. **Silver layer bugs surfaced by correct calibration** (now actionable):
+   - `MIN_SERVE_INTERVAL_S=8.0` cooldown in `build_silver_match_t5.py:532` blocks the 2nd serve of a point (fault → retry). Fix: reset cooldown on `serve_side` or `point_number` change.
+   - `server_end_d` forward-fill window in `build_silver_v2.py:542-546` needs explicit `ORDER BY ball_hit_s, id` — currently only ~20% rows populated.
+   - Volley over-classification (156/162 rows on pre-calibration run) should resolve automatically once hitter_y is accurate; verify on first post-calibration silver.
+
+2. **Stroke classification**:
+   - Near player: existing COCO-pose heuristic should start working once full-body bboxes flow into `build_silver_match_t5.py`. Target accuracy 70-80%. No code change needed — just a clean run.
+   - Far player: infrastructure ready in `ml_pipeline/stroke_classifier/`, weights not trained. Blocked on a clean dual-submit pair (this post-calibration run + SportAI ground truth). Workflow: `harness export-stroke-data` → `harness train-stroke` → ship weights in Docker image.
+
+3. **Ball**: detection + bounce already work (99.5% rate). Speed was 10× under due to compressed homography — with radial calibration correct, speeds should land near SportAI's 358 km/h average without code changes. Verify via `eval-ball`.
+
+4. **Performance**: 55-minute runtime untouched. Target 20 min via SAHI tile tuning + batching. Add per-stage timing instrumentation first (not done yet).
+
+**Remaining known gaps (lower priority)**:
+- Ball delta fallback quality unvalidated (may detect racket motion, not just ball)
 - TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
-- Stroke classifier weights not yet trained (architecture + pipeline ready, needs dual-submit data)
-- Silver serve detection has a `MIN_SERVE_INTERVAL_S=8.0` cooldown that blocks fault-retry serves (independent of homography fix — P1, will surface once homography lands)
-- Silver `server_end_d` forward-fill window framing bug (`build_silver_v2.py:542-546`, only 20% rows populated — P1)
+- AWS on-demand G-family quota = 0 (Spot-only production; request increase recommended)
 
 ---
 
