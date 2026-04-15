@@ -42,6 +42,7 @@ COPY ml_pipeline/config.py /app/ml_pipeline/
 COPY ml_pipeline/pipeline.py /app/ml_pipeline/
 COPY ml_pipeline/video_preprocessor.py /app/ml_pipeline/
 COPY ml_pipeline/court_detector.py /app/ml_pipeline/
+COPY ml_pipeline/camera_calibration.py /app/ml_pipeline/
 COPY ml_pipeline/ball_tracker.py /app/ml_pipeline/
 COPY ml_pipeline/tracknet_v3.py /app/ml_pipeline/
 COPY ml_pipeline/player_tracker.py /app/ml_pipeline/
