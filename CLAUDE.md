@@ -401,22 +401,29 @@ Media Room → S3 upload → `_t5_submit()` → AWS Batch job → sentinel `t5:/
 
 ### Pipeline components (`ml_pipeline/`)
 
-**`court_detector.py`** — CNN (14 keypoints) + Hough-lines fallback. CNN keypoints extracted via threshold 170 + Hough circles + `refine_kps()` line-intersection snap (matching yastrebksv/TennisProject reference). Calibration lock: best detection in first 300 frames, then frozen. `get_court_corners_pixels()` returns 4 baseline corners for player scoring geometry.
+**`court_detector.py`** — CNN (14 keypoints) + Hough-lines fallback + geometry-validated calibration lock.
+- CNN keypoints via threshold 170 + Hough circles + `refine_kps()` (matches yastrebksv/TennisProject).
+- **Calibration (frames 0-299)**: CNN runs every 30 frames; each candidate homography is geometry-validated.
+- **Geometry validator** (`_validate_homography_geometry`): far baseline above near baseline; vertical span 25-70% of frame height; far baseline below top 8% (scoreboard region); near baseline above bottom 5% (logo region); far width < 0.75 × near width (perspective). Guards against the "banner+logo as baselines" failure mode where Hough picks sponsor lines.
+- **Lock @ frame 300**: prefer highest-inlier geometry-validated detection; **fail-fast** if none passed validation — raises `RuntimeError`, `__main__.py` catches and calls `db.mark_failed()`. No silent fallback.
+- **`to_court_coords(px, py, strict=True)`**: priority `_locked_detection` → `_last_detection` → `_last_good_detection`. Debug annotations pass `strict=False` to see out-of-bounds projections.
+- Keypoint pixel positions are logged at lock/fail time for diagnostics (`court_kps[NN] bl_top_L detected=(X,Y) ref=(286,561)`).
 
-**`ball_tracker.py`** — TrackNet V2 (3-frame, 9ch) with frame-delta Hough fallback for missed frames. V2 detects ~36% of frames; delta fallback recovers ~63%. Three-tier heatmap extraction: Hough circles → CC centroid → argmax. TrackNetV3 architecture ported in `tracknet_v3.py` (U-Net, 8-frame + background median = 27ch, sigmoid output) — activates when `models/tracknet_v3.pt` exists.
+**`ball_tracker.py`** — TrackNet V2 (3-frame, 9ch) + frame-delta Hough fallback. V2 detects ~36% of frames; delta recovers ~63%. Three-tier heatmap extraction: Hough circles → CC centroid → argmax. TrackNetV3 architecture ported in `tracknet_v3.py` — activates when `models/tracknet_v3.pt` exists.
 
-**`player_tracker.py`** — Multi-strategy detection + three-tier court-geometry scoring:
-- **Detection**: SAHI tiled inference (416×416 overlapping tiles, `sahi==0.11.18`) + full-frame YOLOv8x-pose + detection-only YOLOv8m for far baseline. Falls back to manual 3-pass if SAHI unavailable.
-- **Scoring** (`_choose_two_players`): One player from each half (near/far). When court corners available:
-  - Tier 1 (3000): Inside court quadrilateral (`cv2.pointPolygonTest`)
-  - Tier 2 (2000): Behind baseline, within sideline extensions (±20% depth, ±15% width)
-  - Tier 3 (1000): Near sideline corridor (baseline-to-net)
-  - Tier 0: Off-court
-  - Tiebreakers: MOG2 motion (+500), bbox area (0-200, bigger = closer to camera), center-line proximity (0-100)
-  - Falls back to centering + motion heuristic when no court corners
-- **MOG2 background subtraction** (`pipeline.py`): foreground mask fed every frame, motion ratio computed per candidate bbox. Moving player > stationary spectator.
+**`player_tracker.py`** — Multi-strategy detection + three-tier court-metre scoring:
+- **Detection**: SAHI tiled inference (640×640 tiles, 15% overlap, `sahi==0.11.18`) + full-frame YOLOv8x-pose + detection-only YOLOv8m for far baseline. Conditional SAHI skip when far-half candidate already found at `court_y ≤ 5`.
+- **Scoring** (`_choose_two_players`): one player from each pixel-half (near/far).
+  - Tier 1 (3000): INSIDE doubles court — `0 ≤ x ≤ 10.97, 0 ≤ y ≤ 23.77`
+  - Tier 2 (2000): BEHIND baseline — `-3 ≤ x ≤ 13.97, -4 ≤ y < 0 OR 23.77 < y ≤ 27.77`
+  - Tier 3 (1000): WIDE alley — `-1 ≤ x < 0 OR 10.97 < x ≤ 11.97, 0 ≤ y ≤ 23.77`
+  - Tier 0: Everything else (umpire, spectator, coach, bench)
+  - Tiebreakers: MOG2 motion bonus (+500), baseline-closeness (0-500), bbox area (0-200)
+  - **Pixel-polygon gate** (Fix B): feet > 150 px outside detected court polygon → tier 0; 50-150 px outside → tier capped at 1000. Defends against bad homography mapping spectators to valid metric zones.
+- **MOG2 background subtraction** (`pipeline.py`): foreground mask fed every frame, motion ratio per candidate bbox.
+- Debug frames annotated with both `x=` and `y=` per bbox when homography available.
 
-**`pipeline.py`** — Orchestrates court → ball → MOG2 → player per frame. Post-processing: interpolation, bounce detection, speed calc, stationary player filter.
+**`pipeline.py`** — Orchestrates court → ball → MOG2 → player per frame. Post-processing: interpolation, bounce detection, speed calc, stationary player filter, optical-flow stroke classification (second video pass at bounce frames).
 
 ### AWS Batch & Docker
 
@@ -476,8 +483,13 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 
 ### Reconciliation reference
 
-- SportAI: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves)
-- T5 baseline: track in `golden_datasets.json` once metrics stable
+- SportAI ground truth: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves; ball speed avg 358 km/h)
+- Latest T5 reference run: `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 162 rows, 1 point, 1 serve, ball speed avg 30 km/h. Known-wrong due to lens distortion compressing court projection (ball y range `[10.69, 24.29]` — far half not projectable).
+- T5 golden baseline: track in `golden_datasets.json` once lens-distortion fix lands.
+
+### Deployment
+
+Job definition `ten-fifty5-ml-pipeline` **revision 13** is current. Rev 13 = rev 12 image (`sha256:2397c93b...` — tighter geometry validator + keypoint diagnostics + x= debug annotations + fail-fast) plus auto-retry on `Host EC2*` status reasons (Spot interruption, up to 3 attempts). Job queue has on-demand fallback at priority 2.
 
 ### Stroke classification (`build_silver_match_t5.py`)
 
@@ -499,12 +511,20 @@ python -m ml_pipeline.harness train-stroke --data <dir> --epochs 50
 ```
 Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `StrokeClassifier` at pipeline runtime. Target: 75-85% accuracy on 200+ labeled examples from dual-submit pairs.
 
-### Known gaps
+### Known gaps + current focus
 
+**P0 — Wide-angle lens distortion (in progress, Apr 15)**. Root cause of every downstream metric being wrong on MATCHI-style indoor footage. The near baseline visibly curves in the image = barrel distortion from a wide-angle lens. Single homography can't represent non-linear distortion → players at image edges project 4-5m off in court-metre space. Every symptom traces back to this: speed 10× under (pixel-to-metre scale compressed), 105/162 "Volley" classifications (hitters land near mis-projected "net"), 1 serve detected (hitter baseline gate fails), etc.
+
+**Fix plan (approved Apr 15)**:
+- **Option A (primary)**: fit `[k1, k2]` radial distortion coefficients alongside homography using the 14 court keypoints as planar correspondences. `cv2.calibrateCamera` with `CALIB_FIX_PRINCIPAL_POINT | CALIB_FIX_ASPECT_RATIO | CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3 | CALIB_USE_INTRINSIC_GUESS` flags. Precompute undistort maps via `initUndistortRectifyMap`, apply with `remap` per frame before CNN/ball/player detection.
+- **Option C (fallback)**: 4-zone piecewise homography split at net-y × centre-x, one homography per quadrant, inverse-distance blend within 80px of zone boundaries. Used when Option A fails (RMS > 1.5 px after calibration).
+
+**Other gaps**:
 - Ball delta fallback quality unvalidated (may detect player movement, not just ball)
 - TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
 - Stroke classifier weights not yet trained (architecture + pipeline ready, needs dual-submit data)
-- Speed calculation underestimates ~50% vs SportAI
+- Silver serve detection has a `MIN_SERVE_INTERVAL_S=8.0` cooldown that blocks fault-retry serves (independent of homography fix — P1, will surface once homography lands)
+- Silver `server_end_d` forward-fill window framing bug (`build_silver_v2.py:542-546`, only 20% rows populated — P1)
 
 ---
 
