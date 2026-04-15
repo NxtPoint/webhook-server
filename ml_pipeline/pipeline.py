@@ -191,6 +191,11 @@ class TennisAnalysisPipeline:
 
     def _process_frame(self, frame: np.ndarray, frame_idx: int):
         """Process a single frame through all three models."""
+        # Keep the raw (distorted) frame. Detectors operate in raw pixel
+        # space; projection to metres via court_detector.to_court_coords
+        # applies per-point undistortion internally. This keeps all pixel-
+        # space geometry (court polygon, debug bboxes, motion masks) aligned.
+
         # 1. Court detection (runs every N frames, cached otherwise)
         court = self.court_detector.detect(frame, frame_idx)
 

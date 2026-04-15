@@ -13,6 +13,12 @@ import torch.nn as nn
 from dataclasses import dataclass
 from typing import Optional
 
+from ml_pipeline.camera_calibration import (
+    CalibrationResult,
+    fit_calibration,
+    project_pixel_to_metres,
+)
+
 logger = logging.getLogger(__name__)
 
 from ml_pipeline.config import (
@@ -129,6 +135,8 @@ class CourtDetector:
         self._best_validated_detection: Optional[CourtDetection] = None  # homography that passes geometry
         self._best_calibration_inliers: int = 0
         self._best_validated_inliers: int = 0
+        self._calibration: Optional[CalibrationResult] = None
+        self._calibration_observations: list[np.ndarray] = []
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
         model = CourtKeypointNet(in_channels=3, out_channels=15)
@@ -198,6 +206,11 @@ class CourtDetector:
                     "inliers=%d confidence=%.2f",
                     frame_idx, n_inliers, detection.confidence,
                 )
+            # Accumulate geometry-validated observations for lens calibration.
+            # Only geometry-validated detections are used so the calibration
+            # solver sees consistent, trustworthy keypoint positions.
+            if geom_ok:
+                self._calibration_observations.append(detection.keypoints.copy())
         self._last_frame_idx = frame_idx
 
         # Check if calibration period is over
@@ -241,6 +254,24 @@ class CourtDetector:
                 "(inliers=%d, confidence=%.2f). No more CNN runs.",
                 frame_idx, locked_inliers, self._locked_detection.confidence,
             )
+            self._calibration = fit_calibration(
+                self._calibration_observations,
+                img_shape=frame.shape[:2],
+                rms_threshold_px=1.5,
+            )
+            if self._calibration is not None:
+                logger.info(
+                    "court_calibration: lens calibration locked — mode=%s rms=%.4f px "
+                    "from %d observations",
+                    self._calibration.mode, self._calibration.rms_px,
+                    len(self._calibration_observations),
+                )
+            else:
+                logger.warning(
+                    "court_calibration: lens calibration failed (both Option A and C) "
+                    "from %d observations — falling back to single homography",
+                    len(self._calibration_observations),
+                )
             best = self._locked_detection
             # Log the detected pixel positions of every keypoint so we
             # can diagnose mis-labeled keypoints (e.g. net mistaken for
@@ -777,6 +808,16 @@ class CourtDetector:
         Debug annotations pass strict=False so we still see the numeric court_y
         for off-court candidates, which is diagnostically useful.
         """
+        if self._calibration is not None:
+            result = project_pixel_to_metres(pixel_x, pixel_y, self._calibration)
+            if result is None:
+                return None
+            mx, my = result
+            if strict and not (-5.0 <= mx <= COURT_WIDTH_DOUBLES_M + 5.0 and
+                               -5.0 <= my <= COURT_LENGTH_M + 5.0):
+                return None
+            return (float(mx), float(my))
+
         det = self._locked_detection
         if det is None or det.homography is None:
             det = self._last_detection
