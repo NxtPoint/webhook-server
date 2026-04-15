@@ -502,16 +502,29 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 
 - SportAI ground truth: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves; ball speed avg 358 km/h)
 - Latest T5 reference run (pre-calibration, known-wrong): `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 162 rows, 1 point, 1 serve, ball speed avg 30 km/h (ball y range `[10.69, 24.29]`).
-- **First clean T5 run with radial calibration** (Apr 15 evening): `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` — first run producing correctly-calibrated bronze/silver. Lock: `mode=radial rms=6.26 px from 11 observations`. Near + far player detection both working visually. Eval-ball / reconcile numbers captured in `project_t5_apr15_breakthrough.md` memory.
-- T5 golden baseline: take a snapshot from the first fully-clean run.
+- **First clean T5 run with radial calibration** (Apr 15 evening): `90ad59a8-8853-4014-9fd8-c32af7c4a2e9`. Lock `mode=radial rms=6.26 px from 11 observations`. Key numbers from reconcile vs SportAI ground truth `4a194ff3`:
+
+| Metric | Pre-cal (ad763368) | Post-cal (90ad59a8) | SportAI |
+|---|---|---|---|
+| Silver rows | 162 | 160 | 88 |
+| Serves (raw) | 1 | **21** | 24 |
+| Serves (serve_d after Pass 3 gate) | 1 | **17** | 24 |
+| Points | 1 | 2 | 17 |
+| Games | 1 | 1 | 2 |
+| Volley classifications | 156 | **2** | 5 |
+| stroke_d Backhand | 0 | 0 | 15 |
+| stroke_d Forehand | 21 | 80 | 41 |
+| Ball court_y range | [10.7, 24.3] | **[-3.4, 28.6]** | full court |
+| Ball speed avg (km/h) | 30 | 44 | 359 |
+| server_end_d populated | 20% | **100%** | 100% |
+
+- T5 golden baseline: take a snapshot once remaining silver bugs resolved (points collapse, ball speed, backhand detection).
 
 ### Deployment
 
-Job definition revisions — **eu-north-1 revision 23**, **us-east-1 revision 12**. Both point to digest `sha256:4170a5fb...` (three scoring fixes: tier 0 → score 0 in metric branch, near-side +8m behind_baseline, SAHI crop margin 30%). Retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
+Job definition revisions — **eu-north-1 revision 24**, **us-east-1 revision 13**. Both point to digest `sha256:9107d338...` (adds on top of rev 23: legacy pixel-space branch `tier == 0 → score = 0` + `MIN_SELECTABLE_SCORE = 1000` gate in `_choose_two_players::best_far/best_near` selection). Retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
 
-**Queued but not yet deployed** (commit `f97690e`): legacy branch tier 0 → score 0, plus `MIN_SELECTABLE_SCORE = 1000` gate in `_choose_two_players`. Deploy on next build cycle.
-
-**Compute environment reality**: account has **zero on-demand G-family vCPU quota** in both regions (confirmed via `VcpuLimitExceeded` error). Production is Spot-only despite on-demand being listed as fallback in the job queue. When Spot capacity is tight (Stockholm was flat all day Apr 15), manual failover between regions via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:12 ...`. Quota increase request recommended for operational resilience.
+**Compute environment reality**: account has **zero on-demand G-family vCPU quota** in both regions (confirmed via `VcpuLimitExceeded` error). Production is Spot-only despite on-demand being listed as fallback in the job queue. When Spot capacity is tight (Stockholm was flat most of Apr 15), manual failover between regions via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:13 ...`. Quota increase request recommended for operational resilience. Full setup playbook in `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
 ### Stroke classification (`build_silver_match_t5.py`)
 
@@ -544,10 +557,12 @@ Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `St
 
 **NEXT, in order**:
 
-1. **Silver layer bugs surfaced by correct calibration** (now actionable):
-   - `MIN_SERVE_INTERVAL_S=8.0` cooldown in `build_silver_match_t5.py:532` blocks the 2nd serve of a point (fault → retry). Fix: reset cooldown on `serve_side` or `point_number` change.
-   - `server_end_d` forward-fill window in `build_silver_v2.py:542-546` needs explicit `ORDER BY ball_hit_s, id` — currently only ~20% rows populated.
-   - Volley over-classification (156/162 rows on pre-calibration run) should resolve automatically once hitter_y is accurate; verify on first post-calibration silver.
+1. **Silver layer bugs surfaced by the clean 90ad59a8 run** (now actionable, in priority order):
+   - **Points collapse to 2 (SportAI 17)** — root cause is `serve_side_d` not alternating. Every serve in sample output has identical hitter coords (hx=7.13, hy=-4.16). `_find_nearest_detection` in `build_silver_match_t5.py` appears to return the same stale detection per bounce, so all serves compute `serve_side_d='ad'` → point_number only increments on server-change (2 games × 1 boundary = 2 points). Fix direction: tighten hitter detection to the ACTUAL frame of the serve, not a propagated nearby detection. Player tracker change.
+   - **4 serves lost Pass 1 → Pass 3** (21 raw → 17 serve_d). Pass 3 (`build_silver_v2.py:515-525`) re-gates on `swing_type IN ('fh_overhead','bh_overhead','overhead','smash','other')` AND hitter_y within `eps=0.30m` of baseline. Either the lost 4 have swing_type set by the near-player heuristic to `fh` (rejected) or hitter_y is slightly inside the court (rejected). Enable INFO logging on serve candidates + walk the geom_pass vs fired_primary counts.
+   - **Ball speed avg 44 km/h (SportAI 359)** — 8× under. Bounce range has ~1983 detections; SportAI only reports peak-at-hit speeds. Inspect `ball_tracker.compute_speeds` — it's likely averaging over between-rally low-velocity samples. Probably fix = only report ball speed around hit events, match SportAI's semantic.
+   - **0 Backhand detected** (SportAI 15). Near-player stroke heuristic in `build_silver_match_t5.py::_assign_stroke_near` — wrist/shoulder comparison thresholds or handedness detection likely off. Review at keypoint level.
+   - **MIN_SERVE_INTERVAL_S=8** (`build_silver_match_t5.py:532`) — not the primary issue but probably blocks 1-2 fault-retry serves per game. Relax to per-point reset once points collapse is fixed.
 
 2. **Stroke classification**:
    - Near player: existing COCO-pose heuristic should start working once full-body bboxes flow into `build_silver_match_t5.py`. Target accuracy 70-80%. No code change needed — just a clean run.
