@@ -125,8 +125,10 @@ class CourtDetector:
         # lock the best and stop re-computing. Eliminates the constant
         # "REJECTED bad scale" cascade and wasted GPU cycles.
         self._locked_detection: Optional[CourtDetection] = None
-        self._best_detection: Optional[CourtDetection] = None
+        self._best_detection: Optional[CourtDetection] = None            # any homography, by inliers
+        self._best_validated_detection: Optional[CourtDetection] = None  # homography that passes geometry
         self._best_calibration_inliers: int = 0
+        self._best_validated_inliers: int = 0
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
         model = CourtKeypointNet(in_channels=3, out_channels=15)
@@ -171,14 +173,26 @@ class CourtDetector:
         self._last_detection = detection
         if detection.homography is not None:
             self._last_good_detection = detection
-            # Track best calibration detection by inlier count
             valid_mask = detection.keypoints[:, 0] >= 0
             n_inliers = int(valid_mask.sum())
+            geom_ok = self._validate_homography_geometry(detection.keypoints, valid_mask)
+
+            # Track best-any (highest inliers regardless of geometry)
             if n_inliers > self._best_calibration_inliers:
                 self._best_calibration_inliers = n_inliers
                 self._best_detection = detection
                 logger.info(
-                    "court_calibration: new best detection at frame=%d "
+                    "court_calibration: new best-ANY at frame=%d "
+                    "inliers=%d confidence=%.2f geometry=%s",
+                    frame_idx, n_inliers, detection.confidence,
+                    "PASS" if geom_ok else "FAIL",
+                )
+            # Track best-validated (only those passing geometry)
+            if geom_ok and n_inliers > self._best_validated_inliers:
+                self._best_validated_inliers = n_inliers
+                self._best_validated_detection = detection
+                logger.info(
+                    "court_calibration: new best-VALIDATED at frame=%d "
                     "inliers=%d confidence=%.2f",
                     frame_idx, n_inliers, detection.confidence,
                 )
@@ -186,17 +200,24 @@ class CourtDetector:
 
         # Check if calibration period is over
         if frame_idx >= COURT_CALIBRATION_FRAMES and self._locked_detection is None:
-            # Prefer the highest-inlier detection seen during calibration.
-            # Falling back to _last_good_detection only if we somehow never
-            # recorded a best (shouldn't happen, but keeps us safe).
-            best = self._best_detection or self._last_good_detection
+            # Priority: geometry-validated best → highest-inliers best →
+            # last detection with any homography. User preferred fallback
+            # over abort if nothing passes validation.
+            best = (self._best_validated_detection
+                    or self._best_detection
+                    or self._last_good_detection)
             if best is not None:
                 self._locked_detection = best
                 locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
+                source = (
+                    "VALIDATED" if best is self._best_validated_detection
+                    else "FALLBACK-ANY" if best is self._best_detection
+                    else "FALLBACK-LAST"
+                )
                 logger.info(
-                    "court_calibration: LOCKED best detection after %d frames "
+                    "court_calibration: LOCKED %s detection after %d frames "
                     "(inliers=%d, confidence=%.2f). No more CNN runs.",
-                    frame_idx, locked_inliers, best.confidence,
+                    source, frame_idx, locked_inliers, best.confidence,
                 )
             else:
                 logger.warning(
@@ -348,6 +369,46 @@ class CourtDetector:
             return None
 
         return (float(ix), float(iy))
+
+    def _validate_homography_geometry(self, keypoints: np.ndarray,
+                                       valid_mask: np.ndarray) -> bool:
+        """Sanity-check detected keypoints for valid tennis-court perspective.
+
+        Guards against the "net mis-detected as far baseline" failure mode,
+        where the CNN labels net-line pixels as baseline keypoints. The
+        resulting homography compresses the court vertically — stands behind
+        the real far baseline project to y=0, real far baseline to y~12.
+
+        Rules (pixel-space):
+          1. Far baseline (kps 0-1) must sit ABOVE near baseline (kps 2-3)
+          2. Vertical separation must be meaningful (>= 150 pixels @ 1080p)
+          3. If all 4 baseline corners detected: far baseline must be
+             NARROWER than near baseline (perspective) — else the "far"
+             is probably the net line, which is nearly as wide.
+
+        Returns True if geometry looks valid OR we don't have enough
+        baseline keypoints to judge. False only if geometry is clearly wrong.
+        """
+        far_detected = [i for i in (0, 1) if i < len(valid_mask) and valid_mask[i]]
+        near_detected = [i for i in (2, 3) if i < len(valid_mask) and valid_mask[i]]
+        if not far_detected or not near_detected:
+            return True  # insufficient evidence — don't reject on geometry
+
+        far_y = float(np.mean([keypoints[i, 1] for i in far_detected]))
+        near_y = float(np.mean([keypoints[i, 1] for i in near_detected]))
+
+        if far_y >= near_y:
+            return False
+        if (near_y - far_y) < 150:
+            return False
+
+        if len(far_detected) == 2 and len(near_detected) == 2:
+            far_w = abs(keypoints[1, 0] - keypoints[0, 0])
+            near_w = abs(keypoints[3, 0] - keypoints[2, 0])
+            if far_w >= near_w * 0.9:
+                return False
+
+        return True
 
     def _compute_homography(self, detected_kps: np.ndarray, valid_mask: np.ndarray = None) -> Optional[np.ndarray]:
         if valid_mask is None:

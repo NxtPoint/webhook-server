@@ -884,6 +884,24 @@ class PlayerTracker:
                 else:
                     tier = 0  # off-court (umpire, spectator, coach)
 
+                # Pixel-space sanity gate (Fix B): even if the metric zone
+                # says "in court", a candidate whose pixel feet are far
+                # outside the detected court polygon is a spectator whose
+                # wrong-homography projection happens to land inside. Cap
+                # tier based on how far the feet sit outside the polygon.
+                #   inside polygon                 → keep metric tier
+                #   within 50 px of edge           → keep metric tier
+                #   50–150 px outside              → tier <= 1000 (wide alley)
+                #   > 150 px outside               → tier = 0
+                if court_poly is not None:
+                    pixel_dist = cv2.pointPolygonTest(
+                        court_poly, (float(cx), float(y2)), True,
+                    )
+                    if pixel_dist < -150.0:
+                        tier = 0
+                    elif pixel_dist < -50.0:
+                        tier = min(tier, 1000)
+
                 # Baseline-closeness: distance to nearer baseline, in metres.
                 # At y=0 or y=23.77 → dist=0 → full 500 points.
                 # At y=11.88 (net) → dist=11.88 → 0 points.
