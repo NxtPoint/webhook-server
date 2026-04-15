@@ -125,6 +125,7 @@ class CourtDetector:
         # lock the best and stop re-computing. Eliminates the constant
         # "REJECTED bad scale" cascade and wasted GPU cycles.
         self._locked_detection: Optional[CourtDetection] = None
+        self._best_detection: Optional[CourtDetection] = None
         self._best_calibration_inliers: int = 0
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
@@ -175,6 +176,7 @@ class CourtDetector:
             n_inliers = int(valid_mask.sum())
             if n_inliers > self._best_calibration_inliers:
                 self._best_calibration_inliers = n_inliers
+                self._best_detection = detection
                 logger.info(
                     "court_calibration: new best detection at frame=%d "
                     "inliers=%d confidence=%.2f",
@@ -184,12 +186,17 @@ class CourtDetector:
 
         # Check if calibration period is over
         if frame_idx >= COURT_CALIBRATION_FRAMES and self._locked_detection is None:
-            if self._last_good_detection is not None:
-                self._locked_detection = self._last_good_detection
+            # Prefer the highest-inlier detection seen during calibration.
+            # Falling back to _last_good_detection only if we somehow never
+            # recorded a best (shouldn't happen, but keeps us safe).
+            best = self._best_detection or self._last_good_detection
+            if best is not None:
+                self._locked_detection = best
+                locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
                 logger.info(
                     "court_calibration: LOCKED best detection after %d frames "
-                    "(inliers=%d). No more CNN runs for remaining video.",
-                    frame_idx, self._best_calibration_inliers,
+                    "(inliers=%d, confidence=%.2f). No more CNN runs.",
+                    frame_idx, locked_inliers, best.confidence,
                 )
             else:
                 logger.warning(
@@ -366,7 +373,7 @@ class CourtDetector:
         #    (A reasonable image-to-reference court mapping has scale ~0.5-10)
         # 3. Inlier-only mean reprojection error: should be small by RANSAC
         #    construction, but double-check it's < 10px
-        MIN_INLIERS = 4  # mathematical minimum for findHomography
+        MIN_INLIERS = 8  # require majority of 14 kps — 4 is mathematically valid but geometrically unstable
         MAX_SCALE = 20.0  # reasonable image-to-reference court mapping is 1-10
         MAX_INLIER_ERR_PX = 15.0
 
