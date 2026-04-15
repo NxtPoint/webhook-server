@@ -941,21 +941,44 @@ class CourtDetector:
           [2] near baseline left  (bottom-left)
           [3] near baseline right (bottom-right)
 
-        Returns None if fewer than 4 corners are detected.
+        When lens calibration is available, project the metric court
+        corners (0,0 — 10.97,0 — 10.97,23.77 — 0,23.77) through the
+        calibration. This gives a pixel polygon that matches the actual
+        court lines, instead of relying on raw CNN keypoints — some of
+        which were dropped during calibration refinement because they
+        were collapsed / systematically wrong.
+
+        Falls back to raw keypoint positions if no calibration exists.
+        Returns None if fewer than 4 corners can be produced.
         """
+        if self._calibration is not None:
+            metric_corners = [
+                (0.0, 0.0),                        # far-left
+                (COURT_WIDTH_DOUBLES_M, 0.0),      # far-right
+                (0.0, COURT_LENGTH_M),             # near-left
+                (COURT_WIDTH_DOUBLES_M, COURT_LENGTH_M),  # near-right
+            ]
+            corners = []
+            for mx, my in metric_corners:
+                pt = project_metres_to_pixel(mx, my, self._calibration)
+                if pt is None:
+                    break
+                corners.append((float(pt[0]), float(pt[1])))
+            if len(corners) == 4:
+                return corners
+
         det = self._last_detection
         if det is None or det.homography is None:
             det = self._last_good_detection
         if det is None:
             return None
         kps = det.keypoints
-        # Keypoints 0-3 are the 4 baseline corners
         corners = []
         for i in range(4):
             if kps[i][0] >= 0 and kps[i][1] >= 0:
                 corners.append((float(kps[i][0]), float(kps[i][1])))
             else:
-                return None  # need all 4
+                return None
         return corners
 
     def get_court_bbox_pixels(self) -> Optional[tuple]:
