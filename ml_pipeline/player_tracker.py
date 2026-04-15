@@ -1041,14 +1041,17 @@ class PlayerTracker:
                 else:
                     tier = 0
 
-                dist_to_baseline_px = abs(y2 - home_baseline_y)
-                baseline_closeness = max(
-                    0.0, 1.0 - (dist_to_baseline_px / court_depth)
-                ) * 500
-                bbox_w = box[2] - box[0]
-                bbox_h = box[3] - box[1]
-                bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
-                score = tier + motion_bonus + baseline_closeness + bbox_score
+                if tier == 0:
+                    score = 0.0
+                else:
+                    dist_to_baseline_px = abs(y2 - home_baseline_y)
+                    baseline_closeness = max(
+                        0.0, 1.0 - (dist_to_baseline_px / court_depth)
+                    ) * 500
+                    bbox_w = box[2] - box[0]
+                    bbox_h = box[3] - box[1]
+                    bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
+                    score = tier + motion_bonus + baseline_closeness + bbox_score
 
             else:
                 # ── Fallback: centering + motion (no court geometry) ────
@@ -1064,8 +1067,13 @@ class PlayerTracker:
         far_candidates.sort(key=lambda s: s[0], reverse=True)
         near_candidates.sort(key=lambda s: s[0], reverse=True)
 
-        best_far = far_candidates[0] if far_candidates else None
-        best_near = near_candidates[0] if near_candidates else None
+        # Require a minimum score to select a player for a half. A score
+        # below the tier-3 floor (1000) means the best candidate is off-court
+        # (tier 0, no bonuses) — the half is legitimately empty, not a
+        # reason to grab whatever linesperson happens to be visible.
+        MIN_SELECTABLE_SCORE = 1000.0
+        best_far = far_candidates[0] if far_candidates and far_candidates[0][0] >= MIN_SELECTABLE_SCORE else None
+        best_near = near_candidates[0] if near_candidates and near_candidates[0][0] >= MIN_SELECTABLE_SCORE else None
 
         if best_far:
             logger.debug(
