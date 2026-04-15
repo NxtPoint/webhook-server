@@ -952,16 +952,21 @@ class PlayerTracker:
                 # tier based on how far the feet sit outside the polygon.
                 #   inside polygon                 → keep metric tier
                 #   within 50 px of edge           → keep metric tier
-                #   50–150 px outside              → tier <= 1000 (wide alley)
-                #   > 150 px outside               → tier = 0
+                #   > 300 px outside               → tier = 0
+                # Previously 150 px but the polygon is a 4-corner straight-
+                # edge quadrilateral while the real court baseline curves
+                # down at the edges on wide-angle cameras. A player with
+                # feet at the baseline corner can be 200+ px below the
+                # straight polygon edge even though they're ON the court.
+                # With correct lens calibration, metric tier scoring
+                # already rejects off-court candidates cleanly; the pixel
+                # gate is just a safety net for extreme outliers.
                 if court_poly is not None:
                     pixel_dist = cv2.pointPolygonTest(
                         court_poly, (float(cx), float(y2)), True,
                     )
-                    if pixel_dist < -150.0:
+                    if pixel_dist < -300.0:
                         tier = 0
-                    elif pixel_dist < -50.0:
-                        tier = min(tier, 1000)
 
                 # Baseline-closeness: distance to nearer baseline, in metres.
                 # At y=0 or y=23.77 → dist=0 → full 500 points.
@@ -983,6 +988,16 @@ class PlayerTracker:
 
                 score = tier + motion_bonus + baseline_closeness + bbox_score
 
+            elif to_court_coords is not None:
+                # Calibration exists but THIS candidate's projection failed
+                # the strict bounds check (court_xy is None). Means the
+                # candidate is physically off the real court — a spectator
+                # beyond the sidelines, the umpire on a chair past the net,
+                # someone in the bleachers. Give them a minimal score so
+                # they can't beat a real far-player detection (which always
+                # produces a valid court_xy).
+                tier = 0
+                score = float(motion_bonus)  # 0 or 500 only
             elif court_poly is not None:
                 # ── Fallback: legacy pixel-space geometry (no homography) ──
                 # Used on frames before court calibration completes.
