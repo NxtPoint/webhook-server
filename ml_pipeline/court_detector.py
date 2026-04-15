@@ -261,7 +261,7 @@ class CourtDetector:
             self._calibration = fit_calibration(
                 self._calibration_observations,
                 img_shape=frame.shape[:2],
-                rms_threshold_px=1.5,
+                rms_threshold_px=5.0,
             )
             if self._calibration is not None:
                 logger.info(
@@ -526,14 +526,18 @@ class CourtDetector:
 
         if frame_h > 0:
             span = near_y - far_y
-            if span > frame_h * 0.70:
-                return _reject(f"span {span:.0f}px > 70% of frame_h {frame_h}")
+            # 90% threshold: MATCHI-style wide-angle indoor cameras frame
+            # the court to fill most of the vertical extent — legitimate
+            # span is often 80-88%. 70% was calibrated for broadcast tennis
+            # and rejected every valid detection on club footage.
+            if span > frame_h * 0.90:
+                return _reject(f"span {span:.0f}px > 90% of frame_h {frame_h}")
             if span < frame_h * 0.25:
                 return _reject(f"span {span:.0f}px < 25% of frame_h {frame_h}")
-            if far_y < frame_h * 0.08:
-                return _reject(f"far_y {far_y:.0f} in top 8% ({int(frame_h * 0.08)})")
-            if near_y > frame_h * 0.95:
-                return _reject(f"near_y {near_y:.0f} in bottom 5% ({int(frame_h * 0.95)})")
+            if far_y < frame_h * 0.04:
+                return _reject(f"far_y {far_y:.0f} in top 4% ({int(frame_h * 0.04)})")
+            if near_y > frame_h * 0.98:
+                return _reject(f"near_y {near_y:.0f} in bottom 2% ({int(frame_h * 0.98)})")
 
         return True
 
