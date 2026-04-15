@@ -42,6 +42,8 @@ class CalibrationResult:
     map1: Optional[np.ndarray] = None           # precomputed undistort map (CV_16SC2)
     map2: Optional[np.ndarray] = None
     homography_undistorted: Optional[np.ndarray] = None  # (3,3) pixel_undistorted -> metric
+    rvec: Optional[np.ndarray] = None           # (3,1) rotation for metric→pixel projection
+    tvec: Optional[np.ndarray] = None           # (3,1) translation
 
     # Option C fields (populated when mode == 'piecewise')
     zone_homographies: Optional[list] = None    # 4 x (3,3) in order [FL, FR, NL, NR]
@@ -147,6 +149,14 @@ def _option_a(
         logger.warning("Option A: findHomography returned None after undistortion")
         return None
 
+    # rvec/tvec for the best frame so project_metres_to_pixel can invert.
+    obj_pts_best = object_points[best_idx].reshape(-1, 1, 3)
+    img_pts_best = image_points[best_idx].reshape(-1, 1, 2)
+    ok, rvec, tvec = cv2.solvePnP(obj_pts_best, img_pts_best, K, dist)
+    if not ok:
+        logger.warning("Option A: solvePnP failed for inverse projection; skipping")
+        return None
+
     return CalibrationResult(
         mode="radial",
         rms_px=float(rms),
@@ -156,6 +166,8 @@ def _option_a(
         map1=map1,
         map2=map2,
         homography_undistorted=H_undist,
+        rvec=rvec,
+        tvec=tvec,
     )
 
 
@@ -467,6 +479,65 @@ def project_pixel_to_metres(
     mx = sum(w * m[0] for w, m in results) / total_w
     my = sum(w * m[1] for w, m in results) / total_w
     return float(mx), float(my)
+
+
+def project_metres_to_pixel(
+    mx: float, my: float,
+    calib: CalibrationResult,
+) -> Optional[tuple[float, float]]:
+    """Inverse of project_pixel_to_metres — metric court coord → raw pixel.
+
+    Used for debug overlays (draw the real court lines back onto the image).
+    Radial mode uses cv2.projectPoints with the stored rvec/tvec. Piecewise
+    mode inverts the zone homography nearest the given metric position.
+    """
+    if calib.mode == "radial":
+        if calib.rvec is None or calib.tvec is None:
+            return None
+        world_pt = np.array([[[mx, my, 0.0]]], dtype=np.float64)
+        pixel, _ = cv2.projectPoints(world_pt, calib.rvec, calib.tvec, calib.K, calib.dist)
+        return float(pixel[0, 0, 0]), float(pixel[0, 0, 1])
+
+    # Piecewise: pick the zone by metric position, invert its homography.
+    net_metric = COURT_LENGTH_M / 2
+    centre_metric = COURT_WIDTH_DOUBLES_M / 2
+    far = my < net_metric
+    left = mx < centre_metric
+    zone = (0 if far else 2) + (0 if left else 1)
+    H = calib.zone_homographies[zone]
+    if H is None:
+        return None
+    try:
+        H_inv = np.linalg.inv(H)
+    except np.linalg.LinAlgError:
+        return None
+    v = H_inv @ np.array([mx, my, 1.0], dtype=np.float64)
+    if abs(v[2]) < 1e-9:
+        return None
+    return float(v[0] / v[2]), float(v[1] / v[2])
+
+
+def evaluate_calibration(
+    calib: CalibrationResult,
+    keypoint_observations: list[np.ndarray],
+) -> np.ndarray:
+    """Project each detected keypoint through the calibration and compare to
+    its expected metric position. Returns a (14,) array of errors in metres;
+    NaN where the keypoint was not detected in the best-frame observation.
+    """
+    best = _best_frame_kps(keypoint_observations)
+    errors = np.full(14, np.nan, dtype=np.float64)
+    for i in range(14):
+        if best[i, 0] < 0:
+            continue
+        projected = project_pixel_to_metres(
+            float(best[i, 0]), float(best[i, 1]), calib,
+        )
+        if projected is None:
+            continue
+        ex, ey, _ = _ref_to_world_3d(i)
+        errors[i] = float(np.hypot(projected[0] - ex, projected[1] - ey))
+    return errors
 
 
 def undistort_frame(frame: np.ndarray, calib: Optional[CalibrationResult]) -> np.ndarray:

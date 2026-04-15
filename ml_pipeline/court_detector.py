@@ -15,7 +15,9 @@ from typing import Optional
 
 from ml_pipeline.camera_calibration import (
     CalibrationResult,
+    evaluate_calibration,
     fit_calibration,
+    project_metres_to_pixel,
     project_pixel_to_metres,
 )
 
@@ -266,6 +268,35 @@ class CourtDetector:
                     self._calibration.mode, self._calibration.rms_px,
                     len(self._calibration_observations),
                 )
+                errors_m = evaluate_calibration(
+                    self._calibration, self._calibration_observations,
+                )
+                valid = ~np.isnan(errors_m)
+                if valid.any():
+                    mean_err = float(np.nanmean(errors_m))
+                    max_err = float(np.nanmax(errors_m))
+                    p90_err = float(np.nanpercentile(errors_m[valid], 90))
+                    logger.info(
+                        "court_calibration: per-keypoint errors (metres): "
+                        "mean=%.3f p90=%.3f max=%.3f",
+                        mean_err, p90_err, max_err,
+                    )
+                    kp_names = [
+                        "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
+                        "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
+                        "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
+                        "ctr_top",  "ctr_bot",
+                    ]
+                    for i, name in enumerate(kp_names):
+                        if valid[i]:
+                            fn = logger.warning if errors_m[i] > 0.5 else logger.info
+                            fn("court_kp_err[%02d] %s err=%.3fm", i, name, errors_m[i])
+                    if max_err > 0.5:
+                        logger.warning(
+                            "court_calibration: max keypoint error %.3fm exceeds 0.5m "
+                            "— calibration quality SUSPECT",
+                            max_err,
+                        )
             else:
                 logger.warning(
                     "court_calibration: lens calibration failed (both Option A and C) "
@@ -851,6 +882,15 @@ class CourtDetector:
             return None
 
         return (float(mx), float(my))
+
+    def to_pixel_coords(self, metric_x: float, metric_y: float) -> Optional[tuple]:
+        """Inverse of to_court_coords — metric → raw pixel. Used for
+        drawing projected court lines on debug frames. Returns None if
+        calibration is not available.
+        """
+        if self._calibration is None:
+            return None
+        return project_metres_to_pixel(metric_x, metric_y, self._calibration)
 
     def get_court_corners_pixels(self) -> Optional[list]:
         """Return the 4 baseline corner keypoints as pixel coordinates.

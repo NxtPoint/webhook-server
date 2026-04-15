@@ -39,6 +39,8 @@ from ml_pipeline.config import (
     SAHI_POSTPROCESS_MATCH_THRESHOLD,
     COURT_LENGTH_M,
     COURT_WIDTH_DOUBLES_M,
+    COURT_WIDTH_SINGLES_M,
+    SERVICE_BOX_DEPTH_M,
 )
 
 # SAHI — lazy import to avoid startup cost when disabled
@@ -161,6 +163,7 @@ class PlayerTracker:
         motion_mask: Optional[np.ndarray] = None,
         court_corners: Optional[list] = None,
         to_court_coords: Optional[Callable] = None,
+        to_pixel_coords: Optional[Callable] = None,
     ) -> List[PlayerDetection]:
         """Detect players. Runs YOLO every N frames, reuses last result otherwise.
 
@@ -337,6 +340,7 @@ class PlayerTracker:
                 self._save_debug_frame_v2(
                     frame, frame_idx, deduped_boxes, candidates,
                     to_court_coords=to_court_coords,
+                    to_pixel_coords=to_pixel_coords,
                 )
             except Exception as e:
                 logger.warning("debug frame save failed: %s", e)
@@ -644,17 +648,26 @@ class PlayerTracker:
         return kept_boxes, kept_kps
 
     def _save_debug_frame_v2(self, frame, frame_idx: int, all_boxes, kept_boxes,
-                              to_court_coords=None) -> None:
+                              to_court_coords=None, to_pixel_coords=None) -> None:
         """Save a frame with YOLO bboxes drawn on it. Uploads to S3 immediately
         if upload context is set, so the user can inspect mid-run.
 
         Draws ALL detections (red = filtered, green = kept). When
         to_court_coords is provided, also annotates each bbox with its
-        projected court_y value so we can diagnose whether the far-baseline
-        player is being detected but projected wrong.
+        projected court_x/y value so we can diagnose projection issues.
+
+        When to_pixel_coords is provided (post-calibration-lock), overlays
+        the real court lines (baselines, net, service lines, sidelines)
+        projected from metric space back to pixel space. Misalignment vs
+        the actual court in the image = calibration off by exactly that
+        much.
         """
         os.makedirs(DEBUG_FRAMES_DIR, exist_ok=True)
         img = frame.copy()
+
+        if to_pixel_coords is not None:
+            self._draw_metric_grid(img, to_pixel_coords)
+
         kept_set = set(
             (round(b[0], 1), round(b[1], 1), round(b[2], 1), round(b[3], 1))
             for b in kept_boxes
@@ -707,6 +720,54 @@ class PlayerTracker:
                              self._debug_s3_bucket, s3_key)
             except Exception as e:
                 logger.warning("debug frame S3 upload failed: %s", e)
+
+    def _draw_metric_grid(self, img, to_pixel_coords: Callable) -> None:
+        """Overlay real court lines projected from metric space using the
+        active lens calibration. Misalignment vs the court lines visible
+        in the image indicates calibration error by exactly that amount.
+
+        Colours:
+          yellow = baselines + net + sidelines (outer court)
+          cyan   = service lines + centre service (inner lines)
+        """
+        # (x_start, y_start, x_end, y_end) in metres; colour
+        CL = COURT_LENGTH_M
+        CW = COURT_WIDTH_DOUBLES_M
+        SINGLES_OFFSET = (CW - COURT_WIDTH_SINGLES_M) / 2  # 1.37m
+        SVC_DIST = SERVICE_BOX_DEPTH_M                      # 6.40m from net
+        NET_Y = CL / 2                                      # 11.885
+        outer = (0, 255, 255)   # yellow (BGR)
+        inner = (255, 255, 0)   # cyan   (BGR)
+        lines = [
+            (0.0, 0.0, CW, 0.0, outer),                       # far baseline
+            (0.0, CL, CW, CL, outer),                         # near baseline
+            (0.0, NET_Y, CW, NET_Y, outer),                   # net
+            (0.0, 0.0, 0.0, CL, outer),                       # doubles sideline L
+            (CW, 0.0, CW, CL, outer),                         # doubles sideline R
+            (SINGLES_OFFSET, 0.0, SINGLES_OFFSET, CL, outer), # singles L
+            (CW - SINGLES_OFFSET, 0.0, CW - SINGLES_OFFSET, CL, outer),  # singles R
+            (SINGLES_OFFSET, NET_Y - SVC_DIST, CW - SINGLES_OFFSET, NET_Y - SVC_DIST, inner),  # far svc
+            (SINGLES_OFFSET, NET_Y + SVC_DIST, CW - SINGLES_OFFSET, NET_Y + SVC_DIST, inner),  # near svc
+            (CW / 2, NET_Y - SVC_DIST, CW / 2, NET_Y + SVC_DIST, inner),  # centre svc
+        ]
+        h, w = img.shape[:2]
+        for (x1, y1, x2, y2, colour) in lines:
+            prev = None
+            for t in np.linspace(0.0, 1.0, 80):
+                mx = x1 + t * (x2 - x1)
+                my = y1 + t * (y2 - y1)
+                pt = to_pixel_coords(mx, my)
+                if pt is None:
+                    prev = None
+                    continue
+                px, py = int(round(pt[0])), int(round(pt[1]))
+                if prev is not None:
+                    # Draw segment only if both endpoints are inside the frame
+                    # or close to it (allow 50px margin for lines that exit).
+                    if (-50 <= prev[0] < w + 50 and -50 <= prev[1] < h + 50 and
+                            -50 <= px < w + 50 and -50 <= py < h + 50):
+                        cv2.line(img, prev, (px, py), colour, 1, cv2.LINE_AA)
+                prev = (px, py)
 
     def _save_debug_frame(self, frame, frame_idx: int, boxes) -> None:
         """Save a frame with YOLO bboxes drawn on it for visual debugging.

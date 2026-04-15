@@ -215,6 +215,7 @@ class TennisAnalysisPipeline:
             frame, frame_idx, court_bbox=court_bbox, motion_mask=motion_mask,
             court_corners=court_corners,
             to_court_coords=self.court_detector.to_court_coords,
+            to_pixel_coords=self.court_detector.to_pixel_coords,
         )
 
     def _postprocess(self, result: AnalysisResult):
