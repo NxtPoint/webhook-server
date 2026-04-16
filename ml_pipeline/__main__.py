@@ -121,6 +121,29 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
     s3_bucket = os.environ["S3_BUCKET"]
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
 
+    # S3 bucket region can differ from the compute region when a job runs
+    # in a fallback region (e.g. us-east-1 Batch executing against a bucket
+    # that lives in eu-north-1). Pinning the S3 client to the compute region
+    # produces a spurious 404 on head_object for cross-region buckets
+    # because HeadObject does not follow the 301 redirect transparently.
+    # Resolve the bucket's home region once, fall back to AWS_REGION on
+    # failure so single-region deployments still work.
+    try:
+        _loc_client = boto3.client("s3", region_name="us-east-1")
+        _loc = _loc_client.get_bucket_location(Bucket=s3_bucket)
+        s3_region = _loc.get("LocationConstraint") or "us-east-1"
+        if s3_region != aws_region:
+            logger.info(
+                f"S3 bucket {s3_bucket} lives in {s3_region}; compute region is "
+                f"{aws_region}. Pinning S3 client to {s3_region}."
+            )
+    except Exception as e:
+        logger.warning(
+            f"get_bucket_location failed for {s3_bucket}: {e}; "
+            f"falling back to AWS_REGION={aws_region}"
+        )
+        s3_region = aws_region
+
     engine = _get_engine()
     ml_analysis_init(engine)
     db = MLDBWriter(engine)
@@ -149,7 +172,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
     try:
         # 1. Download from S3
         on_progress("downloading", 5)
-        s3 = boto3.client("s3", region_name=aws_region)
+        s3 = boto3.client("s3", region_name=s3_region)
         ext = os.path.splitext(s3_key)[1] or ".mp4"
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
         os.close(tmp_fd)
