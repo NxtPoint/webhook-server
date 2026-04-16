@@ -952,7 +952,15 @@ class PlayerTracker:
             court_xy = None
             if to_court_coords is not None:
                 try:
-                    court_xy = to_court_coords(cx, y2)
+                    # strict=False so we get metric coords even beyond the
+                    # ±5m court-sanity bounds. The far player on MATCHI
+                    # wide-angle projects to y≈-7.8 (tier-2 widened to -10m
+                    # in A0 to accept this). With strict=True the
+                    # projection returns None for y<-5, which short-
+                    # circuits into the "minimal score" branch below and
+                    # tier-2's widening never gets consulted. A0's fix
+                    # only works in combination with strict=False here.
+                    court_xy = to_court_coords(cx, y2, strict=False)
                 except Exception:
                     court_xy = None
 
