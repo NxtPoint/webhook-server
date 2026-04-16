@@ -484,6 +484,15 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     near_dets = []
     far_dets = []
     any_with_coords = []
+    # Keypoint-only indices (A4): separate lists of detections that actually
+    # have pose keypoints. The primary hitter lookup uses a tight frame
+    # window (A1) to keep coords fresh; a secondary lookup on these lists
+    # uses a wider window so swing_type inference has pose data even when
+    # the nearest detection in the tight window is pose-less (e.g. SAHI
+    # returned a bbox without pose, or PLAYER_DETECTION_INTERVAL=5 means
+    # the hit frame falls between pose runs).
+    near_kp_dets = []
+    far_kp_dets = []
     for pd in player_dets:
         frame_idx, pid, cx, cy, centerx, centery, kps, stroke_cls = pd
         mapped_pid = pid_map.get(pid, str(pid))
@@ -499,8 +508,12 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             any_with_coords.append(entry)
             if cy > HALF_Y:
                 near_dets.append(entry)
+                if kps is not None:
+                    near_kp_dets.append(entry)
             else:
                 far_dets.append(entry)
+                if kps is not None:
+                    far_kp_dets.append(entry)
         # Note: entries with NULL court coords are NOT useful for hit_x/y
         # so we don't add them to any list. The fallback uses any_with_coords.
 
@@ -508,10 +521,14 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     near_frames, near_dets = _build_detection_index(near_dets)
     far_frames, far_dets = _build_detection_index(far_dets)
     any_frames, any_dets = _build_detection_index(any_with_coords)
+    near_kp_frames, near_kp_dets = _build_detection_index(near_kp_dets)
+    far_kp_frames, far_kp_dets = _build_detection_index(far_kp_dets)
 
     logger.info(
-        "T5 Pass 1: player buckets — near=%d far=%d any_with_coords=%d (of %d total)",
-        len(near_dets), len(far_dets), len(any_dets), len(player_dets),
+        "T5 Pass 1: player buckets — near=%d far=%d any_with_coords=%d "
+        "near_with_kp=%d far_with_kp=%d (of %d total)",
+        len(near_dets), len(far_dets), len(any_dets),
+        len(near_kp_dets), len(far_kp_dets), len(player_dets),
     )
 
     # ---- Step 4: Look up dominant hand ----
@@ -542,6 +559,13 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     # across many bounces, so serve_side_d never alternated.
     HIT_BEFORE_BOUNCE_FRAMES = max(1, int(round(fps * 0.32)))
     HIT_WINDOW_FRAMES = max(1, int(round(fps * 0.20)))
+    # Separate, wider window for swing_type pose lookup (A4). Player detection
+    # runs every PLAYER_DETECTION_INTERVAL=5 frames and SAHI bboxes come back
+    # without pose, so hit-frame pose coverage is sparse. A stroke doesn't
+    # change within a second, so a pose from ±1.2s of the hit still describes
+    # the same stroke type — just not necessarily the exact contact instant.
+    # Coords still come from the tight HIT_WINDOW (A1); only keypoints widen.
+    KP_WINDOW_FRAMES = max(1, int(round(fps * 1.20)))
 
     # Diagnostic counters — why serves are accepted/rejected
     serve_diag = {
@@ -555,6 +579,8 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         "geometric_fail_wrong_side": 0, # bounce on same side as hitter
         "pose_pass": 0,
         "pose_no_keypoints": 0,
+        "kp_patched_widened": 0,  # A4: hitter had coord but no pose; wider window supplied pose
+        "kp_still_missing": 0,    # A4: even widened window had no pose on this side
         "cooldown_block": 0,
         "fired_primary": 0,
         "fired_secondary": 0,
@@ -625,6 +651,34 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                     "keypoints": other.get("keypoints"),
                     "_synthesized": True,
                 }
+
+        # A4 — dual-window keypoint patch. If we have a hitter with fresh
+        # coords but no pose (common because SAHI returns bboxes without
+        # keypoints and PLAYER_DETECTION_INTERVAL=5 means most hit frames
+        # aren't pose-run frames), look in a WIDER window for the nearest
+        # same-side detection that DOES have keypoints and adopt those. A
+        # stroke's classification doesn't flip within ±1.2s so a slightly-
+        # older pose still describes the same stroke type.
+        #
+        # Skip when the hitter was synthesized via the mirror fallback —
+        # those coords came from the OPPOSITE half's player, so any pose
+        # found on the hitter's "expected" side belongs to a different
+        # player entirely.
+        if (hitter is not None
+                and hitter.get("keypoints") is None
+                and not hitter.get("_synthesized")):
+            kp_frames = near_kp_frames if bounce_on_top else far_kp_frames
+            kp_dets = near_kp_dets if bounce_on_top else far_kp_dets
+            kp_match = _find_nearest_detection(
+                kp_frames, kp_dets, hit_frame_est,
+                max_distance_frames=KP_WINDOW_FRAMES,
+            )
+            if kp_match is not None:
+                hitter["keypoints"] = kp_match.get("keypoints")
+                hitter["_kp_source_frame"] = kp_match["frame_idx"]
+                serve_diag["kp_patched_widened"] += 1
+            else:
+                serve_diag["kp_still_missing"] += 1
 
         # Compute ball-player distance FIRST so we can use it for serve detection
         # (it's the strongest single signal — all SportAI ground truth serves
