@@ -121,6 +121,18 @@ class TennisAnalysisPipeline:
             self.court_detector._detect_interval = COURT_DETECTION_INTERVAL_PRACTICE
             self.player_tracker._detect_interval = PLAYER_DETECTION_INTERVAL_PRACTICE
 
+        # Per-stage wall-clock accumulators (B1 instrumentation). Used to
+        # figure out which stage is the optimisation bottleneck — B2-B6
+        # choose where to cut without guessing. The stage names match the
+        # four calls inside _process_frame plus the post-processing block.
+        self._stage_seconds: dict = {
+            "court": 0.0,
+            "ball": 0.0,
+            "motion_mask": 0.0,
+            "player": 0.0,
+            "postprocess": 0.0,
+        }
+
     def _report_progress(self, stage: str, pct: int = None):
         """Report progress to callback and log."""
         if pct is None:
@@ -131,6 +143,46 @@ class TennisAnalysisPipeline:
                 self._progress_cb(stage, pct)
             except Exception as e:
                 logger.warning(f"Progress callback failed: {e}")
+
+    def _log_stage_timings(self, frame_idx: int, final: bool = False):
+        """Emit per-stage timing summary.
+
+        Interim call (final=False) prints cumulative totals so far and
+        ms-per-frame averaged over frames processed. Final call prints the
+        same plus the grand total and each stage's share of it — the
+        single most useful number for deciding where to optimise next.
+        """
+        totals = self._stage_seconds
+        grand = sum(totals.values())
+        if grand <= 0 or frame_idx <= 0:
+            return
+        label = "FINAL" if final else f"@ frame {frame_idx}"
+        parts = []
+        for name, secs in totals.items():
+            ms_per = secs * 1000 / max(1, frame_idx)
+            share = 100 * secs / grand if grand else 0
+            parts.append(f"{name}={secs:.1f}s ({ms_per:.1f}ms/fr, {share:.0f}%)")
+        logger.info("stage_timings %s [total=%.1fs]  %s", label, grand, "  ".join(parts))
+
+        # Player sub-stage breakdown — tells us whether SAHI, full-frame YOLO,
+        # or scoring logic is the bottleneck inside the player stage.
+        sub = getattr(self.player_tracker, "_sub_seconds", None)
+        if sub:
+            player_total = (
+                sub["full_yolo"] + sub["sahi"] + sub["choose2"] + sub["other"]
+            )
+            if player_total > 0:
+                sub_parts = []
+                for name in ("full_yolo", "sahi", "choose2", "other"):
+                    secs = sub[name]
+                    share = 100 * secs / player_total
+                    sub_parts.append(f"{name}={secs:.1f}s ({share:.0f}%)")
+                skip = getattr(self.player_tracker, "_sahi_skip_count", 0)
+                runs = getattr(self.player_tracker, "_sahi_run_count", 0)
+                logger.info(
+                    "player_sub %s [player_total=%.1fs  sahi_ran=%d sahi_skipped=%d]  %s",
+                    label, player_total, runs, skip, "  ".join(sub_parts),
+                )
 
     def process(self, video_path: str) -> AnalysisResult:
         """Run the full analysis pipeline on a video file."""
@@ -173,13 +225,20 @@ class TennisAnalysisPipeline:
                 fps_actual = frame_idx / elapsed if elapsed > 0 else 0
                 self._report_progress("processing", overall_pct)
                 logger.info(f"Progress: {frame_idx}/{expected_frames} frames ({fps_actual:.1f} fps)")
+                # Per-stage timing snapshot — lets us see which stage is
+                # eating wall-clock as the run progresses (e.g. player
+                # tracker slowing down once MOG2 background stabilises).
+                self._log_stage_timings(frame_idx)
 
         result.total_frames_processed = frame_idx
         logger.info(f"Frame processing complete: {frame_idx} frames, {result.frame_errors} errors")
+        self._log_stage_timings(frame_idx, final=True)
 
         # Post-processing
         self._report_progress("computing_analytics")
+        t_post = time.perf_counter()
         self._postprocess(result)
+        self._stage_seconds["postprocess"] += time.perf_counter() - t_post
 
         result.processing_time_sec = time.time() - t0
         result.ms_per_frame = (result.processing_time_sec * 1000 / frame_idx) if frame_idx > 0 else 0
@@ -195,20 +254,28 @@ class TennisAnalysisPipeline:
         # space; projection to metres via court_detector.to_court_coords
         # applies per-point undistortion internally. This keeps all pixel-
         # space geometry (court polygon, debug bboxes, motion masks) aligned.
+        pc = time.perf_counter
 
         # 1. Court detection (runs every N frames, cached otherwise)
+        t = pc()
         court = self.court_detector.detect(frame, frame_idx)
+        self._stage_seconds["court"] += pc() - t
 
         # 2. Ball tracking
+        t = pc()
         self.ball_tracker.detect_frame(frame, frame_idx)
+        self._stage_seconds["ball"] += pc() - t
 
         # 3. MOG2 foreground mask — feed every frame so the background model
         #    learns. The mask is passed to player tracker for motion scoring.
+        t = pc()
         motion_mask = self._bg_subtractor.apply(
             frame, learningRate=MOG2_LEARNING_RATE,
         )
+        self._stage_seconds["motion_mask"] += pc() - t
 
         # 4. Player tracking (with motion mask + court geometry for scoring)
+        t = pc()
         court_bbox = self.court_detector.get_court_bbox_pixels()
         court_corners = self.court_detector.get_court_corners_pixels()
         self.player_tracker.detect_frame(
@@ -217,6 +284,7 @@ class TennisAnalysisPipeline:
             to_court_coords=self.court_detector.to_court_coords,
             to_pixel_coords=self.court_detector.to_pixel_coords,
         )
+        self._stage_seconds["player"] += pc() - t
 
     def _postprocess(self, result: AnalysisResult):
         """Run interpolation, bounce detection, speed calc, and aggregate stats."""

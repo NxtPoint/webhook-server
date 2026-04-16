@@ -153,6 +153,19 @@ class PlayerTracker:
             "choose2_kept_0": 0,
             "choose2_dropped_middle": 0,         # 3+ cands, dropped middle ones
         }
+        # B1: wall-clock accumulators for detect_frame sub-stages. The
+        # pipeline reads this dict in its stage-timing summary so we know
+        # whether full-frame YOLO, SAHI, or the downstream scoring logic
+        # dominates the player-stage budget. B3/B4 target SAHI specifically,
+        # so this is the switch that tells us which is worth the work.
+        self._sub_seconds: Dict[str, float] = {
+            "full_yolo": 0.0,
+            "sahi": 0.0,
+            "choose2": 0.0,
+            "other": 0.0,
+        }
+        self._sahi_skip_count: int = 0
+        self._sahi_run_count: int = 0
 
     def set_debug_upload_context(self, s3_client, s3_bucket: str, job_id: str) -> None:
         """Enable live debug frame upload to S3 (called from __main__.py)."""
@@ -195,11 +208,22 @@ class PlayerTracker:
             return reused
         self._last_detect_frame = frame_idx
 
+        import time as _time
+        _pc = _time.perf_counter
+        _t_detect_start = _pc()
+        _sub_before = (
+            self._sub_seconds["full_yolo"]
+            + self._sub_seconds["sahi"]
+            + self._sub_seconds["choose2"]
+        )
+
         # ── Detection strategy: SAHI (systematic) or manual 3-pass (legacy) ──
         if SAHI_ENABLED and self._sahi_model is not None:
             # Full-frame YOLO first — catches the near player (large, ~400px)
             # easily and occasionally the far player when they're visible.
+            _t = _pc()
             full_boxes_list, full_kps_list = self._run_yolo(frame)
+            self._sub_seconds["full_yolo"] += _pc() - _t
 
             # Smart conditional SAHI: skip SAHI ONLY when full-frame YOLO has
             # already found a candidate AT THE FAR BASELINE (court_y ≤ 5).
@@ -224,11 +248,15 @@ class PlayerTracker:
 
             if skip_sahi:
                 sahi_boxes, sahi_kps = [], []
+                self._sahi_skip_count += 1
                 if frame_idx % 150 == 0:
                     logger.info("sahi_skipped frame=%d — full-frame YOLO has far-baseline candidate", frame_idx)
             else:
                 # SAHI on court ROI only — crowd stands never contain players
+                _t = _pc()
                 sahi_boxes, sahi_kps = self._run_sahi(frame, court_bbox=court_bbox)
+                self._sub_seconds["sahi"] += _pc() - _t
+                self._sahi_run_count += 1
 
             all_boxes = full_boxes_list + sahi_boxes
             all_kps = full_kps_list + sahi_kps
@@ -321,11 +349,13 @@ class PlayerTracker:
         # pass straight through to _assign_ids and bench_sitter gets locked
         # into pid=1. _choose_two_players now enforces a y-span check to
         # reject this case.
+        _t = _pc()
         candidates, candidate_kps = self._choose_two_players(
             candidates, candidate_kps, court_bbox, frame.shape[:2],
             motion_mask=motion_mask, court_corners=court_corners,
             to_court_coords=to_court_coords,
         )
+        self._sub_seconds["choose2"] += _pc() - _t
 
         # Debug frame export AFTER _choose_two_players so the image shows
         # the true final kept set (bench sitter rejected, real players kept).
@@ -388,6 +418,16 @@ class PlayerTracker:
         frame_detections = self._assign_ids(candidates, frame_idx, candidate_kps)
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
+
+        # "other" = this frame's detect_frame total minus its sub-stage time
+        # (dedup, court filter, _assign_ids, debug-frame bookkeeping).
+        frame_total_s = _pc() - _t_detect_start
+        sub_after = (
+            self._sub_seconds["full_yolo"]
+            + self._sub_seconds["sahi"]
+            + self._sub_seconds["choose2"]
+        )
+        self._sub_seconds["other"] += max(0.0, frame_total_s - (sub_after - _sub_before))
         return frame_detections
 
     def _run_yolo(self, frame: np.ndarray, conf: float = None):
