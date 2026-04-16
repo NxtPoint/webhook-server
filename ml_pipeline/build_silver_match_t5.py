@@ -559,6 +559,16 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     # across many bounces, so serve_side_d never alternated.
     HIT_BEFORE_BOUNCE_FRAMES = max(1, int(round(fps * 0.32)))
     HIT_WINDOW_FRAMES = max(1, int(round(fps * 0.20)))
+    # Soft-fallback window for hitter resolution (#2 post-validation). The
+    # tight HIT_WINDOW_FRAMES was returning None on 38% of bounces in the
+    # a015bf3a reconcile — those rows lost hit_x/y → null serve_side_d →
+    # excluded from point numbering, so points only reached 3 instead of
+    # 15+. We now first try the tight window (precision for serves), and
+    # on miss retry with a wider window that tags the hitter as "stale"
+    # so downstream callers can weight it differently if needed. The
+    # wider window still bounds staleness — we never silently reuse a
+    # detection from >1.2s before the hit.
+    HIT_SOFT_WINDOW_FRAMES = max(1, int(round(fps * 1.20)))
     # Separate, wider window for swing_type pose lookup (A4). Player detection
     # runs every PLAYER_DETECTION_INTERVAL=5 frames and SAHI bboxes come back
     # without pose, so hit-frame pose coverage is sparse. A stroke doesn't
@@ -571,7 +581,9 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     serve_diag = {
         "total_bounces": 0,
         "no_hitter": 0,
-        "no_hitter_stale_only": 0,  # detections exist but none within window
+        "no_hitter_stale_only": 0,  # detections exist but none within tight window
+        "hitter_soft_fallback": 0,  # tight window missed, soft fallback resolved it
+        "no_hitter_even_soft": 0,   # soft fallback also missed — genuinely no data
         "geometric_pass": 0,
         "geometric_fail_no_dist": 0,   # ball_player_distance > 1.5
         "geometric_fail_hitter_y": 0,  # hitter not past baseline
@@ -607,15 +619,34 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         h_dets = near_dets if bounce_on_top else far_dets
 
         # Search target = estimated hit frame (bounce minus flight time).
-        # The ±window rejects stale detections; sparse-side coverage yields
-        # hitter=None rather than a recycled position from seconds earlier.
+        # The tight ±window rejects stale detections; sparse-side coverage
+        # yields hitter=None so we don't silently reuse an old position.
         hit_frame_est = max(0, frame_idx - HIT_BEFORE_BOUNCE_FRAMES)
         hitter = _find_nearest_detection(
             h_frames, h_dets, hit_frame_est,
             max_distance_frames=HIT_WINDOW_FRAMES,
         )
+
+        # Soft fallback (#2): if the tight window missed but detections
+        # exist on this side, widen to HIT_SOFT_WINDOW_FRAMES and tag the
+        # hitter so downstream can tell precision from approximation. The
+        # tight window is what protects serve detection (serves need exact
+        # coords for serve_side_d alternation). For rally shots, an older
+        # position is still usable to keep point structure intact. Without
+        # this, reconcile showed 38% of rows with null hit_x/y → null
+        # point_number → artificially low points count.
         if hitter is None and h_dets:
             serve_diag["no_hitter_stale_only"] += 1
+            hitter = _find_nearest_detection(
+                h_frames, h_dets, hit_frame_est,
+                max_distance_frames=HIT_SOFT_WINDOW_FRAMES,
+            )
+            if hitter is not None:
+                hitter = dict(hitter)  # copy so we don't mutate the index
+                hitter["_hitter_stale"] = True
+                serve_diag["hitter_soft_fallback"] += 1
+            else:
+                serve_diag["no_hitter_even_soft"] += 1
 
         # Fallback: if no player on the hitter's side, use ANY player with
         # valid coords and mirror them to the hitter's side. This handles the
@@ -691,10 +722,16 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             )
 
         # Serve detection: combines GEOMETRY + POSE + DISTANCE for high precision.
+        # Stale (soft-fallback) hitters are treated as "no hitter" here —
+        # serves need exact coords to get serve_side_d right, and a
+        # soft-resolved position from ±1.2s back could flip the deuce/ad
+        # attribution. Rally-shot rows still USE the stale hitter for
+        # hit_x/y (set further below) so point structure stays intact.
         serve_diag["total_bounces"] += 1
         is_serve = False
 
-        if hitter is None:
+        hitter_is_stale = bool(hitter and hitter.get("_hitter_stale"))
+        if hitter is None or hitter_is_stale:
             serve_diag["no_hitter"] += 1
             geom_ok, geom_reason = False, "no_hitter"
             is_overhead = False

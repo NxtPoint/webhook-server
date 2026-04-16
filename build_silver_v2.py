@@ -1249,7 +1249,11 @@ def pass5_analytics(conn: Connection, task_id: str, cfg: dict) -> int:
         WHEN p.volley IS TRUE THEN 'Volley'
         WHEN lower(COALESCE(p.swing_type,'')) IN ('fh_overhead','bh_overhead','overhead','smash') THEN 'Overhead'
         WHEN lower(COALESCE(p.swing_type,'')) = 'fh' THEN 'Forehand'
-        WHEN lower(COALESCE(p.swing_type,'')) IN ('2h_bh','1h_bh') THEN 'Backhand'
+        -- T5 near-player heuristic emits plain 'bh' (no handedness prefix
+        -- — we don't detect one-handed vs two-handed from keypoints).
+        -- Include it alongside SportAI's '1h_bh'/'2h_bh' so A4's pose-
+        -- recovered backhands actually map to stroke_d='Backhand'.
+        WHEN lower(COALESCE(p.swing_type,'')) IN ('bh','1h_bh','2h_bh') THEN 'Backhand'
         WHEN lower(COALESCE(p.swing_type,'')) IN ('slice','bh_slice','fh_slice') THEN 'Slice'
         ELSE 'Other' END,
 
