@@ -9,7 +9,7 @@ import os
 import numpy as np
 from ultralytics import YOLO
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Callable
+from typing import Optional, List, Dict, Callable, Tuple
 
 import cv2
 
@@ -24,6 +24,8 @@ from ml_pipeline.config import (
     YOLO_COURT_CROP_MARGIN_PX,
     YOLO_PERSON_CLASS_ID,
     PLAYER_IOU_THRESHOLD,
+    PLAYER_MAX_CENTER_DRIFT_PX,
+    PLAYER_TRACK_TIMEOUT_FRAMES,
     PLAYER_COURT_MARGIN_PX,
     PLAYER_OUTSIDE_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
@@ -123,7 +125,10 @@ class PlayerTracker:
                 logger.warning("SAHI not installed (pip install sahi), falling back to 3-pass")
             except Exception as e:
                 logger.warning("SAHI init failed: %s, falling back to 3-pass", e)
-        self._prev_players: Dict[int, tuple] = {}  # player_id → bbox from prev frame
+        # player_id → (bbox, last-refreshed frame_idx). Storing the frame
+        # lets us expire stale entries — without this a 10-second-old
+        # bbox can silently match a new false positive.
+        self._prev_players: Dict[int, Tuple[tuple, int]] = {}
         self.detections: List[PlayerDetection] = []
         self._last_result: List[PlayerDetection] = []
         self._detect_interval: int = PLAYER_DETECTION_INTERVAL
@@ -1140,12 +1145,32 @@ class PlayerTracker:
 
     def _assign_ids(self, bboxes: list, frame_idx: int,
                     kps_list: list = None) -> List[PlayerDetection]:
-        """Assign player_id 0/1 consistently across frames using IoU."""
+        """Assign player_id 0/1 consistently across frames using IoU + distance + freshness.
+
+        Pid 0 = near-side, pid 1 = far-side. Two guards prevent identity flips:
+          * Center-distance gate: a new bbox can't inherit a pid via IoU alone
+            if the centers are > PLAYER_MAX_CENTER_DRIFT_PX apart. A
+            false-positive on one half cannot steal the opposite pid from a
+            stale-but-overlapping prev bbox.
+          * Freshness gate: prev entries older than PLAYER_TRACK_TIMEOUT_FRAMES
+            are ignored. Without this, a 10-second-old bbox silently matches
+            any new detection with non-zero IoU.
+        Entries not refreshed this frame are kept but age — they expire
+        naturally after the timeout.
+        """
         if kps_list is None:
             kps_list = [None] * len(bboxes)
 
+        # Drop stale entries first so downstream logic works on the fresh set.
+        self._prev_players = {
+            pid: (bbox, seen_at)
+            for pid, (bbox, seen_at) in self._prev_players.items()
+            if frame_idx - seen_at <= PLAYER_TRACK_TIMEOUT_FRAMES
+        }
+
         if not self._prev_players:
-            # First detection: assign by vertical position (higher y = near-side = player 0)
+            # First (or post-timeout) frame: assign by vertical position
+            # (higher pixel-y = near-side = player 0).
             paired = list(zip(bboxes, kps_list))
             paired.sort(key=lambda p: (p[0][1] + p[0][3]) / 2, reverse=True)
             results = []
@@ -1157,38 +1182,48 @@ class PlayerTracker:
                     bbox=bbox, center=(cx, cy), keypoints=kps,
                 )
                 results.append(det)
-                self._prev_players[pid] = bbox
+                self._prev_players[pid] = (bbox, frame_idx)
             return results
 
-        # Match via IoU
+        # Greedy IoU matching with distance gate.
         assignments = {}
         used_pids = set()
         used_bboxes = set()
 
-        # Greedy matching: best IoU first
         pairs = []
-        for pid, prev_bbox in self._prev_players.items():
+        for pid, (prev_bbox, _seen) in self._prev_players.items():
+            pcx = (prev_bbox[0] + prev_bbox[2]) / 2
+            pcy = (prev_bbox[1] + prev_bbox[3]) / 2
             for bi, bbox in enumerate(bboxes):
                 iou = self._compute_iou(prev_bbox, bbox)
-                pairs.append((iou, pid, bi))
-        pairs.sort(reverse=True)
+                ncx = (bbox[0] + bbox[2]) / 2
+                ncy = (bbox[1] + bbox[3]) / 2
+                dist = ((pcx - ncx) ** 2 + (pcy - ncy) ** 2) ** 0.5
+                pairs.append((iou, dist, pid, bi))
+        # Sort by IoU desc; ties broken by smaller distance.
+        pairs.sort(key=lambda p: (-p[0], p[1]))
 
-        for iou, pid, bi in pairs:
+        for iou, dist, pid, bi in pairs:
             if pid in used_pids or bi in used_bboxes:
                 continue
-            if iou >= PLAYER_IOU_THRESHOLD:
+            if iou >= PLAYER_IOU_THRESHOLD and dist <= PLAYER_MAX_CENTER_DRIFT_PX:
                 assignments[bi] = pid
                 used_pids.add(pid)
                 used_bboxes.add(bi)
 
-        # Assign unmatched bboxes to remaining player IDs
-        available_pids = [p for p in range(2) if p not in used_pids]
-        for bi in range(len(bboxes)):
-            if bi not in used_bboxes and available_pids:
-                assignments[bi] = available_pids.pop(0)
+        # Unmatched bboxes → remaining pids. Falls back to first-detection
+        # style spatial order: higher pixel-y bbox gets the lower remaining pid,
+        # so a fresh detection ends up as pid 0 (near) when it belongs there
+        # even if prev_players still remembers a stale pid 1.
+        available_pids = sorted(p for p in range(2) if p not in used_pids)
+        unmatched = [bi for bi in range(len(bboxes)) if bi not in used_bboxes]
+        unmatched.sort(key=lambda bi: (bboxes[bi][1] + bboxes[bi][3]) / 2, reverse=True)
+        for bi in unmatched:
+            if not available_pids:
+                break
+            assignments[bi] = available_pids.pop(0)
 
         results = []
-        new_prev = {}
         for bi, pid in assignments.items():
             bbox = bboxes[bi]
             cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
@@ -1197,9 +1232,8 @@ class PlayerTracker:
                 bbox=bbox, center=(cx, cy), keypoints=kps_list[bi],
             )
             results.append(det)
-            new_prev[pid] = bbox
+            self._prev_players[pid] = (bbox, frame_idx)
 
-        self._prev_players = new_prev
         return results
 
     @staticmethod

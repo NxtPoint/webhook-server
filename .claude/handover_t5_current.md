@@ -10,10 +10,16 @@
 - **Code change merged: A1** — `build_silver_match_t5.py::_find_nearest_detection` now accepts `max_distance_frames`. Caller back-tracks search target by `HIT_BEFORE_BOUNCE_FRAMES` (≈0.32s × fps) to estimate the actual hit frame, gates on `HIT_WINDOW_FRAMES` (≈0.20s × fps). Stale detections are no longer silently reused; the `serve_diag.no_hitter_stale_only` counter tracks how often the gate fires. Expected downstream: hitter coords vary across far-side hits → `serve_side_d` alternates → points 2 → ~15.
 - Master plan for rest of dev (Phases A / B / C) written into this doc and CLAUDE.md. Training is explicitly paused until Phase A is green.
 
-**Next action**: rebuild & push Docker image (eu-north-1 rev 25, us-east-1 rev 14), submit a fresh T5 run against `s3://nextpoint-prod-uploads/wix-uploads/1776237811_match.mp4`, then reconcile. Watch for:
-- `T5 serve diagnostics` CloudWatch line — `no_hitter_stale_only` should be > 0 (confirms the gate is firing; 0 would mean the far player's coverage is unexpectedly dense in this run).
+**Deployed and submitted** (Apr 16):
+- eu-north-1 **job def rev 25**, us-east-1 **rev 14** — both point to `sha256:1f8aa7a3d1a398abc3b4385783478c2cb3444d4e583697e08f8e77741ef1348f`.
+- Validation task **`8006ec73-95f5-48c6-ba9f-755cac3ae266`** (batch job `729fca0e-b1ba-4347-9f2d-4c099679af01`) queued in eu-north-1 against `wix-uploads/1776237811_match.mp4`. Clone of `90ad59a8` submission_context so auto-ingest fires on sentinel.
+- Orphaned job `249dc06d` marked failed (Spot killed it mid-run Apr 15; DB row was stale).
+
+**Watch for (after run completes)**:
+- CloudWatch `T5 serve diagnostics` — `no_hitter_stale_only > 0` (confirms gate is firing; 0 would mean far-side coverage is unexpectedly dense).
 - Reconcile points: target 10-15 (up from 2).
-- Sample silver rows — hitter coords should show VARIATION across bounces, not a single repeated (hx, hy) pair.
+- Sample silver rows: hitter coords should show VARIATION across bounces, not a single repeated (hx, hy) pair.
+- Tier-2 catch rate: Player B (far) frame count vs 90ad59a8 — should rise once y=-7 observations are no longer rejected.
 
 ═══════════════════════════════════════════════════════════════════════
 ## TL;DR — where we are

@@ -163,6 +163,21 @@ PLAYER_DETECTION_INTERVAL = 5      # Was 3 — increased to 5 (200ms between det
                                    # changes). Cuts detection work by 40%. Further increases
                                    # risk missing serve impact positions.
 PLAYER_DETECTION_INTERVAL_PRACTICE = 10  # Less frequent for practice
+# Identity stability (A2): bbox-to-prev matching needs two guards beyond
+# raw IoU or a false-positive in one half can steal the OTHER half's pid.
+PLAYER_MAX_CENTER_DRIFT_PX = 250   # Max pixel distance between prev and new
+                                   # bbox centers for a match to count. A
+                                   # detection halfway across the image cannot
+                                   # inherit a pid just because its IoU with
+                                   # the stale prev bbox happens to exceed
+                                   # threshold (1080p frame: half-court span
+                                   # in pixels is ~400-500 px; 250 covers a
+                                   # player's typical motion in a 5-frame
+                                   # window but rejects cross-court jumps).
+PLAYER_TRACK_TIMEOUT_FRAMES = 30   # Drop prev_players[pid] if not refreshed
+                                   # for this many frames (1.2s @ 25fps).
+                                   # Stops a 10-second-old bbox from silently
+                                   # matching a new false-positive detection.
 
 # ---------------------------------------------------------------------------
 # MOG2 background subtraction (far-player motion scoring)
