@@ -745,7 +745,13 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
             "volley": is_volley,
             "is_in_rally": True,
             "ball_player_distance": ball_player_dist,
-            "ball_speed": (speed_kmh / 3.6) if speed_kmh else None,  # km/h → m/s
+            # silver.ball_speed is stored in km/h to match SportAI's semantic.
+            # Was previously converted to m/s here; SportAI silver stores km/h
+            # as-is from the bronze JSON, so the conversion caused a 3.6×
+            # unit gap that the reconcile tool hid by multiplying both sides
+            # by 3.6 (producing SportAI's "359 km/h avg" which is physically
+            # impossible). Store km/h directly so both sides match.
+            "ball_speed": speed_kmh,
             "ball_impact_type": None,
             "ball_hit_s": ts,
             "ball_hit_location_x": hit_x,

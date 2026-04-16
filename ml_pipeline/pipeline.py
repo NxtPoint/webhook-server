@@ -225,6 +225,10 @@ class TennisAnalysisPipeline:
         self.ball_tracker.interpolate_gaps()
         self.ball_tracker.detect_bounces(court_detector=self.court_detector)
         self.ball_tracker.compute_speeds(court_detector=self.court_detector, fps=self.target_fps)
+        # Replace the per-bounce speed_kmh with peak flight speed in the
+        # preceding window, matching SportAI's "ball speed at hit" semantic.
+        # Non-bounce detections retain their pairwise frame-to-frame speeds.
+        self.ball_tracker.assign_peak_flight_speeds()
         result.ball_detections = self.ball_tracker.detections
 
         # Player post-processing

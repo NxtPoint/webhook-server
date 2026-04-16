@@ -657,6 +657,42 @@ class BallTracker:
                 if court_detector._last_detection else "no_detection",
             )
 
+    def assign_peak_flight_speeds(self, window_frames: int = 15):
+        """Overwrite each bounce's ``speed_kmh`` with the peak pairwise speed
+        observed in the preceding ``window_frames`` frames.
+
+        Motivation: per-frame pairwise speed at the bounce itself tends to
+        under-report the true shot velocity because the ball has already
+        decelerated and is about to bounce. SportAI reports "ball speed at
+        hit" — the velocity during flight between the player's strike and
+        the bounce. A peak over the preceding window approximates that
+        semantic from the same data.
+
+        Call after ``compute_speeds`` has populated pairwise speeds on all
+        detections. Non-bounce detections are left unchanged.
+        """
+        n_updated = 0
+        for bi, det in enumerate(self.detections):
+            if not det.is_bounce:
+                continue
+            low_frame = det.frame_idx - window_frames
+            speeds = []
+            for j in range(bi - 1, -1, -1):
+                d = self.detections[j]
+                if d.frame_idx < low_frame:
+                    break
+                if d.speed_kmh is not None and d.speed_kmh > 0:
+                    speeds.append(d.speed_kmh)
+            if speeds:
+                det.speed_kmh = max(speeds)
+                n_updated += 1
+        logger.info(
+            "assign_peak_flight_speeds: set peak-flight speed on %d/%d bounces (window=%d frames)",
+            n_updated,
+            sum(1 for d in self.detections if d.is_bounce),
+            window_frames,
+        )
+
     def reset(self):
         self._frame_buffer.clear()
         self.detections.clear()

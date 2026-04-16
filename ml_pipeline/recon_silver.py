@@ -189,17 +189,16 @@ def run_distributions(conn, sportai_tid: str, t5_tid: str):
 
 
 def run_speed(conn, sportai_tid: str, t5_tid: str):
-    _hr("BALL SPEED COMPARISON (m/s)")
+    _hr("BALL SPEED COMPARISON (km/h)")
     for label, tid in [("SPORTAI", sportai_tid), ("T5", t5_tid)]:
         r = conn.execute(text("""
             SELECT
               count(ball_speed) AS populated,
-              round(avg(ball_speed)::numeric, 1) AS avg_ms,
-              round(max(ball_speed)::numeric, 1) AS max_ms,
-              round(min(ball_speed)::numeric, 1) AS min_ms,
-              round(percentile_cont(0.5) WITHIN GROUP (ORDER BY ball_speed)::numeric, 1) AS median_ms,
-              round((avg(ball_speed) * 3.6)::numeric, 1) AS avg_kmh,
-              round((max(ball_speed) * 3.6)::numeric, 1) AS max_kmh
+              round(avg(ball_speed)::numeric, 1) AS avg_kmh,
+              round(max(ball_speed)::numeric, 1) AS max_kmh,
+              round(min(ball_speed)::numeric, 1) AS min_kmh,
+              round(percentile_cont(0.5) WITHIN GROUP (ORDER BY ball_speed)::numeric, 1) AS median_kmh,
+              round(percentile_cont(0.95) WITHIN GROUP (ORDER BY ball_speed)::numeric, 1) AS p95_kmh
             FROM silver.point_detail
             WHERE task_id = CAST(:tid AS uuid) AND ball_speed IS NOT NULL
         """), {"tid": tid}).mappings().first()
