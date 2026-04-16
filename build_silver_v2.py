@@ -86,7 +86,14 @@ SPORT_CONFIG: Dict[str, Dict[str, float]] = {
         "half_y":              11.885,
         "service_line_m":       6.40,
         "far_service_line_m":  17.37,
-        "eps_baseline_m":       0.30,
+        # A5 widen — was 0.30m but T5's calibration extrapolation places
+        # real-baseline hitters at 0.38-1.01m inside court on MATCHI wide-
+        # angle, so 8 of 11 missing serves were legitimate but failed the
+        # tight gate (reconcile of a015bf3a Apr 16). 1.5m matches Pass 1's
+        # HITTER_NEAR_MAX tolerance in build_silver_match_t5.py. Verified
+        # zero SportAI impact — their hy sits at ~24.47 or ~0.0, nowhere
+        # near the 0.3-1.5m band.
+        "eps_baseline_m":       1.5,
     },
 }
 
