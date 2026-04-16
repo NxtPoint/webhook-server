@@ -531,10 +531,23 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     last_serve_ts = -999.0  # for serve cooldown
     MIN_SERVE_INTERVAL_S = 8.0  # minimum seconds between consecutive serves
 
+    # Ball flight from hit → bounce on the opposite side is ~0.3s for a
+    # typical rally shot (and as low as ~0.15s for a hard serve). We
+    # snap the hitter-lookup target backward from the bounce frame by
+    # this offset so the "nearest detection" points at where the hitter
+    # actually WAS at the moment they struck the ball, not where they
+    # ended up after follow-through. The ±window gates out stale
+    # detections (e.g. far-side player seen 30 frames ago) — without
+    # it, sparse far-side coverage would share one stale position
+    # across many bounces, so serve_side_d never alternated.
+    HIT_BEFORE_BOUNCE_FRAMES = max(1, int(round(fps * 0.32)))
+    HIT_WINDOW_FRAMES = max(1, int(round(fps * 0.20)))
+
     # Diagnostic counters — why serves are accepted/rejected
     serve_diag = {
         "total_bounces": 0,
         "no_hitter": 0,
+        "no_hitter_stale_only": 0,  # detections exist but none within window
         "geometric_pass": 0,
         "geometric_fail_no_dist": 0,   # ball_player_distance > 1.5
         "geometric_fail_hitter_y": 0,  # hitter not past baseline
@@ -567,14 +580,25 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         h_frames = near_frames if bounce_on_top else far_frames
         h_dets = near_dets if bounce_on_top else far_dets
 
-        # Find nearest player detection on the hitter's side
-        hitter = _find_nearest_detection(h_frames, h_dets, frame_idx)
+        # Search target = estimated hit frame (bounce minus flight time).
+        # The ±window rejects stale detections; sparse-side coverage yields
+        # hitter=None rather than a recycled position from seconds earlier.
+        hit_frame_est = max(0, frame_idx - HIT_BEFORE_BOUNCE_FRAMES)
+        hitter = _find_nearest_detection(
+            h_frames, h_dets, hit_frame_est,
+            max_distance_frames=HIT_WINDOW_FRAMES,
+        )
+        if hitter is None and h_dets:
+            serve_diag["no_hitter_stale_only"] += 1
 
         # Fallback: if no player on the hitter's side, use ANY player with
         # valid coords and mirror them to the hitter's side. This handles the
         # case where ML only tracks one player (always on one side).
         if hitter is None and any_dets:
-            other = _find_nearest_detection(any_frames, any_dets, frame_idx)
+            other = _find_nearest_detection(
+                any_frames, any_dets, hit_frame_est,
+                max_distance_frames=HIT_WINDOW_FRAMES,
+            )
             if other is not None:
                 # Determine which side the "other" player is on
                 other_on_top = (other["court_y"] is not None and other["court_y"] < HALF_Y)
@@ -768,8 +792,17 @@ def _build_detection_index(dets: List[dict]) -> Tuple[List[int], List[dict]]:
 
 
 def _find_nearest_detection(frames: List[int], dets: List[dict],
-                            target_frame: int) -> Optional[dict]:
-    """Find the player detection closest in frame_idx to the target (binary search)."""
+                            target_frame: int,
+                            max_distance_frames: Optional[int] = None) -> Optional[dict]:
+    """Find the player detection closest in frame_idx to the target (binary search).
+
+    When ``max_distance_frames`` is given, returns ``None`` if the nearest
+    detection lies outside that window. This prevents stale detections from
+    being silently reused on bounces where the hitter's side has sparse
+    temporal coverage (seen with far-player at ~10% frame coverage — every
+    bounce would inherit the same single far-side detection, so
+    ``serve_side_d`` never alternated and points collapsed).
+    """
     if not dets:
         return None
 
@@ -784,6 +817,9 @@ def _find_nearest_detection(frames: List[int], dets: List[dict],
             if dist < best_dist:
                 best_dist = dist
                 best = dets[candidate_idx]
+
+    if max_distance_frames is not None and best_dist > max_distance_frames:
+        return None
     return best
 
 

@@ -920,17 +920,22 @@ class PlayerTracker:
                     0.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
-                # Priority 2 (2000): behind own baseline. Near side allows
-                # up to 8m past because radial calibration extrapolates
-                # conservatively at the image's extreme bottom edge and a
-                # player physically 3m past the baseline can project to
-                # metric y ~28-30. Far side stays 4m (extrapolation near
-                # the top of the image is better-constrained).
+                # Priority 2 (2000): nearest player behind baseline, up
+                # to 10m either side. Observed on MATCHI wide-angle that
+                # a far player physically ~4m behind the baseline projects
+                # to metric y ~-6/-7 — calibration extrapolation on the
+                # far edge is over-negative. Expanding both sides to 10m
+                # catches the real player; tier 0 + MIN_SELECTABLE_SCORE
+                # still rejects spectators on the back wall.
+                # TODO: investigate far-side extrapolation bias (physical
+                # ~4m → measured -6/-7m suggests k1/k2 fit leaves residual
+                # distortion near the image top). Tightening this range
+                # depends on that fix.
                 behind_baseline = (
                     -3.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 3.0
                     and (
-                        -4.0 <= court_y_m < 0.0
-                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 8.0
+                        -10.0 <= court_y_m < 0.0
+                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 10.0
                     )
                 )
                 # Priority 3 (1000): wide-alley corridor — 1m off each

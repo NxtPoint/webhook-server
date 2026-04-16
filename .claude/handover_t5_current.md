@@ -1,6 +1,19 @@
-# HANDOVER — T5 ML Pipeline (end of Apr 15, evening)
+# HANDOVER — T5 ML Pipeline (Apr 15 eve → Apr 16 start)
 
 ## Read CLAUDE.md first — the T5 section is the authoritative reference.
+
+## Apr 16 morning — session log
+
+- Overnight run `fd623ed2` reconciled vs SportAI `4a194ff3`. Improvements: serves_d 17 → 20 (+3 ✓). Concerns: Player 1 frames dropped 1600 → 758 with var_y=155 (identity flipping), points still 2, backhand still 0, ball speed still ~48 km/h.
+- User flagged via screenshot: Player B (far) measuring court_y=-7 rejected by tier-2 (-4m cap). Physical distance behind baseline looks ~4m — calibration extrapolates too negatively near the top of the image.
+- **Code change merged: A0** — `player_tracker.py::_choose_two_players` tier-2 `behind_baseline` expanded to ±10m on both sides (was -4m / +8m). Tier 1 / 3 unchanged. Follow-up: investigate k1/k2 far-edge residual so tier-2 can tighten again later.
+- **Code change merged: A1** — `build_silver_match_t5.py::_find_nearest_detection` now accepts `max_distance_frames`. Caller back-tracks search target by `HIT_BEFORE_BOUNCE_FRAMES` (≈0.32s × fps) to estimate the actual hit frame, gates on `HIT_WINDOW_FRAMES` (≈0.20s × fps). Stale detections are no longer silently reused; the `serve_diag.no_hitter_stale_only` counter tracks how often the gate fires. Expected downstream: hitter coords vary across far-side hits → `serve_side_d` alternates → points 2 → ~15.
+- Master plan for rest of dev (Phases A / B / C) written into this doc and CLAUDE.md. Training is explicitly paused until Phase A is green.
+
+**Next action**: rebuild & push Docker image (eu-north-1 rev 25, us-east-1 rev 14), submit a fresh T5 run against `s3://nextpoint-prod-uploads/wix-uploads/1776237811_match.mp4`, then reconcile. Watch for:
+- `T5 serve diagnostics` CloudWatch line — `no_hitter_stale_only` should be > 0 (confirms the gate is firing; 0 would mean the far player's coverage is unexpectedly dense in this run).
+- Reconcile points: target 10-15 (up from 2).
+- Sample silver rows — hitter coords should show VARIATION across bounces, not a single repeated (hx, hy) pair.
 
 ═══════════════════════════════════════════════════════════════════════
 ## TL;DR — where we are
@@ -58,58 +71,63 @@ Compared to SportAI ground truth `4a194ff3`:
 | server_end_d populated | 20% | **100%** | 100% |
 
 ═══════════════════════════════════════════════════════════════════════
-## NEXT SESSION — WHAT TO TACKLE, IN ORDER
+## MASTER PLAN — finish all dev before training (Apr 16+)
 ═══════════════════════════════════════════════════════════════════════
 
-### P0 — Points collapse (17 serves → 2 points)
+**Strategy**: Get the pipeline rock-solid FIRST. Only start stroke-classifier
+training once Phase A is green on a fresh run. Every iteration before that
+burns a dual-submit pair that SportAI charges for — we want each one to
+deliver a strictly-better labeled set.
 
-**Symptom**: `point_number` only increments twice across 17 serves.
+Three phases, strictly sequential: **A = correct, B = fast, C = ops.** Don't
+skip ahead. Numbers inside each phase are rough priority; merge order may shift
+with findings.
 
-**Traced root cause**: every row in the silver output sample has **identical hitter coordinates** (hx=7.13, hy=-4.16) — so every serve computes `serve_side_d = 'ad'` (x > mid for far-server), no alternation, point numbering stagnates.
+### Phase A — Correctness (blocks training)
 
-**Where to look**: `ml_pipeline/build_silver_match_t5.py::_find_nearest_detection` — this pulls the hitter-side player detection nearest IN TIME to the bounce. Suspect it's returning a stale cached detection because the far player is only detected in 10% of frames (1600/15300 per eval-player).
+Target outcome: reconcile vs SportAI on the reference video closes to
+**serves 22-24 / points 12-15 / backhand 10-15 / ball speed 200-400 km/h avg**.
 
-**Fix direction**: tighten the "find hitter" logic — require a detection within N frames (say, ±5 = ±0.2s) of the actual hit, not the bounce. If none available, flag the bounce as `hitter_resolved=False` rather than silently using stale data. Also worth investigating why far-player detection dropped to 10% of frames (was 11% pre-fix — the fresh rev 24 may help).
+| # | Symptom (vs SportAI) | Location | First move |
+|---|---|---|---|
+| **A0** | Player B measuring y=-7 rejected by -4m tier-2 cap | `player_tracker.py::_choose_two_players` | ✅ Done — tier-2 expanded to ±10m. Validate on next run that Player B capture rate > 60%. |
+| **A1** | Points 2 vs 17 — stale hitter coords | `build_silver_match_t5.py::_find_nearest_detection` | Require hit-frame detection within ±5 frames of the hit event, not the bounce. Flag `hitter_resolved=False` on miss; do NOT silently reuse last seen. |
+| **A2** | Player 1 identity instability (var_y=155 in fd623ed2) | `player_tracker.py` tracking loop | Confirm bbox continuity — if ID jumps between two disjoint spatial clusters, tighten assignment with IOU threshold + distance gate. |
+| **A3** | Ball speed 48 km/h vs 359 (8× under) | `ball_tracker.py::compute_speeds` | Switch from mean-across-all-bounces to per-rally peak-at-hit ±3 frames (or 95th pct). Court coords are known-correct, it's a semantic bug. |
+| **A4** | Backhand 0 vs 15 | `build_silver_match_t5.py` near-player heuristic | Dump COCO keypoints for one SportAI-labeled backhand frame. Validate wrist/shoulder x signal; check keypoint confidence floor didn't swallow them. |
+| **A5** | 4 serves lost Pass 1→3 | `build_silver_v2.py:515-525` gate | Enable serve-diag logging in Pass 1; cross-ref swing_type assignments for the 4 dropped rows. Likely `fh`/`bh` instead of `overhead`, OR hitter_y just inside [0.30, 23.47]. |
+| **A6** | Wide serve bucket 0 vs 43 | Pass 3 zone derivation for `serve_bucket_d` | Check bounce x-thresholds against actual MATCHI video geometry; likely off by a metre or using wrong court width. |
+| **A7** | shot_ix_in_point / rally_length collapse | Pass 3 | Cascades from A1 — should auto-fix once points partition correctly. Verify, don't pre-patch. |
 
-**Expected gain**: points 2 → 15+ once serve_side alternates correctly.
+### Phase B — Performance (runtime 55 min → target 30-45, stretch 20)
 
-### P1 — 4 serves lost Pass 1 → Pass 3
+Only once Phase A is stable — perf tweaks that change detection cadence will
+muddle correctness debugging.
 
-**Symptom**: `serves_raw = 21`, `serves_d = 17`. Four rows have `serve=TRUE` but get filtered by Pass 3's `serve_d` check.
+| # | Change | Expected gain |
+|---|---|---|
+| **B1** | Per-stage timing instrumentation in `pipeline.py::_process_frame` (court / ball / MOG2 / player / SAHI). Log stage totals per 1000 frames. | Baseline for the rest of Phase B. |
+| **B2** | `PLAYER_DETECTION_INTERVAL` 5 → 8 frames | ~30% player-stage reduction; interpolation between detections already good. |
+| **B3** | SAHI tile 640 → 800 px, overlap 15% → 10% | Fewer tiles/frame. |
+| **B4** | Skip SAHI when full-frame YOLO already has a valid far candidate | Avoid the big-cost path on easy frames. |
+| **B5** | FFmpeg CUDA hardware decode (`h264_cuvid`) | ~10-20% wall-clock. |
+| **B6** | Batch YOLO inference across frames (stretch) | Big win, ~1 day eng. |
 
-**Pass 3 gate** (in `build_silver_v2.py:515-525`):
-```sql
-serve_d = CASE
-  WHEN swing_type IN ('fh_overhead','bh_overhead','overhead','smash','other')
-   AND (y < 0.30 OR y > 23.47)
-  THEN TRUE ELSE FALSE
-```
+### Phase C — Operations (non-blocking, schedule alongside A/B)
 
-**Likely culprits**: (a) swing_type assigned `fh`/`bh` by near-player stroke heuristic instead of `overhead` on some serves; (b) hitter_y falls in [0.30, 23.47] band (not close enough to baseline).
+| # | Change | Why |
+|---|---|---|
+| **C1** | Submit AWS on-demand G-family vCPU quota request (both regions) | Current 0-quota forces Spot-only; Spot starvation = manual region migration. See `.claude/playbook_aws_batch_ondemand_fallback.md`. |
+| **C2** | `harness dual-submit` command — submit SportAI + T5 to same video in one call, return both task_ids + diff URL once done | Turns each training round into one command instead of five. |
+| **C3** | `T5_DEBUG=1` env var toggle for diagnostic logging & debug-frame uploads | Production runs stay quiet; debug runs go loud. |
 
-**Diagnostic**: enable INFO logging in Pass 1 (`logger.info("T5 serve cand ...")` already exists at line 644 — confirm it's emitting) then walk the counter output:
-```
-T5 serve diagnostics: {geometric_pass: N, pose_pass: M, cooldown_block: K, fired_primary: J}
-```
-and cross-reference against Pass 3 `serve_d` survivors.
+### Stopping condition — move to training when:
 
-### P2 — Ball speed 8× under (44 km/h vs 359)
+- Phase A: 6 of 7 items green on reconcile
+- Phase B: wall-clock < 45 min (not the 20-min stretch)
+- Phase C: dual-submit tool working, so training prep doesn't bottleneck
 
-**Hypothesis**: `ball_tracker.py::compute_speeds` averages over ALL 1983 bounce detections including near-stationary "ball rolling between rallies" samples. SportAI only reports peak-at-hit speeds.
-
-**Fix direction**: restrict speed reporting to frames within ±3 of a detected hit event. Or take 95th percentile of speed distribution per rally.
-
-**Read**: `ml_pipeline/ball_tracker.py` — functions `compute_speeds`, `interpolate_gaps`, `detect_bounces`. The court coords are right (confirmed by `court_coord_pct_>=50.0 → 97.2% PASS`), so the projection layer is fine. The issue is the speed's semantic.
-
-### P3 — Backhand classification (0 of 15 SportAI)
-
-**Where**: `ml_pipeline/build_silver_match_t5.py` near-player stroke heuristic (search for `_assign_stroke_near` or similar — uses wrist vs shoulder x-coord).
-
-**Diagnostic**: pick a specific backhand frame (SportAI labels it, we don't) and dump the COCO keypoint positions. If left_wrist_x < left_shoulder_x on a backhand stroke, the heuristic is correct and something else is masking it. If keypoints aren't being detected for the near player in those frames, that's a keypoint-confidence issue.
-
-### P4 — MIN_SERVE_INTERVAL_S cooldown (optional polish)
-
-Currently 8s. Probably blocks 1-2 fault-retry serves per game. Relax to per-point reset once points collapse is fixed. Low-value until P0 lands.
+Then run 5 dual-submit matches, export stroke data, train, re-benchmark.
 
 ═══════════════════════════════════════════════════════════════════════
 ## VALIDATION SEQUENCE (run after EACH next code change)
