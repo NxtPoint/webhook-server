@@ -11,9 +11,15 @@
 - Master plan for rest of dev (Phases A / B / C) written into this doc and CLAUDE.md. Training is explicitly paused until Phase A is green.
 
 **Deployed and submitted** (Apr 16):
-- eu-north-1 **job def rev 25**, us-east-1 **rev 14** — both point to `sha256:1f8aa7a3d1a398abc3b4385783478c2cb3444d4e583697e08f8e77741ef1348f`.
-- Validation task **`8006ec73-95f5-48c6-ba9f-755cac3ae266`** (batch job `729fca0e-b1ba-4347-9f2d-4c099679af01`) queued in eu-north-1 against `wix-uploads/1776237811_match.mp4`. Clone of `90ad59a8` submission_context so auto-ingest fires on sentinel.
-- Orphaned job `249dc06d` marked failed (Spot killed it mid-run Apr 15; DB row was stale).
+
+| Rev | Region | Image digest | Contents | Test task |
+|---|---|---|---|---|
+| 25 / 14 | eu / us | `sha256:1f8aa7a3d1...` | A0 + A1 | `8006ec73-95f5-48c6-ba9f-755cac3ae266` (eu, batch `729fca0e`) |
+| 26 / 15 | eu / us | `sha256:1521560c36...` | A0 + A1 + A2 | `a015bf3a-a6e6-47ae-9988-55f9bffc9820` (us, batch `90469804`) |
+
+Parallel runs: eu on 25 (A0+A1 only) vs us on 15 (A0+A1+A2). Comparing lets us isolate A2's contribution. A3 held pending investigation of SportAI's ball_speed semantic (likely per-shot peak, not average — needs validation before we code against a suspicious target).
+
+Orphaned job `249dc06d` marked failed (Spot killed it mid-run Apr 15; DB row was stale).
 
 **Watch for (after run completes)**:
 - CloudWatch `T5 serve diagnostics` — `no_hitter_stale_only > 0` (confirms gate is firing; 0 would mean far-side coverage is unexpectedly dense).
