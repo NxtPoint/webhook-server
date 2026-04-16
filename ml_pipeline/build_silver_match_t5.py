@@ -39,7 +39,16 @@ FAR_SERVICE_LINE_M = COURT_LENGTH_M - SERVICE_LINE_M            # 17.37m
 SINGLES_LEFT_X = (COURT_WIDTH_DOUBLES_M - COURT_WIDTH_SINGLES_M) / 2  # 1.37m
 SINGLES_RIGHT_X = SINGLES_LEFT_X + COURT_WIDTH_SINGLES_M              # 9.60m
 CENTRE_X = COURT_WIDTH_DOUBLES_M / 2                            # 5.485m
-EPS_BASELINE_M = 0.30
+# A5 widen — was 0.30m but T5's calibration extrapolation places
+# real-baseline hitters at 0.38-1.01m INSIDE court on MATCHI wide-
+# angle footage, so the tight gate rejected 8 of 11 missing serves
+# in the a015bf3a reconcile (Apr 16). 1.5m matches Pass 1's
+# HITTER_NEAR_MAX tolerance in _serve_geometric_check below. Zero
+# SportAI impact (their hy sits at ~24.47 or ~0.0, nowhere near the
+# 0.3-1.5m band the widening opens). This constant is the one the
+# T5 builder actually uses — the matching value in build_silver_v2.py
+# is overridden by this via SPORT_CONFIG_SINGLES below.
+EPS_BASELINE_M = 1.5
 
 # Thresholds for match analysis
 SERVE_GAP_S = 3.0       # seconds gap before a bounce to consider it a serve (was 5.0 — too strict for sparse bounce data)
@@ -559,6 +568,16 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
     # across many bounces, so serve_side_d never alternated.
     HIT_BEFORE_BOUNCE_FRAMES = max(1, int(round(fps * 0.32)))
     HIT_WINDOW_FRAMES = max(1, int(round(fps * 0.20)))
+    # A5+ addendum — the first candidate serve in a match must be at
+    # least this many seconds into the video. Observed on a015bf3a /
+    # 081e089c: two false-positive serves at ts=0.3 and ts=8.5 during
+    # warmup. Stationarity gate couldn't catch ts=0.3 because the
+    # video has no prior frames to sample. SportAI's FIRST real serve
+    # on the reference match is at ts=54.48. 15s is a conservative
+    # floor that kills warmup while not clipping any legitimate early
+    # serve — coach-camera MATCHI footage always has at least 15s of
+    # setup/warmup before the first point.
+    FIRST_SERVE_MIN_TS_S = 15.0
     # Soft-fallback window for hitter resolution (#2 post-validation). The
     # tight HIT_WINDOW_FRAMES was returning None on 38% of bounces in the
     # a015bf3a reconcile — those rows lost hit_x/y → null serve_side_d →
@@ -597,6 +616,7 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         "stationary_fail": 0,     # A5+: hitter moved > 0.5m in 1-2s before hit (warmup/ball-roll)
         "stationary_nodata": 0,   # A5+: no prior detections; benefit of doubt granted
         "stationarity_block": 0,  # A5+: geom+cooldown passed but stationarity rejected
+        "first_serve_too_early": 0,  # A5+: first candidate serve < FIRST_SERVE_MIN_TS_S
         "cooldown_block": 0,
         "fired_primary": 0,
         "fired_secondary": 0,
@@ -805,11 +825,19 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         # of net + bounce_x in singles+alley) is precise enough on its own —
         # rally shots are almost never struck from past the baseline.
         if geom_ok and cooldown_ok and stationarity_ok:
-            is_serve = True
-            serve_diag["fired_primary"] += 1
-            if is_overhead:
-                # Bonus signal — track for diagnostics, doesn't change outcome
-                serve_diag["fired_secondary"] += 1
+            # First-serve-min-ts gate — no match starts with a serve in
+            # the first 15s. Kills warmup false positives that slipped
+            # past stationarity (e.g. near player momentarily still at
+            # ts=0.3s because video JUST started and no prior samples
+            # exist to refute stationarity).
+            if last_serve_ts < 0 and ts < FIRST_SERVE_MIN_TS_S:
+                serve_diag["first_serve_too_early"] += 1
+            else:
+                is_serve = True
+                serve_diag["fired_primary"] += 1
+                if is_overhead:
+                    # Bonus signal — track for diagnostics, doesn't change outcome
+                    serve_diag["fired_secondary"] += 1
         elif geom_ok and not cooldown_ok:
             serve_diag["cooldown_block"] += 1
         elif geom_ok and not stationarity_ok:
