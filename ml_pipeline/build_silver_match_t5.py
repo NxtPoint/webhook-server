@@ -593,6 +593,10 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         "pose_no_keypoints": 0,
         "kp_patched_widened": 0,  # A4: hitter had coord but no pose; wider window supplied pose
         "kp_still_missing": 0,    # A4: even widened window had no pose on this side
+        "stationary_ok": 0,       # A5+: hitter stationary 1-2s pre-hit
+        "stationary_fail": 0,     # A5+: hitter moved > 0.5m in 1-2s before hit (warmup/ball-roll)
+        "stationary_nodata": 0,   # A5+: no prior detections; benefit of doubt granted
+        "stationarity_block": 0,  # A5+: geom+cooldown passed but stationarity rejected
         "cooldown_block": 0,
         "fired_primary": 0,
         "fired_secondary": 0,
@@ -754,20 +758,42 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         ts_since_last_serve = ts - last_serve_ts
         cooldown_ok = ts_since_last_serve >= MIN_SERVE_INTERVAL_S
 
+        # A5+ pre-hit stationarity — real servers stand still ~1-2s before
+        # contact. Warmup ball-bouncing and between-point rolls involve
+        # players wandering on court, which is the single cleanest signal
+        # that separates them from a real serve. Kills the two false
+        # positives observed on a015bf3a (ts=27, ts=35 warmup bounces
+        # before the SportAI-confirmed first serve at ts=54.48).
+        stationary = None
+        if geom_ok:
+            stationary = _check_hitter_stationary_pre_hit(
+                h_frames, h_dets, hit_frame_est, hitter, fps,
+            )
+            if stationary is True:
+                serve_diag["stationary_ok"] += 1
+            elif stationary is False:
+                serve_diag["stationary_fail"] += 1
+            else:
+                serve_diag["stationary_nodata"] += 1
+        # None = no prior samples. Benefit of doubt (don't reject real
+        # far-side serves where tracking is sparse and we have no prior
+        # pose data to confirm stationarity).
+        stationarity_ok = stationary is not False
+
         # Per-candidate trace: log every bounce that passes the geometric gate
         # so we can see exactly where serves are being accepted/rejected.
         if geom_ok and logger.isEnabledFor(logging.INFO):
             hy = hitter.get("court_y") if hitter else None
             logger.info(
-                "T5 serve cand frame=%d ts=%.2f hy=%.2f bx=%.2f by=%.2f dist=%s overhead=%s cooldown_ok=%s (since_last=%.1fs)",
+                "T5 serve cand frame=%d ts=%.2f hy=%.2f bx=%.2f by=%.2f dist=%s overhead=%s cooldown_ok=%s stationary=%s (since_last=%.1fs)",
                 frame_idx, ts,
                 hy if hy is not None else float("nan"),
                 cx, cy,
                 f"{ball_player_dist:.2f}" if ball_player_dist is not None else "None",
-                is_overhead, cooldown_ok, ts_since_last_serve,
+                is_overhead, cooldown_ok, stationary, ts_since_last_serve,
             )
 
-        # Primary trigger: geometric + cooldown.
+        # Primary trigger: geometric + cooldown + stationary pre-hit.
         #
         # Pose is intentionally NOT required: the actual serve motion happens
         # ~0.5-1.0s BEFORE the bounce frame, so by the time we look at the
@@ -778,7 +804,7 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         # The geometric gate (hitter past a baseline + bounce on opposite half
         # of net + bounce_x in singles+alley) is precise enough on its own —
         # rally shots are almost never struck from past the baseline.
-        if geom_ok and cooldown_ok:
+        if geom_ok and cooldown_ok and stationarity_ok:
             is_serve = True
             serve_diag["fired_primary"] += 1
             if is_overhead:
@@ -786,6 +812,8 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
                 serve_diag["fired_secondary"] += 1
         elif geom_ok and not cooldown_ok:
             serve_diag["cooldown_block"] += 1
+        elif geom_ok and not stationarity_ok:
+            serve_diag["stationarity_block"] += 1
 
         if is_serve:
             last_serve_ts = ts
@@ -886,6 +914,61 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
 def _build_detection_index(dets: List[dict]) -> Tuple[List[int], List[dict]]:
     """Pre-compute sorted frame index for binary search."""
     return [d["frame_idx"] for d in dets], dets
+
+
+def _check_hitter_stationary_pre_hit(
+    h_frames: List[int], h_dets: List[dict],
+    hit_frame_est: int, hitter: Optional[dict], fps: float,
+    threshold_m: float = 0.5,
+) -> Optional[bool]:
+    """A5+ pre-hit stationarity gate — serves require the hitter to be
+    roughly still in the 1-2 seconds before contact (ball-toss stance,
+    preparation). Warmup and between-point bounces fail this because
+    both players are wandering.
+
+    Samples the hitter's own side (h_dets) at hit_frame - 1s and
+    hit_frame - 2s, each with ±0.3s tolerance. Compares each sample's
+    court_x/y to the hitter's current position.
+
+    Returns
+    -------
+    True
+        All prior samples within threshold_m of the hitter. Serve OK.
+    False
+        At least one prior sample > threshold_m away. Player was moving.
+    None
+        No prior samples found in either window. Can't confirm, caller
+        should give benefit of doubt (sparse far-side tracking often
+        leaves real far serves with no prior pose data).
+
+    Reference: academic systems (TenniSet, TAL4Tennis) use rally-state
+    labels or player-stationarity windows to reject warmup bounces.
+    yastrebksv/TennisProject and ArtLabss/tennis-tracking have no such
+    gate and so over-count serve-like bounces during practice footage.
+    """
+    if hitter is None or hitter.get("court_x") is None or hitter.get("court_y") is None:
+        return False
+
+    tol_frames = max(1, int(round(fps * 0.3)))
+    samples: List[dict] = []
+    for offset_s in (1.0, 2.0):
+        target = max(0, hit_frame_est - int(round(fps * offset_s)))
+        prior = _find_nearest_detection(
+            h_frames, h_dets, target, max_distance_frames=tol_frames,
+        )
+        if prior is not None and prior.get("court_x") is not None \
+                and prior.get("court_y") is not None:
+            samples.append(prior)
+
+    if not samples:
+        return None
+
+    for s in samples:
+        dx = abs(s["court_x"] - hitter["court_x"])
+        dy = abs(s["court_y"] - hitter["court_y"])
+        if dx > threshold_m or dy > threshold_m:
+            return False
+    return True
 
 
 def _find_nearest_detection(frames: List[int], dets: List[dict],
