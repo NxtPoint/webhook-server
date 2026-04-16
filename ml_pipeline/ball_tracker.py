@@ -658,15 +658,24 @@ class BallTracker:
             )
 
     def assign_peak_flight_speeds(self, window_frames: int = 15):
-        """Overwrite each bounce's ``speed_kmh`` with the peak pairwise speed
-        observed in the preceding ``window_frames`` frames.
+        """Overwrite each bounce's ``speed_kmh`` with a robust high-
+        percentile of the pairwise speeds in the preceding window.
 
         Motivation: per-frame pairwise speed at the bounce itself tends to
         under-report the true shot velocity because the ball has already
         decelerated and is about to bounce. SportAI reports "ball speed at
         hit" — the velocity during flight between the player's strike and
-        the bounce. A peak over the preceding window approximates that
-        semantic from the same data.
+        the bounce. A high-percentile over the preceding window
+        approximates that semantic.
+
+        p75 instead of max: TrackNet occasionally produces a single-frame
+        jitter where the ball position appears to jump, producing pairwise
+        speeds of 200-250 km/h. Using max() propagated those spikes to
+        every bounce whose window touched the bad frame — the 081e089c
+        reconcile showed 3+ adjacent bounces all reading 246.8 km/h (the
+        clamp ceiling) purely from one bad detection. p75 is robust to a
+        single outlier in a ~3-5 sample window but still captures the
+        genuine flight peak (second-highest measurement).
 
         Call after ``compute_speeds`` has populated pairwise speeds on all
         detections. Non-bounce detections are left unchanged.
@@ -684,10 +693,16 @@ class BallTracker:
                 if d.speed_kmh is not None and d.speed_kmh > 0:
                     speeds.append(d.speed_kmh)
             if speeds:
-                det.speed_kmh = max(speeds)
+                speeds.sort()
+                # p75 = 75th percentile. For a 4-sample window this is the
+                # 3rd-highest; for a 3-sample window it's the 2nd-highest;
+                # for a single sample it falls back to that sample. Robust
+                # to one jitter outlier per window.
+                k = max(0, min(len(speeds) - 1, int(len(speeds) * 0.75)))
+                det.speed_kmh = speeds[k]
                 n_updated += 1
         logger.info(
-            "assign_peak_flight_speeds: set peak-flight speed on %d/%d bounces (window=%d frames)",
+            "assign_peak_flight_speeds: set peak-flight speed (p75) on %d/%d bounces (window=%d frames)",
             n_updated,
             sum(1 for d in self.detections if d.is_bounce),
             window_frames,
