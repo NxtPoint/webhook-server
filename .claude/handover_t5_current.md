@@ -16,8 +16,14 @@
 |---|---|---|---|---|
 | 25 / 14 | eu / us | `sha256:1f8aa7a3d1...` | A0 + A1 | `8006ec73-95f5-48c6-ba9f-755cac3ae266` (eu, batch `729fca0e`) |
 | 26 / 15 | eu / us | `sha256:1521560c36...` | A0 + A1 + A2 | `a015bf3a-a6e6-47ae-9988-55f9bffc9820` (us, batch `90469804`) |
+| **27 / 16** | eu / us | `sha256:ee847c174...` | A0 + A1 + A2 + A3 | **`3f7af532-8827-4a5a-b68f-d1f68b544ab7`** (eu, batch `8fefa2ba`) |
 
-Parallel runs: eu on 25 (A0+A1 only) vs us on 15 (A0+A1+A2). Comparing lets us isolate A2's contribution. A3 held pending investigation of SportAI's ball_speed semantic (likely per-shot peak, not average — needs validation before we code against a suspicious target).
+Three runs layered so each code increment can be isolated on reconcile:
+- Run 1 (A0+A1 only): validates hitter-window gate for points-collapse.
+- Run 2 (A0+A1+A2): validates player identity stability (delta on var_y vs Run 1).
+- Run 3 (A0+A1+A2+A3): validates ball_speed unit + peak-flight semantic.
+
+A4 (backhand classification) dropped from bundle after probing revealed it's not a threshold tweak — pose keypoints are missing at 13/15 SportAI backhand moments because PLAYER_DETECTION_INTERVAL=5 and SAHI returns bboxes without pose. A4 needs a dual-window hitter resolver (±5 frame gate for coords, ±30 frame widening for keypoints only) and a couple of hours of care. Held as its own cycle.
 
 Orphaned job `249dc06d` marked failed (Spot killed it mid-run Apr 15; DB row was stale).
 
