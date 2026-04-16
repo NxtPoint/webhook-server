@@ -16,7 +16,17 @@
 |---|---|---|---|---|
 | 25 / 14 | eu / us | `sha256:1f8aa7a3d1...` | A0 + A1 | `8006ec73-95f5-48c6-ba9f-755cac3ae266` (eu, batch `729fca0e`) |
 | 26 / 15 | eu / us | `sha256:1521560c36...` | A0 + A1 + A2 | `a015bf3a-a6e6-47ae-9988-55f9bffc9820` (us, batch `90469804`) |
-| **27 / 16** | eu / us | `sha256:ee847c174...` | A0 + A1 + A2 + A3 | **`3f7af532-8827-4a5a-b68f-d1f68b544ab7`** (eu, batch `8fefa2ba`) |
+| **27 / 16** | eu / us | `sha256:ee847c174...` | A0 + A1 + A2 + A3 | `3f7af532-...` CANCELLED (eu Spot-starved) |
+| **28 / 17** | eu / us | `sha256:378f0219846...` | A0-A4 + #1 + #2 + S3 fix + B1 | **`e8bcdc58-7c94-4dea-ab66-033135c2e063`** (us, batch `af14e2e6`) |
+
+**Key findings from a015bf3a reconcile (Apr 16 afternoon)**:
+- A1 ✅ hitter coords now vary per row (no more identical 7.02/-4.44)
+- A2 ✅ partial — var_y 155 → 111 (far-player still jumps between real player and umpire)
+- A3a ✅ SportAI phantom "359 km/h" gone — truth is 99.7 km/h avg, realistic tennis
+- A4 + #1 ✅ Backhand went 0 → 42 (over-counts vs SportAI 15 — heuristic calibration needed)
+- Other dropped 46 → 5 (strokes classified properly)
+- #2 ⚠️ soft-fallback shipped but only added +2 rows of coverage — the null-hitter cases are mostly "no detection at all on hitter side" not "only-stale detections"
+- **A8 surfaced** — eval-player shows Player 1 avg_y=13.45 (umpire's position at y~11-12, not real far player at y=0 to -7). Widening tier-2 doesn't help because umpire is TIER 1 inside court; always beats real far player. Needs non-player filter (motion-persistence / aspect-ratio / pixel-zone exclusion).
 
 Three runs layered so each code increment can be isolated on reconcile:
 - Run 1 (A0+A1 only): validates hitter-window gate for points-collapse.
