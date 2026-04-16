@@ -1,248 +1,300 @@
-# HANDOVER — T5 ML Pipeline (Apr 15 eve → Apr 16 start)
+# HANDOVER — T5 ML Pipeline (end of Apr 16)
 
-## Read CLAUDE.md first — the T5 section is the authoritative reference.
+## Read CLAUDE.md first — the T5 section is the authoritative reference. This doc is the working state.
 
-## Apr 16 morning — session log
+═══════════════════════════════════════════════════════════════════════
+## TL;DR — where we are end of Apr 16
+═══════════════════════════════════════════════════════════════════════
 
-- Overnight run `fd623ed2` reconciled vs SportAI `4a194ff3`. Improvements: serves_d 17 → 20 (+3 ✓). Concerns: Player 1 frames dropped 1600 → 758 with var_y=155 (identity flipping), points still 2, backhand still 0, ball speed still ~48 km/h.
-- User flagged via screenshot: Player B (far) measuring court_y=-7 rejected by tier-2 (-4m cap). Physical distance behind baseline looks ~4m — calibration extrapolates too negatively near the top of the image.
-- **Code change merged: A0** — `player_tracker.py::_choose_two_players` tier-2 `behind_baseline` expanded to ±10m on both sides (was -4m / +8m). Tier 1 / 3 unchanged. Follow-up: investigate k1/k2 far-edge residual so tier-2 can tighten again later.
-- **Code change merged: A1** — `build_silver_match_t5.py::_find_nearest_detection` now accepts `max_distance_frames`. Caller back-tracks search target by `HIT_BEFORE_BOUNCE_FRAMES` (≈0.32s × fps) to estimate the actual hit frame, gates on `HIT_WINDOW_FRAMES` (≈0.20s × fps). Stale detections are no longer silently reused; the `serve_diag.no_hitter_stale_only` counter tracks how often the gate fires. Expected downstream: hitter coords vary across far-side hits → `serve_side_d` alternates → points 2 → ~15.
-- Master plan for rest of dev (Phases A / B / C) written into this doc and CLAUDE.md. Training is explicitly paused until Phase A is green.
+**3 things fundamentally solved on Apr 16**:
+- **Ball speed**: from 30 km/h (m/s unit bug) → p95 = 132 km/h matching SportAI's 129 km/h within 3 km/h. Real.
+- **Court calibration + far-player mapping**: user visually verified on frame 300+ that Player B at y=-7 is now correctly kept. A0 strict=False fix unblocked the tier-2 widening.
+- **SILVER VALIDATION = PASS** (harness validate 081e089c). First clean pass.
 
-**Deployed and submitted** (Apr 16):
+**1 thing with structural work ahead**: serve detection. 17 detected vs SportAI's 24. Some false positives still (ts=15.3 warmup), serve_side_d skew, low-speed noise. Genuine progress but not done.
 
-| Rev | Region | Image digest | Contents | Test task |
+═══════════════════════════════════════════════════════════════════════
+## BASELINE — task 081e089c (Apr 16 end-of-day reference)
+═══════════════════════════════════════════════════════════════════════
+
+**Task ID**: `081e089c-f7b1-49ce-b51c-d623bcc60953`
+**Region / image**: eu-north-1 / `sha256:378f0219846d3f3b193dedc45276de62a2d64fe992c519ead119447ed1ffb334` (rev 28 eu, rev 17 us — pre strict=False). Silver built with ALL Render-side fixes.
+
+### Reconcile vs SportAI `4a194ff3`
+
+| Metric | Pre-calibration (Apr 15, ad763368) | Start of Apr 16 (90ad59a8) | **End of Apr 16 (081e089c)** | SportAI target |
 |---|---|---|---|---|
-| 25 / 14 | eu / us | `sha256:1f8aa7a3d1...` | A0 + A1 | `8006ec73-95f5-48c6-ba9f-755cac3ae266` (eu, batch `729fca0e`) |
-| 26 / 15 | eu / us | `sha256:1521560c36...` | A0 + A1 + A2 | `a015bf3a-a6e6-47ae-9988-55f9bffc9820` (us, batch `90469804`) |
-| **27 / 16** | eu / us | `sha256:ee847c174...` | A0 + A1 + A2 + A3 | `3f7af532-...` CANCELLED (eu Spot-starved) |
-| **28 / 17** | eu / us | `sha256:378f0219846...` | A0-A4 + #1 + #2 + S3 fix + B1 | `e8bcdc58-...` CANCELLED (far-player still filtered at y=-7.8) |
-| **29 / 18** | eu / us | `sha256:7d38fded6e8...` | above + A0 strict=False | **`dc5e1945-200c-4296-beb9-b6eff4d6d4b3`** (us, batch `3bf39ff5`) |
+| Silver rows | 162 | 160 | 160 | 88 |
+| Serves raw | 1 | 21 | **17** | 24 |
+| serves_d | 1 | 17 | **17** | 24 |
+| **Points** | **1** | **2** | **6** | 17 |
+| Games | 1 | 1 | 1 | 2 |
+| Volleys | 156 | 2 | 5 | 5 |
+| Forehand | 21 | 80 | 88 | 41 |
+| **Backhand** | **0** | **0** | **43** | 15 |
+| Overhead | — | — | 3 | 1 |
+| **Ball speed avg** | **30** | **44** (m/s bug) | **72.1** | 99.7 |
+| **Ball speed p95** | — | — | **132.1** | **129.2** ✅ |
+| **Ball speed max** | — | 246.8 (clamp) | **175.3** | 132.5 |
+| Ball y range | [10.7, 24.3] | [-3.4, 28.6] | [-3.4, 28.6] | full court |
+| Serve bucket wide | 0 | 0 | 16 | 43 |
+| Serve bucket T | — | — | 40 | 4 |
+| server_end_d populated | 20% | 100% | 82% | 100% |
+| point_number populated | — | 62% | **82%** | 100% |
+| shot_ix_in_point populated | — | 9% | 22% | 88% |
 
-**Critical A0 follow-up** — the tier-2 widening (±10m in `player_tracker.py`) had ZERO effect on its own because `court_detector.to_court_coords(strict=True)` returns None for any feet outside ±5m. The player-scoring path short-circuited into a "minimal score" branch at `_choose_two_players` line 1056 BEFORE tier-2 could be consulted. Rev 29/18 passes `strict=False` when projecting player candidates so the widened tier-2 actually runs. Ball tracker keeps strict=True (we don't want ball coords beyond ±5m to be valid).
+### Eval signals (081e089c)
 
-**Key findings from a015bf3a reconcile (Apr 16 afternoon)**:
-- A1 ✅ hitter coords now vary per row (no more identical 7.02/-4.44)
-- A2 ✅ partial — var_y 155 → 111 (far-player still jumps between real player and umpire)
-- A3a ✅ SportAI phantom "359 km/h" gone — truth is 99.7 km/h avg, realistic tennis
-- A4 + #1 ✅ Backhand went 0 → 42 (over-counts vs SportAI 15 — heuristic calibration needed)
-- Other dropped 46 → 5 (strokes classified properly)
-- #2 ⚠️ soft-fallback shipped but only added +2 rows of coverage — the null-hitter cases are mostly "no detection at all on hitter side" not "only-stale detections"
-- **A8 surfaced** — eval-player shows Player 1 avg_y=13.45 (umpire's position at y~11-12, not real far player at y=0 to -7). Widening tier-2 doesn't help because umpire is TIER 1 inside court; always beats real far player. Needs non-player filter (motion-persistence / aspect-ratio / pixel-zone exclusion).
-
-Three runs layered so each code increment can be isolated on reconcile:
-- Run 1 (A0+A1 only): validates hitter-window gate for points-collapse.
-- Run 2 (A0+A1+A2): validates player identity stability (delta on var_y vs Run 1).
-- Run 3 (A0+A1+A2+A3): validates ball_speed unit + peak-flight semantic.
-
-A4 (backhand classification) dropped from bundle after probing revealed it's not a threshold tweak — pose keypoints are missing at 13/15 SportAI backhand moments because PLAYER_DETECTION_INTERVAL=5 and SAHI returns bboxes without pose. A4 needs a dual-window hitter resolver (±5 frame gate for coords, ±30 frame widening for keypoints only) and a couple of hours of care. Held as its own cycle.
-
-Orphaned job `249dc06d` marked failed (Spot killed it mid-run Apr 15; DB row was stale).
-
-**Watch for (after run completes)**:
-- CloudWatch `T5 serve diagnostics` — `no_hitter_stale_only > 0` (confirms gate is firing; 0 would mean far-side coverage is unexpectedly dense).
-- Reconcile points: target 10-15 (up from 2).
-- Sample silver rows: hitter coords should show VARIATION across bounces, not a single repeated (hx, hy) pair.
-- Tier-2 catch rate: Player B (far) frame count vs 90ad59a8 — should rise once y=-7 observations are no longer rejected.
+- **eval-court**: PASS (confidence 0.857, VALIDATED mode=radial rms=6.26)
+- **eval-player**: PASS. Player 0 (near) var_y=1.65 (rock solid), 1590 frames. Player 1 (far) var_y=104 (umpire interference — A8 remaining), 1656 frames (up from 1283 pre-A0-strict=False).
+- **eval-ball**: detection 13.0%, 162 bounces, court_coord 97.2%, speed_max 246.8 (non-bounce pairwise still has jitter but bounces corrected to 175).
+- **BRONZE VALIDATION**: PASS (except ball court_x/y out-of-range — known calibration extrapolation edge, non-blocking).
+- **SILVER VALIDATION**: **PASS** (all fields present, coverage above thresholds).
 
 ═══════════════════════════════════════════════════════════════════════
-## TL;DR — where we are
+## PHASE A STATUS (correctness — the list you asked for)
 ═══════════════════════════════════════════════════════════════════════
 
-**Court calibration SOLVED.** Radial lens correction locks at RMS 6.26 px on MATCHI wide-angle footage.
-**Player detection SOLVED.** Near + far both tracked on ~95%+ of frames. Spectators/linespeople rejected.
-**First clean silver run**: task `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` — serves jumped 1 → 21, volley over-classification 156 → 2, far half of court now projectable.
+| # | Item | Status | Notes |
+|---|---|---|---|
+| **A0** | Player tier-2 widen + strict=False | ✅ **DONE** | Far player at y=-7 now caught. User visually verified on frame 300+. |
+| **A1** | Hitter-window gate (+soft-fallback #2) | ✅ **DONE** | Hitter coords vary per bounce (no more stale 7.02/-4.44). |
+| **A2** | Player identity guards | ✅ **PARTIAL** | var_y 155→104. Umpire still wins some frames. Needs A8 to fully resolve. |
+| **A3a** | ball_speed unit (km/h) | ✅ **DONE** | Phantom "359 km/h" gone, units consistent. |
+| **A3b** | Peak flight speed (p75 over window) | ✅ **DONE** | Max clamps gone, p95 matches SportAI within 3 km/h. |
+| **A4** | Dual-window keypoint + #1 stroke_d 'bh' | ✅ **DONE (over-counts)** | Backhand pipeline works (0→43). Over-classifies vs SportAI 15 — needs heuristic calibration, non-blocking. |
+| **A5** | eps widen + FIRST_SERVE_MIN_TS + stationarity | ✅ **PARTIAL** | eps=1.5 landed, ts=15.3 warmup still slips through — bump to 30s. Stationarity working but can't catch first-2s bounces. |
+| **A6** | Wide serve bucket fix | ❌ **NOT STARTED** | T bucket 40 vs 4 (over), wide 16 vs 43 (under). Bounce x-thresholds need tuning. |
+| **A7** | shot_ix_in_point / rally_length | ⚠️ **CASCADES** | Currently 22% vs SportAI 88%. Root: missing serves/points; improves as A5/A6 land. |
+| **A8** | Non-player filter (umpire) | ❌ **NOT STARTED** | Umpire wins far-slot on some frames (tier 1 in-court beats tier 2 behind baseline). Needs motion-persistence or aspect-ratio or explicit zone exclusion. Major contributor to Player 1 var_y=104. |
 
-Remaining silver-layer bugs are **all surfaced and diagnosed** (they were always there, just hidden under the lens distortion). Ready to iterate on serve logic + ball speed + backhand next session.
+**Newly discovered — Apr 16 evening**:
+| Item | Details |
+|---|---|
+| **A5 follow-up — FIRST_SERVE_MIN_TS_S too loose** | 15s allowed ts=15.3 warmup serve. SportAI's first real is ts=54.5. Bump to 30s (conservative). |
+| **serve_side_d skew** | T5 5 deuce / 12 ad (skewed). SportAI alternates properly. Logic mis-computes from hitter_x. Investigate. |
+| **Low-speed serve bug** | p75 over window returns slow values when no pre-hit flight data exists (window all-slow). Some serves show 0.1, 13, 17 km/h. Require window to have ≥ N frames with speed > threshold, else leave NULL. |
+| **Cooldown (MIN_SERVE_INTERVAL_S=8)** | Probably blocking fault-retry serves. SportAI has 24 serves for 17 points (1.4 serves/point). T5 has 17/6 (2.8/point) — cooldown may be letting through SECOND bounces of the same serve, and rejecting legitimate retries. Investigate. |
+
+═══════════════════════════════════════════════════════════════════════
+## PHASE B STATUS — performance (47-min run, data collected today)
+═══════════════════════════════════════════════════════════════════════
+
+**B1 timing data from 081e089c** (CloudWatch, full-run FINAL):
+
+```
+stage_timings FINAL [total=2822.9s=47min]
+  court=2.2s (0%)  ball=714.6s (25%)  motion_mask=623.0s (22%)  player=1483.0s (53%)  postprocess=0s
+player_sub FINAL [player_total=1480.9s  sahi_ran=3166 sahi_skipped=2]
+  full_yolo=410.9s (28%)  sahi=1065.4s (72%)  choose2=1.7s (0%)  other=2.9s (0%)
+```
+
+**Key finding: SAHI is 38% of total runtime (1065s of 2823s). Current B4 skip rule fires only 2 times out of 3168 player frames (<0.1%). Huge optimization wedge.**
+
+| # | Item | Status | Expected savings |
+|---|---|---|---|
+| **B1** | Per-stage timing instrumentation | ✅ **DONE** | Data collected. Gives us this table. |
+| **B4+** | Tighten SAHI skip rule | ❌ **TOP PRIORITY** | Currently <0.1% skip rate. If we skip when full-frame YOLO has 2 candidates OR far player tracked last N frames, easy 40-60% skip rate = **~400-600s saved (14-21%)**. |
+| **B3** | SAHI tile 640→800, overlap 15%→10% | ❌ Not started | ~200-300s saved. Risk: larger tiles = less zoom on 30-40px far player; may reduce far detection rate. |
+| **B2** | PLAYER_DETECTION_INTERVAL 5→8 | ❌ Not started | ~550s on player stage. Risk: reduces pose coverage further (A4 already pose-starved at 13%). |
+| **B5** | FFmpeg CUDA decode | ❌ Not started | ~200-400s. High risk — real code rewrite. |
+| **B6** | YOLO frame batching | ❌ Not started | ~500-800s. Very high — ~1 day of work. |
+
+**Realistic Phase B target**: 47 min → ~30 min with B4+ (SAHI skip rule) + B3 (tile config). No architecture changes.
+
+═══════════════════════════════════════════════════════════════════════
+## PHASE C STATUS (ops, non-blocking)
+═══════════════════════════════════════════════════════════════════════
+
+| # | Item | Status |
+|---|---|---|
+| C1 | AWS on-demand G-family vCPU quota request | ❌ User action needed via AWS Support (~24-48h turnaround). |
+| C2 | `harness dual-submit` one-command tool | ❌ Not started. |
+| C3 | `T5_DEBUG=1` env var toggle for live debug | ❌ Not started. |
+| — | Cross-region S3 (was blocking us-east-1) | ✅ Fixed in `__main__.py` via bucket-region auto-discovery. |
+
+═══════════════════════════════════════════════════════════════════════
+## KEY INSIGHTS / LESSONS LEARNT ON APR 16
+═══════════════════════════════════════════════════════════════════════
+
+1. **Tier widening alone doesn't help** — if `to_court_coords(strict=True)` returns None for y < -5, the widened zone never gets consulted. Config changes in the wrong branch are no-ops. Always trace the call chain before claiming a config fix is live.
+
+2. **Shadowed config constants** — `EPS_BASELINE_M` was defined in TWO places (build_silver_v2.py and build_silver_match_t5.py). T5 uses its own local copy via SPORT_CONFIG_SINGLES, so the shared-config fix was a no-op. Memory saved at `feedback_shadowed_config_constants.md`.
+
+3. **Render auto-deploy lag** — commits need to propagate to Render before `rerun-ingest` uses them. Auto-ingest that fires at batch-end can race with Render rebuilds. Always push, wait 2-3 min, THEN rerun. Memory saved at `feedback_push_before_rerun.md`.
+
+4. **Ball-speed fix was a chain of 3 bugs**:
+   - Unit inconsistency (T5 m/s vs SportAI km/h)
+   - Bounce-frame pairwise speed is not "speed at hit" (needed peak-over-window)
+   - `max()` over window is fragile to TrackNet jitter (needed p75)
+   Fixing one without the others produced nothing meaningful.
+
+5. **B1 timing data revealed the real bottleneck** — SAHI at 72% of player stage. Every hour of engineering effort on ball / court / choose2 would have been a waste. Measurement before optimization is mandatory.
+
+6. **Parallel front-end submission as Spot insurance** — user submitted via Media Room while dc5e1945 retry was stuck, and the frontend run won. Same image, same data. Insurance against Spot pool instability in either region. Keep using this pattern on important runs until on-demand quota lands.
+
+7. **`rerun-silver` vs `rerun-ingest`** — rerun-ingest re-downloads bronze JSON from S3 (fails if JSON was cleaned up). rerun-silver rebuilds from existing ml_analysis.* tables. For iterating on silver code against the SAME bronze, always use rerun-silver.
 
 ═══════════════════════════════════════════════════════════════════════
 ## DEPLOYMENT STATE
 ═══════════════════════════════════════════════════════════════════════
 
-| Region | Job definition | Image digest |
-|---|---|---|
-| eu-north-1 | **revision 24** | `sha256:9107d338e7e05e60ef6a6c32d6220600e023cbc667e34706903109e30815aee6` |
-| us-east-1 | **revision 13** | same digest |
+| Rev | Region | Image digest | Contents |
+|---|---|---|---|
+| **29 / 18** | eu / us | `sha256:7d38fded6e85be6bcffa5f220821a058b55651986a1a1d4e328bf62f0168afd5` | Current latest. A0-A5 + #1 + #2 + cross-region S3 + B1 + strict=False |
 
-Retry strategy: 3 attempts, auto-retry on `Host EC2*` (Spot interruption) only.
+**Render main branch is at** commit `1e87a91` (A3b p75 ball-speed fix) — auto-deployed. Includes all silver-side fixes: A1, A3a, A4, A5 eps=1.5, A5+ stationarity, FIRST_SERVE_MIN_TS_S=15.0, #1 bh-mapping, #2 soft-fallback.
 
-**Compute reality**: account has 0 on-demand G-family vCPU quota in both regions. Production is Spot-only. Manual region-migration via `aws batch submit-job` when one region's Spot is flat.
+**Not yet in a Batch image** (pushed to main but need rebuild to apply):
+- `1e87a91` — ball_tracker.py p75 over window (currently only backfilled manually on 081e089c; next Batch run picks it up natively)
 
-### Reference tasks
+═══════════════════════════════════════════════════════════════════════
+## REFERENCE TASKS
+═══════════════════════════════════════════════════════════════════════
 
 | Purpose | Task ID |
 |---|---|
 | SportAI ground truth | `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` |
-| Last pre-calibration T5 (known-wrong) | `ad763368-eb3d-40f0-b9fe-84e0c9755c90` |
-| **First clean T5 (rev 23 code, radial calibrated)** | `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` |
+| Pre-calibration T5 (known-wrong, Apr 15 AM) | `ad763368-eb3d-40f0-b9fe-84e0c9755c90` |
+| Post-calibration, pre-today (Apr 15 PM) | `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` |
+| First successful today (Apr 16 AM, A0+A1+A2) | `a015bf3a-a6e6-47ae-9988-55f9bffc9820` |
+| **Apr 16 end-of-day baseline (everything)** | **`081e089c-f7b1-49ce-b51c-d623bcc60953`** |
 
-### S3 reference video
-
-`s3://nextpoint-prod-uploads/wix-uploads/1776237811_match.mp4` — the 10-min match that 90ad59a8 ran against. Already downloaded locally to `ml_pipeline/test_videos/match_90ad59a8.mp4` for stroke training.
-
-═══════════════════════════════════════════════════════════════════════
-## RECONCILE NUMBERS — FIRST CLEAN RUN
-═══════════════════════════════════════════════════════════════════════
-
-Compared to SportAI ground truth `4a194ff3`:
-
-| Metric | Pre-cal (ad763368) | Post-cal (90ad59a8) | SportAI |
-|---|---|---|---|
-| Silver rows | 162 | 160 | 88 |
-| Serves raw | 1 | **21** | 24 |
-| Serves d (Pass 3 gate) | 1 | **17** | 24 |
-| Points | 1 | 2 | 17 |
-| Games | 1 | 1 | 2 |
-| Volleys | 156 | **2** | 5 |
-| Forehand | 21 | 80 | 41 |
-| Backhand | 0 | 0 | 15 |
-| Ball court_y range | [10.7, 24.3] | **[-3.4, 28.6]** | full court |
-| Ball speed avg (km/h) | 30 | 44 | 359 |
-| server_end_d populated | 20% | **100%** | 100% |
+**Reference video S3**: `s3://nextpoint-prod-uploads/wix-uploads/1776237770_match.mp4` (re-uploaded Apr 16 after original 1776237811 was cleaned up). Local copy at `ml_pipeline/test_videos/match_90ad59a8.mp4.mp4` (50.8 MB).
 
 ═══════════════════════════════════════════════════════════════════════
-## MASTER PLAN — finish all dev before training (Apr 16+)
+## VALIDATION SEQUENCE (run after each code change)
 ═══════════════════════════════════════════════════════════════════════
 
-**Strategy**: Get the pipeline rock-solid FIRST. Only start stroke-classifier
-training once Phase A is green on a fresh run. Every iteration before that
-burns a dual-submit pair that SportAI charges for — we want each one to
-deliver a strictly-better labeled set.
-
-Three phases, strictly sequential: **A = correct, B = fast, C = ops.** Don't
-skip ahead. Numbers inside each phase are rough priority; merge order may shift
-with findings.
-
-### Phase A — Correctness (blocks training)
-
-Target outcome: reconcile vs SportAI on the reference video closes to
-**serves 22-24 / points 12-15 / backhand 10-15 / ball speed 200-400 km/h avg**.
-
-| # | Symptom (vs SportAI) | Location | First move |
-|---|---|---|---|
-| **A0** | Player B measuring y=-7 rejected by -4m tier-2 cap | `player_tracker.py::_choose_two_players` | ✅ Done — tier-2 expanded to ±10m. Validate on next run that Player B capture rate > 60%. |
-| **A1** | Points 2 vs 17 — stale hitter coords | `build_silver_match_t5.py::_find_nearest_detection` | Require hit-frame detection within ±5 frames of the hit event, not the bounce. Flag `hitter_resolved=False` on miss; do NOT silently reuse last seen. |
-| **A2** | Player 1 identity instability (var_y=155 in fd623ed2) | `player_tracker.py` tracking loop | Confirm bbox continuity — if ID jumps between two disjoint spatial clusters, tighten assignment with IOU threshold + distance gate. |
-| **A3** | Ball speed 48 km/h vs 359 (8× under) | `ball_tracker.py::compute_speeds` | Switch from mean-across-all-bounces to per-rally peak-at-hit ±3 frames (or 95th pct). Court coords are known-correct, it's a semantic bug. |
-| **A4** | Backhand 0 vs 15 | `build_silver_match_t5.py` near-player heuristic | Dump COCO keypoints for one SportAI-labeled backhand frame. Validate wrist/shoulder x signal; check keypoint confidence floor didn't swallow them. |
-| **A5** | 4 serves lost Pass 1→3 | `build_silver_v2.py:515-525` gate | Enable serve-diag logging in Pass 1; cross-ref swing_type assignments for the 4 dropped rows. Likely `fh`/`bh` instead of `overhead`, OR hitter_y just inside [0.30, 23.47]. |
-| **A6** | Wide serve bucket 0 vs 43 | Pass 3 zone derivation for `serve_bucket_d` | Check bounce x-thresholds against actual MATCHI video geometry; likely off by a metre or using wrong court width. |
-| **A7** | shot_ix_in_point / rally_length collapse | Pass 3 | Cascades from A1 — should auto-fix once points partition correctly. Verify, don't pre-patch. |
-
-### Phase B — Performance (runtime 55 min → target 30-45, stretch 20)
-
-Only once Phase A is stable — perf tweaks that change detection cadence will
-muddle correctness debugging.
-
-| # | Change | Expected gain |
-|---|---|---|
-| **B1** | Per-stage timing instrumentation in `pipeline.py::_process_frame` (court / ball / MOG2 / player / SAHI). Log stage totals per 1000 frames. | Baseline for the rest of Phase B. |
-| **B2** | `PLAYER_DETECTION_INTERVAL` 5 → 8 frames | ~30% player-stage reduction; interpolation between detections already good. |
-| **B3** | SAHI tile 640 → 800 px, overlap 15% → 10% | Fewer tiles/frame. |
-| **B4** | Skip SAHI when full-frame YOLO already has a valid far candidate | Avoid the big-cost path on easy frames. |
-| **B5** | FFmpeg CUDA hardware decode (`h264_cuvid`) | ~10-20% wall-clock. |
-| **B6** | Batch YOLO inference across frames (stretch) | Big win, ~1 day eng. |
-
-### Phase C — Operations (non-blocking, schedule alongside A/B)
-
-| # | Change | Why |
-|---|---|---|
-| **C1** | Submit AWS on-demand G-family vCPU quota request (both regions) | Current 0-quota forces Spot-only; Spot starvation = manual region migration. See `.claude/playbook_aws_batch_ondemand_fallback.md`. |
-| **C2** | `harness dual-submit` command — submit SportAI + T5 to same video in one call, return both task_ids + diff URL once done | Turns each training round into one command instead of five. |
-| **C3** | `T5_DEBUG=1` env var toggle for diagnostic logging & debug-frame uploads | Production runs stay quiet; debug runs go loud. |
-
-### Stopping condition — move to training when:
-
-- Phase A: 6 of 7 items green on reconcile
-- Phase B: wall-clock < 45 min (not the 20-min stretch)
-- Phase C: dual-submit tool working, so training prep doesn't bottleneck
-
-Then run 5 dual-submit matches, export stroke data, train, re-benchmark.
-
-═══════════════════════════════════════════════════════════════════════
-## VALIDATION SEQUENCE (run after EACH next code change)
-═══════════════════════════════════════════════════════════════════════
-
-After deploying a fix and getting a fresh T5 run:
-
+**For silver-code changes (Pass 1/3/5, stroke_d, etc)** — no Batch run needed, ~10 seconds:
 ```bash
-# On Render shell (needs DATABASE_URL env):
-python -m ml_pipeline.harness validate <new_task_id>
-python -m ml_pipeline.harness rerun-ingest <new_task_id>   # if direct-submit bypassing auto-ingest
-python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <new_task_id>
-python -m ml_pipeline.harness eval-ball <new_task_id>
-python -m ml_pipeline.harness eval-player <new_task_id>
-python -m ml_pipeline.harness eval-court <new_task_id>
+# On Render shell (DATABASE_URL env set):
+python -m ml_pipeline.harness rerun-silver <task_id>
+python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <task_id>
 ```
 
-**Quick regression check on CloudWatch logs**:
+**For Batch-side changes (ball_tracker, player_tracker, pipeline, camera_calibration)** — need fresh run:
+1. Docker build + push to ECR (both regions)
+2. Register new Batch job def revision
+3. Submit via `aws batch submit-job` OR via Media Room upload (preferred — auto-ingest works)
+4. ~47 min wait for completion + auto-ingest
+5. Reconcile + evals
+
+**Full eval suite**:
+```bash
+python -m ml_pipeline.harness validate <task_id>
+python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <task_id>
+python -m ml_pipeline.harness eval-ball <task_id>
+python -m ml_pipeline.harness eval-player <task_id>
+python -m ml_pipeline.harness eval-court <task_id>
+```
+
+**Serve viewer** (local, Windows):
+```bash
+DATABASE_URL="..." python -m ml_pipeline.diag.serve_viewer <task_id> \
+    --video ml_pipeline/test_videos/match_90ad59a8.mp4.mp4 \
+    --output ./diag_<tid>
+```
+
+═══════════════════════════════════════════════════════════════════════
+## NEXT SESSION — PRIORITY ORDER
+═══════════════════════════════════════════════════════════════════════
+
+### P0 — Serve detection quality (the remaining Phase A work)
+
+1. **Bump FIRST_SERVE_MIN_TS_S 15s → 30s** — 1-line change in `build_silver_match_t5.py`. Kills the ts=15.3 warmup false positive. SportAI's first real serve is 54.5s, 30s is safely conservative.
+
+2. **Investigate serve_side_d skew** (5 deuce / 12 ad vs SportAI's balanced). Look at the `serve_side_d` CASE in `build_silver_v2.py` Pass 3 — probably uses dynamic mid_x that gets skewed when most serves are from one side.
+
+3. **Fix low-speed serve artefacts** — `assign_peak_flight_speeds` should return None (not the p75) when fewer than N genuine flight samples exist in the window. Signals the silver builder to leave ball_speed NULL instead of reporting 0.1 km/h.
+
+4. **Review MIN_SERVE_INTERVAL_S=8** — SportAI has 24 serves / 17 points = 1.4 serves/point (fault retries). T5 has 17/6 = 2.8/point which implies we're LETTING THROUGH second bounces of the same serve AND rejecting legitimate retries. Split into two mechanisms: aggressive same-serve-dedup (3s) and legitimate-retry allowance (per-point reset).
+
+5. **A6 — wide serve bucket** (40 T vs 4, 16 wide vs 43). Check the x-thresholds in Pass 3 `serve_bucket_d` CASE against actual MATCHI court geometry.
+
+### P1 — A8 umpire filter (Player 1 var_y=104)
+
+Real source of Player 1 oscillation. Umpire at y=11-12 scores tier-1 (in-court) 3000 vs real far player tier-2 (behind baseline) 2000. Options:
+- **Motion-persistence**: real player moves across multiple frames; umpire sits still. Use MOG2 history over 3-5 seconds.
+- **Aspect-ratio**: sitting umpire bbox has different aspect than standing player.
+- **Explicit pixel-zone exclusion**: umpire chair area is known fixed region.
+
+Recommend motion-persistence — cleanest, no fragile pixel zones.
+
+### P2 — Phase B optimisation (biggest wedge identified)
+
+**B4+ — tighten SAHI skip rule** (top priority, low risk). Currently skips <0.1% of frames. Proposed rule: skip SAHI when full-frame YOLO returned ≥2 candidates AND one of them is in the far half. Expected 40-60% skip rate → **~400-600s runtime saved (47 min → 35 min)**.
+
+**B3 — SAHI tile config** (second priority). Bigger tiles, less overlap. Test against far-player detection rate on a short clip.
+
+### P3 — A4 heuristic calibration (over-counting backhands)
+
+Backhand 43 vs SportAI 15. A4's wider-window keypoint lookup is now finding poses but the FH/BH heuristic (in `_infer_swing_type_from_keypoints`) is too aggressive. Dump COCO keypoints for SportAI-labelled forehands vs backhands and calibrate the wrist/shoulder x-threshold.
+
+### Stopping condition to move to stroke-classifier training
+
+6 of 9 Phase A items green, wall-clock < 40 min, dual-submit tool working. Then 5 dual-submit matches → train stroke classifier → re-benchmark.
+
+═══════════════════════════════════════════════════════════════════════
+## STARTER PROMPT FOR NEXT SESSION
+═══════════════════════════════════════════════════════════════════════
 
 ```
-grep "court_calibration: LOCKED"      # should say VALIDATED mode=radial rms=6.xx
-grep "Option A iter"                   # should converge to bad_indices=[]
-grep "per-keypoint errors (metres)"    # mean should be <0.3m
+Continuing T5 ML pipeline work. End of Apr 16 we landed a major milestone:
+SILVER VALIDATION = PASS on task 081e089c-f7b1-49ce-b51c-d623bcc60953.
+Ball speed is p95 = 132 km/h matching SportAI 129. Player B (far side)
+correctly tracked after A0 strict=False fix. Points 1→6 (SportAI 17).
+
+Please read `.claude/handover_t5_current.md` first — it has the full
+Apr 16 baseline, Phase A/B/C status table, key insights learned, and
+ranked next-session priorities (P0/P1/P2/P3).
+
+Today's priority is P0 — serve detection quality. Four fixes in order
+(all small, silver-side only — no Batch rebuild needed):
+
+  1. Bump FIRST_SERVE_MIN_TS_S 15 → 30 in build_silver_match_t5.py
+     (kills ts=15.3 warmup false positive)
+  2. Investigate + fix serve_side_d skew (5 deuce / 12 ad)
+  3. p75 should return NULL when flight-sample count is too low
+     (kills 0.1 / 13 / 17 km/h phantom serves)
+  4. Split MIN_SERVE_INTERVAL_S into same-serve-dedup (3s) vs
+     legitimate-retry (per-point reset) — T5 has 2.8 serves/point
+     suggesting both directions broken
+
+Then P1: A8 umpire filter via motion-persistence (real source of
+Player 1 var_y=104 umpire interference — tier-1 in-court umpire
+beats real far player at tier-2).
+
+Then P2: SAHI skip rule is top perf win (72% of player stage, <0.1%
+skip rate today). Before coding optimization, re-read B1 timing data
+in the handover — measurement-driven, not guessed.
+
+Reference task for comparison: 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb
+(SportAI ground truth).
+
+Starter session checks:
+  git status                           # clean, no uncommitted
+  git log --oneline origin/main..HEAD  # empty, should have 0 ahead
+  cat .claude/handover_t5_current.md   # this doc
 ```
 
-If any of these look wrong, calibration regressed — fix that before chasing silver.
-
 ═══════════════════════════════════════════════════════════════════════
-## STROKE TRAINING — WEEKEND TASK
+## COMMIT CHRONOLOGY (Apr 16)
 ═══════════════════════════════════════════════════════════════════════
 
-User wants to do training on the weekend once multiple matches are accumulated. Infrastructure ready:
+Chronological session commits for git-log reference:
+- `753d8fb` A0 + A1 (tier-2 widen, hitter-window gate)
+- `f6b5d05` A2 (player identity guards)
+- `111174b` A3 (ball_speed unit + peak flight)
+- `3ff78ef` A4 (dual-window keypoint)
+- `aa1157f` cross-region S3
+- `a6ec499` B1 per-stage timing
+- `16191f0` #1 stroke_d bh + #2 soft-fallback
+- `b6e9d7a` A0 follow-up (strict=False) — the fix that unblocked far player
+- `bec5e5e` A5 eps widen (wrong file, no-op)
+- `bcb1ec3` serve viewer
+- `ae1a454` A5+ stationarity
+- `2f4a53d` A5 eps actually landed (right file) + FIRST_SERVE_MIN_TS_S
+- `1e87a91` A3b p75 not max
 
-- Local venv: `.venv` (Python 3.14) has `torch==2.11.0+cpu`, `torchvision`, `opencv`, `sqlalchemy` — tested working.
-- Training video: `ml_pipeline/test_videos/match_90ad59a8.mp4` (already downloaded).
-- Commands (on Render shell for DB access, then local for training):
-  ```bash
-  python -m ml_pipeline.harness export-stroke-data \
-    --sportai-task 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb \
-    --t5-task 90ad59a8-8853-4014-9fd8-c32af7c4a2e9 \
-    --video ml_pipeline/test_videos/match_90ad59a8.mp4 \
-    --output ./stroke_data/
-  python -m ml_pipeline.harness train-stroke --data ./stroke_data/ --epochs 50
-  ```
-- Output lands at `ml_pipeline/models/stroke_classifier.pt` (gitignored by default — **manually add to commit** if wanted to ship, OR change .gitignore to include `.pt` files).
-
-Training on one match yields skewed weights (over-fit to that one match). Real accuracy requires 3-5 matches / 300+ examples / held-out validation. Start proof-of-concept on weekend, accumulate more matches over coming weeks.
-
-═══════════════════════════════════════════════════════════════════════
-## OPEN THREADS (not urgent)
-═══════════════════════════════════════════════════════════════════════
-
-- AWS on-demand G-family quota request (see `.claude/playbook_aws_batch_ondemand_fallback.md`). Without it, Spot tightness = manual region migration.
-- Performance target 55 min → 20 min: untouched. Requires per-stage timing instrumentation first. Realistic post-tuning 35-40 min; 20 min needs batching refactor (~1 day of engineering).
-- TrackNetV3 weights unavailable (architecture ported in `tracknet_v3.py`). Ball is already 99.5% detected — not critical.
-- SportAI training data is NOT a gold standard:
-  - 100% on player xy/movement — trust for calibration
-  - 95% on strokes — train stroke classifier on this (model ceiling ~95%)
-  - 70% on ball bounces — **DON'T** train bounce detection on this; our rule-based detector is cleaner.
-
-═══════════════════════════════════════════════════════════════════════
-## COMMIT CHRONOLOGY (Apr 15)
-═══════════════════════════════════════════════════════════════════════
-
-Summary: 25+ commits today, rev 10 → rev 24 (eu) / rev 3 → rev 13 (us-east-1). Timeline in `project_t5_apr15_breakthrough.md` memory file.
-
-Latest commits (most recent first):
-- `216d111` chore: tidy VS Code source control + AWS playbook
-- `f97690e` fix(t5): legacy branch tier 0 → score 0 + MIN_SELECTABLE_SCORE
-- `9525875` fix(t5): tier 0 scores 0, near baseline +8m, SAHI crop margin 10% → 30%
-- `ab0b5bc` fix(t5): tier 0 for null-projection candidates + relax pixel gate
-- `15094b3` fix(t5): court polygon from calibrated projection when available
-- `d54d31c` fix(t5): raise Option A RMS threshold 5.0 → 10.0
-- `584c3bb` fix(t5): iterative outlier rejection in calibration
-- `09bf724` fix(t5): unblock CNN-path + decouple calibration observations
-- `116cd81` feat(t5): lens distortion calibration (Option A + Option C fallback)
-- `8a1a253` fix(t5): court calibration locks BEST detection, not most recent (where it all began today)
-
-═══════════════════════════════════════════════════════════════════════
-## IF STARTING A FRESH CLAUDE CHAT
-═══════════════════════════════════════════════════════════════════════
-
-Paste this as the first message to the fresh agent:
-
-> Continuing T5 ML pipeline work from Apr 15. Lens distortion is solved (rev 24/13 deployed, mode=radial rms=6.26). Last clean run is task `90ad59a8-8853-4014-9fd8-c32af7c4a2e9`. Please read CLAUDE.md (T5 section) and `.claude/handover_t5_current.md` first — they have full context. Top priority today is P0 (points collapse from 17 → 2 due to stale hitter coords in `build_silver_match_t5.py::_find_nearest_detection`), then P1 (4 serves lost between Pass 1 and Pass 3), then P2 (ball speed 8× compressed in `ball_tracker.compute_speeds`), then P3 (backhand classification returning 0 of 15). Validation sequence after each fix is in the handover doc.
-
-That gives a fresh agent everything they need in ~150 words.
+Plus repeated docs/handover updates.

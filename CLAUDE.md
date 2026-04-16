@@ -500,29 +500,42 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 
 ### Reconciliation reference
 
-- SportAI ground truth: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves; ball speed avg 358 km/h)
-- Latest T5 reference run (pre-calibration, known-wrong): `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 162 rows, 1 point, 1 serve, ball speed avg 30 km/h (ball y range `[10.69, 24.29]`).
-- **First clean T5 run with radial calibration** (Apr 15 evening): `90ad59a8-8853-4014-9fd8-c32af7c4a2e9`. Lock `mode=radial rms=6.26 px from 11 observations`. Key numbers from reconcile vs SportAI ground truth `4a194ff3`:
+- SportAI ground truth: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves; ball_speed avg 99.7 km/h, p95 129.2, max 132.5)
+- Pre-calibration T5 (known-wrong, Apr 15 AM): `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 1 point, 1 serve, ball speed reported 30 km/h
+- Post-calibration first clean (Apr 15 PM): `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` — 2 points, 17 serves
+- **Apr 16 end-of-day baseline (every fix landed)**: **`081e089c-f7b1-49ce-b51c-d623bcc60953`**. SILVER VALIDATION = PASS.
 
-| Metric | Pre-cal (ad763368) | Post-cal (90ad59a8) | SportAI |
-|---|---|---|---|
-| Silver rows | 162 | 160 | 88 |
-| Serves (raw) | 1 | **21** | 24 |
-| Serves (serve_d after Pass 3 gate) | 1 | **17** | 24 |
-| Points | 1 | 2 | 17 |
-| Games | 1 | 1 | 2 |
-| Volley classifications | 156 | **2** | 5 |
-| stroke_d Backhand | 0 | 0 | 15 |
-| stroke_d Forehand | 21 | 80 | 41 |
-| Ball court_y range | [10.7, 24.3] | **[-3.4, 28.6]** | full court |
-| Ball speed avg (km/h) | 30 | 44 | 359 |
-| server_end_d populated | 20% | **100%** | 100% |
+| Metric | Pre-cal (ad763368) | Apr 15 eve (90ad59a8) | **Apr 16 eod (081e089c)** | SportAI |
+|---|---|---|---|---|
+| Silver rows | 162 | 160 | 160 | 88 |
+| serves_d | 1 | 17 | **17** | 24 |
+| **Points** | **1** | **2** | **6** | 17 |
+| Games | 1 | 1 | 1 | 2 |
+| Volleys | 156 | 2 | 5 | 5 |
+| **Backhand** | **0** | **0** | **43** | 15 |
+| Forehand | 21 | 80 | 88 | 41 |
+| Overhead | — | — | 3 | 1 |
+| **Ball speed avg** | **30** | **44** (m/s bug) | **72.1** | 99.7 |
+| **Ball speed p95** | — | — | **132.1** | **129.2** |
+| Ball speed max | — | 246.8 (clamp) | 175.3 | 132.5 |
+| Ball y range | [10.7, 24.3] | [-3.4, 28.6] | [-3.4, 28.6] | full |
+| serve_bucket wide | — | 0 | 16 | 43 |
+| serve_bucket T (over) | — | — | 40 | 4 |
+| point_number populated | — | 62% | 82% | 100% |
+| shot_ix_in_point populated | — | 9% | 22% | 88% |
+| Player 1 var_y | — | — | 104 | — |
 
-- T5 golden baseline: take a snapshot once remaining silver bugs resolved (points collapse, ball speed, backhand detection).
+Reference video S3: `s3://nextpoint-prod-uploads/wix-uploads/1776237770_match.mp4` (re-uploaded Apr 16 after original was cleaned up). Local copy: `ml_pipeline/test_videos/match_90ad59a8.mp4.mp4`.
 
 ### Deployment
 
-Job definition revisions — **eu-north-1 revision 24**, **us-east-1 revision 13**. Both point to digest `sha256:9107d338...` (adds on top of rev 23: legacy pixel-space branch `tier == 0 → score = 0` + `MIN_SELECTABLE_SCORE = 1000` gate in `_choose_two_players::best_far/best_near` selection). Retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
+| Rev | Region | Image digest | Contents |
+|---|---|---|---|
+| **29 / 18** | eu / us | `sha256:7d38fded6e85be6bcffa5f220821a058b55651986a1a1d4e328bf62f0168afd5` | A0-A5, #1 stroke_d bh, #2 soft-fallback, cross-region S3, B1 timing, strict=False |
+
+Commit `1e87a91` (A3b p75 over window) is pushed to main but applied manually to 081e089c ml_analysis via SQL backfill — next Batch run picks it up natively.
+
+Retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
 
 **Compute environment reality**: account has **zero on-demand G-family vCPU quota** in both regions (confirmed via `VcpuLimitExceeded` error). Production is Spot-only despite on-demand being listed as fallback in the job queue. When Spot capacity is tight (Stockholm was flat most of Apr 15), manual failover between regions via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:13 ...`. Quota increase request recommended for operational resilience. Full setup playbook in `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
@@ -557,39 +570,50 @@ Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `St
 
 ### Master plan — finish all dev before training (Apr 16+)
 
-Strategy: lock the pipeline **before** burning dual-submit SportAI credits on training labels. Three phases, strictly sequential: A = correct, B = fast, C = ops. Authoritative checklist lives in `.claude/handover_t5_current.md`.
+Strategy: lock the pipeline **before** burning dual-submit SportAI credits on training labels. Three phases, strictly sequential: A = correct, B = fast, C = ops. Authoritative checklist + Apr 16 baseline numbers live in `.claude/handover_t5_current.md`.
 
-**Phase A — Correctness (blocks training)**. Close reconcile vs SportAI on the reference video to serves 22-24 / points 12-15 / backhand 10-15 / ball speed 200-400 km/h.
-- **A0** ✅ done. Tier-2 `behind_baseline` expanded ±10m (was -4m / +8m) in `player_tracker.py::_choose_two_players`. Far player observed at metric y=-7 was being rejected; calibration extrapolation on the far image edge appears over-negative (physical ~4m → measured -6/-7m). Needs a follow-up investigation into k1/k2 residuals at the top of frame; for now the wider tier works around it.
-- **A1** Points collapse (17 serves → 2 points). Every sampled silver row has identical hitter coords (hx=7.13, hy=-4.16) → `serve_side_d` never alternates. Root cause: `build_silver_match_t5.py::_find_nearest_detection` returns stale data because far-player coverage is ~10% of frames. Fix: require a detection within ±5 frames of the hit event; flag `hitter_resolved=False` on miss, don't silently reuse.
-- **A2** Player 1 identity stability (var_y=155 in fd623ed2) — tighten IOU + distance gating so tracking doesn't jump between two disjoint spatial clusters.
-- **A3** Ball speed 48 km/h vs 359. `ball_tracker.py::compute_speeds` averages across all ~1983 bounce detections including inter-rally low-velocity samples. Semantic fix: per-rally peak-at-hit ±3 frames (or 95th pct).
-- **A4** Backhand 0 vs 15. Near-player heuristic in `build_silver_match_t5.py` — dump COCO keypoints for one SportAI-labeled backhand, validate wrist/shoulder x signal, check confidence floor didn't filter them out.
-- **A5** 4 serves lost Pass 1→3 (`build_silver_v2.py:515-525` gate). Enable serve-diag logging, cross-ref swing_type for the 4 drops — likely `fh`/`bh` instead of `overhead`, or hitter_y just inside [0.30, 23.47].
-- **A6** Wide serve bucket 0 vs 43 — bounce x-thresholds in Pass 3 likely off vs actual MATCHI geometry.
-- **A7** shot_ix_in_point / rally_length — cascades from A1, verify after A1 lands.
+**Apr 16 end-of-day reference task**: `081e089c-f7b1-49ce-b51c-d623bcc60953`. SILVER VALIDATION = PASS. Reconcile vs SportAI: points 6/17, serves_d 17/24, ball_speed p95 132 km/h (matches SportAI's 129), Backhand 43/15, bucket wide 16/43.
 
-**Phase B — Performance (only after A stable)**. 55 min → target 30-45, stretch 20.
-- **B1** Per-stage timing instrumentation in `pipeline.py::_process_frame` (court / ball / MOG2 / player / SAHI) — baseline before tuning anything else.
-- **B2** `PLAYER_DETECTION_INTERVAL` 5 → 8 (interpolation already bridges gaps).
-- **B3** SAHI tile 640 → 800, overlap 15% → 10%.
-- **B4** Skip SAHI when full-frame YOLO already has a valid far candidate.
-- **B5** FFmpeg CUDA decode (`h264_cuvid`).
-- **B6** YOLO frame batching (stretch; ~1 day eng).
+**Phase A — Correctness (blocks training)**
+- **A0** ✅ **DONE** — tier-2 widen + `strict=False` in `to_court_coords`. Far player at y=-7 now caught. User visually verified on frame 300+.
+- **A1** ✅ DONE — hitter-window gate, coords vary per bounce (+#2 soft-fallback).
+- **A2** ✅ PARTIAL — identity guards cut var_y 155→104. Umpire still wins some far-slot frames → A8 needed.
+- **A3a** ✅ DONE — ball_speed unit (km/h consistent, killed SportAI phantom 359).
+- **A3b** ✅ DONE — peak flight speed (p75 over 15-frame window). p95 = 132 matches SportAI 129.
+- **A4** ✅ DONE (over-counts) — dual-window keypoint + stroke_d `'bh'` mapping. Backhand 0→43 (vs SportAI 15). Heuristic calibration later, non-blocking.
+- **A5** ✅ PARTIAL — eps_baseline 0.30→1.5, stationarity gate, FIRST_SERVE_MIN_TS_S=15. Bump floor to 30s next session (ts=15.3 warmup still slips).
+- **A6** ❌ NOT STARTED — serve_bucket T over-counts (40 vs 4), wide under (16 vs 43). Pass 3 x-threshold tuning.
+- **A7** ⚠️ CASCADES — `shot_ix_in_point` 22% vs SportAI 88%. Improves as A5/A6 land.
+- **A8** ❌ NOT STARTED — non-player filter at net zone. Umpire at y=11-12 wins tier-1 (in-court) over real far player at tier-2 (behind-baseline). Needs motion-persistence / aspect-ratio / pixel-zone exclusion.
 
-**Phase C — Ops (non-blocking)**.
-- **C1** AWS on-demand G-family vCPU quota request, both regions. Current 0-quota = Spot-only; starvation = manual region migration. See `.claude/playbook_aws_batch_ondemand_fallback.md`.
-- **C2** `harness dual-submit` — one-command SportAI + T5 submission on same video; returns both task_ids + reconcile URL when done.
-- **C3** `T5_DEBUG=1` env var toggle for diagnostic logging and debug-frame upload.
+**New items discovered Apr 16 evening** (next session P0):
+- FIRST_SERVE_MIN_TS_S 15→30 (ts=15.3 warmup false positive)
+- `serve_side_d` skew (5 deuce / 12 ad, should alternate) — Pass 3 logic investigation
+- Low-speed serve artefacts (p75 returns 0.1/13/17 km/h when window has no flight samples)
+- `MIN_SERVE_INTERVAL_S=8` may both pass through secondary bounces AND block legit fault retries — split into two mechanisms
 
-**Stopping condition for training**: 6 of 7 Phase A items green, wall-clock < 45 min, dual-submit tool working. Then 5 dual-submit matches → export stroke data → train → re-benchmark.
+**Phase B — Performance (measurement-driven now)**. B1 timing from 081e089c showed:
+- Total **47 min** (2823s). player=53% (1483s), ball=25%, motion_mask=22%, court=0%.
+- **Inside player stage: SAHI=72% (1065s)**. Current SAHI-skip rule fires <0.1% (2/3168 frames).
+- **Biggest wedge = tighten B4 SAHI skip rule**: skip when full-frame YOLO has 2+ candidates with one in far half. Expected 40-60% skip rate → ~400-600s saved (14-21%).
+- B3 (tile 640→800, overlap 15→10%) second priority, ~200-300s. Risk: lower zoom on 30-40px far player.
+- B2 (PLAYER_DETECTION_INTERVAL 5→8) risky — pose coverage already 13%.
+- B1 ✅ DONE — instrumentation collecting.
 
-**Stroke classification readiness (unchanged)**: near-player COCO-pose heuristic works once A4 is fixed. Far-player optical-flow CNN architecture ready in `ml_pipeline/stroke_classifier/`; blocked on training data from 5+ clean dual-submit pairs.
+**Phase C — Ops**:
+- **C1** AWS on-demand G-family vCPU quota request — user action via AWS Support (~24-48h). Spot-only deployment hit 3/3 kills on eu-north-1 Apr 16. Quota increase would eliminate Spot drama.
+- **C2** `harness dual-submit` — not started.
+- **C3** `T5_DEBUG=1` env toggle — not started.
+- Cross-region S3 ✅ done — us-east-1 now works against eu-north-1 bucket.
+
+**Stopping condition for training**: 6 of 9 Phase A items green, wall-clock < 40 min, dual-submit tool working. Then 5 dual-submit matches → export stroke data → train → re-benchmark.
+
+**Stroke classification readiness**: A4 backhand pipeline now works (over-counts but classifying). Far-player optical-flow CNN architecture ready in `ml_pipeline/stroke_classifier/`; blocked on training data from 5+ clean dual-submit pairs.
 
 **Lower-priority known gaps**:
 - Ball delta fallback quality unvalidated (may detect racket motion, not just ball)
 - TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
-- Calibration extrapolation bias on far image edge (see A0 note)
+- Calibration extrapolation bias on far image edge (A0 workaround covers it; k1/k2 refit possible future work)
 
 ---
 
