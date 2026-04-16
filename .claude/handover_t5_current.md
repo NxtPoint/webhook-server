@@ -231,6 +231,21 @@ Recommend motion-persistence — cleanest, no fragile pixel zones.
 
 Backhand 43 vs SportAI 15. A4's wider-window keypoint lookup is now finding poses but the FH/BH heuristic (in `_infer_swing_type_from_keypoints`) is too aggressive. Dump COCO keypoints for SportAI-labelled forehands vs backhands and calibrate the wrist/shoulder x-threshold.
 
+### P4 — Auto-generate serve-diag visuals in the pipeline (~45 min of work)
+
+Right now the serve viewer (`ml_pipeline/diag/serve_viewer.py`) is a manual tool requiring the local video. Wire it into auto-ingest so every T5 run produces visual diagnostics automatically.
+
+Steps:
+1. New harness command `python -m ml_pipeline.harness generate-diag <task_id>` — downloads trimmed video from S3 (`s3://{bucket}/trimmed/{task_id}/practice.mp4`), runs the viewer, uploads outputs to `s3://{bucket}/diag/{task_id}/` (contact_serves.png + contact_overheads.png + per-shot subfolders).
+2. Hook into `upload_app.py::_do_ingest_t5` after silver build completes: one extra function call, fire-and-forget background thread (like video trim).
+3. Store pointer in `ml_analysis.video_analysis_jobs.diag_s3_prefix` (new column, ALTER TABLE IF NOT EXISTS pattern).
+4. New client API `GET /api/client/match/serve-diag/<task_id>` returns presigned URL for `contact_serves.png`.
+5. Dashboard button in `match_analysis.html` opening the contact sheet inline.
+
+Cost: ~30s per task on Render ingest worker, ~40MB S3 per task. No GPU compute, no Batch impact. Runs in parallel with video trim.
+
+Payoff: never SSH to Render shell again to validate a run. Every future task has visual proof-of-classification accessible from the dashboard.
+
 ### Stopping condition to move to stroke-classifier training
 
 6 of 9 Phase A items green, wall-clock < 40 min, dual-submit tool working. Then 5 dual-submit matches → train stroke classifier → re-benchmark.
@@ -268,6 +283,12 @@ beats real far player at tier-2).
 Then P2: SAHI skip rule is top perf win (72% of player stage, <0.1%
 skip rate today). Before coding optimization, re-read B1 timing data
 in the handover — measurement-driven, not guessed.
+
+Then P4: auto-generate serve-diag visuals in the auto-ingest flow
+(new harness command + hook into _do_ingest_t5 + upload to S3 +
+client API + dashboard button). ~45 min of work; means every future
+T5 run produces visual serve-classification diagnostics accessible
+from the dashboard — no more SSH to Render for validation.
 
 Reference task for comparison: 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb
 (SportAI ground truth).
