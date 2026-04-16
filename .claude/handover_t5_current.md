@@ -17,7 +17,10 @@
 | 25 / 14 | eu / us | `sha256:1f8aa7a3d1...` | A0 + A1 | `8006ec73-95f5-48c6-ba9f-755cac3ae266` (eu, batch `729fca0e`) |
 | 26 / 15 | eu / us | `sha256:1521560c36...` | A0 + A1 + A2 | `a015bf3a-a6e6-47ae-9988-55f9bffc9820` (us, batch `90469804`) |
 | **27 / 16** | eu / us | `sha256:ee847c174...` | A0 + A1 + A2 + A3 | `3f7af532-...` CANCELLED (eu Spot-starved) |
-| **28 / 17** | eu / us | `sha256:378f0219846...` | A0-A4 + #1 + #2 + S3 fix + B1 | **`e8bcdc58-7c94-4dea-ab66-033135c2e063`** (us, batch `af14e2e6`) |
+| **28 / 17** | eu / us | `sha256:378f0219846...` | A0-A4 + #1 + #2 + S3 fix + B1 | `e8bcdc58-...` CANCELLED (far-player still filtered at y=-7.8) |
+| **29 / 18** | eu / us | `sha256:7d38fded6e8...` | above + A0 strict=False | **`dc5e1945-200c-4296-beb9-b6eff4d6d4b3`** (us, batch `3bf39ff5`) |
+
+**Critical A0 follow-up** — the tier-2 widening (±10m in `player_tracker.py`) had ZERO effect on its own because `court_detector.to_court_coords(strict=True)` returns None for any feet outside ±5m. The player-scoring path short-circuited into a "minimal score" branch at `_choose_two_players` line 1056 BEFORE tier-2 could be consulted. Rev 29/18 passes `strict=False` when projecting player candidates so the widened tier-2 actually runs. Ball tracker keeps strict=True (we don't want ball coords beyond ±5m to be valid).
 
 **Key findings from a015bf3a reconcile (Apr 16 afternoon)**:
 - A1 ✅ hitter coords now vary per row (no more identical 7.02/-4.44)
