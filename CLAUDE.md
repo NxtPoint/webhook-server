@@ -84,9 +84,7 @@ Media Room uploads video to S3 → `POST /api/submit_s3_task` → main app route
 
 ### Main App (`upload_app.py`)
 
-Primary service. Responsibilities: S3 presigned URLs + multipart lifecycle, SportAI/T5/Technique submission (routed by `sport_type`), task status orchestration, auto-ingest triggering, video trim callback, SES notification, CORS preflight for `/api/client/*`.
-
-**Registered blueprints**: `coaches_api`, `members_api`, `subscriptions_api`, `usage_api`, `entitlements_api`, `client_api`, `coach_accept`, `ml_analysis_bp`, `ingest_bronze`, `tennis_coach.coach_api`.
+Primary service. Responsibilities: S3 presigned URLs + multipart lifecycle, SportAI/T5/Technique submission (routed by `sport_type`), task status orchestration, auto-ingest triggering, video trim callback, SES notification, CORS preflight for `/api/client/*`. Registered blueprints: grep `app.register_blueprint` in `upload_app.py`.
 
 **On-boot init** (idempotent, each try/except-wrapped so one failure can't kill the service):
 1. `gold_init_presentation()` — `gold.vw_player`, `gold.vw_point`, `gold.match_*`, `gold.player_performance`
@@ -498,46 +496,13 @@ Every dual-submit pair (SportAI + T5 on same video) produces free training label
 
 `DEBUG_FRAME_INTERVAL > 0` in config. Green = KEPT, red = FILTERED. Uploaded live to `s3://{bucket}/debug/{job_id}/frame_*.jpg`.
 
-### Reconciliation reference
+### Reconciliation & deployment
 
-- SportAI ground truth: `4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb` (88 rows, 17 points, 2 games, 24 serves; ball_speed avg 99.7 km/h, p95 129.2, max 132.5)
-- Pre-calibration T5 (known-wrong, Apr 15 AM): `ad763368-eb3d-40f0-b9fe-84e0c9755c90` — 1 point, 1 serve, ball speed reported 30 km/h
-- Post-calibration first clean (Apr 15 PM): `90ad59a8-8853-4014-9fd8-c32af7c4a2e9` — 2 points, 17 serves
-- **Apr 16 end-of-day baseline (every fix landed)**: **`081e089c-f7b1-49ce-b51c-d623bcc60953`**. SILVER VALIDATION = PASS.
+Current baseline task, reconcile table, and deployed image rev/digest all live in `.claude/handover_t5_current.md` — these numbers change session-to-session and are stale the moment they're written here. Reference video S3: `s3://nextpoint-prod-uploads/wix-uploads/1776237770_match.mp4`.
 
-| Metric | Pre-cal (ad763368) | Apr 15 eve (90ad59a8) | **Apr 16 eod (081e089c)** | SportAI |
-|---|---|---|---|---|
-| Silver rows | 162 | 160 | 160 | 88 |
-| serves_d | 1 | 17 | **17** | 24 |
-| **Points** | **1** | **2** | **6** | 17 |
-| Games | 1 | 1 | 1 | 2 |
-| Volleys | 156 | 2 | 5 | 5 |
-| **Backhand** | **0** | **0** | **43** | 15 |
-| Forehand | 21 | 80 | 88 | 41 |
-| Overhead | — | — | 3 | 1 |
-| **Ball speed avg** | **30** | **44** (m/s bug) | **72.1** | 99.7 |
-| **Ball speed p95** | — | — | **132.1** | **129.2** |
-| Ball speed max | — | 246.8 (clamp) | 175.3 | 132.5 |
-| Ball y range | [10.7, 24.3] | [-3.4, 28.6] | [-3.4, 28.6] | full |
-| serve_bucket wide | — | 0 | 16 | 43 |
-| serve_bucket T (over) | — | — | 40 | 4 |
-| point_number populated | — | 62% | 82% | 100% |
-| shot_ix_in_point populated | — | 9% | 22% | 88% |
-| Player 1 var_y | — | — | 104 | — |
+Batch retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
 
-Reference video S3: `s3://nextpoint-prod-uploads/wix-uploads/1776237770_match.mp4` (re-uploaded Apr 16 after original was cleaned up). Local copy: `ml_pipeline/test_videos/match_90ad59a8.mp4.mp4`.
-
-### Deployment
-
-| Rev | Region | Image digest | Contents |
-|---|---|---|---|
-| **29 / 18** | eu / us | `sha256:7d38fded6e85be6bcffa5f220821a058b55651986a1a1d4e328bf62f0168afd5` | A0-A5, #1 stroke_d bh, #2 soft-fallback, cross-region S3, B1 timing, strict=False |
-
-Commit `1e87a91` (A3b p75 over window) is pushed to main but applied manually to 081e089c ml_analysis via SQL backfill — next Batch run picks it up natively.
-
-Retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
-
-**Compute environment reality**: account has **zero on-demand G-family vCPU quota** in both regions (confirmed via `VcpuLimitExceeded` error). Production is Spot-only despite on-demand being listed as fallback in the job queue. When Spot capacity is tight (Stockholm was flat most of Apr 15), manual failover between regions via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:13 ...`. Quota increase request recommended for operational resilience. Full setup playbook in `.claude/playbook_aws_batch_ondemand_fallback.md`.
+**Compute environment reality**: account has zero on-demand G-family vCPU quota in both regions — production is Spot-only despite on-demand being listed as fallback. Manual cross-region failover via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:<rev> ...` when Spot is tight. Quota playbook: `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
 ### Stroke classification (`build_silver_match_t5.py`)
 
@@ -559,61 +524,11 @@ python -m ml_pipeline.harness train-stroke --data <dir> --epochs 50
 ```
 Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `StrokeClassifier` at pipeline runtime. Target: 75-85% accuracy on 200+ labeled examples from dual-submit pairs.
 
-### Known gaps + current focus
+### Current focus & handover
 
-**SOLVED Apr 15 — Lens distortion**. Primary blocker for weeks is now fixed. Radial calibration locks at RMS 6.26 px (≈15cm metric error) on MATCHI wide-angle footage. Yellow grid overlay on debug frames traces the real court lines. See `project_t5_apr15_breakthrough.md` memory for full chronology.
+Active T5 work — the Phase A/B/C checklist, per-item status, current-session P0s, perf-budget numbers, and stopping condition for training — is tracked in **`.claude/handover_t5_current.md`**. Read that at the start of any T5 session; it moves fast. Durable architectural context (calibration, player scoring, stroke cascade) stays in this file above; ephemeral run status stays in the handover.
 
-**SOLVED Apr 15 — Player detection cascade**:
-- Far player detected in >95% of frames post-calibration (was 0% at the low point)
-- Near player full-body bbox stable (previous head-only-KEPT artifact resolved by raising near-side behind_baseline to +8m and pixel-gate tolerance to 300 px)
-- Side spectators, linespeople, umpires filtered (tier 0 → score 0 + MIN_SELECTABLE_SCORE 1000)
-
-### Master plan — finish all dev before training (Apr 16+)
-
-Strategy: lock the pipeline **before** burning dual-submit SportAI credits on training labels. Three phases, strictly sequential: A = correct, B = fast, C = ops. Authoritative checklist + Apr 16 baseline numbers live in `.claude/handover_t5_current.md`.
-
-**Apr 16 end-of-day reference task**: `081e089c-f7b1-49ce-b51c-d623bcc60953`. SILVER VALIDATION = PASS. Reconcile vs SportAI: points 6/17, serves_d 17/24, ball_speed p95 132 km/h (matches SportAI's 129), Backhand 43/15, bucket wide 16/43.
-
-**Phase A — Correctness (blocks training)**
-- **A0** ✅ **DONE** — tier-2 widen + `strict=False` in `to_court_coords`. Far player at y=-7 now caught. User visually verified on frame 300+.
-- **A1** ✅ DONE — hitter-window gate, coords vary per bounce (+#2 soft-fallback).
-- **A2** ✅ PARTIAL — identity guards cut var_y 155→104. Umpire still wins some far-slot frames → A8 needed.
-- **A3a** ✅ DONE — ball_speed unit (km/h consistent, killed SportAI phantom 359).
-- **A3b** ✅ DONE — peak flight speed (p75 over 15-frame window). p95 = 132 matches SportAI 129.
-- **A4** ✅ DONE (over-counts) — dual-window keypoint + stroke_d `'bh'` mapping. Backhand 0→43 (vs SportAI 15). Heuristic calibration later, non-blocking.
-- **A5** ✅ PARTIAL — eps_baseline 0.30→1.5, stationarity gate, FIRST_SERVE_MIN_TS_S=15. Bump floor to 30s next session (ts=15.3 warmup still slips).
-- **A6** ❌ NOT STARTED — serve_bucket T over-counts (40 vs 4), wide under (16 vs 43). Pass 3 x-threshold tuning.
-- **A7** ⚠️ CASCADES — `shot_ix_in_point` 22% vs SportAI 88%. Improves as A5/A6 land.
-- **A8** ❌ NOT STARTED — non-player filter at net zone. Umpire at y=11-12 wins tier-1 (in-court) over real far player at tier-2 (behind-baseline). Needs motion-persistence / aspect-ratio / pixel-zone exclusion.
-
-**New items discovered Apr 16 evening** (next session P0):
-- FIRST_SERVE_MIN_TS_S 15→30 (ts=15.3 warmup false positive)
-- `serve_side_d` skew (5 deuce / 12 ad, should alternate) — Pass 3 logic investigation
-- Low-speed serve artefacts (p75 returns 0.1/13/17 km/h when window has no flight samples)
-- `MIN_SERVE_INTERVAL_S=8` may both pass through secondary bounces AND block legit fault retries — split into two mechanisms
-
-**Phase B — Performance (measurement-driven now)**. B1 timing from 081e089c showed:
-- Total **47 min** (2823s). player=53% (1483s), ball=25%, motion_mask=22%, court=0%.
-- **Inside player stage: SAHI=72% (1065s)**. Current SAHI-skip rule fires <0.1% (2/3168 frames).
-- **Biggest wedge = tighten B4 SAHI skip rule**: skip when full-frame YOLO has 2+ candidates with one in far half. Expected 40-60% skip rate → ~400-600s saved (14-21%).
-- B3 (tile 640→800, overlap 15→10%) second priority, ~200-300s. Risk: lower zoom on 30-40px far player.
-- B2 (PLAYER_DETECTION_INTERVAL 5→8) risky — pose coverage already 13%.
-- B1 ✅ DONE — instrumentation collecting.
-
-**Phase C — Ops**:
-- **C1** AWS on-demand G-family vCPU quota request — user action via AWS Support (~24-48h). Spot-only deployment hit 3/3 kills on eu-north-1 Apr 16. Quota increase would eliminate Spot drama.
-- **C2** `harness dual-submit` — not started.
-- **C3** `T5_DEBUG=1` env toggle — not started.
-- Cross-region S3 ✅ done — us-east-1 now works against eu-north-1 bucket.
-
-**Stopping condition for training**: 6 of 9 Phase A items green, wall-clock < 40 min, dual-submit tool working. Then 5 dual-submit matches → export stroke data → train → re-benchmark.
-
-**Stroke classification readiness**: A4 backhand pipeline now works (over-counts but classifying). Far-player optical-flow CNN architecture ready in `ml_pipeline/stroke_classifier/`; blocked on training data from 5+ clean dual-submit pairs.
-
-**Lower-priority known gaps**:
-- Ball delta fallback quality unvalidated (may detect racket motion, not just ball)
-- TrackNetV3 weights not yet available (architecture ready in `tracknet_v3.py`)
-- Calibration extrapolation bias on far image edge (A0 workaround covers it; k1/k2 refit possible future work)
+Background + recent wins are captured in the auto-memory files (`project_t5_apr15_breakthrough.md`, etc.) referenced from `MEMORY.md`.
 
 ---
 
