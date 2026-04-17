@@ -111,6 +111,67 @@ def _verify_ownership(task_id: str, email: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# AI Coach paywall — see docs/pricing_strategy.md §7
+# ---------------------------------------------------------------------------
+
+def _check_ai_coach_entitled(email: str) -> tuple[bool, Optional[str]]:
+    """AI Coach is the premium differentiator. Returns (allowed, reason).
+
+    Allowed: admins, coaches, and paid_active players.
+    Blocked: free-trial users (no active subscription) and cancelled/expired.
+    """
+    if email in _ADMIN_EMAILS:
+        return True, None
+
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT
+                      a.active AS account_active,
+                      COALESCE(m.role, 'player_parent') AS role,
+                      (s.status = 'ACTIVE') AS paid_active
+                    FROM billing.account a
+                    LEFT JOIN billing.member m
+                      ON m.account_id = a.id AND m.is_primary = true
+                    LEFT JOIN LATERAL (
+                      SELECT status
+                      FROM billing.subscription_state
+                      WHERE account_id = a.id
+                      ORDER BY updated_at DESC NULLS LAST
+                      LIMIT 1
+                    ) s ON TRUE
+                    WHERE a.email = :email
+                    LIMIT 1
+                """),
+                {"email": email},
+            ).mappings().first()
+    except Exception:
+        log.exception("[coach_api] entitlement check failed email=%s", email)
+        return False, "ENTITLEMENT_CHECK_FAILED"
+
+    if not row:
+        return False, "ACCOUNT_NOT_FOUND"
+    if not row["account_active"]:
+        return False, "ACCOUNT_INACTIVE"
+    if row["role"] == "coach":
+        return True, None
+    if row["paid_active"]:
+        return True, None
+    return False, "UPGRADE_REQUIRED"
+
+
+def _paywall_response():
+    """402 Payment Required — tells the frontend to swap in the upgrade teaser."""
+    return jsonify({
+        "ok": False,
+        "error": "UPGRADE_REQUIRED",
+        "message": "AI Coach is included with all paid plans. Upgrade to unlock.",
+        "upgrade_url": "/pricing",
+    }), 402
+
+
+# ---------------------------------------------------------------------------
 # Options preflight
 # ---------------------------------------------------------------------------
 
@@ -162,6 +223,14 @@ def analyze():
 
     if not _verify_ownership(task_id, email):
         return jsonify({"ok": False, "error": "not found or access denied"}), 404
+
+    # Paywall: AI Coach requires paid plan (or coach/admin). Free-trial users
+    # see the teaser UI but this endpoint is hard-gated. See pricing_strategy.md §7.
+    entitled, block_reason = _check_ai_coach_entitled(email)
+    if not entitled:
+        if block_reason == "UPGRADE_REQUIRED":
+            return _paywall_response()
+        return jsonify({"ok": False, "error": block_reason or "not_entitled"}), 403
 
     # Derive cache key
     if prompt_key == "freeform":
@@ -255,6 +324,13 @@ def get_cards(task_id: str):
 
     if not _verify_ownership(task_id, email):
         return jsonify({"ok": False, "error": "not found or access denied"}), 404
+
+    # Paywall: pre-generated insight cards are AI Coach output — same gate.
+    entitled, block_reason = _check_ai_coach_entitled(email)
+    if not entitled:
+        if block_reason == "UPGRADE_REQUIRED":
+            return _paywall_response()
+        return jsonify({"ok": False, "error": block_reason or "not_entitled"}), 403
 
     force = request.args.get("force", "").lower() in ("1", "true", "yes")
 

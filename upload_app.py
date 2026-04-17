@@ -242,10 +242,24 @@ def _sql_exec_to_json(q: str):
 # BILLING + ROLE GATE (RENDER SSoT)
 # ==========================
 
-def _upload_entitlement_gate(email: str) -> tuple[bool, str]:
+def _upload_entitlement_gate(email: str, sport_type: str | None = None) -> tuple[bool, str]:
+    """Server-side upload gate. See docs/pricing_strategy.md §5.
+
+    - Match uploads (default) are gated by matches_remaining.
+    - Technique uploads (sport_type in TECHNIQUE_SPORT_TYPES) are gated by
+      techniques_remaining — which the free-trial signup bonus seeds with 5.
+    - Paid subscribers pass as long as they have credits of the relevant type.
+      (Subscription-ACTIVE alone is not sufficient — the plan's monthly matches
+      are granted as credits; a subscriber who's used all their matches must
+      top up or wait for refill, same as today.)
+    - Coaches never upload.
+    """
     e = (email or "").strip().lower()
     if not e:
         return False, "email_required"
+
+    is_technique = (sport_type or "").strip().lower() in TECHNIQUE_SPORT_TYPES
+    sport_known = bool((sport_type or "").strip())
 
     with engine.begin() as conn:
         row = conn.execute(sql_text("""
@@ -266,8 +280,32 @@ def _upload_entitlement_gate(email: str) -> tuple[bool, str]:
             return False, "account_not_found"
 
         role = (row.get("role") or "player_parent").strip().lower()
-        remaining = int(row.get("matches_remaining") or 0)
+        match_remaining = int(row.get("matches_remaining") or 0)
         account_id = int(row.get("account_id"))
+
+        # Techniques come from a separate credit pool — not surfaced by
+        # vw_customer_usage (match-only). Sum directly from grant/consumption.
+        technique_remaining = 0
+        try:
+            trow = conn.execute(sql_text("""
+                WITH g AS (
+                  SELECT COALESCE(SUM(techniques_granted), 0) AS granted
+                  FROM billing.entitlement_grant
+                  WHERE account_id = :aid
+                    AND is_active = true
+                    AND (valid_from IS NULL OR valid_from <= now())
+                    AND (valid_to   IS NULL OR now() < valid_to)
+                ),
+                c AS (
+                  SELECT COALESCE(SUM(consumed_techniques), 0) AS consumed
+                  FROM billing.entitlement_consumption
+                  WHERE account_id = :aid
+                )
+                SELECT GREATEST((SELECT granted FROM g) - (SELECT consumed FROM c), 0) AS remaining
+            """), {"aid": account_id}).mappings().first()
+            technique_remaining = int((trow or {}).get("remaining") or 0)
+        except Exception:
+            technique_remaining = 0
 
         try:
             sub = conn.execute(sql_text("""
@@ -283,14 +321,21 @@ def _upload_entitlement_gate(email: str) -> tuple[bool, str]:
 
     if role == "coach":
         return False, "coach_cannot_upload"
-    # Allow upload if user has an active subscription OR has remaining credits
-    # (PAYG users won't have an active subscription but will have credits)
-    if subscription_status != "ACTIVE" and remaining <= 0:
-        return False, "subscription_inactive"
-    if remaining <= 0:
-        return False, "insufficient_credits"
 
-    return True, "ok"
+    # With a known sport_type, check the matching credit pool precisely.
+    # Without sport_type (multipart/presign before submit), pass if the user
+    # has credits of EITHER type — the submit endpoint re-checks precisely.
+    if sport_known:
+        pool_remaining = technique_remaining if is_technique else match_remaining
+    else:
+        pool_remaining = match_remaining + technique_remaining
+
+    if pool_remaining > 0:
+        return True, "ok"
+    if subscription_status == "ACTIVE":
+        # Active subscriber, 0 credits of the relevant kind — monthly cap hit.
+        return False, "insufficient_credits"
+    return False, "insufficient_credits"
 
 
 # ==========================
@@ -2866,7 +2911,23 @@ def api_submit_s3_task():
     _require_s3()
 
     email = (body.get("customer_email") or body.get("email") or "").strip().lower()
-    allowed, reason = _upload_entitlement_gate(email)
+
+    # Resolve sport_type up-front so the entitlement gate can check the right
+    # credit pool (techniques vs matches). See docs/pricing_strategy.md §5.
+    _game_type = (body.get("gameType") or "singles").strip().lower()
+    _SPORT_TYPE_MAP = {
+        "singles": "tennis_singles",
+        "singles_t5": "tennis_singles_t5",
+        "serve": "serve_practice",
+        "serve_practice": "serve_practice",
+        "rally": "rally_practice",
+        "rally_practice": "rally_practice",
+        "technique": "technique_analysis",
+        "technique_analysis": "technique_analysis",
+    }
+    _resolved_sport_type = _SPORT_TYPE_MAP.get(_game_type, "tennis_singles")
+
+    allowed, reason = _upload_entitlement_gate(email, sport_type=_resolved_sport_type)
     if not allowed:
         return jsonify({"ok": False, "error": reason}), 403
 

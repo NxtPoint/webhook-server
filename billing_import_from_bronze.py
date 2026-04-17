@@ -20,7 +20,32 @@ from sqlalchemy.orm import Session
 
 from db_init import engine
 from models_billing import Account
-from billing_service import create_account_with_primary_member, consume_match_for_task
+from billing_service import (
+    create_account_with_primary_member,
+    consume_match_for_task,
+    consume_technique_for_task,
+)
+
+
+def _is_technique_task(sport_type: Optional[str]) -> bool:
+    return (sport_type or "").strip().lower() == "technique_analysis"
+
+
+def _consume_credit_for_task(account_id: int, task_id: str, sport_type: Optional[str]) -> bool:
+    """Route to match or technique credit consumption based on sport_type.
+    Technique analyses consume from the technique credit pool (free-trial grants
+    5 techniques; paid plans include unlimited). Match tasks consume match credits."""
+    if _is_technique_task(sport_type):
+        return consume_technique_for_task(
+            account_id=account_id,
+            task_id=task_id,
+            source="technique",
+        )
+    return consume_match_for_task(
+        account_id=account_id,
+        task_id=task_id,
+        source="sportai",
+    )
 
 
 def _find_or_create_account(session: Session, email: str, customer_name: Optional[str]) -> Account:
@@ -63,7 +88,8 @@ def sync_usage_from_submission_context(
                     task_id,
                     email,
                     customer_name,
-                    last_status
+                    last_status,
+                    sport_type
                 FROM bronze.submission_context
                 WHERE lower(coalesce(last_status,'')) = lower(:status)
                 """
@@ -94,10 +120,10 @@ def sync_usage_from_submission_context(
 
             account = _find_or_create_account(session, email=email, customer_name=customer_name)
 
-            inserted = consume_match_for_task(
+            inserted = _consume_credit_for_task(
                 account_id=int(account.id),
                 task_id=str(task_id),
-                source="sportai",
+                sport_type=row.get("sport_type"),
             )
 
             if inserted:
@@ -134,7 +160,7 @@ def sync_usage_for_task_id(task_id: str, dry_run: bool = True) -> Dict[str, Any]
         row = session.execute(
             text(
                 """
-                SELECT task_id, email, customer_name, last_status
+                SELECT task_id, email, customer_name, last_status, sport_type
                 FROM bronze.submission_context
                 WHERE task_id = :task_id
                 """
@@ -155,10 +181,10 @@ def sync_usage_for_task_id(task_id: str, dry_run: bool = True) -> Dict[str, Any]
 
         account = _find_or_create_account(session, email=email, customer_name=row.get("customer_name"))
 
-        inserted = consume_match_for_task(
+        inserted = _consume_credit_for_task(
             account_id=int(account.id),
             task_id=str(task_id),
-            source="sportai",
+            sport_type=row.get("sport_type"),
         )
 
         if not dry_run:

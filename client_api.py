@@ -712,7 +712,7 @@ def register_member():
     if role not in ("player_parent", "coach"):
         role = "player_parent"
 
-    from billing_service import create_account_with_primary_member
+    from billing_service import create_account_with_primary_member, grant_signup_bonus
 
     acct = create_account_with_primary_member(
         email=email,
@@ -741,6 +741,14 @@ def register_member():
                 {"surname": surname or None, "role": role, "full_name": first_name, "mid": member_id},
             )
             session.commit()
+
+    # Free-trial signup bonus — 1 match + 5 techniques, once per account, ever.
+    # Coaches don't get it (they're already free at launch and can't upload).
+    if role == "player_parent":
+        try:
+            grant_signup_bonus(int(acct.id))
+        except Exception:
+            logging.getLogger(__name__).exception("signup_bonus grant failed for account_id=%s", acct.id)
 
     return jsonify({"ok": True, "account_id": int(acct.id)})
 

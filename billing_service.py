@@ -33,6 +33,36 @@ from models_billing import Account, Member
 import uuid
 
 # ----------------------------
+# Schema bootstrap (idempotent) — technique credit tracking
+# ----------------------------
+
+def _ensure_technique_columns() -> None:
+    """Add technique credit columns to billing.entitlement_grant and
+    billing.entitlement_consumption if they don't already exist.
+    Follows the same idempotent pattern as _ensure_member_profile_columns()
+    in client_api.py. Safe to run on every boot."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE billing.entitlement_grant "
+                "ADD COLUMN IF NOT EXISTS techniques_granted INT NOT NULL DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE billing.entitlement_consumption "
+                "ADD COLUMN IF NOT EXISTS consumed_techniques INT NOT NULL DEFAULT 0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE billing.entitlement_consumption "
+                "ALTER COLUMN consumed_matches SET DEFAULT 0"
+            ))
+    except Exception:
+        pass
+
+
+_ensure_technique_columns()
+
+
+# ----------------------------
 # Internal helpers
 # ----------------------------
 
@@ -182,12 +212,25 @@ def add_member_to_account(
 # Entitlements (Credits)
 # ----------------------------
 
+_ALLOWED_GRANT_SOURCES = (
+    "wix_subscription",
+    "wix_payg",
+    "manual_adjustment",
+    "signup_bonus",
+)
+
+SIGNUP_BONUS_MATCHES = 1
+SIGNUP_BONUS_TECHNIQUES = 5
+SIGNUP_BONUS_PLAN_CODE = "signup_trial"
+
+
 def grant_entitlement(
     *,
     account_id: int,
     source: str,
     plan_code: str,
     matches_granted: int,
+    techniques_granted: int = 0,
     external_wix_id: Optional[str] = None,
     valid_from: Optional[datetime] = None,
     valid_to: Optional[datetime] = None,
@@ -195,9 +238,11 @@ def grant_entitlement(
 ) -> int:
     if matches_granted < 0:
         raise ValueError("matches_granted must be >= 0")
+    if techniques_granted < 0:
+        raise ValueError("techniques_granted must be >= 0")
     if not plan_code:
         raise ValueError("plan_code required")
-    if source not in ("wix_subscription", "wix_payg", "manual_adjustment"):
+    if source not in _ALLOWED_GRANT_SOURCES:
         raise ValueError("invalid source")
 
     vf = valid_from or datetime.now(timezone.utc)
@@ -205,8 +250,8 @@ def grant_entitlement(
     with Session(engine) as session:
         # ---------- IDEMPOTENCY GUARD ----------
         # Check by external_wix_id first (strongest match), then fall back
-        # to (account_id, source, plan_code, valid_from) to prevent duplicates
-        # even when external_wix_id is not provided.
+        # to (account_id, source, plan_code) for internal sources that don't
+        # carry an external id (e.g. signup_bonus — one per account, ever).
         if external_wix_id:
             existing = session.execute(
                 text("""
@@ -223,6 +268,25 @@ def grant_entitlement(
                     "source": source,
                     "plan_code": plan_code,
                     "external_wix_id": external_wix_id,
+                },
+            ).scalar_one_or_none()
+
+            if existing is not None:
+                return int(existing)
+        elif source == "signup_bonus":
+            existing = session.execute(
+                text("""
+                    SELECT id
+                    FROM billing.entitlement_grant
+                    WHERE account_id = :account_id
+                      AND source = :source
+                      AND plan_code = :plan_code
+                    LIMIT 1
+                """),
+                {
+                    "account_id": account_id,
+                    "source": source,
+                    "plan_code": plan_code,
                 },
             ).scalar_one_or_none()
 
@@ -256,9 +320,13 @@ def grant_entitlement(
             text(
                 """
                 INSERT INTO billing.entitlement_grant
-                    (account_id, source, plan_code, external_wix_id, matches_granted, valid_from, valid_to, is_active)
+                    (account_id, source, plan_code, external_wix_id,
+                     matches_granted, techniques_granted,
+                     valid_from, valid_to, is_active)
                 VALUES
-                    (:account_id, :source, :plan_code, :external_wix_id, :matches_granted, :valid_from, :valid_to, :is_active)
+                    (:account_id, :source, :plan_code, :external_wix_id,
+                     :matches_granted, :techniques_granted,
+                     :valid_from, :valid_to, :is_active)
                 RETURNING id
                 """
             ),
@@ -268,6 +336,7 @@ def grant_entitlement(
                 "plan_code": plan_code,
                 "external_wix_id": external_wix_id,
                 "matches_granted": matches_granted,
+                "techniques_granted": techniques_granted,
                 "valid_from": vf,
                 "valid_to": valid_to,
                 "is_active": is_active,
@@ -276,6 +345,18 @@ def grant_entitlement(
         grant_id = int(res.scalar_one())
         session.commit()
         return grant_id
+
+
+def grant_signup_bonus(account_id: int) -> int:
+    """One-time free trial grant: 1 match + 5 techniques, lifetime.
+    Idempotent — re-registering the same account does not re-grant."""
+    return grant_entitlement(
+        account_id=account_id,
+        source="signup_bonus",
+        plan_code=SIGNUP_BONUS_PLAN_CODE,
+        matches_granted=SIGNUP_BONUS_MATCHES,
+        techniques_granted=SIGNUP_BONUS_TECHNIQUES,
+    )
 
 
 def get_remaining_matches(account_id: int) -> int:
@@ -374,9 +455,9 @@ def consume_matches_for_task(
             text(
                 """
                 INSERT INTO billing.entitlement_consumption
-                    (account_id, task_id, consumed_matches, source)
+                    (account_id, task_id, consumed_matches, consumed_techniques, source)
                 VALUES
-                    (:account_id, :task_id, :consumed_matches, :source)
+                    (:account_id, :task_id, :consumed_matches, 0, :source)
                 ON CONFLICT (task_id) DO NOTHING
                 """
             ),
@@ -384,6 +465,40 @@ def consume_matches_for_task(
                 "account_id": account_id,
                 "task_id": str(task_uuid),
                 "consumed_matches": int(consumed_matches),
+                "source": source,
+            },
+        )
+        inserted = (res.rowcount or 0) == 1
+        session.commit()
+        return inserted
+
+
+def consume_technique_for_task(
+    *,
+    account_id: int,
+    task_id: str,
+    source: str = "technique",
+) -> bool:
+    """Consume 1 technique credit for a technique_analysis task.
+    Idempotent by DB unique(task_id).
+    Inserts a row with consumed_matches=0, consumed_techniques=1 so this
+    does not affect match-credit accounting."""
+    task_uuid = _to_uuid(task_id)
+
+    with Session(engine) as session:
+        res = session.execute(
+            text(
+                """
+                INSERT INTO billing.entitlement_consumption
+                    (account_id, task_id, consumed_matches, consumed_techniques, source)
+                VALUES
+                    (:account_id, :task_id, 0, 1, :source)
+                ON CONFLICT (task_id) DO NOTHING
+                """
+            ),
+            {
+                "account_id": account_id,
+                "task_id": str(task_uuid),
                 "source": source,
             },
         )
