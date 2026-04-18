@@ -243,10 +243,12 @@ done
 
 | Region | Revision | Image digest |
 |---|---|---|
-| eu-north-1 | **30** | `sha256:dd6c4e1e24da563b409a461ccfb549d08c272a025982812fcfcde779ce905c3c` |
-| us-east-1 | **19** | same |
+| eu-north-1 | **31** | `sha256:5798437b9ba01737665d1460f925f21a7d8e7af106a9c79b1e7af5577b9fc817` |
+| us-east-1 | **20** | same |
 
-Contents: player_tracker pose-gap fix (tier-500 net-zone, MIN_SELECTABLE_SCORE=500, pose_bonus=300), db_writer detection_source column.
+Contents: **player_tracker semantic-half ID assignment** (Apr 18 — fixes the swap bug that made minute-1-4 pose appear missing), plus earlier fixes (tier-500 net-zone, MIN_SELECTABLE_SCORE=500, pose_bonus=300) and db_writer detection_source column scaffolding.
+
+Prior rev 30 / 19 (`dd6c4e1e24da...c3c`) is deprecated — it had the scoring fixes but NOT the ID-swap fix, so it still produced the minute-1-4 "Player 0 = far player" bug.
 
 ### Quota note
 
