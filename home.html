@@ -109,29 +109,65 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .drawer-cta { margin-top: auto; padding-top: 24px; }
 
 /* ================================================================
-   HERO — clean dark green, no grid, BIG image slot on the right
+   HERO — full-bleed Hawkeye-style court visualization
    ================================================================ */
 .hero {
   position: relative;
-  background: linear-gradient(165deg, var(--green) 0%, var(--green-dark) 100%);
+  background: #0a1814;
   color: var(--white);
-  padding: 150px 28px 120px;
+  padding: 150px 28px 130px;
+  min-height: 94vh;
   overflow: hidden;
+  display: flex;
+  align-items: center;
 }
+
+/* Atmospheric lighting — radial glows that give the scene depth */
 .hero::before {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2;
   background:
-    radial-gradient(1200px 700px at 80% 30%, rgba(34,120,60,0.45), transparent 60%),
-    radial-gradient(900px 500px at 10% 90%, rgba(19,66,33,0.7), transparent 60%);
+    radial-gradient(1600px 900px at 78% 50%, rgba(26,92,46,0.28), transparent 65%),
+    radial-gradient(900px 700px at 12% 78%, rgba(5,12,9,0.92), transparent 62%),
+    radial-gradient(1100px 600px at 8% 14%, rgba(5,12,9,0.88), transparent 62%);
 }
+
+/* Technical grid backdrop, radially masked to the right side */
+.hero::after {
+  content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 72%);
+  -webkit-mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 72%);
+}
+
+/* Court visualization — full-bleed SVG layer */
+.hero-viz {
+  position: absolute; inset: 0; z-index: 1;
+  pointer-events: none;
+}
+.hero-viz svg { width: 100%; height: 100%; }
+
+/* Left-side gradient fade so text stays readable over the visual */
+.hero-fade {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 62%; z-index: 4;
+  background: linear-gradient(90deg, rgba(5,12,9,0.94) 0%, rgba(5,12,9,0.7) 42%, transparent 100%);
+  pointer-events: none;
+}
+
 .hero-inner {
-  position: relative; z-index: 2;
-  max-width: 1280px; margin: 0 auto;
-  display: grid; grid-template-columns: 1.05fr 1fr; gap: 80px; align-items: center;
+  position: relative; z-index: 6;
+  max-width: 1280px; margin: 0 auto; width: 100%;
 }
+.hero-content { max-width: 640px; }
+
 @media (max-width: 1020px) {
-  .hero { padding: 130px 24px 80px; }
-  .hero-inner { grid-template-columns: 1fr; gap: 56px; }
+  .hero { padding: 130px 24px 90px; min-height: auto; }
+  .hero-fade {
+    width: 100%;
+    background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.55) 55%, rgba(5,12,9,0.82) 100%);
+  }
 }
 
 .hero-eyebrow { margin-bottom: 22px; }
@@ -143,62 +179,6 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .hero-meta { display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.8rem; color: rgba(255,255,255,0.55); }
 .hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
 .hero-meta svg { width: 14px; height: 14px; color: rgba(255,255,255,0.65); }
-
-/* HERO VISUAL — big photo-driven image slot */
-.hero-visual {
-  position: relative;
-  aspect-ratio: 4 / 5;
-  max-height: 640px;
-  border-radius: 6px;
-  overflow: hidden;
-  box-shadow: 0 50px 100px -20px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
-  /* Fallback gradient shows if image missing. Photo placeholder: /static/home/hero.jpg */
-  background:
-    linear-gradient(180deg, rgba(19,66,33,0) 0%, rgba(10,31,20,0.65) 100%),
-    linear-gradient(140deg, #2b7a42 0%, #134221 100%);
-}
-.hero-visual-img {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  object-fit: cover; object-position: center;
-  z-index: 1;
-}
-.hero-visual-overlay {
-  position: absolute; inset: 0; z-index: 2;
-  background: linear-gradient(180deg, rgba(10,31,20,0) 35%, rgba(10,31,20,0.7) 100%);
-  pointer-events: none;
-}
-.hero-visual-caption {
-  position: absolute; left: 24px; right: 24px; bottom: 22px; z-index: 3;
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 14px;
-  color: var(--white);
-}
-.hero-visual-caption-eyebrow {
-  font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.18em;
-  color: rgba(255,255,255,0.55); margin-bottom: 4px;
-}
-.hero-visual-caption-title {
-  font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2;
-  max-width: 24ch;
-}
-.hero-visual-kpi {
-  flex-shrink: 0;
-  background: rgba(255,255,255,0.08);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: var(--radius);
-  padding: 10px 14px;
-  text-align: right;
-}
-.hero-visual-kpi .val { font-size: 1.4rem; font-weight: 800; color: var(--white); line-height: 1; letter-spacing: -0.02em; }
-.hero-visual-kpi .lbl { font-size: 0.6rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(255,255,255,0.6); margin-top: 2px; }
-/* Placeholder icon shown only when photo is missing */
-.hero-visual-placeholder {
-  position: absolute; inset: 0; z-index: 0;
-  display: flex; align-items: center; justify-content: center;
-  color: rgba(255,255,255,0.1);
-}
-.hero-visual-placeholder svg { width: 140px; height: 140px; stroke-width: 1; }
 
 /* ================================================================
    STAT BAND
@@ -510,8 +490,115 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
   </div>
 </div>
 
-<!-- HERO -->
+<!-- HERO — full-bleed Hawkeye-style court visualization as background -->
 <section class="hero">
+  <!-- Full-bleed court visualization -->
+  <div class="hero-viz" aria-hidden="true">
+    <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <!-- Trail glow filter -->
+        <filter id="h-glow" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="6"/>
+        </filter>
+        <filter id="h-glow-sm" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="3"/>
+        </filter>
+        <!-- Subtle court surface tint -->
+        <radialGradient id="h-surface" cx="50%" cy="50%" r="55%">
+          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.14"/>
+          <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+
+      <!-- Subtle court surface -->
+      <rect width="1600" height="900" fill="url(#h-surface)"/>
+
+      <!-- Court lines (bird's-eye, landscape orientation) -->
+      <g stroke="rgba(255,255,255,0.16)" stroke-width="1.4" fill="none" shape-rendering="geometricPrecision">
+        <!-- Outer rectangle (doubles sidelines) -->
+        <rect x="240" y="220" width="1120" height="460"/>
+        <!-- Singles sidelines (inset ~1.37m / 10.97m) -->
+        <line x1="240" y1="278" x2="1360" y2="278"/>
+        <line x1="240" y1="622" x2="1360" y2="622"/>
+        <!-- Service lines (6.4m from net) -->
+        <line x1="520" y1="278" x2="520" y2="622"/>
+        <line x1="1080" y1="278" x2="1080" y2="622"/>
+        <!-- Centre service line -->
+        <line x1="520" y1="450" x2="1080" y2="450"/>
+        <!-- Centre marks on baselines -->
+        <line x1="240" y1="446" x2="256" y2="446"/>
+        <line x1="240" y1="454" x2="256" y2="454"/>
+        <line x1="1360" y1="446" x2="1344" y2="446"/>
+        <line x1="1360" y1="454" x2="1344" y2="454"/>
+      </g>
+
+      <!-- Net (slightly brighter, heavier) -->
+      <g stroke="rgba(255,255,255,0.42)" stroke-width="2" fill="none">
+        <line x1="800" y1="200" x2="800" y2="700"/>
+      </g>
+      <!-- Net posts -->
+      <circle cx="800" cy="200" r="3" fill="rgba(255,255,255,0.5)"/>
+      <circle cx="800" cy="700" r="3" fill="rgba(255,255,255,0.5)"/>
+
+      <!-- SHOT TRAILS — thin arcs from one side of court to another -->
+      <g fill="none" stroke-linecap="round">
+        <!-- Serve: near baseline mid → far deuce T -->
+        <path d="M 260 448 Q 640 402 1080 495" stroke="rgba(255,255,255,0.42)" stroke-width="1.6"/>
+        <!-- Serve: near baseline mid → far deuce wide -->
+        <path d="M 260 448 Q 620 506 1070 600" stroke="rgba(255,255,255,0.3)" stroke-width="1.4"/>
+        <!-- Serve: near baseline mid → far ad T -->
+        <path d="M 260 452 Q 640 434 1080 415" stroke="rgba(255,255,255,0.38)" stroke-width="1.5"/>
+        <!-- Serve: near baseline mid → far ad wide -->
+        <path d="M 260 452 Q 620 380 1070 302" stroke="rgba(255,255,255,0.28)" stroke-width="1.4"/>
+        <!-- Rally cross-court: far deuce baseline → near ad -->
+        <path d="M 1340 560 Q 800 470 270 360" stroke="rgba(255,255,255,0.22)" stroke-width="1.3"/>
+        <!-- Rally cross-court: far ad → near deuce -->
+        <path d="M 1340 340 Q 800 430 270 548" stroke="rgba(255,255,255,0.2)" stroke-width="1.3"/>
+        <!-- Winner down the line: near → far (upper alley edge) -->
+        <path d="M 265 352 Q 800 330 1340 360" stroke="rgba(74,222,128,0.55)" stroke-width="1.8"/>
+        <!-- Approach shot: near mid → far mid cross -->
+        <path d="M 265 548 Q 800 560 1340 558" stroke="rgba(255,255,255,0.18)" stroke-width="1.2"/>
+      </g>
+
+      <!-- Endpoint glow dots — outer halo + bright core -->
+      <g>
+        <!-- Deuce T landing -->
+        <circle cx="1080" cy="495" r="14" fill="rgba(74,222,128,0.14)" filter="url(#h-glow)"/>
+        <circle cx="1080" cy="495" r="5" fill="rgba(74,222,128,0.85)" filter="url(#h-glow-sm)"/>
+        <circle cx="1080" cy="495" r="2.4" fill="#86E8A4"/>
+        <!-- Deuce wide -->
+        <circle cx="1070" cy="600" r="11" fill="rgba(74,222,128,0.12)" filter="url(#h-glow)"/>
+        <circle cx="1070" cy="600" r="3.8" fill="rgba(74,222,128,0.75)" filter="url(#h-glow-sm)"/>
+        <circle cx="1070" cy="600" r="1.8" fill="#86E8A4"/>
+        <!-- Ad T -->
+        <circle cx="1080" cy="415" r="12" fill="rgba(74,222,128,0.13)" filter="url(#h-glow)"/>
+        <circle cx="1080" cy="415" r="4.2" fill="rgba(74,222,128,0.78)" filter="url(#h-glow-sm)"/>
+        <circle cx="1080" cy="415" r="2" fill="#86E8A4"/>
+        <!-- Ad wide -->
+        <circle cx="1070" cy="302" r="10" fill="rgba(74,222,128,0.11)" filter="url(#h-glow)"/>
+        <circle cx="1070" cy="302" r="3.6" fill="rgba(74,222,128,0.7)" filter="url(#h-glow-sm)"/>
+        <circle cx="1070" cy="302" r="1.8" fill="#86E8A4"/>
+        <!-- Rally landings (near side — white glow instead of green) -->
+        <circle cx="270" cy="360" r="10" fill="rgba(255,255,255,0.08)" filter="url(#h-glow)"/>
+        <circle cx="270" cy="360" r="3.2" fill="rgba(255,255,255,0.7)" filter="url(#h-glow-sm)"/>
+        <circle cx="270" cy="548" r="9" fill="rgba(255,255,255,0.08)" filter="url(#h-glow)"/>
+        <circle cx="270" cy="548" r="3" fill="rgba(255,255,255,0.65)" filter="url(#h-glow-sm)"/>
+        <!-- Winner DTL (far end) — brighter green -->
+        <circle cx="1340" cy="360" r="16" fill="rgba(74,222,128,0.18)" filter="url(#h-glow)"/>
+        <circle cx="1340" cy="360" r="6" fill="rgba(74,222,128,0.95)" filter="url(#h-glow-sm)"/>
+        <circle cx="1340" cy="360" r="2.6" fill="#B9F2C9"/>
+      </g>
+
+      <!-- Small court annotation label, bottom-right of visual -->
+      <g transform="translate(1220, 770)" opacity="0.4">
+        <text x="0" y="0" fill="rgba(255,255,255,0.8)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.18em">HAWK-EYE VIEW · 8 SHOTS TRACKED</text>
+      </g>
+    </svg>
+  </div>
+
+  <!-- Left fade for text readability -->
+  <div class="hero-fade"></div>
+
   <div class="hero-inner">
     <div class="hero-content">
       <div class="eyebrow light hero-eyebrow">ATP-level analysis · for serious players</div>
@@ -533,25 +620,6 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>No credit card</span>
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Under 20 min</span>
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Full match history kept</span>
-      </div>
-    </div>
-
-    <!-- HERO VISUAL — drop /static/home/hero.jpg (4:5 aspect, portrait, dark/moody player photo) -->
-    <div class="hero-visual">
-      <div class="hero-visual-placeholder">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-      </div>
-      <img src="/static/home/hero.jpg" alt="Player serving — Ten-Fifty5 hero" class="hero-visual-img" onerror="this.style.display='none'">
-      <div class="hero-visual-overlay"></div>
-      <div class="hero-visual-caption">
-        <div>
-          <div class="hero-visual-caption-eyebrow">Live · match analysed</div>
-          <div class="hero-visual-caption-title">Every shot. Every bounce. Every pattern.</div>
-        </div>
-        <div class="hero-visual-kpi">
-          <div class="val">68%</div>
-          <div class="lbl">1st Serve</div>
-        </div>
       </div>
     </div>
   </div>

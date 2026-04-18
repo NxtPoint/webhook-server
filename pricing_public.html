@@ -10,14 +10,35 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,600&display=swap" rel="stylesheet">
 <style>
 :root {
-  --green-darkest: #0A1F14; --green-deep: #0F2A1C; --green-primary: #1A3C2A;
-  --green-mid: #2B5840; --green-soft: #4A7C5E; --green-50: #E8F0EB;
-  --gold-deep: #8B6F2A; --gold: #C9A84C; --gold-light: #E0C77A; --gold-wash: rgba(201,168,76,0.08);
-  --cream: #F7F5EE; --white: #fff; --ink: #0A0F0C;
-  --text: #121814; --text-sec: #5a6b65; --text-dim: #9ca89f;
-  --border: #E8E5DC;
+  /* Locker room palette */
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-dark: #134221;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --t-fast: 0.2s; --t-med: 0.4s;
+  /* Aliases — old names resolve to new palette, no gold anywhere */
+  --green-darkest: #0a1814;
+  --green-deep: var(--green-dark);
+  --green-primary: var(--green);
+  --green-mid: var(--green-light);
+  --green-soft: var(--green-light);
+  --green-50: var(--green-bg);
+  --gold-deep: var(--green);
+  --gold: var(--green);
+  --gold-light: var(--green-light);
+  --gold-wash: var(--green-bg);
+  --cream: var(--bg);
+  --ink: var(--text);
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
@@ -31,7 +52,7 @@ body {
 a { color: inherit; text-decoration: none; }
 img, svg { display: block; max-width: 100%; }
 button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
-.serif { font-family: 'Fraunces', Georgia, serif; }
+.serif { font-family: 'Inter', sans-serif; }
 
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
 .wrap-narrow { max-width: 920px; margin: 0 auto; padding: 0 28px; }
@@ -90,13 +111,20 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .drawer-cta { margin-top: auto; padding-top: 32px; }
 
 /* HERO */
-.page-hero { background: linear-gradient(160deg, var(--green-deep) 0%, var(--green-darkest) 60%, #070E0A 100%); color: var(--white); padding: 180px 28px 110px; position: relative; overflow: hidden; text-align: center; }
-.page-hero::before { content: ''; position: absolute; top: -30%; right: -20%; width: 900px; height: 900px; background: radial-gradient(closest-side, rgba(201,168,76,0.10), transparent 70%); pointer-events: none; }
-.page-hero-inner { max-width: 860px; margin: 0 auto; position: relative; }
-.page-hero h1 { color: var(--white); margin: 20px 0 22px; }
-.page-hero h1 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
-.page-hero .eyebrow { justify-content: center; }
-.page-hero .lede.light { margin: 0 auto; }
+.page-hero { position: relative; background: #0a1814; color: var(--white); padding: 160px 28px 110px; min-height: 72vh; overflow: hidden; display: flex; align-items: center; }
+.page-hero::before { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2; background: radial-gradient(1400px 800px at 78% 50%, rgba(26,92,46,0.28), transparent 65%), radial-gradient(900px 600px at 12% 80%, rgba(5,12,9,0.9), transparent 60%), radial-gradient(1100px 500px at 6% 10%, rgba(5,12,9,0.88), transparent 60%); }
+.page-hero::after { content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 56px 56px; mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%); -webkit-mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%); }
+.page-hero-viz { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.page-hero-viz svg { width: 100%; height: 100%; }
+.page-hero-fade { position: absolute; left: 0; top: 0; bottom: 0; width: 62%; z-index: 4; background: linear-gradient(90deg, rgba(5,12,9,0.94) 0%, rgba(5,12,9,0.7) 42%, transparent 100%); pointer-events: none; }
+.page-hero-inner { position: relative; z-index: 6; max-width: 1280px; margin: 0 auto; width: 100%; }
+.page-hero-content { max-width: 640px; }
+.page-hero h1 { color: var(--white); margin: 18px 0 22px; }
+.page-hero h1 .accent { color: rgba(255,255,255,0.6); font-style: italic; font-weight: 300; }
+@media (max-width: 1020px) {
+  .page-hero { padding: 130px 24px 80px; min-height: auto; }
+  .page-hero-fade { width: 100%; background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.6) 55%, rgba(5,12,9,0.82) 100%); }
+}
 
 .section { padding: 90px 0; position: relative; }
 .section.alt { background: var(--cream); }
@@ -131,7 +159,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 }
 .trial-callout .eyebrow { margin-bottom: 14px; }
 .trial-callout h2 { margin-bottom: 10px; font-size: clamp(1.5rem, 3vw, 1.9rem); }
-.trial-callout h2 .accent { color: var(--gold-deep); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.trial-callout h2 .accent { color: var(--gold-deep); font-family: 'Inter', sans-serif; font-style: italic; font-weight: 600; }
 .trial-callout p { color: var(--text-sec); font-size: 0.95rem; line-height: 1.55; max-width: 58ch; }
 .trial-callout-ctas { display: flex; gap: 12px; flex-shrink: 0; }
 
@@ -162,9 +190,17 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .plan-label { font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--gold-deep); }
 .plan-featured-badge { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.12em; padding: 3px 9px; border-radius: 3px; background: var(--gold); color: var(--ink); }
 .plan-name { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.015em; margin-bottom: 4px; }
-.plan-matches { font-family: 'Fraunces', Georgia, serif; font-size: 2.6rem; font-weight: 600; color: var(--green-primary); line-height: 1; margin: 16px 0 4px; }
-.plan-matches-unit { font-size: 0.5em; color: var(--text-sec); font-family: 'Inter', sans-serif; font-weight: 500; margin-left: 4px; }
+.plan-price { font-size: 2.8rem; font-weight: 800; color: var(--text); letter-spacing: -0.03em; line-height: 1; margin: 16px 0 4px; display: flex; align-items: baseline; gap: 4px; }
+.plan-price .currency { font-size: 1.2rem; font-weight: 700; color: var(--text-sec); }
+.plan-price .period { font-size: 0.9rem; font-weight: 500; color: var(--text-sec); letter-spacing: 0; }
+.plan-matches { font-size: 0.9rem; color: var(--text-sec); margin-bottom: 4px; }
+.plan-matches strong { color: var(--text); font-weight: 600; }
+.plan-matches-unit { font-size: 0.9rem; color: var(--text-sec); font-weight: 500; margin-left: 4px; }
 .plan-period-note { font-size: 0.82rem; color: var(--text-sec); margin-bottom: 20px; }
+/* PAYG prices */
+.payg-price { font-size: 1.8rem; font-weight: 800; color: var(--green); letter-spacing: -0.025em; line-height: 1; margin-bottom: 8px; display: flex; align-items: baseline; gap: 3px; }
+.payg-price .currency { font-size: 0.9rem; font-weight: 700; color: var(--text-sec); }
+.payg-per { font-size: 0.74rem; color: var(--text-dim); margin-bottom: 12px; }
 .plan-desc { color: var(--text-sec); font-size: 0.92rem; line-height: 1.55; margin-bottom: 22px; flex: 1; }
 .plan-features { list-style: none; margin-bottom: 28px; }
 .plan-features li { display: flex; align-items: flex-start; gap: 10px; font-size: 0.9rem; color: var(--text); padding: 6px 0; }
@@ -195,7 +231,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .payg-card:hover { border-color: var(--gold); }
 .payg-card-label { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-dim); margin-bottom: 8px; }
 .payg-card-name { font-size: 1.05rem; font-weight: 600; margin-bottom: 12px; }
-.payg-card-matches { font-family: 'Fraunces', Georgia, serif; font-weight: 600; font-size: 1.8rem; color: var(--green-primary); line-height: 1; margin-bottom: 16px; }
+.payg-card-matches { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.8rem; color: var(--green-primary); line-height: 1; margin-bottom: 16px; }
 .payg-card .btn { width: 100%; justify-content: center; }
 
 /* FEATURE TABLE */
@@ -238,7 +274,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 @media (max-width: 880px) { .coach-banner { grid-template-columns: 1fr; padding: 36px 28px; } }
 .coach-banner-content { position: relative; }
 .coach-banner h3 { color: var(--white); margin-bottom: 12px; font-size: 1.5rem; }
-.coach-banner h3 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.coach-banner h3 .accent { color: var(--gold); font-family: 'Inter', sans-serif; font-style: italic; font-weight: 600; }
 .coach-banner p { color: rgba(255,255,255,0.8); font-size: 0.95rem; line-height: 1.6; margin-bottom: 22px; max-width: 54ch; }
 .coach-banner-cta { display: flex; gap: 12px; position: relative; justify-content: flex-end; }
 @media (max-width: 880px) { .coach-banner-cta { justify-content: flex-start; } }
@@ -263,7 +299,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .final-cta::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(closest-side at 20% 30%, rgba(201,168,76,0.09), transparent 60%), radial-gradient(closest-side at 80% 70%, rgba(201,168,76,0.09), transparent 60%); }
 .final-cta-inner { position: relative; max-width: 780px; margin: 0 auto; }
 .final-cta h2 { color: var(--white); font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 700; margin-bottom: 22px; }
-.final-cta h2 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.final-cta h2 .accent { color: var(--gold); font-family: 'Inter', sans-serif; font-style: italic; font-weight: 600; }
 .final-cta .lede { color: rgba(255,255,255,0.8); margin: 0 auto 40px; }
 .final-cta .eyebrow { justify-content: center; }
 
@@ -326,12 +362,77 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
   </div>
 </div>
 
-<!-- HERO -->
+<!-- HERO — full-bleed, premium single-court visualization -->
 <section class="page-hero">
+  <div class="page-hero-viz" aria-hidden="true">
+    <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="p-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
+        <filter id="p-glow-sm" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3"/></filter>
+        <radialGradient id="p-surface" cx="50%" cy="50%" r="55%">
+          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.14"/>
+          <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="1600" height="900" fill="url(#p-surface)"/>
+
+      <!-- Single large court, right-centered -->
+      <g stroke="rgba(255,255,255,0.16)" stroke-width="1.4" fill="none">
+        <rect x="320" y="220" width="1120" height="460"/>
+        <line x1="320" y1="278" x2="1440" y2="278"/>
+        <line x1="320" y1="622" x2="1440" y2="622"/>
+        <line x1="600" y1="278" x2="600" y2="622"/>
+        <line x1="1160" y1="278" x2="1160" y2="622"/>
+        <line x1="600" y1="450" x2="1160" y2="450"/>
+      </g>
+      <line x1="880" y1="200" x2="880" y2="700" stroke="rgba(255,255,255,0.42)" stroke-width="2"/>
+
+      <!-- Just 4 serve trails — clean and premium, not busy -->
+      <g fill="none" stroke-linecap="round">
+        <path d="M 340 452 Q 680 406 1140 500" stroke="rgba(255,255,255,0.45)" stroke-width="1.7"/>
+        <path d="M 340 452 Q 680 438 1140 418" stroke="rgba(255,255,255,0.4)" stroke-width="1.6"/>
+        <path d="M 340 448 Q 680 504 1130 595" stroke="rgba(255,255,255,0.32)" stroke-width="1.5"/>
+        <path d="M 340 448 Q 680 386 1130 308" stroke="rgba(255,255,255,0.32)" stroke-width="1.5"/>
+      </g>
+
+      <!-- Bright endpoint glows — concentrated in the "premium" zones -->
+      <g>
+        <circle cx="1140" cy="500" r="18" fill="rgba(74,222,128,0.2)" filter="url(#p-glow)"/>
+        <circle cx="1140" cy="500" r="7" fill="rgba(74,222,128,0.95)" filter="url(#p-glow-sm)"/>
+        <circle cx="1140" cy="500" r="3" fill="#B9F2C9"/>
+        <circle cx="1140" cy="418" r="14" fill="rgba(74,222,128,0.15)" filter="url(#p-glow)"/>
+        <circle cx="1140" cy="418" r="5" fill="rgba(74,222,128,0.82)" filter="url(#p-glow-sm)"/>
+        <circle cx="1140" cy="418" r="2.2" fill="#86E8A4"/>
+        <circle cx="1130" cy="595" r="12" fill="rgba(74,222,128,0.12)" filter="url(#p-glow)"/>
+        <circle cx="1130" cy="595" r="4.4" fill="rgba(74,222,128,0.7)" filter="url(#p-glow-sm)"/>
+        <circle cx="1130" cy="595" r="2" fill="#86E8A4"/>
+        <circle cx="1130" cy="308" r="12" fill="rgba(74,222,128,0.12)" filter="url(#p-glow)"/>
+        <circle cx="1130" cy="308" r="4.4" fill="rgba(74,222,128,0.7)" filter="url(#p-glow-sm)"/>
+        <circle cx="1130" cy="308" r="2" fill="#86E8A4"/>
+      </g>
+
+      <!-- Floating price chips near the court (non-decorative UI cue for pricing context) -->
+      <g transform="translate(1260, 238)">
+        <rect width="108" height="58" rx="6" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)"/>
+        <text x="14" y="22" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="9" font-weight="600" letter-spacing="0.14em">STANDARD</text>
+        <text x="14" y="46" fill="#fff" font-family="Inter, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.02em">$40<tspan fill="rgba(255,255,255,0.6)" font-size="11" font-weight="500">/mo</tspan></text>
+      </g>
+      <g transform="translate(1260, 636)">
+        <rect width="108" height="58" rx="6" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)"/>
+        <text x="14" y="22" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="9" font-weight="600" letter-spacing="0.14em">PAYG · 1</text>
+        <text x="14" y="46" fill="#fff" font-family="Inter, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.02em">$25</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="page-hero-fade"></div>
+
   <div class="page-hero-inner">
-    <div class="eyebrow light">Pricing</div>
-    <h1>Simple pricing.<br><span class="accent">Premium product.</span></h1>
-    <p class="lede light">Every paid plan bundles Match Analysis, Technique Analysis and unlimited AI Coach. You choose by how many matches you analyse — never by what features you can see.</p>
+    <div class="page-hero-content">
+      <div class="eyebrow light">Pricing</div>
+      <h1>Simple pricing.<br><span class="accent">Premium product.</span></h1>
+      <p class="lede light">Every paid plan bundles Match Analysis, Technique Analysis and unlimited AI Coach. You choose by how many matches you analyse — never by what features you can see.</p>
+    </div>
   </div>
 </section>
 
@@ -365,7 +466,8 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
       <div class="plan">
         <div class="plan-label-row"><span class="plan-label">Starter</span></div>
         <div class="plan-name">Starter</div>
-        <div class="plan-matches">3<span class="plan-matches-unit">/ month</span></div>
+        <div class="plan-price"><span class="currency">$</span>25<span class="period">/mo</span></div>
+        <div class="plan-matches"><strong>3 match analyses</strong> per month</div>
         <div class="plan-period-note">Perfect for casual players</div>
         <p class="plan-desc">For players who compete a few times a month and want deep insight on the matches that matter most.</p>
         <ul class="plan-features">
@@ -386,7 +488,8 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
           <span class="plan-featured-badge">Most Popular</span>
         </div>
         <div class="plan-name">Standard</div>
-        <div class="plan-matches">5<span class="plan-matches-unit">/ month</span></div>
+        <div class="plan-price"><span class="currency">$</span>40<span class="period">/mo</span></div>
+        <div class="plan-matches"><strong>5 match analyses</strong> per month</div>
         <div class="plan-period-note">For competitive players</div>
         <p class="plan-desc">The most popular plan. Enough analyses for weekly training plus weekend tournaments, with priority processing.</p>
         <ul class="plan-features">
@@ -403,7 +506,8 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
       <div class="plan">
         <div class="plan-label-row"><span class="plan-label">Advanced</span></div>
         <div class="plan-name">Advanced</div>
-        <div class="plan-matches">10<span class="plan-matches-unit">/ month</span></div>
+        <div class="plan-price"><span class="currency">$</span>70<span class="period">/mo</span></div>
+        <div class="plan-matches"><strong>10 match analyses</strong> per month</div>
         <div class="plan-period-note">Academy &amp; tour-aspiring</div>
         <p class="plan-desc">For serious competitors analysing every training match and tournament. Up to 10 matches per month — the whole platform, no cap.</p>
         <ul class="plan-features">
@@ -439,19 +543,22 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
         <div class="payg-card">
           <div class="payg-card-label">Single credit</div>
           <div class="payg-card-name">1 Match Credit</div>
-          <div class="payg-card-matches">1 match</div>
+          <div class="payg-price"><span class="currency">$</span>25</div>
+          <div class="payg-per">1 match · $25 per match</div>
           <a href="https://www.ten-fifty5.com/plans?planSlug=33d94f21-e1b3-467c-b355-8b6aa225b815" class="btn btn-ghost-dark btn-sm">Buy 1 Credit</a>
         </div>
         <div class="payg-card">
           <div class="payg-card-label">Small pack</div>
           <div class="payg-card-name">3 Match Credits</div>
-          <div class="payg-card-matches">3 matches</div>
+          <div class="payg-price"><span class="currency">$</span>50</div>
+          <div class="payg-per">3 matches · $16.67 per match</div>
           <a href="https://www.ten-fifty5.com/plans?planSlug=3f4b2758-d92b-42fc-9df4-b73d42b51fc5" class="btn btn-ghost-dark btn-sm">Buy 3 Credits</a>
         </div>
         <div class="payg-card">
           <div class="payg-card-label">Bulk · best value</div>
           <div class="payg-card-name">5 Match Credits</div>
-          <div class="payg-card-matches">5 matches</div>
+          <div class="payg-price"><span class="currency">$</span>100</div>
+          <div class="payg-per">5 matches · $20 per match</div>
           <a href="https://www.ten-fifty5.com/plans?planSlug=e38df7f5-1681-4ee9-beee-7ebd6bcf5c7e" class="btn btn-gold btn-sm">Buy 5 Credits</a>
         </div>
       </div>

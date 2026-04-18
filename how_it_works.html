@@ -10,15 +10,35 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,600&display=swap" rel="stylesheet">
 <style>
 :root {
-  --green-darkest: #0A1F14; --green-deep: #0F2A1C; --green-primary: #1A3C2A;
-  --green-mid: #2B5840; --green-soft: #4A7C5E; --green-50: #E8F0EB;
-  --gold-deep: #8B6F2A; --gold: #C9A84C; --gold-light: #E0C77A;
-  --gold-wash: rgba(201,168,76,0.08);
-  --cream: #F7F5EE; --white: #fff; --ink: #0A0F0C;
-  --text: #121814; --text-sec: #5a6b65; --text-dim: #9ca89f;
-  --border: #E8E5DC;
+  /* Locker room palette (primary) */
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-dark: #134221;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --t-fast: 0.2s; --t-med: 0.4s;
+  /* Aliases — everything old resolves to new palette, no gold anywhere */
+  --green-darkest: #0a1814;
+  --green-deep: var(--green-dark);
+  --green-primary: var(--green);
+  --green-mid: var(--green-light);
+  --green-soft: var(--green-light);
+  --green-50: var(--green-bg);
+  --gold-deep: var(--green);
+  --gold: var(--green);
+  --gold-light: var(--green-light);
+  --gold-wash: var(--green-bg);
+  --cream: var(--bg);
+  --ink: var(--text);
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
@@ -32,7 +52,7 @@ body {
 a { color: inherit; text-decoration: none; }
 img, svg { display: block; max-width: 100%; }
 button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
-.serif { font-family: 'Fraunces', Georgia, serif; }
+.serif { font-weight: 600; font-style: italic; color: rgba(255,255,255,0.55); }
 
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
 .wrap-narrow { max-width: 920px; margin: 0 auto; padding: 0 28px; }
@@ -98,23 +118,47 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 .drawer-nav a:last-child { border-bottom: none; }
 .drawer-cta { margin-top: auto; padding-top: 32px; }
 
-/* HERO (slimmer than home) */
+/* HERO — full-bleed, data-extraction visualization */
 .page-hero {
-  background: linear-gradient(160deg, var(--green-deep) 0%, var(--green-darkest) 60%, #070E0A 100%);
+  position: relative;
+  background: #0a1814;
   color: var(--white);
-  padding: 180px 28px 110px;
-  position: relative; overflow: hidden;
-  text-align: center;
+  padding: 160px 28px 110px;
+  min-height: 78vh;
+  overflow: hidden;
+  display: flex; align-items: center;
 }
 .page-hero::before {
-  content: ''; position: absolute; top: -30%; right: -20%; width: 900px; height: 900px;
-  background: radial-gradient(closest-side, rgba(201,168,76,0.10), transparent 70%);
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2;
+  background:
+    radial-gradient(1400px 800px at 78% 50%, rgba(26,92,46,0.28), transparent 65%),
+    radial-gradient(900px 600px at 12% 80%, rgba(5,12,9,0.9), transparent 60%),
+    radial-gradient(1100px 500px at 6% 10%, rgba(5,12,9,0.88), transparent 60%);
+}
+.page-hero::after {
+  content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%);
+}
+.page-hero-viz { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.page-hero-viz svg { width: 100%; height: 100%; }
+.page-hero-fade {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 62%; z-index: 4;
+  background: linear-gradient(90deg, rgba(5,12,9,0.94) 0%, rgba(5,12,9,0.7) 42%, transparent 100%);
   pointer-events: none;
 }
-.page-hero-inner { max-width: 860px; margin: 0 auto; position: relative; }
-.page-hero h1 { color: var(--white); margin: 20px 0 22px; }
-.page-hero h1 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
-.page-hero .eyebrow { justify-content: center; }
+.page-hero-inner { position: relative; z-index: 6; max-width: 1280px; margin: 0 auto; width: 100%; }
+.page-hero-content { max-width: 640px; }
+.page-hero h1 { color: var(--white); margin: 18px 0 22px; }
+.page-hero h1 .accent { color: rgba(255,255,255,0.6); font-style: italic; font-weight: 300; }
+@media (max-width: 1020px) {
+  .page-hero { padding: 130px 24px 80px; min-height: auto; }
+  .page-hero-fade { width: 100%; background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.6) 55%, rgba(5,12,9,0.82) 100%); }
+}
 
 /* SECTIONS */
 .section { padding: 110px 0; position: relative; }
@@ -179,7 +223,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 }
 .deep-list li:last-child { border-bottom: 1px solid var(--border); }
 .deep-list-num {
-  font-family: 'Fraunces', serif; font-weight: 600; font-size: 1.1rem;
+  font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.1rem;
   color: var(--gold-deep); flex-shrink: 0; min-width: 28px;
 }
 .deep-list-body strong { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
@@ -219,7 +263,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
   padding: 28px 24px;
 }
 .quality-big {
-  font-family: 'Fraunces', serif; font-weight: 600; font-size: 2.6rem; color: var(--gold);
+  font-family: 'Inter', sans-serif; font-weight: 600; font-size: 2.6rem; color: var(--gold);
   letter-spacing: -0.02em; line-height: 1; margin-bottom: 6px;
 }
 .quality-big sup { font-size: 0.55em; vertical-align: super; color: var(--gold-light); }
@@ -231,7 +275,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 .final-cta::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(closest-side at 20% 30%, rgba(201,168,76,0.09), transparent 60%), radial-gradient(closest-side at 80% 70%, rgba(201,168,76,0.09), transparent 60%); }
 .final-cta-inner { position: relative; max-width: 780px; margin: 0 auto; }
 .final-cta h2 { color: var(--white); font-size: clamp(2rem, 4.5vw, 3.2rem); font-weight: 700; margin-bottom: 22px; }
-.final-cta h2 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.final-cta h2 .accent { color: rgba(255,255,255,0.6); font-style: italic; font-weight: 300; }
 .final-cta .lede { color: rgba(255,255,255,0.8); margin: 0 auto 40px; }
 .final-cta .eyebrow { justify-content: center; }
 
@@ -294,12 +338,131 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
   </div>
 </div>
 
-<!-- HERO -->
+<!-- HERO — full-bleed data-extraction visualization -->
 <section class="page-hero">
+  <div class="page-hero-viz" aria-hidden="true">
+    <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="w-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>
+        <filter id="w-glow-sm" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2.4"/></filter>
+        <radialGradient id="w-surface" cx="50%" cy="50%" r="55%">
+          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.14"/>
+          <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+
+      <rect width="1600" height="900" fill="url(#w-surface)"/>
+
+      <!-- Court lines (landscape bird's-eye) -->
+      <g stroke="rgba(255,255,255,0.16)" stroke-width="1.4" fill="none">
+        <rect x="300" y="220" width="1120" height="460"/>
+        <line x1="300" y1="278" x2="1420" y2="278"/>
+        <line x1="300" y1="622" x2="1420" y2="622"/>
+        <line x1="580" y1="278" x2="580" y2="622"/>
+        <line x1="1140" y1="278" x2="1140" y2="622"/>
+        <line x1="580" y1="450" x2="1140" y2="450"/>
+      </g>
+      <line x1="860" y1="200" x2="860" y2="700" stroke="rgba(255,255,255,0.42)" stroke-width="2"/>
+
+      <!-- BALL TRAJECTORY: a zigzag over the court showing a 6-shot rally -->
+      <g fill="none" stroke="rgba(74,222,128,0.55)" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="3 4">
+        <path d="M 340 460 Q 580 420 860 460 Q 1140 500 1380 440 Q 1140 400 860 440 Q 580 480 340 420 Q 580 460 860 500"/>
+      </g>
+      <!-- Ball positions at each contact point (small dots) -->
+      <g>
+        <circle cx="340" cy="460" r="5" fill="rgba(74,222,128,0.2)" filter="url(#w-glow)"/>
+        <circle cx="340" cy="460" r="2.5" fill="#86E8A4"/>
+        <circle cx="1380" cy="440" r="5" fill="rgba(74,222,128,0.2)" filter="url(#w-glow)"/>
+        <circle cx="1380" cy="440" r="2.5" fill="#86E8A4"/>
+        <circle cx="860" cy="500" r="4" fill="rgba(74,222,128,0.18)" filter="url(#w-glow)"/>
+        <circle cx="860" cy="500" r="2" fill="#86E8A4"/>
+      </g>
+
+      <!-- Ball bounding box — "tracked this frame" indicator at mid-court -->
+      <g transform="translate(850, 486)">
+        <rect x="-12" y="-10" width="24" height="20" fill="none" stroke="#4ADE80" stroke-width="1.2" opacity="0.8"/>
+        <line x1="-12" y1="0" x2="-18" y2="0" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
+        <line x1="12" y1="0" x2="18" y2="0" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
+        <line x1="0" y1="-10" x2="0" y2="-16" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
+        <line x1="0" y1="10" x2="0" y2="16" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
+        <text x="20" y="-12" fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em">BALL · F 142</text>
+      </g>
+
+      <!-- PLAYER 1 (near baseline) — pose skeleton mini -->
+      <g transform="translate(340, 640)" stroke-linecap="round">
+        <line x1="0" y1="-14" x2="0" y2="0" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="-8" y1="4" x2="8" y2="4" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="0" y1="0" x2="-6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="0" y1="0" x2="6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="-8" y1="4" x2="-14" y2="14" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="8" y1="4" x2="16" y2="-6" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <circle cx="0" cy="-18" r="4" fill="none" stroke="#4ADE80" stroke-width="1.2"/>
+        <circle cx="0" cy="0" r="1.8" fill="#4ADE80"/>
+        <circle cx="-8" cy="4" r="1.8" fill="#4ADE80"/>
+        <circle cx="8" cy="4" r="1.8" fill="#4ADE80"/>
+        <circle cx="-14" cy="14" r="1.8" fill="#4ADE80"/>
+        <circle cx="16" cy="-6" r="1.8" fill="#4ADE80"/>
+        <circle cx="-6" cy="16" r="1.8" fill="#4ADE80"/>
+        <circle cx="6" cy="16" r="1.8" fill="#4ADE80"/>
+        <rect x="-22" y="-30" width="44" height="60" fill="none" stroke="rgba(74,222,128,0.35)" stroke-width="1" stroke-dasharray="2 2"/>
+        <text x="24" y="-22" fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em">POSE · 17 KP</text>
+      </g>
+
+      <!-- PLAYER 2 (far baseline) — same -->
+      <g transform="translate(1380, 260)" stroke-linecap="round">
+        <line x1="0" y1="-14" x2="0" y2="0" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="-8" y1="4" x2="8" y2="4" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="0" y1="0" x2="-6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="0" y1="0" x2="6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="-8" y1="4" x2="-16" y2="-6" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <line x1="8" y1="4" x2="14" y2="14" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
+        <circle cx="0" cy="-18" r="4" fill="none" stroke="#4ADE80" stroke-width="1.2"/>
+        <circle cx="0" cy="0" r="1.8" fill="#4ADE80"/>
+        <circle cx="-8" cy="4" r="1.8" fill="#4ADE80"/>
+        <circle cx="8" cy="4" r="1.8" fill="#4ADE80"/>
+        <circle cx="-16" cy="-6" r="1.8" fill="#4ADE80"/>
+        <circle cx="14" cy="14" r="1.8" fill="#4ADE80"/>
+        <circle cx="-6" cy="16" r="1.8" fill="#4ADE80"/>
+        <circle cx="6" cy="16" r="1.8" fill="#4ADE80"/>
+        <rect x="-22" y="-30" width="44" height="60" fill="none" stroke="rgba(74,222,128,0.35)" stroke-width="1" stroke-dasharray="2 2"/>
+      </g>
+
+      <!-- Court calibration markers — show keypoints detected at court corners -->
+      <g fill="#4ADE80">
+        <circle cx="300" cy="220" r="3" opacity="0.85"/>
+        <circle cx="1420" cy="220" r="3" opacity="0.85"/>
+        <circle cx="300" cy="680" r="3" opacity="0.85"/>
+        <circle cx="1420" cy="680" r="3" opacity="0.85"/>
+        <circle cx="860" cy="278" r="3" opacity="0.85"/>
+        <circle cx="860" cy="622" r="3" opacity="0.85"/>
+        <circle cx="580" cy="450" r="3" opacity="0.85"/>
+        <circle cx="1140" cy="450" r="3" opacity="0.85"/>
+      </g>
+      <g transform="translate(294, 196)">
+        <text fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em">COURT · 14 KP</text>
+      </g>
+
+      <!-- Shot classification label — next to the ball bbox -->
+      <g transform="translate(1180, 720)">
+        <rect width="180" height="26" rx="3" fill="rgba(74,222,128,0.1)" stroke="rgba(74,222,128,0.5)"/>
+        <text x="12" y="17" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.1em">CLASSIFIED: FOREHAND DRIVE</text>
+      </g>
+
+      <!-- Small telemetry strip, right side -->
+      <g transform="translate(1220, 820)" opacity="0.4">
+        <text fill="rgba(255,255,255,0.85)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.18em">PIPELINE · 4 LAYERS EXTRACTED</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="page-hero-fade"></div>
+
   <div class="page-hero-inner">
-    <div class="eyebrow light">How it works</div>
-    <h1>From match video to <span class="accent">actionable data</span><br>in under twenty minutes.</h1>
-    <p class="lede light" style="margin:0 auto;">You press upload. Our computer vision pipeline tracks every shot, every bounce, every pose. Claude turns the numbers into coaching. You walk back onto court knowing the answer.</p>
+    <div class="page-hero-content">
+      <div class="eyebrow light">How it works</div>
+      <h1>From match video to <span class="accent">actionable data</span> in under twenty minutes.</h1>
+      <p class="lede light">You press upload. Our computer vision pipeline tracks every shot, every bounce, every pose. Claude turns the numbers into coaching. You walk back onto court knowing the answer.</p>
+    </div>
   </div>
 </section>
 
@@ -407,7 +570,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
           <!-- Tab strip -->
           <g transform="translate(0, 0)">
             <rect width="420" height="28" fill="rgba(255,255,255,0.04)" rx="3"/>
-            <rect x="8" y="4" width="70" height="20" rx="2" fill="#C9A84C"/>
+            <rect x="8" y="4" width="70" height="20" rx="2" fill="#1a5c2e"/>
             <text x="43" y="17" fill="#0A0F0C" font-size="8" font-family="Inter" font-weight="600" text-anchor="middle">Summary</text>
             <text x="98" y="17" fill="rgba(255,255,255,0.5)" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Serve</text>
             <text x="148" y="17" fill="rgba(255,255,255,0.5)" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Return</text>
@@ -419,19 +582,19 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
           <g transform="translate(0, 44)">
             <rect width="98" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
             <text x="49" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">1ST SERVE %</text>
-            <text x="49" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">68</text>
+            <text x="49" y="40" fill="#1a5c2e" font-size="22" font-family="Inter" font-weight="600" text-anchor="middle">68</text>
             <text x="49" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">vs 61% avg</text>
             <rect x="107" width="98" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
             <text x="156" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">ACES</text>
-            <text x="156" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">12</text>
+            <text x="156" y="40" fill="#1a5c2e" font-size="22" font-family="Inter" font-weight="600" text-anchor="middle">12</text>
             <text x="156" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">personal best</text>
             <rect x="214" width="98" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
             <text x="263" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">WINNERS</text>
-            <text x="263" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">24</text>
+            <text x="263" y="40" fill="#1a5c2e" font-size="22" font-family="Inter" font-weight="600" text-anchor="middle">24</text>
             <text x="263" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">18 fh · 6 bh</text>
             <rect x="321" width="99" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
             <text x="370" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">UNF. ERRORS</text>
-            <text x="370" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">14</text>
+            <text x="370" y="40" fill="#1a5c2e" font-size="22" font-family="Inter" font-weight="600" text-anchor="middle">14</text>
             <text x="370" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">down from 22</text>
           </g>
 
@@ -441,24 +604,24 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 
             <g transform="translate(0, 20)">
               <text x="210" y="10" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" font-weight="500" text-anchor="middle">1ST SERVE WIN %</text>
-              <rect x="120" y="15" width="88" height="14" rx="2" fill="#C9A84C" opacity="0.85"/>
-              <text x="116" y="25" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">72%</text>
+              <rect x="120" y="15" width="88" height="14" rx="2" fill="#1a5c2e" opacity="0.85"/>
+              <text x="116" y="25" fill="#1a5c2e" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">72%</text>
               <rect x="212" y="15" width="62" height="14" rx="2" fill="rgba(255,255,255,0.3)"/>
               <text x="278" y="25" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="700">58%</text>
             </g>
 
             <g transform="translate(0, 50)">
               <text x="210" y="10" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" font-weight="500" text-anchor="middle">RALLY WIN %</text>
-              <rect x="150" y="15" width="58" height="14" rx="2" fill="#C9A84C" opacity="0.85"/>
-              <text x="146" y="25" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">54%</text>
+              <rect x="150" y="15" width="58" height="14" rx="2" fill="#1a5c2e" opacity="0.85"/>
+              <text x="146" y="25" fill="#1a5c2e" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">54%</text>
               <rect x="212" y="15" width="50" height="14" rx="2" fill="rgba(255,255,255,0.3)"/>
               <text x="266" y="25" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="700">46%</text>
             </g>
 
             <g transform="translate(0, 80)">
               <text x="210" y="10" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" font-weight="500" text-anchor="middle">BREAK POINTS WON</text>
-              <rect x="176" y="15" width="32" height="14" rx="2" fill="#C9A84C" opacity="0.85"/>
-              <text x="172" y="25" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">4/7</text>
+              <rect x="176" y="15" width="32" height="14" rx="2" fill="#1a5c2e" opacity="0.85"/>
+              <text x="172" y="25" fill="#1a5c2e" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">4/7</text>
               <rect x="212" y="15" width="42" height="14" rx="2" fill="rgba(255,255,255,0.3)"/>
               <text x="258" y="25" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="700">2/4</text>
             </g>
@@ -470,19 +633,19 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             <g transform="translate(60, 60)">
               <path d="M -50 10 A 50 50 0 0 1 50 10" stroke="rgba(255,255,255,0.15)" stroke-width="6" fill="none" stroke-linecap="round"/>
               <path d="M -50 10 A 50 50 0 0 1 36 -25" stroke="#C9A84C" stroke-width="6" fill="none" stroke-linecap="round"/>
-              <text x="0" y="3" fill="#C9A84C" font-size="20" font-family="Fraunces" font-weight="600" text-anchor="middle">142</text>
+              <text x="0" y="3" fill="#1a5c2e" font-size="20" font-family="Inter" font-weight="600" text-anchor="middle">142</text>
               <text x="0" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">km/h avg 1st</text>
             </g>
             <g transform="translate(180, 60)">
               <path d="M -50 10 A 50 50 0 0 1 50 10" stroke="rgba(255,255,255,0.15)" stroke-width="6" fill="none" stroke-linecap="round"/>
               <path d="M -50 10 A 50 50 0 0 1 14 -38" stroke="#C9A84C" stroke-width="6" fill="none" stroke-linecap="round"/>
-              <text x="0" y="3" fill="#C9A84C" font-size="20" font-family="Fraunces" font-weight="600" text-anchor="middle">168</text>
+              <text x="0" y="3" fill="#1a5c2e" font-size="20" font-family="Inter" font-weight="600" text-anchor="middle">168</text>
               <text x="0" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">km/h peak</text>
             </g>
             <g transform="translate(300, 60)">
               <path d="M -50 10 A 50 50 0 0 1 50 10" stroke="rgba(255,255,255,0.15)" stroke-width="6" fill="none" stroke-linecap="round"/>
               <path d="M -50 10 A 50 50 0 0 1 -14 -38" stroke="#C9A84C" stroke-width="6" fill="none" stroke-linecap="round"/>
-              <text x="0" y="3" fill="#C9A84C" font-size="20" font-family="Fraunces" font-weight="600" text-anchor="middle">108</text>
+              <text x="0" y="3" fill="#1a5c2e" font-size="20" font-family="Inter" font-weight="600" text-anchor="middle">108</text>
               <text x="0" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">km/h avg 2nd</text>
             </g>
           </g>
@@ -567,56 +730,56 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
           <!-- Joint markers & chain arrows -->
           <g>
             <!-- Hip -->
-            <circle cx="188" cy="152" r="9" fill="#C9A84C"/>
+            <circle cx="188" cy="152" r="9" fill="#1a5c2e"/>
             <circle cx="188" cy="152" r="18" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
             <circle cx="188" cy="152" r="26" stroke="#C9A84C" stroke-width="0.6" fill="none" opacity="0.2"/>
             <path d="M 200 148 L 236 118" stroke="#C9A84C" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
 
             <!-- Shoulder (right) -->
-            <circle cx="210" cy="86" r="8" fill="#C9A84C"/>
+            <circle cx="210" cy="86" r="8" fill="#1a5c2e"/>
             <circle cx="210" cy="86" r="16" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
             <path d="M 222 82 L 260 58" stroke="#C9A84C" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
 
             <!-- Elbow -->
-            <circle cx="268" cy="60" r="7" fill="#C9A84C"/>
+            <circle cx="268" cy="60" r="7" fill="#1a5c2e"/>
             <circle cx="268" cy="60" r="14" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
             <path d="M 278 58 L 298 52" stroke="#C9A84C" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
 
             <!-- Wrist -->
-            <circle cx="304" cy="50" r="6" fill="#C9A84C"/>
+            <circle cx="304" cy="50" r="6" fill="#1a5c2e"/>
             <circle cx="304" cy="50" r="12" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
           </g>
 
           <!-- Readouts -->
           <g transform="translate(12, 122)">
             <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
-            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">HIP ROTATION</text>
-            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">142°/s</text>
+            <text x="8" y="12" fill="#1a5c2e" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">HIP ROTATION</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Inter" font-weight="600">142°/s</text>
           </g>
           <g transform="translate(12, 58)">
             <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
-            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">SHOULDER</text>
-            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">318°/s</text>
+            <text x="8" y="12" fill="#1a5c2e" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">SHOULDER</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Inter" font-weight="600">318°/s</text>
           </g>
           <g transform="translate(324, 30)">
             <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
-            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">ELBOW EXT</text>
-            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">412°/s</text>
+            <text x="8" y="12" fill="#1a5c2e" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">ELBOW EXT</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Inter" font-weight="600">412°/s</text>
           </g>
           <g transform="translate(324, 90)">
             <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
-            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">WRIST VEL.</text>
-            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">24.3 m/s</text>
+            <text x="8" y="12" fill="#1a5c2e" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">WRIST VEL.</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Inter" font-weight="600">24.3 m/s</text>
           </g>
 
           <!-- Chain sequence bar -->
           <g transform="translate(20, 310)">
             <text x="0" y="0" fill="rgba(255,255,255,0.6)" font-size="7" font-family="Inter" font-weight="600" letter-spacing="0.1em">CHAIN SEQUENCE · HIP → SHOULDER → ELBOW → WRIST</text>
             <rect x="0" y="8" width="380" height="4" rx="2" fill="rgba(255,255,255,0.1)"/>
-            <rect x="0" y="8" width="70" height="4" rx="2" fill="#C9A84C" opacity="0.6"/>
-            <rect x="90" y="8" width="80" height="4" rx="2" fill="#C9A84C" opacity="0.75"/>
-            <rect x="190" y="8" width="90" height="4" rx="2" fill="#C9A84C" opacity="0.9"/>
-            <rect x="300" y="8" width="80" height="4" rx="2" fill="#C9A84C"/>
+            <rect x="0" y="8" width="70" height="4" rx="2" fill="#1a5c2e" opacity="0.6"/>
+            <rect x="90" y="8" width="80" height="4" rx="2" fill="#1a5c2e" opacity="0.75"/>
+            <rect x="190" y="8" width="90" height="4" rx="2" fill="#1a5c2e" opacity="0.9"/>
+            <rect x="300" y="8" width="80" height="4" rx="2" fill="#1a5c2e"/>
             <text x="35" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">HIP</text>
             <text x="130" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">SHOULDER</text>
             <text x="235" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">ELBOW</text>
@@ -625,9 +788,9 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 
           <!-- Scoring badge -->
           <g transform="translate(292, 178)">
-            <rect width="110" height="34" rx="17" fill="#C9A84C"/>
+            <rect width="110" height="34" rx="17" fill="#1a5c2e"/>
             <text x="55" y="15" fill="#0A0F0C" font-size="6.5" font-family="Inter" font-weight="700" letter-spacing="0.12em" text-anchor="middle">SEQUENCE</text>
-            <text x="55" y="28" fill="#0A0F0C" font-size="12" font-family="Fraunces" font-weight="700" text-anchor="middle">Advanced</text>
+            <text x="55" y="28" fill="#0A0F0C" font-size="12" font-family="Inter" font-weight="700" text-anchor="middle">Advanced</text>
           </g>
         </svg>
       </div>
@@ -695,16 +858,16 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
           <!-- Quick prompt chips at top -->
           <g transform="translate(0, 6)">
             <rect width="90" height="24" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(201,168,76,0.3)" stroke-width="1"/>
-            <text x="45" y="16" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Serve analysis</text>
+            <text x="45" y="16" fill="#1a5c2e" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Serve analysis</text>
             <rect x="96" width="76" height="24" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(201,168,76,0.3)" stroke-width="1"/>
-            <text x="134" y="16" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Weakness</text>
+            <text x="134" y="16" fill="#1a5c2e" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Weakness</text>
             <rect x="178" width="60" height="24" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(201,168,76,0.3)" stroke-width="1"/>
-            <text x="208" y="16" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Tactics</text>
+            <text x="208" y="16" fill="#1a5c2e" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Tactics</text>
           </g>
 
           <!-- User question bubble -->
           <g transform="translate(134, 48)">
-            <rect width="286" height="58" rx="10" fill="#C9A84C"/>
+            <rect width="286" height="58" rx="10" fill="#1a5c2e"/>
             <text x="14" y="18" fill="#0A0F0C" font-size="7" font-family="Inter" font-weight="700" letter-spacing="0.12em">YOU</text>
             <text x="14" y="34" fill="#0A0F0C" font-size="10" font-family="Inter" font-weight="500">Why am I losing the second set so often lately?</text>
             <text x="14" y="48" fill="#0A0F0C" font-size="10" font-family="Inter" font-weight="500">Is it fitness or something else?</text>
@@ -714,20 +877,20 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
           <g transform="translate(0, 118)">
             <rect width="320" height="118" rx="10" fill="rgba(255,255,255,0.06)" stroke="rgba(201,168,76,0.2)" stroke-width="1"/>
             <g transform="translate(14, 18)">
-              <circle cx="6" cy="6" r="6" fill="#C9A84C"/>
-              <text x="20" y="10" fill="#C9A84C" font-size="7" font-family="Inter" font-weight="700" letter-spacing="0.12em">AI COACH</text>
+              <circle cx="6" cy="6" r="6" fill="#1a5c2e"/>
+              <text x="20" y="10" fill="#1a5c2e" font-size="7" font-family="Inter" font-weight="700" letter-spacing="0.12em">AI COACH</text>
             </g>
             <text x="14" y="44" fill="#fff" font-size="8.5" font-family="Inter">Looking at your last 5 matches, your 1st serve %</text>
             <text x="14" y="58" fill="#fff" font-size="8.5" font-family="Inter">drops from 64% in set 1 to 52% in set 2. That's a big</text>
             <text x="14" y="72" fill="#fff" font-size="8.5" font-family="Inter">gap. Alongside, your unforced errors on the backhand</text>
             <text x="14" y="86" fill="#fff" font-size="8.5" font-family="Inter">side jump 40% in set 2.</text>
-            <text x="14" y="104" fill="#C9A84C" font-size="8.5" font-family="Inter" font-weight="600">Not fitness. It's decision quality under fatigue.</text>
+            <text x="14" y="104" fill="#1a5c2e" font-size="8.5" font-family="Inter" font-weight="600">Not fitness. It's decision quality under fatigue.</text>
           </g>
 
           <!-- Data citation chip -->
           <g transform="translate(12, 248)">
             <rect width="300" height="38" rx="4" fill="rgba(201,168,76,0.1)" stroke="rgba(201,168,76,0.4)" stroke-width="1"/>
-            <text x="12" y="14" fill="#C9A84C" font-size="6.5" font-family="Inter" font-weight="700" letter-spacing="0.12em">CITED FROM YOUR DATA</text>
+            <text x="12" y="14" fill="#1a5c2e" font-size="6.5" font-family="Inter" font-weight="700" letter-spacing="0.12em">CITED FROM YOUR DATA</text>
             <text x="12" y="28" fill="rgba(255,255,255,0.9)" font-size="8" font-family="Inter">Last 5 matches · Set 1 vs Set 2 · Serve % split · BH error rate</text>
           </g>
 
@@ -736,7 +899,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             <rect width="400" height="40" rx="10" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
             <text x="14" y="24" fill="rgba(255,255,255,0.5)" font-size="9" font-family="Inter">Ask a follow-up...</text>
             <g transform="translate(368, 14)">
-              <rect width="24" height="14" rx="3" fill="#C9A84C"/>
+              <rect width="24" height="14" rx="3" fill="#1a5c2e"/>
               <path d="M 5 7 L 17 7 M 13 3 L 17 7 L 13 11" stroke="#0A0F0C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
             </g>
           </g>

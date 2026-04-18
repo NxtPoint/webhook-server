@@ -10,14 +10,35 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,600&display=swap" rel="stylesheet">
 <style>
 :root {
-  --green-darkest: #0A1F14; --green-deep: #0F2A1C; --green-primary: #1A3C2A;
-  --green-mid: #2B5840; --green-soft: #4A7C5E; --green-50: #E8F0EB;
-  --gold-deep: #8B6F2A; --gold: #C9A84C; --gold-light: #E0C77A; --gold-wash: rgba(201,168,76,0.08);
-  --cream: #F7F5EE; --white: #fff; --ink: #0A0F0C;
-  --text: #121814; --text-sec: #5a6b65; --text-dim: #9ca89f;
-  --border: #E8E5DC;
+  /* Locker room palette */
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-dark: #134221;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --red: #dc2626;
+  --radius: 4px;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --t-fast: 0.2s; --t-med: 0.4s;
+  /* Aliases — old names resolve to new palette, no gold anywhere */
+  --green-darkest: #0a1814;
+  --green-deep: var(--green-dark);
+  --green-primary: var(--green);
+  --green-mid: var(--green-light);
+  --green-soft: var(--green-light);
+  --green-50: var(--green-bg);
+  --gold-deep: var(--green);
+  --gold: var(--green);
+  --gold-light: var(--green-light);
+  --gold-wash: var(--green-bg);
+  --cream: var(--bg);
+  --ink: var(--text);
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
@@ -31,7 +52,7 @@ body {
 a { color: inherit; text-decoration: none; }
 img, svg { display: block; max-width: 100%; }
 button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
-.serif { font-family: 'Fraunces', Georgia, serif; }
+.serif { font-family: 'Inter', sans-serif; }
 
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
 .wrap-narrow { max-width: 920px; margin: 0 auto; padding: 0 28px; }
@@ -88,54 +109,77 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 .drawer-nav a:last-child { border-bottom: none; }
 .drawer-cta { margin-top: auto; padding-top: 32px; }
 
-/* HERO — split layout with pull-quote */
+/* HERO — full-bleed multi-court coach view */
 .coach-hero {
-  background: linear-gradient(160deg, var(--green-deep) 0%, var(--green-darkest) 60%, #070E0A 100%);
+  position: relative;
+  background: #0a1814;
   color: var(--white);
-  padding: 170px 28px 100px;
-  position: relative; overflow: hidden;
+  padding: 160px 28px 110px;
+  min-height: 82vh;
+  overflow: hidden;
+  display: flex; align-items: center;
 }
 .coach-hero::before {
-  content: ''; position: absolute; top: -30%; right: -10%; width: 900px; height: 900px;
-  background: radial-gradient(closest-side, rgba(201,168,76,0.12), transparent 70%);
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2;
+  background:
+    radial-gradient(1400px 800px at 78% 50%, rgba(26,92,46,0.28), transparent 65%),
+    radial-gradient(900px 600px at 12% 80%, rgba(5,12,9,0.9), transparent 60%),
+    radial-gradient(1100px 500px at 6% 10%, rgba(5,12,9,0.88), transparent 60%);
 }
-.coach-hero-inner {
-  max-width: 1240px; margin: 0 auto; position: relative;
-  display: grid; grid-template-columns: 1.1fr 1fr; gap: 60px; align-items: center;
+.coach-hero::after {
+  content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%);
+  -webkit-mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%);
 }
-@media (max-width: 980px) { .coach-hero-inner { grid-template-columns: 1fr; gap: 48px; } .coach-hero { padding: 140px 24px 80px; } }
+.coach-hero-viz { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.coach-hero-viz svg { width: 100%; height: 100%; }
+.coach-hero-fade {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 62%; z-index: 4;
+  background: linear-gradient(90deg, rgba(5,12,9,0.94) 0%, rgba(5,12,9,0.7) 42%, transparent 100%);
+  pointer-events: none;
+}
+.coach-hero-inner { position: relative; z-index: 6; max-width: 1280px; margin: 0 auto; width: 100%; }
+.coach-hero-content { max-width: 640px; }
+.coach-hero h1 { color: var(--white); margin: 18px 0 22px; }
+.coach-hero h1 .accent { color: rgba(255,255,255,0.6); font-style: italic; font-weight: 300; }
+.coach-hero .lede.light { margin-bottom: 34px; }
+.coach-hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 1020px) {
+  .coach-hero { padding: 130px 24px 80px; min-height: auto; }
+  .coach-hero-fade { width: 100%; background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.6) 55%, rgba(5,12,9,0.82) 100%); }
+}
 
-.coach-hero h1 { color: var(--white); margin: 20px 0 22px; }
-.coach-hero h1 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
-.coach-hero .lede.light { margin-bottom: 36px; }
-.coach-hero-ctas { display: flex; gap: 14px; flex-wrap: wrap; }
-
-/* Pull-quote card (the coach value prop, verbatim) */
+/* Pull-quote card — standalone section after hero */
+.pull-quote-section {
+  background: var(--white);
+  padding: 80px 28px;
+  border-bottom: 1px solid var(--border);
+}
 .pull-quote-card {
-  background: linear-gradient(155deg, rgba(201,168,76,0.08), rgba(255,255,255,0.02));
-  border: 1px solid rgba(201,168,76,0.3);
-  border-radius: 6px;
-  padding: 36px 34px;
+  max-width: 960px; margin: 0 auto;
+  padding: 0 0 0 40px;
   position: relative;
-  box-shadow: 0 30px 80px -30px rgba(0,0,0,0.5);
-}
-.pull-quote-card::before {
-  content: '"';
-  position: absolute; top: -18px; left: 26px;
-  font-family: 'Fraunces', serif; font-size: 6rem; font-weight: 700;
-  color: var(--gold); line-height: 1;
+  border-left: 4px solid var(--green);
 }
 .pull-quote-card blockquote {
-  font-family: 'Fraunces', serif; font-style: italic;
-  font-size: clamp(1.05rem, 1.5vw, 1.2rem); line-height: 1.6;
-  color: rgba(255,255,255,0.95); font-weight: 400;
-  letter-spacing: -0.005em;
+  font-size: clamp(1.15rem, 1.8vw, 1.5rem);
+  line-height: 1.5;
+  color: var(--text);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.pull-quote-card blockquote em {
+  color: var(--green); font-style: italic; font-weight: 600;
 }
 .pull-quote-card cite {
-  display: block; margin-top: 22px;
-  font-family: 'Inter', sans-serif; font-style: normal;
-  font-size: 0.74rem; font-weight: 600; letter-spacing: 0.14em;
-  color: var(--gold); text-transform: uppercase;
+  display: block; margin-top: 18px;
+  font-style: normal;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.16em;
+  color: var(--green-light); text-transform: uppercase;
 }
 
 /* SECTIONS */
@@ -169,7 +213,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   box-shadow: 0 20px 40px -20px rgba(10,31,20,0.12);
 }
 .value-num {
-  font-family: 'Fraunces', serif; font-weight: 600;
+  font-family: 'Inter', sans-serif; font-weight: 600;
   font-size: 2.4rem; color: var(--gold-deep);
   line-height: 1; flex-shrink: 0;
   min-width: 60px;
@@ -203,7 +247,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   background: var(--green-primary); color: var(--gold);
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-family: 'Fraunces', serif; font-weight: 600; font-size: 1.1rem;
+  font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.1rem;
 }
 .workflow-step h4 { margin-bottom: 6px; font-size: 1.1rem; color: var(--text); }
 .workflow-step p { color: var(--text-sec); font-size: 0.94rem; line-height: 1.6; max-width: 62ch; }
@@ -270,7 +314,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 .final-cta::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(closest-side at 20% 30%, rgba(201,168,76,0.09), transparent 60%), radial-gradient(closest-side at 80% 70%, rgba(201,168,76,0.09), transparent 60%); }
 .final-cta-inner { position: relative; max-width: 780px; margin: 0 auto; }
 .final-cta h2 { color: var(--white); font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 700; margin-bottom: 22px; }
-.final-cta h2 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.final-cta h2 .accent { color: var(--gold); font-family: 'Inter', sans-serif; font-style: italic; font-weight: 600; }
 .final-cta .lede { color: rgba(255,255,255,0.8); margin: 0 auto 40px; }
 .final-cta .eyebrow { justify-content: center; }
 
@@ -333,10 +377,123 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   </div>
 </div>
 
-<!-- HERO with pull-quote -->
+<!-- HERO — full-bleed multi-court roster visualization -->
 <section class="coach-hero">
+  <div class="coach-hero-viz" aria-hidden="true">
+    <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="c-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>
+        <filter id="c-glow-sm" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2.4"/></filter>
+        <radialGradient id="c-surface" cx="50%" cy="50%" r="55%">
+          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.12"/>
+          <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="1600" height="900" fill="url(#c-surface)"/>
+
+      <!-- 4 mini-courts in a 2x2 grid — each a different player -->
+      <!-- COURT 1 (top-left quadrant of right side): Luca M. — serving strong -->
+      <g transform="translate(560, 120)">
+        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
+        <text x="20" y="22" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">LUCA M. · U16</text>
+        <text x="20" y="36" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">1ST SRV 71% · trending up</text>
+        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.22)" stroke-width="1" fill="none">
+          <rect x="0" y="0" width="360" height="180"/>
+          <line x1="0" y1="22" x2="360" y2="22"/>
+          <line x1="0" y1="158" x2="360" y2="158"/>
+          <line x1="90" y1="22" x2="90" y2="158"/>
+          <line x1="270" y1="22" x2="270" y2="158"/>
+          <line x1="90" y1="90" x2="270" y2="90"/>
+          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.4)" stroke-width="1.4"/>
+        </g>
+        <g transform="translate(30, 60)">
+          <circle cx="286" cy="70" r="10" fill="rgba(74,222,128,0.22)" filter="url(#c-glow)"/>
+          <circle cx="286" cy="70" r="4" fill="#4ADE80" filter="url(#c-glow-sm)"/>
+          <circle cx="294" cy="108" r="9" fill="rgba(74,222,128,0.2)" filter="url(#c-glow)"/>
+          <circle cx="294" cy="108" r="3.5" fill="#4ADE80" filter="url(#c-glow-sm)"/>
+          <circle cx="278" cy="130" r="7" fill="rgba(74,222,128,0.15)" filter="url(#c-glow)"/>
+          <circle cx="278" cy="130" r="3" fill="#4ADE80"/>
+        </g>
+      </g>
+
+      <!-- COURT 2 (top-right quadrant): Sofia K. — BH errors -->
+      <g transform="translate(1020, 120)">
+        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
+        <text x="20" y="22" fill="#fdba74" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">SOFIA K. · U18</text>
+        <text x="20" y="36" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">BH ERRORS UP · review needed</text>
+        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.22)" stroke-width="1" fill="none">
+          <rect x="0" y="0" width="360" height="180"/>
+          <line x1="0" y1="22" x2="360" y2="22"/>
+          <line x1="0" y1="158" x2="360" y2="158"/>
+          <line x1="90" y1="22" x2="90" y2="158"/>
+          <line x1="270" y1="22" x2="270" y2="158"/>
+          <line x1="90" y1="90" x2="270" y2="90"/>
+          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.4)" stroke-width="1.4"/>
+        </g>
+        <g transform="translate(30, 60)">
+          <circle cx="82" cy="50" r="9" fill="rgba(251,146,60,0.22)" filter="url(#c-glow)"/>
+          <circle cx="82" cy="50" r="3.5" fill="#fdba74"/>
+          <circle cx="110" cy="40" r="8" fill="rgba(251,146,60,0.18)" filter="url(#c-glow)"/>
+          <circle cx="110" cy="40" r="3" fill="#fdba74"/>
+          <circle cx="140" cy="32" r="7" fill="rgba(251,146,60,0.16)" filter="url(#c-glow)"/>
+          <circle cx="140" cy="32" r="3" fill="#fdba74"/>
+          <circle cx="60" cy="62" r="6" fill="rgba(251,146,60,0.14)" filter="url(#c-glow)"/>
+          <circle cx="60" cy="62" r="2.5" fill="#fdba74"/>
+        </g>
+      </g>
+
+      <!-- COURT 3 (bottom-left quadrant): James R. — improving -->
+      <g transform="translate(560, 440)">
+        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
+        <text x="20" y="22" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">JAMES R. · U14</text>
+        <text x="20" y="36" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">+4 KPIs UP · strong week</text>
+        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.22)" stroke-width="1" fill="none">
+          <rect x="0" y="0" width="360" height="180"/>
+          <line x1="0" y1="22" x2="360" y2="22"/>
+          <line x1="0" y1="158" x2="360" y2="158"/>
+          <line x1="90" y1="22" x2="90" y2="158"/>
+          <line x1="270" y1="22" x2="270" y2="158"/>
+          <line x1="90" y1="90" x2="270" y2="90"/>
+          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.4)" stroke-width="1.4"/>
+        </g>
+        <g transform="translate(30, 60)" fill="none" stroke-linecap="round">
+          <path d="M 30 150 Q 180 100 330 60" stroke="rgba(74,222,128,0.5)" stroke-width="1.4"/>
+          <path d="M 30 150 Q 180 140 330 110" stroke="rgba(74,222,128,0.4)" stroke-width="1.3"/>
+          <circle cx="330" cy="60" r="9" fill="rgba(74,222,128,0.2)" filter="url(#c-glow)"/>
+          <circle cx="330" cy="60" r="3.5" fill="#4ADE80"/>
+          <circle cx="330" cy="110" r="8" fill="rgba(74,222,128,0.18)" filter="url(#c-glow)"/>
+          <circle cx="330" cy="110" r="3" fill="#4ADE80"/>
+          <circle cx="30" cy="150" r="5" fill="#4ADE80"/>
+        </g>
+      </g>
+
+      <!-- COURT 4 (bottom-right quadrant): Ana T. — idle -->
+      <g transform="translate(1020, 440)">
+        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
+        <text x="20" y="22" fill="rgba(255,255,255,0.45)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">ANA T. · U16</text>
+        <text x="20" y="36" fill="rgba(255,255,255,0.35)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">NO NEW DATA · 1 week</text>
+        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.12)" stroke-width="1" fill="none">
+          <rect x="0" y="0" width="360" height="180"/>
+          <line x1="0" y1="22" x2="360" y2="22"/>
+          <line x1="0" y1="158" x2="360" y2="158"/>
+          <line x1="90" y1="22" x2="90" y2="158"/>
+          <line x1="270" y1="22" x2="270" y2="158"/>
+          <line x1="90" y1="90" x2="270" y2="90"/>
+          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.18)" stroke-width="1.4"/>
+        </g>
+      </g>
+
+      <!-- Small header label above grid -->
+      <g transform="translate(560, 90)">
+        <text fill="rgba(255,255,255,0.45)" font-family="Inter, sans-serif" font-size="11" font-weight="700" letter-spacing="0.22em">COACH DASHBOARD · 4 LINKED PLAYERS</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="coach-hero-fade"></div>
+
   <div class="coach-hero-inner">
-    <div>
+    <div class="coach-hero-content">
       <div class="eyebrow light">For Coaches</div>
       <h1>Coach with data.<br><span class="accent">Always free.</span></h1>
       <p class="lede light">You've seen the matches you travelled to. The ones you didn't? Until now, you guessed. Our data makes the difference measurable — for every player on your roster.</p>
@@ -347,14 +504,16 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
         <a href="#how-it-works" class="btn btn-ghost">How it works</a>
       </div>
     </div>
+  </div>
+</section>
 
-    <!-- Pull-quote card, reproducing Tomo's value prop verbatim -->
-    <div class="pull-quote-card">
-      <blockquote>
-        Coaches can't travel to every match. Their kids lose tournaments and they don't know why. Our data tells them where the kids are falling short — detailed stats, performance history trending over time, the AI Coach giving them game knowledge, technique analysis putting them above their peers. Data-driven coaching, in real time.
-      </blockquote>
-      <cite>— The pitch, in plain words</cite>
-    </div>
+<!-- PULL QUOTE — verbatim coach value prop (moved out of hero for impact on its own) -->
+<section class="pull-quote-section">
+  <div class="pull-quote-card">
+    <blockquote>
+      Coaches can't travel to every match. Their kids lose tournaments and they don't know why. Our data tells them where the kids are falling short — <em>detailed stats, performance history trending over time, the AI Coach giving them game knowledge, technique analysis putting them above their peers.</em> Data-driven coaching, in real time.
+    </blockquote>
+    <cite>— The pitch, in plain words</cite>
   </div>
 </section>
 
