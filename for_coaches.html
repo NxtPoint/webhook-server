@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>For Coaches · Ten·Fifty5 — data-driven coaching, free at launch.</title>
+<meta name="description" content="You can't travel to every match. Our data tells you where the gap is. Free coach accounts, full dashboards on every linked player, AI Coach on their data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --green-darkest: #0A1F14; --green-deep: #0F2A1C; --green-primary: #1A3C2A;
+  --green-mid: #2B5840; --green-soft: #4A7C5E; --green-50: #E8F0EB;
+  --gold-deep: #8B6F2A; --gold: #C9A84C; --gold-light: #E0C77A; --gold-wash: rgba(201,168,76,0.08);
+  --cream: #F7F5EE; --white: #fff; --ink: #0A0F0C;
+  --text: #121814; --text-sec: #5a6b65; --text-dim: #9ca89f;
+  --border: #E8E5DC;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-fast: 0.2s; --t-med: 0.4s;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--white); color: var(--text); line-height: 1.5;
+  font-feature-settings: "kern","liga","ss01";
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+a { color: inherit; text-decoration: none; }
+img, svg { display: block; max-width: 100%; }
+button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+.serif { font-family: 'Fraunces', Georgia, serif; }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
+.wrap-narrow { max-width: 920px; margin: 0 auto; padding: 0 28px; }
+
+.eyebrow { display: inline-flex; align-items: center; gap: 10px; font-size: 0.72rem; font-weight: 600; color: var(--gold); text-transform: uppercase; letter-spacing: 0.16em; }
+.eyebrow::before { content: ""; width: 24px; height: 1px; background: var(--gold); opacity: 0.6; }
+.eyebrow.light { color: var(--gold-light); }
+.eyebrow.ink { color: var(--green-primary); }
+.eyebrow.ink::before { background: var(--green-primary); }
+
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; color: var(--text); }
+h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 800; }
+h2 { font-size: clamp(1.8rem, 3.6vw, 2.6rem); }
+h3 { font-size: clamp(1.15rem, 2vw, 1.45rem); font-weight: 600; letter-spacing: -0.01em; }
+h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
+.lede { font-size: clamp(1.02rem, 1.3vw, 1.15rem); color: var(--text-sec); line-height: 1.6; max-width: 60ch; }
+.lede.light { color: rgba(255,255,255,0.78); }
+
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 15px 26px; font-size: 0.92rem; font-weight: 600; border-radius: 3px; transition: all var(--t-fast) var(--ease); white-space: nowrap; }
+.btn svg { width: 16px; height: 16px; transition: transform var(--t-fast) var(--ease); }
+.btn:hover svg { transform: translateX(3px); }
+.btn-gold { background: var(--gold); color: var(--ink); box-shadow: 0 10px 28px -12px rgba(201,168,76,0.55); }
+.btn-gold:hover { background: var(--gold-light); transform: translateY(-1px); }
+.btn-ghost { background: transparent; color: var(--white); border: 1px solid rgba(255,255,255,0.25); }
+.btn-ghost:hover { border-color: var(--gold); color: var(--gold-light); }
+.btn-ghost-dark { background: transparent; color: var(--green-primary); border: 1px solid var(--green-primary); }
+.btn-ghost-dark:hover { background: var(--green-primary); color: var(--white); }
+.btn-sm { padding: 10px 18px; font-size: 0.82rem; }
+.btn-lg { padding: 18px 34px; font-size: 1rem; }
+
+/* NAV */
+.nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 18px 28px; background: rgba(15,42,28,0.88); backdrop-filter: saturate(180%) blur(12px); -webkit-backdrop-filter: saturate(180%) blur(12px); transition: all var(--t-fast) var(--ease); }
+.nav.scrolled { padding: 12px 28px; background: rgba(10,31,20,0.96); border-bottom: 1px solid rgba(255,255,255,0.06); }
+.nav-inner { max-width: 1280px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.nav-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.08em; color: var(--white); font-size: 1.08rem; }
+.nav-brand-dot { color: var(--gold); font-size: 1.4em; line-height: 0; margin-top: -2px; }
+.nav-links { display: flex; align-items: center; gap: 32px; list-style: none; }
+.nav-links a { color: rgba(255,255,255,0.78); font-size: 0.9rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
+.nav-links a:hover, .nav-links a.active { color: var(--gold-light); }
+.nav-right { display: flex; align-items: center; gap: 14px; }
+.nav-signin { color: rgba(255,255,255,0.78); font-size: 0.9rem; font-weight: 500; }
+.nav-signin:hover { color: var(--gold-light); }
+.nav-burger { display: none; padding: 8px; color: var(--white); }
+.nav-burger svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; }
+@media (max-width: 880px) { .nav-links, .nav-signin { display: none; } .nav-burger { display: inline-flex; } .nav-right .btn { padding: 10px 16px; font-size: 0.78rem; } }
+
+.drawer { position: fixed; inset: 0; z-index: 200; background: var(--green-deep); color: var(--white); padding: 24px 28px; transform: translateX(100%); transition: transform var(--t-med) var(--ease); display: flex; flex-direction: column; }
+.drawer.open { transform: translateX(0); }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 60px; }
+.drawer-close { padding: 8px; color: var(--white); }
+.drawer-close svg { width: 28px; height: 28px; stroke: currentColor; fill: none; stroke-width: 2; }
+.drawer-nav { display: flex; flex-direction: column; gap: 4px; }
+.drawer-nav a { padding: 18px 0; font-size: 1.4rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--white); }
+.drawer-nav a:last-child { border-bottom: none; }
+.drawer-cta { margin-top: auto; padding-top: 32px; }
+
+/* HERO — split layout with pull-quote */
+.coach-hero {
+  background: linear-gradient(160deg, var(--green-deep) 0%, var(--green-darkest) 60%, #070E0A 100%);
+  color: var(--white);
+  padding: 170px 28px 100px;
+  position: relative; overflow: hidden;
+}
+.coach-hero::before {
+  content: ''; position: absolute; top: -30%; right: -10%; width: 900px; height: 900px;
+  background: radial-gradient(closest-side, rgba(201,168,76,0.12), transparent 70%);
+}
+.coach-hero-inner {
+  max-width: 1240px; margin: 0 auto; position: relative;
+  display: grid; grid-template-columns: 1.1fr 1fr; gap: 60px; align-items: center;
+}
+@media (max-width: 980px) { .coach-hero-inner { grid-template-columns: 1fr; gap: 48px; } .coach-hero { padding: 140px 24px 80px; } }
+
+.coach-hero h1 { color: var(--white); margin: 20px 0 22px; }
+.coach-hero h1 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.coach-hero .lede.light { margin-bottom: 36px; }
+.coach-hero-ctas { display: flex; gap: 14px; flex-wrap: wrap; }
+
+/* Pull-quote card (the coach value prop, verbatim) */
+.pull-quote-card {
+  background: linear-gradient(155deg, rgba(201,168,76,0.08), rgba(255,255,255,0.02));
+  border: 1px solid rgba(201,168,76,0.3);
+  border-radius: 6px;
+  padding: 36px 34px;
+  position: relative;
+  box-shadow: 0 30px 80px -30px rgba(0,0,0,0.5);
+}
+.pull-quote-card::before {
+  content: '"';
+  position: absolute; top: -18px; left: 26px;
+  font-family: 'Fraunces', serif; font-size: 6rem; font-weight: 700;
+  color: var(--gold); line-height: 1;
+}
+.pull-quote-card blockquote {
+  font-family: 'Fraunces', serif; font-style: italic;
+  font-size: clamp(1.05rem, 1.5vw, 1.2rem); line-height: 1.6;
+  color: rgba(255,255,255,0.95); font-weight: 400;
+  letter-spacing: -0.005em;
+}
+.pull-quote-card cite {
+  display: block; margin-top: 22px;
+  font-family: 'Inter', sans-serif; font-style: normal;
+  font-size: 0.74rem; font-weight: 600; letter-spacing: 0.14em;
+  color: var(--gold); text-transform: uppercase;
+}
+
+/* SECTIONS */
+.section { padding: 100px 0; position: relative; }
+.section.alt { background: var(--cream); }
+.section.dark { background: linear-gradient(180deg, var(--green-primary), var(--green-deep)); color: var(--white); }
+.section.dark h2, .section.dark h3 { color: var(--white); }
+.section-head { max-width: 760px; margin: 0 auto 56px; text-align: center; }
+.section-head h2 { margin-bottom: 18px; }
+.section-head .lede { margin-left: auto; margin-right: auto; }
+@media (max-width: 760px) { .section { padding: 72px 0; } .section-head { margin-bottom: 40px; } }
+
+/* VALUE GRID */
+.value-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px;
+}
+@media (max-width: 880px) { .value-grid { grid-template-columns: 1fr; gap: 16px; } }
+
+.value-card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 32px 30px;
+  display: flex; gap: 22px;
+  position: relative;
+  transition: border-color var(--t-fast) var(--ease), transform var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease);
+}
+.value-card:hover {
+  border-color: var(--green-soft);
+  transform: translateY(-2px);
+  box-shadow: 0 20px 40px -20px rgba(10,31,20,0.12);
+}
+.value-num {
+  font-family: 'Fraunces', serif; font-weight: 600;
+  font-size: 2.4rem; color: var(--gold-deep);
+  line-height: 1; flex-shrink: 0;
+  min-width: 60px;
+  letter-spacing: -0.02em;
+}
+.value-card h4 { margin-bottom: 8px; font-size: 1.1rem; }
+.value-card p { color: var(--text-sec); font-size: 0.92rem; line-height: 1.6; }
+
+/* WORKFLOW STEPS */
+.workflow {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 44px 44px 36px;
+  max-width: 980px; margin: 0 auto;
+}
+@media (max-width: 720px) { .workflow { padding: 30px 24px; } }
+
+.workflow-row {
+  display: grid; grid-template-columns: auto 1fr;
+  gap: 24px;
+  padding: 24px 0;
+  border-top: 1px solid var(--border);
+  align-items: flex-start;
+}
+.workflow-row:first-child { border-top: none; padding-top: 0; }
+.workflow-row:last-child { padding-bottom: 0; }
+
+.workflow-step-num {
+  width: 44px; height: 44px; flex-shrink: 0;
+  background: var(--green-primary); color: var(--gold);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Fraunces', serif; font-weight: 600; font-size: 1.1rem;
+}
+.workflow-step h4 { margin-bottom: 6px; font-size: 1.1rem; color: var(--text); }
+.workflow-step p { color: var(--text-sec); font-size: 0.94rem; line-height: 1.6; max-width: 62ch; }
+
+/* COMPARISON TABLE */
+.compare-table {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 980px; margin: 0 auto;
+}
+.compare-header {
+  display: grid; grid-template-columns: 1.4fr 1fr 1fr;
+  padding: 18px 28px;
+  background: var(--green-primary); color: var(--white);
+  font-size: 0.76rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+}
+.compare-header > div:first-child { text-align: left; }
+.compare-header > div { text-align: center; }
+.compare-header .h-coach { color: var(--gold); }
+.compare-row {
+  display: grid; grid-template-columns: 1.4fr 1fr 1fr;
+  padding: 16px 28px;
+  border-top: 1px solid var(--border);
+  align-items: center;
+  font-size: 0.92rem;
+}
+.compare-row:nth-child(even) { background: var(--cream); }
+.compare-row .feature { font-weight: 500; color: var(--text); }
+.compare-row .cell { text-align: center; color: var(--text-sec); font-size: 0.88rem; }
+.compare-row .cell.yes { color: var(--green-primary); font-weight: 600; }
+.compare-row .cell.yes-gold { color: var(--gold-deep); font-weight: 600; }
+.compare-row .cell .x { color: var(--text-dim); }
+@media (max-width: 720px) {
+  .compare-header, .compare-row { grid-template-columns: 1.4fr 1fr 1fr; padding: 14px 16px; font-size: 0.82rem; }
+  .compare-row .cell { font-size: 0.8rem; }
+}
+
+/* HOW IT'S FREE */
+.free-explain-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px;
+}
+@media (max-width: 880px) { .free-explain-grid { grid-template-columns: 1fr; gap: 18px; } }
+.free-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 30px 28px;
+  text-align: center;
+}
+.free-card-ic {
+  width: 52px; height: 52px; margin: 0 auto 20px;
+  background: rgba(201,168,76,0.15); border: 1px solid rgba(201,168,76,0.4);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.free-card-ic svg { width: 24px; height: 24px; color: var(--gold); }
+.free-card h4 { color: var(--white); margin-bottom: 10px; font-size: 1.1rem; }
+.free-card p { color: rgba(255,255,255,0.7); font-size: 0.9rem; line-height: 1.6; }
+
+/* FINAL CTA */
+.final-cta { position: relative; background: linear-gradient(145deg, var(--green-deep) 0%, var(--green-darkest) 100%); color: var(--white); padding: 110px 28px; text-align: center; overflow: hidden; }
+.final-cta::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(closest-side at 20% 30%, rgba(201,168,76,0.09), transparent 60%), radial-gradient(closest-side at 80% 70%, rgba(201,168,76,0.09), transparent 60%); }
+.final-cta-inner { position: relative; max-width: 780px; margin: 0 auto; }
+.final-cta h2 { color: var(--white); font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 700; margin-bottom: 22px; }
+.final-cta h2 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.final-cta .lede { color: rgba(255,255,255,0.8); margin: 0 auto 40px; }
+.final-cta .eyebrow { justify-content: center; }
+
+.footer { background: var(--green-darkest); color: rgba(255,255,255,0.7); padding: 70px 28px 30px; border-top: 1px solid rgba(255,255,255,0.06); }
+.footer-inner { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 48px; }
+@media (max-width: 760px) { .footer-inner { grid-template-columns: 1fr 1fr; gap: 32px 24px; } .footer-brand { grid-column: 1 / -1; } }
+.footer-brand { max-width: 300px; }
+.footer-brand-name { font-weight: 800; letter-spacing: 0.08em; color: var(--white); font-size: 1.08rem; margin-bottom: 16px; }
+.footer-brand p { font-size: 0.86rem; line-height: 1.6; color: rgba(255,255,255,0.55); }
+.footer-col h5 { font-size: 0.72rem; font-weight: 700; color: var(--gold); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 18px; }
+.footer-col ul { list-style: none; }
+.footer-col li { margin-bottom: 10px; }
+.footer-col a { font-size: 0.88rem; color: rgba(255,255,255,0.7); transition: color var(--t-fast) var(--ease); }
+.footer-col a:hover { color: var(--gold-light); }
+.footer-bottom { max-width: 1240px; margin: 50px auto 0; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: rgba(255,255,255,0.45); flex-wrap: wrap; gap: 12px; }
+
+.fade-in { opacity: 0; transform: translateY(18px); transition: opacity 0.8s var(--ease), transform 0.8s var(--ease); }
+.fade-in.visible { opacity: 1; transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 14px 20px; } }
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a href="/home" class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</a>
+    <ul class="nav-links">
+      <li><a href="/how-it-works">How It Works</a></li>
+      <li><a href="/pricing-public">Pricing</a></li>
+      <li><a href="/for-coaches" class="active">For Coaches</a></li>
+    </ul>
+    <div class="nav-right">
+      <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
+      <a href="/register?role=coach" class="btn btn-gold btn-sm">Coach with data · Free
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      </a>
+      <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <span class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</span>
+    <button class="drawer-close" onclick="document.getElementById('drawer').classList.remove('open')" aria-label="Close menu">
+      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+    </button>
+  </div>
+  <div class="drawer-nav">
+    <a href="/how-it-works">How It Works</a>
+    <a href="/pricing-public">Pricing</a>
+    <a href="/for-coaches">For Coaches</a>
+    <a href="https://www.ten-fifty5.com/portal">Sign In</a>
+  </div>
+  <div class="drawer-cta">
+    <a href="/register?role=coach" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Coach with data · Free</a>
+  </div>
+</div>
+
+<!-- HERO with pull-quote -->
+<section class="coach-hero">
+  <div class="coach-hero-inner">
+    <div>
+      <div class="eyebrow light">For Coaches</div>
+      <h1>Coach with data.<br><span class="accent">Always free.</span></h1>
+      <p class="lede light">You've seen the matches you travelled to. The ones you didn't? Until now, you guessed. Our data makes the difference measurable — for every player on your roster.</p>
+      <div class="coach-hero-ctas">
+        <a href="/register?role=coach" class="btn btn-gold btn-lg">Get your free coach account
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </a>
+        <a href="#how-it-works" class="btn btn-ghost">How it works</a>
+      </div>
+    </div>
+
+    <!-- Pull-quote card, reproducing Tomo's value prop verbatim -->
+    <div class="pull-quote-card">
+      <blockquote>
+        Coaches can't travel to every match. Their kids lose tournaments and they don't know why. Our data tells them where the kids are falling short — detailed stats, performance history trending over time, the AI Coach giving them game knowledge, technique analysis putting them above their peers. Data-driven coaching, in real time.
+      </blockquote>
+      <cite>— The pitch, in plain words</cite>
+    </div>
+  </div>
+</section>
+
+<!-- WHY YOU NEED THIS -->
+<section class="section alt">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow ink">What you get</div>
+      <h2 style="margin-top:14px;">Six things you didn't have<br>before breakfast.</h2>
+      <p class="lede">Everything a touring coach's staff would prep for a pro — but for every player on your roster, ready before they're done stretching.</p>
+    </div>
+
+    <div class="value-grid">
+      <div class="value-card">
+        <span class="value-num">01</span>
+        <div>
+          <h4>A match report from every match — even the ones you missed</h4>
+          <p>Parent films on a phone. Club camera auto-uploads. Junior plays abroad. By the time you open the app, the analysis is done. Point-by-point, heatmaps, KPIs — on your phone before the player's home.</p>
+        </div>
+      </div>
+
+      <div class="value-card">
+        <span class="value-num">02</span>
+        <div>
+          <h4>Trend lines that tell you what's really changing</h4>
+          <p>Is their first-serve percentage actually up, or are you just remembering the good ones? Is the backhand error rate climbing since the grip change? Our performance module answers with data, not gut feel.</p>
+        </div>
+      </div>
+
+      <div class="value-card">
+        <span class="value-num">03</span>
+        <div>
+          <h4>An AI coach trained on your player's data</h4>
+          <p>Ask "what tactical change would give my player the biggest lift against deep returners?" and get an answer grounded in their actual patterns — not generic coaching blog content.</p>
+        </div>
+      </div>
+
+      <div class="value-card">
+        <span class="value-num">04</span>
+        <div>
+          <h4>Technique analysis that catches what your eye misses</h4>
+          <p>Pose estimation + kinetic chain scoring finds the technical issues before they become habits. "Shoulder peaks before hip" is something you see once the data shows you — then you can't unsee it.</p>
+        </div>
+      </div>
+
+      <div class="value-card">
+        <span class="value-num">05</span>
+        <div>
+          <h4>Proof, not promises, for parents</h4>
+          <p>Progression charts and KPI comparisons give parents something concrete to look at. Fees get renewed when the chart goes up and the coach is the one who drew the line.</p>
+        </div>
+      </div>
+
+      <div class="value-card">
+        <span class="value-num">06</span>
+        <div>
+          <h4>Trimmed match footage, ready to review</h4>
+          <p>Watch the point they lost the break. Scrub the five biggest winners. Full trimmed video is linked to the data so you can go from stat to clip in one click, then share it on the group chat.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT'S FREE -->
+<section class="section dark">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow light" style="justify-content:center;">Why it's free for coaches</div>
+      <h2 style="margin-top:14px;">No fee. No catch.<br>You're not the customer — you're the advantage.</h2>
+      <p class="lede light">At launch, every coach account is free. Your players cover the uploads. We get a better product because coaches are on it. Everyone wins.</p>
+    </div>
+
+    <div class="free-explain-grid">
+      <div class="free-card">
+        <div class="free-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h4>Players pay for their uploads</h4>
+        <p>Your player subscribes (or pays as they go). Each upload consumes their credit — never yours. You read the data. They get the bill.</p>
+      </div>
+      <div class="free-card">
+        <div class="free-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M20 21v-2a4 4 0 00-3-3.87M4 21v-2a4 4 0 013-3.87"/></svg>
+        </div>
+        <h4>Invited, not self-serve</h4>
+        <p>Coaches can only be added by a player account — keeps the data tied to the right person and makes the permission model simple. You don't upload, you review.</p>
+      </div>
+      <div class="free-card">
+        <div class="free-card-ic">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        </div>
+        <h4>Unlimited linked players</h4>
+        <p>Work with three juniors? Twelve? The whole academy? No seat fee, no per-player charge. Invite every player who wants you looking at their data.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS WORKFLOW -->
+<section class="section" id="how-it-works">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow ink">The workflow</div>
+      <h2 style="margin-top:14px;">Five minutes to set up.<br>Five years of value.</h2>
+    </div>
+
+    <div class="workflow">
+      <div class="workflow-row">
+        <div class="workflow-step-num">1</div>
+        <div class="workflow-step">
+          <h4>Player creates their account</h4>
+          <p>Your player (or their parent, for juniors) signs up at ten-fifty5.com. They pick a subscription or start free. Takes 90 seconds.</p>
+        </div>
+      </div>
+      <div class="workflow-row">
+        <div class="workflow-step-num">2</div>
+        <div class="workflow-step">
+          <h4>They invite you from the Locker Room</h4>
+          <p>In their dashboard, they add your email under "Invite Coach". You get an email with a secure accept link.</p>
+        </div>
+      </div>
+      <div class="workflow-row">
+        <div class="workflow-step-num">3</div>
+        <div class="workflow-step">
+          <h4>You accept. Your free coach account is created.</h4>
+          <p>One click on the email link, and you're in. No credit card, no password gymnastics — the token does the auth.</p>
+        </div>
+      </div>
+      <div class="workflow-row">
+        <div class="workflow-step-num">4</div>
+        <div class="workflow-step">
+          <h4>You open the portal and see their whole history</h4>
+          <p>Every match, every dashboard, every technique analysis, every AI Coach card. Read-only, obviously — you don't upload, they do.</p>
+        </div>
+      </div>
+      <div class="workflow-row">
+        <div class="workflow-step-num">5</div>
+        <div class="workflow-step">
+          <h4>They keep uploading. You keep coaching.</h4>
+          <p>Every new match, new technique clip, new insight card shows up in your portal automatically. You're in the loop without having to chase.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARISON: COACH vs PLAYER -->
+<section class="section alt">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow ink">Permissions &amp; scope</div>
+      <h2 style="margin-top:14px;">What a coach can do.<br>And what only a player can.</h2>
+      <p class="lede">Coach access is read-and-query on your players' data. Uploads always come from the player — that way the data stays attached to their career history, not yours.</p>
+    </div>
+
+    <div class="compare-table">
+      <div class="compare-header">
+        <div>Capability</div>
+        <div>Player</div>
+        <div class="h-coach">Coach</div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">Upload match video</div>
+        <div class="cell yes">Yes</div>
+        <div class="cell"><span class="x">—</span></div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">Upload technique stroke</div>
+        <div class="cell yes">Yes</div>
+        <div class="cell"><span class="x">—</span></div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">View match dashboards</div>
+        <div class="cell yes">Own matches</div>
+        <div class="cell yes-gold">All linked players</div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">View technique reports</div>
+        <div class="cell yes">Own</div>
+        <div class="cell yes-gold">All linked players</div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">Ask the AI Coach</div>
+        <div class="cell yes">Own data</div>
+        <div class="cell yes-gold">Linked players' data</div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">Performance trending</div>
+        <div class="cell yes">Own KPIs</div>
+        <div class="cell yes-gold">Every linked player</div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">Trimmed match footage</div>
+        <div class="cell yes">Yes</div>
+        <div class="cell yes-gold">Yes</div>
+      </div>
+      <div class="compare-row">
+        <div class="feature">Pays for uploads</div>
+        <div class="cell yes">Yes</div>
+        <div class="cell"><span class="x">Free at launch</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FINAL CTA -->
+<section class="final-cta">
+  <div class="final-cta-inner">
+    <div class="eyebrow light">Free coach account · No card required</div>
+    <h2 style="margin-top:20px;">Stop guessing.<br><span class="accent">Start coaching.</span></h2>
+    <p class="lede">Your first player invites you and you're in. If you don't have a player ready, send this page to the parent — they'll know what to do next.</p>
+    <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
+      <a href="/register?role=coach" class="btn btn-gold btn-lg">Get your free coach account
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      </a>
+      <a href="mailto:info@ten-fifty5.com?subject=Coach%20onboarding%20question" class="btn btn-ghost">Talk to us first</a>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-brand-name">TEN<span class="nav-brand-dot">·</span>FIFTY5</div>
+      <p>ATP-level match analysis, biomechanical technique breakdown and AI coaching — for serious competitive players and the coaches who train them.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Product</h5>
+      <ul>
+        <li><a href="/how-it-works">How It Works</a></li>
+        <li><a href="/pricing-public">Pricing</a></li>
+        <li><a href="/for-coaches">For Coaches</a></li>
+        <li><a href="/register">Start Free</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h5>Company</h5>
+      <ul>
+        <li><a href="mailto:info@ten-fifty5.com">Contact</a></li>
+        <li><a href="mailto:support@ten-fifty5.com">Support</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h5>Legal</h5>
+      <ul>
+        <li><a href="#">Privacy</a></li>
+        <li><a href="#">Terms</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>&copy; 2026 Ten·Fifty5. All rights reserved.</span>
+    <span>Built for the serious player.</span>
+  </div>
+</footer>
+
+<script>
+(function() {
+  var nav = document.getElementById('nav');
+  var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) { if (entry.isIntersecting) { entry.target.classList.add('visible'); io.unobserve(entry.target); } });
+    }, { threshold: 0.12, rootMargin: '0px 0px -60px 0px' });
+    document.querySelectorAll('.section-head, .value-card, .workflow-row, .free-card').forEach(function(el) {
+      el.classList.add('fade-in'); io.observe(el);
+    });
+  }
+})();
+</script>
+</body>
+</html>

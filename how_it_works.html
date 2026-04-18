@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>How Ten·Fifty5 Works — from match video to data edge</title>
+<meta name="description" content="Upload video. Computer vision tracks every shot, bounce and stroke. AI turns the data into coaching you can act on. See how the full loop works.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --green-darkest: #0A1F14; --green-deep: #0F2A1C; --green-primary: #1A3C2A;
+  --green-mid: #2B5840; --green-soft: #4A7C5E; --green-50: #E8F0EB;
+  --gold-deep: #8B6F2A; --gold: #C9A84C; --gold-light: #E0C77A;
+  --gold-wash: rgba(201,168,76,0.08);
+  --cream: #F7F5EE; --white: #fff; --ink: #0A0F0C;
+  --text: #121814; --text-sec: #5a6b65; --text-dim: #9ca89f;
+  --border: #E8E5DC;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --t-fast: 0.2s; --t-med: 0.4s;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 16px; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--white); color: var(--text); line-height: 1.5;
+  font-feature-settings: "kern","liga","ss01";
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+a { color: inherit; text-decoration: none; }
+img, svg { display: block; max-width: 100%; }
+button { font: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+.serif { font-family: 'Fraunces', Georgia, serif; }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 28px; }
+.wrap-narrow { max-width: 920px; margin: 0 auto; padding: 0 28px; }
+
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-size: 0.72rem; font-weight: 600;
+  color: var(--gold); text-transform: uppercase; letter-spacing: 0.16em;
+}
+.eyebrow::before { content: ""; width: 24px; height: 1px; background: var(--gold); opacity: 0.6; }
+.eyebrow.light { color: var(--gold-light); }
+.eyebrow.ink { color: var(--green-primary); }
+.eyebrow.ink::before { background: var(--green-primary); }
+
+h1, h2, h3, h4 { font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; color: var(--text); }
+h1 { font-size: clamp(2.2rem, 5vw, 3.8rem); font-weight: 800; }
+h2 { font-size: clamp(1.8rem, 3.6vw, 2.6rem); }
+h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0.01em; }
+.lede { font-size: clamp(1.02rem, 1.3vw, 1.15rem); color: var(--text-sec); line-height: 1.6; max-width: 60ch; }
+.lede.light { color: rgba(255,255,255,0.78); }
+
+/* Buttons — same system as home */
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 15px 26px; font-size: 0.92rem; font-weight: 600;
+  border-radius: 3px; transition: all var(--t-fast) var(--ease);
+  white-space: nowrap;
+}
+.btn svg { width: 16px; height: 16px; transition: transform var(--t-fast) var(--ease); }
+.btn:hover svg { transform: translateX(3px); }
+.btn-gold { background: var(--gold); color: var(--ink); box-shadow: 0 10px 28px -12px rgba(201,168,76,0.55); }
+.btn-gold:hover { background: var(--gold-light); transform: translateY(-1px); }
+.btn-ghost { background: transparent; color: var(--white); border: 1px solid rgba(255,255,255,0.25); }
+.btn-ghost:hover { border-color: var(--gold); color: var(--gold-light); }
+.btn-ghost-dark { background: transparent; color: var(--green-primary); border: 1px solid var(--green-primary); }
+.btn-ghost-dark:hover { background: var(--green-primary); color: var(--white); }
+.btn-sm { padding: 10px 18px; font-size: 0.82rem; }
+.btn-lg { padding: 18px 34px; font-size: 1rem; }
+
+/* NAV — same as home */
+.nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 18px 28px; background: rgba(15,42,28,0.88); backdrop-filter: saturate(180%) blur(12px); -webkit-backdrop-filter: saturate(180%) blur(12px); transition: all var(--t-fast) var(--ease); }
+.nav.scrolled { padding: 12px 28px; background: rgba(10,31,20,0.96); border-bottom: 1px solid rgba(255,255,255,0.06); }
+.nav-inner { max-width: 1280px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.nav-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.08em; color: var(--white); font-size: 1.08rem; }
+.nav-brand-dot { color: var(--gold); font-size: 1.4em; line-height: 0; margin-top: -2px; }
+.nav-links { display: flex; align-items: center; gap: 32px; list-style: none; }
+.nav-links a { color: rgba(255,255,255,0.78); font-size: 0.9rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
+.nav-links a:hover, .nav-links a.active { color: var(--gold-light); }
+.nav-right { display: flex; align-items: center; gap: 14px; }
+.nav-signin { color: rgba(255,255,255,0.78); font-size: 0.9rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
+.nav-signin:hover { color: var(--gold-light); }
+.nav-burger { display: none; padding: 8px; color: var(--white); }
+.nav-burger svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; }
+@media (max-width: 880px) { .nav-links, .nav-signin { display: none; } .nav-burger { display: inline-flex; } .nav-right .btn { padding: 10px 16px; font-size: 0.78rem; } }
+
+.drawer { position: fixed; inset: 0; z-index: 200; background: var(--green-deep); color: var(--white); padding: 24px 28px; transform: translateX(100%); transition: transform var(--t-med) var(--ease); display: flex; flex-direction: column; }
+.drawer.open { transform: translateX(0); }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 60px; }
+.drawer-close { padding: 8px; color: var(--white); }
+.drawer-close svg { width: 28px; height: 28px; stroke: currentColor; fill: none; stroke-width: 2; }
+.drawer-nav { display: flex; flex-direction: column; gap: 4px; }
+.drawer-nav a { padding: 18px 0; font-size: 1.4rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--white); }
+.drawer-nav a:last-child { border-bottom: none; }
+.drawer-cta { margin-top: auto; padding-top: 32px; }
+
+/* HERO (slimmer than home) */
+.page-hero {
+  background: linear-gradient(160deg, var(--green-deep) 0%, var(--green-darkest) 60%, #070E0A 100%);
+  color: var(--white);
+  padding: 180px 28px 110px;
+  position: relative; overflow: hidden;
+  text-align: center;
+}
+.page-hero::before {
+  content: ''; position: absolute; top: -30%; right: -20%; width: 900px; height: 900px;
+  background: radial-gradient(closest-side, rgba(201,168,76,0.10), transparent 70%);
+  pointer-events: none;
+}
+.page-hero-inner { max-width: 860px; margin: 0 auto; position: relative; }
+.page-hero h1 { color: var(--white); margin: 20px 0 22px; }
+.page-hero h1 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.page-hero .eyebrow { justify-content: center; }
+
+/* SECTIONS */
+.section { padding: 110px 0; position: relative; }
+.section.alt { background: var(--cream); }
+.section.dark { background: linear-gradient(180deg, var(--green-primary), var(--green-deep)); color: var(--white); }
+.section.dark h2, .section.dark h3 { color: var(--white); }
+.section-head { max-width: 760px; margin: 0 auto 64px; text-align: center; }
+.section-head h2 { margin-bottom: 18px; }
+.section-head .lede { margin-left: auto; margin-right: auto; }
+@media (max-width: 760px) { .section { padding: 72px 0; } .section-head { margin-bottom: 44px; } .page-hero { padding: 140px 24px 80px; } }
+
+/* STEPS — shared with home, simplified */
+.steps-strip {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+  margin-top: 40px; position: relative;
+}
+.steps-strip::before {
+  content: ''; position: absolute; top: 48px; left: 12%; right: 12%; height: 1px;
+  background: repeating-linear-gradient(90deg, var(--gold) 0 6px, transparent 6px 14px);
+  opacity: 0.45;
+}
+@media (max-width: 880px) { .steps-strip { grid-template-columns: 1fr; gap: 36px; } .steps-strip::before { display: none; } }
+.step-mini { text-align: center; position: relative; padding: 0 14px; }
+.step-mini-circle {
+  width: 96px; height: 96px; margin: 0 auto 22px;
+  background: var(--white); border: 1px solid var(--border); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; position: relative;
+  box-shadow: 0 12px 28px -14px rgba(10,31,20,0.2);
+}
+.step-mini-circle svg { width: 44px; height: 44px; color: var(--green-primary); }
+.step-mini-count {
+  position: absolute; top: -6px; right: -6px;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--gold); color: var(--ink);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 0.78rem;
+  box-shadow: 0 4px 12px -2px rgba(201,168,76,0.5);
+}
+.step-mini h3 { margin-bottom: 8px; }
+.step-mini p { color: var(--text-sec); font-size: 0.92rem; max-width: 28ch; margin: 0 auto; }
+
+/* PRODUCT DEEP-DIVE ROWS — alternating */
+.deep-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: center;
+  max-width: 1180px; margin: 0 auto;
+}
+.deep-row + .deep-row { margin-top: 120px; }
+.deep-row.reverse .deep-content { order: 2; }
+.deep-row.reverse .deep-visual { order: 1; }
+@media (max-width: 900px) {
+  .deep-row { grid-template-columns: 1fr; gap: 40px; }
+  .deep-row.reverse .deep-content, .deep-row.reverse .deep-visual { order: unset; }
+  .deep-row + .deep-row { margin-top: 80px; }
+}
+.deep-content h2 { margin: 16px 0 18px; }
+.deep-content .lede { margin-bottom: 26px; }
+.deep-list { list-style: none; margin-bottom: 32px; }
+.deep-list li {
+  display: flex; align-items: flex-start; gap: 12px; padding: 10px 0;
+  font-size: 0.95rem; color: var(--text);
+  border-top: 1px solid var(--border);
+}
+.deep-list li:last-child { border-bottom: 1px solid var(--border); }
+.deep-list-num {
+  font-family: 'Fraunces', serif; font-weight: 600; font-size: 1.1rem;
+  color: var(--gold-deep); flex-shrink: 0; min-width: 28px;
+}
+.deep-list-body strong { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
+.deep-list-body span { color: var(--text-sec); font-size: 0.9rem; }
+
+.deep-visual {
+  background: linear-gradient(155deg, var(--green-deep), var(--green-darkest));
+  border-radius: 8px;
+  padding: 32px;
+  box-shadow: 0 30px 80px -30px rgba(10,31,20,0.4);
+  position: relative;
+  min-height: 400px;
+}
+.deep-visual-head {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;
+}
+.deep-visual-title { color: var(--gold); font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; }
+.deep-visual-dots {
+  display: inline-flex; gap: 4px;
+}
+.deep-visual-dots span { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,0.18); }
+.deep-visual-dots span:first-child { background: #E57373; }
+.deep-visual-dots span:nth-child(2) { background: #FFD054; }
+.deep-visual-dots span:last-child { background: #4ADE80; }
+
+/* DATA QUALITY strip */
+.quality-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-top: 20px;
+}
+@media (max-width: 880px) { .quality-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .quality-grid { grid-template-columns: 1fr; } }
+
+.quality-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 28px 24px;
+}
+.quality-big {
+  font-family: 'Fraunces', serif; font-weight: 600; font-size: 2.6rem; color: var(--gold);
+  letter-spacing: -0.02em; line-height: 1; margin-bottom: 6px;
+}
+.quality-big sup { font-size: 0.55em; vertical-align: super; color: var(--gold-light); }
+.quality-label { font-size: 0.78rem; color: rgba(255,255,255,0.85); font-weight: 500; margin-bottom: 8px; }
+.quality-sub { font-size: 0.78rem; color: rgba(255,255,255,0.55); line-height: 1.45; }
+
+/* FINAL CTA & FOOTER — reused from home */
+.final-cta { position: relative; background: linear-gradient(145deg, var(--green-deep) 0%, var(--green-darkest) 100%); color: var(--white); padding: 120px 28px; text-align: center; overflow: hidden; }
+.final-cta::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(closest-side at 20% 30%, rgba(201,168,76,0.09), transparent 60%), radial-gradient(closest-side at 80% 70%, rgba(201,168,76,0.09), transparent 60%); }
+.final-cta-inner { position: relative; max-width: 780px; margin: 0 auto; }
+.final-cta h2 { color: var(--white); font-size: clamp(2rem, 4.5vw, 3.2rem); font-weight: 700; margin-bottom: 22px; }
+.final-cta h2 .accent { color: var(--gold); font-family: 'Fraunces', serif; font-style: italic; font-weight: 600; }
+.final-cta .lede { color: rgba(255,255,255,0.8); margin: 0 auto 40px; }
+.final-cta .eyebrow { justify-content: center; }
+
+.footer { background: var(--green-darkest); color: rgba(255,255,255,0.7); padding: 70px 28px 30px; border-top: 1px solid rgba(255,255,255,0.06); }
+.footer-inner { max-width: 1240px; margin: 0 auto; display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: 48px; }
+@media (max-width: 760px) { .footer-inner { grid-template-columns: 1fr 1fr; gap: 32px 24px; } .footer-brand { grid-column: 1 / -1; } }
+.footer-brand { max-width: 300px; }
+.footer-brand-name { font-weight: 800; letter-spacing: 0.08em; color: var(--white); font-size: 1.08rem; margin-bottom: 16px; }
+.footer-brand p { font-size: 0.86rem; line-height: 1.6; color: rgba(255,255,255,0.55); }
+.footer-col h5 { font-size: 0.72rem; font-weight: 700; color: var(--gold); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 18px; }
+.footer-col ul { list-style: none; }
+.footer-col li { margin-bottom: 10px; }
+.footer-col a { font-size: 0.88rem; color: rgba(255,255,255,0.7); transition: color var(--t-fast) var(--ease); }
+.footer-col a:hover { color: var(--gold-light); }
+.footer-bottom { max-width: 1240px; margin: 50px auto 0; padding-top: 24px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: center; font-size: 0.8rem; color: rgba(255,255,255,0.45); flex-wrap: wrap; gap: 12px; }
+
+.fade-in { opacity: 0; transform: translateY(18px); transition: opacity 0.8s var(--ease), transform 0.8s var(--ease); }
+.fade-in.visible { opacity: 1; transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 14px 20px; } }
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a href="/home" class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</a>
+    <ul class="nav-links">
+      <li><a href="/how-it-works" class="active">How It Works</a></li>
+      <li><a href="/pricing-public">Pricing</a></li>
+      <li><a href="/for-coaches">For Coaches</a></li>
+    </ul>
+    <div class="nav-right">
+      <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
+      <a href="/register" class="btn btn-gold btn-sm">Analyse My First Match Free
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      </a>
+      <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
+        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <span class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</span>
+    <button class="drawer-close" onclick="document.getElementById('drawer').classList.remove('open')" aria-label="Close menu">
+      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+    </button>
+  </div>
+  <div class="drawer-nav">
+    <a href="/how-it-works">How It Works</a>
+    <a href="/pricing-public">Pricing</a>
+    <a href="/for-coaches">For Coaches</a>
+    <a href="https://www.ten-fifty5.com/portal">Sign In</a>
+  </div>
+  <div class="drawer-cta">
+    <a href="/register" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
+  </div>
+</div>
+
+<!-- HERO -->
+<section class="page-hero">
+  <div class="page-hero-inner">
+    <div class="eyebrow light">How it works</div>
+    <h1>From match video to <span class="accent">actionable data</span><br>in under twenty minutes.</h1>
+    <p class="lede light" style="margin:0 auto;">You press upload. Our computer vision pipeline tracks every shot, every bounce, every pose. Claude turns the numbers into coaching. You walk back onto court knowing the answer.</p>
+  </div>
+</section>
+
+<!-- THE LOOP — 3 steps -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow ink">The loop</div>
+      <h2 style="margin-top:16px;">Upload. Analyse. Improve.</h2>
+      <p class="lede">Every match a signal. Every signal a decision. Every decision a better next match.</p>
+    </div>
+
+    <div class="steps-strip">
+      <div class="step-mini">
+        <div class="step-mini-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <div class="step-mini-count">1</div>
+        </div>
+        <h3>Capture &amp; upload</h3>
+        <p>Record from a single fixed camera at the back of the court. Drag your .mp4 into the Media Room.</p>
+      </div>
+      <div class="step-mini">
+        <div class="step-mini-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+          <div class="step-mini-count">2</div>
+        </div>
+        <h3>AI processes</h3>
+        <p>Court calibration, ball tracking, player pose, shot classification. Sub-20-minute turnaround.</p>
+      </div>
+      <div class="step-mini">
+        <div class="step-mini-circle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 17 9 11 13 15 21 7"/><polyline points="14 7 21 7 21 14"/>
+          </svg>
+          <div class="step-mini-count">3</div>
+        </div>
+        <h3>You act</h3>
+        <p>Explore dashboards, interrogate the AI coach, share with your team, compare to your baseline.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRODUCT DEEP DIVE 1: MATCH ANALYSIS -->
+<section class="section alt">
+  <div class="wrap">
+    <div class="deep-row">
+      <div class="deep-content">
+        <div class="eyebrow ink">Match Analysis · 8 tabs</div>
+        <h2>Every point mapped.<br><span class="serif" style="color:var(--green-primary); font-style:italic; font-weight:600;">Every pattern exposed.</span></h2>
+        <p class="lede">From serve placement heatmaps to rally-length distributions to cross-match performance trending — the same chart vocabulary you see in ATP broadcast, applied to your footage.</p>
+        <ul class="deep-list">
+          <li>
+            <span class="deep-list-num">01</span>
+            <div class="deep-list-body">
+              <strong>Summary</strong>
+              <span>Head-to-head KPI bars, serve-speed gauges, point outcomes at a glance.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">02</span>
+            <div class="deep-list-body">
+              <strong>Serve &amp; Return Performance</strong>
+              <span>1st/2nd serve splits, return depth, return winner rate, deuce vs. ad breakdown.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">03</span>
+            <div class="deep-list-body">
+              <strong>Rally Analysis</strong>
+              <span>Length distributions, aggression profile, depth map, stroke mix, winner/error balance.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">04</span>
+            <div class="deep-list-body">
+              <strong>Placement Heatmaps</strong>
+              <span>Five tabs: serve placement, return position, return target, groundstrokes, rally position.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">05</span>
+            <div class="deep-list-body">
+              <strong>Player Performance</strong>
+              <span>18 KPIs scorecard with rolling 5-match averages, benchmark comparison and trend sparklines.</span>
+            </div>
+          </li>
+        </ul>
+        <a href="/register" class="btn btn-gold">Analyse My First Match Free
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </a>
+      </div>
+
+      <!-- Visual: dashboard mockup -->
+      <div class="deep-visual">
+        <div class="deep-visual-head">
+          <span class="deep-visual-title">Match Dashboard · Summary</span>
+          <div class="deep-visual-dots"><span></span><span></span><span></span></div>
+        </div>
+        <svg viewBox="0 0 420 380" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Tab strip -->
+          <g transform="translate(0, 0)">
+            <rect width="420" height="28" fill="rgba(255,255,255,0.04)" rx="3"/>
+            <rect x="8" y="4" width="70" height="20" rx="2" fill="#C9A84C"/>
+            <text x="43" y="17" fill="#0A0F0C" font-size="8" font-family="Inter" font-weight="600" text-anchor="middle">Summary</text>
+            <text x="98" y="17" fill="rgba(255,255,255,0.5)" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Serve</text>
+            <text x="148" y="17" fill="rgba(255,255,255,0.5)" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Return</text>
+            <text x="198" y="17" fill="rgba(255,255,255,0.5)" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Rally</text>
+            <text x="248" y="17" fill="rgba(255,255,255,0.5)" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Points</text>
+          </g>
+
+          <!-- KPI strip -->
+          <g transform="translate(0, 44)">
+            <rect width="98" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
+            <text x="49" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">1ST SERVE %</text>
+            <text x="49" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">68</text>
+            <text x="49" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">vs 61% avg</text>
+            <rect x="107" width="98" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
+            <text x="156" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">ACES</text>
+            <text x="156" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">12</text>
+            <text x="156" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">personal best</text>
+            <rect x="214" width="98" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
+            <text x="263" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">WINNERS</text>
+            <text x="263" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">24</text>
+            <text x="263" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">18 fh · 6 bh</text>
+            <rect x="321" width="99" height="62" rx="3" fill="rgba(255,255,255,0.04)"/>
+            <text x="370" y="16" fill="rgba(255,255,255,0.55)" font-size="6.5" font-family="Inter" font-weight="600" text-anchor="middle" letter-spacing="0.08em">UNF. ERRORS</text>
+            <text x="370" y="40" fill="#C9A84C" font-size="22" font-family="Fraunces" font-weight="600" text-anchor="middle">14</text>
+            <text x="370" y="54" fill="rgba(255,255,255,0.4)" font-size="6.5" font-family="Inter" text-anchor="middle">down from 22</text>
+          </g>
+
+          <!-- H2H bars -->
+          <g transform="translate(0, 120)">
+            <text x="0" y="10" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="600" letter-spacing="0.08em">HEAD TO HEAD</text>
+
+            <g transform="translate(0, 20)">
+              <text x="210" y="10" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" font-weight="500" text-anchor="middle">1ST SERVE WIN %</text>
+              <rect x="120" y="15" width="88" height="14" rx="2" fill="#C9A84C" opacity="0.85"/>
+              <text x="116" y="25" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">72%</text>
+              <rect x="212" y="15" width="62" height="14" rx="2" fill="rgba(255,255,255,0.3)"/>
+              <text x="278" y="25" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="700">58%</text>
+            </g>
+
+            <g transform="translate(0, 50)">
+              <text x="210" y="10" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" font-weight="500" text-anchor="middle">RALLY WIN %</text>
+              <rect x="150" y="15" width="58" height="14" rx="2" fill="#C9A84C" opacity="0.85"/>
+              <text x="146" y="25" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">54%</text>
+              <rect x="212" y="15" width="50" height="14" rx="2" fill="rgba(255,255,255,0.3)"/>
+              <text x="266" y="25" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="700">46%</text>
+            </g>
+
+            <g transform="translate(0, 80)">
+              <text x="210" y="10" fill="rgba(255,255,255,0.4)" font-size="7" font-family="Inter" font-weight="500" text-anchor="middle">BREAK POINTS WON</text>
+              <rect x="176" y="15" width="32" height="14" rx="2" fill="#C9A84C" opacity="0.85"/>
+              <text x="172" y="25" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="700" text-anchor="end">4/7</text>
+              <rect x="212" y="15" width="42" height="14" rx="2" fill="rgba(255,255,255,0.3)"/>
+              <text x="258" y="25" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="700">2/4</text>
+            </g>
+          </g>
+
+          <!-- Bottom: speed gauge arc -->
+          <g transform="translate(0, 240)">
+            <text x="0" y="10" fill="rgba(255,255,255,0.55)" font-size="8" font-family="Inter" font-weight="600" letter-spacing="0.08em">SERVE SPEED</text>
+            <g transform="translate(60, 60)">
+              <path d="M -50 10 A 50 50 0 0 1 50 10" stroke="rgba(255,255,255,0.15)" stroke-width="6" fill="none" stroke-linecap="round"/>
+              <path d="M -50 10 A 50 50 0 0 1 36 -25" stroke="#C9A84C" stroke-width="6" fill="none" stroke-linecap="round"/>
+              <text x="0" y="3" fill="#C9A84C" font-size="20" font-family="Fraunces" font-weight="600" text-anchor="middle">142</text>
+              <text x="0" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">km/h avg 1st</text>
+            </g>
+            <g transform="translate(180, 60)">
+              <path d="M -50 10 A 50 50 0 0 1 50 10" stroke="rgba(255,255,255,0.15)" stroke-width="6" fill="none" stroke-linecap="round"/>
+              <path d="M -50 10 A 50 50 0 0 1 14 -38" stroke="#C9A84C" stroke-width="6" fill="none" stroke-linecap="round"/>
+              <text x="0" y="3" fill="#C9A84C" font-size="20" font-family="Fraunces" font-weight="600" text-anchor="middle">168</text>
+              <text x="0" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">km/h peak</text>
+            </g>
+            <g transform="translate(300, 60)">
+              <path d="M -50 10 A 50 50 0 0 1 50 10" stroke="rgba(255,255,255,0.15)" stroke-width="6" fill="none" stroke-linecap="round"/>
+              <path d="M -50 10 A 50 50 0 0 1 -14 -38" stroke="#C9A84C" stroke-width="6" fill="none" stroke-linecap="round"/>
+              <text x="0" y="3" fill="#C9A84C" font-size="20" font-family="Fraunces" font-weight="600" text-anchor="middle">108</text>
+              <text x="0" y="18" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">km/h avg 2nd</text>
+            </g>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRODUCT DEEP DIVE 2: TECHNIQUE ANALYSIS (reverse) -->
+<section class="section">
+  <div class="wrap">
+    <div class="deep-row reverse">
+      <div class="deep-content">
+        <div class="eyebrow ink">Technique Analysis · 12 swing types</div>
+        <h2>Biomechanics, not guesswork.<br><span class="serif" style="color:var(--green-primary); font-style:italic; font-weight:600;">Watch your stroke like a scout would.</span></h2>
+        <p class="lede">3D pose estimation on every frame. Kinetic-chain ordering. Feature-by-feature benchmarks against beginner, intermediate, advanced and professional. Nobody else in tennis ships this.</p>
+        <ul class="deep-list">
+          <li>
+            <span class="deep-list-num">01</span>
+            <div class="deep-list-body">
+              <strong>Pose timeline</strong>
+              <span>Frame-by-frame 2D and 3D joint positions with confidence scores for every key joint.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">02</span>
+            <div class="deep-list-body">
+              <strong>Kinetic chain analysis</strong>
+              <span>Peak speed sequencing — hip → torso → shoulder → elbow → wrist — scored for order and timing.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">03</span>
+            <div class="deep-list-body">
+              <strong>Feature scorecard</strong>
+              <span>Per-feature score with observation, suggestion, and ranges across four skill levels.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">04</span>
+            <div class="deep-list-body">
+              <strong>Progression tracking</strong>
+              <span>Session-to-session trends so you can see your technique improve over time — not just guess.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">05</span>
+            <div class="deep-list-body">
+              <strong>All strokes covered</strong>
+              <span>Forehand/backhand drive, topspin, slice, flat/kick/slice serves, volleys, overhead.</span>
+            </div>
+          </li>
+        </ul>
+        <a href="/register" class="btn btn-gold">Upload your first stroke
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </a>
+      </div>
+
+      <!-- Visual: figure with kinetic chain -->
+      <div class="deep-visual">
+        <div class="deep-visual-head">
+          <span class="deep-visual-title">Forehand Drive · Kinetic Chain</span>
+          <div class="deep-visual-dots"><span></span><span></span><span></span></div>
+        </div>
+        <svg viewBox="0 0 420 380" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Figure silhouette (larger, centered) -->
+          <g transform="translate(150, 30)">
+            <!-- Head -->
+            <circle cx="40" cy="24" r="16" fill="rgba(201,168,76,0.25)" stroke="#C9A84C" stroke-width="1.2"/>
+            <!-- Torso -->
+            <path d="M 20 44 Q 40 40 60 44 L 66 130 L 60 230 L 48 290 L 32 290 L 20 230 L 14 130 Z" fill="rgba(201,168,76,0.18)" stroke="#C9A84C" stroke-width="1" stroke-opacity="0.6"/>
+            <!-- Racket arm -->
+            <path d="M 60 58 L 120 42 L 146 36" stroke="#C9A84C" stroke-width="7" stroke-linecap="round" fill="none" stroke-opacity="0.8"/>
+            <!-- Racquet -->
+            <circle cx="154" cy="34" r="14" stroke="#C9A84C" stroke-width="2.5" fill="none"/>
+            <line x1="146" y1="36" x2="140" y2="46" stroke="#C9A84C" stroke-width="3" stroke-linecap="round"/>
+            <!-- Non-dominant arm -->
+            <path d="M 20 60 L -10 100 L -22 128" stroke="#C9A84C" stroke-width="6" stroke-linecap="round" fill="none" stroke-opacity="0.7"/>
+          </g>
+
+          <!-- Joint markers & chain arrows -->
+          <g>
+            <!-- Hip -->
+            <circle cx="188" cy="152" r="9" fill="#C9A84C"/>
+            <circle cx="188" cy="152" r="18" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
+            <circle cx="188" cy="152" r="26" stroke="#C9A84C" stroke-width="0.6" fill="none" opacity="0.2"/>
+            <path d="M 200 148 L 236 118" stroke="#C9A84C" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
+
+            <!-- Shoulder (right) -->
+            <circle cx="210" cy="86" r="8" fill="#C9A84C"/>
+            <circle cx="210" cy="86" r="16" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
+            <path d="M 222 82 L 260 58" stroke="#C9A84C" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
+
+            <!-- Elbow -->
+            <circle cx="268" cy="60" r="7" fill="#C9A84C"/>
+            <circle cx="268" cy="60" r="14" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
+            <path d="M 278 58 L 298 52" stroke="#C9A84C" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
+
+            <!-- Wrist -->
+            <circle cx="304" cy="50" r="6" fill="#C9A84C"/>
+            <circle cx="304" cy="50" r="12" stroke="#C9A84C" stroke-width="1" fill="none" opacity="0.45"/>
+          </g>
+
+          <!-- Readouts -->
+          <g transform="translate(12, 122)">
+            <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
+            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">HIP ROTATION</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">142°/s</text>
+          </g>
+          <g transform="translate(12, 58)">
+            <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
+            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">SHOULDER</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">318°/s</text>
+          </g>
+          <g transform="translate(324, 30)">
+            <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
+            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">ELBOW EXT</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">412°/s</text>
+          </g>
+          <g transform="translate(324, 90)">
+            <rect width="80" height="30" rx="3" fill="rgba(255,255,255,0.05)"/>
+            <text x="8" y="12" fill="#C9A84C" font-size="6" font-family="Inter" font-weight="700" letter-spacing="0.1em">WRIST VEL.</text>
+            <text x="8" y="25" fill="#fff" font-size="13" font-family="Fraunces" font-weight="600">24.3 m/s</text>
+          </g>
+
+          <!-- Chain sequence bar -->
+          <g transform="translate(20, 310)">
+            <text x="0" y="0" fill="rgba(255,255,255,0.6)" font-size="7" font-family="Inter" font-weight="600" letter-spacing="0.1em">CHAIN SEQUENCE · HIP → SHOULDER → ELBOW → WRIST</text>
+            <rect x="0" y="8" width="380" height="4" rx="2" fill="rgba(255,255,255,0.1)"/>
+            <rect x="0" y="8" width="70" height="4" rx="2" fill="#C9A84C" opacity="0.6"/>
+            <rect x="90" y="8" width="80" height="4" rx="2" fill="#C9A84C" opacity="0.75"/>
+            <rect x="190" y="8" width="90" height="4" rx="2" fill="#C9A84C" opacity="0.9"/>
+            <rect x="300" y="8" width="80" height="4" rx="2" fill="#C9A84C"/>
+            <text x="35" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">HIP</text>
+            <text x="130" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">SHOULDER</text>
+            <text x="235" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">ELBOW</text>
+            <text x="340" y="28" fill="rgba(255,255,255,0.5)" font-size="7" font-family="Inter" text-anchor="middle">WRIST</text>
+          </g>
+
+          <!-- Scoring badge -->
+          <g transform="translate(292, 178)">
+            <rect width="110" height="34" rx="17" fill="#C9A84C"/>
+            <text x="55" y="15" fill="#0A0F0C" font-size="6.5" font-family="Inter" font-weight="700" letter-spacing="0.12em" text-anchor="middle">SEQUENCE</text>
+            <text x="55" y="28" fill="#0A0F0C" font-size="12" font-family="Fraunces" font-weight="700" text-anchor="middle">Advanced</text>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRODUCT DEEP DIVE 3: AI COACH -->
+<section class="section alt">
+  <div class="wrap">
+    <div class="deep-row">
+      <div class="deep-content">
+        <div class="eyebrow ink">AI Coach · grounded in your data</div>
+        <h2>Ask it anything.<br><span class="serif" style="color:var(--green-primary); font-style:italic; font-weight:600;">It already read the report.</span></h2>
+        <p class="lede">A tour-level coach in your pocket, briefed on every match you've ever played. Powered by Claude, grounded in your own stats. No generic platitudes — answers that cite your real patterns.</p>
+        <ul class="deep-list">
+          <li>
+            <span class="deep-list-num">01</span>
+            <div class="deep-list-body">
+              <strong>Pre-match insight cards</strong>
+              <span>Three auto-generated cards per match: what's working, where the gap is, one thing to focus on.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">02</span>
+            <div class="deep-list-body">
+              <strong>Tactical Q&amp;A</strong>
+              <span>"Where should I target my 2nd serve?" → specific answer with your win-rate data for each zone.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">03</span>
+            <div class="deep-list-body">
+              <strong>Weakness analysis</strong>
+              <span>One-click breakdown of your weakest patterns, scored across serve, return, rally and points.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">04</span>
+            <div class="deep-list-body">
+              <strong>Freeform coaching chat</strong>
+              <span>Any question, any angle. Answers are always grounded in your match data, never made up.</span>
+            </div>
+          </li>
+          <li>
+            <span class="deep-list-num">05</span>
+            <div class="deep-list-body">
+              <strong>Unlimited on paid plans</strong>
+              <span>Ask as many questions as you want. No per-query fees, no token counters.</span>
+            </div>
+          </li>
+        </ul>
+        <a href="/register" class="btn btn-gold">Try your AI coach free
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </a>
+      </div>
+
+      <!-- Visual: chat thread -->
+      <div class="deep-visual">
+        <div class="deep-visual-head">
+          <span class="deep-visual-title">AI Coach · conversation</span>
+          <div class="deep-visual-dots"><span></span><span></span><span></span></div>
+        </div>
+        <svg viewBox="0 0 420 380" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Quick prompt chips at top -->
+          <g transform="translate(0, 6)">
+            <rect width="90" height="24" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(201,168,76,0.3)" stroke-width="1"/>
+            <text x="45" y="16" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Serve analysis</text>
+            <rect x="96" width="76" height="24" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(201,168,76,0.3)" stroke-width="1"/>
+            <text x="134" y="16" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Weakness</text>
+            <rect x="178" width="60" height="24" rx="12" fill="rgba(255,255,255,0.05)" stroke="rgba(201,168,76,0.3)" stroke-width="1"/>
+            <text x="208" y="16" fill="#C9A84C" font-size="8" font-family="Inter" font-weight="500" text-anchor="middle">Tactics</text>
+          </g>
+
+          <!-- User question bubble -->
+          <g transform="translate(134, 48)">
+            <rect width="286" height="58" rx="10" fill="#C9A84C"/>
+            <text x="14" y="18" fill="#0A0F0C" font-size="7" font-family="Inter" font-weight="700" letter-spacing="0.12em">YOU</text>
+            <text x="14" y="34" fill="#0A0F0C" font-size="10" font-family="Inter" font-weight="500">Why am I losing the second set so often lately?</text>
+            <text x="14" y="48" fill="#0A0F0C" font-size="10" font-family="Inter" font-weight="500">Is it fitness or something else?</text>
+          </g>
+
+          <!-- AI response bubble (long) -->
+          <g transform="translate(0, 118)">
+            <rect width="320" height="118" rx="10" fill="rgba(255,255,255,0.06)" stroke="rgba(201,168,76,0.2)" stroke-width="1"/>
+            <g transform="translate(14, 18)">
+              <circle cx="6" cy="6" r="6" fill="#C9A84C"/>
+              <text x="20" y="10" fill="#C9A84C" font-size="7" font-family="Inter" font-weight="700" letter-spacing="0.12em">AI COACH</text>
+            </g>
+            <text x="14" y="44" fill="#fff" font-size="8.5" font-family="Inter">Looking at your last 5 matches, your 1st serve %</text>
+            <text x="14" y="58" fill="#fff" font-size="8.5" font-family="Inter">drops from 64% in set 1 to 52% in set 2. That's a big</text>
+            <text x="14" y="72" fill="#fff" font-size="8.5" font-family="Inter">gap. Alongside, your unforced errors on the backhand</text>
+            <text x="14" y="86" fill="#fff" font-size="8.5" font-family="Inter">side jump 40% in set 2.</text>
+            <text x="14" y="104" fill="#C9A84C" font-size="8.5" font-family="Inter" font-weight="600">Not fitness. It's decision quality under fatigue.</text>
+          </g>
+
+          <!-- Data citation chip -->
+          <g transform="translate(12, 248)">
+            <rect width="300" height="38" rx="4" fill="rgba(201,168,76,0.1)" stroke="rgba(201,168,76,0.4)" stroke-width="1"/>
+            <text x="12" y="14" fill="#C9A84C" font-size="6.5" font-family="Inter" font-weight="700" letter-spacing="0.12em">CITED FROM YOUR DATA</text>
+            <text x="12" y="28" fill="rgba(255,255,255,0.9)" font-size="8" font-family="Inter">Last 5 matches · Set 1 vs Set 2 · Serve % split · BH error rate</text>
+          </g>
+
+          <!-- Follow-up prompt -->
+          <g transform="translate(0, 302)">
+            <rect width="400" height="40" rx="10" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
+            <text x="14" y="24" fill="rgba(255,255,255,0.5)" font-size="9" font-family="Inter">Ask a follow-up...</text>
+            <g transform="translate(368, 14)">
+              <rect width="24" height="14" rx="3" fill="#C9A84C"/>
+              <path d="M 5 7 L 17 7 M 13 3 L 17 7 L 13 11" stroke="#0A0F0C" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            </g>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DATA QUALITY -->
+<section class="section dark">
+  <div class="wrap">
+    <div class="section-head">
+      <div class="eyebrow light" style="justify-content:center;">Under the hood</div>
+      <h2 style="margin-top:16px;">The signal behind the coaching.</h2>
+      <p class="lede light">Every dashboard, every AI answer, every trend line is built on the same raw feed: computer-vision-extracted tennis data captured at broadcast-grade density.</p>
+    </div>
+
+    <div class="quality-grid">
+      <div class="quality-card">
+        <div class="quality-big">450<sup>+</sup></div>
+        <div class="quality-label">Data points per match</div>
+        <div class="quality-sub">Ball positions, bounces, player poses, shot classifications — all timestamped and court-calibrated.</div>
+      </div>
+      <div class="quality-card">
+        <div class="quality-big">25<sup>fps</sup></div>
+        <div class="quality-label">Tracking resolution</div>
+        <div class="quality-sub">25 frames per second of ball + pose data. Ample to catch spin, stroke mechanics and footwork transitions.</div>
+      </div>
+      <div class="quality-card">
+        <div class="quality-big">14</div>
+        <div class="quality-label">Court keypoints</div>
+        <div class="quality-sub">CNN-estimated court geometry plus lens-distortion calibration. Sub-15cm metric accuracy across the 23.77m court.</div>
+      </div>
+      <div class="quality-card">
+        <div class="quality-big">17</div>
+        <div class="quality-label">Pose keypoints per frame</div>
+        <div class="quality-sub">COCO-format joint tracking on both players, used for stroke classification and technique analysis.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FINAL CTA -->
+<section class="final-cta">
+  <div class="final-cta-inner">
+    <div class="eyebrow light">Ready when you are</div>
+    <h2 style="margin-top:20px;">Upload your first match.<br><span class="accent">See everything we see.</span></h2>
+    <p class="lede">No card. No commitment. Just one upload between you and a data-driven training plan.</p>
+    <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
+      <a href="/register" class="btn btn-gold btn-lg">Analyse My First Match Free
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      </a>
+      <a href="/pricing-public" class="btn btn-ghost">See pricing</a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-brand-name">TEN<span class="nav-brand-dot">·</span>FIFTY5</div>
+      <p>ATP-level match analysis, biomechanical technique breakdown and AI coaching — for serious competitive players and the coaches who train them.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Product</h5>
+      <ul>
+        <li><a href="/how-it-works">How It Works</a></li>
+        <li><a href="/pricing-public">Pricing</a></li>
+        <li><a href="/for-coaches">For Coaches</a></li>
+        <li><a href="/register">Start Free</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h5>Company</h5>
+      <ul>
+        <li><a href="mailto:info@ten-fifty5.com">Contact</a></li>
+        <li><a href="mailto:support@ten-fifty5.com">Support</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h5>Legal</h5>
+      <ul>
+        <li><a href="#">Privacy</a></li>
+        <li><a href="#">Terms</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>&copy; 2026 Ten·Fifty5. All rights reserved.</span>
+    <span>Built for the serious player.</span>
+  </div>
+</footer>
+
+<script>
+(function() {
+  var nav = document.getElementById('nav');
+  var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) { if (entry.isIntersecting) { entry.target.classList.add('visible'); io.unobserve(entry.target); } });
+    }, { threshold: 0.12, rootMargin: '0px 0px -60px 0px' });
+    document.querySelectorAll('.section-head, .deep-row, .step-mini, .quality-card').forEach(function(el) {
+      el.classList.add('fade-in'); io.observe(el);
+    });
+  }
+})();
+</script>
+</body>
+</html>

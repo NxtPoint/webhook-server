@@ -1,14 +1,22 @@
 # locker_room_app.py — Standalone Flask server for the Locker Room service (Render).
 #
 # Serves client-facing HTML SPAs as static files via send_file():
+#
+# Members area (logged-in):
 #   GET /              → locker_room.html   (dashboard: matches, stats, video playback)
 #   GET /register      → players_enclosure.html (onboarding wizard)
 #   GET /media-room    → media_room.html    (video upload wizard)
 #   GET /backoffice    → backoffice.html    (admin dashboard)
 #   GET /match-analysis → match_analysis.html (match analytics dashboard)
 #   GET /portal        → portal.html        (unified nav shell, main Wix entry point)
-#   GET /pricing       → pricing.html       (plans & pricing page)
+#   GET /pricing       → pricing.html       (entitlement-aware plans page, inside portal)
 #   GET /coach-accept  → coach_accept.html  (coach invitation acceptance)
+#
+# Public marketing pages (pre-login; primary host is Wix, these are same-origin backups):
+#   GET /home          → home.html          (landing)
+#   GET /how-it-works  → how_it_works.html
+#   GET /pricing-public → pricing_public.html (marketing pricing — distinct from /pricing)
+#   GET /for-coaches   → for_coaches.html
 #
 # No database connection — all data access goes through the webhook-server API.
 # Only installs flask + gunicorn (not full requirements.txt).
@@ -64,6 +72,30 @@ def pricing():
 @app.get("/coach-accept")
 def coach_accept():
     return send_file("coach_accept.html")
+
+
+# ----------------------------------------------------------------
+# Public marketing pages — served same-origin as backup to Wix hosting
+# ----------------------------------------------------------------
+
+@app.get("/home")
+def public_home():
+    return send_file("home.html")
+
+
+@app.get("/how-it-works")
+def public_how_it_works():
+    return send_file("how_it_works.html")
+
+
+@app.get("/pricing-public")
+def public_pricing():
+    return send_file("pricing_public.html")
+
+
+@app.get("/for-coaches")
+def public_for_coaches():
+    return send_file("for_coaches.html")
 
 
 @app.get("/__alive")

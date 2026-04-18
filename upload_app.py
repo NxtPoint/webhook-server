@@ -2177,6 +2177,33 @@ def pricing():
 
 
 # ==========================
+# PUBLIC MARKETING PAGES (same-origin backups to Wix hosting)
+# ==========================
+@app.get("/home")
+def public_home_page():
+    from flask import send_file
+    return send_file("home.html")
+
+
+@app.get("/how-it-works")
+def public_how_it_works_page():
+    from flask import send_file
+    return send_file("how_it_works.html")
+
+
+@app.get("/pricing-public")
+def public_pricing_page():
+    from flask import send_file
+    return send_file("pricing_public.html")
+
+
+@app.get("/for-coaches")
+def public_for_coaches_page():
+    from flask import send_file
+    return send_file("for_coaches.html")
+
+
+# ==========================
 # PUBLIC ENDPOINTS (UPLOADS + STATUS + OPS)
 # ==========================
 @app.get("/")
