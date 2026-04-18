@@ -382,153 +382,50 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 
 ## T5 ML Pipeline (`ml_pipeline/`)
 
-In-house ML pipeline for tennis video analysis. Runs on AWS Batch GPU (Spot G4dn.xlarge). Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
+In-house tennis video analysis pipeline. Runs on AWS Batch GPU (Spot G4dn.xlarge) for detection; runs on Render for serve detection + silver build. Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
 
-### Architecture
+**All operational detail (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, session log, current task IDs, known gaps) lives in `.claude/handover_t5.md`.** Read that file at the start of any T5 session — it's the single source of truth.
+
+### Data flow (overview only — detail in handover)
 
 ```
-SportAI JSON ──→ bronze.player_swing ──→ silver.point_detail (model='sportai')
-T5 ML Pipeline ──→ ml_analysis.* ──────→ silver.point_detail (model='t5')
+video.mp4 → Batch (court/ball/player detection) → ml_analysis.*
+          → Render (serve_detector) → ml_analysis.serve_events
+          → Render (build_silver_match_t5) → silver.point_detail (model='t5')
+          → gold.* views → dashboards
 ```
 
-Both share passes 3-5 in `build_silver_v2.py`. T5 silver builders: `build_silver_match_t5.py` (match), `build_silver_practice.py` (practice).
+Both T5 and SportAI share passes 3-5 in `build_silver_v2.py` (repo root). The serve detector is a separate module (`ml_pipeline/serve_detector/`, pose-first architecture per Silent Impact 2025 + TAL4Tennis literature) that emits ServeEvent rows which the silver builder consumes.
 
-### T5 flow
+### Key directories
 
-Media Room → S3 upload → `_t5_submit()` → AWS Batch job → sentinel `t5://complete/{id}` → auto-ingest (`bronze_ingest_t5.py` COPY → silver build → video trim → SES notification). Region failover: eu-north-1 → us-east-1.
+| Dir | Purpose |
+|---|---|
+| `ml_pipeline/` | Core detection pipeline (court, ball, player), harness, evals |
+| `ml_pipeline/serve_detector/` | Pose-first serve detection + rally state machine + schema |
+| `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels |
+| `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification |
+| `ml_pipeline/diag/` | Dev tools — serve viewer, pose probe, local pose extractor |
 
-### Pipeline components (`ml_pipeline/`)
+Weights in `ml_pipeline/models/` (~270 MB, git-ignored): TrackNet V2, YOLOv8x/m-pose, YOLOv8m, court_keypoints.pth, optional `stroke_classifier.pt` / `tracknet_v3.pt`.
 
-**`court_detector.py`** — CNN (14 keypoints) + Hough-lines fallback + geometry-validated calibration lock + lens calibration integration.
-- CNN keypoints via threshold 170 + Hough circles + `refine_kps()` (matches yastrebksv/TennisProject).
-- **Calibration (frames 0-299)**: CNN runs every 30 frames; each candidate homography is geometry-validated. Hough fallback only when CNN returns zero valid keypoints (`cnn_kps_count == 0`) — Hough is otherwise unreliable on wide-angle indoor footage where it picks up sponsor-banner and logo edges as "baselines".
-- **Geometry validator** (`_validate_homography_geometry`): far baseline above near baseline; vertical span **25-90%** of frame height (90% upper bound — wide-angle indoor cameras legitimately have courts filling 80%+ of frame); far baseline below top 4%; near baseline above bottom 2%; far width < **0.85 × near width**; logs specific rejection reason per frame.
-- **Lock @ frame 300**: prefer highest-inlier geometry-validated detection, fallback to any-best, then last-good. Fail-fast only if no detection at all AND no calibration produced.
-- **Lens calibration** (new Apr 15, see `camera_calibration.py`): at lock time, pipes accumulated keypoint observations into `fit_calibration(observations, img_shape, rms_threshold_px=10.0)`. Result stored on `self._calibration`.
-- **`to_court_coords(px, py, strict=True)`**: when `self._calibration` is set, routes through `project_pixel_to_metres` (radial or piecewise). Otherwise falls back to `_locked_detection.homography`. Strict=True applies ±5m slop bounds; debug annotations pass `strict=False`.
-- **`to_pixel_coords(mx, my)`**: inverse projection — metric → raw pixel via `cv2.projectPoints(rvec, tvec, K, dist)`. Used by debug grid overlay.
-- **`get_court_corners_pixels()`**: when calibration is set, projects `(0,0), (10.97,0), (0,23.77), (10.97,23.77)` metric corners through calibration. Otherwise returns raw keypoint corners. This gives the pixel-polygon gate a polygon matching the real court lines.
-- Keypoint pixel positions + per-keypoint error (metres) logged at lock for diagnostics (`court_kp_err[NN] bl_top_L err=0.132m`).
+### Most-used commands
 
-**`camera_calibration.py`** — Lens distortion calibration for wide-angle MATCHI indoor cameras. Single module implementing **both Option A (primary) and Option C (fallback)**.
-- `fit_calibration(observations, img_shape, rms_threshold_px=10.0)` top-level entry.
-- **Probe step**: one-shot fit on raw observations identifies keypoint indices with per-keypoint error > 1m (typical failure mode: CNN collapses `bl_top_L`/`sg_top_L`/`sv_top_L` into the same pixel on wide-angle footage). Those indices are marked missing across all observations before the main fit.
-- **Option A (radial, Brown-Conrady k1/k2)**: `cv2.calibrateCamera` with `CALIB_FIX_PRINCIPAL_POINT | CALIB_FIX_ASPECT_RATIO | CALIB_ZERO_TANGENT_DIST | CALIB_FIX_K3 | CALIB_USE_INTRINSIC_GUESS`. Pre-filter via RANSAC `findHomography(threshold=3px)` drops per-point outliers before bundle adjustment. **Iterative refinement** up to 3 passes: fit → evaluate per-keypoint error → drop indices with error > 1m → refit. Returns `CalibrationResult(mode='radial', ...)` on RMS ≤ 10 px. Working RMS on MATCHI footage: **6.26 px** (≈15cm metric error across the 23.77m court).
-- **Option C (piecewise)**: 4-zone homographies split at `net_y_px × centre_x_px`. Each zone gets 3-4 keypoints. Mirror-fallback: if FR zone is unfit but FL has keypoints, derive FR from FL reflection across the centre line. Inverse-distance blend within 80 px of zone boundaries. Used when Option A fails to converge.
-- `project_pixel_to_metres(px, py, calib)` — raw-pixel → metre. Radial mode does `undistortPoints` + `homography_undistorted`; piecewise applies the zone's H directly.
-- `project_metres_to_pixel(mx, my, calib)` — inverse, via `cv2.projectPoints` (radial) or inverse zone H (piecewise). Used for debug grid overlay and court-corner polygon.
-- `evaluate_calibration(calib, observations)` — per-keypoint metric error. Used at lock for self-check and iteratively during refinement.
-- `undistort_frame(frame, calib)` — kept in module but **not used at runtime** (pipeline.py doesn't remap frames). Per-point undistortion at projection time keeps all pixel-space geometry (court polygon, bboxes, motion masks) in a single coordinate space.
-
-**`ball_tracker.py`** — TrackNet V2 (3-frame, 9ch) + frame-delta Hough fallback. V2 detects ~36% of frames; delta recovers ~63%. Three-tier heatmap extraction: Hough circles → CC centroid → argmax. TrackNetV3 architecture ported in `tracknet_v3.py` — activates when `models/tracknet_v3.pt` exists.
-
-**`player_tracker.py`** — Multi-strategy detection + three-tier court-metre scoring.
-- **Detection**: SAHI tiled inference (640×640 tiles, 15% overlap, `sahi==0.11.18`) + full-frame YOLOv8x-pose + detection-only YOLOv8m for far baseline. Conditional SAHI skip when full-frame YOLO already has a far-baseline candidate (`court_y ≤ 5`). **SAHI crop margin: 30%** (was 10% — raised because `court_bbox` from raw keypoints on wide-angle footage cropped out the real far baseline; 30% covers the gap).
-- **Scoring** (`_choose_two_players`): one player from each pixel-half (near/far). Three zones based on calibrated metric coords:
-  - Tier 1 (3000): INSIDE doubles court — `0 ≤ x ≤ 10.97, 0 ≤ y ≤ 23.77`
-  - Tier 2 (2000): BEHIND baseline — `-3 ≤ x ≤ 13.97, -4 ≤ y < 0 OR 23.77 < y ≤ 31.77` (**near-side +8m** to cover calibration extrapolation slack at the extreme bottom of the frame)
-  - Tier 3 (1000): WIDE alley — `-1 ≤ x < 0 OR 10.97 < x ≤ 11.97, 0 ≤ y ≤ 23.77`
-  - Tier 0: Everything else (umpire, spectator, coach, bench)
-  - Bonuses: MOG2 motion (+500), baseline-closeness (0-500), bbox area (0-200)
-  - **tier 0 → score = 0 (no bonuses)**. Spectators/linespeople can't accidentally win a half by stacking bonuses when no real player is in the candidate list.
-- **`MIN_SELECTABLE_SCORE = 1000`**: a candidate must score ≥ tier-3 floor to be picked. If no candidate in a half meets this, the half is correctly left empty — no "best of a bad lot" selection.
-- **Pixel-polygon gate**: feet > 300 px outside detected court polygon → tier 0. Previously 150 px but the polygon is a 4-corner straight-line quadrilateral while real baselines curve at the edges on wide-angle cameras; 150 was rejecting legitimate detections. With correct calibration, metric tier rules are the primary filter; pixel gate is a safety net for extreme outliers.
-- **Null-projection handling**: when calibration exists and `to_court_coords` returns None (strict bounds failed), tier 0 and `score = motion_bonus only` — no legacy pixel-space fallback (which had been over-scoring spectators).
-- **Debug frames**: `x=` and `y=` labels per bbox. **Metric grid overlay**: yellow (outer — baselines, net, sidelines) and cyan (inner — service lines, centre service) projected from metric space via `to_pixel_coords`. Frame-accurate visual calibration check.
-- **Legacy pixel-space branch** (pre-calibration fallback): also applies `tier==0 → score=0` for symmetry.
-- **MOG2 background subtraction** (`pipeline.py`): foreground mask fed every frame, motion ratio per candidate bbox.
-
-**`pipeline.py`** — Orchestrates court → ball → MOG2 → player per frame. Raw (distorted) frames pass through unchanged — per-point undistortion happens inside `project_pixel_to_metres`. Post-processing: interpolation, bounce detection, speed calc, stationary player filter, optical-flow stroke classification (second video pass at bounce frames).
-
-### AWS Batch & Docker
-
-Primary: eu-north-1, fallback: us-east-1. Spot G4dn.xlarge, bid 100%. Base image: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`.
+See `.claude/handover_t5.md` for the full catalogue. The ones that come up constantly:
 
 ```bash
-docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
-ACCOUNT=696793787014
-aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com
-docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-docker push $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-# Repeat for us-east-1
+python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
+python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
+python -m ml_pipeline.harness reconcile <sa_tid> <t5_tid>
+python -m ml_pipeline.harness rerun-silver <task_id>    # fast — no Batch needed
+python -m ml_pipeline.diag.serve_viewer <task_id> --video <path>  # visual contact sheets
 ```
 
-Weights in `ml_pipeline/models/` (~270MB, git-ignored): TrackNet V2, YOLOv8x-pose, YOLOv8m-pose, YOLOv8m, court_keypoints.pth.
+### Compute reality
 
-### Database (`ml_analysis.*`)
+Production is Spot-only in both regions (on-demand G-family vCPU quota is zero — confirmed 2026-04-15). Manual cross-region failover when Spot is tight. Playbook: `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
-`video_analysis_jobs` (job tracking), `ball_detections` (per-frame), `player_detections` (per-frame bbox + court coords + keypoints JSONB), `match_analytics` (aggregate).
-
-### Test harness & eval (`ml_pipeline/harness.py`)
-
-```bash
-# Validation & comparison
-python -m ml_pipeline.harness validate <task_id>
-python -m ml_pipeline.harness reconcile <sportai_tid> <t5_tid>
-python -m ml_pipeline.harness golden-snapshot <task_id> --name N
-python -m ml_pipeline.harness golden-check <name>
-
-# Per-component evaluation (persisted to eval_history.jsonl)
-python -m ml_pipeline.harness eval-ball <task_id>      # detection rate, bounces, speed
-python -m ml_pipeline.harness eval-player <task_id>    # player count, coord variance, path length
-python -m ml_pipeline.harness eval-court <task_id>     # confidence, homography success
-python -m ml_pipeline.harness eval-history [--last N]
-
-# Training data
-python -m ml_pipeline.harness export-ball-labels <task_id> <out.json>
-python -m ml_pipeline.harness export-sportai-labels <task_id> <out.json>
-python -m ml_pipeline.harness extract-frames <video_or_s3> <out_dir> [--fps 25]
-```
-
-`ml_pipeline/eval_store.py` persists eval results to `ml_pipeline/eval_history.jsonl`.
-
-### Training pipeline (`ml_pipeline/training/`)
-
-Fine-tune TrackNet V2 on own footage using SportAI ground truth as labels:
-- `export_labels.py` — extract ball labels from DB (T5 detections + SportAI hits)
-- `tracknet_dataset.py` — PyTorch Dataset: 3-frame windows → Gaussian heatmap labels (σ=2.5px)
-- `train_tracknet.py` — freeze encoder (conv1-10), train decoder, BCELoss pos_weight=100, Adam lr=1e-4
-- `extract_frames.py` — extract frames from video/S3 matching `ml_analysis.ball_detections` frame indices
-
-Every dual-submit pair (SportAI + T5 on same video) produces free training labels.
-
-### Debug frames
-
-`DEBUG_FRAME_INTERVAL > 0` in config. Green = KEPT, red = FILTERED. Uploaded live to `s3://{bucket}/debug/{job_id}/frame_*.jpg`.
-
-### Reconciliation & deployment
-
-Current baseline task, reconcile table, and deployed image rev/digest all live in `.claude/handover_t5_current.md` — these numbers change session-to-session and are stale the moment they're written here. Reference video S3: `s3://nextpoint-prod-uploads/wix-uploads/1776237770_match.mp4`.
-
-Batch retry strategy: up to 3 attempts, auto-retry only on `Host EC2*` status reasons.
-
-**Compute environment reality**: account has zero on-demand G-family vCPU quota in both regions — production is Spot-only despite on-demand being listed as fallback. Manual cross-region failover via `aws batch submit-job --region us-east-1 --job-definition ten-fifty5-ml-pipeline:<rev> ...` when Spot is tight. Quota playbook: `.claude/playbook_aws_batch_ondemand_fallback.md`.
-
-### Stroke classification (`build_silver_match_t5.py`)
-
-**Near player** (200-400px, has pose keypoints): Four-tier heuristic from COCO keypoints — serve (arm raised at baseline), overhead (arm raised mid-court), volley (near net + compact arm), forehand/backhand (wrist position relative to shoulders, three signal tiers). Handles both handedness.
-
-**Far player** (30-40px, no pose): Optical flow classifier in `ml_pipeline/stroke_classifier/`. Three-tier cascade in silver builder: keypoints → optical flow → position fallback.
-
-- `flow_extractor.py` — Farneback dense optical flow on bbox crop ±5 frames around hit events, resized to canonical 64×48
-- `model.py` — StrokeFlowCNN: lightweight 3D-CNN (~50K params), 5-class (fh/bh/serve/volley/other). Runs on CPU <5ms/hit
-- `train.py` — Training script with augmentation (temporal flip, mirror, magnitude scaling)
-- `export_training_data.py` — Aligns SportAI ground truth with T5 player detections from dual-submit pairs
-
-**Pipeline integration**: After bounce detection, `pipeline.py::_classify_far_player_strokes()` re-reads video at bounce frames ±5, extracts flow, classifies, stores `stroke_class` on `PlayerDetection` → persisted to `ml_analysis.player_detections.stroke_class`. Silver builder reads it as tier 2 in the cascade.
-
-**Training workflow**:
-```bash
-python -m ml_pipeline.harness export-stroke-data --sportai-task <id> --t5-task <id> --video <path> --output <dir>
-python -m ml_pipeline.harness train-stroke --data <dir> --epochs 50
-```
-Weights saved to `ml_pipeline/models/stroke_classifier.pt`. Auto-detected by `StrokeClassifier` at pipeline runtime. Target: 75-85% accuracy on 200+ labeled examples from dual-submit pairs.
-
-### Current focus & handover
-
-Active T5 work — the Phase A/B/C checklist, per-item status, current-session P0s, perf-budget numbers, and stopping condition for training — is tracked in **`.claude/handover_t5_current.md`**. Read that at the start of any T5 session; it moves fast. Durable architectural context (calibration, player scoring, stroke cascade) stays in this file above; ephemeral run status stays in the handover.
-
-Background + recent wins are captured in the auto-memory files (`project_t5_apr15_breakthrough.md`, etc.) referenced from `MEMORY.md`.
+Background / historical context lives in the auto-memory files (`project_t5_*.md`) referenced from `MEMORY.md`.
 
 ---
 
