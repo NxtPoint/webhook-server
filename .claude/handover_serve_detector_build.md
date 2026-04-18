@@ -73,27 +73,26 @@ Plus:
 
 ## Morning next steps (in order)
 
-### 1. Rebuild Batch image + deploy (~30 min)
+### 1. Rebuild Batch image + deploy — **DONE overnight**
 
-The `player_tracker.py` fix needs to go into Batch. Steps:
+| Region | New revision | Prior | Image digest |
+|---|---|---|---|
+| eu-north-1 | **30** | 29 | `sha256:dd6c4e1e24da563b409a461ccfb549d08c272a025982812fcfcde779ce905c3c` |
+| us-east-1 | **19** | 18 | same digest |
+
+Both ECR pushes completed, both job definitions registered. Image contains the 3 `player_tracker.py` fixes (tier-500 net-zone, MIN_SELECTABLE_SCORE 500, pose_bonus) plus `db_writer.py` detection_source column write. Any new Batch job submission will pick up the new image automatically; no further ops action needed.
+
+Kick off a fresh run on the baseline via Media Room (preferred — auto-ingest flows) or:
 
 ```bash
-cd C:/dev/webhook-server
-docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline .
-ACCOUNT=696793787014
-
-# eu-north-1
-aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com
-docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-docker push $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-
-# us-east-1 (same image)
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
-docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
-docker push $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+aws batch submit-job --region eu-north-1 \
+  --job-name serve-detector-validation \
+  --job-queue ten-fifty5-ml-queue \
+  --job-definition ten-fifty5-ml-pipeline:30 \
+  --parameters s3_key=wix-uploads/1776237770_match.mp4,job_id=<NEW_UUID>
 ```
 
-Then via Media Room or CLI, rerun 081e089c. ~47 min for full Batch run.
+~47 min for full Batch run.
 
 ### 2. Validate post-rebuild (~5 min)
 
