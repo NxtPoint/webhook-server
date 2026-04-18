@@ -1150,6 +1150,100 @@ def cmd_extract_frames(args: argparse.Namespace) -> int:
 
 
 # ============================================================
+# Serve-detector eval
+# ============================================================
+
+def cmd_eval_serve(args: argparse.Namespace) -> int:
+    """Run the pose-first serve detector and compare to SportAI ground truth.
+
+    Persists detected events to ml_analysis.serve_events. Reports
+    precision / recall / timestamp alignment error per player and
+    overall. Default SportAI reference is the same hardcoded pair the
+    reconcile command uses.
+    """
+    from sqlalchemy import text
+    from ml_pipeline.serve_detector.detector import detect_serves_for_task
+
+    task_id = args.task_id
+    sa_tid = args.sportai_tid or "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+    tolerance = args.tolerance
+
+    hr(f"EVAL SERVE  task_id={task_id[:8]}  vs SA {sa_tid[:8]}  tol={tolerance}s")
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        print(f"  {INFO} running serve detector on {task_id}")
+        events = detect_serves_for_task(conn, task_id, replace=True)
+    print(f"  {INFO} detected {len(events)} serve events")
+
+    with engine.connect() as conn:
+        sa_truth = conn.execute(text("""
+            SELECT ball_hit_s, serve_side_d,
+                   CASE WHEN ball_hit_location_y > 22 THEN 'NEAR'
+                        WHEN ball_hit_location_y < 2 THEN 'FAR'
+                        ELSE '?' END AS server_role
+            FROM silver.point_detail
+            WHERE task_id = :tid AND model = 'sportai' AND serve_d = TRUE
+            ORDER BY ball_hit_s
+        """), {"tid": sa_tid}).mappings().all()
+
+    if not sa_truth:
+        print(f"  {FAIL} no SportAI ground truth for {sa_tid}")
+        return 1
+
+    # Alignment (greedy by nearest-timestamp within tolerance)
+    used = [False] * len(sa_truth)
+    matches, fps, misses = [], [], []
+    for e in sorted(events, key=lambda x: x.ts):
+        best_i, best_gap = None, 1e9
+        for i, t in enumerate(sa_truth):
+            if used[i]: continue
+            gap = abs(e.ts - float(t["ball_hit_s"]))
+            if gap < best_gap:
+                best_i, best_gap = i, gap
+        if best_i is not None and best_gap <= tolerance:
+            used[best_i] = True
+            matches.append((e, sa_truth[best_i], e.ts - float(sa_truth[best_i]["ball_hit_s"])))
+        else:
+            fps.append(e)
+    misses = [sa_truth[i] for i in range(len(sa_truth)) if not used[i]]
+
+    tp = len(matches); fp = len(fps); fn = len(misses)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    mean_err = sum(abs(g) for _, _, g in matches) / tp if tp else 0.0
+
+    # Breakdown by player role
+    near_tp = sum(1 for _, t, _ in matches if t["server_role"] == "NEAR")
+    far_tp = sum(1 for _, t, _ in matches if t["server_role"] == "FAR")
+    near_total = sum(1 for t in sa_truth if t["server_role"] == "NEAR")
+    far_total = sum(1 for t in sa_truth if t["server_role"] == "FAR")
+
+    print()
+    print(f"  {INFO} precision = {precision:.1%}  recall = {recall:.1%}  f1 = {f1:.1%}")
+    print(f"  {INFO} ts error (matched pairs) mean = {mean_err:.2f}s")
+    print(f"  {INFO} near-player: {near_tp}/{near_total} recall  "
+          f"far-player: {far_tp}/{far_total} recall")
+    print(f"  {INFO} false positives = {fp}")
+    if misses:
+        print(f"  {INFO} missed SportAI serves:")
+        for m in misses:
+            print(f"      ts={float(m['ball_hit_s']):.2f} side={m['serve_side_d']} server={m['server_role']}")
+    if fps:
+        print(f"  {INFO} false-positive detections:")
+        for e in fps:
+            print(f"      ts={e.ts:.2f} pid={e.player_id} source={e.source.value} conf={e.confidence:.2f}")
+
+    # Pass thresholds — 75% F1 and 0.75s ts-err, conservative for v1
+    if f1 >= 0.75 and mean_err <= 0.75:
+        print(f"  {PASS} serve detection meets targets")
+        return 0
+    print(f"  {FAIL} below target thresholds (f1 >= 75%, mean_err <= 0.75s)")
+    return 1
+
+
+# ============================================================
 # Stroke classifier commands
 # ============================================================
 
@@ -1283,6 +1377,14 @@ def main():
     p_ec = sub.add_parser("eval-court")
     p_ec.add_argument("task_id")
 
+    p_es = sub.add_parser("eval-serve",
+                          help="Run serve detector + reconcile vs SportAI ground truth")
+    p_es.add_argument("task_id")
+    p_es.add_argument("--sportai-tid", default=None,
+                      help="SportAI task id for ground truth (default: reference match)")
+    p_es.add_argument("--tolerance", type=float, default=3.0,
+                      help="Seconds of alignment tolerance (default 3.0)")
+
     # Training pipeline — label export + frame extraction
     p_ebl = sub.add_parser(
         "export-ball-labels",
@@ -1365,6 +1467,8 @@ def main():
         return cmd_eval_player(args)
     if args.cmd == "eval-court":
         return cmd_eval_court(args)
+    if args.cmd == "eval-serve":
+        return cmd_eval_serve(args)
     if args.cmd == "export-ball-labels":
         return cmd_export_ball_labels(args)
     if args.cmd == "export-sportai-labels":

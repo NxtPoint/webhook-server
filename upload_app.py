@@ -2054,6 +2054,24 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s silver build failed (non-fatal): %s", task_id, e)
         elif is_singles_t5:
+            # Pose-first serve detection — runs between bronze ingest and
+            # silver build, consumes ml_analysis.player_detections + ball_
+            # detections, persists ml_analysis.serve_events. Failure here
+            # is non-fatal: the silver builder has its own legacy serve
+            # logic as fallback. See ml_pipeline/serve_detector/.
+            try:
+                from ml_pipeline.serve_detector import detect_serves_for_task
+                with engine.begin() as conn:
+                    serve_events = detect_serves_for_task(conn, task_id, replace=True)
+                app.logger.info(
+                    "T5 INGEST task_id=%s serve detector fired %d events",
+                    task_id, len(serve_events),
+                )
+            except ImportError:
+                app.logger.warning("T5 INGEST task_id=%s serve_detector module not available", task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s serve detection failed (non-fatal): %s", task_id, e)
+
             try:
                 from ml_pipeline.build_silver_match_t5 import build_silver_match_t5
                 silver_result = build_silver_match_t5(task_id=task_id, replace=True, engine=engine)
