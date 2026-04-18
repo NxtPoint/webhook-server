@@ -418,8 +418,11 @@ class PlayerTracker:
                         frame_idx, len(far_half_diag), far_half_diag,
                     )
 
-        # Assign player_id via IoU matching with previous frame
-        frame_detections = self._assign_ids(candidates, frame_idx, candidate_kps)
+        # Assign player_id by semantic frame half (pid 0 = near, pid 1 = far).
+        # Pass frame height so the midline is computed correctly for the video.
+        frame_detections = self._assign_ids(
+            candidates, frame_idx, candidate_kps, frame_height=frame.shape[0],
+        )
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
 
@@ -1211,95 +1214,72 @@ class PlayerTracker:
         return [], []
 
     def _assign_ids(self, bboxes: list, frame_idx: int,
-                    kps_list: list = None) -> List[PlayerDetection]:
-        """Assign player_id 0/1 consistently across frames using IoU + distance + freshness.
+                    kps_list: list = None,
+                    frame_height: Optional[int] = None) -> List[PlayerDetection]:
+        """Assign player_id by frame half.
 
-        Pid 0 = near-side, pid 1 = far-side. Two guards prevent identity flips:
-          * Center-distance gate: a new bbox can't inherit a pid via IoU alone
-            if the centers are > PLAYER_MAX_CENTER_DRIFT_PX apart. A
-            false-positive on one half cannot steal the opposite pid from a
-            stale-but-overlapping prev bbox.
-          * Freshness gate: prev entries older than PLAYER_TRACK_TIMEOUT_FRAMES
-            are ignored. Without this, a 10-second-old bbox silently matches
-            any new detection with non-zero IoU.
-        Entries not refreshed this frame are kept but age — they expire
-        naturally after the timeout.
+        SEMANTIC ASSIGNMENT: pid 0 = near-side (bbox center cy > midline),
+        pid 1 = far-side (bbox center cy <= midline). This is robust to
+        tracking timeouts that previously caused identity swaps.
+
+        Why the change (found 2026-04-18):
+        The old IoU-based path had a swap-lock bug. When both players were
+        lost for PLAYER_TRACK_TIMEOUT_FRAMES (happens during sparse-
+        tracking minutes 1-4 on the MATCHI baseline) and the first re-init
+        frame saw ONLY the far player, the far player was assigned pid=0
+        by the "highest pixel-y first" rule (it was the only bbox). IoU
+        matching on subsequent frames then locked that swap in, yielding
+        minutes where Player 1 is actually the near-camera player with
+        pose (court_y~=23) and Player 0 is the 30px far bbox (court_y~=0).
+
+        Semantic-half assignment sidesteps this entirely: pid is a pure
+        function of current bbox pixel position, no state, no possibility
+        of swap. Players on a tennis court stay in their respective halves
+        in pixel space (near player's feet are always in the lower half of
+        the frame because the camera is behind/above the near baseline).
+
+        If MULTIPLE bboxes fall in the same half (e.g. near player +
+        umpire), the one with the largest area wins — the upstream
+        `_choose_two_players` has already scored by tier / motion / pose
+        and should usually emit at most two bboxes, so collisions are
+        rare and "biggest wins" is a safe tiebreaker.
+
+        PLAYER_TRACK_TIMEOUT_FRAMES / IoU / distance gates are obsolete
+        with this approach and no longer consulted here.
         """
         if kps_list is None:
             kps_list = [None] * len(bboxes)
 
-        # Drop stale entries first so downstream logic works on the fresh set.
-        self._prev_players = {
-            pid: (bbox, seen_at)
-            for pid, (bbox, seen_at) in self._prev_players.items()
-            if frame_idx - seen_at <= PLAYER_TRACK_TIMEOUT_FRAMES
-        }
+        # Default to 1080 if not passed (MATCHI 1080p). Callers in this
+        # module pass frame.shape[0] when they have the frame.
+        fh = frame_height if frame_height is not None else 1080
+        midline_y = fh / 2.0
 
-        if not self._prev_players:
-            # First (or post-timeout) frame: assign by vertical position
-            # (higher pixel-y = near-side = player 0).
-            paired = list(zip(bboxes, kps_list))
-            paired.sort(key=lambda p: (p[0][1] + p[0][3]) / 2, reverse=True)
-            results = []
-            for i, (bbox, kps) in enumerate(paired[:2]):
-                pid = i
-                cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-                det = PlayerDetection(
-                    frame_idx=frame_idx, player_id=pid,
-                    bbox=bbox, center=(cx, cy), keypoints=kps,
-                )
-                results.append(det)
-                self._prev_players[pid] = (bbox, frame_idx)
-            return results
+        near_cands = []
+        far_cands = []
+        for bbox, kps in zip(bboxes, kps_list):
+            cy = (bbox[1] + bbox[3]) / 2.0
+            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+            entry = (area, bbox, kps)
+            if cy > midline_y:
+                near_cands.append(entry)
+            else:
+                far_cands.append(entry)
 
-        # Greedy IoU matching with distance gate.
-        assignments = {}
-        used_pids = set()
-        used_bboxes = set()
-
-        pairs = []
-        for pid, (prev_bbox, _seen) in self._prev_players.items():
-            pcx = (prev_bbox[0] + prev_bbox[2]) / 2
-            pcy = (prev_bbox[1] + prev_bbox[3]) / 2
-            for bi, bbox in enumerate(bboxes):
-                iou = self._compute_iou(prev_bbox, bbox)
-                ncx = (bbox[0] + bbox[2]) / 2
-                ncy = (bbox[1] + bbox[3]) / 2
-                dist = ((pcx - ncx) ** 2 + (pcy - ncy) ** 2) ** 0.5
-                pairs.append((iou, dist, pid, bi))
-        # Sort by IoU desc; ties broken by smaller distance.
-        pairs.sort(key=lambda p: (-p[0], p[1]))
-
-        for iou, dist, pid, bi in pairs:
-            if pid in used_pids or bi in used_bboxes:
-                continue
-            if iou >= PLAYER_IOU_THRESHOLD and dist <= PLAYER_MAX_CENTER_DRIFT_PX:
-                assignments[bi] = pid
-                used_pids.add(pid)
-                used_bboxes.add(bi)
-
-        # Unmatched bboxes → remaining pids. Falls back to first-detection
-        # style spatial order: higher pixel-y bbox gets the lower remaining pid,
-        # so a fresh detection ends up as pid 0 (near) when it belongs there
-        # even if prev_players still remembers a stale pid 1.
-        available_pids = sorted(p for p in range(2) if p not in used_pids)
-        unmatched = [bi for bi in range(len(bboxes)) if bi not in used_bboxes]
-        unmatched.sort(key=lambda bi: (bboxes[bi][1] + bboxes[bi][3]) / 2, reverse=True)
-        for bi in unmatched:
-            if not available_pids:
-                break
-            assignments[bi] = available_pids.pop(0)
+        # Biggest bbox per half wins. _choose_two_players already filtered
+        # to real player candidates; this is a last-line disambiguator.
+        near_cands.sort(key=lambda c: c[0], reverse=True)
+        far_cands.sort(key=lambda c: c[0], reverse=True)
 
         results = []
-        for bi, pid in assignments.items():
-            bbox = bboxes[bi]
-            cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-            det = PlayerDetection(
-                frame_idx=frame_idx, player_id=pid,
-                bbox=bbox, center=(cx, cy), keypoints=kps_list[bi],
-            )
-            results.append(det)
-            self._prev_players[pid] = (bbox, frame_idx)
+        for pid, cands in [(0, near_cands[:1]), (1, far_cands[:1])]:
+            for _area, bbox, kps in cands:
+                cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+                results.append(PlayerDetection(
+                    frame_idx=frame_idx, player_id=pid,
+                    bbox=bbox, center=(cx, cy), keypoints=kps,
+                ))
+                self._prev_players[pid] = (bbox, frame_idx)
 
         return results
 
