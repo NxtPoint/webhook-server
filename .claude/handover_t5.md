@@ -418,46 +418,85 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 
 ## Known issues + next priorities
 
-### P0 — Validate Apr 18 Batch deploy on `6421211e-6d2e-4d3f-a188-5ec5916c3703`
+### P0 — Validate rev 31 run `f3433ffc-042f-46ff-80df-76fdd4b84871` (FIRST THING APR 19)
 
-Just submitted (2026-04-18). Image contains player_tracker pose-gap fix. Expected result on completion (~47 min): pose coverage ≥ 80% every minute of the match (was 0% for minutes 1-5 on the pre-fix baseline).
+Submitted 2026-04-18 19:07 UTC on rev 31 (eu) / rev 20 (us) with the ID-swap fix. Batch was RUNNING with 10% progress at 19:12 UTC; ~47 min runtime. Expected complete around 20:00 UTC. Render auto-ingest runs the detector + silver build on completion.
 
-Run after completion:
+**Run first thing:**
 ```bash
-python -m ml_pipeline.harness eval-player 6421211e-6d2e-4d3f-a188-5ec5916c3703
-python -m ml_pipeline.harness eval-serve 6421211e-6d2e-4d3f-a188-5ec5916c3703
+python -m ml_pipeline.harness eval-player f3433ffc-042f-46ff-80df-76fdd4b84871
+python -m ml_pipeline.harness eval-serve  f3433ffc-042f-46ff-80df-76fdd4b84871
+python -m ml_pipeline.harness eval-ball   f3433ffc-042f-46ff-80df-76fdd4b84871
+python -m ml_pipeline.harness eval-court  f3433ffc-042f-46ff-80df-76fdd4b84871
+python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb f3433ffc-042f-46ff-80df-76fdd4b84871
 ```
 
-Target on `eval-serve`: near-player recall ≥ 80%, overall precision ≥ 70%.
+**What to look for:**
 
-### P1 — Far-player serve detection (blocked on ball data)
+| Check | rev 30 baseline (broken) | rev 31 expected |
+|---|---|---|
+| Player 1 `var_y` | 101.8 (ID-swap symptom) | < 20 (clean far-player tracking) |
+| Player 0 court_y minutes 1-4 | avg 0 (far, swapped) | avg ~23.5 (near, correct) |
+| Player 0 pose coverage minutes 1-4 | 0% | ≥ 80% |
+| Near-player serve recall | 1/14 | 12-13/14 |
+| Far-player serve recall | 0/10 | 1-3/10 (still blocked on ball data — see P1) |
+| Total TP vs SportAI's 24 | 1 | 13-16 |
+| F1 | 5.6% | 55-70% |
 
-Current: ~10% recall. Bronze TrackNet misses ~half of far-half serve bounces. Two paths:
-- **Local ball extraction** mirroring the pose extractor — run TrackNet locally on the full video, augment `ml_analysis.ball_detections` with high-recall detections. ~1 day of work.
-- **Retrain TrackNet** on dual-submit labels. Weeks of iteration.
+**If those numbers land** → architecture validated end-to-end. Move to P1.
+**If Player 1 var_y is still ~100** → ID swap not fully fixed. Check: is the `_choose_two_players` span-check dropping near player sometimes, leaving `_assign_ids` with only a far candidate? May need to relax span ratio.
+**If near serve recall is still low** → pose data arrived correctly but the pose signal rules need tuning. Start with `serve_detector/pose_signal.py::find_serve_candidates` — loosen `arm_extension_px >= 30` if pose peaks are subtle.
 
-### P2 — Umpire interference filter (Player 1 var_y=104)
+### P1 — Far-player serve detection (NEXT after P0 validates)
 
-Path-length filter in `pipeline.py` catches most but not all. Motion-persistence over 3-5 seconds would finish it. Non-blocking — mostly affects rally-shot attribution, not serves (since far-player serves are detected from bounces, not pose).
+Current: ~10% recall. Bronze TrackNet misses ~half of far-half serve bounces — the 30-40 px ball on the far half of frame is below TrackNetV2's reliable detection floor. Two paths:
+- **Local ball extraction** mirroring the pose extractor. Write `ml_pipeline/diag/extract_local_balls.py` that runs TrackNetV2 locally on the full video with tuned thresholds, writes JSONL. `serve_detector/detector.py` gains an offline-ball-rows parameter. ~1 day of work. Expected gain: far-player recall 10% → 70-80%.
+- **Retrain TrackNet** on dual-submit labels. `tracknet_v3.py` architecture already ported; weights don't exist. Weeks of iteration but higher ceiling.
+
+**Recommended order:** local extraction first (fast, unblocks the remaining 10 serves). Retraining is the long-term path but doesn't need to come before proving the architecture.
+
+### P2 — Umpire interference filter (Player 1 var_y, if still an issue post-fix)
+
+Pre-rev-31, Player 1 var_y was 101.8 — but much of that was the ID-swap artefact (real near player winning pid=1 occasionally). The rev 31 fix should bring this down to <20. If it's still high after the fix, the true umpire issue remains: the real far-player slot is sometimes filled by the umpire at the net (court_y ≈ 11-12). Path-length filter catches most; motion-persistence over 3-5 seconds would finish it. Non-blocking for serves.
 
 ### P3 — Serve bucket calibration
 
-T5 over-counts T bucket (40 vs 4), under-counts wide (16 vs 43). Pass-3 `serve_bucket_d` CASE in `build_silver_v2.py` — x thresholds need tuning against real MATCHI court geometry.
+T5 over-counts T bucket (40 vs 4), under-counts wide (16 vs 43). Pass-3 `serve_bucket_d` CASE in `build_silver_v2.py` — x thresholds need tuning against real MATCHI court geometry. Do this AFTER serves detection is solid; otherwise it's tuning on wrong data.
+
+### Realistic roadmap to 24/24 TP
+
+Current architecture is ball-bottlenecked for far-player serves. The sequence to 24/24:
+
+1. P0 confirms rev 31 → expected ~13-16/24 TP (near-player path working)
+2. P1 local ball extraction → expected ~20-22/24 TP (far-player path unblocked)
+3. P3 serve bucket calibration → cosmetic; not about recall
+4. Residual 2-4 missing TP will need pose/bounce edge-case handling — tune after seeing real data
+
+Estimated: 3-5 days of focused work from now to 24/24.
 
 ---
 
 ## Session log (reverse chronological)
 
-### 2026-04-18 — Serve detector deployed
+### 2026-04-18 evening — ID-swap root cause + rev 31 deploy
 
-- Image `sha256:dd6c4e1e24da...` built, pushed to both ECR repos, registered (eu rev 30, us rev 19).
+- Validated rev 30 run (`6421211e`). Result was disappointing: 1/24 TP, F1 5.6%, same pattern as pre-fix baseline.
+- Dug in: Player 0 in minutes 1-4 had avg_court_y=0 (was supposed to be ~23.5 near baseline), bbox width 33 px (real near player is 131 px). Player 1 had court_y=23 and had pose. **IDs were swapped** during minutes 1-4.
+- Root cause: old IoU-based `_assign_ids` had a swap-lock mode. When both players were lost for PLAYER_TRACK_TIMEOUT_FRAMES and re-init saw only the far player, the far player got pid=0 by "highest pixel-y first" (it was the only bbox). IoU matching locked the swap in for subsequent frames until another timeout.
+- Fix: replaced IoU-based assignment with **semantic-half assignment** — pid=0 if bbox center cy > frame_height/2, else pid=1. Pure function, no state, no swap possible. Biggest bbox per half wins on collision.
+- Verified locally against the same probe frames — all now correctly assign pid=0 to near player with pose.
+- Built new image `sha256:5798437b9ba0...`, pushed to both ECRs, registered revision 31 (eu) / 20 (us).
+- Batch job `f3433ffc-...` submitted 19:07 UTC on rev 31. Morning validation: see P0.
+
+### 2026-04-18 morning/afternoon — Serve detector deployed (rev 30)
+
+- Image `sha256:dd6c4e1e24da...` built, pushed, registered (eu rev 30, us rev 19). [Superseded by rev 31 — this rev had scoring fixes but NOT the ID-swap fix.]
 - New module `ml_pipeline/serve_detector/` (pose-first architecture per Silent Impact 2025 + TAL4Tennis + Springer 2024 literature).
-- Three pipeline fixes in `player_tracker.py` close the pose-coverage gap (tier-500 net-zone, MIN_SELECTABLE_SCORE 1000→500, pose_bonus +300).
+- Three scoring fixes in `player_tracker.py` for the net-zone tier (tier-500, MIN_SELECTABLE_SCORE 1000→500, pose_bonus +300).
 - `db_writer.py` adds `detection_source` column for future diagnostics.
 - `harness.py` eval-serve command + `_do_ingest_t5` wiring.
 - 9 component tests, all passing.
-- Offline validation on 081e089c: near-player 12/14 TP (86%), overall 13/24 TP, 0.05 s mean ts error.
-- Batch job `6421211e-...` submitted for post-deploy validation.
+- Offline validation on locally-extracted pose: near-player 12/14 TP (86%), overall 13/24 TP, 0.05 s mean ts error — proved the detector works, implied the problem was pose-data-starvation in DB, which turned out to be the ID-swap bug (caught in the evening dig above).
 
 ### 2026-04-17 — Root-cause dig
 
@@ -482,11 +521,14 @@ Earlier context (pre-calibration) is in `memory/project_t5_*.md` — kept for re
 
 | Symptom | File / check |
 |---|---|
-| Near-player serves missing | `serve_detector/pose_signal.py::find_serve_candidates` — tune cluster size / arm-extension threshold |
+| Player IDs swapped (Player 0 at far baseline, Player 1 at near) | `player_tracker.py::_assign_ids` — semantic-half assignment should prevent this since rev 31. If recurring, check whether `frame_height` is being passed correctly from `detect_frame` |
+| Player 1 `var_y > 50` | Umpire interference — umpire at net (court_y≈11-12) sometimes wins far-slot. Path-length filter in `pipeline.py` catches most. See P2 |
+| Near-player serves missing (after rev 31) | `serve_detector/pose_signal.py::find_serve_candidates` — tune cluster size / arm-extension threshold (30 px default) |
 | Too many false-positive serves | `serve_detector/detector.py::_detect_bounce_based_serves_far` — tighten bounce-first gates |
 | Rally state misclassifying | `serve_detector/rally_state.py::state_at` — adjust `idle_threshold_s` |
-| Pipeline not producing pose | `player_tracker.py::_choose_two_players` — check tier assignment for mid-court |
+| Pipeline not producing pose | `player_tracker.py::_choose_two_players` — check tier assignment for mid-court (tier-500 added rev 30) |
 | `ml_analysis.serve_events` missing | `serve_detector/schema.py::init_serve_events_schema` — auto-created on first use |
 | Batch job uses old image | `aws batch describe-job-definitions` — confirm revision pinned to current digest |
 | Ball speeds look wrong | `ball_tracker.py::assign_peak_flight_speeds` — p75 over 15-frame window logic |
 | Court calibration fails | `camera_calibration.py::fit_calibration` — check RMS threshold 10 px |
+| Far-player serves missing (after rev 31) | Bronze ball-bounce sparsity on far half. See P1 — needs local ball extraction or TrackNet retrain |
