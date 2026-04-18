@@ -1,0 +1,469 @@
+"""Serve detector orchestrator.
+
+Two entry points:
+  - detect_serves_for_task(conn, task_id) — production: reads from
+    ml_analysis.player_detections + ball_detections, persists ServeEvent
+    rows to ml_analysis.serve_events.
+  - detect_serves_offline(pose_rows, ball_rows, bounce_ts, ...) —
+    validation / local testing: consumes in-memory data, returns a
+    list of ServeEvent objects without touching any DB.
+
+Design — two serve signals:
+
+  NEAR PLAYER: pose-first.
+    YOLOv8x-pose reliably resolves the near player's body (100-200 px
+    bbox) including wrist/shoulder/nose keypoints. We scan the pose
+    sequence for the serve signature (trophy + toss + both-up) and
+    pick the peak frame as contact. Ball-toss and rally-state gate
+    the candidate.
+
+  FAR PLAYER: bounce-first (legacy path, refined).
+    Far player is 30-40 px, has no reliable pose. But the far player's
+    serves bounce in the near service boxes where TrackNet detects them
+    reliably. For each bounce on the near half (cy > HALF_Y) that has
+    no nearby detected serve from the near player, treat the far
+    player as the hitter and emit a ServeEvent if geometric + rally
+    state gates pass.
+
+Both signals emit ServeEvent. The merge step dedupes any cross-player
+false positives by timestamp proximity.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import List, Optional, Sequence
+
+from sqlalchemy import text as sql_text
+
+from ml_pipeline.serve_detector.ball_toss import detect_ball_toss
+from ml_pipeline.serve_detector.models import ServeEvent, SignalSource
+from ml_pipeline.serve_detector.pose_signal import (
+    PoseServeCandidate,
+    find_serve_candidates,
+)
+from ml_pipeline.serve_detector.rally_state import (
+    RallyState,
+    RallyStateMachine,
+    build_from_db,
+)
+from ml_pipeline.serve_detector.schema import (
+    delete_serves_for_task,
+    init_serve_events_schema,
+)
+
+logger = logging.getLogger(__name__)
+
+# Court constants — must match ml_pipeline.config SPORT_CONFIG_SINGLES
+COURT_LENGTH_M = 23.77
+HALF_Y = COURT_LENGTH_M / 2.0
+BASELINE_NEAR = COURT_LENGTH_M
+BASELINE_FAR = 0.0
+
+# Minimum seconds between any two accepted serves (cross-player dedupe).
+CROSS_PLAYER_DEDUP_S = 3.0
+
+
+def _get_dominant_hand(conn, task_id: str) -> bool:
+    """Return True if the submitter is left-handed. Default right."""
+    row = conn.execute(sql_text("""
+        SELECT COALESCE(m.dominant_hand, 'right') AS hand
+        FROM bronze.submission_context sc
+        LEFT JOIN billing.member m
+            ON lower(m.email) = lower(sc.email) AND m.is_primary = true
+        WHERE sc.task_id = :tid LIMIT 1
+    """), {"tid": task_id}).fetchone()
+    return (row[0] if row else "right") == "left"
+
+
+def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
+    """Load all pose-carrying detections for one player, ordered by frame."""
+    rows = conn.execute(sql_text("""
+        SELECT frame_idx, keypoints, court_x, court_y,
+               bbox_x1, bbox_y1, bbox_x2, bbox_y2
+        FROM ml_analysis.player_detections
+        WHERE job_id = :tid AND player_id = :pid AND keypoints IS NOT NULL
+        ORDER BY frame_idx
+    """), {"tid": task_id, "pid": player_id}).mappings().all()
+    out = []
+    for r in rows:
+        out.append({
+            "frame_idx": r["frame_idx"],
+            "keypoints": r["keypoints"],
+            "court_x": r["court_x"],
+            "court_y": r["court_y"],
+            "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
+        })
+    return out
+
+
+def _load_ball_rows(conn, task_id: str) -> list:
+    """Load all ball detections (for ball_toss lookups)."""
+    rows = conn.execute(sql_text("""
+        SELECT frame_idx, x, y, is_bounce, court_x, court_y, speed_kmh
+        FROM ml_analysis.ball_detections
+        WHERE job_id = :tid
+        ORDER BY frame_idx
+    """), {"tid": task_id}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _baseline_zone(court_y: Optional[float]) -> Optional[str]:
+    """Classify a court_y into 'near' / 'far' baseline zones. Tolerant of
+    calibration extrapolation slack past the painted baselines AND of
+    slight mid-court drift during the serve motion (player shifts
+    forward ~1-2m during the toss + trophy pose even though their
+    feet stay behind the baseline)."""
+    if court_y is None:
+        return None
+    if 18.5 <= court_y <= 28.0:
+        return "near"
+    if -3.5 <= court_y <= 4.5:
+        return "far"
+    return None
+
+
+def _detect_pose_based_serves(
+    pose_rows: list,
+    player_id: int,
+    is_left_handed: bool,
+    fps: float,
+    task_id: str,
+    rally: RallyStateMachine,
+    ball_rows: list,
+) -> List[ServeEvent]:
+    """Pose-first detection for the given player."""
+    # Require the baseline spatial prior: only score frames where the
+    # player is within baseline zones (they can't serve from mid-court).
+    # Serves start from behind a baseline — tolerate ±2-3m slack for
+    # calibration noise but reject any mid-court frames outright.
+    baseline_rows = [r for r in pose_rows if _baseline_zone(r.get("court_y")) is not None]
+
+    candidates = find_serve_candidates(
+        pose_rows=baseline_rows,
+        player_id=player_id,
+        is_left_handed=is_left_handed,
+        fps=fps,
+    )
+    logger.info(
+        "serve_detector: %d pose serve candidates for player %d (from %d baseline-zone pose rows)",
+        len(candidates), player_id, len(baseline_rows),
+    )
+
+    events: List[ServeEvent] = []
+    for c in candidates:
+        # Rally-state gate — but pose is the primary signal. If we see
+        # a HIGH-CONFIDENCE pose cluster (peak_score == 3 = toss + trophy
+        # + both-up all visible), that's unambiguously a serve and we
+        # override the rally state. This protects us from spurious
+        # bronze-side bounce detections that would otherwise flip us
+        # into IN_RALLY and block real serves. Score-1 and score-2
+        # candidates still respect the rally gate (lower confidence
+        # that this is a serve vs a smash / reach / ready position).
+        state = rally.state_at(c.ts)
+        if state == RallyState.IN_RALLY and c.peak_score < 3:
+            logger.debug(
+                "serve_detector: pose candidate @ ts=%.2f REJECTED (rally IN_RALLY, peak_score=%d)",
+                c.ts, c.peak_score,
+            )
+            continue
+
+        # Optional ball-toss confirmation (boosts confidence, never rejects)
+        toss = detect_ball_toss(
+            ball_rows=ball_rows,
+            player_bbox=c.bbox,
+            contact_frame=c.frame_idx,
+            fps=fps,
+        )
+
+        # Link to nearest subsequent bounce within 1.5s — this fills in
+        # the silver-facing bounce coords when possible.
+        bounce_frame = None
+        bounce_cx = None
+        bounce_cy = None
+        for b in ball_rows:
+            if not b.get("is_bounce"):
+                continue
+            fi = b.get("frame_idx", 0)
+            if fi < c.frame_idx:
+                continue
+            if fi - c.frame_idx > int(round(fps * 1.5)):
+                break
+            bounce_frame = fi
+            bounce_cx = b.get("court_x")
+            bounce_cy = b.get("court_y")
+            break
+
+        # Fusion confidence: pose-only base, +0.1 if ball-toss seen,
+        # +0.1 if linked bounce exists. Cap at 1.0.
+        conf = c.confidence
+        if toss.has_rising_ball:
+            conf = min(1.0, conf + 0.1)
+        if bounce_frame is not None:
+            conf = min(1.0, conf + 0.1)
+
+        # Source classification
+        if toss.has_rising_ball and bounce_frame is not None:
+            source = SignalSource.POSE_AND_BOUNCE
+        elif toss.has_rising_ball:
+            source = SignalSource.POSE_AND_BALL
+        elif bounce_frame is not None:
+            source = SignalSource.POSE_AND_BOUNCE
+        else:
+            source = SignalSource.POSE_ONLY
+
+        events.append(ServeEvent(
+            task_id=task_id,
+            frame_idx=c.frame_idx,
+            ts=c.ts,
+            player_id=player_id,
+            source=source,
+            confidence=conf,
+            pose_score=float(c.peak_score),
+            trophy_peak_frame=c.frame_idx,
+            has_ball_toss=toss.has_rising_ball,
+            bounce_frame=bounce_frame,
+            bounce_court_x=bounce_cx,
+            bounce_court_y=bounce_cy,
+            rally_state=state.value,
+            hitter_court_x=c.court_x,
+            hitter_court_y=c.court_y,
+            hitter_bbox=c.bbox,
+            diagnostics={
+                "cluster_size": c.cluster_size,
+                "dom_wrist_y_peak": c.dom_wrist_y_peak,
+                "toss_samples": toss.samples,
+                "toss_y_drop": toss.y_drop_px,
+            },
+        ))
+    return events
+
+
+def _detect_bounce_based_serves_far(
+    task_id: str,
+    fps: float,
+    ball_rows: list,
+    pose_rows_far: list,
+    rally: RallyStateMachine,
+    pose_serve_times_near: List[float],
+) -> List[ServeEvent]:
+    """Bounce-first detection for the far player.
+
+    Rationale: the far player's pose is too sparse (30-40 px body) to
+    run pose-first reliably, but their serves produce bounces in the
+    NEAR service boxes (bronze-side near half) which TrackNet catches
+    well. We pick up those bounces and attribute them to the far
+    player when:
+      (a) bounce is on the near half of court (cy > HALF_Y)
+      (b) rally state is not IN_RALLY
+      (c) no near-player pose-based serve fires within 3s either side
+          (the pose signal wins when both detect)
+    """
+    events: List[ServeEvent] = []
+    last_fired_ts = -1e9
+    bounces = [b for b in ball_rows if b.get("is_bounce")]
+
+    # Pre-sort near-player serve timestamps for quick dedup check
+    near_times = sorted(pose_serve_times_near)
+
+    import bisect
+    MIN_SERVE_GAP_S = 5.0
+
+    for b in bounces:
+        cy = b.get("court_y")
+        if cy is None or cy <= HALF_Y:
+            continue  # bounce on far half - far player's SERVE can't land there
+        ts = b["frame_idx"] / fps
+
+        # Query state JUST BEFORE this bounce — the bounce itself is in
+        # the rally state machine's list, so state_at(ts) always returns
+        # IN_RALLY. We want "was the court idle leading into this bounce?"
+        state = rally.state_at(ts - 0.1)
+        if state == RallyState.IN_RALLY:
+            continue
+
+        # Skip if a near-player pose-based serve fires within 3s — that
+        # same event was already captured by the stronger signal.
+        i = bisect.bisect_left(near_times, ts)
+        if i < len(near_times) and abs(near_times[i] - ts) < CROSS_PLAYER_DEDUP_S:
+            continue
+        if i > 0 and abs(near_times[i - 1] - ts) < CROSS_PLAYER_DEDUP_S:
+            continue
+
+        # Cooldown between consecutive far-player serves
+        if ts - last_fired_ts < MIN_SERVE_GAP_S:
+            continue
+
+        # Confidence is lower than pose-based — 0.6 base, +0.1 if idle
+        # time is long (clearly between-points), -0.1 if bounce_court_x
+        # is weird (far from any service box).
+        idle = rally.time_since_last_bounce(ts)
+        conf = 0.6 + (0.1 if idle > 5.0 else 0.0)
+
+        events.append(ServeEvent(
+            task_id=task_id,
+            frame_idx=b["frame_idx"],
+            ts=ts,
+            player_id=1,
+            source=SignalSource.BOUNCE_ONLY,
+            confidence=min(1.0, conf),
+            bounce_frame=b["frame_idx"],
+            bounce_court_x=b.get("court_x"),
+            bounce_court_y=b.get("court_y"),
+            rally_state=state.value,
+            diagnostics={"idle_before_s": idle},
+        ))
+        last_fired_ts = ts
+
+    logger.info("serve_detector: %d bounce-based far-player serves", len(events))
+    return events
+
+
+def _persist_events(conn, events: List[ServeEvent]) -> None:
+    if not events:
+        return
+    rows = [e.to_db_row() for e in events]
+    conn.execute(sql_text("""
+        INSERT INTO ml_analysis.serve_events
+            (task_id, frame_idx, ts, player_id, source, confidence,
+             pose_score, trophy_peak_frame, has_ball_toss,
+             bounce_frame, bounce_court_x, bounce_court_y,
+             rally_state, hitter_court_x, hitter_court_y)
+        VALUES
+            (:task_id, :frame_idx, :ts, :player_id, :source, :confidence,
+             :pose_score, :trophy_peak_frame, :has_ball_toss,
+             :bounce_frame, :bounce_court_x, :bounce_court_y,
+             :rally_state, :hitter_court_x, :hitter_court_y)
+        ON CONFLICT (task_id, frame_idx, player_id) DO NOTHING
+    """), rows)
+
+
+def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[ServeEvent]:
+    """Production entry point. Runs pose-first for near player + bounce-first
+    for far player. Persists to ml_analysis.serve_events. Returns the
+    events for downstream consumption or logging."""
+    init_serve_events_schema(conn)
+    if replace:
+        deleted = delete_serves_for_task(conn, task_id)
+        if deleted:
+            logger.info("serve_detector: deleted %d prior serve events", deleted)
+
+    fps = conn.execute(sql_text(
+        "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
+    ), {"t": task_id}).scalar() or 25.0
+    is_left_handed = _get_dominant_hand(conn, task_id)
+
+    pose_near = _load_pose_rows(conn, task_id, 0)
+    pose_far = _load_pose_rows(conn, task_id, 1)
+    ball_rows = _load_ball_rows(conn, task_id)
+    rally = build_from_db(conn, task_id, fps)
+
+    # Near player (pose-first)
+    near_events = _detect_pose_based_serves(
+        pose_rows=pose_near,
+        player_id=0,
+        is_left_handed=is_left_handed,
+        fps=fps,
+        task_id=task_id,
+        rally=rally,
+        ball_rows=ball_rows,
+    )
+
+    # Far player pose-first (usually yields nothing because the far
+    # player's body is 30-40 px and pose is unreliable, but included
+    # for the sake of the same code path).
+    far_pose_events = _detect_pose_based_serves(
+        pose_rows=pose_far,
+        player_id=1,
+        is_left_handed=is_left_handed,
+        fps=fps,
+        task_id=task_id,
+        rally=rally,
+        ball_rows=ball_rows,
+    )
+
+    # Rebuild the rally state machine using detected serve events AS
+    # rally events, and with a LONGER idle threshold (8s). After a
+    # near-player serve, the rally can continue for ~10-15s with
+    # sporadic bounces. We want bounce-based far-player detection to
+    # stay OFF during that rally. 8s is the typical longest gap
+    # between shots within one point on MATCHI-style footage where
+    # TrackNet occasionally loses the ball mid-rally.
+    pose_serve_times = [e.ts for e in near_events] + [e.ts for e in far_pose_events]
+    augmented_bounce_ts = sorted(list(rally.bounce_ts) + pose_serve_times)
+    rally_for_far = RallyStateMachine(
+        bounce_ts=augmented_bounce_ts,
+        idle_threshold_s=8.0,
+    )
+
+    far_bounce_events = _detect_bounce_based_serves_far(
+        task_id=task_id,
+        fps=fps,
+        ball_rows=ball_rows,
+        pose_rows_far=pose_far,
+        rally=rally_for_far,
+        pose_serve_times_near=pose_serve_times,
+    )
+
+    all_events = near_events + far_pose_events + far_bounce_events
+    all_events.sort(key=lambda e: e.ts)
+    _persist_events(conn, all_events)
+    logger.info(
+        "serve_detector: persisted %d serve events (near_pose=%d far_pose=%d far_bounce=%d)",
+        len(all_events), len(near_events), len(far_pose_events), len(far_bounce_events),
+    )
+    return all_events
+
+
+# -----------------------------------------------------------------------------
+# Offline / validation entry point — no DB, no side effects
+# -----------------------------------------------------------------------------
+
+def detect_serves_offline(
+    *,
+    task_id: str,
+    pose_rows_near: Sequence[dict],
+    pose_rows_far: Sequence[dict] = (),
+    ball_rows: Sequence[dict] = (),
+    is_left_handed: bool = False,
+    fps: float = 25.0,
+) -> List[ServeEvent]:
+    """In-memory detection for local validation. Same logic as
+    detect_serves_for_task but with explicitly-passed data and no
+    DB writes."""
+    bounce_ts = [
+        b["frame_idx"] / fps for b in ball_rows if b.get("is_bounce")
+    ]
+    rally = RallyStateMachine(bounce_ts=bounce_ts)
+
+    pose_near = list(pose_rows_near)
+    pose_far = list(pose_rows_far)
+    ball_list = list(ball_rows)
+
+    near_events = _detect_pose_based_serves(
+        pose_rows=pose_near, player_id=0,
+        is_left_handed=is_left_handed, fps=fps, task_id=task_id,
+        rally=rally, ball_rows=ball_list,
+    )
+    far_pose_events = _detect_pose_based_serves(
+        pose_rows=pose_far, player_id=1,
+        is_left_handed=is_left_handed, fps=fps, task_id=task_id,
+        rally=rally, ball_rows=ball_list,
+    )
+
+    # See detect_serves_for_task — augment the rally state machine with
+    # the near-player serve times so bounce-based far-player detection
+    # doesn't treat return-bounces as serves. Longer idle threshold (8s)
+    # keeps the machine in IN_RALLY during typical sparse-ball rallies.
+    pose_serve_times = [e.ts for e in near_events] + [e.ts for e in far_pose_events]
+    augmented = sorted(bounce_ts + pose_serve_times)
+    rally_for_far = RallyStateMachine(bounce_ts=augmented, idle_threshold_s=8.0)
+
+    far_bounce_events = _detect_bounce_based_serves_far(
+        task_id=task_id, fps=fps, ball_rows=ball_list,
+        pose_rows_far=pose_far, rally=rally_for_far,
+        pose_serve_times_near=pose_serve_times,
+    )
+    all_events = near_events + far_pose_events + far_bounce_events
+    all_events.sort(key=lambda e: e.ts)
+    return all_events

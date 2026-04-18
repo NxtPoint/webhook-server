@@ -237,12 +237,19 @@ def _annotate(frame: np.ndarray, shot: dict, ball: Optional[dict],
     return img
 
 
-def _make_contact_sheet(images: list, title: str, cols: int = 3) -> Optional[np.ndarray]:
+def _make_contact_sheet(images: list, title: str, cols: int = 1) -> Optional[np.ndarray]:
+    """Contact sheet: one image per row by default because the 3-frame
+    strips are already 3x wide. cols>1 only makes sense for single-frame
+    images (non-strip mode).
+    """
     if not images:
         return None
     h, w = images[0].shape[:2]
-    thumb_w = w // 2
-    thumb_h = h // 2
+    # Target row height ~360px so all shots fit on a reasonable page.
+    target_row_h = 360
+    scale = target_row_h / h
+    thumb_w = int(w * scale)
+    thumb_h = target_row_h
     rows = (len(images) + cols - 1) // cols
     sheet = np.full((rows * thumb_h + 60, cols * thumb_w, 3), 30, dtype=np.uint8)
     cv2.putText(sheet, title, (20, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.2,
@@ -281,8 +288,17 @@ def run(task_id: str, video_path: str, output_dir: str) -> int:
 
     with engine.connect() as conn:
         fps = _get_fps(conn, task_id)
+        # ball_hit_s stored in silver is the BOUNCE timestamp, not the
+        # racket-contact timestamp. For a serve the ball travels ~0.3s
+        # from contact to bounce, so extracting at ball_hit_s shows the
+        # ball already in the opposite court. Back-track by ~0.32s
+        # (same constant A1 uses to estimate hit frame from bounce) so
+        # the viewer lands near the actual contact moment. Also emit
+        # adjacent frames so the whole serve motion can be seen.
+        hit_offset_frames = max(1, int(round(fps * 0.32)))
+        sequence_offsets = [-hit_offset_frames - 5, -hit_offset_frames, 0]
         serves, overheads = _fetch_shots(conn, task_id)
-        print(f"task_id={task_id}  fps={fps:.1f}")
+        print(f"task_id={task_id}  fps={fps:.1f}  hit-back-track={hit_offset_frames} frames")
         print(f"  serves (serve_d=TRUE): {len(serves)}")
         print(f"  overheads (not serve): {len(overheads)}")
 
@@ -293,18 +309,41 @@ def run(task_id: str, video_path: str, output_dir: str) -> int:
             ("OVERHEAD-NOT-SERVE", overheads, overs_dir, over_imgs),
         ]:
             for shot in shots:
-                frame_idx = int(round(shot["ball_hit_s"] * fps))
-                frame = _extract_frame(cap, frame_idx)
-                if frame is None:
-                    print(f"  [skip id={shot['id']}] could not read frame {frame_idx}")
+                bounce_frame = int(round(shot["ball_hit_s"] * fps))
+                # Build a 3-frame strip: toss / contact / bounce so the
+                # serve motion is visible, not just the aftermath.
+                strip_frames = []
+                for offset in sequence_offsets:
+                    fi = max(0, bounce_frame + offset)
+                    frame = _extract_frame(cap, fi)
+                    if frame is None:
+                        continue
+                    label = {
+                        sequence_offsets[0]: "toss (~0.5s before hit)",
+                        sequence_offsets[1]: "CONTACT (estimated)",
+                        sequence_offsets[2]: "bounce (ball_hit_s in silver)",
+                    }.get(offset, f"+{offset} frames")
+                    # Only fetch/annotate tracker detections for the
+                    # contact frame (that's where the hitter logic ran)
+                    if offset == sequence_offsets[1]:
+                        ball = _fetch_ball_pixel(conn, task_id, fi)
+                        players = _fetch_player_pixels(conn, task_id, fi)
+                        frame = _annotate(frame, shot, ball, players, kind)
+                    cv2.putText(frame, label, (20, frame.shape[0] - 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255),
+                                3, cv2.LINE_AA)
+                    strip_frames.append(frame)
+                if not strip_frames:
+                    print(f"  [skip id={shot['id']}] could not read any frame")
                     continue
-                ball = _fetch_ball_pixel(conn, task_id, frame_idx)
-                players = _fetch_player_pixels(conn, task_id, frame_idx)
-                img = _annotate(frame, shot, ball, players, kind)
+                h = strip_frames[0].shape[0]
+                w = strip_frames[0].shape[1]
+                resized = [cv2.resize(f, (w // 2, h // 2)) for f in strip_frames]
+                strip = np.hstack(resized)
                 fname = f"{kind.lower()}_id{shot['id']:03d}_ts{shot['ball_hit_s']:06.1f}.png"
                 path = out_dir / fname
-                cv2.imwrite(str(path), img)
-                sink.append(img)
+                cv2.imwrite(str(path), strip)
+                sink.append(strip)
                 print(f"  [{kind}] id={shot['id']} ts={shot['ball_hit_s']:.2f} -> {path.name}")
 
         # Contact sheets

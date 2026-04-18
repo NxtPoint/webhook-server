@@ -41,6 +41,10 @@ ml_pipeline/test_videos/
 # Eval history (per-machine; grown incrementally by harness)
 ml_pipeline/eval_history.jsonl
 
+# Serve-detector local diagnostics — contact-sheet PNGs + pose dumps
+diag_*/
+ml_pipeline/diag/local_poses_*.jsonl
+
 # Ad-hoc user files at repo root (PDFs, screenshots, quick notes)
 /*.pdf
 /*.png

@@ -119,12 +119,24 @@ class MLDBWriter:
         if not detections:
             return
         import json
+        # Idempotent ALTER — adds detection_source column if missing. Lets
+        # SQL diagnostics tell yolo_pose / yolo_det / sahi apart in future.
+        with self.engine.begin() as conn:
+            conn.execute(sql_text(
+                "ALTER TABLE ml_analysis.player_detections "
+                "ADD COLUMN IF NOT EXISTS detection_source TEXT"
+            ))
         with self.engine.begin() as conn:
             batch = []
             for d in detections:
                 kps_json = None
                 if d.keypoints is not None:
                     kps_json = json.dumps(d.keypoints.tolist())
+                source = getattr(d, 'detection_source', None)
+                if source is None and d.keypoints is not None:
+                    # Full-frame YOLOv8x-pose is the only path that produces
+                    # keypoints; SAHI and yolov8m-det don't. Back-fill.
+                    source = "yolo_pose"
                 batch.append({
                     "job_id": job_id,
                     "frame_idx": d.frame_idx,
@@ -139,25 +151,30 @@ class MLDBWriter:
                     "court_y": d.court_y,
                     "keypoints": kps_json,
                     "stroke_class": getattr(d, 'stroke_class', None),
+                    "detection_source": source,
                 })
                 if len(batch) >= batch_size:
                     conn.execute(sql_text("""
                         INSERT INTO ml_analysis.player_detections
                             (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                             center_x, center_y, court_x, court_y, keypoints, stroke_class)
+                             center_x, center_y, court_x, court_y, keypoints, stroke_class,
+                             detection_source)
                         VALUES
                             (:job_id, :frame_idx, :player_id, :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2,
-                             :center_x, :center_y, :court_x, :court_y, :keypoints, :stroke_class)
+                             :center_x, :center_y, :court_x, :court_y, :keypoints, :stroke_class,
+                             :detection_source)
                     """), batch)
                     batch = []
             if batch:
                 conn.execute(sql_text("""
                     INSERT INTO ml_analysis.player_detections
                         (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                         center_x, center_y, court_x, court_y, keypoints, stroke_class)
+                         center_x, center_y, court_x, court_y, keypoints, stroke_class,
+                         detection_source)
                     VALUES
                         (:job_id, :frame_idx, :player_id, :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2,
-                         :center_x, :center_y, :court_x, :court_y, :keypoints, :stroke_class)
+                         :center_x, :center_y, :court_x, :court_y, :keypoints, :stroke_class,
+                         :detection_source)
                 """), batch)
         logger.info(f"Saved {len(detections)} player detections for job {job_id}")
 

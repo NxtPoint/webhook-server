@@ -75,6 +75,10 @@ class PlayerDetection:
     keypoints: Optional[np.ndarray] = field(default=None, repr=False)
     # keypoints: (17, 3) array — x, y, confidence per COCO keypoint
     stroke_class: Optional[str] = None  # optical flow classification for far player
+    # Which detection path produced this row. Lets SQL distinguish pose-
+    # carrying full-frame YOLO detections from SAHI fragments or detection-
+    # only fallback. Values: "yolo_pose" | "yolo_det" | "sahi". None = legacy.
+    detection_source: Optional[str] = None
 
 
 class PlayerTracker:
@@ -1008,6 +1012,15 @@ class PlayerTracker:
                     tier = 2000
                 elif wide_alley:
                     tier = 1000
+                elif kps is not None:
+                    # Net-zone / mid-court with pose keypoints. This is where
+                    # real players end up during rally (approach shots, net
+                    # play, recovery). Before this tier existed, these
+                    # pose-carrying full-frame YOLO detections were rejected
+                    # as tier-0 and silently dropped, creating a minute-long
+                    # "pose gap" in the stored detections exactly when the
+                    # near player was most active.
+                    tier = 500
                 else:
                     tier = 0  # off-court (umpire, spectator, coach)
 
@@ -1051,6 +1064,12 @@ class PlayerTracker:
                 bbox_w = box[2] - box[0]
                 bbox_h = box[3] - box[1]
                 bbox_score = min(200, (bbox_w * bbox_h) / 25.0)
+                # Pose bonus: full-frame YOLOv8x-pose carries 17 COCO keypoints;
+                # SAHI tile output and detection-only YOLOv8m don't. Giving
+                # pose-carrying detections a +300 nudge prevents small SAHI
+                # fragments from stealing player_id=0 when the real near
+                # player also exists in the same frame with pose data.
+                pose_bonus = 300 if kps is not None else 0
 
                 # Tier 0 = off-court (spectator, umpire, linesperson).
                 # Zero the bonuses so they can't accidentally outscore a
@@ -1059,7 +1078,7 @@ class PlayerTracker:
                 if tier == 0:
                     score = 0.0
                 else:
-                    score = tier + motion_bonus + baseline_closeness + bbox_score
+                    score = tier + motion_bonus + baseline_closeness + bbox_score + pose_bonus
 
             elif to_court_coords is not None:
                 # Calibration exists but THIS candidate's projection failed
@@ -1125,11 +1144,11 @@ class PlayerTracker:
         far_candidates.sort(key=lambda s: s[0], reverse=True)
         near_candidates.sort(key=lambda s: s[0], reverse=True)
 
-        # Require a minimum score to select a player for a half. A score
-        # below the tier-3 floor (1000) means the best candidate is off-court
-        # (tier 0, no bonuses) — the half is legitimately empty, not a
-        # reason to grab whatever linesperson happens to be visible.
-        MIN_SELECTABLE_SCORE = 1000.0
+        # Require a minimum score to select a player for a half. We lowered
+        # this from 1000 (tier-3 floor = wide alley) to 500 (new net-zone
+        # pose tier) so mid-court pose-carrying detections aren't rejected.
+        # Non-pose mid-court fragments still score tier=0 and fail this gate.
+        MIN_SELECTABLE_SCORE = 500.0
         best_far = far_candidates[0] if far_candidates and far_candidates[0][0] >= MIN_SELECTABLE_SCORE else None
         best_near = near_candidates[0] if near_candidates and near_candidates[0][0] >= MIN_SELECTABLE_SCORE else None
 
