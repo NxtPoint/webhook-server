@@ -110,17 +110,33 @@ def build_bronze_payload(
     ball_dets = list(result.ball_detections or [])
     player_dets_full = list(result.player_detections or [])
 
-    # Filter player detections to a window around each bounce
+    # Filter NON-POSE player detections to a window around each bounce —
+    # silver only needs nearest-player per bounce. But keep ALL pose-
+    # carrying rows (keypoints is not None). The serve_detector needs
+    # continuous pose data across rally-entry sequences (trophy pose
+    # happens ~0.5-1s BEFORE the ball hit), so a ±N-frames-from-bounce
+    # filter starves it of exactly the frames that matter. Prod eval on
+    # task 9fe8c096 returned 0/24 serves while offline validation from
+    # locally-extracted pose gave 12/14 — the gap was this filter.
+    # Pose rows are ~500 bytes each; keeping them all adds ~2-3 MB to a
+    # typical match's bronze JSON. Still well within SportAI-comparable
+    # scale (~14 MB / 5K rows).
     bounce_frames = sorted({d.frame_idx for d in ball_dets if d.is_bounce})
     keep_frames = set()
     for bf in bounce_frames:
         for offset in range(-player_window_frames, player_window_frames + 1):
             keep_frames.add(bf + offset)
 
-    player_dets = [d for d in player_dets_full if d.frame_idx in keep_frames]
+    player_dets = [
+        d for d in player_dets_full
+        if (d.frame_idx in keep_frames) or (d.keypoints is not None)
+    ]
+    n_pose = sum(1 for d in player_dets if d.keypoints is not None)
     logger.info(
-        "bronze_export: filtered player_detections %d -> %d (±%d frames around %d bounces)",
-        len(player_dets_full), len(player_dets), player_window_frames, len(bounce_frames),
+        "bronze_export: player_detections %d -> %d kept (%d pose-carrying, "
+        "remaining filtered to ±%d frames around %d bounces)",
+        len(player_dets_full), len(player_dets), n_pose,
+        player_window_frames, len(bounce_frames),
     )
 
     # Pipeline video metadata (from VideoMetadata dataclass)
