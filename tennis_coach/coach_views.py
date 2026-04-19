@@ -110,6 +110,9 @@ def init_coach_views():
     """
     Idempotent recreation of gold coach views. Called from tennis_coach.init on boot.
     Depends on gold.vw_player existing (gold_init_presentation() must run first).
+
+    All views are dropped + recreated inside a single transaction so concurrent
+    readers block on DDL locks instead of seeing a missing view.
     """
     try:
         with engine.begin() as conn:
@@ -119,16 +122,21 @@ def init_coach_views():
         return
 
     created, failed = [], []
-    for name, sql in _COACH_VIEWS:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
-                conn.execute(text(sql))
-            created.append(name)
-            log.info("[coach_views] created %s", name)
-        except Exception as e:
-            failed.append((name, str(e)))
-            log.error("[coach_views] failed to create %s: %s", name, e)
+    try:
+        with engine.begin() as conn:
+            for name, sql in _COACH_VIEWS:
+                try:
+                    conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
+                    conn.execute(text(sql))
+                    created.append(name)
+                    log.info("[coach_views] recreated %s", name)
+                except Exception as e:
+                    failed.append((name, str(e)))
+                    log.error("[coach_views] failed to recreate %s: %s", name, e)
+                    raise
+    except Exception:
+        log.exception("[coach_views] transaction rolled back — previous views retained")
+        return {"created": [], "failed": failed or [("transaction", "rolled back")]}
 
-    log.info("[coach_views] %d created, %d failed", len(created), len(failed))
+    log.info("[coach_views] %d recreated atomically", len(created))
     return {"created": created, "failed": failed}

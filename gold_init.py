@@ -922,13 +922,19 @@ def gold_init_presentation():
     """
     Idempotent recreation of gold presentation views. Safe to call on every boot.
 
-    Each view is DROP + CREATE (not CREATE OR REPLACE) to avoid column-type
-    replacement errors when schemas evolve. Each view is wrapped in try/except
-    so a single failure doesn't block the rest.
+    All views are dropped and recreated inside a SINGLE transaction. Postgres
+    DDL is transactional and acquires AccessExclusiveLock on the affected
+    objects, so concurrent readers (e.g. /api/client/matches hitting
+    gold.vw_client_match_summary mid-boot) block on the lock and then see
+    the new views atomically at COMMIT. No window where a view is absent.
 
-    Dependencies matter: vw_player must exist before vw_point, which must exist
-    before any match_* view that references it. The _VIEWS list is ordered
-    accordingly.
+    A single view failure rolls back the whole transaction — we keep the
+    previous set of views rather than a half-applied mix of old+new that
+    could silently break downstream dashboards.
+
+    Dependencies matter: vw_player must exist before vw_point, which must
+    exist before any match_* view that references it. The _VIEWS list is
+    ordered accordingly.
     """
     try:
         with engine.begin() as conn:
@@ -937,22 +943,25 @@ def gold_init_presentation():
         log.exception("[gold_init] failed to ensure gold schema")
         return
 
-    created = []
-    failed = []
-    for name, sql in _VIEWS:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
-                conn.execute(text(sql))
-            created.append(name)
-            log.info("[gold_init] created %s", name)
-        except Exception as e:
-            failed.append((name, str(e)))
-            log.error("[gold_init] failed to create %s: %s", name, e)
+    created: list[str] = []
+    failed: list[tuple[str, str]] = []
+    try:
+        with engine.begin() as conn:
+            for name, sql in _VIEWS:
+                try:
+                    conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
+                    conn.execute(text(sql))
+                    created.append(name)
+                    log.info("[gold_init] recreated %s", name)
+                except Exception as e:
+                    failed.append((name, str(e)))
+                    log.error("[gold_init] failed to recreate %s: %s", name, e)
+                    # Abort the whole transaction — better to keep the old
+                    # views than half-update them.
+                    raise
+    except Exception:
+        log.exception("[gold_init] transaction rolled back — previous views retained")
+        return {"created": [], "failed": failed or [("transaction", "rolled back")]}
 
-    log.info(
-        "[gold_init] presentation views: %d created, %d failed",
-        len(created),
-        len(failed),
-    )
+    log.info("[gold_init] presentation views: %d recreated atomically", len(created))
     return {"created": created, "failed": failed}

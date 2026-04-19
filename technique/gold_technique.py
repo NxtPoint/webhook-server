@@ -277,22 +277,26 @@ def init_technique_gold_views() -> dict:
         log.exception("[technique_gold] failed to ensure gold schema")
         return {"created": [], "failed": []}
 
-    created = []
-    failed = []
+    created: list[str] = []
+    failed: list[tuple[str, str]] = []
 
-    for name, sql in _TECHNIQUE_VIEWS:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
-                conn.execute(text(sql))
-            created.append(name)
-            log.info("[technique_gold] created %s", name)
-        except Exception as e:
-            failed.append((name, str(e)))
-            log.error("[technique_gold] failed to create %s: %s", name, e)
+    # Single transaction: readers block on DDL locks and see the new views
+    # atomically at COMMIT, never a missing view mid-boot.
+    try:
+        with engine.begin() as conn:
+            for name, sql in _TECHNIQUE_VIEWS:
+                try:
+                    conn.execute(text(f"DROP VIEW IF EXISTS {name} CASCADE"))
+                    conn.execute(text(sql))
+                    created.append(name)
+                    log.info("[technique_gold] recreated %s", name)
+                except Exception as e:
+                    failed.append((name, str(e)))
+                    log.error("[technique_gold] failed to recreate %s: %s", name, e)
+                    raise
+    except Exception:
+        log.exception("[technique_gold] transaction rolled back — previous views retained")
+        return {"created": [], "failed": failed or [("transaction", "rolled back")]}
 
-    log.info(
-        "[technique_gold] views: %d created, %d failed",
-        len(created), len(failed),
-    )
+    log.info("[technique_gold] %d recreated atomically", len(created))
     return {"created": created, "failed": failed}
