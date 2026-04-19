@@ -514,6 +514,35 @@ Estimated: 1-2 weeks from now to 24/24. The density issue may turn out to be qui
 
 ## Session log (reverse chronological)
 
+### 2026-04-19 afternoon (autonomous session) — SAHI merge verified: 27% faster, 5% kept_2 regression
+
+Stretch goal run: task `9fe8c096-09b6-44f8-bceb-ab9185e24ca9` (Batch `7df43765-7718-4740-86f8-d849fd2f8845`) on rev 32 (conf=0.10 + SAHI skip merged). Ran 2069.7s vs 6a9bce49's 2842s — **27% faster, 12.7 min saved**. SAHI skip rate came in at **76.6%** (exceeding the handover's 57% projection).
+
+PlayerTracker diagnostics comparison:
+
+| metric | 6a9bce49 (pre-merge) | 9fe8c096 (merged) | delta |
+|---|---|---|---|
+| frames_yolo_ran | 3096 | 3060 | −1% |
+| avg candidates/frame | 12.77 | 4.82 | −62% |
+| kept_0 | 1.4% (44) | 0.0% (0) | −100% ✓ |
+| kept_1_single_cand | 32.5% (1006) | 33.1% (1014) | +0.6% |
+| kept_2 (both players) | 64.6% (2000) | **59.6% (1823)** | **−5.0%** |
+| kept_1_span_fail | 1.5% (46) | 7.3% (223) | **+5.8%** |
+| SAHI skip rate | 0% | 76.6% | — |
+
+**The key regression**: 177 frames moved from `kept_2` to `kept_1_span_fail`. That's frames where both halves have candidates surviving _choose_two_players, but their pixel y-span is below the 378 px min — so the far candidate is dropped as a bench-sitter-style false positive. Before the merge, SAHI almost always contributed extra small-bbox candidates in the far half; with SAHI now skipped on 76.6% of frames (trigger: full-frame pose found in both halves), the real far-player bbox from SAHI is sometimes missing when YOLO full-frame misses it, and the best-scoring "far" candidate ends up being a mid-court artifact that the span check correctly rejects.
+
+**This is a net win but not a zero-regression change**. Trade-off summary:
+- ✓ Runtime: 47.4 → 34.5 min (27% reduction, great for iteration speed).
+- ✓ Pre-existing `kept_0` gap closed: 1.4% → 0%.
+- ✗ Far-player `kept_2` dropped 5% because fewer SAHI-sourced far candidates are available.
+
+**Two paths for follow-up**:
+1. **Accept the 5% regression** and consider it a fair cost for 27% runtime savings (and the 1.4% kept_0 win partially offsets). The impact is bounded to far-player detection.
+2. **Tighten the SAHI skip rule** so it runs more often — e.g. require BOTH pose-spanning AND metric-far-baseline conditions (currently an OR). Would drop skip rate from 76.6% to maybe 40-50% (still a win over 0%), likely restoring kept_2 while keeping most perf gains.
+
+Prod rev 32/21 (digest `613c01376da7fdc631e7c5b5105bf202c3528ce9b61833526c8ecc432869d8ef`) is currently deployed. If (2) becomes preferred, it's a config tweak + rebuild.
+
 ### 2026-04-19 afternoon (autonomous session) — conf=0.10 verified on Batch run 6a9bce49
 
 Batch job `8bb77cf9` (task `6a9bce49-6a65-4d28-a0d1-42bab5f2fcee`) completed in 2842s (47 min). PlayerTracker final diagnostics from CloudWatch log stream `ml-pipeline/default/df19af458b8a444bb3a3b08eb3138db1`:
