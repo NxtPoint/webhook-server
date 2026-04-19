@@ -1,6 +1,6 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-18
+**Last updated:** 2026-04-19
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
@@ -402,6 +402,8 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 | `diag/extract_local_poses.py` | Full-video local pose extraction → JSONL (dev-only; seek-based, see handover P0) |
 | `diag/repro_pose_gap.py` | Apr 18 probe that ran detect_frame on seek-read frames; superseded by `prod_pose_audit` |
 | `diag/prod_pose_audit.py` | Sequential-read YOLO vs `ml_analysis.player_detections` — discriminates H1/H2/H3 density-gap hypotheses |
+| `diag/query_detections.py` | Standalone DB dump of player_detections rows for a task + frame window. Avoids heredoc quoting issues from Render shell |
+| `diag/replay_detect_frame.py` | Replay `detect_frame()` locally on target frames with instrumented `_choose_two_players` that logs every candidate's tier/motion/baseline/bbox/pose/total score breakdown. Used to discriminate H1 (container-specific) from H2 (scoring bug) |
 
 ### Root-level touchpoints (not in ml_pipeline/)
 
@@ -429,7 +431,9 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 
 ## Known issues + next priorities
 
-### P0 — Investigate near-player YOLOv8x-pose detection density (NEW, highest priority)
+### P0 — Near-player density (DIAGNOSED — awaiting conf=0.10 rebuild verification)
+
+**Status 2026-04-19 afternoon:** H2 ruled out, H1 confirmed by exclusion. Fix deployed in code (commit b66ad85, `YOLO_CONFIDENCE` 0.25→0.10). Verification task `6a9bce49-6a65-4d28-a0d1-42bab5f2fcee` running after Docker rebuild. See `memory/project_t5_apr19_density_blocker.md` for full diag trail.
 
 **Rev 31 validation on `f181aaf7-6862-4364-bd03-7e92ff5346e9` (2026-04-19) — partial success, new blocker found.**
 
@@ -514,6 +518,31 @@ Estimated: 1-2 weeks from now to 24/24. The density issue may turn out to be qui
 ---
 
 ## Session log (reverse chronological)
+
+### 2026-04-19 afternoon — Density gap diagnosed: H2 ruled out, H1 confirmed, conf=0.10 fix deployed
+
+Three-diag sequence nailed down the cause of the near-player density gap on `f181aaf7`:
+
+1. **`ml_pipeline/diag/prod_pose_audit.py --local-only`** — sequential-read YOLO on 300 target frames:
+   - Local YOLO near-pose: **189/300 (63%)** frames have a pose-carrying near-half bbox.
+   - Seek vs sequential pixel diff: **0/300** → **H3 ruled out** (video is 25fps source at 25fps target, no downsampling ambiguity).
+   - 189 frames where local YOLO succeeds but DB stored nothing → proves pipeline dropped them.
+
+2. **`ml_pipeline/diag/query_detections.py`** — raw DB dump around frames 4745-4800:
+   - Only 3 rows across 56 frames. When pid=0 IS stored, it has pose. So Batch's scoring picks the pose bbox when anything at all comes through — the gap is "nothing comes through", not "wrong thing wins".
+   - pid=1 junk fallback with NULL court coords confirms semantic-half `_assign_ids` accepting spectators as "far player" when real one isn't detected. Separate issue, lower priority.
+
+3. **`ml_pipeline/diag/replay_detect_frame.py`** — full detect_frame() replay locally with instrumented `_choose_two_players`:
+   - On frames 4750, 4780, 4800: local pipeline (YOLOv8x-pose + SAHI + court calibration + pixel-polygon gate) **KEPT the near player with pose on all 3 target frames**.
+   - Scores 3941 / 2997 / 2968 — near pose bbox wins its half by ~600+ points.
+   - Pixel-polygon gate never trips (pixel_dist +99, -36, -113 vs the -300 threshold).
+   - **H2 definitively ruled out** — the scoring logic + pixel-polygon gate are correct.
+
+**Verdict: H1 (Batch-container-specific).** Same code + weights + imgsz + conf threshold produces the bbox on local CPU FP32 but Batch GPU misses it. Leading theory: **GPU FP16 inference suppressing pose detections near the 0.25 YOLO_CONFIDENCE threshold**.
+
+**Fix deployed (commit b66ad85):** `YOLO_CONFIDENCE` lowered 0.25 → 0.10. Tier-based scoring + pixel-polygon gate continue to filter non-player noise downstream. New Docker image must be built + pushed to both ECRs + registered as new Batch job def revision before verification task `6a9bce49-6a65-4d28-a0d1-42bab5f2fcee` runs with the fix active.
+
+**If 6a9bce49 does NOT fix density:** threshold wasn't the cause — next move is CloudWatch `dedup_detail frame=XX full=Y` analysis to see raw GPU YOLO box counts, and an ultralytics version pin audit against the Docker image.
 
 ### 2026-04-19 morning — Rev 31 validated, new density blocker, SAHI branch ready
 
