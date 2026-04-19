@@ -418,65 +418,90 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 
 ## Known issues + next priorities
 
-### P0 — Validate rev 31 run `f3433ffc-042f-46ff-80df-76fdd4b84871` (FIRST THING APR 19)
+### P0 — Investigate near-player YOLOv8x-pose detection density (NEW, highest priority)
 
-Submitted 2026-04-18 19:07 UTC on rev 31 (eu) / rev 20 (us) with the ID-swap fix. Batch was RUNNING with 10% progress at 19:12 UTC; ~47 min runtime. Expected complete around 20:00 UTC. Render auto-ingest runs the detector + silver build on completion.
+**Rev 31 validation on `f181aaf7-6862-4364-bd03-7e92ff5346e9` (2026-04-19) — partial success, new blocker found.**
 
-**Run first thing:**
+ID-swap fix validated:
+- Player 0 correctly = near player in every minute (court_y 23.0-26.0)
+- When Player 0 is detected, pose coverage is 92-100%
+
+But serve detection still = 1/14 near, 0/10 far (F1 5.6% — same as rev 30). Why: near-player **detection rate itself** is ~2% of frames in minutes 3-6 (the most rally-active minutes):
+
+| Minute | pid=0 detections / 1500 frames | % | Pose when detected |
+|---|---|---|---|
+| 0 | 648 | 43% | 99% |
+| 1 | 124 | 8% | 92% |
+| 2 | 169 | 11% | 96% |
+| 3 | 29 | **2%** | 100% |
+| 4 | 27 | **2%** | 48% |
+| 5 | 27 | **2%** | 81% |
+| 6 | 22 | **2%** | 77% |
+| 7 | 197 | 13% | 100% |
+| 8 | 77 | 5% | 86% |
+| 9 | 261 | 17% | 96% |
+
+Task: **find out why YOLOv8x-pose detects the near player in only ~2% of middle-minute frames** when a local `_run_yolo(frame)` call on the same video at the same frame indices produces strong pose output (verified in `ml_pipeline/diag/repro_pose_gap.py` Apr 18).
+
+Three hypotheses to discriminate:
+1. **Pipeline preprocessing differs** — `pipeline.py` or `player_tracker.detect_frame` may transform/crop the frame before `_run_yolo` in ways my isolated probe doesn't. Check: YOLO imgsz path, any letterbox/pad, any BGR/RGB conversion drift, SAHI's crop margin interaction.
+2. **Semantic-half filter isn't seeing the pose-carrying bbox** — despite my Apr 18 `_assign_ids` rewrite taking biggest-area-per-half, something upstream may discard pose bboxes before `_assign_ids` is called. Check: after `_choose_two_players` runs, does the returned candidate list actually include the pose-carrying YOLO output? Add per-frame logging.
+3. **cv2 seek vs sequential read** — my local probe seeks via `cap.set(CAP_PROP_POS_FRAMES, N)` which may land on a keyframe near N, not N itself. Batch reads sequentially. Same frame_idx may correspond to different actual frames. **Easy validation:** modify `repro_pose_gap.py` to read sequentially (not seek), compare output.
+
+**Suggested first step:** write `ml_pipeline/diag/prod_pose_audit.py` that iterates the reference video sequentially (same path as Batch) and logs what pose would have been at frames 4500-6000 (minute 3-4 — the worst window). Compare counts with what's in `ml_analysis.player_detections` for task f181aaf7. Delta tells you which hypothesis is correct.
+
+**Do NOT** tune pose-scoring rules until density is understood — pose rules are only relevant if we have enough samples to cluster.
+
+### P1 — Merge + deploy SAHI optimization (ready, held pending P0)
+
+Branch `perf/sahi-skip-tighten` on origin. Commit `190fd62`. Validated locally — 57% SAHI skip rate on 100-frame sample, 0 detection regressions. Expected ~600s (21%) wall-clock saving on 47-min runs.
+
+Why not merged yet: wanted to keep correctness and perf as separate rebuilds so we can distinguish their effects. Now that rev 31 has revealed the density issue (P0) is independent of SAHI, it's safe to merge + rebuild whenever.
+
+**To merge and deploy:**
 ```bash
-python -m ml_pipeline.harness eval-player f3433ffc-042f-46ff-80df-76fdd4b84871
-python -m ml_pipeline.harness eval-serve  f3433ffc-042f-46ff-80df-76fdd4b84871
-python -m ml_pipeline.harness eval-ball   f3433ffc-042f-46ff-80df-76fdd4b84871
-python -m ml_pipeline.harness eval-court  f3433ffc-042f-46ff-80df-76fdd4b84871
-python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb f3433ffc-042f-46ff-80df-76fdd4b84871
+git checkout main
+git pull
+git merge perf/sahi-skip-tighten
+git push origin main
+cd C:/dev/webhook-server
+docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .
+# Push to both ECRs and register rev 32 / 21 — same pattern as handover's Docker section
 ```
 
-**What to look for:**
+### P2 — Far-player serve detection (still on the list, but blocked by P0 now)
 
-| Check | rev 30 baseline (broken) | rev 31 expected |
-|---|---|---|
-| Player 1 `var_y` | 101.8 (ID-swap symptom) | < 20 (clean far-player tracking) |
-| Player 0 court_y minutes 1-4 | avg 0 (far, swapped) | avg ~23.5 (near, correct) |
-| Player 0 pose coverage minutes 1-4 | 0% | ≥ 80% |
-| Near-player serve recall | 1/14 | 12-13/14 |
-| Far-player serve recall | 0/10 | 1-3/10 (still blocked on ball data — see P1) |
-| Total TP vs SportAI's 24 | 1 | 13-16 |
-| F1 | 5.6% | 55-70% |
-
-**If those numbers land** → architecture validated end-to-end. Move to P1.
-**If Player 1 var_y is still ~100** → ID swap not fully fixed. Check: is the `_choose_two_players` span-check dropping near player sometimes, leaving `_assign_ids` with only a far candidate? May need to relax span ratio.
-**If near serve recall is still low** → pose data arrived correctly but the pose signal rules need tuning. Start with `serve_detector/pose_signal.py::find_serve_candidates` — loosen `arm_extension_px >= 30` if pose peaks are subtle.
-
-### P1 — Far-player serve detection (NEXT after P0 validates)
-
-Current: ~10% recall. Bronze TrackNet misses ~half of far-half serve bounces — the 30-40 px ball on the far half of frame is below TrackNetV2's reliable detection floor. Two paths:
-- **Local ball extraction** mirroring the pose extractor. Write `ml_pipeline/diag/extract_local_balls.py` that runs TrackNetV2 locally on the full video with tuned thresholds, writes JSONL. `serve_detector/detector.py` gains an offline-ball-rows parameter. ~1 day of work. Expected gain: far-player recall 10% → 70-80%.
-- **Retrain TrackNet** on dual-submit labels. `tracknet_v3.py` architecture already ported; weights don't exist. Weeks of iteration but higher ceiling.
-
-**Recommended order:** local extraction first (fast, unblocks the remaining 10 serves). Retraining is the long-term path but doesn't need to come before proving the architecture.
-
-### P2 — Umpire interference filter (Player 1 var_y, if still an issue post-fix)
-
-Pre-rev-31, Player 1 var_y was 101.8 — but much of that was the ID-swap artefact (real near player winning pid=1 occasionally). The rev 31 fix should bring this down to <20. If it's still high after the fix, the true umpire issue remains: the real far-player slot is sometimes filled by the umpire at the net (court_y ≈ 11-12). Path-length filter catches most; motion-persistence over 3-5 seconds would finish it. Non-blocking for serves.
+Bronze TrackNet misses ~half of far-half serve bounces. Same plan as before (local ball extraction), but it's no longer the critical path — we need near-player detection density first.
 
 ### P3 — Serve bucket calibration
 
-T5 over-counts T bucket (40 vs 4), under-counts wide (16 vs 43). Pass-3 `serve_bucket_d` CASE in `build_silver_v2.py` — x thresholds need tuning against real MATCHI court geometry. Do this AFTER serves detection is solid; otherwise it's tuning on wrong data.
+Cosmetic. Defer until P0 + P2 land.
 
-### Realistic roadmap to 24/24 TP
+### Realistic roadmap to 24/24 TP (revised 2026-04-19)
 
-Current architecture is ball-bottlenecked for far-player serves. The sequence to 24/24:
+1. **P0 — near-player density fix (days)** → unblocks near-player serves → ~12/24 TP
+2. **P1 — SAHI perf merge (hours)** → reduces Batch runtime 47→30 min but no accuracy change
+3. **P2 — local ball extraction (1-2 days)** → unblocks far-player serves → ~20/24 TP
+4. **P3 — bucket + edge tuning** → final polish → ~22-24/24 TP
 
-1. P0 confirms rev 31 → expected ~13-16/24 TP (near-player path working)
-2. P1 local ball extraction → expected ~20-22/24 TP (far-player path unblocked)
-3. P3 serve bucket calibration → cosmetic; not about recall
-4. Residual 2-4 missing TP will need pose/bounce edge-case handling — tune after seeing real data
-
-Estimated: 3-5 days of focused work from now to 24/24.
+Estimated: 1-2 weeks from now to 24/24. The density issue may turn out to be quick (hypothesis 3) or deep (hypothesis 1) — we won't know until we diagnose it.
 
 ---
 
 ## Session log (reverse chronological)
+
+### 2026-04-19 morning — Rev 31 validated, new density blocker, SAHI branch ready
+
+**Rev 31 validation on `f181aaf7-6862-4364-bd03-7e92ff5346e9`** (submitted by user 04:22 UTC, completed 05:14 UTC):
+- ID-swap fix ✅ — Player 0 correctly = near player in every minute, pose coverage 92-100% when detected.
+- Serve detection ❌ — still 1/14 near, 0/10 far. F1 = 5.6%, same as rev 30.
+- Root cause: **near-player detection density** is ~2% of frames in minutes 3-6. Not a swap, not a scoring bug — YOLOv8x-pose just isn't finding the near player in most rally frames. See P0 for hypothesis set + first-step diag plan.
+- Previous f3433ffc (Apr 18 submission) FAILED at 11% with "Host EC2 terminated" — Spot eviction. Retried as f181aaf7 this morning.
+
+**SAHI optimization branch** (`perf/sahi-skip-tighten`, commit `190fd62`):
+- Background agent delivered B4+ skip-rule tightening. 57% skip rate on 100-frame bench, 0 detection regressions.
+- Rule: skip SAHI if EITHER (A) full-frame YOLOv8x-pose has pose-carrying candidates in both halves with size gates (near ≥40 px, far ≥20 px, ±5% midline dead zone), OR (B) any candidate projects via strict=False `to_court_coords` to court_y ∈ [-10, 5] m.
+- Expected ~600s off 47-min runs. HELD on merge — see P1.
 
 ### 2026-04-18 evening — ID-swap root cause + rev 31 deploy
 
