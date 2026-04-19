@@ -39,6 +39,8 @@ import uuid
 def _ensure_technique_columns() -> None:
     """Add technique credit columns to billing.entitlement_grant and
     billing.entitlement_consumption if they don't already exist.
+    Also widens the source CHECK constraint to include signup_bonus
+    (added after the table was originally created).
     Follows the same idempotent pattern as _ensure_member_profile_columns()
     in client_api.py. Safe to run on every boot."""
     try:
@@ -54,6 +56,17 @@ def _ensure_technique_columns() -> None:
             conn.execute(text(
                 "ALTER TABLE billing.entitlement_consumption "
                 "ALTER COLUMN consumed_matches SET DEFAULT 0"
+            ))
+            # Widen source CHECK to match _ALLOWED_GRANT_SOURCES.
+            conn.execute(text(
+                "ALTER TABLE billing.entitlement_grant "
+                "DROP CONSTRAINT IF EXISTS entitlement_grant_source_check"
+            ))
+            conn.execute(text(
+                "ALTER TABLE billing.entitlement_grant "
+                "ADD CONSTRAINT entitlement_grant_source_check "
+                "CHECK (source IN ('wix_subscription','wix_payg',"
+                "'manual_adjustment','signup_bonus'))"
             ))
     except Exception:
         pass

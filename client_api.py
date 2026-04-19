@@ -822,7 +822,7 @@ def add_children():
                          dominant_hand, dob, skill_level, club_school, notes)
                     VALUES
                         (:aid, :first, :surname, false, 'player_parent', true,
-                         :hand, :dob::date, :skill, :club, :notes)
+                         :hand, CAST(:dob AS date), :skill, :club, :notes)
                     RETURNING id
                 """),
                 {
