@@ -271,7 +271,16 @@ class PlayerTracker:
             midline_y = frame_h / 2
             dead_zone = frame_h * 0.05  # ±5% of frame height around midline
 
-            # Predicate A — count pose-carrying candidates per half with size gate
+            # Predicate A — count pose-carrying candidates per half with size gate.
+            # 2026-04-19 tightening (v2): for the FAR side, also require the feet
+            # project near the far baseline (court_y <= 5). This stops the umpire
+            # at the net (court_y ~= 11-12) with pose data from spoofing rule A
+            # and triggering a SAHI skip when the real far player hasn't been
+            # detected by full-frame YOLO. Symptom this fixes: 177 frames on task
+            # 9fe8c096 moved from kept_2 to kept_1_span_fail vs 6a9bce49, because
+            # SAHI was skipped based on umpire-pose-in-far-half, then
+            # _choose_two_players picked that mid-court candidate as best_far,
+            # failed the y-span check against the near player, and dropped it.
             has_near_pose = False
             has_far_pose = False
             for box, kp in zip(full_boxes_list, full_kps_list):
@@ -282,7 +291,24 @@ class PlayerTracker:
                 if cy > midline_y + dead_zone and bbox_h >= 40:
                     has_near_pose = True
                 elif cy < midline_y - dead_zone and bbox_h >= 20:
-                    has_far_pose = True
+                    # Far-half pose candidate — require feet-projects-near-baseline.
+                    # If to_court_coords isn't available (pre-calibration) we keep
+                    # the legacy behavior and accept any far-half pose (so we
+                    # don't penalize early-run frames where calibration hasn't
+                    # locked yet).
+                    if to_court_coords is None:
+                        has_far_pose = True
+                    else:
+                        cx_box = (box[0] + box[2]) / 2
+                        y2_box = box[3]
+                        try:
+                            pt_box = to_court_coords(cx_box, y2_box, strict=False)
+                        except TypeError:
+                            pt_box = to_court_coords(cx_box, y2_box)
+                        except Exception:
+                            pt_box = None
+                        if pt_box is not None and pt_box[1] <= 5.0:
+                            has_far_pose = True
                 if has_near_pose and has_far_pose:
                     break
             skip_A = has_near_pose and has_far_pose
@@ -1161,15 +1187,19 @@ class PlayerTracker:
                     score = tier + motion_bonus + baseline_closeness + bbox_score + pose_bonus
 
             elif to_court_coords is not None:
-                # Calibration exists but THIS candidate's projection failed
-                # the strict bounds check (court_xy is None). Means the
-                # candidate is physically off the real court — a spectator
-                # beyond the sidelines, the umpire on a chair past the net,
-                # someone in the bleachers. Give them a minimal score so
-                # they can't beat a real far-player detection (which always
-                # produces a valid court_xy).
+                # Calibration exists but THIS candidate's projection failed —
+                # court_xy is None even with strict=False. That means the
+                # homography itself can't map this pixel (not just a bounds
+                # rejection). Candidate is physically off the real court —
+                # spectator beyond the sidelines, umpire on a chair past the
+                # net, someone in the bleachers. Always reject regardless of
+                # motion: motion_bonus = 500 = MIN_SELECTABLE_SCORE floor, so
+                # allowing it through let moving spectators be assigned pid=1
+                # whenever the real far player was missed. See f181aaf7
+                # minute-0 DB dump (query_detections.py) showing pid=1 with
+                # court_x=None and bbox 38x65 for a back-row spectator.
                 tier = 0
-                score = float(motion_bonus)  # 0 or 500 only
+                score = 0.0
             elif court_poly is not None:
                 # ── Fallback: legacy pixel-space geometry (no homography) ──
                 # Used on frames before court calibration completes.
