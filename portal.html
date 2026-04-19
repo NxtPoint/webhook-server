@@ -269,26 +269,63 @@ body {
 
 <script>
 // ==================== AUTH ====================
+// URL params are a fallback — the real handoff is via postMessage from
+// Wix's Velo code on the /portal page. That code reads CLIENT_API_KEY
+// from the Wix Secrets Manager and posts it here (see docs/wix_auth.md).
+// Storing auth in mutable globals so a late-arriving handoff can update them.
 const params = new URLSearchParams(window.location.search);
-const EMAIL = (params.get('email') || '').trim().toLowerCase();
-const API_KEY = params.get('key') || '';
-const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
-const FIRST_NAME = (params.get('firstName') || params.get('first_name') || '').trim();
-const SURNAME = (params.get('surname') || params.get('last_name') || '').trim();
-const WIX_MEMBER_ID = (params.get('wixMemberId') || params.get('wix_member_id') || '').trim();
+const AUTH = {
+  email:       (params.get('email') || '').trim().toLowerCase(),
+  apiKey:      (params.get('key') || '').trim(),
+  apiBase:     (params.get('api') || 'https://api.nextpointtennis.com').trim(),
+  firstName:   (params.get('firstName') || params.get('first_name') || '').trim(),
+  surname:     (params.get('surname')   || params.get('last_name')  || '').trim(),
+  wixMemberId: (params.get('wixMemberId') || params.get('wix_member_id') || '').trim(),
+};
+// Legacy const references — kept as getters so existing code keeps working.
+let EMAIL = AUTH.email;
+let API_KEY = AUTH.apiKey;
+let API_BASE = AUTH.apiBase;
+let FIRST_NAME = AUTH.firstName;
+let SURNAME = AUTH.surname;
+let WIX_MEMBER_ID = AUTH.wixMemberId;
 
 const ADMIN_EMAILS = ['info@ten-fifty5.com', 'tomo.stojakovic@gmail.com'];
-const isAdmin = ADMIN_EMAILS.includes(EMAIL);
+let isAdmin = ADMIN_EMAILS.includes(EMAIL);
 
-// Build auth query string to forward to each page
+// Called whenever auth values change (either from initial URL or a later
+// Wix handoff). Re-runs init if we were waiting for credentials.
+let _initStarted = false;
+function applyAuth(next) {
+  AUTH.email       = (next.email || AUTH.email || '').trim().toLowerCase();
+  AUTH.apiKey      = (next.key   || next.apiKey   || AUTH.apiKey   || '').trim();
+  AUTH.apiBase     = (next.api   || next.apiBase  || AUTH.apiBase  || 'https://api.nextpointtennis.com').trim();
+  AUTH.firstName   = (next.firstName || next.first_name || AUTH.firstName || '').trim();
+  AUTH.surname     = (next.surname   || next.last_name  || AUTH.surname   || '').trim();
+  AUTH.wixMemberId = (next.wixMemberId || next.wix_member_id || AUTH.wixMemberId || '').trim();
+
+  EMAIL = AUTH.email; API_KEY = AUTH.apiKey; API_BASE = AUTH.apiBase;
+  FIRST_NAME = AUTH.firstName; SURNAME = AUTH.surname; WIX_MEMBER_ID = AUTH.wixMemberId;
+  isAdmin = ADMIN_EMAILS.includes(EMAIL);
+
+  if (!_initStarted && AUTH.email && AUTH.apiKey) {
+    _initStarted = true;
+    init();
+  }
+}
+
+// Build auth query string to forward to each iframed child page.
+// Child iframes live on our own Render origin, so handoff-via-URL here is
+// internal plumbing (not a cross-origin leak). Updating in one place means
+// all children get the latest key even if it arrived by postMessage.
 function authParams() {
   const p = new URLSearchParams();
-  if (EMAIL) p.set('email', EMAIL);
-  if (API_KEY) p.set('key', API_KEY);
-  if (API_BASE) p.set('api', API_BASE);
-  if (FIRST_NAME) p.set('firstName', FIRST_NAME);
-  if (SURNAME) p.set('surname', SURNAME);
-  if (WIX_MEMBER_ID) p.set('wixMemberId', WIX_MEMBER_ID);
+  if (AUTH.email) p.set('email', AUTH.email);
+  if (AUTH.apiKey) p.set('key', AUTH.apiKey);
+  if (AUTH.apiBase) p.set('api', AUTH.apiBase);
+  if (AUTH.firstName) p.set('firstName', AUTH.firstName);
+  if (AUTH.surname) p.set('surname', AUTH.surname);
+  if (AUTH.wixMemberId) p.set('wixMemberId', AUTH.wixMemberId);
   return p.toString();
 }
 
@@ -567,8 +604,11 @@ window.addEventListener('message', function(event) {
     return;
   }
 
-  // Wix postMessage handoff (forward to content iframe)
+  // Wix postMessage handoff — Wix reads CLIENT_API_KEY from its Secrets
+  // Manager and posts it to us. Apply to our own AUTH state, then forward
+  // to the currently-loaded child iframe so it can pick up the same key.
   if (d.type === 'wix-handoff' || d.email) {
+    applyAuth(d);
     const frame = document.getElementById('contentFrame');
     if (frame && frame.contentWindow) {
       frame.contentWindow.postMessage(event.data, '*');
@@ -576,7 +616,27 @@ window.addEventListener('message', function(event) {
   }
 });
 
-init();
+// Signal to the Wix parent that we're mounted and ready to receive
+// the wix-handoff message. Wix re-posts the handoff on this signal,
+// which removes the race where Wix posts before our listener attaches.
+try { window.parent.postMessage({ type: 'portal-ready' }, '*'); } catch (e) {}
+
+// If URL params already supplied email + key, boot straight away.
+// Otherwise wait for the Wix postMessage handoff (handled in applyAuth).
+// Safety net: if no handoff arrives within 5s, init anyway so the profile
+// screen / error state can render instead of an endless spinner.
+if (AUTH.email && AUTH.apiKey) {
+  _initStarted = true;
+  init();
+} else {
+  setTimeout(() => {
+    if (!_initStarted) {
+      _initStarted = true;
+      init();
+    }
+  }, 5000);
+}
+
 </script>
 </body>
 </html>
