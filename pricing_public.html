@@ -733,5 +733,33 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
   }
 })();
 </script>
+<!-- Wix iframe height broadcast — paired with the listener in the Wix Studio embed -->
+<script>
+(function(){
+  if (window.self === window.top) return; // not embedded, no-op
+  var lastHeight = 0;
+  function send() {
+    try {
+      var h = Math.max(
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        document.documentElement.offsetHeight,
+        document.body.offsetHeight
+      );
+      if (h && Math.abs(h - lastHeight) > 4) {
+        lastHeight = h;
+        window.parent.postMessage({ type: 'tfifty5-resize', height: h }, '*');
+      }
+    } catch (err) { /* cross-origin denials in older browsers — ignore */ }
+  }
+  window.addEventListener('load', send);
+  window.addEventListener('resize', send);
+  if ('ResizeObserver' in window) {
+    try { new ResizeObserver(send).observe(document.documentElement); } catch (err) {}
+  }
+  // Safety-net interval for layout shifts we might miss
+  setInterval(send, 800);
+})();
+</script>
 </body>
 </html>
