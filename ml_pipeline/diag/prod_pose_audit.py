@@ -228,17 +228,24 @@ def main(argv=None) -> int:
                          "When set, DATABASE_URL is NOT required — rows are "
                          "loaded from the file. Use this to run the YOLO side "
                          "locally when your laptop can't reach the prod DB.")
+    ap.add_argument("--local-only", action="store_true",
+                    help="Skip DB entirely — run YOLO locally on the target "
+                         "frames and report local-near-pose rate + seek-vs-"
+                         "sequential H3 pixel diff. Use this when you already "
+                         "know the DB density and just want to know whether "
+                         "local YOLO sees the player.")
     args = ap.parse_args(argv)
 
     db_url = None
-    if not args.db_json:
+    if not args.db_json and not args.local_only:
         db_url = (
             os.environ.get("DATABASE_URL")
             or os.environ.get("POSTGRES_URL")
             or os.environ.get("DB_URL")
         )
         if not db_url:
-            print("DATABASE_URL env var required (or pass --db-json)", file=sys.stderr)
+            print("DATABASE_URL env var required (or pass --db-json or --local-only)",
+                  file=sys.stderr)
             return 2
         # Normalize scheme + force psycopg v3 driver (matches db_init.py). The
         # Render webhook-server installs psycopg (v3) only, not psycopg2, so a
@@ -283,7 +290,10 @@ def main(argv=None) -> int:
               f"target={FRAME_SAMPLE_FPS} fps, total_src={total_src} frames")
     print()
 
-    if args.db_json:
+    if args.local_only:
+        db_by_frame = {}
+        print("Mode: LOCAL-ONLY (skipping DB compare — using known density baseline)")
+    elif args.db_json:
         dbj = json.loads(Path(args.db_json).read_text())
         db_by_frame = {}
         for yi_str, rows in dbj.get("by_frame", {}).items():
@@ -306,57 +316,57 @@ def main(argv=None) -> int:
           f"{len(db_by_frame)} distinct frames.")
     print()
 
-    # ── DB-only density report ─────────────────────────────────────────────
-    # Runs regardless of mode. In --fetch-db-only we stop here; otherwise
-    # we continue to the YOLO vs DB comparison below.
-    print("=== DB DENSITY BY SAMPLED FRAME ===")
     target_sorted = sorted(target_indices)
-    n_pid0 = 0
-    n_pid0_pose = 0
-    n_pid1 = 0
-    n_pid1_pose = 0
-    for yi in target_sorted:
-        rows = db_by_frame.get(yi, [])
-        if any(r["player_id"] == 0 for r in rows):
-            n_pid0 += 1
-        if any(r["player_id"] == 0 and r["has_keypoints"] for r in rows):
-            n_pid0_pose += 1
-        if any(r["player_id"] == 1 for r in rows):
-            n_pid1 += 1
-        if any(r["player_id"] == 1 and r["has_keypoints"] for r in rows):
-            n_pid1_pose += 1
 
-    nsamp = max(1, len(target_sorted))
-    print(f"  pid=0 (near) present in DB:       {n_pid0}/{nsamp}  "
-          f"({100*n_pid0/nsamp:.1f}%)")
-    print(f"    of those, with keypoints:       {n_pid0_pose}/{nsamp}  "
-          f"({100*n_pid0_pose/nsamp:.1f}%)")
-    print(f"  pid=1 (far) present in DB:        {n_pid1}/{nsamp}  "
-          f"({100*n_pid1/nsamp:.1f}%)")
-    print(f"    of those, with keypoints:       {n_pid1_pose}/{nsamp}  "
-          f"({100*n_pid1_pose/nsamp:.1f}%)")
-    print()
+    if not args.local_only:
+        # ── DB density report ──────────────────────────────────────────────
+        # Runs in --fetch-db-only (Render path) and full YOLO-vs-DB mode.
+        print("=== DB DENSITY BY SAMPLED FRAME ===")
+        n_pid0 = 0
+        n_pid0_pose = 0
+        n_pid1 = 0
+        n_pid1_pose = 0
+        for yi in target_sorted:
+            rows = db_by_frame.get(yi, [])
+            if any(r["player_id"] == 0 for r in rows):
+                n_pid0 += 1
+            if any(r["player_id"] == 0 and r["has_keypoints"] for r in rows):
+                n_pid0_pose += 1
+            if any(r["player_id"] == 1 for r in rows):
+                n_pid1 += 1
+            if any(r["player_id"] == 1 and r["has_keypoints"] for r in rows):
+                n_pid1_pose += 1
 
-    # Also break down by minute for comparison against the Apr 19 memo table.
-    # At 25fps, minute N = frames [N*1500, (N+1)*1500).
-    print("  Per-minute pid=0 density in window:")
-    minute_buckets = {}
-    for yi in target_sorted:
-        minute = yi // 1500
-        bkt = minute_buckets.setdefault(minute, {"samples": 0, "pid0": 0, "pose": 0})
-        bkt["samples"] += 1
-        rows = db_by_frame.get(yi, [])
-        if any(r["player_id"] == 0 for r in rows):
-            bkt["pid0"] += 1
-        if any(r["player_id"] == 0 and r["has_keypoints"] for r in rows):
-            bkt["pose"] += 1
-    for m in sorted(minute_buckets):
-        b = minute_buckets[m]
-        pct = 100 * b["pid0"] / max(1, b["samples"])
-        pose_pct = 100 * b["pose"] / max(1, b["samples"])
-        print(f"    minute {m}:  pid0={b['pid0']}/{b['samples']} ({pct:.1f}%)  "
-              f"pose={b['pose']}/{b['samples']} ({pose_pct:.1f}%)")
-    print()
+        nsamp = max(1, len(target_sorted))
+        print(f"  pid=0 (near) present in DB:       {n_pid0}/{nsamp}  "
+              f"({100*n_pid0/nsamp:.1f}%)")
+        print(f"    of those, with keypoints:       {n_pid0_pose}/{nsamp}  "
+              f"({100*n_pid0_pose/nsamp:.1f}%)")
+        print(f"  pid=1 (far) present in DB:        {n_pid1}/{nsamp}  "
+              f"({100*n_pid1/nsamp:.1f}%)")
+        print(f"    of those, with keypoints:       {n_pid1_pose}/{nsamp}  "
+              f"({100*n_pid1_pose/nsamp:.1f}%)")
+        print()
+
+        # At 25fps, minute N = frames [N*1500, (N+1)*1500).
+        print("  Per-minute pid=0 density in window:")
+        minute_buckets = {}
+        for yi in target_sorted:
+            minute = yi // 1500
+            bkt = minute_buckets.setdefault(minute, {"samples": 0, "pid0": 0, "pose": 0})
+            bkt["samples"] += 1
+            rows = db_by_frame.get(yi, [])
+            if any(r["player_id"] == 0 for r in rows):
+                bkt["pid0"] += 1
+            if any(r["player_id"] == 0 and r["has_keypoints"] for r in rows):
+                bkt["pose"] += 1
+        for m in sorted(minute_buckets):
+            b = minute_buckets[m]
+            pct = 100 * b["pid0"] / max(1, b["samples"])
+            pose_pct = 100 * b["pose"] / max(1, b["samples"])
+            print(f"    minute {m}:  pid0={b['pid0']}/{b['samples']} ({pct:.1f}%)  "
+                  f"pose={b['pose']}/{b['samples']} ({pose_pct:.1f}%)")
+        print()
 
     if args.fetch_db_only:
         # Dump the DB rows so the YOLO-side run (done locally) can load them.
