@@ -223,23 +223,30 @@ def main(argv=None) -> int:
                     help="Skip all YOLO work — just query the DB and print "
                          "density stats + dump rows to JSON. Runs cleanly on "
                          "Render webhook-server (no cv2 / ultralytics / weights).")
+    ap.add_argument("--db-json", default=None,
+                    help="Path to a JSON file produced by --fetch-db-only. "
+                         "When set, DATABASE_URL is NOT required — rows are "
+                         "loaded from the file. Use this to run the YOLO side "
+                         "locally when your laptop can't reach the prod DB.")
     args = ap.parse_args(argv)
 
-    db_url = (
-        os.environ.get("DATABASE_URL")
-        or os.environ.get("POSTGRES_URL")
-        or os.environ.get("DB_URL")
-    )
-    if not db_url:
-        print("DATABASE_URL env var required", file=sys.stderr)
-        return 2
-    # Normalize scheme + force psycopg v3 driver (matches db_init.py). The
-    # Render webhook-server installs psycopg (v3) only, not psycopg2, so a
-    # bare postgresql:// URL makes SQLAlchemy try to import psycopg2 and fail.
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    if db_url.startswith("postgresql://") and "+psycopg" not in db_url:
-        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    db_url = None
+    if not args.db_json:
+        db_url = (
+            os.environ.get("DATABASE_URL")
+            or os.environ.get("POSTGRES_URL")
+            or os.environ.get("DB_URL")
+        )
+        if not db_url:
+            print("DATABASE_URL env var required (or pass --db-json)", file=sys.stderr)
+            return 2
+        # Normalize scheme + force psycopg v3 driver (matches db_init.py). The
+        # Render webhook-server installs psycopg (v3) only, not psycopg2, so a
+        # bare postgresql:// URL makes SQLAlchemy try to import psycopg2 and fail.
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        if db_url.startswith("postgresql://") and "+psycopg" not in db_url:
+            db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     if not args.fetch_db_only:
         video = Path(args.video)
@@ -276,13 +283,27 @@ def main(argv=None) -> int:
               f"target={FRAME_SAMPLE_FPS} fps, total_src={total_src} frames")
     print()
 
-    engine = create_engine(db_url)
-    db_by_frame = _fetch_db_detections(
-        engine, args.task, args.start_frame, args.end_frame,
-    )
+    if args.db_json:
+        dbj = json.loads(Path(args.db_json).read_text())
+        db_by_frame = {}
+        for yi_str, rows in dbj.get("by_frame", {}).items():
+            db_by_frame[int(yi_str)] = [
+                {"player_id": r["player_id"],
+                 "bbox": tuple(r["bbox"]),
+                 "center": tuple(r["center"]),
+                 "court_y": r.get("court_y"),
+                 "has_keypoints": bool(r["has_keypoints"])}
+                for r in rows
+            ]
+        print(f"Loaded DB rows from {args.db_json}")
+    else:
+        engine = create_engine(db_url)
+        db_by_frame = _fetch_db_detections(
+            engine, args.task, args.start_frame, args.end_frame,
+        )
     total_db_rows = sum(len(v) for v in db_by_frame.values())
-    print(f"Fetched {total_db_rows} player_detections rows across "
-          f"{len(db_by_frame)} distinct frames from DB.")
+    print(f"Have {total_db_rows} player_detections rows across "
+          f"{len(db_by_frame)} distinct frames.")
     print()
 
     # ── DB-only density report ─────────────────────────────────────────────
