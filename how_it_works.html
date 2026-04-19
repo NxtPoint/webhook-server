@@ -310,7 +310,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     </ul>
     <div class="nav-right">
       <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="/register" class="btn btn-gold btn-sm">Analyse My First Match Free
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-sm">Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
@@ -334,123 +334,123 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     <a href="https://www.ten-fifty5.com/portal">Sign In</a>
   </div>
   <div class="drawer-cta">
-    <a href="/register" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
+    <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
   </div>
 </div>
 
-<!-- HERO — full-bleed data-extraction visualization -->
+<!-- HERO — full-bleed longitudinal progression chart ("The Long Game") -->
 <section class="page-hero">
   <div class="page-hero-viz" aria-hidden="true">
     <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="w-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>
-        <filter id="w-glow-sm" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2.4"/></filter>
-        <radialGradient id="w-surface" cx="50%" cy="50%" r="55%">
-          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.14"/>
-          <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
-        </radialGradient>
+        <filter id="w-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
+        <linearGradient id="area-fill" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#4ADE80" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="#4ADE80" stop-opacity="0"/>
+        </linearGradient>
+        <linearGradient id="line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stop-color="rgba(74,222,128,0.5)"/>
+          <stop offset="100%" stop-color="#86E8A4"/>
+        </linearGradient>
       </defs>
 
-      <rect width="1600" height="900" fill="url(#w-surface)"/>
+      <!-- Chart area: x 500→1520, y 200→740 -->
 
-      <!-- Court lines (landscape bird's-eye) -->
-      <g stroke="rgba(255,255,255,0.16)" stroke-width="1.4" fill="none">
-        <rect x="300" y="220" width="1120" height="460"/>
-        <line x1="300" y1="278" x2="1420" y2="278"/>
-        <line x1="300" y1="622" x2="1420" y2="622"/>
-        <line x1="580" y1="278" x2="580" y2="622"/>
-        <line x1="1140" y1="278" x2="1140" y2="622"/>
-        <line x1="580" y1="450" x2="1140" y2="450"/>
+      <!-- Horizontal grid lines -->
+      <g stroke="rgba(255,255,255,0.05)" stroke-width="1">
+        <line x1="500" y1="740" x2="1520" y2="740"/>
+        <line x1="500" y1="640" x2="1520" y2="640"/>
+        <line x1="500" y1="540" x2="1520" y2="540"/>
+        <line x1="500" y1="440" x2="1520" y2="440"/>
+        <line x1="500" y1="340" x2="1520" y2="340"/>
+        <line x1="500" y1="240" x2="1520" y2="240"/>
       </g>
-      <line x1="860" y1="200" x2="860" y2="700" stroke="rgba(255,255,255,0.42)" stroke-width="2"/>
 
-      <!-- BALL TRAJECTORY: a zigzag over the court showing a 6-shot rally -->
-      <g fill="none" stroke="rgba(74,222,128,0.55)" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="3 4">
-        <path d="M 340 460 Q 580 420 860 460 Q 1140 500 1380 440 Q 1140 400 860 440 Q 580 480 340 420 Q 580 460 860 500"/>
+      <!-- Y-axis tick labels -->
+      <g fill="rgba(255,255,255,0.28)" font-family="Inter, sans-serif" font-size="11" font-weight="500" letter-spacing="0.06em">
+        <text x="462" y="744" text-anchor="end">45%</text>
+        <text x="462" y="644" text-anchor="end">55%</text>
+        <text x="462" y="544" text-anchor="end">65%</text>
+        <text x="462" y="444" text-anchor="end">75%</text>
+        <text x="462" y="344" text-anchor="end">85%</text>
+        <text x="462" y="244" text-anchor="end">95%</text>
       </g>
-      <!-- Ball positions at each contact point (small dots) -->
+
+      <!-- Y-axis title (vertical label on far left) -->
+      <g transform="translate(388, 480) rotate(-90)">
+        <text fill="rgba(255,255,255,0.4)" font-family="Inter, sans-serif" font-size="11" font-weight="700" letter-spacing="0.18em" text-anchor="middle">1ST SERVE % · AVG</text>
+      </g>
+
+      <!-- Area fill under the curve -->
+      <path d="M 520 700 L 620 660 L 720 630 L 820 570 L 920 520 L 1020 460 L 1120 420 L 1220 360 L 1320 320 L 1420 280 L 1500 250 L 1500 740 L 520 740 Z" fill="url(#area-fill)"/>
+
+      <!-- Dashed baseline — "where they started" reference -->
+      <line x1="520" y1="700" x2="1500" y2="700" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="4 6"/>
+      <text x="525" y="694" fill="rgba(255,255,255,0.35)" font-family="Inter, sans-serif" font-size="10" font-weight="600" letter-spacing="0.1em">BASELINE · MATCH 1</text>
+
+      <!-- Main trend line -->
+      <path d="M 520 700 L 620 660 L 720 630 L 820 570 L 920 520 L 1020 460 L 1120 420 L 1220 360 L 1320 320 L 1420 280 L 1500 250" stroke="url(#line-grad)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- Match data points -->
       <g>
-        <circle cx="340" cy="460" r="5" fill="rgba(74,222,128,0.2)" filter="url(#w-glow)"/>
-        <circle cx="340" cy="460" r="2.5" fill="#86E8A4"/>
-        <circle cx="1380" cy="440" r="5" fill="rgba(74,222,128,0.2)" filter="url(#w-glow)"/>
-        <circle cx="1380" cy="440" r="2.5" fill="#86E8A4"/>
-        <circle cx="860" cy="500" r="4" fill="rgba(74,222,128,0.18)" filter="url(#w-glow)"/>
-        <circle cx="860" cy="500" r="2" fill="#86E8A4"/>
+        <circle cx="520" cy="700" r="10" fill="rgba(74,222,128,0.18)"/>
+        <circle cx="520" cy="700" r="4.5" fill="#86E8A4"/>
+        <circle cx="620" cy="660" r="8" fill="rgba(74,222,128,0.15)"/>
+        <circle cx="620" cy="660" r="4" fill="#86E8A4"/>
+        <circle cx="720" cy="630" r="8" fill="rgba(74,222,128,0.15)"/>
+        <circle cx="720" cy="630" r="4" fill="#86E8A4"/>
+        <circle cx="820" cy="570" r="9" fill="rgba(74,222,128,0.18)"/>
+        <circle cx="820" cy="570" r="4.5" fill="#86E8A4"/>
+        <circle cx="920" cy="520" r="9" fill="rgba(74,222,128,0.18)"/>
+        <circle cx="920" cy="520" r="4.5" fill="#86E8A4"/>
+        <circle cx="1020" cy="460" r="9" fill="rgba(74,222,128,0.18)"/>
+        <circle cx="1020" cy="460" r="4.5" fill="#86E8A4"/>
+        <circle cx="1120" cy="420" r="9" fill="rgba(74,222,128,0.18)"/>
+        <circle cx="1120" cy="420" r="4.5" fill="#86E8A4"/>
+        <circle cx="1220" cy="360" r="10" fill="rgba(74,222,128,0.2)"/>
+        <circle cx="1220" cy="360" r="4.5" fill="#86E8A4"/>
+        <circle cx="1320" cy="320" r="10" fill="rgba(74,222,128,0.2)"/>
+        <circle cx="1320" cy="320" r="4.5" fill="#86E8A4"/>
+        <circle cx="1420" cy="280" r="11" fill="rgba(74,222,128,0.24)"/>
+        <circle cx="1420" cy="280" r="5" fill="#86E8A4"/>
+        <!-- Last point — brighter, bigger, with glow -->
+        <circle cx="1500" cy="250" r="22" fill="rgba(74,222,128,0.2)" filter="url(#w-glow)"/>
+        <circle cx="1500" cy="250" r="10" fill="rgba(74,222,128,0.9)"/>
+        <circle cx="1500" cy="250" r="5" fill="#B9F2C9"/>
       </g>
 
-      <!-- Ball bounding box — "tracked this frame" indicator at mid-court -->
-      <g transform="translate(850, 486)">
-        <rect x="-12" y="-10" width="24" height="20" fill="none" stroke="#4ADE80" stroke-width="1.2" opacity="0.8"/>
-        <line x1="-12" y1="0" x2="-18" y2="0" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
-        <line x1="12" y1="0" x2="18" y2="0" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
-        <line x1="0" y1="-10" x2="0" y2="-16" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
-        <line x1="0" y1="10" x2="0" y2="16" stroke="#4ADE80" stroke-width="1" opacity="0.8"/>
-        <text x="20" y="-12" fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em">BALL · F 142</text>
+      <!-- Start milestone: UTR 5.2 -->
+      <g transform="translate(520, 700)">
+        <line x1="0" y1="0" x2="0" y2="80" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="2 3"/>
+        <g transform="translate(-60, -96)">
+          <rect width="120" height="40" rx="4" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.15)"/>
+          <text x="60" y="18" fill="rgba(255,255,255,0.5)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em" text-anchor="middle">START · JAN</text>
+          <text x="60" y="34" fill="#fff" font-family="Inter, sans-serif" font-size="13" font-weight="800" text-anchor="middle">UTR 5.2</text>
+        </g>
       </g>
 
-      <!-- PLAYER 1 (near baseline) — pose skeleton mini -->
-      <g transform="translate(340, 640)" stroke-linecap="round">
-        <line x1="0" y1="-14" x2="0" y2="0" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="-8" y1="4" x2="8" y2="4" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="0" y1="0" x2="-6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="0" y1="0" x2="6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="-8" y1="4" x2="-14" y2="14" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="8" y1="4" x2="16" y2="-6" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <circle cx="0" cy="-18" r="4" fill="none" stroke="#4ADE80" stroke-width="1.2"/>
-        <circle cx="0" cy="0" r="1.8" fill="#4ADE80"/>
-        <circle cx="-8" cy="4" r="1.8" fill="#4ADE80"/>
-        <circle cx="8" cy="4" r="1.8" fill="#4ADE80"/>
-        <circle cx="-14" cy="14" r="1.8" fill="#4ADE80"/>
-        <circle cx="16" cy="-6" r="1.8" fill="#4ADE80"/>
-        <circle cx="-6" cy="16" r="1.8" fill="#4ADE80"/>
-        <circle cx="6" cy="16" r="1.8" fill="#4ADE80"/>
-        <rect x="-22" y="-30" width="44" height="60" fill="none" stroke="rgba(74,222,128,0.35)" stroke-width="1" stroke-dasharray="2 2"/>
-        <text x="24" y="-22" fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em">POSE · 17 KP</text>
+      <!-- End milestone: UTR 6.8 (current) -->
+      <g transform="translate(1500, 250)">
+        <g transform="translate(-140, -86)">
+          <rect width="130" height="46" rx="4" fill="rgba(74,222,128,0.15)" stroke="rgba(74,222,128,0.5)"/>
+          <text x="65" y="19" fill="#86E8A4" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em" text-anchor="middle">TODAY · JUN</text>
+          <text x="65" y="37" fill="#fff" font-family="Inter, sans-serif" font-size="15" font-weight="800" text-anchor="middle">UTR 6.8 ↑</text>
+        </g>
       </g>
 
-      <!-- PLAYER 2 (far baseline) — same -->
-      <g transform="translate(1380, 260)" stroke-linecap="round">
-        <line x1="0" y1="-14" x2="0" y2="0" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="-8" y1="4" x2="8" y2="4" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="0" y1="0" x2="-6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="0" y1="0" x2="6" y2="16" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="-8" y1="4" x2="-16" y2="-6" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <line x1="8" y1="4" x2="14" y2="14" stroke="rgba(255,255,255,0.55)" stroke-width="1.4"/>
-        <circle cx="0" cy="-18" r="4" fill="none" stroke="#4ADE80" stroke-width="1.2"/>
-        <circle cx="0" cy="0" r="1.8" fill="#4ADE80"/>
-        <circle cx="-8" cy="4" r="1.8" fill="#4ADE80"/>
-        <circle cx="8" cy="4" r="1.8" fill="#4ADE80"/>
-        <circle cx="-16" cy="-6" r="1.8" fill="#4ADE80"/>
-        <circle cx="14" cy="14" r="1.8" fill="#4ADE80"/>
-        <circle cx="-6" cy="16" r="1.8" fill="#4ADE80"/>
-        <circle cx="6" cy="16" r="1.8" fill="#4ADE80"/>
-        <rect x="-22" y="-30" width="44" height="60" fill="none" stroke="rgba(74,222,128,0.35)" stroke-width="1" stroke-dasharray="2 2"/>
+      <!-- X-axis month labels -->
+      <g fill="rgba(255,255,255,0.35)" font-family="Inter, sans-serif" font-size="11" font-weight="500" letter-spacing="0.08em" text-anchor="middle">
+        <text x="520" y="778">JAN</text>
+        <text x="720" y="778">FEB</text>
+        <text x="920" y="778">MAR</text>
+        <text x="1120" y="778">APR</text>
+        <text x="1320" y="778">MAY</text>
+        <text x="1500" y="778">JUN</text>
       </g>
 
-      <!-- Court calibration markers — show keypoints detected at court corners -->
-      <g fill="#4ADE80">
-        <circle cx="300" cy="220" r="3" opacity="0.85"/>
-        <circle cx="1420" cy="220" r="3" opacity="0.85"/>
-        <circle cx="300" cy="680" r="3" opacity="0.85"/>
-        <circle cx="1420" cy="680" r="3" opacity="0.85"/>
-        <circle cx="860" cy="278" r="3" opacity="0.85"/>
-        <circle cx="860" cy="622" r="3" opacity="0.85"/>
-        <circle cx="580" cy="450" r="3" opacity="0.85"/>
-        <circle cx="1140" cy="450" r="3" opacity="0.85"/>
-      </g>
-      <g transform="translate(294, 196)">
-        <text fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em">COURT · 14 KP</text>
-      </g>
-
-      <!-- Shot classification label — next to the ball bbox -->
-      <g transform="translate(1180, 720)">
-        <rect width="180" height="26" rx="3" fill="rgba(74,222,128,0.1)" stroke="rgba(74,222,128,0.5)"/>
-        <text x="12" y="17" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.1em">CLASSIFIED: FOREHAND DRIVE</text>
-      </g>
-
-      <!-- Small telemetry strip, right side -->
-      <g transform="translate(1220, 820)" opacity="0.4">
-        <text fill="rgba(255,255,255,0.85)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.18em">PIPELINE · 4 LAYERS EXTRACTED</text>
+      <!-- Bottom callout: delta -->
+      <g transform="translate(1100, 828)">
+        <text fill="rgba(74,222,128,0.9)" font-family="Inter, sans-serif" font-size="13" font-weight="700" letter-spacing="0.16em">+22% 1ST SERVE · +1.6 UTR · 6 MONTHS</text>
       </g>
     </svg>
   </div>
@@ -460,7 +460,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
   <div class="page-hero-inner">
     <div class="page-hero-content">
       <div class="eyebrow light">How it works</div>
-      <h1>From match video to <span class="accent">actionable data</span> in under twenty minutes.</h1>
+      <h1>From match video to <span class="accent">actionable data</span> in a couple of hours.</h1>
       <p class="lede light">You press upload. Our computer vision pipeline tracks every shot, every bounce, every pose. Claude turns the numbers into coaching. You walk back onto court knowing the answer.</p>
     </div>
   </div>
@@ -494,7 +494,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
           <div class="step-mini-count">2</div>
         </div>
         <h3>AI processes</h3>
-        <p>Court calibration, ball tracking, player pose, shot classification. Sub-20-minute turnaround.</p>
+        <p>Court calibration, ball tracking, player pose, shot classification. Ready in 1-2 hours.</p>
       </div>
       <div class="step-mini">
         <div class="step-mini-circle">
@@ -555,7 +555,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             </div>
           </li>
         </ul>
-        <a href="/register" class="btn btn-gold">Analyse My First Match Free
+        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold">Analyse My First Match Free
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
       </div>
@@ -700,7 +700,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             </div>
           </li>
         </ul>
-        <a href="/register" class="btn btn-gold">Upload your first stroke
+        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold">Upload your first stroke
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
       </div>
@@ -843,7 +843,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             </div>
           </li>
         </ul>
-        <a href="/register" class="btn btn-gold">Try your AI coach free
+        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold">Try your AI coach free
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
       </div>
@@ -950,7 +950,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     <h2 style="margin-top:20px;">Upload your first match.<br><span class="accent">See everything we see.</span></h2>
     <p class="lede">No card. No commitment. Just one upload between you and a data-driven training plan.</p>
     <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
-      <a href="/register" class="btn btn-gold btn-lg">Analyse My First Match Free
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <a href="/pricing-public" class="btn btn-ghost">See pricing</a>
@@ -971,7 +971,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="/register">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">

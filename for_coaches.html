@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>For Coaches · Ten·Fifty5 — data-driven coaching, free at launch.</title>
-<meta name="description" content="You can't travel to every match. Our data tells you where the gap is. Free coach accounts, full dashboards on every linked player, AI Coach on their data.">
+<title>For Coaches · Ten·Fifty5 — first player free. Coach Pro from $50/mo.</title>
+<meta name="description" content="Coach with data. Your first linked player is free, forever. Scale to unlimited players on Coach Pro. Full dashboards, AI Coach and technique reports on every student.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,600&display=swap" rel="stylesheet">
@@ -349,7 +349,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
     </ul>
     <div class="nav-right">
       <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="/register?role=coach" class="btn btn-gold btn-sm">Coach with data · Free
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-sm">Coach with data · Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
@@ -373,119 +373,110 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
     <a href="https://www.ten-fifty5.com/portal">Sign In</a>
   </div>
   <div class="drawer-cta">
-    <a href="/register?role=coach" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Coach with data · Free</a>
+    <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Coach with data · Free</a>
   </div>
 </div>
 
-<!-- HERO — full-bleed multi-court roster visualization -->
+<!-- HERO — full-bleed coach-as-hub network diagram -->
 <section class="coach-hero">
   <div class="coach-hero-viz" aria-hidden="true">
     <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="c-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/></filter>
-        <filter id="c-glow-sm" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2.4"/></filter>
-        <radialGradient id="c-surface" cx="50%" cy="50%" r="55%">
-          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.12"/>
+        <filter id="ch-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
+        <filter id="ch-glow-lg" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="14"/></filter>
+        <radialGradient id="ch-surface" cx="65%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.16"/>
           <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
         </radialGradient>
       </defs>
-      <rect width="1600" height="900" fill="url(#c-surface)"/>
+      <rect width="1600" height="900" fill="url(#ch-surface)"/>
 
-      <!-- 4 mini-courts in a 2x2 grid — each a different player -->
-      <!-- COURT 1 (top-left quadrant of right side): Luca M. — serving strong -->
-      <g transform="translate(560, 120)">
-        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
-        <text x="20" y="22" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">LUCA M. · U16</text>
-        <text x="20" y="36" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">1ST SRV 71% · trending up</text>
-        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.22)" stroke-width="1" fill="none">
-          <rect x="0" y="0" width="360" height="180"/>
-          <line x1="0" y1="22" x2="360" y2="22"/>
-          <line x1="0" y1="158" x2="360" y2="158"/>
-          <line x1="90" y1="22" x2="90" y2="158"/>
-          <line x1="270" y1="22" x2="270" y2="158"/>
-          <line x1="90" y1="90" x2="270" y2="90"/>
-          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.4)" stroke-width="1.4"/>
-        </g>
-        <g transform="translate(30, 60)">
-          <circle cx="286" cy="70" r="10" fill="rgba(74,222,128,0.22)" filter="url(#c-glow)"/>
-          <circle cx="286" cy="70" r="4" fill="#4ADE80" filter="url(#c-glow-sm)"/>
-          <circle cx="294" cy="108" r="9" fill="rgba(74,222,128,0.2)" filter="url(#c-glow)"/>
-          <circle cx="294" cy="108" r="3.5" fill="#4ADE80" filter="url(#c-glow-sm)"/>
-          <circle cx="278" cy="130" r="7" fill="rgba(74,222,128,0.15)" filter="url(#c-glow)"/>
-          <circle cx="278" cy="130" r="3" fill="#4ADE80"/>
-        </g>
+      <!-- Concentric rings behind the hub — signal reach -->
+      <g fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1">
+        <circle cx="1090" cy="450" r="180"/>
+        <circle cx="1090" cy="450" r="280"/>
+        <circle cx="1090" cy="450" r="380"/>
       </g>
 
-      <!-- COURT 2 (top-right quadrant): Sofia K. — BH errors -->
-      <g transform="translate(1020, 120)">
-        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
-        <text x="20" y="22" fill="#fdba74" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">SOFIA K. · U18</text>
-        <text x="20" y="36" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">BH ERRORS UP · review needed</text>
-        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.22)" stroke-width="1" fill="none">
-          <rect x="0" y="0" width="360" height="180"/>
-          <line x1="0" y1="22" x2="360" y2="22"/>
-          <line x1="0" y1="158" x2="360" y2="158"/>
-          <line x1="90" y1="22" x2="90" y2="158"/>
-          <line x1="270" y1="22" x2="270" y2="158"/>
-          <line x1="90" y1="90" x2="270" y2="90"/>
-          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.4)" stroke-width="1.4"/>
-        </g>
-        <g transform="translate(30, 60)">
-          <circle cx="82" cy="50" r="9" fill="rgba(251,146,60,0.22)" filter="url(#c-glow)"/>
-          <circle cx="82" cy="50" r="3.5" fill="#fdba74"/>
-          <circle cx="110" cy="40" r="8" fill="rgba(251,146,60,0.18)" filter="url(#c-glow)"/>
-          <circle cx="110" cy="40" r="3" fill="#fdba74"/>
-          <circle cx="140" cy="32" r="7" fill="rgba(251,146,60,0.16)" filter="url(#c-glow)"/>
-          <circle cx="140" cy="32" r="3" fill="#fdba74"/>
-          <circle cx="60" cy="62" r="6" fill="rgba(251,146,60,0.14)" filter="url(#c-glow)"/>
-          <circle cx="60" cy="62" r="2.5" fill="#fdba74"/>
-        </g>
+      <!-- Connection lines from coach hub → 5 player nodes -->
+      <g stroke="rgba(74,222,128,0.35)" stroke-width="1.4" stroke-linecap="round" fill="none" stroke-dasharray="4 4">
+        <line x1="1090" y1="450" x2="770" y2="220"/>   <!-- NW player -->
+        <line x1="1090" y1="450" x2="770" y2="680"/>   <!-- SW player -->
+        <line x1="1090" y1="450" x2="1410" y2="220"/>  <!-- NE player -->
+        <line x1="1090" y1="450" x2="1410" y2="680"/>  <!-- SE player -->
+        <line x1="1090" y1="450" x2="1490" y2="450"/>  <!-- E player -->
       </g>
 
-      <!-- COURT 3 (bottom-left quadrant): James R. — improving -->
-      <g transform="translate(560, 440)">
-        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
-        <text x="20" y="22" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">JAMES R. · U14</text>
-        <text x="20" y="36" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">+4 KPIs UP · strong week</text>
-        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.22)" stroke-width="1" fill="none">
-          <rect x="0" y="0" width="360" height="180"/>
-          <line x1="0" y1="22" x2="360" y2="22"/>
-          <line x1="0" y1="158" x2="360" y2="158"/>
-          <line x1="90" y1="22" x2="90" y2="158"/>
-          <line x1="270" y1="22" x2="270" y2="158"/>
-          <line x1="90" y1="90" x2="270" y2="90"/>
-          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.4)" stroke-width="1.4"/>
-        </g>
-        <g transform="translate(30, 60)" fill="none" stroke-linecap="round">
-          <path d="M 30 150 Q 180 100 330 60" stroke="rgba(74,222,128,0.5)" stroke-width="1.4"/>
-          <path d="M 30 150 Q 180 140 330 110" stroke="rgba(74,222,128,0.4)" stroke-width="1.3"/>
-          <circle cx="330" cy="60" r="9" fill="rgba(74,222,128,0.2)" filter="url(#c-glow)"/>
-          <circle cx="330" cy="60" r="3.5" fill="#4ADE80"/>
-          <circle cx="330" cy="110" r="8" fill="rgba(74,222,128,0.18)" filter="url(#c-glow)"/>
-          <circle cx="330" cy="110" r="3" fill="#4ADE80"/>
-          <circle cx="30" cy="150" r="5" fill="#4ADE80"/>
-        </g>
+      <!-- Coach hub (center, large) -->
+      <g>
+        <circle cx="1090" cy="450" r="110" fill="rgba(74,222,128,0.2)" filter="url(#ch-glow-lg)"/>
+        <circle cx="1090" cy="450" r="66" fill="rgba(74,222,128,0.18)" stroke="#4ADE80" stroke-width="2"/>
+        <circle cx="1090" cy="450" r="54" fill="#0a1814"/>
+        <text x="1090" y="442" fill="rgba(134,232,164,0.7)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.22em" text-anchor="middle">COACH</text>
+        <text x="1090" y="470" fill="#fff" font-family="Inter, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.01em" text-anchor="middle">You</text>
       </g>
 
-      <!-- COURT 4 (bottom-right quadrant): Ana T. — idle -->
-      <g transform="translate(1020, 440)">
-        <rect x="0" y="0" width="420" height="260" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1" rx="4"/>
-        <text x="20" y="22" fill="rgba(255,255,255,0.45)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.12em">ANA T. · U16</text>
-        <text x="20" y="36" fill="rgba(255,255,255,0.35)" font-family="Inter, sans-serif" font-size="8.5" font-weight="500">NO NEW DATA · 1 week</text>
-        <g transform="translate(30, 60)" stroke="rgba(255,255,255,0.12)" stroke-width="1" fill="none">
-          <rect x="0" y="0" width="360" height="180"/>
-          <line x1="0" y1="22" x2="360" y2="22"/>
-          <line x1="0" y1="158" x2="360" y2="158"/>
-          <line x1="90" y1="22" x2="90" y2="158"/>
-          <line x1="270" y1="22" x2="270" y2="158"/>
-          <line x1="90" y1="90" x2="270" y2="90"/>
-          <line x1="180" y1="0" x2="180" y2="180" stroke="rgba(255,255,255,0.18)" stroke-width="1.4"/>
-        </g>
+      <!-- Player node: Luca M. (NW) — up trend -->
+      <g transform="translate(770, 220)">
+        <circle r="52" fill="rgba(255,255,255,0.04)" stroke="rgba(74,222,128,0.45)" stroke-width="1.4"/>
+        <circle r="44" fill="#0a1814"/>
+        <text y="-8" fill="rgba(134,232,164,0.85)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.14em" text-anchor="middle">LUCA M.</text>
+        <text y="8" fill="#fff" font-family="Inter, sans-serif" font-size="16" font-weight="800" text-anchor="middle">71%</text>
+        <text y="22" fill="rgba(134,232,164,0.85)" font-family="Inter, sans-serif" font-size="8.5" font-weight="700" letter-spacing="0.1em" text-anchor="middle">1ST SRV ↑</text>
+        <text x="0" y="-66" fill="rgba(255,255,255,0.4)" font-family="Inter, sans-serif" font-size="9" font-weight="500" letter-spacing="0.1em" text-anchor="middle">U16 · 2 days ago</text>
       </g>
 
-      <!-- Small header label above grid -->
-      <g transform="translate(560, 90)">
-        <text fill="rgba(255,255,255,0.45)" font-family="Inter, sans-serif" font-size="11" font-weight="700" letter-spacing="0.22em">COACH DASHBOARD · 4 LINKED PLAYERS</text>
+      <!-- Player node: Sofia K. (SW) — BH errors (amber) -->
+      <g transform="translate(770, 680)">
+        <circle r="52" fill="rgba(255,255,255,0.04)" stroke="rgba(251,146,60,0.5)" stroke-width="1.4"/>
+        <circle r="44" fill="#0a1814"/>
+        <text y="-8" fill="#fdba74" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.14em" text-anchor="middle">SOFIA K.</text>
+        <text y="8" fill="#fff" font-family="Inter, sans-serif" font-size="15" font-weight="800" text-anchor="middle">BH</text>
+        <text y="22" fill="#fdba74" font-family="Inter, sans-serif" font-size="8.5" font-weight="700" letter-spacing="0.1em" text-anchor="middle">ERRORS UP</text>
+        <text x="0" y="-66" fill="rgba(255,255,255,0.4)" font-family="Inter, sans-serif" font-size="9" font-weight="500" letter-spacing="0.1em" text-anchor="middle">U18 · 5 days ago</text>
+      </g>
+
+      <!-- Player node: James R. (NE) — strong week -->
+      <g transform="translate(1410, 220)">
+        <circle r="52" fill="rgba(255,255,255,0.04)" stroke="rgba(74,222,128,0.45)" stroke-width="1.4"/>
+        <circle r="44" fill="#0a1814"/>
+        <text y="-8" fill="rgba(134,232,164,0.85)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.14em" text-anchor="middle">JAMES R.</text>
+        <text y="8" fill="#fff" font-family="Inter, sans-serif" font-size="16" font-weight="800" text-anchor="middle">+4</text>
+        <text y="22" fill="rgba(134,232,164,0.85)" font-family="Inter, sans-serif" font-size="8.5" font-weight="700" letter-spacing="0.1em" text-anchor="middle">KPIs UP</text>
+        <text x="0" y="-66" fill="rgba(255,255,255,0.4)" font-family="Inter, sans-serif" font-size="9" font-weight="500" letter-spacing="0.1em" text-anchor="middle">U14 · today</text>
+      </g>
+
+      <!-- Player node: Ana T. (SE) — idle -->
+      <g transform="translate(1410, 680)" opacity="0.55">
+        <circle r="52" fill="rgba(255,255,255,0.03)" stroke="rgba(255,255,255,0.2)" stroke-width="1.2"/>
+        <circle r="44" fill="#0a1814"/>
+        <text y="-4" fill="rgba(255,255,255,0.6)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.14em" text-anchor="middle">ANA T.</text>
+        <text y="14" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="8.5" font-weight="600" letter-spacing="0.08em" text-anchor="middle">IDLE</text>
+        <text x="0" y="-66" fill="rgba(255,255,255,0.3)" font-family="Inter, sans-serif" font-size="9" font-weight="500" letter-spacing="0.1em" text-anchor="middle">U16 · 1 week ago</text>
+      </g>
+
+      <!-- Player node: Tom P. (E) — technique uploaded -->
+      <g transform="translate(1490, 450)">
+        <circle r="48" fill="rgba(255,255,255,0.04)" stroke="rgba(74,222,128,0.4)" stroke-width="1.3"/>
+        <circle r="40" fill="#0a1814"/>
+        <text y="-6" fill="rgba(134,232,164,0.85)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.14em" text-anchor="middle">TOM P.</text>
+        <text y="10" fill="#fff" font-family="Inter, sans-serif" font-size="14" font-weight="800" text-anchor="middle">87</text>
+        <text y="22" fill="rgba(134,232,164,0.85)" font-family="Inter, sans-serif" font-size="8" font-weight="700" letter-spacing="0.1em" text-anchor="middle">TECHNIQUE</text>
+        <text x="0" y="-62" fill="rgba(255,255,255,0.4)" font-family="Inter, sans-serif" font-size="9" font-weight="500" letter-spacing="0.1em" text-anchor="middle">ADULT · today</text>
+      </g>
+
+      <!-- Data packets along connection lines -->
+      <g fill="#86E8A4">
+        <circle cx="930" cy="335" r="3.5" opacity="0.8"/>
+        <circle cx="930" cy="565" r="3.5" opacity="0.8"/>
+        <circle cx="1250" cy="335" r="3.5" opacity="0.8"/>
+        <circle cx="1250" cy="565" r="3.5" opacity="0.8"/>
+        <circle cx="1290" cy="450" r="3.5" opacity="0.8"/>
+      </g>
+
+      <!-- Top-right summary stat -->
+      <g transform="translate(1540, 110)">
+        <text text-anchor="end" fill="rgba(255,255,255,0.4)" font-family="Inter, sans-serif" font-size="11" font-weight="700" letter-spacing="0.22em">YOUR ROSTER · 5 LINKED PLAYERS · 4 ACTIVE</text>
       </g>
     </svg>
   </div>
@@ -495,10 +486,10 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   <div class="coach-hero-inner">
     <div class="coach-hero-content">
       <div class="eyebrow light">For Coaches</div>
-      <h1>Coach with data.<br><span class="accent">Always free.</span></h1>
+      <h1>Coach with data.<br><span class="accent">Start with one player free.</span></h1>
       <p class="lede light">You've seen the matches you travelled to. The ones you didn't? Until now, you guessed. Our data makes the difference measurable — for every player on your roster.</p>
       <div class="coach-hero-ctas">
-        <a href="/register?role=coach" class="btn btn-gold btn-lg">Get your free coach account
+        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Start free · 1 player
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
         <a href="#how-it-works" class="btn btn-ghost">How it works</a>
@@ -583,8 +574,8 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   <div class="wrap">
     <div class="section-head">
       <div class="eyebrow light" style="justify-content:center;">Why it's free for coaches</div>
-      <h2 style="margin-top:14px;">No fee. No catch.<br>You're not the customer — you're the advantage.</h2>
-      <p class="lede light">At launch, every coach account is free. Your players cover the uploads. We get a better product because coaches are on it. Everyone wins.</p>
+      <h2 style="margin-top:14px;">First player free.<br>Unlimited players for $50/mo.</h2>
+      <p class="lede light">Try us with your first student at zero cost — forever free. When the second player invites you, Coach Pro unlocks unlimited linked players. Your students' credits always cover the uploads.</p>
     </div>
 
     <div class="free-explain-grid">
@@ -639,7 +630,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
       <div class="workflow-row">
         <div class="workflow-step-num">3</div>
         <div class="workflow-step">
-          <h4>You accept. Your free coach account is created.</h4>
+          <h4>You accept. Your coach account is created.</h4>
           <p>One click on the email link, and you're in. No credit card, no password gymnastics — the token does the auth.</p>
         </div>
       </div>
@@ -714,7 +705,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
       <div class="compare-row">
         <div class="feature">Pays for uploads</div>
         <div class="cell yes">Yes</div>
-        <div class="cell"><span class="x">Free at launch</span></div>
+        <div class="cell"><span class="x">Free · 1 player</span></div>
       </div>
     </div>
   </div>
@@ -723,11 +714,11 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 <!-- FINAL CTA -->
 <section class="final-cta">
   <div class="final-cta-inner">
-    <div class="eyebrow light">Free coach account · No card required</div>
+    <div class="eyebrow light">First player free · No card required</div>
     <h2 style="margin-top:20px;">Stop guessing.<br><span class="accent">Start coaching.</span></h2>
     <p class="lede">Your first player invites you and you're in. If you don't have a player ready, send this page to the parent — they'll know what to do next.</p>
     <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
-      <a href="/register?role=coach" class="btn btn-gold btn-lg">Get your free coach account
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Start free · 1 player
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <a href="mailto:info@ten-fifty5.com?subject=Coach%20onboarding%20question" class="btn btn-ghost">Talk to us first</a>
@@ -747,7 +738,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="/register">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">

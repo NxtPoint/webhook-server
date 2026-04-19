@@ -334,7 +334,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
     </ul>
     <div class="nav-right">
       <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="/register" class="btn btn-gold btn-sm">Analyse My First Match Free
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-sm">Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
@@ -358,69 +358,74 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
     <a href="https://www.ten-fifty5.com/portal">Sign In</a>
   </div>
   <div class="drawer-cta">
-    <a href="/register" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
+    <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
   </div>
 </div>
 
-<!-- HERO — full-bleed, premium single-court visualization -->
+<!-- HERO — full-bleed, typography-forward price ladder -->
 <section class="page-hero">
   <div class="page-hero-viz" aria-hidden="true">
     <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="p-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
-        <filter id="p-glow-sm" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3"/></filter>
-        <radialGradient id="p-surface" cx="50%" cy="50%" r="55%">
+        <filter id="pp-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="10"/></filter>
+        <radialGradient id="pp-surface" cx="70%" cy="50%" r="60%">
           <stop offset="0%" stop-color="#1a5c2e" stop-opacity="0.14"/>
           <stop offset="100%" stop-color="#1a5c2e" stop-opacity="0"/>
         </radialGradient>
       </defs>
-      <rect width="1600" height="900" fill="url(#p-surface)"/>
+      <rect width="1600" height="900" fill="url(#pp-surface)"/>
 
-      <!-- Single large court, right-centered -->
-      <g stroke="rgba(255,255,255,0.16)" stroke-width="1.4" fill="none">
-        <rect x="320" y="220" width="1120" height="460"/>
-        <line x1="320" y1="278" x2="1440" y2="278"/>
-        <line x1="320" y1="622" x2="1440" y2="622"/>
-        <line x1="600" y1="278" x2="600" y2="622"/>
-        <line x1="1160" y1="278" x2="1160" y2="622"/>
-        <line x1="600" y1="450" x2="1160" y2="450"/>
-      </g>
-      <line x1="880" y1="200" x2="880" y2="700" stroke="rgba(255,255,255,0.42)" stroke-width="2"/>
-
-      <!-- Just 4 serve trails — clean and premium, not busy -->
-      <g fill="none" stroke-linecap="round">
-        <path d="M 340 452 Q 680 406 1140 500" stroke="rgba(255,255,255,0.45)" stroke-width="1.7"/>
-        <path d="M 340 452 Q 680 438 1140 418" stroke="rgba(255,255,255,0.4)" stroke-width="1.6"/>
-        <path d="M 340 448 Q 680 504 1130 595" stroke="rgba(255,255,255,0.32)" stroke-width="1.5"/>
-        <path d="M 340 448 Q 680 386 1130 308" stroke="rgba(255,255,255,0.32)" stroke-width="1.5"/>
+      <!-- Diagonal accent lines — subtle geometric wallpaper, not court-y -->
+      <g stroke="rgba(255,255,255,0.04)" stroke-width="1">
+        <line x1="780" y1="0" x2="1780" y2="1000"/>
+        <line x1="680" y1="0" x2="1680" y2="1000"/>
+        <line x1="880" y1="0" x2="1880" y2="1000"/>
+        <line x1="980" y1="0" x2="1980" y2="1000"/>
       </g>
 
-      <!-- Bright endpoint glows — concentrated in the "premium" zones -->
-      <g>
-        <circle cx="1140" cy="500" r="18" fill="rgba(74,222,128,0.2)" filter="url(#p-glow)"/>
-        <circle cx="1140" cy="500" r="7" fill="rgba(74,222,128,0.95)" filter="url(#p-glow-sm)"/>
-        <circle cx="1140" cy="500" r="3" fill="#B9F2C9"/>
-        <circle cx="1140" cy="418" r="14" fill="rgba(74,222,128,0.15)" filter="url(#p-glow)"/>
-        <circle cx="1140" cy="418" r="5" fill="rgba(74,222,128,0.82)" filter="url(#p-glow-sm)"/>
-        <circle cx="1140" cy="418" r="2.2" fill="#86E8A4"/>
-        <circle cx="1130" cy="595" r="12" fill="rgba(74,222,128,0.12)" filter="url(#p-glow)"/>
-        <circle cx="1130" cy="595" r="4.4" fill="rgba(74,222,128,0.7)" filter="url(#p-glow-sm)"/>
-        <circle cx="1130" cy="595" r="2" fill="#86E8A4"/>
-        <circle cx="1130" cy="308" r="12" fill="rgba(74,222,128,0.12)" filter="url(#p-glow)"/>
-        <circle cx="1130" cy="308" r="4.4" fill="rgba(74,222,128,0.7)" filter="url(#p-glow-sm)"/>
-        <circle cx="1130" cy="308" r="2" fill="#86E8A4"/>
+      <!-- PRICE LADDER — 3 tier columns, featured (Standard) brightest and largest -->
+
+      <!-- Column 1 : Starter -->
+      <g transform="translate(780, 530)" opacity="0.55">
+        <text fill="rgba(255,255,255,0.5)" font-family="Inter, sans-serif" font-size="13" font-weight="700" letter-spacing="0.22em" text-anchor="middle">STARTER</text>
+        <text x="0" y="72" fill="#fff" font-family="Inter, sans-serif" font-size="92" font-weight="800" letter-spacing="-0.05em" text-anchor="middle">
+          <tspan fill="rgba(255,255,255,0.55)" font-size="42" font-weight="700" dy="-38">$</tspan>25
+        </text>
+        <text x="0" y="112" fill="rgba(255,255,255,0.5)" font-family="Inter, sans-serif" font-size="13" font-weight="500" letter-spacing="0.12em" text-anchor="middle">/ MONTH · 3 MATCHES</text>
       </g>
 
-      <!-- Floating price chips near the court (non-decorative UI cue for pricing context) -->
-      <g transform="translate(1260, 238)">
-        <rect width="108" height="58" rx="6" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)"/>
-        <text x="14" y="22" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="9" font-weight="600" letter-spacing="0.14em">STANDARD</text>
-        <text x="14" y="46" fill="#fff" font-family="Inter, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.02em">$40<tspan fill="rgba(255,255,255,0.6)" font-size="11" font-weight="500">/mo</tspan></text>
+      <!-- Column 2 : Standard (featured, biggest & brightest) -->
+      <g transform="translate(1060, 470)">
+        <!-- glow halo behind -->
+        <circle cx="0" cy="60" r="180" fill="rgba(74,222,128,0.12)" filter="url(#pp-glow)"/>
+        <text fill="#86E8A4" font-family="Inter, sans-serif" font-size="14" font-weight="700" letter-spacing="0.22em" text-anchor="middle">STANDARD · MOST POPULAR</text>
+        <text x="0" y="128" fill="#fff" font-family="Inter, sans-serif" font-size="168" font-weight="800" letter-spacing="-0.06em" text-anchor="middle">
+          <tspan fill="rgba(255,255,255,0.75)" font-size="66" font-weight="700" dy="-68">$</tspan>40
+        </text>
+        <text x="0" y="180" fill="rgba(255,255,255,0.72)" font-family="Inter, sans-serif" font-size="15" font-weight="600" letter-spacing="0.12em" text-anchor="middle">/ MONTH · 5 MATCHES</text>
       </g>
-      <g transform="translate(1260, 636)">
-        <rect width="108" height="58" rx="6" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.2)"/>
-        <text x="14" y="22" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="9" font-weight="600" letter-spacing="0.14em">PAYG · 1</text>
-        <text x="14" y="46" fill="#fff" font-family="Inter, sans-serif" font-size="20" font-weight="800" letter-spacing="-0.02em">$25</text>
+
+      <!-- Column 3 : Advanced -->
+      <g transform="translate(1340, 530)" opacity="0.55">
+        <text fill="rgba(255,255,255,0.5)" font-family="Inter, sans-serif" font-size="13" font-weight="700" letter-spacing="0.22em" text-anchor="middle">ADVANCED</text>
+        <text x="0" y="72" fill="#fff" font-family="Inter, sans-serif" font-size="92" font-weight="800" letter-spacing="-0.05em" text-anchor="middle">
+          <tspan fill="rgba(255,255,255,0.55)" font-size="42" font-weight="700" dy="-38">$</tspan>70
+        </text>
+        <text x="0" y="112" fill="rgba(255,255,255,0.5)" font-family="Inter, sans-serif" font-size="13" font-weight="500" letter-spacing="0.12em" text-anchor="middle">/ MONTH · 10 MATCHES</text>
+      </g>
+
+      <!-- Connecting baseline beneath all three -->
+      <line x1="640" y1="680" x2="1480" y2="680" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+
+      <!-- Bottom strip — PAYG tease -->
+      <g transform="translate(1060, 768)">
+        <text fill="rgba(255,255,255,0.35)" font-family="Inter, sans-serif" font-size="12" font-weight="500" letter-spacing="0.18em" text-anchor="middle">OR PAY AS YOU GO · $25 / $50 / $100 · CREDITS NEVER EXPIRE</text>
+      </g>
+
+      <!-- First-match-free ribbon at top right -->
+      <g transform="translate(1330, 180)">
+        <rect x="-108" y="-22" width="216" height="44" rx="22" fill="rgba(74,222,128,0.14)" stroke="rgba(74,222,128,0.5)"/>
+        <text x="0" y="5" fill="#86E8A4" font-family="Inter, sans-serif" font-size="13" font-weight="700" letter-spacing="0.18em" text-anchor="middle">FIRST MATCH FREE</text>
       </g>
     </svg>
   </div>
@@ -445,7 +450,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
       <p>Create an account and get <strong style="color:var(--text);">one full Match Analysis</strong> plus <strong style="color:var(--text);">five Technique Analyses</strong> — free, forever, no credit card. Keep permanent access to whatever you generate, even if you never pay a penny.</p>
     </div>
     <div class="trial-callout-ctas">
-      <a href="/register" class="btn btn-gold btn-lg">Start Free
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Start Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
     </div>
@@ -640,8 +645,8 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
     <div class="coach-banner">
       <div class="coach-banner-content">
         <div class="eyebrow light">For Coaches</div>
-        <h3 style="margin-top:14px;">Coaches join free. <span class="accent">Always.</span></h3>
-        <p>If you're a coach, there's no subscription to pay. Your players invite you, and you get full view access to their dashboards, technique reports and AI Coach. Player credits cover the uploads.</p>
+        <h3 style="margin-top:14px;">First player free. <span class="accent">Always.</span></h3>
+        <p>Start coaching with your first linked player at zero cost. Beyond that, <strong style="color:var(--white);">Coach Pro is $50/mo</strong> for unlimited linked players — full dashboards, technique reports and AI Coach on every student.</p>
       </div>
       <div class="coach-banner-cta">
         <a href="/for-coaches" class="btn btn-gold">See the coach experience
@@ -696,7 +701,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
     <h2 style="margin-top:20px;">Upload one match.<br><span class="accent">Decide after.</span></h2>
     <p class="lede">The best way to choose a plan is to try the thing first. Your first match is on us — keep it forever.</p>
     <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
-      <a href="/register" class="btn btn-gold btn-lg">Analyse My First Match Free
+      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <a href="/how-it-works" class="btn btn-ghost">How it works</a>
@@ -716,7 +721,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="/register">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">
