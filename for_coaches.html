@@ -114,7 +114,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
   position: relative;
   background: #0a1814;
   color: var(--white);
-  padding: 160px 28px 110px;
+  padding: 80px 28px 110px;
   min-height: 82vh;
   overflow: hidden;
   display: flex; align-items: center;
@@ -149,7 +149,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 .coach-hero .lede.light { margin-bottom: 34px; }
 .coach-hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 1020px) {
-  .coach-hero { padding: 130px 24px 80px; min-height: auto; }
+  .coach-hero { padding: 80px 24px 80px; min-height: auto; }
   .coach-hero-fade { width: 100%; background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.6) 55%, rgba(5,12,9,0.82) 100%); }
 }
 
@@ -339,44 +339,6 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 </head>
 <body>
 
-<nav class="nav" id="nav">
-  <div class="nav-inner">
-    <a href="/home" class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</a>
-    <ul class="nav-links">
-      <li><a href="/how-it-works">How It Works</a></li>
-      <li><a href="/pricing-public">Pricing</a></li>
-      <li><a href="/for-coaches" class="active">For Coaches</a></li>
-    </ul>
-    <div class="nav-right">
-      <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-sm">Coach with data · Free
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
-      </a>
-      <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
-        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-    </div>
-  </div>
-</nav>
-
-<div class="drawer" id="drawer">
-  <div class="drawer-head">
-    <span class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</span>
-    <button class="drawer-close" onclick="document.getElementById('drawer').classList.remove('open')" aria-label="Close menu">
-      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-    </button>
-  </div>
-  <div class="drawer-nav">
-    <a href="/how-it-works">How It Works</a>
-    <a href="/pricing-public">Pricing</a>
-    <a href="/for-coaches">For Coaches</a>
-    <a href="https://www.ten-fifty5.com/portal">Sign In</a>
-  </div>
-  <div class="drawer-cta">
-    <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Coach with data · Free</a>
-  </div>
-</div>
-
 <!-- HERO — full-bleed coach-as-hub network diagram -->
 <section class="coach-hero">
   <div class="coach-hero-viz" aria-hidden="true">
@@ -489,7 +451,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
       <h1>Coach with data.<br><span class="accent">Start with one player free.</span></h1>
       <p class="lede light">You've seen the matches you travelled to. The ones you didn't? Until now, you guessed. Our data makes the difference measurable — for every player on your roster.</p>
       <div class="coach-hero-ctas">
-        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Start free · 1 player
+        <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold btn-lg">Start free · 1 player
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
         <a href="#how-it-works" class="btn btn-ghost">How it works</a>
@@ -718,7 +680,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
     <h2 style="margin-top:20px;">Stop guessing.<br><span class="accent">Start coaching.</span></h2>
     <p class="lede">Your first player invites you and you're in. If you don't have a player ready, send this page to the parent — they'll know what to do next.</p>
     <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Start free · 1 player
+      <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold btn-lg">Start free · 1 player
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <a href="mailto:info@ten-fifty5.com?subject=Coach%20onboarding%20question" class="btn btn-ghost">Talk to us first</a>
@@ -738,7 +700,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal" target="_top">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">
@@ -765,9 +727,11 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 <script>
 (function() {
   var nav = document.getElementById('nav');
-  var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  if (nav) {
+    var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  }
 
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function(entries) {

@@ -123,7 +123,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
   position: relative;
   background: #0a1814;
   color: var(--white);
-  padding: 160px 28px 110px;
+  padding: 80px 28px 110px;
   min-height: 78vh;
   overflow: hidden;
   display: flex; align-items: center;
@@ -156,7 +156,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 .page-hero h1 { color: var(--white); margin: 18px 0 22px; }
 .page-hero h1 .accent { color: rgba(255,255,255,0.6); font-style: italic; font-weight: 300; }
 @media (max-width: 1020px) {
-  .page-hero { padding: 130px 24px 80px; min-height: auto; }
+  .page-hero { padding: 80px 24px 80px; min-height: auto; }
   .page-hero-fade { width: 100%; background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.6) 55%, rgba(5,12,9,0.82) 100%); }
 }
 
@@ -168,7 +168,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 .section-head { max-width: 760px; margin: 0 auto 64px; text-align: center; }
 .section-head h2 { margin-bottom: 18px; }
 .section-head .lede { margin-left: auto; margin-right: auto; }
-@media (max-width: 760px) { .section { padding: 72px 0; } .section-head { margin-bottom: 44px; } .page-hero { padding: 140px 24px 80px; } }
+@media (max-width: 760px) { .section { padding: 72px 0; } .section-head { margin-bottom: 44px; } .page-hero { padding: 80px 24px 80px; } }
 
 /* STEPS — shared with home, simplified */
 .steps-strip {
@@ -299,44 +299,6 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 </style>
 </head>
 <body>
-
-<nav class="nav" id="nav">
-  <div class="nav-inner">
-    <a href="/home" class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</a>
-    <ul class="nav-links">
-      <li><a href="/how-it-works" class="active">How It Works</a></li>
-      <li><a href="/pricing-public">Pricing</a></li>
-      <li><a href="/for-coaches">For Coaches</a></li>
-    </ul>
-    <div class="nav-right">
-      <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-sm">Analyse My First Match Free
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
-      </a>
-      <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
-        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-    </div>
-  </div>
-</nav>
-
-<div class="drawer" id="drawer">
-  <div class="drawer-head">
-    <span class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</span>
-    <button class="drawer-close" onclick="document.getElementById('drawer').classList.remove('open')" aria-label="Close menu">
-      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-    </button>
-  </div>
-  <div class="drawer-nav">
-    <a href="/how-it-works">How It Works</a>
-    <a href="/pricing-public">Pricing</a>
-    <a href="/for-coaches">For Coaches</a>
-    <a href="https://www.ten-fifty5.com/portal">Sign In</a>
-  </div>
-  <div class="drawer-cta">
-    <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
-  </div>
-</div>
 
 <!-- HERO — full-bleed longitudinal progression chart ("The Long Game") -->
 <section class="page-hero">
@@ -555,7 +517,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             </div>
           </li>
         </ul>
-        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold">Analyse My First Match Free
+        <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold">Analyse My First Match Free
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
       </div>
@@ -700,7 +662,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             </div>
           </li>
         </ul>
-        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold">Upload your first stroke
+        <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold">Upload your first stroke
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
       </div>
@@ -843,7 +805,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
             </div>
           </li>
         </ul>
-        <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold">Try your AI coach free
+        <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold">Try your AI coach free
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
       </div>
@@ -950,7 +912,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     <h2 style="margin-top:20px;">Upload your first match.<br><span class="accent">See everything we see.</span></h2>
     <p class="lede">No card. No commitment. Just one upload between you and a data-driven training plan.</p>
     <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Analyse My First Match Free
+      <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold btn-lg">Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <a href="/pricing-public" class="btn btn-ghost">See pricing</a>
@@ -971,7 +933,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal" target="_top">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">
@@ -998,9 +960,11 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 <script>
 (function() {
   var nav = document.getElementById('nav');
-  var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  if (nav) {
+    var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  }
 
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function(entries) {

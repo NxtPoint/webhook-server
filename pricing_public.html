@@ -111,7 +111,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .drawer-cta { margin-top: auto; padding-top: 32px; }
 
 /* HERO */
-.page-hero { position: relative; background: #0a1814; color: var(--white); padding: 160px 28px 110px; min-height: 72vh; overflow: hidden; display: flex; align-items: center; }
+.page-hero { position: relative; background: #0a1814; color: var(--white); padding: 80px 28px 110px; min-height: 72vh; overflow: hidden; display: flex; align-items: center; }
 .page-hero::before { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2; background: radial-gradient(1400px 800px at 78% 50%, rgba(26,92,46,0.28), transparent 65%), radial-gradient(900px 600px at 12% 80%, rgba(5,12,9,0.9), transparent 60%), radial-gradient(1100px 500px at 6% 10%, rgba(5,12,9,0.88), transparent 60%); }
 .page-hero::after { content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 56px 56px; mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%); -webkit-mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%); }
 .page-hero-viz { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
@@ -122,7 +122,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .page-hero h1 { color: var(--white); margin: 18px 0 22px; }
 .page-hero h1 .accent { color: rgba(255,255,255,0.6); font-style: italic; font-weight: 300; }
 @media (max-width: 1020px) {
-  .page-hero { padding: 130px 24px 80px; min-height: auto; }
+  .page-hero { padding: 80px 24px 80px; min-height: auto; }
   .page-hero-fade { width: 100%; background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.6) 55%, rgba(5,12,9,0.82) 100%); }
 }
 
@@ -133,7 +133,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .section-head { max-width: 760px; margin: 0 auto 56px; text-align: center; }
 .section-head h2 { margin-bottom: 18px; }
 .section-head .lede { margin-left: auto; margin-right: auto; }
-@media (max-width: 760px) { .section { padding: 64px 0; } .section-head { margin-bottom: 40px; } .page-hero { padding: 140px 24px 80px; } }
+@media (max-width: 760px) { .section { padding: 64px 0; } .section-head { margin-bottom: 40px; } .page-hero { padding: 80px 24px 80px; } }
 
 /* FREE TRIAL CALLOUT */
 .trial-callout {
@@ -324,44 +324,6 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 </head>
 <body>
 
-<nav class="nav" id="nav">
-  <div class="nav-inner">
-    <a href="/home" class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</a>
-    <ul class="nav-links">
-      <li><a href="/how-it-works">How It Works</a></li>
-      <li><a href="/pricing-public" class="active">Pricing</a></li>
-      <li><a href="/for-coaches">For Coaches</a></li>
-    </ul>
-    <div class="nav-right">
-      <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-sm">Analyse My First Match Free
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
-      </a>
-      <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
-        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-    </div>
-  </div>
-</nav>
-
-<div class="drawer" id="drawer">
-  <div class="drawer-head">
-    <span class="nav-brand">TEN<span class="nav-brand-dot">·</span>FIFTY5</span>
-    <button class="drawer-close" onclick="document.getElementById('drawer').classList.remove('open')" aria-label="Close menu">
-      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-    </button>
-  </div>
-  <div class="drawer-nav">
-    <a href="/how-it-works">How It Works</a>
-    <a href="/pricing-public">Pricing</a>
-    <a href="/for-coaches">For Coaches</a>
-    <a href="https://www.ten-fifty5.com/portal">Sign In</a>
-  </div>
-  <div class="drawer-cta">
-    <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg" style="width:100%;justify-content:center;">Analyse My First Match Free</a>
-  </div>
-</div>
-
 <!-- HERO — full-bleed, typography-forward price ladder -->
 <section class="page-hero">
   <div class="page-hero-viz" aria-hidden="true">
@@ -450,7 +412,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
       <p>Create an account and get <strong style="color:var(--text);">one full Match Analysis</strong> plus <strong style="color:var(--text);">five Technique Analyses</strong> — free, forever, no credit card. Keep permanent access to whatever you generate, even if you never pay a penny.</p>
     </div>
     <div class="trial-callout-ctas">
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Start Free
+      <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold btn-lg">Start Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
     </div>
@@ -482,7 +444,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Full 18-KPI performance scorecard</li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Trimmed match footage</li>
         </ul>
-        <a href="https://www.ten-fifty5.com/plans?planSlug=9b8b3bd1-430b-45d9-8d1e-bdd75ffed130" class="btn btn-ghost-dark">Choose Starter</a>
+        <a href="https://www.ten-fifty5.com/plans?planSlug=9b8b3bd1-430b-45d9-8d1e-bdd75ffed130" target="_top" class="btn btn-ghost-dark">Choose Starter</a>
       </div>
 
       <!-- STANDARD (featured) -->
@@ -504,7 +466,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Full 18-KPI performance scorecard</li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Priority processing</li>
         </ul>
-        <a href="https://www.ten-fifty5.com/plans?planSlug=64f83c88-6720-4ab2-a1c4-858f49eda7a7" class="btn btn-gold">Choose Standard</a>
+        <a href="https://www.ten-fifty5.com/plans?planSlug=64f83c88-6720-4ab2-a1c4-858f49eda7a7" target="_top" class="btn btn-gold">Choose Standard</a>
       </div>
 
       <!-- ADVANCED -->
@@ -522,7 +484,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Full 18-KPI performance scorecard</li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Priority processing</li>
         </ul>
-        <a href="https://www.ten-fifty5.com/plans?planSlug=b405caec-9e29-45c9-a2af-d5d70c152855" class="btn btn-ghost-dark">Choose Advanced</a>
+        <a href="https://www.ten-fifty5.com/plans?planSlug=b405caec-9e29-45c9-a2af-d5d70c152855" target="_top" class="btn btn-ghost-dark">Choose Advanced</a>
       </div>
     </div>
   </div>
@@ -550,21 +512,21 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
           <div class="payg-card-name">1 Match Credit</div>
           <div class="payg-price"><span class="currency">$</span>25</div>
           <div class="payg-per">1 match · $25 per match</div>
-          <a href="https://www.ten-fifty5.com/plans?planSlug=33d94f21-e1b3-467c-b355-8b6aa225b815" class="btn btn-ghost-dark btn-sm">Buy 1 Credit</a>
+          <a href="https://www.ten-fifty5.com/plans?planSlug=33d94f21-e1b3-467c-b355-8b6aa225b815" target="_top" class="btn btn-ghost-dark btn-sm">Buy 1 Credit</a>
         </div>
         <div class="payg-card">
           <div class="payg-card-label">Small pack</div>
           <div class="payg-card-name">3 Match Credits</div>
           <div class="payg-price"><span class="currency">$</span>50</div>
           <div class="payg-per">3 matches · $16.67 per match</div>
-          <a href="https://www.ten-fifty5.com/plans?planSlug=3f4b2758-d92b-42fc-9df4-b73d42b51fc5" class="btn btn-ghost-dark btn-sm">Buy 3 Credits</a>
+          <a href="https://www.ten-fifty5.com/plans?planSlug=3f4b2758-d92b-42fc-9df4-b73d42b51fc5" target="_top" class="btn btn-ghost-dark btn-sm">Buy 3 Credits</a>
         </div>
         <div class="payg-card">
           <div class="payg-card-label">Bulk · best value</div>
           <div class="payg-card-name">5 Match Credits</div>
           <div class="payg-price"><span class="currency">$</span>100</div>
           <div class="payg-per">5 matches · $20 per match</div>
-          <a href="https://www.ten-fifty5.com/plans?planSlug=e38df7f5-1681-4ee9-beee-7ebd6bcf5c7e" class="btn btn-gold btn-sm">Buy 5 Credits</a>
+          <a href="https://www.ten-fifty5.com/plans?planSlug=e38df7f5-1681-4ee9-beee-7ebd6bcf5c7e" target="_top" class="btn btn-gold btn-sm">Buy 5 Credits</a>
         </div>
       </div>
     </div>
@@ -701,7 +663,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
     <h2 style="margin-top:20px;">Upload one match.<br><span class="accent">Decide after.</span></h2>
     <p class="lede">The best way to choose a plan is to try the thing first. Your first match is on us — keep it forever.</p>
     <div style="margin-top:40px; display:flex; gap:14px; justify-content:center; flex-wrap:wrap;">
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-gold btn-lg">Analyse My First Match Free
+      <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-gold btn-lg">Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
       <a href="/how-it-works" class="btn btn-ghost">How it works</a>
@@ -721,7 +683,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal" target="_top">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">
@@ -748,9 +710,11 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 <script>
 (function() {
   var nav = document.getElementById('nav');
-  var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  if (nav) {
+    var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  }
 
   document.querySelectorAll('.faq-item').forEach(function(item) {
     item.querySelector('.faq-q').addEventListener('click', function() {

@@ -115,7 +115,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
   position: relative;
   background: #0a1814;
   color: var(--white);
-  padding: 150px 28px 130px;
+  padding: 80px 28px 130px;
   min-height: 94vh;
   overflow: hidden;
   display: flex;
@@ -163,7 +163,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .hero-content { max-width: 640px; }
 
 @media (max-width: 1020px) {
-  .hero { padding: 130px 24px 90px; min-height: auto; }
+  .hero { padding: 80px 24px 90px; min-height: auto; }
   .hero-fade {
     width: 100%;
     background: linear-gradient(180deg, rgba(5,12,9,0.9) 0%, rgba(5,12,9,0.55) 55%, rgba(5,12,9,0.82) 100%);
@@ -499,49 +499,10 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .fade-in { opacity: 0; transform: translateY(16px); transition: opacity 0.7s var(--ease), transform 0.7s var(--ease); }
 .fade-in.visible { opacity: 1; transform: translateY(0); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
-@media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 12px 18px; } .hero { padding: 120px 18px 70px; } .hero-ctas .btn { width: 100%; } }
+@media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 12px 18px; } .hero { padding: 80px 18px 70px; } .hero-ctas .btn { width: 100%; } }
 </style>
 </head>
 <body>
-
-<nav class="nav" id="nav">
-  <div class="nav-inner">
-    <a href="/home" class="nav-brand">TEN-FIFTY5</a>
-    <ul class="nav-links">
-      <li><a href="/how-it-works">How It Works</a></li>
-      <li><a href="/pricing-public">Pricing</a></li>
-      <li><a href="/for-coaches">For Coaches</a></li>
-    </ul>
-    <div class="nav-right">
-      <a href="https://www.ten-fifty5.com/portal" class="nav-signin">Sign In</a>
-      <a href="https://www.ten-fifty5.com/portal" class="nav-cta">
-        Analyse My First Match Free
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
-      </a>
-      <button class="nav-burger" onclick="document.getElementById('drawer').classList.add('open')" aria-label="Open menu">
-        <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-      </button>
-    </div>
-  </div>
-</nav>
-
-<div class="drawer" id="drawer">
-  <div class="drawer-head">
-    <span class="nav-brand">TEN-FIFTY5</span>
-    <button class="drawer-close" onclick="document.getElementById('drawer').classList.remove('open')" aria-label="Close menu">
-      <svg viewBox="0 0 24 24"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-    </button>
-  </div>
-  <div class="drawer-nav">
-    <a href="/how-it-works">How It Works</a>
-    <a href="/pricing-public">Pricing</a>
-    <a href="/for-coaches">For Coaches</a>
-    <a href="https://www.ten-fifty5.com/portal">Sign In</a>
-  </div>
-  <div class="drawer-cta">
-    <a href="https://www.ten-fifty5.com/portal" class="btn btn-primary btn-lg" style="width:100%;">Analyse My First Match Free</a>
-  </div>
-</div>
 
 <!-- HERO — full-bleed Hawkeye-style court visualization as background -->
 <section class="hero">
@@ -663,7 +624,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
         Upload one match. Get point-by-point breakdowns, AI coaching and biomechanical stroke analysis that paid coaches build by hand. Your first match is on us.
       </p>
       <div class="hero-ctas">
-        <a href="https://www.ten-fifty5.com/portal" class="btn btn-primary btn-lg">
+        <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-primary btn-lg">
           Analyse My First Match Free
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
         </a>
@@ -1475,7 +1436,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
     <h2 style="margin-top:16px;">Bring the data.<br>We'll find the edge.</h2>
     <p class="lede">One upload and you'll never play a match without the signal again.</p>
     <div style="margin-top:32px; display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">
-      <a href="https://www.ten-fifty5.com/portal" class="btn btn-primary btn-lg" style="background:var(--white); color:var(--green);">
+      <a href="https://www.ten-fifty5.com/portal" target="_top" class="btn btn-primary btn-lg" style="background:var(--white); color:var(--green);">
         Analyse My First Match Free
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
       </a>
@@ -1496,7 +1457,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
         <li><a href="/how-it-works">How It Works</a></li>
         <li><a href="/pricing-public">Pricing</a></li>
         <li><a href="/for-coaches">For Coaches</a></li>
-        <li><a href="https://www.ten-fifty5.com/portal">Start Free</a></li>
+        <li><a href="https://www.ten-fifty5.com/portal" target="_top">Start Free</a></li>
       </ul>
     </div>
     <div class="footer-col">
@@ -1524,9 +1485,11 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 (function() {
   // Scroll nav
   var nav = document.getElementById('nav');
-  var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  if (nav) {
+    var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  }
 
   // FAQ accordion
   document.querySelectorAll('.faq-item').forEach(function(item) {
