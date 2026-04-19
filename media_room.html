@@ -568,57 +568,56 @@ function renderStep1(el) {
   const srvOk  = devAccess;
   const rallyOk = devAccess;
   const techniqueOk = true;
-  const srvCls  = srvOk  ? '' : ' disabled';
-  const rallyCls = rallyOk ? '' : ' disabled';
-  const techniqueCls = techniqueOk ? '' : ' disabled';
-  const srvBadge  = srvOk  ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
-  const rallyBadge = rallyOk ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
-  const techniqueBadge = techniqueOk ? '' : '<div class="coming-soon-badge">Coming Soon</div>';
-  const srvClick  = srvOk  ? ' onclick="selectGameType(\'serve\', this)"' : '';
-  const rallyClick = rallyOk ? ' onclick="selectGameType(\'rally\', this)"' : '';
-  const techniqueClick = techniqueOk ? ' onclick="selectGameType(\'technique\', this)"' : '';
+
+  // All game-type cards in one list. `available` controls whether the card
+  // is clickable/rendered above the Continue button or demoted to the
+  // "Coming soon" section below it.
+  const CARDS = [
+    { type: 'singles',    title: 'Singles',           sub: 'Full match analysis', icon: '&#127934;', available: true,        selected: true },
+    { type: 'singles_t5', title: 'Singles (T5)',      sub: 'ML match analysis',   icon: '&#129309;', available: singlesT5Ok },
+    { type: 'serve',      title: 'Serve Practice',    sub: 'Serve metrics',       icon: '&#9889;',   available: srvOk },
+    { type: 'rally',      title: 'Rally Practice',    sub: 'Rally analysis',      icon: '&#127936;', available: rallyOk },
+    { type: 'technique',  title: 'Technique Session', sub: 'Stroke analysis',     icon: '&#127919;', available: techniqueOk },
+    { type: 'doubles',    title: 'Doubles Training',  sub: 'Team dynamics',       icon: '&#129309;', available: false },
+  ];
+
+  const cardHtml = (c) => {
+    if (c.available) {
+      return `
+        <div class="game-card${c.selected ? ' selected' : ''}" onclick="selectGameType('${c.type}', this)" data-type="${c.type}">
+          <div class="game-card-icon">${c.icon}</div>
+          <div class="game-card-title">${c.title}</div>
+          <div class="game-card-sub">${c.sub}</div>
+        </div>`;
+    }
+    return `
+      <div class="game-card disabled" data-type="${c.type}">
+        <div class="coming-soon-badge">Coming Soon</div>
+        <div class="game-card-icon">${c.icon}</div>
+        <div class="game-card-title">${c.title}</div>
+        <div class="game-card-sub">${c.sub}</div>
+      </div>`;
+  };
+
+  const available = CARDS.filter(c => c.available);
+  const comingSoon = CARDS.filter(c => !c.available);
+
+  const comingSoonHtml = comingSoon.length
+    ? `
+      <div class="section-title" style="margin-top:24px;opacity:0.7;">Coming Soon</div>
+      <div class="card-grid">
+        ${comingSoon.map(cardHtml).join('')}
+      </div>`
+    : '';
 
   el.innerHTML = `
     <div class="section-card">
       <div class="section-title">Select Game Type</div>
       <div class="card-grid">
-        <div class="game-card selected" onclick="selectGameType('singles', this)" data-type="singles">
-          <div class="game-card-icon">&#127934;</div>
-          <div class="game-card-title">Singles</div>
-          <div class="game-card-sub">Full match analysis</div>
-        </div>
-        <div class="game-card${singlesT5Ok ? '' : ' disabled'}"${singlesT5Ok ? ' onclick="selectGameType(\'singles_t5\', this)"' : ''} data-type="singles_t5">
-          ${singlesT5Ok ? '' : '<div class="coming-soon-badge">Coming Soon</div>'}
-          <div class="game-card-icon">&#129309;</div>
-          <div class="game-card-title">Singles (T5)</div>
-          <div class="game-card-sub">ML match analysis</div>
-        </div>
-        <div class="game-card${srvCls}"${srvClick} data-type="serve">
-          ${srvBadge}
-          <div class="game-card-icon">&#9889;</div>
-          <div class="game-card-title">Serve Practice</div>
-          <div class="game-card-sub">Serve metrics</div>
-        </div>
-        <div class="game-card${rallyCls}"${rallyClick} data-type="rally">
-          ${rallyBadge}
-          <div class="game-card-icon">&#127936;</div>
-          <div class="game-card-title">Rally Practice</div>
-          <div class="game-card-sub">Rally analysis</div>
-        </div>
-        <div class="game-card${techniqueCls}"${techniqueClick} data-type="technique">
-          ${techniqueBadge}
-          <div class="game-card-icon">&#127919;</div>
-          <div class="game-card-title">Technique Session</div>
-          <div class="game-card-sub">Stroke analysis</div>
-        </div>
-        <div class="game-card disabled" data-type="doubles">
-          <div class="coming-soon-badge">Coming Soon</div>
-          <div class="game-card-icon">&#129309;</div>
-          <div class="game-card-title">Doubles Training</div>
-          <div class="game-card-sub">Team dynamics</div>
-        </div>
+        ${available.map(cardHtml).join('')}
       </div>
       <button class="btn-primary" onclick="goToStep(2)">Continue &rarr;</button>
+      ${comingSoonHtml}
     </div>
   `;
 }
