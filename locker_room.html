@@ -625,8 +625,8 @@ function render() {
     <div class="header-tabs">
       <button class="header-tab active" onclick="switchHeaderTab('account',this)">Account</button>
       <button class="header-tab" onclick="switchHeaderTab('details',this)">My Details</button>
-      <button class="header-tab" onclick="switchHeaderTab('players',this)">Linked Players</button>
-      <button class="header-tab" onclick="switchHeaderTab('coach',this)">Invite Coach</button>
+      ${!isCoach ? `<button class="header-tab" onclick="switchHeaderTab('players',this)">Linked Players</button>` : ''}
+      ${!isCoach ? `<button class="header-tab" onclick="switchHeaderTab('coach',this)">Invite Coach</button>` : ''}
     </div>
 
     <!-- TAB 1: Account -->
@@ -717,19 +717,20 @@ function render() {
       </div>
     </div>
 
-    <!-- TAB 3: Linked Players (unchanged) -->
+    ${!isCoach ? `
+    <!-- TAB 3: Linked Players (players/parents only) -->
     <div class="header-tab-content" id="htab-players">
       <div style="padding-top:14px">
         ${renderLinkedPlayersContent()}
       </div>
     </div>
 
-    <!-- TAB 4: Invite Coach -->
+    <!-- TAB 4: Invite Coach (players/parents only — coaches don't invite coaches) -->
     <div class="header-tab-content" id="htab-coach">
       <div style="padding-top:14px">
         ${renderCoachInviteContent()}
       </div>
-    </div>
+    </div>` : ''}
   </div>`;
 
   // === CHARTS ===

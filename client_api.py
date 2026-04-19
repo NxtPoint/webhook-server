@@ -2149,6 +2149,27 @@ def coach_invite():
     if not coach_email:
         return jsonify({"ok": False, "error": "coach_email required"}), 400
 
+    # Guard: coaches cannot invite other coaches. Only players/parents can
+    # link a coach to their own (or their child's) dataset. Prevents
+    # coach↔coach viewing loops and keeps permissions flowing one way.
+    with Session(engine) as session:
+        inviter_role = session.execute(
+            text("""
+                SELECT LOWER(COALESCE(m.role, 'player_parent'))
+                FROM billing.account a
+                LEFT JOIN billing.member m ON m.account_id = a.id AND m.is_primary = true
+                WHERE a.email = :email
+                LIMIT 1
+            """),
+            {"email": email},
+        ).scalar()
+    if (inviter_role or '').strip() == 'coach':
+        return jsonify({
+            "ok": False,
+            "error": "COACH_CANNOT_INVITE_COACH",
+            "message": "Coach accounts cannot invite other coaches. Ask the player or parent to send the invite instead.",
+        }), 403
+
     from coaches_api import STATUS_INVITED, SCHEMA, TABLE
 
     with Session(engine) as session:

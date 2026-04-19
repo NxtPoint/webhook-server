@@ -452,7 +452,7 @@ function toggleMobile() {
 }
 
 // ==================== INIT ====================
-function init() {
+async function init() {
   if (!EMAIL || !API_KEY) {
     document.body.innerHTML = '<div class="access-denied"><h3>Configuration Required</h3><p>Missing email or API key. Access through your dashboard.</p></div>';
     return;
@@ -461,20 +461,29 @@ function init() {
   // Set sidebar state
   document.getElementById('sidebar').classList.toggle('expanded', sidebarExpanded);
 
-  // Set user info in footer
+  // Set provisional user info (overwritten once profile fetch completes)
   const name = [FIRST_NAME, SURNAME].filter(Boolean).join(' ') || EMAIL.split('@')[0];
   document.getElementById('userName').textContent = name;
   document.getElementById('userEmail').textContent = EMAIL;
   document.getElementById('userAvatar').textContent = (name[0] || '?').toUpperCase();
 
-  // Fetch profile to get real name (async, non-blocking)
-  fetchProfile();
-
   renderNav();
 
-  // Resolve initial page from hash
+  // Gate: first-time users (no profile or no role set) MUST complete profile
+  // before seeing the dashboard. After they save, players_enclosure sends a
+  // 'portal-navigate' postMessage which lands them on the dashboard.
+  const profileReady = await fetchProfile();
+
   const hash = window.location.hash.replace('#', '');
   const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
+
+  if (!profileReady) {
+    // New user or incomplete profile — force them through /register first
+    navigateTo('profile');
+    return;
+  }
+
+  // Resolve initial page from hash
   if (hash && allItems.find(i => i.id === hash && !i.disabled)) {
     navigateTo(hash);
   } else {
@@ -482,6 +491,9 @@ function init() {
   }
 }
 
+// Returns true if the signed-in user has a *complete* profile (has a role
+// set on billing.member). False means they're new / incomplete and should
+// be routed to /register first.
 async function fetchProfile() {
   const statusEl = document.getElementById('connStatus');
   try {
@@ -491,11 +503,11 @@ async function fetchProfile() {
     if (res.status === 403) {
       if (statusEl) { statusEl.textContent = 'API key invalid'; statusEl.style.color = 'var(--red)'; }
       console.error('Portal: API key rejected (403). API:', API_BASE);
-      return;
+      return false;
     }
     if (!res.ok) {
       if (statusEl) { statusEl.textContent = 'API error ' + res.status; statusEl.style.color = 'var(--red)'; }
-      return;
+      return false;
     }
     const data = await res.json();
     if (data.ok && data.profile) {
@@ -504,12 +516,16 @@ async function fetchProfile() {
       document.getElementById('userName').textContent = name;
       document.getElementById('userAvatar').textContent = (name[0] || '?').toUpperCase();
       if (statusEl) { statusEl.textContent = 'Connected'; statusEl.style.color = 'var(--green)'; }
+      // Profile is "complete" when it has a role AND a full_name
+      return Boolean(p.role) && Boolean(p.full_name);
     } else {
-      if (statusEl) { statusEl.textContent = 'No profile found'; statusEl.style.color = 'var(--amber)'; }
+      if (statusEl) { statusEl.textContent = 'Let\'s finish setup'; statusEl.style.color = 'var(--amber)'; }
+      return false;
     }
   } catch (e) {
     console.error('Portal: fetchProfile failed', e);
     if (statusEl) { statusEl.textContent = 'Connection failed'; statusEl.style.color = 'var(--red)'; }
+    return false;
   }
 }
 
