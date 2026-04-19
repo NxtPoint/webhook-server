@@ -252,8 +252,12 @@ done
 
 | Region | Revision | Image digest |
 |---|---|---|
-| eu-north-1 | **33** | `sha256:9d4e73909b9f8af6ada9bf50aac4eb234d739b4997007e94587076367d8f8567` |
-| us-east-1 | **22** | same |
+| eu-north-1 | **34** | `sha256:ffdbd4273449ef8bbc4344e38b8a1e1f195b552491a4c1b3e3a018862420a1dc` |
+| us-east-1 | **23** | same |
+
+**Critical fix in rev 34**: `bronze_export.py` was filtering player_detections to only ±5 frames around ball bounces — starved the serve_detector, which needs continuous pose across rally-entry (trophy pose is ~0.5-1s BEFORE the ball hit). This explained why task 9fe8c096 eval returned **0/24** serves despite offline pose validation giving 12/14. Fix (commit a2a5917): unconditionally keep all pose-carrying rows; non-pose rows still get bounce filter.
+
+Prior rev 33 deprecated. Earlier revs (32, 31, 30) also deprecated.
 
 Contents: rev 32 baseline + **two follow-up fixes from the rev-32 verification run review** (commit 89aa88d):
 
