@@ -561,11 +561,13 @@ function goToStep(n) {
 // TASK 3 — STEP 1: GAME TYPE SELECTOR
 // ============================================================
 function renderStep1(el) {
-  const devAccess = EMAIL === 'tomo.stojakovic@gmail.com';
+  // Admin dev access — sees every game type, including T5.
+  const devAccess = EMAIL === 'tomo.stojakovic@gmail.com' || EMAIL === 'info@ten-fifty5.com';
+  // Technique is available to everyone; T5 / Serve / Rally remain dev-only.
   const singlesT5Ok = devAccess;
   const srvOk  = devAccess;
   const rallyOk = devAccess;
-  const techniqueOk = devAccess;
+  const techniqueOk = true;
   const srvCls  = srvOk  ? '' : ' disabled';
   const rallyCls = rallyOk ? '' : ' disabled';
   const techniqueCls = techniqueOk ? '' : ' disabled';
