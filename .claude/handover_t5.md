@@ -252,12 +252,14 @@ done
 
 | Region | Revision | Image digest |
 |---|---|---|
-| eu-north-1 | **31** | `sha256:5798437b9ba01737665d1460f925f21a7d8e7af106a9c79b1e7af5577b9fc817` |
-| us-east-1 | **20** | same |
+| eu-north-1 | **32** | `sha256:613c01376da7fdc631e7c5b5105bf202c3528ce9b61833526c8ecc432869d8ef` |
+| us-east-1 | **21** | same |
 
-Contents: **player_tracker semantic-half ID assignment** (Apr 18 — fixes the swap bug that made minute-1-4 pose appear missing), plus earlier fixes (tier-500 net-zone, MIN_SELECTABLE_SCORE=500, pose_bonus=300) and db_writer detection_source column scaffolding.
+Contents: rev 31 baseline (semantic-half assignment, tier-500 net-zone, etc.) + **YOLO_CONFIDENCE 0.25→0.10** (commit b66ad85) + **merged perf/sahi-skip-tighten B4+ skip rule** (merge commit 891b124, branch from 190fd62). This is the first image to combine both fixes.
 
-Prior rev 30 / 19 (`dd6c4e1e24da...c3c`) is deprecated — it had the scoring fixes but NOT the ID-swap fix, so it still produced the minute-1-4 "Player 0 = far player" bug.
+Prior revs deprecated:
+- rev 31 / 20 (`5798437b9ba01...`): semantic-half fix but conf=0.25 → suffered the density blocker.
+- rev 30 / 19 (`dd6c4e1e24da...`): scoring fixes but NO semantic-half fix (ID-swap bug present).
 
 ### Quota note
 
@@ -481,22 +483,15 @@ Script prints per-frame table for "interesting" rows (gap or H3 diff), aggregate
 
 **Do NOT** tune pose-scoring rules until density is understood — pose rules are only relevant if we have enough samples to cluster.
 
-### P1 — Merge + deploy SAHI optimization (ready, held pending P0)
+### P1 — SAHI perf merge DEPLOYED (2026-04-19 autonomous session)
 
-Branch `perf/sahi-skip-tighten` on origin. Commit `190fd62`. Validated locally — 57% SAHI skip rate on 100-frame sample, 0 detection regressions. Expected ~600s (21%) wall-clock saving on 47-min runs.
+Merged `perf/sahi-skip-tighten` (commit 190fd62 → merge commit 891b124) into main. Docker rebuilt, pushed to both ECRs (digest `sha256:613c01376da7fdc631e7c5b5105bf202c3528ce9b61833526c8ecc432869d8ef`), registered as rev 32 (eu) / rev 21 (us). Verification run submitted: task `1e191bb5-a2da-400e-ab9d-c755587e859f`, Batch job `2a1a2c76-2924-4007-bdff-c0150e7c9b7e`.
 
-Why not merged yet: wanted to keep correctness and perf as separate rebuilds so we can distinguish their effects. Now that rev 31 has revealed the density issue (P0) is independent of SAHI, it's safe to merge + rebuild whenever.
-
-**To merge and deploy:**
-```bash
-git checkout main
-git pull
-git merge perf/sahi-skip-tighten
-git push origin main
-cd C:/dev/webhook-server
-docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .
-# Push to both ECRs and register rev 32 / 21 — same pattern as handover's Docker section
-```
+Expected behaviour on verification run:
+- Total runtime: ~35-40 min (vs 47 min before, ~600s saved from SAHI skip).
+- PlayerTracker diag: `kept_0`, `kept_1`, `kept_2` within ±2% of 6a9bce49 (1.4%, 34%, 64.6%).
+- `sahi_skipped` counter non-zero (was 0 in 6a9bce49 because skip rule wasn't deployed yet).
+- Handler should not trigger auto-ingest on this task — direct Batch submit with a fresh UUID (no submission_context row), which is fine for CloudWatch-only verification.
 
 ### P2 — Far-player serve detection (still on the list, but blocked by P0 now)
 
