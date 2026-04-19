@@ -111,7 +111,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .drawer-cta { margin-top: auto; padding-top: 32px; }
 
 /* HERO */
-.page-hero { position: relative; background: #0a1814; color: var(--white); padding: 80px 28px 110px; min-height: 72vh; overflow: hidden; display: flex; align-items: center; }
+.page-hero { position: relative; background: #0a1814; color: var(--white); padding: 80px 28px 110px; min-height: clamp(500px, 68vh, 680px); overflow: hidden; display: flex; align-items: center; }
 .page-hero::before { content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 2; background: radial-gradient(1400px 800px at 78% 50%, rgba(26,92,46,0.28), transparent 65%), radial-gradient(900px 600px at 12% 80%, rgba(5,12,9,0.9), transparent 60%), radial-gradient(1100px 500px at 6% 10%, rgba(5,12,9,0.88), transparent 60%); }
 .page-hero::after { content: ''; position: absolute; inset: 0; z-index: 3; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px); background-size: 56px 56px; mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%); -webkit-mask-image: radial-gradient(ellipse at 72% 50%, black 6%, transparent 70%); }
 .page-hero-viz { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
