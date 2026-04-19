@@ -225,10 +225,21 @@ def main(argv=None) -> int:
                          "Render webhook-server (no cv2 / ultralytics / weights).")
     args = ap.parse_args(argv)
 
-    db_url = os.environ.get("DATABASE_URL")
+    db_url = (
+        os.environ.get("DATABASE_URL")
+        or os.environ.get("POSTGRES_URL")
+        or os.environ.get("DB_URL")
+    )
     if not db_url:
         print("DATABASE_URL env var required", file=sys.stderr)
         return 2
+    # Normalize scheme + force psycopg v3 driver (matches db_init.py). The
+    # Render webhook-server installs psycopg (v3) only, not psycopg2, so a
+    # bare postgresql:// URL makes SQLAlchemy try to import psycopg2 and fail.
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    if db_url.startswith("postgresql://") and "+psycopg" not in db_url:
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     if not args.fetch_db_only:
         video = Path(args.video)
