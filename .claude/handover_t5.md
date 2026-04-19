@@ -252,12 +252,18 @@ done
 
 | Region | Revision | Image digest |
 |---|---|---|
-| eu-north-1 | **32** | `sha256:613c01376da7fdc631e7c5b5105bf202c3528ce9b61833526c8ecc432869d8ef` |
-| us-east-1 | **21** | same |
+| eu-north-1 | **33** | `sha256:9d4e73909b9f8af6ada9bf50aac4eb234d739b4997007e94587076367d8f8567` |
+| us-east-1 | **22** | same |
 
-Contents: rev 31 baseline (semantic-half assignment, tier-500 net-zone, etc.) + **YOLO_CONFIDENCE 0.25→0.10** (commit b66ad85) + **merged perf/sahi-skip-tighten B4+ skip rule** (merge commit 891b124, branch from 190fd62). This is the first image to combine both fixes.
+Contents: rev 32 baseline + **two follow-up fixes from the rev-32 verification run review** (commit 89aa88d):
+
+1. **`_choose_two_players` failed-projection score = 0** (was `motion_bonus` up to 500). Fixes the pid=1 junk fallback — moving spectators with null court coords were being assigned pid=1 when the real far player wasn't detected. Seen on f181aaf7 minute 0 DB dump.
+2. **SAHI skip rule A requires far-half pose candidate's feet to project to `court_y ≤ 5`**. Was accepting any pose-carrying bbox in the far pixel half, which let the umpire at the net (court_y~11-12) spoof the skip rule. This caused the 177-frame kept_2 → kept_1_span_fail shift on task 9fe8c096.
+
+Rev 33 verification run: **task `052a9674-5d12-4918-abe8-8e700f84690d`** (Batch `b93b8ddc-3059-4c44-bfe7-060005545dd9`), submitted 2026-04-19 afternoon. Expected: recover the 5% kept_2 regression vs rev 32, possibly at small cost to SAHI skip rate.
 
 Prior revs deprecated:
+- rev 32 / 21 (`613c01376da7f...`): conf=0.10 + SAHI merge, but had the span_fail regression + pid=1 junk. Superseded by rev 33.
 - rev 31 / 20 (`5798437b9ba01...`): semantic-half fix but conf=0.25 → suffered the density blocker.
 - rev 30 / 19 (`dd6c4e1e24da...`): scoring fixes but NO semantic-half fix (ID-swap bug present).
 
