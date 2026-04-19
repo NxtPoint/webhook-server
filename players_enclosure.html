@@ -3,15 +3,16 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>TEN-FIFTY5 Players' Enclosure</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<title>Welcome to TEN-FIFTY5</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #f5f5f5;
-  --white: #ffffff;
   --green: #1a5c2e;
   --green-light: #22783c;
+  --green-dark: #134221;
   --green-bg: rgba(26,92,46,0.08);
+  --bg: #f5f5f5;
+  --white: #ffffff;
   --text: #1a1a1a;
   --text-sec: #6b7280;
   --text-dim: #9ca3af;
@@ -19,263 +20,328 @@
   --amber: #d97706;
   --red: #dc2626;
   --radius: 4px;
-  --transition: 0.2s ease;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-html { font-size: 15px; }
+html, body { overflow-x: hidden; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: var(--bg); color: var(--text); line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  padding: 20px 16px;
+  min-height: 100vh;
 }
-button { cursor: pointer; font-family: inherit; }
+button, input { font-family: inherit; font-size: inherit; }
+a { color: var(--green); }
 
-.app { max-width: 960px; margin: 0 auto; padding: 16px 16px calc(120px + env(safe-area-inset-bottom, 0px)); }
+.wrap { max-width: 760px; margin: 0 auto; }
 
-/* ========== HEADER ========== */
+/* ================= HEADER ================= */
 .header {
   background: var(--white);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin-bottom: 20px;
+  padding: 14px 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 16px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-.header-top {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px; flex-wrap: wrap; gap: 10px;
-}
-.logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; color: var(--green); }
-.nav-title { font-size: 0.85rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; }
+.logo { font-size: 1.2rem; font-weight: 800; letter-spacing: 0.1em; color: var(--green); }
+.header-sub { font-size: 0.72rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.14em; }
 
-/* ========== LOADING / ERROR ========== */
-.loading, .empty-state { text-align: center; padding: 60px 20px; color: var(--text-sec); }
-.loading .spinner {
-  width: 32px; height: 32px; border: 3px solid var(--border);
-  border-top-color: var(--green); border-radius: 50%;
-  animation: spin 0.8s linear infinite; margin: 0 auto 12px;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-.empty-state h3 { font-weight: 500; margin-bottom: 6px; color: var(--text); }
-.empty-state p { color: var(--text-dim); font-size: 0.88rem; max-width: 400px; margin: 0 auto; }
-
-/* ========== ENTITLEMENT OVERLAYS ========== */
-.block-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
-  z-index: 9999; display: flex; align-items: center; justify-content: center;
-}
-.block-overlay-box {
-  background: var(--white); border-radius: var(--radius); padding: 40px 32px;
-  max-width: 440px; width: 90%; text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
-}
-.block-overlay-box h2 { font-size: 1.2rem; margin-bottom: 12px; color: var(--red); }
-.block-overlay-box p { color: var(--text-sec); font-size: 0.9rem; line-height: 1.6; }
-.block-overlay-box a { color: var(--green); font-weight: 600; }
-
-.entitlement-banner {
-  border: 1px solid; border-radius: var(--radius);
-  padding: 10px 16px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; font-size: 0.85rem;
-}
-.entitlement-banner.warn { background: rgba(220,38,38,0.06); border-color: var(--red); color: var(--red); }
-.entitlement-banner.info { background: rgba(217,119,6,0.06); border-color: var(--amber); color: var(--amber); }
-.entitlement-banner a { font-weight: 600; text-decoration: underline; color: inherit; }
-.entitlement-banner .dismiss {
-  background: none; border: none; color: inherit; font-size: 1.1rem; padding: 2px 6px;
-  opacity: 0.6; transition: opacity var(--transition);
-}
-.entitlement-banner .dismiss:hover { opacity: 1; }
-
-/* ========== STEPS ========== */
-.step { display: none; }
-.step.active { display: block; }
-
-/* ========== WELCOME CARD ========== */
-.welcome-card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 32px 24px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-.welcome-card h2 { font-size: 1.3rem; font-weight: 700; margin-bottom: 8px; color: var(--green); }
-.welcome-card p { color: var(--text-sec); font-size: 0.9rem; margin-bottom: 20px; }
-.welcome-info {
-  display: inline-flex; flex-direction: column; gap: 6px;
-  background: var(--green-bg); border-radius: var(--radius); padding: 16px 28px;
-  margin-bottom: 24px; text-align: left;
-}
-.welcome-info .label { font-size: 0.72rem; color: var(--text-dim); font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
-.welcome-info .value { font-size: 0.95rem; font-weight: 600; color: var(--text); }
-
-/* ========== ROLE CARDS ========== */
-.section-label {
-  font-size: 0.82rem; font-weight: 600; color: var(--text-sec);
-  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
-}
-.role-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-.role-card {
-  background: var(--white); border: 2px solid var(--border); border-radius: var(--radius);
-  padding: 24px 16px; text-align: center; cursor: pointer;
-  transition: all var(--transition); box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-.role-card:hover { border-color: var(--green); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-.role-card.selected { border-color: var(--green); background: var(--green-bg); }
-.role-card .role-icon { font-size: 2rem; margin-bottom: 8px; }
-.role-card .role-title { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-.role-card .role-desc { font-size: 0.78rem; color: var(--text-sec); line-height: 1.4; }
-
-/* ========== FORM FIELDS ========== */
-.form-card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-.form-card h3 { font-size: 0.88rem; font-weight: 700; margin-bottom: 14px; color: var(--text); }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.form-field { }
-.form-field.full { grid-column: 1 / -1; }
-.form-label { display: block; font-size: 0.72rem; color: var(--text-dim); margin-bottom: 2px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
-.form-input {
-  width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius);
-  font-family: inherit; font-size: 0.85rem; color: var(--text); background: var(--white);
-  transition: border-color var(--transition); outline: none;
-}
-.form-input:focus { border-color: var(--green); }
-.form-input:-webkit-autofill,
-.form-input:-webkit-autofill:hover,
-.form-input:-webkit-autofill:focus {
-  -webkit-box-shadow: 0 0 0 30px var(--bg) inset !important;
-  -webkit-text-fill-color: var(--text) !important;
-  border-color: var(--border);
-}
-select.form-input { appearance: auto; }
-textarea.form-input { resize: vertical; min-height: 60px; }
-
-/* ========== BUTTONS ========== */
-.btn-primary {
-  background: var(--green); color: var(--white); border: none;
-  padding: 10px 24px; border-radius: var(--radius); font-weight: 600; font-size: 0.88rem;
-  transition: background var(--transition); display: inline-flex; align-items: center; gap: 6px;
-}
-.btn-primary:hover { background: var(--green-light); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-secondary {
-  background: var(--white); color: var(--green); border: 1px solid var(--green);
-  padding: 8px 18px; border-radius: var(--radius); font-weight: 600; font-size: 0.82rem;
-  transition: all var(--transition);
-}
-.btn-secondary:hover { background: var(--green); color: var(--white); }
-.btn-danger {
-  background: var(--white); color: var(--red); border: 1px solid var(--red);
-  padding: 6px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
-  transition: all var(--transition);
-}
-.btn-danger:hover { background: rgba(220,38,38,0.05); }
-.btn-row { display: flex; gap: 10px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
-.msg-bar { padding: 10px 14px; border-radius: var(--radius); font-size: 0.85rem; font-weight: 500; margin-top: 12px; display: none; }
-.msg-bar.info { display: block; background: var(--green-bg); color: var(--green); }
-.msg-bar.error { display: block; background: rgba(220,38,38,0.08); color: var(--red); }
-.msg-bar.success { display: block; background: var(--green-bg); color: var(--green); }
-
-/* ========== COMPLETION ========== */
-.completion-card {
-  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 32px 24px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-}
-.completion-card h2 { font-size: 1.2rem; font-weight: 700; margin-bottom: 12px; color: var(--green); }
-.completion-card p { color: var(--text-sec); font-size: 0.9rem; margin-bottom: 20px; }
-.completion-summary {
-  text-align: left; background: var(--green-bg); border-radius: var(--radius);
-  padding: 16px 20px; margin-bottom: 24px;
-}
-.completion-summary .summary-row { display: flex; justify-content: space-between; padding: 4px 0; }
-.completion-summary .summary-label { font-size: 0.78rem; color: var(--text-sec); font-weight: 500; text-transform: uppercase; }
-.completion-summary .summary-value { font-size: 0.88rem; font-weight: 600; color: var(--text); }
-
-/* ========== PHOTO UPLOAD ========== */
-.photo-upload-area {
-  display: flex; align-items: center; gap: 16px; margin-bottom: 20px;
-  justify-content: center;
-}
-.photo-preview {
-  width: 80px; height: 80px; border-radius: 50%; border: 2px solid var(--border);
-  background: var(--bg); display: flex; align-items: center; justify-content: center;
-  overflow: hidden; font-size: 2rem; color: var(--text-dim);
-}
-.photo-preview img { width: 100%; height: 100%; object-fit: cover; }
-.photo-upload-btn { position: relative; }
-.photo-upload-btn input[type="file"] {
-  position: absolute; inset: 0; opacity: 0; cursor: pointer;
-}
-
-/* ========== PROGRESS BAR ========== */
-.progress-bar {
-  display: flex; gap: 8px; margin-bottom: 24px;
-}
+/* ================= PROGRESS ================= */
+.progress { display: flex; gap: 6px; margin-bottom: 20px; }
 .progress-step {
-  flex: 1; height: 4px; border-radius: 2px; background: var(--border);
-  transition: background var(--transition);
+  flex: 1; height: 4px; background: var(--border); border-radius: 2px;
+  transition: background 0.3s var(--ease);
 }
 .progress-step.done { background: var(--green); }
-.progress-step.current { background: var(--green); opacity: 0.5; }
+.progress-step.current { background: var(--green-light); }
 
-/* ========== MOBILE ========== */
-@media (max-width: 600px) {
-  .role-grid { grid-template-columns: 1fr; }
-  .form-grid { grid-template-columns: 1fr; }
-  .header-top { flex-direction: column; align-items: flex-start; }
-  .app { padding-bottom: 300px !important; }
+/* ================= CARD ================= */
+.card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 44px 44px 38px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
 }
+@media (max-width: 640px) { .card { padding: 30px 22px 26px; } }
+
+h1 {
+  font-size: clamp(1.6rem, 3.4vw, 2rem);
+  font-weight: 800; letter-spacing: -0.02em; line-height: 1.15;
+  color: var(--green); margin-bottom: 14px;
+}
+h2 {
+  font-size: clamp(1.35rem, 2.6vw, 1.6rem);
+  font-weight: 700; letter-spacing: -0.015em;
+  color: var(--text); margin-bottom: 12px;
+}
+p.lede {
+  color: var(--text-sec); font-size: 1rem; line-height: 1.6;
+  max-width: 56ch;
+}
+
+/* ================= EMAIL CHIP ================= */
+.email-chip {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 12px 18px;
+  background: var(--green-bg); border: 1px solid var(--green);
+  border-radius: var(--radius);
+  color: var(--green); font-weight: 600; font-size: 0.95rem;
+  margin: 22px 0 30px;
+  word-break: break-all;
+}
+.email-chip svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+/* ================= ROLE GRID ================= */
+.role-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  margin: 28px 0 8px;
+}
+@media (max-width: 600px) { .role-grid { grid-template-columns: 1fr; } }
+
+.role-card {
+  background: var(--white);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 24px 24px;
+  cursor: pointer; text-align: center;
+  transition: border-color 0.2s var(--ease), background 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.role-card:hover { border-color: var(--green); transform: translateY(-2px); }
+.role-card.selected { border-color: var(--green); background: var(--green-bg); }
+.role-icon {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  background: var(--green-bg); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s var(--ease);
+}
+.role-card.selected .role-icon { background: var(--green); }
+.role-card.selected .role-icon svg { color: var(--white); }
+.role-icon svg { width: 26px; height: 26px; color: var(--green); stroke-width: 1.8; }
+.role-title { font-size: 1.1rem; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.role-desc { font-size: 0.88rem; color: var(--text-sec); line-height: 1.55; }
+
+/* ================= FORM FIELDS ================= */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 24px 0 16px; }
+@media (max-width: 520px) { .form-grid { grid-template-columns: 1fr; } }
+
+.field label {
+  display: block; font-size: 0.75rem; font-weight: 600;
+  color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+.field input {
+  width: 100%; padding: 13px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.95rem; color: var(--text); background: var(--white);
+  transition: border-color 0.2s var(--ease);
+}
+.field input:focus { outline: none; border-color: var(--green); }
+.field input::placeholder { color: var(--text-dim); }
+
+/* ================= TOGGLE ROW ================= */
+.toggle-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 16px 18px;
+  background: var(--green-bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease);
+  margin-top: 6px;
+}
+.toggle-row:hover { border-color: var(--green); }
+.toggle-row input[type=checkbox] {
+  width: 20px; height: 20px; accent-color: var(--green);
+  flex-shrink: 0; cursor: pointer; margin-top: 1px;
+}
+.toggle-row-text { color: var(--text); font-size: 0.95rem; }
+.toggle-row-text strong { font-weight: 600; display: block; margin-bottom: 2px; }
+.toggle-row-text span { color: var(--text-sec); font-size: 0.85rem; }
+
+/* ================= CHILDREN LIST ================= */
+.children-list { display: flex; flex-direction: column; gap: 10px; margin: 22px 0 10px; }
+.child-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 40px;
+  gap: 10px;
+  align-items: end;
+  background: var(--bg);
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+@media (max-width: 520px) {
+  .child-row { grid-template-columns: 1fr 1fr; }
+  .child-row .remove-child { grid-column: 1 / -1; }
+}
+.child-row input {
+  padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.9rem; background: var(--white);
+}
+.child-row input:focus { outline: none; border-color: var(--green); }
+.remove-child {
+  padding: 10px 12px;
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--red); font-weight: 700; cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.remove-child:hover { border-color: var(--red); background: rgba(220,38,38,0.06); }
+
+.btn-add-child {
+  width: 100%; padding: 14px;
+  background: none; border: 1px dashed var(--green);
+  border-radius: var(--radius);
+  color: var(--green); font-weight: 600; font-size: 0.88rem;
+  cursor: pointer;
+  margin-top: 4px;
+  transition: background 0.2s var(--ease);
+}
+.btn-add-child:hover { background: var(--green-bg); }
+
+/* ================= ACTIONS ================= */
+.actions {
+  display: flex; gap: 10px; justify-content: space-between;
+  margin-top: 32px; flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 13px 28px;
+  border-radius: var(--radius);
+  font-weight: 600; font-size: 0.92rem;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.btn svg { width: 16px; height: 16px; }
+.btn-primary { background: var(--green); color: var(--white); border-color: var(--green); }
+.btn-primary:hover { background: var(--green-light); border-color: var(--green-light); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-back { background: var(--white); color: var(--text-sec); border-color: var(--border); }
+.btn-back:hover { background: var(--bg); color: var(--text); border-color: var(--text-dim); }
+
+/* ================= MESSAGES ================= */
+.msg {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 0.88rem; line-height: 1.5;
+  margin-top: 16px;
+}
+.msg.error { background: rgba(220,38,38,0.06); border: 1px solid var(--red); color: var(--red); }
+.msg.warn  { background: rgba(217,119,6,0.06); border: 1px solid var(--amber); color: var(--amber); }
+.msg.ok    { background: var(--green-bg); border: 1px solid var(--green); color: var(--green); }
+
+/* ================= SUCCESS ================= */
+.success-wrap { text-align: center; padding: 12px 0; }
+.success-ring {
+  width: 80px; height: 80px; margin: 0 auto 22px;
+  background: var(--green); color: var(--white);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 12px 40px -10px rgba(26,92,46,0.5);
+}
+.success-ring svg { width: 36px; height: 36px; stroke-width: 3; }
+
+.summary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 22px;
+  margin: 22px auto 28px;
+  max-width: 460px;
+  text-align: left;
+}
+.summary-row {
+  display: flex; justify-content: space-between;
+  padding: 8px 0; font-size: 0.92rem;
+  border-bottom: 1px solid var(--border);
+  gap: 14px;
+}
+.summary-row:last-child { border-bottom: none; }
+.summary-label {
+  color: var(--text-sec); text-transform: uppercase;
+  font-size: 0.7rem; letter-spacing: 0.08em; font-weight: 600;
+  white-space: nowrap;
+}
+.summary-value {
+  color: var(--text); font-weight: 500;
+  text-align: right; word-break: break-word;
+}
+
+/* ================= STEP VISIBILITY ================= */
+.step { display: none; }
+.step.active { display: block; animation: stepIn 0.28s var(--ease); }
+@keyframes stepIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ================= LOADING ================= */
+.loading { text-align: center; padding: 48px 20px; color: var(--text-sec); }
+.spinner {
+  width: 32px; height: 32px; margin: 0 auto 14px;
+  border: 3px solid var(--border); border-top-color: var(--green);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
-<div class="app" id="app">
-  <div class="loading" id="loading"><div class="spinner"></div><p>Setting up your account...</p></div>
+<div class="wrap">
+
+  <div class="header">
+    <div class="logo">TEN-FIFTY5</div>
+    <div class="header-sub">Finish your setup</div>
+  </div>
+
+  <div class="progress" id="progress">
+    <div class="progress-step current"></div>
+    <div class="progress-step"></div>
+    <div class="progress-step"></div>
+  </div>
+
+  <div class="card" id="card">
+    <div class="loading"><div class="spinner"></div>Loading…</div>
+  </div>
+
 </div>
 
 <script>
-/* ================================================================
-   PLAYERS' ENCLOSURE — Member registration & onboarding
-   Wix handoff: postMessage (preferred) or URL params
-   ================================================================ */
+// ============================================================
+// PLAYERS' ENCLOSURE — simplified 2-role onboarding
+// Wix provides: EMAIL (and optionally a key for API auth).
+// We collect: name, surname, role, optional children.
+// ============================================================
 
 const params = new URLSearchParams(window.location.search);
-const API_KEY = params.get('key') || '';
-const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
 
-// Wix handoff data — populated via postMessage or URL params
-let WIX_DATA = {
-  email: (params.get('email') || '').trim().toLowerCase(),
-  firstName: (params.get('firstName') || params.get('first_name') || '').trim(),
-  surname: (params.get('surname') || params.get('last_name') || '').trim(),
+const STATE = {
+  apiKey:   params.get('key') || '',
+  apiBase:  params.get('api') || 'https://api.nextpointtennis.com',
+  email:    (params.get('email') || '').trim().toLowerCase(),
   wixMemberId: (params.get('wixMemberId') || params.get('wix_member_id') || '').trim(),
+  role: '',                 // 'player_parent' | 'coach'
+  firstName: '',
+  surname: '',
+  hasChildren: false,
+  children: [],             // [{first_name, surname}]
+  step: 'welcome',          // 'welcome' | 'role' | 'details' | 'children' | 'done' | 'blocked'
+  alreadyRegistered: false,
 };
 
-// Listen for postMessage from Wix parent
+// Listen for postMessage from Wix (if Wix sends email that way instead of URL)
 window.addEventListener('message', function(event) {
   if (!event.data || typeof event.data !== 'object') return;
   const d = event.data;
   if (d.type !== 'wix-handoff' && !d.email) return;
-
-  WIX_DATA.email = (d.email || WIX_DATA.email || '').trim().toLowerCase();
-  WIX_DATA.firstName = (d.firstName || d.first_name || WIX_DATA.firstName || '').trim();
-  WIX_DATA.surname = (d.surname || d.last_name || WIX_DATA.surname || '').trim();
-  WIX_DATA.wixMemberId = (d.wixMemberId || d.wix_member_id || WIX_DATA.wixMemberId || '').trim();
-
-  // Re-init if we haven't started yet or if we were waiting for data
-  if (!initDone) init();
+  STATE.email = (d.email || STATE.email || '').trim().toLowerCase();
+  STATE.wixMemberId = (d.wixMemberId || d.wix_member_id || STATE.wixMemberId || '').trim();
+  if (STATE.step === 'welcome' && !STATE.email) render();
 });
-
-let initDone = false;
-let alreadyRegistered = false;
-let profile = null;
-let currentStep = 0; // 0=welcome, 1=role, 2=children, 3=complete
-let selectedRole = '';
-let childForms = [0]; // indices of child forms
-let childNextId = 1;
-let entitlements = null;
-
-function apiFetch(path, opts = {}) {
-  const sep = path.includes('?') ? '&' : '?';
-  const headers = { 'X-Client-Key': API_KEY, ...(opts.headers || {}) };
-  return fetch(API_BASE + path + sep + 'email=' + encodeURIComponent(WIX_DATA.email), { ...opts, headers });
-}
 
 function esc(s) {
   if (s == null) return '';
@@ -283,470 +349,381 @@ function esc(s) {
   d.textContent = String(s);
   return d.innerHTML;
 }
-function goToPricing() { if (window.parent !== window) { window.parent.postMessage({ type: 'portal-navigate', target: 'pricing' }, '*'); } else { window.location.href = '/pricing?' + new URLSearchParams({ email: EMAIL, key: API_KEY, api: API_BASE }).toString(); } }
 
-function showError(title, msg) {
-  document.getElementById('app').innerHTML = `
-    <div class="header"><div class="header-top"><div class="logo">TEN-FIFTY5</div><div class="nav-title">Players' Enclosure</div></div></div>
-    <div class="empty-state"><h3>${title}</h3><p>${msg}</p></div>`;
+async function api(path, opts = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = { 'X-Client-Key': STATE.apiKey, ...(opts.headers || {}) };
+  const url = STATE.apiBase + path + sep + 'email=' + encodeURIComponent(STATE.email);
+  return fetch(url, { ...opts, headers });
 }
 
+// ============================================================
+// INIT
+// ============================================================
 async function init() {
-  // Gate: need email + key at minimum
-  if (!WIX_DATA.email) {
-    setTimeout(() => {
-      if (!WIX_DATA.email) showError('Missing Information', 'We couldn\'t receive your account details. Please access this page through your TEN-FIFTY5 dashboard.');
-    }, 2000);
-    return;
-  }
-  if (!API_KEY) {
-    showError('Configuration Required', 'Missing API key. Access the Players\' Enclosure through your dashboard.');
-    return;
-  }
-
-  initDone = true;
-
-  // Fetch profile + entitlements from API (user may already exist)
-  try {
-    const [prRes, eRes] = await Promise.all([
-      apiFetch('/api/client/profile'),
-      apiFetch('/api/client/entitlements'),
-    ]);
-    const prData = await prRes.json();
-    const eData = await eRes.json();
-    profile = prData.ok ? prData.profile : null;
-    entitlements = eData.ok ? eData.entitlements : null;
-  } catch (e) { console.error('API fetch failed', e); }
-
-  // If profile exists in DB, pre-populate WIX_DATA from it
-  if (profile) {
-    WIX_DATA.firstName = WIX_DATA.firstName || profile.full_name || '';
-    WIX_DATA.surname = WIX_DATA.surname || profile.surname || '';
-
-    // If user already has a role set, they've completed registration before
-    if (profile.role) {
-      alreadyRegistered = true;
-    }
-  }
-
-  // For brand-new users with no profile AND no Wix handoff data, show error
-  if (!profile && !WIX_DATA.firstName) {
-    showError('Missing Information', 'We need your name to set up your account. Please ensure your Wix profile is complete, or access this page through your TEN-FIFTY5 dashboard.');
-    return;
-  }
-
-  render();
-}
-
-function render() {
-  const app = document.getElementById('app');
-  let html = '';
-
-  // Header
-  html += `<div class="header"><div class="header-top">
-    <div class="logo">TEN-FIFTY5</div>
-    <div class="nav-title">Players' Enclosure</div>
-  </div></div>`;
-
-  // Entitlement checks
-  if (entitlements) {
-    if (entitlements.account_status === 'terminated') {
-      html += `<div class="block-overlay"><div class="block-overlay-box">
-        <h2>Account Suspended</h2>
-        <p>Your account has been suspended. Please contact support at <a href="mailto:support@ten-fifty5.com">support@ten-fifty5.com</a> for assistance.</p>
-      </div></div>`;
-      app.innerHTML = html;
+  if (!STATE.email) {
+    // Wait briefly for postMessage from Wix
+    await new Promise(res => setTimeout(res, 1500));
+    if (!STATE.email) {
+      STATE.step = 'blocked';
+      render();
       return;
     }
-    if (!entitlements.plan_active && entitlements.credits_remaining <= 0) {
-      html += `<div class="entitlement-banner info">
-        <span>No active plan. <a href="#" onclick="goToPricing();return false">View plans</a> to get started.</span>
-      </div>`;
-    }
   }
 
-  // Already registered — show summary instead of wizard
-  if (alreadyRegistered) {
-    const roleLabels = { player_parent: 'Player / Parent', coach: 'Coach' };
-    html += `<div class="completion-card">
-      <h2>Your Profile</h2>
-      <p>Your account is already set up.</p>
-      <div class="completion-summary">
-        <div class="summary-row"><span class="summary-label">Name</span><span class="summary-value">${esc(WIX_DATA.firstName)} ${esc(WIX_DATA.surname)}</span></div>
-        <div class="summary-row"><span class="summary-label">Email</span><span class="summary-value">${esc(WIX_DATA.email)}</span></div>
-        <div class="summary-row"><span class="summary-label">Role</span><span class="summary-value">${roleLabels[profile?.role] || profile?.role || 'Player / Parent'}</span></div>
-      </div>
-      <div class="btn-row" style="justify-content:center;margin-top:24px">
-        <button class="btn-primary" onclick="goToLockerRoom()">Go to Locker Room</button>
-      </div>
-    </div>`;
-    app.innerHTML = html;
-    return;
+  // Fetch existing profile to see if already registered
+  if (STATE.apiKey) {
+    try {
+      const res = await api('/api/client/profile');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && data.profile && data.profile.role && data.profile.full_name) {
+          STATE.alreadyRegistered = true;
+          STATE.role = data.profile.role;
+          STATE.firstName = data.profile.full_name;
+          STATE.surname = data.profile.surname || '';
+        }
+      }
+    } catch (e) { /* silent — they can re-register if needed */ }
   }
 
-  // Progress bar
-  const steps = selectedRole === 'parent_children' ? 4 : 3;
-  html += '<div class="progress-bar">';
-  for (let i = 0; i < steps; i++) {
-    const cls = i < currentStep ? 'done' : i === currentStep ? 'current' : '';
-    html += `<div class="progress-step ${cls}"></div>`;
-  }
-  html += '</div>';
-
-  // Step 0: Welcome
-  html += `<div class="step ${currentStep === 0 ? 'active' : ''}" id="step0">
-    <div class="welcome-card">
-      <h2>Welcome to TEN-FIFTY5</h2>
-      <p>Let's set up your account. We've received your details from your membership.</p>
-      <div class="welcome-info">
-        <div><span class="label">Name</span><span class="value">${esc(WIX_DATA.firstName)} ${esc(WIX_DATA.surname)}</span></div>
-        <div><span class="label">Email</span><span class="value">${esc(WIX_DATA.email)}</span></div>
-      </div>
-      <div class="btn-row" style="justify-content:center">
-        <button class="btn-primary" onclick="goToStep(1)">Get Started</button>
-      </div>
-    </div>
-  </div>`;
-
-  // Step 1: Role selection
-  html += `<div class="step ${currentStep === 1 ? 'active' : ''}" id="step1">
-    <div class="section-label">Select Your Role</div>
-    <div class="role-grid">
-      <div class="role-card ${selectedRole === 'player_parent' ? 'selected' : ''}" onclick="selectRole('player_parent')">
-        <div class="role-icon">&#127934;</div>
-        <div class="role-title">Player / Parent</div>
-        <div class="role-desc">I'm a player or a parent managing a single player's account.</div>
-      </div>
-      <div class="role-card ${selectedRole === 'parent_children' ? 'selected' : ''}" onclick="selectRole('parent_children')">
-        <div class="role-icon">&#128106;</div>
-        <div class="role-title">Parent with Children</div>
-        <div class="role-desc">I'm a parent managing multiple children who play tennis.</div>
-      </div>
-      <div class="role-card ${selectedRole === 'coach' ? 'selected' : ''}" onclick="selectRole('coach')">
-        <div class="role-icon">&#128203;</div>
-        <div class="role-title">Coach</div>
-        <div class="role-desc">I'm a coach reviewing my players' match analysis and footage.</div>
-      </div>
-    </div>
-    <div class="btn-row">
-      <button class="btn-secondary" onclick="goToStep(0)">Back</button>
-      <button class="btn-primary" id="btnRoleNext" onclick="submitRole()" ${selectedRole ? '' : 'disabled'}>Continue</button>
-    </div>
-    <div class="msg-bar" id="roleMsg"></div>
-  </div>`;
-
-  // Step 2: Child profiles (conditional)
-  html += `<div class="step ${currentStep === 2 ? 'active' : ''}" id="step2">
-    <div class="section-label">Add Your Children</div>
-    <div id="childFormsContainer">${renderChildForms()}</div>
-    <div class="btn-row">
-      <button class="btn-secondary" onclick="addChildForm()">+ Add Another Child</button>
-    </div>
-    <div class="btn-row" style="margin-top:20px">
-      <button class="btn-secondary" onclick="goToStep(1)">Back</button>
-      <button class="btn-primary" id="btnChildNext" onclick="submitChildren()">Continue</button>
-    </div>
-    <div class="msg-bar" id="childMsg"></div>
-  </div>`;
-
-  // Step 3: Completion
-  const completeStep = selectedRole === 'parent_children' ? 3 : 2;
-  html += `<div class="step ${currentStep === completeStep ? 'active' : ''}" id="stepComplete">
-    <div class="completion-card">
-      <h2>You're All Set!</h2>
-      <p>Your account has been configured successfully.</p>
-      <div class="completion-summary" id="completionSummary"></div>
-      <div class="photo-upload-area">
-        <div class="photo-preview" id="photoPreview">&#128100;</div>
-        <div>
-          <div class="photo-upload-btn">
-            <button class="btn-secondary">Upload Profile Photo</button>
-            <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadPhoto(this)">
-          </div>
-          <div style="font-size:0.72rem;color:var(--text-dim);margin-top:4px">Optional — JPG, PNG or WebP</div>
-        </div>
-      </div>
-      <div class="msg-bar" id="photoMsg"></div>
-      <div class="btn-row" style="justify-content:center;margin-top:24px">
-        <button class="btn-primary" onclick="goToLockerRoom()">Go to Locker Room</button>
-      </div>
-    </div>
-  </div>`;
-
-  app.innerHTML = html;
-
-  // Populate completion summary if on that step
-  if (currentStep === completeStep) {
-    populateCompletionSummary();
-  }
-}
-
-function renderChildForms() {
-  let html = '';
-  childForms.forEach((id, idx) => {
-    html += `<div class="form-card" id="childCard${id}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <h3>Child ${idx + 1}</h3>
-        ${childForms.length > 1 ? `<button class="btn-danger" onclick="removeChildForm(${id})">Remove</button>` : ''}
-      </div>
-      <div class="form-grid">
-        <div class="form-field">
-          <label class="form-label">Name *</label>
-          <input class="form-input" id="child-name-${id}" placeholder="Full name">
-        </div>
-        <div class="form-field">
-          <label class="form-label">Date of Birth</label>
-          <input class="form-input" type="date" id="child-dob-${id}">
-        </div>
-        <div class="form-field">
-          <label class="form-label">Dominant Hand</label>
-          <select class="form-input" id="child-hand-${id}">
-            <option value="">-</option>
-            <option value="right">Right</option>
-            <option value="left">Left</option>
-          </select>
-        </div>
-        <div class="form-field">
-          <label class="form-label">Skill Level</label>
-          <select class="form-input" id="child-skill-${id}">
-            <option value="">-</option>
-            <option value="beginner">Beginner</option>
-            <option value="intermediate">Intermediate</option>
-            <option value="advanced">Advanced</option>
-            <option value="competitive">Competitive</option>
-          </select>
-        </div>
-        <div class="form-field">
-          <label class="form-label">Club / School</label>
-          <input class="form-input" id="child-club-${id}" placeholder="Tennis club or school">
-        </div>
-        <div class="form-field">
-          <label class="form-label">Notes</label>
-          <textarea class="form-input" id="child-notes-${id}" placeholder="Any additional information"></textarea>
-        </div>
-      </div>
-    </div>`;
-  });
-  return html;
-}
-
-// ============ ROLE SELECTION ============
-
-function selectRole(role) {
-  selectedRole = role;
+  STATE.step = STATE.alreadyRegistered ? 'done' : 'welcome';
   render();
 }
 
-async function submitRole() {
-  const btn = document.getElementById('btnRoleNext');
-  const msg = document.getElementById('roleMsg');
-  if (!selectedRole) return;
+// ============================================================
+// STEP MACHINE
+// ============================================================
+function setStep(s) { STATE.step = s; render(); }
+function setRole(r) { STATE.role = r; render(); }
 
-  const dbRole = selectedRole === 'coach' ? 'coach' : 'player_parent';
+function onNameInput() {
+  STATE.firstName = document.getElementById('first-name')?.value.trim() || '';
+  STATE.surname   = document.getElementById('surname')?.value.trim() || '';
+  document.getElementById('btn-details-next').disabled = !(STATE.firstName && STATE.surname);
+}
 
-  btn.textContent = 'Saving...'; btn.disabled = true;
-  msg.className = 'msg-bar'; msg.textContent = '';
+function toggleChildren(el) {
+  STATE.hasChildren = el.checked;
+}
 
+function addChild() {
+  STATE.children.push({ first_name: '', surname: '' });
+  render();
+  // Focus the new row's first name
+  const rows = document.querySelectorAll('.child-row input[data-field="first_name"]');
+  if (rows.length) rows[rows.length - 1].focus();
+}
+
+function removeChild(idx) {
+  STATE.children.splice(idx, 1);
+  if (STATE.children.length === 0) STATE.children.push({ first_name: '', surname: '' });
+  render();
+}
+
+function onChildInput(idx, field, value) {
+  if (!STATE.children[idx]) return;
+  STATE.children[idx][field] = value.trim();
+}
+
+// ============================================================
+// SUBMIT — one call at the end
+// ============================================================
+async function completeSignup(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  // 1) Register the primary member
   try {
-    const res = await apiFetch('/api/client/register', {
+    const res = await fetch(STATE.apiBase + '/api/client/register?email=' + encodeURIComponent(STATE.email), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Client-Key': STATE.apiKey },
       body: JSON.stringify({
-        email: WIX_DATA.email,
-        first_name: WIX_DATA.firstName,
-        surname: WIX_DATA.surname,
-        wix_member_id: WIX_DATA.wixMemberId || null,
-        role: dbRole,
+        email: STATE.email,
+        first_name: STATE.firstName,
+        surname: STATE.surname,
+        wix_member_id: STATE.wixMemberId || null,
+        role: STATE.role,
       }),
     });
-    const data = await res.json();
-    if (!data.ok) {
-      msg.className = 'msg-bar error'; msg.textContent = 'Error: ' + (data.error || 'unknown');
-      btn.textContent = 'Continue'; btn.disabled = false;
+
+    if (res.status === 403) {
+      showInlineError('Connection issue. Please refresh this page — if it keeps happening, email <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a>.');
+      btn.disabled = false; btn.textContent = 'Complete setup';
       return;
     }
 
-    if (selectedRole === 'parent_children') {
-      goToStep(2);
-    } else {
-      // Skip children step
-      goToStep(selectedRole === 'parent_children' ? 2 : 2);
-      // Actually go to completion
-      currentStep = 2;
-      render();
-    }
-  } catch (e) {
-    msg.className = 'msg-bar error'; msg.textContent = 'Error: ' + e.message;
-    btn.textContent = 'Continue'; btn.disabled = false;
-  }
-}
-
-// ============ CHILD FORMS ============
-
-function addChildForm() {
-  childForms.push(childNextId++);
-  document.getElementById('childFormsContainer').innerHTML = renderChildForms();
-}
-
-function removeChildForm(id) {
-  childForms = childForms.filter(f => f !== id);
-  if (childForms.length === 0) childForms = [childNextId++];
-  document.getElementById('childFormsContainer').innerHTML = renderChildForms();
-}
-
-function collectChildren() {
-  const children = [];
-  for (const id of childForms) {
-    const name = (document.getElementById('child-name-' + id)?.value || '').trim();
-    if (!name) continue;
-    children.push({
-      name: name,
-      dob: (document.getElementById('child-dob-' + id)?.value || '').trim() || null,
-      dominant_hand: (document.getElementById('child-hand-' + id)?.value || '').trim() || null,
-      skill_level: (document.getElementById('child-skill-' + id)?.value || '').trim() || null,
-      club_school: (document.getElementById('child-club-' + id)?.value || '').trim() || null,
-      notes: (document.getElementById('child-notes-' + id)?.value || '').trim() || null,
-    });
-  }
-  return children;
-}
-
-async function submitChildren() {
-  const btn = document.getElementById('btnChildNext');
-  const msg = document.getElementById('childMsg');
-  const children = collectChildren();
-
-  if (children.length === 0) {
-    msg.className = 'msg-bar error'; msg.textContent = 'Please add at least one child with a name.';
-    return;
-  }
-
-  btn.textContent = 'Saving...'; btn.disabled = true;
-  msg.className = 'msg-bar'; msg.textContent = '';
-
-  try {
-    const res = await apiFetch('/api/client/children', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: WIX_DATA.email, children }),
-    });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({ ok: false, error: 'bad_response' }));
     if (!data.ok) {
-      msg.className = 'msg-bar error'; msg.textContent = 'Error: ' + (data.error || 'unknown');
-      btn.textContent = 'Continue'; btn.disabled = false;
+      showInlineError('We couldn\'t save your profile — ' + (data.error || 'please try again') + '.');
+      btn.disabled = false; btn.textContent = 'Complete setup';
       return;
     }
 
-    currentStep = 3;
-    render();
-  } catch (e) {
-    msg.className = 'msg-bar error'; msg.textContent = 'Error: ' + e.message;
-    btn.textContent = 'Continue'; btn.disabled = false;
-  }
-}
-
-// ============ NAVIGATION ============
-
-function goToStep(step) {
-  currentStep = step;
-  render();
-}
-
-// ============ COMPLETION ============
-
-function populateCompletionSummary() {
-  const el = document.getElementById('completionSummary');
-  if (!el) return;
-
-  const roleLabels = {
-    player_parent: 'Player / Parent (Solo)',
-    parent_children: 'Parent with Children',
-    coach: 'Coach',
-  };
-
-  let html = '';
-  html += `<div class="summary-row"><span class="summary-label">Name</span><span class="summary-value">${esc(WIX_DATA.firstName)} ${esc(WIX_DATA.surname)}</span></div>`;
-  html += `<div class="summary-row"><span class="summary-label">Email</span><span class="summary-value">${esc(WIX_DATA.email)}</span></div>`;
-  html += `<div class="summary-row"><span class="summary-label">Role</span><span class="summary-value">${roleLabels[selectedRole] || selectedRole}</span></div>`;
-
-  if (selectedRole === 'parent_children') {
-    const children = collectChildren();
-    html += `<div class="summary-row"><span class="summary-label">Children</span><span class="summary-value">${children.length} registered</span></div>`;
-    children.forEach((c, i) => {
-      html += `<div class="summary-row" style="padding-left:12px"><span class="summary-label">Child ${i+1}</span><span class="summary-value">${esc(c.name)}</span></div>`;
-    });
-  }
-
-  el.innerHTML = html;
-}
-
-// ============ PHOTO UPLOAD ============
-
-async function uploadPhoto(input) {
-  const file = input.files[0];
-  if (!file) return;
-
-  const msg = document.getElementById('photoMsg');
-  msg.className = 'msg-bar info'; msg.textContent = 'Uploading photo...';
-
-  try {
-    // Get presigned URL
-    const urlRes = await apiFetch('/api/client/profile-photo-upload-url');
-    const urlData = await urlRes.json();
-    if (!urlData.ok) { msg.className = 'msg-bar error'; msg.textContent = 'Failed to get upload URL'; return; }
-
-    // Upload to S3
-    const uploadRes = await fetch(urlData.upload_url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'image/jpeg' },
-      body: file,
-    });
-
-    if (!uploadRes.ok) { msg.className = 'msg-bar error'; msg.textContent = 'Upload failed'; return; }
-
-    // Save photo key to profile
-    const saveRes = await apiFetch('/api/client/profile', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile_photo_url: urlData.photo_key }),
-    });
-    const saveData = await saveRes.json();
-    if (saveData.ok) {
-      msg.className = 'msg-bar success'; msg.textContent = 'Photo uploaded!';
-      // Show preview
-      const reader = new FileReader();
-      reader.onload = function(e) {
-        document.getElementById('photoPreview').innerHTML = `<img src="${e.target.result}" alt="Profile">`;
-      };
-      reader.readAsDataURL(file);
-    } else {
-      msg.className = 'msg-bar error'; msg.textContent = 'Failed to save photo reference';
+    // 2) Register children (if any)
+    const validChildren = STATE.children.filter(c => c.first_name && c.surname);
+    if (STATE.role === 'player_parent' && STATE.hasChildren && validChildren.length) {
+      try {
+        const cres = await fetch(STATE.apiBase + '/api/client/children?email=' + encodeURIComponent(STATE.email), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Client-Key': STATE.apiKey },
+          body: JSON.stringify({
+            email: STATE.email,
+            children: validChildren.map(c => ({
+              full_name: c.first_name,
+              surname: c.surname,
+            })),
+          }),
+        });
+        // Don't block on children failure — user can add later
+        if (!cres.ok) console.warn('Children registration non-ok:', cres.status);
+      } catch (e) { console.warn('Children error', e); }
     }
+
+    // All good — show success state, then route to dashboard
+    STATE.alreadyRegistered = true;
+    setStep('done');
   } catch (e) {
-    msg.className = 'msg-bar error'; msg.textContent = 'Upload error: ' + e.message;
+    showInlineError('Connection error: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Complete setup';
   }
 }
 
-// ============ LOCKER ROOM NAV ============
+function showInlineError(html) {
+  const wrap = document.getElementById('msg-wrap');
+  if (wrap) wrap.innerHTML = `<div class="msg error">${html}</div>`;
+}
 
 function goToLockerRoom() {
-  const lockerUrl = params.get('locker_room_url') || '';
-  if (lockerUrl) {
-    window.location.href = lockerUrl + '?email=' + encodeURIComponent(WIX_DATA.email) + '&key=' + encodeURIComponent(API_KEY) + '&api=' + encodeURIComponent(API_BASE);
+  // Ask the portal parent to switch to the dashboard
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'portal-navigate', target: 'dashboard' }, '*');
   } else {
-    // Try relative navigation or parent postMessage
-    if (window.parent !== window) {
-      window.parent.postMessage({ type: 'navigate', target: 'locker_room', email: WIX_DATA.email }, '*');
-    } else {
-      window.location.href = '/?email=' + encodeURIComponent(WIX_DATA.email) + '&key=' + encodeURIComponent(API_KEY) + '&api=' + encodeURIComponent(API_BASE);
-    }
+    window.location.href = '/?' + new URLSearchParams({ email: STATE.email, key: STATE.apiKey, api: STATE.apiBase }).toString();
   }
 }
 
-// ============ INIT ============
+// ============================================================
+// RENDER
+// ============================================================
+function render() {
+  const card = document.getElementById('card');
+  const prog = document.getElementById('progress');
 
-// Wait briefly for postMessage before using URL params
-setTimeout(() => { if (!initDone) init(); }, 500);
+  // Progress bar state
+  const stepOrder = ['welcome', 'role', 'details', 'children', 'done'];
+  const showChildren = STATE.role === 'player_parent' && STATE.hasChildren;
+  const effectiveSteps = showChildren ? ['role', 'details', 'children'] : ['role', 'details'];
+  const currentIdx = effectiveSteps.indexOf(STATE.step);
+  let progressHTML = '';
+  for (let i = 0; i < effectiveSteps.length; i++) {
+    const cls = (STATE.step === 'done') ? 'done'
+              : (i < currentIdx) ? 'done'
+              : (i === currentIdx) ? 'current'
+              : '';
+    progressHTML += `<div class="progress-step ${cls}"></div>`;
+  }
+  if (prog) prog.innerHTML = progressHTML;
+
+  let html = '';
+
+  if (STATE.step === 'blocked') {
+    html = `
+      <div class="success-wrap">
+        <div class="role-icon" style="width:80px;height:80px;margin-bottom:22px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <h2>We need your account details</h2>
+        <p class="lede" style="margin:14px auto 0;">Access this page through your TEN-FIFTY5 dashboard so we can pick up your email automatically. Or email <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a> if you're stuck.</p>
+      </div>`;
+  }
+
+  else if (STATE.step === 'welcome') {
+    html = `
+      <h1>Welcome to TEN-FIFTY5</h1>
+      <p class="lede">One more step and you're in. This takes about 30 seconds.</p>
+      <div class="email-chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><polyline points="22 6 12 13 2 6"/></svg>
+        ${esc(STATE.email)}
+      </div>
+      <div class="actions" style="justify-content:flex-end;">
+        <button class="btn btn-primary" onclick="setStep('role')">
+          Get started
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    `;
+  }
+
+  else if (STATE.step === 'role') {
+    html = `
+      <h2>Who are you?</h2>
+      <p class="lede">Pick one — this changes what your account shows.</p>
+      <div class="role-grid">
+        <div class="role-card ${STATE.role === 'player_parent' ? 'selected' : ''}" onclick="setRole('player_parent')">
+          <div class="role-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>
+          </div>
+          <div class="role-title">Player or Parent</div>
+          <div class="role-desc">I play myself, or I'm a parent managing my child's tennis.</div>
+        </div>
+        <div class="role-card ${STATE.role === 'coach' ? 'selected' : ''}" onclick="setRole('coach')">
+          <div class="role-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+          </div>
+          <div class="role-title">Coach</div>
+          <div class="role-desc">I coach players and want to review their match data.</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-back" onclick="setStep('welcome')">Back</button>
+        <button class="btn btn-primary" onclick="setStep('details')" ${STATE.role ? '' : 'disabled'}>
+          Continue
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    `;
+  }
+
+  else if (STATE.step === 'details') {
+    const initialChildrenCheck = STATE.hasChildren ? 'checked' : '';
+    const nameValid = !!(STATE.firstName && STATE.surname);
+    html = `
+      <h2>What should we call you?</h2>
+      <p class="lede">We just need your name. Everything else you can add later from your account.</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="first-name">First name</label>
+          <input id="first-name" type="text" placeholder="e.g. Tomo" autocomplete="given-name" value="${esc(STATE.firstName)}" oninput="onNameInput()" autofocus>
+        </div>
+        <div class="field">
+          <label for="surname">Surname</label>
+          <input id="surname" type="text" placeholder="e.g. Stojakovic" autocomplete="family-name" value="${esc(STATE.surname)}" oninput="onNameInput()">
+        </div>
+      </div>
+      ${STATE.role === 'player_parent' ? `
+        <label class="toggle-row">
+          <input type="checkbox" ${initialChildrenCheck} onchange="toggleChildren(this)">
+          <div class="toggle-row-text">
+            <strong>I'd like to add my children now</strong>
+            <span>Add a profile for each child. You can add or edit them anytime from your account.</span>
+          </div>
+        </label>
+      ` : ''}
+      <div id="msg-wrap"></div>
+      <div class="actions">
+        <button class="btn btn-back" onclick="setStep('role')">Back</button>
+        <button class="btn btn-primary" id="btn-details-next" ${nameValid ? '' : 'disabled'} onclick="continueFromDetails(this)">
+          ${STATE.role === 'player_parent' && STATE.hasChildren ? 'Continue' : 'Complete setup'}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    `;
+  }
+
+  else if (STATE.step === 'children') {
+    if (STATE.children.length === 0) STATE.children.push({ first_name: '', surname: '' });
+    html = `
+      <h2>Add your children</h2>
+      <p class="lede">Just name and surname per child — that's enough to get started. Everything else (UTR, club, dob) you can add later.</p>
+      <div class="children-list">
+        ${STATE.children.map((c, i) => `
+          <div class="child-row">
+            <div>
+              <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;">Child ${i + 1} · first name</label>
+              <input type="text" placeholder="First name" data-field="first_name" value="${esc(c.first_name)}" oninput="onChildInput(${i}, 'first_name', this.value)">
+            </div>
+            <div>
+              <label style="font-size:0.7rem;color:var(--text-dim);display:block;margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;">Surname</label>
+              <input type="text" placeholder="Surname" data-field="surname" value="${esc(c.surname)}" oninput="onChildInput(${i}, 'surname', this.value)">
+            </div>
+            ${STATE.children.length > 1 ? `<button class="remove-child" onclick="removeChild(${i})" aria-label="Remove child ${i + 1}">&times;</button>` : '<div></div>'}
+          </div>
+        `).join('')}
+      </div>
+      <button class="btn-add-child" onclick="addChild()">+ Add another child</button>
+      <div id="msg-wrap"></div>
+      <div class="actions">
+        <button class="btn btn-back" onclick="setStep('details')">Back</button>
+        <button class="btn btn-primary" onclick="completeSignup(this)">
+          Complete setup
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    `;
+  }
+
+  else if (STATE.step === 'done') {
+    const roleLabel = STATE.role === 'coach' ? 'Coach' : 'Player / Parent';
+    const name = [STATE.firstName, STATE.surname].filter(Boolean).join(' ');
+    const validChildren = STATE.children.filter(c => c.first_name && c.surname);
+    html = `
+      <div class="success-wrap">
+        <div class="success-ring">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h2>You're in, ${esc(STATE.firstName) || 'champion'}.</h2>
+        <p class="lede" style="margin:10px auto 0;">Welcome to TEN-FIFTY5. Your account is ready — let's get your first match analysed.</p>
+        <div class="summary">
+          <div class="summary-row"><span class="summary-label">Name</span><span class="summary-value">${esc(name)}</span></div>
+          <div class="summary-row"><span class="summary-label">Email</span><span class="summary-value">${esc(STATE.email)}</span></div>
+          <div class="summary-row"><span class="summary-label">Role</span><span class="summary-value">${roleLabel}</span></div>
+          ${validChildren.length ? `<div class="summary-row"><span class="summary-label">Children</span><span class="summary-value">${validChildren.length} added</span></div>` : ''}
+        </div>
+        <button class="btn btn-primary" onclick="goToLockerRoom()" style="padding:14px 32px;font-size:1rem;">
+          Go to Locker Room
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    `;
+  }
+
+  card.innerHTML = html;
+}
+
+// ============================================================
+// STEP TRANSITIONS
+// ============================================================
+function continueFromDetails(btn) {
+  STATE.firstName = document.getElementById('first-name').value.trim();
+  STATE.surname   = document.getElementById('surname').value.trim();
+  if (!STATE.firstName || !STATE.surname) return;
+
+  if (STATE.role === 'player_parent' && STATE.hasChildren) {
+    setStep('children');
+  } else {
+    completeSignup(btn);
+  }
+}
+
+// Wix iframe auto-height broadcast
+(function(){
+  if (window.self === window.top) return;
+  var last = 0;
+  function send() {
+    try {
+      var h = Math.max(
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        document.documentElement.offsetHeight,
+        document.body.offsetHeight
+      );
+      if (h && Math.abs(h - last) > 4) {
+        last = h;
+        window.parent.postMessage({ type: 'tfifty5-resize', height: h }, '*');
+      }
+    } catch (e) {}
+  }
+  window.addEventListener('load', send);
+  window.addEventListener('resize', send);
+  if ('ResizeObserver' in window) {
+    try { new ResizeObserver(send).observe(document.documentElement); } catch(e){}
+  }
+  setInterval(send, 800);
+})();
+
+// GO
+init();
 </script>
 </body>
 </html>

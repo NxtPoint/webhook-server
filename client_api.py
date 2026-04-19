@@ -807,23 +807,28 @@ def add_children():
         for c in children:
             if not isinstance(c, dict):
                 continue
-            name = (c.get("name") or "").strip()
-            if not name:
+            # Accept either a single "name" / "full_name" (legacy) OR
+            # separate "first_name" + "surname" from the new onboarding
+            # wizard. First name is required; surname optional.
+            first = (c.get("full_name") or c.get("first_name") or c.get("name") or "").strip()
+            surname = (c.get("surname") or "").strip()
+            if not first:
                 continue
 
             row = session.execute(
                 text("""
                     INSERT INTO billing.member
-                        (account_id, full_name, is_primary, role, active,
+                        (account_id, full_name, surname, is_primary, role, active,
                          dominant_hand, dob, skill_level, club_school, notes)
                     VALUES
-                        (:aid, :name, false, 'player_parent', true,
+                        (:aid, :first, :surname, false, 'player_parent', true,
                          :hand, :dob::date, :skill, :club, :notes)
                     RETURNING id
                 """),
                 {
                     "aid": acct_id,
-                    "name": name,
+                    "first": first,
+                    "surname": surname or None,
                     "hand": (c.get("dominant_hand") or "").strip() or None,
                     "dob": (c.get("dob") or "").strip() or None,
                     "skill": (c.get("skill_level") or "").strip() or None,
@@ -832,7 +837,8 @@ def add_children():
                 },
             )
             child_id = row.scalar_one()
-            created.append({"id": int(child_id), "name": name})
+            display = f"{first} {surname}".strip()
+            created.append({"id": int(child_id), "name": display})
 
         session.commit()
 
