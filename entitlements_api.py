@@ -38,15 +38,20 @@ OPS_KEY = os.environ.get("OPS_KEY", "").strip()
 
 
 def _ensure_entitlements_schema() -> None:
-    """Add technique credit columns to billing.entitlements if they don't
-    already exist. Idempotent; safe on every boot."""
+    """Add technique credit + coach-cap columns to billing.entitlements
+    if they don't already exist. Idempotent; safe on every boot."""
     try:
         with engine.begin() as conn:
-            for col in ("techniques_granted", "techniques_consumed", "techniques_remaining"):
+            for col in ("techniques_granted", "techniques_consumed", "techniques_remaining",
+                        "coach_linked_players"):
                 conn.execute(text(
                     f"ALTER TABLE billing.entitlements "
                     f"ADD COLUMN IF NOT EXISTS {col} INT NOT NULL DEFAULT 0"
                 ))
+            conn.execute(text(
+                "ALTER TABLE billing.entitlements "
+                "ADD COLUMN IF NOT EXISTS can_link_additional_player BOOLEAN NOT NULL DEFAULT true"
+            ))
     except Exception:
         pass
 
@@ -103,6 +108,28 @@ c AS (
   WHERE account_id IN (SELECT account_id FROM a)
   GROUP BY account_id
 ),
+-- Coach cap (Phase 2) — count this email's ACCEPTED+active coach links.
+-- Used to decide can_link_additional_player. See docs/pricing_strategy.md §6.
+cl AS (
+  SELECT
+    (SELECT email FROM a) AS email,
+    COUNT(*)::int AS coach_linked_players
+  FROM billing.coaches_permission
+  WHERE coach_email = (SELECT email FROM a)
+    AND status = 'ACCEPTED'
+    AND active = true
+),
+-- Is the coach on a non-free ACTIVE subscription? The free Coach Access
+-- plan (Wix id cd2b6772…) does NOT count as paid for the cap check.
+cp AS (
+  SELECT EXISTS (
+    SELECT 1 FROM billing.subscription_state s
+    WHERE s.account_id = (SELECT account_id FROM a)
+      AND s.status = 'ACTIVE'
+      AND (s.plan_id IS NULL
+           OR s.plan_id NOT IN ('cd2b6772-1880-42ec-9049-4d9e4decc42b'))
+  ) AS is_coach_pro
+),
 calc AS (
   SELECT
     a.account_id,
@@ -127,18 +154,24 @@ calc AS (
     GREATEST(
       COALESCE(g.techniques_granted, 0) - COALESCE(c.techniques_consumed, 0),
       0
-    ) AS techniques_remaining
+    ) AS techniques_remaining,
+
+    COALESCE(cl.coach_linked_players, 0) AS coach_linked_players,
+    COALESCE(cp.is_coach_pro, false) AS is_coach_pro
   FROM a
   LEFT JOIN m ON m.account_id = a.account_id
   LEFT JOIN s ON s.account_id = a.account_id
   LEFT JOIN g ON g.account_id = a.account_id
   LEFT JOIN c ON c.account_id = a.account_id
+  LEFT JOIN cl ON true
+  LEFT JOIN cp ON true
 )
 INSERT INTO billing.entitlements (
   account_id, email, role, account_active,
   subscription_status, current_period_end, paid_active,
   matches_granted, matches_consumed, matches_remaining,
   techniques_granted, techniques_consumed, techniques_remaining,
+  coach_linked_players, can_link_additional_player,
   can_view_dashboards, dashboard_block_reason,
   can_upload, block_reason, updated_at
 )
@@ -147,6 +180,15 @@ SELECT
   subscription_status, current_period_end, paid_active,
   matches_granted, matches_consumed, matches_remaining,
   techniques_granted, techniques_consumed, techniques_remaining,
+
+  coach_linked_players,
+  -- Coach can accept another invite if: under 1-player free cap OR
+  -- they have a paid (non-free) subscription. Non-coaches always true.
+  (
+    role <> 'coach'
+    OR coach_linked_players < 1
+    OR is_coach_pro
+  ) AS can_link_additional_player,
 
   -- View access: paid subscribers, coaches, or anyone who ever consumed a
   -- credit (free-trial graduates keep their trial dashboard forever). This
@@ -183,23 +225,25 @@ SELECT
   now()
 FROM calc
 ON CONFLICT (account_id) DO UPDATE SET
-  email                  = EXCLUDED.email,
-  role                   = EXCLUDED.role,
-  account_active         = EXCLUDED.account_active,
-  subscription_status    = EXCLUDED.subscription_status,
-  current_period_end     = EXCLUDED.current_period_end,
-  paid_active            = EXCLUDED.paid_active,
-  matches_granted        = EXCLUDED.matches_granted,
-  matches_consumed       = EXCLUDED.matches_consumed,
-  matches_remaining      = EXCLUDED.matches_remaining,
-  techniques_granted     = EXCLUDED.techniques_granted,
-  techniques_consumed    = EXCLUDED.techniques_consumed,
-  techniques_remaining   = EXCLUDED.techniques_remaining,
-  can_view_dashboards    = EXCLUDED.can_view_dashboards,
-  dashboard_block_reason = EXCLUDED.dashboard_block_reason,
-  can_upload             = EXCLUDED.can_upload,
-  block_reason           = EXCLUDED.block_reason,
-  updated_at             = now();
+  email                      = EXCLUDED.email,
+  role                       = EXCLUDED.role,
+  account_active             = EXCLUDED.account_active,
+  subscription_status        = EXCLUDED.subscription_status,
+  current_period_end         = EXCLUDED.current_period_end,
+  paid_active                = EXCLUDED.paid_active,
+  matches_granted            = EXCLUDED.matches_granted,
+  matches_consumed           = EXCLUDED.matches_consumed,
+  matches_remaining          = EXCLUDED.matches_remaining,
+  techniques_granted         = EXCLUDED.techniques_granted,
+  techniques_consumed        = EXCLUDED.techniques_consumed,
+  techniques_remaining       = EXCLUDED.techniques_remaining,
+  coach_linked_players       = EXCLUDED.coach_linked_players,
+  can_link_additional_player = EXCLUDED.can_link_additional_player,
+  can_view_dashboards        = EXCLUDED.can_view_dashboards,
+  dashboard_block_reason     = EXCLUDED.dashboard_block_reason,
+  can_upload                 = EXCLUDED.can_upload,
+  block_reason               = EXCLUDED.block_reason,
+  updated_at                 = now();
 """)
 
 READ_SQL = text("""
@@ -217,6 +261,8 @@ SELECT
   techniques_granted,
   techniques_consumed,
   techniques_remaining,
+  coach_linked_players,
+  can_link_additional_player,
   can_upload,
   block_reason,
   can_view_dashboards,

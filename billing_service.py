@@ -507,6 +507,95 @@ def consume_technique_for_task(
         return inserted
 
 
+# ----------------------------
+# Coach gate — Phase 2 cap
+# See docs/pricing_strategy.md §6. First linked player is free;
+# 2nd+ requires Coach Pro subscription. Gate fires at ACCEPT time
+# so existing accepted links are grandfathered automatically.
+# ----------------------------
+
+# Free Coach Access Wix plan — $0, does not count as "paid" for the gate.
+# Any OTHER active subscription on a coach account is treated as Coach Pro.
+FREE_COACH_WIX_IDS = frozenset({
+    "cd2b6772-1880-42ec-9049-4d9e4decc42b",
+})
+
+# Upgrade target — Wix Coach Pro plan (ongoing / monthly).
+COACH_PRO_WIX_ID = "d0f5eda4-380b-416c-ae08-a3d26c63d840"
+COACH_PRO_UPGRADE_URL = f"https://www.ten-fifty5.com/plans?planSlug={COACH_PRO_WIX_ID}"
+
+FREE_COACH_LINK_LIMIT = 1  # first linked player free
+
+
+def count_accepted_coach_links(coach_email: str) -> int:
+    """How many ACCEPTED + active coach permissions this email holds.
+    Used to decide whether the next accept exceeds the free limit."""
+    email = _norm_email(coach_email)
+    if not email:
+        return 0
+    with engine.connect() as conn:
+        n = conn.execute(
+            text("""
+                SELECT COUNT(*)
+                FROM billing.coaches_permission
+                WHERE coach_email = :email
+                  AND status = 'ACCEPTED'
+                  AND active = true
+            """),
+            {"email": email},
+        ).scalar()
+    return int(n or 0)
+
+
+def coach_has_pro_subscription(coach_email: str) -> bool:
+    """True if the coach's account has an ACTIVE subscription that isn't
+    the zero-dollar free Coach Access plan. The rule is deliberately
+    simple: any paid plan on a coach account is treated as Coach Pro.
+
+    billing.subscription_state.plan_id holds the Wix plan UUID (see
+    subscriptions_api.subscription_event). We exclude the free-coach
+    UUIDs so that free Coach Access subscribers still hit the 1-player
+    cap. Everyone else with an ACTIVE sub passes."""
+    email = _norm_email(coach_email)
+    if not email:
+        return False
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT 1
+                FROM billing.account a
+                JOIN billing.subscription_state s ON s.account_id = a.id
+                WHERE a.email = :email
+                  AND s.status = 'ACTIVE'
+                  AND (
+                    s.plan_id IS NULL
+                    OR s.plan_id NOT IN ('cd2b6772-1880-42ec-9049-4d9e4decc42b')
+                  )
+                LIMIT 1
+            """),
+            {"email": email},
+        ).first()
+    return bool(row)
+
+
+def coach_accept_gate(coach_email: str) -> tuple[bool, str | None]:
+    """Returns (allowed, block_reason).
+    - allowed=True when: coach has 0 accepted links (first is free) OR
+      coach has Coach Pro subscription (unlimited).
+    - allowed=False otherwise, reason='COACH_UPGRADE_REQUIRED'.
+    Fails open on DB errors so we never block legitimate invites because
+    of infrastructure noise."""
+    try:
+        existing = count_accepted_coach_links(coach_email)
+        if existing < FREE_COACH_LINK_LIMIT:
+            return True, None
+        if coach_has_pro_subscription(coach_email):
+            return True, None
+        return False, "COACH_UPGRADE_REQUIRED"
+    except Exception:
+        # Fail open — a DB hiccup must not block coach accepts.
+        return True, None
+
 
 def get_usage_summary(account_id: int) -> Dict[str, Any]:
     """

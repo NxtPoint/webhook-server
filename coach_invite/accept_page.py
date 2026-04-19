@@ -29,6 +29,12 @@ from sqlalchemy.orm import Session
 
 from db_init import engine
 from coach_invite.db import get_permission_by_token, clear_token
+from billing_service import (
+    coach_accept_gate,
+    count_accepted_coach_links,
+    COACH_PRO_UPGRADE_URL,
+    FREE_COACH_LINK_LIMIT,
+)
 
 accept_bp = Blueprint("coach_accept", __name__)
 
@@ -53,6 +59,21 @@ def accept_by_token():
     perm = get_permission_by_token(token)
     if not perm:
         return jsonify({"ok": False, "error": "invalid_or_expired_token"}), 400
+
+    # Phase 2 cap — first linked player free, Coach Pro required for more.
+    # See docs/pricing_strategy.md §6.
+    allowed, reason = coach_accept_gate(perm["coach_email"])
+    if not allowed:
+        return jsonify({
+            "ok": False,
+            "error": reason or "COACH_UPGRADE_REQUIRED",
+            "message": "Your free coach account already has 1 linked player. Upgrade to Coach Pro to accept additional invites.",
+            "upgrade_url": COACH_PRO_UPGRADE_URL,
+            "coach_email": perm["coach_email"],
+            "owner_name": perm["owner_name"],
+            "current_links": count_accepted_coach_links(perm["coach_email"]),
+            "free_limit": FREE_COACH_LINK_LIMIT,
+        }), 402
 
     # Look up coach account (if they have one) — same logic as coaches_api.api_accept
     with Session(engine) as session:

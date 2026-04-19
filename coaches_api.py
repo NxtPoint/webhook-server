@@ -208,6 +208,27 @@ def api_accept():
     if not coach_email:
         return jsonify(ok=False, error="coach_email_required"), 400
 
+    # Phase 2 cap — first linked player free, Coach Pro required for more.
+    # Gate before any UPDATE so we don't half-transition state on a blocked
+    # accept. See docs/pricing_strategy.md §6.
+    from billing_service import (
+        coach_accept_gate,
+        count_accepted_coach_links,
+        COACH_PRO_UPGRADE_URL,
+        FREE_COACH_LINK_LIMIT,
+    )
+    allowed, reason = coach_accept_gate(coach_email)
+    if not allowed:
+        return jsonify(
+            ok=False,
+            error=reason or "COACH_UPGRADE_REQUIRED",
+            message="Coach has reached free limit of 1 linked player. Coach Pro required.",
+            upgrade_url=COACH_PRO_UPGRADE_URL,
+            coach_email=coach_email,
+            current_links=count_accepted_coach_links(coach_email),
+            free_limit=FREE_COACH_LINK_LIMIT,
+        ), 402
+
     with Session(engine) as session:
         try:
             coach = session.execute(

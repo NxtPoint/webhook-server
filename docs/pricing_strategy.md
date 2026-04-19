@@ -187,13 +187,22 @@ Why coaches are free at launch:
 
 > *Coaches can't travel to every match. Their kids lose tournaments and the coach doesn't know why. Our data tells them where the kids are falling short — detailed stats, performance history trending over time, the AI Coach giving them game knowledge, technique analysis putting them above their peers. Data-driven coaching, in real time.*
 
-### Phase 2 (post-launch, not yet built)
+### Phase 2 — coach cap · **LIVE as of 2026-04-19**
 
 - First linked player: **free forever**
 - 2nd+ linked player: coach must subscribe to a paid Coach Pro plan
-- Paid coach plan Wix IDs already exist: `82694b71-888d-471a-9f6c-1e99feb5a253` (1 month), `d0f5eda4-380b-416c-ae08-a3d26c63d840` (ongoing)
-- Grandfather rule: coaches already active at the time of rollout keep unlimited players free, forever
-- Metric to watch before rolling this out: % of player signups that came through a coach invite. If >25% at 3 months, leave it free. If <10% at 6 months, roll out the cap.
+- Paid coach plan Wix IDs: `82694b71-888d-471a-9f6c-1e99feb5a253` (1 month), `d0f5eda4-380b-416c-ae08-a3d26c63d840` (ongoing). Upgrade URL constant: `COACH_PRO_UPGRADE_URL` in `billing_service.py`.
+- Grandfather rule: existing `ACCEPTED + active` permissions are untouched — the gate only fires at ACCEPT time for new invites. Coaches already at 2+ players keep their stable.
+- Free Coach Access plan (`cd2b6772…`) does NOT count as paid. Free-Coach-Access subscribers still hit the 1-player cap.
+- Metric to watch: % of player signups via coach invite, 402 `COACH_UPGRADE_REQUIRED` rate.
+
+#### Gate implementation (live code paths)
+
+- **Helper**: `billing_service.coach_accept_gate(email) -> (allowed, reason)`. Returns `(True, None)` if coach has <1 accepted link OR has a paid non-free subscription. Returns `(False, 'COACH_UPGRADE_REQUIRED')` otherwise. Fails open on DB error.
+- **Public accept (token path)**: `coach_invite/accept_page.py::accept_by_token` calls the gate before any UPDATE and returns HTTP 402 with `{error, message, upgrade_url, current_links, free_limit}`.
+- **Ops accept path**: `coaches_api.py::api_accept` same gate, same 402 response.
+- **Coach accept UI**: `coach_accept.html` intercepts 402 and renders a `stateUpgrade` card with the upgrade CTA (points at Coach Pro Wix plan). Invite stays pending — coach can pay then retry the same link.
+- **Entitlements surface**: `billing.entitlements` now carries `coach_linked_players` (int) and `can_link_additional_player` (bool). Non-coaches always see `can_link_additional_player = true`. Coaches compute as `coach_linked_players < 1 OR is_coach_pro`.
 
 ### What Coach Pro gives (when we build it)
 
@@ -296,7 +305,7 @@ Consistent across Wix public pages and the in-product upsell surfaces.
 ## 10. What we are NOT doing at launch (explicitly)
 
 - ❌ Separate pricing for Technique or AI Coach — both are bundled into every paid plan
-- ❌ Coach paid tier — coaches are free at launch
+- ✅ ~~Coach paid tier — coaches are free at launch~~ **SHIPPED 2026-04-19**: first player free, Coach Pro $50/mo for 2+
 - ❌ Referral credits mechanic — designed in §7, not built
 - ❌ AI Coach usage caps — unlimited for paid users at launch
 - ❌ Credit rollover on monthly plans — status quo (no rollover)

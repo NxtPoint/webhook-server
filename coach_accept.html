@@ -134,6 +134,24 @@ body {
       <h2>Missing invitation link</h2>
       <p>No invitation token found. Please use the link from your email.</p>
     </div>
+
+    <!-- Upgrade required — coach has reached free limit of 1 linked player -->
+    <div class="state" id="stateUpgrade">
+      <div class="icon">&#128274;</div>
+      <h2>Upgrade to accept this invite</h2>
+      <p>Your free coach account is linked to <strong id="currentLinks">1</strong> player.
+         <strong>Coach Pro</strong> unlocks unlimited linked players — full dashboards, technique reports and AI Coach on every student you work with.</p>
+      <p style="margin-top:14px;padding:10px 14px;background:var(--green-bg);border:1px solid var(--green);border-radius:var(--radius);font-size:0.82rem;color:var(--green);">
+        <span id="upgradeContext"></span>
+      </p>
+      <a href="#" id="upgradeBtn" target="_blank" rel="noopener"
+         style="display:inline-block;margin-top:18px;padding:12px 28px;background:var(--green);color:var(--white);border-radius:var(--radius);font-size:0.9rem;font-weight:600;text-decoration:none;transition:background 0.2s ease;">
+         Upgrade to Coach Pro — $50/mo
+      </a>
+      <p style="margin-top:14px;font-size:0.78rem;color:var(--text-dim);">
+        After subscribing, come back to this link to accept. The invite stays valid.
+      </p>
+    </div>
   </div>
 </div>
 
@@ -160,8 +178,23 @@ body {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token: token }),
   })
-  .then(res => res.json())
-  .then(data => {
+  .then(res => res.json().then(data => ({ status: res.status, data: data })))
+  .then(({ status, data }) => {
+    // Phase 2 coach cap — 402 means upgrade required
+    if (status === 402 || data.error === 'COACH_UPGRADE_REQUIRED') {
+      var currentLinksEl = document.getElementById('currentLinks');
+      if (currentLinksEl) currentLinksEl.textContent = data.current_links != null ? data.current_links : '1';
+      var ctxEl = document.getElementById('upgradeContext');
+      if (ctxEl) {
+        var inviter = data.owner_name ? (' from <strong>' + data.owner_name + '</strong>') : '';
+        ctxEl.innerHTML = 'This invite' + inviter + ' will be waiting — subscribe and click the link again to accept.';
+      }
+      var btn = document.getElementById('upgradeBtn');
+      if (btn && data.upgrade_url) btn.setAttribute('href', data.upgrade_url);
+      show('stateUpgrade');
+      return;
+    }
+
     if (data.ok) {
       document.getElementById('ownerName').textContent = data.owner_name || 'the account owner';
       document.getElementById('coachEmail').textContent = data.coach_email || 'your invited email address';
