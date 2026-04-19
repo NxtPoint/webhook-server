@@ -170,6 +170,17 @@ class PlayerTracker:
         }
         self._sahi_skip_count: int = 0
         self._sahi_run_count: int = 0
+        # B4+ diagnostics: track WHICH predicate fired the skip, and how often
+        # each would-fire independently. Lets us tune the rule post-deploy
+        # without needing to re-run the pipeline. A = spatial-coverage pose
+        # test, B = metric far-baseline test (original rule, relaxed).
+        self._sahi_skip_by_rule: Dict[str, int] = {
+            "A_spatial_pose": 0,   # skipped because 2 pose-carrying candidates span both halves
+            "B_metric_far":   0,   # skipped because a candidate projected near the far baseline
+            "would_skip_A_only": 0,
+            "would_skip_B_only": 0,
+            "would_skip_both":   0,
+        }
 
     def set_debug_upload_context(self, s3_client, s3_bucket: str, job_id: str) -> None:
         """Enable live debug frame upload to S3 (called from __main__.py)."""
@@ -229,32 +240,98 @@ class PlayerTracker:
             full_boxes_list, full_kps_list = self._run_yolo(frame)
             self._sub_seconds["full_yolo"] += _pc() - _t
 
-            # Smart conditional SAHI: skip SAHI ONLY when full-frame YOLO has
-            # already found a candidate AT THE FAR BASELINE (court_y ≤ 5).
-            # The far baseline is at court_y=0 in our system, so a real far
-            # player is at y ≤ ~5 (baseline + some depth during rallies).
-            # The umpire at the net is at y ≈ 11, which FAILS this check —
-            # so we correctly keep running SAHI when only the umpire is in
-            # the far half. Skipping SAHI on frames where the real far
-            # player IS visible at the baseline saves the biggest time sink.
-            skip_sahi = False
+            # B4+ tightened skip rule — two independent predicates. Skip SAHI
+            # if EITHER fires. Both are positive signals that full-frame YOLO
+            # has already found both players (or at least the far player).
+            #
+            # Rule A — SPATIAL COVERAGE via pose: full-frame YOLOv8x-pose has
+            # ≥1 pose-carrying candidate clearly in the near pixel half AND
+            # ≥1 pose-carrying candidate clearly in the far pixel half. Pose
+            # presence distinguishes real persons from tiny fragments. YOLOv8x-
+            # pose has a ~60-80 px keypoint-resolution floor, so if it DID find
+            # a far-half person with pose, the far player is definitely visible
+            # and SAHI's ~300ms of tiled compute is redundant. Size gates (40 px
+            # near, 20 px far) filter fragments. A ±5% vertical dead zone around
+            # the midline prevents mid-court recovery positions from either half
+            # spoofing the test.
+            #
+            # Rule B — METRIC FAR-BASELINE (prior rule, relaxed): calibration
+            # projection of any candidate's feet lands near the far baseline.
+            # Two changes from the prior implementation:
+            #   1. Pass `strict=False` so candidates with projected y ≤ -5 m
+            #      (calibration-extrapolation bias on the far image edge — the
+            #      same widening A0 applies in tier-2 scoring) aren't silently
+            #      dropped here. Without this the predicate almost never fired
+            #      — exactly the symptom we're fixing.
+            #   2. Widen the far-baseline band to [-10, 5] m, matching the
+            #      tier-2 `behind_baseline` widening in _choose_two_players.
+            skip_A = False   # spatial coverage via pose
+            skip_B = False   # metric far-baseline
+            frame_h = frame.shape[0]
+            midline_y = frame_h / 2
+            dead_zone = frame_h * 0.05  # ±5% of frame height around midline
+
+            # Predicate A — count pose-carrying candidates per half with size gate
+            has_near_pose = False
+            has_far_pose = False
+            for box, kp in zip(full_boxes_list, full_kps_list):
+                if kp is None:
+                    continue
+                cy = (box[1] + box[3]) / 2
+                bbox_h = box[3] - box[1]
+                if cy > midline_y + dead_zone and bbox_h >= 40:
+                    has_near_pose = True
+                elif cy < midline_y - dead_zone and bbox_h >= 20:
+                    has_far_pose = True
+                if has_near_pose and has_far_pose:
+                    break
+            skip_A = has_near_pose and has_far_pose
+
+            # Predicate B — metric far-baseline with strict=False
             if to_court_coords is not None:
                 for box in full_boxes_list:
                     cx = (box[0] + box[2]) / 2
                     y2 = box[3]  # feet position
                     try:
-                        pt = to_court_coords(cx, y2)
+                        pt = to_court_coords(cx, y2, strict=False)
+                    except TypeError:
+                        # Older CourtDetector without strict kwarg
+                        try:
+                            pt = to_court_coords(cx, y2)
+                        except Exception:
+                            pt = None
                     except Exception:
                         pt = None
-                    if pt is not None and -5.0 <= pt[1] <= 5.0:
-                        skip_sahi = True
+                    if pt is not None and -10.0 <= pt[1] <= 5.0:
+                        skip_B = True
                         break
+
+            # Would-skip accounting (for post-run tuning diagnostics)
+            if skip_A and skip_B:
+                self._sahi_skip_by_rule["would_skip_both"] += 1
+            elif skip_A:
+                self._sahi_skip_by_rule["would_skip_A_only"] += 1
+            elif skip_B:
+                self._sahi_skip_by_rule["would_skip_B_only"] += 1
+
+            skip_sahi = skip_A or skip_B
 
             if skip_sahi:
                 sahi_boxes, sahi_kps = [], []
                 self._sahi_skip_count += 1
+                # Record which predicate fired (prefer A as primary since it's
+                # the stronger signal — pose-confirmed both players visible).
+                if skip_A:
+                    self._sahi_skip_by_rule["A_spatial_pose"] += 1
+                    reason = "pose-spanning-halves"
+                else:
+                    self._sahi_skip_by_rule["B_metric_far"] += 1
+                    reason = "metric-far-baseline"
                 if frame_idx % 150 == 0:
-                    logger.info("sahi_skipped frame=%d — full-frame YOLO has far-baseline candidate", frame_idx)
+                    logger.info(
+                        "sahi_skipped frame=%d reason=%s (A=%s B=%s)",
+                        frame_idx, reason, skip_A, skip_B,
+                    )
             else:
                 # SAHI on court ROI only — crowd stands never contain players
                 _t = _pc()
@@ -1339,6 +1416,26 @@ class PlayerTracker:
         logger.info("  dropped_middle (3+):   %6d (%5.1f%%)", d["choose2_dropped_middle"], pct(d["choose2_dropped_middle"]))
         logger.info("  far_multi_cand_frames: %6d", d.get("far_multi_candidate_frames", 0))
 
+        # SAHI skip rule breakdown (B4+). Shows which predicate is firing, and
+        # how often each would fire independently. If A alone is carrying the
+        # skip rate with B adding very little, the metric-far predicate can be
+        # retired. Conversely, frames where only B fires are the calibration-
+        # extrapolation cases where pose missed the far player.
+        skip_total = self._sahi_skip_count
+        run_total = self._sahi_run_count
+        total_sahi_frames = skip_total + run_total
+        if total_sahi_frames > 0:
+            logger.info("SAHI skip rule breakdown:")
+            logger.info("  skipped/total:         %6d / %6d (%5.1f%%)",
+                        skip_total, total_sahi_frames,
+                        100.0 * skip_total / total_sahi_frames)
+            br = self._sahi_skip_by_rule
+            logger.info("  fired_by_A_pose:       %6d", br["A_spatial_pose"])
+            logger.info("  fired_by_B_metric:     %6d", br["B_metric_far"])
+            logger.info("  would_skip_A_only:     %6d", br["would_skip_A_only"])
+            logger.info("  would_skip_B_only:     %6d", br["would_skip_B_only"])
+            logger.info("  would_skip_both:       %6d", br["would_skip_both"])
+
     def reset(self):
         self._prev_players.clear()
         self.detections.clear()
@@ -1347,3 +1444,11 @@ class PlayerTracker:
                 self._diag[k] = [0] * len(self._diag[k])
             else:
                 self._diag[k] = 0
+        for k in self._sub_seconds:
+            self._sub_seconds[k] = 0.0
+        self._sahi_skip_count = 0
+        self._sahi_run_count = 0
+        for k in self._sahi_skip_by_rule:
+            self._sahi_skip_by_rule[k] = 0
+        self._last_detect_frame = -self._detect_interval
+        self._last_result = []
