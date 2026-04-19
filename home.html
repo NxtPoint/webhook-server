@@ -337,6 +337,59 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .report-caption ul svg { width: 14px; height: 14px; margin-top: 4px; color: var(--green); flex-shrink: 0; }
 
 /* ================================================================
+   LONG GAME — longitudinal-tracking differentiator section
+   ================================================================ */
+.longgame {
+  background: linear-gradient(170deg, var(--green-dark) 0%, #0a1814 100%);
+  position: relative; overflow: hidden;
+  color: var(--white);
+  padding: 100px 0;
+}
+.longgame::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(1100px 700px at 85% 50%, rgba(74,222,128,0.08), transparent 65%),
+    radial-gradient(800px 500px at 15% 100%, rgba(5,12,9,0.8), transparent 60%);
+}
+.longgame .wrap { position: relative; }
+.longgame-inner {
+  display: grid; grid-template-columns: 1fr 1.25fr; gap: 60px; align-items: center;
+  max-width: 1200px; margin: 0 auto;
+}
+@media (max-width: 920px) {
+  .longgame-inner { grid-template-columns: 1fr; gap: 44px; }
+  .longgame { padding: 74px 0; }
+}
+.longgame h2 { color: var(--white); margin: 16px 0 20px; }
+.longgame .lede.light { margin-bottom: 24px; }
+.longgame-pts { list-style: none; }
+.longgame-pts li {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 0;
+  font-size: 0.92rem; color: rgba(255,255,255,0.82);
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.longgame-pts li:last-child { border-bottom: 1px solid rgba(255,255,255,0.08); }
+.longgame-pts svg { width: 16px; height: 16px; margin-top: 4px; color: #86E8A4; flex-shrink: 0; }
+
+.longgame-visual {
+  position: relative;
+  aspect-ratio: 16 / 11;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 22px 24px 16px;
+  overflow: hidden;
+}
+.longgame-visual-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 6px;
+}
+.longgame-visual-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.18em; color: #86E8A4; }
+.longgame-visual-sub { font-size: 0.62rem; font-weight: 600; letter-spacing: 0.12em; color: rgba(255,255,255,0.4); }
+.longgame-visual svg { width: 100%; height: calc(100% - 24px); }
+
+/* ================================================================
    DIFFERENTIATORS
    ================================================================ */
 .differ-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -619,7 +672,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
       <div class="hero-meta">
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>No credit card</span>
         <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Ready in 1-2 hours</span>
-        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Full match history kept</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Any camera · iPhone, Android, DSLR</span>
       </div>
     </div>
   </div>
@@ -1085,6 +1138,122 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Tactical, technical or match-prep Q&amp;A</li>
           <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Unlimited on every paid plan</li>
         </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- LONG GAME — the longitudinal differentiator nobody else in tennis has -->
+<section class="longgame">
+  <div class="wrap">
+    <div class="longgame-inner">
+      <div class="longgame-content">
+        <div class="eyebrow light">The Long Game</div>
+        <h2>Every match teaches you something.<br>We make sure you never forget it.</h2>
+        <p class="lede light">Your coach moves on. Your stats fade. But your progression chart — every KPI, every match, every month — compounds. No competitor tracks this the way we do.</p>
+        <ul class="longgame-pts">
+          <li>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Rolling 5-match averages vs your own baseline
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            18 KPIs trending across your season
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Technique benchmarked vs beginner → pro
+          </li>
+          <li>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            UTR-style progression pathways · coming soon
+          </li>
+        </ul>
+      </div>
+
+      <div class="longgame-visual" aria-hidden="true">
+        <div class="longgame-visual-head">
+          <span class="longgame-visual-title">1ST SERVE % · 6-MONTH TREND</span>
+          <span class="longgame-visual-sub">+22%</span>
+        </div>
+        <svg viewBox="0 0 800 440" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="lg-area" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#4ADE80" stop-opacity="0.45"/>
+              <stop offset="100%" stop-color="#4ADE80" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="lg-line" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="rgba(74,222,128,0.55)"/>
+              <stop offset="100%" stop-color="#B9F2C9"/>
+            </linearGradient>
+            <filter id="lg-glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="6"/></filter>
+          </defs>
+
+          <!-- Grid lines -->
+          <g stroke="rgba(255,255,255,0.05)" stroke-width="1">
+            <line x1="60" y1="380" x2="780" y2="380"/>
+            <line x1="60" y1="300" x2="780" y2="300"/>
+            <line x1="60" y1="220" x2="780" y2="220"/>
+            <line x1="60" y1="140" x2="780" y2="140"/>
+            <line x1="60" y1="60"  x2="780" y2="60"/>
+          </g>
+          <!-- Y-axis ticks -->
+          <g fill="rgba(255,255,255,0.3)" font-family="Inter, sans-serif" font-size="10" font-weight="500" letter-spacing="0.05em">
+            <text x="50" y="384" text-anchor="end">45%</text>
+            <text x="50" y="304" text-anchor="end">55%</text>
+            <text x="50" y="224" text-anchor="end">65%</text>
+            <text x="50" y="144" text-anchor="end">75%</text>
+            <text x="50" y="64"  text-anchor="end">85%</text>
+          </g>
+
+          <!-- Area fill -->
+          <path d="M 88 350 L 200 310 L 320 285 L 440 225 L 560 165 L 680 115 L 760 78 L 760 380 L 88 380 Z" fill="url(#lg-area)"/>
+          <!-- Baseline reference -->
+          <line x1="88" y1="350" x2="760" y2="350" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="3 5"/>
+          <!-- Main line -->
+          <path d="M 88 350 L 200 310 L 320 285 L 440 225 L 560 165 L 680 115 L 760 78" stroke="url(#lg-line)" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+          <!-- Data points -->
+          <g>
+            <circle cx="88" cy="350" r="8" fill="rgba(74,222,128,0.18)"/>
+            <circle cx="88" cy="350" r="4" fill="#86E8A4"/>
+            <circle cx="200" cy="310" r="7" fill="rgba(74,222,128,0.16)"/>
+            <circle cx="200" cy="310" r="3.5" fill="#86E8A4"/>
+            <circle cx="320" cy="285" r="7" fill="rgba(74,222,128,0.16)"/>
+            <circle cx="320" cy="285" r="3.5" fill="#86E8A4"/>
+            <circle cx="440" cy="225" r="7" fill="rgba(74,222,128,0.16)"/>
+            <circle cx="440" cy="225" r="3.5" fill="#86E8A4"/>
+            <circle cx="560" cy="165" r="8" fill="rgba(74,222,128,0.2)"/>
+            <circle cx="560" cy="165" r="4" fill="#86E8A4"/>
+            <circle cx="680" cy="115" r="9" fill="rgba(74,222,128,0.22)"/>
+            <circle cx="680" cy="115" r="4.5" fill="#86E8A4"/>
+            <!-- Bright final point -->
+            <circle cx="760" cy="78" r="18" fill="rgba(74,222,128,0.22)" filter="url(#lg-glow)"/>
+            <circle cx="760" cy="78" r="8" fill="rgba(74,222,128,0.95)"/>
+            <circle cx="760" cy="78" r="4" fill="#B9F2C9"/>
+          </g>
+
+          <!-- X-axis labels -->
+          <g fill="rgba(255,255,255,0.38)" font-family="Inter, sans-serif" font-size="10" font-weight="600" letter-spacing="0.12em" text-anchor="middle">
+            <text x="88" y="410">JAN</text>
+            <text x="200" y="410">FEB</text>
+            <text x="320" y="410">MAR</text>
+            <text x="440" y="410">APR</text>
+            <text x="560" y="410">MAY</text>
+            <text x="680" y="410">JUN</text>
+            <text x="760" y="410" fill="#86E8A4">NOW</text>
+          </g>
+
+          <!-- Start / end milestone tags -->
+          <g>
+            <rect x="40" y="288" width="90" height="22" rx="3" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.18)"/>
+            <text x="85" y="302" fill="rgba(255,255,255,0.55)" font-family="Inter, sans-serif" font-size="9" font-weight="700" letter-spacing="0.1em" text-anchor="middle">UTR 5.2</text>
+          </g>
+          <g>
+            <rect x="650" y="34" width="104" height="26" rx="3" fill="rgba(74,222,128,0.14)" stroke="rgba(74,222,128,0.5)"/>
+            <text x="702" y="50" fill="#86E8A4" font-family="Inter, sans-serif" font-size="10" font-weight="800" letter-spacing="0.1em" text-anchor="middle">UTR 6.8 ↑</text>
+          </g>
+        </svg>
       </div>
     </div>
   </div>

@@ -669,6 +669,26 @@ def client_entitlements():
     period_end = row["current_period_end"]
     period_end_iso = period_end.isoformat() if period_end else None
 
+    # PAYG → subscription nudge. Count distinct PAYG grants on this account.
+    # Surface a nudge when the user has 3+ PAYG packs AND no active sub —
+    # they're spending more than they would on Standard ($40/mo for 5 matches).
+    payg_grant_count = 0
+    try:
+        with engine.connect() as conn:
+            payg_grant_count = conn.execute(
+                text("""
+                    SELECT COUNT(*)
+                    FROM billing.entitlement_grant
+                    WHERE account_id = :aid
+                      AND source = 'wix_payg'
+                      AND is_active = true
+                """),
+                {"aid": int(row["account_id"])},
+            ).scalar() or 0
+    except Exception:
+        payg_grant_count = 0
+    show_subscription_nudge = (int(payg_grant_count) >= 3) and (not plan_active)
+
     return jsonify({
         "ok": True,
         "entitlements": {
@@ -683,6 +703,8 @@ def client_entitlements():
             "plan_type": row["plan_type"],
             "current_period_end": period_end_iso,
             "plans_page_url": PLANS_PAGE_URL,
+            "payg_grant_count": int(payg_grant_count),
+            "show_subscription_nudge": bool(show_subscription_nudge),
         },
     })
 

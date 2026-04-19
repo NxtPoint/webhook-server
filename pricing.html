@@ -208,6 +208,29 @@ button { cursor: pointer; font-family: inherit; }
   margin-bottom: 16px;
 }
 
+/* PAYG → subscription nudge banner */
+.nudge-banner {
+  background: rgba(217,119,6,0.08);
+  border: 1px solid var(--amber);
+  border-left: 4px solid var(--amber);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.nudge-banner-text { color: var(--text); font-size: 0.88rem; line-height: 1.5; }
+.nudge-banner-text strong { color: var(--amber); }
+.nudge-banner-cta {
+  flex-shrink: 0;
+  padding: 8px 16px; border-radius: var(--radius);
+  background: var(--amber); color: var(--white); border: none;
+  font-size: 0.82rem; font-weight: 600; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: opacity var(--transition);
+}
+.nudge-banner-cta:hover { opacity: 0.88; }
+
 /* ========== LOADING ========== */
 .loading {
   display: flex; align-items: center; justify-content: center;
@@ -514,6 +537,21 @@ function renderStatusBar(planActive, planCode, planType, subStatus, periodEnd, r
 
 function renderFullPlanView(currentPlanCode) {
   let html = '';
+
+  // PAYG → subscription nudge — show when user has 3+ PAYG grants + no active sub
+  const showNudge = entitlements?.show_subscription_nudge === true;
+  const paygCount = entitlements?.payg_grant_count || 0;
+  if (showNudge) {
+    html += `<div class="nudge-banner">
+      <div class="nudge-banner-text">
+        <strong>You've bought ${paygCount} credit packs.</strong>
+        Standard is <strong>$40/mo</strong> for 5 matches + unlimited Technique + AI Coach — it pays for itself at your current pace.
+      </div>
+      <a href="#standard" class="nudge-banner-cta" onclick="document.querySelector('.plan-card.featured')?.scrollIntoView({behavior:'smooth', block:'center'});return false;">
+        See Standard &rarr;
+      </a>
+    </div>`;
+  }
 
   // Monthly subscription plans
   html += `<div class="section-heading">Monthly Subscriptions</div>`;
