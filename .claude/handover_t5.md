@@ -152,6 +152,15 @@ python -m ml_pipeline.diag.pose_gap_probe
 
 Samples 20 frames spanning the match, runs YOLOv8x-pose locally, reports whether the model finds the near player with usable keypoints. Used to distinguish "pipeline bug" from "model limitation" when pose data is sparse.
 
+### Diagnostic — prod pose audit (H1/H2/H3 discriminator)
+
+```bash
+DATABASE_URL=... python -m ml_pipeline.diag.prod_pose_audit \
+    --task <task_uuid> --start-frame 4500 --end-frame 6000 --every 5
+```
+
+Sequential-read YOLOv8x-pose (matching Batch's `VideoPreprocessor.frames()` iteration exactly) vs `ml_analysis.player_detections` for the same frame_idx range. Also compares against `cap.set(POS_FRAMES, N)` seek-read on every sample to catch keyframe-seek mismatches (H3). Emits per-frame "interesting row" table, aggregate stats, and hypothesis verdict. See P0 below for interpretation.
+
 ### Offline serve-detector validation
 
 For iteration without Batch rebuild, extract pose locally and run the detector in-memory:
@@ -389,8 +398,10 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 | File | Purpose |
 |---|---|
 | `diag/serve_viewer.py` | Visual contact sheets — 3-frame strips per serve |
-| `diag/pose_gap_probe.py` | Local YOLOv8x-pose sampling to diagnose pose-coverage gaps |
-| `diag/extract_local_poses.py` | Full-video local pose extraction → JSONL (dev-only) |
+| `diag/pose_gap_probe.py` | Local YOLOv8x-pose sampling to diagnose pose-coverage gaps (uses seek — superseded for Batch-comparison by `prod_pose_audit`) |
+| `diag/extract_local_poses.py` | Full-video local pose extraction → JSONL (dev-only; seek-based, see handover P0) |
+| `diag/repro_pose_gap.py` | Apr 18 probe that ran detect_frame on seek-read frames; superseded by `prod_pose_audit` |
+| `diag/prod_pose_audit.py` | Sequential-read YOLO vs `ml_analysis.player_detections` — discriminates H1/H2/H3 density-gap hypotheses |
 
 ### Root-level touchpoints (not in ml_pipeline/)
 
@@ -448,7 +459,21 @@ Three hypotheses to discriminate:
 2. **Semantic-half filter isn't seeing the pose-carrying bbox** — despite my Apr 18 `_assign_ids` rewrite taking biggest-area-per-half, something upstream may discard pose bboxes before `_assign_ids` is called. Check: after `_choose_two_players` runs, does the returned candidate list actually include the pose-carrying YOLO output? Add per-frame logging.
 3. **cv2 seek vs sequential read** — my local probe seeks via `cap.set(CAP_PROP_POS_FRAMES, N)` which may land on a keyframe near N, not N itself. Batch reads sequentially. Same frame_idx may correspond to different actual frames. **Easy validation:** modify `repro_pose_gap.py` to read sequentially (not seek), compare output.
 
-**Suggested first step:** write `ml_pipeline/diag/prod_pose_audit.py` that iterates the reference video sequentially (same path as Batch) and logs what pose would have been at frames 4500-6000 (minute 3-4 — the worst window). Compare counts with what's in `ml_analysis.player_detections` for task f181aaf7. Delta tells you which hypothesis is correct.
+**First diag delivered 2026-04-19:** `ml_pipeline/diag/prod_pose_audit.py`. Iterates the video sequentially with VideoPreprocessor's exact fps-downsampling math (so yielded_idx here == Batch's `frame_idx` in `ml_analysis.player_detections`), runs YOLOv8x-pose at prod imgsz/conf, AND reads the same yielded_idx via `cap.set(POS_FRAMES, ...)` to directly test H3 (pixel-level comparison of the two reads). Queries `ml_analysis.player_detections` for the matching (task, frame) and classifies each sample as MATCH / LOCAL>DB / both-empty / DB>LOCAL.
+
+Run:
+```bash
+DATABASE_URL=... python -m ml_pipeline.diag.prod_pose_audit \
+    --task f181aaf7-6862-4364-bd03-7e92ff5346e9 \
+    --start-frame 4500 --end-frame 6000 --every 5
+```
+
+Script prints per-frame table for "interesting" rows (gap or H3 diff), aggregate stats, and a hypothesis verdict. Detail JSON written to `ml_pipeline/diag/prod_pose_audit_<task8>.json` for follow-up analysis. ~300 YOLO runs at default stride; allow 5-10 min on CPU, ~1 min on GPU.
+
+**Verdict interpretation:**
+- H3 signal: `SEEK vs SEQUENTIAL pixel content differs` > 10% → the Apr 18 offline validation was comparing mismatched frames; redo offline eval with sequential iteration.
+- H1/H2 signal: `LOCAL found near-pose, DB missing pid=0` > 30% → raw YOLO sees the player but Batch dropped it. Next step: replay `detect_frame()` locally with `court_corners` + `to_court_coords` pulled from `ml_analysis.court_detections` — if local detect_frame ALSO returns empty → H2 (scoring); else → H1 (Batch-container-specific, e.g. GPU nondeterminism or image/weights drift).
+- Neither: local YOLO also misses the near player → genuine model-capability issue (motion blur / occlusion / camera pan), not a pipeline bug.
 
 **Do NOT** tune pose-scoring rules until density is understood — pose rules are only relevant if we have enough samples to cluster.
 
