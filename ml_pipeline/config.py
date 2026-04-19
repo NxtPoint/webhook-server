@@ -122,7 +122,15 @@ COURT_REFERENCE_KEYPOINTS = [
 # ---------------------------------------------------------------------------
 # Player tracker (YOLOv8)
 # ---------------------------------------------------------------------------
-YOLO_CONFIDENCE = 0.25             # Sane production value with YOLOv8x-pose (bigger model = more confident)
+YOLO_CONFIDENCE = 0.10             # Was 0.25. 2026-04-19: prod_pose_audit + replay_detect_frame diags
+                                   # proved the near-player pose bbox Batch was missing in minutes 3-6
+                                   # IS produced by local CPU YOLOv8x-pose AND scoring logic keeps it
+                                   # when given the same frame (H2 ruled out). The drop only happens
+                                   # inside the Batch container — leading theory is GPU FP16 inference
+                                   # suppressing detections near the 0.25 threshold. Lowering to 0.10
+                                   # lets borderline GPU outputs through; _choose_two_players tier
+                                   # scoring + pixel-polygon gate still reject non-player noise
+                                   # downstream. If false-positive rate explodes, revisit.
 YOLO_COURT_CROP_CONFIDENCE = 0.15  # Lower threshold for the court-crop pass — distant players are small
                                    # and produce lower-confidence detections. Safe to be permissive here
                                    # because _choose_two_players span check filters non-players downstream.
