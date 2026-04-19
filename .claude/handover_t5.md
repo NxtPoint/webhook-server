@@ -519,6 +519,25 @@ Estimated: 1-2 weeks from now to 24/24. The density issue may turn out to be qui
 
 ## Session log (reverse chronological)
 
+### 2026-04-19 afternoon (autonomous session) — conf=0.10 verified on Batch run 6a9bce49
+
+Batch job `8bb77cf9` (task `6a9bce49-6a65-4d28-a0d1-42bab5f2fcee`) completed in 2842s (47 min). PlayerTracker final diagnostics from CloudWatch log stream `ml-pipeline/default/df19af458b8a444bb3a3b08eb3138db1`:
+
+```
+frames_yolo_ran: 3096
+avg candidates/frame: 12.77
+kept_2 (both players):  2000  (64.6%)
+kept_1_single_cand:     1006  (32.5%)
+kept_0 (nothing):         44  (1.4%)
+kept_1_span_fail:         46  (1.5%)
+```
+
+The conf=0.10 fix landed decisively — 97%+ of YOLO-run frames now produce at least one valid player candidate vs f181aaf7's ~2% in rally-dense minutes. Early CloudWatch samples from minutes 0-1 showed **100% full>=1 frames** before CloudWatch ingestion lag cut off visibility.
+
+Follow-up items noted during this session:
+- Serve-recall number needs DB access to measure — Tomo runs `python -m ml_pipeline.harness eval-serve 6a9bce49-6a65-4d28-a0d1-42bab5f2fcee` + reconcile on Render.
+- `pid=1` junk fallback bug found while querying f181aaf7: when `to_court_coords` returns None (projection failed — spectator outside calibrated bounds), `_choose_two_players` sets `score = motion_bonus` which can be 500, passing `MIN_SELECTABLE_SCORE = 500` and assigning pid=1 to whatever moves in the upper half. Clean fix: `score = 0.0` when `court_xy is None`. Deferred to not confound conf=0.10 verification.
+
 ### 2026-04-19 afternoon — Density gap diagnosed: H2 ruled out, H1 confirmed, conf=0.10 fix deployed
 
 Three-diag sequence nailed down the cause of the near-player density gap on `f181aaf7`:
