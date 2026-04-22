@@ -86,7 +86,17 @@ def main(argv=None) -> int:
         ROUND(t5.hitter_court_y::numeric, 1) AS t5_hy,
         ROUND(t5.bounce_court_x::numeric, 1) AS t5_bx,
         ROUND(t5.bounce_court_y::numeric, 1) AS t5_by,
-        ROUND(ABS(sa.ts - t5.ts)::numeric, 2) AS dt,
+        -- Timing semantics: pose_only / pose_and_* events are stamped
+        -- at the HIT frame (trophy peak, ~contact time); bounce_only
+        -- events are stamped at the BOUNCE frame which is ~0.5 s after
+        -- hit (ball flight). SA ball_hit_s is hit time. Subtract 0.5 s
+        -- from bounce_only t5_ts before computing dt so a correctly-
+        -- detected bounce-based serve gets a correct dt, not
+        -- penalised by flight-time semantics.
+        ROUND(ABS(sa.ts - (t5.ts - CASE
+          WHEN t5.source = 'bounce_only' THEN 0.5
+          ELSE 0.0
+        END))::numeric, 2) AS dt,
         CASE
           WHEN t5.bounce_court_x IS NOT NULL AND sa.bx IS NOT NULL
           THEN ROUND(SQRT(POWER(sa.bx - t5.bounce_court_x, 2)
