@@ -162,7 +162,14 @@ def train(
 
     # ── Dataset + splits ────────────────────────────────────────────────────
     logger.info("Loading dataset: frames_dir=%s  labels=%s", frames_dir, labels_json)
-    full_dataset = TrackNetDataset(frames_dir, labels_json)
+    # skip_no_label_middle=False: build_serve_bounce_dataset extracts frames
+    # as [bounce-(N-1), ..., bounce] per the TrackNet V2 convention (label
+    # on LAST frame of window, model predicts ball at t given frames [t-2,
+    # t-1, t]). The middle frame is never labeled — dropping samples
+    # whose middle is unlabeled would discard every single training
+    # sample. The last-frame-label contract still holds regardless.
+    full_dataset = TrackNetDataset(frames_dir, labels_json,
+                                    skip_no_label_middle=False)
     stats = full_dataset.label_stats()
     logger.info(
         "Dataset: total=%d  with_ball=%d  without_ball=%d",
