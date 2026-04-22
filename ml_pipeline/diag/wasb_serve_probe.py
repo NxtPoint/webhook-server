@@ -119,6 +119,11 @@ def main():
     ap.add_argument("--only-role", choices=["NEAR", "FAR"], default=None)
     ap.add_argument("--max-serves", type=int, default=None)
     ap.add_argument("--score-threshold", type=float, default=0.5)
+    ap.add_argument("--native-crop", action="store_true",
+                    help="Crop a 512x288 NATIVE-resolution tile centered on "
+                         "the expected bounce pixel and feed that to WASB "
+                         "(no resize of the ball). Bypasses the 3.75x downsample "
+                         "that collapses sub-pixel balls.")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -164,6 +169,20 @@ def main():
         logger.info("[%d/%d] ts=%.2f role=%s expected bounce court=(%.2f,%.2f) pixel=(%d,%d) frames [%d,%d)",
                     i+1, len(serves), ts, role, mx, my, int(ex_pxx), int(ex_pxy), start_f, end_f)
 
+        # Native-crop mode: carve a 512x288 tile centered on expected bounce
+        # pixel and feed it directly to WASB. WASB's internal resize becomes
+        # a no-op (input already 512x288), so ball retains native size.
+        crop_origin = None
+        if args.native_crop:
+            h, w = 1080, 1920  # will re-read from first frame
+            from ml_pipeline.wasb_ball_tracker import WASB_INPUT_W, WASB_INPUT_H
+            x0 = int(round(ex_pxx - WASB_INPUT_W / 2))
+            y0 = int(round(ex_pxy - WASB_INPUT_H / 2))
+            crop_origin = (max(0, min(w - WASB_INPUT_W, x0)),
+                           max(0, min(h - WASB_INPUT_H, y0)))
+            logger.info("  native-crop tile at (%d,%d) size %dx%d",
+                        crop_origin[0], crop_origin[1], WASB_INPUT_W, WASB_INPUT_H)
+
         wasb.reset()
         cap = cv2.VideoCapture(args.video)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
@@ -173,7 +192,21 @@ def main():
             for idx in range(start_f, end_f):
                 ok, frame = cap.read()
                 if not ok: break
-                det = wasb.detect_frame(frame, idx)
+                if args.native_crop and crop_origin is not None:
+                    from ml_pipeline.wasb_ball_tracker import WASB_INPUT_W, WASB_INPUT_H
+                    cx0, cy0 = crop_origin
+                    feed = frame[cy0:cy0 + WASB_INPUT_H, cx0:cx0 + WASB_INPUT_W]
+                    if feed.shape[:2] != (WASB_INPUT_H, WASB_INPUT_W):
+                        continue
+                    det = wasb.detect_frame(feed, idx)
+                    if det:
+                        # Crop is already at native res; wasb tracker scaled
+                        # by (crop_w/INPUT_W, crop_h/INPUT_H) = (1,1). Add
+                        # crop origin to land in full-frame pixel coords.
+                        det["x"] += cx0
+                        det["y"] += cy0
+                else:
+                    det = wasb.detect_frame(frame, idx)
                 if det:
                     # Project pixel → court
                     court = detector.to_court_coords(det["x"], det["y"], strict=False)
