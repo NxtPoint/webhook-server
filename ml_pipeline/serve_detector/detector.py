@@ -121,6 +121,22 @@ def _load_ball_rows(conn, task_id: str) -> list:
     """), {"tid": task_id}).mappings().all()
     rows = [dict(r) for r in rows]
 
+    # Check table existence via information_schema BEFORE selecting — if the
+    # table doesn't exist, a direct SELECT raises an exception that poisons
+    # the current transaction (Postgres aborts the whole block; all later
+    # queries fail with InFailedSqlTransaction even though we caught the
+    # Python exception). Guarding with information_schema avoids this.
+    table_exists = conn.execute(sql_text("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'ml_analysis'
+              AND table_name = 'ball_detections_roi'
+        )
+    """)).scalar()
+    if not table_exists:
+        logger.debug("ball_detections_roi table not present — skipping ROI merge")
+        return rows
+
     try:
         roi_rows = conn.execute(sql_text("""
             SELECT frame_idx, x, y, is_bounce, court_x, court_y
@@ -129,7 +145,7 @@ def _load_ball_rows(conn, task_id: str) -> list:
             ORDER BY frame_idx
         """), {"tid": task_id}).mappings().all()
     except Exception as exc:
-        logger.debug("ball_detections_roi not available (%s)", exc)
+        logger.warning("ball_detections_roi query failed (%s) — skipping ROI merge", exc)
         return rows
 
     if not roi_rows:
