@@ -86,17 +86,29 @@ def main(argv=None) -> int:
         ROUND(t5.hitter_court_y::numeric, 1) AS t5_hy,
         ROUND(t5.bounce_court_x::numeric, 1) AS t5_bx,
         ROUND(t5.bounce_court_y::numeric, 1) AS t5_by,
-        -- Timing semantics: pose_only / pose_and_* events are stamped
-        -- at the HIT frame (trophy peak, ~contact time); bounce_only
-        -- events are stamped at the BOUNCE frame which is ~0.5 s after
-        -- hit (ball flight). SA ball_hit_s is hit time. Subtract 0.5 s
-        -- from bounce_only t5_ts before computing dt so a correctly-
-        -- detected bounce-based serve gets a correct dt, not
-        -- penalised by flight-time semantics.
-        ROUND(ABS(sa.ts - (t5.ts - CASE
-          WHEN t5.source = 'bounce_only' THEN 0.5
-          ELSE 0.0
-        END))::numeric, 2) AS dt,
+        -- Timing semantics: SA ball_hit_s is the HIT (racket contact)
+        -- time. T5 events are stamped at different physical moments:
+        --   pose_only / pose_and_* : TROPHY PEAK (frame with highest
+        --     dom_wrist_y). Trophy peak happens 0.3-0.6 s BEFORE hit
+        --     in a normal serve motion. Most matches cluster at +0.5 s.
+        --   bounce_only : BOUNCE time, ~0.5 s AFTER hit (ball flight).
+        -- Correct dt by shifting T5 ts by the appropriate flight / toss
+        -- offset so dt = 0 means "correctly detected the same physical
+        -- serve". Without these shifts, a correctly-firing pose event
+        -- at trophy peak has dt ≈ 0.5 s by construction and sits right
+        -- on the MATCH / WEAK_TIME boundary — inflating WEAK verdicts
+        -- for physically-correct detections. Take the MIN of raw and
+        -- shifted dt so a single offset value handles both "pose at
+        -- trophy" (normal) and "pose at follow-through" (rare; peak
+        -- picking caught post-hit frame). Same for bounce: raw or -0.5.
+        ROUND(LEAST(
+          ABS(sa.ts - t5.ts),
+          CASE
+            WHEN t5.source LIKE 'pose%' THEN ABS(sa.ts - (t5.ts + 0.5))
+            WHEN t5.source = 'bounce_only' THEN ABS(sa.ts - (t5.ts - 0.5))
+            ELSE ABS(sa.ts - t5.ts)
+          END
+        )::numeric, 2) AS dt,
         CASE
           WHEN t5.bounce_court_x IS NOT NULL AND sa.bx IS NOT NULL
           THEN ROUND(SQRT(POWER(sa.bx - t5.bounce_court_x, 2)
