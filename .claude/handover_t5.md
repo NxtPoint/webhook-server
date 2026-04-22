@@ -1,6 +1,6 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-22 (P2 ROI extractor landed — awaiting Render validation)
+**Last updated:** 2026-04-22 (pose-first FAR unlock — 0/10 → 3/10 strict on 8a5e0b5e)
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
@@ -11,10 +11,23 @@
 Pipeline is operational end-to-end on **rev 36/25** (calibration fix, commit 364d8dd / image digest `e4d7781c...`). Fresh T5 run on task `d1fed568-b285-4117-bcef-c6039d52fc37` (video `1776858099_match.mp4`, reconciled against new SA reference `1515aff7-1ec7-472d-8dba-8fff9f939ff1` — 25 serves, 18 points).
 
 **Serve detection numbers (reconcile_serves_strict, ±2 s strict):**
-- Near-player: **13/14 MATCH** — unchanged from 8a5e0b5e
-- Far-player:  **0/11 MATCH** — unchanged (SA has 1 more FAR serve on new ref)
+
+`d1fed568` (vs SA `1515aff7`, 11 FAR):
+- Near-player: **13/14 MATCH**
+- Far-player:  **4/11 MATCH** (463.52 via pose_signal cluster-size fix, plus 502.72 / 555.68 bounce_only, 584.92 pose_only)
+
+`8a5e0b5e` (vs SA `4a194ff3`, 10 FAR) — primary task:
+- Near-player: **13/14 MATCH**
+- Far-player:  **3/10 MATCH** — 463.52, 549.84, 584.92 (all pose_only)
+  - 5 NO_MATCH (386.60, 410.08, 434.20, 458.08, 497.40) — ROI extractor locks onto a static non-player body (keypoints dead static across 4s window; real serve would show toss/trophy/strike motion). Fix direction: motion-based bbox selection instead of "biggest bbox" in `extract_vitpose_far.py::main()`.
+  - 378.08 WEAK_TIME + 502.72 FAR_IN_TIME — misattributed to pid=0 pose FPs
 - SUSPECT_BOUNCE: 0
-- All serves `bounce_court_x/y = NULL` — bounce-link rejects because TrackNet doesn't detect bounces in the service box (independent of calibration)
+
+**Two new commits unlocking the FAR pose-first path:**
+- `dd5456a` `pose_signal.py` — relax `min_cluster_size` gate when `peak_score==3`. Far-player trophy window is only 2-3 frames (80-120 ms @ 25 fps) because the body is ~50 px; the 3-frame size floor threw out real serves with a single crisp peak. All three signals (trophy + toss + both_up) simultaneously is physically only a serve, so the arm-extension gate alone is sufficient suppression.
+- `635b062` `detector._load_pose_rows` — when bronze has pose but NULL court_y, borrow court_x/y from the ROI row at the same frame. Bronze full-frame YOLO resolves keypoints but can't project 30–40 px feet; baseline-zone gate then rejects NULL. Previously silently skipped every frame where bronze and ROI both detected the body (the very frames we need).
+
+New diag tool: `ml_pipeline/diag/probe_serve_window.py` — per-gate instrumentation on `find_serve_candidates` at a single SA ts. Use it when eval-serve shows a FAR miss to pinpoint which gate rejected.
 
 The calibration fix was essential for label projection (SA-GT bounce → pixel) but did NOT improve bounce DETECTION. The 0/10 → 0/11 pattern is consistent: bronze TrackNet systematically misses serve bounces in both service boxes.
 
@@ -27,6 +40,15 @@ eval-serve (loose 3 s matching) reports "5/11 far recall" but reconcile_serves_s
 3. **All confirmed near serves are bounce-less** (`bounce_court_x/y = NULL`). Same P2 cause. Fixing P2 retroactively fills bounce fields for future runs.
 4. **Serve bucket / side tuning** — `serve_bucket_d` over-counts T, under-counts wide. Cosmetic; defer until P2 solid.
 
+**Remaining gap to 8/10 FAR target on 8a5e0b5e (5 serves away)**:
+
+The 5 NO_MATCH serves (386.60, 410.08, 434.20, 458.08, 497.40) all pattern-match:
+- ROI extractor wrote 15–38 usable pose rows per serve (so the pipeline is unblocked)
+- But keypoint positions are **dead static across the 4-s window** — dom_wrist_y drifts only 1–2 px from t₀−2 s to t₀+2 s; real serve shows 30–50 px trophy peak excursion
+- Consistent arm-below-shoulder (max_arm = −18 to −10 px) suggests ViTPose is not seeing a trophy because the body isn't in trophy — YOLO is locked onto a static non-player (line judge / ball kid / scoreboard artefact) via the "biggest bbox per frame" rule in `extract_vitpose_far.py:303`
+
+Actionable next step (not executed this iteration): replace the `np.argmax(areas)` selector in `extract_vitpose_far.py::main()` with a motion-aware selector. Either (a) pick the detection with largest frame-to-frame center displacement, or (b) when multiple persons are detected in the far ROI, prefer the one closest to the expected serve position (deuce ≈ ROI-right, ad ≈ ROI-left for FAR-player perspective from our camera view). Re-extract (~17 min on CPU for 10 serves with local weights) → eval-serve → reconcile.
+
 **Notable fixes 2026-04-19 → 2026-04-22 (serve-detection chain reconstruction)**:
 - Density (conf 0.25→0.10)
 - SAHI skip merge + rule-A tightening
@@ -36,6 +58,8 @@ eval-serve (loose 3 s matching) reports "5/11 far recall" but reconcile_serves_s
 - **Rally-state gate loosened to accept sustained+confident clusters** (commit 8ae1b10) — unlocked ts 120.28 + 178.44
 - **Bounce-linking requires opposite side of net** (commit ded044f) — eliminated SUSPECT_BOUNCE verdicts
 - **Fixed transaction-poisoning bug in `_load_ball_rows`** (commit ee3db11) — agent 2's ROI query now guards with `information_schema`
+- **Pose cluster-size relaxed when peak_score==3** (commit dd5456a) — unlocked crisp 2-frame far-player trophies
+- **ROI court-coord borrow on NULL bronze cy** (commit 635b062) — unlocked every frame bronze + ROI both saw
 
 ---
 
