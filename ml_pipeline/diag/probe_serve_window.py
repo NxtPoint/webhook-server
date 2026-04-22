@@ -147,7 +147,7 @@ def main(argv=None) -> int:
     print()
 
     if not scored_keep:
-        print("  VERDICT: 0 frames passed score>=1 filter → no cluster possible")
+        print("  VERDICT: 0 frames passed score>=1 filter -> no cluster possible")
         return 0
 
     # Gate 4: clustering
@@ -199,7 +199,7 @@ def main(argv=None) -> int:
         print(f"    cluster {i}: {verdict}  "
               f"(size={len(c)}, peak_score={max_score}, arm_ext={arm_ext:.1f}, "
               f"peak frame={peak_row['frame_idx']} @ ts={peak_ts:.2f}) "
-              f"{'→ ' + '; '.join(reasons) if reasons else ''}")
+              f"{'-> ' + '; '.join(reasons) if reasons else ''}")
 
     print()
     # Gate 8: call the real function to cross-check

@@ -269,9 +269,19 @@ def find_serve_candidates(
     # shots keep the wrist near or below the shoulders.
     peaks: List[PoseServeCandidate] = []
     for cluster in clusters:
-        if len(cluster) < min_cluster_size:
-            continue
         max_score = max(s.total for _, s in cluster)
+        # Size gate: normally require min_cluster_size frames of sustained
+        # pose motion. EXCEPTION: if the peak score is 3 (trophy + toss +
+        # both_up simultaneously) the cluster is accepted at any size —
+        # all three signals firing in one frame is physically a serve
+        # (ready/return/rally never raise the passive wrist above the
+        # passive shoulder). On far-player footage the trophy window is
+        # only 2-3 frames because the body is 50 px, so the size gate
+        # throws out real serves; on near-player footage the trophy is
+        # sustained 5+ frames so the gate still suppresses noise.
+        # The arm-extension gate below still applies either way.
+        if len(cluster) < min_cluster_size and max_score < 3:
+            continue
         if max_score < min_cluster_peak:
             continue
         # The peak frame = the one with highest dominant wrist (smallest
