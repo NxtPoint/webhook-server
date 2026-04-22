@@ -260,7 +260,8 @@ def _option_a(
         errors_m = evaluate_calibration(tentative, observations)
         valid = ~np.isnan(errors_m)
         if not valid.any():
-            return tentative if rms <= rms_threshold_px else None
+            # No metric comparison possible; caller will decide on RMS
+            return tentative
 
         bad_indices = {
             int(i) for i in range(14)
@@ -273,17 +274,18 @@ def _option_a(
             iteration, rms, max_err, sorted(bad_indices),
         )
 
-        # Accept if within threshold AND no bad keypoints remain
-        if rms <= rms_threshold_px and not bad_indices:
-            return tentative
-
         # Keep best candidate so far (lowest RMS)
         if last_result is None or tentative.rms_px < last_result.rms_px:
             last_result = tentative
 
-        # Drop bad keypoints and retry, unless nothing to drop
+        # Accept if within threshold AND no bad keypoints remain
+        if rms <= rms_threshold_px and not bad_indices:
+            return tentative
+
+        # No bad keypoints to drop — no further refinement possible. Return
+        # our best candidate so fit_calibration can compare against Option C.
         if not bad_indices:
-            return tentative if rms <= rms_threshold_px else None
+            return last_result
 
         observations = _mark_kp_indices_missing(observations, bad_indices)
         # Ensure enough keypoints remain
@@ -294,10 +296,12 @@ def _option_a(
             logger.info("Option A: too few keypoints after drop, stopping refinement")
             break
 
-    # Hit max iterations. Return the last_result only if its RMS is below threshold.
-    if last_result is not None and last_result.rms_px <= rms_threshold_px:
-        return last_result
-    return None
+    # Hit max iterations. Return the last_result unconditionally — the
+    # caller (fit_calibration) now compares Option A vs Option C on
+    # actual RMS and picks the lower one, so "above threshold but still
+    # sensible" Option A results are kept as candidates. A None return
+    # here would force a fallback to Option C even when C is much worse.
+    return last_result
 
 
 def _best_frame_kps(keypoint_observations: list[np.ndarray]) -> np.ndarray:
@@ -560,18 +564,37 @@ def fit_calibration(
             keypoint_observations, bad_indices,
         )
 
+    # Compute BOTH Option A and Option C, then pick the one with lower RMS.
+    # Previously Option A was short-circuited if its RMS was just above the
+    # threshold, causing fallback to Option C even when C was much worse
+    # (seen on match_90ad59a8 2026-04-22: A rms=11.22 px, C rms=53.13 px —
+    # fallback produced 66 m keypoint error and duplicate-pixel projections
+    # for distinct bounce coordinates, poisoning downstream labels).
     result_a = _option_a(keypoint_observations, img_shape, rms_threshold_px)
-    if result_a is not None:
-        logger.info("Calibration: using Option A (radial), RMS=%.4f", result_a.rms_px)
-        return result_a
-
-    logger.info("Calibration: falling back to Option C (piecewise)")
     result_c = _option_c(keypoint_observations)
+
+    candidates = []
+    if result_a is not None:
+        candidates.append(("radial/Option A", result_a))
     if result_c is not None:
-        logger.info("Calibration: using Option C (piecewise), RMS=%.4f", result_c.rms_px)
-    else:
+        candidates.append(("piecewise/Option C", result_c))
+    if not candidates:
         logger.warning("Calibration: both options failed; returning None")
-    return result_c
+        return None
+
+    candidates.sort(key=lambda kv: kv[1].rms_px)
+    winner_name, winner = candidates[0]
+    for name, r in candidates:
+        logger.info("Calibration candidate %-20s RMS=%.4f", name, r.rms_px)
+    over_threshold_note = (
+        " (above rms_threshold_px=%.1f but still the best candidate)" %
+        rms_threshold_px
+    ) if winner.rms_px > rms_threshold_px else ""
+    logger.info(
+        "Calibration: using %s, RMS=%.4f%s",
+        winner_name, winner.rms_px, over_threshold_note,
+    )
+    return winner
 
 
 def _apply_homography(H: np.ndarray, px: float, py: float) -> Optional[tuple[float, float]]:
