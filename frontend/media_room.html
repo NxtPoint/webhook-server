@@ -561,13 +561,14 @@ function goToStep(n) {
 // TASK 3 — STEP 1: GAME TYPE SELECTOR
 // ============================================================
 function renderStep1(el) {
-  // Admin dev access — sees every game type, including T5.
+  // Admin dev access — sees every game type, including T5 and Technique.
   const devAccess = EMAIL === 'tomo.stojakovic@gmail.com' || EMAIL === 'info@ten-fifty5.com';
-  // Technique is available to everyone; T5 / Serve / Rally remain dev-only.
+  // T5 / Serve / Rally / Technique are all dev-only until SportAI gives us
+  // the production TECHNIQUE_API_BASE URL — see docs/pricing_strategy.md.
   const singlesT5Ok = devAccess;
   const srvOk  = devAccess;
   const rallyOk = devAccess;
-  const techniqueOk = true;
+  const techniqueOk = devAccess;
 
   // All game-type cards in one list. `available` controls whether the card
   // is clickable/rendered above the Continue button or demoted to the

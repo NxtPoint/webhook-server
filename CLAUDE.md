@@ -13,7 +13,7 @@ Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 | **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` |
 | **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` |
 
-The Locker Room service serves HTML SPAs via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard). The main webhook-server serves all of them as same-origin backups for API access from within iframes.
+The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard), plus public marketing pages `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`. The main webhook-server serves all of them as same-origin backups for API access from within iframes.
 
 **Local dev:**
 ```bash
@@ -36,6 +36,8 @@ Schema DDL is split across files:
 - `ensure_invite_token_column()` in `coach_invite/db.py`
 
 All use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` / `DROP VIEW IF EXISTS + CREATE VIEW` patterns.
+
+Gold view recreation (`gold_init.py`, `tennis_coach/coach_views.py`, `technique/gold_technique.py`) wraps the **entire** DROP+CREATE loop in a **single transaction**. Postgres DDL is transactional and takes AccessExclusiveLock on each view, so concurrent readers block until COMMIT and then see the new views atomically — no mid-boot window where a view is absent. A single view failure rolls back the whole transaction; we keep the previous working set rather than a half-applied mix.
 
 ---
 
@@ -376,7 +378,14 @@ Bucket `nextpoint-prod-uploads` requires CORS for browser-to-S3 multipart upload
 
 New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`. Repo root is for service entry points only (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`).
 
-**Exception**: the SPA HTML files (`locker_room.html`, `media_room.html`, `portal.html`, `backoffice.html`, `pricing.html`, `coach_accept.html`, `players_enclosure.html`, `practice.html`, `match_analysis.html`) live in the repo root because `locker_room_app.py` serves them with `send_file()` from the working directory.
+**`frontend/`** — all SPA HTML pages. Served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`:
+
+- Authenticated app: `locker_room.html`, `media_room.html`, `portal.html` (nav shell / Wix entry point), `backoffice.html`, `pricing.html`, `coach_accept.html`, `players_enclosure.html` (register wizard), `practice.html`, `match_analysis.html`
+- Public marketing: `home.html`, `how_it_works.html`, `pricing_public.html`, `for_coaches.html`
+
+**`docs/`** — design docs and strategy specs (`pricing_strategy.md`, `llm_coach_design.md`). Source of truth for business rules. Code links back to section numbers (e.g. "see docs/pricing_strategy.md §6").
+
+**Known stale files at root** (audited 2026-04-19, candidates for deletion; none are imported anywhere outside `.claude/worktrees/`): `build_silver_point_detail.py` (replaced by `build_silver_v2.py`), `bronze_json_schema.py`, `inspect_bronze_blobs.py`, `probes.py`, `test_silver_diagnostics.py`.
 
 ---
 

@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, send_file
@@ -38,11 +39,17 @@ from billing_service import (
 
 accept_bp = Blueprint("coach_accept", __name__)
 
+# Resolve HTML by absolute path so the service doesn't depend on the cwd.
+_FRONTEND_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend",
+)
+
 
 @accept_bp.get("/coach-accept")
 def coach_accept_page():
     """Serve the coach acceptance HTML page."""
-    return send_file("coach_accept.html")
+    return send_file(os.path.join(_FRONTEND_DIR, "coach_accept.html"))
 
 
 @accept_bp.route("/api/coaches/accept-token", methods=["POST", "OPTIONS"])

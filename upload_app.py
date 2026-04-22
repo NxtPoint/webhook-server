@@ -2143,82 +2143,66 @@ def _do_ingest_t5(task_id: str) -> bool:
 
 
 # ==========================
-# MEDIA ROOM (served same-origin for upload API access)
+# SPA HTML ROUTES (served same-origin so API calls don't need CORS)
+# All HTML lives in frontend/ — resolved by absolute path.
 # ==========================
+_FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
+
+
+def _html(name: str):
+    from flask import send_file
+    return send_file(os.path.join(_FRONTEND_DIR, name))
+
+
 @app.get("/media-room")
 def media_room():
-    from flask import send_file
-    return send_file("media_room.html")
+    return _html("media_room.html")
 
 
-# ==========================
-# BACKOFFICE (admin cockpit, same-origin for API access)
-# ==========================
 @app.get("/backoffice")
 def backoffice():
-    from flask import send_file
-    return send_file("backoffice.html")
+    return _html("backoffice.html")
 
-
-# ==========================
-# ANALYTICS (Power BI embed)
-# ==========================
 
 @app.get("/practice")
 def practice_page():
-    from flask import send_file
-    return send_file("practice.html")
+    return _html("practice.html")
 
 
 @app.get("/match-analysis")
 def match_analysis_page():
-    from flask import send_file
-    return send_file("match_analysis.html")
+    return _html("match_analysis.html")
 
 
-# ==========================
-# PORTAL (unified nav shell — entry point for Wix)
-# ==========================
 @app.get("/portal")
 def portal():
-    from flask import send_file
-    return send_file("portal.html")
+    return _html("portal.html")
 
 
-# ==========================
-# PRICING (plans & pricing page)
-# ==========================
 @app.get("/pricing")
 def pricing():
-    from flask import send_file
-    return send_file("pricing.html")
+    return _html("pricing.html")
 
 
-# ==========================
-# PUBLIC MARKETING PAGES (same-origin backups to Wix hosting)
-# ==========================
+# Public marketing pages — same-origin backups to Wix hosting
 @app.get("/home")
 def public_home_page():
-    from flask import send_file
-    return send_file("home.html")
+    return _html("home.html")
 
 
 @app.get("/how-it-works")
 def public_how_it_works_page():
-    from flask import send_file
-    return send_file("how_it_works.html")
+    return _html("how_it_works.html")
 
 
 @app.get("/pricing-public")
 def public_pricing_page():
-    from flask import send_file
-    return send_file("pricing_public.html")
+    return _html("pricing_public.html")
 
 
 @app.get("/for-coaches")
 def public_for_coaches_page():
-    from flask import send_file
-    return send_file("for_coaches.html")
+    return _html("for_coaches.html")
 
 
 # ==========================

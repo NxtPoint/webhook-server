@@ -27,51 +27,58 @@ from flask import Flask, send_file, jsonify
 
 app = Flask(__name__)
 
+# All SPA HTML lives in frontend/ — resolve by absolute path so the service
+# doesn't depend on the process cwd.
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
+
+
+def _html(name: str):
+    return send_file(os.path.join(FRONTEND_DIR, name))
+
 
 @app.get("/")
 def index():
-    return send_file("locker_room.html")
+    return _html("locker_room.html")
 
 
 @app.get("/register")
 def players_enclosure():
-    return send_file("players_enclosure.html")
+    return _html("players_enclosure.html")
 
 
 @app.get("/media-room")
 def media_room():
-    return send_file("media_room.html")
+    return _html("media_room.html")
 
 
 @app.get("/backoffice")
 def backoffice():
-    return send_file("backoffice.html")
-
+    return _html("backoffice.html")
 
 
 @app.get("/practice")
 def practice():
-    return send_file("practice.html")
+    return _html("practice.html")
 
 
 @app.get("/match-analysis")
 def match_analysis():
-    return send_file("match_analysis.html")
+    return _html("match_analysis.html")
 
 
 @app.get("/portal")
 def portal():
-    return send_file("portal.html")
+    return _html("portal.html")
 
 
 @app.get("/pricing")
 def pricing():
-    return send_file("pricing.html")
+    return _html("pricing.html")
 
 
 @app.get("/coach-accept")
 def coach_accept():
-    return send_file("coach_accept.html")
+    return _html("coach_accept.html")
 
 
 # ----------------------------------------------------------------
@@ -80,22 +87,22 @@ def coach_accept():
 
 @app.get("/home")
 def public_home():
-    return send_file("home.html")
+    return _html("home.html")
 
 
 @app.get("/how-it-works")
 def public_how_it_works():
-    return send_file("how_it_works.html")
+    return _html("how_it_works.html")
 
 
 @app.get("/pricing-public")
 def public_pricing():
-    return send_file("pricing_public.html")
+    return _html("pricing_public.html")
 
 
 @app.get("/for-coaches")
 def public_for_coaches():
-    return send_file("for_coaches.html")
+    return _html("for_coaches.html")
 
 
 @app.get("/__alive")
