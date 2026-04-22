@@ -63,7 +63,9 @@ FAR_ROI_Y_LO = -3.0
 FAR_ROI_Y_HI = 5.0
 FAR_ROI_X_PAD = 1.5
 
-BBOX_EXPAND_FACTOR = 1.25  # grow the bbox 25% before feeding to ViTPose
+BBOX_EXPAND_W = 1.5   # uniform 50% width expansion (centered)
+BBOX_EXPAND_H = 5.0   # 5x height expansion, biased downward (see _expand_bbox)
+                      # 10 px head bbox → 50 px full-body bbox; catches feet.
 
 VITPOSE_REPO = "usyd-community/vitpose-plus-small"
 
@@ -173,15 +175,30 @@ def _compute_far_roi_pixel(detector, frame_shape, pad_px=20):
             min(h, int(max(ys) + pad_px)))
 
 
-def _expand_bbox(bbox, scale, frame_w, frame_h):
-    """Expand bbox by scale factor, centered on bbox center, clipped to frame."""
+def _expand_bbox(bbox, scale_w, scale_h, frame_w, frame_h, extend_down_factor=4.0):
+    """Expand bbox asymmetrically:
+       - width: scale_w from center (uniform left/right)
+       - height: scale_h from TOP (extend downward more than up)
+
+    The YOLOv8m-det bbox on small far players often captures only the
+    head/upper torso (10-14 px tall). Feet and knees are BELOW that
+    bbox, so ViTPose fabricates those keypoints instead of seeing them.
+    Aggressive downward extension keeps the FULL body in frame for the
+    pose model, giving wrist/ankle real visual evidence to lock onto.
+    """
     x1, y1, x2, y2 = bbox
-    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    w, h = (x2 - x1) * scale, (y2 - y1) * scale
+    cx = (x1 + x2) / 2
+    w = (x2 - x1) * scale_w
+    h_orig = y2 - y1
+    h_extended = h_orig * scale_h
+    # Keep the TOP (head) location mostly unchanged; extend mainly DOWN
+    up_fraction = 0.5 / (0.5 + extend_down_factor)
+    new_top = y1 - (h_extended - h_orig) * up_fraction
+    new_bottom = y2 + (h_extended - h_orig) * (1.0 - up_fraction)
     return (max(0, int(cx - w / 2)),
-            max(0, int(cy - h / 2)),
+            max(0, int(new_top)),
             min(frame_w - 1, int(cx + w / 2)),
-            min(frame_h - 1, int(cy + h / 2)))
+            min(frame_h - 1, int(new_bottom)))
 
 
 def main():
@@ -285,9 +302,11 @@ def main():
                 fbx2 = bx2 + x0; fby2 = by2 + y0
                 n_dets += 1
 
-                # Stage 2: expand bbox + ViTPose
+                # Stage 2: expand bbox asymmetrically (mainly downward)
+                # + feed tight crop to ViTPose
                 ebx1, eby1, ebx2, eby2 = _expand_bbox(
-                    (fbx1, fby1, fbx2, fby2), BBOX_EXPAND_FACTOR,
+                    (fbx1, fby1, fbx2, fby2),
+                    BBOX_EXPAND_W, BBOX_EXPAND_H,
                     W_FRAME, H_FRAME)
                 bbox_w = ebx2 - ebx1; bbox_h = eby2 - eby1
                 if bbox_w <= 0 or bbox_h <= 0:
