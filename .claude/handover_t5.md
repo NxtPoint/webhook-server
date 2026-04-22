@@ -1,20 +1,22 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-19
+**Last updated:** 2026-04-22
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
 ---
 
-## Status
+## Status (2026-04-22)
 
-Pipeline is operational end-to-end: court calibration ✓, player identification ✓, ball tracking (near half only) ✓, **pose-first serve detection deployed**. Baseline reference `081e089c`: near-player serves hit 86% recall vs SportAI with 0.05 s mean timestamp error (validated offline against locally-extracted pose). Current Batch image `sha256:dd6c4e1e24da...c3c` — eu-north-1 revision 30, us-east-1 revision 19 (pushed 2026-04-18).
+Pipeline is operational end-to-end on rev 35/24. On task `8a5e0b5e` strict reconciliation (`reconcile_serves_strict`) confirmed **11/14 near-player serves as CONFIDENT MATCHES** — dt 0.04-0.12s, correct `player_id=0`, mean ts error 0.25s. Near-player serve detection via the pose-first detector is working as designed.
 
-**Remaining gaps, in priority order:**
+**Remaining gaps (post 2026-04-22 session):**
 
-1. **Far-player serve detection** — ~10% recall. Bottleneck is bronze-side TrackNet missing ~half of far-half serve bounces. Next step: local ball extraction, or retrain TrackNet on dual-submit labels.
-2. **Umpire interference in Player 1 slot** — `var_y=104` on reference task. Path-length filter catches most but not all. See A8 in session log.
-3. **Serve bucket / side tuning** — serve_bucket_d over-counts T, under-counts wide. Pass 3 x-thresholds in `build_silver_v2.py` need calibration.
+1. **Far-player serve detection — 0/10 confident**. The 3/10 from `harness eval-serve` was loose-match false positives (pid=0 near-player pose hits landing within 3s of a far-player serve). Strict reconcile kills them. Root cause: bronze-side TrackNet misses far-half serve bounces → the bounce-first far-player detector has no anchors. **This is the next major initiative.** See the P2 playbook below.
+2. **All near-player serves are bounce-less in `serve_events`**. Every confirmed MATCH has `bounce_court_x/y = NULL`. Serve detector carries them on pose alone. Same P2 cause — far-half bounce detection is unreliable. Fixing P2 retroactively fills bounce fields for future runs.
+3. **Serve bucket / side tuning** — `serve_bucket_d` over-counts T, under-counts wide. Pass 3 x-thresholds in `build_silver_v2.py`. Cosmetic; defer until P2 solid.
+
+**Notable fixes landed in the 2026-04-19 to 2026-04-22 sessions** (reconciled in the "Session log" and "Current deploy state" sections): density (conf 0.25→0.10), SAHI skip + tightening, bronze-export pose row filter removal, pid=1 junk fallback rejection, **2.4m hitter_y drift fixed via feet projection in `map_to_court`**.
 
 ---
 
@@ -252,12 +254,17 @@ done
 
 | Region | Revision | Image digest |
 |---|---|---|
-| eu-north-1 | **34** | `sha256:ffdbd4273449ef8bbc4344e38b8a1e1f195b552491a4c1b3e3a018862420a1dc` |
-| us-east-1 | **23** | same |
+| eu-north-1 | **35** | `sha256:08a816ca66fb8ab2f6694e58d43311964f2c15aa7520dd60e108800989caaf2b` |
+| us-east-1 | **24** | same |
 
-**Critical fix in rev 34**: `bronze_export.py` was filtering player_detections to only ±5 frames around ball bounces — starved the serve_detector, which needs continuous pose across rally-entry (trophy pose is ~0.5-1s BEFORE the ball hit). This explained why task 9fe8c096 eval returned **0/24** serves despite offline pose validation giving 12/14. Fix (commit a2a5917): unconditionally keep all pose-carrying rows; non-pose rows still get bounce filter.
+**Cumulative fixes in rev 35** (from rev 31 baseline):
+1. `YOLO_CONFIDENCE` 0.25 → 0.10 (b66ad85) — unblocks GPU FP16 borderline pose detections.
+2. SAHI skip merge (891b124) + rule-A tightening (89aa88d) — 27% runtime saving, no far-player coverage regression.
+3. `bronze_export` keeps all pose-carrying rows (a2a5917) — critical; previous ±5-frame-from-bounce filter starved the serve_detector of trophy-pose data.
+4. `_choose_two_players` rejects failed-projection candidates (89aa88d) — no more pid=1 junk fallback from moving spectators.
+5. **`map_to_court` projects bbox feet, not center** (68fd131) — closes the 2.4m inward hitter_y drift that was causing stroke mis-classification. Uses `y2` (feet pixel) instead of bbox center; homography still outputs metres. Aligns with `_choose_two_players` scoring and SportAI ground truth.
 
-Prior rev 33 deprecated. Earlier revs (32, 31, 30) also deprecated.
+Prior revs (31, 32, 33, 34) deprecated — each superseded by the next in the chain.
 
 Contents: rev 32 baseline + **two follow-up fixes from the rev-32 verification run review** (commit 89aa88d):
 
@@ -410,12 +417,13 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 | File | Purpose |
 |---|---|
 | `diag/serve_viewer.py` | Visual contact sheets — 3-frame strips per serve |
-| `diag/pose_gap_probe.py` | Local YOLOv8x-pose sampling to diagnose pose-coverage gaps (uses seek — superseded for Batch-comparison by `prod_pose_audit`) |
-| `diag/extract_local_poses.py` | Full-video local pose extraction → JSONL (dev-only; seek-based, see handover P0) |
-| `diag/repro_pose_gap.py` | Apr 18 probe that ran detect_frame on seek-read frames; superseded by `prod_pose_audit` |
+| `diag/pose_gap_probe.py` | Local YOLOv8x-pose sampling to diagnose pose-coverage gaps |
+| `diag/extract_local_poses.py` | Full-video local pose extraction → JSONL (used by `serve_detector.validate_offline`) |
 | `diag/prod_pose_audit.py` | Sequential-read YOLO vs `ml_analysis.player_detections` — discriminates H1/H2/H3 density-gap hypotheses |
-| `diag/query_detections.py` | Standalone DB dump of player_detections rows for a task + frame window. Avoids heredoc quoting issues from Render shell |
-| `diag/replay_detect_frame.py` | Replay `detect_frame()` locally on target frames with instrumented `_choose_two_players` that logs every candidate's tier/motion/baseline/bbox/pose/total score breakdown. Used to discriminate H1 (container-specific) from H2 (scoring bug) |
+| `diag/query_detections.py` | Standalone DB dump of `ml_analysis.player_detections` rows for a task + frame window |
+| `diag/serve_chain_audit.py` | Funnel view: pose rows → baseline zone → usable → trophy / toss / both_up → score==3 → serve_events. Pinpoints where the pose→serve chain loses data |
+| `diag/reconcile_serves_strict.py` | SA-vs-T5 serve reconciliation with ±2s window, bounce-distance check, and per-row verdict (MATCH / WEAK_TIME / SUSPECT_BOUNCE / FAR_IN_TIME / NO_MATCH). Tighter than `harness eval-serve` |
+| `diag/bench_sahi_skip.py` | Benchmarks SAHI skip rule on a held-out frame sample; came with the `perf/sahi-skip-tighten` merge |
 
 ### Root-level touchpoints (not in ml_pipeline/)
 

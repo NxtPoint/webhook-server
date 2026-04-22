@@ -48,3 +48,8 @@ ml_pipeline/diag/local_poses_*.jsonl
 # Ad-hoc user files at repo root (PDFs, screenshots, quick notes)
 /*.pdf
 /*.png
+
+# Diag outputs — per-task data files, can be regenerated
+ml_pipeline/diag/*.jsonl
+ml_pipeline/diag/local_poses_*.jsonl
+ml_pipeline/diag/prod_pose_audit_*.json
