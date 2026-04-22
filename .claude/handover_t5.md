@@ -47,11 +47,16 @@ The 5 NO_MATCH serves (386.60, 410.08, 434.20, 458.08, 497.40) all pattern-match
 - But keypoint positions are **dead static across the 4-s window** — dom_wrist_y drifts only 1–2 px from t₀−2 s to t₀+2 s; real serve shows 30–50 px trophy peak excursion
 - Consistent arm-below-shoulder (max_arm = −18 to −10 px) suggests ViTPose is not seeing a trophy because the body isn't in trophy — YOLO is locked onto a static non-player (line judge / ball kid / scoreboard artefact) via the "biggest bbox per frame" rule in `extract_vitpose_far.py:303`
 
-**Motion-aware selector attempted and regressed (commit reverted)**: tried greedy nearest-neighbor trajectory linking with MAX_LINK_DIST=50 px + MAX_GAP_FRAMES=5, scoring by `total_motion + 2×vertical_range + 0.5×len`. Result: d1fed568 strict FAR went 4/11 → 2/11 because the real-player trophy is a 2–3 frame burst and a trajectory containing it scored LOWER than a competing longer static-ish trajectory. The crisp 463.52 and 584.92 trophies both got evicted. Lessons for the next attempt:
-  - Per-trajectory total motion is the wrong metric when the SIGNAL is a short burst — a static object with noisy 1-px-per-frame jitter over 80 frames outscores a 2-frame 30-px spike
-  - Trajectory linking with a fixed 50 px threshold fragments a fast-moving player's arm-raised pose into two trajectories (head-down → arms-up displaces the bbox center by >50 px in one frame)
-  - Safer alternatives to try: (a) per-frame: run ViTPose on ALL YOLO detections, keep the one with smallest `dom_wrist_y` (highest arm); (b) YOLO's built-in `.track()` mode with ByteTrack for stable IDs across the window; (c) position prior using SA's serve_side_d as a weak anchor (deuce ≈ one ROI half, ad ≈ the other)
-  - DO NOT just pick "most-moving trajectory" — the signal is short + sharp, not sustained
+**Two bbox-selection attempts made, both reverted**:
+
+1. *Motion-aware (trajectory-based)*: greedy nearest-neighbor linking with MAX_LINK_DIST=50 px + MAX_GAP_FRAMES=5, scoring by `total_motion + 2×vertical_range + 0.5×len`. **Regressed 4/11 → 2/11** because the real-player trophy is a 2–3 frame burst and a trajectory containing it scored LOWER than a competing longer static-ish trajectory. Fast bbox center displacement also fragmented the player into two trajectories (head-down → arms-up displaces the bbox center by >50 px in one frame).
+
+2. *Highest-arm per-frame* (Option a from the original list): ran ViTPose on every YOLO detection per frame, kept the one whose dom wrist was highest in the image. **Net zero effect — same 4/11 as biggest-bbox.** The failure mode is subtler than it first appeared: at non-trophy frames the real server has arms at hip level, whereas a static line-judge's arm-at-chest has HIGHER pixels, so highest-arm still picks the judge most of the time. Only during the 1-2 frame trophy peak does the server outscore, and that's too few frames to cluster reliably with pose_signal's min_cluster_size=3 — even with the peak_score==3 override, we need ViTPose to produce a single crisp score=3 at the peak, and something (wrist/shoulder conf below MIN_KP_CONF, passive wrist not above passive shoulder in the ViTPose output) is suppressing it.
+
+**Where this leaves the gap to 11/11**:
+  - Safer alternatives still to try: (b) YOLO's built-in `.track()` mode with ByteTrack for stable IDs across the window — once a track is established it doesn't get clobbered by nearby static bodies; (c) position prior using SA's serve_side_d as a weak anchor (deuce ≈ one ROI half, ad ≈ the other) — reject any detection outside the expected half-ROI for the known serve side
+  - *Orthogonal approach*: visualise one of the failing serves — render the ROI with all YOLO bboxes and their ViTPose keypoints overlaid for frames 9645-9660 on 386.60. Probably the real server IS in those frames but ViTPose is returning low-confidence / flipped keypoints that score_pose_frame drops via its MIN_KP_CONF=0.3 gate. If that's the case, either loosen MIN_KP_CONF to 0.2 for far-player rows, or swap ViTPose-Small for ViTPose-Large (5× weights, likely 3-5× more accurate on 50 px bodies)
+  - DO NOT re-try the motion-aware or highest-arm variants — both fail for documented reasons above
 
 **Notable fixes 2026-04-19 → 2026-04-22 (serve-detection chain reconstruction)**:
 - Density (conf 0.25→0.10)
