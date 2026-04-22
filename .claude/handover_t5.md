@@ -6,9 +6,19 @@
 
 ---
 
-## Status (2026-04-22 — evening session)
+## Status (2026-04-22 — late session)
 
-Pipeline is operational end-to-end on rev 35/24. On task `8a5e0b5e` strict reconciliation (`reconcile_serves_strict`) confirms **13/14 near-player serves as CONFIDENT MATCHES** — dt 0.04-0.12s, correct `player_id=0`, mean ts error 0.22s, zero SUSPECT_BOUNCE. Near-player serve detection is solid.
+Pipeline is operational end-to-end on **rev 36/25** (calibration fix, commit 364d8dd / image digest `e4d7781c...`). Fresh T5 run on task `d1fed568-b285-4117-bcef-c6039d52fc37` (video `1776858099_match.mp4`, reconciled against new SA reference `1515aff7-1ec7-472d-8dba-8fff9f939ff1` — 25 serves, 18 points).
+
+**Serve detection numbers (reconcile_serves_strict, ±2 s strict):**
+- Near-player: **13/14 MATCH** — unchanged from 8a5e0b5e
+- Far-player:  **0/11 MATCH** — unchanged (SA has 1 more FAR serve on new ref)
+- SUSPECT_BOUNCE: 0
+- All serves `bounce_court_x/y = NULL` — bounce-link rejects because TrackNet doesn't detect bounces in the service box (independent of calibration)
+
+The calibration fix was essential for label projection (SA-GT bounce → pixel) but did NOT improve bounce DETECTION. The 0/10 → 0/11 pattern is consistent: bronze TrackNet systematically misses serve bounces in both service boxes.
+
+eval-serve (loose 3 s matching) reports "5/11 far recall" but reconcile_serves_strict rejects all five as WEAK_TIME / FAR_IN_TIME — they're near-player pose FPs (return strokes) coincidentally close to SA far serve times.
 
 **Remaining gaps:**
 
