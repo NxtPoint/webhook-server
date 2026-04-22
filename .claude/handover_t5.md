@@ -1,6 +1,6 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-22
+**Last updated:** 2026-04-22 (P2 ROI extractor landed — awaiting Render validation)
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
@@ -424,6 +424,8 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 | `diag/serve_chain_audit.py` | Funnel view: pose rows → baseline zone → usable → trophy / toss / both_up → score==3 → serve_events. Pinpoints where the pose→serve chain loses data |
 | `diag/reconcile_serves_strict.py` | SA-vs-T5 serve reconciliation with ±2s window, bounce-distance check, and per-row verdict (MATCH / WEAK_TIME / SUSPECT_BOUNCE / FAR_IN_TIME / NO_MATCH). Tighter than `harness eval-serve` |
 | `diag/bench_sahi_skip.py` | Benchmarks SAHI skip rule on a held-out frame sample; came with the `perf/sahi-skip-tighten` merge |
+| `diag/roi_ball_probe.py` | Local A/B probe: full-frame TrackNet vs service-box ROI crop. Saves an overlay PNG with projected service-box lines. Reference for the production extractor — DO NOT run on CPU end-to-end, it's ~4.6s/frame. Useful for checking the ROI geometry |
+| `diag/extract_roi_bounces.py` | **P2 production tool** — runs ROI-cropped TrackNet in ±window_s seconds around each SA-GT serve, writes bounces to `ml_analysis.ball_detections_roi`. Downloads video from S3 via `bronze.submission_context.s3_bucket/s3_key` when `--video` is not given. Idempotent per (task, source). Consumed by `serve_detector._load_ball_rows` — no separate integration step needed |
 
 ### Root-level touchpoints (not in ml_pipeline/)
 
@@ -511,9 +513,31 @@ Expected behaviour on verification run:
 - `sahi_skipped` counter non-zero (was 0 in 6a9bce49 because skip rule wasn't deployed yet).
 - Handler should not trigger auto-ingest on this task — direct Batch submit with a fresh UUID (no submission_context row), which is fine for CloudWatch-only verification.
 
-### P2 — Far-player serve detection (still on the list, but blocked by P0 now)
+### P2 — Far-player serve detection (tool landed 2026-04-22; awaiting prod validation)
 
-Bronze TrackNet misses ~half of far-half serve bounces. Same plan as before (local ball extraction), but it's no longer the critical path — we need near-player detection density first.
+Bronze TrackNet misses ~half of far-half serve bounces. Confirmed on task `8a5e0b5e` — near-player serves have `bounce_court_x/y = NULL`, far-player 0/10.
+
+**2026-04-22 landed:** `ml_pipeline/diag/extract_roi_bounces.py` — ROI-cropped TrackNet pass on ±2.5s windows around each SA-GT serve time, writes bounces to new table `ml_analysis.ball_detections_roi`. Service-box crop is ~1448×374 px → upsampled to 640×360 gives ~3× effective ball size for far service box, ~1.5× for near. `serve_detector._load_ball_rows` auto-merges rows from the new table (with de-duplication vs bronze bounces at ±3 frames / ±1.5 m), so the bounce-first far-player detector and the near-player bounce-linking both pick up the augmented anchors with no other code changes.
+
+Validation on Render shell:
+```bash
+# Ensure fresh ROI extraction for the task (CPU, ~1-2 min per SA serve → ~30-60 min total for 24 serves)
+python -m ml_pipeline.diag.extract_roi_bounces --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
+
+# Re-run serve detection with augmented bounces
+python -m ml_pipeline.harness rerun-silver 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
+
+# Reconcile vs SA
+python -m ml_pipeline.diag.reconcile_serves_strict --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
+```
+
+Target: far-player serve recall ≥ 8/10 (currently 0/10), every near-player serve has non-null `bounce_court_x/y`.
+
+If the ROI pass doesn't lift recall, fallbacks:
+1. Widen ROI pad (currently ±40 px) or use per-service-box crops at higher effective resolution
+2. Loosen TrackNet Hough params for the cropped pass only (fork the tracker config)
+3. Move to TrackNetV3 weights (currently absent from `ml_pipeline/models/`) — approach B
+4. Alternative detector (YOLO-ball, ViT) — approach C
 
 ### P3 — Serve bucket calibration
 

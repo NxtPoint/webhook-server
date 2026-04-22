@@ -98,14 +98,84 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
 
 
 def _load_ball_rows(conn, task_id: str) -> list:
-    """Load all ball detections (for ball_toss lookups)."""
+    """Load all ball detections (for ball_toss lookups).
+
+    Optionally merges in rows from ml_analysis.ball_detections_roi — the
+    table populated by ml_pipeline.diag.extract_roi_bounces for serve-
+    window ROI-cropped TrackNet passes. These ROI rows carry extra
+    bounces in the service boxes that the full-frame bronze pass
+    systematically misses (ball ~1-2 px at 640×360 global scale). When
+    the table doesn't exist or has no rows for this task, behaviour is
+    identical to the pre-augmentation version.
+
+    Dedup rule: if the bronze layer already has a bounce within ±3
+    frames AND within 1.5 m of an ROI bounce, we drop the ROI row —
+    the bronze one already anchors the serve. Otherwise the ROI row
+    is kept (and will fill a gap the serve_detector currently can't).
+    """
     rows = conn.execute(sql_text("""
         SELECT frame_idx, x, y, is_bounce, court_x, court_y, speed_kmh
         FROM ml_analysis.ball_detections
         WHERE job_id = :tid
         ORDER BY frame_idx
     """), {"tid": task_id}).mappings().all()
-    return [dict(r) for r in rows]
+    rows = [dict(r) for r in rows]
+
+    try:
+        roi_rows = conn.execute(sql_text("""
+            SELECT frame_idx, x, y, is_bounce, court_x, court_y
+            FROM ml_analysis.ball_detections_roi
+            WHERE job_id = :tid
+            ORDER BY frame_idx
+        """), {"tid": task_id}).mappings().all()
+    except Exception as exc:
+        logger.debug("ball_detections_roi not available (%s)", exc)
+        return rows
+
+    if not roi_rows:
+        return rows
+
+    bronze_bounces = [
+        (r["frame_idx"], r.get("court_x"), r.get("court_y"))
+        for r in rows if r.get("is_bounce")
+    ]
+
+    def _is_dup_of_bronze(fi, cx, cy) -> bool:
+        for bfi, bcx, bcy in bronze_bounces:
+            if abs(bfi - fi) > 3:
+                continue
+            if cx is None or bcx is None or cy is None or bcy is None:
+                return True  # close in frame and no coords to compare — assume dup
+            if (bcx - cx) ** 2 + (bcy - cy) ** 2 <= 1.5 ** 2:
+                return True
+        return False
+
+    added = 0
+    skipped = 0
+    for r in roi_rows:
+        fi = r["frame_idx"]
+        cx = r.get("court_x")
+        cy = r.get("court_y")
+        if r.get("is_bounce") and _is_dup_of_bronze(fi, cx, cy):
+            skipped += 1
+            continue
+        rows.append({
+            "frame_idx": fi,
+            "x": r["x"],
+            "y": r["y"],
+            "is_bounce": r.get("is_bounce", False),
+            "court_x": cx,
+            "court_y": cy,
+            "speed_kmh": None,
+        })
+        added += 1
+
+    rows.sort(key=lambda r: r["frame_idx"])
+    logger.info(
+        "ball_detections augmented: +%d ROI rows (skipped %d duplicates)",
+        added, skipped,
+    )
+    return rows
 
 
 def _baseline_zone(court_y: Optional[float]) -> Optional[str]:
