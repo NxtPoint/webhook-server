@@ -124,7 +124,8 @@ def _get_sa_serves(conn, sportai_tid):
         SELECT ball_hit_s AS ts,
                CASE WHEN ball_hit_location_y > 22 THEN 'NEAR'
                     WHEN ball_hit_location_y < 2 THEN 'FAR'
-                    ELSE '?' END AS role
+                    ELSE '?' END AS role,
+               serve_side_d AS side
         FROM silver.point_detail
         WHERE task_id = CAST(:tid AS uuid)
           AND model = 'sportai'
@@ -133,6 +134,45 @@ def _get_sa_serves(conn, sportai_tid):
         ORDER BY ball_hit_s
     """), {"tid": sportai_tid}).mappings().all()
     return [dict(r) for r in rows]
+
+
+def _expected_server_half(role, side):
+    """Return (court_x_min, court_x_max) for where the SERVER stands given
+    role ('NEAR'/'FAR') and serve_side_d ('deuce'/'ad').
+
+    The visual-debug pass revealed two figures at the far baseline during
+    many serves (one server + one non-server walking / standing at the
+    baseline). Biggest-bbox YOLO sometimes locks onto the wrong one,
+    producing 'dead-static keypoints' for 5 of 11 FAR serves on
+    d1fed568. SA's serve_side_d disambiguates which half of the baseline
+    the server stands on.
+
+    Geometry:
+      - Court center at court_x = 5.485 m (half of 10.97 m doubles width).
+      - FAR player faces the camera, so their LEFT = camera's RIGHT.
+      - FAR DEUCE = server stands in their OWN deuce box (their right
+        side) = camera's LEFT half = court_x < 5.485.
+      - FAR AD    = server stands in their OWN ad box (their left
+        side)   = camera's RIGHT half = court_x > 5.485.
+      - NEAR is the mirror (near player faces away from camera):
+        NEAR DEUCE = camera's RIGHT half; NEAR AD = camera's LEFT half.
+      - 1 m overlap around the centre mark so a server a few cm into the
+        wrong half (unusual but not impossible) isn't rejected.
+    """
+    if not side:
+        return (-10.0, 20.0)  # permissive: accept anywhere
+    side = str(side).lower()
+    if role == "FAR":
+        if side == "deuce":
+            return (-2.0, 6.5)   # camera's LEFT half + 1m slop
+        if side == "ad":
+            return (4.5, 13.0)   # camera's RIGHT half + 1m slop
+    elif role == "NEAR":
+        if side == "deuce":
+            return (4.5, 13.0)   # mirror
+        if side == "ad":
+            return (-2.0, 6.5)
+    return (-10.0, 20.0)
 
 
 def _calibrate_court(video_path, n_frames=300):
@@ -271,11 +311,15 @@ def main():
     for i, s in enumerate(serves):
         ts = float(s["ts"])
         role = s["role"]
+        side = s.get("side")
+        cx_min, cx_max = _expected_server_half(role, side)
         center_frame = int(round(ts * args.fps))
         start_f = max(0, center_frame - window_frames)
         end_f = center_frame + window_frames
-        logger.info("[%d/%d] ts=%.2f role=%s frames [%d,%d)",
-                    i+1, len(serves), ts, role, start_f, end_f)
+        logger.info("[%d/%d] ts=%.2f role=%s side=%s frames [%d,%d) "
+                    "server_cx_range=[%.1f,%.1f]",
+                    i+1, len(serves), ts, role, side, start_f, end_f,
+                    cx_min, cx_max)
 
         cap = cv2.VideoCapture(args.video)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
@@ -298,12 +342,42 @@ def main():
                 )
                 if not det_res or det_res[0].boxes is None or len(det_res[0].boxes) == 0:
                     continue
-                # Pick biggest bbox in the ROI
+                # Side-prior bbox selection: filter YOLO detections to ones
+                # whose feet project into the expected-server half of the
+                # court, THEN pick biggest remaining. The far baseline often
+                # has TWO figures (server + non-server walking / standing)
+                # and biggest-bbox alone locks onto the wrong one, producing
+                # dead-static keypoints. Visual debug at 386.60 confirmed
+                # the pattern on d1fed568. The side filter uses SA's
+                # serve_side_d as ground truth for which half the server
+                # occupies.
                 boxes = det_res[0].boxes.xyxy.cpu().numpy()
+                # Compute feet court_x for each candidate bbox
+                in_side = []
+                for bi, b in enumerate(boxes):
+                    bbx1, bby1, bbx2, bby2 = [float(v) for v in b]
+                    fbx1_c = bbx1 + x0; fby1_c = bby1 + y0
+                    fbx2_c = bbx2 + x0; fby2_c = bby2 + y0
+                    feet_x_c = (fbx1_c + fbx2_c) / 2
+                    feet_y_c = fby2_c
+                    court_c = detector.to_court_coords(feet_x_c, feet_y_c, strict=False)
+                    cx_c = court_c[0] if court_c else None
+                    if cx_c is None:
+                        # No projection — keep as permissive (server side
+                        # unknown). Happens at frame edges / top of ROI.
+                        in_side.append(bi)
+                        continue
+                    if cx_min <= cx_c <= cx_max:
+                        in_side.append(bi)
+                if not in_side:
+                    # No detection on the expected side — skip this frame.
+                    # Better to drop a frame than write pose from the wrong
+                    # body (which was the source of the 5 NO_MATCH serves).
+                    continue
+                # Among the side-filtered candidates, pick biggest (area)
                 areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-                big = int(np.argmax(areas))
+                big = max(in_side, key=lambda bi: areas[bi])
                 bx1, by1, bx2, by2 = [float(v) for v in boxes[big]]
-                # Shift to full-frame
                 fbx1 = bx1 + x0; fby1 = by1 + y0
                 fbx2 = bx2 + x0; fby2 = by2 + y0
                 n_dets += 1
