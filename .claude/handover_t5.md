@@ -263,8 +263,13 @@ done
 
 | Region | Revision | Image digest |
 |---|---|---|
-| eu-north-1 | **35** | `sha256:08a816ca66fb8ab2f6694e58d43311964f2c15aa7520dd60e108800989caaf2b` |
-| us-east-1 | **24** | same |
+| eu-north-1 | **36** | `sha256:e4d7781ccfe39c532bf22d4f00e54528b6f12ba48e83fff5c461b6edca8f76c4` |
+| us-east-1 | **25** | same |
+
+**Cumulative fixes in rev 36** (from rev 35 baseline):
+- **Court calibration: pick best of Option A/C by RMS** (commit 364d8dd) — was rejecting Option A at RMS 11.22 px and falling back to Option C at 53.13 px. Max keypoint error: 66.5 m → 5.56 m. Restores the Apr-15-era calibration quality and fixes duplicate-pixel projections for distinct court coords.
+
+Prior deploy state:
 
 **Cumulative fixes in rev 35** (from rev 31 baseline):
 1. `YOLO_CONFIDENCE` 0.25 → 0.10 (b66ad85) — unblocks GPU FP16 borderline pose detections.
