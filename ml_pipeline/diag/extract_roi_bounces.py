@@ -111,7 +111,28 @@ def _init_roi_schema(conn) -> None:
     """))
 
 
-def _get_video_s3(conn, task_id: str) -> Tuple[str, str]:
+def _s3_head_ok(bucket: str, key: str) -> bool:
+    import boto3
+    from botocore.exceptions import ClientError
+    s3 = boto3.client("s3")
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError:
+        return False
+
+
+def _get_video_s3(conn, task_id: str,
+                  sportai_fallback_tid: Optional[str] = None) -> Tuple[str, str]:
+    """Resolve the S3 location of the task's video.
+
+    Strategy:
+      1. Read s3_bucket/s3_key from bronze.submission_context for task_id
+      2. HeadObject — if it exists, return it
+      3. If the fallback (SportAI) task_id is provided, try its s3_key
+         (dual-submit matches share video content with the SA upload)
+      4. Raise with a helpful message pointing at all the things we tried
+    """
     row = conn.execute(sql_text("""
         SELECT s3_bucket, s3_key
         FROM bronze.submission_context
@@ -121,9 +142,40 @@ def _get_video_s3(conn, task_id: str) -> Tuple[str, str]:
         raise RuntimeError(f"no submission_context row for task {task_id}")
     bucket = row[0] or os.environ.get("S3_BUCKET")
     key = row[1]
-    if not bucket or not key:
-        raise RuntimeError(f"missing s3_bucket/s3_key for task {task_id}: {row}")
-    return bucket, key
+    attempts = []
+    if bucket and key:
+        attempts.append((bucket, key, "submission_context"))
+        if _s3_head_ok(bucket, key):
+            return bucket, key
+
+    # Fallback: SportAI reference task (dual-submit scenario — same video)
+    if sportai_fallback_tid:
+        sa_row = conn.execute(sql_text("""
+            SELECT s3_bucket, s3_key
+            FROM bronze.submission_context
+            WHERE task_id = :tid
+        """), {"tid": sportai_fallback_tid}).fetchone()
+        if sa_row:
+            sa_bucket = sa_row[0] or os.environ.get("S3_BUCKET")
+            sa_key = sa_row[1]
+            if sa_bucket and sa_key:
+                attempts.append((sa_bucket, sa_key, "sportai fallback"))
+                if _s3_head_ok(sa_bucket, sa_key):
+                    logger.info(
+                        "using SportAI fallback s3://%s/%s (primary object missing)",
+                        sa_bucket, sa_key,
+                    )
+                    return sa_bucket, sa_key
+
+    tried = "\n".join(f"    - s3://{b}/{k}  (from {src})" for b, k, src in attempts)
+    raise RuntimeError(
+        f"video not found in S3 for task {task_id}. Tried:\n{tried}\n"
+        f"Options:\n"
+        f"  - pass --s3-bucket <bucket> --s3-key <key> explicitly\n"
+        f"  - pass --video <local_path> if you have the file locally\n"
+        f"  - check `aws s3 ls s3://{bucket or '<bucket>'}/ --recursive "
+        f"| grep <identifier>` for the real path"
+    )
 
 
 def _get_sa_serve_times(conn, sportai_tid: str) -> List[dict]:
@@ -365,7 +417,13 @@ def main():
                     help="T5 task_id to extract ROI bounces for")
     ap.add_argument("--video", default=None,
                     help="Local video path. If omitted, downloads from S3 via "
-                         "bronze.submission_context.s3_bucket/s3_key.")
+                         "bronze.submission_context.s3_bucket/s3_key, "
+                         "falling back to the SportAI reference task's key "
+                         "when the primary object is missing.")
+    ap.add_argument("--s3-bucket", default=None,
+                    help="Override S3 bucket (skips submission_context lookup)")
+    ap.add_argument("--s3-key", default=None,
+                    help="Override S3 key (skips submission_context lookup)")
     ap.add_argument("--sportai", default=DEFAULT_SPORTAI_REF,
                     help=f"SA reference task_id for serve times (default {DEFAULT_SPORTAI_REF[:8]})")
     ap.add_argument("--window-s", type=float, default=2.5,
@@ -387,8 +445,16 @@ def main():
 
     # --- DB reads --------------------------------------------------------
     with engine.connect() as conn:
-        bucket, key = _get_video_s3(conn, args.task)
         sa_serves = _get_sa_serve_times(conn, args.sportai)
+        bucket = key = None
+        if not args.video:
+            if args.s3_bucket and args.s3_key:
+                bucket, key = args.s3_bucket, args.s3_key
+                logger.info("using explicit S3 override: s3://%s/%s", bucket, key)
+            else:
+                bucket, key = _get_video_s3(
+                    conn, args.task, sportai_fallback_tid=args.sportai,
+                )
 
     if not sa_serves:
         logger.error("no SA serves found for sportai task %s", args.sportai)
