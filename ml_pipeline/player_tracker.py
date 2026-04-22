@@ -1403,9 +1403,26 @@ class PlayerTracker:
         return inter / union if union > 0 else 0.0
 
     def map_to_court(self, court_detector):
-        """Map all player detections to court coordinates."""
+        """Map all player detections to court coordinates.
+
+        Uses the bbox's FEET (center_x, y2) — where the player actually
+        stands on the court — rather than the bbox center. Reconciliation
+        on task 8a5e0b5e (2026-04-22) showed a consistent 2.4m inward
+        drift for near-player hitter_y (T5=22.1 vs SA=24.5) that was
+        traced to the previous center-based projection: a player's bbox
+        center sits ~1m above their feet, and with wide-angle perspective
+        that projects to a court_y 2m inside the true baseline.
+
+        Switching to feet aligns stored court_y with:
+          - _choose_two_players scoring, which already uses y2 (feet)
+          - SportAI ground truth, which reports player feet position
+          - physical intuition: the player's court location IS their feet
+        """
         for det in self.detections:
-            coords = court_detector.to_court_coords(det.center[0], det.center[1])
+            # bbox = (x1, y1, x2, y2). Feet = (center_x, y2).
+            cx = (det.bbox[0] + det.bbox[2]) / 2.0
+            y_feet = det.bbox[3]
+            coords = court_detector.to_court_coords(cx, y_feet)
             if coords is not None:
                 det.court_x, det.court_y = coords
 
