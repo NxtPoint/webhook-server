@@ -837,9 +837,18 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
     # Pass env from the Render-side main app through to the Batch container at submit time.
     # Keeps Render as the single source of truth for DB/S3 config and avoids baking secrets
     # into the job definition. Overrides the `environment` block from the registered job def.
+    #
+    # Note: AWS Batch runs outside Render's VPC, so it CANNOT use the internal-hostname
+    # `DATABASE_URL` (short form, e.g. `...@dpg-xxx-a/db`). It needs the external URL with
+    # full FQDN + sslmode. Prefer `EXTERNAL_DATABASE_URL` (set explicitly in Render for this
+    # purpose); fall back to `DATABASE_URL` only for local/dev environments where one URL
+    # serves both roles.
     env_overrides = [
         {"name": "DATABASE_URL",
-         "value": os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("DB_URL") or ""},
+         "value": (os.getenv("EXTERNAL_DATABASE_URL")
+                   or os.getenv("DATABASE_URL")
+                   or os.getenv("POSTGRES_URL")
+                   or os.getenv("DB_URL") or "")},
         {"name": "S3_BUCKET",  "value": os.getenv("S3_BUCKET")  or ""},
         {"name": "AWS_REGION", "value": os.getenv("AWS_REGION") or ""},
     ]
