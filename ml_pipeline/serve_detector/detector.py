@@ -77,7 +77,19 @@ def _get_dominant_hand(conn, task_id: str) -> bool:
 
 
 def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
-    """Load all pose-carrying detections for one player, ordered by frame."""
+    """Load all pose-carrying detections for one player, ordered by frame.
+
+    Augmentation: if ml_analysis.player_detections_roi exists and has rows
+    for this (task, player_id), merge those in. This is how the native-crop
+    YOLOv8x-pose diag tool (extract_far_player_pose.py) lifts far-player
+    pose coverage — full-frame YOLO misses 30-40 px bodies, but a tight
+    crop around the far baseline resolves the keypoints. Same pattern as
+    _load_ball_rows merging from ball_detections_roi.
+
+    Dedup rule: bronze row at frame F wins over ROI row at frame F
+    (bronze is the canonical pipeline output; ROI is a quality booster).
+    ROI rows for frames where bronze has no pose are appended.
+    """
     rows = conn.execute(sql_text("""
         SELECT frame_idx, keypoints, court_x, court_y,
                bbox_x1, bbox_y1, bbox_x2, bbox_y2
@@ -85,6 +97,27 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
         WHERE job_id = :tid AND player_id = :pid AND keypoints IS NOT NULL
         ORDER BY frame_idx
     """), {"tid": task_id, "pid": player_id}).mappings().all()
+
+    # Check if ROI table exists (same information_schema guard as _load_ball_rows)
+    table_exists = conn.execute(sql_text("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'ml_analysis'
+              AND table_name = 'player_detections_roi'
+        )
+    """)).scalar()
+
+    bronze_frames = {int(r["frame_idx"]) for r in rows}
+    roi_rows = []
+    if table_exists:
+        roi_rows = conn.execute(sql_text("""
+            SELECT frame_idx, keypoints, court_x, court_y,
+                   bbox_x1, bbox_y1, bbox_x2, bbox_y2
+            FROM ml_analysis.player_detections_roi
+            WHERE job_id = :tid AND player_id = :pid AND keypoints IS NOT NULL
+            ORDER BY frame_idx
+        """), {"tid": task_id, "pid": player_id}).mappings().all()
+
     out = []
     for r in rows:
         out.append({
@@ -94,6 +127,28 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
             "court_y": r["court_y"],
             "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
         })
+
+    added = 0
+    skipped = 0
+    for r in roi_rows:
+        if int(r["frame_idx"]) in bronze_frames:
+            skipped += 1
+            continue
+        out.append({
+            "frame_idx": r["frame_idx"],
+            "keypoints": r["keypoints"],
+            "court_x": r["court_x"],
+            "court_y": r["court_y"],
+            "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
+        })
+        added += 1
+
+    if roi_rows:
+        logger.info(
+            "player_detections pid=%d augmented: bronze=%d +roi=%d (skipped %d bronze-dup)",
+            player_id, len(rows), added, skipped,
+        )
+    out.sort(key=lambda r: r["frame_idx"])
     return out
 
 
