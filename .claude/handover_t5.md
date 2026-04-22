@@ -426,6 +426,7 @@ Matches events by timestamp, reports coverage/precision/recall per field, dumps 
 | `diag/bench_sahi_skip.py` | Benchmarks SAHI skip rule on a held-out frame sample; came with the `perf/sahi-skip-tighten` merge |
 | `diag/roi_ball_probe.py` | Local A/B probe: full-frame TrackNet vs service-box ROI crop. Saves an overlay PNG with projected service-box lines. Reference for the production extractor — DO NOT run on CPU end-to-end, it's ~4.6s/frame. Useful for checking the ROI geometry |
 | `diag/extract_roi_bounces.py` | **P2 production tool** — runs ROI-cropped TrackNet in ±window_s seconds around each SA-GT serve, writes bounces to `ml_analysis.ball_detections_roi`. Downloads video from S3 via `bronze.submission_context.s3_bucket/s3_key` when `--video` is not given. Idempotent per (task, source). Consumed by `serve_detector._load_ball_rows` — no separate integration step needed |
+| `diag/trace_missed_far_serves.py` | Per-FAR-player-serve diagnosis: lists bronze + ROI bounces in the near service box, rally-idle time, cross-player-dedup hits, near-serve events. Prints a verdict naming the gate most likely rejecting each SA serve. Complement to `trace_missed_serves.py` (which handles the pose-first near-player path) |
 
 ### Root-level touchpoints (not in ml_pipeline/)
 
@@ -521,14 +522,26 @@ Bronze TrackNet misses ~half of far-half serve bounces. Confirmed on task `8a5e0
 
 Validation on Render shell:
 ```bash
-# Ensure fresh ROI extraction for the task (CPU, ~1-2 min per SA serve → ~30-60 min total for 24 serves)
+# 1. Ensure fresh ROI extraction for the task
+#    (CPU, ~1-2 min per SA serve → ~30-60 min total for 24 serves)
 python -m ml_pipeline.diag.extract_roi_bounces --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
 
-# Re-run serve detection with augmented bounces
+# 2. Re-run the serve detector — this is the step that actually reads
+#    ml_analysis.ball_detections_roi via _load_ball_rows. rerun-silver
+#    ALONE does NOT invoke detect_serves_for_task — it only rebuilds
+#    silver.point_detail from existing serve_events.
+python -m ml_pipeline.harness eval-serve 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
+
+# 3. Optional — rebuild silver.point_detail so downstream dashboards pick up the new serves
 python -m ml_pipeline.harness rerun-silver 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
 
-# Reconcile vs SA
+# 4. Reconcile vs SA (tighter than eval-serve's 3s greedy match)
 python -m ml_pipeline.diag.reconcile_serves_strict --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
+
+# 5. If gaps remain: diagnose which gate rejected each specific SA serve
+python -m ml_pipeline.diag.trace_missed_far_serves --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
+python -m ml_pipeline.diag.trace_missed_serves     --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088 \
+    --targets <comma-separated-SA-ts>
 ```
 
 Target: far-player serve recall ≥ 8/10 (currently 0/10), every near-player serve has non-null `bounce_court_x/y`.
