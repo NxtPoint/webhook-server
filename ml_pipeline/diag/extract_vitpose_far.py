@@ -59,7 +59,13 @@ COURT_WIDTH_DOUBLES_M = 10.97
 DEFAULT_SPORTAI_REF = "1515aff7-1ec7-472d-8dba-8fff9f939ff1"
 
 # Far-baseline ROI in court metric space (where to look for the far player)
-FAR_ROI_Y_LO = -3.0
+# NOTE: during trophy pose, the player's raised arm extends well above
+# their head. With FAR_ROI_Y_LO=-3 (original), the ROI pixel top sat at
+# ~y=215 and YOLO systematically LOST the player in frames 9447-9487
+# (the serve-motion window on task d1fed568 ts=378.08). Widening to
+# -8 gives ~60 extra pixels of headroom so the raised arm stays in the
+# crop that YOLOv8m-det sees.
+FAR_ROI_Y_LO = -8.0
 FAR_ROI_Y_HI = 5.0
 FAR_ROI_X_PAD = 1.5
 
@@ -344,7 +350,17 @@ def main():
                 wrist_conf = float(max(kp_full[9, 2], kp_full[10, 2]))
                 shoulder_conf = float(max(kp_full[5, 2], kp_full[6, 2]))
                 kp_max = float(kp_full[:, 2].max())
-                has_usable = wrist_conf > 0.3 and shoulder_conf > 0.3
+                # Keep rows where EITHER (wrist AND shoulder both > 0.3) OR
+                # (wrist > 0.5 alone). Trophy pose occludes the shoulder
+                # behind the raised arm so shoulder conf drops to ~0.12
+                # precisely during the serve motion. Without the OR branch,
+                # our filter REJECTS the key trophy-pose frames — the
+                # opposite of what we need. pose_signal.score_pose_frame
+                # already handles single-shoulder-available gracefully.
+                has_usable = (
+                    (wrist_conf > 0.3 and shoulder_conf > 0.3)
+                    or wrist_conf > 0.5
+                )
                 if has_usable:
                     n_pose_usable += 1
 
