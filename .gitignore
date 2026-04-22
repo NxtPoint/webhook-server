@@ -21,7 +21,12 @@ result_*.json
 # ML pipeline model weights (large binary files)
 ml_pipeline/models/*.pt
 ml_pipeline/models/*.pth
+ml_pipeline/models/*.pth.tar
 ml_pipeline/models/*.onnx
+
+# ML pipeline training artifacts
+ml_pipeline/training/datasets/
+ml_pipeline/training/labels/
 
 # Test video clips
 ml_pipeline/test_videos/
