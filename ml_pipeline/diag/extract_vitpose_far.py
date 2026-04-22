@@ -73,7 +73,7 @@ BBOX_EXPAND_W = 1.5   # uniform 50% width expansion (centered)
 BBOX_EXPAND_H = 5.0   # 5x height expansion, biased downward (see _expand_bbox)
                       # 10 px head bbox → 50 px full-body bbox; catches feet.
 
-VITPOSE_REPO = "usyd-community/vitpose-plus-small"
+VITPOSE_REPO = "usyd-community/vitpose-plus-base"  # was vitpose-plus-small; upgrade for 30-50 px far-player bodies
 
 
 def _normalize_db_url(url):
@@ -125,7 +125,8 @@ def _get_sa_serves(conn, sportai_tid):
                CASE WHEN ball_hit_location_y > 22 THEN 'NEAR'
                     WHEN ball_hit_location_y < 2 THEN 'FAR'
                     ELSE '?' END AS role,
-               serve_side_d AS side
+               serve_side_d AS side,
+               ball_hit_location_x AS hit_x
         FROM silver.point_detail
         WHERE task_id = CAST(:tid AS uuid)
           AND model = 'sportai'
@@ -136,42 +137,45 @@ def _get_sa_serves(conn, sportai_tid):
     return [dict(r) for r in rows]
 
 
-def _expected_server_half(role, side):
-    """Return (court_x_min, court_x_max) for where the SERVER stands given
-    role ('NEAR'/'FAR') and serve_side_d ('deuce'/'ad').
+# Per-serve court_x window around the SA hit location. The visual-debug
+# pass (ts386.20_n6.jpg on d1fed568) revealed TWO figures at the far
+# baseline during many serves (server + non-server) — biggest-bbox
+# alone picks either interchangeably. SA's ball_hit_location_x pins the
+# server to a tight range: deuce servers at 3.77-4.33, ad servers at
+# 6.82-7.13 on d1fed568. ±1.5 m around that position allows for the
+# server stepping forward through the serve motion while still
+# excluding a non-server standing anywhere else on the baseline.
+SERVER_CX_SLOP = 1.5
 
-    The visual-debug pass revealed two figures at the far baseline during
-    many serves (one server + one non-server walking / standing at the
-    baseline). Biggest-bbox YOLO sometimes locks onto the wrong one,
-    producing 'dead-static keypoints' for 5 of 11 FAR serves on
-    d1fed568. SA's serve_side_d disambiguates which half of the baseline
-    the server stands on.
 
-    Geometry:
-      - Court center at court_x = 5.485 m (half of 10.97 m doubles width).
-      - FAR player faces the camera, so their LEFT = camera's RIGHT.
-      - FAR DEUCE = server stands in their OWN deuce box (their right
-        side) = camera's LEFT half = court_x < 5.485.
-      - FAR AD    = server stands in their OWN ad box (their left
-        side)   = camera's RIGHT half = court_x > 5.485.
-      - NEAR is the mirror (near player faces away from camera):
-        NEAR DEUCE = camera's RIGHT half; NEAR AD = camera's LEFT half.
-      - 1 m overlap around the centre mark so a server a few cm into the
-        wrong half (unusual but not impossible) isn't rejected.
+def _expected_server_cx(role, side, hit_x):
+    """Return (court_x_min, court_x_max) for where the server stands.
+
+    Strongest signal first: if SA provides hit_x (ball_hit_location_x at
+    racket contact), the server's feet are within ~1.5 m of that x-
+    position throughout the serve motion. Fall back to side-based half-
+    court split if hit_x is missing.
     """
+    if hit_x is not None:
+        try:
+            hx = float(hit_x)
+            return (hx - SERVER_CX_SLOP, hx + SERVER_CX_SLOP)
+        except (TypeError, ValueError):
+            pass
+    # Fallback: half-court split by serve_side_d
     if not side:
-        return (-10.0, 20.0)  # permissive: accept anywhere
+        return (-10.0, 20.0)
     side = str(side).lower()
     if role == "FAR":
         if side == "deuce":
-            return (-2.0, 6.5)   # camera's LEFT half + 1m slop
+            return (-2.0, 5.5)
         if side == "ad":
-            return (4.5, 13.0)   # camera's RIGHT half + 1m slop
+            return (5.5, 13.0)
     elif role == "NEAR":
         if side == "deuce":
-            return (4.5, 13.0)   # mirror
+            return (5.5, 13.0)
         if side == "ad":
-            return (-2.0, 6.5)
+            return (-2.0, 5.5)
     return (-10.0, 20.0)
 
 
@@ -312,14 +316,16 @@ def main():
         ts = float(s["ts"])
         role = s["role"]
         side = s.get("side")
-        cx_min, cx_max = _expected_server_half(role, side)
+        hit_x = s.get("hit_x")
+        cx_min, cx_max = _expected_server_cx(role, side, hit_x)
         center_frame = int(round(ts * args.fps))
         start_f = max(0, center_frame - window_frames)
         end_f = center_frame + window_frames
-        logger.info("[%d/%d] ts=%.2f role=%s side=%s frames [%d,%d) "
-                    "server_cx_range=[%.1f,%.1f]",
-                    i+1, len(serves), ts, role, side, start_f, end_f,
-                    cx_min, cx_max)
+        hit_x_s = f"{float(hit_x):.2f}" if hit_x is not None else "None"
+        logger.info("[%d/%d] ts=%.2f role=%s side=%s hit_x=%s "
+                    "server_cx=[%.1f,%.1f] frames [%d,%d)",
+                    i+1, len(serves), ts, role, side, hit_x_s,
+                    cx_min, cx_max, start_f, end_f)
 
         cap = cv2.VideoCapture(args.video)
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
