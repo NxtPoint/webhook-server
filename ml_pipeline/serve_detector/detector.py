@@ -272,11 +272,24 @@ def _detect_pose_based_serves(
             fps=fps,
         )
 
-        # Link to nearest subsequent bounce within 1.5s — this fills in
-        # the silver-facing bounce coords when possible.
+        # Link to nearest subsequent bounce within 1.5s — but ONLY if
+        # it's on the OPPOSITE side of the net from the hitter. A serve
+        # MUST land on the other side. Without this check the loop picks
+        # up the first same-side rally-return bounce (often 0.5-1s after
+        # the serve) and attaches it as the serve bounce, which gives
+        # SUSPECT_BOUNCE verdicts in reconcile_serves_strict and pollutes
+        # silver's bounce_court_x/y with wrong coords. Seen on task
+        # 8a5e0b5e at ts 120.28 and 178.44 — linked bounces at y=21-22
+        # (near side) for near-player serves whose true bounces were on
+        # the far side but not detected by TrackNet. When no valid
+        # opposite-side bounce is found within 1.5s, bounce coords stay
+        # NULL — matches the behaviour of all other near-player serves
+        # on this video whose serve bounce TrackNet missed.
         bounce_frame = None
         bounce_cx = None
         bounce_cy = None
+        hitter_near = c.court_y is not None and c.court_y > HALF_Y
+        hitter_far = c.court_y is not None and c.court_y < HALF_Y
         for b in ball_rows:
             if not b.get("is_bounce"):
                 continue
@@ -285,9 +298,20 @@ def _detect_pose_based_serves(
                 continue
             if fi - c.frame_idx > int(round(fps * 1.5)):
                 break
+            bcy = b.get("court_y")
+            # Opposite-side gate: near-player serve must land on far side
+            # (bcy < HALF_Y); far-player serve must land on near side
+            # (bcy > HALF_Y). If we don't know the hitter's side, fall
+            # through and accept (back-compat for candidates without
+            # court_y populated).
+            if bcy is not None:
+                if hitter_near and bcy >= HALF_Y:
+                    continue
+                if hitter_far and bcy <= HALF_Y:
+                    continue
             bounce_frame = fi
             bounce_cx = b.get("court_x")
-            bounce_cy = b.get("court_y")
+            bounce_cy = bcy
             break
 
         # Fusion confidence: pose-only base, +0.1 if ball-toss seen,
