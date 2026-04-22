@@ -59,6 +59,7 @@ COURT_LENGTH_M = 23.77
 HALF_Y = COURT_LENGTH_M / 2.0
 BASELINE_NEAR = COURT_LENGTH_M
 BASELINE_FAR = 0.0
+SERVICE_LINE_FROM_NET_M = 6.40
 
 # Minimum seconds between any two accepted serves (cross-player dedupe).
 CROSS_PLAYER_DEDUP_S = 3.0
@@ -345,25 +346,50 @@ def _detect_pose_based_serves(
         bounce_cy = None
         hitter_near = c.court_y is not None and c.court_y > HALF_Y
         hitter_far = c.court_y is not None and c.court_y < HALF_Y
+
+        # Service-box court-y ranges (serve MUST bounce inside the opponent's
+        # service box; if a bounce is on the opposite side of net but way
+        # outside the box — e.g. at the near baseline — it's a rally bounce
+        # that happened to come soon after, not the serve bounce itself).
+        # Tolerance of 1.5 m past the service line in both directions
+        # (real wide serves land in the doubles alley).
+        NEAR_SB_Y_MIN = HALF_Y - 1.5  # 10.39
+        NEAR_SB_Y_MAX = HALF_Y + SERVICE_LINE_FROM_NET_M + 1.5  # 19.78
+        FAR_SB_Y_MIN = HALF_Y - SERVICE_LINE_FROM_NET_M - 1.5   # 3.99
+        FAR_SB_Y_MAX = HALF_Y + 1.5  # 13.39
+
+        # Only accept a bounce link if the bounce is IN THE SERVICE BOX
+        # on the opposite side of the net from the hitter. If no such
+        # bounce exists within 1.5s (because the true serve bounce
+        # wasn't detected), leave bounce coords NULL — better than
+        # attaching a rally-return bounce with wrong coords.
+        # Seen on d1fed568 ts=584.92: no WASB bounce for this serve,
+        # the previous "fall back to any opposite-side bounce" logic
+        # picked a back-court rally bounce at court_y=23.1 and produced
+        # a SUSPECT_BOUNCE verdict.
+        max_search_frames = int(round(fps * 1.5))
         for b in ball_rows:
             if not b.get("is_bounce"):
                 continue
             fi = b.get("frame_idx", 0)
             if fi < c.frame_idx:
                 continue
-            if fi - c.frame_idx > int(round(fps * 1.5)):
+            if fi - c.frame_idx > max_search_frames:
                 break
             bcy = b.get("court_y")
-            # Opposite-side gate: near-player serve must land on far side
-            # (bcy < HALF_Y); far-player serve must land on near side
-            # (bcy > HALF_Y). If we don't know the hitter's side, fall
-            # through and accept (back-compat for candidates without
-            # court_y populated).
-            if bcy is not None:
-                if hitter_near and bcy >= HALF_Y:
+            # Strict opposite-side + in-service-box check
+            if bcy is None:
+                # No coords — can't verify, skip
+                continue
+            if hitter_near:
+                if not (FAR_SB_Y_MIN <= bcy <= FAR_SB_Y_MAX):
                     continue
-                if hitter_far and bcy <= HALF_Y:
+            elif hitter_far:
+                if not (NEAR_SB_Y_MIN <= bcy <= NEAR_SB_Y_MAX):
                     continue
+            else:
+                # Unknown hitter side — accept any bounce
+                pass
             bounce_frame = fi
             bounce_cx = b.get("court_x")
             bounce_cy = bcy

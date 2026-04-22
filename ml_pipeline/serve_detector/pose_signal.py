@@ -191,9 +191,10 @@ def find_serve_candidates(
     *,
     min_peak_score: int = 1,
     min_cluster_peak: int = 1,
-    min_cluster_size: int = 4,
+    min_cluster_size: Optional[int] = None,
     cluster_max_gap_s: float = 1.2,
     min_serve_interval_s: float = 4.0,
+    min_arm_extension_px: Optional[float] = None,
 ) -> List[PoseServeCandidate]:
     """Scan a sequence of pose rows for serve candidates.
 
@@ -221,7 +222,22 @@ def find_serve_candidates(
     while catching serves where the triple-signal peak is only 1-2 frames.
 
     Returns candidates ordered by ts ascending.
+
+    Per-player defaults:
+      Near (pid=0): min_cluster_size=4, min_arm_extension_px=30
+        — tuned on 150-200 px near-player body; yields 13/14 on 8a5e0b5e.
+      Far  (pid=1): min_cluster_size=3, min_arm_extension_px=5
+        — 50-100 px far-player body via ViTPose cascade; 30 px would
+        require arm physically way above head at pixel scale, impossible
+        for small body. Proportional threshold (~10% of body height)
+        scales down.
     """
+    # Per-player default overrides
+    if min_cluster_size is None:
+        min_cluster_size = 4 if player_id == 0 else 3
+    if min_arm_extension_px is None:
+        min_arm_extension_px = 30.0 if player_id == 0 else 5.0
+
     # Step 1-2: score + filter (keep any usable frame with at least one signal)
     scored = []
     for row in pose_rows:
@@ -266,7 +282,7 @@ def find_serve_candidates(
         # shoulders. This rules out "player happened to score 1 for 5
         # frames with hands around chest height" false positives.
         arm_extension_px = peak_score.shoulder_y - peak_score.dom_wrist_y
-        if arm_extension_px < 30:
+        if arm_extension_px < min_arm_extension_px:
             continue
         peaks.append(PoseServeCandidate(
             frame_idx=peak_row["frame_idx"],
