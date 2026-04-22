@@ -60,24 +60,41 @@ def _fetch_bronze_bounces(conn, task_id, ts_lo, ts_hi, fps):
     return [(r.frame_idx / fps, r.court_x, r.court_y) for r in rows]
 
 
+_ROI_TABLE_CHECKED = False
+_ROI_TABLE_EXISTS = False
+
+
 def _fetch_roi_bounces(conn, task_id, ts_lo, ts_hi, fps):
-    """Fetch ROI-augmented bounces. Returns [] if the table doesn't exist."""
-    try:
-        rows = conn.execute(sql_text("""
-            SELECT frame_idx, court_x, court_y, source
-            FROM ml_analysis.ball_detections_roi
-            WHERE job_id = :tid
-              AND is_bounce = TRUE
-              AND frame_idx BETWEEN :lo AND :hi
-            ORDER BY frame_idx
-        """), {
-            "tid": task_id,
-            "lo": int(ts_lo * fps),
-            "hi": int(ts_hi * fps),
-        }).fetchall()
-    except Exception as exc:
-        print(f"  (ball_detections_roi not available: {exc})")
+    """Fetch ROI-augmented bounces. Returns [] if the table doesn't exist.
+
+    A failing SELECT on a missing table poisons the Postgres transaction
+    (all subsequent queries fail with InFailedSqlTransaction), so we
+    check table existence via information_schema first.
+    """
+    global _ROI_TABLE_CHECKED, _ROI_TABLE_EXISTS
+    if not _ROI_TABLE_CHECKED:
+        _ROI_TABLE_EXISTS = bool(conn.execute(sql_text("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'ml_analysis'
+                  AND table_name = 'ball_detections_roi'
+            )
+        """)).scalar())
+        _ROI_TABLE_CHECKED = True
+    if not _ROI_TABLE_EXISTS:
         return []
+    rows = conn.execute(sql_text("""
+        SELECT frame_idx, court_x, court_y, source
+        FROM ml_analysis.ball_detections_roi
+        WHERE job_id = :tid
+          AND is_bounce = TRUE
+          AND frame_idx BETWEEN :lo AND :hi
+        ORDER BY frame_idx
+    """), {
+        "tid": task_id,
+        "lo": int(ts_lo * fps),
+        "hi": int(ts_hi * fps),
+    }).fetchall()
     return [(r.frame_idx / fps, r.court_x, r.court_y, r.source) for r in rows]
 
 
@@ -207,38 +224,49 @@ def main(argv=None) -> int:
 
             print(f"  idle-time before target (bronze bounces only): {idle:.1f}s")
 
-            # Verdict
+            # Verdict — anchor-availability first, THEN gate checks
             if any_far_match:
                 matched += 1
                 print(f"\n  VERDICT: FAR-player serve detected ✓")
                 continue
 
-            if near_events_close:
-                print(f"\n  VERDICT: blocked by CROSS_PLAYER_DEDUP (near-player event "
-                      f"within ±{CROSS_PLAYER_DEDUP_S}s). Loosen dedup? Check if the "
-                      f"near event is a real serve or a FP.")
-                continue
-
             total_anchors = len(bronze_nsb) + len(roi_nsb)
             if total_anchors == 0:
+                near_note = ""
+                if near_events_close:
+                    near_note = (f" (Separately: near-player event(s) fired "
+                                 f"within ±{CROSS_PLAYER_DEDUP_S}s — these would "
+                                 f"ALSO have dedup-blocked the serve if there had "
+                                 f"been an anchor. Worth investigating whether "
+                                 f"those near events are real or return-stroke FPs.)")
                 print(f"\n  VERDICT: NO BOUNCE ANCHOR in the near service box within "
                       f"±{args.window}s. Bounce-first detector cannot fire. "
-                      f"Run extract_roi_bounces, or widen window, or the serve actually "
-                      f"bounces elsewhere (out-call / deep return).")
-            elif idle < 8.0:
+                      f"Run extract_roi_bounces, widen window, or confirm the serve "
+                      f"actually bounced in the near service box.{near_note}")
+                continue
+
+            if near_events_close:
+                print(f"\n  VERDICT: blocked by CROSS_PLAYER_DEDUP (near-player event "
+                      f"within ±{CROSS_PLAYER_DEDUP_S}s). Anchor was present. "
+                      f"Check if the near event is a real serve or a FP.")
+                continue
+
+            if idle < 8.0:
                 print(f"\n  VERDICT: anchor present but rally_state=IN_RALLY "
-                      f"(idle={idle:.1f}s < 8.0s threshold). Would need a longer "
-                      f"idle or to lower the gate threshold.")
-            elif total_anchors > 0 and len(roi_nsb) > 0 and len(bronze_nsb) == 0:
+                      f"(idle={idle:.1f}s < 8.0s threshold). Need a longer idle "
+                      f"or a lower gate threshold.")
+                continue
+
+            if len(roi_nsb) > 0 and len(bronze_nsb) == 0:
                 print(f"\n  VERDICT: ONLY ROI bounces present — if this still doesn't "
                       f"trigger an event, check that ml_analysis.ball_detections_roi "
                       f"rows are being merged (look for 'ball_detections augmented' "
                       f"log line during rerun-silver).")
-            else:
-                print(f"\n  VERDICT: anchor + idle look OK but no event. Check "
-                      f"MIN_SERVE_GAP_S cooldown, near-player near-match within "
-                      f"{CROSS_PLAYER_DEDUP_S}s, or _detect_bounce_based_serves_far "
-                      f"confidence threshold.")
+                continue
+
+            print(f"\n  VERDICT: anchor + idle look OK but no event. Check "
+                  f"MIN_SERVE_GAP_S cooldown or _detect_bounce_based_serves_far "
+                  f"confidence threshold.")
 
         print(f"\n{'='*80}")
         print(f"SUMMARY: {matched}/{len(targets)} FAR-player SA serves already matched "
