@@ -834,6 +834,16 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
     if is_practice:
         cmd.append("--practice")
 
+    # Pass env from the Render-side main app through to the Batch container at submit time.
+    # Keeps Render as the single source of truth for DB/S3 config and avoids baking secrets
+    # into the job definition. Overrides the `environment` block from the registered job def.
+    env_overrides = [
+        {"name": "DATABASE_URL",
+         "value": os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("DB_URL") or ""},
+        {"name": "S3_BUCKET",  "value": os.getenv("S3_BUCKET")  or ""},
+        {"name": "AWS_REGION", "value": os.getenv("AWS_REGION") or ""},
+    ]
+
     batch_job_id = None
     used_region = None
     last_error = None
@@ -844,7 +854,7 @@ def _t5_submit(s3_key: str, email: str = None, meta: dict = None,
                 jobName=f"t5-{sport_type[:5]}-{job_id[:8]}",
                 jobQueue=BATCH_JOB_QUEUE,
                 jobDefinition=BATCH_JOB_DEF,
-                containerOverrides={"command": cmd},
+                containerOverrides={"command": cmd, "environment": env_overrides},
                 tags={
                     "Project": "TEN-FIFTY5",
                     "Environment": "production",
