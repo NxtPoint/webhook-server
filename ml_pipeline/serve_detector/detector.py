@@ -222,19 +222,29 @@ def _detect_pose_based_serves(
 
     events: List[ServeEvent] = []
     for c in candidates:
-        # Rally-state gate — but pose is the primary signal. If we see
-        # a HIGH-CONFIDENCE pose cluster (peak_score == 3 = toss + trophy
-        # + both-up all visible), that's unambiguously a serve and we
-        # override the rally state. This protects us from spurious
-        # bronze-side bounce detections that would otherwise flip us
-        # into IN_RALLY and block real serves. Score-1 and score-2
-        # candidates still respect the rally gate (lower confidence
-        # that this is a serve vs a smash / reach / ready position).
+        # Rally-state gate — pose is the primary signal. Accept a
+        # candidate in IN_RALLY state if it shows either:
+        #   (a) peak_score >= 3  (all three signals captured simultaneously
+        #       somewhere in the cluster — unambiguous trophy)
+        #   OR
+        #   (b) confidence >= 0.65 AND cluster_size >= 20
+        #       (sustained pose over ~0.8s+ with solid trophy geometry —
+        #       rally-ending bounces sometimes keep rally_state=IN_RALLY
+        #       stuck between points, which was blocking real score-1
+        #       clusters on task 8a5e0b5e at ts 120.28 and 178.44
+        #       despite dt 0.04-0.08s matches, conf 0.68-0.73,
+        #       cluster_size 25-30).
+        #
+        # Anything failing both → reject.
         state = rally.state_at(c.ts)
-        if state == RallyState.IN_RALLY and c.peak_score < 3:
+        sustained_ok = (c.confidence >= 0.65 and c.cluster_size >= 20)
+        if (state == RallyState.IN_RALLY
+                and c.peak_score < 3
+                and not sustained_ok):
             logger.debug(
-                "serve_detector: pose candidate @ ts=%.2f REJECTED (rally IN_RALLY, peak_score=%d)",
-                c.ts, c.peak_score,
+                "serve_detector: pose candidate @ ts=%.2f REJECTED "
+                "(rally IN_RALLY, peak_score=%d, conf=%.2f, cluster_size=%d)",
+                c.ts, c.peak_score, c.confidence, c.cluster_size,
             )
             continue
 
