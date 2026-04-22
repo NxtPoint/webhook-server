@@ -87,9 +87,14 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
     crop around the far baseline resolves the keypoints. Same pattern as
     _load_ball_rows merging from ball_detections_roi.
 
-    Dedup rule: bronze row at frame F wins over ROI row at frame F
-    (bronze is the canonical pipeline output; ROI is a quality booster).
-    ROI rows for frames where bronze has no pose are appended.
+    Dedup rule: bronze and ROI may both have a row at frame F. Prefer the
+    one with a usable court_y (baseline-zone filter downstream requires
+    non-NULL court_y). In practice on far-player footage, bronze
+    full-frame YOLO resolves keypoints but cannot project 30-40 px feet
+    to the court (court_y is NULL), while ROI native-crop extractors
+    write court_y=0.0 by construction. If both have court_y the bronze
+    row wins (canonical). ROI rows for frames where bronze has no row
+    at all are appended.
     """
     rows = conn.execute(sql_text("""
         SELECT frame_idx, keypoints, court_x, court_y,
@@ -108,7 +113,6 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
         )
     """)).scalar()
 
-    bronze_frames = {int(r["frame_idx"]) for r in rows}
     roi_rows = []
     if table_exists:
         roi_rows = conn.execute(sql_text("""
@@ -119,35 +123,52 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
             ORDER BY frame_idx
         """), {"tid": task_id, "pid": player_id}).mappings().all()
 
-    out = []
+    # Build by-frame index so a ROI row can override a bronze row whose
+    # court_y is NULL (the baseline-zone gate downstream rejects NULL).
+    by_frame = {}
     for r in rows:
-        out.append({
+        by_frame[int(r["frame_idx"])] = {
             "frame_idx": r["frame_idx"],
             "keypoints": r["keypoints"],
             "court_x": r["court_x"],
             "court_y": r["court_y"],
             "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
-        })
-
+            "_origin": "bronze",
+        }
     added = 0
+    overridden = 0
     skipped = 0
     for r in roi_rows:
-        if int(r["frame_idx"]) in bronze_frames:
+        f = int(r["frame_idx"])
+        existing = by_frame.get(f)
+        if existing is None:
+            by_frame[f] = {
+                "frame_idx": r["frame_idx"],
+                "keypoints": r["keypoints"],
+                "court_x": r["court_x"],
+                "court_y": r["court_y"],
+                "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
+                "_origin": "roi",
+            }
+            added += 1
+        elif existing["court_y"] is None and r["court_y"] is not None:
+            # Bronze has pose but no projection; ROI has both. Keep bronze
+            # keypoints (higher-res model) but borrow ROI's court coords so
+            # the baseline-zone gate doesn't reject this frame.
+            existing["court_x"] = r["court_x"]
+            existing["court_y"] = r["court_y"]
+            existing["_origin"] = "bronze+roi_coords"
+            overridden += 1
+        else:
             skipped += 1
-            continue
-        out.append({
-            "frame_idx": r["frame_idx"],
-            "keypoints": r["keypoints"],
-            "court_x": r["court_x"],
-            "court_y": r["court_y"],
-            "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
-        })
-        added += 1
+
+    out = [{k: v for k, v in row.items() if not k.startswith("_")}
+           for row in by_frame.values()]
 
     if roi_rows:
         logger.info(
-            "player_detections pid=%d augmented: bronze=%d +roi=%d (skipped %d bronze-dup)",
-            player_id, len(rows), added, skipped,
+            "player_detections pid=%d augmented: bronze=%d +roi=%d (borrowed_cy=%d dup_skipped=%d)",
+            player_id, len(rows), added, overridden, skipped,
         )
     out.sort(key=lambda r: r["frame_idx"])
     return out
