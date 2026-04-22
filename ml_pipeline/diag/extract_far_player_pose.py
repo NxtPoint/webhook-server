@@ -151,8 +151,37 @@ def _project(mx, my, det):
     return None
 
 
-def _compute_far_roi_pixel(detector, frame_shape, pad_px=20) -> Tuple[int, int, int, int]:
-    """Project far-baseline metric region to pixel ROI."""
+def _compute_far_roi_pixel(detector, frame_shape, mode="wide",
+                           tight_w=256, tight_h=192) -> Tuple[int, int, int, int]:
+    """Compute pixel ROI for far-baseline region.
+
+    mode='wide':  full court-width band covering court_y in [-3, 5] m.
+                  Good for tracking player across lateral moves but produces
+                  a flat aspect ratio (e.g. 704x103) that YOLO only zooms
+                  ~1.8x → pose keypoints (wrist/shoulder) unresolved on
+                  far player.
+
+    mode='tight': square-ish crop centered on far-baseline center point
+                  (court_x=COURT_WIDTH/2, court_y=0). Default tight_w x
+                  tight_h is 256x192. YOLO scales this to 1280x1280 at
+                  imgsz=1280 → ~5x effective zoom of the player. Far
+                  player at ~40x25 source px → ~200x125 in YOLO input.
+                  Pose keypoints resolve at that size.
+                  Assumes the server is near the baseline center during
+                  the serve — valid for the ±1.5s window around contact.
+    """
+    h, w = frame_shape[:2]
+
+    if mode == "tight":
+        p = _project(COURT_WIDTH_DOUBLES_M / 2, 0.0, detector)
+        if p is None:
+            raise RuntimeError("cannot project far-baseline center")
+        cx, cy = p
+        x0 = max(0, min(w - tight_w, int(round(cx - tight_w / 2))))
+        y0 = max(0, min(h - tight_h, int(round(cy - tight_h / 2))))
+        return (x0, y0, x0 + tight_w, y0 + tight_h)
+
+    # Default: wide band
     corners_m = [
         (-FAR_ROI_X_PAD, FAR_ROI_Y_LO),
         (COURT_WIDTH_DOUBLES_M + FAR_ROI_X_PAD, FAR_ROI_Y_LO),
@@ -166,11 +195,10 @@ def _compute_far_roi_pixel(detector, frame_shape, pad_px=20) -> Tuple[int, int, 
             raise RuntimeError(f"cannot project far-ROI corner ({mx},{my})")
         pxs.append(p)
     xs = [p[0] for p in pxs]; ys = [p[1] for p in pxs]
-    h, w = frame_shape[:2]
-    x0 = max(0, int(min(xs) - pad_px))
-    y0 = max(0, int(min(ys) - pad_px))
-    x1 = min(w, int(max(xs) + pad_px))
-    y1 = min(h, int(max(ys) + pad_px))
+    x0 = max(0, int(min(xs) - 20))
+    y0 = max(0, int(min(ys) - 20))
+    x1 = min(w, int(max(xs) + 20))
+    y1 = min(h, int(max(ys) + 20))
     return (x0, y0, x1, y1)
 
 
@@ -221,7 +249,12 @@ def main():
                     help="which SA role to build ROI pose data around "
                          "(default FAR; we only need ROI pose for pid=1)")
     ap.add_argument("--max-serves", type=int, default=None)
-    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--conf", type=float, default=0.25,
+                    help="YOLO detection confidence threshold")
+    ap.add_argument("--kp-conf-threshold", type=float, default=0.3,
+                    help="min confidence on dominant wrist AND shoulder to count as 'usable pose'")
+    ap.add_argument("--verbose-kp", action="store_true",
+                    help="log keypoint confidences per detection")
     ap.add_argument("--source-tag", default="far_roi_pose")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -309,6 +342,9 @@ def main():
                 # Only count "usable pose" if keypoints are present AND confident
                 has_pose = False
                 kp_json = None
+                kp_max_conf = 0.0
+                wrist_conf = 0.0
+                shoulder_conf = 0.0
                 if kp is not None:
                     # Shift keypoints to full-frame
                     kp_full = kp.copy()
@@ -318,12 +354,19 @@ def main():
                         [float(kp_full[j, 0]), float(kp_full[j, 1]), float(kp_full[j, 2])]
                         for j in range(kp_full.shape[0])
                     ]
-                    # wrist and shoulder confidence > 0.3?
+                    kp_max_conf = float(kp_full[:, 2].max()) if kp_full.size else 0.0
                     wrist_conf = max(float(kp_full[9, 2]), float(kp_full[10, 2]))
                     shoulder_conf = max(float(kp_full[5, 2]), float(kp_full[6, 2]))
-                    if wrist_conf > 0.3 and shoulder_conf > 0.3:
+                    if wrist_conf > args.kp_conf_threshold and shoulder_conf > args.kp_conf_threshold:
                         has_pose = True
                         n_pose += 1
+                # Per-det diagnostic line — shows whether keypoints are close
+                # to the threshold or genuinely noisy
+                if args.verbose_kp:
+                    logger.info("  frame %d: bbox %.0fx%.0f  kp_max=%.2f  "
+                                "wrist=%.2f shoulder=%.2f  usable=%s",
+                                idx, fbx2 - fbx1, fby2 - fby1,
+                                kp_max_conf, wrist_conf, shoulder_conf, has_pose)
 
                 if cy is not None and -3.5 <= cy <= 4.5:
                     n_in_far_baseline += 1
