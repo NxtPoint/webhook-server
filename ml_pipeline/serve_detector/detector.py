@@ -457,12 +457,18 @@ def _detect_bounce_based_serves_far(
         if state == RallyState.IN_RALLY:
             continue
 
-        # Skip if a near-player pose-based serve fires within 3s — that
-        # same event was already captured by the stronger signal.
-        i = bisect.bisect_left(near_times, ts)
-        if i < len(near_times) and abs(near_times[i] - ts) < CROSS_PLAYER_DEDUP_S:
-            continue
-        if i > 0 and abs(near_times[i - 1] - ts) < CROSS_PLAYER_DEDUP_S:
+        # Skip if a near-player pose-based serve fires within the
+        # BEFORE window — a genuine same-serve conflict where the
+        # near player is the server and the pose signal beat us to it.
+        # But DO NOT dedup against near-player events that fire AFTER
+        # the far-player bounce: those are the near player RETURNING
+        # the far player's serve, not a competing serve signal.
+        # (Seen on 8a5e0b5e / d1fed568: near-player pose FP fires ~1 s
+        # after the far serve bounce due to the return-stroke motion.)
+        i = bisect.bisect_right(near_times, ts)
+        # Any near-pose event in [ts - CROSS_PLAYER_DEDUP_S, ts] blocks.
+        if i > 0 and (ts - near_times[i - 1]) < CROSS_PLAYER_DEDUP_S \
+                 and (ts - near_times[i - 1]) >= 0:
             continue
 
         # Cooldown between consecutive far-player serves
