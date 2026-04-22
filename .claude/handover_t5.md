@@ -6,17 +6,26 @@
 
 ---
 
-## Status (2026-04-22)
+## Status (2026-04-22 — evening session)
 
-Pipeline is operational end-to-end on rev 35/24. On task `8a5e0b5e` strict reconciliation (`reconcile_serves_strict`) confirmed **11/14 near-player serves as CONFIDENT MATCHES** — dt 0.04-0.12s, correct `player_id=0`, mean ts error 0.25s. Near-player serve detection via the pose-first detector is working as designed.
+Pipeline is operational end-to-end on rev 35/24. On task `8a5e0b5e` strict reconciliation (`reconcile_serves_strict`) confirms **13/14 near-player serves as CONFIDENT MATCHES** — dt 0.04-0.12s, correct `player_id=0`, mean ts error 0.22s, zero SUSPECT_BOUNCE. Near-player serve detection is solid.
 
-**Remaining gaps (post 2026-04-22 session):**
+**Remaining gaps:**
 
-1. **Far-player serve detection — 0/10 confident**. The 3/10 from `harness eval-serve` was loose-match false positives (pid=0 near-player pose hits landing within 3s of a far-player serve). Strict reconcile kills them. Root cause: bronze-side TrackNet misses far-half serve bounces → the bounce-first far-player detector has no anchors. **This is the next major initiative.** See the P2 playbook below.
-2. **All near-player serves are bounce-less in `serve_events`**. Every confirmed MATCH has `bounce_court_x/y = NULL`. Serve detector carries them on pose alone. Same P2 cause — far-half bounce detection is unreliable. Fixing P2 retroactively fills bounce fields for future runs.
-3. **Serve bucket / side tuning** — `serve_bucket_d` over-counts T, under-counts wide. Pass 3 x-thresholds in `build_silver_v2.py`. Cosmetic; defer until P2 solid.
+1. **Far-player serve detection — 0/10 confident**. Handed to agent 2 as the P2 ROI-extractor initiative (commit 064b64c). Awaiting Render validation of `extract_roi_bounces → rerun-silver → reconcile` chain.
+2. **1 near-miss (ts=148.52)**. Diag (`trace_missed_serves`) shows 0 trophy-pose frames in the window. Likely a second serve with less-aggressive trophy form. Fix would loosen the per-cluster arm-above-shoulder test (30→20 px) — defers; low-risk but not blocking today.
+3. **All confirmed near serves are bounce-less** (`bounce_court_x/y = NULL`). Same P2 cause. Fixing P2 retroactively fills bounce fields for future runs.
+4. **Serve bucket / side tuning** — `serve_bucket_d` over-counts T, under-counts wide. Cosmetic; defer until P2 solid.
 
-**Notable fixes landed in the 2026-04-19 to 2026-04-22 sessions** (reconciled in the "Session log" and "Current deploy state" sections): density (conf 0.25→0.10), SAHI skip + tightening, bronze-export pose row filter removal, pid=1 junk fallback rejection, **2.4m hitter_y drift fixed via feet projection in `map_to_court`**.
+**Notable fixes 2026-04-19 → 2026-04-22 (serve-detection chain reconstruction)**:
+- Density (conf 0.25→0.10)
+- SAHI skip merge + rule-A tightening
+- bronze-export pose-row filter removal
+- pid=1 junk fallback rejection
+- 2.4m hitter_y drift fixed via feet projection in `map_to_court` (rev 35)
+- **Rally-state gate loosened to accept sustained+confident clusters** (commit 8ae1b10) — unlocked ts 120.28 + 178.44
+- **Bounce-linking requires opposite side of net** (commit ded044f) — eliminated SUSPECT_BOUNCE verdicts
+- **Fixed transaction-poisoning bug in `_load_ball_rows`** (commit ee3db11) — agent 2's ROI query now guards with `information_schema`
 
 ---
 
