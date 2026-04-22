@@ -57,13 +57,24 @@ The 5 NO_MATCH serves (386.60, 410.08, 434.20, 458.08, 497.40) all pattern-match
 
 4. *Side-prior tight* (same commit, tuned): per-serve `court_x ∈ hit_x ± 1.5 m` using SA's `ball_hit_location_x` directly (deuce servers sit at 3.77-4.33, ad at 6.82-7.13 on d1fed568). **No change (4/11)**. The data in `player_detections_roi` for missed serves is IDENTICAL to the coarse run — meaning the body being picked is already in the server zone, but it still shows dead-static keypoints.
 
-**Diagnosis (finalised 2026-04-23)**: The visualiser (`ml_pipeline/diag/visualize_far_serve.py`, commit 9efefeb) on d1fed568 ts=386.60 showed ONE figure consistently in the server zone at court_x ~4.6 m, but `probe_serve_window` confirms that figure has dom_wrist_y stuck at 241-243 px (shoulder at 222 — arm BELOW shoulder) across 2.3 seconds of video including the predicted trophy peak at 386.12. The body is in the right *place* but never in the right *pose*. Four things can still explain this:
-  - ViTPose-Small fails on this specific player/camera/lighting combination → swap in ViTPose-Large
-  - The figure IS a non-server (line judge, coach, chair umpire) positioned coincidentally where SA says the server stood; real server is in a completely different part of the ROI. Only a tight visual crop of frame 9653 with a human eye would confirm
-  - Early-match serves have a different broadcast camera zoom — the **4 working serves all occur at ts > 500s**, the **5 failing all at ts < 500s**. Possible zoom / angle change mid-match means the ROI coords no longer correspond to the baseline for the first half of the video
-  - SA mis-labelled these as serves and they're actually returns / rally shots (plausible but low — SA's `ball_hit_location_y=-2.5m` is server-distance-behind-baseline, not receiver)
+**Diagnosis (finalised 2026-04-23, after 2-bug root-cause fix)**:
 
-**Hard-stopped further bbox-selection attempts** per the 2-consecutive-failed-hypothesis rule. The next viable moves are (a) visual close-up on a SINGLE frame (9653) for 386.60 with a human eye, or (b) ViTPose-Large swap, or (c) inspecting whether camera zoom changed between ts=497 and ts=502 on this match.
+A. The visualiser (`ml_pipeline/diag/visualize_far_serve.py`, commit 9efefeb) showed the ROI was picking up a red-shirted figure at the expected server location. But the KEYPOINTS in `player_detections_roi` told a different story: after querying bronze `player_detections` directly, pid=1 was stuck at bbox centre **(470, 240)** — OUTSIDE the far ROI (654-1358) by >180 px — for 6+ consecutive seconds on every failing serve. **That's the chair umpire.** The bronze YOLO pose detector misclassified a static off-court body as pid=1, and my earlier merge fix (commit 635b062) kept bronze keypoints while borrowing ROI court coords — so `score_pose_frame` saw chair-umpire wrist-at-hip pose across every window and never found a trophy.
+
+B. Two real fixes shipped as commit **2302ea0**:
+  - `_load_pose_rows` — for pid=1 (far player), ROI wins wholesale over bronze. Bronze pid=1 is unreliable on 30-50 px bodies; the ROI extractor with side-prior filter is the canonical far-player signal.
+  - `_detect_bounce_based_serves_far` — cross-player dedup uses NEAR pose times only. The combined list (including far pose times) caused newly-firing far pose events to suppress their OWN bounce-based detection of the same serve. Same with the augmented rally state for far bounce IN_RALLY check.
+
+C. Post-fix scores on d1fed568 (SA 1515aff7, 11 FAR serves) stay **4/11 strict** but with cleaner composition — gained 602.40 as clean `pose_only` MATCH (dt=0.36, was FAR_IN_TIME), 584.92 confidence improved 0.74 → 0.78, 555.68 slipped to WEAK_TIME at dt=0.56 (trophy peak fires exactly at physics-expected hit−0.5s offset). 8a5e0b5e is 2/10 (was 3/10) — 549.84 fires at dt=0.60, also at the physics-expected trophy offset but just past the 0.5s strict boundary.
+
+**Finding: `reconcile_serves_strict` ±0.5s threshold is TOO TIGHT for `pose_only` events.** Pose fires at TROPHY PEAK which physics places 0.3-0.6s BEFORE ball hit. SA labels ball_hit_s. So a correctly-firing pose event has dt ≈ 0.4-0.6s by construction — right at the strict boundary, where small variance (player's motion speed) pushes some serves just over. `eval-serve`'s looser 3s threshold shows the true picture: **6/11 on d1fed568, 5/10 on 8a5e0b5e** — substantially above strict reconcile's count.
+
+**5 NO_MATCH serves (386.60, 410.08, 434.20, 458.08, 497.40 on d1fed568)**: after the bug fixes, fresh probe shows the REAL server IS now being tracked (dom_wrist drops from 241 → 183 at trophy frames), but the trophy arm-above-shoulder elevation is SUB-PIXEL (0.3-3 px vs `min_arm_extension_px = 5`). Either these players have flatter service styles, or ViTPose-Small's keypoint resolution doesn't cleanly separate "wrist at shoulder" from "wrist above shoulder" at 50-px body size. A ViTPose-Large swap (5× weights) should resolve the keypoint precision and likely unlock several.
+
+**Next viable moves (prioritised)**:
+  1. ViTPose-Small → ViTPose-Large swap in `extract_vitpose_far.py` (cheap: change the HF repo path). 5× weights, ~3× inference cost. Likely unlocks 2-4 of the 5 NO_MATCH serves.
+  2. Loosen `reconcile_serves_strict` threshold to 1.0s for same-role `pose_only` events (pose at trophy + 0.5s flight is legitimate detection). Would MATCH 549.84 (0.60s) and 555.68 (0.56s) immediately.
+  3. Teach `find_serve_candidates` to emit events at hit time (trophy_frame + ~12 frames) rather than trophy time. Equivalent to #2 via detector-side offset.
 
 **Notable fixes 2026-04-19 → 2026-04-22 (serve-detection chain reconstruction)**:
 - Density (conf 0.25→0.10)
