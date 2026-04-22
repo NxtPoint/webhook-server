@@ -376,7 +376,15 @@ Bucket `nextpoint-prod-uploads` requires CORS for browser-to-S3 multipart upload
 
 ## Code Organisation
 
-New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`. Repo root is for service entry points only (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`).
+New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`. Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
+
+**Root-level blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring):
+
+- `client_api.py` — `/api/client/*`, CLIENT_API_KEY auth. Primary customer-facing API surface (dashboard endpoints, profile, entitlements, members, matches, footage URLs). See [Client API](#client-api-client_apipy--non-dashboard-endpoints) and [Dashboard Endpoints](#client-api--dashboard-endpoints) above.
+- `coaches_api.py` — `/api/coaches/*`, OPS_KEY auth. Server-to-server coach permission management over `billing.coaches_permission` (invite / accept / revoke). Companion to the token-based public accept page in `coach_invite/accept_page.py`; called internally by `client_api.py` coach endpoints.
+- `members_api.py` — members CRUD blueprint.
+- `subscriptions_api.py`, `usage_api.py`, `entitlements_api.py` — billing surface (see [Billing System](#billing-system)).
+- `ui_app.py` — **legacy** admin UI mounted at `/upload/*`, OPS_KEY auth. Renders bronze/silver inspection pages via `render_template_string`. Not used by any SPA (`backoffice.html` is the real admin UI) — retained for shell/debugging only.
 
 **`frontend/`** — all SPA HTML pages. Served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`:
 
