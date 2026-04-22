@@ -47,16 +47,23 @@ The 5 NO_MATCH serves (386.60, 410.08, 434.20, 458.08, 497.40) all pattern-match
 - But keypoint positions are **dead static across the 4-s window** — dom_wrist_y drifts only 1–2 px from t₀−2 s to t₀+2 s; real serve shows 30–50 px trophy peak excursion
 - Consistent arm-below-shoulder (max_arm = −18 to −10 px) suggests ViTPose is not seeing a trophy because the body isn't in trophy — YOLO is locked onto a static non-player (line judge / ball kid / scoreboard artefact) via the "biggest bbox per frame" rule in `extract_vitpose_far.py:303`
 
-**Two bbox-selection attempts made, both reverted**:
+**Four bbox-selection attempts made (2026-04-22/23), all plateau at 4/11 strict on d1fed568**:
 
 1. *Motion-aware (trajectory-based)*: greedy nearest-neighbor linking with MAX_LINK_DIST=50 px + MAX_GAP_FRAMES=5, scoring by `total_motion + 2×vertical_range + 0.5×len`. **Regressed 4/11 → 2/11** because the real-player trophy is a 2–3 frame burst and a trajectory containing it scored LOWER than a competing longer static-ish trajectory. Fast bbox center displacement also fragmented the player into two trajectories (head-down → arms-up displaces the bbox center by >50 px in one frame).
 
 2. *Highest-arm per-frame* (Option a from the original list): ran ViTPose on every YOLO detection per frame, kept the one whose dom wrist was highest in the image. **Net zero effect — same 4/11 as biggest-bbox.** The failure mode is subtler than it first appeared: at non-trophy frames the real server has arms at hip level, whereas a static line-judge's arm-at-chest has HIGHER pixels, so highest-arm still picks the judge most of the time. Only during the 1-2 frame trophy peak does the server outscore, and that's too few frames to cluster reliably with pose_signal's min_cluster_size=3 — even with the peak_score==3 override, we need ViTPose to produce a single crisp score=3 at the peak, and something (wrist/shoulder conf below MIN_KP_CONF, passive wrist not above passive shoulder in the ViTPose output) is suppressing it.
 
-**Where this leaves the gap to 11/11**:
-  - Safer alternatives still to try: (b) YOLO's built-in `.track()` mode with ByteTrack for stable IDs across the window — once a track is established it doesn't get clobbered by nearby static bodies; (c) position prior using SA's serve_side_d as a weak anchor (deuce ≈ one ROI half, ad ≈ the other) — reject any detection outside the expected half-ROI for the known serve side
-  - *Orthogonal approach*: visualise one of the failing serves — render the ROI with all YOLO bboxes and their ViTPose keypoints overlaid for frames 9645-9660 on 386.60. Probably the real server IS in those frames but ViTPose is returning low-confidence / flipped keypoints that score_pose_frame drops via its MIN_KP_CONF=0.3 gate. If that's the case, either loosen MIN_KP_CONF to 0.2 for far-player rows, or swap ViTPose-Small for ViTPose-Large (5× weights, likely 3-5× more accurate on 50 px bodies)
-  - DO NOT re-try the motion-aware or highest-arm variants — both fail for documented reasons above
+3. *Side-prior coarse* (commit 9efefeb): SA `serve_side_d` → half-court split `court_x < 5.5` for deuce, `> 5.5` for ad, with 1m centre-mark slop. **No change (4/11)** — two figures regularly occupy the same half during serves.
+
+4. *Side-prior tight* (same commit, tuned): per-serve `court_x ∈ hit_x ± 1.5 m` using SA's `ball_hit_location_x` directly (deuce servers sit at 3.77-4.33, ad at 6.82-7.13 on d1fed568). **No change (4/11)**. The data in `player_detections_roi` for missed serves is IDENTICAL to the coarse run — meaning the body being picked is already in the server zone, but it still shows dead-static keypoints.
+
+**Diagnosis (finalised 2026-04-23)**: The visualiser (`ml_pipeline/diag/visualize_far_serve.py`, commit 9efefeb) on d1fed568 ts=386.60 showed ONE figure consistently in the server zone at court_x ~4.6 m, but `probe_serve_window` confirms that figure has dom_wrist_y stuck at 241-243 px (shoulder at 222 — arm BELOW shoulder) across 2.3 seconds of video including the predicted trophy peak at 386.12. The body is in the right *place* but never in the right *pose*. Four things can still explain this:
+  - ViTPose-Small fails on this specific player/camera/lighting combination → swap in ViTPose-Large
+  - The figure IS a non-server (line judge, coach, chair umpire) positioned coincidentally where SA says the server stood; real server is in a completely different part of the ROI. Only a tight visual crop of frame 9653 with a human eye would confirm
+  - Early-match serves have a different broadcast camera zoom — the **4 working serves all occur at ts > 500s**, the **5 failing all at ts < 500s**. Possible zoom / angle change mid-match means the ROI coords no longer correspond to the baseline for the first half of the video
+  - SA mis-labelled these as serves and they're actually returns / rally shots (plausible but low — SA's `ball_hit_location_y=-2.5m` is server-distance-behind-baseline, not receiver)
+
+**Hard-stopped further bbox-selection attempts** per the 2-consecutive-failed-hypothesis rule. The next viable moves are (a) visual close-up on a SINGLE frame (9653) for 386.60 with a human eye, or (b) ViTPose-Large swap, or (c) inspecting whether camera zoom changed between ts=497 and ts=502 on this match.
 
 **Notable fixes 2026-04-19 → 2026-04-22 (serve-detection chain reconstruction)**:
 - Density (conf 0.25→0.10)
