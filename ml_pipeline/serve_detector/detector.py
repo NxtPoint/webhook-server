@@ -123,8 +123,21 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
             ORDER BY frame_idx
         """), {"tid": task_id, "pid": player_id}).mappings().all()
 
-    # Build by-frame index so a ROI row can override a bronze row whose
-    # court_y is NULL (the baseline-zone gate downstream rejects NULL).
+    # Build by-frame index. Merge policy:
+    #   pid=1 (far player): ROI wins wholesale when both exist. The full-
+    #     frame YOLO pose detector routinely misclassifies a STATIC
+    #     non-player (chair umpire, line judge) as pid=1 — observed on
+    #     d1fed568 for frames 9550-9720 where bronze pid=1 was fixed at
+    #     bbox center (470, 240) for 6+ seconds, which is OUTSIDE the
+    #     far-baseline ROI (654-1358). Those bronze keypoints describe
+    #     the umpire's chest-level hands, not the server's trophy pose.
+    #     The ROI extractor (extract_vitpose_far.py) is designed for
+    #     small-body far-player detection with a side-prior filter, and
+    #     its keypoints are the canonical far-player signal.
+    #   pid=0 (near player): bronze wins as before (near YOLO resolves
+    #     100-200 px bodies reliably; no ROI extractor runs for near).
+    #     If an ROI row exists only for a frame bronze missed, append it.
+    #     If bronze has NULL court_y, borrow ROI's for baseline-zone gate.
     by_frame = {}
     for r in rows:
         by_frame[int(r["frame_idx"])] = {
@@ -137,24 +150,29 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
         }
     added = 0
     overridden = 0
+    roi_wins = 0
     skipped = 0
+    far_player = (player_id == 1)
     for r in roi_rows:
         f = int(r["frame_idx"])
         existing = by_frame.get(f)
+        roi_entry = {
+            "frame_idx": r["frame_idx"],
+            "keypoints": r["keypoints"],
+            "court_x": r["court_x"],
+            "court_y": r["court_y"],
+            "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
+            "_origin": "roi",
+        }
         if existing is None:
-            by_frame[f] = {
-                "frame_idx": r["frame_idx"],
-                "keypoints": r["keypoints"],
-                "court_x": r["court_x"],
-                "court_y": r["court_y"],
-                "bbox": (r["bbox_x1"], r["bbox_y1"], r["bbox_x2"], r["bbox_y2"]),
-                "_origin": "roi",
-            }
+            by_frame[f] = roi_entry
             added += 1
+        elif far_player:
+            # ROI wins wholesale for pid=1 — bronze pid=1 is unreliable
+            by_frame[f] = roi_entry
+            roi_wins += 1
         elif existing["court_y"] is None and r["court_y"] is not None:
-            # Bronze has pose but no projection; ROI has both. Keep bronze
-            # keypoints (higher-res model) but borrow ROI's court coords so
-            # the baseline-zone gate doesn't reject this frame.
+            # Near-player merge: keep bronze kp, borrow ROI court coords
             existing["court_x"] = r["court_x"]
             existing["court_y"] = r["court_y"]
             existing["_origin"] = "bronze+roi_coords"
@@ -167,8 +185,9 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
 
     if roi_rows:
         logger.info(
-            "player_detections pid=%d augmented: bronze=%d +roi=%d (borrowed_cy=%d dup_skipped=%d)",
-            player_id, len(rows), added, overridden, skipped,
+            "player_detections pid=%d augmented: bronze=%d +roi_only=%d "
+            "(roi_override=%d borrowed_cy=%d dup_skipped=%d)",
+            player_id, len(rows), added, roi_wins, overridden, skipped,
         )
     out.sort(key=lambda r: r["frame_idx"])
     return out
@@ -617,20 +636,28 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
     # stay OFF during that rally. 8s is the typical longest gap
     # between shots within one point on MATCHI-style footage where
     # TrackNet occasionally loses the ball mid-rally.
-    pose_serve_times = [e.ts for e in near_events] + [e.ts for e in far_pose_events]
-    augmented_bounce_ts = sorted(list(rally.bounce_ts) + pose_serve_times)
+    # Only NEAR pose events augment the rally state for far-bounce
+    # detection. Far pose events MUST NOT be added — they describe
+    # the SAME player the bounce detector is working on, and a far
+    # pose firing at a slightly-wrong time would push the rally
+    # state to IN_RALLY and block the correct far bounce. The intent
+    # of the augmentation is "near player's serve strikes keep the
+    # rally active so we don't re-emit them as far serves".
+    near_pose_times = [e.ts for e in near_events]
+    augmented_bounce_ts = sorted(list(rally.bounce_ts) + near_pose_times)
     rally_for_far = RallyStateMachine(
         bounce_ts=augmented_bounce_ts,
         idle_threshold_s=8.0,
     )
 
+    # Cross-player dedup also uses NEAR pose only (see rationale above).
     far_bounce_events = _detect_bounce_based_serves_far(
         task_id=task_id,
         fps=fps,
         ball_rows=ball_rows,
         pose_rows_far=pose_far,
         rally=rally_for_far,
-        pose_serve_times_near=pose_serve_times,
+        pose_serve_times_near=near_pose_times,
     )
 
     all_events = near_events + far_pose_events + far_bounce_events
