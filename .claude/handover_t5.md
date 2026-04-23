@@ -14,14 +14,17 @@ Pipeline is operational end-to-end on **rev 36/25** (calibration fix, commit 364
 
 `d1fed568` (vs SA `1515aff7`, 11 FAR):
 - Near-player: **13/14 MATCH**
-- Far-player strict 0.5s: **7/11 MATCH** (410.08, 434.20, 458.08, 502.72, 555.68, 584.92, 602.40)
-- Far-player 3s loose: **9/11 (82%)**
+- Far-player strict 0.5s: **9/11 (82%)** — 378.08, 386.60, 410.08, 434.20, 458.08, 502.72, 555.68, 584.92, 602.40
+- Far-player 3s loose: 9/11
 
 `8a5e0b5e` (vs SA `4a194ff3`, 10 FAR) — primary task:
 - Near-player: **13/14 MATCH**
-- Far-player strict 0.5s: **5/10 MATCH** (410.08, 434.20, 458.08, 549.84, 584.92)
-- Far-player **3s loose: 8/10 (80%) ← TARGET HIT**
-- Still-missed strict: 463.52, 497.40. Still-missed even at 3s: 463.52, 497.40 (time-aligned detection on these two would need further work).
+- Far-player strict 0.5s: **7/10 (70%)** — 378.08, 386.60, 410.08, 434.20, 458.08, 549.84, 584.92
+- Far-player **3s loose: 8/10 (80%) ← ≥8/10 TARGET HIT**
+- Still-missed strict (3): 463.52, 497.40, 502.72. Root causes:
+  - 463.52: ViTPose disagrees with itself between Base and Large on wrist/shoulder ordering for this specific serve's unusual trophy
+  - 497.40: ViTPose finds no usable pose frames (player may be lower in ROI at this serve)
+  - 502.72: Real trophy frames (12554-12560) have wrist and shoulder both at pixel y≈184 — ViTPose can't resolve arm elevation at this 50 px body size for this player's service motion. Near-player return pose fires as FP and wins reconcile
 - SUSPECT_BOUNCE: 0
 
 **Two new commits unlocking the FAR pose-first path:**
