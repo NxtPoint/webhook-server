@@ -14,14 +14,14 @@ Pipeline is operational end-to-end on **rev 36/25** (calibration fix, commit 364
 
 `d1fed568` (vs SA `1515aff7`, 11 FAR):
 - Near-player: **13/14 MATCH**
-- Far-player strict 0.5s: **6/11 MATCH** (410.08, 434.20, 458.08, 502.72, 555.68, 584.92)
-- Far-player 3s loose: **9/11** (adds 378.08 and 386.60 which fire but are time-misaligned)
+- Far-player strict 0.5s: **7/11 MATCH** (410.08, 434.20, 458.08, 502.72, 555.68, 584.92, 602.40)
+- Far-player 3s loose: **9/11 (82%)**
 
 `8a5e0b5e` (vs SA `4a194ff3`, 10 FAR) — primary task:
 - Near-player: **13/14 MATCH**
-- Far-player strict 0.5s: **4/10 MATCH** — 410.08, 434.20, 458.08, 584.92 (all pose_only)
-- Far-player 3s loose: **7/10** (adds 378.08, 386.60, 502.72 which fire but are time-misaligned)
-- Still-missed strict: 463.52, 497.40, 549.84. Of these, 463.52 has a pose cluster firing but at ts=461.60 (1.92s before SA hit, way off). 497.40, 549.84 have no pose cluster at all.
+- Far-player strict 0.5s: **5/10 MATCH** (410.08, 434.20, 458.08, 549.84, 584.92)
+- Far-player **3s loose: 8/10 (80%) ← TARGET HIT**
+- Still-missed strict: 463.52, 497.40. Still-missed even at 3s: 463.52, 497.40 (time-aligned detection on these two would need further work).
 - SUSPECT_BOUNCE: 0
 
 **Two new commits unlocking the FAR pose-first path:**
