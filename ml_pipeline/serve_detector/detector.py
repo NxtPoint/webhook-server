@@ -41,6 +41,7 @@ from ml_pipeline.serve_detector.models import ServeEvent, SignalSource
 from ml_pipeline.serve_detector.pose_signal import (
     PoseServeCandidate,
     find_serve_candidates,
+    score_pose_frame,
 )
 from ml_pipeline.serve_detector.rally_state import (
     RallyState,
@@ -77,7 +78,8 @@ def _get_dominant_hand(conn, task_id: str) -> bool:
     return (row[0] if row else "right") == "left"
 
 
-def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
+def _load_pose_rows(conn, task_id: str, player_id: int,
+                    is_left_handed: bool = False) -> list:
     """Load all pose-carrying detections for one player, ordered by frame.
 
     Augmentation: if ml_analysis.player_detections_roi exists and has rows
@@ -123,30 +125,42 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
             ORDER BY frame_idx, source
         """), {"tid": task_id, "pid": player_id}).mappings().all()
 
-    # ROI ensemble: when multiple ROI rows exist at same frame_idx from
-    # DIFFERENT source tags (e.g. far_vitpose + far_vitpose_large), the
-    # PRIMARY source (far_vitpose, typically ViTPose-Base) wins at that
-    # frame. Secondary sources (far_vitpose_large) only fill FRAMES the
-    # primary missed. Attempted "pick highest keypoint confidence per
-    # frame" merge (commit [earlier]) regressed d1fed568 from 6/11 to
-    # 5/11 strict — Large produces high-confidence keypoints with
-    # WRONG wrist/shoulder ordering on some trophy frames (empirically
-    # observed at ts=463.52 frame 11575), and the confidence-max merge
-    # picked those over Base's lower-confidence-but-correct values. The
-    # supplement-only strategy is strictly additive — it can only
-    # unlock serves Base missed entirely, never displace Base's correct
-    # reads.
-    PRIMARY_TAG = "far_vitpose"
+    # ROI ensemble (score-aware): when multiple ROI rows exist at same
+    # frame_idx from DIFFERENT source tags, run score_pose_frame on
+    # each candidate and keep the one with the highest pose-signal
+    # score (trophy + toss + both_up, 0..3). Tie-break on arm_extension
+    # so trophy-like frames beat neutral-stance frames at equal score.
+    #
+    # This is the direct fix for the Base∪Large = 8/11 union observed
+    # on d1fed568 where the two models catch different serves. Simpler
+    # merges (highest-confidence, primary-wins) either regressed or
+    # were no-ops because they can't distinguish semantically-correct
+    # trophy orientation from confident-but-wrong orientation.
+    # score_pose_frame IS the signal we care about, so using it as the
+    # merge tie-breaker aligns the merge with the downstream scoring.
     if roi_rows:
-        primary = [r for r in roi_rows if r.get("source") == PRIMARY_TAG]
-        secondary = [r for r in roi_rows if r.get("source") != PRIMARY_TAG]
-        primary_frames = {int(r["frame_idx"]) for r in primary}
-        filtered = list(primary)
-        for r in secondary:
-            if int(r["frame_idx"]) not in primary_frames:
-                filtered.append(r)
-        roi_rows = filtered
-        roi_rows.sort(key=lambda r: int(r["frame_idx"]))
+        from collections import defaultdict as _dd
+        _by_frame = _dd(list)
+        for r in roi_rows:
+            _by_frame[int(r["frame_idx"])].append(r)
+
+        def _row_rank(r):
+            try:
+                s = score_pose_frame(r["keypoints"], is_left_handed)
+            except Exception:
+                return (0, 0.0)
+            if not s.usable:
+                return (0, 0.0)
+            return (s.total, s.shoulder_y - s.dom_wrist_y)
+
+        selected = []
+        for f in sorted(_by_frame.keys()):
+            rows_f = _by_frame[f]
+            if len(rows_f) == 1:
+                selected.append(rows_f[0])
+            else:
+                selected.append(max(rows_f, key=_row_rank))
+        roi_rows = selected
 
     # Build by-frame index. Merge policy:
     #   pid=1 (far player): ROI wins wholesale when both exist. The full-
@@ -625,8 +639,8 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
     ), {"t": task_id}).scalar() or 25.0
     is_left_handed = _get_dominant_hand(conn, task_id)
 
-    pose_near = _load_pose_rows(conn, task_id, 0)
-    pose_far = _load_pose_rows(conn, task_id, 1)
+    pose_near = _load_pose_rows(conn, task_id, 0, is_left_handed=is_left_handed)
+    pose_far = _load_pose_rows(conn, task_id, 1, is_left_handed=is_left_handed)
     ball_rows = _load_ball_rows(conn, task_id)
     rally = build_from_db(conn, task_id, fps)
 
