@@ -236,7 +236,18 @@ def find_serve_candidates(
     if min_cluster_size is None:
         min_cluster_size = 4 if player_id == 0 else 3
     if min_arm_extension_px is None:
-        min_arm_extension_px = 30.0 if player_id == 0 else 5.0
+        # Near player (pid=0): 30 px is ~20% of 150 px body, clean gate.
+        # Far player (pid=1): lowered 5 -> 2.5 px (2026-04-23). On 50 px
+        # bodies ViTPose routinely captures a real trophy pose with
+        # wrist only 2-5 px above shoulder; 5 px gate rejected d1fed568
+        # ts=386.60 cluster 0 at arm_ext=2.6 (right-time trophy) while
+        # accepting cluster 1 at arm_ext=26.1 (follow-through at wrong
+        # time). The 2.5 threshold unlocks the right-time cluster. The
+        # peak_score, min_cluster_size, and score-first peak-picker
+        # gates together still prevent obvious FP explosions — ready
+        # poses and rally shots don't produce score>=2 clusters with
+        # consistent wrist-above-shoulder across 3+ consecutive frames.
+        min_arm_extension_px = 30.0 if player_id == 0 else 2.5
 
     # Step 1-2: score + filter (keep any usable frame with at least one signal)
     scored = []
@@ -299,13 +310,24 @@ def find_serve_candidates(
 
         # Size gate: normally require min_cluster_size frames of sustained
         # pose motion. EXCEPTIONS that accept smaller clusters:
-        #   (a) peak_score == 3 (trophy+toss+both_up in one frame — only
-        #       a serve raises both wrists above the passive shoulder), OR
-        #   (b) peak arm extension >= STRONG_ARM_EXT_PX (physically
-        #       impossible outside a serve at far-player pixel scale).
+        #   (a) size=1 with peak_score == 3 (trophy+toss+both_up in one
+        #       frame — only a serve raises both wrists above the
+        #       passive shoulder), OR
+        #   (b) size=1 with peak arm extension >= STRONG_ARM_EXT_PX
+        #       (physically impossible outside a serve), OR
+        #   (c) size >= 2 with peak_score >= 2 AND arm_ext >=
+        #       min_arm_extension_px — two consecutive frames with
+        #       two-of-three pose signals firing and wrist above
+        #       shoulder is a strong enough signal at far-player scale.
+        #       Added 2026-04-23 to catch d1fed568 / 8a5e0b5e ts=386.60
+        #       cluster 0 (size=2 score=2 arm_ext=2.6) which sits at
+        #       the correct trophy time while a competing follow-
+        #       through cluster with arm_ext=26 fires at wrong time.
         # The arm-extension gate below still applies either way.
-        strong_peak = max_score >= 3 or arm_extension_px >= STRONG_ARM_EXT_PX
-        if len(cluster) < min_cluster_size and not strong_peak:
+        strong_single = max_score >= 3 or arm_extension_px >= STRONG_ARM_EXT_PX
+        duo_accepted = (len(cluster) >= 2 and max_score >= 2
+                        and arm_extension_px >= min_arm_extension_px)
+        if len(cluster) < min_cluster_size and not (strong_single or duo_accepted):
             continue
         if max_score < min_cluster_peak:
             continue
