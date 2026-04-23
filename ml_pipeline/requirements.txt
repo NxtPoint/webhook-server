@@ -26,4 +26,6 @@ sahi==0.11.18
 # ViTPose-Base for far-baseline ROI pose extraction (roi_extractors/pose.py).
 # Weights are pre-downloaded at image-build time in the Dockerfile so the
 # Batch job doesn't pay a 300 MB download on every cold start.
-transformers==4.44.2
+# ViTPose classes (VitPoseForPoseEstimation, VitPoseImageProcessor) were
+# added in transformers 4.48.0 — do not downgrade below that.
+transformers==4.49.0
