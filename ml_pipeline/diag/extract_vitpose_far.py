@@ -73,7 +73,7 @@ BBOX_EXPAND_W = 1.5   # uniform 50% width expansion (centered)
 BBOX_EXPAND_H = 5.0   # 5x height expansion, biased downward (see _expand_bbox)
                       # 10 px head bbox → 50 px full-body bbox; catches feet.
 
-VITPOSE_REPO = "usyd-community/vitpose-plus-base"  # was vitpose-plus-small; upgrade for 30-50 px far-player bodies
+VITPOSE_REPO = "usyd-community/vitpose-plus-base"  # was vitpose-plus-small; upgrade for 30-50 px far-player bodies. Large (tested 2026-04-23) same strict count, -2 at 3s — mixed-player results don't justify 2x runtime
 
 
 def _normalize_db_url(url):
