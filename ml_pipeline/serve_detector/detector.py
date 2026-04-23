@@ -125,41 +125,55 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
             ORDER BY frame_idx, source
         """), {"tid": task_id, "pid": player_id}).mappings().all()
 
-    # ROI ensemble (score-aware): when multiple ROI rows exist at same
-    # frame_idx from DIFFERENT source tags, run score_pose_frame on
-    # each candidate and keep the one with the highest pose-signal
-    # score (trophy + toss + both_up, 0..3). Tie-break on arm_extension
-    # so trophy-like frames beat neutral-stance frames at equal score.
+    # ROI ensemble (no-dedup): when multiple ROI rows exist at same
+    # frame_idx from DIFFERENT source tags, KEEP BOTH. pose_signal
+    # scores each row independently; both flow into clustering. The
+    # score>=1 filter naturally drops any row where this particular
+    # model's keypoints don't show trophy signal at that frame, while
+    # keeping the other model's correct reading.
     #
-    # This is the direct fix for the Base∪Large = 8/11 union observed
-    # on d1fed568 where the two models catch different serves. Simpler
-    # merges (highest-confidence, primary-wins) either regressed or
-    # were no-ops because they can't distinguish semantically-correct
-    # trophy orientation from confident-but-wrong orientation.
-    # score_pose_frame IS the signal we care about, so using it as the
-    # merge tie-breaker aligns the merge with the downstream scoring.
+    # Prior dedup strategies all failed to capture the Base∪Large =
+    # 8/11 union observed on d1fed568:
+    #   (a) pick-highest-keypoint-confidence: REGRESSED 6/11 -> 5/11
+    #       (Large's high-conf wrong-orientation frames won)
+    #   (b) primary-wins (supplement-only): 6/11 no-op (Base has
+    #       frames at Large-only serves but scored 0; secondary never
+    #       gets a chance)
+    #   (c) score-aware (pick best score_pose_frame per frame): 6/11
+    #       composition swap (gained 497, lost 434) — per-frame best
+    #       doesn't guarantee cluster-level coherence
+    # No-dedup lets the clustering resolve which source "wins" at the
+    # CLUSTER level: a cluster with several score>=1 frames from
+    # either source can pass the min_cluster_size gate even if neither
+    # source alone has enough frames. The peak-picker (min dom_wrist_y)
+    # naturally selects the best trophy frame across both sources.
+    # Duplicate-frame cluster_size inflation is benign: a 4-frame
+    # cluster is still a cluster with real signal; the arm_extension
+    # gate + min_serve_interval dedup prevent spurious fires.
     if roi_rows:
+        # Light dedup: if two rows have IDENTICAL bbox (within 1 px)
+        # they're the same detection and only one should enter the
+        # scorer. Otherwise (different bbox, i.e. each model saw a
+        # different candidate body) keep both.
         from collections import defaultdict as _dd
         _by_frame = _dd(list)
         for r in roi_rows:
             _by_frame[int(r["frame_idx"])].append(r)
-
-        def _row_rank(r):
-            try:
-                s = score_pose_frame(r["keypoints"], is_left_handed)
-            except Exception:
-                return (0, 0.0)
-            if not s.usable:
-                return (0, 0.0)
-            return (s.total, s.shoulder_y - s.dom_wrist_y)
-
         selected = []
         for f in sorted(_by_frame.keys()):
             rows_f = _by_frame[f]
-            if len(rows_f) == 1:
-                selected.append(rows_f[0])
-            else:
-                selected.append(max(rows_f, key=_row_rank))
+            # Dedup on (bbox_x1, bbox_y1) within 2 px tolerance
+            kept = []
+            for r in rows_f:
+                dup = False
+                for k in kept:
+                    if (abs(r["bbox_x1"] - k["bbox_x1"]) < 2 and
+                            abs(r["bbox_y1"] - k["bbox_y1"]) < 2):
+                        dup = True
+                        break
+                if not dup:
+                    kept.append(r)
+            selected.extend(kept)
         roi_rows = selected
 
     # Build by-frame index. Merge policy:
@@ -644,20 +658,20 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
     ball_rows = _load_ball_rows(conn, task_id)
     rally = build_from_db(conn, task_id, fps)
 
-    # Near player (pose-first)
-    near_events = _detect_pose_based_serves(
-        pose_rows=pose_near,
-        player_id=0,
-        is_left_handed=is_left_handed,
-        fps=fps,
-        task_id=task_id,
-        rally=rally,
-        ball_rows=ball_rows,
-    )
-
-    # Far player pose-first (usually yields nothing because the far
-    # player's body is 30-40 px and pose is unreliable, but included
-    # for the sake of the same code path).
+    # Order: FAR pose first, then NEAR pose using a rally state
+    # machine augmented with the far-pose event timestamps. Rationale:
+    # bronze TrackNet routinely misses the ball bounce from a FAR
+    # player's serve into the near service box — without those
+    # bounces, the rally state machine thinks the ball isn't in play
+    # after a FAR serve, and the subsequent NEAR player's RETURN
+    # STROKE (which can briefly score pose_score=3 on a high-
+    # backswing return) passes the rally-state gate as if it were a
+    # serve. Observed on 8a5e0b5e ts=502.72: SA labels FAR serve at
+    # 502.72 then NEAR return at 503.72, but T5 fires pid=0
+    # pose_only at 503.8 score=3 with rally_state=between_points,
+    # beating the real FAR serve in reconcile timing-wins. Feeding
+    # far-pose events into the rally state before near-pose detection
+    # puts the state correctly at IN_RALLY for those windows.
     far_pose_events = _detect_pose_based_serves(
         pose_rows=pose_far,
         player_id=1,
@@ -665,6 +679,29 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
         fps=fps,
         task_id=task_id,
         rally=rally,
+        ball_rows=ball_rows,
+    )
+
+    # Augment rally state with far-pose serve times + 0.5s flight
+    # (approximate hit→bounce time; pose fires at trophy which is ~0.5s
+    # before hit, so trophy+0.5 ≈ hit, and another ~0.5s adds bounce
+    # time; use trophy+1 as a rough "ball-in-play" marker). Use 8 s
+    # idle threshold to match far-bounce code — a tennis rally can go
+    # 10-15 s on this footage, and we don't want near-pose FPs to pass
+    # the gate just because a few seconds elapsed since the far serve.
+    far_pose_times = sorted([e.ts + 1.0 for e in far_pose_events])
+    augmented_rally_for_near = RallyStateMachine(
+        bounce_ts=sorted(list(rally.bounce_ts) + far_pose_times),
+        idle_threshold_s=8.0,
+    )
+
+    near_events = _detect_pose_based_serves(
+        pose_rows=pose_near,
+        player_id=0,
+        is_left_handed=is_left_handed,
+        fps=fps,
+        task_id=task_id,
+        rally=augmented_rally_for_near,
         ball_rows=ball_rows,
     )
 

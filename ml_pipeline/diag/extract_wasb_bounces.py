@@ -53,7 +53,12 @@ DEFAULT_SPORTAI_REF = "1515aff7-1ec7-472d-8dba-8fff9f939ff1"
 # Serve ball descends fast (~20-30 px/frame in 512x288 crop) then
 # rebounds up (~10-20 px/frame). A true bounce shows y-velocity sign
 # flip from positive (descending) to negative (ascending).
-BOUNCE_MIN_VEL_MAG = 3.0      # px/frame — lower than ball_tracker's 2.0
+BOUNCE_MIN_VEL_MAG = 2.0      # px/frame — lowered 2026-04-23 from 3.0 to
+                              # catch serves with gentler rebounds (e.g.
+                              # 8a5e0b5e ts=463.52 had 14 dets/3 in-zone
+                              # but 0 bounces detected at 3.0; WASB
+                              # positions are noisier on fast serves so
+                              # the velocity magnitude is less clean).
 BOUNCE_MIN_SPACING_FR = 8
 
 
