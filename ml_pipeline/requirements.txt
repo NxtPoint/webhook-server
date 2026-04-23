@@ -23,3 +23,7 @@ seaborn==0.13.2
 sqlalchemy==2.0.31
 psycopg[binary]==3.1.19
 sahi==0.11.18
+# ViTPose-Base for far-baseline ROI pose extraction (roi_extractors/pose.py).
+# Weights are pre-downloaded at image-build time in the Dockerfile so the
+# Batch job doesn't pay a 300 MB download on every cold start.
+transformers==4.44.2
