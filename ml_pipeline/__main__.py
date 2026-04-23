@@ -188,6 +188,29 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         pipeline.player_tracker.set_debug_upload_context(s3, s3_bucket, job_id)
         result = pipeline.process(tmp_path)
 
+        # 2b. Far-baseline ROI pose extraction (ViTPose-Base on YOLOv8m-det
+        # crops). Supplements bronze pid=1 with high-quality keypoints on
+        # the 30-50 px far-player body where full-frame YOLOv8x-pose
+        # under-resolves. Writes to ml_analysis.player_detections_roi
+        # (source='far_vitpose'), consumed by serve_detector's merge
+        # logic on the Render side. Failure is non-fatal.
+        if not practice:
+            try:
+                on_progress("roi_pose", 78)
+                from ml_pipeline.roi_extractors import extract_far_pose
+                court_det = getattr(pipeline, "court_detector", None)
+                n_pose = extract_far_pose(
+                    video_path=tmp_path,
+                    job_id=job_id,
+                    engine=engine,
+                    fps=getattr(result, "video_fps", 25.0) or 25.0,
+                    sample_every=2,
+                    court_detector=court_det,
+                )
+                logger.info(f"ROI pose: wrote {n_pose} rows")
+            except Exception as e:
+                logger.warning(f"ROI pose extraction failed (non-fatal): {e}")
+
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
         # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads
         # and bulk-inserts into ml_analysis.* in the same region as the DB.
