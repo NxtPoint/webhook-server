@@ -262,6 +262,10 @@ def main():
     ap.add_argument("--max-serves", type=int, default=None)
     ap.add_argument("--det-conf", type=float, default=0.15)
     ap.add_argument("--source-tag", default="far_vitpose")
+    ap.add_argument("--vitpose-repo", default=VITPOSE_REPO,
+                    help=f"HuggingFace repo for ViTPose model (default: "
+                         f"{VITPOSE_REPO}). Try usyd-community/vitpose-plus-"
+                         f"small|base|large to trade speed for accuracy.")
     ap.add_argument("--verbose-kp", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -302,8 +306,10 @@ def main():
     import torch
     from transformers import VitPoseForPoseEstimation, VitPoseImageProcessor
     logger.info("Stage 2: loading ViTPose++ small from HuggingFace...")
-    vit_model = VitPoseForPoseEstimation.from_pretrained(VITPOSE_REPO)
-    vit_proc = VitPoseImageProcessor.from_pretrained(VITPOSE_REPO)
+    repo = args.vitpose_repo
+    logger.info("Stage 2: loading ViTPose from %s", repo)
+    vit_model = VitPoseForPoseEstimation.from_pretrained(repo)
+    vit_proc = VitPoseImageProcessor.from_pretrained(repo)
     vit_model.eval()
     coco_idx = torch.tensor([0])  # COCO expert head
     logger.info("Both stages loaded.")

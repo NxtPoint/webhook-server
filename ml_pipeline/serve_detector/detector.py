@@ -117,11 +117,36 @@ def _load_pose_rows(conn, task_id: str, player_id: int) -> list:
     if table_exists:
         roi_rows = conn.execute(sql_text("""
             SELECT frame_idx, keypoints, court_x, court_y,
-                   bbox_x1, bbox_y1, bbox_x2, bbox_y2
+                   bbox_x1, bbox_y1, bbox_x2, bbox_y2, source
             FROM ml_analysis.player_detections_roi
             WHERE job_id = :tid AND player_id = :pid AND keypoints IS NOT NULL
-            ORDER BY frame_idx
+            ORDER BY frame_idx, source
         """), {"tid": task_id, "pid": player_id}).mappings().all()
+
+    # ROI ensemble: when multiple ROI rows exist at same frame_idx from
+    # DIFFERENT source tags (e.g. far_vitpose + far_vitpose_large), the
+    # PRIMARY source (far_vitpose, typically ViTPose-Base) wins at that
+    # frame. Secondary sources (far_vitpose_large) only fill FRAMES the
+    # primary missed. Attempted "pick highest keypoint confidence per
+    # frame" merge (commit [earlier]) regressed d1fed568 from 6/11 to
+    # 5/11 strict — Large produces high-confidence keypoints with
+    # WRONG wrist/shoulder ordering on some trophy frames (empirically
+    # observed at ts=463.52 frame 11575), and the confidence-max merge
+    # picked those over Base's lower-confidence-but-correct values. The
+    # supplement-only strategy is strictly additive — it can only
+    # unlock serves Base missed entirely, never displace Base's correct
+    # reads.
+    PRIMARY_TAG = "far_vitpose"
+    if roi_rows:
+        primary = [r for r in roi_rows if r.get("source") == PRIMARY_TAG]
+        secondary = [r for r in roi_rows if r.get("source") != PRIMARY_TAG]
+        primary_frames = {int(r["frame_idx"]) for r in primary}
+        filtered = list(primary)
+        for r in secondary:
+            if int(r["frame_idx"]) not in primary_frames:
+                filtered.append(r)
+        roi_rows = filtered
+        roi_rows.sort(key=lambda r: int(r["frame_idx"]))
 
     # Build by-frame index. Merge policy:
     #   pid=1 (far player): ROI wins wholesale when both exist. The full-
