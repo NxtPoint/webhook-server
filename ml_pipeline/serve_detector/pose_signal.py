@@ -279,7 +279,22 @@ def find_serve_candidates(
     STRONG_ARM_EXT_PX = 15.0
     for cluster in clusters:
         max_score = max(s.total for _, s in cluster)
-        peak_row, peak_score = min(cluster, key=lambda x: x[1].dom_wrist_y)
+        # Peak frame = highest pose-signal score first (trophy+toss+both_up),
+        # tie-break on arm_extension (shoulder - wrist). Previously used
+        # min(dom_wrist_y) which picks the ABSOLUTE pixel-highest wrist.
+        # That often lands on FOLLOW-THROUGH (arm extended during racket
+        # swing) rather than TROPHY PEAK (arm held overhead during toss).
+        # Follow-through frames can have higher absolute wrist position
+        # than trophy (arm fully extended vs arm bent at peak), but LOWER
+        # score_pose_frame.total (passive wrist is swinging down, not
+        # tossing). Using score as primary key makes the detector fire at
+        # the physically-correct moment (trophy, ~0.5s before hit) instead
+        # of post-hit follow-through.
+        def _peak_rank(x):
+            pose_score = x[1]
+            return (pose_score.total,
+                    pose_score.shoulder_y - pose_score.dom_wrist_y)
+        peak_row, peak_score = max(cluster, key=_peak_rank)
         arm_extension_px = peak_score.shoulder_y - peak_score.dom_wrist_y
 
         # Size gate: normally require min_cluster_size frames of sustained
