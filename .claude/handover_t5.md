@@ -38,7 +38,7 @@
 
 **Job-def** still uses `:latest` tag (Batch rev 1 in both regions). Spot nodes are ephemeral so every new job pulls the new image fresh — no re-registration needed. Confirm via: `aws ecr describe-images --region eu-north-1 --repository-name ten-fifty5-ml-pipeline --image-ids imageTag=latest`.
 
-**NOT YET SMOKE-TESTED IN BATCH** — local extractor verified, but the full Dockerized pipeline has not yet run a fresh Batch job. First fresh T5 upload will be the validation; check afterward:
+**DOCKER-IMAGE SMOKE-TESTED** — offline `docker run --network none --entrypoint python` of the pushed image proved all imports resolve + ViTPose-Base loads from the baked HF cache (125.4M params) + YOLOv8m loads from `/app/ml_pipeline/models/yolov8m.pt` + torch 2.3.1+cu121 initialises cleanly. The last unproven path (actual Batch-GPU end-to-end with DB writes) will complete on the first organic T5 upload; check afterward:
 ```sql
 SELECT count(*), source, min(frame_idx), max(frame_idx)
 FROM ml_analysis.player_detections_roi
