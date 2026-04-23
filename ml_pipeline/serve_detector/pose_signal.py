@@ -268,30 +268,36 @@ def find_serve_candidates(
     # 40+ px) at peak, whereas ready position, returns, and rally
     # shots keep the wrist near or below the shoulders.
     peaks: List[PoseServeCandidate] = []
+    # Strong-arm exception: cluster with peak arm extension >= this many
+    # px is a physically-unambiguous trophy (wrist that far above shoulder
+    # on a 50 px body is impossible for ready/return/rally — only serves
+    # raise the arm so high). Accept even with cluster size < min and
+    # peak score < 3. Observed on d1fed568 ts=463.52 with ViTPose-Base:
+    # single-frame cluster at score=2 with arm_ext=29.7 px — an obvious
+    # trophy pose ViTPose captured crisply in one frame (brief peak on
+    # small body). Old rule required peak==3 OR size>=min, dropping it.
+    STRONG_ARM_EXT_PX = 15.0
     for cluster in clusters:
         max_score = max(s.total for _, s in cluster)
+        peak_row, peak_score = min(cluster, key=lambda x: x[1].dom_wrist_y)
+        arm_extension_px = peak_score.shoulder_y - peak_score.dom_wrist_y
+
         # Size gate: normally require min_cluster_size frames of sustained
-        # pose motion. EXCEPTION: if the peak score is 3 (trophy + toss +
-        # both_up simultaneously) the cluster is accepted at any size —
-        # all three signals firing in one frame is physically a serve
-        # (ready/return/rally never raise the passive wrist above the
-        # passive shoulder). On far-player footage the trophy window is
-        # only 2-3 frames because the body is 50 px, so the size gate
-        # throws out real serves; on near-player footage the trophy is
-        # sustained 5+ frames so the gate still suppresses noise.
+        # pose motion. EXCEPTIONS that accept smaller clusters:
+        #   (a) peak_score == 3 (trophy+toss+both_up in one frame — only
+        #       a serve raises both wrists above the passive shoulder), OR
+        #   (b) peak arm extension >= STRONG_ARM_EXT_PX (physically
+        #       impossible outside a serve at far-player pixel scale).
         # The arm-extension gate below still applies either way.
-        if len(cluster) < min_cluster_size and max_score < 3:
+        strong_peak = max_score >= 3 or arm_extension_px >= STRONG_ARM_EXT_PX
+        if len(cluster) < min_cluster_size and not strong_peak:
             continue
         if max_score < min_cluster_peak:
             continue
-        # The peak frame = the one with highest dominant wrist (smallest
-        # dom_wrist_y pixel). This is the TROPHY moment of the serve.
-        peak_row, peak_score = min(cluster, key=lambda x: x[1].dom_wrist_y)
         # Require the peak arm to be clearly ABOVE the shoulder line —
-        # at least 30 px higher in image (= lower pixel y) than the
-        # shoulders. This rules out "player happened to score 1 for 5
-        # frames with hands around chest height" false positives.
-        arm_extension_px = peak_score.shoulder_y - peak_score.dom_wrist_y
+        # at least min_arm_extension_px higher in image (= lower pixel y)
+        # than the shoulders. This rules out "player happened to score 1
+        # for 5 frames with hands around chest height" false positives.
         if arm_extension_px < min_arm_extension_px:
             continue
         peaks.append(PoseServeCandidate(
