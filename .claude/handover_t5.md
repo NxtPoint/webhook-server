@@ -1,6 +1,6 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-22 (pose-first FAR unlock — 0/10 → 3/10 strict on 8a5e0b5e)
+**Last updated:** 2026-04-23 (ViTPose-Base unlock + reconcile flight-time fix)
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
@@ -14,13 +14,14 @@ Pipeline is operational end-to-end on **rev 36/25** (calibration fix, commit 364
 
 `d1fed568` (vs SA `1515aff7`, 11 FAR):
 - Near-player: **13/14 MATCH**
-- Far-player:  **4/11 MATCH** (463.52 via pose_signal cluster-size fix, plus 502.72 / 555.68 bounce_only, 584.92 pose_only)
+- Far-player strict 0.5s: **6/11 MATCH** (410.08, 434.20, 458.08, 502.72, 555.68, 584.92)
+- Far-player 3s loose: **9/11** (adds 378.08 and 386.60 which fire but are time-misaligned)
 
 `8a5e0b5e` (vs SA `4a194ff3`, 10 FAR) — primary task:
 - Near-player: **13/14 MATCH**
-- Far-player:  **3/10 MATCH** — 463.52, 549.84, 584.92 (all pose_only)
-  - 5 NO_MATCH (386.60, 410.08, 434.20, 458.08, 497.40) — ROI extractor locks onto a static non-player body (keypoints dead static across 4s window; real serve would show toss/trophy/strike motion). Fix direction: motion-based bbox selection instead of "biggest bbox" in `extract_vitpose_far.py::main()`.
-  - 378.08 WEAK_TIME + 502.72 FAR_IN_TIME — misattributed to pid=0 pose FPs
+- Far-player strict 0.5s: **4/10 MATCH** — 410.08, 434.20, 458.08, 584.92 (all pose_only)
+- Far-player 3s loose: **7/10** (adds 378.08, 386.60, 502.72 which fire but are time-misaligned)
+- Still-missed strict: 463.52, 497.40, 549.84. Of these, 463.52 has a pose cluster firing but at ts=461.60 (1.92s before SA hit, way off). 497.40, 549.84 have no pose cluster at all.
 - SUSPECT_BOUNCE: 0
 
 **Two new commits unlocking the FAR pose-first path:**
