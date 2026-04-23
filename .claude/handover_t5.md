@@ -1,12 +1,12 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-23 (serve detection sign-off — architecture complete, partial production deployment)
+**Last updated:** 2026-04-23 (Option A rollout — ROI pose extractor integrated into Batch pipeline)
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
 ---
 
-## Deployment state (2026-04-23 sign-off)
+## Deployment state (2026-04-23 — Option A landing)
 
 **WHAT'S LIVE IN PRODUCTION** (auto-deployed via Render pulling from `main`):
 
@@ -22,20 +22,37 @@
 
 `reconcile_serves_strict.py` + `probe_serve_window.py` + `visualize_far_serve.py` diag tools — all on main.
 
-**WHAT'S NOT YET IN PRODUCTION** (the P2 ROI data requires manual extraction):
+### P2 ROI extractor integration (Option A — deployed 2026-04-23)
 
-Two tables that power the far-player improvements:
-- `ml_analysis.player_detections_roi` — filled by `ml_pipeline/diag/extract_vitpose_far.py`
-- `ml_analysis.ball_detections_roi` — filled by `ml_pipeline/diag/extract_wasb_bounces.py`
+**Images live in ECR, both regions:**
+- `696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest`
+- `696793787014.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest`
+- Digest: `sha256:2640e28f9531b8431313a0e6c192acf082da5b111b6feba6bc43639d60977640`
+- Image size: 17.9 GB uncompressed / 6.4 GB compressed (adds transformers 4.49.0 + ViTPose-Base weights on top of previous rev)
 
-Both extractors are manual diag tools that:
-- Take `--sportai` reference (for serve-time windows)
-- Require local video file
-- Write to their respective tables
+**Code wired into Batch pipeline** (`ml_pipeline/__main__.py::_run_batch` step 2b):
+- `ml_pipeline/roi_extractors/pose.py::extract_far_pose()` — SA-less ViTPose-Base extractor, scans the whole video on GPU, writes to `ml_analysis.player_detections_roi` (`source='far_vitpose'`). Failure is non-fatal.
+- `ml_pipeline/roi_extractors/bounces.py::extract_far_bounces()` — **STUB** (logs + returns 0). Proper WASB bounce extraction deferred to a follow-up session.
+- Runs only for match uploads (`if not practice`), not practice sessions.
+- Smoke-tested locally (CPU) in Phase 1: 306 sampled frames → 260 detections → 119 usable pose rows in 579 s. End-to-end DB write confirmed.
 
-**For a fresh T5 upload that has NO SA counterpart, these tables stay empty, so the serve_detector's far-player path has nothing to work with** — new uploads currently get near-only detection (13/14) and no far-player MATCHes until we integrate the extractors into the Batch pipeline or post-Render step.
+**Job-def** still uses `:latest` tag (Batch rev 1 in both regions). Spot nodes are ephemeral so every new job pulls the new image fresh — no re-registration needed. Confirm via: `aws ecr describe-images --region eu-north-1 --repository-name ten-fifty5-ml-pipeline --image-ids imageTag=latest`.
 
-**For tasks that already have the ROI tables populated** (the eval tasks d1fed568, 8a5e0b5e), all session improvements are active.
+**NOT YET SMOKE-TESTED IN BATCH** — local extractor verified, but the full Dockerized pipeline has not yet run a fresh Batch job. First fresh T5 upload will be the validation; check afterward:
+```sql
+SELECT count(*), source, min(frame_idx), max(frame_idx)
+FROM ml_analysis.player_detections_roi
+WHERE job_id = '<new_task_id>'
+GROUP BY source;
+```
+Should see `source='far_vitpose'` with rows spanning most of the video. If zero rows, the batch logs at `awslogs-group=/aws/batch/ten-fifty5-ml-pipeline` will show the `roi_pose:` lines from `ml_pipeline/roi_extractors/pose.py` indicating where it failed (calibration, YOLO, or ViTPose).
+
+Then on Render: `python -m ml_pipeline.harness rerun-ingest <task_id>` + `python -m ml_pipeline.harness eval-serve <task_id>` (if SA counterpart exists).
+
+### Extractors still available as diag tools (for retrospective re-processing)
+
+- `ml_pipeline/diag/extract_vitpose_far.py` — kept for re-running ROI on historical tasks or A/B testing different model variants. Takes `--sportai` for serve-time windows; new production extractor scans the whole video.
+- `ml_pipeline/diag/extract_wasb_bounces.py` — same, for bounces. Still needed pending the production bounce extractor.
 
 ---
 
