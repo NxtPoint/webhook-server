@@ -1,12 +1,153 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-23 (ViTPose-Base unlock + reconcile flight-time fix)
+**Last updated:** 2026-04-23 (serve detection sign-off — architecture complete, partial production deployment)
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
 ---
 
-## Status (2026-04-22 — late session)
+## Deployment state (2026-04-23 sign-off)
+
+**WHAT'S LIVE IN PRODUCTION** (auto-deployed via Render pulling from `main`):
+
+`serve_detector/` — all session improvements are in the code path Render runs post-ingest:
+- Bronze pid=1 chair-umpire fix (ROI wins wholesale for pid=1)
+- Cross-player dedup only considers NEAR events
+- Pose cluster gates (size-1 strong-arm exception, size-2 duo_accepted rule)
+- Score-first peak-picker (prefers trophy over follow-through)
+- Score-aware ROI ensemble merge (handles Base + Large source tags)
+- Arm-ext threshold 2.5 px for pid=1 (was 5)
+- Augmented rally state machine for near-pose detection
+- Reconcile diagnostic with flight-time offsets
+
+`reconcile_serves_strict.py` + `probe_serve_window.py` + `visualize_far_serve.py` diag tools — all on main.
+
+**WHAT'S NOT YET IN PRODUCTION** (the P2 ROI data requires manual extraction):
+
+Two tables that power the far-player improvements:
+- `ml_analysis.player_detections_roi` — filled by `ml_pipeline/diag/extract_vitpose_far.py`
+- `ml_analysis.ball_detections_roi` — filled by `ml_pipeline/diag/extract_wasb_bounces.py`
+
+Both extractors are manual diag tools that:
+- Take `--sportai` reference (for serve-time windows)
+- Require local video file
+- Write to their respective tables
+
+**For a fresh T5 upload that has NO SA counterpart, these tables stay empty, so the serve_detector's far-player path has nothing to work with** — new uploads currently get near-only detection (13/14) and no far-player MATCHes until we integrate the extractors into the Batch pipeline or post-Render step.
+
+**For tasks that already have the ROI tables populated** (the eval tasks d1fed568, 8a5e0b5e), all session improvements are active.
+
+---
+
+## Integration blueprint (P2 — deploy ROI extractors to production)
+
+Goal: every fresh T5 upload automatically gets `player_detections_roi` and `ball_detections_roi` populated.
+
+Two options:
+
+**Option A: integrate into AWS Batch GPU pipeline (recommended — right architecture)**
+- Add ViTPose-Base + transformers package to `ml_pipeline/Dockerfile`
+- Create `ml_pipeline/extract_roi_pose_production.py` — SA-less version of `extract_vitpose_far` that scans ALL frames where bronze detected a far-baseline person (not just around SA timestamps)
+- Wire as a new stage in `ml_pipeline/__main__.py` after player detection
+- Same for WASB bounce extraction
+- Docker rebuild + ECR push both regions + new job def revision
+- Test on a fresh upload via Batch
+- Cost: ~500 MB added to image (ViTPose weights + transformers), GPU inference adds ~5 min/match
+- Burns 1-2 of remaining Docker rebuild budget
+
+**Option B: post-ingest Render step (interim — no GPU needed)**
+- After T5 ingest completes on Render, run CPU ViTPose on the video (slow: ~45 min for 10-min match)
+- Not viable for production (Render webhook worker would time out)
+
+**Recommended sequence for a future /loop session:**
+1. Write SA-less `extract_roi_pose_production.py` (reuse most of `extract_vitpose_far.py`)
+2. Write corresponding `extract_roi_bounces_production.py`
+3. Integrate both into `ml_pipeline/__main__.py` pipeline stages
+4. Local dry-run on test match
+5. Docker rebuild + ECR push + job def register (see §Docker rebuild below)
+6. Submit one Batch test run on a NEW match (not 8a5e0b5e/d1fed568 — those already have data)
+7. Verify ROI tables populated
+8. Run reconcile to confirm detection numbers
+
+---
+
+## /loop workflow (what's needed to pick this up again)
+
+**Environment (set before running `/loop`):**
+- `DATABASE_URL` — production Postgres connection (`.env` in webhook-server repo)
+- AWS creds active (check `aws sts get-caller-identity` — needed for ECR push + Batch submit)
+- `.venv/Scripts/activate` on Windows bash (Python 3.12, sqlalchemy, torch CPU, transformers, ultralytics, cv2 all installed)
+- Local video file: `ml_pipeline/test_videos/match_90ad59a8.mp4.mp4` (50 MB — same video for the two eval tasks)
+- HuggingFace auto-download for ViTPose weights (no token required for public repos)
+
+**Typical session flow:**
+1. User fires `/loop <task-prompt>` with the T5 Far-Side Serve Detection prompt block
+2. Dynamic mode — no interval parsed, so agent self-paces via `ScheduleWakeup`
+3. For code changes: agent edits, commits (requires `git` config — don't touch global config), pushes to `origin/main`
+4. For data work: agent runs extractors / serve detector / reconcile directly against DB
+5. Long-running operations (> 5 min): agent uses `run_in_background=true` Bash + `Monitor` to stream progress lines
+6. Agent resets `ScheduleWakeup` safety net on every monitor event (1500-1680 s range)
+
+**Key commands the agent runs frequently:**
+
+```bash
+# Re-run serve detector on an existing task (fast, no Batch)
+python -m ml_pipeline.harness eval-serve <task_id> --sportai <sa_id>
+
+# Strict reconcile (with flight-time offset)
+python -m ml_pipeline.diag.reconcile_serves_strict --task <task_id> --sportai <sa_id>
+
+# Probe a specific serve-time window
+python -m ml_pipeline.diag.probe_serve_window --task <task_id> --ts <sa_ts> --win 2.0 --player 1
+
+# Re-extract ViTPose ROI for a task (~20 min CPU)
+python -m ml_pipeline.diag.extract_vitpose_far \
+    --task <task_id> --video <path> --sportai <sa_id> \
+    --only-role FAR --source-tag far_vitpose --window-s 2.0
+
+# Extract with Large model into ensemble slot (~45 min CPU)
+python -m ml_pipeline.diag.extract_vitpose_far \
+    --task <task_id> --video <path> --sportai <sa_id> \
+    --only-role FAR --source-tag far_vitpose_large \
+    --vitpose-repo usyd-community/vitpose-plus-large \
+    --window-s 2.0
+
+# Extract WASB bounces (~10 min CPU)
+python -m ml_pipeline.diag.extract_wasb_bounces \
+    --task <task_id> --video <path> --sportai <sa_id>
+```
+
+**Docker rebuild + Batch job-def register (when needed):**
+
+```bash
+# Auth to both ECR regions (get ACCOUNT from `aws sts get-caller-identity`)
+aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
+
+# Build (multi-platform) — do this from repo root
+docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .
+
+# Push to eu-north-1 (primary)
+docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+docker push $ACCOUNT.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+
+# Push to us-east-1 (failover)
+docker tag ten-fifty5-ml-pipeline:latest $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+docker push $ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+
+# Register new job-def revision (pulls the new image digest into the Batch job definition)
+# See .claude/playbook_aws_batch_ondemand_fallback.md for the full invocation.
+```
+
+**Session budget (what to watch):**
+- 4 Docker rebuilds per session (20-30 min each) — pushing to both ECRs
+- 4 Batch submits per session (~40 min each on Spot)
+- CPU extraction runs don't count against these budgets
+- Hard stop after 2 consecutive failed hypothesis tests
+
+---
+
+## Status (2026-04-23 sign-off)
 
 Pipeline is operational end-to-end on **rev 36/25** (calibration fix, commit 364d8dd / image digest `e4d7781c...`). Fresh T5 run on task `d1fed568-b285-4117-bcef-c6039d52fc37` (video `1776858099_match.mp4`, reconciled against new SA reference `1515aff7-1ec7-472d-8dba-8fff9f939ff1` — 25 serves, 18 points).
 
