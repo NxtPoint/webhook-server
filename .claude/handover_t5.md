@@ -38,7 +38,33 @@
 
 **Job-def** still uses `:latest` tag (Batch rev 1 in both regions). Spot nodes are ephemeral so every new job pulls the new image fresh — no re-registration needed. Confirm via: `aws ecr describe-images --region eu-north-1 --repository-name ten-fifty5-ml-pipeline --image-ids imageTag=latest`.
 
-**DOCKER-IMAGE SMOKE-TESTED** — offline `docker run --network none --entrypoint python` of the pushed image proved all imports resolve + ViTPose-Base loads from the baked HF cache (125.4M params) + YOLOv8m loads from `/app/ml_pipeline/models/yolov8m.pt` + torch 2.3.1+cu121 initialises cleanly. The last unproven path (actual Batch-GPU end-to-end with DB writes) will complete on the first organic T5 upload; check afterward:
+**FULLY VALIDATED END-TO-END IN PRODUCTION BATCH** — task `4a591553-a8d9-4eaf-9bff-b0ec5c9c1185` on 2026-04-23 18:37–19:30 UTC ran the complete deployed pipeline on Spot G4dn.xlarge under job-def rev 40 (digest-pinned). Results:
+  - Main pipeline: 15,300 frames, 0 errors, 2539 s
+  - ROI extractor: 7,650 sampled frames → 7,244 YOLO detections → **3,725 usable ViTPose rows written** to `ml_analysis.player_detections_roi` with `source='far_vitpose'` in 500 s
+  - Bronze export, heatmaps, debug frames, trimmed video all succeeded
+  - Cost: $0.14 on on-demand (retry after earlier Spot eviction)
+
+### Job-def state (post-validation)
+
+- Rev 40 active in eu-north-1, pinned to `sha256:54e4a0c7...` (today's amd64 sub-manifest of the buildx manifest list)
+- retryStrategy: 3 attempts, auto-retry on `Host EC2*` (Spot eviction) and `DockerTimeoutError*`
+- Lambda submits by name (`BATCH_JOB_DEF=ten-fifty5-ml-pipeline`) so new jobs auto-resolve to rev 40
+- us-east-1 rev not updated (sandbox blocked re-register; primary region stays eu-north-1)
+
+### Gotcha learned this session
+
+Buildx pushes a manifest-list, not a regular image manifest. If the job-def is pinned to a digest (which it was from a previous rev), pushing a new `:latest` to ECR does NOT change the pinned digest — the job keeps pulling the old image. Always `aws batch register-job-definition` with the new amd64 sub-manifest digest after a push. Don't rely on tag resolution when the job-def uses `@sha256:` pinning.
+
+### How to verify on a fresh upload
+
+```sql
+-- Did the ROI pose step fire?
+SELECT count(*), source, min(frame_idx), max(frame_idx)
+FROM ml_analysis.player_detections_roi
+WHERE job_id = '<new_task_id>'
+GROUP BY source;
+-- Expect: thousands of rows, source='far_vitpose'
+```
 ```sql
 SELECT count(*), source, min(frame_idx), max(frame_idx)
 FROM ml_analysis.player_detections_roi
