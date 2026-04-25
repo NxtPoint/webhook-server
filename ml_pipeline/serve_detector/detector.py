@@ -522,6 +522,38 @@ def _detect_pose_based_serves(
         else:
             source = SignalSource.POSE_ONLY
 
+        # POSE_ONLY context gate — pid=1 only.
+        # Phase 7 deploy (commit 7fcf4f5) wired the production ROI pose
+        # extractor into AWS Batch. The extractor now scans the full
+        # video instead of ±2.5s windows around SA-GT serves, so far-
+        # baseline pose data exists for every rally interlude and warmup
+        # pose. find_serve_candidates' min_peak_score=1 + 2.5px arm gate
+        # is calibrated for SPARSE far-pose data (real serves only); on
+        # full-video data it produces ~60 trophy-pose-like FPs per match.
+        # The gate requires real-serve context for far-player POSE_ONLY:
+        #   (a) ≥ 3.0s since the last bronze bounce — we're in a true
+        #       between-points window, not at a rally interlude
+        #   (b) ≤ 3.0s to next bronze bounce — the pose started a point
+        #       (a real serve produces a near-side bounce within ~1.5s,
+        #       caught by bronze TrackNet reliably; a follow-up return
+        #       bounce within ~2.5s also counts; a warmup pose has no
+        #       follow-up bronze bounce because no point starts).
+        # Near-player (pid=0) POSE_ONLY untouched — bronze full-frame
+        # YOLO pose data is dense and reliable, the existing pose-cluster
+        # gates are well-calibrated. Applying this filter to pid=0 caused
+        # 8/12 near MATCHes to drop on task 4a591553 because bronze
+        # TrackNet sometimes misses BOTH the post-near-serve bounces.
+        if source == SignalSource.POSE_ONLY and player_id == 1:
+            idle_before = rally.time_since_last_bounce(c.ts)
+            time_to_bounce = rally.time_to_next_bounce(c.ts)
+            if idle_before < 3.0 or time_to_bounce > 3.0:
+                logger.debug(
+                    "serve_detector: pid=1 POSE_ONLY rejected @ ts=%.2f "
+                    "peak_score=%d idle_before=%.2fs time_to_next_bounce=%.2fs",
+                    c.ts, c.peak_score, idle_before, time_to_bounce,
+                )
+                continue
+
         events.append(ServeEvent(
             task_id=task_id,
             frame_idx=c.frame_idx,
