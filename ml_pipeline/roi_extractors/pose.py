@@ -312,13 +312,21 @@ def extract_far_pose(
 
         feet_x = (fbx1 + fbx2) / 2
         feet_y = fby2
-        # court_y=0.0 by ROI geometry (see diag/extract_vitpose_far.py
-        # discussion — the top-of-frame calibration can be unreliable).
-        cx = None
+        # Project feet to real court coords. The diag-tool predecessor
+        # (diag/extract_vitpose_far.py) hardcoded court_y=0.0 because
+        # it was bounded to ±2.5s windows around SA-GT serves where the
+        # player WAS at the baseline by definition. The production
+        # extractor scans the full video, so we MUST keep the real
+        # projected court_y — without it, downstream serve_detector
+        # can't tell a baseline trophy pose (real serve setup) apart
+        # from a mid-court trophy pose (rally overhead/forehand). Skip
+        # the row entirely when projection fails (strict=False already
+        # gives ±5m slack for far-baseline calibration noise).
         court = court_detector.to_court_coords(feet_x, feet_y, strict=False)
-        if court:
-            cx = court[0]
-        cy = 0.0
+        if court is None:
+            idx += 1
+            continue
+        cx, cy = float(court[0]), float(court[1])
 
         import json as _json
         kp_json = [

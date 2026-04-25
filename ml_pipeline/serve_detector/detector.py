@@ -506,42 +506,6 @@ def _detect_pose_based_serves(
         else:
             source = SignalSource.POSE_ONLY
 
-        # POSE_ONLY anti-FP gate (added 2026-04-24 after task 4a591553
-        # shipped 74 FPs following the full-video ROI extractor rollout).
-        # When ROI pose data covered only ±2.5s around SA-GT serves, the
-        # peak-picker had no data to fire on outside real serves. Post
-        # Phase 7, ROI writes ~3700 rows sampled every 2 frames across
-        # the entire video — so any weak arm-up during rally/warmup that
-        # scores `min_peak_score=1` can pass the cluster gates.
-        #
-        # A real serve occurs in a between-point window: multi-second
-        # quiet before (no rally activity), then the serve, then a
-        # bounce in the opponent's service box ~1s later. Rally arm-ups
-        # happen mid-rally (lots of bounces around them). Warmup trophy
-        # poses happen without any follow-up bounce (no real point
-        # started). The gate requires BOTH context signals for POSE_ONLY:
-        #   (a) ≥ 3.0s idle BEFORE the candidate — we're in a
-        #       between-point window, not mid-rally
-        #   (b) ≤ 3.0s to next bounce AFTER the candidate — the serve
-        #       produced a playable bounce (not warmup motion)
-        # POSE_AND_BALL / POSE_AND_BOUNCE already have corroborating
-        # signals, so we don't touch those paths. Near-player MATCHes
-        # at score=1 that lack TrackNet-detected service bounces still
-        # survive because rally-state bounce detection is dense enough
-        # (any rally-return bounce within 3s keeps time_to_next_bounce
-        # small), and real serves always have long idle before.
-        if source == SignalSource.POSE_ONLY:
-            idle_before = rally.time_since_last_bounce(c.ts)
-            time_to_bounce = rally.time_to_next_bounce(c.ts)
-            if idle_before < 3.0 or time_to_bounce > 3.0:
-                logger.debug(
-                    "serve_detector: POSE_ONLY rejected @ ts=%.2f pid=%d "
-                    "peak_score=%d idle_before=%.2fs time_to_next_bounce=%.2fs",
-                    c.ts, c.player_id, c.peak_score,
-                    idle_before, time_to_bounce,
-                )
-                continue
-
         events.append(ServeEvent(
             task_id=task_id,
             frame_idx=c.frame_idx,
