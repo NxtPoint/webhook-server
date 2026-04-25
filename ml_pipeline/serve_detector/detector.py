@@ -402,7 +402,23 @@ def _detect_pose_based_serves(
         #
         # Anything failing both → reject.
         state = rally.state_at(c.ts)
-        sustained_ok = (c.confidence >= 0.65 and c.cluster_size >= 20)
+        if c.player_id == 0:
+            # Near (pid=0): bronze pose data is dense and reliable —
+            # 0.65/20 has held since 2026-04-22 (added to catch real
+            # serves at task 8a5e0b5e ts=120.28 and 178.44 where rally
+            # state was stuck IN_RALLY).
+            sustained_ok = (c.confidence >= 0.65 and c.cluster_size >= 20)
+        else:
+            # Far (pid=1): tighter thresholds, added 2026-04-25 after task
+            # 4a591553 surfaced four mid-rally pid=1 trophy poses with
+            # conf 0.89-0.99 and sustained clusters that defeated the
+            # 0.65/20 sustained_ok exception. Real far-player serves
+            # observed in the 386/410/463 MATCH set have conf 0.86-0.88
+            # and cluster_size in the 20-30 range — bumping to 0.85/30
+            # excludes the FP cluster while still admitting real serves
+            # whose rally-state happens to read IN_RALLY (e.g. when the
+            # previous rally-end bounce was within 3s of the toss).
+            sustained_ok = (c.confidence >= 0.85 and c.cluster_size >= 30)
         if (state == RallyState.IN_RALLY
                 and c.peak_score < 3
                 and not sustained_ok):
@@ -563,10 +579,29 @@ def _detect_bounce_based_serves_far(
     import bisect
     MIN_SERVE_GAP_S = 5.0
 
+    # NEAR service box bounds — a far-player's SERVE must land here, not
+    # anywhere on the near half. The previous gate (cy > HALF_Y) accepted
+    # rally bounces deep on the near baseline (cy ~22) when rally state
+    # was momentarily fooled into BETWEEN_POINTS. Tightening to the actual
+    # service box (cy in [10.39, 19.78]) plus the per-side x bounds makes
+    # the bounce alone a near-sufficient signal that this WAS a serve.
+    NEAR_SB_Y_MIN = HALF_Y - 1.5            # 10.39 — half-meter past net
+    NEAR_SB_Y_MAX = HALF_Y + SERVICE_LINE_FROM_NET_M + 1.5   # 19.78 — past service line
+    SINGLES_HALF_WIDTH_M = 4.115            # singles court half-width
+    COURT_CENTRE_X = 5.485                  # COURT_WIDTH_DOUBLES_M / 2
+    SB_X_TOL = 1.5                          # let wide serves into the doubles alley
+    NEAR_SB_X_MIN = COURT_CENTRE_X - SINGLES_HALF_WIDTH_M - SB_X_TOL  # -0.13
+    NEAR_SB_X_MAX = COURT_CENTRE_X + SINGLES_HALF_WIDTH_M + SB_X_TOL  # 11.10
+
     for b in bounces:
         cy = b.get("court_y")
-        if cy is None or cy <= HALF_Y:
-            continue  # bounce on far half - far player's SERVE can't land there
+        cx = b.get("court_x")
+        if cy is None:
+            continue
+        if not (NEAR_SB_Y_MIN <= cy <= NEAR_SB_Y_MAX):
+            continue  # bounce on far half OR on near baseline — not a serve bounce
+        if cx is not None and not (NEAR_SB_X_MIN <= cx <= NEAR_SB_X_MAX):
+            continue  # bounce way outside the doubles court x bounds
         ts = b["frame_idx"] / fps
 
         # Query state JUST BEFORE this bounce — the bounce itself is in
