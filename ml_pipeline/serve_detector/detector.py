@@ -546,11 +546,38 @@ def _detect_pose_based_serves(
         if source == SignalSource.POSE_ONLY and player_id == 1:
             idle_before = rally.time_since_last_bounce(c.ts)
             time_to_bounce = rally.time_to_next_bounce(c.ts)
-            if idle_before < 3.0 or time_to_bounce > 3.0:
+            # Sliding-threshold gate (revised 2026-04-25 after eval on
+            # task 4a591553 showed the previous 3.0s/3.0s gate killed 3
+            # real far MATCHes while preserving 5 mid-rally FPs).
+            #
+            # The FPs are mid-rally trophy-like motions (overhead shots,
+            # defensive lobs) with HIGHER pose scores than real far
+            # serves on this match — score=3 conf 0.93-0.99 vs real
+            # serves at score=2 conf 0.86-0.88. Relying purely on
+            # absolute idle/bounce thresholds penalises real serves
+            # whose previous rally just ended (idle_before ~2s) while
+            # the high-conf rally FPs sit in slightly longer interludes.
+            #
+            # Better formulation: graduate the bounce-context strictness
+            # by peak_score. A unambiguous score=3 trophy+toss+both_up
+            # is real serve evidence on its own — relaxed context
+            # (≥1.5s idle, ≤5s bounce). Score=2 needs moderate context
+            # (≥2.5s idle, ≤4s bounce). Score=1 should not have
+            # surfaced as POSE_ONLY at this stage but if it does,
+            # require the strict 4s/3s window.
+            if c.peak_score >= 3:
+                idle_min, bounce_max = 1.5, 5.0
+            elif c.peak_score == 2:
+                idle_min, bounce_max = 2.5, 4.0
+            else:
+                idle_min, bounce_max = 4.0, 3.0
+            if idle_before < idle_min or time_to_bounce > bounce_max:
                 logger.debug(
                     "serve_detector: pid=1 POSE_ONLY rejected @ ts=%.2f "
-                    "peak_score=%d idle_before=%.2fs time_to_next_bounce=%.2fs",
+                    "peak_score=%d idle_before=%.2fs time_to_next_bounce=%.2fs "
+                    "(thresholds idle>=%.1f, bounce<=%.1f)",
                     c.ts, c.peak_score, idle_before, time_to_bounce,
+                    idle_min, bounce_max,
                 )
                 continue
 
