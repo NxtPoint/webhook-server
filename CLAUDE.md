@@ -22,6 +22,8 @@ pip install -r requirements.txt
 gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 1800
 ```
 
+**Deploy:** Render auto-deploys all four services on push to `origin/main` (build config in `render.yaml`). Always `git push` *before* asking the user to rerun an ingest from the Render shell — otherwise the shell executes stale code and the rerun is wasted.
+
 ### Testing & Code Quality
 
 No automated test suite, no CI, no linter. All testing is manual against the live Render database. Do not run `pytest`.
@@ -255,8 +257,6 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 - Public marketing: `home.html`, `how_it_works.html`, `pricing_public.html`, `for_coaches.html`
 
 **`docs/`** — design docs and strategy specs (`pricing_strategy.md`, `llm_coach_design.md`). Source of truth for business rules. Code links back to section numbers (e.g. "see docs/pricing_strategy.md §6").
-
-**Known stale files at root** (audited 2026-04-19, candidates for deletion; none are imported anywhere outside `.claude/worktrees/`): `build_silver_point_detail.py` (replaced by `build_silver_v2.py`), `bronze_json_schema.py`, `inspect_bronze_blobs.py`, `probes.py`, `test_silver_diagnostics.py`.
 
 ---
 
