@@ -206,6 +206,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     fps=getattr(result, "video_fps", 25.0) or 25.0,
                     sample_every=2,
                     court_detector=court_det,
+                    bounces=getattr(result, "ball_detections", None),
                 )
                 logger.info(f"ROI pose: wrote {n_pose} rows")
             except Exception as e:

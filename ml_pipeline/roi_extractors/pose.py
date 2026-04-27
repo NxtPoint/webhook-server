@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -135,6 +135,7 @@ def extract_far_pose(
     vitpose_repo: str = VITPOSE_REPO,
     calib_frames: int = 300,
     court_detector=None,
+    bounces: Optional[List] = None,
 ) -> int:
     """Run far-baseline ViTPose extraction across the entire video.
 
@@ -156,6 +157,13 @@ def extract_far_pose(
             None, a new one is built from the first calib_frames of the
             video. Pass the pipeline's court detector when available to
             save ~10-20 s of re-calibration.
+        bounces: in-memory list of BallDetection-like objects with
+            frame_idx + is_bounce attributes (typically result.ball_detections
+            from the just-finished pipeline.process()). When supplied, frames
+            whose ts falls inside an IN_RALLY window are skipped at the source
+            — real serves only happen between rallies, so this drops mid-rally
+            trophy-pose noise that the downstream pose-first detector can't
+            disambiguate. When None, every sampled frame is processed.
 
     Returns:
         Number of rows written.
@@ -221,8 +229,41 @@ def extract_far_pose(
         logger.info("roi_pose: ViTPose on cpu")
     coco_idx = torch.tensor([0])
 
+    # 3b. Build rally state machine from in-memory bounces. Real serves only
+    # happen between rallies; mid-rally trophy poses (overheads, lobs, stretch
+    # volleys) are pose-locally indistinguishable from real serves at the
+    # baseline, so we skip them at the source. Bronze ml_analysis.ball_detections
+    # is empty at this stage (Render ingests bronze later from the JSON export),
+    # which is why the in-memory list is the right input — see handover_t5.md
+    # NEXT SESSION block.
+    rally = None
+    rally_in_rally_state = None
+    if bounces:
+        try:
+            from ml_pipeline.serve_detector.rally_state import (
+                RallyStateMachine, RallyState,
+            )
+            bounce_ts = [
+                d.frame_idx / fps
+                for d in bounces
+                if getattr(d, "is_bounce", False)
+            ]
+            rally = RallyStateMachine(bounce_ts=bounce_ts)
+            rally_in_rally_state = RallyState.IN_RALLY
+            logger.info(
+                "roi_pose: rally gate active, %d bounces (of %d ball detections)",
+                len(bounce_ts), len(bounces),
+            )
+        except Exception as e:
+            logger.warning("roi_pose: rally state machine build failed (%s); processing all frames", e)
+            rally = None
+            rally_in_rally_state = None
+    else:
+        logger.info("roi_pose: no bounces supplied; processing all sampled frames (no rally gate)")
+
     # 4. Scan frames, run detection + pose, collect rows
     total_frames_probed = 0
+    total_in_rally_skipped = 0
     total_dets = 0
     total_usable = 0
     rows_to_write = []
@@ -236,6 +277,12 @@ def extract_far_pose(
         if idx % sample_every != 0:
             idx += 1
             continue
+        if rally is not None:
+            ts = idx / fps
+            if rally.state_at(ts) == rally_in_rally_state:
+                total_in_rally_skipped += 1
+                idx += 1
+                continue
         total_frames_probed += 1
 
         roi_crop = frame[y0:y1, x0:x1]
@@ -347,9 +394,10 @@ def extract_far_pose(
     cap.release()
     dt_scan = time.time() - t_start
     logger.info(
-        "roi_pose: scanned %d sampled frames (every %d), %d detections, "
-        "%d usable poses in %.1fs",
-        total_frames_probed, sample_every, total_dets, total_usable, dt_scan,
+        "roi_pose: scanned %d sampled frames (every %d), skipped %d IN_RALLY frames, "
+        "%d detections, %d usable poses in %.1fs",
+        total_frames_probed, sample_every, total_in_rally_skipped,
+        total_dets, total_usable, dt_scan,
     )
 
     if not rows_to_write:
