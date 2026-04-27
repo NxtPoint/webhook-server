@@ -33,6 +33,7 @@ Schema DDL is split across files:
 - `gold_init.py::gold_init_presentation()` — gold presentation views (idempotent, called on boot)
 - `tennis_coach/db.py::init_coach_cache()` — coach cache table (idempotent)
 - `tennis_coach/coach_views.py::init_coach_views()` — gold coach views (idempotent)
+- `support_bot/db.py::init_support_schema()` — support_bot.conversations + faq_cache (idempotent)
 - `_ensure_member_profile_columns()` in `client_api.py` — billing columns (on import)
 - `_ensure_submission_context_schema()` in `upload_app.py` — submission_context columns (on import)
 - `ensure_invite_token_column()` in `coach_invite/db.py`
@@ -159,6 +160,31 @@ Module: `coach_invite/` (contains both email types).
 **AWS SES setup**: region `eu-north-1` (Stockholm, matches Render). IAM user `nextpoint-uploader` needs `ses:SendEmail` / `ses:SendRawEmail`. Domain `ten-fifty5.com` verified via DKIM. Must be promoted out of sandbox to send to unverified recipients.
 
 **Env vars**: `SES_FROM_EMAIL` (default `noreply@ten-fifty5.com`), `COACH_ACCEPT_BASE_URL` (default `https://api.nextpointtennis.com`), `LOCKER_ROOM_BASE_URL` (default `https://www.ten-fifty5.com/portal`).
+
+## Support Bot (`support_bot/`)
+
+Customer-service chat bot for the portal pages. **Claude Haiku 4.5** with prompt caching + forced tool-use for guaranteed structured output. FAQ-only — bot answers strictly from `support_bot/faq.md` and escalates anything not covered (or any account-specific question) to `info@ten-fifty5.com` via SES.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/support/ask` | Main entry. Body `{message, email, page_context?, conversation_id?}` → `{answer, confidence, needs_human, cited_sections, actions}` |
+| `POST /api/support/feedback` | Thumbs up/down on a turn |
+| `POST /api/support/escalate` | Email transcript to `info@ten-fifty5.com`, Reply-To = customer |
+| `GET /api/support/health` | Admin-only: FAQ hash, conversation counts, cost metrics |
+
+Auth: `X-Client-Key` header (same as Client API). Admin endpoints require `email` in `ADMIN_EMAILS`.
+
+Tables (idempotent on boot via `init_support_schema()`): `support_bot.conversations` (every Q+A logged with tokens + cost) and `support_bot.faq_cache` (sha256-keyed dedup, invalidated when `faq.md` content hash changes).
+
+**Surface**: portal pages only (`portal.html`, `locker_room.html`, `media_room.html`, `match_analysis.html`, `pricing.html`, `backoffice.html`, `practice.html`). Not on public marketing pages or pre-account flows.
+
+**Cost**: ~$0.001 per cached query, ~$0.008 per cache-write. Realistic monthly spend at portal volumes: < $5.
+
+**Anti-hallucination**: hard FAQ-only system rule, account-specific questions auto-escalated regardless of FAQ coverage, `confidence=high` filter on cache writes, AI-Coach redirect for stroke/match-data questions, kill switch via `SUPPORT_BOT_ENABLED=false`.
+
+**The FAQ is the load-bearing artefact** — `support_bot/faq.md` is currently seeded with 5 example entries; real ~30 to be written by Tomo + co-worker based on actual inbound email volume.
+
+Full implementation reference: **`docs/support_bot.md`**. Design history & rationale: `docs/support_bot_design.md`.
 
 ## Client API (`client_api.py`) — non-dashboard endpoints
 

@@ -158,6 +158,15 @@ try:
 except Exception:
     app.logger.exception("tennis_coach init failed on boot")
 
+# ---------- Support Bot (idempotent on boot) ----------
+try:
+    from support_bot.init import init_support_bot
+    from support_bot.support_api import support_bp
+    init_support_bot()
+    app.register_blueprint(support_bp)
+except Exception:
+    app.logger.exception("support_bot init failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init
