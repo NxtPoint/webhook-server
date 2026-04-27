@@ -522,64 +522,21 @@ def _detect_pose_based_serves(
         else:
             source = SignalSource.POSE_ONLY
 
-        # POSE_ONLY context gate — pid=1 only.
-        # Phase 7 deploy (commit 7fcf4f5) wired the production ROI pose
-        # extractor into AWS Batch. The extractor now scans the full
-        # video instead of ±2.5s windows around SA-GT serves, so far-
-        # baseline pose data exists for every rally interlude and warmup
-        # pose. find_serve_candidates' min_peak_score=1 + 2.5px arm gate
-        # is calibrated for SPARSE far-pose data (real serves only); on
-        # full-video data it produces ~60 trophy-pose-like FPs per match.
-        # The gate requires real-serve context for far-player POSE_ONLY:
-        #   (a) ≥ 3.0s since the last bronze bounce — we're in a true
-        #       between-points window, not at a rally interlude
-        #   (b) ≤ 3.0s to next bronze bounce — the pose started a point
-        #       (a real serve produces a near-side bounce within ~1.5s,
-        #       caught by bronze TrackNet reliably; a follow-up return
-        #       bounce within ~2.5s also counts; a warmup pose has no
-        #       follow-up bronze bounce because no point starts).
-        # Near-player (pid=0) POSE_ONLY untouched — bronze full-frame
-        # YOLO pose data is dense and reliable, the existing pose-cluster
-        # gates are well-calibrated. Applying this filter to pid=0 caused
-        # 8/12 near MATCHes to drop on task 4a591553 because bronze
-        # TrackNet sometimes misses BOTH the post-near-serve bounces.
-        if source == SignalSource.POSE_ONLY and player_id == 1:
-            idle_before = rally.time_since_last_bounce(c.ts)
-            time_to_bounce = rally.time_to_next_bounce(c.ts)
-            # Sliding-threshold gate (revised 2026-04-25 after eval on
-            # task 4a591553 showed the previous 3.0s/3.0s gate killed 3
-            # real far MATCHes while preserving 5 mid-rally FPs).
-            #
-            # The FPs are mid-rally trophy-like motions (overhead shots,
-            # defensive lobs) with HIGHER pose scores than real far
-            # serves on this match — score=3 conf 0.93-0.99 vs real
-            # serves at score=2 conf 0.86-0.88. Relying purely on
-            # absolute idle/bounce thresholds penalises real serves
-            # whose previous rally just ended (idle_before ~2s) while
-            # the high-conf rally FPs sit in slightly longer interludes.
-            #
-            # Better formulation: graduate the bounce-context strictness
-            # by peak_score. A unambiguous score=3 trophy+toss+both_up
-            # is real serve evidence on its own — relaxed context
-            # (≥1.5s idle, ≤5s bounce). Score=2 needs moderate context
-            # (≥2.5s idle, ≤4s bounce). Score=1 should not have
-            # surfaced as POSE_ONLY at this stage but if it does,
-            # require the strict 4s/3s window.
-            if c.peak_score >= 3:
-                idle_min, bounce_max = 1.5, 5.0
-            elif c.peak_score == 2:
-                idle_min, bounce_max = 2.5, 4.0
-            else:
-                idle_min, bounce_max = 4.0, 3.0
-            if idle_before < idle_min or time_to_bounce > bounce_max:
-                logger.debug(
-                    "serve_detector: pid=1 POSE_ONLY rejected @ ts=%.2f "
-                    "peak_score=%d idle_before=%.2fs time_to_next_bounce=%.2fs "
-                    "(thresholds idle>=%.1f, bounce<=%.1f)",
-                    c.ts, c.peak_score, idle_before, time_to_bounce,
-                    idle_min, bounce_max,
-                )
-                continue
+        # NOTE on the pid=1 POSE_ONLY context gate (removed 2026-04-27):
+        # Two iterations of bounce-context filters (commits caf5d60,
+        # 96f1ccd, 19fec92) all penalised real far serves more than
+        # they removed FPs. Bronze TrackNet routinely misses the post-
+        # serve bounces that real far MATCHes need (the ball lands ~17m
+        # away from the camera and clears 1-2 px), so time_to_next_bounce
+        # is often >4s for real serves. Mid-rally trophy-pose FPs sit
+        # AT rally times where bronze bounces ARE dense, so they pass
+        # the same gate. Net result on task 4a591553: 13/14 near + 0/10
+        # far strict MATCH vs original 12/14 + 3/10 — lost 2 strict
+        # MATCHes total. Bounce timing is NOT a usable discriminator
+        # for far-player serves with the current bronze layer.
+        # Keeping the cleaner wins (NEAR-SB bounce filter at line 569,
+        # per-pid sustained_ok at line 408) which don't hurt real
+        # MATCHes — they only filter clearly-different FP classes.
 
         events.append(ServeEvent(
             task_id=task_id,
