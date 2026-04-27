@@ -305,6 +305,12 @@ def gold_init():
     """
     with engine.begin() as conn:
         conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS gold;"))
+        # Ensure columns the view depends on exist before CREATE OR REPLACE.
+        # `deleted_at` powers the soft-delete filter for the match list.
+        conn.execute(sql_text(
+            "ALTER TABLE bronze.submission_context "
+            "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"
+        ))
         conn.execute(sql_text("""
             CREATE OR REPLACE VIEW gold.vw_client_match_summary AS
             WITH player_map AS (
@@ -436,5 +442,6 @@ def gold_init():
             FROM bronze.submission_context sc
             LEFT JOIN stats s ON s.task_id = sc.task_id::uuid
             WHERE sc.email IS NOT NULL
-              AND sc.sport_type = 'tennis_singles';
+              AND sc.sport_type = 'tennis_singles'
+              AND sc.deleted_at IS NULL;
         """))

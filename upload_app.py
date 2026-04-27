@@ -140,6 +140,15 @@ try:
 except Exception:
     app.logger.exception("gold_init_presentation() failed on boot — gold views may be stale")
 
+# Legacy gold.vw_client_match_summary (feeds /api/client/matches sidebar). Will
+# eventually be replaced by gold.match_kpi but currently live. Wrapped so a
+# single view failure doesn't kill the service.
+try:
+    from db_init import gold_init as _gold_init_legacy  # noqa: E402
+    _gold_init_legacy()
+except Exception:
+    app.logger.exception("legacy gold_init() (vw_client_match_summary) failed on boot")
+
 # ---------- LLM Tennis Coach (idempotent on boot) ----------
 try:
     from tennis_coach.coach_api import coach_bp
@@ -399,6 +408,7 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS player_b_set3_games INT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS first_server TEXT",
         f"ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS sport_type TEXT DEFAULT '{DEFAULT_SPORT_TYPE}'",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
     ):
         conn.execute(sql_text(ddl))
 

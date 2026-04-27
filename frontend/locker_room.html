@@ -319,6 +319,13 @@ select.profile-input { appearance: auto; }
   transition: all var(--transition); white-space: nowrap;
 }
 .btn-edit:hover { background: var(--green); color: var(--white); }
+.btn-remove {
+  background: var(--white); color: var(--red); border: 1px solid var(--red);
+  padding: 6px 14px; border-radius: var(--radius); font-weight: 600; font-size: 0.78rem;
+  transition: all var(--transition); white-space: nowrap;
+}
+.btn-remove:hover { background: var(--red); color: var(--white); }
+.btn-remove:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge-processing {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 6px 14px; border-radius: var(--radius); font-size: 0.78rem; font-weight: 600;
@@ -1237,6 +1244,11 @@ function renderGroupedMatches() {
           ? `onclick="event.stopPropagation();playFootage('${m.task_id}')"`
           : 'onclick="event.stopPropagation()"';
 
+        const analysisReady = status.cls === 'processed' && (m.total_points || 0) > 0;
+        const analysisAction = analysisReady
+          ? `onclick="event.stopPropagation();openAnalysis('${m.task_id}')"`
+          : 'onclick="event.stopPropagation()" disabled';
+        const analysisTitle = analysisReady ? 'Open match analytics' : 'Analytics not yet available';
         html += `<div class="match-card" onclick="openDetail(${m._idx})">
           <div class="match-info">
             <div class="match-opponent">${esc(m.player_a_name||'Player A')} vs ${esc(m.player_b_name||'Opponent')}</div>
@@ -1248,6 +1260,8 @@ function renderGroupedMatches() {
               &#9654;${hasTrim ? '' : '<span class="tooltip">Footage not yet available</span>'}
             </button>
             <button class="btn-edit" onclick="event.stopPropagation();openDetail(${m._idx})">Edit</button>
+            <button class="btn-edit" ${analysisAction} title="${analysisTitle}">Analysis</button>
+            <button class="btn-remove" onclick="event.stopPropagation();confirmRemoveMatch(${m._idx})" title="Remove this match from your profile">Remove</button>
           </div>
         </div>`;
       });
@@ -1503,6 +1517,43 @@ async function reprocessOnly(taskId) {
 
 function esc(s) { if(s==null)return''; const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
 function goToPricing() { if (window.parent !== window) { window.parent.postMessage({ type: 'portal-navigate', target: 'pricing' }, '*'); } else { window.location.href = '/pricing?' + new URLSearchParams({ email: EMAIL, key: API_KEY, api: API_BASE }).toString(); } }
+
+function openAnalysis(taskId) {
+  if (!taskId) return;
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'portal-navigate', target: 'match-analysis', params: { task_id: taskId } }, '*');
+  } else {
+    const qs = new URLSearchParams({ email: EMAIL, key: API_KEY, api: API_BASE, task_id: taskId }).toString();
+    window.location.href = '/match-analysis?' + qs;
+  }
+}
+
+async function confirmRemoveMatch(idx) {
+  const m = matches[idx];
+  if (!m) return;
+  const label = `${m.player_a_name || 'Player A'} vs ${m.player_b_name || 'Opponent'}` +
+                (m.match_date ? ` on ${m.match_date}` : '');
+  const ok = window.confirm(
+    `Remove "${label}" from your profile?\n\n` +
+    `This permanently deletes the match analytics, video footage, and all derived data. ` +
+    `Your account history and credit usage are preserved. This cannot be undone.`
+  );
+  if (!ok) return;
+
+  showMsg('info', `Removing match: ${label}...`);
+  try {
+    const res = await apiFetch(`/api/client/matches/${m.task_id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.ok) {
+      showMsg('success', 'Match removed.');
+      setTimeout(() => init(), 1200);
+    } else {
+      showMsg('error', 'Remove failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) {
+    showMsg('error', 'Error: ' + e.message);
+  }
+}
 document.addEventListener('keydown', e => {
   if (e.key==='Escape') {
     if (document.getElementById('videoModal').classList.contains('open')) closeVideo();

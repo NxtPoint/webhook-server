@@ -430,10 +430,215 @@ def reprocess_match(task_id: str):
     try:
         from build_silver_v2 import build_silver_v2
         result = build_silver_v2(task_id=task_id, replace=True)
-        return jsonify({"ok": True, "result": result or "rebuilt"})
     except Exception:
         log.exception("reprocess failed task_id=%s", task_id)
         return jsonify({"ok": False, "error": "reprocess_failed"}), 500
+
+    # Invalidate cached AI Coach responses — silver may now have a different
+    # player A/B mapping (eg. first_server flipped), so cached coaching that
+    # named the wrong player is now wrong. Best-effort; missing table is fine.
+    try:
+        with engine.begin() as conn:
+            has_cache = conn.execute(text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='tennis_coach' AND table_name='coach_cache'"
+            )).scalar()
+            if has_cache:
+                conn.execute(
+                    text("DELETE FROM tennis_coach.coach_cache WHERE task_id = :tid"),
+                    {"tid": task_id},
+                )
+    except Exception:
+        log.exception("reprocess: coach_cache invalidation failed task_id=%s", task_id)
+
+    return jsonify({"ok": True, "result": result or "rebuilt"})
+
+
+# ----------------------------
+# DELETE /api/client/matches/<task_id>
+# Soft-deletes submission_context (audit trail preserved) and hard-deletes
+# everything derived: bronze.* (except submission_context), silver.*,
+# ml_analysis.*, tennis_coach.coach_cache, plus S3 video objects.
+# Billing schema is NEVER touched — the match was a valid billing event.
+# ----------------------------
+
+@client_bp.route("/api/client/matches/<task_id>", methods=["DELETE", "OPTIONS"])
+def delete_match(task_id: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    if not _guard():
+        return _forbid()
+
+    email = _norm_email(request.args.get("email"))
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    # 1. Fetch ownership, status, and S3 keys we'll need after the row is gone.
+    with engine.connect() as conn:
+        ctx = conn.execute(
+            text("""
+                SELECT email, last_status, s3_bucket, s3_key,
+                       trim_output_s3_key, deleted_at
+                FROM bronze.submission_context
+                WHERE task_id = :tid
+            """),
+            {"tid": task_id},
+        ).mappings().first()
+
+    if not ctx or _norm_email(ctx["email"]) != email:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    if ctx.get("deleted_at"):
+        return jsonify({"ok": False, "error": "already_deleted"}), 409
+
+    # Block if mid-pipeline — concurrent ingest/trim could re-create rows
+    # we just deleted, leaving an inconsistent partial state.
+    last_status = (ctx.get("last_status") or "").lower()
+    PIPELINE_TERMINAL = {
+        "", "done", "completed", "failed", "cancelled", "canceled",
+        "trim_completed", "trim_failed", "trim_skipped", "ingest_failed",
+    }
+    if last_status not in PIPELINE_TERMINAL:
+        return jsonify({
+            "ok": False, "error": "still_processing", "last_status": last_status,
+        }), 409
+
+    # 2. Collect ml_analysis job rows up-front for S3 prefix cleanup.
+    ml_jobs: list[dict] = []
+    try:
+        with engine.connect() as conn:
+            has_jobs = conn.execute(text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='ml_analysis' AND table_name='video_analysis_jobs'"
+            )).scalar()
+            if has_jobs:
+                ml_jobs = [dict(r) for r in conn.execute(
+                    text("SELECT job_id, bronze_s3_key, ball_heatmap_s3_key, "
+                         "player_heatmap_s3_keys "
+                         "FROM ml_analysis.video_analysis_jobs WHERE task_id = :tid"),
+                    {"tid": task_id},
+                ).mappings().all()]
+    except Exception:
+        log.exception("delete_match: ml_analysis lookup failed task_id=%s", task_id)
+
+    # 3. DB cascade in a single transaction. submission_context is SOFT-deleted
+    #    last so the audit trail (and S3 keys we already captured) is preserved.
+    try:
+        with engine.begin() as conn:
+            def _exists(schema: str, table: str) -> bool:
+                return conn.execute(text(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema=:s AND table_name=:t"
+                ), {"s": schema, "t": table}).scalar() is not None
+
+            def _del(schema: str, table: str, where: str = "task_id = :tid"):
+                if _exists(schema, table):
+                    conn.execute(
+                        text(f"DELETE FROM {schema}.{table} WHERE {where}"),
+                        {"tid": task_id},
+                    )
+
+            # Coach cache (LLM responses keyed on task_id)
+            _del("tennis_coach", "coach_cache")
+
+            # Silver
+            for tbl in ("point_detail", "practice_detail",
+                        "technique_summary", "technique_features_enriched",
+                        "technique_kinetic_chain_analysis", "technique_pose_timeline"):
+                _del("silver", tbl)
+
+            # ml_analysis: detection rows are keyed on job_id, so resolve via task_id
+            if _exists("ml_analysis", "video_analysis_jobs"):
+                conn.execute(text(
+                    "DELETE FROM ml_analysis.ball_detections WHERE job_id IN "
+                    "(SELECT job_id FROM ml_analysis.video_analysis_jobs WHERE task_id = :tid)"
+                ), {"tid": task_id})
+                conn.execute(text(
+                    "DELETE FROM ml_analysis.player_detections WHERE job_id IN "
+                    "(SELECT job_id FROM ml_analysis.video_analysis_jobs WHERE task_id = :tid)"
+                ), {"tid": task_id})
+            for tbl in ("match_analytics", "serve_events"):
+                _del("ml_analysis", tbl)
+            _del("ml_analysis", "video_analysis_jobs")
+
+            # Bronze technique
+            for tbl in ("technique_pose_3d", "technique_pose_2d", "technique_wrist_speed",
+                        "technique_kinetic_chain", "technique_feature_categories",
+                        "technique_features", "technique_analysis_metadata"):
+                _del("bronze", tbl)
+
+            # Bronze match — submission_context EXCLUDED (soft-deleted below)
+            for tbl in ("raw_result_chunk", "raw_result", "player", "player_swing",
+                        "rally", "ball_position", "ball_bounce", "unmatched_field",
+                        "debug_event", "player_position", "session",
+                        "session_confidences", "thumbnail", "highlight",
+                        "team_session", "bounce_heatmap"):
+                _del("bronze", tbl)
+
+            # Soft-delete submission_context — audit trail / billing reference stays.
+            conn.execute(
+                text("UPDATE bronze.submission_context "
+                     "SET deleted_at = now() WHERE task_id = :tid"),
+                {"tid": task_id},
+            )
+    except Exception:
+        log.exception("delete_match: DB cascade failed task_id=%s", task_id)
+        return jsonify({"ok": False, "error": "delete_failed"}), 500
+
+    # 4. S3 cleanup. Best-effort: DB is the source of truth for "is this match
+    #    visible to the user?", so a stuck S3 object isn't user-facing.
+    s3_warnings: list[str] = []
+    try:
+        from upload_app import _s3_client, S3_BUCKET as DEFAULT_BUCKET
+        s3 = _s3_client()
+
+        def _safe_delete(bucket, key):
+            if not bucket or not key:
+                return
+            try:
+                s3.delete_object(Bucket=bucket, Key=key)
+            except Exception as e:
+                s3_warnings.append(f"{bucket}/{key}: {e!r}")
+
+        def _safe_delete_prefix(bucket, prefix):
+            if not bucket or not prefix:
+                return
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    objs = [{"Key": o["Key"]} for o in page.get("Contents", [])]
+                    if objs:
+                        s3.delete_objects(Bucket=bucket, Delete={"Objects": objs})
+            except Exception as e:
+                s3_warnings.append(f"{bucket}/{prefix}*: {e!r}")
+
+        # Original uploaded video (separate bucket sometimes — wix-uploads)
+        _safe_delete(ctx.get("s3_bucket") or DEFAULT_BUCKET, ctx.get("s3_key"))
+        # Trimmed video (review.mp4 / technique.mp4 / practice.mp4)
+        _safe_delete(DEFAULT_BUCKET, ctx.get("trim_output_s3_key"))
+        # Trimmed prefix sweep — catches anything else under trimmed/{task_id}/
+        _safe_delete_prefix(DEFAULT_BUCKET, f"trimmed/{task_id}/")
+
+        # T5 detection assets — keyed on job_id, not task_id
+        for job in ml_jobs:
+            jid = job.get("job_id")
+            _safe_delete(DEFAULT_BUCKET, job.get("bronze_s3_key"))
+            _safe_delete(DEFAULT_BUCKET, job.get("ball_heatmap_s3_key"))
+            phk = job.get("player_heatmap_s3_keys")
+            if isinstance(phk, dict):
+                for v in phk.values():
+                    _safe_delete(DEFAULT_BUCKET, v)
+            if jid:
+                _safe_delete_prefix(DEFAULT_BUCKET, f"analysis/{jid}/")
+                _safe_delete_prefix(DEFAULT_BUCKET, f"debug/{jid}/")
+    except Exception:
+        log.exception("delete_match: S3 cleanup error task_id=%s", task_id)
+        s3_warnings.append("s3_client_init_failed")
+
+    payload: dict = {"ok": True, "deleted": True}
+    if s3_warnings:
+        payload["s3_warnings"] = s3_warnings[:5]
+    return jsonify(payload)
 
 
 # ----------------------------

@@ -435,7 +435,7 @@ function renderNav() {
 }
 
 // ==================== NAVIGATE ====================
-function navigateTo(pageId) {
+function navigateTo(pageId, extraParams) {
   const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
   const item = allItems.find(i => i.id === pageId);
   if (!item || item.disabled) return;
@@ -448,7 +448,13 @@ function navigateTo(pageId) {
 
   // Load page in content iframe
   const contentEl = document.getElementById('content');
-  const pagePath = item.path + (item.path.includes('?') ? '&' : '?') + authParams();
+  let pagePath = item.path + (item.path.includes('?') ? '&' : '?') + authParams();
+  if (extraParams && typeof extraParams === 'object') {
+    for (const [k, v] of Object.entries(extraParams)) {
+      if (v == null || v === '') continue;
+      pagePath += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(v);
+    }
+  }
   contentEl.innerHTML = `<iframe src="${pagePath}" id="contentFrame" title="${item.label}"></iframe>`;
 
   // Close mobile sidebar
@@ -593,7 +599,7 @@ window.addEventListener('message', function(event) {
       'backoffice': 'backoffice',
     };
     const pageId = targetMap[(d.target || '').toLowerCase()] || d.target;
-    if (pageId) navigateTo(pageId);
+    if (pageId) navigateTo(pageId, d.params);
     return;
   }
 

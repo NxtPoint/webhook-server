@@ -568,7 +568,15 @@ async function init() {
   // Reverse so newest first
   matches.reverse();
   renderLayout();
-  selectMatch(0);
+
+  // Optional deep-link: ?task_id=<uuid> → preselect that match. Falls back to newest.
+  const wantedTid = params.get('task_id');
+  let initialIdx = 0;
+  if (wantedTid) {
+    const found = matches.findIndex(m => m.task_id === wantedTid);
+    if (found >= 0) initialIdx = found;
+  }
+  selectMatch(initialIdx);
 }
 
 // ==================== HELPERS ====================
