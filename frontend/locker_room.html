@@ -265,6 +265,7 @@ select.profile-input { appearance: auto; }
 .charts-row {
   display: grid; grid-template-columns: 7fr 3fr; gap: 16px; margin-bottom: 24px;
 }
+.charts-row.charts-row-single { grid-template-columns: 1fr; }
 .chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
@@ -573,9 +574,12 @@ async function init() {
       return await res.json();
     } catch (e) { console.warn('fetch failed:', path, e); return { ok: false }; }
   }
-  const [mData, uData, pData, prData, eData, mbData, cData] = await Promise.all([
+  // /api/client/usage was previously fetched here for the right-side gauge.
+  // It used a different filter logic from /api/client/entitlements, which
+  // produced contradictory totals on the same screen. Entitlements is now
+  // the single source of truth for credit numbers.
+  const [mData, pData, prData, eData, mbData, cData] = await Promise.all([
     safeFetch('/api/client/matches'),
-    safeFetch('/api/client/usage'),
     safeFetch('/api/client/players'),
     safeFetch('/api/client/profile'),
     safeFetch('/api/client/entitlements'),
@@ -584,7 +588,7 @@ async function init() {
   ]);
   const EXCLUDE_TYPES = ['serve_practice', 'rally_practice', 'tennis_singles_t5'];
   matches = (mData.ok ? mData.matches : []).filter(m => !EXCLUDE_TYPES.includes(m.sport_type));
-  usage = uData.ok ? uData.usage : null;
+  usage = null;  // legacy variable kept for code that hasn't been migrated yet
   players = pData.ok ? pData.players : [];
   profile = prData.ok ? prData.profile : null;
   entitlements = eData.ok ? eData.entitlements : null;
@@ -598,9 +602,12 @@ function render() {
   const playerName = profile?.full_name || usage?.player_name || EMAIL.split('@')[0];
   const surname = profile?.surname || '';
   const displayName = surname ? playerName + ' ' + surname : playerName;
-  const remaining = entitlements?.credits_remaining ?? usage?.matches_remaining ?? 0;
-  const granted = entitlements?.matches_granted ?? usage?.matches_granted ?? 0;
-  const consumed = entitlements?.matches_consumed ?? usage?.matches_consumed ?? 0;
+  // Credits — single source of truth is /api/client/entitlements (active grants only).
+  // credits_remaining is the legacy field name that was checked first; matches_remaining
+  // is the canonical field returned by entitlements_api.py.
+  const remaining = entitlements?.matches_remaining ?? entitlements?.credits_remaining ?? 0;
+  const granted = entitlements?.matches_granted ?? 0;
+  const consumed = entitlements?.matches_consumed ?? 0;
   const pillClass = remaining === 0 ? 'critical' : remaining <= 2 ? 'low' : '';
   const isCoach = (entitlements?.role || profile?.role || '').toLowerCase() === 'coach';
   const planActive = entitlements?.plan_active ?? true;
@@ -673,20 +680,17 @@ function render() {
             <div class="account-value">${esc(EMAIL)}</div>
           </div>
           <div class="account-field">
-            <label class="profile-label">Account Status</label>
-            <div class="account-value" style="color:${statusColor};font-weight:600">${statusLabel}</div>
+            <label class="profile-label">Status</label>
+            <div class="account-value" style="color:${statusColor};font-weight:600">
+              ${statusLabel}${planLabel && planLabel !== statusLabel ? ` <span style="color:${planColor};font-weight:600">&middot; ${planLabel} subscription</span>` : ''}
+            </div>
           </div>
           <div class="account-field">
-            <label class="profile-label">Subscription</label>
-            <div class="account-value" style="color:${planColor};font-weight:600">${planLabel}</div>
-          </div>
-          <div class="account-field">
-            <label class="profile-label">Matches Remaining</label>
-            <div class="account-value"><span class="usage-pill ${pillClass}" style="display:inline-flex">${remaining} match${remaining!==1?'es':''}</span></div>
-          </div>
-          <div class="account-field">
-            <label class="profile-label">Matches Used</label>
-            <div class="account-value">${consumed} / ${granted}</div>
+            <label class="profile-label">Match Credits</label>
+            <div class="account-value">
+              <span class="usage-pill ${pillClass}" style="display:inline-flex">${remaining} available</span>
+              <span style="color:var(--text-dim);font-size:0.82rem;margin-left:8px">&middot; ${consumed} uploaded so far</span>
+            </div>
           </div>
           <div class="account-field">
             <label class="profile-label">Role</label>
@@ -765,16 +769,12 @@ function render() {
   </div>`;
 
   // === CHARTS ===
-  html += `<div class="charts-row">
+  // Single full-width chart: rolling 12 months. The previous "Usage" gauge
+  // duplicated the credits block above and showed an inconsistent denominator
+  // (lifetime grants, not current period) — removed to avoid confusing the
+  // user with two contradictory totals.
+  html += `<div class="charts-row charts-row-single">
     <div class="chart-card"><h3>Matches Per Month</h3><div class="chart-wrap"><canvas id="chartMonthly"></canvas></div></div>
-    <div class="chart-card">
-      <h3>Usage</h3>
-      <div class="gauge-container">
-        <div class="gauge-number">${consumed}<span style="font-size:1rem;color:var(--text-dim);font-weight:400"> / ${granted}</span></div>
-        <div class="gauge-label">matches used &mdash; <strong style="color:var(--green)">${remaining} remaining</strong></div>
-        <div class="gauge-bar"><div class="gauge-fill" style="width:${granted>0?Math.min(100,Math.round(consumed/granted*100)):0}%"></div></div>
-      </div>
-    </div>
   </div>`;
 
   // === LATEST MATCH HERO ===
@@ -1179,11 +1179,17 @@ function renderHero() {
   const avgRally   = kpi.avg_rally_length ?? latest.avg_rally_length ?? 0;
   const avgRallyTxt = (typeof avgRally === 'number' ? avgRally.toFixed(1) : String(avgRally));
 
+  // Watch Footage: always render in the same slot. Green when ready, soft
+  // "processing" badge while the trim worker is running, disabled outline
+  // otherwise (legacy uploads with NULL trim_status, failed trims, etc.) so
+  // the action row never silently loses a control.
   let actionsHtml = '';
   if (hasTrim) {
     actionsHtml += `<button class="btn-watch" onclick="event.stopPropagation();playFootage('${latest.task_id}')">&#9654; Watch Footage</button>`;
   } else if (trimProcessing) {
     actionsHtml += `<span class="badge-processing">&#9203; Processing footage&hellip;</span>`;
+  } else {
+    actionsHtml += `<button class="btn-watch" disabled onclick="event.stopPropagation()" title="Footage not available for this match" style="background:var(--white);color:var(--text-dim);border:1px solid var(--border);">&#9654; Watch Footage</button>`;
   }
   actionsHtml += `<button class="btn-edit" onclick="event.stopPropagation();openDetail(${heroIdx})">Edit Details</button>`;
   const analysisAttr = analysisReady
@@ -1289,11 +1295,15 @@ function renderGroupedMatches() {
         const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
         const hasTrim = m.trim_status === 'completed' && m.trim_output_s3_key;
         const trimProcessing = m.trim_status && m.trim_status !== 'completed' && m.trim_status !== 'failed';
-        let watchHtml = '';
+        let watchHtml;
         if (hasTrim) {
           watchHtml = `<button class="btn-watch" onclick="event.stopPropagation();playFootage('${m.task_id}')" title="Watch footage">&#9654; Watch Footage</button>`;
         } else if (trimProcessing) {
           watchHtml = `<span class="badge-processing" title="Footage is still being prepared">&#9203; Processing</span>`;
+        } else {
+          // Legacy uploads with no trim, or trim_status='failed'. Keep the slot
+          // visible (disabled) so the action row stays consistent across all rows.
+          watchHtml = `<button class="btn-watch" disabled onclick="event.stopPropagation()" title="Footage not available for this match" style="background:var(--white);color:var(--text-dim);border:1px solid var(--border);">&#9654; Watch Footage</button>`;
         }
 
         const analysisReady = status.cls === 'processed' && (m.total_points || 0) > 0;
@@ -1333,20 +1343,36 @@ function toggleGroup(id) {
 function renderMonthlyChart() {
   const canvas = document.getElementById('chartMonthly');
   if (!canvas) return;
+  // Rolling 12 months ending the current month. Previous fixed Jan-Dec layout
+  // left most of the chart empty early in a year and double-counted across
+  // year boundaries (Apr 2026 stacked with Apr 2025 when there were no
+  // matches in 2025).
   const now = new Date();
-  const yr = now.getFullYear();
-  const counts = new Array(12).fill(0);
+  const buckets = []; // [{key:'2025-05', label:'May 25', count:0}, ...]
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    const showYr = (i === 11) || (d.getMonth() === 0); // year tag at start + on Jan
+    const label = MONTHS[d.getMonth()] + (showYr ? ' ' + String(d.getFullYear()).slice(-2) : '');
+    buckets.push({ key, label, count: 0 });
+  }
+  const idx = new Map(buckets.map((b, i) => [b.key, i]));
   matches.forEach(m => {
-    const d = m.match_date ? new Date(m.match_date) : null;
-    if (d && d.getFullYear() === yr) counts[d.getMonth()]++;
+    const dateStr = m.match_date || m.created_at;
+    if (!dateStr) return;
+    const d = new Date(dateStr);
+    if (isNaN(d)) return;
+    const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    const i = idx.get(key);
+    if (i !== undefined) buckets[i].count++;
   });
   new Chart(canvas, {
     type: 'line',
     data: {
-      labels: MONTHS,
+      labels: buckets.map(b => b.label),
       datasets: [{
         label: 'Matches',
-        data: counts,
+        data: buckets.map(b => b.count),
         borderColor: '#1a5c2e',
         backgroundColor: 'rgba(26,92,46,0.1)',
         fill: true,
