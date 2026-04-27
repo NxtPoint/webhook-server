@@ -496,13 +496,44 @@ select.edit-input { appearance: auto; }
   .profile-grid { grid-template-columns: 1fr; }
   .member-card-grid { grid-template-columns: 1fr; }
   .match-card { flex-wrap: wrap; }
+  /* Mobile match-row layout: info on top, action row gets its own line at full
+     card width with left-aligned wrapping so buttons can never overflow the
+     card edge — previously the Remove button could spill outside the card. */
+  .match-info { flex: 1 1 100%; }
+  .match-right {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  .match-right .btn-edit,
+  .match-right .btn-watch,
+  .match-right .btn-remove {
+    flex: 1 1 calc(50% - 3px);   /* 2-up grid, fills the row cleanly */
+    min-width: 0;
+    padding: 10px 8px;
+    font-size: 0.78rem;
+    text-align: center;
+  }
+  .match-right .match-score { width: 100%; text-align: left; padding-bottom: 4px; }
   .match-list { padding-left: 16px; }
   .app { padding-bottom: 300px !important; }
   .detail-panel { width: 100vw; border-left: none; }
-  .match-card, .btn-edit, .btn-primary, .btn-danger, .panel-close, .btn-watch { min-height: 44px; }
+  .match-card, .btn-edit, .btn-primary, .btn-danger, .btn-remove, .panel-close, .btn-watch { min-height: 44px; }
   .hero-top { flex-direction: column; }
   .hero-score { text-align: left; }
   .hero-stats { gap: 16px; }
+  /* Hero action row: stack as 2-up grid at narrow widths too */
+  .hero-actions { width: 100%; }
+  .hero-actions .btn-watch,
+  .hero-actions .btn-edit,
+  .hero-actions .btn-remove {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    text-align: center;
+  }
 }
 </style>
 </head>

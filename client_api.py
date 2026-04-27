@@ -491,17 +491,12 @@ def delete_match(task_id: str):
     if ctx.get("deleted_at"):
         return jsonify({"ok": False, "error": "already_deleted"}), 409
 
-    # Block if mid-pipeline — concurrent ingest/trim could re-create rows
-    # we just deleted, leaving an inconsistent partial state.
-    last_status = (ctx.get("last_status") or "").lower()
-    PIPELINE_TERMINAL = {
-        "", "done", "completed", "failed", "cancelled", "canceled",
-        "trim_completed", "trim_failed", "trim_skipped", "ingest_failed",
-    }
-    if last_status not in PIPELINE_TERMINAL:
-        return jsonify({
-            "ok": False, "error": "still_processing", "last_status": last_status,
-        }), 409
+    # Note: we used to block delete while last_status was non-terminal to avoid
+    # races with the ingest/trim worker. Removed at user request — deletion
+    # of test data must work in any state. If a worker is mid-flight, it may
+    # re-write a few rows after we delete; the soft-delete on submission_context
+    # still hides the match from the UI, and a re-delete (or the cleanup sweep
+    # cron) will mop up.
 
     # 2. Collect ml_analysis job rows up-front for S3 prefix cleanup.
     ml_jobs: list[dict] = []

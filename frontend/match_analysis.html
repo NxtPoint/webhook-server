@@ -558,7 +558,15 @@ async function init() {
   try {
     const res = await apiFetch('/api/client/matches');
     const data = await res.json();
-    matches = data.ok ? data.matches.filter(m => m.sport_type === 'tennis_singles' && m.total_points > 0) : [];
+    // Match the SQL filter in gold.vw_client_match_summary: legacy rows
+    // (uploaded before sport_type column existed) have NULL sport_type and
+    // are treated as singles. Without this, deep-links to legacy matches
+    // silently fall back to the newest match.
+    matches = data.ok
+      ? data.matches.filter(m =>
+          (m.sport_type === 'tennis_singles' || m.sport_type == null)
+          && m.total_points > 0)
+      : [];
   } catch (e) { matches = []; }
 
   if (!matches.length) {
