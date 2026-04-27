@@ -238,6 +238,7 @@ def extract_far_pose(
     # NEXT SESSION block.
     rally = None
     rally_in_rally_state = None
+    rally_gate_broken = False
     if bounces:
         try:
             from ml_pipeline.serve_detector.rally_state import (
@@ -255,9 +256,19 @@ def extract_far_pose(
                 len(bounce_ts), len(bounces),
             )
         except Exception as e:
-            logger.warning("roi_pose: rally state machine build failed (%s); processing all frames", e)
+            # Caller asked for the gate (passed bounces) but we couldn't build
+            # it. This is a packaging / dependency bug — fall through and
+            # process every frame so the run still succeeds, but flag it loud
+            # in logs so the next CloudWatch grep catches it instead of
+            # silently regressing to baseline.
+            logger.error(
+                "roi_pose: BUG — rally gate requested but failed to build (%s). "
+                "Falling back to UNGATED full-video scan. Fix me before relying on results.",
+                e,
+            )
             rally = None
             rally_in_rally_state = None
+            rally_gate_broken = True
     else:
         logger.info("roi_pose: no bounces supplied; processing all sampled frames (no rally gate)")
 
@@ -393,11 +404,12 @@ def extract_far_pose(
 
     cap.release()
     dt_scan = time.time() - t_start
+    gate_tag = " [RALLY GATE BROKEN — UNGATED RESULTS]" if rally_gate_broken else ""
     logger.info(
         "roi_pose: scanned %d sampled frames (every %d), skipped %d IN_RALLY frames, "
-        "%d detections, %d usable poses in %.1fs",
+        "%d detections, %d usable poses in %.1fs%s",
         total_frames_probed, sample_every, total_in_rally_skipped,
-        total_dets, total_usable, dt_scan,
+        total_dets, total_usable, dt_scan, gate_tag,
     )
 
     if not rows_to_write:

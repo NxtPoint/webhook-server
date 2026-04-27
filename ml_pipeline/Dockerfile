@@ -70,6 +70,13 @@ COPY ml_pipeline/stroke_classifier/ /app/ml_pipeline/stroke_classifier/
 # ml_pipeline/roi_extractors/pose.py for the pose extractor.
 COPY ml_pipeline/roi_extractors/ /app/ml_pipeline/roi_extractors/
 
+# Serve detector package — pose.py imports rally_state.RallyStateMachine to
+# gate ROI extraction to between-rally moments. The package's __init__.py
+# pulls in detector/schema/models/pose_signal/ball_toss; all transitive
+# deps (sqlalchemy, stdlib) are already in the image. Without this COPY,
+# the rally gate silently fails open and processes every frame.
+COPY ml_pipeline/serve_detector/ /app/ml_pipeline/serve_detector/
+
 # Copy package entry point
 COPY ml_pipeline/__main__.py /app/ml_pipeline/__main__.py
 
