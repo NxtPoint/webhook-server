@@ -442,6 +442,8 @@ def gold_init():
             FROM bronze.submission_context sc
             LEFT JOIN stats s ON s.task_id = sc.task_id::uuid
             WHERE sc.email IS NOT NULL
-              AND sc.sport_type = 'tennis_singles'
+              -- legacy rows (pre-sport_type column) had NULL — treat as singles,
+              -- otherwise the historical match list silently drops them
+              AND (sc.sport_type IS NULL OR sc.sport_type = 'tennis_singles')
               AND sc.deleted_at IS NULL;
         """))

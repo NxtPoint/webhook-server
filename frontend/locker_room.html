@@ -361,7 +361,11 @@ select.profile-input { appearance: auto; }
 .match-info { flex: 1; min-width: 0; }
 .match-opponent { font-weight: 600; font-size: 0.95rem; }
 .match-meta { color: var(--text-sec); font-size: 0.78rem; margin-top: 2px; }
-.match-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.match-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+/* History-row Watch Footage button — same look as the hero's .btn-watch but
+   tightened so 4 actions + score still fit comfortably on a tablet row. */
+.match-right .btn-watch { padding: 6px 14px; font-size: 0.78rem; }
+.match-right .badge-processing { padding: 6px 10px; font-size: 0.72rem; }
 .match-score { font-weight: 700; font-size: 1rem; color: var(--green); letter-spacing: 1px; }
 .status-badge {
   display: inline-block; padding: 2px 8px; border-radius: var(--radius);
@@ -536,7 +540,27 @@ function apiFetch(path, opts = {}) {
 }
 
 let matches = [], usage = null, players = [], profile = null, entitlements = null, members = [], coaches = [];
+// Cache of gold.match_kpi rows keyed by task_id. Populated on demand by the
+// hero (latest match) and the Edit panel (whichever match is opened).
+const kpiCache = new Map();
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+// Fetch + cache a single gold.match_kpi row. Returns null on any failure so
+// callers can fall back to legacy values from the match list.
+async function fetchKpi(taskId) {
+  if (!taskId) return null;
+  if (kpiCache.has(taskId)) return kpiCache.get(taskId);
+  try {
+    const res = await apiFetch('/api/client/match/kpi/' + taskId);
+    const data = await res.json();
+    const row = (data && data.ok && Array.isArray(data.rows) && data.rows[0]) || null;
+    if (row) kpiCache.set(taskId, row);
+    return row;
+  } catch (e) {
+    console.warn('match_kpi fetch failed', taskId, e);
+    return null;
+  }
+}
 
 async function init() {
   if (!EMAIL || !API_KEY) {
@@ -767,6 +791,11 @@ function render() {
   } else {
     renderHero();
     renderGroupedMatches();
+    // Async upgrade: pull richer stats from gold.match_kpi for the latest
+    // match and re-render the hero in place. Non-blocking — first paint
+    // already happened with legacy fields.
+    const latestTid = matches[matches.length - 1]?.task_id;
+    if (latestTid) fetchKpi(latestTid).then(() => renderHero());
   }
   renderMonthlyChart();
 }
@@ -1128,11 +1157,27 @@ function renderHero() {
   const latest = matches[matches.length - 1];
   if (!latest) return;
 
+  // Prefer gold.match_kpi values when available (richer + canonical). Fall back
+  // to the legacy /api/client/matches row so first paint isn't blocked on a
+  // separate fetch.
+  const kpi = kpiCache.get(latest.task_id) || {};
+
   const status = normalizeStatus(latest.last_status);
   const meta = [latest.match_date, latest.location].filter(Boolean).join(' \u2022 ');
   const hasTrim = latest.trim_status === 'completed' && latest.trim_output_s3_key;
   const trimProcessing = latest.trim_status && latest.trim_status !== 'completed' && latest.trim_status !== 'failed';
   const durationMin = latest.trim_duration_s ? Math.round(latest.trim_duration_s / 60) : null;
+  const heroIdx = latest._idx !== undefined ? latest._idx : matches.length - 1;
+  const analysisReady = status.cls === 'processed' && (kpi.total_points || latest.total_points || 0) > 0;
+
+  // Stats: Points, Games, Winners (total = pa+pb), Avg Rally, Duration. Aces dropped per spec.
+  const points     = kpi.total_points    ?? latest.total_points    ?? 0;
+  const games      = kpi.total_games     ?? latest.total_games     ?? 0;
+  const winnersA   = kpi.pa_winners      ?? latest.player_a_winners ?? 0;
+  const winnersB   = kpi.pb_winners      ?? latest.player_b_winners ?? 0;
+  const winners    = (Number(winnersA) || 0) + (Number(winnersB) || 0);
+  const avgRally   = kpi.avg_rally_length ?? latest.avg_rally_length ?? 0;
+  const avgRallyTxt = (typeof avgRally === 'number' ? avgRally.toFixed(1) : String(avgRally));
 
   let actionsHtml = '';
   if (hasTrim) {
@@ -1140,8 +1185,12 @@ function renderHero() {
   } else if (trimProcessing) {
     actionsHtml += `<span class="badge-processing">&#9203; Processing footage&hellip;</span>`;
   }
-  const heroIdx = latest._idx !== undefined ? latest._idx : matches.length - 1;
   actionsHtml += `<button class="btn-edit" onclick="event.stopPropagation();openDetail(${heroIdx})">Edit Details</button>`;
+  const analysisAttr = analysisReady
+    ? `onclick="event.stopPropagation();openAnalysis('${latest.task_id}')"`
+    : `onclick="event.stopPropagation()" disabled`;
+  actionsHtml += `<button class="btn-edit" ${analysisAttr} title="${analysisReady ? 'Open match analytics' : 'Analytics not yet available'}">Analysis</button>`;
+  actionsHtml += `<button class="btn-remove" onclick="event.stopPropagation();confirmRemoveMatch(${heroIdx})" title="Remove this match from your profile">Remove</button>`;
 
   const heroArea = document.getElementById('heroArea');
   heroArea.innerHTML = `
@@ -1155,10 +1204,10 @@ function renderHero() {
         <div class="hero-score">${esc(latest.score||'')}</div>
       </div>
       <div class="hero-stats">
-        <div class="hero-stat"><div class="hero-stat-val">${latest.total_points||0}</div><div class="hero-stat-label">Points</div></div>
-        <div class="hero-stat"><div class="hero-stat-val">${latest.total_games||0}</div><div class="hero-stat-label">Games</div></div>
-        <div class="hero-stat"><div class="hero-stat-val">${latest.total_aces||0}</div><div class="hero-stat-label">Aces</div></div>
-        <div class="hero-stat"><div class="hero-stat-val">${latest.avg_rally_length||0}</div><div class="hero-stat-label">Avg Rally</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${points}</div><div class="hero-stat-label">Points</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${games}</div><div class="hero-stat-label">Games</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${winners}</div><div class="hero-stat-label">Winners</div></div>
+        <div class="hero-stat"><div class="hero-stat-val">${avgRallyTxt}</div><div class="hero-stat-label">Avg Rally</div></div>
         ${durationMin ? `<div class="hero-stat"><div class="hero-stat-val">${durationMin}m</div><div class="hero-stat-label">Duration</div></div>` : ''}
       </div>
       <div class="hero-actions">${actionsHtml}</div>
@@ -1239,10 +1288,13 @@ function renderGroupedMatches() {
         const status = normalizeStatus(m.last_status);
         const meta = [m.match_date, m.location].filter(Boolean).join(' \u2022 ');
         const hasTrim = m.trim_status === 'completed' && m.trim_output_s3_key;
-        const playBtnClass = hasTrim ? 'btn-play' : 'btn-play disabled';
-        const playAction = hasTrim
-          ? `onclick="event.stopPropagation();playFootage('${m.task_id}')"`
-          : 'onclick="event.stopPropagation()"';
+        const trimProcessing = m.trim_status && m.trim_status !== 'completed' && m.trim_status !== 'failed';
+        let watchHtml = '';
+        if (hasTrim) {
+          watchHtml = `<button class="btn-watch" onclick="event.stopPropagation();playFootage('${m.task_id}')" title="Watch footage">&#9654; Watch Footage</button>`;
+        } else if (trimProcessing) {
+          watchHtml = `<span class="badge-processing" title="Footage is still being prepared">&#9203; Processing</span>`;
+        }
 
         const analysisReady = status.cls === 'processed' && (m.total_points || 0) > 0;
         const analysisAction = analysisReady
@@ -1256,9 +1308,7 @@ function renderGroupedMatches() {
           </div>
           <div class="match-right">
             <div class="match-score">${esc(m.score||'')}</div>
-            <button class="${playBtnClass}" ${playAction} title="${hasTrim ? 'Watch footage' : 'Footage not yet available'}">
-              &#9654;${hasTrim ? '' : '<span class="tooltip">Footage not yet available</span>'}
-            </button>
+            ${watchHtml}
             <button class="btn-edit" onclick="event.stopPropagation();openDetail(${m._idx})">Edit</button>
             <button class="btn-edit" ${analysisAction} title="${analysisTitle}">Analysis</button>
             <button class="btn-remove" onclick="event.stopPropagation();confirmRemoveMatch(${m._idx})" title="Remove this match from your profile">Remove</button>
@@ -1347,13 +1397,8 @@ function openDetail(idx) {
 
   document.getElementById('panelBody').innerHTML = `
     <div class="match-score" style="font-size:1.3rem;margin-bottom:16px;font-weight:700;color:var(--green)">${esc(m.score||'No score')}</div>
-    <div class="stats-grid">
-      ${statRow(m.player_a_points_won,'Points Won',m.player_b_points_won)}
-      ${statRow(m.player_a_games_won,'Games Won',m.player_b_games_won)}
-      ${statRow(m.player_a_winners,'Winners',m.player_b_winners)}
-      ${statRow(m.player_a_first_serve_pct+'%','1st Serve %',m.player_b_first_serve_pct+'%')}
-      ${statRow(m.total_aces,'Aces',m.total_double_faults+' DFs')}
-      ${statRow(m.avg_rally_length,'Avg Rally',m.max_rally_length+' max')}
+    <div class="stats-grid" id="editStatsBox">
+      ${renderEditStatsHTML(m, kpiCache.get(m.task_id))}
     </div>
 
     <div class="edit-section">
@@ -1417,6 +1462,41 @@ function openDetail(idx) {
   document.getElementById('overlay').classList.add('open');
   document.getElementById('detailPanel').classList.add('open');
   document.body.style.overflow = 'hidden';
+
+  // Async upgrade: pull richer comparison stats from gold.match_kpi and
+  // re-render the stats box in place. Non-blocking — first paint already
+  // shows what we have from the match list. If the panel is closed before
+  // this resolves, the DOM update is harmless.
+  fetchKpi(m.task_id).then((kpi) => {
+    const box = document.getElementById('editStatsBox');
+    if (box) box.innerHTML = renderEditStatsHTML(m, kpi);
+  });
+}
+
+// Per-player comparison stats grid for the Edit Details panel. Pulls from
+// gold.match_kpi when available, falls back to the legacy match-list row
+// for the four stats it covers (points won, games won, 1st serve % per
+// player). The remaining three stats (1st serve win %, return pts won %,
+// rally pts won %) only exist in match_kpi — show "—" until it loads.
+function renderEditStatsHTML(m, kpi) {
+  kpi = kpi || {};
+  const num = (v) => (v == null || Number.isNaN(Number(v))) ? '—' : v;
+  const pct = (v) => (v == null || Number.isNaN(Number(v))) ? '—' : (Number(v).toFixed(1) + '%');
+  const aName = m.player_a_name || 'Player A';
+  const bName = m.player_b_name || 'Opponent';
+  return `
+    <div class="stat-row" style="font-size:0.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.3px;">
+      <div class="val-a" style="font-weight:600;font-size:0.78rem;color:var(--green);">${esc(aName)}</div>
+      <div class="stat-name"></div>
+      <div class="val-b" style="font-weight:600;font-size:0.78rem;color:var(--green);">${esc(bName)}</div>
+    </div>
+    ${statRow(num(kpi.pa_points_won ?? m.player_a_points_won), 'Points Won', num(kpi.pb_points_won ?? m.player_b_points_won))}
+    ${statRow(num(kpi.pa_games_won ?? m.player_a_games_won), 'Games Won', num(kpi.pb_games_won ?? m.player_b_games_won))}
+    ${statRow(pct(kpi.pa_first_serve_pct ?? m.player_a_first_serve_pct), '1st Serve %', pct(kpi.pb_first_serve_pct ?? m.player_b_first_serve_pct))}
+    ${statRow(pct(kpi.pa_first_serve_won_pct), '1st Serve Win %', pct(kpi.pb_first_serve_won_pct))}
+    ${statRow(pct(kpi.pa_ret_pts_won_pct), 'Return Pts Won %', pct(kpi.pb_ret_pts_won_pct))}
+    ${statRow(pct(kpi.pa_rally_pts_won_pct), 'Rally Pts Won %', pct(kpi.pb_rally_pts_won_pct))}
+  `;
 }
 
 function closeDetail() {
