@@ -147,6 +147,20 @@
   // ---------- 6. Initial render ----------
   renderBody();
 
+  // ---------- 7. Sidebar-launched mode ----------
+  // On portal.html the bubble would duplicate the new "Help & Support"
+  // sidebar entry — hide it. Direct page access (e.g. /match-analysis
+  // accessed without the portal shell) keeps the bubble as a fallback
+  // so the user always has a way in.
+  const onPortalShell = location.pathname.replace(/\/+$/, '') === '/portal';
+  if (onPortalShell) bubbleEl.style.display = 'none';
+
+  // Expose simple open/close so the portal sidebar (or any host page)
+  // can trigger the panel without knowing the widget's internals.
+  window.nf5SupportOpen  = () => setPanelOpen(true);
+  window.nf5SupportClose = () => setPanelOpen(false);
+  window.nf5SupportToggle = togglePanel;
+
   // =================================================================
   //   Functions
   // =================================================================

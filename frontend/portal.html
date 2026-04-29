@@ -366,6 +366,12 @@ const NAV_ITEMS = [
     path: '/pricing',
     icon: '<svg viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>',
   },
+  {
+    id: 'support',
+    label: 'Help & Support',
+    // No path — handled as an action in navigateTo()
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  },
 ];
 
 const ADMIN_NAV_ITEMS = [
@@ -436,6 +442,17 @@ function renderNav() {
 
 // ==================== NAVIGATE ====================
 function navigateTo(pageId, extraParams) {
+  // Help & Support is an action, not a destination — open the support
+  // widget panel without changing pages.
+  if (pageId === 'support') {
+    if (typeof window.nf5SupportOpen === 'function') {
+      window.nf5SupportOpen();
+    } else {
+      console.warn('[portal] support widget not ready');
+    }
+    return;
+  }
+
   const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
   const item = allItems.find(i => i.id === pageId);
   if (!item || item.disabled) return;
