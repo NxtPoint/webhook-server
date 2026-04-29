@@ -357,7 +357,12 @@ def pass1_load(conn: Connection, task_id: str, cfg: dict, start_time_s: Optional
     FROM bronze.player_swing s
     WHERE s.task_id::uuid = :tid
       AND COALESCE(s.valid, FALSE) = TRUE
-      AND COALESCE(s.is_in_rally, TRUE) = TRUE
+      -- is_in_rally gate deliberately removed: SportAI's rally segmentation
+      -- has been observed to fail catastrophically (task 0336b82b... had
+      -- 480/515 valid swings rejected because only 37 had is_in_rally=TRUE).
+      -- Point/game structure is anchored on serves (pass 3), not on this
+      -- flag, so dropping it doesn't break downstream. The `valid` gate
+      -- still filters SportAI's low-confidence detections.
       {warmup_clause}
     ON CONFLICT (task_id, id, model) DO NOTHING;
     """
