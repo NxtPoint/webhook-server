@@ -58,3 +58,11 @@ ml_pipeline/diag/local_poses_*.jsonl
 ml_pipeline/diag/*.jsonl
 ml_pipeline/diag/local_poses_*.jsonl
 ml_pipeline/diag/prod_pose_audit_*.json
+
+# Detector test-harness fixtures (snapshot_task output). Gitignored —
+# regenerate from DB with `python -m ml_pipeline.diag.snapshot_task ...`.
+# Locally these are 50-100 MB each.
+ml_pipeline/fixtures/*.pkl.gz
+ml_pipeline/fixtures/*.pkl
+# bench_baseline.json IS committed (it's the regression baseline tied to
+# the current commit's numbers — you want it diff-visible when it changes).

@@ -689,26 +689,30 @@ def _persist_events(conn, events: List[ServeEvent]) -> None:
     """), rows)
 
 
-def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[ServeEvent]:
-    """Production entry point. Runs pose-first for near player + bounce-first
-    for far player. Persists to ml_analysis.serve_events. Returns the
-    events for downstream consumption or logging."""
-    init_serve_events_schema(conn)
-    if replace:
-        deleted = delete_serves_for_task(conn, task_id)
-        if deleted:
-            logger.info("serve_detector: deleted %d prior serve events", deleted)
+def _run_pipeline(
+    *,
+    task_id: str,
+    fps: float,
+    is_left_handed: bool,
+    pose_near: list,
+    pose_far: list,
+    ball_rows: list,
+    rally: "RallyStateMachine",
+) -> tuple[List[ServeEvent], List[ServeEvent], List[ServeEvent]]:
+    """Shared in-memory detection pipeline for prod + offline harness.
 
-    fps = conn.execute(sql_text(
-        "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
-    ), {"t": task_id}).scalar() or 25.0
-    is_left_handed = _get_dominant_hand(conn, task_id)
+    Returns (near_events, far_pose_events, far_bounce_events) so callers
+    can log a per-source breakdown. Concatenated + sorted output is the
+    union sorted by ts.
 
-    pose_near = _load_pose_rows(conn, task_id, 0, is_left_handed=is_left_handed)
-    pose_far = _load_pose_rows(conn, task_id, 1, is_left_handed=is_left_handed)
-    ball_rows = _load_ball_rows(conn, task_id)
-    rally = build_from_db(conn, task_id, fps)
-
+    SINGLE SOURCE OF TRUTH for serve detection logic — every change to
+    rally augmentation / source ordering goes here. Previously the
+    offline path (detect_serves_offline) had drifted: it ran near pose
+    first with un-augmented rally, then far pose, then far bounce. Prod
+    runs far pose first, augments rally with far-pose times, then near
+    pose, then far bounce. That drift is exactly the cloudnet-vs-prod
+    gap we're trying to eliminate. Both entry points now call this.
+    """
     # Order: FAR pose first, then NEAR pose using a rally state
     # machine augmented with the far-pose event timestamps. Rationale:
     # bronze TrackNet routinely misses the ball bounce from a FAR
@@ -786,6 +790,34 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
         rally=rally_for_far,
         pose_serve_times_near=near_pose_times,
     )
+    return near_events, far_pose_events, far_bounce_events
+
+
+def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[ServeEvent]:
+    """Production entry point. Runs pose-first for near player + bounce-first
+    for far player. Persists to ml_analysis.serve_events. Returns the
+    events for downstream consumption or logging."""
+    init_serve_events_schema(conn)
+    if replace:
+        deleted = delete_serves_for_task(conn, task_id)
+        if deleted:
+            logger.info("serve_detector: deleted %d prior serve events", deleted)
+
+    fps = conn.execute(sql_text(
+        "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
+    ), {"t": task_id}).scalar() or 25.0
+    is_left_handed = _get_dominant_hand(conn, task_id)
+
+    pose_near = _load_pose_rows(conn, task_id, 0, is_left_handed=is_left_handed)
+    pose_far = _load_pose_rows(conn, task_id, 1, is_left_handed=is_left_handed)
+    ball_rows = _load_ball_rows(conn, task_id)
+    rally = build_from_db(conn, task_id, fps)
+
+    near_events, far_pose_events, far_bounce_events = _run_pipeline(
+        task_id=task_id, fps=fps, is_left_handed=is_left_handed,
+        pose_near=pose_near, pose_far=pose_far,
+        ball_rows=ball_rows, rally=rally,
+    )
 
     all_events = near_events + far_pose_events + far_bounce_events
     all_events.sort(key=lambda e: e.ts)
@@ -809,43 +841,27 @@ def detect_serves_offline(
     ball_rows: Sequence[dict] = (),
     is_left_handed: bool = False,
     fps: float = 25.0,
-) -> List[ServeEvent]:
-    """In-memory detection for local validation. Same logic as
-    detect_serves_for_task but with explicitly-passed data and no
-    DB writes."""
+    return_split: bool = False,
+):
+    """In-memory detection for local validation — shares _run_pipeline
+    with the prod entry point so offline numbers always match prod.
+
+    If return_split=True, returns (near_events, far_pose_events,
+    far_bounce_events) instead of the merged sorted list — useful for
+    the harness bench output.
+    """
     bounce_ts = [
         b["frame_idx"] / fps for b in ball_rows if b.get("is_bounce")
     ]
     rally = RallyStateMachine(bounce_ts=bounce_ts)
 
-    pose_near = list(pose_rows_near)
-    pose_far = list(pose_rows_far)
-    ball_list = list(ball_rows)
-
-    near_events = _detect_pose_based_serves(
-        pose_rows=pose_near, player_id=0,
-        is_left_handed=is_left_handed, fps=fps, task_id=task_id,
-        rally=rally, ball_rows=ball_list,
+    near_events, far_pose_events, far_bounce_events = _run_pipeline(
+        task_id=task_id, fps=fps, is_left_handed=is_left_handed,
+        pose_near=list(pose_rows_near), pose_far=list(pose_rows_far),
+        ball_rows=list(ball_rows), rally=rally,
     )
-    far_pose_events = _detect_pose_based_serves(
-        pose_rows=pose_far, player_id=1,
-        is_left_handed=is_left_handed, fps=fps, task_id=task_id,
-        rally=rally, ball_rows=ball_list,
-    )
-
-    # See detect_serves_for_task — augment the rally state machine with
-    # the near-player serve times so bounce-based far-player detection
-    # doesn't treat return-bounces as serves. Longer idle threshold (8s)
-    # keeps the machine in IN_RALLY during typical sparse-ball rallies.
-    pose_serve_times = [e.ts for e in near_events] + [e.ts for e in far_pose_events]
-    augmented = sorted(bounce_ts + pose_serve_times)
-    rally_for_far = RallyStateMachine(bounce_ts=augmented, idle_threshold_s=8.0)
-
-    far_bounce_events = _detect_bounce_based_serves_far(
-        task_id=task_id, fps=fps, ball_rows=ball_list,
-        pose_rows_far=pose_far, rally=rally_for_far,
-        pose_serve_times_near=pose_serve_times,
-    )
+    if return_split:
+        return near_events, far_pose_events, far_bounce_events
     all_events = near_events + far_pose_events + far_bounce_events
     all_events.sort(key=lambda e: e.ts)
     return all_events
