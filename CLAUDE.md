@@ -161,9 +161,9 @@ Module: `coach_invite/` (contains both email types).
 
 **Env vars**: `SES_FROM_EMAIL` (default `noreply@ten-fifty5.com`), `COACH_ACCEPT_BASE_URL` (default `https://api.nextpointtennis.com`), `LOCKER_ROOM_BASE_URL` (default `https://www.ten-fifty5.com/portal`).
 
-## Support Bot (`support_bot/`)
+## Support Bot (`support_bot/` + `frontend/support.html`)
 
-Customer-service chat bot for the portal pages. **Claude Haiku 4.5** with prompt caching + forced tool-use for guaranteed structured output. FAQ-only — bot answers strictly from `support_bot/faq.md` and escalates anything not covered (or any account-specific question) to `info@ten-fifty5.com` via SES.
+Customer-service chat for the portal. **Claude Haiku 4.5** with prompt caching + forced tool-use for guaranteed structured output. FAQ-only — bot answers strictly from `support_bot/faq.md` and escalates anything not covered (or any account-specific question) to `info@ten-fifty5.com` via SES.
 
 | Endpoint | Purpose |
 |---|---|
@@ -172,11 +172,11 @@ Customer-service chat bot for the portal pages. **Claude Haiku 4.5** with prompt
 | `POST /api/support/escalate` | Email transcript to `info@ten-fifty5.com`, Reply-To = customer |
 | `GET /api/support/health` | Admin-only: FAQ hash, conversation counts, cost metrics |
 
-Auth: `X-Client-Key` header (same as Client API). Admin endpoints require `email` in `ADMIN_EMAILS`.
+Auth: `X-Client-Key` header (same as Client API). Admin endpoints require `email` in `ADMIN_EMAILS`. CORS: `/api/support/` is in `CORS_PATHS` next to `/api/client/`.
 
 Tables (idempotent on boot via `init_support_schema()`): `support_bot.conversations` (every Q+A logged with tokens + cost) and `support_bot.faq_cache` (sha256-keyed dedup, invalidated when `faq.md` content hash changes).
 
-**Surface**: portal pages only (`portal.html`, `locker_room.html`, `media_room.html`, `match_analysis.html`, `pricing.html`, `backoffice.html`, `practice.html`). Not on public marketing pages or pre-account flows.
+**Surface**: dedicated page `frontend/support.html` served at `GET /help` (by both `locker_room_app.py` and `upload_app.py` as same-origin backup). Reached via the **Help & Support** item in the portal sidebar (`portal.html` `NAV_ITEMS`); loads inside the portal iframe via the standard `navigateTo()` flow with auth params populated by `authParams()`. Visually mirrors the AI Coach module (greeting + quick-prompt chips + input + green-callout answer + green-pill `[section.id]` citations + amber escalate CTA when `needs_human` or `confidence=low`).
 
 **Cost**: ~$0.001 per cached query, ~$0.008 per cache-write. Realistic monthly spend at portal volumes: < $5.
 
@@ -184,7 +184,7 @@ Tables (idempotent on boot via `init_support_schema()`): `support_bot.conversati
 
 **The FAQ is the load-bearing artefact** — `support_bot/faq.md` is currently seeded with 5 example entries; real ~30 to be written by Tomo + co-worker based on actual inbound email volume.
 
-Full implementation reference: **`docs/support_bot.md`**. Design history & rationale: `docs/support_bot_design.md`.
+Full implementation reference: **`docs/support_bot.md`**. Design history & rationale (note: predates the widget→page pivot): `docs/support_bot_design.md`.
 
 ## Client API (`client_api.py`) — non-dashboard endpoints
 
