@@ -101,8 +101,43 @@ def _ensure_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notified_at TIMESTAMPTZ",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_status TEXT",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS wix_notify_error TEXT",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
     ):
         conn.execute(sql_text(ddl))
+
+
+def _abort_if_deleted(task_id: str, stage: str) -> bool:
+    """Return True (and persist abort status) if submission_context.deleted_at is set.
+
+    Caller is expected to short-circuit when this returns True — it stops the
+    worker re-populating bronze rows after a user-initiated delete races with
+    an in-flight ingest. The cleanup sweep mops up any partial writes.
+    """
+    try:
+        with engine.connect() as conn:
+            deleted = conn.execute(sql_text(
+                "SELECT 1 FROM bronze.submission_context "
+                "WHERE task_id = :t AND deleted_at IS NOT NULL"
+            ), {"t": task_id}).scalar() is not None
+    except Exception:
+        app.logger.exception("INGEST WORKER deleted_at check failed task_id=%s stage=%s", task_id, stage)
+        return False
+
+    if not deleted:
+        return False
+
+    app.logger.warning("INGEST WORKER aborting stage=%s task_id=%s — match soft-deleted", stage, task_id)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_error = 'aborted: match deleted by user',
+                       ingest_finished_at = COALESCE(ingest_finished_at, now())
+                 WHERE task_id = :t
+            """), {"t": task_id})
+    except Exception:
+        app.logger.exception("INGEST WORKER abort-status update failed task_id=%s", task_id)
+    return True
 
 
 # ============================================================
@@ -141,6 +176,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
     try:
         app.logger.info("INGEST START task_id=%s result_url=%s", task_id, result_url)
 
+        if _abort_if_deleted(task_id, "pre_start"):
+            return False
+
         # Mark started
         with engine.begin() as conn:
             _ensure_schema(conn)
@@ -176,6 +214,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # -------------------------
         # STEP 2: BRONZE INGEST
         # -------------------------
+        if _abort_if_deleted(task_id, "pre_bronze"):
+            return False
+
         app.logger.info("INGEST STEP task_id=%s step=bronze_ingest_start", task_id)
 
         with engine.begin() as conn:
@@ -209,6 +250,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # -------------------------
         # STEP 3: SILVER BUILD
         # -------------------------
+        if _abort_if_deleted(task_id, "pre_silver"):
+            return False
+
         app.logger.info("INGEST STEP task_id=%s step=silver_build_start", task_id)
         build_silver_point_detail(task_id=task_id, replace=True)
         app.logger.info("INGEST STEP task_id=%s step=silver_build_done", task_id)
@@ -216,6 +260,9 @@ def _do_ingest(task_id: str, result_url: str) -> bool:
         # -------------------------
         # STEP 4: VIDEO TRIM TRIGGER (fire-and-forget)
         # -------------------------
+        if _abort_if_deleted(task_id, "pre_trim"):
+            return False
+
         app.logger.info("INGEST STEP task_id=%s step=video_trim_trigger_start", task_id)
         _trigger_video_trim(task_id)
 

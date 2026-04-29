@@ -167,6 +167,13 @@ try:
 except Exception:
     app.logger.exception("support_bot init failed on boot")
 
+# ---------- Orphan sweep (POST /ops/orphan-sweep) ----------
+try:
+    from cleanup import orphan_sweep_bp
+    app.register_blueprint(orphan_sweep_bp)
+except Exception:
+    app.logger.exception("cleanup.orphan_sweep_bp register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init
@@ -2036,6 +2043,39 @@ def _start_ingest_background(task_id: str, result_url: str) -> bool:
         return True
 
 
+def _t5_abort_if_deleted(task_id: str, stage: str) -> bool:
+    """Mirror of ingest_worker_app._abort_if_deleted for the T5 in-process path.
+
+    Returns True (and persists abort status) if submission_context.deleted_at is set,
+    so the caller short-circuits before re-populating bronze rows.
+    """
+    try:
+        with engine.connect() as conn:
+            deleted = conn.execute(sql_text(
+                "SELECT 1 FROM bronze.submission_context "
+                "WHERE task_id = :t AND deleted_at IS NOT NULL"
+            ), {"t": task_id}).scalar() is not None
+    except Exception:
+        app.logger.exception("T5 INGEST deleted_at check failed task_id=%s stage=%s", task_id, stage)
+        return False
+
+    if not deleted:
+        return False
+
+    app.logger.warning("T5 INGEST aborting stage=%s task_id=%s — match soft-deleted", stage, task_id)
+    try:
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                UPDATE bronze.submission_context
+                   SET ingest_error = 'aborted: match deleted by user',
+                       ingest_finished_at = COALESCE(ingest_finished_at, now())
+                 WHERE task_id = :t
+            """), {"t": task_id})
+    except Exception:
+        app.logger.exception("T5 INGEST abort-status update failed task_id=%s", task_id)
+    return True
+
+
 def _do_ingest_t5(task_id: str) -> bool:
     """
     Lightweight ingest for T5 ML pipeline jobs.
@@ -2045,6 +2085,9 @@ def _do_ingest_t5(task_id: str) -> bool:
     """
     try:
         app.logger.info("T5 INGEST START task_id=%s", task_id)
+
+        if _t5_abort_if_deleted(task_id, "pre_start"):
+            return False
 
         with engine.begin() as conn:
             _ensure_submission_context_schema(conn)
@@ -2059,6 +2102,9 @@ def _do_ingest_t5(task_id: str) -> bool:
                     last_status_at = now()
                 WHERE task_id = :t
             """), {"t": task_id})
+
+        if _t5_abort_if_deleted(task_id, "pre_bronze"):
+            return False
 
         # Bronze ingest: download gzipped JSON from S3 and bulk-load into ml_analysis.*
         # Mirrors SportAI's pattern — same region as DB, fast COPY bulk insert.
@@ -2077,6 +2123,9 @@ def _do_ingest_t5(task_id: str) -> bool:
 
         is_practice = _st in {"serve_practice", "rally_practice"}
         is_singles_t5 = _st == "tennis_singles_t5"
+
+        if _t5_abort_if_deleted(task_id, "pre_silver"):
+            return False
 
         # Silver: build from ml_analysis detections. Track success — we only
         # set session_id below if silver actually built, so failures retry.
@@ -2119,6 +2168,9 @@ def _do_ingest_t5(task_id: str) -> bool:
                 app.logger.warning("T5 INGEST task_id=%s silver match builder not available (ml deps missing)", task_id)
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s silver match build failed (non-fatal): %s", task_id, e)
+
+        if _t5_abort_if_deleted(task_id, "pre_trim"):
+            return False
 
         # Video trim: reuse match trim pipeline
         try:
@@ -3448,6 +3500,126 @@ def ops_sql_qs():
         return jsonify(_sql_exec_to_json(request.args.get("q", "")))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+
+
+# ==========================
+# OPS — STORAGE COMPACTION
+# ==========================
+# Runs VACUUM (FULL, ANALYZE) on the bronze/silver/ml_analysis tables that grow
+# with match volume. Reports per-table bytes-freed JSON. Each VACUUM takes
+# ACCESS EXCLUSIVE on its table for the duration — trigger during low traffic.
+#
+# Operationally, autovacuum already reclaims dead-row space for reuse, so
+# tables don't grow unbounded between calls. This endpoint exists for the
+# occasional case where you want bytes returned to the OS (e.g. after a
+# bulk delete like the one we just ran in the shell).
+_COMPACT_TARGETS = (
+    # Big JSONB / blob tables first.
+    ("bronze", "raw_result"),
+    ("bronze", "raw_result_chunk"),
+    ("bronze", "player_swing"),
+    ("bronze", "ball_position"),
+    ("bronze", "ball_bounce"),
+    ("bronze", "player_position"),
+    ("bronze", "player"),
+    ("bronze", "rally"),
+    ("bronze", "session"),
+    ("bronze", "session_confidences"),
+    ("bronze", "thumbnail"),
+    ("bronze", "highlight"),
+    ("bronze", "team_session"),
+    ("bronze", "bounce_heatmap"),
+    ("bronze", "unmatched_field"),
+    ("bronze", "debug_event"),
+    ("bronze", "submission_context"),
+    ("silver", "point_detail"),
+    ("silver", "practice_detail"),
+    ("ml_analysis", "ball_detections"),
+    ("ml_analysis", "player_detections"),
+    ("ml_analysis", "video_analysis_jobs"),
+    ("ml_analysis", "serve_events"),
+    ("ml_analysis", "match_analytics"),
+)
+
+
+def _table_size_bytes(conn, schema: str, table: str) -> int | None:
+    try:
+        row = conn.execute(sql_text(
+            "SELECT pg_total_relation_size(format('%I.%I', :s, :t)::regclass)"
+        ), {"s": schema, "t": table}).scalar()
+        return int(row) if row is not None else None
+    except Exception:
+        return None
+
+
+@app.post("/ops/compact-storage")
+def ops_compact_storage():
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    body = request.get_json(silent=True) or {}
+    only = body.get("only")  # optional list[str] of "schema.table" to scope the run
+    only_set = set(only) if isinstance(only, list) else None
+
+    results: list[dict] = []
+    skipped: list[dict] = []
+    total_before = 0
+    total_after = 0
+
+    # VACUUM cannot run inside a transaction — use AUTOCOMMIT.
+    autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
+
+    for schema, table in _COMPACT_TARGETS:
+        full = f"{schema}.{table}"
+        if only_set is not None and full not in only_set:
+            continue
+
+        with autocommit_engine.connect() as conn:
+            exists = conn.execute(sql_text(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = :s AND table_name = :t"
+            ), {"s": schema, "t": table}).scalar()
+            if not exists:
+                skipped.append({"table": full, "reason": "missing"})
+                continue
+
+            before = _table_size_bytes(conn, schema, table)
+            t0 = time.time()
+            try:
+                conn.execute(sql_text(f'VACUUM (FULL, ANALYZE) {schema}.{table}'))
+            except Exception as e:
+                results.append({
+                    "table": full,
+                    "status": "failed",
+                    "error": f"{e.__class__.__name__}: {e}"[:200],
+                })
+                continue
+            elapsed_ms = int((time.time() - t0) * 1000)
+            after = _table_size_bytes(conn, schema, table)
+
+        if before is not None:
+            total_before += before
+        if after is not None:
+            total_after += after
+
+        results.append({
+            "table": full,
+            "status": "ok",
+            "before_bytes": before,
+            "after_bytes": after,
+            "freed_bytes": (before - after) if (before is not None and after is not None) else None,
+            "elapsed_ms": elapsed_ms,
+        })
+
+    return jsonify({
+        "ok": True,
+        "total_before_bytes": total_before,
+        "total_after_bytes": total_after,
+        "total_freed_bytes": total_before - total_after,
+        "results": results,
+        "skipped": skipped,
+    })
+
 
 # ==========================
 # OPTIONAL UI BLUEPRINT (IF PRESENT)
