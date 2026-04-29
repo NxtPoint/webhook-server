@@ -238,12 +238,16 @@ game_stats AS (
     GROUP BY pl.task_id, pl.player_a_id, pl.player_b_id
 ),
 shot_stats AS (
+    -- NB: silver stamps ace_d / service_winner_d on EVERY shot of the point via
+    -- EXISTS, and reclassifies BOTH serve rows of a DF point to 'Double'. So
+    -- for aces / unreturned we filter to the contact serve (shot_outcome <> 'Error');
+    -- for DFs we count distinct point_keys.
     SELECT
         pl.task_id,
-        COUNT(*) FILTER (WHERE s.ace_d = true AND s.player_id = pl.player_a_id) AS pa_aces,
-        COUNT(*) FILTER (WHERE s.ace_d = true AND s.player_id = pl.player_b_id) AS pb_aces,
-        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_a_id) AS pa_double_faults,
-        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_b_id) AS pb_double_faults,
+        COUNT(*) FILTER (WHERE s.ace_d = true AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS pa_aces,
+        COUNT(*) FILTER (WHERE s.ace_d = true AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_b_id) AS pb_aces,
+        COUNT(DISTINCT s.point_key) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_a_id) AS pa_double_faults,
+        COUNT(DISTINCT s.point_key) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_b_id) AS pb_double_faults,
         COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_a_id) AS pa_winners,
         COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_b_id) AS pb_winners,
         COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Error' AND s.player_id = pl.player_a_id) AS pa_errors,
@@ -281,13 +285,16 @@ shot_stats AS (
         -- Total serves (all serve_d shots per player)
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.player_id = pl.player_a_id) AS pa_total_serves,
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.player_id = pl.player_b_id) AS pb_total_serves,
-        -- Unreturned serves (service winners)
-        COUNT(*) FILTER (WHERE s.serve_d = true AND s.service_winner_d = true AND s.player_id = pl.player_a_id) AS pa_unreturned_serves,
-        COUNT(*) FILTER (WHERE s.serve_d = true AND s.service_winner_d = true AND s.player_id = pl.player_b_id) AS pb_unreturned_serves,
-        -- Second serve attempts and in
-        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.player_id = pl.player_a_id) AS pa_second_serves_total,
+        -- Unreturned serves (service winners) — filter to the contact serve so a
+        -- 1st-serve-fault followed by a 2nd-serve-unreturned isn't counted as 2.
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.service_winner_d = true AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS pa_unreturned_serves,
+        COUNT(*) FILTER (WHERE s.serve_d = true AND s.service_winner_d = true AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_b_id) AS pb_unreturned_serves,
+        -- Second-serve attempts: count points where a 2nd serve was attempted.
+        -- DF points have BOTH serve rows = 'Double' (no '2nd'), so include 'Double'
+        -- and count distinct points to avoid double-counting either case.
+        COUNT(DISTINCT s.point_key) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point IN ('2nd','Double') AND s.player_id = pl.player_a_id) AS pa_second_serves_total,
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS pa_second_serves_in,
-        COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.player_id = pl.player_b_id) AS pb_second_serves_total,
+        COUNT(DISTINCT s.point_key) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point IN ('2nd','Double') AND s.player_id = pl.player_b_id) AS pb_second_serves_total,
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_b_id) AS pb_second_serves_in,
         -- Return errors
         COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_a_id) AS pa_return_errors,
@@ -486,7 +493,10 @@ SELECT
     COUNT(*) FILTER (WHERE s.shot_outcome_d <> 'Error') AS serves_in,
     COUNT(DISTINCT s.point_key) AS points_played,
     COUNT(DISTINCT s.point_key) FILTER (WHERE s.point_winner_player_id = s.player_id) AS points_won,
-    COUNT(*) FILTER (WHERE s.service_winner_d = true) AS unreturned
+    -- Filter to the contact serve: service_winner_d is EXISTS-stamped on every
+    -- serve row of the point, so a 1st-serve-fault before an unreturned 2nd
+    -- would otherwise count as 2.
+    COUNT(*) FILTER (WHERE s.service_winner_d = true AND s.shot_outcome_d <> 'Error') AS unreturned
 FROM silver.point_detail s
 JOIN gold.vw_player pl ON pl.task_id = s.task_id
 WHERE s.serve_d = true
@@ -715,11 +725,16 @@ shot_agg AS (
         pl.task_id,
         COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = '1st' AND s.player_id = pl.player_a_id) AS first_serves_attempted,
         COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = '1st' AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS first_serves_in,
-        COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = '2nd' AND s.player_id = pl.player_a_id) AS second_serves_attempted,
-        COUNT(*) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_a_id) AS double_faults,
-        COUNT(*) FILTER (WHERE s.ace_d AND s.player_id = pl.player_a_id) AS aces,
+        -- 2nd-serve attempts: include 'Double' and dedupe by point_key, since a DF
+        -- point has BOTH serve rows reclassified to 'Double' (silver pass-3).
+        COUNT(DISTINCT s.point_key) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point IN ('2nd','Double') AND s.player_id = pl.player_a_id) AS second_serves_attempted,
+        COUNT(DISTINCT s.point_key) FILTER (WHERE s.serve_d AND s.serve_try_ix_in_point = 'Double' AND s.player_id = pl.player_a_id) AS double_faults,
+        -- Aces / unreturned: silver EXISTS-stamps these on every serve row of the
+        -- point. Filter to the contact serve so a 1st-serve-fault before an
+        -- ace/unreturned 2nd serve doesn't count twice.
+        COUNT(*) FILTER (WHERE s.ace_d AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS aces,
         COUNT(*) FILTER (WHERE s.serve_d AND s.player_id = pl.player_a_id) AS total_serves,
-        COUNT(*) FILTER (WHERE s.serve_d AND s.service_winner_d AND s.player_id = pl.player_a_id) AS unreturned_serves,
+        COUNT(*) FILTER (WHERE s.serve_d AND s.service_winner_d AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS unreturned_serves,
         COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.player_id = pl.player_a_id) AS return_attempts,
         COUNT(*) FILTER (WHERE s.shot_ix_in_point = 2 AND s.shot_outcome_d <> 'Error' AND s.player_id = pl.player_a_id) AS returns_made,
         COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_a_id) AS rally_winners,
