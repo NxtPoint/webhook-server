@@ -2274,6 +2274,11 @@ def pricing():
     return _html("pricing.html")
 
 
+@app.get("/help")
+def help_page():
+    return _html("support.html")
+
+
 # Public marketing pages — same-origin backups to Wix hosting
 @app.get("/home")
 def public_home_page():

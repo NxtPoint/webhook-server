@@ -1,10 +1,10 @@
 # Support Bot (`support_bot/`)
 
-Customer-service chat bot answering FAQ-only questions on the portal pages. Uses Claude Haiku 4.5 with prompt caching + forced tool-use for guaranteed structured output. All authenticated (`X-Client-Key`); portal-only — no public/Wix surface in v1.
+Customer-service chat answering FAQ-only questions on the portal. Uses Claude Haiku 4.5 with prompt caching + forced tool-use for guaranteed structured output. All authenticated (`X-Client-Key`); portal-only — no public/Wix surface.
 
-**Status (2026-04-27)**: Phase 1 backend deployed. Frontend widget pending next session.
+**Status (2026-04-29)**: Backend + frontend page deployed. Both live.
 
-**Design history**: `docs/support_bot_design.md` (the spec — alternatives considered, locked decisions, rationale).
+**Design history**: `docs/support_bot_design.md` (the original spec — note that the frontend pivoted from a floating widget to a dedicated `/help` page styled like the AI Coach module; design doc reflects the pre-pivot widget plan).
 
 ## Flow
 
@@ -85,9 +85,18 @@ except Exception:
 
 ## Frontend
 
-**Pending** (next session). Spec'd in `docs/support_bot_design.md` §6: single self-contained `static/support_widget.js`, included via one `<script src="/static/support_widget.js" defer></script>` line on each of seven portal HTML files (`portal.html`, `locker_room.html`, `media_room.html`, `match_analysis.html`, `pricing.html`, `backoffice.html`, `practice.html`). Iframe-mount idempotency check via `window.__nf5_support_mounted__` flag so the bubble appears exactly once whether accessed via the portal shell or directly.
+**Dedicated page**: `frontend/support.html`, served at `/help` by both `locker_room_app.py` (canonical) and `upload_app.py` (same-origin backup). Loaded inside the portal iframe via the standard `navigateTo()` flow — same auth handoff (`?email=&firstName=&key=&api=` URL params populated by `authParams()` in portal.html) that every other portal page uses. No floating widget, no postMessage hack, no separate static asset.
 
-Reuses existing AI-Coach styling (`.coach-pill` for `[section.id]` citations, `.coach-quick-btn` for quick prompts, `--green-primary` accent, "Coach thinking…"-style spinner copy).
+The page mirrors the AI Coach module visually:
+- Greeting card with first-name personalisation + 4 quick-prompt buttons
+- Input row with green Send button (mirrors `.coach-input` / `.coach-quick-btn`)
+- Conversation log: user-message bubbles + bot answer cards with green left-border callouts (`.support-answer` mirrors `.coach-answer`)
+- `[section.id]` citations rendered as green pills (`.support-pill` mirrors `.coach-pill`)
+- Inline action buttons for `actions[]` from API
+- Thumbs up/down per turn (local state only in v1 — see Iteration loop below for server-feedback upgrade path)
+- Amber "This didn't help — email us" CTA appears when `needs_human=true` or `confidence=low`; calls `/api/support/escalate` and shows a toast
+
+**Sidebar entry**: portal.html has a "Help & Support" nav item under "Plans & Pricing" with `path: '/help'` — navigates like every other item, no special-case JS.
 
 ## Cost model
 

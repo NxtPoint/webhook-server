@@ -81,6 +81,11 @@ def coach_accept():
     return _html("coach_accept.html")
 
 
+@app.get("/help")
+def help_page():
+    return _html("support.html")
+
+
 # ----------------------------------------------------------------
 # Public marketing pages — served same-origin as backup to Wix hosting
 # ----------------------------------------------------------------

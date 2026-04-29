@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>TEN-FIFTY5 Help &amp; Support</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --white: #ffffff;
+  --green: #1a5c2e;
+  --green-light: #22783c;
+  --green-bg: rgba(26,92,46,0.08);
+  --text: #1a1a1a;
+  --text-sec: #6b7280;
+  --text-dim: #9ca3af;
+  --border: #e5e5e5;
+  --amber: #d97706;
+  --amber-bg: rgba(217,119,6,0.08);
+  --red: #dc2626;
+  --radius: 4px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 15px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  height: 100%;
+}
+button { cursor: pointer; font-family: inherit; }
+input, textarea { font-family: inherit; }
+
+.app { max-width: 880px; margin: 0 auto; padding: 16px 16px calc(120px + env(safe-area-inset-bottom, 0px)); }
+
+/* ========== HEADER ========== */
+.page-header {
+  margin-bottom: 18px;
+}
+.page-title {
+  font-size: 1.4rem; font-weight: 700; color: var(--text);
+  letter-spacing: 0.3px; display: flex; align-items: center; gap: 10px;
+}
+.page-title .spark { color: var(--green); font-size: 1.1rem; }
+.page-sub {
+  margin-top: 4px; color: var(--text-sec); font-size: 0.88rem;
+}
+
+/* ========== CARD ========== */
+.card {
+  background: var(--white); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  margin-bottom: 16px;
+}
+.card h3 {
+  font-size: 0.95rem; font-weight: 700; color: var(--text);
+  margin-bottom: 10px; letter-spacing: 0.2px;
+}
+.card .card-sub {
+  font-size: 0.82rem; color: var(--text-sec); margin-bottom: 12px;
+}
+
+/* ========== QUICK PROMPTS (mirrors AI Coach .coach-quick-btn) ========== */
+.quick-row {
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.quick-btn {
+  padding: 8px 14px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--white); font-size: 0.82rem; font-weight: 500; color: var(--text-sec);
+  transition: all var(--transition);
+}
+.quick-btn:hover { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+
+/* ========== INPUT ROW (mirrors AI Coach .coach-input-row) ========== */
+.input-row { display: flex; gap: 8px; align-items: stretch; }
+.support-input {
+  flex: 1; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.88rem; background: var(--white); color: var(--text);
+}
+.support-input:focus { outline: none; border-color: var(--green); }
+.send-btn {
+  background: var(--green); color: var(--white); border: none;
+  padding: 0 18px; border-radius: var(--radius);
+  font-size: 0.85rem; font-weight: 600;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  transition: background var(--transition);
+}
+.send-btn:hover { background: var(--green-light); }
+.send-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ========== CONVERSATION LOG ========== */
+.conversation { margin-top: 18px; display: flex; flex-direction: column; gap: 14px; }
+.conversation:empty { display: none; }
+
+/* User question bubble */
+.msg-user {
+  align-self: flex-end; max-width: 80%;
+  background: var(--green); color: var(--white);
+  padding: 10px 14px; border-radius: 14px 14px 2px 14px;
+  font-size: 0.86rem; line-height: 1.45; word-wrap: break-word;
+}
+
+/* Bot response card (mirrors AI Coach .coach-answer) */
+.msg-bot { display: flex; flex-direction: column; gap: 8px; }
+.support-answer {
+  background: var(--green-bg); border-left: 3px solid var(--green);
+  padding: 12px 16px; border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 0.88rem; line-height: 1.6; color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* Citation pills (mirrors AI Coach .coach-pill) */
+.support-pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  background: var(--green-bg); color: var(--green);
+  font-weight: 700; font-size: 0.74rem; margin: 0 2px;
+  border: 1px solid rgba(26,92,46,0.2);
+}
+
+/* Action buttons (deep-links from API actions[]) */
+.actions-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.action-link {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--white);
+  font-size: 0.78rem; font-weight: 500; color: var(--text-sec);
+  text-decoration: none; transition: all var(--transition);
+}
+.action-link:hover { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+.action-link .arrow { font-size: 0.7rem; opacity: 0.8; }
+
+/* Escalation CTA */
+.escalate-row { display: flex; }
+.escalate-btn {
+  padding: 8px 14px; border-radius: var(--radius);
+  border: 1px solid var(--amber); background: var(--amber-bg);
+  color: var(--amber); font-size: 0.82rem; font-weight: 600;
+  transition: background var(--transition);
+}
+.escalate-btn:hover { background: rgba(217,119,6,0.16); }
+.escalate-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Thumbs feedback */
+.thumbs-row { display: flex; gap: 6px; }
+.thumb-btn {
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius);
+  width: 32px; height: 28px; padding: 0; line-height: 1; font-size: 0.92rem;
+  opacity: 0.65; transition: all var(--transition);
+}
+.thumb-btn:hover { opacity: 1; border-color: var(--green); }
+.thumbs-given .thumb-btn { pointer-events: none; opacity: 0.45; }
+.thumbs-up .thumb-btn[data-thumb="up"] {
+  opacity: 1; border-color: var(--green); background: var(--green-bg);
+}
+.thumbs-down .thumb-btn[data-thumb="down"] {
+  opacity: 1; border-color: var(--amber); background: var(--amber-bg);
+}
+
+/* Loading + empty (mirror AI Coach .coach-loading / .coach-empty) */
+.loading-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; font-size: 0.84rem; color: var(--text-sec);
+  background: var(--green-bg); border-left: 3px solid var(--green);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.spinner {
+  width: 16px; height: 16px;
+  border: 2px solid var(--border); border-top-color: var(--green);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state {
+  padding: 14px; text-align: center; font-size: 0.82rem;
+  color: var(--text-dim); background: var(--bg); border-radius: var(--radius);
+}
+
+/* Toast confirmation */
+.toast {
+  margin-top: 8px; padding: 10px 14px;
+  background: var(--green-bg); color: var(--green);
+  border-radius: var(--radius); font-size: 0.82rem; font-weight: 600;
+  text-align: center;
+}
+
+/* Auth-missing overlay */
+.no-auth {
+  background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 32px 28px; text-align: center; color: var(--text-sec);
+}
+.no-auth h3 { color: var(--text); margin-bottom: 8px; }
+
+/* Mobile */
+@media (max-width: 640px) {
+  .app { padding: 12px 12px calc(120px + env(safe-area-inset-bottom, 0px)); }
+  .page-title { font-size: 1.2rem; }
+  .quick-row { flex-direction: column; }
+  .quick-btn { width: 100%; text-align: left; }
+  .send-btn { padding: 0 14px; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="page-header">
+    <h1 class="page-title"><span class="spark">✦</span><span>Help &amp; Support</span></h1>
+    <p class="page-sub" id="pageSub">Ask a question and the bot will help. If we can't, we'll send your conversation to <strong>info@ten-fifty5.com</strong>.</p>
+  </div>
+
+  <div id="root"></div>
+</div>
+
+<script>
+// ====================================================================
+//   AUTH (mirrors pricing.html / locker_room.html pattern)
+// ====================================================================
+const params = new URLSearchParams(window.location.search);
+const EMAIL      = (params.get('email') || '').trim().toLowerCase();
+const API_KEY    = (params.get('key') || '').trim();
+const API_BASE   = (params.get('api') || 'https://api.nextpointtennis.com').trim().replace(/\/+$/, '');
+const FIRST_NAME = (params.get('firstName') || '').trim();
+const PAGE_CTX   = '/help';
+
+// ====================================================================
+//   STATE
+// ====================================================================
+let conversationId = null;
+let turns = [];           // [{ id?, question, answer, confidence, needs_human, cited_sections, actions, feedback?, pending?, error? }]
+let busy = false;
+let escalationSent = false;
+
+const QUICK_PROMPTS = [
+  'How do I cancel my plan?',
+  'How do I add a new match?',
+  'How do I invite my coach?',
+  'I have a billing question',
+];
+
+// ====================================================================
+//   RENDER
+// ====================================================================
+function render() {
+  const root = document.getElementById('root');
+
+  if (!EMAIL || !API_KEY) {
+    root.innerHTML = `
+      <div class="no-auth">
+        <h3>You're not signed in</h3>
+        <p>Open this page through your portal so we can answer questions about your account.</p>
+      </div>`;
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="card" id="quickCard">
+      <h3>${escapeHtml(FIRST_NAME ? 'Hi ' + FIRST_NAME + ' 👋' : 'Hi 👋')}</h3>
+      <p class="card-sub">Quick help — tap one or type your own question below.</p>
+      <div class="quick-row" id="quickRow"></div>
+    </div>
+
+    <div class="card">
+      <h3>Ask a question</h3>
+      <div class="input-row">
+        <input type="text" id="userInput" class="support-input" maxlength="1000"
+               placeholder="Type your question…" autocomplete="off" />
+        <button type="button" id="sendBtn" class="send-btn">Send →</button>
+      </div>
+      <div id="conversation" class="conversation"></div>
+    </div>
+  `;
+
+  // Quick prompts
+  const row = document.getElementById('quickRow');
+  row.innerHTML = QUICK_PROMPTS.map((p) =>
+    `<button type="button" class="quick-btn" data-prompt="${escapeAttr(p)}">${escapeHtml(p)}</button>`
+  ).join('');
+  row.querySelectorAll('[data-prompt]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const text = btn.getAttribute('data-prompt');
+      document.getElementById('userInput').value = text;
+      onSend();
+    });
+  });
+
+  // Send button + Enter
+  document.getElementById('sendBtn').addEventListener('click', onSend);
+  document.getElementById('userInput').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); onSend(); }
+  });
+
+  renderConversation();
+}
+
+function renderConversation() {
+  const host = document.getElementById('conversation');
+  if (!host) return;
+  if (!turns.length) { host.innerHTML = ''; return; }
+
+  host.innerHTML = turns.map((t, i) => renderTurnHtml(t, i)).join('') + (escalationSent
+    ? `<div class="toast">Email sent to our team — we'll be in touch.</div>`
+    : '');
+
+  host.querySelectorAll('[data-thumb]').forEach((b) => {
+    b.addEventListener('click', () =>
+      onThumb(b.getAttribute('data-turn-idx'), b.getAttribute('data-thumb'))
+    );
+  });
+  host.querySelectorAll('[data-escalate]').forEach((b) => {
+    b.addEventListener('click', onEscalate);
+  });
+
+  // Scroll the latest answer into view
+  const last = host.lastElementChild;
+  if (last && typeof last.scrollIntoView === 'function') {
+    last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function renderTurnHtml(turn, idx) {
+  const userBlock = `<div class="msg-user">${escapeHtml(turn.question || '')}</div>`;
+
+  if (turn.pending) {
+    return userBlock + `
+      <div class="msg-bot">
+        <div class="loading-row"><span class="spinner"></span>Support thinking…</div>
+      </div>`;
+  }
+  if (turn.error) {
+    return userBlock + `
+      <div class="msg-bot">
+        <div class="empty-state">Network error — please try again or email
+          <strong>info@ten-fifty5.com</strong></div>
+      </div>`;
+  }
+
+  const answerHtml = highlightStats(turn.answer || '');
+  const actionsHtml = (turn.actions || []).length
+    ? `<div class="actions-row">${(turn.actions || []).map((a) =>
+        `<a class="action-link" href="${escapeAttr(a.href)}" target="_top" rel="noopener">${escapeHtml(a.label)}<span class="arrow">↗</span></a>`
+      ).join('')}</div>`
+    : '';
+
+  const showEscalate = turn.needs_human || turn.confidence === 'low';
+  const escalateRow = showEscalate && !escalationSent
+    ? `<div class="escalate-row"><button type="button" class="escalate-btn" data-escalate>This didn't help — email us</button></div>`
+    : '';
+
+  const thumbState = turn.feedback ? `thumbs-given thumbs-${turn.feedback}` : '';
+  const thumbs = `
+    <div class="thumbs-row ${thumbState}">
+      <button type="button" class="thumb-btn" data-thumb="up"   data-turn-idx="${idx}" aria-label="Helpful">👍</button>
+      <button type="button" class="thumb-btn" data-thumb="down" data-turn-idx="${idx}" aria-label="Not helpful">👎</button>
+    </div>`;
+
+  return userBlock + `
+    <div class="msg-bot">
+      <div class="support-answer">${answerHtml}</div>
+      ${actionsHtml}
+      ${escalateRow}
+      ${thumbs}
+    </div>`;
+}
+
+// ====================================================================
+//   API CALLS
+// ====================================================================
+async function onSend() {
+  const inputEl = document.getElementById('userInput');
+  const sendEl = document.getElementById('sendBtn');
+  if (!inputEl || busy) return;
+  const q = (inputEl.value || '').trim();
+  if (!q) return;
+
+  inputEl.value = '';
+  busy = true;
+  if (sendEl) sendEl.disabled = true;
+  turns.push({ question: q, pending: true });
+  renderConversation();
+
+  try {
+    const res = await fetch(API_BASE + '/api/support/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Key': API_KEY },
+      body: JSON.stringify({
+        message: q,
+        email: EMAIL,
+        page_context: PAGE_CTX,
+        conversation_id: conversationId || undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.ok) {
+      if (res.status === 429) {
+        replaceLastTurn({
+          question: q,
+          answer: "You've hit today's limit. Please email info@ten-fifty5.com if it's urgent.",
+          confidence: 'low', needs_human: true, cited_sections: [], actions: [],
+        });
+      } else {
+        replaceLastTurn({ question: q, error: true });
+      }
+      return;
+    }
+
+    if (!conversationId && data.conversation_id) conversationId = data.conversation_id;
+
+    replaceLastTurn({
+      question:       q,
+      answer:         data.answer || '',
+      confidence:     data.confidence || 'medium',
+      needs_human:    !!data.needs_human,
+      cited_sections: data.cited_sections || [],
+      actions:        data.actions || [],
+    });
+  } catch (e) {
+    console.error('[support] /ask failed', e);
+    replaceLastTurn({ question: q, error: true });
+  } finally {
+    busy = false;
+    if (sendEl) sendEl.disabled = false;
+  }
+}
+
+function replaceLastTurn(turn) {
+  turns[turns.length - 1] = turn;
+  renderConversation();
+}
+
+async function onThumb(idxStr, rating) {
+  const idx = parseInt(idxStr, 10);
+  const turn = turns[idx];
+  if (!turn || turn.feedback) return;
+  turn.feedback = rating;
+  renderConversation();
+  // Server-side feedback would require the row uuid; the /ask endpoint
+  // doesn't currently return that. Local-only state for v1; future
+  // enhancement: have /ask return turn_row_id for true server feedback.
+}
+
+async function onEscalate() {
+  if (escalationSent || !conversationId || busy) return;
+  busy = true;
+  try {
+    const res = await fetch(API_BASE + '/api/support/escalate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-Key': API_KEY },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        email: EMAIL,
+        user_note: 'Escalated from Help & Support page',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data && data.ok) {
+      escalationSent = true;
+      renderConversation();
+    } else {
+      alert('Could not send the email. Please write to info@ten-fifty5.com directly.');
+    }
+  } catch (_) {
+    alert('Could not send the email. Please write to info@ten-fifty5.com directly.');
+  } finally {
+    busy = false;
+  }
+}
+
+// ====================================================================
+//   HELPERS
+// ====================================================================
+// Mirrors AI Coach highlightStats() exactly — turns [section.id] into
+// inline green pills so cited FAQ sections are visually obvious.
+function highlightStats(s) {
+  const safe = escapeHtml(s);
+  return safe.replace(/\[([^\]]+)\]/g, '<span class="support-pill">$1</span>');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+// ====================================================================
+//   BOOT
+// ====================================================================
+render();
+</script>
+
+</body>
+</html>

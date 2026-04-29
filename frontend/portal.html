@@ -369,7 +369,7 @@ const NAV_ITEMS = [
   {
     id: 'support',
     label: 'Help & Support',
-    // No path — handled as an action in navigateTo()
+    path: '/help',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   },
 ];
@@ -442,17 +442,6 @@ function renderNav() {
 
 // ==================== NAVIGATE ====================
 function navigateTo(pageId, extraParams) {
-  // Help & Support is an action, not a destination — open the support
-  // widget panel without changing pages.
-  if (pageId === 'support') {
-    if (typeof window.nf5SupportOpen === 'function') {
-      window.nf5SupportOpen();
-    } else {
-      console.warn('[portal] support widget not ready');
-    }
-    return;
-  }
-
   const allItems = [...NAV_ITEMS, ...ADMIN_NAV_ITEMS];
   const item = allItems.find(i => i.id === pageId);
   if (!item || item.disabled) return;
@@ -661,8 +650,5 @@ if (AUTH.email && AUTH.apiKey) {
 }
 
 </script>
-
-<!-- Support bot widget (auto-mounts a help bubble bottom-right) -->
-<script src="/static/support_widget.js" defer></script>
 </body>
 </html>
