@@ -1,0 +1,26 @@
+{
+  "commit": "d496bb2",
+  "fixtures": {
+    "a798eff0": {
+      "far": [
+        3,
+        10
+      ],
+      "near": [
+        13,
+        14
+      ],
+      "total": [
+        16,
+        24
+      ],
+      "verdicts": {
+        "FAR_IN_TIME": 2,
+        "MATCH": 16,
+        "NO_MATCH": 5,
+        "WEAK_TIME": 1
+      }
+    }
+  },
+  "updated_at": "2026-04-29"
+}

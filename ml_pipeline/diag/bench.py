@@ -83,7 +83,7 @@ def _format_delta(curr: list, base: list | None) -> str:
     if delta > 0:
         return f"  (+{delta} vs baseline)"
     if delta < 0:
-        return f"  ({delta} vs baseline) ⚠ REGRESSION"
+        return f"  ({delta} vs baseline) [!] REGRESSION"
     return "  (no change)"
 
 
@@ -128,9 +128,9 @@ def main(argv=None) -> int:
 
     print()
     if any_regression:
-        print("⚠ REGRESSION DETECTED on at least one fixture. Investigate before pushing.")
+        print("[!] REGRESSION DETECTED on at least one fixture. Investigate before pushing.")
     else:
-        print("✓ No regressions vs committed baseline.")
+        print("[OK] No regressions vs committed baseline.")
 
     if args.update_baseline:
         new_baseline = {
