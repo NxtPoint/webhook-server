@@ -68,8 +68,30 @@ def _get_engine():
     return create_engine(_normalize_db_url(url))
 
 
-def _resolve_video_s3(conn, task_id: str) -> Tuple[str, str]:
-    """Read s3_bucket/s3_key from bronze.submission_context."""
+def _s3_head_ok(bucket: str, key: str) -> bool:
+    import boto3
+    from botocore.exceptions import ClientError
+    s3 = boto3.client("s3")
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError:
+        return False
+
+
+def _resolve_video_s3(conn, task_id: str,
+                      sportai_fallback_tid: str = None,
+                      trimmed_fallback: bool = True) -> Tuple[str, str]:
+    """Resolve an S3 location for the task's video.
+
+    Strategy:
+      1. submission_context.s3_bucket/s3_key — primary upload (often deleted
+         after ingest by cleanup)
+      2. submission_context.trim_output_s3_key — trimmed point-clips only,
+         skipped here because we need the full video for mid-rally frames
+      3. SportAI dual-submit fallback — sportai_fallback_tid's s3_key
+      4. Raise with attempts.
+    """
     row = conn.execute(sql_text("""
         SELECT s3_bucket, s3_key
         FROM bronze.submission_context
@@ -77,14 +99,42 @@ def _resolve_video_s3(conn, task_id: str) -> Tuple[str, str]:
     """), {"tid": task_id}).fetchone()
     if row is None:
         raise RuntimeError(f"no submission_context row for task {task_id}")
+    attempts = []
     bucket = row[0] or os.environ.get("S3_BUCKET")
     key = row[1]
-    if not (bucket and key):
-        raise RuntimeError(
-            f"task {task_id} has no s3_bucket/s3_key in submission_context. "
-            f"Pass --video <local_path> instead."
-        )
-    return bucket, key
+    if bucket and key:
+        attempts.append((bucket, key, "primary submission_context"))
+        if _s3_head_ok(bucket, key):
+            return bucket, key
+        logger.warning("primary s3://%s/%s not found (HeadObject 404)", bucket, key)
+
+    if sportai_fallback_tid:
+        sa_row = conn.execute(sql_text("""
+            SELECT s3_bucket, s3_key
+            FROM bronze.submission_context
+            WHERE task_id = :tid
+        """), {"tid": sportai_fallback_tid}).fetchone()
+        if sa_row:
+            sa_bucket = sa_row[0] or os.environ.get("S3_BUCKET")
+            sa_key = sa_row[1]
+            if sa_bucket and sa_key:
+                attempts.append((sa_bucket, sa_key, "SportAI fallback"))
+                if _s3_head_ok(sa_bucket, sa_key):
+                    logger.info("using SportAI fallback s3://%s/%s",
+                                sa_bucket, sa_key)
+                    return sa_bucket, sa_key
+                logger.warning("SportAI fallback s3://%s/%s not found",
+                               sa_bucket, sa_key)
+
+    tried = "\n".join(f"    - s3://{b}/{k}  ({src})"
+                      for b, k, src in attempts) or "    (none — no rows found)"
+    raise RuntimeError(
+        f"video not found in S3 for task {task_id}. Tried:\n{tried}\n"
+        f"Options:\n"
+        f"  - pass --s3-bucket <bucket> --s3-key <key> explicitly\n"
+        f"  - pass --video <local_path> if you have the file locally\n"
+        f"  - pass --sportai <SA_TID> if dual-submit ref is different"
+    )
 
 
 def _download_video_to_tmp(bucket: str, key: str) -> str:
@@ -127,6 +177,13 @@ def main(argv=None) -> int:
                     help="ROI table source tag (default far_nogate_test)")
     ap.add_argument("--video", default=None,
                     help="Local video path (otherwise download from S3)")
+    ap.add_argument("--s3-bucket", default=None,
+                    help="Override S3 bucket (with --s3-key) — bypass DB lookup")
+    ap.add_argument("--s3-key", default=None,
+                    help="Override S3 key (with --s3-bucket) — bypass DB lookup")
+    ap.add_argument("--sportai", default="2c1ad953-b65b-41b4-9999-975964ff92e1",
+                    help="SportAI task_id for dual-submit fallback when the "
+                         "T5 task's video has been deleted")
     ap.add_argument("--rally-gate", action="store_true",
                     help="Keep rally gate ON (default: gate OFF — that's "
                          "the point of this diag)")
@@ -141,11 +198,18 @@ def main(argv=None) -> int:
 
     engine = _get_engine()
 
-    # Get video
+    # Get video — local path > explicit s3 args > DB lookup with SA fallback
     video_path = args.video
     if video_path is None:
-        with engine.connect() as conn:
-            bucket, key = _resolve_video_s3(conn, args.task)
+        if args.s3_bucket and args.s3_key:
+            bucket, key = args.s3_bucket, args.s3_key
+            logger.info("using explicit s3 override: s3://%s/%s", bucket, key)
+        else:
+            with engine.connect() as conn:
+                bucket, key = _resolve_video_s3(
+                    conn, args.task,
+                    sportai_fallback_tid=args.sportai,
+                )
         video_path = _download_video_to_tmp(bucket, key)
     if not os.path.exists(video_path):
         print(f"video not found: {video_path}", file=sys.stderr)
