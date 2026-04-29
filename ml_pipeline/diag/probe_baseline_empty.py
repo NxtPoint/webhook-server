@@ -73,7 +73,7 @@ def _probe(conn, task: str, ts: float, fps: float, win: float, pid: int) -> dict
                 COUNT(*) FILTER (WHERE court_y BETWEEN 5 AND 18) AS cy_5_18,
                 COUNT(*) FILTER (WHERE court_y > 18) AS cy_gt_18
             FROM ml_analysis.{table}
-            WHERE job_id = CAST(:t AS uuid)
+            WHERE job_id = :t
               AND player_id = :pid
               AND frame_idx BETWEEN :lo AND :hi
         """), {"t": task, "pid": pid, "lo": lo, "hi": hi}).mappings().one()
