@@ -24,6 +24,7 @@
   --sidebar-collapsed: 56px;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html, body { height: 100%; overflow: hidden; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -216,6 +217,7 @@ body {
     background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 8px 10px; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.08);
     display: flex; align-items: center; justify-content: center;
+    min-width: 44px; min-height: 44px;
   }
   .mobile-hamburger svg { width: 20px; height: 20px; stroke: var(--green); fill: none; stroke-width: 2; }
   .content { width: 100vw; }
@@ -229,10 +231,10 @@ body {
 <body>
 
 <!-- Mobile hamburger -->
-<button class="mobile-hamburger" onclick="toggleMobile()">
-  <svg viewBox="0 0 24 24"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+<button class="mobile-hamburger" onclick="toggleMobile()" aria-label="Open navigation menu">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
 </button>
-<div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobile()"></div>
+<div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobile()" aria-hidden="true"></div>
 
 <!-- Sidebar -->
 <nav class="sidebar" id="sidebar">
@@ -241,8 +243,8 @@ body {
     <span class="logo-text">TEN-FIFTY5</span>
   </div>
 
-  <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar" aria-label="Toggle sidebar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <polyline points="13 17 18 12 13 7"></polyline>
       <polyline points="6 17 11 12 6 7"></polyline>
     </svg>

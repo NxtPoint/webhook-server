@@ -25,7 +25,9 @@
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html { font-size: 15px; }
+@media (max-width: 768px) { input, select, textarea { font-size: 16px; } }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
@@ -280,8 +282,8 @@ textarea.edit-input { resize: vertical; min-height: 60px; }
 }
 .wakelock-warn.show { display: block; }
 
-/* MOBILE */
-@media (max-width: 600px) {
+/* MOBILE / TABLET PORTRAIT */
+@media (max-width: 768px) {
   .header { flex-direction: column; align-items: flex-start; }
   .header-right { width: 100%; justify-content: space-between; }
   .player-info { text-align: left; }
@@ -484,7 +486,7 @@ function render() {
 
 function renderHeader(name, remaining, pillClass) {
   return `<div class="header">
-    <div class="logo">TEN-FIFTY5</div>
+    <h1 class="logo">TEN-FIFTY5</h1>
     <div class="header-right">
       <div class="player-info">
         <div class="player-name">${esc(name)}</div>

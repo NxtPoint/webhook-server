@@ -19,11 +19,14 @@
   --border: #e5e5e5;
   --amber: #d97706;
   --red: #dc2626;
+  --blue: #2563eb;
   --radius: 4px;
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html { font-size: 15px; }
+@media (max-width: 768px) { input, select, textarea { font-size: 16px; } }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
@@ -51,7 +54,7 @@ button { cursor: pointer; font-family: inherit; }
   display: inline-flex; align-items: center; gap: 5px;
   padding: 5px 12px; border-radius: var(--radius);
   font-size: 0.78rem; font-weight: 600;
-  background: rgba(59,130,246,0.08); color: #2563eb; border: 1px solid #2563eb;
+  background: rgba(37,99,235,0.08); color: var(--blue); border: 1px solid var(--blue);
 }
 
 /* ========== DATE FILTER ========== */
@@ -59,7 +62,7 @@ button { cursor: pointer; font-family: inherit; }
   display: flex; align-items: center; gap: 10px; padding: 10px 16px;
   border-top: 1px solid var(--border); flex-wrap: wrap;
 }
-.date-filter label { font-size: 0.78rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px; }
+.date-filter label, .date-filter .date-filter-legend { font-size: 0.78rem; font-weight: 600; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px; }
 .date-filter input[type="date"] {
   padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
   font-family: inherit; font-size: 0.85rem; color: var(--text); outline: none;
@@ -138,7 +141,7 @@ tbody tr:last-child td { border-bottom: none; }
   font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
 }
 .stage-pill.ok { background: var(--green-bg); color: var(--green); }
-.stage-pill.running { background: rgba(59,130,246,0.08); color: #2563eb; }
+.stage-pill.running { background: rgba(37,99,235,0.08); color: var(--blue); }
 .stage-pill.warn { background: rgba(217,119,6,0.08); color: var(--amber); }
 .stage-pill.fail { background: rgba(220,38,38,0.08); color: var(--red); }
 .stage-pill.pending { background: var(--bg); color: var(--text-dim); }
@@ -209,7 +212,7 @@ tbody tr:last-child td { border-bottom: none; }
 }
 .step-icon.ok { background: var(--green-bg); color: var(--green); }
 .step-icon.fail { background: rgba(220,38,38,0.08); color: var(--red); }
-.step-icon.running { background: rgba(59,130,246,0.08); color: #2563eb; }
+.step-icon.running { background: rgba(37,99,235,0.08); color: var(--blue); }
 .step-icon.pending { background: var(--bg); color: var(--text-dim); }
 .step-body { flex: 1; min-width: 0; }
 .step-name { font-weight: 600; font-size: 0.88rem; }
@@ -255,8 +258,8 @@ tbody tr:last-child td { border-bottom: none; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 
-/* ========== MOBILE ========== */
-@media (max-width: 600px) {
+/* ========== MOBILE / TABLET PORTRAIT ========== */
+@media (max-width: 768px) {
   .app { padding: 10px 10px 300px !important; }
   .charts-row { grid-template-columns: 1fr; }
   .kpi-row { grid-template-columns: 1fr 1fr; }
@@ -275,7 +278,7 @@ tbody tr:last-child td { border-bottom: none; }
 <div class="overlay" id="overlay" onclick="closePanel()"></div>
 <div class="detail-panel" id="detailPanel">
   <div class="panel-header">
-    <button class="panel-close" onclick="closePanel()">&times;</button>
+    <button class="panel-close" onclick="closePanel()" aria-label="Close panel">&times;</button>
     <div class="panel-title" id="panelTitle"></div>
     <div class="panel-subtitle" id="panelSubtitle"></div>
   </div>
@@ -355,16 +358,16 @@ function render() {
   app.innerHTML += `
     <div class="header">
       <div class="header-top">
-        <div class="logo">TEN-FIFTY5</div>
+        <h1 class="logo">TEN-FIFTY5</h1>
         <div class="header-right">
           <span class="admin-badge">BACKOFFICE</span>
         </div>
       </div>
-      <div class="date-filter">
-        <label>Date range:</label>
-        <input type="date" id="dateFrom" value="${currentDateFrom}">
-        <span style="color:var(--text-dim)">to</span>
-        <input type="date" id="dateTo" value="${currentDateTo}">
+      <div class="date-filter" role="group" aria-label="Date range filter">
+        <span class="date-filter-legend" aria-hidden="true">Date range:</span>
+        <input type="date" id="dateFrom" aria-label="From date" value="${currentDateFrom}">
+        <span style="color:var(--text-dim)" aria-hidden="true">to</span>
+        <input type="date" id="dateTo" aria-label="To date" value="${currentDateTo}">
         <button class="btn-sm btn-sm-primary" onclick="refreshPipeline()">Refresh</button>
         <button class="btn-sm btn-sm-outline" onclick="setToday()">Today</button>
         <button class="btn-sm btn-sm-outline" onclick="setWeek()">Last 7 Days</button>

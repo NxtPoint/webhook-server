@@ -22,6 +22,7 @@
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html { font-size: 15px; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -454,7 +455,7 @@ function render() {
 
   // === HEADER ===
   html += `<div class="header"><div class="header-top">
-    <div class="logo">Plans &amp; Pricing</div>
+    <h1 class="logo">Plans &amp; Pricing</h1>
     <div class="header-right">
       <span class="usage-pill ${pillClass}">${remaining} match${remaining !== 1 ? 'es' : ''} remaining</span>
       <div class="player-info">

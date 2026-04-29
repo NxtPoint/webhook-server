@@ -24,7 +24,9 @@
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html { font-size: 15px; overflow-x: hidden; }
+@media (max-width: 768px) { input, select, textarea { font-size: 16px; } }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
@@ -212,7 +214,7 @@ body {
   .gauge-number { font-size: 2rem; }
   .serve-timeline { gap: 3px; }
   .serve-dot { width: 18px; height: 18px; font-size: 0.55rem; }
-  .court-filter-btn { padding: 3px 8px; font-size: 0.7rem; }
+  .court-filter-btn { padding: 10px 12px; font-size: 0.72rem; min-height: 44px; }
   body { overflow: auto; }
   /* Gauges row: 2x2 on mobile instead of 4-col */
   #p-performance .chart-card div[style*="grid-template-columns: 1fr 1fr 1fr 1fr"] {
@@ -233,7 +235,7 @@ body {
 
 <!-- Video Modal -->
 <div class="video-modal" id="videoModal">
-  <span class="close-btn" onclick="closeVideo()">&times;</span>
+  <button type="button" class="close-btn" onclick="closeVideo()" aria-label="Close video">&times;</button>
   <video id="videoPlayer" controls playsinline></video>
 </div>
 

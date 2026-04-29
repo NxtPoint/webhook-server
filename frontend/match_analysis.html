@@ -24,7 +24,9 @@
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html { font-size: 15px; overflow-x: hidden; }
+@media (max-width: 768px) { input, select, textarea { font-size: 16px; } }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
@@ -513,8 +515,8 @@ body {
 <div id="app"><div class="loading"><div><div class="spinner"></div>Loading...</div></div></div>
 
 <!-- Video Modal -->
-<div class="video-modal" id="videoModal">
-  <span class="close-btn" onclick="closeVideo()">&times;</span>
+<div class="video-modal" id="videoModal" role="dialog" aria-label="Match video player">
+  <button type="button" class="close-btn" onclick="closeVideo()" aria-label="Close video">&times;</button>
   <video id="videoPlayer" controls playsinline></video>
 </div>
 

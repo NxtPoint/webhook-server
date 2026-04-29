@@ -19,11 +19,14 @@
   --border: #e5e5e5;
   --amber: #d97706;
   --red: #dc2626;
+  --blue: #2563eb;
   --radius: 4px;
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
 html { font-size: 15px; }
+@media (max-width: 768px) { input, select, textarea { font-size: 16px; } }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
@@ -145,7 +148,7 @@ select.profile-input { appearance: auto; }
   padding: 2px 8px; border-radius: var(--radius);
 }
 .member-card-role.player { background: var(--green-bg); color: var(--green); }
-.member-card-role.coach { background: rgba(59,130,246,0.08); color: #2563eb; }
+.member-card-role.coach { background: rgba(37,99,235,0.08); color: var(--blue); }
 .member-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .member-card-field label { display: block; font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 1px; }
 .member-card-field input, .member-card-field select {
@@ -211,9 +214,9 @@ select.profile-input { appearance: auto; }
   font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
   padding: 2px 8px; border-radius: var(--radius);
 }
-.coach-status.invited { background: rgba(59,130,246,0.08); color: #2563eb; }
+.coach-status.invited { background: rgba(37,99,235,0.08); color: var(--blue); }
 .coach-status.accepted { background: var(--green-bg); color: var(--green); }
-.coach-status.revoked { background: rgba(107,114,128,0.08); color: #6b7280; }
+.coach-status.revoked { background: rgba(107,114,128,0.08); color: var(--text-sec); }
 .btn-revoke {
   padding: 4px 10px; border-radius: var(--radius); font-weight: 600; font-size: 0.72rem;
   background: var(--white); color: var(--red); border: 1px solid var(--red);
@@ -485,8 +488,8 @@ select.edit-input { appearance: auto; }
 }
 .video-modal-close:hover { opacity: 1; }
 
-/* ========== MOBILE ========== */
-@media (max-width: 600px) {
+/* ========== MOBILE / TABLET PORTRAIT ========== */
+@media (max-width: 768px) {
   .header-tabs { flex-wrap: wrap; gap: 2px; padding: 0 8px; }
   .header-tab { padding: 8px 10px; font-size: 0.75rem; }
   .charts-row { grid-template-columns: 1fr; }
@@ -544,7 +547,7 @@ select.edit-input { appearance: auto; }
 <div class="overlay" id="overlay" onclick="closeDetail()"></div>
 <div class="detail-panel" id="detailPanel">
   <div class="panel-header">
-    <button class="panel-close" onclick="closeDetail()">&times;</button>
+    <button class="panel-close" onclick="closeDetail()" aria-label="Close details">&times;</button>
     <div class="panel-title" id="panelTitle"></div>
     <div class="panel-subtitle" id="panelSubtitle"></div>
   </div>
@@ -554,7 +557,7 @@ select.edit-input { appearance: auto; }
 <!-- Video Player Modal -->
 <div class="video-modal" id="videoModal">
   <div class="video-modal-inner">
-    <button class="video-modal-close" onclick="closeVideo()">&times;</button>
+    <button class="video-modal-close" onclick="closeVideo()" aria-label="Close video">&times;</button>
     <video id="videoPlayer" controls preload="none"></video>
   </div>
 </div>
@@ -689,7 +692,7 @@ function render() {
 
   html += `<div class="header">
     <div class="header-top">
-      <div class="logo">TEN-FIFTY5</div>
+      <h1 class="logo">TEN-FIFTY5</h1>
     </div>
     <div class="header-tabs">
       <button class="header-tab active" onclick="switchHeaderTab('account',this)">Account</button>
@@ -740,27 +743,27 @@ function render() {
       <div style="padding-top:14px">
         <div class="profile-grid">
           <div class="profile-field">
-            <label class="profile-label">First Name</label>
+            <label class="profile-label" for="pf-full_name">First Name</label>
             <input class="profile-input" id="pf-full_name" value="${esc(profile?.full_name||'')}">
           </div>
           <div class="profile-field">
-            <label class="profile-label">Surname</label>
+            <label class="profile-label" for="pf-surname">Surname</label>
             <input class="profile-input" id="pf-surname" value="${esc(profile?.surname||'')}">
           </div>
           <div class="profile-field">
-            <label class="profile-label">Email</label>
-            <input class="profile-input" value="${esc(EMAIL)}" disabled style="background:#fafafa;color:var(--text-dim)">
+            <label class="profile-label" for="pf-email-readonly">Email</label>
+            <input class="profile-input" id="pf-email-readonly" value="${esc(EMAIL)}" disabled style="background:#fafafa;color:var(--text-dim)">
           </div>
           <div class="profile-field">
-            <label class="profile-label">Mobile</label>
+            <label class="profile-label" for="pf-phone">Mobile</label>
             <input class="profile-input" id="pf-phone" type="tel" value="${esc(profile?.phone||'')}">
           </div>
           <div class="profile-field">
-            <label class="profile-label">UTR</label>
+            <label class="profile-label" for="pf-utr">UTR</label>
             <input class="profile-input" id="pf-utr" type="text" value="${esc(profile?.utr||'')}">
           </div>
           <div class="profile-field">
-            <label class="profile-label">Dominant Hand</label>
+            <label class="profile-label" for="pf-dominant_hand">Dominant Hand</label>
             <select class="profile-input" id="pf-dominant_hand">
               <option value="">—</option>
               <option value="right" ${profile?.dominant_hand==='right'?'selected':''}>Right</option>
@@ -768,11 +771,11 @@ function render() {
             </select>
           </div>
           <div class="profile-field">
-            <label class="profile-label">Country</label>
+            <label class="profile-label" for="pf-country">Country</label>
             <input class="profile-input" id="pf-country" value="${esc(profile?.country||'')}">
           </div>
           <div class="profile-field">
-            <label class="profile-label">Area</label>
+            <label class="profile-label" for="pf-area">Area</label>
             <input class="profile-input" id="pf-area" value="${esc(profile?.area||'')}">
           </div>
         </div>
