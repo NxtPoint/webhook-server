@@ -3548,10 +3548,13 @@ _COMPACT_TARGETS = (
 
 
 def _table_size_bytes(conn, schema: str, table: str) -> int | None:
+    # Avoid Postgres format('%I.%I', ...) here — % collides with psycopg2's
+    # paramstyle. Schema/table come from the hardcoded _COMPACT_TARGETS, so
+    # direct concatenation is safe (no user input).
     try:
         row = conn.execute(sql_text(
-            "SELECT pg_total_relation_size(format('%I.%I', :s, :t)::regclass)"
-        ), {"s": schema, "t": table}).scalar()
+            f"SELECT pg_total_relation_size('{schema}.{table}'::regclass)"
+        )).scalar()
         return int(row) if row is not None else None
     except Exception:
         return None
