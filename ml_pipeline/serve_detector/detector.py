@@ -407,7 +407,21 @@ def _detect_pose_based_serves(
             # 0.65/20 has held since 2026-04-22 (added to catch real
             # serves at task 8a5e0b5e ts=120.28 and 178.44 where rally
             # state was stuck IN_RALLY).
-            sustained_ok = (c.confidence >= 0.65 and c.cluster_size >= 20)
+            #
+            # 2026-04-29: added a SECOND admission band 0.55/30. Two real
+            # near serves on a798eff0 (73.12 conf=0.59 cluster=30, 347.08
+            # conf=0.65 cluster=30) were rejected by the original gate
+            # because conf landed just under or right on 0.65. Both have
+            # cluster_size=30 (1.2s of sustained score>=1) — well above
+            # the 20-frame minimum. The longer cluster requirement
+            # compensates for the lower confidence: rally motion rarely
+            # produces 30 consecutive score>=1 frames, so the FP risk
+            # from this band is materially smaller than just lowering
+            # the conf threshold.
+            sustained_ok = (
+                (c.confidence >= 0.65 and c.cluster_size >= 20)
+                or (c.confidence >= 0.55 and c.cluster_size >= 30)
+            )
         else:
             # Far (pid=1): tighter thresholds, added 2026-04-25 after task
             # 4a591553 surfaced four mid-rally pid=1 trophy poses with
