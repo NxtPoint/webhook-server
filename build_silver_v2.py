@@ -483,15 +483,18 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     B2              = HALF_W / 2.0
     B3              = 3.0 * HALF_W / 4.0
 
-    # Compute dynamic midline from serve hit locations
+    # Compute dynamic midline from serve hit locations.
+    # Geometric-only: SportAI's `serve` flag is unreliable (observed 8/160 true
+    # positives on a 75-min match), so we ignore it and rely on overhead-type
+    # swing + baseline proximity + singles bounds. 'other' deliberately excluded
+    # — too loose without the SportAI flag as a guard.
     mid_x_row = conn.execute(text(f"""
         SELECT COALESCE(AVG(ball_hit_location_x), :mid_default)
         FROM {SILVER_SCHEMA}.{TABLE}
         WHERE task_id = :tid
           AND ball_hit_location_x IS NOT NULL
           AND ball_hit_location_y IS NOT NULL
-          AND COALESCE(serve, FALSE) IS TRUE
-          AND lower(COALESCE(trim(swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
+          AND lower(COALESCE(trim(swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
           AND (ball_hit_location_y < :eps OR ball_hit_location_y > (:y_max - :eps))
           AND ball_hit_location_x BETWEEN :sx_left AND :sx_right
     """), {
@@ -521,19 +524,21 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
 
     srv_detect AS (
       SELECT b.*,
-        -- serve_d: geometric check
+        -- serve_d: geometric-only — overhead-type swing struck within 1.5m of
+        -- a baseline. SportAI's b.serve flag is unreliable (observed 8/160 true
+        -- positives on a 75-min match), so we deliberately ignore it. 'other'
+        -- excluded from the swing-type list because without the SportAI flag
+        -- it leaks too many non-serves (deep clearing groundstrokes etc.).
         CASE
-          WHEN b.serve IS FALSE THEN FALSE
-          WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
+          WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
            AND b.y IS NOT NULL
            AND (b.y < :eps OR b.y > (:y_max - :eps))
           THEN TRUE
           ELSE FALSE
         END AS serve_d,
-        -- server_end_d (raw)
+        -- server_end_d (raw) — same geometric criteria as serve_d.
         CASE
-          WHEN b.serve IS FALSE THEN NULL
-          WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash','other')
+          WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
            AND b.y IS NOT NULL
            AND (b.y < :eps OR b.y > (:y_max - :eps))
           THEN CASE WHEN b.y < :eps THEN 'far' ELSE 'near' END
