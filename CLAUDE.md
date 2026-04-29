@@ -2,6 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Start here — what to read first
+
+Pick the closest match and jump there before reading the rest of this file:
+
+- **T5 ML pipeline / serve detector / Batch / silver_t5** → `.claude/handover_t5.md` (read the "NEXT SESSION" block + "TEST HARNESS" section). Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
+- **Dashboard / gold view / endpoint mapping** → `docs/dashboards.md`.
+- **Billing / pricing / entitlements / coach invite** → §Billing System + §Coach Invite Flow below; canonical pricing spec is `docs/pricing_strategy.md`.
+- **Environment variables (any service)** → `docs/env_vars.md`.
+- **Technique pipeline** → `docs/technique.md`.
+- **Support bot** → `docs/support_bot.md`.
+- **Anything else** → keep reading. The §Architecture Overview is the right next stop.
+
+## Things not to do (load-bearing)
+
+These look reasonable but will burn future sessions. Each is an explicit decision, not an oversight.
+
+1. **Don't run `pytest`.** No test suite exists; testing is manual against the live Render DB. The closest thing to a regression test is `python -m ml_pipeline.diag.bench` for the T5 serve detector — that one is mandatory before any `serve_detector` push.
+2. **Don't aggregate in Python or JavaScript if a gold view can do it.** The architecture rule is "SQL views own aggregation, Python is a thin passthrough, frontend is pure rendering." Adding `groupby` / `reduce` in `client_api.py` or a chart file means you skipped the right layer — extend or add a `gold.*` view instead.
+3. **Don't import `upload_app` from the ingest worker.** The worker is deliberately self-contained (it calls `ingest_bronze_strict()` directly). Importing the main app pulls in Flask boot side-effects and breaks the worker timeout split (3600s vs 1800s).
+4. **Don't `DELETE FROM billing.*` on match delete.** Matches are billable events — the consumption record stays. Match delete is soft-delete only via `submission_context.deleted_at`; workers honour this at four gates. See `cleanup/orphan_sweep.py`.
+5. **Don't push T5 `serve_detector` changes without `bench` green.** The 20/24 baseline on `a798eff0` is locked in `ml_pipeline/diag/bench_baseline.json`. Three prior silent regressions are why this rule exists. The four remaining misses are upstream (pose / court projection) — gate-tuning to chase them backfires.
+6. **Don't add ops endpoints with query-string `?key=` auth.** `_guard()` in `upload_app.py` deliberately rejects it to keep `OPS_KEY` out of access logs. Header-only (`X-Ops-Key` or `Authorization: Bearer`).
+7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code and waste the rerun.
+
 ## Services and How to Run
 
 Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
