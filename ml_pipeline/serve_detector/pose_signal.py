@@ -249,12 +249,18 @@ def find_serve_candidates(
     if min_serve_interval_s is None:
         # Near (pid=0): 4.0s — typical 1st→2nd serve gap is 8-15s plus
         # walk-back, never under 4s.
-        # Far (pid=1): 2.5s. The 4.0s default killed a real serve at SA
-        # ts=434.20 (cluster peak 434.72 score=2) because a phantom at
-        # 437.76 score=3 was within 4s and won the score-first duel.
-        # Reducing to 2.5s admits both peaks. Real successive far serves
-        # are still well over 2.5s apart on this footage.
-        min_serve_interval_s = 4.0 if player_id == 0 else 2.5
+        # Far (pid=1): 1.5s. Two iterations:
+        #   4.0 → 2.5 (recovered ts=434.20)
+        #   2.5 → 1.5 (recovered ts=497.40, 502.72 on a798eff0)
+        # Real-world far successive serves are 10s+ apart on this footage
+        # (1st-fault walk-back + 2nd-serve toss). 1.5s only de-dups within
+        # ONE serve motion's trophy window — the absolute floor where
+        # confusion is possible — so it's still safe.
+        # Combined with cluster_max_gap_s=0.6 (which splits one giant
+        # cluster into per-serve clusters) the dedup naturally kicks in
+        # for split-trophy single-serve cases without eating real adjacent
+        # serves.
+        min_serve_interval_s = 4.0 if player_id == 0 else 1.5
     if min_arm_extension_px is None:
         # Near player (pid=0): 30 px is ~20% of 150 px body, clean gate.
         # Far player (pid=1): lowered 5 -> 2.5 px (2026-04-23). On 50 px
