@@ -37,8 +37,119 @@ from ml_pipeline.serve_detector.pose_signal import (
     find_serve_candidates,
 )
 from ml_pipeline.serve_detector.detector import _baseline_zone
+from ml_pipeline.serve_detector.rally_state import RallyState, RallyStateMachine
 
 from ml_pipeline.diag.replay_serves import replay, _load_fixture
+
+
+def _trace_prod_kill(fixture: dict, sa_ts: float, expected_pid: int,
+                     fired_split: tuple, *, window: float = 2.0) -> dict:
+    """For a serve that prod missed, walk the gates that COULD have killed it.
+
+    Mirrors what _detect_pose_based_serves actually does in prod:
+      1. Apply baseline-zone filter to full pose stream.
+      2. Run find_serve_candidates on full data (NOT a small window) — this
+         is where min_serve_interval=4s collisions and full-cluster gates
+         come into play.
+      3. If a candidate near sa_ts survived, walk the rally-state gate
+         using prod's per-pid sustained_ok thresholds and the augmented
+         rally state machine that prod actually uses for that pid.
+
+    The whole point: tell us EXACTLY which prod-level gate killed each
+    Bucket A miss so we can fix one gate at a time, not guess.
+    """
+    near_evts, far_pose_evts, _far_bounce_evts = fired_split
+    pose_rows = (fixture["pose_near"] if expected_pid == 0
+                 else fixture["pose_far"])
+    fps = fixture["fps"]
+    is_lh = fixture["is_left_handed"]
+
+    baseline_rows = [r for r in pose_rows
+                     if _baseline_zone(r.get("court_y")) is not None]
+
+    # Same call _detect_pose_based_serves makes in prod
+    cands = find_serve_candidates(
+        pose_rows=baseline_rows,
+        player_id=expected_pid,
+        is_left_handed=is_lh,
+        fps=fps,
+    )
+    nearby = [c for c in cands if abs(c.ts - sa_ts) <= window]
+
+    if not nearby:
+        # No candidate at sa_ts in full-data candidates list. Either the
+        # cluster gates pruned it (unlikely if isolated probe was PASS)
+        # OR min_serve_interval lost the duel to a higher-scoring competitor
+        # within 4s. Re-run with min_serve_interval relaxed and check.
+        relaxed = find_serve_candidates(
+            pose_rows=baseline_rows,
+            player_id=expected_pid,
+            is_left_handed=is_lh,
+            fps=fps,
+            min_serve_interval_s=0.5,
+        )
+        relaxed_nearby = [c for c in relaxed if abs(c.ts - sa_ts) <= window]
+        if relaxed_nearby and not nearby:
+            within_4s = [c for c in cands if abs(c.ts - sa_ts) <= 4.0]
+            return {
+                "kill": "min_serve_interval",
+                "competitor_ts": [round(c.ts, 2) for c in within_4s],
+                "competitor_scores": [c.peak_score for c in within_4s],
+                "lost_score": relaxed_nearby[0].peak_score,
+            }
+        # Even relaxed can't find one — the cluster gates / arm_extension
+        # pruned it on full data. (Less common; usually means more frames
+        # diluted the score-1 cluster on full data than on isolated window.)
+        return {
+            "kill": "find_serve_candidates_full_pruned",
+            "n_full_candidates": len(relaxed),
+            "n_within_window_relaxed": len(relaxed_nearby),
+        }
+
+    # A candidate at sa_ts DID survive find_serve_candidates. Was it then
+    # killed by the rally-state gate inside _detect_pose_based_serves?
+    raw_bounce_ts = [b["frame_idx"] / fps for b in fixture["ball_rows"]
+                     if b.get("is_bounce")]
+    if expected_pid == 0:
+        # Prod augments the near rally with far-pose times + 1.0 (idle=8s)
+        far_pose_times = sorted([e.ts + 1.0 for e in far_pose_evts])
+        rally = RallyStateMachine(
+            bounce_ts=sorted(list(raw_bounce_ts) + far_pose_times),
+            idle_threshold_s=8.0,
+        )
+    else:
+        # Prod runs far-pose first against the raw rally
+        rally = RallyStateMachine(bounce_ts=raw_bounce_ts)
+
+    c = sorted(nearby, key=lambda x: abs(x.ts - sa_ts))[0]
+    state = rally.state_at(c.ts)
+    if expected_pid == 0:
+        sustained_ok = (c.confidence >= 0.65 and c.cluster_size >= 20)
+        threshold = "0.65/20"
+    else:
+        sustained_ok = (c.confidence >= 0.85 and c.cluster_size >= 30)
+        threshold = "0.85/30"
+
+    if (state == RallyState.IN_RALLY
+            and c.peak_score < 3
+            and not sustained_ok):
+        return {
+            "kill": "rally_state_gate",
+            "rally": state.value,
+            "candidate_ts": round(c.ts, 2),
+            "score": c.peak_score,
+            "conf": round(c.confidence, 2),
+            "cluster": c.cluster_size,
+            "sustained_threshold": threshold,
+        }
+    return {
+        "kill": "unknown_passed_all_known_gates",
+        "rally": state.value if state else "?",
+        "candidate_ts": round(c.ts, 2),
+        "score": c.peak_score,
+        "conf": round(c.confidence, 2),
+        "cluster": c.cluster_size,
+    }
 
 
 def _gate_probe(pose_rows: list, sa_ts: float, win: float, fps: float,
@@ -110,6 +221,8 @@ def audit(fixture: dict, *, window: float = 2.0) -> list:
     result = replay(fixture, window=window)
     fps = fixture["fps"]
     is_lh = fixture["is_left_handed"]
+    fired_split = (result["near_evts"], result["far_pose_evts"],
+                   result["far_bounce_evts"])
 
     rows = []
     for sa, evt in result["pairs"]:
@@ -168,10 +281,18 @@ def audit(fixture: dict, *, window: float = 2.0) -> list:
 
         # If not PASS, run gate probe on expected side to find the blocker
         gate = None
+        prod_trace = None
         if verdict != "PASS" and sa_ts is not None and expected_pid is not None:
             pose_rows = (fixture["pose_near"] if expected_pid == 0
                          else fixture["pose_far"])
             gate = _gate_probe(pose_rows, sa_ts, window, fps, is_lh, expected_pid)
+            # If isolated probe says PASS_isolated, walk the prod gates to
+            # find which downstream gate killed the candidate (rally state /
+            # min_serve_interval / etc.). This is the Bucket A diagnostic.
+            if gate.get("gate") == "PASS_isolated":
+                prod_trace = _trace_prod_kill(
+                    fixture, sa_ts, expected_pid, fired_split, window=window,
+                )
 
         rows.append({
             "ts": sa_ts,
@@ -181,6 +302,7 @@ def audit(fixture: dict, *, window: float = 2.0) -> list:
             "dt": dt,
             "t5_event": same_side_evt or other_evt,
             "gate": gate,
+            "prod_trace": prod_trace,
         })
     return rows
 
@@ -194,6 +316,8 @@ def _print(rows: list, *, fixture_name: str = "") -> None:
     print("-" * 130)
     counts = {"PASS": 0, "WEAK_TIME": 0, "WRONG_SIDE": 0, "NO_MATCH": 0}
     fail_buckets: dict[str, int] = {}
+    prod_kill_buckets: dict[str, int] = {}
+    bucket_a_rows: list = []
     for r in rows:
         v = r["verdict"]
         counts[v] = counts.get(v, 0) + 1
@@ -207,6 +331,10 @@ def _print(rows: list, *, fixture_name: str = "") -> None:
         gate_str = gate.get("gate", "-") if gate else "-"
         if gate_str.startswith("FAIL"):
             fail_buckets[gate_str] = fail_buckets.get(gate_str, 0) + 1
+        if r.get("prod_trace"):
+            prod_kill = r["prod_trace"].get("kill", "?")
+            prod_kill_buckets[prod_kill] = prod_kill_buckets.get(prod_kill, 0) + 1
+            bucket_a_rows.append(r)
         win_n = gate.get("window_rows", "-") if gate else "-"
         bz = gate.get("bz_kept", "-") if gate else "-"
         scr = gate.get("scored>=1", "-") if gate else "-"
@@ -226,9 +354,43 @@ def _print(rows: list, *, fixture_name: str = "") -> None:
         print(f"  {k:<11} {n:>3} / {total}  ({100*n/max(1,total):.0f}%)")
     if fail_buckets:
         print()
-        print("=== BLOCKER BUCKETS (NO_MATCH + WRONG_SIDE + WEAK_TIME) ===")
+        print("=== BLOCKER BUCKETS (isolated-probe FAIL_*) ===")
         for k, n in sorted(fail_buckets.items(), key=lambda x: -x[1]):
             print(f"  {k:<28} {n}")
+    if bucket_a_rows:
+        print()
+        print("=== BUCKET A — isolated probe PASSED but prod killed it ===")
+        print(f"{'ts':>7} {'role':>4} {'verdict':<11}  prod_kill        detail")
+        print("-" * 110)
+        for r in bucket_a_rows:
+            t = r["prod_trace"]
+            kill = t.get("kill", "?")
+            # Format the per-kill detail compactly
+            if kill == "rally_state_gate":
+                detail = (f"rally={t['rally']}  score={t['score']}  "
+                          f"conf={t['conf']}  cluster={t['cluster']}  "
+                          f"need {t['sustained_threshold']}")
+            elif kill == "min_serve_interval":
+                comp_ts = t.get("competitor_ts", [])
+                comp_sc = t.get("competitor_scores", [])
+                detail = (f"competitors within 4s: "
+                          f"{list(zip(comp_ts, comp_sc))}  "
+                          f"lost_score={t.get('lost_score')}")
+            elif kill == "find_serve_candidates_full_pruned":
+                detail = (f"full-data candidates n={t.get('n_full_candidates')} "
+                          f"window n={t.get('n_within_window_relaxed')}")
+            elif kill == "unknown_passed_all_known_gates":
+                detail = (f"rally={t['rally']}  score={t['score']}  "
+                          f"conf={t['conf']}  cluster={t['cluster']}  "
+                          f"— investigate _detect_pose_based_serves")
+            else:
+                detail = str(t)
+            print(f"{r['ts']:>7.2f} {r['role']:>4} {r['verdict']:<11}  "
+                  f"{kill:<16} {detail}")
+        print()
+        print("=== PROD-KILL BUCKETS ===")
+        for k, n in sorted(prod_kill_buckets.items(), key=lambda x: -x[1]):
+            print(f"  {k:<32} {n}")
 
 
 def main(argv=None) -> int:
