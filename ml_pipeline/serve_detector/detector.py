@@ -348,21 +348,12 @@ def _baseline_zone(court_y: Optional[float]) -> Optional[str]:
     calibration extrapolation slack past the painted baselines AND of
     slight mid-court drift during the serve motion (player shifts
     forward ~1-2m during the toss + trophy pose even though their
-    feet stay behind the baseline).
-
-    Far slack widened from -3.5 → -5.0 on 2026-04-29 after probe_baseline_empty
-    showed that trophy-pose keypoint rows for 3 missed FAR serves on
-    a798eff0 (ts 458.08, 463.52, 584.92) sit at cy=-3.9 to -4.1.
-    Those frames had pose data + keypoints + court_y all populated, but
-    were being rejected by the 3.5m slack. cy=-5..-3.5 cannot be a
-    rally bounce or mid-court frame — only behind-baseline serve setup
-    can land there — so widening is FP-safe.
-    """
+    feet stay behind the baseline)."""
     if court_y is None:
         return None
     if 18.5 <= court_y <= 28.0:
         return "near"
-    if -5.0 <= court_y <= 4.5:
+    if -3.5 <= court_y <= 4.5:
         return "far"
     return None
 

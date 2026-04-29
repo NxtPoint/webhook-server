@@ -66,12 +66,15 @@ def _probe(conn, task: str, ts: float, fps: float, win: float, pid: int) -> dict
                 COUNT(*) AS rows,
                 COUNT(court_y) AS rows_courty,
                 COUNT(*) FILTER (WHERE keypoints IS NOT NULL) AS rows_kpts,
-                MIN(court_y) AS cy_min,
-                MAX(court_y) AS cy_max,
-                AVG(court_y) AS cy_avg,
-                COUNT(*) FILTER (WHERE court_y < 5)  AS cy_lt_5,
-                COUNT(*) FILTER (WHERE court_y BETWEEN 5 AND 18) AS cy_5_18,
-                COUNT(*) FILTER (WHERE court_y > 18) AS cy_gt_18
+                COUNT(*) FILTER (WHERE keypoints IS NOT NULL
+                                 AND court_y IS NOT NULL) AS rows_kpts_and_courty,
+                COUNT(*) FILTER (WHERE keypoints IS NOT NULL
+                                 AND court_y BETWEEN -3.5 AND 4.5) AS rows_kpts_in_far_bz,
+                COUNT(*) FILTER (WHERE keypoints IS NOT NULL
+                                 AND court_y BETWEEN -5.0 AND 4.5) AS rows_kpts_in_far_bz_wide,
+                MIN(court_y) FILTER (WHERE keypoints IS NOT NULL) AS cy_min_kpts,
+                MAX(court_y) FILTER (WHERE keypoints IS NOT NULL) AS cy_max_kpts,
+                AVG(court_y) FILTER (WHERE keypoints IS NOT NULL) AS cy_avg_kpts
             FROM ml_analysis.{table}
             WHERE job_id = :t
               AND player_id = :pid
@@ -82,21 +85,31 @@ def _probe(conn, task: str, ts: float, fps: float, win: float, pid: int) -> dict
 
 
 def _classify(probe: dict) -> str:
+    """Classify based on KEYPOINT-rows specifically. _load_pose_rows (the path
+    the detector uses) requires keypoints IS NOT NULL, so what matters is
+    not the broader row population but the keypoint subset's court_y state."""
     bronze = probe["tables"].get("bronze", {})
     roi = probe["tables"].get("ROI", {})
-    total = (bronze.get("rows") or 0) + (roi.get("rows") or 0)
-    courty = (bronze.get("rows_courty") or 0) + (roi.get("rows_courty") or 0)
-    if total < 5:
+    kpts_total = (bronze.get("rows_kpts") or 0) + (roi.get("rows_kpts") or 0)
+    kpts_with_cy = ((bronze.get("rows_kpts_and_courty") or 0)
+                    + (roi.get("rows_kpts_and_courty") or 0))
+    kpts_in_bz = ((bronze.get("rows_kpts_in_far_bz") or 0)
+                  + (roi.get("rows_kpts_in_far_bz") or 0))
+    kpts_in_bz_wide = ((bronze.get("rows_kpts_in_far_bz_wide") or 0)
+                       + (roi.get("rows_kpts_in_far_bz_wide") or 0))
+
+    if kpts_total < 5:
         return "detection_miss"
-    if courty == 0:
-        return "calibration_null_courty"
-    # baseline zone is roughly cy < 5 (far) or cy > 18 (near). Mid-court
-    # cy 5-18 is rejected. If ALL courty rows are mid-court that's a
-    # calibration drift.
-    bz = ((bronze.get("cy_lt_5") or 0) + (bronze.get("cy_gt_18") or 0)
-          + (roi.get("cy_lt_5") or 0) + (roi.get("cy_gt_18") or 0))
-    if bz == 0:
-        return "calibration_midcourt_drift"
+    if kpts_with_cy == 0:
+        # Pose extractor produced keypoints but court projection couldn't
+        # map them — homography / calibration fix territory.
+        return "kpts_without_courty"
+    if kpts_in_bz_wide > 0 and kpts_in_bz == 0:
+        # Slack widening would catch them
+        return "fixable_by_widening_slack"
+    if kpts_in_bz == 0:
+        # cy values present on keypoint rows but outside even the wide zone
+        return "kpts_outside_baseline_zone"
     return "baseline_present_other_gate"
 
 
@@ -132,10 +145,16 @@ def main(argv=None) -> int:
         print(f"=== probe_baseline_empty task={args.task[:8]} pid={args.player} "
               f"win=±{args.win}s fps={fps:.2f} ===")
         print()
-        print(f"{'ts':>7} {'src':>7} {'rows':>5} {'kpts':>5} {'cy_n':>5} "
-              f"{'cy_lt5':>6} {'cy_5_18':>7} {'cy_gt18':>7} "
-              f"{'cy_min':>6} {'cy_max':>6} {'cy_avg':>6}  classify")
-        print("-" * 110)
+        print(f"{'ts':>7} {'src':>7} {'rows':>5} {'kpts':>5} "
+              f"{'k+cy':>5} {'k_bz':>5} {'k_bzW':>6} "
+              f"{'cy_min_k':>9} {'cy_max_k':>9} {'cy_avg_k':>9}  classify")
+        print()
+        print("  rows    = total rows  |  kpts = rows w/ keypoints")
+        print("  k+cy    = rows w/ keypoints AND court_y populated")
+        print("  k_bz    = rows w/ keypoints AND court_y in [-3.5, 4.5]  (current far zone)")
+        print("  k_bzW   = rows w/ keypoints AND court_y in [-5.0, 4.5]  (widened slack)")
+        print("  cy_*_k  = court_y stats restricted to keypoint rows only")
+        print("-" * 130)
         for ts in ts_list:
             probe = _probe(conn, args.task, ts, fps, args.win, args.player)
             cls = _classify(probe)
@@ -147,13 +166,12 @@ def main(argv=None) -> int:
                 print(f"{ts:>7.2f} {label:>7} "
                       f"{_fmt(t.get('rows')):>5} "
                       f"{_fmt(t.get('rows_kpts')):>5} "
-                      f"{_fmt(t.get('rows_courty')):>5} "
-                      f"{_fmt(t.get('cy_lt_5')):>6} "
-                      f"{_fmt(t.get('cy_5_18')):>7} "
-                      f"{_fmt(t.get('cy_gt_18')):>7} "
-                      f"{_fmt(t.get('cy_min')):>6} "
-                      f"{_fmt(t.get('cy_max')):>6} "
-                      f"{_fmt(t.get('cy_avg')):>6}  "
+                      f"{_fmt(t.get('rows_kpts_and_courty')):>5} "
+                      f"{_fmt(t.get('rows_kpts_in_far_bz')):>5} "
+                      f"{_fmt(t.get('rows_kpts_in_far_bz_wide')):>6} "
+                      f"{_fmt(t.get('cy_min_kpts')):>9} "
+                      f"{_fmt(t.get('cy_max_kpts')):>9} "
+                      f"{_fmt(t.get('cy_avg_kpts')):>9}  "
                       f"{cls if label == 'bronze' else ''}")
             print()
     return 0
