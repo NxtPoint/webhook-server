@@ -186,6 +186,41 @@ def _fmt(v) -> str:
     return str(v)
 
 
+def _roi_neighbor_density(conn, task: str, ts: float, fps: float,
+                          pid: int, half_widths: list) -> dict:
+    """For each half-width N seconds, count ROI rows in [ts-N, ts+N].
+    Plus dump the closest 5 ROI frames before and after `ts` so we can
+    see the size of the gap centered on the miss. Tells us whether ROI
+    skipped a window centered on the miss (rally-gate or detection
+    failure) vs. is sparse everywhere in the neighbourhood."""
+    out = {"ts": ts, "buckets": [], "before": [], "after": []}
+    target_f = int(ts * fps)
+    for hw in half_widths:
+        lo = int((ts - hw) * fps)
+        hi = int((ts + hw) * fps)
+        n = conn.execute(sql_text("""
+            SELECT COUNT(*)
+            FROM ml_analysis.player_detections_roi
+            WHERE job_id = :t AND player_id = :pid
+              AND frame_idx BETWEEN :lo AND :hi
+        """), {"t": task, "pid": pid, "lo": lo, "hi": hi}).scalar() or 0
+        out["buckets"].append({"half_width_s": hw, "rows": n})
+
+    out["before"] = [dict(r) for r in conn.execute(sql_text("""
+        SELECT frame_idx, source, court_x, court_y
+        FROM ml_analysis.player_detections_roi
+        WHERE job_id = :t AND player_id = :pid AND frame_idx < :tf
+        ORDER BY frame_idx DESC LIMIT 5
+    """), {"t": task, "pid": pid, "tf": target_f}).mappings().all()]
+    out["after"] = [dict(r) for r in conn.execute(sql_text("""
+        SELECT frame_idx, source, court_x, court_y
+        FROM ml_analysis.player_detections_roi
+        WHERE job_id = :t AND player_id = :pid AND frame_idx > :tf
+        ORDER BY frame_idx ASC LIMIT 5
+    """), {"t": task, "pid": pid, "tf": target_f}).mappings().all()]
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", required=True)
@@ -194,6 +229,8 @@ def main(argv=None) -> int:
     ap.add_argument("--win", type=float, default=2.0)
     ap.add_argument("--dump-rows", action="store_true",
                     help="Also dump per-frame bbox/court_y for each window")
+    ap.add_argument("--neighbor-windows", default="2,5,10,20",
+                    help="Comma-sep half-widths (sec) for ROI density buckets")
     args = ap.parse_args(argv)
 
     ts_list = [float(t.strip()) for t in args.ts.split(",") if t.strip()]
@@ -258,6 +295,28 @@ def main(argv=None) -> int:
                       f"{_fmt(t.get('cy_min')):>7} "
                       f"{_fmt(t.get('cy_max')):>7}  "
                       f"{t.get('sources') or ''}")
+            print()
+
+        # 2b. ROI neighbour density — does ROI skip a window centered on
+        # the miss, or is it sparse everywhere nearby?
+        if _table_exists(conn, "ml_analysis", "player_detections_roi"):
+            half_widths = [float(x.strip()) for x in args.neighbor_windows.split(",")
+                           if x.strip()]
+            print(f"--- 2b. ROI neighbour density (half-widths in s: "
+                  f"{half_widths}) ---")
+            print(f"  {'ts':>7}  " + "  ".join(f"±{hw:>4.0f}s" for hw in half_widths)
+                  + "  | nearest ROI frames before / after target")
+            print("  " + "-" * 100)
+            for ts in ts_list:
+                nb = _roi_neighbor_density(conn, args.task, ts, fps,
+                                           args.player, half_widths)
+                bucket_strs = "  ".join(f"{b['rows']:>5}" for b in nb["buckets"])
+                before_fr = ",".join(str(int((r["frame_idx"] / fps) * 100) / 100)
+                                     for r in nb["before"]) or "-"
+                after_fr = ",".join(str(int((r["frame_idx"] / fps) * 100) / 100)
+                                    for r in nb["after"]) or "-"
+                print(f"  {ts:>7.2f}  {bucket_strs}  | "
+                      f"BEFORE: {before_fr}  AFTER: {after_fr}")
             print()
 
         # 3. Optional row dump
