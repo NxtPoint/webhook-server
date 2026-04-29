@@ -95,9 +95,10 @@ def _summary_for_ts(pose_rows, ts, win, fps, is_left_handed, player_id):
     largest = max((len(c) for c in clusters), default=0)
 
     # Run actual cluster gate via find_serve_candidates on the windowed rows
+    # (bz_kept is already windowed + baseline-zone-filtered above)
     candidates = find_serve_candidates(
         bz_kept, fps=fps, player_id=player_id,
-        is_left_handed=is_left_handed, t_window=(ts - win, ts + win),
+        is_left_handed=is_left_handed,
     )
 
     if candidates:
