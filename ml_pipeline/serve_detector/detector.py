@@ -177,16 +177,18 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
         roi_rows = selected
 
     # Build by-frame index. Merge policy:
-    #   pid=1 (far player): ROI wins wholesale when both exist. The full-
-    #     frame YOLO pose detector routinely misclassifies a STATIC
-    #     non-player (chair umpire, line judge) as pid=1 — observed on
-    #     d1fed568 for frames 9550-9720 where bronze pid=1 was fixed at
-    #     bbox center (470, 240) for 6+ seconds, which is OUTSIDE the
-    #     far-baseline ROI (654-1358). Those bronze keypoints describe
-    #     the umpire's chest-level hands, not the server's trophy pose.
-    #     The ROI extractor (extract_vitpose_far.py) is designed for
-    #     small-body far-player detection with a side-prior filter, and
-    #     its keypoints are the canonical far-player signal.
+    #   pid=1 (far player): score-aware per-frame merge. At a shared
+    #     frame, run pose_signal.score_pose_frame on BOTH bronze and
+    #     ROI keypoints; keep the row whose total ∈ {0..3} is higher.
+    #     Ties go to ROI (preserves deploy-note default that ViTPose-Base
+    #     is better-resolved on small far-player bodies). Original
+    #     "ROI wins wholesale" rule was observed losing real bronze
+    #     trophies at frames where ROI's keypoints scored 0 (e.g.
+    #     a798eff0 ts=434/458 vs the d1fed568 baseline). Score-aware
+    #     keeps the chair-umpire fix intact: bronze on a static umpire
+    #     scores 0 (no trophy/toss/both_up) so ROI still wins those
+    #     frames; only frames where bronze's keypoints actually pass
+    #     trophy detection now stay.
     #   pid=0 (near player): bronze wins as before (near YOLO resolves
     #     100-200 px bodies reliably; no ROI extractor runs for near).
     #     If an ROI row exists only for a frame bronze missed, append it.
@@ -204,6 +206,7 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
     added = 0
     overridden = 0
     roi_wins = 0
+    bronze_kept = 0
     skipped = 0
     far_player = (player_id == 1)
     for r in roi_rows:
@@ -221,9 +224,20 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
             by_frame[f] = roi_entry
             added += 1
         elif far_player:
-            # ROI wins wholesale for pid=1 — bronze pid=1 is unreliable
-            by_frame[f] = roi_entry
-            roi_wins += 1
+            # Score-aware per-frame merge for pid=1. score_pose_frame
+            # tolerates malformed/None keypoints (returns total=0), so
+            # this is safe even when one source has bad data at frame f.
+            bronze_score = score_pose_frame(
+                existing["keypoints"], is_left_handed
+            ).total
+            roi_score = score_pose_frame(
+                roi_entry["keypoints"], is_left_handed
+            ).total
+            if roi_score >= bronze_score:
+                by_frame[f] = roi_entry
+                roi_wins += 1
+            else:
+                bronze_kept += 1
         elif existing["court_y"] is None and r["court_y"] is not None:
             # Near-player merge: keep bronze kp, borrow ROI court coords
             existing["court_x"] = r["court_x"]
@@ -239,8 +253,9 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
     if roi_rows:
         logger.info(
             "player_detections pid=%d augmented: bronze=%d +roi_only=%d "
-            "(roi_override=%d borrowed_cy=%d dup_skipped=%d)",
-            player_id, len(rows), added, roi_wins, overridden, skipped,
+            "(roi_won=%d bronze_kept=%d borrowed_cy=%d dup_skipped=%d)",
+            player_id, len(rows), added, roi_wins, bronze_kept,
+            overridden, skipped,
         )
     out.sort(key=lambda r: r["frame_idx"])
     return out
