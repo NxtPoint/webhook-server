@@ -189,7 +189,22 @@ def main(argv=None) -> int:
                          "the point of this diag)")
     ap.add_argument("--sample-every", type=int, default=2)
     ap.add_argument("--det-conf", type=float, default=0.15)
+    ap.add_argument("--cleanup", action="store_true",
+                    help="DELETE all rows for this (job_id, source-tag) and "
+                         "exit. Use after the diag run is done to avoid "
+                         "polluting future production detector runs.")
     args = ap.parse_args(argv)
+
+    # --cleanup mode: just delete the debug rows and exit
+    if args.cleanup:
+        engine = _get_engine()
+        with engine.begin() as conn:
+            n = conn.execute(sql_text("""
+                DELETE FROM ml_analysis.player_detections_roi
+                WHERE job_id = :t AND source = :s
+            """), {"t": args.task, "s": args.source_tag}).rowcount
+        print(f"deleted {n} rows  (job_id={args.task[:8]}, source={args.source_tag})")
+        return 0
 
     ranges = _parse_ranges(args.ranges)
     if not ranges:
