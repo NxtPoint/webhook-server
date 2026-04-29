@@ -192,8 +192,8 @@ def find_serve_candidates(
     min_peak_score: int = 1,
     min_cluster_peak: int = 1,
     min_cluster_size: Optional[int] = None,
-    cluster_max_gap_s: float = 1.2,
-    min_serve_interval_s: float = 4.0,
+    cluster_max_gap_s: Optional[float] = None,
+    min_serve_interval_s: Optional[float] = None,
     min_arm_extension_px: Optional[float] = None,
 ) -> List[PoseServeCandidate]:
     """Scan a sequence of pose rows for serve candidates.
@@ -235,6 +235,26 @@ def find_serve_candidates(
     # Per-player default overrides
     if min_cluster_size is None:
         min_cluster_size = 4 if player_id == 0 else 3
+    if cluster_max_gap_s is None:
+        # Near (pid=0): 1.2s — bronze pose data is dense, real serve
+        # clusters span 0.3-1.0s comfortably.
+        # Far (pid=1): 0.6s. The 1.2s default merged distinct pre-serve
+        # trophy poses (warm-up, practice toss) and the actual serve into
+        # ONE giant cluster, then peak-picker chose a phantom score=3
+        # frame far from the SA hit time. Observed on a798eff0 at SA
+        # ts 555.68: 60-frame cluster spanning 546.96-556.48s with peak
+        # picked at 549.12 (6.5s before truth). Tightening to 0.6s splits
+        # the cluster at 553→554 and the real trophy at 555.44 emerges.
+        cluster_max_gap_s = 1.2 if player_id == 0 else 0.6
+    if min_serve_interval_s is None:
+        # Near (pid=0): 4.0s — typical 1st→2nd serve gap is 8-15s plus
+        # walk-back, never under 4s.
+        # Far (pid=1): 2.5s. The 4.0s default killed a real serve at SA
+        # ts=434.20 (cluster peak 434.72 score=2) because a phantom at
+        # 437.76 score=3 was within 4s and won the score-first duel.
+        # Reducing to 2.5s admits both peaks. Real successive far serves
+        # are still well over 2.5s apart on this footage.
+        min_serve_interval_s = 4.0 if player_id == 0 else 2.5
     if min_arm_extension_px is None:
         # Near player (pid=0): 30 px is ~20% of 150 px body, clean gate.
         # Far player (pid=1): lowered 5 -> 2.5 px (2026-04-23). On 50 px

@@ -1,9 +1,9 @@
 {
-  "commit": "d496bb2",
+  "commit": "e10a914",
   "fixtures": {
     "a798eff0": {
       "far": [
-        3,
+        5,
         10
       ],
       "near": [
@@ -11,13 +11,13 @@
         14
       ],
       "total": [
-        16,
+        18,
         24
       ],
       "verdicts": {
-        "FAR_IN_TIME": 2,
-        "MATCH": 16,
-        "NO_MATCH": 5,
+        "FAR_IN_TIME": 3,
+        "MATCH": 18,
+        "NO_MATCH": 2,
         "WEAK_TIME": 1
       }
     }
