@@ -313,28 +313,33 @@ def gold_init():
         ))
         conn.execute(sql_text("""
             CREATE OR REPLACE VIEW gold.vw_client_match_summary AS
-            WITH player_map AS (
-                -- Map internal player_id → player_a / player_b using first_server
-                SELECT
-                    sc.task_id,
-                    sc.first_server,
-                    -- first_server is 'player_a'/'player_b' or 'S'/'R'
-                    -- We find the two distinct player_ids per task from silver
-                    MIN(pd.player_id) AS pid_min,
-                    MAX(pd.player_id) AS pid_max
-                FROM bronze.submission_context sc
-                JOIN silver.point_detail pd ON pd.task_id = sc.task_id::uuid
-                WHERE pd.player_id IS NOT NULL
-                GROUP BY sc.task_id, sc.first_server
+            WITH first_server_pid AS (
+                -- player_a = whoever served the first point of the match.
+                -- silver.point_detail.server_id is the player_id who served that point
+                -- (assigned in build_silver_v2 pass-3). Pick the earliest point.
+                SELECT DISTINCT ON (pd.task_id)
+                    pd.task_id,
+                    pd.server_id AS player_a_pid
+                FROM silver.point_detail pd
+                WHERE pd.server_id IS NOT NULL
+                  AND pd.exclude_d IS NOT TRUE
+                  AND pd.set_number IS NOT NULL
+                  AND pd.game_number IS NOT NULL
+                  AND pd.point_number IS NOT NULL
+                ORDER BY pd.task_id, pd.set_number, pd.game_number, pd.point_number
             ),
             mapped AS (
                 SELECT
-                    task_id,
-                    -- If first_server matches pid_min, then pid_min=player_a, pid_max=player_b
-                    -- Otherwise pid_max=player_a, pid_min=player_b
-                    CASE WHEN first_server = pid_min THEN pid_min ELSE pid_max END AS player_a_pid,
-                    CASE WHEN first_server = pid_min THEN pid_max ELSE pid_min END AS player_b_pid
-                FROM player_map
+                    fs.task_id,
+                    fs.player_a_pid,
+                    -- player_b = the other distinct player_id observed in this match.
+                    -- Singles-only view (sport_type filter below) so exactly two pids.
+                    (SELECT MIN(pd2.player_id)
+                       FROM silver.point_detail pd2
+                      WHERE pd2.task_id = fs.task_id
+                        AND pd2.player_id IS NOT NULL
+                        AND pd2.player_id <> fs.player_a_pid) AS player_b_pid
+                FROM first_server_pid fs
             ),
             stats AS (
                 SELECT
@@ -366,39 +371,46 @@ def gold_init():
                                   AND pd.exclude_d IS NOT TRUE)
                         AS player_b_games_won,
 
-                    -- Aces & double faults
-                    COUNT(*) FILTER (WHERE pd.ace_d = TRUE AND pd.exclude_d IS NOT TRUE) AS total_aces,
-                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'double_fault' AND pd.exclude_d IS NOT TRUE) AS total_double_faults,
+                    -- Aces & double faults — count DISTINCT points because silver
+                    -- stamps ace_d on every shot row of the point (EXISTS semantics)
+                    -- and a DF point reclassifies BOTH its serve rows to 'Double'.
+                    COUNT(DISTINCT pd.point_number)
+                        FILTER (WHERE pd.ace_d = TRUE AND pd.exclude_d IS NOT TRUE) AS total_aces,
+                    COUNT(DISTINCT pd.point_number)
+                        FILTER (WHERE pd.serve_try_ix_in_point = 'Double' AND pd.exclude_d IS NOT TRUE) AS total_double_faults,
 
                     -- Rally length
                     AVG(pd.rally_length_point) FILTER (WHERE pd.shot_ix_in_point = 1 AND pd.exclude_d IS NOT TRUE) AS avg_rally_length,
                     MAX(pd.rally_length_point) FILTER (WHERE pd.shot_ix_in_point = 1 AND pd.exclude_d IS NOT TRUE) AS max_rally_length,
 
-                    -- First serve %
-                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE AND pd.serve_try_ix_in_point = '1'
+                    -- First serve %  (numerator: 1st-serve attempts that went in;
+                    -- denominator: distinct service points). Silver writes
+                    -- '1st'/'2nd'/'Double'; a DF point has both serve rows = 'Double'.
+                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE AND pd.serve_try_ix_in_point = '1st'
+                                       AND pd.shot_outcome_d <> 'Error'
                                        AND pd.player_id = m.player_a_pid AND pd.exclude_d IS NOT TRUE)
                         AS player_a_first_serves,
-                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE
+                    COUNT(DISTINCT pd.point_key) FILTER (WHERE pd.serve_d = TRUE
                                        AND pd.player_id = m.player_a_pid AND pd.exclude_d IS NOT TRUE)
                         AS player_a_total_serves,
-                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE AND pd.serve_try_ix_in_point = '1'
+                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE AND pd.serve_try_ix_in_point = '1st'
+                                       AND pd.shot_outcome_d <> 'Error'
                                        AND pd.player_id = m.player_b_pid AND pd.exclude_d IS NOT TRUE)
                         AS player_b_first_serves,
-                    COUNT(*) FILTER (WHERE pd.serve_d = TRUE
+                    COUNT(DISTINCT pd.point_key) FILTER (WHERE pd.serve_d = TRUE
                                        AND pd.player_id = m.player_b_pid AND pd.exclude_d IS NOT TRUE)
                         AS player_b_total_serves,
 
                     -- Winners
-                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'winner'
+                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'Winner'
                                        AND pd.player_id = m.player_a_pid AND pd.exclude_d IS NOT TRUE)
                         AS player_a_winners,
-                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'winner'
+                    COUNT(*) FILTER (WHERE pd.shot_outcome_d = 'Winner'
                                        AND pd.player_id = m.player_b_pid AND pd.exclude_d IS NOT TRUE)
                         AS player_b_winners
 
                 FROM silver.point_detail pd
-                JOIN mapped m ON m.task_id = pd.task_id::text
-                -- mapped.task_id is TEXT (from submission_context), pd.task_id is UUID
+                JOIN mapped m ON m.task_id = pd.task_id
                 GROUP BY pd.task_id, m.player_a_pid, m.player_b_pid
             )
             SELECT
