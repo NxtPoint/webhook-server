@@ -28,7 +28,7 @@ Usage:
     python -m ml_pipeline.diag.extract_roi_bounces_v3 \\
         --task d1fed568-b285-4117-bcef-c6039d52fc37 \\
         --video ml_pipeline/test_videos/match_90ad59a8.mp4.mp4 \\
-        --sportai 1515aff7-1ec7-472d-8dba-8fff9f939ff1 \\
+        --sportai 2c1ad953-b65b-41b4-9999-975964ff92e1 \\
         --only-role FAR --max-serves 2
 """
 from __future__ import annotations
@@ -55,7 +55,7 @@ NEAR_SERVICE_LINE_M = HALF_Y + SERVICE_LINE_FROM_NET_M
 TILE_W = 640
 TILE_H = 360
 
-DEFAULT_SPORTAI_REF = "1515aff7-1ec7-472d-8dba-8fff9f939ff1"
+DEFAULT_SPORTAI_REF = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 
 def _normalize_db_url(url: str) -> str:

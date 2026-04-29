@@ -32,7 +32,7 @@ from typing import Optional
 from sqlalchemy import text
 
 # Reference task IDs — update when we have new matches to compare
-DEFAULT_SPORTAI = "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+DEFAULT_SPORTAI = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 DEFAULT_T5      = "9052c6e1-d428-4511-8595-35cd9fec3984"
 
 

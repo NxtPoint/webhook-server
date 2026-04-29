@@ -35,7 +35,7 @@ Usage:
     python -m ml_pipeline.diag.extract_vitpose_far \\
         --task d1fed568-b285-4117-bcef-c6039d52fc37 \\
         --video ml_pipeline/test_videos/match_90ad59a8.mp4.mp4 \\
-        --sportai 1515aff7-1ec7-472d-8dba-8fff9f939ff1 \\
+        --sportai 2c1ad953-b65b-41b4-9999-975964ff92e1 \\
         --only-role FAR --max-serves 2
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ logger = logging.getLogger("extract_vitpose_far")
 
 COURT_LENGTH_M = 23.77
 COURT_WIDTH_DOUBLES_M = 10.97
-DEFAULT_SPORTAI_REF = "1515aff7-1ec7-472d-8dba-8fff9f939ff1"
+DEFAULT_SPORTAI_REF = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 # Far-baseline ROI in court metric space (where to look for the far player)
 # NOTE: during trophy pose, the player's raised arm extends well above

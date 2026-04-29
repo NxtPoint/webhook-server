@@ -17,7 +17,7 @@ Usage (Render shell):
     python -m ml_pipeline.diag.reconcile_serves_strict \\
         --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088
 
-Defaults to SportAI reference 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb; override
+Defaults to SportAI reference 2c1ad953-b65b-41b4-9999-975964ff92e1; override
 with --sportai <uuid> if needed.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ import sys
 from sqlalchemy import create_engine, text as sql_text
 
 
-DEFAULT_SA = "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+DEFAULT_SA = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 
 def _normalize_db_url(url: str) -> str:

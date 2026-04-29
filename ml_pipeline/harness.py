@@ -1165,7 +1165,7 @@ def cmd_eval_serve(args: argparse.Namespace) -> int:
     from ml_pipeline.serve_detector.detector import detect_serves_for_task
 
     task_id = args.task_id
-    sa_tid = args.sportai_tid or "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+    sa_tid = args.sportai_tid or "2c1ad953-b65b-41b4-9999-975964ff92e1"
     tolerance = args.tolerance
 
     hr(f"EVAL SERVE  task_id={task_id[:8]}  vs SA {sa_tid[:8]}  tol={tolerance}s")

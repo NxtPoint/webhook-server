@@ -20,7 +20,7 @@ Usage (Render shell or local with DB):
     python -m ml_pipeline.diag.extract_wasb_bounces \\
         --task d1fed568-b285-4117-bcef-c6039d52fc37 \\
         --video /path/to/match.mp4 \\
-        --sportai 1515aff7-1ec7-472d-8dba-8fff9f939ff1
+        --sportai 2c1ad953-b65b-41b4-9999-975964ff92e1
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ HALF_Y = COURT_LENGTH_M / 2.0
 SERVICE_LINE_FROM_NET_M = 6.40
 FAR_SERVICE_LINE_M = HALF_Y - SERVICE_LINE_FROM_NET_M
 NEAR_SERVICE_LINE_M = HALF_Y + SERVICE_LINE_FROM_NET_M
-DEFAULT_SPORTAI_REF = "1515aff7-1ec7-472d-8dba-8fff9f939ff1"
+DEFAULT_SPORTAI_REF = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 # Bounce-detection velocity thresholds (in model/crop pixel space).
 # Serve ball descends fast (~20-30 px/frame in 512x288 crop) then

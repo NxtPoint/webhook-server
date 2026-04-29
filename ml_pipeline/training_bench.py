@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 
 # Default reference task IDs (same video, two pipelines)
-DEFAULT_SPORTAI = "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+DEFAULT_SPORTAI = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 DEFAULT_T5 = "911f0dce-56cd-4973-9e03-ea3d237cd3c0"
 
 # Alignment window: SportAI event is matched to nearest T5 event within ±N seconds

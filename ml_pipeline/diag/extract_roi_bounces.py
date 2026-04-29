@@ -66,7 +66,7 @@ SERVICE_LINE_FROM_NET_M = 6.40
 FAR_SERVICE_LINE_M = HALF_Y - SERVICE_LINE_FROM_NET_M   # 5.485
 NEAR_SERVICE_LINE_M = HALF_Y + SERVICE_LINE_FROM_NET_M  # 18.285
 
-DEFAULT_SPORTAI_REF = "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+DEFAULT_SPORTAI_REF = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 
 # ---------------------------------------------------------------------------

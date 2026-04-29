@@ -13,7 +13,7 @@ state-of-art on tennis broadcast footage.
 Usage:
     python -m ml_pipeline.diag.wasb_serve_probe \\
         --video ml_pipeline/test_videos/match_90ad59a8.mp4.mp4 \\
-        --sportai 1515aff7-1ec7-472d-8dba-8fff9f939ff1 \\
+        --sportai 2c1ad953-b65b-41b4-9999-975964ff92e1 \\
         --only-role FAR --max-serves 2
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ def _in_zone(cx, cy, role):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", required=True)
-    ap.add_argument("--sportai", default="1515aff7-1ec7-472d-8dba-8fff9f939ff1")
+    ap.add_argument("--sportai", default="2c1ad953-b65b-41b4-9999-975964ff92e1")
     ap.add_argument("--window-s", type=float, default=1.5)
     ap.add_argument("--fps", type=float, default=25.0)
     ap.add_argument("--only-role", choices=["NEAR", "FAR"], default=None)

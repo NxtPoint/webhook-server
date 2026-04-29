@@ -30,7 +30,7 @@ Output JSON schema:
 Usage:
     python -m ml_pipeline.training.label_serve_bounces \\
         --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088 \\
-        --sportai 1515aff7-1ec7-472d-8dba-8fff9f939ff1 \\
+        --sportai 2c1ad953-b65b-41b4-9999-975964ff92e1 \\
         --video ml_pipeline/test_videos/match_90ad59a8.mp4.mp4 \\
         --output ml_pipeline/training/labels/8a5e0b5e_serve_bounces.json
 

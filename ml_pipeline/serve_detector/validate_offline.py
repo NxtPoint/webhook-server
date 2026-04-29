@@ -8,7 +8,7 @@ Usage (repo root, .venv active, DATABASE_URL set):
 
 Reports precision, recall, timestamp alignment error, and writes the
 fired ServeEvent list to stdout for visual review against the SportAI
-ground truth (14 near-player + 10 far-player serves on task 4a194ff3).
+ground truth (14 near-player + 10 far-player serves on task 2c1ad953).
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from ml_pipeline.serve_detector.detector import detect_serves_offline
 
 
 T5_TID = "081e089c-f7b1-49ce-b51c-d623bcc60953"
-SA_TID = "4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb"
+SA_TID = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 
 def _load_pose_jsonl(path: Path, fps: float, role: str) -> list:
