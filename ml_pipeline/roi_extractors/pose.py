@@ -136,6 +136,9 @@ def extract_far_pose(
     calib_frames: int = 300,
     court_detector=None,
     bounces: Optional[List] = None,
+    frame_from: Optional[int] = None,
+    frame_to: Optional[int] = None,
+    replace: bool = True,
 ) -> int:
     """Run far-baseline ViTPose extraction across the entire video.
 
@@ -164,6 +167,13 @@ def extract_far_pose(
             — real serves only happen between rallies, so this drops mid-rally
             trophy-pose noise that the downstream pose-first detector can't
             disambiguate. When None, every sampled frame is processed.
+        frame_from / frame_to: optional inclusive frame range to limit the
+            scan. Default None on both = whole video (production behaviour).
+            Used by diag tooling (replay_roi_pose) to test specific windows
+            without reprocessing the whole video.
+        replace: when True (default), DELETEs prior rows for (job_id, source)
+            before inserting — production idempotency. Set False for diag /
+            additive scans where multiple frame-range runs share a source_tag.
 
     Returns:
         Number of rows written.
@@ -279,9 +289,15 @@ def extract_far_pose(
     total_usable = 0
     rows_to_write = []
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    idx = 0
+    # Seek to frame_from if set — saves walking through 10s of thousands of
+    # frames just to discard them. CAP_PROP_POS_FRAMES seek can be slow on
+    # h264 keyframe boundaries but works for our 100-1000-frame diag windows.
+    start_frame = frame_from if frame_from is not None else 0
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    idx = start_frame
     while True:
+        if frame_to is not None and idx > frame_to:
+            break
         ok, frame = cap.read()
         if not ok:
             break
@@ -416,15 +432,18 @@ def extract_far_pose(
         logger.info("roi_pose: nothing to write")
         return 0
 
-    # 5. Write to DB (replace previous source_tag rows for idempotency)
+    # 5. Write to DB (replace previous source_tag rows for idempotency, unless
+    # caller asked for additive insert — used by diag tooling that runs
+    # multiple non-overlapping frame ranges with the same source tag).
     with engine.begin() as conn:
         _init_schema(conn)
-        n_del = conn.execute(sql_text("""
-            DELETE FROM ml_analysis.player_detections_roi
-            WHERE job_id = :tid AND source = :src
-        """), {"tid": job_id, "src": source_tag}).rowcount
-        if n_del:
-            logger.info("roi_pose: deleted %d prior rows (source=%s)", n_del, source_tag)
+        if replace:
+            n_del = conn.execute(sql_text("""
+                DELETE FROM ml_analysis.player_detections_roi
+                WHERE job_id = :tid AND source = :src
+            """), {"tid": job_id, "src": source_tag}).rowcount
+            if n_del:
+                logger.info("roi_pose: deleted %d prior rows (source=%s)", n_del, source_tag)
         conn.execute(sql_text("""
             INSERT INTO ml_analysis.player_detections_roi
               (job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
