@@ -259,15 +259,21 @@ Bucket `nextpoint-prod-uploads` requires CORS for browser-to-S3 multipart upload
 - ExposeHeaders: `ETag` (required for multipart upload completion)
 - AllowedOrigins: `https://locker-room-26kd.onrender.com`, `https://api.nextpointtennis.com`, ten-fifty5.com variants, Wix editor/site domains
 
-## Diagnostics
+## Diagnostics & Ops
 
-- `GET /__alive` — liveness probe
-- `GET /ops/routes?key=<OPS_KEY>` — list all registered routes
-- `GET /ops/db-ping?key=<OPS_KEY>` — DB connectivity
+All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Authorization: Bearer <OPS_KEY>`). Query-string `?key=` is deliberately rejected to keep OPS_KEY out of access logs — see `_guard()` in `upload_app.py`.
+
+- `GET /__alive` — liveness probe (no auth)
+- `GET /ops/routes` — list all registered routes
+- `GET /ops/db-ping` — DB connectivity
+- `POST /ops/compact-storage` — runs `VACUUM (FULL, ANALYZE)` on the bronze/silver/ml_analysis table list, returns per-table `before_bytes` / `after_bytes` / `freed_bytes` JSON. Optional body `{"only": ["schema.table", ...]}` to scope. Each VACUUM takes ACCESS EXCLUSIVE — trigger during low traffic.
+- `POST /ops/orphan-sweep` — periodic mop-up for the soft-delete cascade. Two passes: (1) child rows whose parent `submission_context.deleted_at IS NOT NULL`, (2) true orphans whose `task_id` has no `submission_context` row at all. Body: `{"dry_run": true}` reports counts without changes; `{"include_orphans": false}` skips pass 2. Idempotent. Never touches `billing.*`. Implemented in `cleanup/orphan_sweep.py`.
+
+**Workers respect `submission_context.deleted_at`** — both the SportAI ingest worker (`ingest_worker_app.py::_do_ingest`) and the in-process T5 path (`upload_app.py::_do_ingest_t5`) check `deleted_at` at four gates (`pre_start`, `pre_bronze`, `pre_silver`, `pre_trim`) and abort cleanly without re-populating bronze rows if a delete races with an in-flight ingest.
 
 ## Code Organisation
 
-New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`. Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
+New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`, `cleanup/`. Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
 
 **Root-level blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring):
 
