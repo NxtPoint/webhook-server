@@ -296,6 +296,22 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 
 .fade-in { opacity: 0; transform: translateY(18px); transition: opacity 0.8s var(--ease), transform 0.8s var(--ease); }
 .fade-in.visible { opacity: 1; transform: translateY(0); }
+
+/* FAQ */
+.faq { max-width: 820px; margin: 0 auto; }
+.faq-item { border-bottom: 1px solid var(--border); }
+.faq-item:first-child { border-top: 1px solid var(--border); }
+.faq-q { width: 100%; text-align: left; padding: 22px 0; font-size: 1.05rem; font-weight: 600; color: var(--text); display: flex; justify-content: space-between; align-items: center; gap: 20px; cursor: pointer; background: none; border: none; }
+.faq-q:hover { color: var(--green-primary); }
+.faq-plus { width: 22px; height: 22px; flex-shrink: 0; position: relative; transition: transform var(--t-fast) var(--ease); }
+.faq-plus::before, .faq-plus::after { content: ''; position: absolute; background: var(--green-primary); border-radius: 1px; }
+.faq-plus::before { left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; }
+.faq-plus::after { top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; transition: transform var(--t-fast) var(--ease); }
+.faq-item.open .faq-plus::after { transform: scaleY(0); }
+.faq-a { max-height: 0; overflow: hidden; transition: max-height var(--t-med) var(--ease); color: var(--text-sec); font-size: 0.95rem; line-height: 1.65; }
+.faq-a-inner { padding: 0 0 24px; max-width: 70ch; }
+.faq-item.open .faq-a { max-height: 400px; }
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 14px 20px; } }
 </style>
@@ -907,6 +923,34 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
   </div>
 </section>
 
+<!-- FAQ -->
+<section class="section">
+  <div class="wrap-narrow">
+    <div class="section-head">
+      <div class="eyebrow ink">Frequently asked</div>
+      <h2 style="margin-top:14px;">Questions about how it works.</h2>
+    </div>
+    <div class="faq">
+      <div class="faq-item">
+        <button class="faq-q">What camera do I need to record my tennis match?<span class="faq-plus"></span></button>
+        <div class="faq-a"><div class="faq-a-inner">Any smartphone or camera works. Just set it up courtside and record your match — no special equipment needed. iPhone, Android, GoPro, or DSLR all produce video Ten-Fifty5 can analyse.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">How long does the AI analysis take?<span class="faq-plus"></span></button>
+        <div class="faq-a"><div class="faq-a-inner">Most matches are analysed within a few hours of upload. You'll receive an email notification when your dashboard is ready to view.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">What does the AI coach do?<span class="faq-plus"></span></button>
+        <div class="faq-a"><div class="faq-a-inner">Our AI coach reviews your match data and provides personalised feedback on technique, strategy, and areas for improvement based on your actual match performance — not generic advice.</div></div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q">Can coaches use Ten-Fifty5 for their players?<span class="faq-plus"></span></button>
+        <div class="faq-a"><div class="faq-a-inner">Yes — we offer coach-specific features including multi-player dashboards, development tracking, and team management tools. Your first linked player is free, forever.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- FINAL CTA -->
 <section class="final-cta">
   <div class="final-cta-inner">
@@ -970,6 +1014,14 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
       el.classList.add('fade-in'); io.observe(el);
     });
   }
+
+  // FAQ accordion
+  document.querySelectorAll('.faq-item').forEach(function(item) {
+    item.querySelector('.faq-q').addEventListener('click', function() {
+      document.querySelectorAll('.faq-item.open').forEach(function(o) { if (o !== item) o.classList.remove('open'); });
+      item.classList.toggle('open');
+    });
+  });
 })();
 </script>
 <!-- Wix iframe height broadcast — paired with the listener in the Wix Studio embed -->
