@@ -313,33 +313,17 @@ def gold_init():
         ))
         conn.execute(sql_text("""
             CREATE OR REPLACE VIEW gold.vw_client_match_summary AS
-            WITH first_server_pid AS (
-                -- player_a = whoever served the first point of the match.
-                -- silver.point_detail.server_id is the player_id who served that point
-                -- (assigned in build_silver_v2 pass-3). Pick the earliest point.
-                SELECT DISTINCT ON (pd.task_id)
-                    pd.task_id,
-                    pd.server_id AS player_a_pid
-                FROM silver.point_detail pd
-                WHERE pd.server_id IS NOT NULL
-                  AND pd.exclude_d IS NOT TRUE
-                  AND pd.set_number IS NOT NULL
-                  AND pd.game_number IS NOT NULL
-                  AND pd.point_number IS NOT NULL
-                ORDER BY pd.task_id, pd.set_number, pd.game_number, pd.point_number
-            ),
-            mapped AS (
+            WITH mapped AS (
+                -- Use gold.vw_player as the single source of truth for player A/B
+                -- mapping so the matches list, dashboards, and heatmaps never disagree.
+                -- vw_player respects submission_context.first_server (user-editable
+                -- via Wix: 'S'/'R'/'player_a'/'player_b') and falls back to the
+                -- first detected server in silver when first_server is unset.
                 SELECT
-                    fs.task_id,
-                    fs.player_a_pid,
-                    -- player_b = the other distinct player_id observed in this match.
-                    -- Singles-only view (sport_type filter below) so exactly two pids.
-                    (SELECT MIN(pd2.player_id)
-                       FROM silver.point_detail pd2
-                      WHERE pd2.task_id = fs.task_id
-                        AND pd2.player_id IS NOT NULL
-                        AND pd2.player_id <> fs.player_a_pid) AS player_b_pid
-                FROM first_server_pid fs
+                    pl.task_id,
+                    pl.player_a_id AS player_a_pid,
+                    pl.player_b_id AS player_b_pid
+                FROM gold.vw_player pl
             ),
             stats AS (
                 SELECT

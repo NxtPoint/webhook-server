@@ -2545,8 +2545,15 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     bx = Math.max(0, Math.min(COURT_W, bx));
     by = Math.max(0, Math.min(COURT_L, by));
 
-    // Plot on near side (bottom of court) — normalised coords already
-    // place bounces in [0, ~12] range (near half of the court).
+    // Force near-half projection. Silver normalisation places bounces in the
+    // near half (y > NET_Y) when ball_hit_location_y is known, but when pose
+    // data is missing the norm columns silently return raw court coords —
+    // those can land in the far half. Mirror them here so the chart is always
+    // shown from the near baseline perspective.
+    if (by < NET_Y) {
+      by = COURT_L - by;
+      bx = COURT_W - bx;
+    }
 
     // Project to canvas pixels and clamp inside the inset bounds
     let px = cx(bx), py = cy(by);
