@@ -2531,16 +2531,22 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   // For all other tabs, use where the ball bounced (bounce coords)
   const useHitCoords = (activeTab === 'player-return-pos' || activeTab === 'rally-player-pos');
 
+  // Use ONLY the field that matches what the tab claims to show. No fallback
+  // to the "other" coord — falling back to ball_hit_*_norm when ball_bounce_*_norm
+  // is NULL would plot the SERVER's standing position (at baseline) instead of
+  // where the serve LANDED, which is wrong for serve / return / groundstroke
+  // placement tabs. Shots with missing data are dropped (and counted below).
+  let droppedNoCoords = 0;
   shots.forEach(s => {
     let bx, by;
     if (useHitCoords) {
-      bx = s.ball_hit_x_norm ?? s.court_x ?? null;
-      by = s.ball_hit_y_norm ?? s.court_y ?? null;
+      bx = s.ball_hit_x_norm;
+      by = s.ball_hit_y_norm;
     } else {
-      bx = s.ball_bounce_x_norm ?? s.ball_hit_x_norm ?? s.court_x ?? s.ball_hit_location_x;
-      by = s.ball_bounce_y_norm ?? s.ball_hit_y_norm ?? s.court_y ?? s.ball_hit_location_y;
+      bx = s.ball_bounce_x_norm;
+      by = s.ball_bounce_y_norm;
     }
-    if (bx == null || by == null) return;
+    if (bx == null || by == null) { droppedNoCoords++; return; }
 
     bx = Math.max(0, Math.min(COURT_W, bx));
     by = Math.max(0, Math.min(COURT_L, by));
@@ -2589,8 +2595,14 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const statsEl = document.getElementById(statsId);
   if (statsEl) {
     const total = wonCount + lostCount;
+    const plotted = total + unknownCount;
     const winPct = total > 0 ? Math.round(100 * wonCount / total) : 0;
     const winColour = winPct >= 60 ? 'var(--green)' : winPct >= 40 ? 'var(--amber)' : 'var(--red)';
+    const droppedNote = droppedNoCoords > 0
+      ? `<span class="hm-stat-row" style="padding-left:10px;border-left:1px solid var(--border);margin-left:4px;color:var(--text-dim)">
+           <strong>${droppedNoCoords}</strong>&nbsp;no placement data
+         </span>`
+      : '';
     statsEl.innerHTML = `
       <div class="heatmap-stats-left">
         <div class="hm-stat-big" style="color:${winColour}">${winPct}%</div>
@@ -2600,8 +2612,9 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
         <span class="hm-stat-row"><span class="hm-dot" style="background:rgba(26,92,46,0.9)"></span><strong>${wonCount}</strong>&nbsp;points won</span>
         <span class="hm-stat-row"><span class="hm-dot" style="background:rgba(220,38,38,0.85)"></span><strong>${lostCount}</strong>&nbsp;points lost</span>
         <span class="hm-stat-row" style="padding-left:10px;border-left:1px solid var(--border);margin-left:4px">
-          <strong style="color:var(--text)">${total + unknownCount}</strong>&nbsp;shots total
+          <strong style="color:var(--text)">${plotted}</strong>&nbsp;shots plotted
         </span>
+        ${droppedNote}
       </div>
     `;
   }
