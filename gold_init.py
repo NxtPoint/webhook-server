@@ -826,9 +826,13 @@ CREATE VIEW gold.player_performance AS
 WITH
 match_kpis AS (
     SELECT *,
-           ROW_NUMBER() OVER (PARTITION BY email ORDER BY COALESCE(match_date, created_at::date), created_at) AS match_seq,
-           COUNT(*) OVER (PARTITION BY email) AS total_matches
+           -- Sequence and total scoped to (email, player_a_name) so a customer
+           -- with multiple linked players (kid, partner, themselves) gets
+           -- separate rolling-5-match windows per player, not a mixed average.
+           ROW_NUMBER() OVER (PARTITION BY email, player_a_name ORDER BY COALESCE(match_date, created_at::date), created_at) AS match_seq,
+           COUNT(*) OVER (PARTITION BY email, player_a_name) AS total_matches
     FROM gold.player_match_kpis
+    WHERE player_a_name IS NOT NULL
 ),
 unpivoted AS (
     SELECT
@@ -859,13 +863,12 @@ unpivoted AS (
 ),
 ranked AS (
     SELECT *,
-           RANK() OVER (PARTITION BY email, kpi_name ORDER BY match_seq DESC) AS recency_rank
+           RANK() OVER (PARTITION BY email, player_a_name, kpi_name ORDER BY match_seq DESC) AS recency_rank
     FROM unpivoted
 ),
 windowed AS (
     SELECT
-        email, kpi_name, benchmark, higher_is_better, category, display_label, unit, total_matches,
-        MAX(player_a_name) FILTER (WHERE recency_rank = 1) AS player_name,
+        email, player_a_name, kpi_name, benchmark, higher_is_better, category, display_label, unit, total_matches,
         MAX(kpi_value) FILTER (WHERE recency_rank = 1) AS last_match_value,
         MAX(match_date) FILTER (WHERE recency_rank = 1) AS last_match_date,
         MAX(task_id::text) FILTER (WHERE recency_rank = 1) AS last_task_id,
@@ -875,11 +878,11 @@ windowed AS (
         JSON_AGG(kpi_value ORDER BY match_seq ASC) FILTER (WHERE recency_rank <= 10) AS sparkline_values,
         JSON_AGG(match_date ORDER BY match_seq ASC) FILTER (WHERE recency_rank <= 10) AS sparkline_dates
     FROM ranked
-    GROUP BY email, kpi_name, benchmark, higher_is_better, category, display_label, unit, total_matches
+    GROUP BY email, player_a_name, kpi_name, benchmark, higher_is_better, category, display_label, unit, total_matches
 )
 SELECT
-    email, category, kpi_name, display_label, unit, benchmark, higher_is_better,
-    total_matches, player_name, last_match_date, last_task_id, last_match_value,
+    email, player_a_name AS player_name, category, kpi_name, display_label, unit, benchmark, higher_is_better,
+    total_matches, last_match_date, last_task_id, last_match_value,
     avg_last_5, avg_prev_5, avg_all_time,
     ROUND(avg_last_5 - benchmark::numeric, 1) AS delta_vs_benchmark,
     ROUND(last_match_value - avg_last_5, 1) AS delta_last_vs_avg,
@@ -907,6 +910,7 @@ SELECT
     sparkline_dates
 FROM windowed
 ORDER BY
+    player_a_name,
     CASE category WHEN 'Serve' THEN 1 WHEN 'Return' THEN 2 WHEN 'Rally' THEN 3 WHEN 'Games' THEN 4 WHEN 'Speed' THEN 5 END,
     kpi_name
 """

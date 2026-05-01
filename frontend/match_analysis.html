@@ -684,6 +684,8 @@ async function selectMatch(idx) {
   coachCardsCache = null;
   coachLastTaskId = null;
   performanceFetched = false;
+  performancePlayers = [];
+  performanceSelectedPlayer = null;
 
   // Reset heatmap filters to defaults for new match
   heatmapFilter = { outcome: 'all', stroke: 'all', serve: 'all', setNum: 'all' };
@@ -1941,6 +1943,8 @@ let heatmapPlayer = 'player_a';
 let heatmapInfoOpen = false;  // side info panel collapsed by default
 let performanceData = null;
 let performanceFetched = false;
+let performancePlayers = [];      // distinct linked players for current email
+let performanceSelectedPlayer = null;  // one player must be selected (no "All")
 
 function renderHeatmapsModule() {
   const tabs = [
@@ -2521,15 +2525,22 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   // Dot radius scales with canvas width — computed once outside the loop
   const rOuter = Math.max(8, Math.round(W / 140));
   const rInner = Math.max(5, Math.round(W / 200));
-  // Inset bounds — keep dots visually inside the drawn court boundary
-  const insetX = rOuter + 2;
-  const insetY = rOuter + 2;
-  const minX = cx(0) + insetX, maxX = cx(COURT_W) - insetX;
-  const minY = cy(0) + insetY, maxY = cy(COURT_L) - insetY;
 
   // For player-position tabs, use where the player was standing (hit coords)
   // For all other tabs, use where the ball bounced (bounce coords)
   const useHitCoords = (activeTab === 'player-return-pos' || activeTab === 'rally-player-pos');
+
+  // Bounds for clamping the FINAL projected pixel. Bounce-placement tabs
+  // (serve land / return / groundstrokes) clamp to the court rectangle so
+  // out-of-court bounces render on the line. Player-position tabs use the
+  // full canvas (incl. surround) so a player standing behind the baseline
+  // shows up behind the court — which is where they actually are.
+  const insetX = rOuter + 2;
+  const insetY = rOuter + 2;
+  const courtMinX = cx(0) + insetX, courtMaxX = cx(COURT_W) - insetX;
+  const courtMinY = cy(0) + insetY, courtMaxY = cy(COURT_L) - insetY;
+  const canvasMinX = insetX, canvasMaxX = W - insetX;
+  const canvasMinY = insetY, canvasMaxY = H - insetY;
 
   // Use ONLY the field that matches what the tab claims to show. No fallback
   // to the "other" coord — falling back to ball_hit_*_norm when ball_bounce_*_norm
@@ -2548,8 +2559,13 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
     }
     if (bx == null || by == null) { droppedNoCoords++; return; }
 
-    bx = Math.max(0, Math.min(COURT_W, bx));
-    by = Math.max(0, Math.min(COURT_L, by));
+    // Bounce tabs clamp to court rectangle (a bounce that lands "out" still
+    // maps onto the closest line). Player-position tabs do NOT clamp here —
+    // a player behind the baseline should plot behind the baseline.
+    if (!useHitCoords) {
+      bx = Math.max(0, Math.min(COURT_W, bx));
+      by = Math.max(0, Math.min(COURT_L, by));
+    }
 
     // Force near-half projection. Silver normalisation places bounces in the
     // near half (y > NET_Y) when ball_hit_location_y is known, but when pose
@@ -2561,10 +2577,15 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
       bx = COURT_W - bx;
     }
 
-    // Project to canvas pixels and clamp inside the inset bounds
+    // Project to canvas pixels and clamp inside the appropriate bounds
     let px = cx(bx), py = cy(by);
-    px = Math.max(minX, Math.min(maxX, px));
-    py = Math.max(minY, Math.min(maxY, py));
+    if (useHitCoords) {
+      px = Math.max(canvasMinX, Math.min(canvasMaxX, px));
+      py = Math.max(canvasMinY, Math.min(canvasMaxY, py));
+    } else {
+      px = Math.max(courtMinX, Math.min(courtMaxX, px));
+      py = Math.max(courtMinY, Math.min(courtMaxY, py));
+    }
 
     let colour;
     if (s.point_winner_player_id === ownerId) {
@@ -2786,21 +2807,29 @@ async function renderPerformanceModule() {
     `<button class="dash-tab${t.id === activeTab ? ' active' : ''}" onclick="switchPerfTab('${t.id}')">${t.label}</button>`
   ).join('');
 
-  // Lazy fetch performance data (email-scoped, not task-scoped)
+  // Lazy fetch performance data (email-scoped). Response also returns the
+  // distinct player list so the dropdown can force a single selection.
   if (!performanceFetched) {
     document.getElementById('dashContent').innerHTML = '<div class="loading" style="height:300px"><div><div class="spinner"></div>Loading performance data...</div></div>';
     try {
       const raw = await apiFetch('/api/client/player/performance');
       const res = await raw.json();
       performanceData = (res.ok && res.rows) ? res.rows : [];
+      performancePlayers = (res.ok && res.players) ? res.players : [];
+      // Default to the first (most-active) linked player. The user must always
+      // have one selected — averaging across linked players is meaningless.
+      if (performancePlayers.length && !performanceSelectedPlayer) {
+        performanceSelectedPlayer = performancePlayers[0];
+      }
     } catch (e) {
       console.error('performance fetch error:', e);
       performanceData = [];
+      performancePlayers = [];
     }
     performanceFetched = true;
   }
 
-  if (!performanceData || !performanceData.length) {
+  if (!performanceData || !performanceData.length || !performancePlayers.length) {
     document.getElementById('dashContent').innerHTML = `
       <div class="tab-panel active">
         <div class="perf-notice">Upload and analyse more matches to build your performance profile. Your KPI scorecard will appear here once you have match data.</div>
@@ -2808,27 +2837,46 @@ async function renderPerformanceModule() {
     return;
   }
 
-  const playerName = performanceData[0]?.player_name || 'Player';
-  const totalMatches = performanceData[0]?.total_matches || 0;
+  // Filter all rows down to the currently-selected player
+  const playerRows = performanceData.filter(r => r.player_name === performanceSelectedPlayer);
+  const playerName = performanceSelectedPlayer || 'Player';
+  const totalMatches = playerRows[0]?.total_matches || 0;
+
+  // Player selector — required (no "All"). Hidden when only one linked player.
+  const selector = performancePlayers.length > 1 ? `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <label for="perfPlayerSelect" style="font-size:0.78rem;color:var(--text-sec);font-weight:500">Player</label>
+      <select id="perfPlayerSelect" onchange="switchPerfPlayer(this.value)"
+              style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.85rem;min-width:180px">
+        ${performancePlayers.map(p => `<option value="${escapeHtml(p)}"${p === performanceSelectedPlayer ? ' selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+      </select>
+    </div>
+  ` : '';
 
   document.getElementById('dashContent').innerHTML = `
     <div class="tab-panel active" id="p-perf-content">
-      ${activeTab === 'scorecard' ? renderScorecard(playerName, totalMatches) : ''}
-      ${activeTab === 'trends' ? renderTrendCharts(playerName) : ''}
-      ${activeTab === 'last-vs-avg' ? renderLastVsAvg(playerName) : ''}
+      ${selector}
+      ${activeTab === 'scorecard' ? renderScorecard(playerName, totalMatches, playerRows) : ''}
+      ${activeTab === 'trends' ? renderTrendCharts(playerName, playerRows) : ''}
+      ${activeTab === 'last-vs-avg' ? renderLastVsAvg(playerName, playerRows) : ''}
     </div>
   `;
 
   if (activeTab === 'trends') {
-    setTimeout(() => renderTrendECharts(), 50);
+    setTimeout(() => renderTrendECharts(playerRows), 50);
   }
   if (activeTab === 'last-vs-avg') {
-    setTimeout(() => renderLastVsAvgChart(), 50);
+    setTimeout(() => renderLastVsAvgChart(playerRows), 50);
   }
 }
 
 function switchPerfTab(id) {
   activeTab = id;
+  renderPerformanceModule();
+}
+
+function switchPerfPlayer(name) {
+  performanceSelectedPlayer = name;
   renderPerformanceModule();
 }
 
@@ -2849,8 +2897,8 @@ function renderSparkline(values, status) {
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
 }
 
-function renderScorecard(playerName, totalMatches) {
-  const rows = performanceData;
+function renderScorecard(playerName, totalMatches, rows) {
+  rows = rows || performanceData;
   let lastCat = '';
 
   const notice = totalMatches < 3
@@ -2914,10 +2962,11 @@ function renderScorecard(playerName, totalMatches) {
   `;
 }
 
-function renderTrendCharts(playerName) {
+function renderTrendCharts(playerName, rows) {
+  rows = rows || performanceData;
   // Group KPIs by category
   const cats = {};
-  performanceData.forEach(r => {
+  rows.forEach(r => {
     if (!cats[r.category]) cats[r.category] = [];
     cats[r.category].push(r);
   });
@@ -2940,8 +2989,9 @@ function renderTrendCharts(playerName) {
   return html;
 }
 
-function renderTrendECharts() {
-  performanceData.forEach(r => {
+function renderTrendECharts(rows) {
+  rows = rows || performanceData;
+  rows.forEach(r => {
     const el = document.getElementById('trendChart_' + r.kpi_name);
     if (!el) return;
     const vals = (r.sparkline_values || []).filter(v => v != null).map(Number);
@@ -2976,23 +3026,25 @@ function renderTrendECharts() {
   });
 }
 
-function renderLastVsAvg(playerName) {
-  const lastDate = performanceData[0]?.last_match_date || '';
+function renderLastVsAvg(playerName, rows) {
+  rows = rows || performanceData;
+  const lastDate = rows[0]?.last_match_date || '';
   return `
     <div class="chart-card full">
       <h3>${escapeHtml(playerName)} · Last Match (${lastDate}) vs 5-Match Average</h3>
-      <div id="chartLastVsAvg" class="echart" style="height:${Math.max(400, performanceData.length * 32)}px"></div>
+      <div id="chartLastVsAvg" class="echart" style="height:${Math.max(400, rows.length * 32)}px"></div>
     </div>
   `;
 }
 
-function renderLastVsAvgChart() {
+function renderLastVsAvgChart(rows) {
+  rows = rows || performanceData;
   const chart = ec('chartLastVsAvg');
   if (!chart) return;
 
-  const labels = performanceData.map(r => r.display_label).reverse();
-  const lastVals = performanceData.map(r => Number(r.last_match_value) || 0).reverse();
-  const avgVals = performanceData.map(r => Number(r.avg_last_5) || 0).reverse();
+  const labels = rows.map(r => r.display_label).reverse();
+  const lastVals = rows.map(r => Number(r.last_match_value) || 0).reverse();
+  const avgVals = rows.map(r => Number(r.avg_last_5) || 0).reverse();
 
   chart.setOption({
     ...ANIM, tooltip: TT,

@@ -1675,25 +1675,54 @@ def gold_match_shot_placement(task_id):
 
 @client_bp.route("/api/client/player/performance", methods=["GET", "OPTIONS"])
 def gold_player_performance():
-    """Cross-match KPI scorecard for Player A (the customer). Email-scoped."""
+    """Cross-match KPI scorecard. Scoped to (email, player_name) — a customer
+    with multiple linked players (kid, partner, themselves) gets a separate
+    rolling window per player. Pass ?player=<name> to filter; if omitted, the
+    response includes all players plus a `players` list and the frontend picks
+    a default."""
     if not _guard():
         return _forbid()
     email = _norm_email(request.args.get("email"))
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
+    player = (request.args.get("player") or "").strip() or None
     try:
         with engine.connect() as conn:
-            rows = conn.execute(
-                text("SELECT * FROM gold.player_performance WHERE email = :email ORDER BY category, kpi_name"),
-                {"email": email},
-            ).mappings().all()
+            if player:
+                rows = conn.execute(
+                    text(
+                        "SELECT * FROM gold.player_performance "
+                        "WHERE email = :email AND player_name = :player "
+                        "ORDER BY category, kpi_name"
+                    ),
+                    {"email": email, "player": player},
+                ).mappings().all()
+            else:
+                rows = conn.execute(
+                    text(
+                        "SELECT * FROM gold.player_performance "
+                        "WHERE email = :email "
+                        "ORDER BY player_name, category, kpi_name"
+                    ),
+                    {"email": email},
+                ).mappings().all()
         serialized = [{k: _serialize(v) for k, v in r.items()} for r in rows]
-        return jsonify({"ok": True, "rows": serialized})
+        # Distinct players (preserve order: most-matches first, then alpha)
+        seen, players = set(), []
+        counts = {}
+        for r in serialized:
+            pn = r.get("player_name")
+            if pn and pn not in seen:
+                seen.add(pn)
+                counts[pn] = r.get("total_matches") or 0
+                players.append(pn)
+        players.sort(key=lambda n: (-counts.get(n, 0), n))
+        return jsonify({"ok": True, "rows": serialized, "players": players})
     except Exception as e:
         err_msg = str(e)
         if "does not exist" in err_msg:
             log.warning("player_performance view not yet created email=%s", email)
-            return jsonify({"ok": True, "rows": []})
+            return jsonify({"ok": True, "rows": [], "players": []})
         log.exception("player_performance endpoint failed email=%s", email)
         return jsonify({"ok": False, "error": "internal_error"}), 500
 
