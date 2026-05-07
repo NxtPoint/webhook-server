@@ -1,0 +1,12 @@
+# Minimal deps to run `python -m ml_pipeline.diag.bench` in CI.
+# Bench replays committed fixtures (ml_pipeline/fixtures_ci/*.pkl.gz) through
+# the prod serve_detector pipeline. It does NOT touch the DB, does NOT need
+# ML weights (torch/opencv/transformers), and does NOT need AWS credentials.
+#
+# The only third-party imports along the bench path are sqlalchemy (top-level
+# `from sqlalchemy import text` in serve_detector/detector.py) and its
+# transitive deps. Everything else (json, gzip, pickle, math, dataclasses)
+# is stdlib.
+#
+# Pinned to match the main requirements.txt entry so CI reflects prod.
+SQLAlchemy==2.0.43
