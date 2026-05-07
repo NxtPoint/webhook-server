@@ -36,7 +36,7 @@ Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (
 | 0 | Doc cleanup + this file | handover ≤700 lines, ≤5 active T5 memory files, this file exists with phase ladder | DONE 2026-05-07 |
 | 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | DONE 2026-05-07 — 880dff02 fixture: **23/24 (10/10 FAR)**. All three target FAR misses (458/463/584) flipped to MATCH. |
 | 2 | Point boundary detection | Single function: given silver events, identify point start/end. Validated against SA `point_number` boundaries on a798eff0 — ≥80% point-boundary match. | POINT 2026-05-07 (function landed; 17.6% IOU≥0.5 / 64.7% IOU≥0.3 — gated by Phase 1 noise) |
-| 3 | Pre-/between-point filter | `silver.point_detail` no longer contains events outside point boundaries. T5 event count for a798eff0 within ±5% of SA event count. | PREP agent-ac1bff976f520a088 2026-05-07 — see `docs/_investigation/may07_t5_event_noise.md` |
+| 3 | Pre-/between-point filter | `silver.point_detail` no longer contains events outside point boundaries. T5 event count for a798eff0 within ±5% of SA event count. | PARTIAL agent-a6248c08d8e2998ae 2026-05-07 — warm-up filter shipped (`exclude_d=TRUE WHERE ball_hit_s < first detected serve`, `build_silver_v2.py` pass 3); between-point still pending Phase 2 `detect_point_boundaries` integration. PREP memo: `docs/_investigation/may07_t5_event_noise.md`. |
 | 4 | Point-completeness reconciler | New diag tool: for each SA point, report match/partial/missing per stroke. Single-number metric committed alongside `bench_baseline.json`. | RECONCILER 2026-05-07 (baseline 0/17) |
 | 5 | Stroke classification reconciliation | T5 vs SA stroke distribution within ±10% per class on validated points. Stop calling racquet-bounces "backhands". | UNCLAIMED (depends on 3) |
 | 6 | Bounce + ball-hit coordinate reconciliation | Per-event `bounce_court_x/y` populated; geometric error vs SA <2m on validated points. | UNCLAIMED (depends on 1) |
@@ -58,11 +58,13 @@ Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (
 **How to verify:** Reconciler diag tool that compares T5 boundaries to SA `point_number` ground truth on a798eff0. Per-point match rate ≥80%.
 **Blocker:** Phase 1 should land first because point-end detection depends on knowing real bounces from racquet-bounces.
 
-### Phase 3 — Pre-/between-point filter
+### Phase 3 — Pre-/between-point filter — PARTIAL 2026-05-07 (warm-up half only)
 **What:** In `build_silver_match_t5.py`, add a filter pass that drops any `player_swing` row whose timestamp falls outside any detected point boundary.
 **Where:** `build_silver_match_t5.py` and possibly the shared `build_silver_v2.py` passes 3-5.
 **How to verify:** T5 event count for a798eff0 within ±5% of SA event count (currently 160 vs 85, target ≤89). T5 stroke distribution per class within ±10% of SA.
 **Blocker:** Phases 1+2.
+
+**Warm-up half landed (agent-a6248c08d8e2998ae, 2026-05-07).** Cheap pre-step from the noise-prep agent's memo: pass 3 in `build_silver_v2.py` now sets `exclude_d=TRUE` on every row whose `ball_hit_s` is below the per-task `MIN(ball_hit_s) FILTER (serve_d)`. Implemented as a new `first_serve_task` CTE + an OR clause in the `final` CTE (lines 704-718, 1028-1035, 1084 of `build_silver_v2.py`). Bench unchanged (a798eff0 20/24, 880dff02 23/24) — silver-only edit, doesn't touch the detector. Predicted impact on `880dff02` T5 silver: 35 rows flip FALSE→TRUE on next `rerun-silver`. Note 35 is below the noise memo's ~52 estimate because that estimate anchored on SA's 54.48s first serve, while this filter anchors on T5's earlier first detected serve (19.68s) — there is room here for a stricter filter once Phase 2's `detect_point_boundaries()` (`ml_pipeline/point_structure/point_boundaries.py`) is integrated. Between-point half still pending — the next session should integrate `detect_point_boundaries()` and treat between-point gaps the same way.
 
 ### Phase 4 — Point-completeness reconciler
 **What:** New `ml_pipeline/diag/audit_points.py` (parallel to `audit_all_serves.py`). For each SA point, find matching T5 point, report match/partial/missing per stroke. Output: single number ("X/Y points fully reconcile") + per-point breakdown.
