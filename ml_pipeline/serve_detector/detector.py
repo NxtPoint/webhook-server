@@ -864,9 +864,18 @@ def detect_serves_offline(
     far_bounce_events) instead of the merged sorted list — useful for
     the harness bench output.
     """
-    bounce_ts = [
-        b["frame_idx"] / fps for b in ball_rows if b.get("is_bounce")
+    # Apply Tomo's bounce-validity rule (May 7) — mirror the prod path's
+    # `build_from_db`, which filters phantom near-baseline TrackNet
+    # clusters before constructing the rally state machine. Doing the
+    # equivalent here keeps offline (bench / replay) numbers in sync with
+    # prod. See `bounce_validity.validate_bounces`.
+    from ml_pipeline.serve_detector.bounce_validity import validate_bounces
+    raw_bounces = [
+        {"frame_idx": b["frame_idx"], "court_y": b.get("court_y")}
+        for b in ball_rows if b.get("is_bounce")
     ]
+    valid_bounces = validate_bounces(raw_bounces)
+    bounce_ts = [b["frame_idx"] / fps for b in valid_bounces]
     rally = RallyStateMachine(bounce_ts=bounce_ts)
 
     near_events, far_pose_events, far_bounce_events = _run_pipeline(

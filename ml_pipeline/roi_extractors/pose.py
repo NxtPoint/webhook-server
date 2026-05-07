@@ -254,16 +254,32 @@ def extract_far_pose(
             from ml_pipeline.serve_detector.rally_state import (
                 RallyStateMachine, RallyState,
             )
-            bounce_ts = [
-                d.frame_idx / fps
+            from ml_pipeline.serve_detector.bounce_validity import (
+                validate_bounces,
+            )
+            raw_bounces = [
+                {
+                    "frame_idx": d.frame_idx,
+                    "court_y": getattr(d, "court_y", None),
+                }
                 for d in bounces
                 if getattr(d, "is_bounce", False)
             ]
+            # Filter phantom near-baseline TrackNet clusters BEFORE feeding
+            # the rally state machine (Tomo's bounce-validity rule, May 7).
+            # Without this, racquet-bouncing pre-serve and TrackNet
+            # misclassifications on near-court features hold the rally
+            # state IN_RALLY for 16-second blocks, blocking ROI pose
+            # extraction during real serves (a798eff0 misses 458/463/584).
+            valid_bounces = validate_bounces(raw_bounces)
+            bounce_ts = [b["frame_idx"] / fps for b in valid_bounces]
             rally = RallyStateMachine(bounce_ts=bounce_ts)
             rally_in_rally_state = RallyState.IN_RALLY
             logger.info(
-                "roi_pose: rally gate active, %d bounces (of %d ball detections)",
-                len(bounce_ts), len(bounces),
+                "roi_pose: rally gate active, %d valid bounces "
+                "(filtered %d phantom of %d raw, from %d ball detections)",
+                len(bounce_ts), len(raw_bounces) - len(valid_bounces),
+                len(raw_bounces), len(bounces),
             )
         except Exception as e:
             # Caller asked for the gate (passed bounces) but we couldn't build

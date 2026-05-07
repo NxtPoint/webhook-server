@@ -34,7 +34,7 @@ Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (
 | # | Phase | Done-when | Owner / Status |
 |---|---|---|---|
 | 0 | Doc cleanup + this file | handover ≤700 lines, ≤5 active T5 memory files, this file exists with phase ladder | DONE 2026-05-07 |
-| 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | UNCLAIMED |
+| 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | BOUNCE 2026-05-07 (filter shipped; bench 20/24; awaiting Batch rerun + re-snapshot to confirm 458/463/584) |
 | 2 | Point boundary detection | Single function: given silver events, identify point start/end. Validated against SA `point_number` boundaries on a798eff0 — ≥80% point-boundary match. | UNCLAIMED |
 | 3 | Pre-/between-point filter | `silver.point_detail` no longer contains events outside point boundaries. T5 event count for a798eff0 within ±5% of SA event count. | UNCLAIMED (depends on 1+2) |
 | 4 | Point-completeness reconciler | New diag tool: for each SA point, report match/partial/missing per stroke. Single-number metric committed alongside `bench_baseline.json`. | UNCLAIMED |

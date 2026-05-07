@@ -95,11 +95,23 @@ class RallyStateMachine:
 
 def build_from_db(conn, task_id: str, fps: float) -> RallyStateMachine:
     """Factory — load bounce timestamps for a task and return a ready-to-query
-    state machine."""
+    state machine.
+
+    Applies `bounce_validity.validate_bounces` before constructing the
+    state machine so phantom near-baseline TrackNet clusters (pre-serve
+    racquet bouncing, court-feature misclassifications) don't drive
+    rally state to IN_RALLY. See the bounce_validity module docstring
+    and `project_t5_may07_phantom_bounces.md` for the receipts.
+    """
     from sqlalchemy import text as sql_text
+    from ml_pipeline.serve_detector.bounce_validity import validate_bounces
+
     rows = conn.execute(sql_text("""
-        SELECT frame_idx FROM ml_analysis.ball_detections
+        SELECT frame_idx, court_y FROM ml_analysis.ball_detections
         WHERE job_id = :tid AND is_bounce = TRUE
         ORDER BY frame_idx
-    """), {"tid": task_id}).scalars().all()
-    return RallyStateMachine(bounce_ts=[r / fps for r in rows])
+    """), {"tid": task_id}).mappings().all()
+    bounces = [{"frame_idx": r["frame_idx"], "court_y": r["court_y"]}
+               for r in rows]
+    valid = validate_bounces(bounces)
+    return RallyStateMachine(bounce_ts=[b["frame_idx"] / fps for b in valid])
