@@ -1,6 +1,24 @@
 {
-  "commit": "c4e2db7",
+  "commit": "c925681",
   "fixtures": {
+    "880dff02": {
+      "far": [
+        10,
+        10
+      ],
+      "near": [
+        13,
+        14
+      ],
+      "total": [
+        23,
+        24
+      ],
+      "verdicts": {
+        "FAR_IN_TIME": 1,
+        "MATCH": 23
+      }
+    },
     "a798eff0": {
       "far": [
         7,
@@ -15,12 +33,12 @@
         24
       ],
       "verdicts": {
-        "FAR_IN_TIME": 1,
+        "FAR_IN_TIME": 2,
         "MATCH": 20,
-        "NO_MATCH": 2,
+        "NO_MATCH": 1,
         "WEAK_TIME": 1
       }
     }
   },
-  "updated_at": "2026-04-29"
+  "updated_at": "2026-05-07"
 }

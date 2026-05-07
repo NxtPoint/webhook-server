@@ -34,7 +34,7 @@ Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (
 | # | Phase | Done-when | Owner / Status |
 |---|---|---|---|
 | 0 | Doc cleanup + this file | handover ≤700 lines, ≤5 active T5 memory files, this file exists with phase ladder | DONE 2026-05-07 |
-| 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | BOUNCE 2026-05-07 (filter shipped; bench 20/24; awaiting Batch rerun + re-snapshot to confirm 458/463/584) |
+| 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | DONE 2026-05-07 — 880dff02 fixture: **23/24 (10/10 FAR)**. All three target FAR misses (458/463/584) flipped to MATCH. |
 | 2 | Point boundary detection | Single function: given silver events, identify point start/end. Validated against SA `point_number` boundaries on a798eff0 — ≥80% point-boundary match. | POINT 2026-05-07 (function landed; 17.6% IOU≥0.5 / 64.7% IOU≥0.3 — gated by Phase 1 noise) |
 | 3 | Pre-/between-point filter | `silver.point_detail` no longer contains events outside point boundaries. T5 event count for a798eff0 within ±5% of SA event count. | PREP agent-ac1bff976f520a088 2026-05-07 — see `docs/_investigation/may07_t5_event_noise.md` |
 | 4 | Point-completeness reconciler | New diag tool: for each SA point, report match/partial/missing per stroke. Single-number metric committed alongside `bench_baseline.json`. | RECONCILER 2026-05-07 (baseline 0/17) |
@@ -46,11 +46,11 @@ Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (
 
 ## Per-phase detail
 
-### Phase 1 — Bounce-validity rule
-**What:** New module `ml_pipeline/serve_detector/bounce_validity.py` containing a pure function `validate_bounces(bounce_seq) -> filtered_seq` that keeps bounces whose ball trajectory crosses the net (or terminates in a net-hit). Wire into `RallyStateMachine.__init__` consumers (both `build_from_db` and the extract_far_pose call site).
-**Where:** `ml_pipeline/serve_detector/`. `extract_far_pose` in `ml_pipeline/roi_extractors/pose.py`.
-**How to verify:** Local bench stays 20/24 (no PASS regression). After production Batch rerun on a798eff0 + re-snapshot, expect at least 1 of 458/463/584 to flip to PASS. If not, the bounce signal alone isn't enough — add the cluster_size relaxation in 7.
-**Blocker:** None.
+### Phase 1 — Bounce-validity rule — DONE 2026-05-07
+**What landed:** `ml_pipeline/serve_detector/bounce_validity.py` exposing `validate_bounces()` (HALF_Y=11.885), wired into `RallyStateMachine.build_from_db`, `extract_far_pose`'s in-memory rally-gate block, and `detect_serves_offline` so bench mirrors prod. Image rebuilt + pushed to both ECRs (eu-north-1 rev 44, us-east-1 rev 26, amd64 sub-manifest digest `sha256:3f2a3fa1...c6b8`).
+**Validation:** New fixture `880dff02` ran end-to-end on the new image: bench reports **23/24 (13/14 NEAR, 10/10 FAR)** vs the locked a798eff0 baseline of 20/24. All three target FAR misses (458.08, 463.52, 584.92) flipped from FAR_IN_TIME/NO_MATCH/WEAK_TIME to MATCH on the strict reconciler. New baseline locked in `ml_pipeline/diag/bench_baseline.json`.
+**Residual:** 1/24 still missing — 148.52 NEAR. That's the Bucket C class (bronze pose-amplitude gap, `arm_ext` distribution caps at 0.1px), independent of the phantom-bounce class Phase 1 targeted. Lives in Backlog and Phase 7 territory; not worth chasing without a pose model swap.
+**Key learning:** `extract_far_pose` lives in the Batch container. The first push of Phase 1 was Render-only — Batch jobs ran the OLD image silently. Added pre-merge checklist + on-demand-priority queue swap to handover_t5.md as a result.
 
 ### Phase 2 — Point boundary detection
 **What:** Function `detect_point_boundaries(serves, ball_events, fps) -> [(point_start_frame, point_end_frame)]`. Point starts at accepted serve, ends at the next accepted serve OR the next idle gap >N seconds in valid (net-crossing) bounce activity.
