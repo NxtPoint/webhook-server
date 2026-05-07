@@ -6,12 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pick the closest match and jump there before reading the rest of this file:
 
-- **T5 ML pipeline / serve detector / Batch / silver_t5** → `.claude/handover_t5.md` (read the "NEXT SESSION" block + "TEST HARNESS" section). Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
+- **T5 ML pipeline / serve detector / Batch / silver_t5** → for *macro plan / current phase* see `docs/north_star.md`; for *how to run / validate / ship* see `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS" sections). Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
 - **Dashboard / gold view / endpoint mapping** → `docs/dashboards.md`.
-- **Billing / pricing / entitlements / coach invite** → §Billing System + §Coach Invite Flow below; canonical pricing spec is `docs/pricing_strategy.md`.
+- **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
+- **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
+- **Billing implementation (file map, entry points, flows)** → `docs/billing.md`. Behaviour rules → `docs/business.md`.
+- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
 - **Environment variables (any service)** → `docs/env_vars.md`.
-- **Technique pipeline** → `docs/technique.md`.
-- **Support bot** → `docs/support_bot.md`.
+- **Technique pipeline** → `docs/technique.md` (canonical) + `technique/README.md` (file orientation).
+- **Support bot** → `docs/support_bot.md` (canonical) + `support_bot/README.md` (file orientation).
 - **Anything else** → keep reading. The §Architecture Overview is the right next stop.
 
 ## Things not to do (load-bearing)
