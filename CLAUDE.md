@@ -11,7 +11,8 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
 - **Billing implementation (file map, entry points, flows)** → `docs/billing.md`. Behaviour rules → `docs/business.md`.
-- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
+- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
+- **Ops endpoints / Render shell tasks / `/ops/*` reference** → `docs/ops_runbook.md` (every endpoint with auth, body, expected output, when to run, plus operational task playbooks).
 - **Environment variables (any service)** → `docs/env_vars.md`.
 - **Technique pipeline** → `docs/technique.md` (canonical) + `technique/README.md` (file orientation).
 - **Support bot** → `docs/support_bot.md` (canonical) + `support_bot/README.md` (file orientation).
@@ -28,6 +29,7 @@ These look reasonable but will burn future sessions. Each is an explicit decisio
 5. **Don't push T5 `serve_detector` changes without `bench` green.** The 20/24 baseline on `a798eff0` is locked in `ml_pipeline/diag/bench_baseline.json`. Three prior silent regressions are why this rule exists. The four remaining misses are upstream (pose / court projection) — gate-tuning to chase them backfires.
 6. **Don't add ops endpoints with query-string `?key=` auth.** `_guard()` in `upload_app.py` deliberately rejects it to keep `OPS_KEY` out of access logs. Header-only (`X-Ops-Key` or `Authorization: Bearer`).
 7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code and waste the rerun.
+8. **Don't merge a T5 detector branch without the Batch-side change check.** Bench is green ≠ Batch is in sync. If `git diff origin/main HEAD --stat` against `ml_pipeline/roi_extractors/`, `ml_pipeline/__main__.py`, `ml_pipeline/pipeline.py`, `ml_pipeline/Dockerfile`, `ml_pipeline/requirements.txt`, or `ml_pipeline/serve_detector/` returns any rows, a Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1 are required before the user reruns. See `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST" — protocol exists because we shipped Phase 1 with code in `extract_far_pose` that lived only on Render and not in Batch on 2026-05-07.
 
 ## Services and How to Run
 

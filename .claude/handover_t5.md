@@ -6,6 +6,70 @@
 
 ---
 
+## BATCH-SIDE CHANGE CHECKLIST — RUN THIS BEFORE EVERY MERGE
+
+Bench going green is necessary but **not sufficient**. Bench replays a pickled fixture of pre-extracted detections — it cannot tell you whether the AWS Batch container is in sync with main. The container caches `:latest` on Spot nodes that are torn down between jobs, so each new job pulls the manifest fresh, but only the digest the active job-def revision pins gets pulled.
+
+**Before merging any T5 detector branch, run this:**
+
+```bash
+git diff origin/main HEAD --stat -- ml_pipeline/roi_extractors/ ml_pipeline/__main__.py ml_pipeline/pipeline.py ml_pipeline/Dockerfile ml_pipeline/requirements.txt ml_pipeline/court_detector.py ml_pipeline/ball_tracker.py ml_pipeline/player_tracker.py ml_pipeline/camera_calibration.py ml_pipeline/heatmaps.py ml_pipeline/bronze_export.py ml_pipeline/db_writer.py ml_pipeline/db_schema.py ml_pipeline/tracknet_v3.py ml_pipeline/video_preprocessor.py ml_pipeline/serve_detector/
+```
+
+If the diff is empty: Render-only deploy is enough — `git push origin main` and you're done.
+
+If the diff is non-empty: **a Docker rebuild + dual-region ECR push + new job-def revisions are required**, otherwise Batch jobs run the OLD image silently. Every file in the list above is included in the Batch container at build time. `serve_detector/` is included because `ml_pipeline/roi_extractors/pose.py` imports from it (e.g. `bounce_validity`, `RallyStateMachine`) — the import surface bridges the two halves.
+
+The full deploy sequence is documented under §"How to ship a Batch-side change end-to-end" below. The short version, as run on 2026-05-07 for Phase 1 (BOUNCE):
+
+```bash
+# 1. Auth
+aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 696793787014.dkr.ecr.eu-north-1.amazonaws.com
+aws ecr get-login-password --region us-east-1  | docker login --username AWS --password-stdin 696793787014.dkr.ecr.us-east-1.amazonaws.com
+
+# 2. Build (3-5 min if no requirements change)
+docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .
+
+# 3. Tag + push to BOTH regions (run in parallel)
+docker tag ten-fifty5-ml-pipeline:latest 696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+docker tag ten-fifty5-ml-pipeline:latest 696793787014.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
+docker push 696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest &
+docker push 696793787014.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest &
+wait
+
+# 4. Extract amd64 sub-manifest digest (NOT manifest list, NOT attestation manifest)
+MSYS_NO_PATHCONV=1 aws ecr batch-get-image --region eu-north-1 --repository-name ten-fifty5-ml-pipeline \
+  --image-ids imageTag=latest \
+  --accepted-media-types application/vnd.oci.image.index.v1+json application/vnd.docker.distribution.manifest.list.v2+json \
+  --query 'images[0].imageManifest' --output text \
+  | python -c "import json,sys; m=json.loads(sys.stdin.read()); [print(x['digest']) for x in m['manifests'] if x['platform']['architecture']=='amd64']"
+
+# 5. Register new job-def revisions in both regions, pinned to the new amd64 digest, retryStrategy preserved.
+#    Use the C:\Users\tomos\AppData\Local\Temp\register_jobdefs.py pattern from the May 7 deploy.
+```
+
+**Do not skip step 5.** Pushing `:latest` does NOT change which image a digest-pinned job-def pulls. Lambda submits jobs by job-def NAME (`BATCH_JOB_DEF=ten-fifty5-ml-pipeline`), so new jobs auto-resolve to the latest active revision — but only after step 5 makes that revision the latest.
+
+## ON-DEMAND CAPACITY DEFAULT — QUEUE CE ORDER
+
+For **testing iterations**, the queue is configured so the on-demand CE is priority 1 and Spot is priority 2. Reasoning: testing reruns are time-sensitive (Tomo is waiting for them), and Spot eviction can lose 30-60 min of runtime on a single rerun. The cost premium is ~$0.40 vs $0.12 per job — accepted.
+
+Verify current order:
+```bash
+aws batch describe-job-queues --region eu-north-1 --job-queues ten-fifty5-ml-queue --query 'jobQueues[0].computeEnvironmentOrder'
+```
+
+Expected (as of 2026-05-07): order 1 = `ten-fifty5-ml-ce-eu-ondemand`, order 2 = `ten-fifty5-ml-compute` (Spot).
+
+To revert to Spot-priority production behaviour after a testing campaign:
+```bash
+aws batch update-job-queue --region eu-north-1 --job-queue ten-fifty5-ml-queue --compute-environment-order '[{"order":1,"computeEnvironment":"arn:aws:batch:eu-north-1:696793787014:compute-environment/ten-fifty5-ml-compute"},{"order":2,"computeEnvironment":"arn:aws:batch:eu-north-1:696793787014:compute-environment/ten-fifty5-ml-ce-eu-ondemand"}]'
+```
+
+If on-demand has zero G-family vCPU quota (last confirmed 2026-04-15; quota may have been raised since), jobs will sit in RUNNABLE indefinitely. Fall back to swapping the order back to Spot-first if RUNNABLE → STARTING never transitions within ~5 min.
+
+---
+
 ## NEXT SESSION — READ THIS FIRST
 
 You're picking up cold. **READ THE TEST HARNESS SECTION BELOW BEFORE TOUCHING ANY DETECTOR CODE.** The harness is now the unit of work — every detector change goes through it before push. No more Render-shell trial-and-error.
