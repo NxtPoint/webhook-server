@@ -89,8 +89,9 @@ def _load_sa(conn, sa_tid: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _load_t5(conn, t5_tid: str) -> list[dict]:
-    rows = conn.execute(sql_text("""
+def _load_t5(conn, t5_tid: str, honor_exclude: bool = False) -> list[dict]:
+    extra = "AND COALESCE(exclude_d, FALSE) = FALSE" if honor_exclude else ""
+    rows = conn.execute(sql_text(f"""
         SELECT id, ball_hit_s AS ts, player_id,
                COALESCE(stroke_d, '(null)') AS stroke,
                COALESCE(serve_d, FALSE) AS serve_d
@@ -98,6 +99,7 @@ def _load_t5(conn, t5_tid: str) -> list[dict]:
         WHERE task_id = CAST(:t AS uuid)
           AND model = 't5'
           AND ball_hit_s IS NOT NULL
+          {extra}
         ORDER BY ball_hit_s, id
     """), {"t": t5_tid}).mappings().all()
     return [dict(r) for r in rows]
@@ -282,6 +284,10 @@ def main(argv=None) -> int:
                     help=f"SportAI truth task_id (default {DEFAULT_SA})")
     ap.add_argument("--update-baseline", action="store_true",
                     help="Write current numbers as the new committed baseline")
+    ap.add_argument("--honor-exclude", action="store_true",
+                    help="Drop T5 rows where exclude_d=TRUE before reconciling "
+                         "(post-Phase-3 active view; off by default to preserve "
+                         "the unfiltered baseline interpretation)")
     args = ap.parse_args(argv)
 
     db_url = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
@@ -294,7 +300,7 @@ def main(argv=None) -> int:
 
     with engine.connect() as conn:
         sa_rows = _load_sa(conn, args.sa)
-        t5_rows = _load_t5(conn, args.task)
+        t5_rows = _load_t5(conn, args.task, honor_exclude=args.honor_exclude)
 
     if not sa_rows:
         print(f"No SA rows for task_id={args.sa}", file=sys.stderr)
