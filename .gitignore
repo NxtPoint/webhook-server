@@ -48,6 +48,8 @@ ml_pipeline/eval_history.jsonl
 
 # Serve-detector local diagnostics — contact-sheet PNGs + pose dumps
 diag_*/
+# Exception: diag_sql/ is the read-only SQL ops endpoint (code module, not output).
+!diag_sql/
 ml_pipeline/diag/local_poses_*.jsonl
 
 # Ad-hoc user files at repo root (PDFs, screenshots, quick notes)

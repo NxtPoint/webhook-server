@@ -174,6 +174,16 @@ try:
 except Exception:
     app.logger.exception("cleanup.orphan_sweep_bp register failed on boot")
 
+# ---------- Read-only diagnostic SQL (POST /ops/diag/sql) ----------
+# Tier-2 autonomy infrastructure — see diag_sql/sql_endpoint.py and
+# docs/north_star.md §Autonomy infrastructure. OPS_KEY-gated, header-only,
+# SELECT-only enforced via sqlparse + keyword denylist.
+try:
+    from diag_sql import diag_sql_bp
+    app.register_blueprint(diag_sql_bp)
+except Exception:
+    app.logger.exception("diag_sql.diag_sql_bp register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init
