@@ -1,0 +1,30 @@
+{
+  "commit": "b04ebc2",
+  "fixtures": {
+    "a798eff0": {
+      "points": [
+        0,
+        17
+      ],
+      "sa_task_id": "2c1ad953-b65b-41b4-9999-975964ff92e1",
+      "stroke_verdicts": {
+        "match": 2,
+        "missing": 81,
+        "partial": 2
+      },
+      "strokes": [
+        2,
+        85
+      ],
+      "t5_extras_outside_points": 121,
+      "t5_task_id": "a798eff0-551f-4b5a-838f-7933866a727c",
+      "t5_total": 160,
+      "verdicts": {
+        "full_match": 0,
+        "missing": 15,
+        "partial": 2
+      }
+    }
+  },
+  "updated_at": "2026-05-07"
+}

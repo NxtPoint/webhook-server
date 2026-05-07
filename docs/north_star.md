@@ -37,7 +37,7 @@ Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (
 | 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | UNCLAIMED |
 | 2 | Point boundary detection | Single function: given silver events, identify point start/end. Validated against SA `point_number` boundaries on a798eff0 — ≥80% point-boundary match. | UNCLAIMED |
 | 3 | Pre-/between-point filter | `silver.point_detail` no longer contains events outside point boundaries. T5 event count for a798eff0 within ±5% of SA event count. | PREP agent-ac1bff976f520a088 2026-05-07 — see `docs/_investigation/may07_t5_event_noise.md` |
-| 4 | Point-completeness reconciler | New diag tool: for each SA point, report match/partial/missing per stroke. Single-number metric committed alongside `bench_baseline.json`. | UNCLAIMED |
+| 4 | Point-completeness reconciler | New diag tool: for each SA point, report match/partial/missing per stroke. Single-number metric committed alongside `bench_baseline.json`. | RECONCILER 2026-05-07 (baseline 0/17) |
 | 5 | Stroke classification reconciliation | T5 vs SA stroke distribution within ±10% per class on validated points. Stop calling racquet-bounces "backhands". | UNCLAIMED (depends on 3) |
 | 6 | Bounce + ball-hit coordinate reconciliation | Per-event `bounce_court_x/y` populated; geometric error vs SA <2m on validated points. | UNCLAIMED (depends on 1) |
 | 7 | Final serve-detection cleanup | Revisit 4 a798eff0 misses with the upstream fixes in place. Whatever doesn't recover is genuinely upstream and gets parked. | UNCLAIMED |
