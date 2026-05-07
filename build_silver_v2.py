@@ -701,6 +701,22 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       JOIN with_try_ff w ON w.id = f.id
     ),
 
+    -- ========== WARM-UP FILTER (Phase 3, May 7) ==========
+    -- Drop pre-first-serve activity (racquet-bouncing during warm-up).
+    -- The existing excl_chain only operates within point_number > 0;
+    -- warm-up rows have point_number IS NULL and are not reached by it.
+    -- This complements (does not replace) the per-point exclusion logic.
+    -- Idempotent: only sets exclude_d to TRUE via OR, never to FALSE.
+    -- NULL-safe: a task with no detected serves leaves first_serve_s NULL,
+    -- and the WHEN-clause guard returns FALSE for every row (no-op).
+    -- See docs/north_star.md Phase 3 + docs/_investigation/may07_t5_event_noise.md.
+    first_serve_task AS (
+      SELECT task_id, MIN(ball_hit_s) AS first_serve_s
+      FROM with_try_ff
+      WHERE serve_d IS TRUE AND ball_hit_s IS NOT NULL
+      GROUP BY task_id
+    ),
+
     -- ========== GAME NUMBERING ==========
     -- Anchors: first serves where server changes (p1/p2 only)
     game_anchors AS (
@@ -1009,7 +1025,14 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         so.point_number,
         so.game_number,
 
-        COALESCE(ec.exclude_d, FALSE) AS exclude_d,
+        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve).
+        -- Warm-up filter is NULL-safe — no detected serves => first_serve_s
+        -- is NULL => the right-hand operand is NULL => OR collapses to the
+        -- existing per-point value. Only ever flips FALSE -> TRUE, never the
+        -- reverse, so it can't undo any existing exclusion.
+        (COALESCE(ec.exclude_d, FALSE)
+         OR (fst.first_serve_s IS NOT NULL AND so.ball_hit_s < fst.first_serve_s)
+        ) AS exclude_d,
 
         CASE
           WHEN EXISTS (SELECT 1 FROM double_pts d WHERE d.task_id = so.task_id AND d.point_number = so.point_number)
@@ -1058,6 +1081,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       LEFT JOIN game_winner gw ON gw.task_id = so.task_id AND gw.game_number = so.game_number
       LEFT JOIN srv_loc_ff slf ON slf.id = so.id
       LEFT JOIN set_info si ON TRUE
+      LEFT JOIN first_serve_task fst ON fst.task_id = so.task_id
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
