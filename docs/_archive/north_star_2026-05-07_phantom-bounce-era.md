@@ -1,0 +1,136 @@
+# T5 ML Pipeline — North Star
+
+**Last updated:** 2026-05-07 by Tomo + Claude (cleanup session)
+**This is the single place where the T5 macro plan lives.** Phase work happens against this ladder. Don't invent new directions — pick a phase, claim it, deliver, update.
+
+---
+
+## Product goal
+
+A tennis match analytics dashboard where:
+
+1. Every event shown corresponds to a real point-stroke (no pre-serve racquet-bouncing leaking in, no between-points walking).
+2. Every coordinate is geometrically accurate within the dashboard's tolerance: hitter location, bounce location, ball trajectory.
+3. Per-stroke claims (forehand winner, backhand depth, attack/defence, serve-side) are correct on validated points.
+4. The user can trust per-rally and per-set aggregates because the underlying events are clean.
+
+We are NOT trying to hit 100% serve detection. We're trying to get the dashboard data trustworthy enough that a coach using it would draw the same conclusions as if they'd watched the match.
+
+---
+
+## Current bottleneck
+
+Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (cy 21-26, gaps 0.3-1.0s, never crossing the net) — these are players bouncing the ball on their racquet pre-serve. They pollute `RallyStateMachine` and cascade two ways:
+
+- Upstream (`extract_far_pose`): rally state stays IN_RALLY for 16-second blocks, blocking ROI pose extraction during real serves (3 of 4 remaining a798eff0 misses).
+- Downstream (silver): non-point activity gets ingested as if it were rally play. T5 has 160 events on a798eff0 vs SportAI's 85 — almost 2× the events, most of those extras being pre-/between-point noise.
+
+**Fix direction (Tomo's bounce-validity rule, May 7):** A bounce is valid rally evidence only if it crosses the net (`b1.cy - HALF_Y` and `b2.cy - HALF_Y` have opposite signs) or terminates on a net hit. Same-side multi-bounce sequences are racquet-bouncing or detector noise.
+
+---
+
+## Phase ladder
+
+| # | Phase | Done-when | Owner / Status |
+|---|---|---|---|
+| 0 | Doc cleanup + this file | handover ≤700 lines, ≤5 active T5 memory files, this file exists with phase ladder | DONE 2026-05-07 |
+| 1 | Bounce-validity rule | net-crossing filter applied at every `RallyStateMachine` consumer; bench remains 20/24; new fixture (post-Batch-rerun) confirms 458/463/584 movement | DONE 2026-05-07 — 880dff02 fixture: **23/24 (10/10 FAR)**. All three target FAR misses (458/463/584) flipped to MATCH. |
+| 2 | Point boundary detection | Single function: given silver events, identify point start/end. Validated against SA `point_number` boundaries on a798eff0 — ≥80% point-boundary match. | POINT 2026-05-07 (function landed; 17.6% IOU≥0.5 / 64.7% IOU≥0.3 — gated by Phase 1 noise) |
+| 3 | Pre-/between-point filter | `silver.point_detail` no longer contains events outside point boundaries. T5 event count for a798eff0 within ±5% of SA event count. | PARTIAL agent-a6248c08d8e2998ae 2026-05-07 — warm-up filter shipped (`exclude_d=TRUE WHERE ball_hit_s < first detected serve`, `build_silver_v2.py` pass 3); between-point still pending Phase 2 `detect_point_boundaries` integration. PREP memo: `docs/_investigation/may07_t5_event_noise.md`. |
+| 4 | Point-completeness reconciler | New diag tool: for each SA point, report match/partial/missing per stroke. Single-number metric committed alongside `bench_baseline.json`. | RECONCILER 2026-05-07 (baseline 0/17) |
+| 5 | Stroke classification reconciliation | T5 vs SA stroke distribution within ±10% per class on validated points. Stop calling racquet-bounces "backhands". | UNCLAIMED (depends on 3) |
+| 6 | Bounce + ball-hit coordinate reconciliation | Per-event `bounce_court_x/y` populated; geometric error vs SA <2m on validated points. | UNCLAIMED (depends on 1) |
+| 7 | Final serve-detection cleanup | Revisit 4 a798eff0 misses with the upstream fixes in place. Whatever doesn't recover is genuinely upstream and gets parked. | UNCLAIMED |
+
+---
+
+## Per-phase detail
+
+### Phase 1 — Bounce-validity rule — DONE 2026-05-07
+**What landed:** `ml_pipeline/serve_detector/bounce_validity.py` exposing `validate_bounces()` (HALF_Y=11.885), wired into `RallyStateMachine.build_from_db`, `extract_far_pose`'s in-memory rally-gate block, and `detect_serves_offline` so bench mirrors prod. Image rebuilt + pushed to both ECRs (eu-north-1 rev 44, us-east-1 rev 26, amd64 sub-manifest digest `sha256:3f2a3fa1...c6b8`).
+**Validation:** New fixture `880dff02` ran end-to-end on the new image: bench reports **23/24 (13/14 NEAR, 10/10 FAR)** vs the locked a798eff0 baseline of 20/24. All three target FAR misses (458.08, 463.52, 584.92) flipped from FAR_IN_TIME/NO_MATCH/WEAK_TIME to MATCH on the strict reconciler. New baseline locked in `ml_pipeline/diag/bench_baseline.json`.
+**Residual:** 1/24 still missing — 148.52 NEAR. That's the Bucket C class (bronze pose-amplitude gap, `arm_ext` distribution caps at 0.1px), independent of the phantom-bounce class Phase 1 targeted. Lives in Backlog and Phase 7 territory; not worth chasing without a pose model swap.
+**Key learning:** `extract_far_pose` lives in the Batch container. The first push of Phase 1 was Render-only — Batch jobs ran the OLD image silently. Added pre-merge checklist + on-demand-priority queue swap to handover_t5.md as a result.
+
+### Phase 2 — Point boundary detection
+**What:** Function `detect_point_boundaries(serves, ball_events, fps) -> [(point_start_frame, point_end_frame)]`. Point starts at accepted serve, ends at the next accepted serve OR the next idle gap >N seconds in valid (net-crossing) bounce activity.
+**Where:** `ml_pipeline/serve_detector/` or new `point_structure/` module.
+**How to verify:** Reconciler diag tool that compares T5 boundaries to SA `point_number` ground truth on a798eff0. Per-point match rate ≥80%.
+**Blocker:** Phase 1 should land first because point-end detection depends on knowing real bounces from racquet-bounces.
+
+### Phase 3 — Pre-/between-point filter — PARTIAL 2026-05-07 (warm-up half only)
+**What:** In `build_silver_match_t5.py`, add a filter pass that drops any `player_swing` row whose timestamp falls outside any detected point boundary.
+**Where:** `build_silver_match_t5.py` and possibly the shared `build_silver_v2.py` passes 3-5.
+**How to verify:** T5 event count for a798eff0 within ±5% of SA event count (currently 160 vs 85, target ≤89). T5 stroke distribution per class within ±10% of SA.
+**Blocker:** Phases 1+2.
+
+**Warm-up half landed (agent-a6248c08d8e2998ae, 2026-05-07).** Cheap pre-step from the noise-prep agent's memo: pass 3 in `build_silver_v2.py` now sets `exclude_d=TRUE` on every row whose `ball_hit_s` is below the per-task `MIN(ball_hit_s) FILTER (serve_d)`. Implemented as a new `first_serve_task` CTE + an OR clause in the `final` CTE (lines 704-718, 1028-1035, 1084 of `build_silver_v2.py`). Bench unchanged (a798eff0 20/24, 880dff02 23/24) — silver-only edit, doesn't touch the detector. Predicted impact on `880dff02` T5 silver: 35 rows flip FALSE→TRUE on next `rerun-silver`. Note 35 is below the noise memo's ~52 estimate because that estimate anchored on SA's 54.48s first serve, while this filter anchors on T5's earlier first detected serve (19.68s) — there is room here for a stricter filter once Phase 2's `detect_point_boundaries()` (`ml_pipeline/point_structure/point_boundaries.py`) is integrated. Between-point half still pending — the next session should integrate `detect_point_boundaries()` and treat between-point gaps the same way.
+
+### Phase 4 — Point-completeness reconciler
+**What:** New `ml_pipeline/diag/audit_points.py` (parallel to `audit_all_serves.py`). For each SA point, find matching T5 point, report match/partial/missing per stroke. Output: single number ("X/Y points fully reconcile") + per-point breakdown.
+**Where:** `ml_pipeline/diag/`.
+**How to verify:** Tool runs on the a798eff0 fixture, reports a number, commits the baseline alongside `bench_baseline.json`.
+**Blocker:** None — can be built in parallel with Phase 1, but useful for measuring Phases 2/3.
+
+### Phase 5 — Stroke classification reconciliation
+**What:** Validate that T5's FH/BH/V/OH classifications match SA on validated points. Currently T5 reports BH=62 vs SA's 15 — most of the gap is misclassified racquet-bouncing (Phase 3 should fix). The remainder is classification logic.
+**Where:** `build_silver_v2.py` stroke derivation logic.
+**How to verify:** Phase 4 reconciler reports per-class accuracy ≥90% on validated points.
+**Blocker:** Phase 3.
+
+### Phase 6 — Bounce + ball-hit coordinate reconciliation
+**What:** Phase 1 lands `validate_bounces()` which already filters phantom bounces. Phase 6 ensures the *valid* bounces are populated into silver as `bounce_court_x/y` columns and reconciled vs SA truth. May also need bounce extraction improvements for low-confidence far-half bounces (the Apr 22 ROI bounce extractor was a STUB; revisit `roi_extractors/bounces.py`).
+**Where:** `silver.point_detail` columns, `roi_extractors/bounces.py`, `build_silver_v2.py`.
+**How to verify:** Geometric error <2m vs SA on validated points. Reconciler tool from Phase 4 reports per-event coordinate error.
+**Blocker:** Phase 1.
+
+### Phase 7 — Final serve-detection cleanup
+**What:** With bounce validation, point boundaries, and clean silver in place, revisit the 4 a798eff0 misses. Whichever still don't recover gets a one-line memo in the Backlog + parked.
+**Blocker:** Phases 1-6.
+
+---
+
+## Backlog (issues we know about but aren't in the phase ladder)
+
+- **2.4-7m y-axis offset.** Calibration extrapolation behind the far baseline produces court_y -3 to -7m for players who are visually at the baseline. PASS gate `[-3.5, 4.5]` admits them with 0.1m margin. Apr 29 verified naive widening (-3.5→-5.0) loses 2 PASS. Likely needs to be addressed via a pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`) — touches multiple call sites; deferred.
+- **148.52 NEAR pose-amplitude gap.** Real serve, real keypoints (0.95 conf), but dominant wrist physically never clears avg shoulder line by more than 0.1px. Needs pose-model swap or training data — deferred.
+- **`extract_roi_bounces.py` integration.** WASB bounce extractor (`roi_extractors/bounces.py`) is currently a STUB. Phase 6 revisits.
+- **Stroke classifier (optical flow CNN) training.** `ml_pipeline/stroke_classifier/` exists with model + flow extractor, but no trained weights. Awaiting clean dual-submit data — Phase 3+ might unblock.
+- **TrackNetV3 retraining.** Architecture ported (`ml_pipeline/tracknet_v3.py`); weights not trained — blocked on clean far-half bounce labels.
+- **Custom T5 skill** (`.claude/skills/t5/`). Marginally helpful for new sessions; ~1 hour of work; not blocking. Add when the project enters a calmer phase.
+- **Silver should consume `ml_analysis.serve_events`** (branch `silver/connect-serve-events` / 2026-05-07, **NOT shipped**). `silver.point_detail.serve_d` currently uses a geometric-only rule (overhead swing within 1.5m of a baseline) and ignores the T5 detector entirely; on `880dff02` that gives 16/24 vs the detector's 23/24. The naive fix (OR the geometric rule with `EXISTS (… serve_events WHERE ABS(ts - ball_hit_s) <= 0.5)`) was prototyped + bench-validated locally but **abandoned at the predict-impact step**: predicted FALSE→TRUE flip count was 24 (14 visible + 10 already `exclude_d=TRUE`), well above the 3-15 sanity band. Root cause: `ml_analysis.serve_events` holds **all** detector candidates (107 rows on `880dff02`), not just the 23 reconciler-validated ones — by `rally_state`: pre_point=28, between_points=67, in_rally=12. Joining at ±0.5s leaks noise that Phase 3 is explicitly trying to remove. Two viable paths: (a) persist the strict reconciler's MATCH verdict to a column on `serve_events` so silver can filter to validated rows; (b) gate the EXISTS branch on `rally_state` ∈ ('pre_point','in_rally') AND `confidence >= 0.7` — needs measuring. Blocker for either: someone has to decide which set of candidates silver trusts. Diagnostic queries used to reach this conclusion are reproducible via the validation queries in the original task brief.
+
+---
+
+## Autonomy infrastructure (separate track)
+
+Not blocking phases 1-7. Captured here so it doesn't get lost.
+
+| Tier | What | Effort | Gain |
+|---|---|---|---|
+| 1 | Local diag where possible; user only intervenes on Batch reruns | Already there | ~30% |
+| 2 | Read-only `/api/diag/sql` Flask endpoint with `OPS_KEY` auth + SELECT-only enforcement; agents query via WebFetch | ½ day | ~50% |
+| 3 | GitHub Actions workflow runs `bench` on every push | Few hours | Catches detector regressions before review |
+| 4 | All diag tools DB-aware via the SQL endpoint (point reconciler, bounce extractor, etc.) | Ongoing | ~70% |
+| 5 | Render→Batch automation: trigger reruns from agent context, watch CloudWatch via API | Weekend project | ~90%; only worthwhile if 2+ months of T5 work remain |
+
+Tier 2 is highest immediate leverage. Schedule for after Phase 1 lands.
+
+---
+
+## Operating rules
+
+1. **No detector edit without `bench` green first.** Hard rule from CLAUDE.md.
+2. **Phase work updates this file.** Anyone closing a phase: bump status, write a 3-line "what changed" entry under the phase. Anyone starting: claim it (write your name + date in Status column).
+3. **New ideas → Backlog, not into phases.** New directions get triaged by Tomo before they become phases. Keeps scope contained.
+4. **One agent per phase, isolated worktrees.** No file conflicts.
+5. **Validation that requires Batch reruns is a Tomo-trigger step.** Agent commits + pushes; Tomo reruns Batch when convenient. Not real-time.
+
+---
+
+## How to update this file
+
+- **Closing a phase:** flip Status to DONE with date; write 3 lines under the phase explaining what shipped + key learnings.
+- **Starting a phase:** flip Status from UNCLAIMED to `<your session ID> <YYYY-MM-DD>`; commit before work starts.
+- **Major restructuring (new bottleneck, new phases):** copy current file to `docs/_archive/north_star_YYYY-MM-DD.md` first, then rewrite. Don't lose history.
+- **Bench baseline shifts:** mention here (not just in `bench_baseline.json` commit message). The single-number metric for the dashboard's data quality is what this file is tracking, not just the detector's.
