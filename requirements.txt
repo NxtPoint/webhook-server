@@ -29,3 +29,4 @@ azure-mgmt-powerbidedicated==1.0.0
 
 gunicorn==22.0.0
 anthropic>=0.40.0
+sqlparse==0.5.5
