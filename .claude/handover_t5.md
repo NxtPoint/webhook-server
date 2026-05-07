@@ -1,6 +1,6 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-04-29 (test harness shipped; serve detector at 20/24 = 83% on a798eff0; remaining 4 misses are upstream pipeline issues)
+**Last updated:** 2026-05-07 (phantom-bounce root cause identified; bench locked at 20/24 on a798eff0; the 4 remaining misses split into TWO classes with distinct upstream fixes needed)
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
@@ -10,43 +10,51 @@
 
 You're picking up cold. **READ THE TEST HARNESS SECTION BELOW BEFORE TOUCHING ANY DETECTOR CODE.** The harness is now the unit of work — every detector change goes through it before push. No more Render-shell trial-and-error.
 
-### Current state (verified 2026-04-29 on task `a798eff0-551f-4b5a-838f-7933866a727c` vs SA `2c1ad953-b65b-41b4-9999-975964ff92e1`)
+**Then read `project_t5_may07_phantom_bounces.md`** in MEMORY.md — it has the full evidence chain (visual + DB + harness) for why the 4 remaining misses are upstream and what the actual fix direction is. Don't restart the diagnosis; the receipts are already there.
+
+### Current state (verified 2026-05-07 on task `a798eff0-551f-4b5a-838f-7933866a727c` vs SA `2c1ad953-b65b-41b4-9999-975964ff92e1`)
 
 | Metric | Value | vs 80-90% gate | Status |
 |---|---|---|---|
-| Total MATCH | 20/24 = 83% | ✓ | At the floor without retraining. |
-| Near MATCH | 13/14 = 93% | ✓ | One miss (148.52) is pose-extractor data gap, not gate-tunable. |
-| Far MATCH | 7/10 = 70% | ✓ | Three misses are court-projection data gaps, not gate-tunable. |
-| Bench baseline | committed at `ml_pipeline/diag/bench_baseline.json` | — | Any subsequent gate edit goes through `bench` first. |
+| Total MATCH | 20/24 = 83% | ✓ | Floor — won't move without bounce filtering. |
+| Near MATCH | 13/14 = 93% | ✓ | 148.52 is real bronze pose-amplitude gap (separate problem). |
+| Far MATCH | 7/10 = 70% | ✓ | 458/463/584 all blocked by phantom-bounce rally pollution. |
+| Bench baseline | committed at `ml_pipeline/diag/bench_baseline.json` | — | Any detector edit goes through `bench` first. |
 
-This session went 14/24 → 20/24 (+6) via three harness-validated fixes, all committed:
-1. `rally_state_gate` for near: added 0.55/30 admission band alongside 0.65/20 (+2: 73.12, 347.08)
-2. `cluster_max_gap_s` for far: 1.2s → 0.6s (+1: 555.68 — peak-pick stopped wandering across merged-cluster boundaries)
-3. `min_serve_interval_s` for far: 4.0s → 2.5s → 1.5s (+3: 434.20, 497.40, 502.72 — score=2 real-serve clusters no longer lose dedup duels to score=3 phantoms within 1.5-2s)
+### The 4 remaining misses — two distinct upstream problems
 
-### The 4 remaining misses (NOT gate-tunable — needs upstream pipeline work)
+**Class A — phantom-bounce rally pollution (FAR misses 458.08, 463.52, 584.92).** Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (cy 21-26), 0.3-1.0s apart, never crossing the net. They keep `RallyStateMachine` in IN_RALLY for 16-second blocks centred on each miss. Both upstream (`extract_far_pose`'s rally gate) and downstream (`_detect_pose_based_serves` for far) skip these windows. With the rally gate disabled locally (May 7 test), ROI **does** find the actual far player at the baseline — verified visually. The problem is the rally gate, fed by phantom bounces, blocks them.
 
-| ts | role | classification | next-action layer |
-|---|---|---|---|
-| 148.52 | NEAR | bronze pose extractor never sees trophy peak — wrist stays AT or BELOW shoulder for entire ±2s window (arm_ext=0.1 max). The trophy frame is missed by YOLOv8x-pose (low confidence on the keypoints, or motion blur). | bronze pose extraction — try ROI extractor for near player, or lower YOLO conf threshold on trophy keypoints, or use a temporal model. |
-| 458.08 | FAR | `kpts_without_courty` — 28 keypoint rows in window, 0 of them have court_y populated. Pose extractor saw the player but court projection failed on those exact frames. | court calibration / homography pipeline in Batch. Inspect why those frame indices got NULL court_y when keypoints succeeded. |
-| 463.52 | FAR | `kpts_without_courty` — 10 keypoint rows, 0 court_y. Same root cause as 458.08. | same as 458.08. |
-| 584.92 | FAR | `kpts_outside_baseline_zone` — 15 keypoint rows have court_y=11.1 (mid-court), not the far baseline. Either player-ID swap (we're tracking the near player as pid=1) or homography drift. | court calibration / player tracking. Check whether pid=1 stays consistent through the match. |
+**Class B — bronze pose-amplitude gap (NEAR miss 148.52).** Bronze YOLOv8x-pose returns 0.95-conf keypoints throughout the trophy window, but the dominant wrist physically never clears the avg shoulder line by more than 0.1 px. trophy_frames=0 in ±2s; cluster scores 2 only via toss + both_up. arm_ext distribution for the cluster: min=-76.6 p50=-6.1 max=0.1. Independent of FAR class — needs different fix (different pose model, training data, or accept the floor).
 
-**All four are upstream of `serve_detector`.** Tightening detector gates can't recover what the pose / court layers didn't capture. The fix paths are:
+### Tomo's bounce-validity rule (May 7) — the architectural fix direction
 
-- **Near 148.52** (1 serve, 4% headroom): Investigate why bronze YOLOv8x-pose missed the trophy peak frame. Quick test: re-snapshot with `--player 0` ROI extraction and see if the trophy is recoverable. If yes, ROI extraction for near becomes worthwhile. If no, this is a YOLO confidence / occlusion issue at trophy moment — needs training data.
+> "A bounce can only be valid if it travels from one side to the other side of the net, or into the net. Those phantom bounces are bounces that happen before serve. Players bouncing the ball on racquet etc. It's mostly up and down or perhaps multiple bounces on the same side of the court."
 
-- **Far 458.08 + 463.52** (2 serves, 8% headroom): Court projection failure on specific keypoint rows. Investigate the homography pipeline — when does `court_y` get computed and skipped? Is it driven by ankle keypoint confidence? If so, fall back to hip-based projection on those frames.
+**A bounce sequence `[b1, b2]` is valid rally evidence only if `(b1.cy - HALF_Y)` and `(b2.cy - HALF_Y)` have opposite signs (ball crossed the net) OR there's a net-hit between them.** Same-side bounce sequences are pre-serve racquet bounces or detector noise and must not advance rally state.
 
-- **Far 584.92** (1 serve, 4% headroom): Player-ID assignment. Check whether the YOLOv8m detector + tracker keeps pid=1 = far player throughout the match, or whether ID swaps occur. The cy=11.1 reading means pid=1 was assigned to a body in the mid-court region — could be a fan/ball-kid or an ID swap.
+### Why this needs three coupled changes (not one knob)
+
+1. **Bounce validation** (new logic — somewhere between `ml_analysis.ball_detections` consumers and `RallyStateMachine`). Filter out non-net-crossing bounces.
+2. **`extract_far_pose`** must consume validated bounces (or have its rally gate dropped — downstream gate becomes the safety).
+3. **Downstream `_detect_pose_based_serves` for far** must consume validated bounces too. May also need `sustained_ok` cluster_size relaxed from 30 → 20 (real serve trophy ≈12-25 frames at 25fps).
+
+Each iteration validates via Batch rerun → re-snapshot → bench. ~30-60 min per cycle. Don't try to validate via local rerun — local court calibration is unreliable.
 
 ### What you can do — read in order
 
 1. **READ THE TEST HARNESS SECTION below.** It's the operating manual.
-2. **Don't touch `ml_pipeline/serve_detector/` without running `bench` first.** The 20/24 baseline is locked. Any tweak that doesn't show a clean delta gets reverted.
-3. **The 4 remaining misses are not your serve_detector problem.** They're upstream. Don't try to gate-tune them — three sessions of evidence shows it backfires.
-4. **Pick ONE upstream investigation and own it end-to-end** — most likely 148.52 NEAR with the ROI extractor route, since the pose pipeline already supports per-pid ROI passes.
+2. **Read `project_t5_may07_phantom_bounces.md`** for the receipts. Don't redo the diagnosis.
+3. **Don't widen `_baseline_zone` slack.** Apr 29 verified -3.5→-5.0 lost 2 PASS without bounce filtering as the prerequisite.
+4. **Don't try to relax `idle_threshold_s`.** Phantom bounces are <1s apart — no gap-based threshold short of disabling the gate works. The fix is bounce validation, not threshold tuning.
+5. **Start with bounce validation.** Implement the net-crossing rule. That's the leaf-most upstream fix; everything downstream gets simpler once it's in.
+
+### Diag tools added May 7 (alongside the Apr 29 harness)
+
+- `ml_pipeline/diag/inspect_pose_window.py` — per-frame pose profiler (arm_ext distribution, score breakdown, 5-bucket verdict). Use this any time you need to characterise pose data in a window.
+- `ml_pipeline/diag/probe_roi_coverage.py` — task-wide + per-window ROI coverage probe with neighbour-density buckets. Distinguishes "ROI ran but skipped this window" from "ROI is sparse here generally."
+- `ml_pipeline/diag/replay_roi_pose.py` — CLI to re-run `extract_far_pose` locally (or on Render) on chosen frame ranges with rally gate disabled. Includes `--cleanup` for removing debug rows from `ml_analysis.player_detections_roi`.
+- `extract_far_pose` (production) now accepts `frame_from`/`frame_to`/`replace` params (defaults preserve prior behaviour).
 
 ---
 
