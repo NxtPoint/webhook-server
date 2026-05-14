@@ -20,7 +20,10 @@
   --amber: #d97706;
   --red: #dc2626;
   --blue: #2563eb;
-  --radius: 4px;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
+  --shadow-md: 0 1px 3px rgba(0,0,0,0.04), 0 2px 6px rgba(0,0,0,0.04);
   --transition: 0.2s ease;
 }
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -140,13 +143,15 @@ body {
 }
 .kpi {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); text-align: center;
+  padding: 16px 18px; box-shadow: var(--shadow-sm); text-align: center;
+  transition: box-shadow var(--transition), transform var(--transition);
 }
-.kpi .val { font-size: 1.6rem; font-weight: 700; color: var(--green); line-height: 1.2; }
+.kpi:hover { box-shadow: var(--shadow-md); }
+.kpi .val { font-size: 1.85rem; font-weight: 700; color: var(--green); line-height: 1.15; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 .kpi .val.amber { color: var(--amber); }
 .kpi .val.red { color: var(--red); }
 .kpi .val.blue { color: var(--blue); }
-.kpi .lbl { font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+.kpi .lbl { font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.6px; margin-top: 6px; font-weight: 600; }
 
 /* ========== CHART CARDS — identical to practice.html ========== */
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
@@ -157,11 +162,13 @@ body {
 .chart-grid.stacked-right { display: grid; grid-template-rows: 1fr 1fr; gap: 16px; }
 .chart-card {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); position: relative;
+  padding: 18px; box-shadow: var(--shadow-sm); position: relative;
+  transition: box-shadow var(--transition);
 }
+.chart-card:hover { box-shadow: var(--shadow-md); }
 .chart-card h3 {
-  font-size: 0.82rem; font-weight: 600; color: var(--text-sec); margin-bottom: 12px;
-  text-transform: uppercase; letter-spacing: 0.5px;
+  font-size: 0.84rem; font-weight: 600; color: var(--text-sec); margin-bottom: 14px;
+  text-transform: uppercase; letter-spacing: 0.6px;
 }
 .chart-card .echart { height: 280px; width: 100%; }
 .chart-card.full { grid-column: 1 / -1; width: 100%; }
@@ -170,11 +177,12 @@ body {
 .compare-row { display: flex; align-items: center; margin-bottom: 6px; }
 .stat-label {
   font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
-  white-space: nowrap; width: 130px; text-align: center; flex-shrink: 0; padding: 0 8px;
+  white-space: nowrap; width: 150px; text-align: center; flex-shrink: 0; padding: 0 8px;
 }
 .compare-bar { height: 22px; border-radius: 4px; transition: width 0.5s ease; min-width: 4px; }
 .compare-val {
-  font-size: 0.82rem; font-weight: 700; white-space: nowrap; min-width: 46px; padding: 0 6px;
+  font-size: 0.82rem; font-weight: 700; white-space: nowrap; min-width: 52px; padding: 0 6px;
+  font-variant-numeric: tabular-nums;
 }
 .compare-half { display: flex; align-items: center; flex: 1; gap: 6px; }
 .compare-half.left { justify-content: flex-end; }
@@ -196,15 +204,18 @@ body {
 .score-set .set-val .winner { color: var(--green); }
 .score-set .set-val .loser { color: var(--text-dim); }
 
-/* Serve strategy table */
-.strategy-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+/* Serve strategy / generic data table */
+.strategy-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
 .strategy-table th {
   text-align: left; padding: 8px 12px; font-size: 0.72rem; font-weight: 600;
   color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.5px;
   border-bottom: 2px solid var(--border);
 }
 .strategy-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.strategy-table tr:last-child td { border-bottom: none; }
+.strategy-table tr:last-child td {
+  border-bottom: none; border-top: 2px solid var(--border);
+  font-weight: 700; background: rgba(0,0,0,0.02);
+}
 .strategy-table .highlight { background: rgba(26,92,46,0.06); }
 .strategy-table .bar-cell { position: relative; }
 .strategy-table .bar-bg {
@@ -469,6 +480,18 @@ body {
   font-size: 0.82rem; color: var(--text-sec); margin-bottom: 16px;
 }
 
+/* iPad / small-laptop range — ease cramped 4-col & 6-col grids. */
+@media (min-width: 769px) and (max-width: 1100px) {
+  .chart-grid.quad { grid-template-columns: 1fr 1fr; }
+  .chart-grid.hex  { grid-template-columns: repeat(3, 1fr); }
+  .chart-grid.tri  { grid-template-columns: 1fr 1fr; }
+  .chart-card { padding: 14px; }
+  .chart-card .echart { height: 260px; }
+  .kpi-strip { gap: 10px; }
+  .kpi .val { font-size: 1.65rem; }
+  .stat-label { width: 110px; }
+}
+
 /* Responsive — IDENTICAL to practice.html mobile rules */
 @media (max-width: 768px) {
   .dash-layout { display: flex; flex-direction: column; height: auto; overflow-x: hidden; width: 100%; }
@@ -484,12 +507,13 @@ body {
   .dash-content { padding: 12px; padding-bottom: 300px; overflow-x: hidden; }
   .chart-grid, .chart-grid.tri, .chart-grid.quad, .chart-grid.hex, .chart-grid.split { grid-template-columns: 1fr; }
   .chart-grid.hex { grid-template-columns: 1fr 1fr 1fr; }  /* 3-col gauge grid on mobile */
-  .kpi-strip { grid-template-columns: repeat(2, 1fr); gap: 8px; }
-  .kpi .val { font-size: 1.3rem; }
-  .kpi .lbl { font-size: 0.65rem; }
-  .chart-card { padding: 12px; }
-  .chart-card .echart { height: 240px; }
-  .chart-card h3 { font-size: 0.75rem; }
+  .kpi-strip { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .kpi { padding: 12px 10px; }
+  .kpi .val { font-size: 1.5rem; }
+  .kpi .lbl { font-size: 0.66rem; margin-top: 4px; }
+  .chart-card { padding: 14px; border-radius: var(--radius-sm); }
+  .chart-card .echart { height: 260px; }
+  .chart-card h3 { font-size: 0.78rem; margin-bottom: 10px; }
   .score-box { flex-direction: column; gap: 12px; }
   .stat-label { width: 100px; font-size: 0.65rem; }
   .compare-val { font-size: 0.72rem; min-width: 38px; }
@@ -1005,12 +1029,16 @@ function renderScoreBox() {
     const b = m[`player_b_set${i}_games`];
     if (a == null || b == null) continue;
     const aWin = a > b;
+    const tie  = a === b;
+    // Tie: neither greyed out — both sides played and neither lost.
+    const aCls = tie ? '' : (aWin ? 'winner' : 'loser');
+    const bCls = tie ? '' : (aWin ? 'loser'  : 'winner');
     setsHTML += `<div class="score-set">
       <div class="set-label">Set ${i}</div>
       <div class="set-val">
-        <span class="${aWin ? 'winner' : 'loser'}">${a}</span>
+        <span class="${aCls}">${a}</span>
         <span style="color:var(--text-dim);font-weight:400">-</span>
-        <span class="${!aWin ? 'winner' : 'loser'}">${b}</span>
+        <span class="${bCls}">${b}</span>
       </div>
     </div>`;
   }
@@ -1279,17 +1307,24 @@ function strategyTable(data) {
     const totalPlayed = rows.reduce((s, r) => s + r.pointsPlayed, 0);
     const overallWinPct = totalPlayed > 0 ? Math.round(100 * totalWon / totalPlayed) : 0;
     const overallColor = overallWinPct >= 60 ? 'var(--green)' : overallWinPct >= 40 ? 'var(--amber)' : 'var(--red)';
+    // Per-row % is now % of *this side* (matches the "Total 100%" row).
+    // Largest-remainder so the side column sums to exactly 100.
+    const denom = totalCount || 1;
+    const exact = rows.map(r => 100 * r.count / denom);
+    const floors = exact.map(Math.floor);
+    const remaining = Math.max(0, Math.min(rows.length, 100 - floors.reduce((a,b)=>a+b,0)));
+    exact.map((e, i) => ({ i, f: e - floors[i] })).sort((a,b)=>b.f-a.f).slice(0, remaining).forEach(o => floors[o.i]++);
     return `<div>
       <h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">${sideLabel}</h4>
       <table class="strategy-table" style="font-size:0.78rem">
-        <thead><tr><th>Direction</th><th style="text-align:right">N</th><th style="text-align:right">%</th><th style="text-align:right">Won</th><th style="text-align:right">Win %</th></tr></thead>
-        <tbody>${rows.map(r => {
+        <thead><tr><th>Direction</th><th style="text-align:right">N</th><th style="text-align:right">% of side</th><th style="text-align:right">Won</th><th style="text-align:right">Win %</th></tr></thead>
+        <tbody>${rows.map((r, i) => {
           const winColor = r.winPct >= 60 ? 'var(--green)' : r.winPct >= 40 ? 'var(--amber)' : 'var(--red)';
           const highlight = r.winPct >= 60 ? ' class="highlight"' : '';
           return `<tr${highlight}>
             <td style="font-weight:600">${r.direction}</td>
             <td style="text-align:right">${r.count}</td>
-            <td style="text-align:right">${r.pctOfTotal}%</td>
+            <td style="text-align:right">${floors[i]}%</td>
             <td style="text-align:right">${r.pointsWon}/${r.pointsPlayed}</td>
             <td style="text-align:right;font-weight:700;color:${winColor}">${r.winPct}%</td>
           </tr>`;
@@ -3148,7 +3183,7 @@ function eBar(id, labels, data, colors, horizontal = false) {
       axisLine: { show: false }, axisTick: { show: false },
     },
     series: [{
-      type: 'bar', barWidth: '55%',
+      type: 'bar', barWidth: '55%', barMaxWidth: 64, barCategoryGap: '35%',
       label: { show: true, position: horizontal ? 'right' : 'top', fontSize: 12, fontWeight: 600, color: '#374151' },
       data: data.map((v, i) => {
         const c = isMultiColor ? colors[i % colors.length] : colors;
@@ -3190,7 +3225,7 @@ function eStackedBar(id, labels, seriesData, horizontal = false) {
       axisLine: { show: false }, axisTick: { show: false },
     },
     series: seriesData.map((s, si) => ({
-      type: 'bar', name: s.name, stack: 'total', barWidth: '55%',
+      type: 'bar', name: s.name, stack: 'total', barWidth: '55%', barMaxWidth: 64, barCategoryGap: '35%',
       data: s.data,
       itemStyle: {
         color: s.color,
@@ -3210,22 +3245,43 @@ function eStackedBar(id, labels, seriesData, horizontal = false) {
 function ePie(id, data, colors) {
   const chart = ec(id);
   if (!chart) return null;
+  // Largest-remainder so the labelled %s sum to exactly 100 instead of 99/101
+  // from independent rounding. ECharts' own p.percent rounds independently.
+  const total = data.reduce((s, d) => s + (d.value || 0), 0) || 1;
+  const exact = data.map(d => 100 * (d.value || 0) / total);
+  const floors = exact.map(Math.floor);
+  const allocated = floors.reduce((a, b) => a + b, 0);
+  const remaining = Math.max(0, Math.min(data.length, 100 - allocated));
+  const order = exact.map((e, i) => ({ i, frac: e - floors[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let j = 0; j < remaining; j++) floors[order[j].i]++;
   chart.setOption({
     ...ANIM, tooltip: TT_ITEM,
     legend: { bottom: 0, textStyle: { fontSize: 13 }, itemGap: 20, icon: 'circle' },
+    // Centre label: show the total in the donut hole. World-class dashboards
+    // (Stripe / Linear) use this convention — fills the empty centre and
+    // anchors the eye to the headline number.
+    graphic: [{
+      type: 'group', left: 'center', top: '45%', z: 100, silent: true,
+      children: [
+        { type: 'text', top: -12, style: { text: String(total), font: 'bold 18px Inter, sans-serif', fill: '#1a1a1a', textAlign: 'center' } },
+        { type: 'text', top: 10, style: { text: 'Total', font: '10px Inter, sans-serif', fill: '#9ca3af', textAlign: 'center' } },
+      ],
+    }],
     series: [{
       type: 'pie', radius: ['45%', '75%'], center: ['50%', '45%'],
-      padAngle: 3,
+      padAngle: 3, minAngle: 6,
       itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
       label: {
-        show: true,
-        formatter: (p) => `{name|${p.name}}\n{pct|${p.percent.toFixed(0)}%}  {cnt|(${p.value})}`,
+        show: true, alignTo: 'edge', edgeDistance: 12, bleedMargin: 8,
+        formatter: (p) => `{name|${p.name}}\n{pct|${floors[p.dataIndex]}%}  {cnt|(${p.value})}`,
         rich: {
           name: { fontSize: 13, fontWeight: 600, color: '#374151', lineHeight: 20 },
           pct: { fontSize: 18, fontWeight: 700, color: '#1a5c2e', lineHeight: 24 },
           cnt: { fontSize: 12, color: '#9ca3af' },
         },
       },
+      labelLayout: { hideOverlap: true },
       emphasis: {
         label: { fontSize: 15, fontWeight: 'bold' },
         itemStyle: { shadowBlur: 20, shadowColor: 'rgba(0,0,0,0.2)' },
@@ -3309,13 +3365,15 @@ function renderAllCharts() {
       CI['chartPhasePoints'] = chart;
     }
 
-    // Shot outcome distribution
+    // Shot outcome distribution — rally-phase scope so winners + errors + in-play
+    // sum to rally_shots. Match Summary's k.pa_errors / k.pa_winners include
+    // returns (different scope) and would mix the denominator.
     if (document.getElementById('chartOutcomes')) {
       const rA = byRole(selectedData.rally, 'player_a') || {};
       const rB = byRole(selectedData.rally, 'player_b') || {};
-      const aW = k.pa_winners || 0, aE = k.pa_errors || 0;
+      const aW = rA.winners || 0, aE = rA.errors || 0;
       const aI = Math.max(0, (rA.rally_shots || 0) - aW - aE);
-      const bW = k.pb_winners || 0, bE = k.pb_errors || 0;
+      const bW = rB.winners || 0, bE = rB.errors || 0;
       const bI = Math.max(0, (rB.rally_shots || 0) - bW - bE);
       eStackedBar('chartOutcomes', [pa, pb], [
         { name: 'Winners', data: [aW, bW], color: C_GREEN },
@@ -3385,7 +3443,7 @@ function renderAllCharts() {
                 label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
                   formatter: p => p.value > 5 ? 'Attack ' + p.value + '%' : '' } },
               { type: 'bar', stack: 'total', name: 'Neutral', data: [Math.round(100*r.aggression_neutral/total)],
-                itemStyle: { color: C_AMBER }, barWidth: '100%',
+                itemStyle: { color: 'rgba(107,114,128,0.75)' }, barWidth: '100%',
                 label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
                   formatter: p => p.value > 5 ? 'Neutral ' + p.value + '%' : '' } },
               { type: 'bar', stack: 'total', name: 'Defence', data: [Math.round(100*r.aggression_defence/total)],
@@ -3430,9 +3488,13 @@ function renderAllCharts() {
       const r = byRole(selectedData.return, role) || {};
       const sfx = role === 'player_a' ? 'a' : 'b';
 
-      eBar('chartRetDepth_' + sfx, ['Deep', 'Middle', 'Short'],
-        [r.returns_deep || 0, r.returns_middle || 0, r.returns_short || 0],
-        [C_GREEN, C_AMBER, C_RED]);
+      // Return Depth: add 'Other' bucket so bars sum to Returns Played
+      // (some returns end up with NULL depth_d — same pattern as rally depth).
+      const retDepthAccounted = (r.returns_deep || 0) + (r.returns_middle || 0) + (r.returns_short || 0);
+      const retDepthOther = Math.max(0, (r.returns_played || 0) - retDepthAccounted);
+      eBar('chartRetDepth_' + sfx, ['Deep', 'Middle', 'Short', 'Other'],
+        [r.returns_deep || 0, r.returns_middle || 0, r.returns_short || 0, retDepthOther],
+        [C_GREEN, C_AMBER, C_RED, 'rgba(156,163,175,0.75)']);
 
       ePie('chartRetStroke_' + sfx, [
         { name: 'Forehand', value: r.returns_forehand || 0 },
@@ -3498,7 +3560,7 @@ function renderAllCharts() {
 
       eBar('chartAgg_' + sfx, ['Attack', 'Neutral', 'Defence'],
         [r.aggression_attack || 0, r.aggression_neutral || 0, r.aggression_defence || 0],
-        [C_GREEN, C_AMBER, C_RED], true);
+        [C_GREEN, 'rgba(107,114,128,0.75)', C_RED], true);
 
       // Depth: include 'Other' for shots silver couldn't classify (NULL depth_d).
       // Without this the bars silently miss rally shots — Tomo 13+4+3=20 ≠ 21.
