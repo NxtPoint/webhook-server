@@ -861,6 +861,7 @@ function renderSummary() {
       <div class="chart-card">
         <h3>Points Won by Phase</h3>
         <div id="chartPhasePoints" class="echart"></div>
+        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Rally (5+) is a subset of Serve and Return &mdash; counts overlap.</div>
       </div>
       <div class="chart-card">
         <h3>Shot Outcome Distribution</h3>
@@ -1086,10 +1087,12 @@ function renderServePerfTab() {
       <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Outcomes by Direction</h3>
         <div id="chartServeDirOut_a" class="echart"></div>
+        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Counts every serve attempt &mdash; a 1st-serve fault and its 2nd-serve outcome both appear.</div>
       </div>
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Outcomes by Direction</h3>
         <div id="chartServeDirOut_b" class="echart"></div>
+        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Counts every serve attempt &mdash; a 1st-serve fault and its 2nd-serve outcome both appear.</div>
       </div>
     </div>
 
@@ -1123,12 +1126,15 @@ function renderServeDetailTab() {
   const pa = k.player_a_name || 'Player A';
   const pb = k.player_b_name || 'Player B';
 
-  // Build 1st/2nd serve direction data from serve_breakdown rows by serve_try
+  // Build 1st/2nd serve direction data from serve_breakdown rows by serve_try.
+  // silver stamps serve_bucket_d as lowercase 'wide' / 'body' but 'T' uppercase
+  // (build_silver_v2.py); normalise to the chart's casing so the table matches.
   function serveByTry(role, tryVal) {
     const rows = rowsForRole(selectedData.serve || [], role).filter(r => r.serve_try_ix_in_point === tryVal);
+    const dirMap = { wide: 'Wide', body: 'Body', t: 'T' };
     const agg = {};
     rows.forEach(r => {
-      const d = r.serve_bucket_d || 'Unknown';
+      const d = dirMap[(r.serve_bucket_d || '').toLowerCase()] || 'Unknown';
       if (!agg[d]) agg[d] = { count: 0, won: 0, played: 0, inCount: 0 };
       agg[d].count   += r.serve_count   || 0;
       agg[d].won     += r.points_won    || 0;
@@ -1565,8 +1571,8 @@ function renderRallyDetail() {
         <div>
           ${statCard('Rally Shots', rA.rally_shots || 0, rB.rally_shots || 0)}
           ${statCard('Rally Pts Won %', (k.pa_rally_pts_won_pct || 0) + '%', (k.pb_rally_pts_won_pct || 0) + '%')}
-          ${statCard('Winners', rA.winners || 0, rB.winners || 0)}
-          ${statCard('Errors', rA.errors || 0, rB.errors || 0, true)}
+          ${statCard('Rally Winners', rA.winners || 0, rB.winners || 0)}
+          ${statCard('Rally Errors', rA.errors || 0, rB.errors || 0, true)}
         </div>
         <div>
           ${statCard('W:E Ratio', wErrA, wErrB)}
@@ -1692,8 +1698,12 @@ function renderPointAnalysis() {
     }).join('');
   }
 
-  // Zone table — all phases, player A
-  const placementA = rowsForRole(selectedData.placement || [], 'player_a');
+  // Zone table — rally phases only (Rally / Transition / Net). Serves have
+  // a NULL rally_location_hit so leaving them in produced an "Unknown" bucket
+  // of ~14 shots per player and a misleading total of 42 (= 14 serves + 7
+  // returns + 21 rally shots). Match the filter renderRallySummaryTab uses.
+  const placementA = rowsForRole(selectedData.placement || [], 'player_a')
+    .filter(s => s.shot_phase_d === 'Rally' || s.shot_phase_d === 'Transition' || s.shot_phase_d === 'Net');
   const ownerId = k.player_a_id;
 
   function zoneEffTable(shots, zoneKey, title) {
@@ -2320,9 +2330,18 @@ function buildGenericTable(shots, groupKey, secondKey, ownerId, colLabel) {
     if (s.point_winner_player_id === ownerId) groups[key].won++;
   });
   const total = shots.length || 1;
-  const rows = Object.values(groups)
-    .map(g => ({ ...g, pct: Math.round(100 * g.count / total), winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0 }))
+  let rows = Object.values(groups)
+    .map(g => ({ ...g, winPct: g.count > 0 ? Math.round(100 * g.won / g.count) : 0 }))
     .sort((a, b) => b.count - a.count);
+  // Largest-remainder rounding so % column sums to exactly 100 (no 101% artefacts).
+  const exact = rows.map(r => 100 * r.count / total);
+  const floors = exact.map(Math.floor);
+  const allocated = floors.reduce((a, b) => a + b, 0);
+  const remaining = Math.max(0, Math.min(rows.length, 100 - allocated));
+  const order = exact.map((e, i) => ({ i, frac: e - floors[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let j = 0; j < remaining; j++) floors[order[j].i]++;
+  rows = rows.map((r, i) => ({ ...r, pct: floors[i] }));
   if (!rows.length) return '<div style="text-align:center;color:var(--text-dim);font-size:0.8rem;padding:20px">No data</div>';
   const totalCount = rows.reduce((s, r) => s + r.count, 0);
   const totalWon = rows.reduce((s, r) => s + r.won, 0);
@@ -3425,9 +3444,11 @@ function renderAllCharts() {
   if (activeTab === 'rally-detail') {
     const lenRows = (selectedData.rallyLength || []).slice()
       .sort((a, b) => (a.rally_length_point || 0) - (b.rally_length_point || 0));
+    // Length-distribution counts every point in the match (not Tomo-only);
+    // use a neutral colour so the visual doesn't imply a per-player split.
     eBar('chartRallyLen',
       lenRows.map(r => r.rally_length_point + ' shots'),
-      lenRows.map(r => r.points || 0), C_GREEN);
+      lenRows.map(r => r.points || 0), 'rgba(100,116,139,0.75)');
 
     const buckets = ['Short (1-4)', 'Medium (5-8)', 'Long (9+)'];
     const paWins = [0, 0, 0], pbWins = [0, 0, 0];
@@ -3468,14 +3489,28 @@ function renderAllCharts() {
         [r.aggression_attack || 0, r.aggression_neutral || 0, r.aggression_defence || 0],
         [C_GREEN, C_AMBER, C_RED], true);
 
-      eBar('chartDepth_' + sfx, ['Deep', 'Middle', 'Short'],
-        [r.depth_deep || 0, r.depth_middle || 0, r.depth_short || 0],
-        [C_GREEN, C_AMBER, C_RED]);
+      // Depth: include 'Other' for shots silver couldn't classify (NULL depth_d).
+      // Without this the bars silently miss rally shots — Tomo 13+4+3=20 ≠ 21.
+      const depthAccounted = (r.depth_deep || 0) + (r.depth_middle || 0) + (r.depth_short || 0);
+      const depthOther = Math.max(0, (r.rally_shots || 0) - depthAccounted);
+      eBar('chartDepth_' + sfx, ['Deep', 'Middle', 'Short', 'Other'],
+        [r.depth_deep || 0, r.depth_middle || 0, r.depth_short || 0, depthOther],
+        [C_GREEN, C_AMBER, C_RED, 'rgba(156,163,175,0.75)']);
 
-      ePie('chartStroke_' + sfx, [
-        { name: 'Forehand', value: r.stroke_forehand || 0 },
-        { name: 'Backhand', value: r.stroke_backhand || 0 },
-      ], [C_GREEN, C_BLUE]);
+      // Stroke: include Slice + Volley + Other so the donut sums to rally_shots.
+      const strokeAccounted = (r.stroke_forehand || 0) + (r.stroke_backhand || 0)
+        + (r.stroke_slice || 0) + (r.stroke_volley || 0);
+      const strokeOther = Math.max(0, (r.rally_shots || 0) - strokeAccounted);
+      const strokeWedgeDefs = [
+        { name: 'Forehand', value: r.stroke_forehand || 0, color: C_GREEN },
+        { name: 'Backhand', value: r.stroke_backhand || 0, color: C_BLUE },
+        { name: 'Slice',    value: r.stroke_slice    || 0, color: C_AMBER },
+        { name: 'Volley',   value: r.stroke_volley   || 0, color: C_TEAL },
+        { name: 'Other',    value: strokeOther,            color: 'rgba(156,163,175,0.75)' },
+      ].filter(w => w.value > 0);
+      ePie('chartStroke_' + sfx,
+        strokeWedgeDefs.map(w => ({ name: w.name, value: w.value })),
+        strokeWedgeDefs.map(w => w.color));
 
       // Rally outcome donut
       const rW = r.winners || 0, rE = r.errors || 0;
