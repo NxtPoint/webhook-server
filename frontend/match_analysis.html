@@ -861,7 +861,7 @@ function renderSummary() {
       <div class="chart-card">
         <h3>Points Won by Phase</h3>
         <div id="chartPhasePoints" class="echart"></div>
-        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Rally (5+) is a subset of Serve and Return &mdash; counts overlap.</div>
+        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Serve = unreturned. Return = returner won. Rally = server won after the return. Bars partition the match &mdash; per-player and total sums equal points played.</div>
       </div>
       <div class="chart-card">
         <h3>Shot Outcome Distribution</h3>
@@ -3268,14 +3268,25 @@ function renderAllCharts() {
 
   // ===== SUMMARY TAB =====
   if (activeTab === 'summary') {
-    // Points won by phase (Serve / Return / Rally) — from kpi directly
+    // Points Won by Phase — clean partition of every point won:
+    //   Serve  = unreturned serves (server wins, length 1)
+    //   Return = returner wins (any length)
+    //   Rally  = server wins after the return came back (points_won - free - return_won)
+    // Three buckets, no overlap. Per player sums to that player's total wins;
+    // grand total sums to total points played.
     if (document.getElementById('chartPhasePoints')) {
       const chart = ec('chartPhasePoints');
+      const paFree   = k.pa_unreturned_serves || 0;
+      const paReturn = k.pa_ret_pts_won       || 0;
+      const paRally  = Math.max(0, (k.pa_points_won || 0) - paFree - paReturn);
+      const pbFree   = k.pb_unreturned_serves || 0;
+      const pbReturn = k.pb_ret_pts_won       || 0;
+      const pbRally  = Math.max(0, (k.pb_points_won || 0) - pbFree - pbReturn);
       chart.setOption({
         ...ANIM, tooltip: TT,
         legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'roundRect' },
         grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
-        xAxis: { type: 'category', data: ['Serve', 'Return', 'Rally (5+)'],
+        xAxis: { type: 'category', data: ['Serve', 'Return', 'Rally'],
           axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
           axisLine: { lineStyle: { color: '#e5e5e5' } }
         },
@@ -3286,11 +3297,11 @@ function renderAllCharts() {
         },
         series: [
           { type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
-            data: [k.pa_svc_pts_won || 0, k.pa_ret_pts_won || 0, k.pa_rally_pts_won || 0],
+            data: [paFree, paReturn, paRally],
             itemStyle: { color: PA_COLOR, borderRadius: [6, 6, 0, 0] },
             label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PA_COLOR } },
           { type: 'bar', name: pb, barWidth: '25%',
-            data: [k.pb_svc_pts_won || 0, k.pb_ret_pts_won || 0, k.pb_rally_pts_won || 0],
+            data: [pbFree, pbReturn, pbRally],
             itemStyle: { color: PB_COLOR, borderRadius: [6, 6, 0, 0] },
             label: { show: true, position: 'top', fontSize: 12, fontWeight: 600, color: PB_COLOR } },
         ],
