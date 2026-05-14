@@ -272,16 +272,17 @@ shot_stats AS (
         MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_second_serve_speed_max,
         AVG(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_second_serve_speed_avg,
         MAX(s.ball_speed) FILTER (WHERE s.serve_d = true AND s.serve_try_ix_in_point = '2nd' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_second_serve_speed_max,
-        -- Forehand speed
-        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_fh_speed_avg,
-        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_fh_speed_max,
-        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_fh_speed_avg,
-        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_fh_speed_max,
-        -- Backhand speed
-        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_bh_speed_avg,
-        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_bh_speed_max,
-        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_avg,
-        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_max,
+        -- Forehand / Backhand speed — rally phases only so Match Summary
+        -- gauges match Rally Detail averages (WARN-011). Returns are
+        -- groundstrokes too but reported on the Return tab.
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_fh_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_fh_speed_max,
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_fh_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_fh_speed_max,
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_bh_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id)::numeric(5,1) AS pa_bh_speed_max,
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_avg,
+        MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_b_id)::numeric(5,1) AS pb_bh_speed_max,
         -- Total serves (all serve_d shots per player)
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.player_id = pl.player_a_id) AS pa_total_serves,
         COUNT(*) FILTER (WHERE s.serve_d = true AND s.player_id = pl.player_b_id) AS pb_total_serves,
@@ -593,6 +594,17 @@ SELECT
     -- Outcomes
     COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Winner') AS winners,
     COUNT(*) FILTER (WHERE s.shot_outcome_d = 'Error') AS errors,
+    -- Stroke × outcome cross-product (BUG-005: Point Analysis "Winners &
+    -- Errors by Stroke"). Frontend already reads these field names; the
+    -- view just wasn't emitting them.
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Forehand' AND s.shot_outcome_d = 'Winner') AS winner_stroke_forehand,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Forehand' AND s.shot_outcome_d = 'Error')  AS error_stroke_forehand,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Backhand' AND s.shot_outcome_d = 'Winner') AS winner_stroke_backhand,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Backhand' AND s.shot_outcome_d = 'Error')  AS error_stroke_backhand,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Volley'   AND s.shot_outcome_d = 'Winner') AS winner_stroke_volley,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Volley'   AND s.shot_outcome_d = 'Error')  AS error_stroke_volley,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Slice'    AND s.shot_outcome_d = 'Winner') AS winner_stroke_slice,
+    COUNT(*) FILTER (WHERE s.stroke_d = 'Slice'    AND s.shot_outcome_d = 'Error')  AS error_stroke_slice,
     -- Speeds
     AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0)::numeric(5,1) AS fh_speed_avg,
     MAX(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0)::numeric(5,1) AS fh_speed_max,

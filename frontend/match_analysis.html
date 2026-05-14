@@ -1410,7 +1410,7 @@ function renderReturnDetail() {
           ${statCard('Return Errors', rA.return_errors || 0, rB.return_errors || 0, true)}
           ${statCard('vs 1st Serve %', vs1A + '%', vs1B + '%')}
           ${statCard('vs 2nd Serve %', vs2A + '%', vs2B + '%')}
-          ${statCard('Break Opportunity', (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0), (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0))}
+          ${statCard('Return Pts Won', (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0), (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0))}
         </div>
       </div>
     </div>
