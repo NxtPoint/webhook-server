@@ -1233,8 +1233,14 @@ function renderHero() {
   actionsHtml += `<button class="btn-remove" onclick="event.stopPropagation();confirmRemoveMatch(${heroIdx})" title="Remove this match from your profile">Remove</button>`;
 
   const heroArea = document.getElementById('heroArea');
+  // Body-click goes to Analysis if it's available; otherwise opens the edit
+  // modal so the user can still act on the card. Explicit Edit / Analysis
+  // buttons stay for unambiguous actions.
+  const heroBodyAction = analysisReady
+    ? `onclick="openAnalysis('${latest.task_id}')"`
+    : `onclick="openDetail(${heroIdx})"`;
   heroArea.innerHTML = `
-    <div class="hero-card" onclick="openDetail(${heroIdx})">
+    <div class="hero-card" ${heroBodyAction}>
       <div class="section-label" style="margin-bottom:12px">Latest Match</div>
       <div class="hero-top">
         <div>
@@ -1345,7 +1351,11 @@ function renderGroupedMatches() {
           ? `onclick="event.stopPropagation();openAnalysis('${m.task_id}')"`
           : 'onclick="event.stopPropagation()" disabled';
         const analysisTitle = analysisReady ? 'Open match analytics' : 'Analytics not yet available';
-        html += `<div class="match-card" onclick="openDetail(${m._idx})">
+        // Body-click: prefer Analysis when available, fall back to Edit.
+        const cardBodyAction = analysisReady
+          ? `onclick="openAnalysis('${m.task_id}')"`
+          : `onclick="openDetail(${m._idx})"`;
+        html += `<div class="match-card" ${cardBodyAction}>
           <div class="match-info">
             <div class="match-opponent">${esc(m.player_a_name||'Player A')} vs ${esc(m.player_b_name||'Opponent')}</div>
             <div class="match-meta">${esc(meta)} <span class="status-badge ${status.cls}">${status.label}</span></div>
