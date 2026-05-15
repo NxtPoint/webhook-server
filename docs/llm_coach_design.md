@@ -1,5 +1,19 @@
 # LLM Tennis Coach — Feature Spec
 
+> ⚠️ **Historical design doc — drifted from production.**
+> This was the original design spec written before implementation. The actual production code took different decisions, most notably:
+> - **No `ss_*` views.** The implementation uses `gold.coach_*` (defined in `tennis_coach/coach_views.py`) plus existing `gold.match_*` views. The data fetcher (`tennis_coach/data_fetcher.py`) shapes the JSON payload in Python.
+> - **`gold.coach_pressure_points` is a stub.** Break-point detection needs game-score progression which silver doesn't store; the view returns zero rows.
+>
+> **For current state, read these first:**
+> - [`../tennis_coach/README.md`](../tennis_coach/README.md) — file map, entry points, current data flow
+> - [`business.md`](business.md) §4 — the AI Coach paywall and rate-limit rules
+> - [`pricing_strategy.md`](pricing_strategy.md) §7 — access matrix and positioning
+>
+> Kept here for design rationale and historical context only. Do not implement from this doc.
+
+---
+
 **Status**: Design approved. Implementation pending completion of `ss_*` presentation layer.
 
 **Author**: Background design agent, 2026-04-11

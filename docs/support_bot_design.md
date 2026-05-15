@@ -1,5 +1,19 @@
 # Support Bot — Feature Spec
 
+> ⚠️ **Historical design doc — drifted from production.**
+> This was the original design spec. Production took a different UX direction:
+> - **No floating chat bubble.** The bot is now a dedicated page at `/help` (served by `frontend/support.html`), reached via the **Help & Support** sidebar item in the portal. The decision is captured in memory `feedback_native_pages_over_widgets.md` ("for portal features, build dedicated pages reached via sidebar; floating widgets feel bolted-on").
+> - The backend architecture, prompts, FAQ contract, cost model, and escalation rules in this doc are **still accurate** — only the UX surface changed.
+>
+> **For current state, read these first:**
+> - [`support_bot.md`](support_bot.md) — canonical live-implementation reference (the page, endpoints, cost, guardrails)
+> - [`../support_bot/README.md`](../support_bot/README.md) — file map and entry points
+> - [`../support_bot/faq.md`](../support_bot/faq.md) — the load-bearing FAQ content the bot answers from
+>
+> Kept here for backend architecture rationale. Do not implement from §2 (User Experience) — that section is stale.
+
+---
+
 **Status**: Design draft, pending review.
 **Author**: 2026-04-27
 **Sibling spec**: `docs/llm_coach_design.md` — many patterns mirror that doc deliberately.
