@@ -752,8 +752,10 @@ shot_agg AS (
         COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Winner' AND s.player_id = pl.player_a_id) AS rally_winners,
         COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.shot_outcome_d = 'Error' AND s.player_id = pl.player_a_id) AS rally_errors,
         COUNT(*) FILTER (WHERE s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id) AS rally_shots_total,
-        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS fh_speed_avg,
-        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS bh_speed_avg,
+        -- Rally-phase only so Performance Scorecard FH/BH speed matches
+        -- the Match Analytics view (gold.match_kpi after WARN-011 fix).
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Forehand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id)::numeric(5,1) AS fh_speed_avg,
+        AVG(s.ball_speed) FILTER (WHERE s.stroke_d = 'Backhand' AND s.ball_speed > 0 AND s.shot_phase_d IN ('Rally','Transition','Net') AND s.player_id = pl.player_a_id)::numeric(5,1) AS bh_speed_avg,
         AVG(s.ball_speed) FILTER (WHERE s.serve_d AND s.ball_speed > 0 AND s.player_id = pl.player_a_id)::numeric(5,1) AS serve_speed_avg
     FROM gold.vw_player pl
     LEFT JOIN silver.point_detail s ON s.task_id = pl.task_id AND s.exclude_d IS NOT TRUE

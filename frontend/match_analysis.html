@@ -204,6 +204,35 @@ body {
 .score-set .set-val .winner { color: var(--green); }
 .score-set .set-val .loser { color: var(--text-dim); }
 
+/* Performance Module — player selector */
+.perf-player-row {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px; flex-wrap: wrap;
+}
+.perf-player-label {
+  font-size: 0.7rem; color: var(--text-sec); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.6px;
+}
+.perf-player-select-wrap {
+  position: relative; min-width: 220px;
+}
+.perf-player-select-wrap::after {
+  content: ''; position: absolute; right: 14px; top: 50%; pointer-events: none;
+  width: 8px; height: 8px; border-right: 2px solid var(--green); border-bottom: 2px solid var(--green);
+  transform: translateY(-65%) rotate(45deg); transition: transform var(--transition);
+}
+.perf-player-select {
+  width: 100%; appearance: none; -webkit-appearance: none;
+  padding: 10px 36px 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--white); color: var(--text);
+  font-size: 0.9rem; font-weight: 600; font-family: inherit;
+  box-shadow: var(--shadow-sm); cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.perf-player-select:hover { border-color: var(--green); box-shadow: var(--shadow-md); }
+.perf-player-select:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 3px rgba(26,92,46,0.12); }
+
 /* Serve strategy / generic data table */
 .strategy-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
 .strategy-table th {
@@ -514,6 +543,25 @@ body {
   .chart-card { padding: 14px; border-radius: var(--radius-sm); }
   .chart-card .echart { height: 260px; }
   .chart-card h3 { font-size: 0.78rem; margin-bottom: 10px; }
+  /* H2H compare-row: stack label above the bars so each half breathes.
+     Inline 150px label leaves bars only ~80px each on a 360px phone.
+     Grid layout: label spans both columns on row 1; left/right halves
+     occupy row 2 side-by-side. */
+  .compare-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px 8px;
+    margin-bottom: 12px;
+  }
+  .compare-row .stat-label {
+    grid-column: 1 / -1; width: auto; text-align: center; padding: 0;
+    font-size: 0.62rem; letter-spacing: 0.5px;
+  }
+  .compare-row .compare-half { flex: none; gap: 6px; }
+  .compare-row .compare-half.left { grid-column: 1; justify-content: flex-end; }
+  .compare-row .compare-half.right { grid-column: 2; justify-content: flex-start; }
+  .compare-row .compare-val { font-size: 0.78rem; min-width: 38px; padding: 0 4px; }
+  .compare-row .compare-bar { height: 18px; }
   .score-box { flex-direction: column; gap: 12px; }
   .stat-label { width: 100px; font-size: 0.65rem; }
   .compare-val { font-size: 0.72rem; min-width: 38px; }
@@ -868,10 +916,10 @@ function renderSummary() {
         <div style="font-weight:700;color:${PB_COLOR}">${pb}</div>
       </div>
       ${compareBar('Points Won', `${pct(k.pa_points_won, k.total_points)}%`, `${pct(k.pb_points_won, k.total_points)}%`, k.pa_points_won, k.pb_points_won)}
-      ${compareBar('Service Pts Won', `${k.pa_svc_pts_won_pct || 0}%`, `${k.pb_svc_pts_won_pct || 0}%`, k.pa_svc_pts_won, k.pb_svc_pts_won)}
-      ${compareBar('Return Pts Won', `${k.pa_ret_pts_won_pct || 0}%`, `${k.pb_ret_pts_won_pct || 0}%`, k.pa_ret_pts_won, k.pb_ret_pts_won)}
-      ${compareBar('Rally Pts Won', `${k.pa_rally_pts_won_pct || 0}%`, `${k.pb_rally_pts_won_pct || 0}%`, k.pa_rally_pts_won, k.pb_rally_pts_won)}
-      ${compareBar('1st Serve %', `${k.pa_first_serve_pct || 0}%`, `${k.pb_first_serve_pct || 0}%`, k.pa_first_serve_pct, k.pb_first_serve_pct)}
+      ${compareBar('Service Pts Won', `${pctW(k.pa_svc_pts_won_pct)}%`, `${pctW(k.pb_svc_pts_won_pct)}%`, k.pa_svc_pts_won, k.pb_svc_pts_won)}
+      ${compareBar('Return Pts Won', `${pctW(k.pa_ret_pts_won_pct)}%`, `${pctW(k.pb_ret_pts_won_pct)}%`, k.pa_ret_pts_won, k.pb_ret_pts_won)}
+      ${compareBar('Rally Pts Won', `${pctW(k.pa_rally_pts_won_pct)}%`, `${pctW(k.pb_rally_pts_won_pct)}%`, k.pa_rally_pts_won, k.pb_rally_pts_won)}
+      ${compareBar('1st Serve %', `${pctW(k.pa_first_serve_pct)}%`, `${pctW(k.pb_first_serve_pct)}%`, k.pa_first_serve_pct, k.pb_first_serve_pct)}
       ${compareBar('Aces', k.pa_aces || 0, k.pb_aces || 0, k.pa_aces, k.pb_aces)}
       ${compareBar('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, k.pa_double_faults, k.pb_double_faults, true)}
       ${compareBar('Winners', k.pa_winners || 0, k.pb_winners || 0, k.pa_winners, k.pb_winners)}
@@ -1088,8 +1136,8 @@ function renderServePerfTab() {
           ${statCard('UTR', k.player_a_utr || '—', k.player_b_utr || '—')}
           ${statCard('Total Serves', k.pa_total_serves || 0, k.pb_total_serves || 0)}
           ${statCard('Svc Pts Won', k.pa_svc_pts_won || 0, k.pb_svc_pts_won || 0)}
-          ${statCard('1st Serve In %', (k.pa_first_serve_pct || 0) + '%', (k.pb_first_serve_pct || 0) + '%')}
-          ${statCard('Svc Pts Won %', (k.pa_svc_pts_won_pct || 0) + '%', (k.pb_svc_pts_won_pct || 0) + '%')}
+          ${statCard('1st Serve In %', pctW(k.pa_first_serve_pct) + '%', pctW(k.pb_first_serve_pct) + '%')}
+          ${statCard('Svc Pts Won %', pctW(k.pa_svc_pts_won_pct) + '%', pctW(k.pb_svc_pts_won_pct) + '%')}
         </div>
         <div>
           ${statCard('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, true)}
@@ -1209,13 +1257,13 @@ function renderServeDetailTab() {
         <div>
           ${statCard('Svc Points Played', k.pa_service_points || 0, k.pb_service_points || 0)}
           ${statCard('Svc Points Won', k.pa_svc_pts_won || 0, k.pb_svc_pts_won || 0)}
-          ${statCard('Svc Pts Won %', (k.pa_svc_pts_won_pct || 0) + '%', (k.pb_svc_pts_won_pct || 0) + '%')}
-          ${statCard('1st Serve In %', (k.pa_first_serve_pct || 0) + '%', (k.pb_first_serve_pct || 0) + '%')}
+          ${statCard('Svc Pts Won %', pctW(k.pa_svc_pts_won_pct) + '%', pctW(k.pb_svc_pts_won_pct) + '%')}
+          ${statCard('1st Serve In %', pctW(k.pa_first_serve_pct) + '%', pctW(k.pb_first_serve_pct) + '%')}
         </div>
         <div>
-          ${statCard('1st Serve Win %', (k.pa_first_serve_won_pct || 0) + '%', (k.pb_first_serve_won_pct || 0) + '%')}
-          ${statCard('2nd Serve In %', (k.pa_second_serve_pct || 0) + '%', (k.pb_second_serve_pct || 0) + '%')}
-          ${statCard('2nd Serve Win %', (k.pa_second_serve_won_pct || 0) + '%', (k.pb_second_serve_won_pct || 0) + '%')}
+          ${statCard('1st Serve Win %', pctW(k.pa_first_serve_won_pct) + '%', pctW(k.pb_first_serve_won_pct) + '%')}
+          ${statCard('2nd Serve In %', pctW(k.pa_second_serve_pct) + '%', pctW(k.pb_second_serve_pct) + '%')}
+          ${statCard('2nd Serve Win %', pctW(k.pa_second_serve_won_pct) + '%', pctW(k.pb_second_serve_won_pct) + '%')}
           ${statCard('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, true)}
         </div>
       </div>
@@ -1550,7 +1598,7 @@ function renderRallySummaryTab() {
           ${statCard('Rally Pts Played', totalRallyPts, totalRallyPts)}
           ${statCard('Rally Pts Won', k.pa_rally_pts_won || 0, k.pb_rally_pts_won || 0)}
           ${statCard('Rally Pts Lost', k.pb_rally_pts_won || 0, k.pa_rally_pts_won || 0, true)}
-          ${statCard('Rally Pts Won %', (k.pa_rally_pts_won_pct || 0) + '%', (k.pb_rally_pts_won_pct || 0) + '%')}
+          ${statCard('Rally Pts Won %', pctW(k.pa_rally_pts_won_pct) + '%', pctW(k.pb_rally_pts_won_pct) + '%')}
         </div>
         <div>
           ${statCard('Winner %', winnerPctA + '%', winnerPctB + '%')}
@@ -1605,7 +1653,7 @@ function renderRallyDetail() {
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
           ${statCard('Rally Shots', rA.rally_shots || 0, rB.rally_shots || 0)}
-          ${statCard('Rally Pts Won %', (k.pa_rally_pts_won_pct || 0) + '%', (k.pb_rally_pts_won_pct || 0) + '%')}
+          ${statCard('Rally Pts Won %', pctW(k.pa_rally_pts_won_pct) + '%', pctW(k.pb_rally_pts_won_pct) + '%')}
           ${statCard('Rally Winners', rA.winners || 0, rB.winners || 0)}
           ${statCard('Rally Errors', rA.errors || 0, rB.errors || 0, true)}
         </div>
@@ -1929,6 +1977,11 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// Whole-number percent helper. Gold returns 1-decimal percentages
+// (e.g. 42.9) — round for clean dashboard display. Use everywhere a
+// SQL-side _pct value lands on screen so the dashboard is consistent.
+function pctW(v) { return Math.round(Number(v) || 0); }
+
 async function askCoachPreset(promptKey) {
   const tid = selectedMatch?.task_id;
   if (!tid || coachBusy) return;
@@ -2168,7 +2221,7 @@ function renderHeatmapContent() {
           <h3>${tabTitle}</h3>
           <div id="heatmapStats" class="heatmap-stats-row"></div>
           <div class="heatmap-court-wrap">
-            <canvas id="heatmapCourt" width="1200" height="760"></canvas>
+            <canvas id="heatmapCourt" width="1200" height="1100"></canvas>
           </div>
           <h3 id="heatmapTableTitle" style="margin-top:12px;margin-bottom:4px">Placement Summary</h3>
           <div class="heatmap-split-tables" id="heatmapTable"></div>
@@ -2484,12 +2537,19 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
 
-  // Court dimensions (metres) with surround padding
+  // Court dimensions (metres) with surround padding.
+  // Top-half-only view: the shot-plotting code mirrors every shot into the
+  // near half, so the far half of the court is always empty. Cropping the
+  // view to "net → near baseline + room behind" gives proportional space to
+  // the visible data and roomier behind-baseline area for return and rally
+  // hit positions (where players often stand 1-3m behind the line).
   const COURT_L = 23.77, COURT_W = 10.97, SINGLES_W = 8.23, SVC_LINE = 6.40, NET_Y = COURT_L / 2;
-  const SURROUND_X = 2.0;  // ~2m each side outside doubles lines
-  const SURROUND_Y = 4.0;  // ~4m behind each baseline
+  const SURROUND_X = 2.0;       // ~2m each side outside doubles lines
+  const EXTEND_BEHIND_Y = 7.0;  // 7m behind near baseline (was 4m on full court)
+  const VIEW_TOP_Y    = NET_Y - 0.4;            // tiny strip above the net for visibility
+  const VIEW_BOTTOM_Y = COURT_L + EXTEND_BEHIND_Y;
+  const VIEW_RANGE_Y  = VIEW_BOTTOM_Y - VIEW_TOP_Y;
   const TOTAL_W = COURT_W + SURROUND_X * 2;
-  const TOTAL_L = COURT_L + SURROUND_Y * 2;
 
   // Canvas padding (small pixel margin)
   const PAD = Math.round(W * 0.01);
@@ -2501,9 +2561,11 @@ function drawHeatmapCourt(canvasId, shots, statsId) {
   const LW_OUTER = Math.max(3, Math.round(W / 320));
   const half = 0.5;
 
-  // Total area → canvas coordinate helpers (includes surround)
+  // Total area → canvas coordinate helpers. cy maps the cropped near-half
+  // window onto the full canvas height; far-half lines (cy(0), cy(SVC_LINE),
+  // etc.) fall off-canvas and don't render.
   function cx(courtX) { return PAD + ((courtX + SURROUND_X) / TOTAL_W) * CW; }
-  function cy(courtY) { return PAD + ((courtY + SURROUND_Y) / TOTAL_L) * CH; }
+  function cy(courtY) { return PAD + ((courtY - VIEW_TOP_Y) / VIEW_RANGE_Y) * CH; }
 
   ctx.clearRect(0, 0, W, H);
 
@@ -2898,12 +2960,13 @@ async function renderPerformanceModule() {
 
   // Player selector — required (no "All"). Hidden when only one linked player.
   const selector = performancePlayers.length > 1 ? `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-      <label for="perfPlayerSelect" style="font-size:0.78rem;color:var(--text-sec);font-weight:500">Player</label>
-      <select id="perfPlayerSelect" onchange="switchPerfPlayer(this.value)"
-              style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.85rem;min-width:180px">
-        ${performancePlayers.map(p => `<option value="${escapeHtml(p)}"${p === performanceSelectedPlayer ? ' selected' : ''}>${escapeHtml(p)}</option>`).join('')}
-      </select>
+    <div class="perf-player-row">
+      <label for="perfPlayerSelect" class="perf-player-label">Player</label>
+      <div class="perf-player-select-wrap">
+        <select id="perfPlayerSelect" class="perf-player-select" onchange="switchPerfPlayer(this.value)">
+          ${performancePlayers.map(p => `<option value="${escapeHtml(p)}"${p === performanceSelectedPlayer ? ' selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+        </select>
+      </div>
     </div>
   ` : '';
 
@@ -2967,9 +3030,14 @@ function renderScorecard(playerName, totalMatches, rows) {
       tableRows += `<tr class="cat-divider"><td colspan="7">${escapeHtml(r.category)}</td></tr>`;
     }
 
-    const val = r.avg_last_5 != null ? Number(r.avg_last_5).toFixed(1) : '—';
-    const bench = r.benchmark != null ? Number(r.benchmark).toFixed(1) : '—';
-    const delta = r.delta_vs_benchmark != null ? Number(r.delta_vs_benchmark).toFixed(1) : '—';
+    // Whole numbers for percentages, 1 decimal for non-percent KPIs
+    // (rally length, speeds, W:E ratio). Keeps the dashboard consistent
+    // with Match Analytics where SQL-side _pct values are rounded for display.
+    const fmt = (v) => v == null ? '—'
+      : (r.unit === '%' ? String(Math.round(Number(v))) : Number(v).toFixed(1));
+    const val   = fmt(r.avg_last_5);
+    const bench = fmt(r.benchmark);
+    const delta = fmt(r.delta_vs_benchmark);
     const deltaColor = r.delta_vs_benchmark == null ? 'var(--text-dim)'
       : (r.higher_is_better ? (r.delta_vs_benchmark >= 0 ? 'var(--green)' : 'var(--red)')
         : (r.delta_vs_benchmark <= 0 ? 'var(--green)' : 'var(--red)'));
