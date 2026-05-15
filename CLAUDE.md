@@ -11,7 +11,7 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
 - **Billing implementation (file map, entry points, flows)** → `docs/billing.md`. Behaviour rules → `docs/business.md`.
-- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
+- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`, `superset/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
 - **Ops endpoints / Render shell tasks / `/ops/*` reference** → `docs/ops_runbook.md` (every endpoint with auth, body, expected output, when to run, plus operational task playbooks).
 - **Environment variables (any service)** → `docs/env_vars.md`.
 - **Technique pipeline** → `docs/technique.md` (canonical) + `technique/README.md` (file orientation).
@@ -57,7 +57,7 @@ gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 1800
 
 No automated test suite and no linter. All functional testing is manual against the live Render database. Do not run `pytest`.
 
-**One CI check exists:** `.github/workflows/bench.yml` runs `python -m ml_pipeline.diag.bench` on every push to `main` and every PR that touches `ml_pipeline/serve_detector/**`, `ml_pipeline/diag/bench*`, `ml_pipeline/diag/replay_serves.py`, `build_silver_v2.py`, or the workflow itself. It replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`ml_pipeline/diag/bench_baseline.json`, currently 20/24). Bench exits non-zero on any negative delta, which fails the PR check. Sub-second runtime; no DB, no AWS, no ML weights — see `.claude/handover_t5.md` §"TEST HARNESS". If the check goes red: revert the offending commit, reproduce locally with the same command, and only ship a fix that turns it green again. Do not skip or relax the check to land a PR — the regression is real (this is exactly the silent slip from `0cb645a` that motivated the harness).
+**One CI check exists** — `.github/workflows/bench.yml` is the entire `.github/` surface, no other workflows. It runs `python -m ml_pipeline.diag.bench` on every push to `main` and every PR that touches `ml_pipeline/serve_detector/**`, `ml_pipeline/diag/bench*`, `ml_pipeline/diag/replay_serves.py`, `build_silver_v2.py`, or the workflow itself. It replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`ml_pipeline/diag/bench_baseline.json`, currently 20/24). Bench exits non-zero on any negative delta, which fails the PR check. Sub-second runtime; no DB, no AWS, no ML weights — see `.claude/handover_t5.md` §"TEST HARNESS". If the check goes red: revert the offending commit, reproduce locally with the same command, and only ship a fix that turns it green again. Do not skip or relax the check to land a PR — the regression is real (this is exactly the silent slip from `0cb645a` that motivated the harness).
 
 Schema DDL is split across files:
 - `db_init.py::bronze_init()` — bronze tables (idempotent, called on boot)
@@ -315,9 +315,20 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 - `subscriptions_api.py`, `usage_api.py`, `entitlements_api.py` — billing surface (see [Billing System](#billing-system)).
 - `ui_app.py` — **legacy** admin UI mounted at `/upload/*`, OPS_KEY auth. Renders bronze/silver inspection pages via `render_template_string`. Not used by any SPA (`backoffice.html` is the real admin UI) — retained for shell/debugging only.
 
+**Root-level cron scripts** (invoked by Render Cron Jobs, not registered as blueprints):
+
+- `cron_capacity_sweep.py` — periodic billing/capacity sweep. See `docs/billing.md` and `docs/env_vars.md` for schedule + env vars.
+- `cron_monthly_refill.py` — monthly entitlement refill for active subscriptions.
+
+**Ignorable root directories** — present on disk but not part of the runtime:
+
+- `_archive/` — deprecated code kept for reference (don't read unless investigating a specific historical regression).
+- `diag_081e089c/`, `data/` — local investigation snapshots and scratch dumps (often git-ignored). Skip unless the current task explicitly references them.
+- `static/`, `templates/` — Flask defaults; the actual SPAs live under `frontend/` and bronze/silver inspection templates are inlined in `ui_app.py`.
+
 **`frontend/`** — all SPA HTML pages. Served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`:
 
-- Authenticated app: `locker_room.html`, `media_room.html`, `portal.html` (nav shell / Wix entry point), `backoffice.html`, `pricing.html`, `coach_accept.html`, `players_enclosure.html` (register wizard), `practice.html`, `match_analysis.html`
+- Authenticated app: `locker_room.html`, `media_room.html`, `portal.html` (nav shell / Wix entry point), `backoffice.html`, `pricing.html`, `coach_accept.html`, `players_enclosure.html` (register wizard), `practice.html`, `match_analysis.html`, `support.html` (served at `/help`)
 - Public marketing: `home.html`, `how_it_works.html`, `pricing_public.html`, `for_coaches.html`
 
 **`docs/`** — design docs and strategy specs (`pricing_strategy.md`, `llm_coach_design.md`). Source of truth for business rules. Code links back to section numbers (e.g. "see docs/pricing_strategy.md §6").
@@ -328,7 +339,7 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 
 In-house tennis video analysis pipeline. Runs on AWS Batch GPU (Spot G4dn.xlarge) for detection; runs on Render for serve detection + silver build. Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
 
-**All operational detail (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, session log, current task IDs, known gaps) lives in `.claude/handover_t5.md`.** Read that file at the start of any T5 session — it's the single source of truth.
+**All operational detail (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, session log, current task IDs, known gaps) lives in `.claude/handover_t5.md`.** Read that file at the start of any T5 session — it's the single source of truth. Note: `.claude/` is git-ignored, so `handover_t5.md` and the other `.claude/*.md` notes referenced throughout this file are local-only — they exist on disk but won't show up in `git log` / GitHub.
 
 ### Data flow (overview only — detail in handover)
 
@@ -389,3 +400,4 @@ Tables, gold view list, key files, frontend swing-type list, full flow detail: *
 - **`_archive/`**: Deprecated/replaced code kept for reference.
 - **`lambda/`**: AWS Lambda source (e.g., S3 trigger for ML pipeline).
 - **`.claude/`**: Local Claude Code settings (git-ignored).
+- **Auto-memory** (Claude Code's per-project memory dir, indexed by `MEMORY.md`): persistent cross-session notes loaded into every conversation. Historical T5 context (`project_t5_*.md`), user/feedback rules, and feature-launch records live here — check it for "why did we decide X" before re-deriving from code. Local to the machine, not in git.
