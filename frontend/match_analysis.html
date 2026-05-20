@@ -175,19 +175,36 @@ body {
 .chart-card.full { grid-column: 1 / -1; width: 100%; margin-bottom: 16px; }
 .chart-grid > .chart-card.full { margin-bottom: 0; }  /* inside a grid, gap handles spacing */
 
-/* Per-player stat table (Serve / Return / Rally Performance summaries) */
-.player-stat-table {
-  width: 100%; max-width: 520px; margin: 0 auto;
+/* H2H side-by-side stat table — used at the top of Serve / Return / Rally
+   Performance tabs. Player names are bold column headers; metric label is the
+   centre column; winner cell gets player colour + bold, loser cell muted. */
+.h2h-stat-table {
+  width: 100%; max-width: 900px; margin: 0 auto;
   border-collapse: collapse; font-variant-numeric: tabular-nums;
 }
-.player-stat-table tr { border-bottom: 1px solid var(--border); }
-.player-stat-table tr:last-child { border-bottom: none; }
-.player-stat-table td { padding: 9px 14px; }
-.player-stat-table .psl {
-  font-size: 0.74rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
+.h2h-stat-table thead th {
+  font-size: 0.85rem; font-weight: 700; padding: 8px 16px;
+  border-bottom: 2px solid var(--border);
 }
-.player-stat-table .psv {
-  font-size: 1rem; font-weight: 700; text-align: right; padding-right: 6px;
+.h2h-stat-table thead th.h2h-metric {
+  text-align: center; color: var(--text-sec); font-size: 0.68rem;
+  text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600;
+}
+.h2h-stat-table tbody tr { border-bottom: 1px solid var(--border); }
+.h2h-stat-table tbody tr:last-child { border-bottom: none; }
+.h2h-stat-table tbody td { padding: 9px 16px; }
+.h2h-stat-table td.h2h-win  { font-size: 1rem; font-weight: 700; text-align: center; }
+.h2h-stat-table td.h2h-lose { font-size: 1rem; font-weight: 500; color: var(--text-dim); text-align: center; }
+.h2h-stat-table td.h2h-tie  { font-size: 1rem; font-weight: 600; color: var(--text-sec); text-align: center; }
+.h2h-stat-table td.h2h-metric {
+  text-align: center; color: var(--text-sec); font-size: 0.74rem;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+@media (max-width: 768px) {
+  .h2h-stat-table thead th { font-size: 0.78rem; padding: 6px 6px; }
+  .h2h-stat-table tbody td { padding: 7px 6px; }
+  .h2h-stat-table td.h2h-win, .h2h-stat-table td.h2h-lose, .h2h-stat-table td.h2h-tie { font-size: 0.88rem; }
+  .h2h-stat-table td.h2h-metric { font-size: 0.65rem; }
 }
 
 /* ========== HEAD-TO-HEAD BARS (match analysis specific) ========== */
@@ -1153,39 +1170,22 @@ function renderServePerfTab() {
   const stratA = buildServeStrategyFromView('player_a');
   const stratB = buildServeStrategyFromView('player_b');
 
-  const serveRowsA = [
-    ['UTR',                k.player_a_utr || '—'],
-    ['Total Serves',       k.pa_total_serves || 0],
-    ['Svc Pts Won',        k.pa_svc_pts_won || 0],
-    ['1st Serve In %',     pctW(k.pa_first_serve_pct) + '%'],
-    ['Svc Pts Won %',      pctW(k.pa_svc_pts_won_pct) + '%'],
-    ['Double Faults',      k.pa_double_faults || 0],
-    ['Unreturned Svc Pts', k.pa_unreturned_serves || 0],
-    ['Avg Serve Speed',    k.pa_serve_speed_avg || '—'],
-    ['Fastest Serve',      k.pa_serve_speed_max || '—'],
-  ];
-  const serveRowsB = [
-    ['UTR',                k.player_b_utr || '—'],
-    ['Total Serves',       k.pb_total_serves || 0],
-    ['Svc Pts Won',        k.pb_svc_pts_won || 0],
-    ['1st Serve In %',     pctW(k.pb_first_serve_pct) + '%'],
-    ['Svc Pts Won %',      pctW(k.pb_svc_pts_won_pct) + '%'],
-    ['Double Faults',      k.pb_double_faults || 0],
-    ['Unreturned Svc Pts', k.pb_unreturned_serves || 0],
-    ['Avg Serve Speed',    k.pb_serve_speed_avg || '—'],
-    ['Fastest Serve',      k.pb_serve_speed_max || '—'],
+  const serveRows = [
+    ['UTR',                k.player_a_utr || '—',                       k.player_b_utr || '—'],
+    ['Total Serves',       k.pa_total_serves || 0,                      k.pb_total_serves || 0],
+    ['Svc Pts Won',        k.pa_svc_pts_won || 0,                       k.pb_svc_pts_won || 0],
+    ['1st Serve In %',     pctW(k.pa_first_serve_pct) + '%',            pctW(k.pb_first_serve_pct) + '%'],
+    ['Svc Pts Won %',      pctW(k.pa_svc_pts_won_pct) + '%',            pctW(k.pb_svc_pts_won_pct) + '%'],
+    ['Double Faults',      k.pa_double_faults || 0,                     k.pb_double_faults || 0,                   true],
+    ['Unreturned Svc Pts', k.pa_unreturned_serves || 0,                 k.pb_unreturned_serves || 0],
+    ['Avg Serve Speed',    k.pa_serve_speed_avg || '—',                 k.pb_serve_speed_avg || '—'],
+    ['Fastest Serve',      k.pa_serve_speed_max || '—',                 k.pb_serve_speed_max || '—'],
   ];
 
   return `
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3 style="color:${PA_COLOR}">${pa} · Serve Performance</h3>
-        ${playerStatTable(serveRowsA, PA_COLOR)}
-      </div>
-      <div class="chart-card">
-        <h3 style="color:${PB_COLOR}">${pb} · Serve Performance</h3>
-        ${playerStatTable(serveRowsB, PB_COLOR)}
-      </div>
+    <div class="chart-card full">
+      <h3>Serve Performance</h3>
+      ${h2hStatTable(pa, pb, serveRows)}
     </div>
 
     <div class="chart-grid">
@@ -1337,15 +1337,37 @@ function renderServeDetailTab() {
   `;
 }
 
-// Per-player stat table — used when we want a clean single-player metrics list
-// (e.g., Serve Performance / Return Detail tabs split into two parallel tables).
-function playerStatTable(rows, color) {
-  return `<table class="player-stat-table">
-    ${rows.map(([label, val]) => `
+// H2H stat table — single side-by-side comparison table with player names as
+// prominent column headers. Each row is [label, valA, valB, invert?] where
+// `invert` flips the winner-highlight semantics (lower is better, e.g. Double Faults).
+function h2hStatTable(pa, pb, rows) {
+  function cell(val, isWinner, isLoser, color) {
+    const cls = isWinner ? 'h2h-win' : isLoser ? 'h2h-lose' : 'h2h-tie';
+    const colorAttr = isWinner ? `style="color:${color}"` : '';
+    return `<td class="${cls}" ${colorAttr}>${val}</td>`;
+  }
+  return `<table class="h2h-stat-table">
+    <thead>
       <tr>
-        <td class="psl">${label}</td>
-        <td class="psv" style="color:${color}">${val}</td>
-      </tr>`).join('')}
+        <th class="h2h-col" style="color:${PA_COLOR};text-align:right">${pa}</th>
+        <th class="h2h-metric">Metric</th>
+        <th class="h2h-col" style="color:${PB_COLOR};text-align:left">${pb}</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map(([label, valA, valB, invert]) => {
+        const numA = parseFloat(String(valA).replace('%','')) || 0;
+        const numB = parseFloat(String(valB).replace('%','')) || 0;
+        const aWins = invert ? numA < numB : numA > numB;
+        const bWins = invert ? numB < numA : numB > numA;
+        const tie = !aWins && !bWins;
+        return `<tr>
+          ${cell(valA, aWins, bWins && !tie, PA_COLOR)}
+          <td class="h2h-metric">${label}</td>
+          ${cell(valB, bWins, aWins && !tie, PB_COLOR)}
+        </tr>`;
+      }).join('')}
+    </tbody>
   </table>`;
 }
 
@@ -1465,37 +1487,21 @@ function renderReturnSummaryTab() {
     return buildGenericTable(shots, zoneKey, null, ownerId, title);
   }
 
-  const retRowsA = [
-    ['Return Pts Played', rA.returns_played || 0],
-    ['Returns Made',      rA.returns_made || 0],
-    ['Return Errors',     rA.return_errors || 0],
-    ['Return Pts Won',    (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0)],
-    ['Unreturned %',      unretA + '%'],
-    ['Made %',            madeA + '%'],
-    ['Won %',             wonA + '%'],
-    ['Return Winners',    rA.return_winners || 0],
-  ];
-  const retRowsB = [
-    ['Return Pts Played', rB.returns_played || 0],
-    ['Returns Made',      rB.returns_made || 0],
-    ['Return Errors',     rB.return_errors || 0],
-    ['Return Pts Won',    (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0)],
-    ['Unreturned %',      unretB + '%'],
-    ['Made %',            madeB + '%'],
-    ['Won %',             wonB + '%'],
-    ['Return Winners',    rB.return_winners || 0],
+  const retRows = [
+    ['Return Pts Played', rA.returns_played || 0,                                              rB.returns_played || 0],
+    ['Returns Made',      rA.returns_made || 0,                                                rB.returns_made || 0],
+    ['Return Errors',     rA.return_errors || 0,                                               rB.return_errors || 0,                                          true],
+    ['Return Pts Won',    (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0),       (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0)],
+    ['Unreturned %',      unretA + '%',                                                        unretB + '%',                                                    true],
+    ['Made %',            madeA + '%',                                                         madeB + '%'],
+    ['Won %',             wonA + '%',                                                          wonB + '%'],
+    ['Return Winners',    rA.return_winners || 0,                                              rB.return_winners || 0],
   ];
 
   return `
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3 style="color:${PA_COLOR}">${pa} · Return Comparison</h3>
-        ${playerStatTable(retRowsA, PA_COLOR)}
-      </div>
-      <div class="chart-card">
-        <h3 style="color:${PB_COLOR}">${pb} · Return Comparison</h3>
-        ${playerStatTable(retRowsB, PB_COLOR)}
-      </div>
+    <div class="chart-card full">
+      <h3>Return Comparison</h3>
+      ${h2hStatTable(pa, pb, retRows)}
     </div>
 
     <div class="chart-grid">
@@ -1654,37 +1660,21 @@ function renderRallySummaryTab() {
     return buildGenericTable(shots, zoneKey, null, ownerId, title);
   }
 
-  const rallyRowsA = [
-    ['Rally Pts Played', totalRallyPts],
-    ['Rally Pts Won',    k.pa_rally_pts_won || 0],
-    ['Rally Pts Lost',   k.pb_rally_pts_won || 0],
-    ['Rally Pts Won %',  pctW(k.pa_rally_pts_won_pct) + '%'],
-    ['Winner %',         winnerPctA + '%'],
-    ['Error %',          errorPctA + '%'],
-    ['W:E Ratio',        weA],
-    ['Rally Shots',      rA.rally_shots || 0],
-  ];
-  const rallyRowsB = [
-    ['Rally Pts Played', totalRallyPts],
-    ['Rally Pts Won',    k.pb_rally_pts_won || 0],
-    ['Rally Pts Lost',   k.pa_rally_pts_won || 0],
-    ['Rally Pts Won %',  pctW(k.pb_rally_pts_won_pct) + '%'],
-    ['Winner %',         winnerPctB + '%'],
-    ['Error %',          errorPctB + '%'],
-    ['W:E Ratio',        weB],
-    ['Rally Shots',      rB.rally_shots || 0],
+  const rallyRows = [
+    ['Rally Pts Played', totalRallyPts,                       totalRallyPts],
+    ['Rally Pts Won',    k.pa_rally_pts_won || 0,             k.pb_rally_pts_won || 0],
+    ['Rally Pts Lost',   k.pb_rally_pts_won || 0,             k.pa_rally_pts_won || 0,             true],
+    ['Rally Pts Won %',  pctW(k.pa_rally_pts_won_pct) + '%',  pctW(k.pb_rally_pts_won_pct) + '%'],
+    ['Winner %',         winnerPctA + '%',                    winnerPctB + '%'],
+    ['Error %',          errorPctA + '%',                     errorPctB + '%',                     true],
+    ['W:E Ratio',        weA,                                 weB],
+    ['Rally Shots',      rA.rally_shots || 0,                 rB.rally_shots || 0],
   ];
 
   return `
-    <div class="chart-grid">
-      <div class="chart-card">
-        <h3 style="color:${PA_COLOR}">${pa} · Rally Comparison</h3>
-        ${playerStatTable(rallyRowsA, PA_COLOR)}
-      </div>
-      <div class="chart-card">
-        <h3 style="color:${PB_COLOR}">${pb} · Rally Comparison</h3>
-        ${playerStatTable(rallyRowsB, PB_COLOR)}
-      </div>
+    <div class="chart-card full">
+      <h3>Rally Comparison</h3>
+      ${h2hStatTable(pa, pb, rallyRows)}
     </div>
 
     <div class="chart-grid">
