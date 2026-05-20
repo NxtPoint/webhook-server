@@ -177,50 +177,54 @@ Strict iteration protocol. Each change is a separate branch + Batch run.
 8. **Record in this doc** under "Tuning rounds" below.
 9. **If improved AND no regression in downstream silver/bench:** merge to main, lock as new baseline. If regression: revert, try next candidate.
 
-### Candidate changes (priority order)
+### Candidate changes — **REPRIORITISED 2026-05-20** after Round 0 findings
+
+The original eight candidates all targeted Tier 4 upstream of `_filter_outliers`.
+Round 0 local diag (below) showed Tier 4 already fires on ~100% of frames at
+the current threshold — so all Tier-4-upstream candidates have near-zero
+leverage on the persisted-row count. The real bottleneck is `_filter_outliers`
+eating 79% of Tier-4 returns.
+
+**New priority list:**
 
 | # | Change | File:Line | Predicted impact | Risk |
 |---|---|---|---|---|
-| **1** | **Motion threshold 25 → 15** | `ball_tracker.py:498` | +5-15% coverage from frames where TrackNet failed but ball motion is dim. | Low. False positives filtered by Hough shape gates. |
-| 2 | Tier 2 CC upper bound 200 → 300 | `ball_tracker.py:408` | Recovers motion-blurred balls that produce big blobs. Magnitude depends on `tier2_cc_rejected_size` in baseline. | Low. |
-| 3 | Post-blur threshold 15 → 8 | `ball_tracker.py:502` | Pairs with #1 — preserves the dimmer-motion regions after blur. | Medium. Couples with #1; ship after #1 to measure each separately. |
-| 4 | Tier 4 `maxRadius` 15 → 20 | `ball_tracker.py:509` | Catches motion-blurred / closer-to-camera ball appearances. | Low. |
-| 5 | Tier 4 `minRadius` 2 → 1 | `ball_tracker.py:509` | Catches further/smaller balls (especially in long shots). | Low-medium. May admit pixel-level noise. |
-| 6 | GaussianBlur (5,5) → (7,7) | `ball_tracker.py:501` | Bigger blobs = easier Hough match on streaked motion. | Medium. Reduces centroid precision. |
-| 7 | Tier 4 `param2` 5 → 3 | `ball_tracker.py:509` | More circles found per frame. | Higher. Already aggressive; more false positives. |
-| 8 | 2-frame max-diff in Tier 4 | `_detect_ball_frame_delta` refactor | Catches faster balls invisible in single-step diff. | Higher. Bigger refactor, defer to round 2+. |
+| **α** | **Source-aware `_filter_outliers`** (new top candidate) | `ball_tracker.py:551` + new `source` field on `BallDetection` | Big. Tier-4 detections gated against projected trajectory from recent Tier-1 anchors instead of previous-detection-of-any-kind. Specifically rescues Tier-4 contributions inside rally windows where Tier 1 is firing periodically. | Medium. Adds a "trust horizon" for Tier-1 anchor staleness. Locally characterisable before any Batch push. |
+| β | Track-confirmation requirement | `detect_frame` + ring buffer | Require N consecutive nearby detections before any acceptance. Filter noise at source. | Higher. Loses leading 1-2 frames of each rally; bigger refactor. |
+| — | ~~Motion threshold 25 → 15~~ | `ball_tracker.py:498` | **CROSSED OFF — Round 0 local experiment showed −11.6% post-filter survival. Hypothesis falsified.** | — |
+| — | ~~Tier 2 CC upper bound 200 → 300~~ | `ball_tracker.py:408` | **CROSSED OFF — `tier2_cc_rejected_size = 0` on 880dff02 baseline. Gate never rejects on this video.** | — |
+| (parked) | Post-blur threshold 15 → 8, Hough min/max radius tweaks, GaussianBlur kernel, param2 = 3, 2-frame max-diff | various lines in `_detect_ball_frame_delta` | All target Tier 4 upstream of the outlier filter. Round 0 evidence is the outlier filter is the dominant gate; tuning upstream of it has near-zero leverage on persisted-row count. **Reconsider only after α or β shifts the bottleneck.** | — |
 
 ---
 
-## What's already on a branch (NOT in Batch yet)
+## Status of `phase-5b/motion-threshold-reduce` — **SUPERSEDED 2026-05-20, do not merge**
 
-Branch `phase-5b/motion-threshold-reduce` contains the single change #1 above:
+The branch contains the threshold change documented above. Round 0 local
+experiment ran the *exact* `_detect_ball_frame_delta` logic on the local
+`a798eff0_sa_video.mp4` at both threshold=25 and threshold=15, with the
+verbatim `_filter_outliers` applied. Result:
 
-```diff
--        _, motion_mask = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)
-+        _, motion_mask = cv2.threshold(delta, 15, 255, cv2.THRESH_BINARY)
-```
+- Tier 4 per-frame returns: 15293 → 15299 (+6, ~0%)
+- After `_filter_outliers`: 3205 → **2833 (−11.6%)**
+- Surviving clusters: 27 → 41 (more, but shorter)
+- Mean cluster length: 118.7 → 69.1 frames
 
-To ship:
-1. Read CLAUDE.md "Batch-side change checklist".
-2. Check out the branch + verify bench is green locally (it will be — change is downstream).
-3. Run the Docker rebuild + dual-region ECR push + job-def revision sequence from `.claude/handover_t5.md`.
-4. Trigger Batch rerun on 880dff02.
-5. Pull diagnostics + row count. Compare to baseline.
-6. Update "Tuning rounds" below.
+The lever does NOT increase per-frame Tier 4 yield (saturated already);
+it changes which circle Hough picks per frame, and with more competing
+motion blobs the strongest pick is noisier — `_filter_outliers` rejects
+more of them. Branch should be closed without merging.
 
-If the change improves coverage by ≥2× (target ≥25%) with no downstream regression, merge to main and continue with #2-#5. If it doesn't improve or makes things worse, revert and revisit the candidate priority list with the actual diagnostic numbers in hand.
+The branch is retained on origin as a record of a tested-and-falsified
+hypothesis. Don't reuse the name.
 
 ---
 
 ## Tuning rounds
 
-(Empty — fill in as experiments run.)
-
 | Round | Date | Change | Baseline coverage | New coverage | Verdict |
 |---|---|---|---|---|---|
-| 0 | 2026-05-?? | (none — baseline) | 13% | — | establish baseline diagnostics |
-| 1 | TBD | Motion threshold 25 → 15 | 13% | ?? | ?? |
+| 0 | 2026-05-20 | baseline from CloudWatch (`880dff02`, eu-north-1 stream `1f5ce...`, 2026-05-07 11:39 UTC) + local Tier-4 experiment on `a798eff0` video | 13% persisted on `880dff02`; tier-4 fires on 63.5% of `880dff02` frames, 100% on `a798eff0` | — | **Baseline established.** Per-frame detector returns ~100% of frames (5521 tier-1 + 63 tier-2 + 9707 tier-4 on `880dff02`); 7.7× collapse between detector returns and DB rows = `_filter_outliers` (150px gate) is the dominant filter, not the Tier-4 threshold. `tier2_cc_rejected = 0`, `tier3_argmax = 0` → CC upper-bound + argmax candidates inert on this video. Full receipts: `.claude/tmp/phase5b_round0_baseline.md` + `.claude/tmp/phase5b_round0_findings.md`. |
+| 1 (cancelled) | 2026-05-20 | Motion threshold 25 → 15 (branch `phase-5b/motion-threshold-reduce`) | 13% | local diag: −11.6% post-filter survival | **CANCELLED, branch SUPERSEDED.** Local Tier-4-only experiment falsified the hypothesis before any Batch push. See "Status of `phase-5b/motion-threshold-reduce`" above. Next round 1 will target `_filter_outliers` instead (Option α from the candidate list). |
 
 ---
 
