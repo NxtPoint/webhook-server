@@ -472,6 +472,12 @@ body {
 .heatmap-split-tables {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;
 }
+/* Groundstroke variant — 3 columns (Deep / Middle / Short) on desktop, collapses
+   to 1 col on mobile via the existing @media (max-width: 768px) rule. */
+.heatmap-split-tables.hm-three-col { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 768px) {
+  .heatmap-split-tables.hm-three-col { grid-template-columns: 1fr; }
+}
 .heatmap-split-tables h4 {
   font-size: 0.68rem; font-weight: 600; color: var(--text-sec);
   text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
@@ -589,25 +595,26 @@ body {
   .chart-card { padding: 14px; border-radius: var(--radius-sm); }
   .chart-card .echart { height: 260px; }
   .chart-card h3 { font-size: 0.78rem; margin-bottom: 10px; }
-  /* H2H compare-row: stack label above the bars so each half breathes.
-     Inline 150px label leaves bars only ~80px each on a 360px phone.
-     Grid layout: label spans both columns on row 1; left/right halves
-     occupy row 2 side-by-side. */
+  /* H2H compare-row on mobile: label centred on top (row 1) and BOTH player
+     halves side-by-side on row 2 — same shape as desktop, just stacked. The
+     explicit grid-row assignments stop auto-flow placing the right half on
+     row 1 col 2 (which left a confusing gap and broke same-level reading). */
   .compare-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto;
     gap: 3px 8px;
     margin-bottom: 12px;
   }
   .compare-row .stat-label {
-    grid-column: 1 / -1; width: auto; text-align: center; padding: 0;
+    grid-column: 1 / -1; grid-row: 1; width: auto; text-align: center; padding: 0;
     font-size: 0.62rem; letter-spacing: 0.5px;
   }
-  .compare-row .compare-half { flex: none; gap: 6px; }
-  .compare-row .compare-half.left { grid-column: 1; justify-content: flex-end; }
-  .compare-row .compare-half.right { grid-column: 2; justify-content: flex-start; }
+  .compare-row .compare-half { flex: none; gap: 6px; display: flex; align-items: center; }
+  .compare-row .compare-half.left  { grid-column: 1; grid-row: 2; justify-content: flex-end; }
+  .compare-row .compare-half.right { grid-column: 2; grid-row: 2; justify-content: flex-start; }
   .compare-row .compare-val { font-size: 0.78rem; min-width: 38px; padding: 0 4px; }
-  .compare-row .compare-bar { height: 18px; }
+  .compare-row .compare-bar { height: 18px; min-width: 4px; }
   .score-box { flex-direction: column; gap: 12px; }
   .stat-label { width: 100px; font-size: 0.65rem; }
   .compare-val { font-size: 0.72rem; min-width: 38px; }
@@ -2603,7 +2610,7 @@ function renderHeatmapSummaryTable(shots) {
     const deepShots = shots.filter(s => s.depth_d === 'Deep');
     const midShots  = shots.filter(s => s.depth_d === 'Middle');
     const shortShots = shots.filter(s => s.depth_d === 'Short');
-    host.innerHTML = `<div class="heatmap-split-tables" style="grid-template-columns:1fr 1fr 1fr">
+    host.innerHTML = `<div class="heatmap-split-tables hm-three-col">
       <div><h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">Deep (${deepShots.length})</h4>${buildDepthColumn('Deep', deepShots)}</div>
       <div><h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">Middle (${midShots.length})</h4>${buildDepthColumn('Middle', midShots)}</div>
       <div><h4 style="font-size:0.68rem;font-weight:600;color:var(--text-sec);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-bottom:4px;border-bottom:1px solid var(--border)">Short (${shortShots.length})</h4>${buildDepthColumn('Short', shortShots)}</div>
