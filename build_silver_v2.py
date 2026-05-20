@@ -717,23 +717,30 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       GROUP BY task_id
     ),
 
-    -- ========== BETWEEN-POINT FILTER (Phase 3 part 2, 2026-05-20) ==========
+    -- ========== BETWEEN-POINT FILTER (Phase 3 part 2, v2 2026-05-20) ==========
     -- Drop T5 rows that fall between detected points (walking, ball pickup,
-    -- racquet-bouncing during the gap). Pure-SQL approximation of Python's
-    -- detect_point_boundaries(): each serve_d=TRUE row anchors a point window
-    -- ending at LEAST(hit + 30s hard cap, next_serve - 2s pre-serve buffer).
-    -- Rows whose ball_hit_s falls in NO window are flipped to exclude_d=TRUE.
+    -- racquet-bouncing in the gap). Pure-SQL approximation of Python's
+    -- detect_point_boundaries().
     --
-    -- T5-only: SportAI silver already emits only at real strokes, so applying
-    -- this filter to SportAI would over-exclude. task_apply_between_point is
-    -- a 0-or-1-row guard CTE that the OR-extension EXISTs-checks. SportAI ->
-    -- empty -> the AND short-circuits -> exclude_d unchanged.
+    -- v1 (commit 00b8639) anchored on every serve_d=TRUE row in with_try_ff
+    -- and was a measured no-op on 880dff02: T5's geometric serve detector
+    -- emits 107 overhead-type detections on an 18-point match (it accepts any
+    -- overhead-type swing within EPS of a baseline), and 107 dense anchors
+    -- create windows that cover the entire match -> nothing falls outside any
+    -- window -> NOT EXISTS predicate FALSE for every row -> no exclusions.
     --
-    -- Safety: also empty when no serves are detected at all (degenerate T5
-    -- task). Without this guard, an empty point_windows would make the
-    -- NOT EXISTS predicate flip every non-serve row to exclude_d=TRUE.
+    -- v2: anchor on the FIRST serve_d=TRUE row per point_number (~18-30
+    -- anchors instead of 107). point_anchors upstream only increments
+    -- point_number when serve_side or player_id changes, so multi-serve
+    -- points (second serves, mid-rally smashes) collapse to one anchor.
+    -- Window cap also tightened 30s -> 20s (realistic rally ceiling).
     --
-    -- Idempotent: only flips FALSE -> TRUE via OR, never the reverse.
+    -- T5-only via task_apply_between_point guard (checks model='t5' on
+    -- silver.point_detail + non-empty point set). SportAI tasks short-circuit
+    -- the OR-extension AND -> no-op, so SportAI silver is unaffected.
+    -- Serves themselves are never flipped — they anchor their own window.
+    --
+    -- Idempotent: only flips exclude_d FALSE -> TRUE via OR, never the reverse.
     -- See docs/north_star.md Phase 3 + .claude/session_2026-05-20_review.md.
     task_apply_between_point AS (
       SELECT 1 AS apply
@@ -742,23 +749,33 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         WHERE task_id = :tid AND model = 't5'
       )
       AND EXISTS (
-        SELECT 1 FROM with_try_ff WHERE serve_d IS TRUE
+        SELECT 1 FROM with_try_ff
+        WHERE serve_d IS TRUE AND point_number IS NOT NULL AND point_number > 0
       )
+    ),
+
+    point_first_serves AS (
+      SELECT DISTINCT ON (task_id, point_number)
+        task_id, point_number, ball_hit_s AS point_start_s
+      FROM with_try_ff
+      WHERE serve_d IS TRUE AND point_number IS NOT NULL AND point_number > 0
+        AND ball_hit_s IS NOT NULL
+      ORDER BY task_id, point_number, ball_hit_s, id
     ),
 
     point_windows AS (
       SELECT
-        w.task_id,
-        w.ball_hit_s AS point_start_s,
+        task_id,
+        point_number,
+        point_start_s,
         LEAST(
-          w.ball_hit_s + 30.0,
+          point_start_s + 20.0,
           COALESCE(
-            LEAD(w.ball_hit_s) OVER (PARTITION BY w.task_id ORDER BY w.ball_hit_s),
-            w.ball_hit_s + 30.0
+            LEAD(point_start_s) OVER (PARTITION BY task_id ORDER BY point_number),
+            point_start_s + 20.0
           ) - 2.0
         ) AS point_end_s
-      FROM with_try_ff w
-      WHERE w.serve_d IS TRUE AND w.ball_hit_s IS NOT NULL
+      FROM point_first_serves
     ),
 
     -- ========== GAME NUMBERING ==========
