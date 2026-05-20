@@ -8,109 +8,99 @@
 
 T5 ML pipeline session pickup. Today is [DATE]. Previous session was 2026-05-20.
 
+**TL;DR change since last handover:** Phase 5b is PARKED with empirical receipts. The staged motion-threshold change was tested and falsified locally (Tier 4 already saturated; lowering the threshold regresses post-`_filter_outliers` survival by 11.6%). The active sub-task is now **Phase 5a — finish the ROI bounce extractor**.
+
 Read in this exact order before doing anything else:
 
-1. `docs/north_star.md` — macro plan. Phase 3 part 2 is now "blocked by Phase 5"
-   with empirical evidence. Phase 5b is the active sub-task.
+1. `docs/north_star.md` — macro plan. Phase 5b status row reads "PARKED 2026-05-20" with the empirical detail inline. Phase 5a is marked ACTIVE.
 
-2. `.claude/session_2026-05-20_phase5b_staged.md` — what's already staged.
-   Branch `phase-5b/motion-threshold-reduce` holds a conservative single-
-   parameter change (motion threshold 25 → 15 in `_detect_ball_frame_delta`).
-   NOT yet in the Batch image.
+2. `.claude/phase5a_kickoff.md` — **REQUIRED READING.** Full scoping of Phase 5a:
+   - Architectural picture (the stub at `ml_pipeline/roi_extractors/bounces.py`, the working diag reference `ml_pipeline/diag/extract_roi_bounces.py`, the `extract_far_pose` precedent in `__main__.py:200-211`)
+   - Recommended design (option (c) from the stub: bronze `ball_detections` as anchor source)
+   - What to lift from the diag tool, what to drop (SA-truth dependency, CLI scaffolding)
+   - Production wiring sketch in `__main__.py`
+   - Three-stage validation plan (local sanity → Batch on 880dff02 → success criteria)
+   - Open questions for next session
+   - Things NOT to do
 
-3. `.claude/phase5b_ball_tracker_characterisation.md` (lives on the branch
-   above — `git checkout` the branch to read it). Required reading. Four-tier
-   detector map, every Hough/threshold parameter with current value +
-   tuning headroom + risk, eight prioritised candidate changes with
-   predicted impact.
+3. `.claude/phase5b_ball_tracker_characterisation.md` — receipts for the parking decision. The "Tuning rounds" table records Round 0 (CloudWatch baseline + local Tier-4 sweep falsifying the threshold change) and the reprioritised candidate list. Read if you're tempted to re-attempt 5b.
 
-4. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST section is
-   mandatory. `ball_tracker.py` edits require Docker rebuild + dual-region
-   ECR push + new job-def revisions before Batch sees the change.
+4. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST section is mandatory. Edits to `ml_pipeline/roi_extractors/` or `__main__.py` require Docker rebuild + dual-region ECR push + new job-def revisions before Batch sees the change.
 
 Then run the bench locally to confirm the floor is still locked:
 
     .venv/Scripts/python -m ml_pipeline.diag.bench
 
-Expect: `a798eff0` 20/24, `880dff02` 23/24, no regressions. If anything
-moved, stop and investigate before touching code.
+Expect: `a798eff0` 20/24, `880dff02` 23/24, no regressions. If anything moved, stop and investigate before touching code.
 
 If bench green, the first move is:
 
-**A.** Pull baseline diagnostics from the latest `880dff02` Batch CloudWatch
-log. `BallTracker.log_diagnostics()` runs at the end of every job via
-`pipeline.py:292`. Record the per-tier % (`tier1_hough` / `tier2_cc` /
-`tier2_cc_rejected` / `tier3_argmax` / `none_returned` / `delta_fallback_hits`)
-in the characterisation doc's "Tuning rounds → Round 0" row.
+**A.** Confirm the bronze `ball_detections` anchor signal is usable. On `880dff02`, count how many bronze detections fall inside the service-box zone (court_x in [-1.5, COURT_WIDTH_DOUBLES+1.5], court_y in [FAR_SERVICE_LINE-1.5, NEAR_SERVICE_LINE+1.5]). If `>` ~50 candidates, option (c) is well-anchored; if fewer, fall back to option (b) or revisit.
 
-**B.** Check out the staged branch + run the BATCH-SIDE CHANGE CHECKLIST:
+    -- run via /ops/diag/sql endpoint (header auth)
+    SELECT count(*) FROM ml_analysis.ball_detections
+    WHERE job_id = '880dff02-58bd-412c-9a29-5c5151004447'
+      AND court_x BETWEEN -1.5 AND 12.47
+      AND court_y BETWEEN 3.985 AND 19.785;
 
-    git fetch origin
-    git checkout phase-5b/motion-threshold-reduce
-    git diff main -- ml_pipeline/ball_tracker.py
+**B.** Build the new `extract_far_bounces` in `ml_pipeline/roi_extractors/bounces.py`. Lift from the diag tool per the `phase5a_kickoff.md` "What to port" list. Skip SA-truth lookups and S3 video resolution (the prod pipeline already has `tmp_path` and `engine`).
 
-Then Docker rebuild + dual-region ECR push + new job-def revisions.
+**C.** Wire the call into `ml_pipeline/__main__.py` after step 2b (around line 211), inside a non-fatal `try/except` matching `extract_far_pose`'s pattern.
 
-**C.** Ask me to rerun `880dff02` (or upload again). Then pull post-rerun
-diagnostics + `ml_analysis.ball_detections` row count vs baseline ≈1983 rows
-(13% of 15300 frames). Target: ≥25% coverage as round-1 success criterion.
-If hit, merge the branch + plan round 2 (next candidate per characterisation
-doc priority list). If not, revisit.
+**D.** Stage 1 local validation: run a Python harness on `a798eff0_sa_video.mp4` (mocking the prod anchor source with the bench fixture's `ball_rows`). Sanity-check that some output rows land in service-box zone court coords and concentrate near SA serve timestamps.
 
-**Things NOT to do** (load-bearing — restating from `CLAUDE.md` and the docs):
+**E.** Bench check, commit, push.
 
-- Don't tune Tier 1 Hough (`TRACKNET_HOUGH_*` in `config.py`). `param2=2`
-  is already maxed permissive; the problem isn't there.
-- Don't lower `TRACKNET_HEATMAP_THRESHOLD=127` — prior attempt at 100
-  broke detection (comment in `config.py`).
-- Don't ship multi-parameter changes in one Batch round — couples cause
-  and effect.
-- Don't re-attempt Phase 3 part 2 with any pure-SQL pattern. Both v1 and
-  v2 flawed for documented structural reasons.
+**F.** BATCH-SIDE CHANGE CHECKLIST (Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1). Ask Tomo to rerun `880dff02`.
+
+**G.** Stage 2 measurement: query `ml_analysis.ball_detections_roi` for `880dff02` row count, plus per-window distribution. Re-run `reconcile_serves_strict` to confirm bench stays green and `audit_points_reconcile` to measure delta vs 0/17 baseline.
+
+**Things NOT to do** (load-bearing — restating from `CLAUDE.md`, `docs/north_star.md`, and `phase5a_kickoff.md`):
+
+- Don't re-attempt Phase 5b motion-threshold tuning. Round 0 receipts are conclusive; branch `phase-5b/motion-threshold-reduce` is retained on origin as falsified-hypothesis record. Don't merge.
+- Don't widen the service-box zone to cover the whole court — the upsample-into-service-box trick IS the resolution gain.
+- Don't ship a Batch round without the BATCH-SIDE CHANGE CHECKLIST. `roi_extractors/` edits are in-container.
+- Don't ship without bench green.
+- Don't skip the non-fatal try/except around the call site in `__main__.py`. 5a is additive; failure must not block silver/trim/notify.
+- Don't re-attempt Phase 3 part 2 with any pure-SQL pattern. Same Phase 5 unblocker required.
 - Don't touch `ml_pipeline/training/visual_debug/`.
-- Don't push `serve_detector` changes without bench green.
-- Don't merge a Batch-touching branch without the BATCH-SIDE checklist.
+- Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD`.
 
 ---
 
 ## State at session end (2026-05-20)
 
-**Local `main` and `origin/main` in sync at `542dbed`** (or later if more docs land overnight). Bench locked at `a798eff0` 20/24 + `880dff02` 23/24 throughout. Zero detector-quality regression today.
+**Local `main` at `d26e8cc`** (Round 0 findings commit), one or more ahead of `origin/main` if Tomo hasn't pushed yet. Push status depends on the close-of-session decision — see commit log via `git log --oneline -20`.
 
-Most-relevant recent commits on main (newest first; full log via `git log --oneline -20`):
+Recent commits on main (newest first; from before this session and through to today's close):
 
+- `d26e8cc` phase 5b: Round 0 findings — staged change falsified, candidate list reprioritised
+- `923280d` docs: refresh next_session_pickup state snapshot
+- `1e7d286` dashboards: revert split tables — single H2H comparison w/ prominent headers
 - `542dbed` docs: copy Phase 5b characterisation + kickoff cross-ref to main
-- `5816ebd` cleanup: finish PowerBI removal residue
 - `e77f6a6` docs: harden CLAUDE.md + add canonical next-session handover
-- `b36ffdb` docs: rename main API references webhook-server -> Sport AI - API call
-- `585b2ad` cleanup: remove PowerBI + Superset (cost reduction)
 - `9ebda55` docs: tidy — CI bullet list + .gitignore .claude/tmp/
 - `d4d5b36` docs: session_2026-05-20_phase5b_staged — Phase 5b round-1 ready for Batch
 - `188a0d9` docs: 2026-05-20 PM — Phase 3 part 2 attempted + reverted, parked behind Phase 5
 - `de06d41` Revert Phase 3 part 2 (v1 + v2 SQL approximations both flawed)
 
-What landed today on main (functional summary):
+What this session contributed (the Phase 5b → 5a pivot):
 
-- Phase 3 part 2 fully reverted with empirical receipts in docs (v1 no-op cause, v2 wrong-rows-dropped cause)
-- `docs/north_star.md` Phase 3 status flipped to "blocked by Phase 5" with per-attempt detail
-- Four session docs in `.claude/`: morning `review`, `phase3pt2_revert`, `phase5b_staged`, this `next_session_pickup`
-- Phase 5b characterisation doc (`phase5b_ball_tracker_characterisation.md`) on main alongside the kickoff cross-ref
-- CLAUDE.md hardened: liveness endpoint corrected (`/__alive` → `/healthz`), env vars + ops/diag/sql + blueprints sections fleshed out
-- PowerBI + Superset removed (cost reduction)
-- Two stale phase-3 branches deleted from origin
+- Bench confirmed locked on both fixtures at session start.
+- Round 0 baseline diagnostics pulled from CloudWatch (eu-north-1 stream `ml-pipeline/default/1f5ceffac5de4e69806bdf61c2fdf4e0`, 2026-05-07 880dff02 run) — captured tier breakdown (tier1=36.1%, tier4=63.5%, none=63.5%, tier2_cc_rejected=0, tier3_argmax=0). Per-frame returns ~100%; persisted DB rows ~13%; 7.7× collapse is downstream of Tier 4.
+- Local Tier-4-only sweep on `a798eff0` at threshold=25 vs 15 — falsified the staged change (post-filter survival 3205 → 2833, −11.6%; mean cluster length 118.7 → 69.1).
+- Surrogate Option α experiment ran but inconclusive (construction artifacts + finding that `ball_rows` aren't strongly concentrated in rally windows even pre-filter — so "anchor on recent Tier-1" doesn't get the concentration boost the design assumed).
+- Full BallTracker local validation aborted: 40-min CPU estimate was off by ~30× (actual ~21 hrs without GPU).
+- `docs/north_star.md` Phase 5 detail updated: 5a is ACTIVE, 5b is PARKED with receipts inline.
+- `.claude/phase5b_ball_tracker_characterisation.md` updated: Tuning rounds Round 0 + Round 1 (cancelled) populated; candidate list reprioritised (motion threshold + CC upper bound crossed off; source-aware filter + track-confirmation added as new top candidates if 5b ever resumes).
+- `.claude/phase5a_kickoff.md` NEW — full Phase 5a scoping (this session's main deliverable for the next agent).
+- `.claude/phase5_kickoff.md` updated: redirect from 5b to 5a.
+- This file updated to reflect the pivot.
 
-**Branch `phase-5b/motion-threshold-reduce` (`dace7ad`) — READY FOR BATCH:**
+**Branch `phase-5b/motion-threshold-reduce`:** retained on origin as a falsified-hypothesis record. Do not merge. Do not reuse the branch name.
 
-- `ml_pipeline/ball_tracker.py` motion threshold 25 → 15 (single safest gain candidate)
-- `.claude/phase5b_ball_tracker_characterisation.md` (also on main since `542dbed` — read from either location)
-- `.claude/phase5_kickoff.md` cross-ref update (same — duplicated on main + branch; clean merge expected)
+**Working tree at session end:** clean except `ml_pipeline/training/visual_debug/` (untracked, deliberately ignored) and potentially `frontend/match_analysis.html` if Tomo's parallel dashboard session left uncommitted work.
 
-**Working tree at session end:** clean except `ml_pipeline/training/visual_debug/` (untracked, deliberately ignored — leftover local debug images).
+The next chat picks up Phase 5a from a fully-scoped kickoff doc, with bench locked and Round 0 receipts committed. That's a clean Phase 5a stage 1 (local sanity) in one session, with stage 2 (Batch validation) handed off afterwards.
 
-The next chat has everything it needs to (a) bench-check, (b) pull baseline
-diagnostics, (c) run the Batch dance, (d) measure the delta. That's a clean
-Phase 5b round-1 cycle in one session.
-
-Good luck with the DB upgrade. If the v18 upgrade resolves the connection
-issue, great — if it doesn't, the IP allowlist diagnosis from earlier is
-still the next thing to check.
+Good luck with the v18 DB upgrade. The diag tools used today (`.claude/tmp/fetch_balltracker_diag.py` for CloudWatch, `.claude/tmp/phase5b_tier4_local_experiment.py` for the Tier-4 sweep) live under `.claude/tmp/` (gitignored) and are reusable for future BallTracker investigations if needed.

@@ -33,9 +33,9 @@ This file isn't the plan — `docs/north_star.md` is. This is just a launching n
 
 5a and 5b are independent and can run in parallel. 5c is foundation for 5d.
 
-**Recommended starting point: 5b (Hough fallback gain-up).** Smallest code change, lowest risk, fastest validation. Existing code is the right shape; a parameter tune may yield a measurable coverage delta. Bench protects detector recall as a safety net; ball coverage measurement is direct via `ml_analysis.ball_detections` row count.
+**~~Recommended starting point: 5b (Hough fallback gain-up).~~ PARKED 2026-05-20.** Round 0 baseline diagnostics + local Tier-4 sweep empirically falsified the staged motion-threshold change. Tier 4 is already saturated (~100% per-frame return rate); the dominant filter is `_filter_outliers` downstream, not the Tier-4 threshold. Source-aware filter surrogate didn't show clean leverage either, and CPU-only full BallTracker validation is too slow (~21 hrs, no local GPU). See `.claude/phase5b_ball_tracker_characterisation.md` Tuning rounds + commit `d26e8cc` for receipts.
 
-**Phase 5b characterisation pass already done (2026-05-20).** See `.claude/phase5b_ball_tracker_characterisation.md` for the four-tier detector map, eight candidate tuning changes with predicted impact + risk, and the measurement-first iteration protocol. A staged round-1 change (motion threshold 25 → 15 in `_detect_ball_frame_delta`) is on branch `phase-5b/motion-threshold-reduce`, NOT yet pushed to Batch — the next session runs the Batch dance and measures the delta.
+**Active starting point as of 2026-05-20: 5a (Finish ROI bounce extractor).** Additive coverage source rather than tuning the saturated existing detector. Full scoping doc: **`.claude/phase5a_kickoff.md`** — design recommendation (option (c): bronze ball_detections as anchor source), what to lift from the diag tool `ml_pipeline/diag/extract_roi_bounces.py`, production wiring sketch in `ml_pipeline/__main__.py`, three-stage validation plan, open questions.
 
 ---
 

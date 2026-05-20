@@ -1,7 +1,7 @@
 # T5 ML Pipeline — North Star
 
-**Last updated:** 2026-05-20 EOD — Phase 3 part 2 attempted + reverted (see Phase 3 detail below). Bottleneck confirmed empirically: pure-SQL approximations of `detect_point_boundaries()` over-filter without reliable bounce data. Phase 5 is the unblocking step.
-**Last verified:** 2026-05-20 — bench green on both fixtures (a798eff0 20/24, 880dff02 23/24); Phase 3 part 2 SQL out of main (commit de06d41); active T5 silver row count on 880dff02 back to 49.
+**Last updated:** 2026-05-20 EOD — **Phase 5b parked with empirical receipts; Phase 5a promoted to active sub-task.** Round 0 baseline diagnostics + local Tier-4 sweep falsified the obvious BallTracker tuning levers; the dominant filter is `_filter_outliers`, not the Tier 4 threshold, and `_filter_outliers` is hard to tune cleanly without real source-labeled per-frame data (needs GPU). See Phase 5 detail + commit `d26e8cc`. Earlier today: Phase 3 part 2 attempted + reverted (pure-SQL approximations of `detect_point_boundaries()` over-filter without reliable bounce data — same Phase 5 unblocker required).
+**Last verified:** 2026-05-20 — bench green on both fixtures (a798eff0 20/24, 880dff02 23/24); Phase 3 part 2 SQL out of main (commit `de06d41`); Phase 5b round 0 receipts committed (`d26e8cc`); active T5 silver row count on 880dff02 back to 49.
 **Previous version archived:** `docs/_archive/north_star_2026-05-07_phantom-bounce-era.md`
 **This is the single place where the T5 macro plan lives.** Phase work happens against this ladder. Don't invent new directions — pick a phase, claim it, deliver, update.
 
@@ -112,8 +112,8 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 **Sub-tasks (parallelizable, all in `ml_pipeline/`):**
 
-- **5a — Finish ROI bounce extractor.** `ml_pipeline/roi_extractors/bounces.py` is a STUB (logs + returns 0). Replace with WASB-style ROI-cropped TrackNet pass during serve windows. Reference: `ml_pipeline/diag/extract_roi_bounces.py` (active diag tool with the working pattern).
-- **5b — Frame-delta Hough fallback gain-up.** Existing `ball_tracker.py` has a Hough fallback that fires when TrackNetV2 fails. Lower the gate / widen the search radius / accept more candidates per frame.
+- **5a — Finish ROI bounce extractor (ACTIVE 2026-05-20).** `ml_pipeline/roi_extractors/bounces.py` is a STUB (logs + returns 0). Replace with WASB-style ROI-cropped TrackNet pass during serve windows. Reference: `ml_pipeline/diag/extract_roi_bounces.py` (active diag tool with the working pattern). Promoted to active sub-task after Phase 5b parked.
+- **5b — Frame-delta Hough fallback gain-up. PARKED 2026-05-20 with empirical receipts.** Round 0 baseline diagnostics (CloudWatch on 880dff02 + local Tier-4 sweep on a798eff0) showed: (i) Tier 4 already returns a position on ~99.93% of TrackNet-empty frames — there's no headroom to "fire more often"; (ii) the staged motion-threshold change 25→15 regresses post-`_filter_outliers` survival by 11.6% (local exp on a798eff0), because lowering the gate makes Hough's strongest-circle pick noisier rather than catching more real balls; (iii) `tier2_cc_rejected = 0` on 880dff02 — the Tier 2 area-gate change is a no-op too; (iv) the dominant filter is `_filter_outliers` (150px from previous-kept) which eats ~79% of Tier-4 returns. Source-aware filter surrogate (Option α) showed -3.0pp rally-precision and the deeper finding that `ball_rows` aren't strongly concentrated in rally windows even pre-filter (Tier-1 fires across the whole match, not just in rallies) — so "gate Tier-4 by recent Tier-1 anchor" doesn't get the concentration boost the design assumed. Full BallTracker local validation aborted (40-min estimate was off by ~30×; actual ~21 hrs on CPU without GPU). Receipts: `.claude/phase5b_ball_tracker_characterisation.md` (Tuning rounds + reprioritised candidates) + commit `d26e8cc`. Branch `phase-5b/motion-threshold-reduce` retained on origin as a falsified-hypothesis record; do not merge.
 - **5c — Dual-submit training data pipeline.** Block 5d. Tomo's existing dual-submit work (T5 + SportAI on same video) gives clean labels. Pipeline is partially built; needs finishing for at least 10 matches before TrackNetV3 retrain has enough data.
 - **5d — TrackNetV3 retrain.** Architecture ported (`ml_pipeline/tracknet_v3.py`); weights not trained. Blocks on 5c. Once weights exist, swap them in via the existing config path — no architectural changes needed.
 
@@ -123,7 +123,7 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 - SA point 6 specifically: ≥3 T5 ball detections in window
 - Phase 4 reconciler: per-point match rate ≥30% (up from 0%)
 
-**Blocker:** None for sub-tasks 5a/5b. 5d blocks on 5c.
+**Blocker:** None for 5a. 5b parked (2026-05-20). 5d blocks on 5c.
 
 ### Phase 6 — Stroke classification reconciliation (was 5) — BLOCKED by 5
 **What:** Validate T5's FH/BH/V/OH classifications match SA on validated points.
