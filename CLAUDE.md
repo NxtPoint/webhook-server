@@ -294,7 +294,7 @@ All auth via URL params forwarded through the portal: `?email=&firstName=&surnam
 
 Full env-var matrix (main API required + optional + legacy, all worker services, crons, Lambda, ML pipeline Docker): **`docs/env_vars.md`**.
 
-Quick reference for the main API: `DATABASE_URL`, `OPS_KEY`, `CLIENT_API_KEY`, `ANTHROPIC_API_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS keys, `SPORT_AI_TOKEN`, plus worker-pair URLs/keys (`INGEST_WORKER_*`, `VIDEO_WORKER_*`, `VIDEO_TRIM_CALLBACK_*`).
+Quick reference for the main API: `DATABASE_URL`, `OPS_KEY`, `CLIENT_API_KEY`, `ANTHROPIC_API_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS keys, `SPORT_AI_TOKEN`, plus worker-pair URLs/keys (`INGEST_WORKER_*`, `VIDEO_WORKER_*`, `VIDEO_TRIM_CALLBACK_*`). Plus two operational tunables read at the top of `upload_app.py`: `MAX_CONTENT_MB` (default 150, sets Flask's `MAX_CONTENT_LENGTH`) and `ENABLE_CORS` (default 0; the per-path CORS allowlist in `CORS_PATHS` runs independently of this flag).
 
 ## S3 CORS
 
@@ -313,7 +313,7 @@ All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Auth
 - `GET /ops/db-ping` — DB connectivity
 - `POST /ops/compact-storage` — runs `VACUUM (FULL, ANALYZE)` on the bronze/silver/ml_analysis table list, returns per-table `before_bytes` / `after_bytes` / `freed_bytes` JSON. Optional body `{"only": ["schema.table", ...]}` to scope. Each VACUUM takes ACCESS EXCLUSIVE — trigger during low traffic.
 - `POST /ops/orphan-sweep` — periodic mop-up for the soft-delete cascade. Two passes: (1) child rows whose parent `submission_context.deleted_at IS NOT NULL`, (2) true orphans whose `task_id` has no `submission_context` row at all. Body: `{"dry_run": true}` reports counts without changes; `{"include_orphans": false}` skips pass 2. Idempotent. Never touches `billing.*`. Implemented in `cleanup/orphan_sweep.py`.
-- `POST /ops/diag/sql` — read-only SELECT runner for autonomous diagnostics (Tier-2 autonomy infra; future Claude sessions hit this via WebFetch instead of asking the user to paste Render-shell output). Body: `{"sql": "SELECT ...", "limit": 100}` (default 100, max 1000). Response: `{"columns": [...], "rows": [[...]], "row_count": N, "truncated": bool, "elapsed_ms": ms}`. Enforced via `sqlparse` + keyword denylist: only single-statement `SELECT` or `WITH ... SELECT`; rejects `INSERT/UPDATE/DELETE/DROP/TRUNCATE/ALTER/CREATE/GRANT/REVOKE/COPY/VACUUM/ANALYZE/CALL/DO/LOCK/EXECUTE/SET/RESET/BEGIN/COMMIT/ROLLBACK` and the phrases `FOR UPDATE` / `FOR SHARE` (CTE-wrapped DML is caught by the keyword check). Per-query transaction sets `statement_timeout = '5s'`; timeout returns 408. Bad SQL returns 400 with `offending_keyword`. Logs query text + IP + elapsed_ms but never row contents (PII). Residual risk: mutating server-side functions (`pg_terminate_backend`, advisory locks) are not enumerated — `OPS_KEY` is server-to-server only, so this is accepted. Implemented in `diag_sql/sql_endpoint.py`. Example: `curl -sS -X POST https://api.nextpointtennis.com/ops/diag/sql -H "X-Ops-Key: $OPS_KEY" -H "Content-Type: application/json" -d '{"sql":"SELECT task_id, sport_type FROM bronze.submission_context ORDER BY created_at DESC LIMIT 5","limit":5}'`.
+- `POST /ops/diag/sql` — read-only SELECT runner for autonomous diagnostics (Tier-2 autonomy infra; future Claude sessions hit this via WebFetch instead of asking the user to paste Render-shell output). Body: `{"sql": "SELECT ...", "limit": 100}` (default 100, max 1000). Response: `{"columns": [...], "rows": [[...]], "row_count": N, "truncated": bool, "elapsed_ms": ms}`. Enforced via `sqlparse` + keyword denylist: only single-statement `SELECT` or `WITH ... SELECT`; rejects `INSERT/UPDATE/DELETE/DROP/TRUNCATE/ALTER/CREATE/GRANT/REVOKE/COPY/VACUUM/ANALYZE/CALL/DO/LOCK/EXECUTE/SET/RESET/BEGIN/COMMIT/ROLLBACK` and the phrases `FOR UPDATE` / `FOR SHARE` (CTE-wrapped DML is caught by the keyword check). Per-query transaction sets `statement_timeout = '5s'` and `idle_in_transaction_session_timeout = '5s'`; timeout returns 408. Bad SQL returns 400 with `offending_keyword`. Logs query text + IP + elapsed_ms but never row contents (PII). No per-IP rate limiting — `OPS_KEY` is server-to-server only, so this is accepted. Residual risk: mutating server-side functions (`pg_terminate_backend`, advisory locks) are not enumerated. Implemented in `diag_sql/sql_endpoint.py`. Example: `curl -sS -X POST https://api.nextpointtennis.com/ops/diag/sql -H "X-Ops-Key: $OPS_KEY" -H "Content-Type: application/json" -d '{"sql":"SELECT task_id, sport_type FROM bronze.submission_context ORDER BY created_at DESC LIMIT 5","limit":5}'`.
 
 **Workers respect `submission_context.deleted_at`** — both the SportAI ingest worker (`ingest_worker_app.py::_do_ingest`) and the in-process T5 path (`upload_app.py::_do_ingest_t5`) check `deleted_at` at four gates (`pre_start`, `pre_bronze`, `pre_silver`, `pre_trim`) and abort cleanly without re-populating bronze rows if a delete races with an in-flight ingest.
 
@@ -321,13 +321,23 @@ All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Auth
 
 New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`, `cleanup/`. Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
 
-**Root-level blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring):
+**Blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring — 14 calls as of 2026-05-20):
 
+Top-level (registered unconditionally):
 - `client_api.py` — `/api/client/*`, CLIENT_API_KEY auth. Primary customer-facing API surface (dashboard endpoints, profile, entitlements, members, matches, footage URLs). Non-dashboard endpoints catalogued [above](#client-api-client_apipy--non-dashboard-endpoints); dashboard endpoints in `docs/dashboards.md`.
 - `coaches_api.py` — `/api/coaches/*`, OPS_KEY auth. Server-to-server coach permission management over `billing.coaches_permission` (invite / accept / revoke). Companion to the token-based public accept page in `coach_invite/accept_page.py`; called internally by `client_api.py` coach endpoints.
 - `members_api.py` — members CRUD blueprint.
 - `subscriptions_api.py`, `usage_api.py`, `entitlements_api.py` — billing surface (see [Billing System](#billing-system)).
+- `coach_invite.accept_bp` — serves `GET /coach-accept` and `POST /api/coaches/accept-token`. Token IS the auth (see §Coach Invite Flow).
+- `ingest_bronze` (no URL prefix) — bronze ingest HTTP surface from `ingest_bronze.py`; complements the self-contained ingest worker.
 - `ui_app.py` — **legacy** admin UI mounted at `/upload/*`, OPS_KEY auth. Renders bronze/silver inspection pages via `render_template_string`. Not used by any SPA (`backoffice.html` is the real admin UI) — retained for shell/debugging only.
+
+Try/except-wrapped (a failure is logged and the service still boots):
+- `tennis_coach.coach_bp` — LLM coach endpoints (see §Dashboards).
+- `support_bot.support_bp` — `/api/support/*` (see §Support Bot).
+- `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`.
+- `diag_sql.diag_sql_bp` — `POST /ops/diag/sql` (see §Diagnostics & Ops).
+- `ml_pipeline.api.ml_analysis_bp` — local-only; the import fails on Render because `cv2`/`torch` aren't installed there. Used by developer-machine diagnostics, never serves prod traffic.
 
 **Root-level cron scripts** (invoked by Render Cron Jobs, not registered as blueprints):
 
@@ -361,7 +371,7 @@ In-house tennis video analysis pipeline. Runs on AWS Batch GPU (Spot G4dn.xlarge
 
 Then run `.venv/Scripts/python -m ml_pipeline.diag.bench` to confirm the floor is locked (currently a798eff0=20/24, 880dff02=23/24) before touching code.
 
-The `.claude/` folder is **tracked in git** (handover docs + playbooks live there); only specific per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) are gitignored.
+The `.claude/` folder is **tracked in git** (handover docs + playbooks live there); only specific per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) plus the scratch `.claude/tmp/` directory and `.claude/worktrees/` are gitignored.
 
 ### Data flow (overview only — detail in handover)
 
