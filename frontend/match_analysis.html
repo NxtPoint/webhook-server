@@ -139,7 +139,7 @@ body {
 /* ========== KPI CARDS — identical to practice.html ========== */
 .kpi-strip {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px; margin-bottom: 20px;
+  gap: 16px; margin-bottom: 16px;
 }
 .kpi {
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
@@ -151,6 +151,7 @@ body {
 .kpi .val.amber { color: var(--amber); }
 .kpi .val.red { color: var(--red); }
 .kpi .val.blue { color: var(--blue); }
+.kpi .val.muted { color: var(--text-sec); }  /* used when a positive-direction KPI is zero — green for "0 winners" reads false */
 .kpi .lbl { font-size: 0.72rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.6px; margin-top: 6px; font-weight: 600; }
 
 /* ========== CHART CARDS — identical to practice.html ========== */
@@ -171,7 +172,23 @@ body {
   text-transform: uppercase; letter-spacing: 0.6px;
 }
 .chart-card .echart { height: 280px; width: 100%; }
-.chart-card.full { grid-column: 1 / -1; width: 100%; }
+.chart-card.full { grid-column: 1 / -1; width: 100%; margin-bottom: 16px; }
+.chart-grid > .chart-card.full { margin-bottom: 0; }  /* inside a grid, gap handles spacing */
+
+/* Per-player stat table (Serve / Return / Rally Performance summaries) */
+.player-stat-table {
+  width: 100%; max-width: 520px; margin: 0 auto;
+  border-collapse: collapse; font-variant-numeric: tabular-nums;
+}
+.player-stat-table tr { border-bottom: 1px solid var(--border); }
+.player-stat-table tr:last-child { border-bottom: none; }
+.player-stat-table td { padding: 9px 14px; }
+.player-stat-table .psl {
+  font-size: 0.74rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.3px;
+}
+.player-stat-table .psv {
+  font-size: 1rem; font-weight: 700; text-align: right; padding-right: 6px;
+}
 
 /* ========== HEAD-TO-HEAD BARS (match analysis specific) ========== */
 .compare-row { display: flex; align-items: center; margin-bottom: 6px; }
@@ -188,11 +205,13 @@ body {
 .compare-half.left { justify-content: flex-end; }
 .compare-half.right { justify-content: flex-start; }
 
-/* Score box */
+/* Score box — constrained max width so it doesn't read as empty container on wide screens.
+   Player A name pinned left, sets in centre, Player B name pinned right. */
 .score-box {
-  display: flex; align-items: center; justify-content: center; gap: 24px;
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
   background: var(--white); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px 24px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  padding: 16px 32px; margin: 0 auto 16px; box-shadow: var(--shadow-sm);
+  max-width: 760px;
 }
 .score-player { text-align: center; }
 .score-player .name { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
@@ -345,7 +364,7 @@ body {
 /* Layout: main heatmap card + optional right-side info panel */
 .heatmap-layout {
   display: grid; grid-template-columns: 1fr; gap: 14px;
-  max-width: 1320px; margin: 0 auto;
+  width: 100%;
 }
 .heatmap-layout.with-info {
   grid-template-columns: 1fr 280px;
@@ -420,13 +439,14 @@ body {
 .hm-dot {
   display: inline-block; width: 9px; height: 9px; border-radius: 50%;
 }
-/* Court — fills the card width, landscape aspect so height stays manageable */
+/* Court — centred with a sensible max width so empty rails don't dominate
+   on wide monitors. The canvas aspect ratio (1200:1100) takes over height. */
 .heatmap-court-wrap {
-  display: flex; flex-direction: column; align-items: stretch;
+  display: flex; flex-direction: column; align-items: center;
   width: 100%;
 }
 .heatmap-court-wrap canvas {
-  display: block; width: 100%; height: auto; border-radius: 6px;
+  display: block; width: 100%; max-width: 1100px; height: auto; border-radius: 6px;
 }
 /* Split table — ad on left, deuce on right — compact */
 .heatmap-split-tables {
@@ -441,9 +461,15 @@ body {
 .heatmap-split-tables table.strategy-table td {
   padding: 4px 8px;
 }
-/* Toggle row — player + filter side by side */
+/* Header row — title left, slicers right, sits inside the heatmap card */
+.heatmap-header-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 12px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+/* Toggle row — player + filter side by side, sits inside the card header */
 .heatmap-toggle-row {
-  display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
 }
 .heatmap-toggle-group {
   display: inline-flex; align-items: center; gap: 6px;
@@ -904,9 +930,9 @@ function renderSummary() {
       <div class="kpi"><div class="val">${k.total_points || 0}</div><div class="lbl">Total Points</div></div>
       <div class="kpi"><div class="val">${k.avg_rally_length || 0}</div><div class="lbl">Avg Rally Length</div></div>
       <div class="kpi"><div class="val">${k.max_rally_length || 0}</div><div class="lbl">Max Rally</div></div>
-      <div class="kpi"><div class="val">${(k.pa_aces || 0) + (k.pb_aces || 0)}</div><div class="lbl">Total Aces</div></div>
-      <div class="kpi"><div class="val red">${(k.pa_double_faults || 0) + (k.pb_double_faults || 0)}</div><div class="lbl">Double Faults</div></div>
-      <div class="kpi"><div class="val">${(k.pa_winners || 0) + (k.pb_winners || 0)}</div><div class="lbl">Winners</div></div>
+      <div class="kpi"><div class="val${((k.pa_aces||0)+(k.pb_aces||0))===0?' muted':''}">${(k.pa_aces || 0) + (k.pb_aces || 0)}</div><div class="lbl">Total Aces</div></div>
+      <div class="kpi"><div class="val ${((k.pa_double_faults||0)+(k.pb_double_faults||0))===0?'muted':'red'}">${(k.pa_double_faults || 0) + (k.pb_double_faults || 0)}</div><div class="lbl">Double Faults</div></div>
+      <div class="kpi"><div class="val${((k.pa_winners||0)+(k.pb_winners||0))===0?' muted':''}">${(k.pa_winners || 0) + (k.pb_winners || 0)}</div><div class="lbl">Winners</div></div>
     </div>
 
     <div class="chart-card full">
@@ -933,7 +959,7 @@ function renderSummary() {
       <div class="chart-card">
         <h3>Points Won by Phase</h3>
         <div id="chartPhasePoints" class="echart"></div>
-        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Serve = unreturned. Return = returner won. Rally = server won after the return. Bars partition the match &mdash; per-player and total sums equal points played.</div>
+        <div style="font-size:0.72rem;color:var(--text-sec);text-align:center;padding:4px 0 0">Serve = unreturned. Return = returner won. Rally = server won after the return. Bars partition the match &mdash; per-player and total sums equal points played.</div>
       </div>
       <div class="chart-card">
         <h3>Shot Outcome Distribution</h3>
@@ -1127,24 +1153,38 @@ function renderServePerfTab() {
   const stratA = buildServeStrategyFromView('player_a');
   const stratB = buildServeStrategyFromView('player_b');
 
+  const serveRowsA = [
+    ['UTR',                k.player_a_utr || '—'],
+    ['Total Serves',       k.pa_total_serves || 0],
+    ['Svc Pts Won',        k.pa_svc_pts_won || 0],
+    ['1st Serve In %',     pctW(k.pa_first_serve_pct) + '%'],
+    ['Svc Pts Won %',      pctW(k.pa_svc_pts_won_pct) + '%'],
+    ['Double Faults',      k.pa_double_faults || 0],
+    ['Unreturned Svc Pts', k.pa_unreturned_serves || 0],
+    ['Avg Serve Speed',    k.pa_serve_speed_avg || '—'],
+    ['Fastest Serve',      k.pa_serve_speed_max || '—'],
+  ];
+  const serveRowsB = [
+    ['UTR',                k.player_b_utr || '—'],
+    ['Total Serves',       k.pb_total_serves || 0],
+    ['Svc Pts Won',        k.pb_svc_pts_won || 0],
+    ['1st Serve In %',     pctW(k.pb_first_serve_pct) + '%'],
+    ['Svc Pts Won %',      pctW(k.pb_svc_pts_won_pct) + '%'],
+    ['Double Faults',      k.pb_double_faults || 0],
+    ['Unreturned Svc Pts', k.pb_unreturned_serves || 0],
+    ['Avg Serve Speed',    k.pb_serve_speed_avg || '—'],
+    ['Fastest Serve',      k.pb_serve_speed_max || '—'],
+  ];
+
   return `
-    <div class="chart-card full">
-      <h3>Serve Comparison</h3>
-      ${h2hPlayerHeader(pa, pb)}
-      <div class="chart-grid" style="margin-bottom:0;gap:12px">
-        <div>
-          ${statCard('UTR', k.player_a_utr || '—', k.player_b_utr || '—')}
-          ${statCard('Total Serves', k.pa_total_serves || 0, k.pb_total_serves || 0)}
-          ${statCard('Svc Pts Won', k.pa_svc_pts_won || 0, k.pb_svc_pts_won || 0)}
-          ${statCard('1st Serve In %', pctW(k.pa_first_serve_pct) + '%', pctW(k.pb_first_serve_pct) + '%')}
-          ${statCard('Svc Pts Won %', pctW(k.pa_svc_pts_won_pct) + '%', pctW(k.pb_svc_pts_won_pct) + '%')}
-        </div>
-        <div>
-          ${statCard('Double Faults', k.pa_double_faults || 0, k.pb_double_faults || 0, true)}
-          ${statCard('Unreturned Svc Pts', k.pa_unreturned_serves || 0, k.pb_unreturned_serves || 0)}
-          ${statCard('Avg Serve Speed', k.pa_serve_speed_avg || '—', k.pb_serve_speed_avg || '—')}
-          ${statCard('Fastest Serve', k.pa_serve_speed_max || '—', k.pb_serve_speed_max || '—')}
-        </div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Serve Performance</h3>
+        ${playerStatTable(serveRowsA, PA_COLOR)}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Serve Performance</h3>
+        ${playerStatTable(serveRowsB, PB_COLOR)}
       </div>
     </div>
 
@@ -1163,12 +1203,12 @@ function renderServePerfTab() {
       <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Outcomes by Direction</h3>
         <div id="chartServeDirOut_a" class="echart"></div>
-        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Counts every serve attempt &mdash; a 1st-serve fault and its 2nd-serve outcome both appear.</div>
+        <div style="font-size:0.72rem;color:var(--text-sec);text-align:center;padding:4px 0 0">Counts every serve attempt &mdash; a 1st-serve fault and its 2nd-serve outcome both appear.</div>
       </div>
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Outcomes by Direction</h3>
         <div id="chartServeDirOut_b" class="echart"></div>
-        <div style="font-size:0.7rem;color:var(--text-dim);text-align:center;padding:4px 0 0">Counts every serve attempt &mdash; a 1st-serve fault and its 2nd-serve outcome both appear.</div>
+        <div style="font-size:0.72rem;color:var(--text-sec);text-align:center;padding:4px 0 0">Counts every serve attempt &mdash; a 1st-serve fault and its 2nd-serve outcome both appear.</div>
       </div>
     </div>
 
@@ -1297,6 +1337,18 @@ function renderServeDetailTab() {
   `;
 }
 
+// Per-player stat table — used when we want a clean single-player metrics list
+// (e.g., Serve Performance / Return Detail tabs split into two parallel tables).
+function playerStatTable(rows, color) {
+  return `<table class="player-stat-table">
+    ${rows.map(([label, val]) => `
+      <tr>
+        <td class="psl">${label}</td>
+        <td class="psv" style="color:${color}">${val}</td>
+      </tr>`).join('')}
+  </table>`;
+}
+
 // Shared small H2H row — pure presentation
 function statCard(label, valA, valB, invert) {
   const numA = parseFloat(String(valA).replace('%','')) || 0;
@@ -1413,23 +1465,36 @@ function renderReturnSummaryTab() {
     return buildGenericTable(shots, zoneKey, null, ownerId, title);
   }
 
+  const retRowsA = [
+    ['Return Pts Played', rA.returns_played || 0],
+    ['Returns Made',      rA.returns_made || 0],
+    ['Return Errors',     rA.return_errors || 0],
+    ['Return Pts Won',    (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0)],
+    ['Unreturned %',      unretA + '%'],
+    ['Made %',            madeA + '%'],
+    ['Won %',             wonA + '%'],
+    ['Return Winners',    rA.return_winners || 0],
+  ];
+  const retRowsB = [
+    ['Return Pts Played', rB.returns_played || 0],
+    ['Returns Made',      rB.returns_made || 0],
+    ['Return Errors',     rB.return_errors || 0],
+    ['Return Pts Won',    (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0)],
+    ['Unreturned %',      unretB + '%'],
+    ['Made %',            madeB + '%'],
+    ['Won %',             wonB + '%'],
+    ['Return Winners',    rB.return_winners || 0],
+  ];
+
   return `
-    <div class="chart-card full">
-      <h3>Return Comparison</h3>
-      ${h2hPlayerHeader(pa, pb)}
-      <div class="chart-grid" style="margin-bottom:0;gap:12px">
-        <div>
-          ${statCard('Return Pts Played', rA.returns_played || 0, rB.returns_played || 0)}
-          ${statCard('Returns Made', rA.returns_made || 0, rB.returns_made || 0)}
-          ${statCard('Return Errors', rA.return_errors || 0, rB.return_errors || 0, true)}
-          ${statCard('Return Pts Won', (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0), (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0))}
-        </div>
-        <div>
-          ${statCard('Unreturned %', unretA + '%', unretB + '%', true)}
-          ${statCard('Made %', madeA + '%', madeB + '%')}
-          ${statCard('Won %', wonA + '%', wonB + '%')}
-          ${statCard('Return Winners', rA.return_winners || 0, rB.return_winners || 0)}
-        </div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Return Comparison</h3>
+        ${playerStatTable(retRowsA, PA_COLOR)}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Return Comparison</h3>
+        ${playerStatTable(retRowsB, PB_COLOR)}
       </div>
     </div>
 
@@ -1589,23 +1654,36 @@ function renderRallySummaryTab() {
     return buildGenericTable(shots, zoneKey, null, ownerId, title);
   }
 
+  const rallyRowsA = [
+    ['Rally Pts Played', totalRallyPts],
+    ['Rally Pts Won',    k.pa_rally_pts_won || 0],
+    ['Rally Pts Lost',   k.pb_rally_pts_won || 0],
+    ['Rally Pts Won %',  pctW(k.pa_rally_pts_won_pct) + '%'],
+    ['Winner %',         winnerPctA + '%'],
+    ['Error %',          errorPctA + '%'],
+    ['W:E Ratio',        weA],
+    ['Rally Shots',      rA.rally_shots || 0],
+  ];
+  const rallyRowsB = [
+    ['Rally Pts Played', totalRallyPts],
+    ['Rally Pts Won',    k.pb_rally_pts_won || 0],
+    ['Rally Pts Lost',   k.pa_rally_pts_won || 0],
+    ['Rally Pts Won %',  pctW(k.pb_rally_pts_won_pct) + '%'],
+    ['Winner %',         winnerPctB + '%'],
+    ['Error %',          errorPctB + '%'],
+    ['W:E Ratio',        weB],
+    ['Rally Shots',      rB.rally_shots || 0],
+  ];
+
   return `
-    <div class="chart-card full">
-      <h3>Rally Comparison</h3>
-      ${h2hPlayerHeader(pa, pb)}
-      <div class="chart-grid" style="margin-bottom:0;gap:12px">
-        <div>
-          ${statCard('Rally Pts Played', totalRallyPts, totalRallyPts)}
-          ${statCard('Rally Pts Won', k.pa_rally_pts_won || 0, k.pb_rally_pts_won || 0)}
-          ${statCard('Rally Pts Lost', k.pb_rally_pts_won || 0, k.pa_rally_pts_won || 0, true)}
-          ${statCard('Rally Pts Won %', pctW(k.pa_rally_pts_won_pct) + '%', pctW(k.pb_rally_pts_won_pct) + '%')}
-        </div>
-        <div>
-          ${statCard('Winner %', winnerPctA + '%', winnerPctB + '%')}
-          ${statCard('Error %', errorPctA + '%', errorPctB + '%', true)}
-          ${statCard('W:E Ratio', weA, weB)}
-          ${statCard('Rally Shots', rA.rally_shots || 0, rB.rally_shots || 0)}
-        </div>
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Rally Comparison</h3>
+        ${playerStatTable(rallyRowsA, PA_COLOR)}
+      </div>
+      <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Rally Comparison</h3>
+        ${playerStatTable(rallyRowsB, PB_COLOR)}
       </div>
     </div>
 
@@ -2213,12 +2291,14 @@ function renderHeatmapContent() {
   }[activeTab] || '';
 
   panel.innerHTML = `
-    ${toggleRow}
-    <div id="heatmapSparseBanner" style="display:none;max-width:1200px;margin:0 auto 10px"></div>
+    <div id="heatmapSparseBanner" style="display:none;margin:0 auto 10px"></div>
     <div class="heatmap-layout${heatmapInfoOpen ? ' with-info' : ''}">
       <div class="heatmap-main">
         <div class="chart-card full heatmap-card">
-          <h3>${tabTitle}</h3>
+          <div class="heatmap-header-row">
+            <h3 style="margin:0">${tabTitle}</h3>
+            ${toggleRow}
+          </div>
           <div id="heatmapStats" class="heatmap-stats-row"></div>
           <div class="heatmap-court-wrap">
             <canvas id="heatmapCourt" width="1200" height="1100"></canvas>
@@ -3341,15 +3421,16 @@ function ePie(id, data, colors) {
       padAngle: 3, minAngle: 6,
       itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
       label: {
-        show: true, alignTo: 'edge', edgeDistance: 12, bleedMargin: 8,
+        show: true, position: 'outside', bleedMargin: 4,
         formatter: (p) => `{name|${p.name}}\n{pct|${floors[p.dataIndex]}%}  {cnt|(${p.value})}`,
         rich: {
-          name: { fontSize: 13, fontWeight: 600, color: '#374151', lineHeight: 20 },
-          pct: { fontSize: 18, fontWeight: 700, color: '#1a5c2e', lineHeight: 24 },
-          cnt: { fontSize: 12, color: '#9ca3af' },
+          name: { fontSize: 12, fontWeight: 600, color: '#374151', lineHeight: 18 },
+          pct: { fontSize: 16, fontWeight: 700, color: '#1a5c2e', lineHeight: 22 },
+          cnt: { fontSize: 11, color: '#9ca3af' },
         },
       },
-      labelLayout: { hideOverlap: true },
+      labelLine: { length: 8, length2: 6, smooth: true },
+      labelLayout: { hideOverlap: true, moveOverlap: 'shiftY' },
       emphasis: {
         label: { fontSize: 15, fontWeight: 'bold' },
         itemStyle: { shadowBlur: 20, shadowColor: 'rgba(0,0,0,0.2)' },
@@ -3409,15 +3490,13 @@ function renderAllCharts() {
       chart.setOption({
         ...ANIM, tooltip: TT,
         legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'roundRect' },
-        grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+        grid: { left: 10, right: 10, top: 30, bottom: 50, containLabel: true },
         xAxis: { type: 'category', data: ['Serve', 'Return', 'Rally'],
           axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
           axisLine: { lineStyle: { color: '#e5e5e5' } }
         },
         yAxis: { type: 'value', minInterval: 1,
-          axisLabel: { fontSize: 12, color: '#9ca3af' },
-          splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-          axisLine: { show: false }, axisTick: { show: false },
+          show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false },
         },
         series: [
           { type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
@@ -3484,11 +3563,11 @@ function renderAllCharts() {
     const scale = Math.ceil(maxAll / 20) * 20;
     eGauge('gaugeSrvA', Math.round(k.pa_first_serve_speed_avg || k.pa_serve_speed_avg || 0), 'max ' + (k.pa_first_serve_speed_max || k.pa_serve_speed_max || '—'), scale, PA_COLOR);
     eGauge('gauge2ndA', Math.round(k.pa_second_serve_speed_avg || 0), 'max ' + (k.pa_second_serve_speed_max || '—'), scale, '#4a7c5c');
-    eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg  || 0), 'max ' + (k.pa_fh_speed_max  || '—'), scale, '#22783c');
+    eGauge('gaugeFhA',  Math.round(k.pa_fh_speed_avg  || 0), 'max ' + (k.pa_fh_speed_max  || '—'), scale, '#d97706');
     eGauge('gaugeBhA',  Math.round(k.pa_bh_speed_avg  || 0), 'max ' + (k.pa_bh_speed_max  || '—'), scale, '#2563eb');
     eGauge('gaugeSrvB', Math.round(k.pb_first_serve_speed_avg || k.pb_serve_speed_avg || 0), 'max ' + (k.pb_first_serve_speed_max || k.pb_serve_speed_max || '—'), scale, PB_COLOR);
     eGauge('gauge2ndB', Math.round(k.pb_second_serve_speed_avg || 0), 'max ' + (k.pb_second_serve_speed_max || '—'), scale, '#4a7c5c');
-    eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg  || 0), 'max ' + (k.pb_fh_speed_max  || '—'), scale, '#22783c');
+    eGauge('gaugeFhB',  Math.round(k.pb_fh_speed_avg  || 0), 'max ' + (k.pb_fh_speed_max  || '—'), scale, '#d97706');
     eGauge('gaugeBhB',  Math.round(k.pb_bh_speed_avg  || 0), 'max ' + (k.pb_bh_speed_max  || '—'), scale, '#2563eb');
 
     // In Attack % comparison bars
@@ -3511,7 +3590,7 @@ function renderAllCharts() {
                 label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
                   formatter: p => p.value > 5 ? 'Attack ' + p.value + '%' : '' } },
               { type: 'bar', stack: 'total', name: 'Neutral', data: [Math.round(100*r.aggression_neutral/total)],
-                itemStyle: { color: 'rgba(107,114,128,0.75)' }, barWidth: '100%',
+                itemStyle: { color: C_AMBER }, barWidth: '100%',
                 label: { show: true, position: 'inside', fontSize: 12, fontWeight: 600, color: '#fff',
                   formatter: p => p.value > 5 ? 'Neutral ' + p.value + '%' : '' } },
               { type: 'bar', stack: 'total', name: 'Defence', data: [Math.round(100*r.aggression_defence/total)],
@@ -3628,7 +3707,7 @@ function renderAllCharts() {
 
       eBar('chartAgg_' + sfx, ['Attack', 'Neutral', 'Defence'],
         [r.aggression_attack || 0, r.aggression_neutral || 0, r.aggression_defence || 0],
-        [C_GREEN, 'rgba(107,114,128,0.75)', C_RED], true);
+        [C_GREEN, C_AMBER, C_RED], true);
 
       // Depth: include 'Other' for shots silver couldn't classify (NULL depth_d).
       // Without this the bars silently miss rally shots — Tomo 13+4+3=20 ≠ 21.
