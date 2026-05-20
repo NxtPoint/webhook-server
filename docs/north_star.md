@@ -1,7 +1,7 @@
 # T5 ML Pipeline — North Star
 
-**Last updated:** 2026-05-07 EOD by Tomo + Claude (replan after ball-coverage finding)
-**Last verified:** 2026-05-20 — bench green on both fixtures (a798eff0 20/24, 880dff02 23/24); no T5 code shipped since May 7; ladder + bottleneck unchanged. See `.claude/session_2026-05-20_review.md` for the integration design Phase 3 part 2 + the validation commands the next session needs.
+**Last updated:** 2026-05-20 EOD — Phase 3 part 2 attempted + reverted (see Phase 3 detail below). Bottleneck confirmed empirically: pure-SQL approximations of `detect_point_boundaries()` over-filter without reliable bounce data. Phase 5 is the unblocking step.
+**Last verified:** 2026-05-20 — bench green on both fixtures (a798eff0 20/24, 880dff02 23/24); Phase 3 part 2 SQL out of main (commit de06d41); active T5 silver row count on 880dff02 back to 49.
 **Previous version archived:** `docs/_archive/north_star_2026-05-07_phantom-bounce-era.md`
 **This is the single place where the T5 macro plan lives.** Phase work happens against this ladder. Don't invent new directions — pick a phase, claim it, deliver, update.
 
@@ -53,7 +53,7 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 | 0 | Doc cleanup + this file | handover ≤700 lines, ≤5 active T5 memory files, this file exists with phase ladder | DONE 2026-05-07 |
 | 1 | Bounce-validity rule | net-crossing filter applied; bench 20/24 floor; new fixture confirms 458/463/584 movement | DONE 2026-05-07 — 880dff02 fixture **23/24 (10/10 FAR)** |
 | 2 | Point boundary detection | `detect_point_boundaries()` function exists; per-point match ≥80% on `a798eff0` | PARTIAL — function landed (POINT 2026-05-07); IOU 17.6% pre-Phase-3, **pending re-measurement on post-Phase-3 active silver** |
-| 3 | Pre-/between-point filter | Active T5 silver ±5% of SA event count; stroke distribution within ±10% per class | PARTIAL — warm-up half shipped; **between-point pending Phase 2 integration into `build_silver_v2.py`** |
+| 3 | Pre-/between-point filter | Active T5 silver ±5% of SA event count; stroke distribution within ±10% per class | PARTIAL — warm-up half shipped; **between-point empirically blocked by Phase 5 (2026-05-20)** |
 | 4 | Point-completeness reconciler | Diag tool shipped with baseline alongside `bench_baseline.json` | DONE 2026-05-07 — tool live, baseline 0/17 (root cause classified as Phase 5 territory) |
 | **5** | **Ball detection coverage (NEW)** | **T5 ball-detection frame coverage ≥50%; longest gap <5s; SA point 6 has T5 ball detections** | **UNCLAIMED — top bottleneck, multi-week** |
 | 6 | Stroke classification reconciliation (was 5) | T5 vs SA stroke distribution within ±10% per class on validated points | BLOCKED by 5 |
@@ -83,9 +83,16 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 **Part 1 — warm-up filter — DONE 2026-05-07.** New `first_serve_task` CTE + OR clause in the `final` CTE flips `exclude_d=TRUE` on rows where `ball_hit_s < per-task MIN(ball_hit_s) FILTER (serve_d)`. Predicted 35-row impact on `880dff02` confirmed via direct query (76 pre-existing exclusions + 35 new = 111 TRUE). Backhand count on active silver dropped from 62 → 10 (now slightly *under* SA's 15). Bench unchanged.
 
-**Part 2 — between-point filter — PENDING.** Integrate Phase 2's `detect_point_boundaries()` into pass 3 so rows whose `ball_hit_s` falls between point boundaries get `exclude_d=TRUE`. Should also tighten the warm-up anchor itself (T5's first detected serve at 19.68s on `880dff02` is likely a false-positive promoted by racquet-bouncing — once point boundaries land, warm-up cutoff can anchor on "first real point start" instead of "first detected serve").
+**Part 2 — between-point filter — BLOCKED by Phase 5 (2026-05-20).** Two pure-SQL attempts shipped + reverted; both flawed for the same upstream reason.
 
-**How to verify:** Active T5 silver row count within ±5% of SA's. Stroke distribution within ±10% per class. (Note: this metric is now achievable for FH/BH/Volley once Phase 5 fixes the under-counting from missing ball coverage.)
+  - **v1 (commit 00b8639, reverted)** — Pattern A from session_2026-05-20_review.md: anchor on every `serve_d=TRUE` row in `with_try_ff`, window = `LEAST(hit+30s, next_serve-2s)`. Result on 880dff02: **no-op**. T5's geometric serve detector emits 107 detections on an 18-point match (any overhead-type swing within EPS of a baseline qualifies). 107 dense anchors create windows that cover the entire match → nothing falls outside any window → 0 rows excluded. Active T5 rows held at 49.
+  - **v2 (commit f0b104e, reverted)** — anchor on first `serve_d=TRUE` per `point_number` (~18-30 anchors), 20s cap. Result on 880dff02: **wrong rows dropped**. Active T5 49 → 34 (-15 by count) but the reconciler's "T5 strokes outside ANY SA point window" held at 20 — all 15 dropped rows were INSIDE real SA windows. Per-point: pt 5 (SA [178.44–195.96]) 8 T5 → 1; pt 14 (SA [458.08–468.00]) 9 T5 → 1. Forward-fill of `point_number` assigns rows in the [SA_point_start, T5_serve_detection] gap to the PREVIOUS point_number; those rows then fall outside that previous point's 20s window and get excluded — even though they're real strokes of the current point.
+  - **Pattern B (Python `detect_point_boundaries()` integration) — inherits the same start-of-window limit.** `detect_point_boundaries()` improves the END of windows via `idle_gap_s=4.0s` (bounce-driven, tighter than v2's 20s cap), but `start_frame = serve.frame_idx` is identical to v2. The structural problem is "T5's serve detection lands later than SA's true point start" — Pattern B doesn't address this.
+  - **Root cause confirmed empirically: this work requires reliable bounce evidence to distinguish 'real stroke before serve detection' from 'between-point noise'. That's Phase 5.** Don't re-attempt Phase 3 part 2 until Phase 5 ball-detection coverage is materially better.
+
+  Revert lives at `de06d41` on main. Phase 3 part 1 (warm-up filter at line 713-718 of `build_silver_v2.py`) is unaffected and still shipping. Restart the design when Phase 5 has produced ≥30% ball-coverage on 880dff02.
+
+**How to verify (when re-attempted):** Active T5 silver row count within ±5% of SA's. **AND** the reconciler's "T5 strokes outside ANY SA point window" count drops. Don't trust row-count alone — v2 hit the row-count target but dropped real strokes; the reconciler's window-overlap metric is the load-bearing signal.
 
 ### Phase 4 — Point-completeness reconciler tool — DONE 2026-05-07
 **What landed:** `ml_pipeline/diag/audit_points_reconcile.py` + `ml_pipeline/diag/points_reconcile_baseline.json`. CLI: `python -m ml_pipeline.diag.audit_points_reconcile --task <T5_TID> [--honor-exclude]`. Reports per-SA-point match/partial/missing per stroke; produces a single number "X/Y points fully reconcile."
