@@ -294,7 +294,7 @@ Bucket `nextpoint-prod-uploads` requires CORS for browser-to-S3 multipart upload
 
 All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Authorization: Bearer <OPS_KEY>`). Query-string `?key=` is deliberately rejected to keep OPS_KEY out of access logs — see `_guard()` in `upload_app.py`.
 
-- `GET /__alive` — liveness probe (no auth)
+- `GET /healthz` — liveness probe on the main API (no auth, returns "OK"). The Locker Room service has its own `/__alive` at `locker_room_app.py:113`; the main API does NOT serve `/__alive`.
 - `GET /ops/routes` — list all registered routes
 - `GET /ops/db-ping` — DB connectivity
 - `POST /ops/compact-storage` — runs `VACUUM (FULL, ANALYZE)` on the bronze/silver/ml_analysis table list, returns per-table `before_bytes` / `after_bytes` / `freed_bytes` JSON. Optional body `{"only": ["schema.table", ...]}` to scope. Each VACUUM takes ACCESS EXCLUSIVE — trigger during low traffic.
