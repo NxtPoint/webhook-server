@@ -435,6 +435,14 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS first_server TEXT",
         f"ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS sport_type TEXT DEFAULT '{DEFAULT_SPORT_TYPE}'",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+
+        # PowerBI integration removed 2026-05-20. DROP IF EXISTS is idempotent
+        # (no-op after the first deploy drops them). Safe to delete this block
+        # once we're confident every running replica has run boot at least once.
+        "ALTER TABLE bronze.submission_context DROP COLUMN IF EXISTS pbi_refresh_status",
+        "ALTER TABLE bronze.submission_context DROP COLUMN IF EXISTS pbi_refresh_started_at",
+        "ALTER TABLE bronze.submission_context DROP COLUMN IF EXISTS pbi_refresh_finished_at",
+        "ALTER TABLE bronze.submission_context DROP COLUMN IF EXISTS pbi_refresh_error",
     ):
         conn.execute(sql_text(ddl))
 
