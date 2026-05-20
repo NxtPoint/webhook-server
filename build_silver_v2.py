@@ -717,6 +717,50 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       GROUP BY task_id
     ),
 
+    -- ========== BETWEEN-POINT FILTER (Phase 3 part 2, 2026-05-20) ==========
+    -- Drop T5 rows that fall between detected points (walking, ball pickup,
+    -- racquet-bouncing during the gap). Pure-SQL approximation of Python's
+    -- detect_point_boundaries(): each serve_d=TRUE row anchors a point window
+    -- ending at LEAST(hit + 30s hard cap, next_serve - 2s pre-serve buffer).
+    -- Rows whose ball_hit_s falls in NO window are flipped to exclude_d=TRUE.
+    --
+    -- T5-only: SportAI silver already emits only at real strokes, so applying
+    -- this filter to SportAI would over-exclude. task_apply_between_point is
+    -- a 0-or-1-row guard CTE that the OR-extension EXISTs-checks. SportAI ->
+    -- empty -> the AND short-circuits -> exclude_d unchanged.
+    --
+    -- Safety: also empty when no serves are detected at all (degenerate T5
+    -- task). Without this guard, an empty point_windows would make the
+    -- NOT EXISTS predicate flip every non-serve row to exclude_d=TRUE.
+    --
+    -- Idempotent: only flips FALSE -> TRUE via OR, never the reverse.
+    -- See docs/north_star.md Phase 3 + .claude/session_2026-05-20_review.md.
+    task_apply_between_point AS (
+      SELECT 1 AS apply
+      WHERE EXISTS (
+        SELECT 1 FROM {SILVER_SCHEMA}.{TABLE}
+        WHERE task_id = :tid AND model = 't5'
+      )
+      AND EXISTS (
+        SELECT 1 FROM with_try_ff WHERE serve_d IS TRUE
+      )
+    ),
+
+    point_windows AS (
+      SELECT
+        w.task_id,
+        w.ball_hit_s AS point_start_s,
+        LEAST(
+          w.ball_hit_s + 30.0,
+          COALESCE(
+            LEAD(w.ball_hit_s) OVER (PARTITION BY w.task_id ORDER BY w.ball_hit_s),
+            w.ball_hit_s + 30.0
+          ) - 2.0
+        ) AS point_end_s
+      FROM with_try_ff w
+      WHERE w.serve_d IS TRUE AND w.ball_hit_s IS NOT NULL
+    ),
+
     -- ========== GAME NUMBERING ==========
     -- Anchors: first serves where server changes (p1/p2 only)
     game_anchors AS (
@@ -1092,13 +1136,24 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         so.point_number,
         so.game_number,
 
-        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve).
+        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve)
+        -- OR between-point filter (T5-only, rows outside any point window).
         -- Warm-up filter is NULL-safe — no detected serves => first_serve_s
         -- is NULL => the right-hand operand is NULL => OR collapses to the
-        -- existing per-point value. Only ever flips FALSE -> TRUE, never the
-        -- reverse, so it can't undo any existing exclusion.
+        -- existing per-point value. Between-point filter is task-gated via
+        -- task_apply_between_point (empty on SportAI / no-serve tasks).
+        -- Serves themselves are never flipped — they anchor their own window.
+        -- Only ever flips FALSE -> TRUE via OR, never the reverse.
         (COALESCE(ec.exclude_d, FALSE)
          OR (fst.first_serve_s IS NOT NULL AND so.ball_hit_s < fst.first_serve_s)
+         OR (EXISTS (SELECT 1 FROM task_apply_between_point)
+             AND so.serve_d IS NOT TRUE
+             AND NOT EXISTS (
+               SELECT 1 FROM point_windows pw
+               WHERE pw.task_id = so.task_id
+                 AND so.ball_hit_s >= pw.point_start_s
+                 AND so.ball_hit_s <= pw.point_end_s
+             ))
         ) AS exclude_d,
 
         CASE
