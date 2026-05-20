@@ -96,18 +96,21 @@ body {
   padding: 0 24px; position: sticky; top: 48px; z-index: 10;
 }
 .module-tab {
-  padding: 10px 20px 4px; font-size: 0.82rem; font-weight: 500; color: rgba(255,255,255,0.65);
+  padding: 10px 20px 8px; font-size: 0.82rem; font-weight: 500; color: rgba(255,255,255,0.65);
   cursor: pointer; border-bottom: 3px solid transparent; transition: all var(--transition);
   background: none; border-top: none; border-left: none; border-right: none;
-  margin-bottom: 4px;
 }
 .module-tab:hover { color: rgba(255,255,255,0.9); }
 .module-tab.active { color: #fff; border-bottom-color: #fff; font-weight: 600; }
 
-/* Sub-tabs — identical to practice.html */
+/* Sub-tabs — identical to practice.html
+   top: must equal dash-toolbar height (48px) + module-tabs height (~36px) so
+   the subtab strip is glued flush under the module bar. Was 88px which left a
+   ~6-8px gap that showed scrolled chart content bleed-through. */
 .dash-tabs {
   display: flex; gap: 0; background: var(--white); border-bottom: 1px solid var(--border);
-  padding: 0 24px; position: sticky; top: 88px; z-index: 9;
+  padding: 0 24px; position: sticky; top: 84px; z-index: 9;
+  box-shadow: 0 1px 0 var(--border);
 }
 .dash-tab {
   padding: 10px 20px; font-size: 0.82rem; font-weight: 500; color: var(--text-sec);
@@ -1170,22 +1173,22 @@ function renderServePerfTab() {
   const stratA = buildServeStrategyFromView('player_a');
   const stratB = buildServeStrategyFromView('player_b');
 
-  const serveRows = [
-    ['UTR',                k.player_a_utr || '—',                       k.player_b_utr || '—'],
-    ['Total Serves',       k.pa_total_serves || 0,                      k.pb_total_serves || 0],
-    ['Svc Pts Won',        k.pa_svc_pts_won || 0,                       k.pb_svc_pts_won || 0],
-    ['1st Serve In %',     pctW(k.pa_first_serve_pct) + '%',            pctW(k.pb_first_serve_pct) + '%'],
-    ['Svc Pts Won %',      pctW(k.pa_svc_pts_won_pct) + '%',            pctW(k.pb_svc_pts_won_pct) + '%'],
-    ['Double Faults',      k.pa_double_faults || 0,                     k.pb_double_faults || 0,                   true],
-    ['Unreturned Svc Pts', k.pa_unreturned_serves || 0,                 k.pb_unreturned_serves || 0],
-    ['Avg Serve Speed',    k.pa_serve_speed_avg || '—',                 k.pb_serve_speed_avg || '—'],
-    ['Fastest Serve',      k.pa_serve_speed_max || '—',                 k.pb_serve_speed_max || '—'],
-  ];
-
   return `
     <div class="chart-card full">
-      <h3>Serve Performance</h3>
-      ${h2hStatTable(pa, pb, serveRows)}
+      <h3>Serve Head to Head</h3>
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+        <div style="font-weight:700;color:${PA_COLOR}">${pa}</div>
+        <div style="font-weight:700;color:${PB_COLOR}">${pb}</div>
+      </div>
+      ${compareBar('UTR',                k.player_a_utr || '—',                       k.player_b_utr || '—',                       parseFloat(k.player_a_utr)||0, parseFloat(k.player_b_utr)||0)}
+      ${compareBar('Total Serves',       k.pa_total_serves || 0,                      k.pb_total_serves || 0,                      k.pa_total_serves, k.pb_total_serves)}
+      ${compareBar('Svc Pts Won',        k.pa_svc_pts_won || 0,                       k.pb_svc_pts_won || 0,                       k.pa_svc_pts_won, k.pb_svc_pts_won)}
+      ${compareBar('1st Serve In %',     pctW(k.pa_first_serve_pct) + '%',            pctW(k.pb_first_serve_pct) + '%',            k.pa_first_serve_pct, k.pb_first_serve_pct)}
+      ${compareBar('Svc Pts Won %',      pctW(k.pa_svc_pts_won_pct) + '%',            pctW(k.pb_svc_pts_won_pct) + '%',            k.pa_svc_pts_won_pct, k.pb_svc_pts_won_pct)}
+      ${compareBar('Double Faults',      k.pa_double_faults || 0,                     k.pb_double_faults || 0,                     k.pa_double_faults, k.pb_double_faults, true)}
+      ${compareBar('Unreturned Svc Pts', k.pa_unreturned_serves || 0,                 k.pb_unreturned_serves || 0,                 k.pa_unreturned_serves, k.pb_unreturned_serves)}
+      ${compareBar('Avg Serve Speed',    k.pa_serve_speed_avg || '—',                 k.pb_serve_speed_avg || '—',                 parseFloat(k.pa_serve_speed_avg)||0, parseFloat(k.pb_serve_speed_avg)||0)}
+      ${compareBar('Fastest Serve',      k.pa_serve_speed_max || '—',                 k.pb_serve_speed_max || '—',                 parseFloat(k.pa_serve_speed_max)||0, parseFloat(k.pb_serve_speed_max)||0)}
     </div>
 
     <div class="chart-grid">
@@ -1292,15 +1295,16 @@ function renderServeDetailTab() {
   return `
     <div class="chart-card full">
       <h3>Serve Stats Head-to-Head</h3>
-      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
+          ${h2hPlayerHeader(pa, pb)}
           ${statCard('Svc Points Played', k.pa_service_points || 0, k.pb_service_points || 0)}
           ${statCard('Svc Points Won', k.pa_svc_pts_won || 0, k.pb_svc_pts_won || 0)}
           ${statCard('Svc Pts Won %', pctW(k.pa_svc_pts_won_pct) + '%', pctW(k.pb_svc_pts_won_pct) + '%')}
           ${statCard('1st Serve In %', pctW(k.pa_first_serve_pct) + '%', pctW(k.pb_first_serve_pct) + '%')}
         </div>
         <div>
+          ${h2hPlayerHeader(pa, pb)}
           ${statCard('1st Serve Win %', pctW(k.pa_first_serve_won_pct) + '%', pctW(k.pb_first_serve_won_pct) + '%')}
           ${statCard('2nd Serve In %', pctW(k.pa_second_serve_pct) + '%', pctW(k.pb_second_serve_pct) + '%')}
           ${statCard('2nd Serve Win %', pctW(k.pa_second_serve_won_pct) + '%', pctW(k.pb_second_serve_won_pct) + '%')}
@@ -1487,21 +1491,24 @@ function renderReturnSummaryTab() {
     return buildGenericTable(shots, zoneKey, null, ownerId, title);
   }
 
-  const retRows = [
-    ['Return Pts Played', rA.returns_played || 0,                                              rB.returns_played || 0],
-    ['Returns Made',      rA.returns_made || 0,                                                rB.returns_made || 0],
-    ['Return Errors',     rA.return_errors || 0,                                               rB.return_errors || 0,                                          true],
-    ['Return Pts Won',    (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0),       (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0)],
-    ['Unreturned %',      unretA + '%',                                                        unretB + '%',                                                    true],
-    ['Made %',            madeA + '%',                                                         madeB + '%'],
-    ['Won %',             wonA + '%',                                                          wonB + '%'],
-    ['Return Winners',    rA.return_winners || 0,                                              rB.return_winners || 0],
-  ];
+  const retWonA = (rA.vs_first_serve_won || 0) + (rA.vs_second_serve_won || 0);
+  const retWonB = (rB.vs_first_serve_won || 0) + (rB.vs_second_serve_won || 0);
 
   return `
     <div class="chart-card full">
-      <h3>Return Comparison</h3>
-      ${h2hStatTable(pa, pb, retRows)}
+      <h3>Return Head to Head</h3>
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+        <div style="font-weight:700;color:${PA_COLOR}">${pa}</div>
+        <div style="font-weight:700;color:${PB_COLOR}">${pb}</div>
+      </div>
+      ${compareBar('Return Pts Played', rA.returns_played || 0,   rB.returns_played || 0,   rA.returns_played, rB.returns_played)}
+      ${compareBar('Returns Made',      rA.returns_made || 0,     rB.returns_made || 0,     rA.returns_made, rB.returns_made)}
+      ${compareBar('Return Errors',     rA.return_errors || 0,    rB.return_errors || 0,    rA.return_errors, rB.return_errors, true)}
+      ${compareBar('Return Pts Won',    retWonA,                  retWonB,                  retWonA, retWonB)}
+      ${compareBar('Unreturned %',      unretA + '%',             unretB + '%',             unretA, unretB, true)}
+      ${compareBar('Made %',            madeA + '%',              madeB + '%',              madeA, madeB)}
+      ${compareBar('Won %',             wonA + '%',               wonB + '%',               wonA, wonB)}
+      ${compareBar('Return Winners',    rA.return_winners || 0,   rB.return_winners || 0,   rA.return_winners, rB.return_winners)}
     </div>
 
     <div class="chart-grid">
@@ -1552,15 +1559,16 @@ function renderReturnDetail() {
   return `
     <div class="chart-card full">
       <h3>Return Head-to-Head</h3>
-      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
+          ${h2hPlayerHeader(pa, pb)}
           ${statCard('Returns Played', rA.returns_played || 0, rB.returns_played || 0)}
           ${statCard('Returns Made %', madeA + '%', madeB + '%')}
           ${statCard('Return Pts Won %', wonA + '%', wonB + '%')}
           ${statCard('Return Winners', rA.return_winners || 0, rB.return_winners || 0)}
         </div>
         <div>
+          ${h2hPlayerHeader(pa, pb)}
           ${statCard('Return Errors', rA.return_errors || 0, rB.return_errors || 0, true)}
           ${statCard('vs 1st Serve %', vs1A + '%', vs1B + '%')}
           ${statCard('vs 2nd Serve %', vs2A + '%', vs2B + '%')}
@@ -1660,21 +1668,21 @@ function renderRallySummaryTab() {
     return buildGenericTable(shots, zoneKey, null, ownerId, title);
   }
 
-  const rallyRows = [
-    ['Rally Pts Played', totalRallyPts,                       totalRallyPts],
-    ['Rally Pts Won',    k.pa_rally_pts_won || 0,             k.pb_rally_pts_won || 0],
-    ['Rally Pts Lost',   k.pb_rally_pts_won || 0,             k.pa_rally_pts_won || 0,             true],
-    ['Rally Pts Won %',  pctW(k.pa_rally_pts_won_pct) + '%',  pctW(k.pb_rally_pts_won_pct) + '%'],
-    ['Winner %',         winnerPctA + '%',                    winnerPctB + '%'],
-    ['Error %',          errorPctA + '%',                     errorPctB + '%',                     true],
-    ['W:E Ratio',        weA,                                 weB],
-    ['Rally Shots',      rA.rally_shots || 0,                 rB.rally_shots || 0],
-  ];
-
   return `
     <div class="chart-card full">
-      <h3>Rally Comparison</h3>
-      ${h2hStatTable(pa, pb, rallyRows)}
+      <h3>Rally Head to Head</h3>
+      <div style="display:flex;justify-content:space-between;margin-bottom:10px">
+        <div style="font-weight:700;color:${PA_COLOR}">${pa}</div>
+        <div style="font-weight:700;color:${PB_COLOR}">${pb}</div>
+      </div>
+      ${compareBar('Rally Pts Played', totalRallyPts,                       totalRallyPts,                       totalRallyPts, totalRallyPts)}
+      ${compareBar('Rally Pts Won',    k.pa_rally_pts_won || 0,             k.pb_rally_pts_won || 0,             k.pa_rally_pts_won, k.pb_rally_pts_won)}
+      ${compareBar('Rally Pts Lost',   k.pb_rally_pts_won || 0,             k.pa_rally_pts_won || 0,             k.pb_rally_pts_won, k.pa_rally_pts_won, true)}
+      ${compareBar('Rally Pts Won %',  pctW(k.pa_rally_pts_won_pct) + '%',  pctW(k.pb_rally_pts_won_pct) + '%',  k.pa_rally_pts_won_pct, k.pb_rally_pts_won_pct)}
+      ${compareBar('Winner %',         winnerPctA + '%',                    winnerPctB + '%',                    winnerPctA, winnerPctB)}
+      ${compareBar('Error %',          errorPctA + '%',                     errorPctB + '%',                     errorPctA, errorPctB, true)}
+      ${compareBar('W:E Ratio',        weA,                                 weB,                                 parseFloat(weA)||0, parseFloat(weB)||0)}
+      ${compareBar('Rally Shots',      rA.rally_shots || 0,                 rB.rally_shots || 0,                 rA.rally_shots, rB.rally_shots)}
     </div>
 
     <div class="chart-grid">
@@ -1717,15 +1725,16 @@ function renderRallyDetail() {
   return `
     <div class="chart-card full">
       <h3>Rally Head-to-Head</h3>
-      ${h2hPlayerHeader(pa, pb)}
       <div class="chart-grid" style="margin-bottom:0;gap:12px">
         <div>
+          ${h2hPlayerHeader(pa, pb)}
           ${statCard('Rally Shots', rA.rally_shots || 0, rB.rally_shots || 0)}
           ${statCard('Rally Pts Won %', pctW(k.pa_rally_pts_won_pct) + '%', pctW(k.pb_rally_pts_won_pct) + '%')}
           ${statCard('Rally Winners', rA.winners || 0, rB.winners || 0)}
           ${statCard('Rally Errors', rA.errors || 0, rB.errors || 0, true)}
         </div>
         <div>
+          ${h2hPlayerHeader(pa, pb)}
           ${statCard('W:E Ratio', wErrA, wErrB)}
           ${statCard('Forehands', rA.stroke_forehand || 0, rB.stroke_forehand || 0)}
           ${statCard('Avg FH Speed', rA.fh_speed_avg || '—', rB.fh_speed_avg || '—')}
@@ -3307,18 +3316,18 @@ function eBar(id, labels, data, colors, horizontal = false) {
   const isMultiColor = Array.isArray(colors);
   chart.setOption({
     ...ANIM, tooltip: TT,
-    grid: { left: horizontal ? 80 : 40, right: 30, top: 30, bottom: 35, containLabel: true },
+    grid: { left: horizontal ? 80 : 10, right: 10, top: 30, bottom: 35, containLabel: true },
     [horizontal ? 'yAxis' : 'xAxis']: {
       type: 'category', data: labels,
       axisLabel: { fontSize: 13, color: '#6b7280' },
       axisLine: { lineStyle: { color: '#e5e5e5' } },
       axisTick: { show: false },
     },
+    // Value axis fully hidden — labels appear on top of each bar via series.label,
+    // so axis ticks + gridlines are noise. Hide for a cleaner reading.
     [horizontal ? 'xAxis' : 'yAxis']: {
       type: 'value', minInterval: 1,
-      axisLabel: { fontSize: 12, color: '#9ca3af' },
-      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-      axisLine: { show: false }, axisTick: { show: false },
+      show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false },
     },
     series: [{
       type: 'bar', barWidth: '55%', barMaxWidth: 64, barCategoryGap: '35%',
@@ -3346,34 +3355,46 @@ function eBar(id, labels, data, colors, horizontal = false) {
 function eStackedBar(id, labels, seriesData, horizontal = false) {
   const chart = ec(id);
   if (!chart) return null;
+  // Per-category totals so the top of each stack carries the bar total. Without
+  // this the chart only shows segment values (inside labels) which forces the
+  // eye to add them up.
+  const totals = labels.map((_, i) =>
+    seriesData.reduce((s, ser) => s + (Number(ser.data[i]) || 0), 0));
+  const lastIdx = seriesData.length - 1;
   chart.setOption({
     ...ANIM, tooltip: { ...TT, trigger: 'axis' },
     legend: { bottom: 0, textStyle: { fontSize: 13 }, itemGap: 20, icon: 'roundRect' },
-    grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+    grid: { left: 10, right: 10, top: 30, bottom: 50, containLabel: true },
     [horizontal ? 'yAxis' : 'xAxis']: {
       type: 'category', data: labels,
       axisLabel: { fontSize: 13, color: '#6b7280' },
       axisLine: { lineStyle: { color: '#e5e5e5' } },
       axisTick: { show: false },
     },
+    // Value axis hidden — totals show on top of each stack via the last series's
+    // formatter, segment values appear inside each colour band.
     [horizontal ? 'xAxis' : 'yAxis']: {
       type: 'value', minInterval: 1,
-      axisLabel: { fontSize: 12, color: '#9ca3af' },
-      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-      axisLine: { show: false }, axisTick: { show: false },
+      show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false },
     },
     series: seriesData.map((s, si) => ({
       type: 'bar', name: s.name, stack: 'total', barWidth: '55%', barMaxWidth: 64, barCategoryGap: '35%',
       data: s.data,
       itemStyle: {
         color: s.color,
-        borderRadius: si === seriesData.length - 1 ? [6, 6, 0, 0] : 0,
+        borderRadius: si === lastIdx ? [6, 6, 0, 0] : 0,
       },
       emphasis: { focus: 'series', blurScope: 'coordinateSystem' },
-      label: {
+      label: si === lastIdx ? {
+        show: true, position: 'top', fontSize: 12, fontWeight: 700, color: '#374151',
+        formatter: (p) => totals[p.dataIndex] > 0 ? String(totals[p.dataIndex]) : '',
+      } : {
         show: true, position: 'inside', fontSize: 11, fontWeight: 600, color: '#fff',
         formatter: (p) => p.value > 0 ? p.value : '',
       },
+      // Also keep segment values visible on the LAST series — render them inside via labelLayout
+      // (we display the TOTAL on top of the last series; the inside label is rendered separately).
+      labelLine: { show: false },
     })),
   });
   CI[id] = chart;
