@@ -11,7 +11,10 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
 - **Billing implementation (file map, entry points, flows)** → `docs/billing.md`. Behaviour rules → `docs/business.md`.
-- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
+- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also. Modules with READMEs:
+  - `coach_invite/`, `tennis_coach/`, `support_bot/`
+  - `technique/`, `video_pipeline/`
+  - `cleanup/`, `lambda/`, `migrations/`, `frontend/`
 - **Ops endpoints / Render shell tasks / `/ops/*` reference** → `docs/ops_runbook.md` (every endpoint with auth, body, expected output, when to run, plus operational task playbooks).
 - **Environment variables (any service)** → `docs/env_vars.md`.
 - **Technique pipeline** → `docs/technique.md` (canonical) + `technique/README.md` (file orientation).
@@ -22,7 +25,7 @@ Pick the closest match and jump there before reading the rest of this file:
 
 These look reasonable but will burn future sessions. Each is an explicit decision, not an oversight.
 
-1. **Don't run `pytest`.** No test suite exists; testing is manual against the live Render DB. The closest thing to a regression test is `python -m ml_pipeline.diag.bench` for the T5 serve detector — that one is mandatory before any `serve_detector` push.
+1. **Don't run `pytest`, and don't add it as a dependency or scaffold test files.** No test suite exists; testing is manual against the live Render DB. The absence is a deliberate decision, not an oversight to "fix." The closest thing to a regression test is `python -m ml_pipeline.diag.bench` for the T5 serve detector — that one is mandatory before any `serve_detector` push.
 2. **Don't aggregate in Python or JavaScript if a gold view can do it.** The architecture rule is "SQL views own aggregation, Python is a thin passthrough, frontend is pure rendering." Adding `groupby` / `reduce` in `client_api.py` or a chart file means you skipped the right layer — extend or add a `gold.*` view instead.
 3. **Don't import `upload_app` from the ingest worker.** The worker is deliberately self-contained (it calls `ingest_bronze_strict()` directly). Importing the main app pulls in Flask boot side-effects and breaks the worker timeout split (3600s vs 1800s).
 4. **Don't `DELETE FROM billing.*` on match delete.** Matches are billable events — the consumption record stays. Match delete is soft-delete only via `submission_context.deleted_at`; workers honour this at four gates. See `cleanup/orphan_sweep.py`.
@@ -30,6 +33,7 @@ These look reasonable but will burn future sessions. Each is an explicit decisio
 6. **Don't add ops endpoints with query-string `?key=` auth.** `_guard()` in `upload_app.py` deliberately rejects it to keep `OPS_KEY` out of access logs. Header-only (`X-Ops-Key` or `Authorization: Bearer`).
 7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code and waste the rerun.
 8. **Don't merge a T5 detector branch without the Batch-side change check.** Bench is green ≠ Batch is in sync. If `git diff origin/main HEAD --stat` against `ml_pipeline/roi_extractors/`, `ml_pipeline/__main__.py`, `ml_pipeline/pipeline.py`, `ml_pipeline/Dockerfile`, `ml_pipeline/requirements.txt`, or `ml_pipeline/serve_detector/` returns any rows, a Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1 are required before the user reruns. See `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST" — protocol exists because we shipped Phase 1 with code in `extract_far_pose` that lived only on Render and not in Batch on 2026-05-07.
+9. **Don't skip, relax, or work around the bench CI check to land a PR.** A red bench is a real regression — `bench.yml` replays a fixed CI fixture against the locked baseline (currently 20/24 on `a798eff0`). Revert the offending commit, reproduce locally with `python -m ml_pipeline.diag.bench`, and ship a fix that turns it green. The whole reason the harness exists is the silent slip from `0cb645a`; weakening the gate (lowering the baseline, narrowing the trigger globs, removing the workflow) is never the right move.
 
 ## Services and How to Run
 
@@ -46,9 +50,13 @@ The main service appears in `render.yaml` as `name: webhook-server` (the legacy 
 
 The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard), plus public marketing pages `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`. The main API serves all of them as same-origin backups for API access from within iframes.
 
-**Local dev:**
+**Local dev** (Windows; the repo is developed on Win 11):
 ```bash
-source .venv/Scripts/activate  # Windows bash
+# Git Bash:
+source .venv/Scripts/activate
+# PowerShell:
+.venv\Scripts\Activate.ps1
+# then (either shell):
 pip install -r requirements.txt
 gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 1800
 ```
