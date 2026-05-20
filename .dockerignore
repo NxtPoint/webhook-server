@@ -4,6 +4,5 @@ __pycache__/
 .git/
 .claude/
 _archive/
-superset/
 node_modules/
 *.egg-info/

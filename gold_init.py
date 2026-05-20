@@ -14,7 +14,6 @@
 # Consumers:
 #   - /api/client/match/* endpoints (thin passthrough, no aggregation in Python)
 #   - LLM coach (reads same views as dashboards → zero hallucination)
-#   - PowerBI / Superset (can still join gold.vw_point to gold.vw_player)
 #
 # DO NOT edit views in the database directly. Edit this file, commit, deploy.
 

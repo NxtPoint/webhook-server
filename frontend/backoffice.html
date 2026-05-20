@@ -537,7 +537,6 @@ function renderPipeline() {
     const bronzeOk = !!t.ingest_finished_at && !t.ingest_error;
     const silverOk = t.silver_built;
     const trimOk = t.trim_status === 'completed';
-    const pbiOk = t.pbi_refresh_status === 'completed';
 
     const sportaiPill = stagePill(t.last_status, t.last_status === 'completed' ? 'Yes' : t.last_status);
     const bronzePill = t.ingest_error
@@ -552,11 +551,6 @@ function renderPipeline() {
       ? stagePill('failed', t.trim_status || 'Error') + errTip(t.trim_error)
       : t.trim_status
         ? stagePill(t.trim_status, t.trim_status === 'completed' ? 'Yes' : t.trim_status)
-        : stagePill(null);
-    const pbiPill = t.pbi_refresh_error
-      ? stagePill('failed', t.pbi_refresh_status || 'Error') + errTip(t.pbi_refresh_error)
-      : t.pbi_refresh_status
-        ? stagePill(t.pbi_refresh_status, t.pbi_refresh_status === 'completed' ? 'Yes' : t.pbi_refresh_status)
         : stagePill(null);
     const sesPill = t.ses_notified_at
       ? stagePill('completed', 'Yes')
@@ -575,7 +569,6 @@ function renderPipeline() {
         <td>${bronzePill}</td>
         <td>${silverPill}</td>
         <td>${trimPill}</td>
-        <td>${pbiPill}</td>
         <td>${sesPill}</td>
       </tr>
     `;
@@ -595,7 +588,6 @@ function renderPipeline() {
               <th>Bronze</th>
               <th>Silver</th>
               <th>Trim</th>
-              <th>PBI</th>
               <th>Email</th>
             </tr>
           </thead>
@@ -650,14 +642,6 @@ function openTaskDetail(taskId) {
       detail: t.trim_status === 'completed'
         ? `Duration: ${t.trim_duration_s ? Math.round(t.trim_duration_s) + 's' : '--'} | Source: ${t.trim_source_duration_s ? Math.round(t.trim_source_duration_s) + 's' : '--'} | Segments: ${t.trim_segment_count || '--'}`
         : t.trim_status ? `Status: ${t.trim_status}` : null,
-    },
-    {
-      name: 'Power BI Refresh',
-      status: t.pbi_refresh_status === 'completed' ? 'ok' : t.pbi_refresh_error ? 'fail' : (['triggered', 'running', 'queued'].includes(t.pbi_refresh_status)) ? 'running' : 'pending',
-      icon: t.pbi_refresh_status === 'completed' ? '&#10003;' : t.pbi_refresh_error ? '&#10007;' : t.pbi_refresh_status ? '&#8635;' : '&#8212;',
-      time: t.pbi_refresh_started_at ? `Started: ${fmtTime(t.pbi_refresh_started_at)}` + (t.pbi_refresh_finished_at ? ` | Finished: ${fmtTime(t.pbi_refresh_finished_at)}` : '') : '--',
-      error: t.pbi_refresh_error,
-      detail: t.pbi_refresh_status ? `Status: ${t.pbi_refresh_status}` : null,
     },
     {
       name: 'Email Notification (SES)',

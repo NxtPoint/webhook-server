@@ -11,7 +11,7 @@ Pick the closest match and jump there before reading the rest of this file:
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
 - **Billing implementation (file map, entry points, flows)** → `docs/billing.md`. Behaviour rules → `docs/business.md`.
-- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`, `superset/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
+- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Modules with READMEs: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also.
 - **Ops endpoints / Render shell tasks / `/ops/*` reference** → `docs/ops_runbook.md` (every endpoint with auth, body, expected output, when to run, plus operational task playbooks).
 - **Environment variables (any service)** → `docs/env_vars.md`.
 - **Technique pipeline** → `docs/technique.md` (canonical) + `technique/README.md` (file orientation).
@@ -412,7 +412,6 @@ Tables, gold view list, key files, frontend swing-type list, full flow detail: *
 
 - **`docs/`**: feature-level design and reference docs. Active: `north_star.md` (T5 macro plan), `dashboards.md` (gold view + endpoint catalogue), `business.md` (canonical product behaviour), `billing.md` (billing implementation), `pricing_strategy.md` (pricing numerics), `ops_runbook.md` (every `/ops/*` endpoint), `env_vars.md` (full env-var matrix), `technique.md`, `support_bot.md`, `llm_coach_design.md`. Code links back by section number where relevant.
 - **`migrations/`**: One-off backfill SQL scripts. No migration framework — schema is managed idempotently via `db_init.py` + `gold_init.py` + per-module `ensure_*` functions.
-- **`superset/`**: Optional Superset BI deployment config. Not in `render.yaml`.
 - **`_archive/`**: Deprecated/replaced code kept for reference.
 - **`lambda/`**: AWS Lambda source (e.g., S3 trigger for ML pipeline).
 - **`.claude/`**: Claude Code handover docs + AWS Batch playbooks (tracked in git, see list above); per-run artefacts (debug frames, eval txts, run status) are gitignored.
