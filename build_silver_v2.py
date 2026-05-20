@@ -717,67 +717,6 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       GROUP BY task_id
     ),
 
-    -- ========== BETWEEN-POINT FILTER (Phase 3 part 2, v2 2026-05-20) ==========
-    -- Drop T5 rows that fall between detected points (walking, ball pickup,
-    -- racquet-bouncing in the gap). Pure-SQL approximation of Python's
-    -- detect_point_boundaries().
-    --
-    -- v1 (commit 00b8639) anchored on every serve_d=TRUE row in with_try_ff
-    -- and was a measured no-op on 880dff02: T5's geometric serve detector
-    -- emits 107 overhead-type detections on an 18-point match (it accepts any
-    -- overhead-type swing within EPS of a baseline), and 107 dense anchors
-    -- create windows that cover the entire match -> nothing falls outside any
-    -- window -> NOT EXISTS predicate FALSE for every row -> no exclusions.
-    --
-    -- v2: anchor on the FIRST serve_d=TRUE row per point_number (~18-30
-    -- anchors instead of 107). point_anchors upstream only increments
-    -- point_number when serve_side or player_id changes, so multi-serve
-    -- points (second serves, mid-rally smashes) collapse to one anchor.
-    -- Window cap also tightened 30s -> 20s (realistic rally ceiling).
-    --
-    -- T5-only via task_apply_between_point guard (checks model='t5' on
-    -- silver.point_detail + non-empty point set). SportAI tasks short-circuit
-    -- the OR-extension AND -> no-op, so SportAI silver is unaffected.
-    -- Serves themselves are never flipped — they anchor their own window.
-    --
-    -- Idempotent: only flips exclude_d FALSE -> TRUE via OR, never the reverse.
-    -- See docs/north_star.md Phase 3 + .claude/session_2026-05-20_review.md.
-    task_apply_between_point AS (
-      SELECT 1 AS apply
-      WHERE EXISTS (
-        SELECT 1 FROM {SILVER_SCHEMA}.{TABLE}
-        WHERE task_id = :tid AND model = 't5'
-      )
-      AND EXISTS (
-        SELECT 1 FROM with_try_ff
-        WHERE serve_d IS TRUE AND point_number IS NOT NULL AND point_number > 0
-      )
-    ),
-
-    point_first_serves AS (
-      SELECT DISTINCT ON (task_id, point_number)
-        task_id, point_number, ball_hit_s AS point_start_s
-      FROM with_try_ff
-      WHERE serve_d IS TRUE AND point_number IS NOT NULL AND point_number > 0
-        AND ball_hit_s IS NOT NULL
-      ORDER BY task_id, point_number, ball_hit_s, id
-    ),
-
-    point_windows AS (
-      SELECT
-        task_id,
-        point_number,
-        point_start_s,
-        LEAST(
-          point_start_s + 20.0,
-          COALESCE(
-            LEAD(point_start_s) OVER (PARTITION BY task_id ORDER BY point_number),
-            point_start_s + 20.0
-          ) - 2.0
-        ) AS point_end_s
-      FROM point_first_serves
-    ),
-
     -- ========== GAME NUMBERING ==========
     -- Anchors: first serves where server changes (p1/p2 only)
     game_anchors AS (
@@ -1153,24 +1092,13 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         so.point_number,
         so.game_number,
 
-        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve)
-        -- OR between-point filter (T5-only, rows outside any point window).
+        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve).
         -- Warm-up filter is NULL-safe — no detected serves => first_serve_s
         -- is NULL => the right-hand operand is NULL => OR collapses to the
-        -- existing per-point value. Between-point filter is task-gated via
-        -- task_apply_between_point (empty on SportAI / no-serve tasks).
-        -- Serves themselves are never flipped — they anchor their own window.
-        -- Only ever flips FALSE -> TRUE via OR, never the reverse.
+        -- existing per-point value. Only ever flips FALSE -> TRUE, never the
+        -- reverse, so it can't undo any existing exclusion.
         (COALESCE(ec.exclude_d, FALSE)
          OR (fst.first_serve_s IS NOT NULL AND so.ball_hit_s < fst.first_serve_s)
-         OR (EXISTS (SELECT 1 FROM task_apply_between_point)
-             AND so.serve_d IS NOT TRUE
-             AND NOT EXISTS (
-               SELECT 1 FROM point_windows pw
-               WHERE pw.task_id = so.task_id
-                 AND so.ball_hit_s >= pw.point_start_s
-                 AND so.ball_hit_s <= pw.point_end_s
-             ))
         ) AS exclude_d,
 
         CASE
