@@ -19,7 +19,7 @@
 Two services, identical routing behaviour:
 
 - **`locker-room`** (Render Flask service): the primary host. Each of the 14 files has a route in `locker_room_app.py` that returns `send_file(frontend/<name>.html)`. No DB connection, only Flask + gunicorn.
-- **`webhook-server`** (main API): each authenticated route is mirrored at the same URL in `upload_app.py` so the SPA can fetch same-origin from inside the portal iframe (avoids CORS for `/api/client/*` calls).
+- **Sport AI - API call** (main API; `webhook-server` in `render.yaml`): each authenticated route is mirrored at the same URL in `upload_app.py` so the SPA can fetch same-origin from inside the portal iframe (avoids CORS for `/api/client/*` calls).
 
 The pattern is one helper `_html(name)` in both apps that resolves an absolute path under `frontend/`. No file is conditionally served — both apps return the same bytes.
 
@@ -109,7 +109,7 @@ These rules apply to every SPA. Portal sets them; nested pages must too because 
 
 ## Data sources by page
 
-Every API call goes to the same-origin webhook-server (because of the same-origin route mirroring above).
+Every API call goes to the same-origin main API ("Sport AI - API call") because of the route mirroring above.
 
 | Page | Primary endpoints |
 |---|---|
@@ -126,7 +126,7 @@ Every API call goes to the same-origin webhook-server (because of the same-origi
 
 ## Gotchas
 
-- **Two apps serve the same files.** A change to `frontend/match_analysis.html` is picked up by both `locker-room` and `webhook-server` on next deploy. There's nothing to keep in sync — the file IS the source.
+- **Two apps serve the same files.** A change to `frontend/match_analysis.html` is picked up by both `locker-room` and the main API ("Sport AI - API call") on next deploy. There's nothing to keep in sync — the file IS the source.
 - **Portal is the only entry point.** Direct links to `/match-analysis` work but won't have the sidebar. Always link via `portal.html#nav=match-analysis` (or whatever the portal hash route is) when sharing in-product.
 - **Dev gates are inline.** Some flows (T5 game types in Media Room, Technique upload) check `email === 'tomo.stojakovic@gmail.com'` directly in JS to gate visibility. There's no server-side gate for these — they're hidden, not enforced.
 - **Marketing pages are mostly dead weight on Render.** Wix is the primary host; these exist as same-origin backups but the SEO win is null because Wix iframes everything. If you delete them, only direct-URL access (very rare) breaks.

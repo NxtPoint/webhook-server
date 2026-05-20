@@ -37,12 +37,14 @@ Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 
 | Service | Start command | Entry point |
 |---|---|---|
-| **Main API** (`webhook-server`) | `gunicorn wsgi:app` | `wsgi.py` → `upload_app.py` |
+| **Sport AI - API call** (main API, custom domain `api.nextpointtennis.com`) | `gunicorn wsgi:app` | `wsgi.py` → `upload_app.py` |
 | **Ingest worker** | `gunicorn ingest_worker_app:app` | `ingest_worker_app.py` |
 | **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` |
 | **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` |
 
-The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard), plus public marketing pages `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`. The main webhook-server serves all of them as same-origin backups for API access from within iframes.
+The main service appears in `render.yaml` as `name: webhook-server` (the legacy slug); the Render dashboard / billing displays it as **"Sport AI - API call"**. Prefer the display name when referring to it in conversation; the repo and local path remain `webhook-server` because the GitHub repo is `NxtPoint/webhook-server`.
+
+The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard), plus public marketing pages `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`. The main API serves all of them as same-origin backups for API access from within iframes.
 
 **Local dev:**
 ```bash
@@ -130,10 +132,14 @@ Media Room uploads video to S3 → `POST /api/submit_s3_task` → main app route
 
 Primary service. Responsibilities: S3 presigned URLs + multipart lifecycle, SportAI/T5/Technique submission (routed by `sport_type`), task status orchestration, auto-ingest triggering, video trim callback, SES notification, CORS preflight for `/api/client/*`. Registered blueprints: grep `app.register_blueprint` in `upload_app.py`.
 
-**On-boot init** (idempotent, each try/except-wrapped so one failure can't kill the service):
+**On-boot init** (idempotent, each try/except-wrapped so one failure can't kill the service — order matters because later steps may read from earlier views):
 1. `gold_init_presentation()` — `gold.vw_player`, `gold.vw_point`, `gold.match_*`, `gold.player_performance`
-2. `init_tennis_coach()` — `gold.coach_*` views + `tennis_coach.coach_cache`
-3. `technique_bronze_init()` + `ensure_silver_schema()` + `init_technique_gold_views()` — bronze/silver tables + `gold.technique_*` views
+2. legacy `gold_init()` from `db_init.py` — `gold.vw_client_match_summary` (feeds `/api/client/matches` sidebar; will be replaced by `gold.match_kpi`)
+3. `init_tennis_coach()` + register `coach_bp` — `gold.coach_*` views + `tennis_coach.coach_cache`
+4. `init_support_bot()` + register `support_bp` — `support_bot.conversations` + `faq_cache`
+5. register `cleanup.orphan_sweep_bp` — exposes `POST /ops/orphan-sweep`
+6. register `diag_sql.diag_sql_bp` — exposes `POST /ops/diag/sql`
+7. `technique_bronze_init()` + `ensure_silver_schema()` + `init_technique_gold_views()` — bronze/silver tables + `gold.technique_*` views
 
 ### Video Trim Pipeline
 

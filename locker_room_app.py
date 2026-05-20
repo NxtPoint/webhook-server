@@ -18,7 +18,7 @@
 #   GET /pricing-public → pricing_public.html (marketing pricing — distinct from /pricing)
 #   GET /for-coaches   → for_coaches.html
 #
-# No database connection — all data access goes through the webhook-server API.
+# No database connection — all data access goes through the main API ("Sport AI - API call" on Render).
 # Only installs flask + gunicorn (not full requirements.txt).
 # Start command: gunicorn locker_room_app:app
 

@@ -40,7 +40,7 @@
 ## Cross-service flow
 
 ```
-─────────── MAIN API (webhook-server) ──────────────────────
+─────────── MAIN API ("Sport AI - API call") ───────────────
 ingest_worker_app step 4
         │
         ▼
@@ -81,7 +81,7 @@ POST /trim
               body={task_id, status: 'completed'|'failed', output_s3_key,
                     source_duration_s, trim_duration_s, segment_count}
 
-─────────── MAIN API (webhook-server) ──────────────────────
+─────────── MAIN API ("Sport AI - API call") ───────────────
 POST /video-trim-complete  (handler in upload_app.py, NOT this module)
         │
         ├─ auth: VIDEO_TRIM_CALLBACK_OPS_KEY (must equal main API's OPS_KEY)

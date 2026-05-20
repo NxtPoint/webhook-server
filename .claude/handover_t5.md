@@ -490,7 +490,7 @@ video.mp4 (S3)
 │          court_detections, video_analysis_jobs   │
 └──────────────────────────────────────────────────┘
                      │
-                     ▼  (Render webhook-server, _do_ingest_t5)
+                     ▼  (Render main API "Sport AI - API call", _do_ingest_t5)
 ┌──────────────────────────────────────────────────┐
 │  ml_pipeline/serve_detector/                     │
 │  pose-first for near player                      │

@@ -1,6 +1,11 @@
 services:
   # =========================================
   # 1) Main API / Upload / SportAI service
+  #    Displayed on the Render dashboard as "Sport AI - API call".
+  #    Custom domain: api.nextpointtennis.com
+  #    The `name: webhook-server` slug below is legacy — kept so existing
+  #    blueprint sync continues to map to the running service. Don't change
+  #    without coordinating with Render (would create a new service).
   # =========================================
   - type: web
     name: webhook-server

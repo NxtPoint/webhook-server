@@ -1,6 +1,6 @@
 # Required Environment Variables
 
-## Main API (webhook-server)
+## Main API ("Sport AI - API call" on Render; `name: webhook-server` in `render.yaml`)
 
 **Required** (service boots but degraded without these):
 | Env Var | Notes |

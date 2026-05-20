@@ -16,7 +16,7 @@ The base URL in production is `https://api.nextpointtennis.com`. From the Render
 
 ### `GET /__alive`
 **What**: Liveness check. Two services answer this:
-- Main API (webhook-server): returns Flask default JSON
+- Main API ("Sport AI - API call" on Render): returns Flask default JSON
 - Locker-room: returns `{"ok": true, "service": "locker-room"}`
 
 **When**: Render's health check pings this. Use to confirm a service is up before debugging deeper.
