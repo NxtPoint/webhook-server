@@ -1,6 +1,7 @@
 # T5 ML Pipeline — North Star
 
 **Last updated:** 2026-05-07 EOD by Tomo + Claude (replan after ball-coverage finding)
+**Last verified:** 2026-05-20 — bench green on both fixtures (a798eff0 20/24, 880dff02 23/24); no T5 code shipped since May 7; ladder + bottleneck unchanged. See `.claude/session_2026-05-20_review.md` for the integration design Phase 3 part 2 + the validation commands the next session needs.
 **Previous version archived:** `docs/_archive/north_star_2026-05-07_phantom-bounce-era.md`
 **This is the single place where the T5 macro plan lives.** Phase work happens against this ladder. Don't invent new directions — pick a phase, claim it, deliver, update.
 

@@ -339,7 +339,7 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 
 In-house tennis video analysis pipeline. Runs on AWS Batch GPU (Spot G4dn.xlarge) for detection; runs on Render for serve detection + silver build. Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
 
-**All operational detail (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, session log, current task IDs, known gaps) lives in `.claude/handover_t5.md`.** Read that file at the start of any T5 session — it's the single source of truth. Note: `.claude/` is git-ignored, so `handover_t5.md` and the other `.claude/*.md` notes referenced throughout this file are local-only — they exist on disk but won't show up in `git log` / GitHub.
+**All operational detail (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, session log, current task IDs, known gaps) lives in `.claude/handover_t5.md`.** Read that file at the start of any T5 session — it's the single source of truth. The `.claude/` folder is **tracked in git** (handover docs + playbooks live there); only specific per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) are gitignored.
 
 ### Data flow (overview only — detail in handover)
 
@@ -399,5 +399,5 @@ Tables, gold view list, key files, frontend swing-type list, full flow detail: *
 - **`superset/`**: Optional Superset BI deployment config. Not in `render.yaml`.
 - **`_archive/`**: Deprecated/replaced code kept for reference.
 - **`lambda/`**: AWS Lambda source (e.g., S3 trigger for ML pipeline).
-- **`.claude/`**: Local Claude Code settings (git-ignored).
+- **`.claude/`**: Claude Code handover docs + AWS Batch playbooks (tracked in git, see list above); per-run artefacts (debug frames, eval txts, run status) are gitignored.
 - **Auto-memory** (Claude Code's per-project memory dir, indexed by `MEMORY.md`): persistent cross-session notes loaded into every conversation. Historical T5 context (`project_t5_*.md`), user/feedback rules, and feature-launch records live here — check it for "why did we decide X" before re-deriving from code. Local to the machine, not in git.
