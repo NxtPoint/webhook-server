@@ -736,14 +736,81 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM game_anchors g
     ),
 
-    with_game AS (
+    with_game_raw AS (
       SELECT w.*,
         MAX(gn.game_number) OVER (
           PARTITION BY w.task_id ORDER BY w.ball_hit_s, w.id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        )::integer AS game_number
+        )::integer AS game_number_raw
       FROM with_try_ff w
       LEFT JOIN game_nums gn ON gn.id = w.id
+    ),
+
+    -- ========== TIEBREAK COALESCING ==========
+    -- Raw `game_number_raw` increments on every server change. In a tiebreak
+    -- the server changes every 2 points, so a 7-5 tiebreak shows up as ~7
+    -- raw "games" of 1-2 points each. The user-visible rule is: one tiebreak
+    -- = one game. Detect a tiebreak as a run of 3+ consecutive raw games
+    -- each with ≤2 points, and merge them into a single coalesced game id.
+    --
+    -- Regular games always have ≥4 points (server needs 4 to win) so this
+    -- conservative threshold doesn't catch normal play. The first / last
+    -- raw block of a recording may have 1-2 points if the camera cut mid-
+    -- game, but a single short block alongside long ones won't trigger
+    -- coalescing.
+    raw_game_pt_counts AS (
+      SELECT task_id, game_number_raw,
+        COUNT(DISTINCT point_number) AS pt_count
+      FROM with_game_raw
+      WHERE point_number IS NOT NULL AND point_number > 0
+        AND game_number_raw IS NOT NULL
+      GROUP BY task_id, game_number_raw
+    ),
+
+    -- Gap-and-island: subtracting the cumulative candidate-count from the
+    -- raw game number gives all consecutive candidates a shared `gap_id`.
+    raw_game_marked AS (
+      SELECT *,
+        (pt_count <= 2)::int AS is_cand,
+        game_number_raw - SUM((pt_count <= 2)::int) OVER (
+          PARTITION BY task_id ORDER BY game_number_raw
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS gap_id
+      FROM raw_game_pt_counts
+    ),
+
+    -- For each gap_id, size of the candidate run.
+    raw_game_runs AS (
+      SELECT *,
+        COUNT(*) FILTER (WHERE is_cand = 1) OVER (PARTITION BY task_id, gap_id) AS cand_run_size,
+        MIN(game_number_raw) FILTER (WHERE is_cand = 1) OVER (PARTITION BY task_id, gap_id) AS cand_run_start
+      FROM raw_game_marked
+    ),
+
+    -- Coalesced id: tiebreak games (cand_run_size ≥ 3) share their run's
+    -- first game_number_raw. Regular games keep their own.
+    game_coalesced_map AS (
+      SELECT task_id, game_number_raw,
+        CASE
+          WHEN is_cand = 1 AND cand_run_size >= 3 THEN cand_run_start
+          ELSE game_number_raw
+        END AS coalesced_id
+      FROM raw_game_runs
+    ),
+
+    -- DENSE_RANK to compact the coalesced ids back to a clean 1..N sequence.
+    final_game_map AS (
+      SELECT task_id, game_number_raw,
+        DENSE_RANK() OVER (PARTITION BY task_id ORDER BY coalesced_id) AS game_number_final
+      FROM game_coalesced_map
+    ),
+
+    with_game AS (
+      SELECT w.*,
+        COALESCE(fgm.game_number_final, w.game_number_raw) AS game_number
+      FROM with_game_raw w
+      LEFT JOIN final_game_map fgm
+        ON fgm.task_id = w.task_id AND fgm.game_number_raw = w.game_number_raw
     ),
 
     -- ========== SERVER_ID ==========
