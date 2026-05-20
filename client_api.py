@@ -53,7 +53,6 @@ import os
 from datetime import datetime
 from typing import Optional
 
-import requests as http_requests
 from flask import Blueprint, jsonify, request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -1977,10 +1976,6 @@ def backoffice_pipeline():
             "trim_duration_s": float(r["trim_duration_s"]) if r["trim_duration_s"] else None,
             "trim_source_duration_s": float(r["trim_source_duration_s"]) if r["trim_source_duration_s"] else None,
             "trim_segment_count": int(r["trim_segment_count"]) if r["trim_segment_count"] else None,
-            "pbi_refresh_status": r["pbi_refresh_status"],
-            "pbi_refresh_started_at": _ts(r["pbi_refresh_started_at"]),
-            "pbi_refresh_finished_at": _ts(r["pbi_refresh_finished_at"]),
-            "pbi_refresh_error": r["pbi_refresh_error"],
             "ses_notified_at": _ts(r["ses_notified_at"]),
             "ses_notify_error": r["ses_notify_error"],
             "score": _format_score(r),
