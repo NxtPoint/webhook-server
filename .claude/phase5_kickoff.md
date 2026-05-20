@@ -17,7 +17,8 @@ This file isn't the plan — `docs/north_star.md` is. This is just a launching n
 
 1. `docs/north_star.md` — full plan. Phase 5 is the new entry; sub-tasks 5a/5b/5c/5d are scoped.
 2. `docs/_investigation/may07_sa_point6_gap.md` — the receipts. SA point 6 (~16s rally) sits inside a 61.8s ball-detection blackout. ~13% match-wide coverage. **Don't redo this diagnosis.**
-3. `.claude/handover_t5.md` — operational doc. Specifically the "BATCH-SIDE CHANGE CHECKLIST" (any roi_extractors / ball_tracker / pipeline.py / Dockerfile edit needs Docker rebuild + dual-region ECR push + new job-def revisions) and the "TEST HARNESS" section (bench is the regression gate — currently locked at a798eff0 20/24 + 880dff02 23/24).
+3. **`.claude/phase5b_ball_tracker_characterisation.md` — required reading for Phase 5b specifically.** Four-tier detector map, every Hough/threshold parameter with current value + tuning headroom, prioritised candidate-change list with predicted impact, measurement-first workflow. A staged single-parameter change (motion threshold 25 → 15) lives on branch `phase-5b/motion-threshold-reduce` ready for the Batch dance.
+4. `.claude/handover_t5.md` — operational doc. Specifically the "BATCH-SIDE CHANGE CHECKLIST" (any roi_extractors / ball_tracker / pipeline.py / Dockerfile edit needs Docker rebuild + dual-region ECR push + new job-def revisions) and the "TEST HARNESS" section (bench is the regression gate — currently locked at a798eff0 20/24 + 880dff02 23/24).
 
 ---
 
@@ -33,6 +34,8 @@ This file isn't the plan — `docs/north_star.md` is. This is just a launching n
 5a and 5b are independent and can run in parallel. 5c is foundation for 5d.
 
 **Recommended starting point: 5b (Hough fallback gain-up).** Smallest code change, lowest risk, fastest validation. Existing code is the right shape; a parameter tune may yield a measurable coverage delta. Bench protects detector recall as a safety net; ball coverage measurement is direct via `ml_analysis.ball_detections` row count.
+
+**Phase 5b characterisation pass already done (2026-05-20).** See `.claude/phase5b_ball_tracker_characterisation.md` for the four-tier detector map, eight candidate tuning changes with predicted impact + risk, and the measurement-first iteration protocol. A staged round-1 change (motion threshold 25 → 15 in `_detect_ball_frame_delta`) is on branch `phase-5b/motion-threshold-reduce`, NOT yet pushed to Batch — the next session runs the Batch dance and measures the delta.
 
 ---
 

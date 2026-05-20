@@ -494,8 +494,17 @@ class BallTracker:
         delta = cv2.absdiff(gray, self._prev_gray)
         self._prev_gray = gray
 
-        # Threshold the delta to get a binary mask of motion
-        _, motion_mask = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)
+        # Threshold the delta to get a binary mask of motion.
+        # Lowered 25 -> 15 in Phase 5b round 1 (2026-05-20). Rationale:
+        # tennis balls on bright hard courts can produce local intensity
+        # diffs of 15-25 between consecutive frames (especially mid-rally
+        # when the ball is brightly lit against bright background). 25 was
+        # excluding this class of motion before the Hough shape gate could
+        # discriminate. Hough's radius bounds (2-15) + param2=5 still filter
+        # non-ball-shaped motion at the next step. See
+        # .claude/phase5b_ball_tracker_characterisation.md for the
+        # measurement-first tuning plan and predicted impact.
+        _, motion_mask = cv2.threshold(delta, 15, 255, cv2.THRESH_BINARY)
 
         # Blur to merge nearby motion pixels into blobs
         motion_mask = cv2.GaussianBlur(motion_mask, (5, 5), 0)
