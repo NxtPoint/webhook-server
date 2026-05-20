@@ -75,39 +75,37 @@ doc priority list). If not, revisit.
 
 ## State at session end (2026-05-20)
 
-**Local `main` at `9ebda55` — one commit ahead of `origin/main` (not yet pushed).**
+**Local `main` and `origin/main` in sync at `542dbed`** (or later if more docs land overnight). Bench locked at `a798eff0` 20/24 + `880dff02` 23/24 throughout. Zero detector-quality regression today.
 
-Recent commits on main (newest first):
+Most-relevant recent commits on main (newest first; full log via `git log --oneline -20`):
 
-- `9ebda55` docs: tidy — CI bullet list + .gitignore .claude/tmp/  *(local only)*
+- `542dbed` docs: copy Phase 5b characterisation + kickoff cross-ref to main
+- `5816ebd` cleanup: finish PowerBI removal residue
+- `e77f6a6` docs: harden CLAUDE.md + add canonical next-session handover
+- `b36ffdb` docs: rename main API references webhook-server -> Sport AI - API call
+- `585b2ad` cleanup: remove PowerBI + Superset (cost reduction)
+- `9ebda55` docs: tidy — CI bullet list + .gitignore .claude/tmp/
 - `d4d5b36` docs: session_2026-05-20_phase5b_staged — Phase 5b round-1 ready for Batch
-- `7818576` dashboards: polish pass 2 — week 1 reconciliation + designer critique
-- `4ae2b81` docs: correct main-API liveness endpoint (/__alive -> /healthz)
 - `188a0d9` docs: 2026-05-20 PM — Phase 3 part 2 attempted + reverted, parked behind Phase 5
 - `de06d41` Revert Phase 3 part 2 (v1 + v2 SQL approximations both flawed)
 
-What landed today on main:
+What landed today on main (functional summary):
 
-- Phase 3 part 2 fully reverted with empirical receipts in docs
-- `docs/north_star.md` updated to reflect "Phase 3 part 2 blocked by Phase 5"
-- Three session docs in `.claude/`: morning review, `phase3pt2_revert`, `phase5b_staged`
-- `CLAUDE.md` doc bug (`/__alive` → `/healthz`) fixed
-- `CLAUDE.md` CI section reformatted as a bullet list + T5 silver builders named explicitly
-- `.gitignore` ignores `.claude/tmp/`
+- Phase 3 part 2 fully reverted with empirical receipts in docs (v1 no-op cause, v2 wrong-rows-dropped cause)
+- `docs/north_star.md` Phase 3 status flipped to "blocked by Phase 5" with per-attempt detail
+- Four session docs in `.claude/`: morning `review`, `phase3pt2_revert`, `phase5b_staged`, this `next_session_pickup`
+- Phase 5b characterisation doc (`phase5b_ball_tracker_characterisation.md`) on main alongside the kickoff cross-ref
+- CLAUDE.md hardened: liveness endpoint corrected (`/__alive` → `/healthz`), env vars + ops/diag/sql + blueprints sections fleshed out
+- PowerBI + Superset removed (cost reduction)
 - Two stale phase-3 branches deleted from origin
 
 **Branch `phase-5b/motion-threshold-reduce` (`dace7ad`) — READY FOR BATCH:**
 
 - `ml_pipeline/ball_tracker.py` motion threshold 25 → 15 (single safest gain candidate)
-- `.claude/phase5b_ball_tracker_characterisation.md` (NEW) — eight prioritised
-  tuning candidates, measurement workflow
-- `.claude/phase5_kickoff.md` cross-ref update
+- `.claude/phase5b_ball_tracker_characterisation.md` (also on main since `542dbed` — read from either location)
+- `.claude/phase5_kickoff.md` cross-ref update (same — duplicated on main + branch; clean merge expected)
 
-**Working tree:** clean except `ml_pipeline/training/visual_debug/` (untracked,
-deliberately ignored — leftover local debug images).
-
-**Bench locked at `a798eff0` 20/24 + `880dff02` 23/24 throughout. Zero
-detector-quality regression today.**
+**Working tree at session end:** clean except `ml_pipeline/training/visual_debug/` (untracked, deliberately ignored — leftover local debug images).
 
 The next chat has everything it needs to (a) bench-check, (b) pull baseline
 diagnostics, (c) run the Batch dance, (d) measure the delta. That's a clean
