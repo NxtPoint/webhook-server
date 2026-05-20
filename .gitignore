@@ -42,6 +42,7 @@ ml_pipeline/test_videos/
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 .claude/worktrees/
+.claude/tmp/
 
 # Eval history (per-machine; grown incrementally by harness)
 ml_pipeline/eval_history.jsonl

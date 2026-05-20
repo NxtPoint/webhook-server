@@ -57,7 +57,15 @@ gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 1800
 
 No automated test suite and no linter. All functional testing is manual against the live Render database. Do not run `pytest`.
 
-**One CI check exists** — `.github/workflows/bench.yml` is the entire `.github/` surface, no other workflows. It runs `python -m ml_pipeline.diag.bench` on every push to `main` and every PR that touches `ml_pipeline/serve_detector/**`, `ml_pipeline/diag/bench*`, `ml_pipeline/diag/replay_serves.py`, `build_silver_v2.py`, or the workflow itself. It replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`ml_pipeline/diag/bench_baseline.json`, currently 20/24). Bench exits non-zero on any negative delta, which fails the PR check. Sub-second runtime; no DB, no AWS, no ML weights — see `.claude/handover_t5.md` §"TEST HARNESS". If the check goes red: revert the offending commit, reproduce locally with the same command, and only ship a fix that turns it green again. Do not skip or relax the check to land a PR — the regression is real (this is exactly the silent slip from `0cb645a` that motivated the harness).
+**One CI check exists** — `.github/workflows/bench.yml` is the entire `.github/` surface, no other workflows. It runs `python -m ml_pipeline.diag.bench` and triggers on every push to `main` and every PR touching one of:
+
+- `ml_pipeline/serve_detector/**`
+- `ml_pipeline/diag/bench*`
+- `ml_pipeline/diag/replay_serves.py`
+- `build_silver_v2.py`
+- `.github/workflows/bench.yml` itself
+
+It replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`ml_pipeline/diag/bench_baseline.json`, currently 20/24). Bench exits non-zero on any negative delta, which fails the PR check. Sub-second runtime; no DB, no AWS, no ML weights — see `.claude/handover_t5.md` §"TEST HARNESS". If the check goes red: revert the offending commit, reproduce locally with the same command, and only ship a fix that turns it green again. Do not skip or relax the check to land a PR — the regression is real (this is exactly the silent slip from `0cb645a` that motivated the harness).
 
 Schema DDL is split across files:
 - `db_init.py::bronze_init()` — bronze tables (idempotent, called on boot)
@@ -107,7 +115,7 @@ Current prod implementation. 5-pass SQL pipeline:
 4. Zone classification + coordinate normalization
 5. Analytics (serve buckets, stroke, rally_length, aggression, depth)
 
-Court geometry constants live in `SPORT_CONFIG` at the top. T5 silver builders call passes 3-5 directly from this module to share the derivation logic.
+Court geometry constants live in `SPORT_CONFIG` at the top. T5 silver builders — `ml_pipeline/build_silver_match_t5.py` (matches) and `ml_pipeline/build_silver_practice.py` (practice) — call passes 3-5 directly from this module to share the derivation logic.
 
 ### Service Topology & Data Flow
 
