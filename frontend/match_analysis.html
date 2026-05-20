@@ -1588,18 +1588,21 @@ function renderReturnDetail() {
       </div>
     </div>
 
-    <div class="chart-grid quad">
+    <div class="chart-grid">
       <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Stroke</h3>
         <div id="chartRetStroke_a" class="echart"></div>
       </div>
       <div class="chart-card">
-        <h3 style="color:${PA_COLOR}">${pa} · Outcome</h3>
-        <div id="chartRetOutcome_a" class="echart"></div>
-      </div>
-      <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Stroke</h3>
         <div id="chartRetStroke_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
+        <h3 style="color:${PA_COLOR}">${pa} · Outcome</h3>
+        <div id="chartRetOutcome_a" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Outcome</h3>
@@ -1754,29 +1757,32 @@ function renderRallyDetail() {
       </div>
     </div>
 
-    <div class="chart-grid tri">
+    <div class="chart-grid">
       <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Aggression</h3>
         <div id="chartAgg_a" class="echart"></div>
       </div>
       <div class="chart-card">
+        <h3 style="color:${PB_COLOR}">${pb} · Aggression</h3>
+        <div id="chartAgg_b" class="echart"></div>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="chart-card">
         <h3 style="color:${PA_COLOR}">${pa} · Depth</h3>
         <div id="chartDepth_a" class="echart"></div>
       </div>
       <div class="chart-card">
-        <h3 style="color:${PA_COLOR}">${pa} · Stroke</h3>
-        <div id="chartStroke_a" class="echart"></div>
+        <h3 style="color:${PB_COLOR}">${pb} · Depth</h3>
+        <div id="chartDepth_b" class="echart"></div>
       </div>
     </div>
 
-    <div class="chart-grid tri">
+    <div class="chart-grid">
       <div class="chart-card">
-        <h3 style="color:${PB_COLOR}">${pb} · Aggression</h3>
-        <div id="chartAgg_b" class="echart"></div>
-      </div>
-      <div class="chart-card">
-        <h3 style="color:${PB_COLOR}">${pb} · Depth</h3>
-        <div id="chartDepth_b" class="echart"></div>
+        <h3 style="color:${PA_COLOR}">${pa} · Stroke</h3>
+        <div id="chartStroke_a" class="echart"></div>
       </div>
       <div class="chart-card">
         <h3 style="color:${PB_COLOR}">${pb} · Stroke</h3>
@@ -2904,7 +2910,7 @@ function renderServeUnretBar(chartId, playerRole) {
   if (!chart) return;
   chart.setOption({
     ...ANIM, tooltip: TT,
-    grid: { left: 40, right: 40, top: 20, bottom: 35, containLabel: true },
+    grid: { left: 10, right: 10, top: 30, bottom: 35, containLabel: true },
     xAxis: {
       type: 'category', data: dirs,
       axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
@@ -2912,12 +2918,10 @@ function renderServeUnretBar(chartId, playerRole) {
     },
     yAxis: {
       type: 'value', minInterval: 1,
-      axisLabel: { fontSize: 12, color: '#9ca3af' },
-      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-      axisLine: { show: false }, axisTick: { show: false },
+      show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false },
     },
     series: [{
-      type: 'bar', barWidth: '55%',
+      type: 'bar', barWidth: '55%', barMaxWidth: 64, barCategoryGap: '35%',
       data: dirs.map(d => agg[d].unret),
       itemStyle: { color: C_TEAL, borderRadius: [6, 6, 0, 0] },
       label: {
@@ -2955,7 +2959,7 @@ function renderServeTryBar(chartId, playerRole, tryVal) {
   chart.setOption({
     ...ANIM, tooltip: TT,
     legend: { bottom: 0, textStyle: { fontSize: 12 }, itemGap: 16, icon: 'roundRect' },
-    grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+    grid: { left: 10, right: 10, top: 30, bottom: 50, containLabel: true },
     xAxis: {
       type: 'category', data: dirs,
       axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
@@ -2963,9 +2967,7 @@ function renderServeTryBar(chartId, playerRole, tryVal) {
     },
     yAxis: {
       type: 'value', max: 100,
-      axisLabel: { fontSize: 12, color: '#9ca3af', formatter: '{value}%' },
-      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-      axisLine: { show: false }, axisTick: { show: false },
+      show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false },
     },
     series: [
       {
@@ -3255,9 +3257,7 @@ function renderLastVsAvgChart(rows) {
       axisLabel: { fontSize: 12, color: '#6b7280', width: 130, overflow: 'truncate' },
       axisTick: { show: false }, axisLine: { lineStyle: { color: '#e5e5e5' } } },
     xAxis: { type: 'value',
-      axisLabel: { fontSize: 11, color: '#9ca3af' },
-      splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-      axisLine: { show: false }, axisTick: { show: false } },
+      show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false } },
     series: [
       { type: 'bar', name: 'Last Match', barWidth: '35%', barGap: '10%',
         data: lastVals, itemStyle: { color: PA_COLOR, borderRadius: [0, 6, 6, 0] },
@@ -3692,14 +3692,12 @@ function renderAllCharts() {
       chart.setOption({
         ...ANIM, tooltip: TT,
         legend: { bottom: 0, textStyle: { fontSize: 13 }, icon: 'roundRect' },
-        grid: { left: 40, right: 30, top: 20, bottom: 50, containLabel: true },
+        grid: { left: 10, right: 10, top: 30, bottom: 50, containLabel: true },
         xAxis: { type: 'category', data: buckets,
           axisLabel: { fontSize: 13, color: '#6b7280' }, axisTick: { show: false },
           axisLine: { lineStyle: { color: '#e5e5e5' } } },
         yAxis: { type: 'value', minInterval: 1,
-          axisLabel: { fontSize: 12, color: '#9ca3af' },
-          splitLine: { lineStyle: { color: '#f0f0f0', type: 'dashed' } },
-          axisLine: { show: false }, axisTick: { show: false } },
+          show: false, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false } },
         series: [
           { type: 'bar', name: pa, barWidth: '25%', barGap: '20%',
             data: paWins, itemStyle: { color: PA_COLOR, borderRadius: [6, 6, 0, 0] },
