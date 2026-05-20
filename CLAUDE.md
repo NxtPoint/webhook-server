@@ -339,7 +339,15 @@ New features **must live in their own subdirectory** with `__init__.py`. Example
 
 In-house tennis video analysis pipeline. Runs on AWS Batch GPU (Spot G4dn.xlarge) for detection; runs on Render for serve detection + silver build. Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
 
-**All operational detail (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, session log, current task IDs, known gaps) lives in `.claude/handover_t5.md`.** Read that file at the start of any T5 session — it's the single source of truth. The `.claude/` folder is **tracked in git** (handover docs + playbooks live there); only specific per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) are gitignored.
+**Where to start a T5 session** — in this order:
+1. `docs/north_star.md` — macro plan + phase ladder
+2. The most recent `.claude/session_YYYY-MM-DD_review.md` if one exists — *live* handover with current design notes, validation commands, and the next path forward
+3. `.claude/handover_t5.md` — canonical operational reference (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, current task IDs, known gaps). The "TEST HARNESS" + "BATCH-SIDE CHANGE CHECKLIST" sections are mandatory reading before any detector edit or push.
+4. `.claude/phase5_kickoff.md` and similar forward-looking docs — read if relevant to the chosen path
+
+Then run `.venv/Scripts/python -m ml_pipeline.diag.bench` to confirm the floor is locked (currently a798eff0=20/24, 880dff02=23/24) before touching code.
+
+The `.claude/` folder is **tracked in git** (handover docs + playbooks live there); only specific per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) are gitignored.
 
 ### Data flow (overview only — detail in handover)
 
@@ -358,7 +366,7 @@ Both T5 and SportAI share passes 3-5 in `build_silver_v2.py` (repo root). The se
 |---|---|
 | `ml_pipeline/` | Core detection pipeline (court, ball, player), harness, evals |
 | `ml_pipeline/serve_detector/` | Pose-first serve detection + rally state machine + schema |
-| `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels |
+| `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (note: `training/visual_debug/` is leftover local debug images, untracked — don't read or edit) |
 | `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification |
 | `ml_pipeline/diag/` | Dev tools — serve viewer, pose probe, local pose extractor |
 
@@ -394,7 +402,7 @@ Tables, gold view list, key files, frontend swing-type list, full flow detail: *
 
 ## Other
 
-- **`docs/`**: feature-level design and reference docs. Active: `dashboards.md` (gold view + endpoint catalogue), `technique.md` (technique pipeline detail), `env_vars.md` (full env-var matrix), `llm_coach_design.md`, `pricing_strategy.md`. Code links back by section number where relevant.
+- **`docs/`**: feature-level design and reference docs. Active: `north_star.md` (T5 macro plan), `dashboards.md` (gold view + endpoint catalogue), `business.md` (canonical product behaviour), `billing.md` (billing implementation), `pricing_strategy.md` (pricing numerics), `ops_runbook.md` (every `/ops/*` endpoint), `env_vars.md` (full env-var matrix), `technique.md`, `support_bot.md`, `llm_coach_design.md`. Code links back by section number where relevant.
 - **`migrations/`**: One-off backfill SQL scripts. No migration framework — schema is managed idempotently via `db_init.py` + `gold_init.py` + per-module `ensure_*` functions.
 - **`superset/`**: Optional Superset BI deployment config. Not in `render.yaml`.
 - **`_archive/`**: Deprecated/replaced code kept for reference.
