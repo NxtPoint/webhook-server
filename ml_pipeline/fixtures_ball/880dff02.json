@@ -1,0 +1,14 @@
+{
+  "task_id": "880dff02-58bd-412c-9a29-5c5151004447",
+  "sa_task_id": "2c1ad953-b65b-41b4-9999-975964ff92e1",
+  "video_local_path": "ml_pipeline/test_videos/a798eff0_sa_video.mp4",
+  "fps": 25.0,
+  "_role": "Phase 5 progress guard. WASB swap is justified iff its sa_bounce_recall on sa_point_6 (where TrackNetV2 finds zero balls per docs/_investigation/may07_sa_point6_gap.md) is materially > 0, AND its detection_rate inside the 73.2s coverage gap is materially > TrackNetV2's.",
+  "_notes": "Hand-bootstrapped 2026-05-21. Same source video as a798eff0. SA point 6 frames and stroke spacings from docs/_investigation/may07_sa_point6_gap.md §SA point 6 window. Coverage gap from §Match-wide ball-detection gap pattern. sa_bounce_frames are the 9 SA point 6 strokes — the recall denominator that the +9pp F1 claim must beat. The gap window has no recall anchors (it's a coverage void by definition); detection_rate there is the diagnostic for raw frame coverage in gaps.",
+  "windows": [
+    {"name": "warmup", "start_frame": 0, "n_frames": 300, "_centre_ts": null},
+    {"name": "sa_point_6", "start_frame": 5599, "n_frames": 405, "_centre_ts": 232.04, "_sa_window_s": [224.96, 239.12], "_strokes": 9, "_note": "TrackNetV2 emits zero balls here on production bronze — the WASB hypothesis is that it finds some."},
+    {"name": "gap_73s_slice", "start_frame": 1000, "n_frames": 400, "_centre_ts": 48.0, "_note": "400-frame slice from inside the 73.2s coverage gap [899, 2728]. No SA strokes (it's an off-court interval), so sa_bounce_recall has no anchors here — measures raw detection rate only."}
+  ],
+  "sa_bounce_frames": [5624, 5649, 5686, 5712, 5811, 5848, 5887, 5929, 5978]
+}
