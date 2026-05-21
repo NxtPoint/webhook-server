@@ -224,3 +224,5 @@ The full session plan after today would look like:
 | +5 | T5 quality dashboard + bench history | Items #9, #10 |
 
 That's **5 working sessions to a fully unblocked Phase 5** with iteration speed measured in seconds, weights versioned, and a production quality monitor live.
+
+**Sequencing caveat (added 2026-05-21):** the silver bench in session +1 should be **baselined AFTER Phase 5a's Step F measurement lands**, not before — otherwise the baseline is immediately stale. Build the harness scaffolding (fixture loader, bench runner, baseline file format) in session +1, but don't lock the per-task expected row counts until 5a's bounce-extractor data has flowed through silver and the new 880dff02 row count is known. Locking earlier means re-baselining day one, which defeats the harness's purpose.
