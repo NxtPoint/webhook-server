@@ -56,6 +56,14 @@ COPY ml_pipeline/court_detector.py /app/ml_pipeline/
 COPY ml_pipeline/camera_calibration.py /app/ml_pipeline/
 COPY ml_pipeline/ball_tracker.py /app/ml_pipeline/
 COPY ml_pipeline/tracknet_v3.py /app/ml_pipeline/
+
+# WASB-SBDT ball detector — HRNet drop-in replacement for TrackNetV2.
+# Pipeline picks between BallTracker and WASBBallTracker via the
+# BALL_TRACKER env var (default tracknet_v2). Weights file is already in
+# ml_pipeline/models/ (wasb_tennis_best.pth.tar) and gets copied via the
+# models/ layer above; this just brings in the Python wrappers.
+COPY ml_pipeline/wasb_ball_tracker.py /app/ml_pipeline/
+COPY ml_pipeline/wasb_hrnet.py /app/ml_pipeline/
 COPY ml_pipeline/player_tracker.py /app/ml_pipeline/
 COPY ml_pipeline/heatmaps.py /app/ml_pipeline/
 COPY ml_pipeline/db_schema.py /app/ml_pipeline/

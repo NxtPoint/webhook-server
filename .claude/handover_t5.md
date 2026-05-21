@@ -13,7 +13,7 @@ Bench going green is necessary but **not sufficient**. Bench replays a pickled f
 **Before merging any T5 detector branch, run this:**
 
 ```bash
-git diff origin/main HEAD --stat -- ml_pipeline/roi_extractors/ ml_pipeline/__main__.py ml_pipeline/pipeline.py ml_pipeline/Dockerfile ml_pipeline/requirements.txt ml_pipeline/court_detector.py ml_pipeline/ball_tracker.py ml_pipeline/player_tracker.py ml_pipeline/camera_calibration.py ml_pipeline/heatmaps.py ml_pipeline/bronze_export.py ml_pipeline/db_writer.py ml_pipeline/db_schema.py ml_pipeline/tracknet_v3.py ml_pipeline/video_preprocessor.py ml_pipeline/serve_detector/
+git diff origin/main HEAD --stat -- ml_pipeline/roi_extractors/ ml_pipeline/__main__.py ml_pipeline/pipeline.py ml_pipeline/Dockerfile ml_pipeline/requirements.txt ml_pipeline/court_detector.py ml_pipeline/ball_tracker.py ml_pipeline/wasb_ball_tracker.py ml_pipeline/wasb_hrnet.py ml_pipeline/config.py ml_pipeline/player_tracker.py ml_pipeline/camera_calibration.py ml_pipeline/heatmaps.py ml_pipeline/bronze_export.py ml_pipeline/db_writer.py ml_pipeline/db_schema.py ml_pipeline/tracknet_v3.py ml_pipeline/video_preprocessor.py ml_pipeline/serve_detector/
 ```
 
 If the diff is empty: Render-only deploy is enough — `git push origin main` and you're done.

@@ -24,11 +24,35 @@ from ml_pipeline.config import (
     MOG2_VAR_THRESHOLD,
     MOG2_DETECT_SHADOWS,
     MOG2_LEARNING_RATE,
+    BALL_TRACKER,
 )
 from ml_pipeline.video_preprocessor import VideoPreprocessor, VideoMetadata
 from ml_pipeline.court_detector import CourtDetector
 from ml_pipeline.ball_tracker import BallTracker, BallDetection
 from ml_pipeline.player_tracker import PlayerTracker, PlayerDetection
+
+
+def _make_ball_tracker(device: str):
+    """Pick the ball tracker class based on the BALL_TRACKER env var.
+
+    Both classes expose the same interface (detect_frame, interpolate_gaps,
+    _filter_outliers, detect_bounces, compute_speeds, assign_peak_flight_speeds,
+    log_diagnostics, reset, self.detections). WASB was validated as a drop-in
+    on the ball-bench (see ml_pipeline/diag/bench_ball_baseline.json) before
+    being made selectable here.
+    """
+    name = BALL_TRACKER
+    if name == "wasb":
+        from ml_pipeline.wasb_ball_tracker import WASBBallTracker
+        logger.info("Ball tracker: WASB (BALL_TRACKER=%s)", name)
+        return WASBBallTracker(device=device)
+    if name not in ("tracknet_v2", "tracknet", ""):
+        logger.warning(
+            "Unknown BALL_TRACKER=%r — falling back to tracknet_v2",
+            name,
+        )
+    logger.info("Ball tracker: TrackNetV2 (BALL_TRACKER=%s)", name or "tracknet_v2")
+    return BallTracker(device=device)
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +127,7 @@ class TennisAnalysisPipeline:
         self.target_fps = FRAME_SAMPLE_FPS_PRACTICE if practice else FRAME_SAMPLE_FPS
         logger.info(f"Initialising pipeline on device: {self.device} (practice={practice}, fps={self.target_fps})")
         self.court_detector = CourtDetector(device=self.device)
-        self.ball_tracker = BallTracker(device=self.device)
+        self.ball_tracker = _make_ball_tracker(self.device)
         self.player_tracker = PlayerTracker(device=self.device)
 
         # MOG2 background subtractor — separates moving players from static

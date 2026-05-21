@@ -73,6 +73,19 @@ BALL_MAX_DIST_BETWEEN_FRAMES = 150
 BALL_MAX_DIST_GAP = 150
 
 # ---------------------------------------------------------------------------
+# Ball tracker selection (env-controlled — see ml_pipeline.pipeline)
+# ---------------------------------------------------------------------------
+# Which ball detector to use in production. Default 'tracknet_v2' so unset
+# environments behave like pre-2026-05-21 production. Set BALL_TRACKER=wasb
+# on Render's main API service to flip to WASB (which benchmarked materially
+# better on the documented coverage-gap regime — see
+# ml_pipeline/diag/bench_ball_baseline.json, 880dff02 SA point 6: 2/9 vs 0/9
+# strokes recovered, commit `7100792`).
+#
+# Valid values: 'tracknet_v2' (default), 'wasb'.
+BALL_TRACKER = os.getenv("BALL_TRACKER", "tracknet_v2").strip().lower()
+
+# ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)
 # ---------------------------------------------------------------------------
 COURT_INPUT_SIZE = 224             # ResNet50 expects 224x224
