@@ -212,6 +212,41 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
             except Exception as e:
                 logger.warning(f"ROI pose extraction failed (non-fatal): {e}")
 
+        # 2c. Service-box-targeted ROI bounce extraction (Phase 5a). Runs
+        # TrackNet on tight crops of both service boxes to recover bounces
+        # the full-frame pass misses because the ball is 1-2 px at 640x360
+        # global scale. Anchors on the in-memory result.ball_detections —
+        # the existing pipeline output already produces low-resolution
+        # signal in service-box areas; we use those as targets for a
+        # high-resolution second pass. Writes to ml_analysis.ball_detections_roi
+        # (source='roi_prod'), consumed by serve_detector's ROI merge logic.
+        # Failure is non-fatal — additive coverage must not block downstream.
+        if not practice:
+            try:
+                on_progress("roi_bounces", 80)
+                from ml_pipeline.roi_extractors import extract_far_bounces
+                court_det = getattr(pipeline, "court_detector", None)
+                # Anchor strategy: bounce-only without zone filter — best of 4
+                # strategies on the 880dff02 fixture (covers 6/24 SA serves vs
+                # 1/24 for the zone-filtered all-detections default the kickoff
+                # doc proposed). See _select_anchors docstring for the
+                # diagnostic table. Stage 2 measurement on 880dff02 validates.
+                n_bounces = extract_far_bounces(
+                    video_path=tmp_path,
+                    job_id=job_id,
+                    engine=engine,
+                    court_detector=court_det,
+                    bounces=getattr(result, "ball_detections", None),
+                    fps=getattr(result, "video_fps", 25.0) or 25.0,
+                    window_s=2.5,
+                    cluster_gap_s=0.5,
+                    anchor_zone_filter=False,
+                    anchor_bounce_only=True,
+                )
+                logger.info(f"ROI bounces: wrote {n_bounces} rows")
+            except Exception as e:
+                logger.warning(f"ROI bounce extraction failed (non-fatal): {e}")
+
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
         # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads
         # and bulk-inserts into ml_analysis.* in the same region as the DB.
