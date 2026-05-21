@@ -1,0 +1,45 @@
+{
+  "task_id": "1d6feb3a-4624-47ae-b8f5-44246b6d0eb3",
+  "job_id": "1d6feb3a-4624-47ae-b8f5-44246b6d0eb3",
+  "captured_at": "2026-05-21T19:39:45.712814Z",
+  "captured_after_commit": "9d37869",
+  "model": "t5",
+  "expected": {
+    "row_count_total": 7,
+    "row_count_active": 7,
+    "row_count_excluded": 0,
+    "serve_count_active": 1,
+    "serve_count_total": 1,
+    "stroke_distribution_active": {
+      "Backhand": 1,
+      "Forehand": 5,
+      "Serve": 1
+    },
+    "outcome_distribution": {
+      "Error": 1,
+      "In": 6
+    },
+    "depth_distribution_active": {
+      "Deep": 5,
+      "Short": 1,
+      "<null>": 1
+    },
+    "first_serve_ts_s": 55.92,
+    "last_serve_ts_s": 55.92
+  },
+  "tolerance": {
+    "row_count_total": {
+      "abs": 0,
+      "comment": "exact \u2014 silver builder is deterministic"
+    },
+    "row_count_active": {
+      "abs": 0
+    },
+    "serve_count_active": {
+      "abs": 0
+    },
+    "stroke_distribution_active": {
+      "per_class_pct": 5
+    }
+  }
+}

@@ -141,6 +141,16 @@ _EXTRA_SUBMISSION_CONTEXT_DDL = [
     "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS s3_key TEXT",
     "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_status TEXT",
     "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_output_s3_key TEXT",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_requested_at TIMESTAMPTZ",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_finished_at TIMESTAMPTZ",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_error TEXT",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_source_duration_s DOUBLE PRECISION",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_duration_s DOUBLE PRECISION",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_segment_count INT",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS trim_seconds_removed DOUBLE PRECISION",
+    # Match scoring timestamps — added by upload_app meta handling
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_start_ts TIMESTAMPTZ",
+    "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS match_end_ts TIMESTAMPTZ",
 ]
 
 
@@ -182,6 +192,21 @@ def _ensure_schema(engine):
     except Exception as e:
         logger.warning("serve_events schema init failed (non-fatal): %s", e)
 
+    # billing.member — silver builder LEFT JOINs to it for dominant_hand. We
+    # only need the columns the silver query reads; the bench doesn't carry
+    # billing data and the JOIN should miss-and-fall-through to 'right'.
+    from sqlalchemy import text as sql_text
+    with engine.begin() as conn:
+        conn.execute(sql_text("CREATE SCHEMA IF NOT EXISTS billing"))
+        conn.execute(sql_text("""
+            CREATE TABLE IF NOT EXISTS billing.member (
+                id              BIGSERIAL PRIMARY KEY,
+                email           TEXT,
+                is_primary      BOOLEAN NOT NULL DEFAULT FALSE,
+                dominant_hand   TEXT
+            )
+        """))
+
 
 def _truncate_task_tables(engine):
     from sqlalchemy import text as sql_text
@@ -195,25 +220,29 @@ def _truncate_task_tables(engine):
 
 
 def _restore_fixture(sql_gz_path: Path) -> None:
-    """Pipe the gzipped SQL fixture through `docker exec -i psql`."""
+    """Decompress + pipe the SQL fixture through `docker exec -i psql`.
+
+    Decompress entirely into memory first (typical fixture is 1-5 MB gzipped,
+    20-100 MB raw — fits easily) then pass to subprocess via `input=`. Passing
+    the GzipFile as stdin failed on Windows because subprocess didn't reliably
+    invoke the decompression path; this avoids that.
+    """
     if not sql_gz_path.exists():
         raise FileNotFoundError(sql_gz_path)
     with gzip.open(sql_gz_path, "rb") as gz:
-        # Stream to psql via stdin. `-v ON_ERROR_STOP=1` makes COPY/SQL
-        # errors fatal instead of silently continuing.
-        proc = subprocess.run(
-            [
-                "docker", "exec", "-i", db_helper.CONTAINER_NAME,
-                "psql",
-                "-U", db_helper.PG_USER,
-                "-d", db_helper.PG_DB,
-                "-v", "ON_ERROR_STOP=1",
-                "--quiet",
-            ],
-            stdin=gz,
-            capture_output=True,
-            text=False,
-        )
+        sql_bytes = gz.read()
+    proc = subprocess.run(
+        [
+            "docker", "exec", "-i", db_helper.CONTAINER_NAME,
+            "psql",
+            "-U", db_helper.PG_USER,
+            "-d", db_helper.PG_DB,
+            "-v", "ON_ERROR_STOP=1",
+            "--quiet",
+        ],
+        input=sql_bytes,
+        capture_output=True,
+    )
     if proc.returncode != 0:
         raise RuntimeError(
             f"fixture restore failed for {sql_gz_path}: "

@@ -104,10 +104,15 @@ def _get_engine(url_override: str | None = None):
 
 
 def _columns(conn, schema: str, table: str) -> list[str]:
+    # Skip GENERATED columns — COPY ... FROM STDIN cannot load into them
+    # (Postgres rejects with "generated columns cannot be used in COPY").
+    # Generated columns are derived from JSONB on restore via the trigger
+    # chain so they auto-populate. Affects bronze.ball_bounce + bronze.ball_position.
     rows = conn.execute(sql_text("""
         SELECT column_name
           FROM information_schema.columns
          WHERE table_schema = :s AND table_name = :t
+           AND COALESCE(is_generated, 'NEVER') = 'NEVER'
          ORDER BY ordinal_position
     """), {"s": schema, "t": table}).scalars().all()
     if not rows:
