@@ -7,8 +7,13 @@ Architectural shape mirrors extract_far_pose (roi_extractors/pose.py):
   - Called from ml_pipeline/__main__.py inside a non-fatal try/except
   - Reuses the pipeline's calibrated court_detector
   - Takes the in-memory result.ball_detections as the anchor source
-  - Writes to ml_analysis.ball_detections_roi where serve_detector's
-    merge logic picks them up
+  - **Writes directly to ml_analysis.ball_detections (the canonical
+    bronze table) with source='roi_prod'** so silver_t5 and
+    serve_detector see the rows through their existing single-table
+    loaders. Original Phase 5a build wrote to a parallel
+    ball_detections_roi table — that was an architectural mistake
+    (forced every downstream consumer to merge two tables); fixed in
+    Option A on 2026-05-21. See feedback_t5_single_canonical_bronze.
 
 Anchor logic (option c from the stub docstring + phase5a_kickoff.md):
   1. Filter result.ball_detections to the service-box zone in court metres
@@ -54,31 +59,21 @@ SB_Y_MARGIN = 1.5
 # ---------------------------------------------------------------------------
 
 def _init_schema(conn) -> None:
-    """Ensure ml_analysis.ball_detections_roi exists (idempotent).
+    """Ensure ml_analysis.ball_detections has the `source` column (idempotent).
 
-    Matches the DDL used by ml_pipeline/diag/extract_roi_bounces.py so
-    diag-tool rows and prod rows share a table. The serve_detector merge
-    logic in detector.py:289-298 reads this table by job_id only and is
-    indifferent to the source column."""
-    conn.execute(sql_text("""
-        CREATE TABLE IF NOT EXISTS ml_analysis.ball_detections_roi (
-            id              BIGSERIAL PRIMARY KEY,
-            job_id          TEXT NOT NULL,
-            frame_idx       INTEGER NOT NULL,
-            x               DOUBLE PRECISION NOT NULL,
-            y               DOUBLE PRECISION NOT NULL,
-            court_x         DOUBLE PRECISION,
-            court_y         DOUBLE PRECISION,
-            is_bounce       BOOLEAN NOT NULL DEFAULT FALSE,
-            source          TEXT NOT NULL DEFAULT 'roi_far',
-            window_serve_ts DOUBLE PRECISION,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-    """))
-    conn.execute(sql_text("""
-        CREATE INDEX IF NOT EXISTS idx_ball_detections_roi_job_bounce
-            ON ml_analysis.ball_detections_roi (job_id) WHERE is_bounce = TRUE;
-    """))
+    Phase 5a writes ROI rows directly into the canonical bronze table
+    `ml_analysis.ball_detections` (with source='roi_prod') so silver and
+    serve_detector see them through the same loader they already use. The
+    `source` column is the only schema addition — distinguishes main-pass
+    rows (NULL or 'main') from ROI-pass rows ('roi_prod' for production,
+    'roi_far' for the diag tool). This avoids the parallel-bronze-table
+    architecture that the original Phase 5a build accidentally created
+    (see .claude/session_2026-05-21_phase5a_stage2.md and
+    feedback_t5_single_canonical_bronze for the rationale)."""
+    conn.execute(sql_text(
+        "ALTER TABLE ml_analysis.ball_detections "
+        "ADD COLUMN IF NOT EXISTS source TEXT"
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -302,19 +297,19 @@ def _persist_rows(
         _init_schema(conn)
         if replace:
             n_del = conn.execute(sql_text("""
-                DELETE FROM ml_analysis.ball_detections_roi
+                DELETE FROM ml_analysis.ball_detections
                 WHERE job_id = :tid AND source = :src
             """), {"tid": job_id, "src": source_tag}).rowcount
             if n_del:
                 logger.info("roi_bounces: deleted %d prior rows (source=%s)",
                             n_del, source_tag)
         conn.execute(sql_text("""
-            INSERT INTO ml_analysis.ball_detections_roi
+            INSERT INTO ml_analysis.ball_detections
                 (job_id, frame_idx, x, y, court_x, court_y,
-                 is_bounce, source, window_serve_ts)
+                 is_bounce, source)
             VALUES
                 (:job_id, :frame_idx, :x, :y, :court_x, :court_y,
-                 :is_bounce, :source, :window_serve_ts)
+                 :is_bounce, :source)
         """), [
             {
                 "job_id": job_id,
@@ -325,7 +320,6 @@ def _persist_rows(
                 "court_y": r["court_y"],
                 "is_bounce": r["is_bounce"],
                 "source": source_tag,
-                "window_serve_ts": r.get("window_serve_ts"),
             }
             for r in rows
         ])
@@ -377,8 +371,9 @@ def extract_far_bounces(
             is_bounce=True. Default True.
         max_windows: cap on the number of ROI windows to run (test/diag
             knob — None = unlimited).
-        source_tag: ml_analysis.ball_detections_roi.source value. Use a
-            distinct tag from the diag tool's 'roi_far' for traceability.
+        source_tag: ml_analysis.ball_detections.source value. Use a
+            distinct tag ('roi_prod' by default) from the diag tool's
+            'roi_far' and from main-pass rows (source='main' or NULL).
         replace: when True (default), DELETE prior rows for
             (job_id, source_tag) before inserting — production idempotency.
         return_rows: when True, returns (count, rows) for Stage 1 inspection.
