@@ -138,16 +138,20 @@ def _dump_table(conn, table: str, filter_col: str, filter_value: str,
     out_handle.write(f"\n-- {table} (filter: {filter_col} = '{filter_value}')\n".encode())
     out_handle.write(f"COPY {table} ({col_list}) FROM STDIN WITH (FORMAT csv);\n".encode())
 
-    # Get the raw psycopg connection (psycopg3) for COPY support
+    # Get the raw psycopg connection (psycopg3) for COPY support.
+    # Cast the column to text in the WHERE clause so the same code path works
+    # for TEXT task_id columns (e.g. bronze.*) and UUID task_id columns (e.g.
+    # ml_analysis.serve_events). Snapshot is not a hot path — losing the
+    # index on the column is fine.
     raw = conn.connection.driver_connection
     copy_sql = (
         f"COPY (SELECT {col_list} FROM {table} "
-        f"WHERE {filter_col} = %s::text OR {filter_col}::text = %s) "
+        f"WHERE {filter_col}::text = %s) "
         f"TO STDOUT WITH (FORMAT csv)"
     )
     bytes_written = 0
     with raw.cursor() as cur:
-        with cur.copy(copy_sql, [str(filter_value), str(filter_value)]) as cp:
+        with cur.copy(copy_sql, [str(filter_value)]) as cp:
             for chunk in cp:
                 # psycopg3 returns memoryview chunks; convert to bytes
                 b = bytes(chunk)

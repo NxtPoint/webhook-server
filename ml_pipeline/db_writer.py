@@ -80,7 +80,12 @@ class MLDBWriter:
             """), params)
 
     def save_ball_detections(self, job_id: str, detections, batch_size: int = 5000):
-        """Bulk insert ball detections."""
+        """Bulk insert ball detections.
+
+        Tags every row with source='main' so the ROI-pass writes ('roi_prod')
+        and main-pass writes are distinguishable post-Phase-5a. Without this,
+        new rows carry source=NULL and lose the diagnostic distinction.
+        """
         if not detections:
             return
         with self.engine.begin() as conn:
@@ -96,21 +101,22 @@ class MLDBWriter:
                     "speed_kmh": d.speed_kmh,
                     "is_bounce": d.is_bounce,
                     "is_in": d.is_in,
+                    "source": "main",
                 })
                 if len(batch) >= batch_size:
                     conn.execute(sql_text("""
                         INSERT INTO ml_analysis.ball_detections
-                            (job_id, frame_idx, x, y, court_x, court_y, speed_kmh, is_bounce, is_in)
+                            (job_id, frame_idx, x, y, court_x, court_y, speed_kmh, is_bounce, is_in, source)
                         VALUES
-                            (:job_id, :frame_idx, :x, :y, :court_x, :court_y, :speed_kmh, :is_bounce, :is_in)
+                            (:job_id, :frame_idx, :x, :y, :court_x, :court_y, :speed_kmh, :is_bounce, :is_in, :source)
                     """), batch)
                     batch = []
             if batch:
                 conn.execute(sql_text("""
                     INSERT INTO ml_analysis.ball_detections
-                        (job_id, frame_idx, x, y, court_x, court_y, speed_kmh, is_bounce, is_in)
+                        (job_id, frame_idx, x, y, court_x, court_y, speed_kmh, is_bounce, is_in, source)
                     VALUES
-                        (:job_id, :frame_idx, :x, :y, :court_x, :court_y, :speed_kmh, :is_bounce, :is_in)
+                        (:job_id, :frame_idx, :x, :y, :court_x, :court_y, :speed_kmh, :is_bounce, :is_in, :source)
                 """), batch)
         logger.info(f"Saved {len(detections)} ball detections for job {job_id}")
 

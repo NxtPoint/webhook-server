@@ -134,6 +134,14 @@ def _create_ball_detections_table(conn):
             created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         );
     """))
+    # Phase 5a — `source` distinguishes main-pass rows ('main') from ROI-pass
+    # ('roi_prod') and any other future producers. Previously only added by
+    # ml_pipeline/roi_extractors/bounces._init_schema when ROI ran; idempotent
+    # here so the column exists from boot.
+    conn.execute(sql_text(
+        "ALTER TABLE ml_analysis.ball_detections "
+        "ADD COLUMN IF NOT EXISTS source TEXT"
+    ))
 
 
 def _create_player_detections_table(conn):
