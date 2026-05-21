@@ -213,7 +213,7 @@ def _baseline_for_task(conn, task_id: str, model: str) -> dict:
         "serve_count_active": int(serve_count_active),
         "serve_count_total": int(serve_count_total),
         "stroke_distribution_active": _dist("stroke_d", active_only=True),
-        "outcome_distribution": _dist("outcome_d", active_only=False),
+        "outcome_distribution": _dist("shot_outcome_d", active_only=False),
         "depth_distribution_active": _dist("depth_d", active_only=True),
         "first_serve_ts_s": (
             float(serve_ts["first_s"]) if serve_ts.get("first_s") is not None else None
