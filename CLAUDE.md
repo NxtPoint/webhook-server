@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pick the closest match and jump there before reading the rest of this file:
 
-- **T5 ML pipeline / serve detector / Batch / silver_t5** → for *macro plan / current phase* see `docs/north_star.md`; for *how to run / validate / ship* see `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS" sections). A modified `.claude/session_*.md` in `git status` names the live thread — open it before re-deriving context. Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
+- **Any session, any task** → **first read `.claude/next_session_pickup.md`**. It's overwritten at the end of every session with: current state, what just shipped, open questions, and a "Read in this order" list specific to the next move. Skipping it wastes the first 30 min re-deriving state. **At session end, overwrite that file with the new state** so the next session inherits cleanly. A modified `.claude/session_*.md` in `git status` names the live thread — open that for the deep detail behind the pickup file's summary.
+- **T5 ML pipeline / serve detector / Batch / silver_t5** → for *macro plan / current phase* see `docs/north_star.md`; for *how to run / validate / ship* see `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS" sections). Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
 - **Dashboard / gold view / endpoint mapping** → `docs/dashboards.md`.
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
