@@ -6,6 +6,29 @@
 
 ---
 
+## The two lines Tomo pastes (canonical opening + closing prompts)
+
+These are the only things Tomo needs to type. Everything else the agent does autonomously.
+
+**Opening (start of session):**
+```
+Read .claude/next_session_pickup.md then run the boot checklist in
+.claude/session_protocol.md. Acknowledge what you're working on in
+one sentence before touching anything. Today's task: [TASK].
+```
+
+**Closing (end of session):**
+```
+Wrap up. Run the close checklist in .claude/session_protocol.md:
+overwrite next_session_pickup.md with current state, archive any
+docs that became historical, commit + push everything, then output
+a 2-line session summary.
+```
+
+If you're an agent reading this: the opening line is your trigger to run the boot checklist below. The closing line is your trigger to run the close checklist. Both checklists are non-negotiable — they're how the project stays coherent across sessions.
+
+---
+
 ## Boot checklist — run on EVERY session start
 
 Run through this in the first ~5 minutes before doing any real work. Don't skip steps because "I already know."
