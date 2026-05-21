@@ -3502,6 +3502,125 @@ def ops_dual_submit_t5():
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
 
 
+@app.post("/ops/dual-submit-t5-backfill")
+def ops_dual_submit_t5_backfill():
+    """Retro-trigger T5 dual-submit for SA tennis_singles tasks that have no
+    paired T5 job. Phase 5c.1 of the dual-submit pipeline.
+
+    Idempotent by design — each per-task call goes through `_manual_dual_submit_t5`
+    which already skips matches whose s3_key already has a T5 job. The SQL
+    filter just avoids paying the lookup cost.
+
+    Body (all optional):
+      {
+        "dry_run": true,       # default: true — list eligible, submit nothing
+        "limit": 50,           # default: 50 — cap how many to submit per call
+        "delay_ms": 1000       # default: 1000 — throttle between submits
+      }
+
+    Response:
+      {
+        "ok": true,
+        "dry_run": bool,
+        "scanned": N,           # SA tennis_singles tasks examined
+        "eligible": M,          # had no paired T5 job
+        "submitted": K,         # T5 jobs newly queued (0 if dry_run)
+        "skipped": [{task_id, reason}, ...],
+        "errors": [{task_id, error}, ...],
+        "next_cursor": "<created_at>"  # for paginating large backfills
+      }
+
+    Cost note: each submitted job is ~$0.12-0.15 on Spot G4dn. Start with
+    dry_run=true to size the backfill before paying.
+    """
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    import time as _time
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    limit = int(body.get("limit", 50))
+    delay_ms = int(body.get("delay_ms", 1000))
+    if limit < 1 or limit > 500:
+        return jsonify({"ok": False, "error": "limit must be in [1, 500]"}), 400
+    if delay_ms < 0 or delay_ms > 60000:
+        return jsonify({"ok": False, "error": "delay_ms must be in [0, 60000]"}), 400
+
+    try:
+        with engine.connect() as conn:
+            _ensure_submission_context_schema(conn)
+            rows = conn.execute(sql_text("""
+                SELECT sc.task_id, sc.s3_key, sc.email,
+                       sc.player_a_name, sc.player_b_name,
+                       sc.created_at
+                  FROM bronze.submission_context sc
+                 WHERE sc.sport_type = 'tennis_singles'
+                   AND sc.deleted_at IS NULL
+                   AND sc.s3_key IS NOT NULL
+                   AND sc.s3_key <> ''
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ml_analysis.video_analysis_jobs vj
+                        WHERE vj.s3_key = sc.s3_key
+                   )
+                 ORDER BY sc.created_at DESC
+                 LIMIT :lim
+            """), {"lim": limit}).mappings().all()
+    except Exception as e:
+        app.logger.exception("OPS DUAL-SUBMIT-T5-BACKFILL eligibility query failed")
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+    eligible = [dict(r) for r in rows]
+    result = {
+        "ok": True,
+        "dry_run": dry_run,
+        "scanned": len(eligible),
+        "eligible": len(eligible),
+        "submitted": 0,
+        "skipped": [],
+        "errors": [],
+        "next_cursor": (
+            eligible[-1]["created_at"].isoformat()
+            if eligible and eligible[-1].get("created_at") else None
+        ),
+    }
+
+    if dry_run:
+        result["sample"] = [
+            {"task_id": str(r["task_id"]), "s3_key": r["s3_key"]}
+            for r in eligible[:5]
+        ]
+        return jsonify(result), 200
+
+    submitted = 0
+    for i, r in enumerate(eligible):
+        sa_tid = str(r["task_id"])
+        try:
+            sub = _manual_dual_submit_t5(sa_tid)
+            if sub.get("status") == "submitted":
+                submitted += 1
+                app.logger.info(
+                    "DUAL-SUBMIT-BACKFILL [%d/%d] sa=%s -> t5=%s",
+                    i + 1, len(eligible), sa_tid, sub.get("t5_task_id"),
+                )
+            else:
+                result["skipped"].append({
+                    "task_id": sa_tid, "reason": sub.get("reason", "unknown"),
+                })
+        except Exception as e:
+            app.logger.exception(
+                "DUAL-SUBMIT-BACKFILL failed sa_task_id=%s", sa_tid,
+            )
+            result["errors"].append({
+                "task_id": sa_tid, "error": f"{e.__class__.__name__}: {e}",
+            })
+        if delay_ms > 0 and i < len(eligible) - 1:
+            _time.sleep(delay_ms / 1000.0)
+
+    result["submitted"] = submitted
+    return jsonify(result), 200
+
+
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
 # ==========================

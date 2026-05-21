@@ -181,6 +181,32 @@ curl -s https://api.nextpointtennis.com/ops/dual-submit-t5 \
 
 Full T5 context: `.claude/handover_t5.md`.
 
+### `POST /ops/dual-submit-t5-backfill`
+**What**: Retro-trigger T5 dual-submit across all SA `tennis_singles` tasks that don't yet have a paired T5 job. Phase 5c.1 of the dual-submit pipeline. Idempotent — inherits the per-task skip logic from `/ops/dual-submit-t5`. Throttled between submits to keep Batch queue depth manageable.
+
+**When**: After flipping `AUTO_DUAL_SUBMIT_T5=1` on Render, to fold historical SA matches into the training corpus. **Always run `dry_run=true` first** to size the backfill — each submitted job is ~$0.12-0.15 on Spot G4dn.
+
+**Body (all optional)**:
+- `dry_run` (default `true`) — list eligible tasks, submit nothing
+- `limit` (default `50`, max `500`) — cap submits per call. Run repeatedly to drain a large queue.
+- `delay_ms` (default `1000`) — throttle between submits (0-60000)
+
+**Response**: `{scanned, eligible, submitted, skipped[], errors[], next_cursor, sample[]}`. `sample` is present in dry-run mode (first 5 eligible).
+
+```bash
+# Step 1 — dry-run to count eligible
+curl -s https://api.nextpointtennis.com/ops/dual-submit-t5-backfill \
+  -H "X-Ops-Key: $OPS_KEY" -H "Content-Type: application/json" \
+  -d '{"dry_run": true, "limit": 500}' | jq
+
+# Step 2 — actually submit (decide limit based on dry-run + Batch capacity)
+curl -s https://api.nextpointtennis.com/ops/dual-submit-t5-backfill \
+  -H "X-Ops-Key: $OPS_KEY" -H "Content-Type: application/json" \
+  -d '{"dry_run": false, "limit": 20, "delay_ms": 1500}' | jq
+```
+
+Full T5 context: `.claude/handover_t5.md`. Dual-submit pipeline status: `.claude/strategy/dual_submit_status_2026-05-20.md`.
+
 ---
 
 ## Billing operations (`OPS_KEY` header)
