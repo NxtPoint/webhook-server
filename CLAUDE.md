@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pick the closest match and jump there before reading the rest of this file:
 
-- **T5 ML pipeline / serve detector / Batch / silver_t5** → for *macro plan / current phase* see `docs/north_star.md`; for *how to run / validate / ship* see `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS" sections). Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
+- **T5 ML pipeline / serve detector / Batch / silver_t5** → for *macro plan / current phase* see `docs/north_star.md`; for *how to run / validate / ship* see `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS" sections). A modified `.claude/session_*.md` in `git status` names the live thread — open it before re-deriving context. Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
 - **Dashboard / gold view / endpoint mapping** → `docs/dashboards.md`.
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
 - **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
@@ -49,6 +49,8 @@ Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 The main service appears in `render.yaml` as `name: webhook-server` (the legacy slug); the Render dashboard / billing displays it as **"Sport AI - API call"**. Prefer the display name when referring to it in conversation; the repo and local path remain `webhook-server` because the GitHub repo is `NxtPoint/webhook-server`.
 
 The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard), plus public marketing pages `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`. The main API serves all of them as same-origin backups for API access from within iframes.
+
+**Shell** — default is PowerShell (use `$null` not `/dev/null`, `$env:VAR` not `$VAR`, backtick for line continuation, `if ($?) { B }` not `A && B`). Bash is also available via the Bash tool for POSIX scripts when convenient.
 
 **Local dev** (Windows; the repo is developed on Win 11):
 ```bash
@@ -409,6 +411,7 @@ Weights in `ml_pipeline/models/` (~270 MB, git-ignored): TrackNet V2, YOLOv8x/m-
 See `.claude/handover_t5.md` for the full catalogue. The ones that come up constantly:
 
 ```bash
+python -m ml_pipeline.diag.bench                        # locked-baseline regression check (mandatory pre-push for serve_detector)
 python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
 python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
 python -m ml_pipeline.harness reconcile <sa_tid> <t5_tid>
