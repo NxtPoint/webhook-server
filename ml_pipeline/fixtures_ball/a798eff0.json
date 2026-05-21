@@ -1,0 +1,14 @@
+{
+  "task_id": "a798eff0-551f-4b5a-838f-7933866a727c",
+  "sa_task_id": "2c1ad953-b65b-41b4-9999-975964ff92e1",
+  "video_local_path": "ml_pipeline/test_videos/a798eff0_sa_video.mp4",
+  "fps": 25.0,
+  "_notes": "Hand-bootstrapped fixture (2026-05-21). Windows cover the four known bench-relevant regimes: warmup (phantom-bounce sensitivity), the 148.52 NEAR miss (Bucket C pose-amplitude), and the three FAR misses 458.08/463.52/584.92 (phantom-bounce rally pollution). sa_bounce_frames is the 4-miss set — partial denominator until snapshot_task_ball is run on Render shell to fill in full SA shot frames.",
+  "windows": [
+    {"name": "warmup", "start_frame": 0, "n_frames": 300, "_centre_ts": null},
+    {"name": "near_miss_148", "start_frame": 3613, "n_frames": 200, "_centre_ts": 148.52},
+    {"name": "far_miss_458_463", "start_frame": 11352, "n_frames": 336, "_centre_ts": 460.8},
+    {"name": "far_miss_584", "start_frame": 14523, "n_frames": 200, "_centre_ts": 584.92}
+  ],
+  "sa_bounce_frames": [3713, 11452, 11588, 14623]
+}
