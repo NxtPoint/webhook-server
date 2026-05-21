@@ -221,6 +221,28 @@ python -m ml_pipeline.diag.probe_baseline_empty --task <T5_TID> --ts <TS_LIST> -
 
 Runs against the live DB (Render shell only — needs DATABASE_URL). Classifies why a window has zero baseline-zone rows: `detection_miss` / `kpts_without_courty` / `fixable_by_widening_slack` / `kpts_outside_baseline_zone`.
 
+### Silver bench (parallel harness for `build_silver_v2.py` / `build_silver_match_t5.py`)
+
+Built 2026-05-22 (scaffolded 2026-05-21 in `5e3e746`). Mirrors the serve bench shape but runs the silver builder against a local Docker Postgres restored from a per-task `.sql.gz` fixture. Same iteration loop:
+
+```bash
+.venv/Scripts/python -m ml_pipeline.diag.bench_silver --setup
+.venv/Scripts/python -m ml_pipeline.diag.bench_silver        # green or [!] REGRESSION
+# Edit build_silver_v2.py / build_silver_match_t5.py → repeat.
+```
+
+Snapshot capture is on Render shell (needs DATABASE_URL):
+
+```bash
+python -m ml_pipeline.diag.bench_silver.snapshot --task <T5_TID>
+# produces <TID8>_bronze.sql.gz + <TID8>_silver_baseline.json
+# upload both to s3://nextpoint-prod-uploads/fixtures/silver/
+```
+
+Full bootstrap playbook (the steps you run NOW to land the first fixture): `.claude/strategy/silver_bench_design_2026-05-21.md` §11. Design + spec: same doc §2-§7.
+
+The silver bench exists because Phase 3 part 2 was reverted twice (`00b8639`, `f0b104e`) — both shipped broken silver row counts to prod that a local bench would have caught in seconds.
+
 ### What the harness does NOT cover
 
 - **Upstream pose extraction quality.** If YOLOv8x-pose missed the trophy frame (Bucket C, e.g. 148.52), the harness can't recover it.

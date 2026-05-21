@@ -292,3 +292,76 @@ In short: the bench is leverage when silver builder is being actively edited. If
 - `.claude/handover_t5.md` §"TEST HARNESS": describes the serve bench architecture. Read before designing.
 - `build_silver_v2.py`: the 5-pass silver builder — the thing under test.
 - North star §"Phase 3": history of the two Phase 3 part 2 reverts that motivated this bench.
+
+---
+
+## 11. Bootstrapping playbook — capture the first fixture
+
+Snapshot + bench orchestrator implemented 2026-05-22 (commit pending). Status:
+
+- ✅ `db_helper.py` — Docker Postgres lifecycle (verified 2026-05-21)
+- ✅ `snapshot.py` — bronze + ml_analysis dump + silver baseline JSON
+- ✅ `bench.py` — orchestrator (restore → run silver → compare to baseline)
+- ⏳ First fixture — **needs a Render-shell run** to capture from production
+
+### Step 1 — on Render shell, capture for 880dff02
+
+```bash
+# Inside Render shell (any service that has DATABASE_URL — e.g. webhook-server)
+cd ~/project   # adjust if the working dir differs
+python -m ml_pipeline.diag.bench_silver.snapshot \
+    --task 880dff02-58bd-412c-9a29-5c5151004447
+
+# Verify the output:
+ls -la ml_pipeline/fixtures_silver/
+# Expect: 880dff02_bronze.sql.gz (~1-5 MB), 880dff02_silver_baseline.json (~2 KB)
+
+# Upload to S3:
+python -c "
+import boto3
+s3 = boto3.client('s3')
+for f in ['880dff02_bronze.sql.gz', '880dff02_silver_baseline.json']:
+    s3.upload_file(f'ml_pipeline/fixtures_silver/{f}',
+                   'nextpoint-prod-uploads',
+                   f'fixtures/silver/{f}')
+    print(f'uploaded {f}')
+"
+```
+
+### Step 2 — repeat for a798eff0 (the second locked fixture)
+
+```bash
+python -m ml_pipeline.diag.bench_silver.snapshot \
+    --task a798eff0-...  # TODO confirm full task_id from production
+# Same upload step
+```
+
+### Step 3 — locally, pull + bench
+
+```bash
+# Pull both fixtures from S3 to local checkout
+aws s3 cp s3://nextpoint-prod-uploads/fixtures/silver/ \
+          ml_pipeline/fixtures_silver/ --recursive
+
+# Spin up bench Postgres + run
+.venv/Scripts/python -m ml_pipeline.diag.bench_silver --setup
+.venv/Scripts/python -m ml_pipeline.diag.bench_silver
+
+# Expect green for each fixture (silver builder is deterministic given fixed bronze).
+```
+
+If green, the baseline JSON is correct — commit it (the `.sql.gz` stays gitignored per `.gitignore`):
+
+```bash
+git add ml_pipeline/fixtures_silver/880dff02_silver_baseline.json \
+        ml_pipeline/fixtures_silver/a798eff0_silver_baseline.json
+git commit -m "silver bench: lock baselines from production capture"
+```
+
+If red on first run, something's drifted between the captured bronze and the current silver builder logic — investigate with `--update-baseline` after confirming the new state is correct.
+
+### Open follow-ups (not blocking step 1)
+
+- CI integration per §6 of this doc — add a job to `.github/workflows/bench.yml` once baselines are committed. Needs IAM role for S3 read on the CI runner.
+- The `tolerance` field defaults to exact-match for row counts; verify that holds in production captures before locking strict.
+- Practice silver (`build_silver_practice.py`) deserves a parallel bench — defer until the match-silver one proves itself.
