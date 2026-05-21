@@ -6,7 +6,20 @@
 
 ---
 
-T5 ML pipeline session pickup. Today is [DATE]. Previous sessions: 2026-05-20 (overnight Phase 5a build) + 2026-05-21 morning (anchor-strategy pivot).
+T5 ML pipeline session pickup. Today is [DATE]. Previous sessions: 2026-05-20 (overnight Phase 5a build), 2026-05-21 morning (anchor-strategy pivot), 2026-05-21 PM (Stage 2 measurement + architectural pivot).
+
+**TL;DR change since last handover:** Phase 5a deployed and measured on a fresh upload of the same video (task `763c9ee9-e5ea-42ab-820a-7d53f6a7316c`). The ROI extractor works (459 rows / 23 bounces / 9 windows), the Render-side `serve_detector` picks them up (+6 serves got `bounce_frame` attached), but **silver row count didn't move** because silver reads `ml_analysis.ball_detections` only, not `ml_analysis.ball_detections_roi`. After reflection with Tomo, the right fix is at the bronze layer: Phase 5a should write to the canonical `ball_detections` table directly. Plan landed as Option A. Full detail in `.claude/session_2026-05-21_phase5a_stage2.md`. Bench still locked: a798eff0=20/24, 880dff02=23/24.
+
+**FIRST ACTION — Option A — change Phase 5a target table.** Single-file edit (~10 lines) in `ml_pipeline/roi_extractors/bounces.py`:
+
+- `_persist_rows()` + `_init_schema()` → target `ml_analysis.ball_detections` instead of `ml_analysis.ball_detections_roi`
+- Add `ADD COLUMN IF NOT EXISTS source TEXT` to `ball_detections` schema (idempotent ALTER), write `source='roi_prod'` so we can still distinguish provenance
+- Drop `window_serve_ts` field from the insert (not on `ball_detections`), or add it via another idempotent ALTER if traceability matters
+- Then: bench, commit, push, Docker rebuild, ECR push both regions, register job-defs, frontend rerun. Same dance as 2026-05-21.
+
+**Fast validation BEFORE the Docker round-trip:** migrate existing `ball_detections_roi` rows for `763c9ee9` into `ball_detections` via direct SQL, then `harness rerun-silver 763c9ee9-...`. If silver row count grows, the Option A hypothesis is confirmed and the Docker deploy ships the same logic permanently. See `.claude/session_2026-05-21_phase5a_stage2.md` §"Validation paths for Option A" for the exact SQL.
+
+**STILL OPEN ADMIN — re-lock Render Postgres.** We opened it to `0.0.0.0/0` to unblock the Batch deploy 2026-05-21 PM. Either re-lock to home IP (`105.214.8.31/32`) before next session OR keep open through Option A's deploy and re-lock after. The proper fix is a NAT Gateway + static EIP for Batch compute — see `feedback_render_postgres_ip_allowlist`.
 
 **TL;DR change since last handover:** Phase 5a `extract_far_bounces` is **built, anchor strategy pivoted, and pushed**. The pivot — the kickoff doc's default (zone-filtered all-detections) covered only **1/24 SA serves** on the 880dff02 fixture. Defaults flipped to **bounce-only-no-zone** which covers **6/24 (25%)**, a 6× improvement available by flipping two parameter defaults. The 880dff02 fixture's `ball_rows` was snapshotted from the same DB Step A queries, so Step A is effectively answered offline: **153 in-zone anchors, 9 in-zone bounces, 4 distinct 10s buckets**. Bench still locked at a798eff0=20/24, 880dff02=23/24. **Step F (BATCH-SIDE CHANGE CHECKLIST + Tomo reruns 880dff02) is now the sole gating action.** See `.claude/session_2026-05-21_phase5a_pivot.md` for the 4-strategy comparison + rationale.
 
