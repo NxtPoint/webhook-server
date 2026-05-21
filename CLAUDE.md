@@ -7,6 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Pick the closest match and jump there before reading the rest of this file:
 
 - **Any session, any task** → **first read `.claude/next_session_pickup.md`**. It's overwritten at the end of every session with: current state, what just shipped, open questions, and a "Read in this order" list specific to the next move. Skipping it wastes the first 30 min re-deriving state. **At session end, overwrite that file with the new state** so the next session inherits cleanly. A modified `.claude/session_*.md` in `git status` names the live thread — open that for the deep detail behind the pickup file's summary.
+- **Routine ops — "when X happens, do Y"** → `.claude/sop.md`. Single page covering Render deploys, Batch container deploys (full checklist), bench discipline, phase transitions, GPU box experiments, prod SQL diag, and the short list of actions that genuinely require Tomo.
+- **Session boot / close checklists** → `.claude/session_protocol.md`. Run the boot checklist in the first 5 min of every session; the close checklist before declaring done. Keeps handovers tight.
+- **Doc tier system + lifecycle rules** → `.claude/docs_hygiene.md`. Five tiers (TRUTH / REFERENCE / STRATEGY / HISTORICAL / MEMORY) + rules for when NOT to write a new doc.
 - **T5 ML pipeline / serve detector / Batch / silver_t5** → for *macro plan / current phase* see `docs/north_star.md`; for *how to run / validate / ship* see `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS" sections). Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
 - **Dashboard / gold view / endpoint mapping** → `docs/dashboards.md`.
 - **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
