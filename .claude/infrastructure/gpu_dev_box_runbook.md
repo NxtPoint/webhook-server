@@ -111,21 +111,46 @@ The project is private (`NxtPoint/webhook-server`), so `git clone` requires cred
 
 From Git Bash on Windows:
 ```bash
-# Excludes: .venv (huge, will reinstall), .git (not needed), _archive (deprecated),
-#          training/datasets (heavy local data), test_videos (huge mp4s)
+# Excludes: .venv (huge, will reinstall on box), .git (not needed), _archive
+# (deprecated code), training/datasets (heavy intermediate data), visual_debug
+# (debug images), __pycache__ (Python bytecode).
+#
+# NOTE: ml_pipeline/test_videos/ is INCLUDED on purpose — the bench fixtures
+# point at local mp4 paths there (e.g. a798eff0_sa_video.mp4, match_90ad59a8.mp4).
+# Excluding it broke the first ball-tracker bench attempt 2026-05-21. If you have
+# a custom oversized video in that dir that you really don't want on the box,
+# exclude that one file specifically rather than the whole directory.
 rsync -avz --progress \
   --exclude '.venv/' --exclude '.git/' \
   --exclude 'ml_pipeline/_archive/' \
   --exclude 'ml_pipeline/diag/_archive/' \
   --exclude 'ml_pipeline/training/datasets/' \
-  --exclude 'ml_pipeline/test_videos/' \
   --exclude 'ml_pipeline/training/visual_debug/' \
   --exclude '__pycache__/' \
   -e "ssh -i $HOME/.ssh/t5-dev.pem" \
   /c/dev/webhook-server/ ubuntu@$PUBLIC_DNS:~/webhook-server/
 ```
 
-Estimated size: ~350 MB (mostly model weights in `ml_pipeline/models/`). Takes a few minutes on first run; rsync incrementals after.
+Estimated size: ~400 MB (model weights ~270 MB, test_videos ~50-100 MB). Takes a few minutes on first run; rsync incrementals after.
+
+### The agent-and-Tomo split (how to run bench loops without burning context)
+
+When an agent (this one or any session) is building a bench / training / experiment that needs the GPU box, the workflow is:
+
+1. **Agent (in chat):** writes code locally on Windows, commits to git, pushes to origin/main. Does NOT touch the box.
+2. **Tomo (one-time per session):** starts the box, rsyncs the project up, SSHes in, runs whatever the agent says, pastes output back to the agent.
+3. **Agent (in chat):** reads the pasted output, decides next step, commits any new code (including new baseline JSONs the run produced).
+4. **Tomo (end of session):** rsyncs any output artefacts (baseline JSONs, training logs) DOWN before stopping the box, then stops it.
+
+```bash
+# Tomo end-of-session: pull down any new artefacts before stopping
+rsync -avz -e "ssh -i $HOME/.ssh/t5-dev.pem" \
+  ubuntu@$PUBLIC_DNS:~/webhook-server/ml_pipeline/diag/ \
+  /c/dev/webhook-server/ml_pipeline/diag/
+aws ec2 stop-instances --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
+```
+
+The agent never SSHes into the box directly. The box is a tool Tomo wields, not an environment the agent lives in. Keeps the agent's context window clean and avoids hidden state.
 
 ### Path B — `git clone` with a GitHub PAT
 
