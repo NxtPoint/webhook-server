@@ -6,136 +6,88 @@
 
 ---
 
-T5 ML pipeline session pickup. Today is [DATE]. Previous sessions: 2026-05-20 (overnight Phase 5a build), 2026-05-21 morning (anchor-strategy pivot), 2026-05-21 PM (Stage 2 measurement + architectural pivot).
+T5 ML pipeline session pickup. Today is [DATE]. Previous sessions: 2026-05-20 (overnight Phase 5a build), 2026-05-21 morning (anchor-strategy pivot), 2026-05-21 PM (Stage 2 measured + **Option A delivered in same session**).
 
-**TL;DR change since last handover:** Phase 5a deployed and measured on a fresh upload of the same video (task `763c9ee9-e5ea-42ab-820a-7d53f6a7316c`). The ROI extractor works (459 rows / 23 bounces / 9 windows), the Render-side `serve_detector` picks them up (+6 serves got `bounce_frame` attached), but **silver row count didn't move** because silver reads `ml_analysis.ball_detections` only, not `ml_analysis.ball_detections_roi`. After reflection with Tomo, the right fix is at the bronze layer: Phase 5a should write to the canonical `ball_detections` table directly. Plan landed as Option A. Full detail in `.claude/session_2026-05-21_phase5a_stage2.md`. Bench still locked: a798eff0=20/24, 880dff02=23/24.
+**TL;DR — where we are:**
+- **Phase 5a is fully shipped end-to-end.** ROI bounce extractor writes directly into canonical `ml_analysis.ball_detections` with `source='roi_prod'`. Silver and serve_detector see the rows through their existing single-table loaders — no downstream code change needed.
+- **Validated on task `763c9ee9-e5ea-42ab-820a-7d53f6a7316c`** via SQL migration + `harness rerun-silver`: silver went **160 → 183 rows (+23)**, serves **16 → 19 (+3)**, including the **first NEAR T5 serve we've ever seen in silver** (id=92, ts=178.76s, hit_y=24.05). Bench unchanged: a798eff0=20/24, 880dff02=23/24.
+- **Batch is on the new image:** eu-north-1 rev 46, us-east-1 rev 28, both pinned to `sha256:87435dbfd…`. Every future Batch run writes to canonical bronze.
+- **Full session detail:** `.claude/session_2026-05-21_phase5a_stage2.md` (including the ADDENDUM showing Option A execution).
 
-**FIRST ACTION — Option A — change Phase 5a target table.** Single-file edit (~10 lines) in `ml_pipeline/roi_extractors/bounces.py`:
+**Open admin item:** Render Postgres is still open to `0.0.0.0/0` (we opened it 2026-05-21 to unblock Batch). Re-lock to home IP `105.214.8.31/32` OR build the NAT-Gateway-with-EIP proper fix. See `feedback_render_postgres_ip_allowlist`.
 
-- `_persist_rows()` + `_init_schema()` → target `ml_analysis.ball_detections` instead of `ml_analysis.ball_detections_roi`
-- Add `ADD COLUMN IF NOT EXISTS source TEXT` to `ball_detections` schema (idempotent ALTER), write `source='roi_prod'` so we can still distinguish provenance
-- Drop `window_serve_ts` field from the insert (not on `ball_detections`), or add it via another idempotent ALTER if traceability matters
-- Then: bench, commit, push, Docker rebuild, ECR push both regions, register job-defs, frontend rerun. Same dance as 2026-05-21.
+Read in this order before doing anything else:
 
-**Fast validation BEFORE the Docker round-trip:** migrate existing `ball_detections_roi` rows for `763c9ee9` into `ball_detections` via direct SQL, then `harness rerun-silver 763c9ee9-...`. If silver row count grows, the Option A hypothesis is confirmed and the Docker deploy ships the same logic permanently. See `.claude/session_2026-05-21_phase5a_stage2.md` §"Validation paths for Option A" for the exact SQL.
-
-**STILL OPEN ADMIN — re-lock Render Postgres.** We opened it to `0.0.0.0/0` to unblock the Batch deploy 2026-05-21 PM. Either re-lock to home IP (`105.214.8.31/32`) before next session OR keep open through Option A's deploy and re-lock after. The proper fix is a NAT Gateway + static EIP for Batch compute — see `feedback_render_postgres_ip_allowlist`.
-
-**TL;DR change since last handover:** Phase 5a `extract_far_bounces` is **built, anchor strategy pivoted, and pushed**. The pivot — the kickoff doc's default (zone-filtered all-detections) covered only **1/24 SA serves** on the 880dff02 fixture. Defaults flipped to **bounce-only-no-zone** which covers **6/24 (25%)**, a 6× improvement available by flipping two parameter defaults. The 880dff02 fixture's `ball_rows` was snapshotted from the same DB Step A queries, so Step A is effectively answered offline: **153 in-zone anchors, 9 in-zone bounces, 4 distinct 10s buckets**. Bench still locked at a798eff0=20/24, 880dff02=23/24. **Step F (BATCH-SIDE CHANGE CHECKLIST + Tomo reruns 880dff02) is now the sole gating action.** See `.claude/session_2026-05-21_phase5a_pivot.md` for the 4-strategy comparison + rationale.
-
-Stage 1 result that proved the design is sound: SA serve at 178.44s matched to ROI bounce at 178.32s (dt=0.12s, correct service-box half), on the `a798eff0` fixture.
-
-Read in this exact order before doing anything else:
-
-1. `.claude/session_2026-05-21_phase5a_pivot.md` — **REQUIRED.** This morning's pivot review with the 4-strategy diagnostic table and why bounce-only-no-zone wins.
-
-2. `.claude/session_2026-05-20_phase5a_overnight.md` — **REQUIRED.** Original overnight build review with Stage 1 results + design decisions.
-
-2. `docs/north_star.md` — macro plan. Phase 5a is ACTIVE; phase 5b is PARKED.
-
-3. `.claude/phase5a_kickoff.md` — the original scoping doc; useful to cross-reference if you need to understand a design choice.
-
-4. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST section is mandatory before Step F.
+1. `.claude/session_2026-05-21_phase5a_stage2.md` — **REQUIRED.** The full Stage 2 + Option A story. ADDENDUM section shows what shipped.
+2. `docs/north_star.md` — macro plan. Phase 5a is now ACTIVE → DONE; next phases.
+3. `.claude/strategy/infrastructure_audit_2026-05-20.md` — the prioritised roadmap for what comes next. Top items now unblocked: silver-builder bench harness (#2), WASB integration (#3), ball-tracker bench (#4).
+4. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST is still required for future Batch deploys.
 
 Then run the bench locally to confirm the floor is still locked:
 
     .venv/Scripts/python -m ml_pipeline.diag.bench
 
-Expect: `a798eff0` 20/24, `880dff02` 23/24, no regressions. If anything moved, stop and investigate before touching code.
+Expect: `a798eff0` 20/24, `880dff02` 23/24, no regressions.
 
-Then check out the feature branch:
+**Next move — pick one:**
 
-    git fetch origin
-    git checkout phase-5a/roi-bounce-extractor
+**Option 1: Silver-builder bench harness (highest leverage from the audit).** Per the 2026-05-21 sequencing caveat in `infrastructure_audit_2026-05-20.md` §9, this should be baselined now that Phase 5a Step F has landed. The harness converts silver-builder iteration from 5-10 min Render round-trips to seconds. ~1 session of build. Files to scaffold:
+- `ml_pipeline/diag/bench_silver.py` (mirrors `bench.py`'s shape)
+- `ml_pipeline/diag/silver_baseline.json` (per-task expected row counts + serve counts)
+- Snapshot fixtures via existing `snapshot_task.py` pattern
+- CI: extend `.github/workflows/bench.yml` to gate silver too
 
-If bench green and branch is checked out, the moves are:
+**Option 2: Verify Option A with a real Batch run.** Upload any video as Singles T5 from the frontend (Tomo's action). After SUCCEEDED, confirm `ml_analysis.ball_detections WHERE job_id = <new_id> AND source = 'roi_prod'` returns non-zero. This is a low-risk integration test — proves the new image (rev 46/28) behaves as designed without depending on validation infra. ~30-60 min of Batch wait.
 
-**A. (DONE — offline)** Anchor-source diagnostic on `880dff02`. The 880dff02 bench fixture was snapshotted from `ml_analysis.ball_detections` for this job_id, so its `ball_rows` IS the Step A answer. Pre-flight diagnostic from 2026-05-21 morning:
+**Option 3: WASB integration (the +9pp F1 win from the market scan).** Uses the GPU dev box for the first time. ~1-2 sessions. Item #3 in the audit. Depends on having Option A's coverage gain measured, then adding WASB as a parallel ball-detection path.
 
-    .venv/Scripts/python -m ml_pipeline.diag.probe_roi_anchor_strategy \
-        ml_pipeline/fixtures/880dff02.pkl.gz
+**Option 4: NAT Gateway + static EIP for Batch + re-lock Render Postgres.** The proper security fix. 30-60 min VPC networking task. Removes the `0.0.0.0/0` hole. Useful before any non-trusted environment changes.
 
-Output:
+**Recommendation:** start with Option 2 (cheap proof Option A's deploy works on a fresh task), then Option 1 (silver bench — biggest leverage). Option 4 can run in parallel with anything since it's pure infra. Option 3 is the medium-term unlock.
 
-    total (in service-box zone): 153
-    bounces (in zone):           9
-    distinct 10s buckets:        4
+**Things NOT to do** (load-bearing — restating from `CLAUDE.md`, `docs/north_star.md`, and the feedback memories):
 
-    strategy                      anchors  clusters  windows   cov_s   serves_covered
-    zone=T, bounce=F                  153         6        3    25.2        1/24 (4%)
-    zone=T, bounce=T                    9         7        3    20.4        0/24 (0%)
-    zone=F, bounce=F                 1983        28       21   123.9       5/24 (21%)
-    zone=F, bounce=T (DEFAULT)        162        96       14   175.5       6/24 (25%)
-
-Defaults flipped to `anchor_zone_filter=False, anchor_bounce_only=True` accordingly. If you want a live-DB cross-check (Tomo had connection issues 2026-05-21), the same `/ops/diag/sql` query with `OPS_KEY` should produce matching counts (153 total, 9 bounces). If they differ materially, the fixture is stale — re-snapshot via `snapshot_task.py`.
-
-**F. (BATCH — only remaining gate)** BATCH-SIDE CHANGE CHECKLIST (Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1). Both edited prod files are in-container. Then Tomo reruns `880dff02` via the frontend (per the run-monitoring rule — user self-serves).
-
-**G. (MEASUREMENT)** After 880dff02 rerun completes:
-
-    -- Did the extractor write rows?
-    SELECT count(*) AS rows,
-           count(*) FILTER (WHERE is_bounce) AS bounces,
-           count(DISTINCT window_serve_ts) AS windows
-    FROM ml_analysis.ball_detections_roi
-    WHERE job_id = '880dff02-58bd-412c-9a29-5c5151004447'
-      AND source = 'roi_prod';
-
-Then:
-
-    .venv/Scripts/python -m ml_pipeline.diag.bench
-    .venv/Scripts/python -m ml_pipeline.harness audit_points_reconcile 880dff02-58bd-412c-9a29-5c5151004447
-    .venv/Scripts/python -m ml_pipeline.diag.reconcile_serves_strict --task 880dff02-58bd-412c-9a29-5c5151004447 --honor-exclude
-
-Success criteria per `docs/north_star.md` Phase 5:
-- T5 ball-detection frame coverage ≥ 50% (currently 13%)
-- Longest no-ball gap < 5s (currently 91.6s)
-- SA point 6 has ≥ 3 T5 ball detections in window (currently 0)
-- Phase 4 reconciler per-point match rate ≥ 30% (currently 0/17)
-
-Phase 5a alone may not hit all four — these are Phase-5-wide targets. Measure the **delta** vs pre-5a baseline.
-
-**Things NOT to do** (load-bearing — restating from `CLAUDE.md`, `docs/north_star.md`, `phase5a_kickoff.md`, and `session_2026-05-20_phase5a_overnight.md`):
-
-- Don't merge `phase-5a/roi-bounce-extractor` to main without **Step A's result**. If anchors are sparse, the implementation needs a small change before shipping.
-- Don't re-attempt Phase 5b motion-threshold tuning. Round 0 receipts are conclusive; branch `phase-5b/motion-threshold-reduce` is retained on origin as falsified-hypothesis record.
-- Don't widen the service-box zone past the current ±1.5 m margin — the upsample-into-service-box trick IS the resolution gain.
-- Don't ship a Batch round without the BATCH-SIDE CHANGE CHECKLIST. `__main__.py` AND `roi_extractors/` edits are both in-container.
+- Don't re-attempt Phase 5b motion-threshold tuning. Round 0 receipts are conclusive; branch `phase-5b/motion-threshold-reduce` retained on origin as falsified-hypothesis record.
+- Don't create parallel bronze tables. **One canonical bronze, distinguished by `source` column.** See `feedback_t5_single_canonical_bronze` for the architectural rationale we landed 2026-05-21 PM.
+- Don't ship a Batch round without the BATCH-SIDE CHANGE CHECKLIST. `roi_extractors/`, `__main__.py`, `serve_detector/` are all in-container.
 - Don't ship without bench green.
 - Don't skip the non-fatal try/except around the call site in `__main__.py`. 5a is additive; failure must not block silver/trim/notify.
-- Don't re-attempt Phase 3 part 2 with any pure-SQL pattern. Same Phase 5 unblocker required.
-- Don't touch `ml_pipeline/training/visual_debug/`.
+- Don't merge a feature branch to main without verifying Batch is in sync (`git diff origin/main HEAD --stat` against the in-container file list).
 - Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD`.
+- Don't touch `ml_pipeline/training/visual_debug/`.
+- Don't ask Tomo to do Docker work — agent handles deploys. See `feedback_agent_handles_deploys`.
 
 ---
 
-## State at session end (2026-05-20 overnight)
+## State at session end (2026-05-21 PM)
 
-**`origin/main` at `c518bf0`** (Tomo's mobile dashboard fix landed mid-session; unrelated to T5).
-**`origin/phase-5a/roi-bounce-extractor`** at session-end commit (Phase 5a feature work).
+**`origin/main` at `5d1e818`** (Option A merge).
+**`origin/phase-5a/roi-bounce-extractor`** — original build, kept as history.
+**`origin/phase-5a/bronze-write-direct`** at `7d8bfaa` — Option A code change.
+**`origin/phase-5b/motion-threshold-reduce`** — falsified-hypothesis record.
 
-Bench locked at `a798eff0` 20/24 + `880dff02` 23/24 throughout. Zero detector-quality regression.
+Most-relevant recent commits on main:
 
-Most-relevant recent commits on main (newest first; full log via `git log --oneline -20`):
+- `5d1e818` Merge phase 5a Option A: write ROI bounces to canonical ball_detections
+- `7d8bfaa` phase 5a Option A: write ROI bounces to canonical ball_detections
+- `90288ef` docs: 2026-05-21 PM — Phase 5a Stage 2 measured + Option A planned
+- `c1370ed` Merge branch 'phase-5a/roi-bounce-extractor' (original Phase 5a build to main)
+- `a2854db` docs: 2026-05-21 — Phase 5a anchor pivot session review + pickup refresh
+- `91e9558` strategy: infra audit - sequence silver bench AFTER 5a Step F lands
 
-- `c518bf0` dashboards: mobile H2H — label row 1, both halves row 2 (Tomo, mid-session)
-- `014eb67` docs: polish next_session_pickup — tighten TL;DR, fix stale state snapshot
-- `590d43b` phase 5: park 5b, promote 5a — session 2026-05-20 pivot
-- `833bca4` dashboards: audit pass — Y axis off everywhere, chart-grid widths uniform
-- `d26e8cc` phase 5b: Round 0 findings — staged change falsified, candidate list reprioritised
+**Batch state:**
+- eu-north-1 job-def `ten-fifty5-ml-pipeline:46` → image `@sha256:87435dbfd…` (Option A)
+- us-east-1 job-def `ten-fifty5-ml-pipeline:28` → image `@sha256:87435dbfd…` (Option A)
 
-What this overnight session contributed (the Phase 5a build):
-
-- `ml_pipeline/roi_extractors/bounces.py` — replaced 48-line stub with ~320-line production `extract_far_bounces`. Anchor source = in-memory `result.ball_detections` filtered to service-box zone, temporal-clustered, ±2.5s ROI windows with overlap merging. Same DDL as the diag tool. Idempotent via DELETE-then-INSERT on `(job_id, source='roi_prod')`.
-- `ml_pipeline/__main__.py` — new "step 2c" call site at line ~215, non-fatal try/except matching the pose extractor pattern.
-- `ml_pipeline/diag/replay_roi_bounces.py` — Stage 1 local harness, no DB required.
-- `.claude/session_2026-05-20_phase5a_overnight.md` — full session review.
-- This file rewritten.
-
-Bench-pre-edit + bench-post-edit confirmed identical (20/24 + 23/24). Stage 1 timing precision confirmed (dt=0.12s on the one SA serve a window covered). The branch is ready for review; the work to do next is Step A (anchor-source diagnostic) + Step F (Batch round).
-
-**Branch `phase-5a/roi-bounce-extractor`:** pushed to origin. NOT merged to main. No PR opened yet (deliberate — let morning-Tomo create the PR after Step A confirms the design).
-
-**Branch `phase-5b/motion-threshold-reduce`:** retained on origin as a falsified-hypothesis record. **Do not merge. Do not reuse the branch name.**
+**Bench at session end:** `commit=5d1e818`, a798eff0=20/24, 880dff02=23/24, no regressions.
 
 **Working tree at session end:** clean except `ml_pipeline/training/visual_debug/` (untracked, deliberately ignored).
+
+**Render Postgres allowlist:** `0.0.0.0/0` (temporary — needs re-lock).
+
+**DB migration done in this session** (for `763c9ee9` only):
+- `ALTER TABLE ml_analysis.ball_detections ADD COLUMN IF NOT EXISTS source TEXT`
+- Tagged 1983 main-pass rows as `source='main'`
+- INSERTed 459 rows from `ball_detections_roi` with `source='roi_prod'`
+
+Other tasks (e.g. 880dff02) still have their ROI data in `ball_detections_roi` only — not migrated. Cleanup migration is a future-session task (low priority — old data, no active impact).
