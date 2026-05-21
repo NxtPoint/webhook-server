@@ -129,6 +129,18 @@ from build_silver_v2 import build_silver_v2 as build_silver_point_detail, DEFAUL
 from billing_import_from_bronze import sync_usage_for_task_id  # noqa: E402
 app.register_blueprint(ingest_bronze, url_prefix="")
 
+# ---------- ml_analysis schema (idempotent on boot) ----------
+# Creates ml_analysis.video_analysis_jobs, ball_detections, player_detections,
+# match_analytics, training_corpus (Phase 5c.2). Previously called lazily from
+# _t5_submit() — moved here so that gold.vw_dual_submit_pairs has its target
+# schema available and the Phase 5c.2 pair-completion hook can INSERT into
+# training_corpus from the very first deploy without waiting for a T5 submit.
+try:
+    from ml_pipeline.db_schema import ml_analysis_init  # noqa: E402
+    ml_analysis_init(engine)
+except Exception:
+    app.logger.exception("ml_analysis_init() failed on boot — T5 / corpus tables may be missing")
+
 # ---------- Gold presentation views (idempotent on boot) ----------
 # Creates gold.vw_player, gold.vw_point, and all match_* presentation views
 # used by the match analysis dashboards and the upcoming LLM coach.
