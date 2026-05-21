@@ -49,6 +49,17 @@ logger = logging.getLogger(__name__)
 # survive single-frame jitter in either source.
 SA_BOUNCE_TOLERANCE_FRAMES = 3
 
+# Max pixel distance between consecutive ball detections that we'll accept as
+# part of one coherent trajectory. Mirrors `BALL_MAX_DIST_BETWEEN_FRAMES` in
+# ml_pipeline.config (default 100 px). Imported lazily to avoid pulling the
+# full ML stack when this module is imported for tests / introspection.
+def _bench_max_jump_px() -> int:
+    try:
+        from ml_pipeline.config import BALL_MAX_DIST_BETWEEN_FRAMES
+        return int(BALL_MAX_DIST_BETWEEN_FRAMES)
+    except Exception:
+        return 100
+
 
 @dataclass
 class BenchDetection:
@@ -131,6 +142,62 @@ def _normalise_detection(det, frame_idx: int) -> Optional[BenchDetection]:
     return None
 
 
+def _sa_recall(
+    detected_frames: set, sa_bounce_frames: list[int], tolerance: int,
+) -> tuple[int, float | None, list[int]]:
+    """Count how many SA bounce anchors have a tracker detection within ±tolerance frames."""
+    hits = 0
+    misses: list[int] = []
+    for bf in sa_bounce_frames:
+        if any(abs(df - bf) <= tolerance for df in detected_frames):
+            hits += 1
+        else:
+            misses.append(bf)
+    recall = hits / len(sa_bounce_frames) if sa_bounce_frames else None
+    return hits, recall, misses
+
+
+def _post_filter_detections(
+    detections: List[BenchDetection], max_pixel_jump: int,
+) -> List[BenchDetection]:
+    """Drop detections that jump > max_pixel_jump px from the previous kept one.
+
+    Mirrors `BallTracker._filter_outliers` semantics in tracker-agnostic form
+    so the same filter applies to both TrackNetV2 and WASB outputs. The
+    threshold matches production's `BALL_MAX_DIST_BETWEEN_FRAMES`.
+    """
+    if len(detections) < 2:
+        return list(detections)
+    kept = [detections[0]]
+    for d in detections[1:]:
+        prev = kept[-1]
+        dist_sq = (d.x - prev.x) ** 2 + (d.y - prev.y) ** 2
+        if dist_sq <= max_pixel_jump * max_pixel_jump:
+            kept.append(d)
+    return kept
+
+
+def _trajectory_coherence_pct(
+    detections: List[BenchDetection], max_pixel_jump: int,
+) -> float | None:
+    """Fraction of consecutive RAW detections within max_pixel_jump px.
+
+    High value → most detections form a coherent trajectory (the tracker is
+    actually following a ball). Low value → most detections jump around (the
+    output is dominated by fallback firing on random motion). This is the
+    cheapest "is the tracker tracking the ball or just firing on noise"
+    signal we have without external truth.
+    """
+    if len(detections) < 2:
+        return None
+    n_smooth = 0
+    for prev, curr in zip(detections, detections[1:]):
+        dist_sq = (curr.x - prev.x) ** 2 + (curr.y - prev.y) ** 2
+        if dist_sq <= max_pixel_jump * max_pixel_jump:
+            n_smooth += 1
+    return n_smooth / (len(detections) - 1)
+
+
 def _compute_metrics(
     detections: List[BenchDetection],
     sa_bounce_frames: list[int],
@@ -139,36 +206,64 @@ def _compute_metrics(
     diag: Optional[dict] = None,
     tolerance: int = SA_BOUNCE_TOLERANCE_FRAMES,
 ) -> dict:
-    """Reduce a tracker run to the comparison numbers the bench cares about."""
+    """Reduce a tracker run to the comparison numbers the bench cares about.
+
+    Reports three layers of "did the tracker work":
+      - RAW detection_rate + sa_bounce_recall (every detect_frame() output)
+      - POST-FILTER detection_rate + sa_bounce_recall (after dropping
+        pixel-jump outliers, which approximates what production stores in
+        ml_analysis.ball_detections)
+      - trajectory_coherence_pct (% of consecutive RAW detections that
+        form a coherent trajectory) — the cheapest noise-vs-signal proxy
+    """
+    max_jump = _bench_max_jump_px()
+
+    # --- RAW layer ---
     detected_frames = {d.frame_idx for d in detections}
     n_det = len(detected_frames)
     rate = n_det / total_frames_processed if total_frames_processed else 0.0
+    sa_hits, sa_recall, sa_misses = _sa_recall(
+        detected_frames, sa_bounce_frames, tolerance,
+    )
 
-    sa_hits = 0
-    sa_misses: list[int] = []
-    for bf in sa_bounce_frames:
-        window_hit = any(
-            abs(df - bf) <= tolerance for df in detected_frames
-        )
-        if window_hit:
-            sa_hits += 1
-        else:
-            sa_misses.append(bf)
-    sa_recall = sa_hits / len(sa_bounce_frames) if sa_bounce_frames else None
+    # --- POST-FILTER layer (production-aligned) ---
+    filtered = _post_filter_detections(detections, max_pixel_jump=max_jump)
+    filtered_frames = {d.frame_idx for d in filtered}
+    n_filt = len(filtered_frames)
+    rate_filt = n_filt / total_frames_processed if total_frames_processed else 0.0
+    filt_hits, filt_recall, filt_misses = _sa_recall(
+        filtered_frames, sa_bounce_frames, tolerance,
+    )
+
+    # --- noise-signal layer ---
+    coherence = _trajectory_coherence_pct(detections, max_pixel_jump=max_jump)
 
     metrics: dict = {
         "frames_processed": total_frames_processed,
+        # raw
         "detections": n_det,
         "detection_rate": round(rate, 4),
         "sa_bounce_total": len(sa_bounce_frames),
         "sa_bounce_hits": sa_hits,
         "sa_bounce_recall": (round(sa_recall, 4) if sa_recall is not None else None),
         "sa_bounce_misses": sa_misses,
+        # post-filter (production-aligned)
+        "post_filter_detections": n_filt,
+        "post_filter_rate": round(rate_filt, 4),
+        "post_filter_sa_hits": filt_hits,
+        "post_filter_sa_recall": (round(filt_recall, 4) if filt_recall is not None else None),
+        "post_filter_sa_misses": filt_misses,
+        # noise-signal
+        "trajectory_coherence_pct": (round(coherence, 4) if coherence is not None else None),
+        "max_pixel_jump_px": max_jump,
+        # cost
         "runtime_sec": round(runtime_sec, 2),
     }
 
-    # TrackNetV2 exposes per-tier diagnostics; surface them for diagnosis but
-    # don't use them in the verdict (the verdict is detection_rate + recall).
+    # TrackNetV2 exposes per-tier diagnostics; surface them so we can see
+    # whether 'detections' are real heatmap hits (tier1_hough) or motion-
+    # based fallback (delta_fallback_hits). Verdict still uses
+    # post_filter_* + trajectory_coherence_pct, not tier_dist directly.
     if diag is not None:
         keep = {
             "frames_inferred",
@@ -223,6 +318,8 @@ def _print_report(metrics: dict) -> None:
     print(f"=== replay_ball task={metrics['task_id'][:8]} "
           f"tracker={metrics['tracker']} ===")
     print(f"  frames_processed:   {metrics['frames_processed']}")
+    print()
+    print(f"  --- RAW (every detect_frame() output) ---")
     print(f"  detections:         {metrics['detections']}")
     print(f"  detection_rate:     {metrics['detection_rate']:.2%}")
     if metrics["sa_bounce_total"]:
@@ -230,17 +327,35 @@ def _print_report(metrics: dict) -> None:
         recall_s = f"{recall:.2%}" if recall is not None else "n/a"
         print(f"  sa_bounce_recall:   {recall_s}  "
               f"({metrics['sa_bounce_hits']}/{metrics['sa_bounce_total']})")
-        if metrics["sa_bounce_misses"]:
-            shown = metrics["sa_bounce_misses"][:5]
-            extra = "" if len(metrics["sa_bounce_misses"]) <= 5 else \
-                f" ...+{len(metrics['sa_bounce_misses'])-5} more"
-            print(f"  sa_bounce_misses:   {shown}{extra}")
+    print()
+    print(f"  --- POST-FILTER (production-aligned, drop pixel-jump > {metrics['max_pixel_jump_px']}px) ---")
+    print(f"  post_filter_detections: {metrics['post_filter_detections']}")
+    print(f"  post_filter_rate:       {metrics['post_filter_rate']:.2%}")
+    if metrics["sa_bounce_total"]:
+        recall = metrics["post_filter_sa_recall"]
+        recall_s = f"{recall:.2%}" if recall is not None else "n/a"
+        print(f"  post_filter_sa_recall:  {recall_s}  "
+              f"({metrics['post_filter_sa_hits']}/{metrics['sa_bounce_total']})")
+        if metrics["post_filter_sa_misses"]:
+            shown = metrics["post_filter_sa_misses"][:5]
+            extra = "" if len(metrics["post_filter_sa_misses"]) <= 5 else \
+                f" ...+{len(metrics['post_filter_sa_misses'])-5} more"
+            print(f"  post_filter_sa_misses:  {shown}{extra}")
+    print()
+    coh = metrics.get("trajectory_coherence_pct")
+    coh_s = f"{coh:.2%}" if coh is not None else "n/a"
+    print(f"  trajectory_coherence_pct: {coh_s}  "
+          f"(fraction of consecutive RAW detections within {metrics['max_pixel_jump_px']}px)")
     print(f"  runtime_sec:        {metrics['runtime_sec']:.2f}s")
     if "tier_dist" in metrics:
         td = metrics["tier_dist"]
+        n = max(1, metrics["detections"])
+        delta = td["delta_fallback_hits"]
+        delta_pct = 100 * delta / n
         print(f"  tier_dist:          "
               f"hough={td['tier1_hough']} cc={td['tier2_cc']} "
-              f"argmax={td['tier3_argmax']} delta={td['delta_fallback_hits']} "
+              f"argmax={td['tier3_argmax']} delta={delta} "
+              f"({delta_pct:.0f}% of dets from motion fallback)  "
               f"empty={td['heatmap_empty']} none={td['none_returned']}")
 
 

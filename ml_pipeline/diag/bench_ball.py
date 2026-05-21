@@ -7,11 +7,23 @@ a `ball_tracker.py` or `wasb_ball_tracker.py` edit, run:
 
 It loads every `*.json` manifest in `ml_pipeline/fixtures_ball/`, runs both
 tracknet_v2 and wasb (where available), and prints per-fixture / per-tracker
-detection_rate + sa_bounce_recall vs `ml_pipeline/diag/bench_ball_baseline.json`.
+metrics vs `ml_pipeline/diag/bench_ball_baseline.json`.
 
-A negative delta on detection_rate OR sa_bounce_recall is a regression — the
-two metrics together correspond to the +9pp F1 claim the audit references for
-the WASB swap. Per-tier diagnostics are reported but never used in the verdict.
+Metrics reported per (fixture, tracker):
+  - post_filter_rate: detections that survive the >100px-jump filter (this
+    is the production-aligned signal — what ends up in ml_analysis.ball_detections)
+  - post_filter_sa_recall: SA-bounce-anchor recall on the same filtered set
+  - trajectory_coherence_pct: % of consecutive RAW detections that form a
+    coherent trajectory — high when the tracker is following a ball, low
+    when output is dominated by motion-fallback noise
+  - tier_dist (TrackNetV2 only): % of detections from each tier; `delta` =
+    frame-delta Hough motion fallback (the noise tier)
+  - det_rate (raw) and sa_bounce_recall (raw) kept for compatibility
+
+Regression test: a drop on any of {post_filter_rate, post_filter_sa_recall,
+trajectory_coherence_pct} flags REGRESSION. Raw det_rate is tracked but its
+drop alone is NOT a regression (WASB legitimately rejects low-confidence
+frames that TrackNetV2's fallback would have kept as noise).
 
 To accept current numbers as the new baseline:
 
@@ -128,9 +140,9 @@ def main(argv=None) -> int:
     print(f"=== bench_ball  fixtures={len(fixtures)}  "
           f"trackers={','.join(trackers)}  commit={_git_sha()} ===")
     print()
-    print(f"{'fixture':<14} {'tracker':<12} {'det_rate':>9} {'sa_recall':>11} "
-          f"{'runtime':>8}    delta")
-    print("-" * 100)
+    print(f"{'fixture':<14} {'tracker':<12} {'post_rate':>10} {'post_recall':>12} "
+          f"{'coherence':>10} {'raw_rate':>9} {'runtime':>8}")
+    print("-" * 110)
 
     for fx in fixtures:
         results[fx.stem] = {}
@@ -141,20 +153,45 @@ def main(argv=None) -> int:
             results[fx.stem][m["tracker"]] = m
 
             base = base_fixtures.get(fx.stem, {}).get(m["tracker"], {})
-            dr_d = _format_delta(m["detection_rate"], base.get("detection_rate"))
-            sr_d = _format_delta(m["sa_bounce_recall"], base.get("sa_bounce_recall"))
-            if "REGRESSION" in (dr_d + sr_d):
+            # Regression test: post-filter metrics + coherence are the verdict.
+            # Raw det_rate is informational only (WASB legitimately drops noisy
+            # frames that TrackNet's fallback would have kept).
+            pr_d = _format_delta(
+                m["post_filter_rate"], base.get("post_filter_rate"),
+            )
+            psr_d = _format_delta(
+                m["post_filter_sa_recall"], base.get("post_filter_sa_recall"),
+            )
+            coh_d = _format_delta(
+                m["trajectory_coherence_pct"], base.get("trajectory_coherence_pct"),
+            )
+            if "REGRESSION" in (pr_d + psr_d + coh_d):
                 any_regression = True
 
-            recall_str = (
-                f"{m['sa_bounce_recall']:.2%}"
-                if m["sa_bounce_recall"] is not None else "n/a"
-            )
+            psr = m["post_filter_sa_recall"]
+            psr_str = f"{psr:.2%}" if psr is not None else "n/a"
+            coh = m["trajectory_coherence_pct"]
+            coh_str = f"{coh:.2%}" if coh is not None else "n/a"
             print(f"{fx.stem:<14} {m['tracker']:<12} "
+                  f"{m['post_filter_rate']:>9.2%} "
+                  f"{psr_str:>12} "
+                  f"{coh_str:>10} "
                   f"{m['detection_rate']:>8.2%} "
-                  f"{recall_str:>11} "
-                  f"{m['runtime_sec']:>7.1f}s"
-                  f"    det_rate{dr_d}  sa_recall{sr_d}")
+                  f"{m['runtime_sec']:>7.1f}s")
+
+            # Show deltas + tier breakdown as a second indented line for clarity.
+            tier_str = ""
+            if "tier_dist" in m:
+                td = m["tier_dist"]
+                n = max(1, m["detections"])
+                tier_str = (f"  tiers: hough={td['tier1_hough']} "
+                            f"cc={td['tier2_cc']} argmax={td['tier3_argmax']} "
+                            f"delta={td['delta_fallback_hits']} "
+                            f"({100*td['delta_fallback_hits']/n:.0f}% fallback)")
+            if any(d for d in (pr_d, psr_d, coh_d)) or tier_str:
+                print(f"  {'':<26} "
+                      f"post_rate{pr_d}  post_recall{psr_d}  coherence{coh_d}"
+                      f"{tier_str}")
 
     print()
     if any_regression:
@@ -169,12 +206,24 @@ def main(argv=None) -> int:
             "fixtures": {
                 stem: {
                     t: {
+                        # Verdict metrics (regression-tracked):
+                        "post_filter_rate": m["post_filter_rate"],
+                        "post_filter_sa_recall": m["post_filter_sa_recall"],
+                        "trajectory_coherence_pct": m["trajectory_coherence_pct"],
+                        # Informational counts:
+                        "post_filter_detections": m["post_filter_detections"],
+                        "post_filter_sa_hits": m["post_filter_sa_hits"],
+                        # Raw (untracked but recorded):
                         "detection_rate": m["detection_rate"],
                         "sa_bounce_recall": m["sa_bounce_recall"],
                         "detections": m["detections"],
                         "sa_bounce_hits": m["sa_bounce_hits"],
+                        # Context:
                         "sa_bounce_total": m["sa_bounce_total"],
                         "frames_processed": m["frames_processed"],
+                        "max_pixel_jump_px": m["max_pixel_jump_px"],
+                        **({"tier_dist": m["tier_dist"]}
+                           if "tier_dist" in m else {}),
                     }
                     for t, m in tracker_results.items()
                 }
