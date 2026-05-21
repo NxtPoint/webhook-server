@@ -10,3 +10,8 @@
 #
 # Pinned to match the main requirements.txt entry so CI reflects prod.
 SQLAlchemy==2.0.43
+
+# bench_silver: needs psycopg to talk to the ephemeral Docker Postgres.
+# Lazy-imported by ml_pipeline.diag.bench_silver.db_helper.get_engine, so
+# the serve bench (ml_pipeline.diag.bench) still works without it.
+psycopg[binary]==3.2.13
