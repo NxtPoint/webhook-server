@@ -6,6 +6,7 @@ Creates tables in the `ml_analysis` schema:
   - ball_detections      (per-frame ball positions)
   - player_detections    (per-frame player bounding boxes)
   - match_analytics      (aggregated stats per job)
+  - training_corpus      (Phase 5c.2 — index of dual-submit-derived label sets)
 
 Safe to call on every boot (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS).
 """
@@ -47,6 +48,7 @@ def ml_analysis_init(engine=None):
         _create_player_detections_table(conn)
         _create_match_analytics_table(conn)
         _create_practice_detail_table(conn)
+        _create_training_corpus_table(conn)
         _create_indexes(conn)
     logger.info("ml_analysis schema init complete")
 
@@ -252,6 +254,28 @@ def _create_practice_detail_table(conn):
         conn.execute(sql_text(col_ddl))
 
 
+def _create_training_corpus_table(conn):
+    # Index of (sa, t5) label sets exported by the dual-submit pair-completion
+    # hook. One row per (sa_task_id, t5_task_id, label_kind). Phase 5c.2 — feeds
+    # the future build-corpus / training pipeline.
+    conn.execute(sql_text("""
+        CREATE TABLE IF NOT EXISTS ml_analysis.training_corpus (
+            id              BIGSERIAL PRIMARY KEY,
+            sa_task_id      TEXT NOT NULL,
+            t5_task_id      TEXT NOT NULL,
+            label_kind      TEXT NOT NULL,        -- 'ball_position' | 'serve_bounce' | 'stroke_classifier'
+            label_s3_key    TEXT NOT NULL,        -- s3://<bucket>/training/labels/<tid>_<kind>.json
+            video_s3_key    TEXT NOT NULL,        -- s3://<bucket>/wix-uploads/<name>.mp4
+            label_count     INTEGER NOT NULL,
+            role_breakdown  JSONB,                -- {'NEAR': N, 'FAR': M} for serve_bounce; null otherwise
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            validated_at    TIMESTAMPTZ,          -- nullable until a Claude / human signs off
+            used_in_models  JSONB,                -- ['tracknet_v2_finetuned_2026-05-25.pt', ...]
+            CONSTRAINT uq_training_corpus_pair_kind UNIQUE (sa_task_id, t5_task_id, label_kind)
+        );
+    """))
+
+
 def _create_indexes(conn):
     # video_analysis_jobs
     conn.execute(sql_text("""
@@ -317,4 +341,14 @@ def _create_indexes(conn):
     conn.execute(sql_text("""
         CREATE INDEX IF NOT EXISTS ix_practice_detail_type
             ON silver.practice_detail (task_id, practice_type);
+    """))
+
+    # training_corpus — lookup by (sa, t5) for the pair-completion hook
+    conn.execute(sql_text("""
+        CREATE INDEX IF NOT EXISTS ix_training_corpus_pair
+            ON ml_analysis.training_corpus (sa_task_id, t5_task_id);
+    """))
+    conn.execute(sql_text("""
+        CREATE INDEX IF NOT EXISTS ix_training_corpus_kind
+            ON ml_analysis.training_corpus (label_kind);
     """))

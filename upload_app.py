@@ -228,6 +228,11 @@ BATCH_REGIONS_PRIORITY = _resolve_batch_regions_priority()
 T5_SPORT_TYPES = {"serve_practice", "rally_practice", "tennis_singles_t5"}
 TECHNIQUE_SPORT_TYPES = {"technique_analysis"}
 AUTO_DUAL_SUBMIT_T5 = os.getenv("AUTO_DUAL_SUBMIT_T5", "0").lower() in ("1", "true", "yes", "y")
+# Phase 5c.2 — when T5 ingest completes for a `tennis_singles_t5` row whose SA
+# pair is also complete, fire `export_sa_ball_positions` and record the result
+# in ml_analysis.training_corpus. Default OFF so the code can ship dark; Tomo
+# flips it on Render once the SA pair (8a5e0b5e / 2c1ad953) backfill is run.
+AUTO_LABEL_DUAL_SUBMIT_PAIRS = os.getenv("AUTO_LABEL_DUAL_SUBMIT_PAIRS", "0").lower() in ("1", "true", "yes", "y")
 
 # ---------- Ingest worker service ----------
 INGEST_WORKER_BASE_URL = (os.getenv("INGEST_WORKER_BASE_URL") or "").strip().rstrip("/")
@@ -2004,6 +2009,145 @@ def _manual_dual_submit_t5(sportai_task_id: str) -> dict:
     return {"status": "submitted", "t5_task_id": t5_task_id}
 
 
+def _label_pair_now(t5_task_id: str) -> dict:
+    """
+    Phase 5c.2 — ungated worker. Idempotent label export for one completed
+    (SA, T5) pair. Used by both the auto hook (gated by env flag) and the
+    /ops/backfill-pair-labels endpoint (ungated, explicit).
+
+    Returns a status dict: {status, sa_task_id?, t5_task_id?, reason?,
+    label_count?, label_s3_uri?}. Never raises — callers expect a dict.
+    """
+    try:
+        # 1. Find the completed SA pair via gold.vw_dual_submit_pairs.
+        #    The view filters deleted_at and requires both ingest_finished_at
+        #    non-null + ingest_error null on each side.
+        with engine.connect() as conn:
+            row = conn.execute(sql_text("""
+                SELECT sa_task_id, t5_task_id, s3_key
+                  FROM gold.vw_dual_submit_pairs
+                 WHERE t5_task_id = :t
+                   AND pair_complete = TRUE
+                 LIMIT 1
+            """), {"t": t5_task_id}).mappings().first()
+
+        if not row:
+            return {"status": "skipped", "reason": "no completed SA pair"}
+
+        sa_task_id = row["sa_task_id"]
+        video_s3_key = row["s3_key"] or ""
+
+        # 2. Idempotency — skip if we've already exported ball_position labels
+        with engine.connect() as conn:
+            existing = conn.execute(sql_text("""
+                SELECT id FROM ml_analysis.training_corpus
+                 WHERE sa_task_id = :sa AND t5_task_id = :t5 AND label_kind = 'ball_position'
+                 LIMIT 1
+            """), {"sa": sa_task_id, "t5": t5_task_id}).first()
+        if existing:
+            return {
+                "status": "skipped",
+                "reason": "training_corpus row already exists",
+                "sa_task_id": sa_task_id, "t5_task_id": t5_task_id,
+            }
+
+        # 3. Export labels in-process from SA bronze.ball_bounce
+        from ml_pipeline.training.label_ball_positions import export_sa_ball_positions
+        labels = export_sa_ball_positions(
+            t5_task_id=t5_task_id, sa_task_id=sa_task_id, engine=engine,
+        )
+
+        # 4. Upload to S3 — same bucket as the source video, under training/labels/
+        if not S3_BUCKET:
+            return {
+                "status": "error",
+                "reason": "S3_BUCKET not configured, cannot upload labels",
+                "sa_task_id": sa_task_id, "t5_task_id": t5_task_id,
+            }
+        label_s3_key = f"training/labels/{t5_task_id}_ball_positions.json"
+        body = json.dumps(labels, indent=2).encode("utf-8")
+        _s3_client().put_object(
+            Bucket=S3_BUCKET,
+            Key=label_s3_key,
+            Body=body,
+            ContentType="application/json",
+        )
+
+        # 5. Record in training_corpus — UNIQUE constraint absorbs any race
+        label_s3_uri = f"s3://{S3_BUCKET}/{label_s3_key}"
+        video_s3_uri = f"s3://{S3_BUCKET}/{video_s3_key}" if video_s3_key else ""
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                INSERT INTO ml_analysis.training_corpus (
+                    sa_task_id, t5_task_id, label_kind,
+                    label_s3_key, video_s3_key, label_count, role_breakdown
+                ) VALUES (
+                    :sa, :t5, 'ball_position',
+                    :label_uri, :video_uri, :label_count, CAST(:role_breakdown AS JSONB)
+                )
+                ON CONFLICT (sa_task_id, t5_task_id, label_kind) DO NOTHING
+            """), {
+                "sa": sa_task_id,
+                "t5": t5_task_id,
+                "label_uri": label_s3_uri,
+                "video_uri": video_s3_uri,
+                "label_count": labels["label_count"],
+                "role_breakdown": json.dumps(labels.get("role_breakdown") or {}),
+            })
+
+        return {
+            "status": "labeled",
+            "sa_task_id": sa_task_id, "t5_task_id": t5_task_id,
+            "label_count": labels["label_count"],
+            "label_s3_uri": label_s3_uri,
+        }
+
+    except Exception as e:
+        app.logger.exception("PAIR_LABEL t5=%s — error during label export: %s", t5_task_id, e)
+        return {
+            "status": "error",
+            "reason": f"{e.__class__.__name__}: {e}",
+            "t5_task_id": t5_task_id,
+        }
+
+
+def _dual_submit_pair_complete_hook(t5_task_id: str) -> None:
+    """
+    Phase 5c.2 pair-completion hook. Fired fire-and-forget from the end of
+    `_do_ingest_t5` whenever a `tennis_singles_t5` row finishes ingest.
+
+    Guards:
+    - `AUTO_LABEL_DUAL_SUBMIT_PAIRS` env flag must be enabled (default OFF).
+    - Idempotent via the UNIQUE (sa, t5, label_kind) constraint on
+      ml_analysis.training_corpus.
+    - All errors swallowed — must not affect the T5 ingest flow.
+
+    The actual work lives in `_label_pair_now`; this is the env-flag gate
+    and result-logging wrapper.
+    """
+    if not AUTO_LABEL_DUAL_SUBMIT_PAIRS:
+        return
+
+    try:
+        result = _label_pair_now(t5_task_id)
+        if result["status"] == "labeled":
+            app.logger.info(
+                "PAIR_LABEL_HOOK sa=%s t5=%s — exported %d labels to %s",
+                result["sa_task_id"], result["t5_task_id"],
+                result["label_count"], result["label_s3_uri"],
+            )
+        else:
+            app.logger.info(
+                "PAIR_LABEL_HOOK t5=%s — %s (%s)",
+                t5_task_id, result["status"], result.get("reason", ""),
+            )
+    except Exception as e:
+        app.logger.exception(
+            "PAIR_LABEL_HOOK t5=%s — error (T5 ingest flow unaffected): %s",
+            t5_task_id, e,
+        )
+
+
 def _start_ingest_background(task_id: str, result_url: str) -> bool:
     """
     Delegate ingest to the ingest-worker service.
@@ -2220,6 +2364,19 @@ def _do_ingest_t5(task_id: str) -> bool:
                 _notify_ses_completion(task_id)
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s email notify failed (non-fatal): %s", task_id, e)
+
+            # Phase 5c.2 — fire-and-forget pair-completion hook. No-op unless
+            # AUTO_LABEL_DUAL_SUBMIT_PAIRS=1 and this is a tennis_singles_t5
+            # row whose SA pair has also completed. Errors are swallowed
+            # inside the helper; this thread cannot affect the T5 ingest flow.
+            try:
+                threading.Thread(
+                    target=_dual_submit_pair_complete_hook,
+                    args=(task_id,),
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s pair-label hook spawn failed (non-fatal): %s", task_id, e)
 
             app.logger.info("T5 INGEST COMPLETE task_id=%s", task_id)
             return True
@@ -3618,6 +3775,100 @@ def ops_dual_submit_t5_backfill():
             _time.sleep(delay_ms / 1000.0)
 
     result["submitted"] = submitted
+    return jsonify(result), 200
+
+
+@app.post("/ops/backfill-pair-labels")
+def ops_backfill_pair_labels():
+    """Retro-export ball-position labels for completed (SA, T5) pairs that
+    have no `ml_analysis.training_corpus` row yet. Phase 5c.2 backfill —
+    sibling to `/ops/dual-submit-t5-backfill` (which queues the T5 jobs).
+
+    Eligibility: `gold.vw_dual_submit_pairs` rows where pair_complete=TRUE
+    AND there is no existing training_corpus row for (sa, t5, 'ball_position').
+
+    Idempotent — each per-pair call goes through `_label_pair_now` which
+    re-checks the corpus before exporting. Safe to re-run.
+
+    Body (all optional):
+      {
+        "dry_run": true,       # default: true — list eligible, label nothing
+        "limit": 50,           # default: 50 — cap how many pairs per call
+        "delay_ms": 100        # default: 100 — throttle between exports
+      }
+    """
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    import time as _time
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    limit = int(body.get("limit", 50))
+    delay_ms = int(body.get("delay_ms", 100))
+    if limit < 1 or limit > 500:
+        return jsonify({"ok": False, "error": "limit must be in [1, 500]"}), 400
+    if delay_ms < 0 or delay_ms > 60000:
+        return jsonify({"ok": False, "error": "delay_ms must be in [0, 60000]"}), 400
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql_text("""
+                SELECT p.sa_task_id, p.t5_task_id, p.s3_key, p.paired_at
+                  FROM gold.vw_dual_submit_pairs p
+                 WHERE p.pair_complete = TRUE
+                   AND NOT EXISTS (
+                       SELECT 1 FROM ml_analysis.training_corpus tc
+                        WHERE tc.sa_task_id = p.sa_task_id
+                          AND tc.t5_task_id = p.t5_task_id
+                          AND tc.label_kind = 'ball_position'
+                   )
+                 ORDER BY p.paired_at ASC
+                 LIMIT :lim
+            """), {"lim": limit}).mappings().all()
+    except Exception as e:
+        app.logger.exception("OPS BACKFILL-PAIR-LABELS eligibility query failed")
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+    eligible = [dict(r) for r in rows]
+    result = {
+        "ok": True,
+        "dry_run": dry_run,
+        "eligible": len(eligible),
+        "labeled": 0,
+        "skipped": [],
+        "errors": [],
+    }
+
+    if dry_run:
+        result["sample"] = [
+            {"sa_task_id": str(r["sa_task_id"]), "t5_task_id": str(r["t5_task_id"])}
+            for r in eligible[:5]
+        ]
+        return jsonify(result), 200
+
+    labeled = 0
+    for i, r in enumerate(eligible):
+        t5_tid = str(r["t5_task_id"])
+        sub = _label_pair_now(t5_tid)
+        if sub.get("status") == "labeled":
+            labeled += 1
+            app.logger.info(
+                "BACKFILL-PAIR-LABELS [%d/%d] sa=%s t5=%s -> %d labels",
+                i + 1, len(eligible), sub["sa_task_id"], t5_tid, sub["label_count"],
+            )
+        elif sub.get("status") == "skipped":
+            result["skipped"].append({
+                "t5_task_id": t5_tid, "reason": sub.get("reason", "unknown"),
+            })
+        else:
+            result["errors"].append({
+                "t5_task_id": t5_tid, "error": sub.get("reason", "unknown"),
+            })
+        if delay_ms > 0 and i < len(eligible) - 1:
+            _time.sleep(delay_ms / 1000.0)
+
+    result["labeled"] = labeled
     return jsonify(result), 200
 
 

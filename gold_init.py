@@ -930,6 +930,44 @@ ORDER BY
 
 
 # ============================================================================
+# DUAL-SUBMIT PAIRS (Phase 5c.2) — index of (SA, T5) tasks sharing one s3_key
+# ============================================================================
+# Self-join bronze.submission_context on s3_key to surface every (SA, T5)
+# pair created by the dual-submit pipeline. `pair_complete` flips true once
+# both ingests finish without error — the signal the pair-completion hook
+# in _do_ingest_t5 watches for. No dependency on ml_analysis.* — the hook
+# does its own lookup against ml_analysis.training_corpus for idempotency.
+
+VW_DUAL_SUBMIT_PAIRS_SQL = """
+CREATE VIEW gold.vw_dual_submit_pairs AS
+SELECT
+    sa.task_id              AS sa_task_id,
+    t5.task_id              AS t5_task_id,
+    sa.s3_key,
+    sa.email,
+    sa.player_a_name,
+    sa.player_b_name,
+    sa.created_at           AS sa_created_at,
+    t5.created_at           AS t5_created_at,
+    sa.ingest_finished_at   AS sa_completed_at,
+    t5.ingest_finished_at   AS t5_completed_at,
+    (sa.ingest_finished_at IS NOT NULL
+     AND t5.ingest_finished_at IS NOT NULL
+     AND sa.ingest_error IS NULL
+     AND t5.ingest_error IS NULL) AS pair_complete,
+    GREATEST(sa.ingest_finished_at, t5.ingest_finished_at) AS paired_at
+FROM bronze.submission_context sa
+JOIN bronze.submission_context t5
+       ON t5.s3_key = sa.s3_key
+      AND t5.task_id <> sa.task_id
+WHERE sa.sport_type = 'tennis_singles'
+  AND t5.sport_type = 'tennis_singles_t5'
+  AND sa.deleted_at IS NULL
+  AND t5.deleted_at IS NULL
+"""
+
+
+# ============================================================================
 # ORCHESTRATION
 # ============================================================================
 
@@ -947,6 +985,8 @@ _VIEWS = [
     # Player performance (cross-match) — order matters: kpis before performance
     ("gold.player_match_kpis", PLAYER_MATCH_KPIS_SQL),
     ("gold.player_performance", PLAYER_PERFORMANCE_SQL),
+    # Dual-submit (Phase 5c.2)
+    ("gold.vw_dual_submit_pairs", VW_DUAL_SUBMIT_PAIRS_SQL),
 ]
 
 

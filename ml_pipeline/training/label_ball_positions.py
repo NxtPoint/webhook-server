@@ -29,6 +29,11 @@ Usage (labelling the SA reference for the 8a5e0b5e dual-submit):
         --task 8a5e0b5e-58a5-4236-a491-0fb7b3a25088 \\
         --sportai 2c1ad953-b65b-41b4-9999-975964ff92e1 \\
         --output ml_pipeline/training/labels/8a5e0b5e_ball_positions.json
+
+Also exposed as a callable: `export_sa_ball_positions(t5_task_id,
+sa_task_id, engine=None, ...) -> dict`. The Phase 5c.2 pair-completion
+hook in upload_app.py calls this in-process and uploads the result to
+S3, avoiding a subprocess hop.
 """
 from __future__ import annotations
 
@@ -46,6 +51,7 @@ logger = logging.getLogger("label_ball_positions")
 
 DEFAULT_FRAME_W = 1920
 DEFAULT_FRAME_H = 1080
+DEFAULT_INCLUDE_TYPES = ("swing", "floor")
 
 
 def _normalize_db_url(url: str) -> str:
@@ -66,33 +72,34 @@ def _get_engine():
     return create_engine(_normalize_db_url(url))
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--task", required=True,
-                    help="T5 task_id the labels belong to (for metadata only)")
-    ap.add_argument("--sportai", required=True,
-                    help="SA task_id to pull bronze.ball_bounce rows from")
-    ap.add_argument("--output", required=True, help="Output JSON path")
-    ap.add_argument("--frame-width", type=int, default=DEFAULT_FRAME_W)
-    ap.add_argument("--frame-height", type=int, default=DEFAULT_FRAME_H)
-    ap.add_argument("--include-types", default="swing,floor",
-                    help="Comma-sep list of bronze.ball_bounce.type values "
-                         "to include. 'swing'=hit, 'floor'=bounce. Default "
-                         "includes both — every SA ball sighting is training "
-                         "signal for TrackNet.")
-    args = ap.parse_args()
+def export_sa_ball_positions(
+    t5_task_id: str,
+    sa_task_id: str,
+    engine=None,
+    frame_width: int = DEFAULT_FRAME_W,
+    frame_height: int = DEFAULT_FRAME_H,
+    include_types=DEFAULT_INCLUDE_TYPES,
+) -> dict:
+    """Build the label JSON for one (T5, SA) pair and return it as a dict.
 
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
+    Raises RuntimeError if the SA task has no bronze.ball_bounce rows
+    (i.e. the SA pipeline didn't emit any ball events — either it
+    failed silently or the match has no usable rallies).
 
-    type_filter = tuple(t.strip() for t in args.include_types.split(",") if t.strip())
+    Does NOT write to disk or to S3 — the caller decides where the
+    output lives. The CLI wrapper (main()) writes to args.output;
+    the upload_app pair-completion hook uploads to s3://.
+    """
+    type_filter = tuple(t.strip() for t in include_types if t and t.strip())
     if not type_filter:
-        raise RuntimeError("--include-types must not be empty")
+        raise ValueError("include_types must not be empty")
 
-    W = int(args.frame_width)
-    H = int(args.frame_height)
+    if engine is None:
+        engine = _get_engine()
 
-    engine = _get_engine()
+    W = int(frame_width)
+    H = int(frame_height)
+
     with engine.connect() as conn:
         rows = conn.execute(sql_text("""
             SELECT frame_nr, image_x, image_y, court_x, court_y,
@@ -104,16 +111,15 @@ def main():
               AND image_x IS NOT NULL
               AND image_y IS NOT NULL
             ORDER BY frame_nr
-        """), {"tid": args.sportai, "types": list(type_filter)}).mappings().all()
+        """), {"tid": sa_task_id, "types": list(type_filter)}).mappings().all()
 
     if not rows:
-        raise RuntimeError(f"no bronze.ball_bounce rows for SA task {args.sportai}")
-    logger.info("pulled %d SA ball events from %s (types=%s)",
-                len(rows), args.sportai[:8], type_filter)
+        raise RuntimeError(f"no bronze.ball_bounce rows for SA task {sa_task_id}")
 
     labels = []
     n_oob = 0
-    n_by_type = {}
+    n_by_type: dict[str, int] = {}
+    n_by_role = {"NEAR": 0, "FAR": 0, "other": 0}
     for r in rows:
         px = float(r["image_x"]) * W
         py = float(r["image_y"]) * H
@@ -129,6 +135,10 @@ def main():
             elif cy_f < 2:
                 role = "FAR"
         n_by_type[r["type"]] = n_by_type.get(r["type"], 0) + 1
+        if role in ("NEAR", "FAR"):
+            n_by_role[role] += 1
+        else:
+            n_by_role["other"] += 1
         labels.append({
             # Same schema key name the downstream builder looks for:
             "bounce_frame_est": int(r["frame_nr"]),
@@ -143,24 +153,56 @@ def main():
             "source": "sportai_ball_bounce",
         })
 
-    out = {
-        "task_id": args.task,
-        "sportai_task_id": args.sportai,
+    return {
+        "task_id": t5_task_id,
+        "sportai_task_id": sa_task_id,
         "frame_height": H,
         "frame_width": W,
         "label_count": len(labels),
+        "out_of_bounds": n_oob,
+        "by_type": n_by_type,
+        "role_breakdown": {"NEAR": n_by_role["NEAR"], "FAR": n_by_role["FAR"]},
         "labels": labels,
     }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--task", required=True,
+                    help="T5 task_id the labels belong to (for metadata only)")
+    ap.add_argument("--sportai", required=True,
+                    help="SA task_id to pull bronze.ball_bounce rows from")
+    ap.add_argument("--output", required=True, help="Output JSON path")
+    ap.add_argument("--frame-width", type=int, default=DEFAULT_FRAME_W)
+    ap.add_argument("--frame-height", type=int, default=DEFAULT_FRAME_H)
+    ap.add_argument("--include-types", default=",".join(DEFAULT_INCLUDE_TYPES),
+                    help="Comma-sep list of bronze.ball_bounce.type values "
+                         "to include. 'swing'=hit, 'floor'=bounce. Default "
+                         "includes both — every SA ball sighting is training "
+                         "signal for TrackNet.")
+    args = ap.parse_args()
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+
+    include_types = tuple(t.strip() for t in args.include_types.split(",") if t.strip())
+
+    out = export_sa_ball_positions(
+        t5_task_id=args.task,
+        sa_task_id=args.sportai,
+        frame_width=args.frame_width,
+        frame_height=args.frame_height,
+        include_types=include_types,
+    )
+
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(out, indent=2))
 
-    logger.info("kept %d labels, out_of_bounds=%d", len(labels), n_oob)
-    logger.info("by type: %s", n_by_type)
-    logger.info("by role: NEAR=%d FAR=%d other=%d",
-                sum(1 for l in labels if l["role"] == "NEAR"),
-                sum(1 for l in labels if l["role"] == "FAR"),
-                sum(1 for l in labels if l["role"] not in ("NEAR", "FAR")))
+    logger.info("pulled %d labels (out_of_bounds=%d, by_type=%s, NEAR=%d FAR=%d other=%d)",
+                out["label_count"], out["out_of_bounds"], out["by_type"],
+                out["role_breakdown"]["NEAR"], out["role_breakdown"]["FAR"],
+                out["label_count"] - out["role_breakdown"]["NEAR"] - out["role_breakdown"]["FAR"])
     logger.info("wrote %s", args.output)
     return 0
 
