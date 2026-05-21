@@ -145,17 +145,42 @@ def _in_service_box_zone(cx, cy) -> bool:
 # Anchor selection — cluster in-memory bounces in service-box zone
 # ---------------------------------------------------------------------------
 
-def _select_anchors(bounces, fps: float) -> List[int]:
-    """Return frame indices of in-memory ball detections that fall inside
-    the service-box zone. Caller filters/clusters further."""
+def _select_anchors(
+    bounces,
+    fps: float,
+    *,
+    zone_filter: bool = False,
+    bounce_only: bool = True,
+) -> List[int]:
+    """Return frame indices of in-memory ball detections to anchor on.
+
+    Two orthogonal filters control which detections are used as anchors:
+
+    * `zone_filter=True` keeps only detections whose court coords fall inside
+      the service-box zone. False keeps all detections regardless of position.
+    * `bounce_only=True` keeps only detections marked `is_bounce`. False keeps
+      every detection (every frame TrackNet succeeded on).
+
+    Defaults: `zone_filter=False, bounce_only=True`. Rationale — pre-flight
+    diagnostic on the 880dff02 fixture (2026-05-21) showed the original
+    `zone=T, bounce=F` default covered only 1/24 SA serves (4%) because bronze
+    detections are concentrated in 4 distinct 10s buckets that don't align
+    with serve times. `zone=F, bounce=T` covered 6/24 (25%) — best of 4
+    strategies tested. Bronze bounces are temporally sparse so they cluster
+    into many small windows; the zone filter on anchors removed useful
+    triggers at baseline / mid-court positions. Stage 2 measurement on
+    880dff02 will validate the choice."""
     if not bounces:
         return []
     anchors = []
     for d in bounces:
-        cx = getattr(d, "court_x", None)
-        cy = getattr(d, "court_y", None)
-        if not _in_service_box_zone(cx, cy):
+        if bounce_only and not getattr(d, "is_bounce", False):
             continue
+        if zone_filter:
+            cx = getattr(d, "court_x", None)
+            cy = getattr(d, "court_y", None)
+            if not _in_service_box_zone(cx, cy):
+                continue
         anchors.append(int(d.frame_idx))
     return sorted(anchors)
 
@@ -321,6 +346,8 @@ def extract_far_bounces(
     fps: float = 25.0,
     window_s: float = 2.5,
     cluster_gap_s: float = 0.5,
+    anchor_zone_filter: bool = False,
+    anchor_bounce_only: bool = True,
     max_windows: Optional[int] = None,
     source_tag: str = "roi_prod",
     replace: bool = True,
@@ -343,6 +370,11 @@ def extract_far_bounces(
         window_s: half-window in seconds around each cluster centroid.
         cluster_gap_s: anchors within this many seconds collapse to one
             cluster centroid before window construction.
+        anchor_zone_filter: when True, restrict anchors to detections inside
+            the service-box zone. Default False (see _select_anchors docstring
+            for the diagnostic table that drove the default).
+        anchor_bounce_only: when True, anchor only on detections with
+            is_bounce=True. Default True.
         max_windows: cap on the number of ROI windows to run (test/diag
             knob — None = unlimited).
         source_tag: ml_analysis.ball_detections_roi.source value. Use a
@@ -370,12 +402,17 @@ def extract_far_bounces(
         )
         return (0, []) if return_rows else 0
 
-    # 1. Select anchors inside the service-box zone
-    anchors = _select_anchors(bounces, fps)
+    # 1. Select anchors per configured strategy (see _select_anchors docstring)
+    anchors = _select_anchors(
+        bounces, fps,
+        zone_filter=anchor_zone_filter,
+        bounce_only=anchor_bounce_only,
+    )
     if not anchors:
         logger.info(
-            "roi_bounces: 0 anchors inside service-box zone (from %d bounces); "
-            "skipping", len(bounces),
+            "roi_bounces: 0 anchors (zone_filter=%s, bounce_only=%s, from %d input); "
+            "skipping",
+            anchor_zone_filter, anchor_bounce_only, len(bounces),
         )
         return (0, []) if return_rows else 0
 

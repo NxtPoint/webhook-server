@@ -6,15 +6,17 @@
 
 ---
 
-T5 ML pipeline session pickup. Today is [DATE]. Previous session was 2026-05-20 (overnight Phase 5a build).
+T5 ML pipeline session pickup. Today is [DATE]. Previous sessions: 2026-05-20 (overnight Phase 5a build) + 2026-05-21 morning (anchor-strategy pivot).
 
-**TL;DR change since last handover:** Phase 5a `extract_far_bounces` was **built, wired into Batch, and Stage-1 validated locally** during an autonomous overnight session. Bench floor still locked (a798eff0=20/24, 880dff02=23/24). Code is on **branch `phase-5a/roi-bounce-extractor`** — pushed but NOT merged. The remaining steps are gated on a single SQL probe (Step A) and the BATCH-SIDE CHANGE CHECKLIST (Step F). See `.claude/session_2026-05-20_phase5a_overnight.md` for the full session detail.
+**TL;DR change since last handover:** Phase 5a `extract_far_bounces` is **built, anchor strategy pivoted, and pushed**. The pivot — the kickoff doc's default (zone-filtered all-detections) covered only **1/24 SA serves** on the 880dff02 fixture. Defaults flipped to **bounce-only-no-zone** which covers **6/24 (25%)**, a 6× improvement available by flipping two parameter defaults. The 880dff02 fixture's `ball_rows` was snapshotted from the same DB Step A queries, so Step A is effectively answered offline: **153 in-zone anchors, 9 in-zone bounces, 4 distinct 10s buckets**. Bench still locked at a798eff0=20/24, 880dff02=23/24. **Step F (BATCH-SIDE CHANGE CHECKLIST + Tomo reruns 880dff02) is now the sole gating action.** See `.claude/session_2026-05-21_phase5a_pivot.md` for the 4-strategy comparison + rationale.
 
-Stage 1 produced clean signal: SA serve at 178.44s matched to ROI bounce at 178.32s (dt=0.12s, correct service-box half), 15 bounces total across 2 windows on the `a798eff0` fixture in 31 min CPU.
+Stage 1 result that proved the design is sound: SA serve at 178.44s matched to ROI bounce at 178.32s (dt=0.12s, correct service-box half), on the `a798eff0` fixture.
 
 Read in this exact order before doing anything else:
 
-1. `.claude/session_2026-05-20_phase5a_overnight.md` — **REQUIRED.** Detailed session review with: files changed, design decisions, Stage 1 results + one observation worth knowing (cluster granularity is coarser than expected — 6 clusters from 153 anchors).
+1. `.claude/session_2026-05-21_phase5a_pivot.md` — **REQUIRED.** This morning's pivot review with the 4-strategy diagnostic table and why bounce-only-no-zone wins.
+
+2. `.claude/session_2026-05-20_phase5a_overnight.md` — **REQUIRED.** Original overnight build review with Stage 1 results + design decisions.
 
 2. `docs/north_star.md` — macro plan. Phase 5a is ACTIVE; phase 5b is PARKED.
 
@@ -35,27 +37,26 @@ Then check out the feature branch:
 
 If bench green and branch is checked out, the moves are:
 
-**A. (BLOCKING)** Anchor-source diagnostic on `880dff02`. Single SQL via `/ops/diag/sql` (needs `OPS_KEY`):
+**A. (DONE — offline)** Anchor-source diagnostic on `880dff02`. The 880dff02 bench fixture was snapshotted from `ml_analysis.ball_detections` for this job_id, so its `ball_rows` IS the Step A answer. Pre-flight diagnostic from 2026-05-21 morning:
 
-    SELECT count(*)                          AS total,
-           count(*) FILTER (WHERE is_bounce) AS bounces,
-           min(frame_idx) AS first_frame,
-           max(frame_idx) AS last_frame,
-           count(DISTINCT frame_idx / 250) AS distinct_10s_buckets
-    FROM ml_analysis.ball_detections
-    WHERE job_id = '880dff02-58bd-412c-9a29-5c5151004447'
-      AND court_x BETWEEN -1.5 AND 12.47
-      AND court_y BETWEEN 3.985 AND 19.785;
+    .venv/Scripts/python -m ml_pipeline.diag.probe_roi_anchor_strategy \
+        ml_pipeline/fixtures/880dff02.pkl.gz
 
-Decision:
-- `total ≥ ~30` AND `distinct_10s_buckets ≥ 10` → option (c) confirmed, proceed to **F**.
-- `total < 10` → option (c) is wrong on this video. Two cheap fixes (single-file edit each):
-  - **Drop anchor filter**: change `_select_anchors` to NOT filter on `_in_service_box_zone` — keep the output filter only.
-  - **Use `is_bounce=True` only**: add `bounce_only=True` parameter / filter; sparser anchors with better serve alignment.
+Output:
 
-  Either is a small edit, but commit + push a new branch revision before Step F.
+    total (in service-box zone): 153
+    bounces (in zone):           9
+    distinct 10s buckets:        4
 
-**F. (BATCH)** BATCH-SIDE CHANGE CHECKLIST (Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1). Both edited prod files are in-container. Then Tomo reruns `880dff02` via the frontend (per the run-monitoring rule — user self-serves).
+    strategy                      anchors  clusters  windows   cov_s   serves_covered
+    zone=T, bounce=F                  153         6        3    25.2        1/24 (4%)
+    zone=T, bounce=T                    9         7        3    20.4        0/24 (0%)
+    zone=F, bounce=F                 1983        28       21   123.9       5/24 (21%)
+    zone=F, bounce=T (DEFAULT)        162        96       14   175.5       6/24 (25%)
+
+Defaults flipped to `anchor_zone_filter=False, anchor_bounce_only=True` accordingly. If you want a live-DB cross-check (Tomo had connection issues 2026-05-21), the same `/ops/diag/sql` query with `OPS_KEY` should produce matching counts (153 total, 9 bounces). If they differ materially, the fixture is stale — re-snapshot via `snapshot_task.py`.
+
+**F. (BATCH — only remaining gate)** BATCH-SIDE CHANGE CHECKLIST (Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1). Both edited prod files are in-container. Then Tomo reruns `880dff02` via the frontend (per the run-monitoring rule — user self-serves).
 
 **G. (MEASUREMENT)** After 880dff02 rerun completes:
 

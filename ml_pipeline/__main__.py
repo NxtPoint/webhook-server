@@ -226,6 +226,11 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                 on_progress("roi_bounces", 80)
                 from ml_pipeline.roi_extractors import extract_far_bounces
                 court_det = getattr(pipeline, "court_detector", None)
+                # Anchor strategy: bounce-only without zone filter — best of 4
+                # strategies on the 880dff02 fixture (covers 6/24 SA serves vs
+                # 1/24 for the zone-filtered all-detections default the kickoff
+                # doc proposed). See _select_anchors docstring for the
+                # diagnostic table. Stage 2 measurement on 880dff02 validates.
                 n_bounces = extract_far_bounces(
                     video_path=tmp_path,
                     job_id=job_id,
@@ -235,6 +240,8 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     fps=getattr(result, "video_fps", 25.0) or 25.0,
                     window_s=2.5,
                     cluster_gap_s=0.5,
+                    anchor_zone_filter=False,
+                    anchor_bounce_only=True,
                 )
                 logger.info(f"ROI bounces: wrote {n_bounces} rows")
             except Exception as e:
