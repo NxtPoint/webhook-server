@@ -2,12 +2,12 @@
 
 ## ⚡ Executive summary (read this first — 30 seconds)
 
-**Today's date:** 2026-05-22 (early morning session — Phase 5c.2 landed)
-**Phase active:** Phase 5 — Ball detection coverage. **5c.2 SHIPPED** (pair-completion hook + corpus). 5e WASB verification still pending (parallel-agent thread).
-**Bench:** `a798eff0=20/24, 880dff02=23/24` — **green**. Ball-bench v2 locked at `7100792`.
-**What shipped last session:** Phase 5c.2 — `_dual_submit_pair_complete_hook` + `ml_analysis.training_corpus` + `gold.vw_dual_submit_pairs` + `POST /ops/backfill-pair-labels`. All gated by `AUTO_LABEL_DUAL_SUBMIT_PAIRS=0` (default OFF) so code ships dark. Commit `d7718e0`.
-**What's blocked:** Nothing for my thread. WASB Step 5 verification on Batch task `1d6feb3a-...` is the parallel agent's open thread — don't touch it.
-**Next session's job:** Pick from the punch list — recommended next solo build is **Phase 5c.2 follow-up: stroke-classifier hook (G10)** OR **silver-builder bench steps 2+4 (Option 3)**.
+**Today's date:** 2026-05-22 (morning session — Phase 5c.2 + silver bench shipped)
+**Phase active:** Phase 5 — Ball detection coverage. **5c.2 SHIPPED** (corpus pipeline foundation). **Silver bench SHIPPED** (snapshot + orchestrator). 5e WASB verification still pending (parallel-agent thread).
+**Bench:** `a798eff0=20/24, 880dff02=23/24` — **green** (serve). Ball-bench v2 locked at `7100792`. Silver-bench has empty fixture set — first capture pending Render shell.
+**What shipped last session:** Phase 5c.2 (`d7718e0`) — `_dual_submit_pair_complete_hook` + `ml_analysis.training_corpus` + `gold.vw_dual_submit_pairs` + `/ops/backfill-pair-labels`. Silver bench (`83e1ab7`) — `snapshot.py` + `bench.py` orchestrator, end-to-end schema init verified locally.
+**What's blocked:** Nothing solo. Two Tomo-side actions for full activation: (1) `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` flip on Render for 5c.2; (2) first fixture capture from Render shell for silver bench.
+**Next session's job:** Activate what's shipped (env flips + first-fixture capture) OR push forward on Phase 5c.3 (`harness build-corpus` subcommand — pure local, no fixtures yet but consumer code can land).
 
 If the above is enough, stop reading this file and go.
 
@@ -15,29 +15,30 @@ If you need depth (inheriting a blocker, verifying a claim, picking next move), 
 
 ---
 
-T5 ML pipeline session pickup. Today is [DATE]. Previous session: 2026-05-22 early morning (Phase 5c.2 shipped + ad-hoc /init review of CLAUDE.md).
+T5 ML pipeline session pickup. Today is [DATE]. Previous session: 2026-05-22 morning (Phase 5c.2 + silver bench shipped; 5e WASB verification still parallel-agent thread).
 
 **TL;DR — where we are:**
-- **Phase 5c.2 shipped (`d7718e0`).** Pair-completion hook + corpus table + view + backfill endpoint. All dark (env flag off) until Tomo flips it. Idempotent via UNIQUE constraint and double idempotency check inside `_label_pair_now`.
-- **WASB ball detector LIVE in production.** Phase 5e shipped 2026-05-21. Both ECRs hold the new image; both job-defs active with `BALL_TRACKER=wasb`. Lambda routes to new revs by job-def name. Rollback = unset the env var on the job-def, no code change. **Step 5 verification — owned by the parallel agent.**
-- **Ball-tracker bench DONE** (audit #4). v2 metric (post-filter + trajectory coherence + tier breakdown). Locked baseline at `7100792`. Any future ball-tracker edit benches in seconds.
-- **Silver-builder bench scaffolding shipped** (audit #2 partial). Docker Postgres lifecycle helper verified end-to-end. Snapshot + orchestrator are STUBS — next session work.
-- **Phase 5c.0+5c.1 ready to flip.** `/ops/dual-submit-t5-backfill` endpoint safety-reviewed and shipped. Tomo to set `AUTO_DUAL_SUBMIT_T5=1` on Render's main API service when convenient. **`AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` is the second flip** that switches on the new 5c.2 hook.
+- **Phase 5c.2 shipped (`d7718e0`).** Pair-completion hook + corpus table + view + backfill endpoint. All dark behind `AUTO_LABEL_DUAL_SUBMIT_PAIRS=0` until flipped. Idempotent via UNIQUE constraint and double-check inside `_label_pair_now`. Backfill endpoint `/ops/backfill-pair-labels` ungated — explicit ops call retro-exports for completed pairs.
+- **Silver bench shipped (`83e1ab7`).** `snapshot.py` captures bronze + ml_analysis rows for one task to gzipped SQL fixture; `bench.py` restores into local Docker Postgres + runs `build_silver_match_t5` + compares to baseline. Empty-state verified locally — bench DB spin-up creates all 24 expected tables (including the new 5c.2 `training_corpus`). Bootstrap playbook in spec §11.
+- **WASB ball detector LIVE in production.** Phase 5e shipped 2026-05-21. Both ECRs hold the new image; both job-defs active with `BALL_TRACKER=wasb`. **Step 5 verification — owned by the parallel agent.**
+- **Ball-tracker bench DONE.** v2 metric, locked baseline at `7100792`.
+- **Phase 5c.0+5c.1 ready to flip.** `AUTO_DUAL_SUBMIT_T5=1` is the first flip; `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` is the second.
 
 **Open admin items:**
-- WASB Step 5 verification on task `1d6feb3a-4624-47ae-b8f5-44246b6d0eb3` — parallel agent owns this; don't intervene unless asked. SQL block + rollback playbook is reproduced at the bottom of this file.
-- 5c.2 boot verification — once Render redeploys, confirm `ml_analysis.training_corpus` table exists and `gold.vw_dual_submit_pairs` view exists (SQL at §"5c.2 verification" below).
+- 5c.2 boot verification — once Render redeploys `83e1ab7`, confirm `ml_analysis.training_corpus` table exists and `gold.vw_dual_submit_pairs` view exists (SQL at §"5c.2 verification" below).
+- Silver bench first-fixture capture — needs one Render-shell run. Playbook: `.claude/strategy/silver_bench_design_2026-05-21.md` §11.
+- WASB Step 5 verification on task `1d6feb3a-4624-47ae-b8f5-44246b6d0eb3` — parallel agent owns this; don't intervene unless asked.
 - Render Postgres still open to `0.0.0.0/0` (since 2026-05-21 Phase 5a). Re-lock to `105.214.8.31/32` or build NAT Gateway + EIP.
 - Option A Batch verification: task `6a8a344f-93bb-49af-8456-88d81a5dd7e3` — older in-flight from earlier in the day, still open.
 - Old GPU box `i-0fb3983fa555c16e3` (eu-north-1a) parked stopped (~$3.70/mo EBS).
 
 Read in this order before doing anything else:
 
-1. `.claude/strategy/dual_submit_status_2026-05-20.md` — Phase 5c.2 design (shipped) + 5c.3-5c.5 ahead.
-2. `.claude/next_session_pickup_ball_bench.md` — ball-bench thread detail + WASB Step 5 verification SQL (parallel agent's thread).
-3. `.claude/strategy/silver_bench_design_2026-05-21.md` — silver bench design spec; what's left to build.
-4. `docs/north_star.md` — macro plan; Phase 5e SHIPPED on the ladder now.
-5. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST. Now includes `wasb_ball_tracker.py`, `wasb_hrnet.py`, `ball_tracker.py`, `config.py`.
+1. `.claude/strategy/silver_bench_design_2026-05-21.md` — silver bench design + §11 bootstrap playbook.
+2. `.claude/strategy/dual_submit_status_2026-05-20.md` — Phase 5c.2 design (shipped) + 5c.3-5c.5 ahead.
+3. `.claude/next_session_pickup_ball_bench.md` — ball-bench thread detail + WASB Step 5 verification SQL (parallel agent's thread).
+4. `docs/north_star.md` — macro plan; Phase 5e SHIPPED on the ladder.
+5. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST + new "Silver bench" subsection at line ~225.
 
 Then run the locked serve-bench locally to confirm the floor:
 
@@ -47,36 +48,37 @@ Expect: `a798eff0` 20/24, `880dff02` 23/24, no regressions.
 
 **Next move — pick one (recommended order: 1 → 2 → 3 → 4):**
 
-**Option 1: Phase 5c.2 follow-up — stroke-classifier hook (G10, ~2 hr).** Extend `_label_pair_now` with a second `label_kind='stroke_classifier'` branch that calls `ml_pipeline/stroke_classifier/export_training_data.py` (refactor needed — currently CLI-only). Same UNIQUE-constraint idempotency. Compounds directly on the 5c.2 framework. Unblocks the far-player stroke classifier (auto-memory `project_far_player_stroke_research.md` flags this as "awaiting dual-submit training data").
+**Option 1: Activate what's shipped.** Tomo-side actions: (a) flip `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render's main API service; (b) run snapshot for first silver-bench fixture from Render shell + upload to S3 + pull locally + bench; (c) run `/ops/backfill-pair-labels` to retro-seed the existing `8a5e0b5e/2c1ad953` pair. Each is <10 min once started. Closes both shipped builds to fully-live state.
 
-**Option 2: Flip Phase 5c.0 + 5c.1 + 5c.2 + run backfills.** Three Render env-var flips: `AUTO_DUAL_SUBMIT_T5=1`, `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1`. Verify by uploading one tennis_singles match → two rows in `ml_analysis.video_analysis_jobs` → after both complete, one row in `ml_analysis.training_corpus`. Then trigger `/ops/dual-submit-t5-backfill` + `/ops/backfill-pair-labels` (dry_run first — see ops_runbook).
+**Option 2: Phase 5c.3 — `harness build-corpus` subcommand (~3-4 hr).** Pure local, no Render needed. Reads `ml_analysis.training_corpus`, pulls labels + videos from S3, assembles dataset for training. Spec at `.claude/strategy/dual_submit_status_2026-05-20.md` §4 Phase 5c.3 step 1. Future GPU box step 2 consumes the dataset. **Note:** consumer ships before producer fires meaningfully, so this is speculative until 5c.2 is activated + has rows.
 
-**Option 3: Silver-builder bench — finish steps 2+4 (~3-4 hr).** Implement `snapshot.py` (needs DATABASE_URL on Render shell) + bench orchestrator. Then capture first fixtures for 880dff02 + a798eff0. Builds on the Docker Postgres helper shipped in `5e3e746`.
+**Option 3: Silver bench follow-ons (~2-3 hr).** (a) Row-level `--diff` flag — show WHICH silver rows changed when bench shows regression. (b) Practice-silver parallel bench — same shape, swap `build_silver_match_t5` for `build_silver_practice`. (c) CI integration per spec §6 — adds a job to `.github/workflows/bench.yml`. Defensive infra; depends on first fixture landing for real signal.
 
 **Option 4: NAT Gateway + EIP + re-lock Render Postgres (~30-60 min).** Closes the `0.0.0.0/0` security hole. Higher risk infra — wants Tomo engaged.
 
-**Strategic frame (Tomo's):** silver is derived from bronze; the goal is to make bronze 100% correct and aligned to SportAI. WASB shipping was the biggest single bronze-quality move this quarter. **Phase 5c.2 is the training-data flywheel foundation; G10 (stroke-classifier hook) is the natural compound on top.**
+**Strategic frame (Tomo's):** silver is derived from bronze; the goal is to make bronze 100% correct and aligned to SportAI. Phase 5c.2 is the training-data flywheel foundation. **Activation (Option 1) is the highest-leverage move because both shipped builds are otherwise dormant.** G10 (stroke-classifier hook) deferred to Phase 5c.5 alongside the GPU pipeline — the cv2/video/GPU dependencies make a hook in the Render API process the wrong architecture.
 
 **Things NOT to do** (load-bearing):
 
 - **Don't touch the WASB Step 5 verification thread.** Parallel agent owns it.
 - **Don't merge `ball_tracker.py`, `wasb_ball_tracker.py`, `wasb_hrnet.py`, `config.py`, `pipeline.py`, or `Dockerfile` changes without BATCH-SIDE CHANGE CHECKLIST.** See CLAUDE.md item #8.
-- **Don't rollback WASB without running the bench against TrackNetV2 first.** Rollback = `aws batch update-job-definition` clearing the `BALL_TRACKER` env var; previous revs (`:46`/`:28`) kept on standby. No image rebuild needed.
+- **Don't rollback WASB without running the bench against TrackNetV2 first.** Rollback = `aws batch update-job-definition` clearing the `BALL_TRACKER` env var; previous revs (`:46`/`:28`) kept on standby.
+- **Don't try to add the stroke-classifier hook (G10) to the Render API process.** `export_training_data.py` imports cv2, opens the video locally, runs optical flow — none of which works on Render. G10 belongs in Phase 5c.5 on the GPU box.
+- **Don't change the `_dual_submit_pair_complete_hook` env-flag default to ON without an explicit go from Tomo.** Default-OFF is the safety; flip is a Render-side action.
 - Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD` (motion-fallback noise is structural).
-- Don't use the §9 sequencing caveat to delay anything — silver-bench-specific (commit `0546278`).
-- Don't drop `test_videos/` from the GPU rsync. Broke the first ball-bench run; runbook keeps it on purpose now.
-- Don't add an S3 URI fallback to `replay_ball.py` until needed (build-when-needed).
+- Don't drop `test_videos/` from the GPU rsync.
 - Don't touch `ml_pipeline/training/visual_debug/`.
 - Don't ask Tomo to do Docker work — agent handles deploys.
 - Don't create parallel bronze tables. One canonical bronze, distinguished by `source`.
-- **Don't change the `_dual_submit_pair_complete_hook` env-flag default to ON without an explicit go from Tomo.** Default-OFF is the safety; flip is a Render-side action.
 
 ---
 
-## State at session end (2026-05-22 early morning)
+## State at session end (2026-05-22 morning)
 
-**`origin/main` at `d7718e0`.** Commits this session (most-recent first):
+**`origin/main` at `83e1ab7`.** Commits this session (most-recent first):
 
+- `83e1ab7` silver bench: implement snapshot + orchestrator (steps 2+4 of the design)
+- `4fba821` docs: pickup refresh — Phase 5c.2 shipped, next move = G10 stroke-classifier hook
 - `d7718e0` phase 5c.2: pair-completion hook + ml_analysis.training_corpus
 
 Previous session-end state (still relevant):
@@ -87,21 +89,20 @@ Previous session-end state (still relevant):
 - `4a39588` WASB swap: env-gated drop-in for BallTracker (default still tracknet_v2)
 - `8c209e8` (parallel agent) docs: session_protocol opening/closing prompts
 - `abbf81d` (parallel agent) docs: SOP + session protocol guardrails
-- `d2a3bd7` docs: pickup refresh — WASB swap (#3) empirically justified
 - `7100792` ball-bench v2 baseline: WASB wins on 880dff02 SA point 6 (0/9 -> 2/9)
 - `5319ed7` ball-bench metric v2: post-filter + trajectory coherence + tier breakdown
 - `98d20bf` phase 5c.1: add /ops/dual-submit-t5-backfill endpoint
 
 **Ball-bench baseline locked at `7100792`** — `ml_pipeline/diag/bench_ball_baseline.json`.
 
-**Batch state (unchanged from previous session):**
-- eu-north-1 `ten-fifty5-ml-pipeline:47` → `sha256:8fe82a361023be8db4f50dd188bab74d12700740ed0d0c208d8c6458b94b34fa` (with `BALL_TRACKER=wasb`)
+**Batch state (unchanged):**
+- eu-north-1 `ten-fifty5-ml-pipeline:47` → `sha256:8fe82a3...` (with `BALL_TRACKER=wasb`)
 - us-east-1 `ten-fifty5-ml-pipeline:29` → same digest, same env var
 - Previous active revs (eu :46 / us :28) kept for instant rollback
 
 **Serve bench at session end:** `a798eff0` 20/24, `880dff02` 23/24, no regressions.
 
-**Silver-builder bench:** scaffolding committed (commit `5e3e746`). Snapshot + orchestrator still STUBS.
+**Silver-builder bench:** snapshot + orchestrator implemented (commit `83e1ab7`). Schema init verified locally — creates all 24 expected tables on a fresh Docker Postgres. CLI: `python -m ml_pipeline.diag.bench_silver --setup|--status|--teardown|--task <TID8>|--update-baseline`. Snapshot CLI: `python -m ml_pipeline.diag.bench_silver.snapshot --task <TID>`. Empty fixture set — first capture pending.
 
 **GPU dev box:** `i-0295d636f6bf957eb` (eu-north-1b), stopped. Old `i-0fb3983fa555c16e3` (1a) parked stopped.
 
@@ -111,7 +112,7 @@ Previous session-end state (still relevant):
 
 ---
 
-## Phase 5c.2 — verification (run after Render redeploys `d7718e0`)
+## Phase 5c.2 — verification (run after Render redeploys `83e1ab7`)
 
 Boot-init creates these idempotently. Verify via `/ops/diag/sql`:
 
@@ -130,8 +131,10 @@ SELECT count(*) AS column_count
  WHERE table_schema = 'gold' AND table_name = 'vw_dual_submit_pairs';
 -- Expect: 11
 
--- 3. Existing pair? (8a5e0b5e_ball_positions.json was labelled locally;
---    once /ops/backfill-pair-labels runs, this should produce one row.)
+-- 3. Any existing pairs? (Won't have any until AUTO_DUAL_SUBMIT_T5=1 is flipped
+--    AND a tennis_singles match is uploaded. The existing 8a5e0b5e_ball_positions.json
+--    label exists locally but the pair structure won't exist in submission_context
+--    until backfill or live submission.)
 SELECT sa_task_id, t5_task_id, s3_key, pair_complete, paired_at
   FROM gold.vw_dual_submit_pairs
  WHERE pair_complete = TRUE
@@ -139,11 +142,49 @@ SELECT sa_task_id, t5_task_id, s3_key, pair_complete, paired_at
  LIMIT 5;
 ```
 
-If everything checks out, the next action is:
-1. `POST /ops/backfill-pair-labels` with `{"dry_run": true}` — list eligible pairs.
-2. Same with `{"dry_run": false, "limit": 1}` — label one to smoke-test the S3 write.
-3. Once verified, lift the limit. The existing labelled `8a5e0b5e` pair will be the first row.
-4. **Then** flip `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` so future pairs auto-label at end of `_do_ingest_t5`.
+Activation sequence:
+1. Flip `AUTO_DUAL_SUBMIT_T5=1` on Render → next SA upload spawns a paired T5.
+2. After T5 completes → confirm two `submission_context` rows for the same `s3_key`.
+3. Flip `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render → next pair-completion fires the hook.
+4. Confirm one row in `ml_analysis.training_corpus`.
+5. `POST /ops/backfill-pair-labels` with `{"dry_run": true}` to find any pre-flip pairs needing retroactive labeling. Then `dry_run=false` to label them.
+
+---
+
+## Silver bench — first-fixture capture (run on Render shell)
+
+Full playbook in `.claude/strategy/silver_bench_design_2026-05-21.md` §11. Quick version:
+
+```bash
+# On Render shell (in webhook-server's project dir):
+python -m ml_pipeline.diag.bench_silver.snapshot \
+    --task 880dff02-58bd-412c-9a29-5c5151004447
+
+# Output: ml_pipeline/fixtures_silver/880dff02_bronze.sql.gz + _silver_baseline.json
+# Upload to S3:
+python -c "
+import boto3
+s3 = boto3.client('s3')
+for f in ['880dff02_bronze.sql.gz', '880dff02_silver_baseline.json']:
+    s3.upload_file(f'ml_pipeline/fixtures_silver/{f}',
+                   'nextpoint-prod-uploads', f'fixtures/silver/{f}')
+"
+
+# Then locally:
+aws s3 cp s3://nextpoint-prod-uploads/fixtures/silver/ \
+          ml_pipeline/fixtures_silver/ --recursive
+.venv/Scripts/python -m ml_pipeline.diag.bench_silver --setup
+.venv/Scripts/python -m ml_pipeline.diag.bench_silver
+# Expect: green for the fixture (silver builder is deterministic).
+```
+
+Once green, commit the baseline JSON (the `.sql.gz` stays gitignored):
+```bash
+git add ml_pipeline/fixtures_silver/880dff02_silver_baseline.json
+git commit -m "silver bench: lock baseline from production capture"
+```
+
+Repeat for `a798eff0` (find full task_id by querying production for the most recent task that matches).
 
 ---
 
@@ -188,13 +229,4 @@ CloudWatch confirm — search the job's log stream for:
 INFO ml_pipeline.pipeline: Ball tracker: WASB (BALL_TRACKER=wasb)
 ```
 
-If you see `Ball tracker: TrackNetV2 (BALL_TRACKER=...)`, the env var didn't reach the container — check `aws batch describe-job-definitions --region eu-north-1 --job-definitions ten-fifty5-ml-pipeline:47 --query 'jobDefinitions[0].containerProperties.environment'` and confirm `BALL_TRACKER=wasb` is present.
-
-**Rollback if WASB regresses:**
-```bash
-# Strip BALL_TRACKER env var from the rev and re-register (creates a new rev pointing back to TrackNet)
-# OR — simpler — point the queue back at rev 46 / 28 (which doesn't have the env var):
-aws batch describe-job-definitions --region eu-north-1 --job-definitions ten-fifty5-ml-pipeline:46 --query 'jobDefinitions[0].status'
-# Re-register the old digest as a new rev if needed, OR Lambda submits by name → latest active wins,
-# so register-job-definition with the OLD image digest + no BALL_TRACKER env to roll back.
-```
+**Rollback if WASB regresses:** point the queue back at rev 46 / 28 (no `BALL_TRACKER` env var). No image rebuild needed.
