@@ -1,0 +1,42 @@
+{
+  "commit": "0e0a30e",
+  "fixtures": {
+    "880dff02": {
+      "tracknet_v2": {
+        "detection_rate": 0.9973,
+        "detections": 1102,
+        "frames_processed": 1105,
+        "sa_bounce_hits": 9,
+        "sa_bounce_recall": 1.0,
+        "sa_bounce_total": 9
+      },
+      "wasb": {
+        "detection_rate": 0.6652,
+        "detections": 735,
+        "frames_processed": 1105,
+        "sa_bounce_hits": 9,
+        "sa_bounce_recall": 1.0,
+        "sa_bounce_total": 9
+      }
+    },
+    "a798eff0": {
+      "tracknet_v2": {
+        "detection_rate": 0.9968,
+        "detections": 935,
+        "frames_processed": 938,
+        "sa_bounce_hits": 3,
+        "sa_bounce_recall": 1.0,
+        "sa_bounce_total": 3
+      },
+      "wasb": {
+        "detection_rate": 0.5853,
+        "detections": 549,
+        "frames_processed": 938,
+        "sa_bounce_hits": 3,
+        "sa_bounce_recall": 1.0,
+        "sa_bounce_total": 3
+      }
+    }
+  },
+  "updated_at": "2026-05-21"
+}
