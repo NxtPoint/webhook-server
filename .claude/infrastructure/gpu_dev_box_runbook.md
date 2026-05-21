@@ -10,14 +10,19 @@
 
 | Resource | Identifier |
 |---|---|
-| EC2 instance | `i-0fb3983fa555c16e3` (`t5-dev-gpu`), g4dn.xlarge, eu-north-1a |
+| EC2 instance | `i-0295d636f6bf957eb` (`t5-dev-gpu-1b`), g4dn.xlarge, **eu-north-1b** |
 | AMI | `ami-0db574be841d285ac` (Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7, Ubuntu 22.04, 2026-04-28) |
 | EBS root | 50 GB gp3, `DeleteOnTermination=true` |
-| Security group | `sg-0f46e482a47124570` (`t5-dev-sg`) — inbound SSH/22 from `31.14.252.13/32` only |
+| Security group | `sg-0f46e482a47124570` (`t5-dev-sg`) — inbound SSH/22 from `105.214.8.31/32` only |
 | Key pair | `t5-dev` (private key at `C:\Users\tomos\.ssh\t5-dev.pem`, `chmod 600`) |
 | IAM role | `t5-dev-instance-role` — read on `s3://nextpoint-prod-uploads`, write on `fixtures/*` + `training/*` |
 | Instance profile | `t5-dev-instance-profile` |
-| Tags | `Name=t5-dev-gpu`, `Project=T5`, `Owner=Tomo`, `Purpose=dev` |
+| Tags | `Name=t5-dev-gpu-1b`, `Project=T5`, `Owner=Tomo`, `Purpose=dev`, `Replaces=i-0fb3983fa555c16e3` |
+
+**Note on the old 1a instance (`i-0fb3983fa555c16e3`):** parked in `stopped` state in eu-north-1a after 2026-05-21 capacity exhaustion (`InsufficientInstanceCapacity` on `start-instances`). Replaced by the 1b instance above. EBS preserved (~$3.70/mo) until terminated. To terminate the old box:
+```bash
+aws ec2 terminate-instances --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
+```
 
 **Cost:** g4dn.xlarge on-demand = $0.526/hr while running. EBS = ~$0.005/hr = ~$3.70/mo while stopped. **Default to start/stop per session.**
 
@@ -30,10 +35,10 @@ All commands use `aws` CLI with the default `nextpoint-uploader` creds (admin) o
 ### Start the box
 
 ```bash
-aws ec2 start-instances --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
-aws ec2 wait instance-status-ok --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
+aws ec2 start-instances --region eu-north-1 --instance-ids i-0295d636f6bf957eb
+aws ec2 wait instance-status-ok --region eu-north-1 --instance-ids i-0295d636f6bf957eb
 PUBLIC_DNS=$(aws ec2 describe-instances --region eu-north-1 \
-  --instance-ids i-0fb3983fa555c16e3 \
+  --instance-ids i-0295d636f6bf957eb \
   --query 'Reservations[0].Instances[0].PublicDnsName' --output text)
 echo "PUBLIC_DNS=$PUBLIC_DNS"
 ```
@@ -64,13 +69,13 @@ aws ec2 authorize-security-group-ingress --region eu-north-1 \
 ### Stop the box (halt compute charges)
 
 ```bash
-aws ec2 stop-instances --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
+aws ec2 stop-instances --region eu-north-1 --instance-ids i-0295d636f6bf957eb
 ```
 
 ### Terminate completely (nukes the EBS volume too — last resort)
 
 ```bash
-aws ec2 terminate-instances --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
+aws ec2 terminate-instances --region eu-north-1 --instance-ids i-0295d636f6bf957eb
 # To fully clean up, also delete: SG, IAM role/policy/profile, key pair
 # Commands at end of this doc.
 ```
@@ -147,7 +152,7 @@ When an agent (this one or any session) is building a bench / training / experim
 rsync -avz -e "ssh -i $HOME/.ssh/t5-dev.pem" \
   ubuntu@$PUBLIC_DNS:~/webhook-server/ml_pipeline/diag/ \
   /c/dev/webhook-server/ml_pipeline/diag/
-aws ec2 stop-instances --region eu-north-1 --instance-ids i-0fb3983fa555c16e3
+aws ec2 stop-instances --region eu-north-1 --instance-ids i-0295d636f6bf957eb
 ```
 
 The agent never SSHes into the box directly. The box is a tool Tomo wields, not an environment the agent lives in. Keeps the agent's context window clean and avoids hidden state.
@@ -287,7 +292,7 @@ nvidia-smi
 ## Full cleanup (when permanently retiring this box)
 
 ```bash
-INSTANCE_ID=i-0fb3983fa555c16e3
+INSTANCE_ID=i-0295d636f6bf957eb
 SG_ID=sg-0f46e482a47124570
 
 # 1. Terminate instance (also kills EBS via DeleteOnTermination)
@@ -315,11 +320,11 @@ rm ~/.ssh/t5-dev.pem
 ## Resource IDs at a glance (for scripting)
 
 ```bash
-export T5_DEV_INSTANCE_ID=i-0fb3983fa555c16e3
+export T5_DEV_INSTANCE_ID=i-0295d636f6bf957eb
 export T5_DEV_SG_ID=sg-0f46e482a47124570
 export T5_DEV_KEY_PATH="$HOME/.ssh/t5-dev.pem"
 export T5_DEV_AMI_ID=ami-0db574be841d285ac
-export T5_DEV_SUBNET_ID=subnet-07afaad4add38d2ab
+export T5_DEV_SUBNET_ID=subnet-069f33b3178eeabb7   # eu-north-1b (1a was capacity-tight 2026-05-21)
 export T5_DEV_VPC_ID=vpc-0173f4ef06c2c3660
 export T5_DEV_INSTANCE_PROFILE=t5-dev-instance-profile
 export T5_DEV_IAM_ROLE=t5-dev-instance-role
@@ -340,3 +345,12 @@ export T5_DEV_IAM_ROLE=t5-dev-instance-role
 - [ ] **Pickle for parallel agent not yet produced** — depends on BallTracker validation
 
 **Total session spend: ~$0.25** (instance ran ~30 min during foundation verification, then stopped).
+
+## Update (2026-05-21 PM) — AZ migration after capacity exhaustion
+
+- Original 1a instance `i-0fb3983fa555c16e3` hit `InsufficientInstanceCapacity` on `start-instances` retry during the ball-tracker bench session. Both 1b and 1c had capacity at the time.
+- **New box launched in eu-north-1b: `i-0295d636f6bf957eb`** with identical specs (same AMI, SG, key pair, instance profile — all region-level, no recreation needed).
+- Venv reinstalled on new box (~3 min): torch 2.5.1+cu121 + cv2 + boto3. Tesla T4 + S3 IAM-role access both verified.
+- **Improvement over 1a setup:** `source /opt/t5-venv/bin/activate` added to `~/.bashrc` so SSH logins land in the venv automatically.
+- The old 1a instance is **stopped, parked** (~$3.70/mo EBS until terminated). Terminate command in cleanup section above. Leaving it parked costs little and means zero risk of losing anything if we need to peek at the old EBS.
+- IP allowlist update: SG inbound rule is now `105.214.8.31/32` (real ISP IP, replacing the ProtonVPN-exit `31.14.252.13/32` that was added 2026-05-20).
