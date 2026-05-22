@@ -116,14 +116,21 @@ def _decode_windows(
                 break
 
 
-def _make_tracker(tracker_name: str):
-    """Instantiate the requested tracker. Lazy-imports torch only when needed."""
+def _make_tracker(tracker_name: str, weights_path: Optional[str] = None):
+    """Instantiate the requested tracker. Lazy-imports torch only when needed.
+
+    When ``weights_path`` is provided, it's threaded through to the tracker's
+    constructor (both ``BallTracker`` and ``WASBBallTracker`` accept it). This
+    is the mechanism Phase 5c.4 uses to bench finetuned weights without
+    rebuilding the Docker image — the candidate `.pt` file is passed in via
+    CLI, and the tracker loads it instead of `TRACKNET_WEIGHTS` / `WASB_WEIGHTS`.
+    """
     if tracker_name in ("tracknet", "tracknet_v2", "v2"):
         from ml_pipeline.ball_tracker import BallTracker
-        return BallTracker(), "tracknet_v2"
+        return BallTracker(weights_path=weights_path), "tracknet_v2"
     if tracker_name in ("wasb", "wasb_sbdt"):
         from ml_pipeline.wasb_ball_tracker import WASBBallTracker
-        return WASBBallTracker(), "wasb"
+        return WASBBallTracker(weights_path=weights_path), "wasb"
     raise SystemExit(f"unknown tracker: {tracker_name}")
 
 
@@ -300,9 +307,18 @@ def _compute_metrics(
     return metrics
 
 
-def replay(fixture: dict, tracker_name: str = "tracknet_v2") -> dict:
-    """Run one tracker over one fixture's windows. Returns a metrics dict."""
-    tracker, normalised_name = _make_tracker(tracker_name)
+def replay(
+    fixture: dict,
+    tracker_name: str = "tracknet_v2",
+    weights_path: Optional[str] = None,
+) -> dict:
+    """Run one tracker over one fixture's windows. Returns a metrics dict.
+
+    ``weights_path`` overrides the tracker's default weights file. Used by
+    Phase 5c.4 bench-gate-before-promotion to compare a candidate finetune
+    against the production baseline.
+    """
+    tracker, normalised_name = _make_tracker(tracker_name, weights_path=weights_path)
 
     detections: List[BenchDetection] = []
     frames_processed = 0
@@ -385,13 +401,17 @@ def main(argv=None) -> int:
     ap.add_argument("--tracker", default="tracknet_v2",
                     choices=["tracknet_v2", "tracknet", "v2", "wasb", "wasb_sbdt"],
                     help="Which tracker to replay (default tracknet_v2)")
+    ap.add_argument("--weights-path", default=None,
+                    help="Optional candidate weights file (e.g. a finetune output). "
+                         "When set, overrides the tracker's default weights. "
+                         "Used by Phase 5c.4 bench-gate-before-promotion.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     fixture = _load_fixture(args.fixture)
-    metrics = replay(fixture, tracker_name=args.tracker)
+    metrics = replay(fixture, tracker_name=args.tracker, weights_path=args.weights_path)
     _print_report(metrics)
     return 0
 

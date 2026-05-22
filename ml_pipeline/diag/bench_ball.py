@@ -97,13 +97,19 @@ def _format_delta(curr: float | None, base: float | None, *, pct: bool = True) -
     return f"  ({s})"
 
 
-def _run_one(fixture_path: Path, tracker: str) -> dict | None:
+def _run_one(
+    fixture_path: Path, tracker: str, weights_path: str | None = None,
+) -> dict | None:
     """Run one (fixture, tracker) pair. Returns metrics dict, or None if the
     tracker is unavailable (e.g. WASB weights missing).
+
+    ``weights_path`` overrides the tracker's default weights file when set —
+    used by Phase 5c.4 to bench a candidate finetune against the production
+    baseline.
     """
     fixture = _load_fixture(str(fixture_path))
     try:
-        return replay(fixture, tracker_name=tracker)
+        return replay(fixture, tracker_name=tracker, weights_path=weights_path)
     except FileNotFoundError as e:
         print(f"[skip] {fixture_path.stem}/{tracker}: {e}", file=sys.stderr)
         return None
@@ -118,7 +124,22 @@ def main(argv=None) -> int:
     ap.add_argument("--fixture", default=None,
                     help="Run only this fixture stem (default: all)")
     ap.add_argument("--fixtures-dir", default=str(FIXTURES_DIR))
+    ap.add_argument("--weights-path", default=None,
+                    help="Optional candidate weights file (.pt). When set, the "
+                         "selected tracker(s) load these weights instead of the "
+                         "default. NEVER pass --update-baseline alongside this "
+                         "— the committed baseline must reflect production "
+                         "weights, not a candidate. Used by Phase 5c.4 "
+                         "bench-gate-before-promotion via bench_finetuned.py.")
     args = ap.parse_args(argv)
+
+    if args.weights_path and args.update_baseline:
+        print(
+            "ERROR: --weights-path cannot be combined with --update-baseline. "
+            "The committed baseline must reflect production weights.",
+            file=sys.stderr,
+        )
+        return 2
 
     fixtures = sorted(Path(args.fixtures_dir).glob("*.json"))
     if args.fixture:
@@ -147,7 +168,7 @@ def main(argv=None) -> int:
     for fx in fixtures:
         results[fx.stem] = {}
         for t in trackers:
-            m = _run_one(fx, t)
+            m = _run_one(fx, t, weights_path=args.weights_path)
             if m is None:
                 continue
             results[fx.stem][m["tracker"]] = m
