@@ -36,6 +36,7 @@ from ml_pipeline.config import (
     BALL_MAX_INTERPOLATION_GAP,
     BALL_MAX_DIST_BETWEEN_FRAMES,
     BALL_MAX_DIST_GAP,
+    BALL_FILTER_REANCHOR_RUN,
     BOUNCE_VELOCITY_WINDOW,
     BOUNCE_MIN_DIRECTION_CHANGE,
     COURT_LENGTH_M,
@@ -549,15 +550,34 @@ class BallTracker:
         self._filter_outliers()
 
     def _filter_outliers(self):
-        """Remove detections where ball jumps > BALL_MAX_DIST_BETWEEN_FRAMES pixels."""
+        """Remove pixel-jump outliers but re-anchor on a coherent post-gap cluster.
+
+        Greedy chain-rejection with a `pending` cluster: detections more than
+        BALL_MAX_DIST_BETWEEN_FRAMES from the current anchor are held aside.
+        If BALL_FILTER_REANCHOR_RUN of them in a row cohere with each other
+        (each within the same threshold of the previous pending entry), the
+        cluster is accepted and becomes the new anchor — a real new trajectory
+        after a gap, not a chain of noise. Pre-fix, a single bad early anchor
+        could freeze the filter and drop tens of thousands of valid downstream
+        detections (1d6feb3a: kept frames 2-3329 of 15,298).
+        """
         if len(self.detections) < 2:
             return
         filtered = [self.detections[0]]
+        pending: list[BallDetection] = []
         for d in self.detections[1:]:
-            prev = filtered[-1]
-            dist = np.hypot(d.x - prev.x, d.y - prev.y)
-            if dist <= BALL_MAX_DIST_BETWEEN_FRAMES:
+            anchor = filtered[-1]
+            if np.hypot(d.x - anchor.x, d.y - anchor.y) <= BALL_MAX_DIST_BETWEEN_FRAMES:
+                pending = []
                 filtered.append(d)
+                continue
+            if pending and np.hypot(d.x - pending[-1].x, d.y - pending[-1].y) <= BALL_MAX_DIST_BETWEEN_FRAMES:
+                pending.append(d)
+            else:
+                pending = [d]
+            if len(pending) >= BALL_FILTER_REANCHOR_RUN:
+                filtered.extend(pending)
+                pending = []
         self.detections = filtered
 
     def detect_bounces(self, court_detector=None):

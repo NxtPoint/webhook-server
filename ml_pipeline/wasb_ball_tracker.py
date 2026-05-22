@@ -47,6 +47,7 @@ from ml_pipeline.config import (
     BALL_MAX_INTERPOLATION_GAP,
     BALL_MAX_DIST_BETWEEN_FRAMES,
     BALL_MAX_DIST_GAP,
+    BALL_FILTER_REANCHOR_RUN,
     BOUNCE_VELOCITY_WINDOW,
     COURT_LENGTH_M,
     COURT_WIDTH_DOUBLES_M,
@@ -270,15 +271,29 @@ class WASBBallTracker:
         self._filter_outliers()
 
     def _filter_outliers(self):
-        """Remove detections where ball jumps > BALL_MAX_DIST_BETWEEN_FRAMES pixels."""
+        """Remove pixel-jump outliers but re-anchor on a coherent post-gap cluster.
+
+        See BallTracker._filter_outliers in ml_pipeline/ball_tracker.py for the
+        algorithm rationale. Identical implementation here so both trackers
+        emit the same shape into ml_analysis.ball_detections.
+        """
         if len(self.detections) < 2:
             return
         filtered = [self.detections[0]]
+        pending: list[BallDetection] = []
         for d in self.detections[1:]:
-            prev = filtered[-1]
-            dist = np.hypot(d.x - prev.x, d.y - prev.y)
-            if dist <= BALL_MAX_DIST_BETWEEN_FRAMES:
+            anchor = filtered[-1]
+            if np.hypot(d.x - anchor.x, d.y - anchor.y) <= BALL_MAX_DIST_BETWEEN_FRAMES:
+                pending = []
                 filtered.append(d)
+                continue
+            if pending and np.hypot(d.x - pending[-1].x, d.y - pending[-1].y) <= BALL_MAX_DIST_BETWEEN_FRAMES:
+                pending.append(d)
+            else:
+                pending = [d]
+            if len(pending) >= BALL_FILTER_REANCHOR_RUN:
+                filtered.extend(pending)
+                pending = []
         self.detections = filtered
 
     def detect_bounces(self, court_detector=None):

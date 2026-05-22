@@ -1,5 +1,5 @@
 {
-  "commit": "5319ed7",
+  "commit": "ff0f0f5",
   "fixtures": {
     "880dff02": {
       "tracknet_v2": {
@@ -7,38 +7,38 @@
         "detections": 1102,
         "frames_processed": 1105,
         "max_pixel_jump_px": 150,
-        "post_filter_detections": 521,
-        "post_filter_rate": 0.4715,
-        "post_filter_sa_hits": 0,
-        "post_filter_sa_recall": 0.0,
+        "post_filter_detections": 889,
+        "post_filter_rate": 0.8045,
+        "post_filter_sa_hits": 9,
+        "post_filter_sa_recall": 1.0,
         "sa_bounce_hits": 9,
         "sa_bounce_recall": 1.0,
         "sa_bounce_total": 9,
         "tier_dist": {
-          "delta_fallback_hits": 638,
+          "delta_fallback_hits": 636,
           "frames_inferred": 1103,
           "heatmap_empty": 639,
           "none_returned": 639,
-          "tier1_hough": 463,
-          "tier2_cc": 1,
+          "tier1_hough": 464,
+          "tier2_cc": 2,
           "tier2_cc_rejected_size": 0,
           "tier3_argmax": 0
         },
-        "trajectory_coherence_pct": 0.733
+        "trajectory_coherence_pct": 0.7366
       },
       "wasb": {
         "detection_rate": 0.6652,
         "detections": 735,
         "frames_processed": 1105,
         "max_pixel_jump_px": 150,
-        "post_filter_detections": 130,
-        "post_filter_rate": 0.1176,
-        "post_filter_sa_hits": 2,
-        "post_filter_sa_recall": 0.2222,
+        "post_filter_detections": 557,
+        "post_filter_rate": 0.5041,
+        "post_filter_sa_hits": 9,
+        "post_filter_sa_recall": 1.0,
         "sa_bounce_hits": 9,
         "sa_bounce_recall": 1.0,
         "sa_bounce_total": 9,
-        "trajectory_coherence_pct": 0.7084
+        "trajectory_coherence_pct": 0.7139
       }
     },
     "a798eff0": {
@@ -47,40 +47,40 @@
         "detections": 935,
         "frames_processed": 938,
         "max_pixel_jump_px": 150,
-        "post_filter_detections": 596,
-        "post_filter_rate": 0.6354,
-        "post_filter_sa_hits": 1,
-        "post_filter_sa_recall": 0.3333,
+        "post_filter_detections": 782,
+        "post_filter_rate": 0.8337,
+        "post_filter_sa_hits": 2,
+        "post_filter_sa_recall": 0.6667,
         "sa_bounce_hits": 3,
         "sa_bounce_recall": 1.0,
         "sa_bounce_total": 3,
         "tier_dist": {
-          "delta_fallback_hits": 629,
+          "delta_fallback_hits": 627,
           "frames_inferred": 936,
           "heatmap_empty": 630,
           "none_returned": 630,
-          "tier1_hough": 305,
-          "tier2_cc": 1,
+          "tier1_hough": 306,
+          "tier2_cc": 2,
           "tier2_cc_rejected_size": 0,
           "tier3_argmax": 0
         },
-        "trajectory_coherence_pct": 0.788
+        "trajectory_coherence_pct": 0.7827
       },
       "wasb": {
         "detection_rate": 0.5853,
         "detections": 549,
         "frames_processed": 938,
         "max_pixel_jump_px": 150,
-        "post_filter_detections": 207,
-        "post_filter_rate": 0.2207,
-        "post_filter_sa_hits": 1,
-        "post_filter_sa_recall": 0.3333,
+        "post_filter_detections": 410,
+        "post_filter_rate": 0.4371,
+        "post_filter_sa_hits": 3,
+        "post_filter_sa_recall": 1.0,
         "sa_bounce_hits": 3,
         "sa_bounce_recall": 1.0,
         "sa_bounce_total": 3,
-        "trajectory_coherence_pct": 0.7153
+        "trajectory_coherence_pct": 0.7226
       }
     }
   },
-  "updated_at": "2026-05-21"
+  "updated_at": "2026-05-22"
 }

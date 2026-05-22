@@ -71,6 +71,14 @@ TRACKNET_HOUGH_MAX_RADIUS = 10  # Allow larger ball circles (slow/zoomed)
 BALL_MAX_INTERPOLATION_GAP = 5   # Standard 5 frames
 BALL_MAX_DIST_BETWEEN_FRAMES = 150
 BALL_MAX_DIST_GAP = 150
+# Number of consecutive detections that cohere with each other (each within
+# BALL_MAX_DIST_BETWEEN_FRAMES of the previous) but are far from the current
+# anchor needed to trigger a re-anchor in _filter_outliers. Without this, a
+# bad early anchor freezes the filter chain — pre-fix, WASB on task 1d6feb3a
+# kept rows only for frames 2-3329 of a 15,298-frame video. 4 is conservative
+# enough that random outliers don't satisfy it but small enough to recover
+# quickly after a real gap (ball re-acquired after going off-screen).
+BALL_FILTER_REANCHOR_RUN = 4
 
 # ---------------------------------------------------------------------------
 # Ball tracker selection (env-controlled — see ml_pipeline.pipeline)

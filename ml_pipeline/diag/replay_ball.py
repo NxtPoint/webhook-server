@@ -157,23 +157,43 @@ def _sa_recall(
     return hits, recall, misses
 
 
+def _bench_reanchor_run() -> int:
+    try:
+        from ml_pipeline.config import BALL_FILTER_REANCHOR_RUN
+        return int(BALL_FILTER_REANCHOR_RUN)
+    except Exception:
+        return 4
+
+
 def _post_filter_detections(
     detections: List[BenchDetection], max_pixel_jump: int,
 ) -> List[BenchDetection]:
-    """Drop detections that jump > max_pixel_jump px from the previous kept one.
+    """Drop pixel-jump outliers but re-anchor on a coherent post-gap cluster.
 
-    Mirrors `BallTracker._filter_outliers` semantics in tracker-agnostic form
-    so the same filter applies to both TrackNetV2 and WASB outputs. The
-    threshold matches production's `BALL_MAX_DIST_BETWEEN_FRAMES`.
+    Mirrors `BallTracker._filter_outliers` (and WASBBallTracker's copy) so the
+    bench measures the same filter shape production applies. Threshold matches
+    `BALL_MAX_DIST_BETWEEN_FRAMES`; re-anchor run length matches
+    `BALL_FILTER_REANCHOR_RUN`.
     """
     if len(detections) < 2:
         return list(detections)
+    reanchor_run = _bench_reanchor_run()
+    max_sq = max_pixel_jump * max_pixel_jump
     kept = [detections[0]]
+    pending: list[BenchDetection] = []
     for d in detections[1:]:
-        prev = kept[-1]
-        dist_sq = (d.x - prev.x) ** 2 + (d.y - prev.y) ** 2
-        if dist_sq <= max_pixel_jump * max_pixel_jump:
+        anchor = kept[-1]
+        if (d.x - anchor.x) ** 2 + (d.y - anchor.y) ** 2 <= max_sq:
+            pending = []
             kept.append(d)
+            continue
+        if pending and (d.x - pending[-1].x) ** 2 + (d.y - pending[-1].y) ** 2 <= max_sq:
+            pending.append(d)
+        else:
+            pending = [d]
+        if len(pending) >= reanchor_run:
+            kept.extend(pending)
+            pending = []
     return kept
 
 
