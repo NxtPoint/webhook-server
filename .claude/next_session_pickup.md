@@ -2,12 +2,13 @@
 
 ## ⚡ Executive summary (read this first — 30 seconds)
 
-**Today's date:** 2026-05-22 (late evening — chain-rejection fix shipped + bundled Batch deploy)
-**Phase active:** Phase 5 — Ball detection coverage. **5e VERIFIED IN PROD** + **5c.2 schema live (awaiting env flips)** + **Silver bench live (1d6feb3a baseline locked)** + **`_filter_outliers` re-anchor fix shipped + Batch deployed (eu :48 / us :30)**.
-**Bench:** Serve `a798eff0=20/24, 880dff02=23/24` — **green** (unchanged, filter fix is upstream of serve). Ball-bench v2 baseline updated post-fix — post_filter_sa_recall hit 100% on 3/4 (fixture, tracker) combos, 67% on a798eff0/tracknet_v2 (was 33% pre-fix). Silver-bench `1d6feb3a` still OK at 7 rows (frozen bronze pre-dates fix; recapture pending).
-**What shipped last session:** Follow-up #1 fixed (`_filter_outliers` re-anchors on coherent post-gap cluster — BALL_FILTER_REANCHOR_RUN=4). Mirror in replay_ball.py. Ball-bench baseline updated hand-derived from the first measurement run (commit `ff0f0f5` numbers — recompute on next bench run to true up sub-percent drift). Batch rebuild + dual-region ECR push + new job-def revs (eu :48, us :30, amd64 digest `bc8f7d72`). Follow-up #2 (`source='main'`) shipped in same Batch image — was dormant code in main; now live.
-**What's blocked:** Nothing. Activation work all solo-runnable.
-**Next session's job:** Pick (a) Phase 5c.2 activation (env flips + `/ops/backfill-pair-labels`), (b) re-capture `1d6feb3a` silver-bench fixture against new Batch image to see post-fix bronze density and update silver baseline, (c) capture `880dff02` as second silver-bench fixture, or (d) Phase 5c.3 `harness build-corpus` (still speculative until 5c.2 activated).
+**Today's date:** 2026-05-22 (late evening — Phase 5c END-TO-END VERIFIED + orphan-sweep endpoint shipped)
+**Phase active:** Phase 5 — Ball detection coverage. **5c.0 / 5c.1 / 5c.2 / 5c.3 ALL LIVE + VERIFIED IN PROD.** 5e VERIFIED. 5d remains blocked on corpus volume.
+**Bench:** Serve `a798eff0=20/24, 880dff02=23/24` — green. Ball-bench post-fix baseline intact. Silver-bench `1d6feb3a` 7 rows (pre-fix bronze; recapture pending).
+**What shipped today (8 commits):** CLAUDE.md doc edit (`ad60eda`); Phase 5c.3 `harness build-corpus` (`2ac4a64`); `verify-corpus-row` (`36f18d5`); `build-corpus --upload-s3` (`4272c5e`); `build-corpus --task` (`b48230c`); `/ops/sweep-t5-orphans` endpoint (`a1a7e96`); plus the two doc commits closing this session.
+**End-to-end proof:** SA `0d0514df-68aa-4346-9e2d-64413429e47f` → auto-spawned T5 `78c32f53-5580-4a88-a4e7-7506e59b2b52` → `ml_analysis.training_corpus` row with **161 ball-position labels (48 NEAR / 47 FAR / 66 other)** created `2026-05-22 20:20:54` UTC, 0.6 s after `_do_ingest_t5` completed.
+**What's blocked:** Nothing on Phase 5c. 5d (TrackNetV3 finetune) needs more corpus rows (~5+ matches) before training is worth attempting.
+**Next session's job:** Pick (a) wire `/ops/sweep-t5-orphans` into a Render cron, (b) re-capture `1d6feb3a` silver-bench fixture, (c) accumulate organic corpus rows + smoke-test `harness build-corpus` once we have 2+ matches, or (d) Phase 5c.4 — bench-gate-before-promotion (needs `ball_tracker.py --weights-path` ⇒ Batch deploy).
 
 If the above is enough, stop reading this file and go.
 
@@ -15,60 +16,103 @@ If you need depth (inheriting a blocker, verifying a claim, picking next move), 
 
 ---
 
-T5 ML pipeline session pickup. Today is [DATE]. Previous session: 2026-05-22 late evening (chain-rejection fix + Batch deploy).
+## Today's big architectural learning — the orphan-trigger gap
 
-**TL;DR — where we are:**
-- **`_filter_outliers` chain-rejection — FIXED + DEPLOYED.** Pre-fix, a single bad early anchor froze the greedy filter chain and dropped tens of thousands of downstream detections (1d6feb3a kept frames 2-3329 of 15,298). Fix: maintain a `pending` cluster of detections rejected from current anchor; when `BALL_FILTER_REANCHOR_RUN=4` consecutive entries cohere with each other, accept the cluster and re-anchor. Both `ml_pipeline/ball_tracker.py` and `ml_pipeline/wasb_ball_tracker.py` carry identical implementations; `ml_pipeline/diag/replay_ball.py:_post_filter_detections` mirrors them so the ball bench measures the new shape. Verified via ball bench: post_filter_sa_recall 0% → 100% (880dff02/tracknet), 22% → 100% (880dff02/wasb), 33% → 67% (a798eff0/tracknet), 33% → 100% (a798eff0/wasb).
-- **Phase 5e WASB integration — VERIFIED IN PROD.** Batch task `1d6feb3a` ran end-to-end with WASB. 17 valid bounces, pipeline complete in 2,258s.
-- **Phase 5c.2 — SHIPPED + verified live on Render schema-only.** Pair-completion hook, `ml_analysis.training_corpus` (11 cols), `gold.vw_dual_submit_pairs` (12 cols), `/ops/backfill-pair-labels`. All dark behind `AUTO_LABEL_DUAL_SUBMIT_PAIRS=0` until flipped.
-- **Silver bench — LIVE END-TO-END.** `1d6feb3a` baseline locked at 7 silver rows. Note: this baseline captures PRE-FIX bronze. A re-snapshot after a fresh Batch run with eu :48 will show many more `ml_analysis.ball_detections` rows and likely more silver rows.
-- **Follow-up #2 (`source='main'`) — NOW LIVE.** Was dormant Batch-side code in main; included in the same Batch deploy this session.
+**The bug:** `_auto_dual_submit_t5` submits a Batch job + creates a `bronze.submission_context` row for the T5 sibling. The ingest gate that calls `_do_ingest_t5` lives inside `/upload/api/task-status` and only fires when a browser polls. **Auto-spawned T5 tasks have no polling browser**, so they sit in `last_status='queued'` indefinitely despite Batch having succeeded.
 
-**Architecture sanity check (verified 2026-05-22 evening):**
-- T5 bronze lives in `ml_analysis.*` schema (`video_analysis_jobs`, `ball_detections`, `player_detections`, `serve_events`); SportAI bronze lives in `bronze.*` (`player_swing`, `rally`, `ball_bounce`, `ball_position`, `player_position`). Separate tables, both feed `silver.point_detail` distinguished by `model='t5'` vs `model='sportai'`.
-- `bronze.submission_context.sport_type` is the routing key (`tennis_singles` / `tennis_singles_t5` / `serve_practice` / `rally_practice` / `technique_analysis`).
-- `build_silver_match_t5.py` literally imports `pass3_point_context`, `pass4_zones_and_normalize`, `pass5_analytics` from `build_silver_v2.py` (line 1062-1067) — real code reuse, not duplication. T5 has its own Pass 1; Passes 3-5 are shared.
+**Tonight's evidence:** `78c32f53-...` Batch completed at 16:42 UTC, sat orphaned for 3h45m until a single manual `GET /upload/api/task-status?task_id=78c32f53-...` unblocked the ingest at ~20:20 UTC. Pair-completion hook fired correctly downstream of that.
 
-**Open admin items:**
-- Phase 5c.2 activation — flip `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render. Then `/ops/backfill-pair-labels {"dry_run": false, "limit": 1}` to seed.
-- Re-capture `1d6feb3a` silver-bench fixture against new Batch image (eu :48) to see post-fix bronze density.
-- Render Postgres still open to `0.0.0.0/0` (since 2026-05-21 Phase 5a). Re-lock to `105.214.8.31/32` or build NAT Gateway + EIP.
-- Old GPU box `i-0fb3983fa555c16e3` (eu-north-1a) parked stopped (~$3.70/mo EBS).
-- Ball-bench baseline values were hand-derived from the first post-fix measurement run (printed rates × frames_processed) rather than from a clean `--update-baseline` run. They should be accurate to ±1 detection and ±0.5% coherence. Next session running `python -m ml_pipeline.diag.bench_ball` will reveal any micro-drift; if a coherence regression flags within ±1%, just `--update-baseline` to true up.
+**The shipped fix (this session):** `POST /ops/sweep-t5-orphans` — OPS_KEY-gated endpoint that scans for the exact gap and fires `_start_ingest_background` for each orphan via a background thread. Idempotent (inner ingest gate checks `ingest_started_at` + staleness; `training_corpus` has a UNIQUE constraint). Documented in CLAUDE.md §Diagnostics & Ops. Dry-run default.
 
-Read in this order before doing anything else:
+**What's still needed:** wire it into a Render cron. Without that, every future auto-spawned T5 still needs manual triggering. **Recommended:** a 5-min cron hitting `/ops/sweep-t5-orphans {"dry_run": false}` — that's the minimal closure of the loop. Owner: next session.
 
-1. `.claude/strategy/silver_bench_design_2026-05-21.md` — design + §11 bootstrap playbook.
-2. `.claude/strategy/dual_submit_status_2026-05-20.md` — Phase 5c.2 design (shipped) + 5c.3-5c.5 ahead.
-3. `docs/north_star.md` — macro plan; Phase 5e SHIPPED + VERIFIED.
-4. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST + silver-bench subsection.
+---
 
-Then run the locked benches locally to confirm the floor:
+## State at session end (2026-05-22 late evening)
+
+`origin/main` at **`a1a7e96` `ops: /ops/sweep-t5-orphans` — fire ingest for stuck auto-spawned T5 tasks**. Recent session commits (most recent first):
+
+```
+a1a7e96 ops: /ops/sweep-t5-orphans — fire ingest for stuck auto-spawned T5 tasks
+b48230c harness: build-corpus --task <t5_task_id> filter
+4272c5e harness: add --upload-s3 flag to build-corpus
+36f18d5 harness: add verify-corpus-row subcommand for ml_analysis.training_corpus
+2ac4a64 phase 5c.3: harness build-corpus subcommand — assemble dataset from training_corpus
+ad60eda docs: CLAUDE.md — document silver/ball benches + db_writer in T5 section
+7fff997 docs: north_star — mark 5e follow-ups #1 + #2 SHIPPED 2026-05-22
+7863a66 fix(t5): _filter_outliers chain-rejection — re-anchor on coherent cluster
+```
+
+**Phase 5c artefacts in prod:**
+- `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render (Sport AI - API call service)
+- `gold.vw_dual_submit_pairs` populated (1 complete pair so far)
+- `ml_analysis.training_corpus` has 1 row (`label_kind='ball_position'`, 161 labels)
+- S3: `s3://nextpoint-prod-uploads/training/labels/78c32f53-5580-4a88-a4e7-7506e59b2b52_ball_positions.json`
+
+**Batch state:**
+- eu-north-1 `ten-fifty5-ml-pipeline:48`, us-east-1 `:30` — amd64 `bc8f7d72…` — INCLUDES chain-rejection fix + `source='main'` follow-up #2
+- Previous active revs (eu :47 / us :29) kept ACTIVE for rollback
+
+**Serve bench:** `a798eff0` 20/24, `880dff02` 23/24, no regressions
+**Silver bench:** `1d6feb3a` OK (7 silver rows — frozen pre-fix bronze)
+**Ball bench:** post-fix baseline locked
+
+**Render auto-deploy status at session close:** `a1a7e96` pushed; deploy should have completed by the time next session starts. To verify post-deploy:
+```bash
+curl -sS -X POST https://api.nextpointtennis.com/ops/sweep-t5-orphans \
+     -H "X-Ops-Key: $OPS_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"dry_run": true}'
+```
+Expected: `{"ok": true, "dry_run": true, "found": 0, ...}` — no orphans since tonight's was manually resolved.
+
+---
+
+## Read in this order before doing anything else
+
+1. `.claude/strategy/dual_submit_status_2026-05-20.md` §1-3 (status) + §4 5c.4-5c.5 (next phases).
+2. `docs/north_star.md` — 5c.0-5c.3 marked LIVE + VERIFIED tonight.
+3. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST. Still load-bearing.
+4. `CLAUDE.md` §Diagnostics & Ops — `/ops/sweep-t5-orphans` documented.
+
+Then run the locked benches to confirm the floor:
 
     .venv/Scripts/python -m ml_pipeline.diag.bench
     .venv/Scripts/python -m ml_pipeline.diag.bench_silver
-    # bench_ball is optional — ~90 min on CPU; only run if you're touching ball_tracker.py
 
-Expect: serve bench `a798eff0` 20/24, `880dff02` 23/24; silver bench `1d6feb3a` OK (7 rows — frozen pre-fix bronze).
+Expect: serve `a798eff0` 20/24, `880dff02` 23/24; silver `1d6feb3a` OK (7 rows).
 
-**Next move — pick one (recommended order: 1 → 2 → 3 → 4):**
+---
 
-**Option 1: Phase 5c.2 activation** (Tomo-side, <10 min). Render dashboard env vars: `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1`. Then `curl -X POST /ops/backfill-pair-labels -d '{"dry_run": true}'` to enumerate eligible pairs, then `{"dry_run": false, "limit": 1}` to seed. Playbook at end of this file.
+## Next move — pick one (recommended order: 1 → 2 → 3 → 4)
 
-**Option 2: Re-capture `1d6feb3a` silver-bench fixture against post-fix Batch image.** Tomo reruns ingest from Render shell → Batch picks up eu :48 → new bronze has many more `ml_analysis.ball_detections` rows → silver builder sees richer input. Capture fresh snapshot via `python -m ml_pipeline.diag.bench_silver.snapshot --task 1d6feb3a-...`, upload to S3, pull locally, run silver bench, `--update-baseline`. Validates the fix end-to-end at the silver layer.
+**Option 1: Wire `/ops/sweep-t5-orphans` into a Render cron (~30 min).** Add a new Render Cron Job (similar pattern to `cron_capacity_sweep.py` / `cron_monthly_refill.py`) that POSTs to `/ops/sweep-t5-orphans` every 5 min with `dry_run=false`. Without this, every future auto-spawned T5 still needs manual unblocking. **This closes the dual-submit loop.**
 
-**Option 3: Capture `880dff02` as second silver-bench fixture (~15 min Render-side + 5 min local).** Same workflow as `1d6feb3a`. Adds a denser regression target. Spec playbook in `.claude/strategy/silver_bench_design_2026-05-21.md` §11.
+**Option 2: Re-capture `1d6feb3a` silver-bench fixture against post-fix Batch image (Tomo-side, ~15 min Render + 5 min local).** From Render shell: `python -m ml_pipeline.diag.bench_silver.snapshot --task <task_id> --upload-s3`; locally pull, run silver bench, `--update-baseline`, commit. If silver row count jumps from 7 → 30+, that's direct evidence the chain-rejection fix is structurally repairing T5 bronze density.
 
-**Option 4: Phase 5c.3 `harness build-corpus` subcommand (~3-4 hr).** Pure local. Reads `ml_analysis.training_corpus`, pulls labels + videos from S3, assembles dataset. Spec at `.claude/strategy/dual_submit_status_2026-05-20.md` §4. **Note:** consumer ships before producer fires meaningfully — speculative until Phase 5c.2 is activated and has rows.
+**Option 3: Smoke-test `harness build-corpus` end-to-end (~15 min, requires 2+ corpus rows).** Need to wait until another tennis_singles upload happens (or do one manually). Then `python -m ml_pipeline.harness verify-corpus-row <t5_id>` to confirm S3 artefacts, followed by `python -m ml_pipeline.harness build-corpus --output-dir ml_pipeline/training/datasets/dual_submit_first --limit 5`. Confirms the assembly path works on real data.
 
-**Strategic frame (Tomo's):** silver derived from bronze; goal is bronze 100% correct and SA-aligned. T5 has its own bronze (`ml_analysis.*`); shared Passes 3-5 produce the unified silver. **Follow-up #1 directly improved bronze quality** — the verdict ball-bench numbers (post_filter_sa_recall jumping to ~100%) are evidence the chain-rejection bug was structurally the dominant cause of T5's "ball goes missing mid-rally" symptom. Bigger downstream effects (denser silver, fewer ROI-coverage gaps, possibly more recovered far-player serves) should land naturally once we re-ingest a real match.
+**Option 4: Phase 5c.4 — bench-gate-before-promotion (~4-6 hr, Batch deploy required).** Extend `ml_pipeline/ball_tracker.py` to accept `--weights-path` constructor arg, add `bench_ball.py --weights-path` flag, write `bench_finetuned.py` comparison script + promotion playbook. **Trips guardrail #8** (Batch-side change checklist) — Docker rebuild + dual-region ECR push + new job-def revs required. Don't ship this without bandwidth to do the Batch deploy carefully.
 
-**Things NOT to do** (load-bearing):
+---
+
+## Open admin items
+
+- `/ops/sweep-t5-orphans` shipped but NOT wired to a cron yet. Manual until that lands.
+- Render Postgres still open to `0.0.0.0/0` (since 2026-05-21 Phase 5a). Re-lock to `105.214.8.31/32` or build NAT Gateway + EIP.
+- Old GPU box `i-0fb3983fa555c16e3` (eu-north-1a) parked stopped (~$3.70/mo EBS).
+- Silver-bench has only 1 fixture (`1d6feb3a`). Adding `880dff02` would give a denser regression target. Both spec'd in `.claude/strategy/silver_bench_design_2026-05-21.md` §11.
+- Tonight's verification curl flow doesn't auto-fire ingest for tasks queued more than `min_age_minutes=5` ago — sweep takes care of those. Edge: a brand-new auto-spawned T5 within the 5-min window will not be picked up until the next sweep tick. Acceptable for now (T5 takes >25 min on Batch; first sweep tick will always be ready).
+
+---
+
+## Things NOT to do (load-bearing)
 
 - **Don't add new columns to `bronze.submission_context` in production** without explicit need and a documented reason.
-- **Don't merge `ball_tracker.py`, `wasb_ball_tracker.py`, `wasb_hrnet.py`, `config.py`, `pipeline.py`, `db_writer.py`, or `Dockerfile` changes without BATCH-SIDE CHANGE CHECKLIST.** Both `_filter_outliers` mirror updates this session went through Docker rebuild + ECR push + job-def revs in both regions.
+- **Don't merge `ball_tracker.py`, `wasb_ball_tracker.py`, `wasb_hrnet.py`, `config.py`, `pipeline.py`, `db_writer.py`, or `Dockerfile` changes without BATCH-SIDE CHANGE CHECKLIST.**
 - **Don't rollback WASB without running the bench against TrackNetV2 first.** Previous revs (eu :46-:47 / us :28-:29) kept on standby.
-- **Don't change the `_dual_submit_pair_complete_hook` env-flag default to ON without an explicit go from Tomo.**
+- **Don't change the `AUTO_DUAL_SUBMIT_T5` / `AUTO_LABEL_DUAL_SUBMIT_PAIRS` env-flag defaults to ON in code.** They are explicitly flipped on Render so the deploy default stays OFF (dark by design).
+- **Don't ship a `bench_ball.py --weights-path` flag without the Batch deploy.** Even an additive `weights_path=None` kwarg on `BallTracker.__init__` trips guardrail #8.
 - Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD` (motion-fallback noise is structural).
 - Don't drop `test_videos/` from the GPU rsync.
 - Don't touch `ml_pipeline/training/visual_debug/`.
@@ -77,85 +121,43 @@ Expect: serve bench `a798eff0` 20/24, `880dff02` 23/24; silver bench `1d6feb3a` 
 
 ---
 
-## State at session end (2026-05-22 late evening)
+## Verification commands (tonight's specific pair)
 
-**`origin/main` at** the commit landing this session (`_filter_outliers` re-anchor + baseline + Batch deploy artefacts). Commits this session (most-recent first will be the chain-rejection fix). Previous session-end state still relevant:
-
-- `ff0f0f5` session close 2026-05-22 evening: archive + CLAUDE.md guardrail
-- `550770c` docs: pickup refresh — silver bench live end-to-end + architecture check
-- `52026a9` silver bench: first fixture (1d6feb3a) green end-to-end + restore fixes
-- `9d37869` fix: snapshot baseline — outcome_d -> shot_outcome_d
-- `1c33607` fix: snapshot UUID cast + follow-up #2 (source='main' on main-pass writes)
-- `d3da6ef` phase 5c.2 fix: eager ml_analysis_init() on boot
-- `379b173` WASB Step 5 verified (parallel agent)
-
-**Ball-bench baseline locked at HEAD** — hand-derived from the first post-fix measurement run; commit notes the source-of-truth caveat.
-**Silver-bench baseline locked at `52026a9`** — `ml_pipeline/fixtures_silver/1d6feb3a_silver_baseline.json`. Pre-fix bronze.
-
-**Batch state:**
-- **eu-north-1 `ten-fifty5-ml-pipeline:48`** — amd64 digest `bc8f7d72ba8942ea25213112d7adff9a867ff8ac1307a1ceba99217ef0d8204f` — INCLUDES chain-rejection fix + `source='main'` follow-up #2
-- **us-east-1 `ten-fifty5-ml-pipeline:30`** — same amd64 digest
-- Previous active revs (eu :47 / us :29) kept ACTIVE for rollback (WASB swap baseline)
-- Pre-WASB revs (eu :46 / us :28) also kept
-
-**Serve bench at session end:** `a798eff0` 20/24, `880dff02` 23/24, no regressions.
-**Silver bench at session end:** `1d6feb3a` OK (7 silver rows — frozen pre-fix bronze).
-**Ball bench at session end:** post-fix verdict metrics all up; new baseline checked in.
-
-**GPU dev box:** `i-0295d636f6bf957eb` (eu-north-1b), stopped. Old `i-0fb3983fa555c16e3` (1a) parked stopped.
-
-**Render Postgres allowlist:** `0.0.0.0/0` (open admin item).
-
----
-
-## Phase 5c.2 activation playbook
-
-In the Render dashboard for "Sport AI - API call":
-
-1. Environment tab → add (or set):
-   - `AUTO_DUAL_SUBMIT_T5` = `1`
-   - `AUTO_LABEL_DUAL_SUBMIT_PAIRS` = `1`
-2. Save → auto-redeploy.
-
-Verify next SA upload spawns a paired T5:
-```sql
--- From psql in Render shell after a fresh tennis_singles upload completes
-SELECT task_id, sport_type, last_status, ingest_finished_at
-  FROM bronze.submission_context
- WHERE s3_key = (SELECT s3_key FROM bronze.submission_context WHERE task_id = '<new_task_id>')
- ORDER BY created_at;
--- Expect two rows: sport_type='tennis_singles' + 'tennis_singles_t5'
-```
-
-After both complete, verify training_corpus row:
-```sql
-SELECT sa_task_id, t5_task_id, label_kind, label_count
-  FROM ml_analysis.training_corpus
- ORDER BY created_at DESC LIMIT 5;
-```
-
-Backfill existing pairs:
 ```bash
-# Dry run first
-curl -X POST https://api.nextpointtennis.com/ops/backfill-pair-labels \
-     -H "X-Ops-Key: $OPS_KEY" -d '{"dry_run": true}'
+# 1. Confirm the corpus row is still there (should always return 1+ row)
+psql "$DATABASE_URL" -c "
+SELECT sa_task_id::text, t5_task_id::text, label_kind, label_count, role_breakdown, created_at
+FROM ml_analysis.training_corpus
+ORDER BY created_at DESC LIMIT 3;
+"
 
-# Then real run
-curl -X POST https://api.nextpointtennis.com/ops/backfill-pair-labels \
-     -H "X-Ops-Key: $OPS_KEY" -d '{"dry_run": false, "limit": 1}'
+# 2. Confirm S3 artefacts are intact (run from a machine with OPS_KEY + boto3)
+.venv/Scripts/python -m ml_pipeline.harness verify-corpus-row 78c32f53-5580-4a88-a4e7-7506e59b2b52
+
+# 3. Smoke-test the assembly path on this single pair (~5 min, downloads 50 MB video)
+.venv/Scripts/python -m ml_pipeline.harness build-corpus \
+    --output-dir ml_pipeline/training/datasets/dual_submit_first \
+    --task 78c32f53-5580-4a88-a4e7-7506e59b2b52 \
+    --limit 1
+
+# 4. Sweep endpoint dry-run (expect 0 orphans, the gap is closed for tonight's task)
+curl -sS -X POST https://api.nextpointtennis.com/ops/sweep-t5-orphans \
+     -H "X-Ops-Key: $OPS_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"dry_run": true}'
 ```
 
 ---
 
-## Capture a fresh silver-bench fixture against post-fix Batch image
+## Phase 5c.2 / 5c.3 activation playbook — DONE; kept for reference
 
-Tomo reruns ingest from Render shell on a sport_type='tennis_singles_t5' task. Batch picks up eu :48 (auto via job-def name). Once SUCCEEDED:
+(env-flag flip + backfill + verification — already executed this session)
 
-1. From Render shell: `python -m ml_pipeline.diag.bench_silver.snapshot --task <task_id> --upload-s3`
-2. Locally: `aws s3 cp s3://<bucket>/silver_bench_fixtures/<task>_bronze.sql.gz ml_pipeline/fixtures_silver/`
-3. Local: `python -m ml_pipeline.diag.bench_silver --task <task> --update-baseline`
-4. Commit the new `_bronze.sql.gz` + `_silver_baseline.json`.
+1. Render dashboard "Sport AI - API call" → Environment:
+   - `AUTO_DUAL_SUBMIT_T5` = `1` ✓
+   - `AUTO_LABEL_DUAL_SUBMIT_PAIRS` = `1` ✓
+2. Confirm fresh tennis_singles upload spawns a paired T5: ✓ (`0d0514df` → `78c32f53`)
+3. After both halves complete, verify `training_corpus` row: ✓ (161 labels)
+4. `/ops/backfill-pair-labels` ran with 0 eligible (no pre-existing pairs): ✓
 
-If the silver-row count jumps from 7 to (say) 30+, that's direct confirmation the chain-rejection fix is structurally repairing T5 bronze density.
-
-Full playbook in `.claude/strategy/silver_bench_design_2026-05-21.md` §11.
+Future activations on different services would follow the same recipe.
