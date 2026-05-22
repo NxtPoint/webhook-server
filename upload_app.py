@@ -3884,6 +3884,102 @@ def ops_backfill_pair_labels():
     return jsonify(result), 200
 
 
+@app.post("/ops/sweep-t5-orphans")
+def ops_sweep_t5_orphans():
+    """Catch up tennis_singles_t5 tasks whose Batch run completed but whose
+    Render-side ingest never fired.
+
+    Background: `_auto_dual_submit_t5` submits a Batch job and creates a
+    `bronze.submission_context` row, but the ingest gate inside
+    `/upload/api/task-status` only opens when a browser polls for that
+    task_id. Auto-spawned T5 tasks have no polling browser, so they sit
+    in `last_status='queued'` indefinitely despite Batch having succeeded.
+
+    This endpoint scans for that exact gap and fires
+    `_start_ingest_background` for each orphan. Idempotency is delegated
+    to the inner ingest path (which checks `ingest_started_at` +
+    staleness before doing real work) and to the pair-completion hook
+    (UNIQUE constraint on training_corpus).
+
+    Body (all optional):
+      {
+        "dry_run": true,             # default true; list orphans, fire nothing
+        "limit": 50,                 # default 50; max orphans per call (1..500)
+        "min_age_minutes": 5         # default 5; only sweep tasks whose
+                                     # video_analysis_jobs.updated_at is at
+                                     # least N minutes old (avoids racing the
+                                     # normal browser-poll path)
+      }
+
+    Response (real run):
+      {ok, dry_run, found, triggered: [{task_id}, ...]}
+
+    Header-only auth (OPS_KEY). Safe to re-run.
+    """
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    limit = int(body.get("limit", 50))
+    min_age_minutes = int(body.get("min_age_minutes", 5))
+    if limit < 1 or limit > 500:
+        return jsonify({"ok": False, "error": "limit must be in [1, 500]"}), 400
+    if min_age_minutes < 0 or min_age_minutes > 1440:
+        return jsonify({"ok": False, "error": "min_age_minutes must be in [0, 1440]"}), 400
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql_text("""
+                SELECT sc.task_id::text          AS task_id,
+                       sc.s3_key,
+                       vaj.updated_at            AS batch_complete_at
+                  FROM bronze.submission_context sc
+                  JOIN ml_analysis.video_analysis_jobs vaj
+                    ON vaj.task_id = sc.task_id::text
+                 WHERE sc.sport_type = 'tennis_singles_t5'
+                   AND sc.ingest_started_at IS NULL
+                   AND sc.deleted_at IS NULL
+                   AND vaj.status = 'complete'
+                   AND vaj.updated_at < NOW() - (:age || ' minutes')::interval
+                 ORDER BY vaj.updated_at ASC
+                 LIMIT :lim
+            """), {"age": str(min_age_minutes), "lim": limit}).mappings().all()
+    except Exception as e:
+        app.logger.exception("OPS SWEEP-T5-ORPHANS query failed")
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+    orphans = [dict(r) for r in rows]
+    result = {
+        "ok": True,
+        "dry_run": dry_run,
+        "found": len(orphans),
+        "triggered": [],
+    }
+
+    if dry_run:
+        result["sample"] = [
+            {"task_id": o["task_id"], "batch_complete_at": str(o["batch_complete_at"])}
+            for o in orphans[:10]
+        ]
+        return jsonify(result), 200
+
+    def _worker(items: list) -> None:
+        for it in items:
+            tid = it["task_id"]
+            try:
+                ok = _start_ingest_background(tid, f"t5://complete/{tid}")
+                app.logger.info("SWEEP-T5-ORPHANS task_id=%s started=%s", tid, ok)
+            except Exception as exc:
+                app.logger.exception(
+                    "SWEEP-T5-ORPHANS task_id=%s error: %s", tid, exc,
+                )
+
+    threading.Thread(target=_worker, args=(orphans,), daemon=True).start()
+    result["triggered"] = [{"task_id": o["task_id"]} for o in orphans]
+    return jsonify(result), 200
+
+
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
 # ==========================
