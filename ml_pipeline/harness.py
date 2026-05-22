@@ -1191,6 +1191,9 @@ def cmd_build_corpus(args: argparse.Namespace) -> int:
     params: Dict[str, Any] = {"kind": args.label_kind}
     if args.validated_only:
         where.append("validated_at IS NOT NULL")
+    if args.task:
+        where.append("t5_task_id = :tid")
+        params["tid"] = args.task
     sql = (
         "SELECT sa_task_id, t5_task_id, label_s3_key, video_s3_key, "
         "       label_count, role_breakdown, created_at "
@@ -1701,6 +1704,9 @@ def main():
     p_bc.add_argument("--label-kind", default="ball_position",
                       choices=["ball_position", "serve_bounce", "stroke_classifier"],
                       help="Filter training_corpus to this label_kind (default ball_position)")
+    p_bc.add_argument("--task", default=None,
+                      help="Filter to a single t5_task_id (useful for smoke-testing a "
+                           "specific pair-completion result before assembling the full corpus)")
     p_bc.add_argument("--validated-only", action="store_true",
                       help="Only include rows where validated_at IS NOT NULL")
     p_bc.add_argument("--limit", type=int, default=50,
