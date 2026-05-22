@@ -59,6 +59,9 @@ Training pipeline (TrackNet fine-tuning):
                                            in ml_analysis.training_corpus (downloads label JSON +
                                            video from S3 into a local cache, then merges via
                                            build_serve_bounce_dataset.build_dataset)
+    verify-corpus-row <t5_task_id>       — defensive diagnostic: check that the corpus row's
+                                           S3 label JSON + video both exist and the JSON parses
+                                           into the expected schema
 
 Stroke classifier (far-player optical flow):
     export-stroke-data --sportai-task <id> --t5-task <id> --video <path> --output <dir>
@@ -1275,6 +1278,117 @@ def cmd_build_corpus(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify_corpus_row(args: argparse.Namespace) -> int:
+    """Verify the S3 artefacts for one ml_analysis.training_corpus entry.
+
+    Defensive diagnostic for confirming that a row written by the pair-
+    completion hook (`_label_pair_now`) actually has both the label JSON
+    and the source video accessible in S3, and that the label JSON parses
+    into the expected schema. Useful right after a fresh pair lands.
+
+    Returns 0 if every row for the given t5_task_id checks out; 1 if any
+    check fails.
+    """
+    from sqlalchemy import text as sql_text
+
+    hr(f"VERIFY CORPUS ROW  t5={args.t5_task_id[:8]}")
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text(
+            "SELECT id, sa_task_id, t5_task_id, label_kind, label_s3_key, "
+            "       video_s3_key, label_count, role_breakdown, "
+            "       created_at, validated_at "
+            "  FROM ml_analysis.training_corpus "
+            " WHERE t5_task_id = :t "
+            " ORDER BY created_at"
+        ), {"t": args.t5_task_id}).mappings().all()
+
+    if not rows:
+        print(f"  {FAIL} no ml_analysis.training_corpus rows for t5={args.t5_task_id}")
+        return 1
+
+    import boto3
+    import botocore
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    s3 = boto3.client("s3", region_name=region)
+
+    all_ok = True
+    for r in rows:
+        print()
+        print(f"  row id={r['id']}  kind={r['label_kind']}  sa={str(r['sa_task_id'])[:8]}")
+        print(f"      label_count={r['label_count']}  role={r['role_breakdown']}")
+        print(f"      created={r['created_at']:%Y-%m-%d %H:%M}  validated={r['validated_at']}")
+
+        try:
+            lbl_bucket, lbl_key = _parse_s3_uri(r["label_s3_key"])
+        except ValueError as exc:
+            print(f"  {FAIL} label_s3_key: {exc}")
+            all_ok = False
+            continue
+
+        try:
+            vid_bucket, vid_key = _parse_s3_uri(r["video_s3_key"])
+        except ValueError as exc:
+            print(f"  {FAIL} video_s3_key: {exc}")
+            all_ok = False
+            continue
+
+        try:
+            hd = s3.head_object(Bucket=lbl_bucket, Key=lbl_key)
+            print(f"  {PASS} label  s3://{lbl_bucket}/{lbl_key}  "
+                  f"({hd['ContentLength']} bytes)")
+        except botocore.exceptions.ClientError as exc:
+            print(f"  {FAIL} label  s3://{lbl_bucket}/{lbl_key}  HEAD failed: {exc}")
+            all_ok = False
+            continue
+
+        try:
+            hv = s3.head_object(Bucket=vid_bucket, Key=vid_key)
+            mb = hv["ContentLength"] / (1024 * 1024)
+            print(f"  {PASS} video  s3://{vid_bucket}/{vid_key}  ({mb:.1f} MB)")
+        except botocore.exceptions.ClientError as exc:
+            print(f"  {FAIL} video  s3://{vid_bucket}/{vid_key}  HEAD failed: {exc}")
+            all_ok = False
+            continue
+
+        try:
+            obj = s3.get_object(Bucket=lbl_bucket, Key=lbl_key)
+            payload = json.loads(obj["Body"].read())
+        except (botocore.exceptions.ClientError, json.JSONDecodeError) as exc:
+            print(f"  {FAIL} label JSON fetch/parse: {exc}")
+            all_ok = False
+            continue
+
+        n_labels = len(payload.get("labels", []))
+        if n_labels != r["label_count"]:
+            print(f"  {WARN} label_count drift: corpus={r['label_count']} "
+                  f"vs JSON={n_labels}")
+        if not payload.get("labels"):
+            print(f"  {FAIL} label JSON has no 'labels' array")
+            all_ok = False
+            continue
+
+        sample = payload["labels"][0]
+        required = {"bounce_frame_est", "pixel_x", "pixel_y"}
+        missing = required - set(sample.keys())
+        if missing:
+            print(f"  {FAIL} label[0] missing required keys: {missing}")
+            all_ok = False
+            continue
+
+        print(f"  {PASS} JSON: {n_labels} labels, "
+              f"frame_size={payload.get('frame_width')}x{payload.get('frame_height')}, "
+              f"by_type={payload.get('by_type')}")
+
+    print()
+    if all_ok:
+        print(f"  {PASS} all {len(rows)} row(s) verified")
+        return 0
+    print(f"  {FAIL} verification failed on at least one row")
+    return 1
+
+
 # ============================================================
 # Serve-detector eval
 # ============================================================
@@ -1536,6 +1650,13 @@ def main():
     p_ef.add_argument("--bucket", default=None, help="S3 bucket (if video is a bare S3 key)")
     p_ef.add_argument("--region", default=None, help="AWS region for S3 download")
 
+    p_vcr = sub.add_parser(
+        "verify-corpus-row",
+        help="Verify S3 artefacts for one ml_analysis.training_corpus row "
+             "(label JSON + video both reachable, JSON schema sane)",
+    )
+    p_vcr.add_argument("t5_task_id", help="T5 task UUID to look up in training_corpus")
+
     p_bc = sub.add_parser(
         "build-corpus",
         help="Phase 5c.3: assemble a TrackNet training dataset from ml_analysis.training_corpus",
@@ -1623,6 +1744,8 @@ def main():
         return cmd_extract_frames(args)
     if args.cmd == "build-corpus":
         return cmd_build_corpus(args)
+    if args.cmd == "verify-corpus-row":
+        return cmd_verify_corpus_row(args)
     if args.cmd == "export-stroke-data":
         return cmd_export_stroke_data(args)
     if args.cmd == "train-stroke":
