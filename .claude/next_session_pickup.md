@@ -1,163 +1,219 @@
-# Next-session pickup — paste this verbatim into the next chat
+# Next-session pickup — morning of 2026-05-23
 
 ## ⚡ Executive summary (read this first — 30 seconds)
 
-**Today's date:** 2026-05-22 (late evening — Phase 5c END-TO-END VERIFIED + orphan-sweep endpoint shipped)
-**Phase active:** Phase 5 — Ball detection coverage. **5c.0 / 5c.1 / 5c.2 / 5c.3 ALL LIVE + VERIFIED IN PROD.** 5e VERIFIED. 5d remains blocked on corpus volume.
-**Bench:** Serve `a798eff0=20/24, 880dff02=23/24` — green. Ball-bench post-fix baseline intact. Silver-bench `1d6feb3a` 7 rows (pre-fix bronze; recapture pending).
-**What shipped today (8 commits):** CLAUDE.md doc edit (`ad60eda`); Phase 5c.3 `harness build-corpus` (`2ac4a64`); `verify-corpus-row` (`36f18d5`); `build-corpus --upload-s3` (`4272c5e`); `build-corpus --task` (`b48230c`); `/ops/sweep-t5-orphans` endpoint (`a1a7e96`); plus the two doc commits closing this session.
-**End-to-end proof:** SA `0d0514df-68aa-4346-9e2d-64413429e47f` → auto-spawned T5 `78c32f53-5580-4a88-a4e7-7506e59b2b52` → `ml_analysis.training_corpus` row with **161 ball-position labels (48 NEAR / 47 FAR / 66 other)** created `2026-05-22 20:20:54` UTC, 0.6 s after `_do_ingest_t5` completed.
-**What's blocked:** Nothing on Phase 5c. 5d (TrackNetV3 finetune) needs more corpus rows (~5+ matches) before training is worth attempting.
-**Next session's job:** Pick (a) wire `/ops/sweep-t5-orphans` into a Render cron, (b) re-capture `1d6feb3a` silver-bench fixture, (c) accumulate organic corpus rows + smoke-test `harness build-corpus` once we have 2+ matches, or (d) Phase 5c.4 — bench-gate-before-promotion (needs `ball_tracker.py --weights-path` ⇒ Batch deploy).
+**Today's date:** 2026-05-23 (Tomo's morning — picking up from overnight Claude session that closed 2026-05-22 ~late night)
+**Phase active:** Phase 5c — dual-submit corpus pipeline. **5c.0 / 5c.1 / 5c.2 / 5c.3 LIVE + VERIFIED in prod.** Tonight's overnight work shipped Phase 5c.4 GROUNDWORK on a branch.
+**Bench:** Serve `a798eff0=20/24, 880dff02=23/24` — green on main as of `ec357f7`.
+**What shipped overnight (3 commits):**
+- `99bc379` docs: CLAUDE.md trim under 40k chars + polling-gate rule + Phase 5c.3 commands
+- `ec357f7` ops: `cron_sweep_t5_orphans.py` (the Render cron script — wiring is the only manual step left)
+- `82930a7` (on `feature/phase-5c-4-bench-gate` branch — NOT merged): Phase 5c.4 groundwork — `bench_finetuned.py`, `--weights-path` threading, promotion playbook
+**What's blocked:** Two things, both your decisions:
+  1. Wire the Render Cron Job for `cron_sweep_t5_orphans.py` (UI-only, ~5 min).
+  2. Review + merge the `feature/phase-5c-4-bench-gate` branch (no Batch deploy in this PR — just diag harness + docs; safe to merge anytime).
+**Next session's first job:** Do (1) above so future auto-spawned T5 tasks unblock themselves. Then merge (2) or leave parked.
 
-If the above is enough, stop reading this file and go.
-
-If you need depth (inheriting a blocker, verifying a claim, picking next move), continue.
-
----
-
-## Today's big architectural learning — the orphan-trigger gap
-
-**The bug:** `_auto_dual_submit_t5` submits a Batch job + creates a `bronze.submission_context` row for the T5 sibling. The ingest gate that calls `_do_ingest_t5` lives inside `/upload/api/task-status` and only fires when a browser polls. **Auto-spawned T5 tasks have no polling browser**, so they sit in `last_status='queued'` indefinitely despite Batch having succeeded.
-
-**Tonight's evidence:** `78c32f53-...` Batch completed at 16:42 UTC, sat orphaned for 3h45m until a single manual `GET /upload/api/task-status?task_id=78c32f53-...` unblocked the ingest at ~20:20 UTC. Pair-completion hook fired correctly downstream of that.
-
-**The shipped fix (this session):** `POST /ops/sweep-t5-orphans` — OPS_KEY-gated endpoint that scans for the exact gap and fires `_start_ingest_background` for each orphan via a background thread. Idempotent (inner ingest gate checks `ingest_started_at` + staleness; `training_corpus` has a UNIQUE constraint). Documented in CLAUDE.md §Diagnostics & Ops. Dry-run default.
-
-**What's still needed:** wire it into a Render cron. Without that, every future auto-spawned T5 still needs manual triggering. **Recommended:** a 5-min cron hitting `/ops/sweep-t5-orphans {"dry_run": false}` — that's the minimal closure of the loop. Owner: next session.
+If the above is enough, stop reading. The rest of this file has details + verification commands.
 
 ---
 
-## State at session end (2026-05-22 late evening)
+## Item 1 — Wire the Render cron (the only thing tonight didn't fully close)
 
-`origin/main` at **`a1a7e96` `ops: /ops/sweep-t5-orphans` — fire ingest for stuck auto-spawned T5 tasks**. Recent session commits (most recent first):
+The script `cron_sweep_t5_orphans.py` is on `origin/main` (commit `ec357f7`). It POSTs to `/ops/sweep-t5-orphans` with `{"dry_run": false}` and exits non-zero on HTTP error. Pattern follows `cron_monthly_refill.py`.
 
-```
-a1a7e96 ops: /ops/sweep-t5-orphans — fire ingest for stuck auto-spawned T5 tasks
-b48230c harness: build-corpus --task <t5_task_id> filter
-4272c5e harness: add --upload-s3 flag to build-corpus
-36f18d5 harness: add verify-corpus-row subcommand for ml_analysis.training_corpus
-2ac4a64 phase 5c.3: harness build-corpus subcommand — assemble dataset from training_corpus
-ad60eda docs: CLAUDE.md — document silver/ball benches + db_writer in T5 section
-7fff997 docs: north_star — mark 5e follow-ups #1 + #2 SHIPPED 2026-05-22
-7863a66 fix(t5): _filter_outliers chain-rejection — re-anchor on coherent cluster
-```
+**Render dashboard steps (~5 min):**
 
-**Phase 5c artefacts in prod:**
-- `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render (Sport AI - API call service)
-- `gold.vw_dual_submit_pairs` populated (1 complete pair so far)
-- `ml_analysis.training_corpus` has 1 row (`label_kind='ball_position'`, 161 labels)
-- S3: `s3://nextpoint-prod-uploads/training/labels/78c32f53-5580-4a88-a4e7-7506e59b2b52_ball_positions.json`
+1. Render dashboard → **+ New** → **Cron Job**
+2. Repository: same GitHub repo as the existing crons (`NxtPoint/webhook-server`)
+3. Branch: `main`
+4. Build command: `pip install --upgrade pip && pip install -r requirements.txt`
+   (matches the pattern of the other crons; the script itself only uses stdlib + nothing in requirements.txt, but Render needs a non-empty build for the Python service to provision)
+5. Command: `python cron_sweep_t5_orphans.py`
+6. Schedule: `*/5 * * * *` (every 5 min)
+7. Env vars:
+   - `OPS_KEY` — copy from "Sport AI - API call" service env. **Same value** as that service uses.
+   - (optional) `SWEEP_T5_ORPHANS_LIMIT` — override the server-side default of 50 max tasks per sweep
+8. Create.
 
-**Batch state:**
-- eu-north-1 `ten-fifty5-ml-pipeline:48`, us-east-1 `:30` — amd64 `bc8f7d72…` — INCLUDES chain-rejection fix + `source='main'` follow-up #2
-- Previous active revs (eu :47 / us :29) kept ACTIVE for rollback
-
-**Serve bench:** `a798eff0` 20/24, `880dff02` 23/24, no regressions
-**Silver bench:** `1d6feb3a` OK (7 silver rows — frozen pre-fix bronze)
-**Ball bench:** post-fix baseline locked
-
-**Render auto-deploy status at session close:** `a1a7e96` pushed; deploy should have completed by the time next session starts. To verify post-deploy:
+**Pre-creation sanity check** (do this BEFORE creating the cron, while you have a shell open):
 ```bash
+# From any shell with OPS_KEY in env:
 curl -sS -X POST https://api.nextpointtennis.com/ops/sweep-t5-orphans \
      -H "X-Ops-Key: $OPS_KEY" \
      -H "Content-Type: application/json" \
      -d '{"dry_run": true}'
 ```
-Expected: `{"ok": true, "dry_run": true, "found": 0, ...}` — no orphans since tonight's was manually resolved.
+Expected response shape:
+```json
+{"ok": true, "dry_run": true, "found": 0, "triggered": [], "sample": []}
+```
+If `found > 0` in the sample, there are stuck T5 tasks waiting — those will get picked up on the first scheduled cron tick after wiring. (You can hit `dry_run=false` manually now if you want to clean up immediately.)
+
+**Post-creation verification:**
+1. Render → the new cron's logs after the first scheduled tick.
+2. Expect a one-line JSON response, `"ok": true`.
+3. No `"triggered"` entries is normal (means no orphans existed at that tick).
+
+That's the full Phase 5c.3 → 5c.3-prime closure. After this, no auto-spawned T5 task can sit in `queued` indefinitely.
+
+---
+
+## Item 2 — Review the Phase 5c.4 branch (your call: merge or leave parked)
+
+Branch: `feature/phase-5c-4-bench-gate` (pushed to origin tonight, commit `82930a7`).
+
+**What's in it:**
+
+1. **Thread `weights_path` through `bench_ball` harness** — both `BallTracker` and `WASBBallTracker` already accept the kwarg in their constructors; the bench wrapper just didn't expose it. Now `bench_ball.py --weights-path <candidate.pt>` lets you bench a candidate finetune against fixtures without rebuilding the Docker image.
+   - Guard: `--weights-path` + `--update-baseline` is hard-rejected — the committed baseline must reflect production weights.
+2. **NEW `ml_pipeline/diag/bench_finetuned.py`** — runs the bench TWICE per (fixture, tracker) pair (production weights vs candidate) and emits a `PROMOTE` / `NEUTRAL` / `REJECT` verdict. Exit code follows verdict; safe to wire into a future CI gate.
+3. **NEW `.claude/playbook_phase_5c4_weights_promotion.md`** — deploy playbook for AFTER a PROMOTE verdict. Documents the env-gated `TRACKNET_WEIGHTS` override pattern (matches the WASB swap from 2026-05-21), the Docker rebuild + dual-region ECR push + job-def rev sequence, and the rollback path (unset env var, no rebuild needed).
+
+**Why on a branch and not main:**
+
+- The harness/diag changes are safe to land any time — they don't touch detector code.
+- The playbook references config.py and ball_tracker.py env-gating that ISN'T shipped yet. That's intentional — the playbook is forward-looking. Merging the playbook to main is fine; landing the env-gate code change is a separate decision that trips guardrail #8 (Docker rebuild required) and shouldn't happen overnight.
+
+**Pre-flight before merging:**
+
+```bash
+# 1. Verify the branch
+git fetch origin
+git log --oneline origin/feature/phase-5c-4-bench-gate -5
+git diff main..origin/feature/phase-5c-4-bench-gate --stat
+
+# 2. Run the locked benches against the branch (should be green — no detector code touched)
+git checkout feature/phase-5c-4-bench-gate
+.venv/Scripts/python -m ml_pipeline.diag.bench
+# Expect: a798eff0=20/24, 880dff02=23/24 [OK] No regressions
+
+# 3. Smoke-test the new harness path (won't have weights to compare yet, but
+#    confirms the CLI is wired correctly)
+.venv/Scripts/python -m ml_pipeline.diag.bench_finetuned --help
+.venv/Scripts/python -m ml_pipeline.diag.bench_finetuned --weights-path /tmp/nope.pt
+# Expect: "ERROR: candidate weights file not found" + exit code 2
+
+# 4. If everything looks good, merge
+git checkout main
+git merge --ff-only origin/feature/phase-5c-4-bench-gate
+git push origin main
+```
+
+The Render deploy on this merge is harmless — diag tools aren't loaded by the running services.
+
+---
+
+## State at session end (2026-05-22 night → 2026-05-23 early hours)
+
+`origin/main` at **`ec357f7` cron: cron_sweep_t5_orphans.py — Phase 5c.3 closure**. Recent commits:
+
+```
+ec357f7 cron: add cron_sweep_t5_orphans.py — Phase 5c.3 closure
+99bc379 docs: trim CLAUDE.md under 40k chars + polling-gate rule + Phase 5c.3 harness commands
+065bbcf session close 2026-05-22 night — Phase 5c END-TO-END VERIFIED
+a1a7e96 ops: /ops/sweep-t5-orphans — fire ingest for stuck auto-spawned T5 tasks
+b48230c harness: build-corpus --task <t5_task_id> filter
+```
+
+`origin/feature/phase-5c-4-bench-gate` at **`82930a7` phase 5c.4 groundwork: bench_finetuned + --weights-path threading**.
+
+**Phase 5c artefacts in prod (unchanged from last session):**
+- `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render
+- `ml_analysis.training_corpus` has 1 row (`78c32f53-...`, label_kind='ball_position', 161 labels)
+- S3: `s3://nextpoint-prod-uploads/training/labels/78c32f53-5580-4a88-a4e7-7506e59b2b52_ball_positions.json`
+
+**Serve bench (verified `ec357f7` 2026-05-22 night):** `a798eff0` 20/24, `880dff02` 23/24, no regressions.
+
+**Batch state (unchanged):** eu-north-1 `:48`, us-east-1 `:30` — amd64 `bc8f7d72…`
 
 ---
 
 ## Read in this order before doing anything else
 
-1. `.claude/strategy/dual_submit_status_2026-05-20.md` §1-3 (status) + §4 5c.4-5c.5 (next phases).
-2. `docs/north_star.md` — 5c.0-5c.3 marked LIVE + VERIFIED tonight.
-3. `.claude/handover_t5.md` — BATCH-SIDE CHANGE CHECKLIST. Still load-bearing.
-4. `CLAUDE.md` §Diagnostics & Ops — `/ops/sweep-t5-orphans` documented.
+1. **This file** — you're already here.
+2. `docs/north_star.md` §"Phase 5" — confirm phase status hasn't shifted.
+3. `CLAUDE.md` §"Things not to do" — note new rule #10 about auto-spawn polling-gate pairing.
+4. `.claude/playbook_phase_5c4_weights_promotion.md` IF you're about to attempt a finetune deploy (not relevant for Item 1 above; only matters if Phase 5c.4 work resumes).
 
-Then run the locked benches to confirm the floor:
+Then run the locked bench to confirm the floor:
 
-    .venv/Scripts/python -m ml_pipeline.diag.bench
-    .venv/Scripts/python -m ml_pipeline.diag.bench_silver
+```bash
+.venv/Scripts/python -m ml_pipeline.diag.bench
+```
 
-Expect: serve `a798eff0` 20/24, `880dff02` 23/24; silver `1d6feb3a` OK (7 rows).
+Expect: serve `a798eff0` 20/24, `880dff02` 23/24.
 
 ---
 
 ## Next move — pick one (recommended order: 1 → 2 → 3 → 4)
 
-**Option 1: Wire `/ops/sweep-t5-orphans` into a Render cron (~30 min).** Add a new Render Cron Job (similar pattern to `cron_capacity_sweep.py` / `cron_monthly_refill.py`) that POSTs to `/ops/sweep-t5-orphans` every 5 min with `dry_run=false`. Without this, every future auto-spawned T5 still needs manual unblocking. **This closes the dual-submit loop.**
+**Option 1: Wire the Render Cron Job for `cron_sweep_t5_orphans.py` (~5 min).** See Item 1 above. This is the last manual closure for Phase 5c.3. Strongly recommended as the first thing.
 
-**Option 2: Re-capture `1d6feb3a` silver-bench fixture against post-fix Batch image (Tomo-side, ~15 min Render + 5 min local).** From Render shell: `python -m ml_pipeline.diag.bench_silver.snapshot --task <task_id> --upload-s3`; locally pull, run silver bench, `--update-baseline`, commit. If silver row count jumps from 7 → 30+, that's direct evidence the chain-rejection fix is structurally repairing T5 bronze density.
+**Option 2: Review + merge `feature/phase-5c-4-bench-gate` (~10 min).** See Item 2 above. Safe; no Batch deploy implied by the merge. Lands the bench_finetuned harness + promotion playbook on main so future sessions can use them.
 
-**Option 3: Smoke-test `harness build-corpus` end-to-end (~15 min, requires 2+ corpus rows).** Need to wait until another tennis_singles upload happens (or do one manually). Then `python -m ml_pipeline.harness verify-corpus-row <t5_id>` to confirm S3 artefacts, followed by `python -m ml_pipeline.harness build-corpus --output-dir ml_pipeline/training/datasets/dual_submit_first --limit 5`. Confirms the assembly path works on real data.
+**Option 3: Re-capture `1d6feb3a` silver-bench fixture against post-fix Batch image (Tomo-side, ~15 min Render + 5 min local).** Still pending from last session — needs Render shell snapshot. If silver row count jumps 7 → 30+ that's direct evidence the chain-rejection fix is structurally repairing T5 bronze density.
 
-**Option 4: Phase 5c.4 — bench-gate-before-promotion (~4-6 hr, Batch deploy required).** Extend `ml_pipeline/ball_tracker.py` to accept `--weights-path` constructor arg, add `bench_ball.py --weights-path` flag, write `bench_finetuned.py` comparison script + promotion playbook. **Trips guardrail #8** (Batch-side change checklist) — Docker rebuild + dual-region ECR push + new job-def revs required. Don't ship this without bandwidth to do the Batch deploy carefully.
+**Option 4: Smoke-test `harness build-corpus` end-to-end (~15 min, requires 2+ corpus rows).** Still blocked on having only 1 corpus row in prod. Either wait for another organic upload, or manually trigger one to seed a second pair.
+
+**Option 5: Phase 5c.4 actual training run.** With the harness shipped tonight (on the branch), the next concrete training step is collecting enough corpus rows (need ~5+ matches) and running `ml_pipeline/training/` to produce a candidate `.pt`. Once you have one, `bench_finetuned --weights-path <.pt>` is the gate.
 
 ---
 
-## Open admin items
+## Open admin items (unchanged from last session except where noted)
 
-- `/ops/sweep-t5-orphans` shipped but NOT wired to a cron yet. Manual until that lands.
+- ~~`/ops/sweep-t5-orphans` shipped but NOT wired to a cron yet.~~ **Script shipped tonight (`ec357f7`); Render Cron Job entry still needs creation (Item 1 above).**
 - Render Postgres still open to `0.0.0.0/0` (since 2026-05-21 Phase 5a). Re-lock to `105.214.8.31/32` or build NAT Gateway + EIP.
 - Old GPU box `i-0fb3983fa555c16e3` (eu-north-1a) parked stopped (~$3.70/mo EBS).
-- Silver-bench has only 1 fixture (`1d6feb3a`). Adding `880dff02` would give a denser regression target. Both spec'd in `.claude/strategy/silver_bench_design_2026-05-21.md` §11.
-- Tonight's verification curl flow doesn't auto-fire ingest for tasks queued more than `min_age_minutes=5` ago — sweep takes care of those. Edge: a brand-new auto-spawned T5 within the 5-min window will not be picked up until the next sweep tick. Acceptable for now (T5 takes >25 min on Batch; first sweep tick will always be ready).
+- Silver-bench has only 1 fixture (`1d6feb3a`). Adding `880dff02` would give a denser regression target.
+- Edge: a brand-new auto-spawned T5 within the cron's `min_age_minutes=5` window will not be picked up until the next 5-min sweep tick. Acceptable for now (T5 takes >25 min on Batch; first sweep tick will always catch them in time).
 
 ---
 
-## Things NOT to do (load-bearing)
+## Things NOT to do (load-bearing, unchanged)
 
-- **Don't add new columns to `bronze.submission_context` in production** without explicit need and a documented reason.
-- **Don't merge `ball_tracker.py`, `wasb_ball_tracker.py`, `wasb_hrnet.py`, `config.py`, `pipeline.py`, `db_writer.py`, or `Dockerfile` changes without BATCH-SIDE CHANGE CHECKLIST.**
-- **Don't rollback WASB without running the bench against TrackNetV2 first.** Previous revs (eu :46-:47 / us :28-:29) kept on standby.
-- **Don't change the `AUTO_DUAL_SUBMIT_T5` / `AUTO_LABEL_DUAL_SUBMIT_PAIRS` env-flag defaults to ON in code.** They are explicitly flipped on Render so the deploy default stays OFF (dark by design).
-- **Don't ship a `bench_ball.py --weights-path` flag without the Batch deploy.** Even an additive `weights_path=None` kwarg on `BallTracker.__init__` trips guardrail #8.
-- Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD` (motion-fallback noise is structural).
-- Don't drop `test_videos/` from the GPU rsync.
-- Don't touch `ml_pipeline/training/visual_debug/`.
+- **Don't merge `ball_tracker.py`, `wasb_ball_tracker.py`, `wasb_hrnet.py`, `config.py`, `pipeline.py`, `db_writer.py`, or `Dockerfile` changes without BATCH-SIDE CHANGE CHECKLIST.** (Tonight's harness commits don't touch these.)
+- **Don't ship Phase 5c.4 actual config.py env-gate change overnight.** The branch tonight is deliberately groundwork-only — the env-gate code change trips guardrail #8 and needs daylight + bandwidth to deploy.
+- **Don't rollback WASB without running the bench against TrackNetV2 first.**
+- **Don't change `AUTO_DUAL_SUBMIT_T5` / `AUTO_LABEL_DUAL_SUBMIT_PAIRS` env-flag defaults to ON in code.**
+- **Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD`.**
+- **Don't auto-spawn a task without a paired server-side trigger** (new rule in CLAUDE.md "Things not to do" #10 — added tonight).
 - Don't ask Tomo to do Docker work — agent handles deploys.
-- Don't create parallel bronze tables. T5 bronze in `ml_analysis.*`, SportAI in `bronze.*`, distinguished at the silver layer by `model` column.
+- Don't create parallel bronze tables.
 
 ---
 
-## Verification commands (tonight's specific pair)
+## Verification commands
 
 ```bash
-# 1. Confirm the corpus row is still there (should always return 1+ row)
-psql "$DATABASE_URL" -c "
-SELECT sa_task_id::text, t5_task_id::text, label_kind, label_count, role_breakdown, created_at
-FROM ml_analysis.training_corpus
-ORDER BY created_at DESC LIMIT 3;
-"
+# 1. Bench floor
+.venv/Scripts/python -m ml_pipeline.diag.bench
+# Expect: a798eff0=20/24, 880dff02=23/24
 
-# 2. Confirm S3 artefacts are intact (run from a machine with OPS_KEY + boto3)
-.venv/Scripts/python -m ml_pipeline.harness verify-corpus-row 78c32f53-5580-4a88-a4e7-7506e59b2b52
-
-# 3. Smoke-test the assembly path on this single pair (~5 min, downloads 50 MB video)
-.venv/Scripts/python -m ml_pipeline.harness build-corpus \
-    --output-dir ml_pipeline/training/datasets/dual_submit_first \
-    --task 78c32f53-5580-4a88-a4e7-7506e59b2b52 \
-    --limit 1
-
-# 4. Sweep endpoint dry-run (expect 0 orphans, the gap is closed for tonight's task)
+# 2. /ops/sweep-t5-orphans dry-run (needs OPS_KEY in env)
 curl -sS -X POST https://api.nextpointtennis.com/ops/sweep-t5-orphans \
      -H "X-Ops-Key: $OPS_KEY" \
      -H "Content-Type: application/json" \
      -d '{"dry_run": true}'
+# Expect: {"ok": true, "dry_run": true, "found": 0|N, ...}
+
+# 3. Corpus row still intact (run against DATABASE_URL)
+psql "$DATABASE_URL" -c "
+SELECT t5_task_id::text, label_kind, label_count, role_breakdown, created_at
+FROM ml_analysis.training_corpus
+ORDER BY created_at DESC LIMIT 3;
+"
+
+# 4. Branch overview
+git fetch origin
+git log --oneline origin/feature/phase-5c-4-bench-gate -3
+git diff main..origin/feature/phase-5c-4-bench-gate --stat
 ```
 
 ---
 
-## Phase 5c.2 / 5c.3 activation playbook — DONE; kept for reference
+## Notes from the overnight session
 
-(env-flag flip + backfill + verification — already executed this session)
-
-1. Render dashboard "Sport AI - API call" → Environment:
-   - `AUTO_DUAL_SUBMIT_T5` = `1` ✓
-   - `AUTO_LABEL_DUAL_SUBMIT_PAIRS` = `1` ✓
-2. Confirm fresh tennis_singles upload spawns a paired T5: ✓ (`0d0514df` → `78c32f53`)
-3. After both halves complete, verify `training_corpus` row: ✓ (161 labels)
-4. `/ops/backfill-pair-labels` ran with 0 eligible (no pre-existing pairs): ✓
-
-Future activations on different services would follow the same recipe.
+- The overnight work was scoped specifically to avoid anything that requires Tomo to be awake for supervision: no Batch deploys, no Render env-var changes, no production data writes. Everything is either local diag harness OR a branch that requires explicit merge intent.
+- The Phase 5c.4 branch was a clean "pickup option 4 from yesterday's pickup, modulo the deploy" — the pickup language said "Don't ship this without bandwidth", so the deploy parts of Option 4 are explicitly punted.
+- CLAUDE.md was over the 40k-char warning threshold (41,879). Trimmed Support Bot section, /ops/diag/sql description, and Client API table to point to canonical docs — net 41,879 → 38,761. Three load-bearing additions in the same commit: rule #10 about auto-spawn polling gates, build-corpus harness commands, the new cron script reference.
