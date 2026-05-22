@@ -402,11 +402,12 @@ Both T5 and SportAI share passes 3-5 in `build_silver_v2.py` (repo root). The se
 
 | Dir | Purpose |
 |---|---|
-| `ml_pipeline/` | Core detection pipeline (court, ball, player), harness, evals |
+| `ml_pipeline/` | Core detection pipeline (court, ball, player), `db_writer.py` (Batch-side writes to `ml_analysis.*`, `source='main'`), harness, evals |
 | `ml_pipeline/serve_detector/` | Pose-first serve detection + rally state machine + schema |
 | `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (note: `training/visual_debug/` is leftover local debug images, untracked — don't read or edit) |
 | `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification |
-| `ml_pipeline/diag/` | Dev tools — serve viewer, pose probe, local pose extractor |
+| `ml_pipeline/diag/` | Dev tools — `bench` / `bench_ball` / `bench_silver` regression harnesses, serve viewer, pose probe |
+| `ml_pipeline/fixtures_ci/`, `fixtures_ball/`, `fixtures_silver/` | Locked bench fixtures (one dir per bench), with `*_baseline.json` siblings |
 
 Weights in `ml_pipeline/models/` (~270 MB, git-ignored): TrackNet V2, YOLOv8x/m-pose, YOLOv8m, court_keypoints.pth, optional `stroke_classifier.pt` / `tracknet_v3.pt`.
 
@@ -415,7 +416,9 @@ Weights in `ml_pipeline/models/` (~270 MB, git-ignored): TrackNet V2, YOLOv8x/m-
 See `.claude/handover_t5.md` for the full catalogue. The ones that come up constantly:
 
 ```bash
-python -m ml_pipeline.diag.bench                        # locked-baseline regression check (mandatory pre-push for serve_detector)
+python -m ml_pipeline.diag.bench                        # serve detector regression (CI-gated; mandatory pre-push)
+python -m ml_pipeline.diag.bench_ball                   # ball-tracker regression (tracknet_v2 + wasb; local-only)
+python -m ml_pipeline.diag.bench_silver                 # silver-builder regression (local Docker Postgres; empty until fixtures land)
 python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
 python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
 python -m ml_pipeline.harness reconcile <sa_tid> <t5_tid>
