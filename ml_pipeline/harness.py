@@ -55,10 +55,13 @@ Training pipeline (TrackNet fine-tuning):
                                          — extract JPEG frames from video for training
     build-corpus --output-dir <dir> [--label-kind ball_position] [--limit 50]
                  [--validated-only] [--dry-run] [--cache-dir <dir>] [--sequence-length 3]
+                 [--upload-s3 s3://bucket/prefix/]
                                          — Phase 5c.3: assemble a combined dataset from all rows
                                            in ml_analysis.training_corpus (downloads label JSON +
                                            video from S3 into a local cache, then merges via
-                                           build_serve_bounce_dataset.build_dataset)
+                                           build_serve_bounce_dataset.build_dataset). With
+                                           --upload-s3, the output is also synced to S3 for
+                                           GPU-box training.
     verify-corpus-row <t5_task_id>       — defensive diagnostic: check that the corpus row's
                                            S3 label JSON + video both exist and the JSON parses
                                            into the expected schema
@@ -1275,6 +1278,38 @@ def cmd_build_corpus(args: argparse.Namespace) -> int:
             f"  {WARN} {result['label_count']} labels — likely to overfit. "
             f"Aim for 5+ matches (~200+ labels) before training."
         )
+
+    if args.upload_s3:
+        try:
+            up_bucket, up_prefix = _parse_s3_uri(args.upload_s3.rstrip("/"))
+        except ValueError as exc:
+            print(f"  {FAIL} --upload-s3: {exc}")
+            return 1
+        n_files = 0
+        n_bytes = 0
+        skip_dir_name = (Path(args.cache_dir).name if args.cache_dir else "_cache")
+        for path in out_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                path.relative_to(cache_dir)
+            except ValueError:
+                pass
+            else:
+                continue
+            # Belt-and-braces: also skip any dir named like the cache,
+            # in case --cache-dir lives outside out_dir but happens to be named the same.
+            if skip_dir_name in path.parts:
+                continue
+            rel = path.relative_to(out_dir).as_posix()
+            key = f"{up_prefix}/{rel}"
+            s3.upload_file(str(path), up_bucket, key)
+            n_files += 1
+            n_bytes += path.stat().st_size
+        mb = n_bytes / (1024 * 1024)
+        print(f"  {PASS} uploaded {n_files} file(s) ({mb:.1f} MB) -> "
+              f"s3://{up_bucket}/{up_prefix}/")
+
     return 0
 
 
@@ -1676,6 +1711,10 @@ def main():
                       help="List eligible corpus rows and exit without downloading")
     p_bc.add_argument("--sequence-length", type=int, default=3,
                       help="TrackNet sliding-window length (default 3)")
+    p_bc.add_argument("--upload-s3", default=None,
+                      help="After local assembly, sync the output directory "
+                           "(excluding the S3 cache dir) to this s3:// destination. "
+                           "Example: s3://nextpoint-prod-uploads/training/datasets/<name>/")
 
     # Stroke classifier — training data export + training
     p_sc_export = sub.add_parser(
