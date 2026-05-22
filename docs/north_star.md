@@ -124,7 +124,7 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 - SA point 6 specifically: ≥3 T5 ball detections in window
 - Phase 4 reconciler: per-point match rate ≥30% (up from 0%)
 
-**Blocker:** 5a DONE 2026-05-21. 5b parked (2026-05-20). 5e SHIPPED 2026-05-21 + VERIFIED IN PROD 2026-05-22. 5c.2 SHIPPED 2026-05-22. 5d blocks on 5c. Next moves: (a) 5c.0+5c.1 flip — `AUTO_DUAL_SUBMIT_T5=1` + run backfill, (b) `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` + capture first silver-bench fixture on Render, (c) attack the three 5e follow-ups (filter chain-rejection, source='main' tag, 1d6feb3a fixture), (d) Phase 5c.3 `harness build-corpus` once 5c.2 produces real `training_corpus` rows.
+**Blocker:** 5a DONE 2026-05-21. 5b parked (2026-05-20). 5e SHIPPED 2026-05-21 + VERIFIED IN PROD 2026-05-22. 5c.2 SHIPPED 2026-05-22. 5d blocks on 5c. **5e follow-ups (1) chain-rejection + (2) `source='main'` SHIPPED 2026-05-22 late evening** — re-anchor fix in commit `7863a66`, deployed to Batch eu-north-1 `:48` / us-east-1 `:30` (amd64 `bc8f7d72…`); ball-bench post_filter_sa_recall verdict: 100% on 3/4 (fixture, tracker) combos, 67% on a798eff0/tracknet (was 33% pre-fix). Next moves: (a) 5c.0+5c.1 flip — `AUTO_DUAL_SUBMIT_T5=1` + run backfill, (b) `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1`, (c) follow-up (3) re-capture `1d6feb3a` silver-bench fixture against new Batch image to see post-fix bronze density, (d) Phase 5c.3 `harness build-corpus` once 5c.2 produces real `training_corpus` rows.
 
 ### Phase 6 — Stroke classification reconciliation (was 5) — BLOCKED by 5
 **What:** Validate T5's FH/BH/V/OH classifications match SA on validated points.
