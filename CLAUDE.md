@@ -38,6 +38,7 @@ These look reasonable but will burn future sessions. Each is an explicit decisio
 7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code and waste the rerun.
 8. **Don't merge a T5 detector branch without the Batch-side change check.** Bench is green ≠ Batch is in sync. If `git diff origin/main HEAD --stat` against `ml_pipeline/roi_extractors/`, `ml_pipeline/__main__.py`, `ml_pipeline/pipeline.py`, `ml_pipeline/Dockerfile`, `ml_pipeline/requirements.txt`, `ml_pipeline/serve_detector/`, `ml_pipeline/ball_tracker.py`, `ml_pipeline/wasb_ball_tracker.py`, `ml_pipeline/wasb_hrnet.py`, `ml_pipeline/config.py`, or `ml_pipeline/db_writer.py` returns any rows, a Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1 are required before the user reruns. See `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST" — protocol exists because we shipped Phase 1 with code in `extract_far_pose` that lived only on Render and not in Batch on 2026-05-07. `db_writer.py` was added 2026-05-22 after we changed its INSERT shape (source='main') without realising the change is dormant until Batch redeploys.
 9. **Don't skip, relax, or work around the bench CI check to land a PR.** A red bench is a real regression — `bench.yml` replays a fixed CI fixture against the locked baseline (currently 20/24 on `a798eff0`). Revert the offending commit, reproduce locally with `python -m ml_pipeline.diag.bench`, and ship a fix that turns it green. The whole reason the harness exists is the silent slip from `0cb645a`; weakening the gate (lowering the baseline, narrowing the trigger globs, removing the workflow) is never the right move.
+10. **Don't auto-spawn a task without a paired server-side trigger.** Browser-polling ingest gates (like the one in `/upload/api/task-status`) only fire when a user has the page open. Auto-spawned tasks have no browser → the ingest never starts and the task sits in `queued` forever. Every auto-spawn must be paired with a cron, webhook, or sweep endpoint — `/ops/sweep-t5-orphans` was added for exactly this gap.
 
 ## Services and How to Run
 
@@ -222,50 +223,13 @@ Module: `coach_invite/` (contains both email types).
 
 ## Support Bot (`support_bot/` + `frontend/support.html`)
 
-Customer-service chat for the portal. **Claude Haiku 4.5** with prompt caching + forced tool-use for guaranteed structured output. FAQ-only — bot answers strictly from `support_bot/faq.md` and escalates anything not covered (or any account-specific question) to `info@ten-fifty5.com` via SES.
+Portal customer-service chat. Claude Haiku 4.5, FAQ-only (answers strictly from `support_bot/faq.md`), forced tool-use for structured output, auto-escalates account-specific questions to `info@ten-fifty5.com` via SES. Surface: `GET /help` (in portal sidebar). API: `/api/support/{ask,feedback,escalate,health}` under `X-Client-Key` auth. Kill switch: `SUPPORT_BOT_ENABLED=false`. The FAQ is the load-bearing artefact (5 seeded entries, ~30 planned).
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /api/support/ask` | Main entry. Body `{message, email, page_context?, conversation_id?}` → `{answer, confidence, needs_human, cited_sections, actions}` |
-| `POST /api/support/feedback` | Thumbs up/down on a turn |
-| `POST /api/support/escalate` | Email transcript to `info@ten-fifty5.com`, Reply-To = customer |
-| `GET /api/support/health` | Admin-only: FAQ hash, conversation counts, cost metrics |
+Full reference: **`docs/support_bot.md`** + `support_bot/README.md`.
 
-Auth: `X-Client-Key` header (same as Client API). Admin endpoints require `email` in `ADMIN_EMAILS`. CORS: `/api/support/` is in `CORS_PATHS` next to `/api/client/`.
+## Client API (`client_api.py`)
 
-Tables (idempotent on boot via `init_support_schema()`): `support_bot.conversations` (every Q+A logged with tokens + cost) and `support_bot.faq_cache` (sha256-keyed dedup, invalidated when `faq.md` content hash changes).
-
-**Surface**: dedicated page `frontend/support.html` served at `GET /help` (by both `locker_room_app.py` and `upload_app.py` as same-origin backup). Reached via the **Help & Support** item in the portal sidebar (`portal.html` `NAV_ITEMS`); loads inside the portal iframe via the standard `navigateTo()` flow with auth params populated by `authParams()`. Visually mirrors the AI Coach module (greeting + quick-prompt chips + input + green-callout answer + green-pill `[section.id]` citations + amber escalate CTA when `needs_human` or `confidence=low`).
-
-**Cost**: ~$0.001 per cached query, ~$0.008 per cache-write. Realistic monthly spend at portal volumes: < $5.
-
-**Anti-hallucination**: hard FAQ-only system rule, account-specific questions auto-escalated regardless of FAQ coverage, `confidence=high` filter on cache writes, AI-Coach redirect for stroke/match-data questions, kill switch via `SUPPORT_BOT_ENABLED=false`.
-
-**The FAQ is the load-bearing artefact** — `support_bot/faq.md` is currently seeded with 5 example entries; real ~30 to be written by Tomo + co-worker based on actual inbound email volume.
-
-Full implementation reference: **`docs/support_bot.md`**. Design history & rationale (note: predates the widget→page pivot): `docs/support_bot_design.md`.
-
-## Client API (`client_api.py`) — non-dashboard endpoints
-
-Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMIN_EMAILS` (hardcoded: `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`).
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/client/matches` | Match list for sidebar — from `gold.vw_client_match_summary` |
-| `GET /api/client/players` | Distinct player names for autocomplete |
-| `PATCH /api/client/matches/<task_id>` | Update match metadata (whitelisted fields) |
-| `POST /api/client/matches/<task_id>/reprocess` | Rebuild silver via `build_silver_v2` |
-| `GET /api/client/profile` / `PATCH` | Primary member profile on `billing.member` |
-| `GET /api/client/usage` | Account usage summary |
-| `GET /api/client/footage-url/<task_id>` | Presigned S3 GET URL for trimmed footage |
-| `GET /api/client/entitlements` | Role, plan, credits, plans_page_url |
-| `GET /api/client/members` / `POST` / `PATCH` / `DELETE` | Linked players (billing.member) |
-| `POST /api/client/register` | Onboarding |
-| `POST /api/client/children` | Add child member |
-| `GET /api/client/profile-photo-upload-url` | Presigned S3 PUT |
-| `GET /api/client/backoffice/pipeline` | Admin pipeline status |
-| `GET /api/client/backoffice/customers` | Admin customer list |
-| `GET /api/client/backoffice/kpis` | Admin KPI cards |
+Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMIN_EMAILS` (hardcoded: `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`). Surface: customer-facing dashboard data + profile / entitlements / members / matches / footage URLs + `/backoffice/*` admin endpoints. Dashboard endpoints catalogued in `docs/dashboards.md`; the full endpoint list is discoverable by grepping `@.*\.route` in `client_api.py`.
 
 ## Locker Room SPAs
 
@@ -328,7 +292,7 @@ All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Auth
 - `POST /ops/compact-storage` — runs `VACUUM (FULL, ANALYZE)` on the bronze/silver/ml_analysis table list, returns per-table `before_bytes` / `after_bytes` / `freed_bytes` JSON. Optional body `{"only": ["schema.table", ...]}` to scope. Each VACUUM takes ACCESS EXCLUSIVE — trigger during low traffic.
 - `POST /ops/orphan-sweep` — periodic mop-up for the soft-delete cascade. Two passes: (1) child rows whose parent `submission_context.deleted_at IS NOT NULL`, (2) true orphans whose `task_id` has no `submission_context` row at all. Body: `{"dry_run": true}` reports counts without changes; `{"include_orphans": false}` skips pass 2. Idempotent. Never touches `billing.*`. Implemented in `cleanup/orphan_sweep.py`.
 - `POST /ops/sweep-t5-orphans` — Phase 5c.2 catch-up sweep. Fires `_start_ingest_background` for any `tennis_singles_t5` task where `bronze.submission_context.ingest_started_at IS NULL` but `ml_analysis.video_analysis_jobs.status='complete'`. Auto-spawned T5 tasks have no polling browser to open the normal ingest gate in `/upload/api/task-status`, so they sit in `last_status='queued'` indefinitely despite Batch having succeeded — this endpoint plugs that exact gap. Body: `{"dry_run": true, "limit": 50, "min_age_minutes": 5}` (all optional; dry-run is the default). Returns `{ok, dry_run, found, triggered: [{task_id}], sample: [...] (dry-run only)}`. Idempotent via the inner ingest gate (checks `ingest_started_at` + staleness) and the `training_corpus` UNIQUE constraint. Header-only auth.
-- `POST /ops/diag/sql` — read-only SELECT runner for autonomous diagnostics (Tier-2 autonomy infra; future Claude sessions hit this via WebFetch instead of asking the user to paste Render-shell output). Body: `{"sql": "SELECT ...", "limit": 100}` (default 100, max 1000). Response: `{"columns": [...], "rows": [[...]], "row_count": N, "truncated": bool, "elapsed_ms": ms}`. Enforced via `sqlparse` + keyword denylist: only single-statement `SELECT` or `WITH ... SELECT`; rejects `INSERT/UPDATE/DELETE/DROP/TRUNCATE/ALTER/CREATE/GRANT/REVOKE/COPY/VACUUM/ANALYZE/CALL/DO/LOCK/EXECUTE/SET/RESET/BEGIN/COMMIT/ROLLBACK` and the phrases `FOR UPDATE` / `FOR SHARE` (CTE-wrapped DML is caught by the keyword check). Per-query transaction sets `statement_timeout = '5s'` and `idle_in_transaction_session_timeout = '5s'`; timeout returns 408. Bad SQL returns 400 with `offending_keyword`. Logs query text + IP + elapsed_ms but never row contents (PII). No per-IP rate limiting — `OPS_KEY` is server-to-server only, so this is accepted. Residual risk: mutating server-side functions (`pg_terminate_backend`, advisory locks) are not enumerated. Implemented in `diag_sql/sql_endpoint.py`. Example: `curl -sS -X POST https://api.nextpointtennis.com/ops/diag/sql -H "X-Ops-Key: $OPS_KEY" -H "Content-Type: application/json" -d '{"sql":"SELECT task_id, sport_type FROM bronze.submission_context ORDER BY created_at DESC LIMIT 5","limit":5}'`.
+- `POST /ops/diag/sql` — read-only SELECT runner for autonomous diagnostics (Tier-2 autonomy infra; future Claude sessions hit this via WebFetch instead of asking Tomo to paste Render-shell output). Body: `{"sql": "...", "limit": 100}`. `sqlparse`-enforced single-statement `SELECT`/`WITH...SELECT` only; keyword denylist + `statement_timeout=5s`. Implemented in `diag_sql/sql_endpoint.py`. Full constraints, curl example, residual risks: **`docs/ops_runbook.md`**.
 
 **Workers respect `submission_context.deleted_at`** — both the SportAI ingest worker (`ingest_worker_app.py::_do_ingest`) and the in-process T5 path (`upload_app.py::_do_ingest_t5`) check `deleted_at` at four gates (`pre_start`, `pre_bronze`, `pre_silver`, `pre_trim`) and abort cleanly without re-populating bronze rows if a delete races with an in-flight ingest.
 
@@ -336,7 +300,7 @@ All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Auth
 
 New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`, `cleanup/`. Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
 
-**Blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring — 14 calls as of 2026-05-20):
+**Blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring):
 
 Top-level (registered unconditionally):
 - `client_api.py` — `/api/client/*`, CLIENT_API_KEY auth. Primary customer-facing API surface (dashboard endpoints, profile, entitlements, members, matches, footage URLs). Non-dashboard endpoints catalogued [above](#client-api-client_apipy--non-dashboard-endpoints); dashboard endpoints in `docs/dashboards.md`.
@@ -424,6 +388,8 @@ python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
 python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
 python -m ml_pipeline.harness reconcile <sa_tid> <t5_tid>
 python -m ml_pipeline.harness rerun-silver <task_id>    # fast — no Batch needed
+python -m ml_pipeline.harness build-corpus              # assemble dataset from ml_analysis.training_corpus (Phase 5c.3); --task <id>, --upload-s3
+python -m ml_pipeline.harness verify-corpus-row <task_id>  # sanity-check a training_corpus row
 python -m ml_pipeline.diag.serve_viewer <task_id> --video <path>  # visual contact sheets
 ```
 
