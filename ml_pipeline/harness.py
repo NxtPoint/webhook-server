@@ -53,6 +53,12 @@ Training pipeline (TrackNet fine-tuning):
     export-sportai-labels <task_id> <out.json> — export SportAI hit positions as training labels
     extract-frames <video_or_s3> <output_dir> [--fps 25]
                                          — extract JPEG frames from video for training
+    build-corpus --output-dir <dir> [--label-kind ball_position] [--limit 50]
+                 [--validated-only] [--dry-run] [--cache-dir <dir>] [--sequence-length 3]
+                                         — Phase 5c.3: assemble a combined dataset from all rows
+                                           in ml_analysis.training_corpus (downloads label JSON +
+                                           video from S3 into a local cache, then merges via
+                                           build_serve_bounce_dataset.build_dataset)
 
 Stroke classifier (far-player optical flow):
     export-stroke-data --sportai-task <id> --t5-task <id> --video <path> --output <dir>
@@ -1149,6 +1155,126 @@ def cmd_extract_frames(args: argparse.Namespace) -> int:
         return 1
 
 
+def _parse_s3_uri(uri: str) -> tuple:
+    """Split an s3://bucket/key URI into (bucket, key)."""
+    if not uri.startswith("s3://"):
+        raise ValueError(f"not an s3:// URI: {uri}")
+    body = uri[len("s3://"):]
+    parts = body.split("/", 1)
+    if len(parts) != 2 or not parts[1]:
+        raise ValueError(f"malformed s3:// URI: {uri}")
+    return parts[0], parts[1]
+
+
+def cmd_build_corpus(args: argparse.Namespace) -> int:
+    """Assemble a TrackNet training dataset from ml_analysis.training_corpus.
+
+    Phase 5c.3 — reads completed dual-submit pair rows from the corpus table,
+    downloads each label JSON + source video from S3 into a local cache, then
+    calls build_serve_bounce_dataset.build_dataset() to produce one combined
+    dataset (frames/ + labels.json).
+
+    Idempotent on S3 cache (skips downloads if the local file already exists
+    and is non-empty) so re-runs after a partial network failure are cheap.
+    """
+    from sqlalchemy import text as sql_text
+
+    hr(f"BUILD CORPUS  kind={args.label_kind}  out={args.output_dir}")
+
+    where = ["label_kind = :kind"]
+    params: Dict[str, Any] = {"kind": args.label_kind}
+    if args.validated_only:
+        where.append("validated_at IS NOT NULL")
+    sql = (
+        "SELECT sa_task_id, t5_task_id, label_s3_key, video_s3_key, "
+        "       label_count, role_breakdown, created_at "
+        "  FROM ml_analysis.training_corpus "
+        f" WHERE {' AND '.join(where)} "
+        " ORDER BY created_at ASC "
+        " LIMIT :lim"
+    )
+    params["lim"] = args.limit
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text(sql), params).mappings().all()
+
+    if not rows:
+        print(f"  {INFO} 0 eligible rows in ml_analysis.training_corpus")
+        print(f"  {INFO} nothing to do — exiting cleanly")
+        return 0
+
+    print(f"  {INFO} {len(rows)} eligible row(s):")
+    for r in rows:
+        print(
+            f"      t5={str(r['t5_task_id'])[:8]}  sa={str(r['sa_task_id'])[:8]}  "
+            f"labels={r['label_count']}  created={r['created_at']:%Y-%m-%d %H:%M}"
+        )
+
+    if args.dry_run:
+        print(f"  {INFO} dry-run — no S3 downloads, no dataset assembled")
+        return 0
+
+    out_dir = Path(args.output_dir)
+    cache_dir = Path(args.cache_dir) if args.cache_dir else (out_dir / "_cache")
+    labels_cache = cache_dir / "labels"
+    videos_cache = cache_dir / "videos"
+    labels_cache.mkdir(parents=True, exist_ok=True)
+    videos_cache.mkdir(parents=True, exist_ok=True)
+
+    import boto3
+    region = os.environ.get("AWS_REGION", "eu-north-1")
+    s3 = boto3.client("s3", region_name=region)
+
+    label_paths: List[str] = []
+    video_paths: List[str] = []
+    for r in rows:
+        try:
+            lbl_bucket, lbl_key = _parse_s3_uri(r["label_s3_key"])
+            vid_bucket, vid_key = _parse_s3_uri(r["video_s3_key"])
+        except ValueError as exc:
+            print(f"  {FAIL} t5={str(r['t5_task_id'])[:8]} — {exc}")
+            return 1
+
+        local_lbl = labels_cache / Path(lbl_key).name
+        local_vid = videos_cache / f"{str(r['t5_task_id'])[:8]}_{Path(vid_key).name}"
+
+        if not local_lbl.exists() or local_lbl.stat().st_size == 0:
+            print(f"  {INFO} downloading label s3://{lbl_bucket}/{lbl_key}")
+            s3.download_file(lbl_bucket, lbl_key, str(local_lbl))
+        else:
+            print(f"  {INFO} cached label   {local_lbl.name}")
+
+        if not local_vid.exists() or local_vid.stat().st_size == 0:
+            print(f"  {INFO} downloading video s3://{vid_bucket}/{vid_key}")
+            s3.download_file(vid_bucket, vid_key, str(local_vid))
+        else:
+            print(f"  {INFO} cached video   {local_vid.name}")
+
+        label_paths.append(str(local_lbl))
+        video_paths.append(str(local_vid))
+
+    from ml_pipeline.training.build_serve_bounce_dataset import build_dataset
+    result = build_dataset(
+        label_paths=label_paths,
+        video_paths=video_paths,
+        output_dir=str(out_dir),
+        sequence_length=args.sequence_length,
+    )
+
+    print(f"  {PASS} dataset assembled")
+    print(f"      frames:  {result['frames_dir']}  ({result['frame_count']} files)")
+    print(f"      labels:  {result['labels_path']}  ({result['label_count']} entries)")
+    print(f"      per_role: {result['per_role']}")
+    print(f"      per_source: {result['per_source']}")
+    if result["label_count"] < 50:
+        print(
+            f"  {WARN} {result['label_count']} labels — likely to overfit. "
+            f"Aim for 5+ matches (~200+ labels) before training."
+        )
+    return 0
+
+
 # ============================================================
 # Serve-detector eval
 # ============================================================
@@ -1410,6 +1536,26 @@ def main():
     p_ef.add_argument("--bucket", default=None, help="S3 bucket (if video is a bare S3 key)")
     p_ef.add_argument("--region", default=None, help="AWS region for S3 download")
 
+    p_bc = sub.add_parser(
+        "build-corpus",
+        help="Phase 5c.3: assemble a TrackNet training dataset from ml_analysis.training_corpus",
+    )
+    p_bc.add_argument("--output-dir", required=True,
+                      help="Directory to write frames/ + labels.json into")
+    p_bc.add_argument("--label-kind", default="ball_position",
+                      choices=["ball_position", "serve_bounce", "stroke_classifier"],
+                      help="Filter training_corpus to this label_kind (default ball_position)")
+    p_bc.add_argument("--validated-only", action="store_true",
+                      help="Only include rows where validated_at IS NOT NULL")
+    p_bc.add_argument("--limit", type=int, default=50,
+                      help="Max corpus rows to include (default 50)")
+    p_bc.add_argument("--cache-dir", default=None,
+                      help="Local cache for S3 downloads (default: <output-dir>/_cache)")
+    p_bc.add_argument("--dry-run", action="store_true",
+                      help="List eligible corpus rows and exit without downloading")
+    p_bc.add_argument("--sequence-length", type=int, default=3,
+                      help="TrackNet sliding-window length (default 3)")
+
     # Stroke classifier — training data export + training
     p_sc_export = sub.add_parser(
         "export-stroke-data",
@@ -1475,6 +1621,8 @@ def main():
         return cmd_export_sportai_labels(args)
     if args.cmd == "extract-frames":
         return cmd_extract_frames(args)
+    if args.cmd == "build-corpus":
+        return cmd_build_corpus(args)
     if args.cmd == "export-stroke-data":
         return cmd_export_stroke_data(args)
     if args.cmd == "train-stroke":
