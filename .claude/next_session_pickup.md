@@ -13,11 +13,12 @@
 
 **Match 2 (`54710da5`) — failed at 6h Batch timeout 16:57 UTC; three diagnostic bugs surfaced (see "Match 2 diagnostic findings" section at the bottom — those notes are unchanged from the parallel agent's afternoon write-up).**
 
-**Next session's strategic options (Tomo to pick — see "Where to go next" section at the bottom for the full analysis):**
-1. **Phase 7 y-axis calibration** — biggest product impact, Batch-side, ~2-3 days, daylight only.
-2. **Wire stroke_events into T5 silver** — direct lever on the Forehand undercount, Render-side, ~1-2 days.
-3. **Bug 2: roi_bounces per-window slowdown** — unblocks long matches (Match 2 hit this), small Batch-side change, ~half a day.
-4. **5s-gap rule retune** — quick fix that may recover ~10 Forehands per match, Render-side, ~few hours but touches load-bearing pre-existing logic.
+**Next session — Tomo-locked priority order is B → C → A.** Full table is in `docs/north_star.md` §"★ Next-session priority order" (canonical) and in the "Where to go next" section below (analysis). Summary:
+1. **B — Wire `stroke_events` into T5 silver** (Render-side, ~1-2 days) — direct lever on Forehand undercount, builds on what shipped tonight.
+2. **C — Fix `roi_bounces` per-window slowdown** (Batch-side, ~half a day) — unblocks long matches, contained fix.
+3. **A — Phase 7 y-axis calibration** (Batch-side, ~2-3 days, daylight only) — biggest single product win; do AFTER silver is cleanest.
+
+Deferred backlog (in `north_star.md`): Option D (5s-gap rule retune, needs silver-bench fixture first), Bug 1 (ROI misalignment, defensive), Phase 8 (lower priority than Phase 7).
 
 ---
 

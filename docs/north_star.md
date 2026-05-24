@@ -40,9 +40,29 @@ We are NOT trying to hit 100% serve detection. We're trying to get the dashboard
 
 ## Current bottleneck
 
-**Ball-bounce x,y geometric accuracy — UNMEASURED on the new pipeline.** Coverage is no longer the dominant problem (see Strategy update 2026-05-24 below). The blocking measurement is now Phase 7: how far is each T5 bounce x,y from SA's truth on a matched pair? Phase 6 (stroke detection) is also now unblocked via a pose-only path; see Strategy update below.
+**Ball-bounce x,y geometric accuracy — MEASURED 2026-05-24, INSUFFICIENT (Phase 7 below).** Median Euclidean error 3.2-4.05m on Match 1 vs <2m target; far-baseline bounces 10-17m off. This is the dominant product blocker — heatmaps, "where balls land", every placement-dependent feature depends on Phase 7. Coverage is no longer the dominant problem (see Strategy update 2026-05-24 below).
 
 Phase 1 is closed; the phantom-bounce era described in the archived north_star is over.
+
+---
+
+## ★ Next-session priority order — Tomo decision 2026-05-24 LATE NIGHT
+
+**Sequence: B → C → A.** Locked in at the end of the 2026-05-24 late-night session that closed Phase 3 part 2 + the Phase 6 production module. Do not lose sight of this order; pick from the top.
+
+| # | Option | Where | Cost | Why this position |
+|---|---|---|---|---|
+| **B** | **Wire `ml_analysis.stroke_events` into T5 silver** (Phase 6 step 2) | Render-side, `build_silver_match_t5.py` Pass 1 | ~1-2 days | Direct lever on the Forehand-undercount ceiling (T5 fh=17 vs SA fh=38). Stroke-driven row generation recovers strokes that the bounce-driven path misses. Improving silver row coverage first means Phase 7's measurement runs against cleaner data. |
+| **C** | **Fix `roi_bounces` per-window slowdown (Bug 2)** | Batch-side, `ml_pipeline/roi_extractors/bounces.py` | ~half a day | Unblocks long matches (Match 2 timed out at 6h Batch because of this). Without it, every match >~45 min keeps failing, future training corpus collection blocked. One-file change (load TrackNet outside the window loop); trips BATCH-SIDE CHANGE CHECKLIST but minimally. |
+| **A** | **Phase 7 — y-axis bounce calibration** | Batch-side, `roi_extractors/bounces.py` + `build_silver_v2.py` + court calibration | ~2-3 days, **daylight only** | Biggest single product win; fix direction known ("pixel-y-based far-baseline check replacing `_baseline_zone(court_y)`"). Best done LAST because measurement quality depends on silver quality (B) and run reliability on long matches (C). Per memory rule `feedback_overnight_branch_only.md`: daylight-supervised session only. |
+
+**Deferred / lower-priority backlog:**
+
+- **Option D — retune `excl_chain.gap_break` 5s → 8s** (Render-side, ~few hours) — would recover ~10 Forehands per Match 1-style task, but touches load-bearing pre-existing pass-3 logic with no silver-bench fixture covering it. Wait for a silver-bench fixture before touching.
+- **Bug 1 — ROI region misalignment** (Batch-side, defensive) — explained sparse FAR-player data on Match 2; not blocking unless it recurs on a new upload.
+- **Phase 8 — final serve-detection cleanup** (4 a798eff0 misses + 1 880dff02 miss) — explicitly lower priority than Phase 7.
+
+Full strategic analysis with cost/risk per option is in `.claude/next_session_pickup.md` ("Where to go next").
 
 ---
 
