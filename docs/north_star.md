@@ -114,7 +114,7 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 **Part 1 — warm-up filter — DONE 2026-05-07.** New `first_serve_task` CTE + OR clause in the `final` CTE flips `exclude_d=TRUE` on rows where `ball_hit_s < per-task MIN(ball_hit_s) FILTER (serve_d)`. Predicted 35-row impact on `880dff02` confirmed via direct query (76 pre-existing exclusions + 35 new = 111 TRUE). Backhand count on active silver dropped from 62 → 10 (now slightly *under* SA's 15). Bench unchanged.
 
-**Part 2 — between-point filter — BLOCKED by Phase 5 (2026-05-20).** Two pure-SQL attempts shipped + reverted; both flawed for the same upstream reason.
+**Part 2 — between-point filter — UNBLOCKED 2026-05-24** (was BLOCKED by Phase 5). Phase 5 coverage prerequisite now met (52%+ on 78c32f53). Today's reconcile on `0d0514df ↔ 78c32f53` re-exposed the exact symptom this filter is meant to fix: T5 has 139 silver rows vs SA's 94, with `shot_ix_in_point` populated on only 38% of T5 rows vs 81% of SA's — meaning ~86 T5 rows are warmup / between-point activity that SA correctly excludes. **Original 2026-05-20 attempts (preserved below for reference)** — two pure-SQL attempts shipped + reverted; both flawed for the same upstream reason that's now resolved.
 
   - **v1 (commit 00b8639, reverted)** — Pattern A from session_2026-05-20_review.md: anchor on every `serve_d=TRUE` row in `with_try_ff`, window = `LEAST(hit+30s, next_serve-2s)`. Result on 880dff02: **no-op**. T5's geometric serve detector emits 107 detections on an 18-point match (any overhead-type swing within EPS of a baseline qualifies). 107 dense anchors create windows that cover the entire match → nothing falls outside any window → 0 rows excluded. Active T5 rows held at 49.
   - **v2 (commit f0b104e, reverted)** — anchor on first `serve_d=TRUE` per `point_number` (~18-30 anchors), 20s cap. Result on 880dff02: **wrong rows dropped**. Active T5 49 → 34 (-15 by count) but the reconciler's "T5 strokes outside ANY SA point window" held at 20 — all 15 dropped rows were INSIDE real SA windows. Per-point: pt 5 (SA [178.44–195.96]) 8 T5 → 1; pt 14 (SA [458.08–468.00]) 9 T5 → 1. Forward-fill of `point_number` assigns rows in the [SA_point_start, T5_serve_detection] gap to the PREVIOUS point_number; those rows then fall outside that previous point's 20s window and get excluded — even though they're real strokes of the current point.
@@ -186,9 +186,9 @@ Refinement work to reach 75-80% recall + 50-60% precision (production-grade): pe
 **Blocker (was Phase 5, now removed):** Phase 5 coverage prerequisite met. Run the measurement.
 **Why this matters more than Phase 6 right now:** A pose-only stroke detector that's 80% accurate is fine for stroke COUNTING; for the dashboards Tomo ships (placement heatmaps, "where did this stroke land"), coordinate accuracy is load-bearing.
 
-### Phase 8 — Final serve-detection cleanup (was 7) — BLOCKED by 5
+### Phase 8 — Final serve-detection cleanup — UNBLOCKED but LOWER PRIORITY than 7
 **What:** With ball coverage, point boundaries, and clean silver in place, revisit the 4 a798eff0 misses + 1 880dff02 miss (148.52 NEAR). Whichever still don't recover gets a one-line memo in the Backlog + parked.
-**Blocker:** Phases 5–7.
+**Status:** Coverage prerequisite met 2026-05-24. Not the next critical move — Phase 7 (bounce x,y accuracy) is the load-bearing measurement. Pick this up after Phase 7 + Phase 6 production module.
 
 ---
 
