@@ -1175,9 +1175,15 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
 
     -- rally_end_s = max bounce time inside the candidate region + 1s
     -- (1s buffer admits the final no-bounce stroke's follow-through).
-    -- Fallback to rally_start_s + 10s if NO bounce falls inside (extremely
-    -- short or no-bounce-detected rally) — leaves a forgiving window so
-    -- v2's "wrong rows dropped" failure mode can't recur.
+    -- Fallback to rally_start_s + 20s if NO bounce falls inside (long
+    -- rally with TrackNet ball-detection gaps, or single-stroke ace
+    -- where TrackNet missed the lone bounce) — admits the bulk of real
+    -- rallies on this footage; v2's "wrong rows dropped" failure mode
+    -- can't recur because the windows here are time-based not point-
+    -- number-based.
+    -- 2026-05-24 evening tuning bump: was +10s — that under-shot. On
+    -- Match 1 (78c32f53) the +10s filter dropped T5 active rows from
+    -- 139 → 61 (target 89-99 = SA's 94 ± 5%).
     rally_windows AS (
       SELECT pwb.task_id, pwb.point_number,
         pwb.rally_start_s,
@@ -1186,12 +1192,15 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
            FROM ball_bounces bb
            WHERE bb.bounce_s >= pwb.rally_start_s
              AND bb.bounce_s < COALESCE(pwb.next_rally_start_s, pwb.rally_start_s + 60.0)),
-          pwb.rally_start_s + 10.0
+          pwb.rally_start_s + 20.0
         ) + 1.0 AS rally_end_s
       FROM point_window_bounds pwb
     ),
 
     -- Per-row gate: does this row's ball_hit_s sit inside ANY rally window?
+    -- The 2.0s pre-buffer (`>= rally_start_s - 2.0`) admits real strokes
+    -- that land 1-2s BEFORE the detected first serve: return-setup
+    -- motion, T5's serve detector latching on a frame or two late, etc.
     -- Pulls the two safety flags from the data-availability CTEs so the
     -- final exclude_d expression can disarm the filter when either is
     -- missing.
@@ -1200,7 +1209,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         EXISTS (
           SELECT 1 FROM rally_windows rw
           WHERE rw.task_id = w.task_id
-            AND w.ball_hit_s >= rw.rally_start_s
+            AND w.ball_hit_s >= (rw.rally_start_s - 2.0)
             AND w.ball_hit_s <= rw.rally_end_s
         ) AS in_rally_window,
         EXISTS (SELECT 1 FROM ball_bounces) AS has_bounce_data,
