@@ -1,6 +1,6 @@
 # T5 ML Pipeline — North Star
 
-**Last updated:** 2026-05-22 afternoon — **Phase 5e WASB production verification PASSED.** Batch task `1d6feb3a-4624-47ae-b8f5-44246b6d0eb3` ran end-to-end on `ten-fifty5-ml-pipeline:47` (image `sha256:8fe82a3…`, `BALL_TRACKER=wasb`); CloudWatch confirms `WASBBallTracker` processed 15,298 frames at 54.3% detection rate, 17 valid bounces, pipeline complete in 2,258s. Phase 5c.2 (corpus foundation) SHIPPED (`d7718e0`) + silver bench SHIPPED (`83e1ab7`). Three follow-ups identified (filter chain-rejection, `source='main'` tag, fixture capture).
+**Last updated:** 2026-05-25 — **Phase 7 MEASURED + REFRAMED.** Ball-bounce reconciliation vs SA on Match 1 (live-DB, `docs/_investigation/bounce_accuracy.md`): the bounce problem is **detection precision + timing, NOT coordinate calibration** — the court calibration is a faithful homography (0.11m self-consistency), and the ~177 nulled bounces are ~84% airborne false-positives, not lost ground bounces. Phase 7 work reframed from "recalibrate" to "reject airborne `is_bounce` FPs + fix ~0.5s timing." (Prior: Phase 5e WASB production verification PASSED, task `1d6feb3a`, 54.3% detection; Phase 5c.2 SHIPPED `d7718e0` + silver bench `83e1ab7`.)
 **Last verified:** 2026-05-22 — serve bench green (a798eff0 20/24, 880dff02 23/24); ball-bench v2 locked at `7100792`; silver-bench schema init verified locally (24 tables on fresh Docker Postgres including `ml_analysis.training_corpus`); WASB pipeline verified in production on Batch task `1d6feb3a`. 5c.2 hook still gated behind `AUTO_LABEL_DUAL_SUBMIT_PAIRS=0` until Tomo flips it.
 **Previous version archived:** `docs/_archive/north_star_2026-05-07_phantom-bounce-era.md`
 **This is the single place where the T5 macro plan lives.** Phase work happens against this ladder. Don't invent new directions — pick a phase, claim it, deliver, update.
@@ -40,7 +40,7 @@ We are NOT trying to hit 100% serve detection. We're trying to get the dashboard
 
 ## Current bottleneck
 
-**Ball-bounce x,y geometric accuracy — MEASURED 2026-05-24, INSUFFICIENT (Phase 7 below).** Median Euclidean error 3.2-4.05m on Match 1 vs <2m target; far-baseline bounces 10-17m off. This is the dominant product blocker — heatmaps, "where balls land", every placement-dependent feature depends on Phase 7. Coverage is no longer the dominant problem (see Strategy update 2026-05-24 below).
+**Ball-bounce accuracy — RECONCILED 2026-05-25 against SA on Match 1; the problem is NOT calibration.** Full diagnosis in `docs/_investigation/bounce_accuracy.md`. Headline: the court calibration is a **faithful planar homography** (reconstructable Render-side from player-feet correspondences to 0.11m self-consistency), so Phase 7-as-"recalibration" is **not** the lever. Event recall is fine (85% of SA floor bounces within ±0.8s). The real levers are **bounce-detection precision** (T5 fires 303 events vs SA's 161; ~177 nulled `is_bounce` flags are ~84% airborne false-positives, correctly clamped — not lost ground bounces) and **~0.5s timing jitter** (downstream of 52% ball coverage). The far baseline is **resolution-limited** (~1px ≈ metres) — a physical cap recalibration can't remove; near-half placement is well-conditioned and likely already good. The old "3-7m off / 10-17m far-baseline" framing conflated airborne FPs and the far-court resolution limit with a calibration error that isn't there.
 
 Phase 1 is closed; the phantom-bounce era described in the archived north_star is over.
 
@@ -67,7 +67,7 @@ Full detail: `docs/_investigation/far_player_accuracy.md`, `.claude/next_session
 | # | Work | Where | Why this position |
 |---|---|---|---|
 | **1** | **Validate the near swing-path gate (2nd match) / Q1-D trained classifier; Q2-B A/B identity** | Render-side | The near gate is single-match-calibrated — needs a 2nd match's SA truth or the trained stroke classifier (Q1-D, `training_corpus` accumulating) before it's trustworthy. Player A/B identity (Q2-B) still unaddressed (silver assigns by court SIDE; can't hold A/B across an end-change). Both gate the stroke-driven flip. |
-| **2** | **Phase 7 — y-axis bounce calibration** | Batch-side, `roi_extractors/bounces.py` + court calibration | The remaining bronze-accuracy lever; bounce x/y error 3.2m median, far-baseline 10-17m off. Biggest single product win. ~2-3 days, **daylight only** (`feedback_overnight_branch_only.md`). |
+| **2** | **Phase 7 (reframed) — bounce-detection PRECISION, not recalibration** | `roi_extractors/bounces.py` (Batch) and/or a silver-side `is_bounce` guard (Render) | RECONCILED 2026-05-25 (`docs/_investigation/bounce_accuracy.md`): calibration is a faithful homography — recalibration is NOT the lever. Reject airborne `is_bounce` FPs (~177/303, ~84% above the court plane); fix the ~0.5s timing jitter (ball coverage). Far-baseline accuracy is resolution-capped (~1px≈m). **Don't trigger a Batch recalibration to chase the 3m number.** |
 | **C** | **Fix `roi_bounces` per-window slowdown (Bug 2)** | Batch-side, `ml_pipeline/roi_extractors/bounces.py` | Contained, well-diagnosed. Unblocks long matches (Match 2 timed out at 6h). One-file change (load TrackNet outside the window loop). |
 
 **Deferred / lower-priority backlog:**
@@ -105,7 +105,7 @@ Full strategic analysis is in `.claude/next_session_pickup.md`.
 
 **Where training fits now (Phase 5c / 5d):** The corpus accumulation pipeline (auto-spawn + auto-label, LIVE per Phase 5c.0-5c.3) is not wasted. It's the runway from heuristic-ceiling (~80%) to ML-ceiling (~90-95%). Once we have 5-10 matches of corpus, a small pose-feature classifier (24-frame window of pose features → hit/not-hit) is trainable and would close the heuristic-to-ML gap. **No longer urgent; no longer load-bearing.** Keep accumulating passively.
 
-**What hasn't moved:** Phase 7 (bounce x,y coordinate accuracy in meters). Coverage being 52% is necessary but not sufficient — we don't yet know the geometric error of T5's reported bounces vs SA's. Next critical measurement.
+**What hasn't moved:** ~~Phase 7 (bounce x,y coordinate accuracy in meters)~~ — **MEASURED 2026-05-25.** The geometric error vs SA is now reconciled (`docs/_investigation/bounce_accuracy.md`) and the conclusion flips: it's a bounce-detection *precision* + timing problem, not a coordinate-calibration problem. Calibration is a faithful homography.
 
 **Implication for the phase ladder:** Phase 5 partial → mostly DONE (coverage met). Phase 6 BLOCKED → UNBLOCKED (pose-only viable). Phase 7 BLOCKED → MEASURABLE (next probe). Phase 8 unchanged.
 
@@ -224,17 +224,32 @@ Three refinements from the `ball_hit_pose.py` probe applied:
 
 **See:** Strategy update 2026-05-24 above for the full three-probe story.
 
-### Phase 7 — Coordinate reconciliation — MEASURABLE 2026-05-24, UNMEASURED
+### Phase 7 — Bounce accuracy — MEASURED + REFRAMED 2026-05-25
 
-**This is THE critical next measurement.** Tomo flagged on 2026-05-24 that ball-bounce x,y accuracy is the single most important product metric — heatmaps, "where balls land" visualisations, every coaching insight depends on it. Coverage being 52% post-WASB means we now have enough bounces to compare; we just haven't done the geometric error measurement yet.
+**Measured against SA on Match 1 (full diagnosis: `docs/_investigation/bounce_accuracy.md`).** The
+critical measurement Tomo flagged is done, and it **reframes the phase**: ball-bounce accuracy is a
+**detection-precision + timing** problem, **not a coordinate-calibration problem.**
 
-**What:** Per-event `bounce_court_x/y` populated; geometric error vs SA <2m on validated points.
-**Where:** `silver.point_detail` columns, `roi_extractors/bounces.py` (overlaps with Phase 5a), `build_silver_v2.py`.
-**How to verify:** Two-step:
-  1. Run `harness reconcile <sa_tid> <t5_tid>` — already measures coverage and distribution of `court_x`/`court_y`/`ball_bounce_x_norm`/`y_norm` (existing tool, `ml_pipeline/recon_silver.py`). Tells us if T5 populates the fields at all.
-  2. New diag probe to compute true geometric error: match T5 bounces to SA bounces by time (±0.5s), compute Euclidean distance in court metres, aggregate (median, p90, p95). Target: <2m median.
-**Blocker (was Phase 5, now removed):** Phase 5 coverage prerequisite met. Run the measurement.
-**Why this matters more than Phase 6 right now:** A pose-only stroke detector that's 80% accurate is fine for stroke COUNTING; for the dashboards Tomo ships (placement heatmaps, "where did this stroke land"), coordinate accuracy is load-bearing.
+**Findings (live-DB reconciliation, both 25fps, time-matched):**
+  - Calibration is a **faithful planar homography** — a fit on 14,198 player-feet correspondences
+    reproduces stored bounce coords to **0.11m**. Recalibration is not the lever.
+  - SA's 161 bounces = 67 floor (ground) + 94 swing (racquet). T5 fires **303** `is_bounce` in the
+    match window: 126 with coords, **177 nulled** by the strict ±5m clamp (`court_detector.py:887`).
+  - The 177 are **~84% airborne false-positives** (detected above the far-baseline image row), not
+    lost ground bounces. Ground-bounce trajectory signature 15% (vs 43% on kept bounces).
+  - Event recall is fine (85% of SA floor within ±0.8s); **timing jitter ~0.5s** (ball coverage).
+  - Far baseline is **resolution-limited** (~1px ≈ metres) — accuracy cap independent of calibration.
+
+**Reframed work (Phase 7'):**
+  1. **Bounce-detection precision** — reject airborne `is_bounce` (require near-court-plane contact /
+     descending→ascending image_y inflection / ball–floor proximity). Cuts the ~177 FPs.
+  2. **Timing** — pin bounce frames via better ball coverage (overlaps Phase 5 / WASB).
+  3. **Persist the per-job homography** (cheap) for re-projection + audit without a rerun.
+**Where:** `roi_extractors/bounces.py` (Batch — trips BATCH-SIDE CHECKLIST) and/or a silver-side
+`is_bounce` guard (Render — faster to validate; mind bronze-first #11). De-risk Render-side on
+Match 1 first, then port to Batch — the pattern that produced the diagnosis.
+**Do NOT:** trigger a Batch court-recalibration to chase the old "3-7m off" number — the calibration
+is faithful; the error is precision, not projection.
 
 ### Phase 8 — Final serve-detection cleanup — UNBLOCKED but LOWER PRIORITY than 7
 **What:** With ball coverage, point boundaries, and clean silver in place, revisit the 4 a798eff0 misses + 1 880dff02 miss (148.52 NEAR). Whichever still don't recover gets a one-line memo in the Backlog + parked.
