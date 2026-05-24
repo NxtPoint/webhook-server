@@ -20,6 +20,7 @@ Usage:
 import json
 import logging
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text as sql_text
@@ -419,10 +420,127 @@ def _infer_swing_type_from_position(
 
 
 # ============================================================
-# T5 PASS 1: Extract bounces → 18 base fields
+# T5 PASS 1: shared player-detection index
 # ============================================================
 
-def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> int:
+def _build_player_buckets(conn: Connection, job_id: str) -> dict:
+    """Fetch player detections and build the side/keypoint indices used by
+    both Pass-1 row-generation strategies (bounce-driven and stroke-driven).
+
+    Returns a dict with binary-search frame lists + parallel detection lists:
+      near_frames/near_dets   — players with court_y > HALF_Y (valid coords)
+      far_frames/far_dets     — players with court_y < HALF_Y (valid coords)
+      any_frames/any_dets     — ALL players with valid coords (mirror fallback)
+      near_kp_frames/..._dets — near players that also carry pose keypoints
+      far_kp_frames/..._dets  — far players that also carry pose keypoints
+      dets_by_pid             — mapped_pid -> (frames, dets) for that track
+      pid_map, top_pids       — ghost-id → top-2 mapping (guarantees 2 players)
+    """
+    player_dets = conn.execute(sql_text("""
+        SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, stroke_class
+        FROM ml_analysis.player_detections
+        WHERE job_id = :jid
+        ORDER BY frame_idx
+    """), {"jid": job_id}).fetchall()
+
+    # Identify the two players — group by player_id, take top 2 by det count.
+    from collections import Counter
+    pid_counts = Counter(p[1] for p in player_dets)
+    top_pids = [pid for pid, _ in pid_counts.most_common(2)]
+    if len(top_pids) < 2:
+        logger.warning("T5 Pass 1: only %d player(s) detected — assigning alternating IDs", len(top_pids))
+        if not top_pids:
+            top_pids = [0, 1]
+        elif len(top_pids) == 1:
+            top_pids.append(top_pids[0] + 1)
+
+    pid_map = {}
+    for pid in pid_counts:
+        if pid == top_pids[0]:
+            pid_map[pid] = str(top_pids[0])
+        else:
+            pid_map[pid] = str(top_pids[1])
+
+    near_dets, far_dets, any_with_coords = [], [], []
+    # Keypoint-only indices (A4): detections that actually carry pose. The
+    # primary hitter lookup uses a tight frame window to keep coords fresh; a
+    # secondary lookup on these lists uses a wider window so swing_type
+    # inference has pose data even when the nearest detection in the tight
+    # window is pose-less (SAHI bbox without pose, or PLAYER_DETECTION_INTERVAL
+    # straddling the hit frame).
+    near_kp_dets, far_kp_dets = [], []
+    # Per-track index — the stroke-driven path resolves the attributed player's
+    # own position when no bounce is available to imply the hitter's side.
+    raw_by_pid: dict = {}
+    for pd in player_dets:
+        frame_idx, pid, cx, cy, centerx, centery, kps, stroke_cls = pd
+        mapped_pid = pid_map.get(pid, str(pid))
+        entry = {
+            "frame_idx": frame_idx,
+            "player_id": mapped_pid,
+            "court_x": cx, "court_y": cy,
+            "center_x": centerx, "center_y": centery,
+            "keypoints": kps,
+            "stroke_class": stroke_cls,
+        }
+        if cy is not None and cx is not None:
+            any_with_coords.append(entry)
+            raw_by_pid.setdefault(mapped_pid, []).append(entry)
+            if cy > HALF_Y:
+                near_dets.append(entry)
+                if kps is not None:
+                    near_kp_dets.append(entry)
+            else:
+                far_dets.append(entry)
+                if kps is not None:
+                    far_kp_dets.append(entry)
+        # Entries with NULL court coords aren't useful for hit_x/y, so they're
+        # excluded from every list; the mirror fallback uses any_with_coords.
+
+    near_frames, near_dets = _build_detection_index(near_dets)
+    far_frames, far_dets = _build_detection_index(far_dets)
+    any_frames, any_dets = _build_detection_index(any_with_coords)
+    near_kp_frames, near_kp_dets = _build_detection_index(near_kp_dets)
+    far_kp_frames, far_kp_dets = _build_detection_index(far_kp_dets)
+    dets_by_pid = {pid: _build_detection_index(dets) for pid, dets in raw_by_pid.items()}
+
+    logger.info(
+        "T5 Pass 1: player buckets — near=%d far=%d any_with_coords=%d "
+        "near_with_kp=%d far_with_kp=%d (of %d total)",
+        len(near_dets), len(far_dets), len(any_dets),
+        len(near_kp_dets), len(far_kp_dets), len(player_dets),
+    )
+
+    return {
+        "near_frames": near_frames, "near_dets": near_dets,
+        "far_frames": far_frames, "far_dets": far_dets,
+        "any_frames": any_frames, "any_dets": any_dets,
+        "near_kp_frames": near_kp_frames, "near_kp_dets": near_kp_dets,
+        "far_kp_frames": far_kp_frames, "far_kp_dets": far_kp_dets,
+        "dets_by_pid": dets_by_pid,
+        "pid_map": pid_map, "top_pids": top_pids,
+        "n_player_dets": len(player_dets),
+    }
+
+
+def _lookup_dominant_hand(conn: Connection, task_id: str) -> bool:
+    """Return True if the primary member is left-handed (defaults right)."""
+    hand_row = conn.execute(sql_text("""
+        SELECT COALESCE(m.dominant_hand, 'right') AS hand
+        FROM bronze.submission_context sc
+        LEFT JOIN billing.member m
+            ON lower(m.email) = lower(sc.email) AND m.is_primary = true
+        WHERE sc.task_id = :tid
+        LIMIT 1
+    """), {"tid": task_id}).fetchone()
+    return (hand_row[0] if hand_row else "right") == "left"
+
+
+# ============================================================
+# T5 PASS 1 (bounce-driven): one bounce → one silver row
+# ============================================================
+
+def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fps: float) -> int:
     """
     Transform T5 ml_analysis.* bounce data into silver.point_detail base fields.
 
@@ -432,6 +550,12 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
       2. Find the nearest player detection on the hitting side
       3. Infer serve, swing_type, volley from context
       4. INSERT the 18 base fields + model='t5'
+
+    This is the original (pre-Phase-6) strategy, retained as the fallback for
+    tasks with no rows in ml_analysis.stroke_events (older T5 ingests, or runs
+    where stroke detection failed). The dispatcher _t5_pass1_load prefers the
+    stroke-driven strategy when stroke events exist. See
+    _t5_pass1_load_stroke_driven.
     """
     # ---- Step 1: Fetch all bounces ordered by time ----
     bounces = conn.execute(sql_text("""
@@ -456,100 +580,17 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
 
     logger.info("T5 Pass 1: %d bounces for job_id=%s at %.1f fps", len(bounces), job_id, fps)
 
-    # ---- Step 2: Fetch all player detections (for nearest-player lookup) ----
-    player_dets = conn.execute(sql_text("""
-        SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, stroke_class
-        FROM ml_analysis.player_detections
-        WHERE job_id = :jid
-        ORDER BY frame_idx
-    """), {"jid": job_id}).fetchall()
-
-    # ---- Step 3: Identify the two players ----
-    # Group by player_id, use the top 2 by detection count
-    from collections import Counter
-    pid_counts = Counter(p[1] for p in player_dets)
-    top_pids = [pid for pid, _ in pid_counts.most_common(2)]
-    if len(top_pids) < 2:
-        logger.warning("T5 Pass 1: only %d player(s) detected — assigning alternating IDs", len(top_pids))
-        if not top_pids:
-            top_pids = [0, 1]
-        elif len(top_pids) == 1:
-            top_pids.append(top_pids[0] + 1)
-
-    # Map any ghost player IDs to the top 2
-    pid_map = {}
-    for pid in pid_counts:
-        if pid == top_pids[0]:
-            pid_map[pid] = str(top_pids[0])
-        else:
-            pid_map[pid] = str(top_pids[1])
-
-    # Build player detection index for fast nearest-frame lookup.
-    # Three lists:
-    #   near_dets: players with court_y > HALF_Y AND valid coords
-    #   far_dets:  players with court_y < HALF_Y AND valid coords
-    #   any_with_coords: ALL players with valid coords (used as ultimate fallback
-    #                    when side-specific lookup returns nothing usable)
-    near_dets = []
-    far_dets = []
-    any_with_coords = []
-    # Keypoint-only indices (A4): separate lists of detections that actually
-    # have pose keypoints. The primary hitter lookup uses a tight frame
-    # window (A1) to keep coords fresh; a secondary lookup on these lists
-    # uses a wider window so swing_type inference has pose data even when
-    # the nearest detection in the tight window is pose-less (e.g. SAHI
-    # returned a bbox without pose, or PLAYER_DETECTION_INTERVAL=5 means
-    # the hit frame falls between pose runs).
-    near_kp_dets = []
-    far_kp_dets = []
-    for pd in player_dets:
-        frame_idx, pid, cx, cy, centerx, centery, kps, stroke_cls = pd
-        mapped_pid = pid_map.get(pid, str(pid))
-        entry = {
-            "frame_idx": frame_idx,
-            "player_id": mapped_pid,
-            "court_x": cx, "court_y": cy,
-            "center_x": centerx, "center_y": centery,
-            "keypoints": kps,
-            "stroke_class": stroke_cls,
-        }
-        if cy is not None and cx is not None:
-            any_with_coords.append(entry)
-            if cy > HALF_Y:
-                near_dets.append(entry)
-                if kps is not None:
-                    near_kp_dets.append(entry)
-            else:
-                far_dets.append(entry)
-                if kps is not None:
-                    far_kp_dets.append(entry)
-        # Note: entries with NULL court coords are NOT useful for hit_x/y
-        # so we don't add them to any list. The fallback uses any_with_coords.
-
-    # Pre-build frame indices for binary search
-    near_frames, near_dets = _build_detection_index(near_dets)
-    far_frames, far_dets = _build_detection_index(far_dets)
-    any_frames, any_dets = _build_detection_index(any_with_coords)
-    near_kp_frames, near_kp_dets = _build_detection_index(near_kp_dets)
-    far_kp_frames, far_kp_dets = _build_detection_index(far_kp_dets)
-
-    logger.info(
-        "T5 Pass 1: player buckets — near=%d far=%d any_with_coords=%d "
-        "near_with_kp=%d far_with_kp=%d (of %d total)",
-        len(near_dets), len(far_dets), len(any_dets),
-        len(near_kp_dets), len(far_kp_dets), len(player_dets),
-    )
+    # ---- Step 2-3: Shared player-detection buckets + two-player mapping ----
+    buckets = _build_player_buckets(conn, job_id)
+    near_frames, near_dets = buckets["near_frames"], buckets["near_dets"]
+    far_frames, far_dets = buckets["far_frames"], buckets["far_dets"]
+    any_frames, any_dets = buckets["any_frames"], buckets["any_dets"]
+    near_kp_frames, near_kp_dets = buckets["near_kp_frames"], buckets["near_kp_dets"]
+    far_kp_frames, far_kp_dets = buckets["far_kp_frames"], buckets["far_kp_dets"]
+    pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
 
     # ---- Step 4: Look up dominant hand ----
-    hand_row = conn.execute(sql_text("""
-        SELECT COALESCE(m.dominant_hand, 'right') AS hand
-        FROM bronze.submission_context sc
-        LEFT JOIN billing.member m
-            ON lower(m.email) = lower(sc.email) AND m.is_primary = true
-        WHERE sc.task_id = :tid
-        LIMIT 1
-    """), {"tid": task_id}).fetchone()
-    is_left_handed = (hand_row[0] if hand_row else "right") == "left"
+    is_left_handed = _lookup_dominant_hand(conn, task_id)
 
     # ---- Step 5: Process each bounce → build row ----
     rows_to_insert = []
@@ -920,6 +961,12 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         return 0
 
     # ---- Step 6: Bulk INSERT ----
+    return _insert_pass1_rows(conn, rows_to_insert)
+
+
+def _insert_pass1_rows(conn: Connection, rows_to_insert: List[dict]) -> int:
+    """Bulk-INSERT Pass-1 base-field rows. Shared by both row-generation
+    strategies so the column list / conflict clause stay in one place."""
     conn.execute(sql_text(f"""
         INSERT INTO {SILVER_SCHEMA}.{TABLE} (
             id, task_id, player_id, valid, serve, swing_type, volley, is_in_rally,
@@ -934,9 +981,291 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
         )
         ON CONFLICT (task_id, id, model) DO NOTHING
     """), rows_to_insert)
-
     logger.info("T5 Pass 1: inserted %d rows into silver.point_detail", len(rows_to_insert))
     return len(rows_to_insert)
+
+
+# ============================================================
+# T5 PASS 1 (stroke-driven): one stroke contact → one silver row
+# ============================================================
+
+def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fps: float) -> int:
+    """Phase 6: generate one silver row per detected stroke contact.
+
+    Iterates ml_analysis.stroke_events (pose wrist-velocity peaks) instead of
+    ball bounces. Each stroke becomes a silver row whose ball_hit_location is
+    the hitter's court position at predicted_hit_frame; bounce coords
+    (court_x/court_y/ball_speed) are joined when a ball bounce falls within ~1s
+    after the hit. This recovers groundstrokes whose bounce TrackNet missed —
+    the Forehand undercount the bounce-driven path exposed (active fh 17 vs
+    SA 38 on Match 1).
+
+    Hitter SIDE is resolved from the reliable bounce-opposite-side signal when
+    a bounce is matched, otherwise from the attributed player's own track.
+    The stroke detector's player_id attribution is perspective-biased toward
+    the near player (it picks whichever wrist has the highest *pixel* velocity),
+    so it is NOT used to assign the silver player_id — side is taken from court
+    position, preserving the bounce-driven invariant that the two silver players
+    map to the two court ends (needed by pass3 serve/point numbering).
+    """
+    import bisect
+
+    strokes = conn.execute(sql_text("""
+        SELECT predicted_hit_frame, player_id, confidence
+        FROM ml_analysis.stroke_events
+        WHERE task_id::text = :tid
+        ORDER BY predicted_hit_frame
+    """), {"tid": task_id}).fetchall()
+    if not strokes:
+        logger.info("T5 Pass 1 (stroke-driven): no stroke events for task=%s", task_id)
+        return 0
+
+    # Shared player-detection buckets + dominant hand.
+    buckets = _build_player_buckets(conn, job_id)
+    near_frames, near_dets = buckets["near_frames"], buckets["near_dets"]
+    far_frames, far_dets = buckets["far_frames"], buckets["far_dets"]
+    any_frames, any_dets = buckets["any_frames"], buckets["any_dets"]
+    near_kp_frames, near_kp_dets = buckets["near_kp_frames"], buckets["near_kp_dets"]
+    far_kp_frames, far_kp_dets = buckets["far_kp_frames"], buckets["far_kp_dets"]
+    dets_by_pid = buckets["dets_by_pid"]
+    pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
+    is_left_handed = _lookup_dominant_hand(conn, task_id)
+
+    # Bounce index (court coords only) for the stroke→bounce join.
+    bounce_rows = conn.execute(sql_text("""
+        SELECT frame_idx, court_x, court_y, speed_kmh, is_in
+        FROM ml_analysis.ball_detections
+        WHERE job_id = :jid AND is_bounce = TRUE
+          AND court_x IS NOT NULL AND court_y IS NOT NULL
+        ORDER BY frame_idx
+    """), {"jid": job_id}).fetchall()
+    bounce_frames = [b[0] for b in bounce_rows]
+
+    # Windows / thresholds mirror the bounce-driven path.
+    HIT_WINDOW_FRAMES = max(1, int(round(fps * 0.20)))
+    HIT_SOFT_WINDOW_FRAMES = max(1, int(round(fps * 1.20)))
+    KP_WINDOW_FRAMES = max(1, int(round(fps * 1.20)))
+    # Ball struck at predicted_hit_frame → crosses net → bounces on opponent's
+    # side. The matching bounce is the first one in (hit, hit + ~1s].
+    BOUNCE_AFTER_FRAMES = max(1, int(round(fps * 1.0)))
+    MIN_SERVE_INTERVAL_S = 8.0
+    FIRST_SERVE_MIN_TS_S = 15.0
+
+    logger.info(
+        "T5 Pass 1 (stroke-driven): %d stroke events, %d court bounces, job=%s at %.1f fps",
+        len(strokes), len(bounce_rows), job_id, fps,
+    )
+
+    diag = {
+        "strokes": len(strokes), "bounce_matched": 0, "no_bounce": 0,
+        "side_from_bounce": 0, "side_from_attribution": 0,
+        "unresolved": 0, "kp_patched": 0, "fired_serve": 0,
+    }
+
+    rows_to_insert: List[dict] = []
+    last_serve_ts = -999.0
+    for i, (hf, raw_stroke_pid, _conf) in enumerate(strokes):
+        ts = hf / fps if fps > 0 else 0.0
+
+        # ---- Match a bounce in (hf, hf + ~1s] ----
+        bi = bisect.bisect_left(bounce_frames, hf)
+        matched_bounce = None
+        if bi < len(bounce_frames) and bounce_frames[bi] <= hf + BOUNCE_AFTER_FRAMES:
+            matched_bounce = bounce_rows[bi]
+        if matched_bounce is not None:
+            b_cx, b_cy, b_speed, b_is_in = (
+                matched_bounce[1], matched_bounce[2], matched_bounce[3], matched_bounce[4],
+            )
+            diag["bounce_matched"] += 1
+        else:
+            b_cx = b_cy = b_speed = b_is_in = None
+            diag["no_bounce"] += 1
+
+        # ---- Resolve hitter SIDE (near = court_y > HALF_Y) ----
+        hitter_side_near = None
+        if matched_bounce is not None:
+            # Ball bounced on one half → hitter struck from the OTHER half.
+            # Bucket convention (matches bounce-driven path): bounce on the
+            # top/far half (court_y < HALF_Y) ⇒ hitter is in the NEAR bucket
+            # (court_y > HALF_Y, which includes the near baseline ~23.77).
+            hitter_side_near = (b_cy < HALF_Y)
+            diag["side_from_bounce"] += 1
+        else:
+            # Fallback: attributed player's own court position. Biased, last
+            # resort — only used when no bounce pins the side.
+            mapped_pid = pid_map.get(raw_stroke_pid, str(raw_stroke_pid))
+            pid_index = dets_by_pid.get(mapped_pid)
+            attr = None
+            if pid_index is not None:
+                pf, pd_list = pid_index
+                attr = (_find_nearest_detection(pf, pd_list, hf, HIT_WINDOW_FRAMES)
+                        or _find_nearest_detection(pf, pd_list, hf, HIT_SOFT_WINDOW_FRAMES))
+            if attr is not None and attr.get("court_y") is not None:
+                hitter_side_near = attr["court_y"] > HALF_Y
+                diag["side_from_attribution"] += 1
+
+        if hitter_side_near is None:
+            diag["unresolved"] += 1
+            continue
+
+        # ---- Look up hitter pose+position on the resolved side ----
+        if hitter_side_near:
+            h_frames, h_dets = near_frames, near_dets
+            kp_frames, kp_dets = near_kp_frames, near_kp_dets
+        else:
+            h_frames, h_dets = far_frames, far_dets
+            kp_frames, kp_dets = far_kp_frames, far_kp_dets
+
+        hitter = _find_nearest_detection(h_frames, h_dets, hf, HIT_WINDOW_FRAMES)
+        if hitter is None and h_dets:
+            hitter = _find_nearest_detection(h_frames, h_dets, hf, HIT_SOFT_WINDOW_FRAMES)
+        # Mirror fallback: no detection on the resolved side → borrow any player
+        # with coords and mirror them onto the hitter's side (same shape as the
+        # bounce-driven mirror path).
+        if hitter is None and any_dets:
+            other = _find_nearest_detection(any_frames, any_dets, hf, HIT_SOFT_WINDOW_FRAMES)
+            if other is not None and other.get("court_y") is not None:
+                other_near = other["court_y"] > HALF_Y
+                mirror_y = (COURT_LENGTH_M - other["court_y"]) if other_near != hitter_side_near else other["court_y"]
+                mirror_y = max(0.0, min(COURT_LENGTH_M, mirror_y))
+                hitter = {
+                    "frame_idx": other["frame_idx"], "player_id": other["player_id"],
+                    "court_x": other["court_x"], "court_y": mirror_y,
+                    "center_x": other.get("center_x"), "center_y": other.get("center_y"),
+                    "keypoints": other.get("keypoints"), "_synthesized": True,
+                }
+
+        if hitter is None:
+            diag["unresolved"] += 1
+            continue
+
+        # Dual-window keypoint patch (mirrors the bounce path A4 step).
+        if hitter.get("keypoints") is None and not hitter.get("_synthesized"):
+            kp_match = _find_nearest_detection(kp_frames, kp_dets, hf, KP_WINDOW_FRAMES)
+            if kp_match is not None:
+                hitter = dict(hitter)
+                hitter["keypoints"] = kp_match.get("keypoints")
+                diag["kp_patched"] += 1
+
+        hit_x = hitter.get("court_x")
+        hit_y = hitter.get("court_y")
+
+        ball_player_dist = None
+        if b_cx is not None and hit_x is not None and hit_y is not None:
+            ball_player_dist = math.hypot(b_cx - hit_x, b_cy - hit_y)
+
+        # ---- Serve detection: requires a matched bounce (serves bounce in the
+        # box). Same geometric + cooldown + stationarity + first-serve gates as
+        # the bounce-driven path. pass3 re-derives serve_d from swing_type +
+        # baseline-y, so this mainly drives swing_type='overhead'. ----
+        is_serve = False
+        if matched_bounce is not None and hit_y is not None:
+            geom_ok, _reason = _serve_geometric_check(hit_y, b_cx, b_cy, ball_player_dist)
+            if geom_ok:
+                cooldown_ok = (ts - last_serve_ts) >= MIN_SERVE_INTERVAL_S
+                stationary = _check_hitter_stationary_pre_hit(h_frames, h_dets, hf, hitter, fps)
+                stationarity_ok = stationary is not False
+                if cooldown_ok and stationarity_ok and not (last_serve_ts < 0 and ts < FIRST_SERVE_MIN_TS_S):
+                    is_serve = True
+                    last_serve_ts = ts
+                    diag["fired_serve"] += 1
+
+        # ---- swing type (same three-tier cascade) ----
+        swing_type = _infer_swing_type_from_keypoints(
+            hitter.get("keypoints"), hitter.get("center_x"),
+            is_serve, is_left_handed, court_y=hit_y,
+        )
+        if swing_type == "other" and not is_serve:
+            flow_class = hitter.get("stroke_class")
+            if flow_class and flow_class != "other":
+                swing_type = flow_class
+            elif b_cx is not None:
+                # Position fallback needs a ball x — only available with a bounce.
+                swing_type = _infer_swing_type_from_position(
+                    b_cx, hit_x, hit_y, is_serve, is_left_handed,
+                )
+
+        is_volley = hit_y is not None and abs(hit_y - HALF_Y) < VOLLEY_NET_DISTANCE_M
+        hitter_pid = str(top_pids[0]) if hitter_side_near else str(top_pids[1])
+
+        rows_to_insert.append({
+            "id": i + 1,
+            "task_id": task_id,
+            "player_id": hitter_pid,
+            "valid": True,
+            "serve": is_serve,
+            "swing_type": swing_type,
+            "volley": is_volley,
+            "is_in_rally": True,
+            "ball_player_distance": ball_player_dist,
+            "ball_speed": b_speed,
+            "ball_impact_type": None,
+            "ball_hit_s": ts,
+            "ball_hit_location_x": hit_x,
+            "ball_hit_location_y": hit_y,
+            "type": "floor",
+            "timestamp": ts,
+            "court_x": b_cx,
+            "court_y": b_cy,
+            "model": "t5",
+        })
+
+    logger.info("T5 Pass 1 (stroke-driven) diagnostics: %s", diag)
+    if not rows_to_insert:
+        logger.warning("T5 Pass 1 (stroke-driven): no valid rows to insert")
+        return 0
+    return _insert_pass1_rows(conn, rows_to_insert)
+
+
+# ============================================================
+# T5 PASS 1 dispatcher
+# ============================================================
+
+def _stroke_driven_enabled() -> bool:
+    """Read the T5_STROKE_DRIVEN_SILVER gate at call time (so flipping the env
+    var + restart applies without a code change / Docker rebuild — same
+    rollback pattern as the WASB swap, memory feedback_env_var_rollback_pattern).
+    """
+    return os.getenv("T5_STROKE_DRIVEN_SILVER", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> int:
+    """Pick the Pass-1 row-generation strategy.
+
+    BOUNCE-DRIVEN IS THE LIVE PROD PATH. The stroke-driven path (Phase 6 step 2)
+    is GATED OFF behind T5_STROKE_DRIVEN_SILVER and MUST stay off until the T5
+    bronze (ml_analysis.*) 18 base fields reconcile to SportAI. Reason (proven
+    2026-05-25): stroke-driven row generation overshoots (Match 1: 141 vs SA's
+    84 active, near 114/27 vs SA 43/41) because the stroke detector's hitter
+    attribution is perspective-biased to the near player and far pose is sparse.
+    That is a BRONZE-accuracy problem, not a silver one — see CLAUDE.md "Things
+    not to do" #11 and docs/north_star.md. Flip the env var on (no redeploy)
+    once far-pose coverage + bounce accuracy land.
+
+    The information_schema existence check runs BEFORE any SELECT on
+    stroke_events so a missing table on an older deployment can't poison the
+    transaction (memory feedback_postgres_missing_table).
+    """
+    if _stroke_driven_enabled():
+        tbl = conn.execute(sql_text("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'ml_analysis' AND table_name = 'stroke_events'
+            LIMIT 1
+        """)).scalar()
+        if tbl:
+            n = conn.execute(sql_text(
+                "SELECT COUNT(*) FROM ml_analysis.stroke_events WHERE task_id::text = :tid"
+            ), {"tid": task_id}).scalar() or 0
+            if n > 0:
+                logger.info(
+                    "T5 Pass 1: stroke-driven row generation ENABLED via "
+                    "T5_STROKE_DRIVEN_SILVER (task=%s, %d stroke events)", task_id, n,
+                )
+                return _t5_pass1_load_stroke_driven(conn, task_id, job_id, fps)
+        logger.info("T5 Pass 1: stroke-driven enabled but no stroke events — bounce-driven (task=%s)", task_id)
+    else:
+        logger.info("T5 Pass 1: bounce-driven (live default; stroke-driven gated off) task=%s", task_id)
+    return _t5_pass1_load_bounce_driven(conn, task_id, job_id, fps)
 
 
 def _build_detection_index(dets: List[dict]) -> Tuple[List[int], List[dict]]:
