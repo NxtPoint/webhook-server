@@ -34,6 +34,17 @@ DEFAULT_MIN_GAP_FRAMES = 25      # raised from probe's 15 — see __init__.py
 DEFAULT_PEAK_TO_CONTACT_OFFSET = 4  # frames added to predicted_hit_frame
 DEFAULT_DECEL_RATIO_MAX = 0.5    # reject peaks where post_v / peak_v > this
 
+# Body-scale velocity normalisation (fixes the near-player attribution bias).
+# Wrist velocity is raw pixels, but the far player is ~3x smaller than the near
+# player in pixels, so far wrist motion can't cross MIN_VELOCITY and the global-
+# max attribution always picked the near player (~208/34 on Match 1 vs SA's
+# ~50/50). We scale each player's velocity by (reference_body / player_body),
+# with the reference = the LARGEST player so the near player is unchanged
+# (factor 1) and the 30px threshold stays valid; only smaller players scale up.
+DEFAULT_NORMALIZE_BODY_SCALE = True
+DEFAULT_SCALE_MIN_SAMPLES = 10   # need this many valid poses to trust a player's median scale
+DEFAULT_SCALE_MAX_FACTOR = 6.0   # cap the boost so a degenerate tiny scale can't blow up velocity
+
 
 def _parse_keypoints(raw) -> Optional[list]:
     """Normalise keypoints to [[x, y, conf], ...] (17 elements). Returns None
@@ -78,11 +89,79 @@ def _wrist_positions(
     return out[0], out[1]
 
 
+def _body_scale(keypoints, min_conf: float) -> Optional[float]:
+    """Robust per-pose body size in pixels: shoulder-midpoint → hip-midpoint
+    (torso length), falling back to shoulder width. Used to size-normalise
+    wrist velocity. Returns None when not enough confident keypoints.
+
+    Torso is preferred over shoulder width alone: it's a longer, more stable
+    lever that survives the far player's ~18px shoulder span better.
+    """
+    kp = _parse_keypoints(keypoints)
+    if kp is None:
+        return None
+
+    def g(i):
+        return kp[i] if i < len(kp) else (0.0, 0.0, 0.0)
+
+    ls, rs, lh, rh = g(5), g(6), g(11), g(12)
+    if ls[2] < min_conf or rs[2] < min_conf:
+        return None
+    sm_x, sm_y = (ls[0] + rs[0]) / 2.0, (ls[1] + rs[1]) / 2.0
+    hips = [h for h in (lh, rh) if h[2] >= min_conf]
+    if hips:
+        hm_x = sum(h[0] for h in hips) / len(hips)
+        hm_y = sum(h[1] for h in hips) / len(hips)
+        torso = ((sm_x - hm_x) ** 2 + (sm_y - hm_y) ** 2) ** 0.5
+        if torso > 2.0:
+            return torso
+    sw = abs(ls[0] - rs[0])
+    return sw if sw > 2.0 else None
+
+
+def compute_player_scale_factors(
+    poses: Sequence[Tuple[int, int, list]],
+    *,
+    min_kp_conf: float = DEFAULT_MIN_KP_CONF,
+    min_samples: int = DEFAULT_SCALE_MIN_SAMPLES,
+    max_factor: float = DEFAULT_SCALE_MAX_FACTOR,
+) -> Dict[int, float]:
+    """Return {player_id: velocity scale factor}.
+
+    factor = reference_body / player_body, where reference = the LARGEST
+    player's median body size. The largest player (the near player) gets
+    factor 1.0 (unchanged); smaller (far) players get a >1 boost so their
+    small-pixel wrist motion becomes comparable. Players with fewer than
+    `min_samples` valid scale poses get factor 1.0 (don't trust a tiny sample),
+    and the boost is capped at `max_factor` so a degenerate scale can't blow up.
+    """
+    scales: Dict[int, List[float]] = {}
+    for _frame, pid, kps in poses:
+        s = _body_scale(kps, min_kp_conf)
+        if s is not None:
+            scales.setdefault(pid, []).append(s)
+
+    medians: Dict[int, float] = {}
+    for pid, vals in scales.items():
+        if len(vals) >= min_samples:
+            vals.sort()
+            medians[pid] = vals[len(vals) // 2]
+    if not medians:
+        return {}
+
+    ref = max(medians.values())
+    factors: Dict[int, float] = {}
+    for pid, m in medians.items():
+        factors[pid] = min(max_factor, ref / m) if m > 0 else 1.0
+    return factors
+
+
 def compute_per_player_velocity(
     poses: Sequence[Tuple[int, int, list]],
     *,
     min_kp_conf: float = DEFAULT_MIN_KP_CONF,
     max_gap_frames: int = DEFAULT_MAX_GAP_FRAMES,
+    scale_factors: Optional[Dict[int, float]] = None,
 ) -> Dict[int, Dict[int, float]]:
     """Return {player_id: {frame: max(left_vel, right_vel)}}.
 
@@ -90,6 +169,10 @@ def compute_per_player_velocity(
     Velocity is dropped across pose gaps > max_gap_frames — when YOLO loses
     a body for ~10 frames we don't know what the wrist did in between, so
     no velocity sample is emitted at the reappearance frame.
+
+    When `scale_factors` is given, each player's velocity is multiplied by its
+    factor (see compute_player_scale_factors) so far-player motion is comparable
+    to near-player motion. Missing pids default to factor 1.0 (no change).
     """
     per_player_rows: Dict[int, List[Tuple[int, list]]] = {}
     for frame, pid, kps in poses:
@@ -97,6 +180,7 @@ def compute_per_player_velocity(
 
     out: Dict[int, Dict[int, float]] = {}
     for pid, rows in per_player_rows.items():
+        factor = (scale_factors or {}).get(pid, 1.0)
         rows.sort(key=lambda r: r[0])
         last_left: Optional[Tuple[int, float, float]] = None
         last_right: Optional[Tuple[int, float, float]] = None
@@ -109,14 +193,14 @@ def compute_per_player_velocity(
                     dx = left[0] - last_left[1]
                     dy = left[1] - last_left[2]
                     df = frame - last_left[0]
-                    v_left = ((dx * dx + dy * dy) ** 0.5) / max(df, 1)
+                    v_left = ((dx * dx + dy * dy) ** 0.5) / max(df, 1) * factor
                 last_left = (frame, left[0], left[1])
             if right is not None:
                 if last_right is not None and frame - last_right[0] <= max_gap_frames:
                     dx = right[0] - last_right[1]
                     dy = right[1] - last_right[2]
                     df = frame - last_right[0]
-                    v_right = ((dx * dx + dy * dy) ** 0.5) / max(df, 1)
+                    v_right = ((dx * dx + dy * dy) ** 0.5) / max(df, 1) * factor
                 last_right = (frame, right[0], right[1])
             cands = [v for v in (v_left, v_right) if v is not None]
             if cands:

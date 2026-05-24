@@ -46,11 +46,13 @@ from ml_pipeline.stroke_detector.velocity_signal import (
     DEFAULT_MIN_GAP_FRAMES,
     DEFAULT_MIN_KP_CONF,
     DEFAULT_MIN_VELOCITY_PX_PER_FRAME,
+    DEFAULT_NORMALIZE_BODY_SCALE,
     DEFAULT_PEAK_TO_CONTACT_OFFSET,
     DEFAULT_SMOOTH_WINDOW,
     DEFAULT_DECEL_RATIO_MAX,
     compute_global_max_velocity,
     compute_per_player_velocity,
+    compute_player_scale_factors,
     detect_velocity_peaks,
     post_peak_velocity_at,
     pre_peak_velocity_at,
@@ -85,6 +87,7 @@ def _run_pipeline(
     max_gap_frames: int,
     peak_to_contact_offset: int,
     decel_ratio_max: float,
+    normalize_by_body_scale: bool = DEFAULT_NORMALIZE_BODY_SCALE,
 ) -> List[StrokeEvent]:
     """In-memory detection pipeline shared by prod + offline paths.
 
@@ -92,10 +95,20 @@ def _run_pipeline(
     serve_detector._run_pipeline's role: every behaviour change goes here
     so prod and offline harness numbers don't drift.
     """
+    scale_factors = None
+    if normalize_by_body_scale:
+        scale_factors = compute_player_scale_factors(poses, min_kp_conf=min_kp_conf)
+        if scale_factors:
+            logger.info(
+                "stroke_detector: body-scale velocity factors %s "
+                "(>1 boosts the smaller/far player so attribution isn't near-biased)",
+                {pid: round(f, 2) for pid, f in sorted(scale_factors.items())},
+            )
     per_player = compute_per_player_velocity(
         poses,
         min_kp_conf=min_kp_conf,
         max_gap_frames=max_gap_frames,
+        scale_factors=scale_factors,
     )
     global_vel, attribution = compute_global_max_velocity(per_player)
     smoothed = smooth_velocity(global_vel, window=smooth_window)
@@ -273,6 +286,7 @@ def detect_strokes_for_task(
     max_gap_frames: int = DEFAULT_MAX_GAP_FRAMES,
     peak_to_contact_offset: int = DEFAULT_PEAK_TO_CONTACT_OFFSET,
     decel_ratio_max: float = DEFAULT_DECEL_RATIO_MAX,
+    normalize_by_body_scale: bool = DEFAULT_NORMALIZE_BODY_SCALE,
 ) -> List[StrokeEvent]:
     """Production entry point. Detects strokes from pose rows + persists
     StrokeEvent rows to ml_analysis.stroke_events.
@@ -305,6 +319,7 @@ def detect_strokes_for_task(
         max_gap_frames=max_gap_frames,
         peak_to_contact_offset=peak_to_contact_offset,
         decel_ratio_max=decel_ratio_max,
+        normalize_by_body_scale=normalize_by_body_scale,
     )
 
     _persist_events(conn, events)
@@ -329,6 +344,7 @@ def detect_strokes_offline(
     max_gap_frames: int = DEFAULT_MAX_GAP_FRAMES,
     peak_to_contact_offset: int = DEFAULT_PEAK_TO_CONTACT_OFFSET,
     decel_ratio_max: float = DEFAULT_DECEL_RATIO_MAX,
+    normalize_by_body_scale: bool = DEFAULT_NORMALIZE_BODY_SCALE,
 ) -> List[StrokeEvent]:
     """In-memory detection for local validation — shares _run_pipeline
     with the prod entry point so offline numbers always match prod.
@@ -344,4 +360,5 @@ def detect_strokes_offline(
         max_gap_frames=max_gap_frames,
         peak_to_contact_offset=peak_to_contact_offset,
         decel_ratio_max=decel_ratio_max,
+        normalize_by_body_scale=normalize_by_body_scale,
     )
