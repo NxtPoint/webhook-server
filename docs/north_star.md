@@ -46,23 +46,29 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 ---
 
-## ★ Next-session priority order — Tomo decision 2026-05-24 LATE NIGHT
+## ★ BRONZE-FIRST PRINCIPLE — Tomo decision 2026-05-25 (supersedes the B→C→A order)
 
-**Sequence: B → C → A.** Locked in at the end of the 2026-05-24 late-night session that closed Phase 3 part 2 + the Phase 6 production module. Do not lose sight of this order; pick from the top.
+**T5 reconciliation to SportAI is a BRONZE (`ml_analysis.*`) accuracy problem, not a silver-derivation problem. Silver row-generation is FROZEN until the 18 base fields align with SportAI in the bronze layer.**
 
-| # | Option | Where | Cost | Why this position |
-|---|---|---|---|---|
-| **B** | **Wire `ml_analysis.stroke_events` into T5 silver** (Phase 6 step 2) | Render-side, `build_silver_match_t5.py` Pass 1 | ~1-2 days | Direct lever on the Forehand-undercount ceiling (T5 fh=17 vs SA fh=38). Stroke-driven row generation recovers strokes that the bounce-driven path misses. Improving silver row coverage first means Phase 7's measurement runs against cleaner data. |
-| **C** | **Fix `roi_bounces` per-window slowdown (Bug 2)** | Batch-side, `ml_pipeline/roi_extractors/bounces.py` | ~half a day | Unblocks long matches (Match 2 timed out at 6h Batch because of this). Without it, every match >~45 min keeps failing, future training corpus collection blocked. One-file change (load TrackNet outside the window loop); trips BATCH-SIDE CHANGE CHECKLIST but minimally. |
-| **A** | **Phase 7 — y-axis bounce calibration** | Batch-side, `roi_extractors/bounces.py` + `build_silver_v2.py` + court calibration | ~2-3 days, **daylight only** | Biggest single product win; fix direction known ("pixel-y-based far-baseline check replacing `_baseline_zone(court_y)`"). Best done LAST because measurement quality depends on silver quality (B) and run reliability on long matches (C). Per memory rule `feedback_overnight_branch_only.md`: daylight-supervised session only. |
+Layering reminder (the naming hides it): the T5 "bronze" is `ml_analysis.*` (ball/player detections, serve/stroke events). `build_silver_match_t5.py` **Pass 1 is the bronze→base-fact projection** that must reconcile to SportAI (the 18 columns: player_id, serve, swing_type, volley, hit location, court_x/y, ball_speed, …). Passes 3-5 are the silver analytics (serve location 1-8, zones, aggression) layered on top — garbage-in/garbage-out if the Pass-1 rows are wrong.
+
+**Why this is now the rule (proven 2026-05-25):** We wired `ml_analysis.stroke_events` into Pass 1 (the old Option B) — stroke-driven row generation, one stroke → one silver row. It overshot badly on Match 1: **141 vs SA's 84 active; near 114 / far 27 vs SA's balanced 43 / 41; far Forehands got *worse* (6 vs SA's 18)**. Root cause is bronze: the stroke detector's hitter attribution is perspective-biased to the near player (208/34 vs true ~50/50), far-player pose is sparse (1,105 vs 11,755 keypoint rows on M1), and bounce coords are off (Phase 7). The code is **committed but gated OFF** behind `T5_STROKE_DRIVEN_SILVER` (bounce-driven stays the live path) — **do not flip it on, and do not chase reconciliation by reorganising silver, until bronze is right.** See CLAUDE.md "Things not to do" #11.
+
+### Priority order (reframed): fix bronze accuracy first
+
+| # | Work | Where | Why this position |
+|---|---|---|---|
+| **1** | **Far-player accuracy + player A/B identity** | Batch-side (`ml_pipeline/roi_extractors/`, pose, tracking) | The binding constraint. Far pose coverage is ~10% of near; per-player A/B identity is unreliable (silver assigns by court SIDE because track ids aren't persistent — Tomo flagged we can't yet tag A/B and hold it across a match). Long-standing issue → **diagnose, don't hack.** Research in flight: **`docs/_investigation/far_player_accuracy.md`** (read it before acting). Prerequisite to flipping the gated stroke-driven path on. |
+| **2** | **Phase 7 — y-axis bounce calibration** | Batch-side, `roi_extractors/bounces.py` + court calibration | The other bronze-accuracy lever; bounce x/y error 3.2m median, far-baseline 10-17m off. Biggest single product win once coverage/identity are sound. ~2-3 days, **daylight only** (`feedback_overnight_branch_only.md`). |
+| **C** | **Fix `roi_bounces` per-window slowdown (Bug 2)** | Batch-side, `ml_pipeline/roi_extractors/bounces.py` | Contained, well-diagnosed. Unblocks long matches (Match 2 timed out at 6h). One-file change (load TrackNet outside the window loop). Good to land alongside the Phase-1 work since it touches the same file. |
 
 **Deferred / lower-priority backlog:**
 
-- **Option D — retune `excl_chain.gap_break` 5s → 8s** (Render-side, ~few hours) — would recover ~10 Forehands per Match 1-style task, but touches load-bearing pre-existing pass-3 logic with no silver-bench fixture covering it. Wait for a silver-bench fixture before touching.
-- **Bug 1 — ROI region misalignment** (Batch-side, defensive) — explained sparse FAR-player data on Match 2; not blocking unless it recurs on a new upload.
-- **Phase 8 — final serve-detection cleanup** (4 a798eff0 misses + 1 880dff02 miss) — explicitly lower priority than Phase 7.
+- **Bug 1 — far-ROI region misalignment** — now folded into priority #1 (far-player accuracy); it's a concrete symptom of the same problem.
+- **Option D — retune `excl_chain.gap_break` 5s → 8s** — silver-side; moot under the bronze-first freeze. Wait for a silver-bench fixture *and* clean bronze.
+- **Phase 8 — final serve-detection cleanup** (4 a798eff0 + 1 880dff02 misses) — lower priority than Phase 7.
 
-Full strategic analysis with cost/risk per option is in `.claude/next_session_pickup.md` ("Where to go next").
+Full strategic analysis is in `.claude/next_session_pickup.md`.
 
 ---
 

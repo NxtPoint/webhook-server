@@ -666,7 +666,9 @@ python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <ta
 | `stroke_detector/velocity_signal.py` | Wrist-velocity peak detection (refactor of `diag/ball_hit_pose.py` probe) |
 | `stroke_detector/detector.py` | Orchestrator — peak-offset (+4f), min-gap=25, decel filter `v[i+3] > peak*0.5` |
 
-Pose-first wrist-velocity peak detector, sibling to `serve_detector/`. Same lifecycle: schema auto-created on first call, delete+reinsert per task on re-detection. Wired into `upload_app.py::_do_ingest_t5` right after serve detection. **Silver consumption is NOT yet wired** — `stroke_events` is populated but `build_silver_match_t5.py` still uses bounce-driven row generation; pivot to stroke-driven is the next Phase 6 step.
+Pose-first wrist-velocity peak detector, sibling to `serve_detector/`. Same lifecycle: schema auto-created on first call, delete+reinsert per task on re-detection. Wired into `upload_app.py::_do_ingest_t5` right after serve detection.
+
+**Silver consumption — BUILT but GATED OFF (2026-05-25).** `build_silver_match_t5.py` now has a stroke-driven Pass 1 (`_t5_pass1_load_stroke_driven`) behind `T5_STROKE_DRIVEN_SILVER` (default OFF; bounce-driven `_t5_pass1_load_bounce_driven` stays live). It overshot on Match 1 (141 vs SA's 84 active; near 114/27 vs SA 43/41) because the detector's hitter attribution is perspective-biased to the near player — a **bronze** problem. **Do not flip the gate on until the 18 bronze base fields reconcile to SportAI** (CLAUDE.md "Things not to do" #11; `docs/north_star.md` §BRONZE-FIRST). The cheapest prerequisite: wire `ml_analysis.player_detections_roi` (holds far pose the silver/stroke paths never read) into `_build_player_buckets` + `stroke_detector/detector.py::_load_pose_rows`. Full diagnosis: `docs/_investigation/far_player_accuracy.md`.
 
 **Quick verification on a live task:**
 ```bash
