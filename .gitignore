@@ -26,6 +26,7 @@ ml_pipeline/models/*.onnx
 # ML pipeline training artifacts
 ml_pipeline/training/datasets/
 ml_pipeline/training/labels/
+ml_pipeline/training/visual_debug/
 
 # Test video clips
 ml_pipeline/test_videos/

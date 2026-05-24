@@ -383,6 +383,7 @@ See `.claude/handover_t5.md` for the full catalogue. The ones that come up const
 ```bash
 python -m ml_pipeline.diag.bench                        # serve detector regression (CI-gated; mandatory pre-push)
 python -m ml_pipeline.diag.bench_ball                   # ball-tracker regression (tracknet_v2 + wasb; local-only)
+python -m ml_pipeline.diag.bench_finetuned --weights-path <path>  # ball-bench against a fine-tuned weights file (Phase 5c.4)
 python -m ml_pipeline.diag.bench_silver                 # silver-builder regression (local Docker Postgres; empty until fixtures land)
 python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
 python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
