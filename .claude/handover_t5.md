@@ -656,6 +656,31 @@ python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <ta
 | `serve_detector/validate_offline.py` | In-memory runner against local pose JSONL (no DB writes) |
 | `serve_detector/tests/test_components.py` | 9 component tests |
 
+### Stroke detection (runs on Render, silver-build time) — SHIPPED 2026-05-24 night
+
+| File | Purpose |
+|---|---|
+| `stroke_detector/__init__.py` | Public API: `detect_strokes_for_task`, `detect_strokes_offline`, `StrokeEvent` |
+| `stroke_detector/models.py` | `StrokeEvent` dataclass (one row per detected stroke contact) |
+| `stroke_detector/schema.py` | DDL for `ml_analysis.stroke_events` (idempotent) |
+| `stroke_detector/velocity_signal.py` | Wrist-velocity peak detection (refactor of `diag/ball_hit_pose.py` probe) |
+| `stroke_detector/detector.py` | Orchestrator — peak-offset (+4f), min-gap=25, decel filter `v[i+3] > peak*0.5` |
+
+Pose-first wrist-velocity peak detector, sibling to `serve_detector/`. Same lifecycle: schema auto-created on first call, delete+reinsert per task on re-detection. Wired into `upload_app.py::_do_ingest_t5` right after serve detection. **Silver consumption is NOT yet wired** — `stroke_events` is populated but `build_silver_match_t5.py` still uses bounce-driven row generation; pivot to stroke-driven is the next Phase 6 step.
+
+**Quick verification on a live task:**
+```bash
+# Force-rerun stroke detection on an existing T5 task
+python -c "from ml_pipeline.stroke_detector import detect_strokes_for_task; from db_init import engine; \
+    conn=engine.connect(); trans=conn.begin(); \
+    events=detect_strokes_for_task(conn, '<T5_TASK_ID>', replace=True); \
+    trans.commit(); conn.close(); print(f'persisted {len(events)} stroke events')"
+
+# Check count + confidence span
+psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(ts)::int, MAX(ts)::int, AVG(confidence)::numeric(3,2) \
+    FROM ml_analysis.stroke_events WHERE task_id::text = '<T5_TASK_ID>';"
+```
+
 ### Silver (T5 variant)
 
 | File | Purpose |

@@ -114,7 +114,20 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 **Part 1 — warm-up filter — DONE 2026-05-07.** New `first_serve_task` CTE + OR clause in the `final` CTE flips `exclude_d=TRUE` on rows where `ball_hit_s < per-task MIN(ball_hit_s) FILTER (serve_d)`. Predicted 35-row impact on `880dff02` confirmed via direct query (76 pre-existing exclusions + 35 new = 111 TRUE). Backhand count on active silver dropped from 62 → 10 (now slightly *under* SA's 15). Bench unchanged.
 
-**Part 2 — between-point filter — UNBLOCKED 2026-05-24** (was BLOCKED by Phase 5). Phase 5 coverage prerequisite now met (52%+ on 78c32f53). Today's reconcile on `0d0514df ↔ 78c32f53` re-exposed the exact symptom this filter is meant to fix: T5 has 139 silver rows vs SA's 94, with `shot_ix_in_point` populated on only 38% of T5 rows vs 81% of SA's — meaning ~86 T5 rows are warmup / between-point activity that SA correctly excludes. **Original 2026-05-20 attempts (preserved below for reference)** — two pure-SQL attempts shipped + reverted; both flawed for the same upstream reason that's now resolved.
+**Part 2 — between-point filter — DONE 2026-05-24 night.** Bounce-driven rally-window filter shipped + verified live on Match 1 (`78c32f53`). v3 implementation (commits `b68e33e` → `0201531`) added 5 new CTEs (`vaj / ball_bounces / point_starts / point_window_bounds / rally_windows / in_rally_flag`) in pass 3 of `build_silver_v2.py`. Rally windows are TIME-based (derived from `ml_analysis.ball_detections` bounces), so v2's forward-fill bug can't recur. Rally end = `GREATEST(last_bounce + 1s, rally_start + 20s)`, capped at `next_rally_start - 3s`; 2s pre-buffer on the start. Three safety gates (`has_bounce_data`, `has_serves`, per-window 10/20s fallback) make the filter a no-op for SportAI tasks and edge-case T5 tasks.
+
+**Live results on Match 1 (`78c32f53` post-filter):**
+- T5 silver: 139 total → **60 active, 79 excluded** (SA: 94 total → 84 active, 10 excluded)
+- Active stroke distribution: T5 Backhand=14 vs SA=15 (exact match within 1), T5 Volley=0 vs SA=4 (over-detection eliminated), T5 Serve=28 vs SA=26 (within 8%)
+- Bench unchanged (a798eff0=20/24, 880dff02=23/24)
+
+**Known ceiling — Forehand undercount is upstream of this filter.** T5 active Forehand=17 vs SA's 38 (gap of 21). Per-row breakdown showed the binding constraints are:
+- The existing `excl_chain.gap_break` 5s-gap rule (pre-existing in pass 3) excludes 24 rows match-wide — 10 Forehands among them. That rule was tuned for SportAI's denser bronze and gets aggressive when Phase 5 ball coverage is at 50% (long-tail strokes after a 5+ second silver-row gap get killed).
+- T5's silver builder is bounce-driven (one bounce = one silver row). When TrackNet misses bounces for forehands, those strokes never become silver rows in the first place — no filter can conjure them.
+
+Three tuning iterations on the between-point filter (`+10s fallback → +20s + 2s pre-buffer → 20s minimum window`) moved the active count by 1 row. The filter is functionally correct; the remaining gap is structural and addressed in two future tracks: (a) retune `excl_chain.gap_break` 5s → 8s for sparse-bounce regimes (small Render-side change, but touches load-bearing pre-existing logic — needs care); (b) pivot the T5 silver builder to consume `ml_analysis.stroke_events` directly (now populated — see Phase 6 below).
+
+**Original 2026-05-20 attempts (preserved below for reference)** — two pure-SQL attempts shipped + reverted; both flawed for the same upstream reason that's now resolved.
 
   - **v1 (commit 00b8639, reverted)** — Pattern A from session_2026-05-20_review.md: anchor on every `serve_d=TRUE` row in `with_try_ff`, window = `LEAST(hit+30s, next_serve-2s)`. Result on 880dff02: **no-op**. T5's geometric serve detector emits 107 detections on an 18-point match (any overhead-type swing within EPS of a baseline qualifies). 107 dense anchors create windows that cover the entire match → nothing falls outside any window → 0 rows excluded. Active T5 rows held at 49.
   - **v2 (commit f0b104e, reverted)** — anchor on first `serve_d=TRUE` per `point_number` (~18-30 anchors), 20s cap. Result on 880dff02: **wrong rows dropped**. Active T5 49 → 34 (-15 by count) but the reconciler's "T5 strokes outside ANY SA point window" held at 20 — all 15 dropped rows were INSIDE real SA windows. Per-point: pt 5 (SA [178.44–195.96]) 8 T5 → 1; pt 14 (SA [458.08–468.00]) 9 T5 → 1. Forward-fill of `point_number` assigns rows in the [SA_point_start, T5_serve_detection] gap to the PREVIOUS point_number; those rows then fall outside that previous point's 20s window and get excluded — even though they're real strokes of the current point.
@@ -157,18 +170,21 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 **Blocker:** 5a DONE 2026-05-21. 5b parked (2026-05-20). 5e SHIPPED 2026-05-21 + VERIFIED IN PROD 2026-05-22. **5c.0 / 5c.1 / 5c.2 / 5c.3 ALL LIVE + VERIFIED 2026-05-22 evening.** 5d blocks on 5c. **5e follow-ups (1) chain-rejection + (2) `source='main'` SHIPPED 2026-05-22 late evening** — re-anchor fix in commit `7863a66`, deployed to Batch eu-north-1 `:48` / us-east-1 `:30` (amd64 `bc8f7d72…`); ball-bench post_filter_sa_recall verdict: 100% on 3/4 (fixture, tracker) combos, 67% on a798eff0/tracknet (was 33% pre-fix). Next moves: (a) wire `/ops/sweep-t5-orphans` into a 5-min Render cron so future auto-spawned T5 tasks no longer need manual unblocking, (b) follow-up (3) re-capture `1d6feb3a` silver-bench fixture against new Batch image to see post-fix bronze density, (c) accumulate more training_corpus rows from organic uploads before attempting a fine-tune run.
 
-### Phase 6 — Stroke detection — UNBLOCKED 2026-05-24
+### Phase 6 — Stroke detection — MODULE DONE 2026-05-24 night, silver consumption is next
 
-**Pivot (2026-05-24):** Original framing was "validate T5's classifications match SA on validated points." Today's investigation revealed a more fundamental upstream gap: we hadn't yet built a general stroke-event detector at all (we only had the specialised serve detector). Phase 6 now scopes "build stroke-event detection + classification" rather than just "reconcile."
+**Module shipped (commits `2cedc4c` → `aaba134`):** `ml_pipeline/stroke_detector/` — 5-file production module mirroring `serve_detector/` shape (`__init__.py`, `models.py`, `schema.py`, `velocity_signal.py`, `detector.py`). Wired into the T5 ingest path in `upload_app.py::_do_ingest_t5` right after `detect_serves_for_task`. Schema auto-created on first call; delete+reinsert per task on re-detection (same lifecycle as `serve_events`).
 
-**Path 0 validated:** `ml_pipeline/diag/ball_hit_pose.py` (pose-only wrist-velocity peak detector) scored **63-67% recall at ±6 tolerance on 78c32f53**, with empirical evidence that:
-- Velocity peak fires 4-6 frames BEFORE SA's contact frame (backswing-to-contact offset) — applying a +4 frame offset would recover this without changing tolerance
-- ~33% miss is concentrated on FAR-side hits (where pose coverage is 40% lower than NEAR) and frames where wrist confidence drops below 0.3 at contact occlusion
-- 274 false positives are mostly multi-peak detection on the SAME swing (backswing + forward swing + follow-through) — fixable by raising `--min-gap-frames` 15→25
+Three refinements from the `ball_hit_pose.py` probe applied:
+1. **Peak-to-contact offset +4 frames.** Velocity peak fires on the backswing-to-contact transition; SA's truth contact frame is 4-6 frames later. `predicted_hit_frame = peak_frame + 4`.
+2. **`min_gap_frames` 15 → 25.** Probe over-fired on backswing + forward + follow-through inside 15 frames at 25fps.
+3. **Deceleration filter.** Reject peaks where smoothed `v[i+3] > peak * 0.5` (single-frame check per probe spec, NOT a mean — first implementation used mean and zaped 100% of peaks on real video; fixed in `aaba134`).
 
-Refinement work to reach 75-80% recall + 50-60% precision (production-grade): peak-offset correction, min-gap tuning, velocity+acceleration template matching, better FAR pose extraction. **None require training labels.**
+**Live results on Match 1 (`78c32f53`):** 249 stroke events persisted, avg confidence 0.95, span ts=3-608s. Probe baseline (no refinements) scored 63-67% recall on 161 SA hits. Production module emits ~150 more events than SA's truth (false-positive surplus) — expected per the pickup; the precision gap is what training-based refinement closes (Phase 5d after corpus accumulation).
 
-**Production landing:** `ml_pipeline/stroke_detector/` (sibling to `serve_detector/`), pose-first architecture matching the shipped serve detector. Emits stroke events that silver builder consumes.
+**Silver consumption — NOT YET WIRED.** The current T5 silver builder (`build_silver_match_t5.py::_t5_pass1_load`) is bounce-driven: one bounce = one silver row. `stroke_events` is populated but not consumed. This is the next Phase 6 step and a direct lever on the Forehand-undercount ceiling that Phase 3 part 2 exposed:
+- A stroke that produces no detectable bounce (TrackNet miss / ball wide / out) currently has no silver row.
+- Wiring `stroke_events` into Pass 1 would generate one silver row per detected stroke contact, with bounce coords joined when available — recovering forehands lost to bounce-detection gaps.
+- Estimate: 1-2 days. Render-side, no Batch redeploy. Risk: changes the row-generation contract for T5 silver, so gold views may need a sanity pass.
 
 **Where training fits (later):** 5-10 corpus rows of paired SA+T5 labels enables training a small pose-feature classifier to close the heuristic ceiling to ~90%+. Phase 5c is now passively accumulating; no urgency.
 
