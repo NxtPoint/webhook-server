@@ -52,8 +52,8 @@ from ml_pipeline.stroke_detector.velocity_signal import (
     compute_global_max_velocity,
     compute_per_player_velocity,
     detect_velocity_peaks,
-    post_peak_mean_velocity,
-    pre_peak_mean_velocity,
+    post_peak_velocity_at,
+    pre_peak_velocity_at,
     smooth_velocity,
     velocity_at,
 )
@@ -112,16 +112,20 @@ def _run_pipeline(
         if peak_v is None:
             continue
 
-        pre_v = pre_peak_mean_velocity(smoothed, peak_frame, lookback=3)
-        post_v = post_peak_mean_velocity(smoothed, peak_frame, lookahead=3)
+        pre_v = pre_peak_velocity_at(smoothed, peak_frame, offset=3)
+        post_v = post_peak_velocity_at(smoothed, peak_frame, offset=3)
 
-        # Deceleration filter — a genuine swing's velocity falls steeply
-        # past contact (racquet decelerates, follow-through dissipates the
-        # kinetic energy). A pickup/walk motion plateaus. Reject peaks
-        # where post_v / peak_v exceeds decel_ratio_max. When post_v is
-        # missing (peak at end of pose sequence, or pose dropout in the
-        # follow-through window), we keep the peak — better to admit a
-        # likely-real stroke than reject for missing-data reasons.
+        # Deceleration filter — pickup spec: `v[i+3] > peak * threshold` →
+        # reject. A genuine swing's velocity drops fast past contact
+        # (racquet decelerates, follow-through dissipates the kinetic
+        # energy). A pickup/walk motion plateaus. When post_v is missing
+        # (peak at end of pose sequence, or pose dropout in the follow-
+        # through window), we keep the peak — better to admit a likely-
+        # real stroke than reject for missing-data reasons.
+        #
+        # Single-frame check (not a mean over [i+1, i+3]) because the mean
+        # runs much higher than v[i+3] alone (frames i+1 / i+2 are still
+        # close to peak velocity) and zaps 100% of peaks on real video.
         decel_ratio: Optional[float] = None
         if post_v is not None and peak_v > 0:
             decel_ratio = post_v / peak_v

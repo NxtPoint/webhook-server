@@ -205,26 +205,49 @@ def velocity_at(smoothed: List[Tuple[int, float]], frame: int) -> Optional[float
     return None
 
 
-def post_peak_mean_velocity(
-    smoothed: List[Tuple[int, float]], peak_frame: int, lookahead: int = 3,
+def post_peak_velocity_at(
+    smoothed: List[Tuple[int, float]], peak_frame: int, offset: int = 3,
 ) -> Optional[float]:
-    """Mean smoothed velocity over the `lookahead` frames AFTER peak_frame.
+    """Smoothed velocity at the frame nearest to `peak_frame + offset`.
 
-    Returns None when fewer than 1 sample falls in (peak_frame, peak_frame+lookahead].
-    Tolerant of pose gaps — uses the smoothed series's actual frames rather
-    than assuming every frame is present.
+    Per the pickup-spec deceleration check (`v[i+offset] > peak * threshold`),
+    we want a single-frame sample, not a mean. A mean over (peak, peak+offset]
+    runs much higher than v[i+offset] alone because frames immediately after
+    the peak are still close to peak velocity. Using the mean made the decel
+    filter zap 100% of peaks on real video; the spec-correct single-frame
+    sample admits realistic swings.
+
+    Tolerant of pose gaps: if the exact peak+offset frame is missing from
+    the smoothed series we take the nearest frame within ±1 of the target.
+    Returns None if no sample is found in (peak_frame, peak_frame+offset+1].
     """
-    samples = [v for f, v in smoothed if peak_frame < f <= peak_frame + lookahead]
-    if not samples:
-        return None
-    return sum(samples) / len(samples)
+    target = peak_frame + offset
+    best_f: Optional[int] = None
+    best_v: Optional[float] = None
+    for f, v in smoothed:
+        if f <= peak_frame:
+            continue
+        if f > peak_frame + offset + 1:
+            break
+        if best_f is None or abs(f - target) < abs(best_f - target):
+            best_f = f
+            best_v = v
+    return best_v
 
 
-def pre_peak_mean_velocity(
-    smoothed: List[Tuple[int, float]], peak_frame: int, lookback: int = 3,
+def pre_peak_velocity_at(
+    smoothed: List[Tuple[int, float]], peak_frame: int, offset: int = 3,
 ) -> Optional[float]:
-    """Mean smoothed velocity over the `lookback` frames BEFORE peak_frame."""
-    samples = [v for f, v in smoothed if peak_frame - lookback <= f < peak_frame]
-    if not samples:
-        return None
-    return sum(samples) / len(samples)
+    """Smoothed velocity at the frame nearest to `peak_frame - offset`."""
+    target = peak_frame - offset
+    best_f: Optional[int] = None
+    best_v: Optional[float] = None
+    for f, v in smoothed:
+        if f >= peak_frame:
+            break
+        if f < peak_frame - offset - 1:
+            continue
+        if best_f is None or abs(f - target) < abs(best_f - target):
+            best_f = f
+            best_v = v
+    return best_v

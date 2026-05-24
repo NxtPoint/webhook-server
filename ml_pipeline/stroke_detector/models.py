@@ -26,9 +26,9 @@ class StrokeEvent:
     confidence: float             # 0..1
 
     peak_velocity_px_per_frame: float
-    pre_peak_v: Optional[float] = None    # mean velocity over [i-3, i-1]
-    post_peak_v: Optional[float] = None   # mean velocity over [i+1, i+3]
-    decel_ratio: Optional[float] = None   # post_peak_v / max(pre_peak_v, peak)
+    pre_peak_v: Optional[float] = None    # smoothed velocity at frame i-3
+    post_peak_v: Optional[float] = None   # smoothed velocity at frame i+3
+    decel_ratio: Optional[float] = None   # post_peak_v / peak_velocity
 
     diagnostics: dict = field(default_factory=dict)
 
