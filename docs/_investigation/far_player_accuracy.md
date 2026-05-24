@@ -26,6 +26,15 @@ decision on what to fix before the stroke-driven silver pivot (Option B in
 > threshold would overfit one match). Next bronze gap before the gate: **far stroke velocity
 > size-normalisation** (`velocity_signal.py`).
 
+> **UPDATE 2026-05-25 — far velocity size-normalisation DONE (commit `956b65a`).** `velocity_signal.py`
+> now scales each player's wrist velocity by (reference_body / player_body), reference = the largest
+> player's median torso, so the near player is unchanged (factor 1, 30px threshold valid) and only the
+> far player scales up (factor 3.03 on M1). Stroke attribution 208/34 → 165/106; gated stroke-driven
+> **far active 27→43, matching SA's 41**. **Far is now fully unblocked across all 3 stages** (ROI
+> pose `ead857a`, fh/bh mirror `a8479a8`, velocity norm `956b65a`). The blocker flipped sides: gated
+> stroke-driven **near active 108 vs SA 43** — near-player false-positive peaks (detector PRECISION),
+> which is the Q1-D / trained-classifier territory (or a precision gate), not far starvation.
+
 **Evidence provenance note.** This session could not run live DB queries (the Bash and
 PowerShell tools were denied in the sandbox, and WebFetch cannot attach the `X-Ops-Key`
 header that `/ops/diag/sql` requires). Every number below is therefore sourced from
