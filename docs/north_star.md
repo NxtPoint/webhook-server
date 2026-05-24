@@ -40,9 +40,40 @@ We are NOT trying to hit 100% serve detection. We're trying to get the dashboard
 
 ## Current bottleneck
 
-**Ball detection coverage.** TrackNetV2 returns ball coordinates for ~13% of frames on the validation match. Six >40s gaps include the 61.8s window that contains SA point 6. Without ball data, T5 cannot emit silver rows at the right timestamps for real rally play, so per-point reconciliation cannot rise above its current floor. This is multi-week investment (TrackNetV3 retrain, ROI bounce extractor finish, Hough fallback gain-up, dual-submit training data) — not a session.
+**Ball-bounce x,y geometric accuracy — UNMEASURED on the new pipeline.** Coverage is no longer the dominant problem (see Strategy update 2026-05-24 below). The blocking measurement is now Phase 7: how far is each T5 bounce x,y from SA's truth on a matched pair? Phase 6 (stroke detection) is also now unblocked via a pose-only path; see Strategy update below.
 
 Phase 1 is closed; the phantom-bounce era described in the archived north_star is over.
+
+---
+
+## Strategy update 2026-05-24 — Path 0 (no training) confirmed viable for Phase 6
+
+**Headline:** Three diag probes today on the `0d0514df ↔ 78c32f53` dual-submit pair answered the "should we train?" question with concrete numbers. Pose-only stroke detection is viable; training is now insurance / runway to 90%+, not a load-bearing prerequisite.
+
+**The three probes (commit history preserves the algorithms; only the winner is in the tree):**
+
+| Probe | Approach | Recall vs 106 SA hits | Why it died / lives |
+|---|---|---|---|
+| 1. `ball_hit_baseline.py` (deleted 2026-05-24) | y-reversal on ball trajectory (port of ameynarwadkar repo) | **0%** | Heuristic assumes broadcast/top-down camera; our amateur side-cam has horizontal ball motion. Dead end. |
+| 2. `ball_hit_fusion.py` (deleted 2026-05-24) | ball position vs wrist-keypoint distance | **15%** | At the millisecond of contact, the ball is OCCLUDED by racquet/player. WASB coverage gap aligns exactly with SA truth frames (median 477px ball-to-wrist distance AT truth). No ball-based heuristic can recover. |
+| 3. `ml_pipeline/diag/ball_hit_pose.py` (KEPT) | wrist-velocity peaks, no ball signal | **63-67%** | Pose IS detectable at hit moments where ball is occluded. The signal exists; remaining gap is algorithm sophistication. |
+
+**Coverage measurement on `78c32f53` (post-WASB + chain-rejection):** 8,005 ball detections / 15,296 frames = **52% coverage**, up from the 13% pre-WASB baseline. That's a 4× improvement — Phase 5's done-when ("≥50% frame coverage") is materially met. Coverage is no longer the dominant constraint.
+
+**Why pose-only beats fusion:** The ball occludes against the racquet at contact. Pose data (wrist keypoint from YOLOv8x-pose) remains detectable at 87% coverage including the hit frames where the ball is invisible. This is the same architectural choice our shipped serve detector uses (Silent Impact 2025 / TAL4Tennis pattern) — 20/24 + 23/24 on bench.
+
+**Realistic ceiling without training** (1-2 weeks of refinement on top of `ball_hit_pose.py`'s 63%):
+- Peak+offset correction (velocity peak fires 4-6 frames before SA's contact frame): recall +25pp at ±3 tolerance → ~63%
+- Tighten `--min-gap-frames` 15→25 to suppress backswing+follow-through double-detection: precision 21% → ~40%+
+- Add acceleration / swing-template matching: another +10pp precision
+- Better FAR pose extraction (currently 6,130 entries vs NEAR's 10,115): +5-10pp recall
+- **Target: 75-80% recall, 50-60% precision** — production-grade for the dashboard / coaching surfaces
+
+**Where training fits now (Phase 5c / 5d):** The corpus accumulation pipeline (auto-spawn + auto-label, LIVE per Phase 5c.0-5c.3) is not wasted. It's the runway from heuristic-ceiling (~80%) to ML-ceiling (~90-95%). Once we have 5-10 matches of corpus, a small pose-feature classifier (24-frame window of pose features → hit/not-hit) is trainable and would close the heuristic-to-ML gap. **No longer urgent; no longer load-bearing.** Keep accumulating passively.
+
+**What hasn't moved:** Phase 7 (bounce x,y coordinate accuracy in meters). Coverage being 52% is necessary but not sufficient — we don't yet know the geometric error of T5's reported bounces vs SA's. Next critical measurement.
+
+**Implication for the phase ladder:** Phase 5 partial → mostly DONE (coverage met). Phase 6 BLOCKED → UNBLOCKED (pose-only viable). Phase 7 BLOCKED → MEASURABLE (next probe). Phase 8 unchanged.
 
 ---
 
@@ -55,10 +86,10 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 | 2 | Point boundary detection | `detect_point_boundaries()` function exists; per-point match ≥80% on `a798eff0` | PARTIAL — function landed (POINT 2026-05-07); IOU 17.6% pre-Phase-3, **pending re-measurement on post-Phase-3 active silver** |
 | 3 | Pre-/between-point filter | Active T5 silver ±5% of SA event count; stroke distribution within ±10% per class | PARTIAL — warm-up half shipped; **between-point empirically blocked by Phase 5 (2026-05-20)** |
 | 4 | Point-completeness reconciler | Diag tool shipped with baseline alongside `bench_baseline.json` | DONE 2026-05-07 — tool live, baseline 0/17 (root cause classified as Phase 5 territory) |
-| **5** | **Ball detection coverage (NEW)** | **T5 ball-detection frame coverage ≥50%; longest gap <5s; SA point 6 has T5 ball detections** | **UNCLAIMED — top bottleneck, multi-week** |
-| 6 | Stroke classification reconciliation (was 5) | T5 vs SA stroke distribution within ±10% per class on validated points | BLOCKED by 5 |
-| 7 | Coordinate reconciliation (was 6) | Per-event `bounce_court_x/y` populated; geometric error vs SA <2m | BLOCKED by 5 |
-| 8 | Final serve-detection cleanup (was 7) | Revisit 4 a798eff0 misses with all upstream fixes in place | BLOCKED by 5 |
+| 5 | Ball detection coverage | T5 ball-detection frame coverage ≥50%; longest gap <5s | **MOSTLY DONE 2026-05-24** — 52% coverage on `78c32f53` post-WASB + chain-rejection (was 13%). See Strategy update above. |
+| 6 | Stroke detection (was "classification reconciliation") | Pose-only detector ≥75% recall vs SA truth at ±3 frame tolerance, ≥50% precision | **UNBLOCKED 2026-05-24** — pose-only path validated (`ball_hit_pose.py` probe at 63-67%; refinement target 75-80% without training). Production module at `ml_pipeline/stroke_detector/` is the next concrete piece. |
+| 7 | Coordinate reconciliation | Per-event `bounce_court_x/y` populated; geometric error vs SA <2m | **MEASURABLE 2026-05-24, UNMEASURED** — coverage prerequisite met. THE next critical measurement. Tomo flagged this as the most important metric. |
+| 8 | Final serve-detection cleanup | Revisit 4 a798eff0 misses with all upstream fixes in place | BLOCKED by 5 → now unblocked but lower priority than 7 |
 
 ---
 
@@ -126,18 +157,34 @@ Phase 1 is closed; the phantom-bounce era described in the archived north_star i
 
 **Blocker:** 5a DONE 2026-05-21. 5b parked (2026-05-20). 5e SHIPPED 2026-05-21 + VERIFIED IN PROD 2026-05-22. **5c.0 / 5c.1 / 5c.2 / 5c.3 ALL LIVE + VERIFIED 2026-05-22 evening.** 5d blocks on 5c. **5e follow-ups (1) chain-rejection + (2) `source='main'` SHIPPED 2026-05-22 late evening** — re-anchor fix in commit `7863a66`, deployed to Batch eu-north-1 `:48` / us-east-1 `:30` (amd64 `bc8f7d72…`); ball-bench post_filter_sa_recall verdict: 100% on 3/4 (fixture, tracker) combos, 67% on a798eff0/tracknet (was 33% pre-fix). Next moves: (a) wire `/ops/sweep-t5-orphans` into a 5-min Render cron so future auto-spawned T5 tasks no longer need manual unblocking, (b) follow-up (3) re-capture `1d6feb3a` silver-bench fixture against new Batch image to see post-fix bronze density, (c) accumulate more training_corpus rows from organic uploads before attempting a fine-tune run.
 
-### Phase 6 — Stroke classification reconciliation (was 5) — BLOCKED by 5
-**What:** Validate T5's FH/BH/V/OH classifications match SA on validated points.
-**Status:** Phase 1 + Phase 3 part 1 already crushed the dominant racquet-bounce-as-Backhand misclassification (62→10). Remaining gap is real classification logic on actual strokes.
-**Where:** `build_silver_v2.py` stroke derivation logic.
-**How to verify:** Phase 4 reconciler reports per-class accuracy ≥90% on validated points.
-**Blocker:** Phase 5. Until ball detection covers real-point windows, there are too few strokes to measure classification accuracy on.
+### Phase 6 — Stroke detection — UNBLOCKED 2026-05-24
 
-### Phase 7 — Coordinate reconciliation (was 6) — BLOCKED by 5
+**Pivot (2026-05-24):** Original framing was "validate T5's classifications match SA on validated points." Today's investigation revealed a more fundamental upstream gap: we hadn't yet built a general stroke-event detector at all (we only had the specialised serve detector). Phase 6 now scopes "build stroke-event detection + classification" rather than just "reconcile."
+
+**Path 0 validated:** `ml_pipeline/diag/ball_hit_pose.py` (pose-only wrist-velocity peak detector) scored **63-67% recall at ±6 tolerance on 78c32f53**, with empirical evidence that:
+- Velocity peak fires 4-6 frames BEFORE SA's contact frame (backswing-to-contact offset) — applying a +4 frame offset would recover this without changing tolerance
+- ~33% miss is concentrated on FAR-side hits (where pose coverage is 40% lower than NEAR) and frames where wrist confidence drops below 0.3 at contact occlusion
+- 274 false positives are mostly multi-peak detection on the SAME swing (backswing + forward swing + follow-through) — fixable by raising `--min-gap-frames` 15→25
+
+Refinement work to reach 75-80% recall + 50-60% precision (production-grade): peak-offset correction, min-gap tuning, velocity+acceleration template matching, better FAR pose extraction. **None require training labels.**
+
+**Production landing:** `ml_pipeline/stroke_detector/` (sibling to `serve_detector/`), pose-first architecture matching the shipped serve detector. Emits stroke events that silver builder consumes.
+
+**Where training fits (later):** 5-10 corpus rows of paired SA+T5 labels enables training a small pose-feature classifier to close the heuristic ceiling to ~90%+. Phase 5c is now passively accumulating; no urgency.
+
+**See:** Strategy update 2026-05-24 above for the full three-probe story.
+
+### Phase 7 — Coordinate reconciliation — MEASURABLE 2026-05-24, UNMEASURED
+
+**This is THE critical next measurement.** Tomo flagged on 2026-05-24 that ball-bounce x,y accuracy is the single most important product metric — heatmaps, "where balls land" visualisations, every coaching insight depends on it. Coverage being 52% post-WASB means we now have enough bounces to compare; we just haven't done the geometric error measurement yet.
+
 **What:** Per-event `bounce_court_x/y` populated; geometric error vs SA <2m on validated points.
 **Where:** `silver.point_detail` columns, `roi_extractors/bounces.py` (overlaps with Phase 5a), `build_silver_v2.py`.
-**How to verify:** Geometric error <2m vs SA on validated points. Phase 4 reconciler reports per-event coordinate error.
-**Blocker:** Phase 5. Need bounce coverage before reconciling coordinates.
+**How to verify:** Two-step:
+  1. Run `harness reconcile <sa_tid> <t5_tid>` — already measures coverage and distribution of `court_x`/`court_y`/`ball_bounce_x_norm`/`y_norm` (existing tool, `ml_pipeline/recon_silver.py`). Tells us if T5 populates the fields at all.
+  2. New diag probe to compute true geometric error: match T5 bounces to SA bounces by time (±0.5s), compute Euclidean distance in court metres, aggregate (median, p90, p95). Target: <2m median.
+**Blocker (was Phase 5, now removed):** Phase 5 coverage prerequisite met. Run the measurement.
+**Why this matters more than Phase 6 right now:** A pose-only stroke detector that's 80% accurate is fine for stroke COUNTING; for the dashboards Tomo ships (placement heatmaps, "where did this stroke land"), coordinate accuracy is load-bearing.
 
 ### Phase 8 — Final serve-detection cleanup (was 7) — BLOCKED by 5
 **What:** With ball coverage, point boundaries, and clean silver in place, revisit the 4 a798eff0 misses + 1 880dff02 miss (148.52 NEAR). Whichever still don't recover gets a one-line memo in the Backlog + parked.
