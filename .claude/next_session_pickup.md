@@ -7,7 +7,9 @@
 **Bench:** `a798eff0=20/24, 880dff02=23/24` — green on main.
 **What shipped:** Stroke-driven T5 silver Pass 1 (`build_silver_match_t5.py`), **committed but env-gated OFF** behind `T5_STROKE_DRIVEN_SILVER` (commit `f09d5df`). Bounce-driven stays the live path (139/60 on Match 1, unchanged).
 **What's blocked:** The stroke-driven pivot overshoots (Match 1: 141 vs SA's 84 active; near 114 / far 27 vs SA's 43/41) because T5 **bronze** is inaccurate — near-biased hitter attribution + sparse far pose. Reconciliation is a bronze problem, not a silver one.
-**Next session's job:** **Q1-A — wire `ml_analysis.player_detections_roi` into the silver + stroke pose buckets** (Render-side, ~1 day, low risk). Verified today: that table holds 958 far poses (all with keypoints) on Match 1 that the silver builder and stroke detector never read. It nearly doubles far coverage and is the prerequisite to ever flipping the gate on.
+**Q1-A — DONE (commit `ead857a`).** Wired `ml_analysis.player_detections_roi` (958 far ViTPose poses on M1) into both the silver `_build_player_buckets` and the stroke detector `_load_pose_rows`, mirroring serve_detector. Result: live bounce-driven row count unchanged (139), active 60→66, far groundstrokes now classify (far Backhand 14→19); stroke far attribution 63→85. Row generation untouched, SportAI unaffected, bench green.
+
+**Next session's job:** Close the two remaining bronze gaps the wiring exposed before the gate can flip — **(1) far fh/bh discrimination** (it now over-calls far backhands: M1 far fh 9 / bh 13 vs SA 18 / 6 — the far player faces the camera, so the handedness/wrist-vs-shoulder logic in `_infer_swing_type_from_keypoints` is likely mirrored for the far half); **(2) far stroke velocity size-normalisation** (full-frame far wrist motion is sub-threshold, so stroke attribution stays near-biased). Then **Q2-B end-anchored A/B identity**. Only flip `T5_STROKE_DRIVEN_SILVER` on once far near/far reconciles to ~50/50.
 
 If the above is enough, stop and go. Read on for the why and the full option set.
 
@@ -53,8 +55,9 @@ A read-only agent investigated far-player accuracy + A/B identity → **`docs/_i
 
 ## Priority order (reframed — fix bronze first)
 
-1. **Q1-A — merge `player_detections_roi` into the silver + stroke pose buckets** (Render-side, ~1 day, low risk). The cheapest, lowest-blast-radius bronze fix; gating prerequisite for the stroke-driven pivot. Start in `build_silver_match_t5.py::_build_player_buckets` and `ml_pipeline/stroke_detector/detector.py::_load_pose_rows`.
-2. **Q2-B — end-anchored player A/B identity** (Render-side). Anchor identity to court end + serve order so A/B persists across end-changes.
+1. ~~Q1-A — merge `player_detections_roi` into the silver + stroke pose buckets~~ **DONE (`ead857a`).**
+2. **Far fh/bh discrimination + far velocity normalisation** (Render/detector). The ROI wiring exposed these: far swing inference over-calls backhands (mirrored far-player geometry), and far stroke velocity is sub-threshold. Fix in `_infer_swing_type_from_keypoints` (far-half handedness) + `stroke_detector/velocity_signal.py` (size-normalise far velocity). Prerequisite for the gate.
+3. **Q2-B — end-anchored player A/B identity** (Render-side). Anchor identity to court end + serve order so A/B persists across end-changes.
 3. **Bug 2 — `roi_bounces` per-window slowdown** (Batch-side, contained; load `BallTracker` once outside the window loop). Unblocks long matches. Trips BATCH-SIDE CHANGE CHECKLIST.
 4. **Phase 7 — y-axis bounce calibration** (Batch-side, daylight only). Do LAST — measures against clean silver.
 

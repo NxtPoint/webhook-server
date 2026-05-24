@@ -4,6 +4,17 @@
 decision on what to fix before the stroke-driven silver pivot (Option B in
 `next_session_pickup.md`) can land.
 
+> **UPDATE 2026-05-25 — Q1-A DONE (commit `ead857a`).** `player_detections_roi` is now merged
+> into both the silver `_build_player_buckets` and the stroke detector `_load_pose_rows`
+> (ROI wins wholesale for pid=1, same as serve_detector). Verified on Match 1: the ROI table
+> holds **958 far ViTPose poses** (all keypoint-carrying); merging lifts far groundstroke
+> classification (live bounce-driven row count unchanged at 139, active 60→66, far Backhand
+> 14→19) and stroke-detector far attribution (63→85 of 256). R1 and the R2 far-coverage
+> numbers are now CONFIRMED (not `[VERIFY]`). **Two follow-on gaps the wiring exposed:**
+> far fh/bh discrimination over-calls backhands (mirrored far-player geometry in
+> `_infer_swing_type_from_keypoints`), and far stroke velocity is sub-threshold (needs
+> size-normalisation in `velocity_signal.py`). These now precede Q2-B in the sequence.
+
 **Evidence provenance note.** This session could not run live DB queries (the Bash and
 PowerShell tools were denied in the sandbox, and WebFetch cannot attach the `X-Ops-Key`
 header that `/ops/diag/sql` requires). Every number below is therefore sourced from
