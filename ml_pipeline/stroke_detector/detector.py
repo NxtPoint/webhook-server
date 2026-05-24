@@ -49,16 +49,28 @@ from ml_pipeline.stroke_detector.velocity_signal import (
     DEFAULT_NORMALIZE_BODY_SCALE,
     DEFAULT_PEAK_TO_CONTACT_OFFSET,
     DEFAULT_SMOOTH_WINDOW,
+    DEFAULT_SWING_PATH_WINDOW,
     DEFAULT_DECEL_RATIO_MAX,
     compute_global_max_velocity,
     compute_per_player_velocity,
     compute_player_scale_factors,
     detect_velocity_peaks,
+    median_body_scales,
     post_peak_velocity_at,
     pre_peak_velocity_at,
     smooth_velocity,
+    swing_path_torsos,
     velocity_at,
 )
+
+# Min wrist swing path (torso-lengths) for a peak attributed to the reference
+# (near, dense-pose) player to count as a real stroke. Brings near active from
+# ~108 to ~SA's 43 on Match 1 while leaving the far player (sparse pose) ungated.
+# Robust, not knife-edge: near lands 39-44 across the whole 0.70-0.85 band, so
+# the result doesn't hinge on the exact value. PROVISIONAL — calibrated on ONE
+# match (no 2nd video / training corpus yet); the durable fix is the trained
+# stroke classifier (Q1-D). Re-validate the threshold when more SA truth exists.
+DEFAULT_NEAR_MIN_SWING_PATH_TORSOS = 0.75
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +100,8 @@ def _run_pipeline(
     peak_to_contact_offset: int,
     decel_ratio_max: float,
     normalize_by_body_scale: bool = DEFAULT_NORMALIZE_BODY_SCALE,
+    near_min_swing_path_torsos: float = 0.0,
+    swing_path_window: int = DEFAULT_SWING_PATH_WINDOW,
 ) -> List[StrokeEvent]:
     """In-memory detection pipeline shared by prod + offline paths.
 
@@ -104,6 +118,21 @@ def _run_pipeline(
                 "(>1 boosts the smaller/far player so attribution isn't near-biased)",
                 {pid: round(f, 2) for pid, f in sorted(scale_factors.items())},
             )
+
+    # Swing-path gate setup (reference/near player only — see module docstring).
+    # Build the per-player pose index + median body scale once, up front.
+    med_scales: Dict[int, float] = {}
+    per_player_pose: Dict[int, List[Tuple[int, list]]] = {}
+    player_frames: Dict[int, List[int]] = {}
+    gate_on = near_min_swing_path_torsos > 0.0 and bool(scale_factors)
+    if gate_on:
+        med_scales = median_body_scales(poses, min_kp_conf=min_kp_conf)
+        for frame, pid, kps in poses:
+            per_player_pose.setdefault(pid, []).append((int(frame), kps))
+        for pid in per_player_pose:
+            per_player_pose[pid].sort(key=lambda r: r[0])
+            player_frames[pid] = [r[0] for r in per_player_pose[pid]]
+    swing_rejected = 0
     per_player = compute_per_player_velocity(
         poses,
         min_kp_conf=min_kp_conf,
@@ -155,6 +184,22 @@ def _run_pipeline(
         player_id = attribution.get(peak_frame, 0)
         confidence = _confidence_from_peak(peak_v, min_velocity)
 
+        # Swing-path precision gate — reference (near, dense-pose) player only.
+        # A real groundstroke sweeps a large wrist arc; a recovery/fidget peak
+        # barely moves. The far player's pose is too sparse for path length to
+        # be reliable (its real strokes measure low), so it is left ungated.
+        if gate_on and scale_factors.get(player_id, 1.0) <= 1.0 + 1e-9:
+            rows = per_player_pose.get(player_id)
+            sc = med_scales.get(player_id)
+            if rows and sc:
+                path = swing_path_torsos(
+                    rows, player_frames[player_id], peak_frame, sc,
+                    window=swing_path_window, max_gap_frames=max_gap_frames,
+                )
+                if path is not None and path < near_min_swing_path_torsos:
+                    swing_rejected += 1
+                    continue
+
         events.append(StrokeEvent(
             task_id=task_id,
             frame_idx=peak_frame,
@@ -168,6 +213,12 @@ def _run_pipeline(
             decel_ratio=decel_ratio,
             diagnostics={"smoothed_window": smooth_window},
         ))
+    if gate_on and swing_rejected:
+        logger.info(
+            "stroke_detector: swing-path gate rejected %d near peaks "
+            "(min_path=%.2f torso-lengths, window=+/-%d)",
+            swing_rejected, near_min_swing_path_torsos, swing_path_window,
+        )
     events.sort(key=lambda e: e.predicted_hit_frame)
     return events
 
@@ -287,6 +338,8 @@ def detect_strokes_for_task(
     peak_to_contact_offset: int = DEFAULT_PEAK_TO_CONTACT_OFFSET,
     decel_ratio_max: float = DEFAULT_DECEL_RATIO_MAX,
     normalize_by_body_scale: bool = DEFAULT_NORMALIZE_BODY_SCALE,
+    near_min_swing_path_torsos: float = DEFAULT_NEAR_MIN_SWING_PATH_TORSOS,
+    swing_path_window: int = DEFAULT_SWING_PATH_WINDOW,
 ) -> List[StrokeEvent]:
     """Production entry point. Detects strokes from pose rows + persists
     StrokeEvent rows to ml_analysis.stroke_events.
@@ -320,6 +373,8 @@ def detect_strokes_for_task(
         peak_to_contact_offset=peak_to_contact_offset,
         decel_ratio_max=decel_ratio_max,
         normalize_by_body_scale=normalize_by_body_scale,
+        near_min_swing_path_torsos=near_min_swing_path_torsos,
+        swing_path_window=swing_path_window,
     )
 
     _persist_events(conn, events)
@@ -345,6 +400,8 @@ def detect_strokes_offline(
     peak_to_contact_offset: int = DEFAULT_PEAK_TO_CONTACT_OFFSET,
     decel_ratio_max: float = DEFAULT_DECEL_RATIO_MAX,
     normalize_by_body_scale: bool = DEFAULT_NORMALIZE_BODY_SCALE,
+    near_min_swing_path_torsos: float = DEFAULT_NEAR_MIN_SWING_PATH_TORSOS,
+    swing_path_window: int = DEFAULT_SWING_PATH_WINDOW,
 ) -> List[StrokeEvent]:
     """In-memory detection for local validation — shares _run_pipeline
     with the prod entry point so offline numbers always match prod.
@@ -361,4 +418,6 @@ def detect_strokes_offline(
         peak_to_contact_offset=peak_to_contact_offset,
         decel_ratio_max=decel_ratio_max,
         normalize_by_body_scale=normalize_by_body_scale,
+        near_min_swing_path_torsos=near_min_swing_path_torsos,
+        swing_path_window=swing_path_window,
     )

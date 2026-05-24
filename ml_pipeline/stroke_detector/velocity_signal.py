@@ -45,6 +45,21 @@ DEFAULT_NORMALIZE_BODY_SCALE = True
 DEFAULT_SCALE_MIN_SAMPLES = 10   # need this many valid poses to trust a player's median scale
 DEFAULT_SCALE_MAX_FACTOR = 6.0   # cap the boost so a degenerate tiny scale can't blow up velocity
 
+# Swing-path precision gate (cuts near-player false-positive peaks). A real
+# groundstroke sweeps the wrist through a large arc; a recovery/split-step/ready
+# adjustment has a velocity blip but little total excursion. We measure the
+# wrist path length (validated consecutive motion, teleports rejected) over a
+# window, normalised to torso-lengths, and reject peaks below the minimum.
+# APPLIED ONLY to the reference (largest / near) player, where pose is dense
+# enough for path length to be meaningful — the far player's pose is too sparse
+# (gaps, dropouts) so its real strokes measure LOW and a global gate would cut
+# them. PROVISIONAL: the threshold is calibrated on a single match (Match 1, no
+# second video / training corpus yet) — re-validate when more SA truth exists;
+# the proper fix is the trained stroke classifier (Q1-D). Set to 0.0 to disable.
+DEFAULT_MIN_SWING_PATH_TORSOS = 0.0   # overridden by detector default; 0 = gate off
+DEFAULT_SWING_PATH_WINDOW = 10        # +/- frames around the peak
+DEFAULT_SWING_STEP_CAP_TORSOS = 0.6   # reject single-step wrist jumps > this (teleport/outlier)
+
 
 def _parse_keypoints(raw) -> Optional[list]:
     """Normalise keypoints to [[x, y, conf], ...] (17 elements). Returns None
@@ -119,6 +134,71 @@ def _body_scale(keypoints, min_conf: float) -> Optional[float]:
     return sw if sw > 2.0 else None
 
 
+def median_body_scales(
+    poses: Sequence[Tuple[int, int, list]],
+    *,
+    min_kp_conf: float = DEFAULT_MIN_KP_CONF,
+    min_samples: int = DEFAULT_SCALE_MIN_SAMPLES,
+) -> Dict[int, float]:
+    """Return {player_id: median body scale px} (torso length). Used both to
+    derive velocity scale factors and to normalise swing-path to torso-lengths."""
+    scales: Dict[int, List[float]] = {}
+    for _frame, pid, kps in poses:
+        s = _body_scale(kps, min_kp_conf)
+        if s is not None:
+            scales.setdefault(pid, []).append(s)
+    out: Dict[int, float] = {}
+    for pid, vals in scales.items():
+        if len(vals) >= min_samples:
+            vals.sort()
+            out[pid] = vals[len(vals) // 2]
+    return out
+
+
+def swing_path_torsos(
+    player_rows: List[Tuple[int, list]],
+    frames: List[int],
+    center_frame: int,
+    body_scale: float,
+    *,
+    window: int = DEFAULT_SWING_PATH_WINDOW,
+    max_gap_frames: int = DEFAULT_MAX_GAP_FRAMES,
+    step_cap_torsos: float = DEFAULT_SWING_STEP_CAP_TORSOS,
+    min_kp_conf: float = 0.4,
+) -> Optional[float]:
+    """Wrist path length (in torso-lengths) over +/-window frames around a peak.
+
+    Sums validated consecutive wrist displacement (gap <= max_gap_frames) for
+    each wrist, rejecting single steps > step_cap_torsos (teleport / outlier
+    keypoints), and returns the larger of the two wrists / body_scale. This is a
+    robust "how big was the swing" measure — real strokes sweep a large arc,
+    fidgets barely move. Returns None if body_scale is missing.
+    """
+    if not frames or not body_scale or body_scale <= 0:
+        return None
+    import bisect as _bisect
+    lo = _bisect.bisect_left(frames, center_frame - window)
+    hi = _bisect.bisect_right(frames, center_frame + window)
+    cap = step_cap_torsos * body_scale
+    best = 0.0
+    for slot in (0, 1):  # left wrist, right wrist
+        last: Optional[Tuple[int, float, float]] = None
+        path = 0.0
+        for i in range(lo, hi):
+            frame, kps = player_rows[i]
+            left, right = _wrist_positions(kps, min_kp_conf)
+            w = (left, right)[slot]
+            if w is None:
+                continue
+            if last is not None and frame - last[0] <= max_gap_frames:
+                d = ((w[0] - last[1]) ** 2 + (w[1] - last[2]) ** 2) ** 0.5
+                if d <= cap:
+                    path += d
+            last = (frame, w[0], w[1])
+        best = max(best, path)
+    return best / body_scale
+
+
 def compute_player_scale_factors(
     poses: Sequence[Tuple[int, int, list]],
     *,
@@ -135,20 +215,9 @@ def compute_player_scale_factors(
     `min_samples` valid scale poses get factor 1.0 (don't trust a tiny sample),
     and the boost is capped at `max_factor` so a degenerate scale can't blow up.
     """
-    scales: Dict[int, List[float]] = {}
-    for _frame, pid, kps in poses:
-        s = _body_scale(kps, min_kp_conf)
-        if s is not None:
-            scales.setdefault(pid, []).append(s)
-
-    medians: Dict[int, float] = {}
-    for pid, vals in scales.items():
-        if len(vals) >= min_samples:
-            vals.sort()
-            medians[pid] = vals[len(vals) // 2]
+    medians = median_body_scales(poses, min_kp_conf=min_kp_conf, min_samples=min_samples)
     if not medians:
         return {}
-
     ref = max(medians.values())
     factors: Dict[int, float] = {}
     for pid, m in medians.items():
