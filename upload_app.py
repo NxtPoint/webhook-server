@@ -2333,6 +2333,24 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s serve detection failed (non-fatal): %s", task_id, e)
 
+            # Pose-first stroke detection — wrist-velocity peak detector;
+            # mirrors serve_detector. Populates ml_analysis.stroke_events.
+            # Failure is non-fatal; the current silver builder is bounce-
+            # driven and does not yet consume stroke_events, so an empty
+            # table only loses an analytics surface, not match correctness.
+            try:
+                from ml_pipeline.stroke_detector import detect_strokes_for_task
+                with engine.begin() as conn:
+                    stroke_events = detect_strokes_for_task(conn, task_id, replace=True)
+                app.logger.info(
+                    "T5 INGEST task_id=%s stroke detector fired %d events",
+                    task_id, len(stroke_events),
+                )
+            except ImportError:
+                app.logger.warning("T5 INGEST task_id=%s stroke_detector module not available", task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s stroke detection failed (non-fatal): %s", task_id, e)
+
             try:
                 from ml_pipeline.build_silver_match_t5 import build_silver_match_t5
                 silver_result = build_silver_match_t5(task_id=task_id, replace=True, engine=engine)

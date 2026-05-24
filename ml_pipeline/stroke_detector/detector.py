@@ -1,0 +1,294 @@
+"""Stroke detector orchestrator.
+
+Two entry points:
+  - detect_strokes_for_task(conn, task_id) — production: reads pose rows
+    from ml_analysis.player_detections, persists StrokeEvent rows to
+    ml_analysis.stroke_events.
+  - detect_strokes_offline(pose_rows, ...) — validation / local testing:
+    consumes in-memory data, returns a list of StrokeEvent objects with
+    no DB writes.
+
+Both entry points share the same in-memory pipeline (`_run_pipeline`) so
+offline numbers always match prod — same drift-avoidance pattern as
+serve_detector.
+
+Algorithm summary (full detail in velocity_signal.py + __init__.py):
+  1. Compute per-frame max wrist velocity, per player + globally.
+  2. Smooth (rolling mean window=3).
+  3. Find local-max peaks above MIN_VELOCITY with MIN_GAP_FRAMES separation.
+  4. Apply +OFFSET to map peak → predicted_hit_frame (the probe found
+     velocity peaks fire 4-6 frames before SA's truth contact frame).
+  5. Apply deceleration filter: reject peaks where post-peak mean velocity
+     hasn't dropped to ≤ DECEL_RATIO_MAX × peak (filters pickup/walk
+     motions whose velocity plateaus rather than falling).
+  6. Build StrokeEvent records, attributed to the player_id whose wrist
+     contributed the global-max velocity at the peak frame.
+
+Confidence is a normalised function of peak velocity magnitude over the
+threshold band — peaks just above MIN_VELOCITY score ~0.4, peaks at 2×
+threshold or higher saturate at 1.0.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from sqlalchemy import text as sql_text
+
+from ml_pipeline.stroke_detector.models import StrokeEvent
+from ml_pipeline.stroke_detector.schema import (
+    delete_strokes_for_task,
+    init_stroke_events_schema,
+)
+from ml_pipeline.stroke_detector.velocity_signal import (
+    DEFAULT_MAX_GAP_FRAMES,
+    DEFAULT_MIN_GAP_FRAMES,
+    DEFAULT_MIN_KP_CONF,
+    DEFAULT_MIN_VELOCITY_PX_PER_FRAME,
+    DEFAULT_PEAK_TO_CONTACT_OFFSET,
+    DEFAULT_SMOOTH_WINDOW,
+    DEFAULT_DECEL_RATIO_MAX,
+    compute_global_max_velocity,
+    compute_per_player_velocity,
+    detect_velocity_peaks,
+    post_peak_mean_velocity,
+    pre_peak_mean_velocity,
+    smooth_velocity,
+    velocity_at,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _confidence_from_peak(peak_v: float, min_v: float) -> float:
+    """Map peak velocity to a 0..1 confidence.
+
+    Floor at 0.4 (any accepted peak is at least min_v), saturating at 1.0
+    when peak_v ≥ 2 × min_v. Linear in between.
+    """
+    if peak_v <= min_v:
+        return 0.4
+    span = min_v  # i.e. from min_v to 2*min_v
+    return min(1.0, 0.4 + 0.6 * ((peak_v - min_v) / max(span, 1.0)))
+
+
+def _run_pipeline(
+    *,
+    task_id: str,
+    fps: float,
+    poses: Sequence[Tuple[int, int, list]],
+    min_velocity: float,
+    min_gap_frames: int,
+    smooth_window: int,
+    min_kp_conf: float,
+    max_gap_frames: int,
+    peak_to_contact_offset: int,
+    decel_ratio_max: float,
+) -> List[StrokeEvent]:
+    """In-memory detection pipeline shared by prod + offline paths.
+
+    SINGLE SOURCE OF TRUTH for stroke-detection logic. Mirrors
+    serve_detector._run_pipeline's role: every behaviour change goes here
+    so prod and offline harness numbers don't drift.
+    """
+    per_player = compute_per_player_velocity(
+        poses,
+        min_kp_conf=min_kp_conf,
+        max_gap_frames=max_gap_frames,
+    )
+    global_vel, attribution = compute_global_max_velocity(per_player)
+    smoothed = smooth_velocity(global_vel, window=smooth_window)
+
+    raw_peaks = detect_velocity_peaks(
+        smoothed,
+        min_velocity=min_velocity,
+        min_gap_frames=min_gap_frames,
+    )
+
+    events: List[StrokeEvent] = []
+    for peak_frame in raw_peaks:
+        peak_v = velocity_at(smoothed, peak_frame)
+        if peak_v is None:
+            continue
+
+        pre_v = pre_peak_mean_velocity(smoothed, peak_frame, lookback=3)
+        post_v = post_peak_mean_velocity(smoothed, peak_frame, lookahead=3)
+
+        # Deceleration filter — a genuine swing's velocity falls steeply
+        # past contact (racquet decelerates, follow-through dissipates the
+        # kinetic energy). A pickup/walk motion plateaus. Reject peaks
+        # where post_v / peak_v exceeds decel_ratio_max. When post_v is
+        # missing (peak at end of pose sequence, or pose dropout in the
+        # follow-through window), we keep the peak — better to admit a
+        # likely-real stroke than reject for missing-data reasons.
+        decel_ratio: Optional[float] = None
+        if post_v is not None and peak_v > 0:
+            decel_ratio = post_v / peak_v
+            if decel_ratio > decel_ratio_max:
+                logger.debug(
+                    "stroke_detector: peak @ frame=%d REJECTED "
+                    "(decel_ratio=%.2f > %.2f, peak_v=%.1f, post_v=%.1f)",
+                    peak_frame, decel_ratio, decel_ratio_max, peak_v, post_v,
+                )
+                continue
+
+        predicted_hit_frame = peak_frame + peak_to_contact_offset
+        ts = predicted_hit_frame / fps if fps > 0 else 0.0
+        player_id = attribution.get(peak_frame, 0)
+        confidence = _confidence_from_peak(peak_v, min_velocity)
+
+        events.append(StrokeEvent(
+            task_id=task_id,
+            frame_idx=peak_frame,
+            ts=ts,
+            predicted_hit_frame=predicted_hit_frame,
+            player_id=int(player_id),
+            confidence=confidence,
+            peak_velocity_px_per_frame=peak_v,
+            pre_peak_v=pre_v,
+            post_peak_v=post_v,
+            decel_ratio=decel_ratio,
+            diagnostics={"smoothed_window": smooth_window},
+        ))
+    events.sort(key=lambda e: e.predicted_hit_frame)
+    return events
+
+
+def _load_pose_rows(conn, task_id: str) -> List[Tuple[int, int, list]]:
+    """Load all (frame_idx, player_id, keypoints) rows for a task.
+
+    Pose-only — we don't need ball/court coordinates here, just the wrist
+    keypoint trajectory. Returns tuples to match the offline interface.
+    """
+    rows = conn.execute(sql_text("""
+        SELECT frame_idx, player_id, keypoints
+        FROM ml_analysis.player_detections
+        WHERE job_id::text = :tid AND keypoints IS NOT NULL
+        ORDER BY player_id, frame_idx
+    """), {"tid": task_id}).fetchall()
+
+    # Fallback for the legacy schema where job_id is an int FK
+    if not rows:
+        rows = conn.execute(sql_text("""
+            SELECT pd.frame_idx, pd.player_id, pd.keypoints
+            FROM ml_analysis.player_detections pd
+            JOIN ml_analysis.video_analysis_jobs vaj
+              ON pd.job_id = vaj.id::text
+            WHERE vaj.task_id::text = :tid AND pd.keypoints IS NOT NULL
+            ORDER BY pd.player_id, pd.frame_idx
+        """), {"tid": task_id}).fetchall()
+
+    out: List[Tuple[int, int, list]] = []
+    for r in rows:
+        kps = r[2]
+        if isinstance(kps, str):
+            try:
+                kps = json.loads(kps)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        out.append((int(r[0]), int(r[1]), kps))
+    return out
+
+
+def _persist_events(conn, events: List[StrokeEvent]) -> None:
+    if not events:
+        return
+    rows = [e.to_db_row() for e in events]
+    conn.execute(sql_text("""
+        INSERT INTO ml_analysis.stroke_events
+            (task_id, frame_idx, ts, predicted_hit_frame, player_id,
+             confidence, peak_velocity_px_per_frame,
+             pre_peak_v, post_peak_v, decel_ratio)
+        VALUES
+            (:task_id, :frame_idx, :ts, :predicted_hit_frame, :player_id,
+             :confidence, :peak_velocity_px_per_frame,
+             :pre_peak_v, :post_peak_v, :decel_ratio)
+        ON CONFLICT (task_id, predicted_hit_frame, player_id) DO NOTHING
+    """), rows)
+
+
+def detect_strokes_for_task(
+    conn,
+    task_id: str,
+    *,
+    replace: bool = True,
+    min_velocity: float = DEFAULT_MIN_VELOCITY_PX_PER_FRAME,
+    min_gap_frames: int = DEFAULT_MIN_GAP_FRAMES,
+    smooth_window: int = DEFAULT_SMOOTH_WINDOW,
+    min_kp_conf: float = DEFAULT_MIN_KP_CONF,
+    max_gap_frames: int = DEFAULT_MAX_GAP_FRAMES,
+    peak_to_contact_offset: int = DEFAULT_PEAK_TO_CONTACT_OFFSET,
+    decel_ratio_max: float = DEFAULT_DECEL_RATIO_MAX,
+) -> List[StrokeEvent]:
+    """Production entry point. Detects strokes from pose rows + persists
+    StrokeEvent rows to ml_analysis.stroke_events.
+
+    Returns the events list for downstream consumption / logging.
+    """
+    init_stroke_events_schema(conn)
+    if replace:
+        deleted = delete_strokes_for_task(conn, task_id)
+        if deleted:
+            logger.info("stroke_detector: deleted %d prior stroke events", deleted)
+
+    fps = conn.execute(sql_text(
+        "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
+    ), {"t": task_id}).scalar() or 25.0
+
+    poses = _load_pose_rows(conn, task_id)
+    if not poses:
+        logger.warning("stroke_detector: no pose rows for task %s", task_id)
+        return []
+
+    events = _run_pipeline(
+        task_id=task_id,
+        fps=fps,
+        poses=poses,
+        min_velocity=min_velocity,
+        min_gap_frames=min_gap_frames,
+        smooth_window=smooth_window,
+        min_kp_conf=min_kp_conf,
+        max_gap_frames=max_gap_frames,
+        peak_to_contact_offset=peak_to_contact_offset,
+        decel_ratio_max=decel_ratio_max,
+    )
+
+    _persist_events(conn, events)
+    logger.info(
+        "stroke_detector: persisted %d stroke events for task %s "
+        "(min_v=%.1f, min_gap=%d, offset=%d, decel_max=%.2f)",
+        len(events), task_id, min_velocity, min_gap_frames,
+        peak_to_contact_offset, decel_ratio_max,
+    )
+    return events
+
+
+def detect_strokes_offline(
+    *,
+    task_id: str,
+    pose_rows: Sequence[Tuple[int, int, list]],
+    fps: float = 25.0,
+    min_velocity: float = DEFAULT_MIN_VELOCITY_PX_PER_FRAME,
+    min_gap_frames: int = DEFAULT_MIN_GAP_FRAMES,
+    smooth_window: int = DEFAULT_SMOOTH_WINDOW,
+    min_kp_conf: float = DEFAULT_MIN_KP_CONF,
+    max_gap_frames: int = DEFAULT_MAX_GAP_FRAMES,
+    peak_to_contact_offset: int = DEFAULT_PEAK_TO_CONTACT_OFFSET,
+    decel_ratio_max: float = DEFAULT_DECEL_RATIO_MAX,
+) -> List[StrokeEvent]:
+    """In-memory detection for local validation — shares _run_pipeline
+    with the prod entry point so offline numbers always match prod.
+    """
+    return _run_pipeline(
+        task_id=task_id,
+        fps=fps,
+        poses=list(pose_rows),
+        min_velocity=min_velocity,
+        min_gap_frames=min_gap_frames,
+        smooth_window=smooth_window,
+        min_kp_conf=min_kp_conf,
+        max_gap_frames=max_gap_frames,
+        peak_to_contact_offset=peak_to_contact_offset,
+        decel_ratio_max=decel_ratio_max,
+    )
