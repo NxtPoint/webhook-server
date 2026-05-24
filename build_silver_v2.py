@@ -1116,10 +1116,16 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     -- Resolve the ml_analysis job row for this task. ml_analysis tables
     -- are keyed on job_id; some legacy data has job_id != task_id, so
     -- match either. Empty for SportAI tasks (no Batch run).
+    -- Explicit :tid::uuid cast — psycopg3 sends Python str as text and
+    -- Postgres has no implicit text→uuid cast. The surrounding pass3
+    -- queries get away with bare `:tid` because SQLAlchemy's column-
+    -- aware inference picks up silver.point_detail.task_id (UUID) first
+    -- and types the param; the ml_analysis tables appear only in this
+    -- new CTE so the inference doesn't reach them.
     vaj AS (
       SELECT job_id, total_frames, video_duration_sec, video_fps
       FROM ml_analysis.video_analysis_jobs
-      WHERE job_id = :tid OR task_id = :tid
+      WHERE job_id = :tid::uuid OR task_id = :tid::uuid
       LIMIT 1
     ),
 
