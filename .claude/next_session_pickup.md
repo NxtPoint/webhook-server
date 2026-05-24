@@ -12,9 +12,7 @@
 
 **Next session's primary job (Tomo decision 2026-05-24 night):** Close out **Phase 3 part 2** (between-point filter, Render-side) THEN **Phase 6** (production stroke detector at `ml_pipeline/stroke_detector/`, Render-side). Both are product-facing wins that make silver data + stroke detection materially better, neither needs Batch redeploys. **Phase 7 (y-axis calibration) is deferred to a later session** — it's a bigger structural fix needing Docker rebuild + dual-region ECR push, and the immediate product gains from 3b + 6 are larger.
 
-**Match 2 verification stays in the OLD chat:** Tomo is keeping the 2026-05-24 chat open. If match 2 (`ac8e28b3`) completes and provides new data, the old chat will do the analysis. **You don't need to re-run probes on match 2.** Continue with the 3b + 6 work regardless.
-
-**Open at session close:** Match 2 (`ac8e28b3-a1ac-4004-b112-dd16078e56a3`) STILL RUNNING on Batch in ROI pose stage with no log output for 1h+; will hit 6h timeout at ~16:56 UTC if it doesn't finish. Status check is informational only — Tomo's old chat will handle if it lands.
+**Match 2 RESOLVED 17:04 UTC — FAILED at 6h timeout. No data persisted.** Three diagnostic findings came out of the failure (ROI misalignment, roi_bounces slowdown, plus the existing y-axis offset). See "Match 2 diagnostic findings" section below — three concrete bugs to investigate alongside Phase 3b + 6.
 
 If the above is enough, stop reading. The rest is depth + verification commands.
 
@@ -144,14 +142,9 @@ When the projection works, errors are <1m. So geometry isn't broken in general �
 
 **Strategic note:** the original ordering had Phase 7 calibration as the primary task. Tomo's revised priority on session close is **Phase 3 part 2 + Phase 6 production module first** (both Render-side, product-facing). Phase 7 (Batch-side, calibration) is deferred. The work below reflects the revised order.
 
-### 1. Quick: confirm match 2 state (informational only)
+### 1. Match 2 status — FAILED, captured below (no action needed)
 
-```bash
-aws batch describe-jobs --region eu-north-1 --jobs ac8e28b3-a1ac-4004-b112-dd16078e56a3 \
-    --query 'jobs[0].[status,statusReason,stoppedAt,container.exitCode]' --output json
-```
-
-Just note the status. **Do NOT re-bench against match 2** — Tomo's 2026-05-24 chat is staying open for that. If match 2 succeeded and lands corpus row #2, the old chat will validate the Phase 7 finding on the second match. You stay focused on 3b + 6.
+Match 2 (`ac8e28b3-a1ac-4004-b112-dd16078e56a3`) timed out at 16:57 UTC after 6h. Exit code 137 (SIGKILL by Batch). Last log was `roi_bounces: [129/194]` — got 66% through the ROI bounce extraction stage. **No data persisted to ml_analysis.** Three diagnostic findings came out of the run; see "Match 2 diagnostic findings" section at the bottom of this file before starting Phase 3b/6 work — these are real bugs that may affect what you build.
 
 ### 2. Phase 3 part 2 — between-point filter (Render-side, product-facing)
 
@@ -286,6 +279,68 @@ psql "$DATABASE_URL" -c "SELECT status, current_stage, progress_pct, (SELECT COU
 # 6. Corpus row count
 psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM ml_analysis.training_corpus;"
 ```
+
+---
+
+## Match 2 diagnostic findings (added 17:00 UTC after timeout)
+
+Three concrete bugs surfaced from the failed match 2 run. None blocks Phase 3b or Phase 6 work directly, but all three are next-session-relevant.
+
+### Bug 1 — Far-ROI region misalignment (HIGH IMPACT)
+
+Match 2's ROI pose stage scanned 65,248 frames and produced **0 detections**:
+
+```
+roi_pose: far ROI pixel (461,695)-(506,735) size=45x40
+...
+roi_pose: scanned 65248 sampled frames (every 2), skipped 21050 IN_RALLY frames, 0 detections, 0 usable poses in 5270.7s
+```
+
+A 45×40 pixel ROI is correct size for a far-baseline player on this camera setup, but it was pointed at the wrong patch of the frame — no person ever appeared there. For comparison, the prior Tomo-vs-Jimbo-Ma `1d6feb3a` run found 7,244 detections from 7,650 frames at 94.7% hit rate.
+
+**Why this matters:** the ROI is computed from court keypoint regression. Court detection on match 2 must have placed the far baseline differently than `1d6feb3a` (same opponent, different match) — different enough that the downstream ROI computation produced a useless region.
+
+**Fix direction (next session):**
+- `ml_pipeline/roi_extractors/pose.py` and `ml_pipeline/roi_extractors/bounces.py` both compute ROI from the same source — find the function
+- Add tolerance: expand the ROI by N pixels in each direction so small court-detection drift doesn't kill the entire ROI stage
+- OR: validate the ROI by checking that at least one frame in a sample has a high-confidence person bbox inside it before committing to it
+- OR: redo court detection per-N-frames instead of once, and re-derive ROI
+
+**Impact on stroke/bounce accuracy:** ROI pose enhances FAR-player pose data when it works. With 0 detections, the FAR player gets only the SAHI-tiled YOLO pose (which IS still working in the main pipeline — 6,130 FAR pose entries for match 2 in earlier diag).
+
+### Bug 2 — roi_bounces per-window slowdown (CAUSED THE TIMEOUT)
+
+The Phase 5a ROI bounce extractor (`ml_pipeline/roi_extractors/bounces.py`) iterates "windows" around clustered bounces. On match 2 it had 194 windows. Per-window timing degraded badly:
+
+```
+[7/194]    ... 0 dets, 0 bounces (7.1s)   <-- early
+...
+[129/194]  ... 0 dets, 0 bounces (50.8s)  <-- late, KILLED here
+```
+
+**7s → 50s per window = ~7× slowdown.** Wallclock budget for the remaining 65 windows would have been ~54 min — well beyond the 6h timeout. THIS is why the job died.
+
+**Why this matters:** even with bug 1 fixed (ROI aligned), bug 2 means roi_bounces can't reliably complete on long matches. Could be memory growth, GPU state accumulation, model-reload-per-window overhead (each window logs "BallTracker: loaded" from scratch — suspicious), or something else.
+
+**Fix direction:**
+- Load TrackNet V2 model ONCE outside the window loop, not per-window
+- Profile memory growth between iterations
+- Check for accumulating tensors that aren't released
+
+The "BallTracker: loaded" log appearing on every single window strongly suggests per-window model loading. That's almost certainly the slowdown source — model load time is fixed cost, but cuDNN warmup and CUDA memory fragmentation might be cumulative.
+
+### Bug 3 — Y-axis bounce calibration offset (CONFIRMED on match 1)
+
+This is the Phase 7 finding from earlier: median Euclidean error 3.2m, direction "T5 reports far-side bounces too close to net by 3-6m." Documented in north_star `Phase 7` section. Match 2 couldn't validate but the direction-consistent finding on match 1 is strong enough to act on.
+
+### Suggested ordering for next session (revised)
+
+If you tackle Phase 3b + 6 first (as Tomo's plan stands), keep these three bugs in mind:
+- **Bug 1 (ROI misalignment) doesn't block 3b or 6** but explains why some matches produce sparse FAR-player data
+- **Bug 2 (roi_bounces slowdown) doesn't block 3b or 6** either but is the reason match 2 didn't land tonight
+- **Bug 3 (y-axis offset) is Phase 7, explicitly deferred**
+
+A possible insertion point: after Phase 3b lands (which doesn't touch the Batch container), Bug 2 is a worthwhile detour — it's a small, contained Batch-side fix (move model loading outside the window loop in `roi_extractors/bounces.py`), trips guardrail #8 minimally (one file change), and unlocks long-match processing for future corpus rows.
 
 ---
 
