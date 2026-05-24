@@ -126,16 +126,25 @@ def fetch_t5_player_poses(engine, t5_task_id: str) -> List[Tuple[int, int, list]
     return out
 
 
-def fetch_sa_hit_frames(engine, sa_task_id: str, fps: float) -> List[int]:
-    """Same as the other probes."""
+def fetch_sa_hit_frames(
+    engine, sa_task_id: str, fps: float, in_rally_only: bool = False,
+) -> List[int]:
+    """Return SA hit frames. When in_rally_only=True, restricts to swings
+    that SA tagged as part of a real rally (is_in_rally=true). For the
+    78c32f53 fixture this drops 13 of 106 hits (warmup / non-rally swings).
+    """
     from sqlalchemy import text as sql_text
+    where_clause = "task_id::text = :tid AND ball_hit_s IS NOT NULL"
+    if in_rally_only:
+        where_clause += " AND is_in_rally = true"
+    sql = f"""
+        SELECT ball_hit_s
+        FROM bronze.player_swing
+        WHERE {where_clause}
+        ORDER BY ball_hit_s
+    """
     with engine.connect() as conn:
-        rows = conn.execute(sql_text("""
-            SELECT ball_hit_s
-            FROM bronze.player_swing
-            WHERE task_id::text = :tid AND ball_hit_s IS NOT NULL
-            ORDER BY ball_hit_s
-        """), {"tid": sa_task_id}).fetchall()
+        rows = conn.execute(sql_text(sql), {"tid": sa_task_id}).fetchall()
     return [int(round(float(r[0]) * fps)) for r in rows]
 
 
@@ -328,6 +337,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                          f"(default {MAX_GAP_FRAMES_FOR_VELOCITY})")
     ap.add_argument("--tolerance-frames", type=int, default=TOLERANCE_FRAMES,
                     help=f"Tolerance for matching predicted to truth (default {TOLERANCE_FRAMES})")
+    ap.add_argument("--in-rally-only", action="store_true",
+                    help="Restrict SA truth set to is_in_rally=true (drops warmup / "
+                         "non-rally swings -- ~13 of 106 on the 78c32f53 fixture)")
+    ap.add_argument("--use-truth-window", action="store_true",
+                    help="Filter PREDICTIONS to [first_truth_frame - 30, last_truth_frame + 30]. "
+                         "Answers 'if we had a rally-region detector, what's the ceiling?' -- "
+                         "uses ground truth ONLY to define the search window, not individual hits. "
+                         "Cuts the 274 warmup-region false positives on the 78c32f53 fixture.")
+    ap.add_argument("--rally-window-padding", type=int, default=30,
+                    help="Frames of padding around the truth window when --use-truth-window is set "
+                         "(default 30)")
     ap.add_argument("--verbose", action="store_true",
                     help="Print velocity distribution at SA truth frames -- "
                          "lets you pick the right --min-velocity empirically")
@@ -355,11 +375,14 @@ def main(argv: Optional[List[str]] = None) -> int:
           f"(per-player counts: {dict(sorted(n_per_player.items()))})")
 
     print("Loading SA ground-truth hits...")
-    truth = fetch_sa_hit_frames(engine, args.sa_task, args.fps)
+    truth = fetch_sa_hit_frames(
+        engine, args.sa_task, args.fps, in_rally_only=args.in_rally_only,
+    )
     if not truth:
         print(f"  ERROR: no SA hits for task {args.sa_task}", file=sys.stderr)
         return 1
-    print(f"  loaded {len(truth)} SA hit frames "
+    label = "in-rally-only" if args.in_rally_only else "all swings"
+    print(f"  loaded {len(truth)} SA hit frames [{label}] "
           f"(range {min(truth)} - {max(truth)})")
 
     print("Computing per-player wrist velocity...")
@@ -390,6 +413,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         min_gap_frames=args.min_gap_frames,
     )
     print(f"  predicted {len(predicted)} hits")
+
+    if args.use_truth_window and truth:
+        low = min(truth) - args.rally_window_padding
+        high = max(truth) + args.rally_window_padding
+        n_before = len(predicted)
+        predicted = [p for p in predicted if low <= p <= high]
+        print(f"  truth-window filter [{low}, {high}]: "
+              f"{n_before} -> {len(predicted)} predictions kept")
     print()
 
     result = evaluate_against_truth(predicted, truth, args.tolerance_frames)
