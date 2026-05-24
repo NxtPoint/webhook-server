@@ -35,6 +35,17 @@ decision on what to fix before the stroke-driven silver pivot (Option B in
 > stroke-driven **near active 108 vs SA 43** — near-player false-positive peaks (detector PRECISION),
 > which is the Q1-D / trained-classifier territory (or a precision gate), not far starvation.
 
+> **UPDATE 2026-05-25 — near precision confirmed a Q1-D job (no heuristic shipped).** Probed three
+> principled precision gates on M1 (only match with SA truth); none separates the ~65 near false
+> positives cleanly: **(a) ball-proximity at contact** — 58% of near hits have no ball within ±5
+> frames and ball court_y (Phase 7 noise) doesn't separate; **(b) rally-alternation collapse** —
+> over-corrects (near 108→34, far 43→26) because far strokes are sometimes missed within a rally;
+> **(c) time-gated same-side collapse** — near plateaus at ~69 even at 3s gaps while already dragging
+> far to 33. The near false positives are rally-paced (1.5-3s apart), structurally indistinguishable
+> from real strokes. Validating any gate needs per-stroke ground truth (dual-submit) = the same data
+> Q1-D trains on, so a count-fitting heuristic would overfit one match. **Near precision is the
+> trained-classifier's job (Q1-D), now the single remaining blocker on the stroke-driven gate.**
+
 **Evidence provenance note.** This session could not run live DB queries (the Bash and
 PowerShell tools were denied in the sandbox, and WebFetch cannot attach the `X-Ops-Key`
 header that `/ops/diag/sql` requires). Every number below is therefore sourced from
