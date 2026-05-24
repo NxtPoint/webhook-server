@@ -354,38 +354,41 @@ def _infer_swing_type_from_keypoints(
             return "volley"
 
     # --- 4. Forehand / Backhand ---
-    # Backhand: dominant wrist crosses to the non-dominant side of the body.
-    # The clearest signal is: wrist x is past the OFF-side shoulder.
-    # Forehand: dominant wrist is on the dominant side of the DOMINANT shoulder.
-    #
-    # We also accept a weaker signal using center_x when shoulder coords are
-    # unavailable — wrist on the dominant side of body centre = forehand.
+    # Forehand = dominant wrist extended to the player's dominant side;
+    # backhand = the wrist crosses to the off side. Whether the dominant side
+    # maps to IMAGE-left or IMAGE-right depends on which way the player faces:
+    #   - NEAR player (court_y > HALF_Y) faces AWAY from the camera → their
+    #     right side is image-right.
+    #   - FAR player (court_y < HALF_Y) faces TOWARD the camera → mirrored, so
+    #     their right side is image-LEFT.
+    # So the dominant hand sits on image-right iff (right-handed) XOR (far).
+    # Without this far-mirror the far player's forehands were misread as
+    # backhands (Match 1 far fh 9 / bh 13 vs SA 18 / 6, 2026-05-25). The
+    # position fallback `_infer_swing_type_from_position` already mirrors the
+    # same way. court_y is None → assume near (preserves prior behaviour, so
+    # near-player classification is byte-identical to before this change).
     if have_dom_wrist:
-        # Strong signal: compare wrist to both shoulder anchors
+        is_far = court_y is not None and court_y < HALF_Y
+        dom_on_right = (not is_left_handed) != is_far  # XOR of handedness & facing
+
+        # Strong signal: dominant wrist vs the OFF-side shoulder.
         if have_dom_shoulder and have_off_shoulder:
-            if is_left_handed:
-                # Left-handed: dominant wrist crosses right of right shoulder → BH
-                crossed_body = dom_wrist_x > off_shoulder_x
-            else:
-                # Right-handed: dominant wrist crosses left of left shoulder → BH
-                crossed_body = dom_wrist_x < off_shoulder_x
+            # Backhand = dominant wrist has crossed PAST the off-side shoulder.
+            crossed_body = (dom_wrist_x < off_shoulder_x) if dom_on_right \
+                else (dom_wrist_x > off_shoulder_x)
             return "bh" if crossed_body else "fh"
 
-        # Medium signal: compare to dominant shoulder only
+        # Medium signal: dominant wrist vs the dominant shoulder.
         if have_dom_shoulder:
-            if is_left_handed:
-                # Left wrist extends left of left shoulder → FH
-                return "fh" if dom_wrist_x < dom_shoulder_x else "bh"
-            else:
-                # Right wrist extends right of right shoulder → FH
-                return "fh" if dom_wrist_x > dom_shoulder_x else "bh"
+            on_dom_side = (dom_wrist_x > dom_shoulder_x) if dom_on_right \
+                else (dom_wrist_x < dom_shoulder_x)
+            return "fh" if on_dom_side else "bh"
 
-        # Weak signal: wrist vs body centre_x (original fallback)
+        # Weak signal: dominant wrist vs body centre_x.
         if center_x is not None:
-            if is_left_handed:
-                return "fh" if dom_wrist_x < center_x else "bh"
-            else:
-                return "fh" if dom_wrist_x > center_x else "bh"
+            on_dom_side = (dom_wrist_x > center_x) if dom_on_right \
+                else (dom_wrist_x < center_x)
+            return "fh" if on_dom_side else "bh"
 
     return "other"
 
