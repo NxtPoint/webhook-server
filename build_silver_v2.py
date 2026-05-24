@@ -1082,6 +1082,124 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM srv_loc_grp
     ),
 
+    -- ========== BETWEEN-POINT FILTER (Phase 3 part 2, May 24) ==========
+    -- Drops rows whose ball_hit_s falls outside any detected rally window.
+    -- A rally window is [first_serve_per_point, last_bounce_in_rally + 1s].
+    -- Anything between rallies (warmup ball-bouncing, idle wandering,
+    -- towel breaks) gets exclude_d=TRUE.
+    --
+    -- Two prior attempts at this filter were reverted before Phase 5 ball
+    -- coverage was adequate:
+    --   v1 (commit 00b8639): anchored on EVERY serve_d row. T5's geometric
+    --     serve detector emits 107 detections on an 18-point match
+    --     → windows cover the entire match → no-op.
+    --   v2 (commit f0b104e): anchored on first_serve_per_point + 20s cap.
+    --     Forward-filled point_number put rows in the wrong point's
+    --     window → dropped real strokes.
+    -- See docs/north_star.md "Phase 3 part 2" for the full reverted-
+    -- attempt history.
+    --
+    -- v3 (this implementation, May 24) uses ml_analysis.ball_detections
+    -- bounce timestamps to derive rally END empirically instead of
+    -- relying on a fixed cap. Bounce coverage rose to 50%+ on 2026-05-21
+    -- (Phase 5e WASB integration) which made this viable. Windows are
+    -- TIME-based (not point-number-based), so the v2 forward-fill bug
+    -- doesn't recur: a row at time X is in-rally iff X lies in any
+    -- rally window, regardless of which point it's attributed to.
+    --
+    -- Safety gates: (a) `has_bounce_data` — for tasks with no
+    -- ml_analysis bounce rows (SportAI tasks) the filter is a no-op;
+    -- (b) `has_serves` — for T5 tasks where the geometric serve detector
+    -- found nothing, we don't build any rally windows, so we don't
+    -- want to mass-exclude rows.
+
+    -- Resolve the ml_analysis job row for this task. ml_analysis tables
+    -- are keyed on job_id; some legacy data has job_id != task_id, so
+    -- match either. Empty for SportAI tasks (no Batch run).
+    vaj AS (
+      SELECT job_id, total_frames, video_duration_sec, video_fps
+      FROM ml_analysis.video_analysis_jobs
+      WHERE job_id = :tid OR task_id = :tid
+      LIMIT 1
+    ),
+
+    -- Convert bounce frames to seconds. fps = total_frames / video_duration_sec
+    -- matches build_silver_match_t5's derivation. Falls back to video_fps when
+    -- one of the components is missing. Empty for SportAI tasks.
+    ball_bounces AS (
+      SELECT
+        bd.frame_idx::double precision
+        * COALESCE(
+            vaj.video_duration_sec::double precision / NULLIF(vaj.total_frames, 0),
+            1.0 / NULLIF(vaj.video_fps, 0)
+          ) AS bounce_s
+      FROM vaj
+      JOIN ml_analysis.ball_detections bd
+        ON bd.job_id::text = vaj.job_id::text
+      WHERE bd.is_bounce = TRUE
+        AND (vaj.total_frames IS NOT NULL OR vaj.video_fps IS NOT NULL)
+    ),
+
+    -- Rally start per point: the first serve's ball_hit_s (must not itself
+    -- be excluded by warm-up / per-point logic).
+    point_starts AS (
+      SELECT
+        w.task_id, w.point_number,
+        MIN(w.ball_hit_s) AS rally_start_s
+      FROM with_game w
+      LEFT JOIN excl_chain ec ON ec.id = w.id
+      WHERE w.serve_d IS TRUE
+        AND w.point_number > 0
+        AND w.ball_hit_s IS NOT NULL
+        AND COALESCE(ec.exclude_d, FALSE) IS NOT TRUE
+      GROUP BY w.task_id, w.point_number
+    ),
+
+    -- Window per point: [rally_start_s, next_point_start_s) defines the
+    -- candidate region; the actual rally_end_s is the last bounce inside it.
+    point_window_bounds AS (
+      SELECT ps.task_id, ps.point_number, ps.rally_start_s,
+        LEAD(ps.rally_start_s) OVER (
+          PARTITION BY ps.task_id ORDER BY ps.point_number
+        ) AS next_rally_start_s
+      FROM point_starts ps
+    ),
+
+    -- rally_end_s = max bounce time inside the candidate region + 1s
+    -- (1s buffer admits the final no-bounce stroke's follow-through).
+    -- Fallback to rally_start_s + 10s if NO bounce falls inside (extremely
+    -- short or no-bounce-detected rally) — leaves a forgiving window so
+    -- v2's "wrong rows dropped" failure mode can't recur.
+    rally_windows AS (
+      SELECT pwb.task_id, pwb.point_number,
+        pwb.rally_start_s,
+        COALESCE(
+          (SELECT MAX(bb.bounce_s)
+           FROM ball_bounces bb
+           WHERE bb.bounce_s >= pwb.rally_start_s
+             AND bb.bounce_s < COALESCE(pwb.next_rally_start_s, pwb.rally_start_s + 60.0)),
+          pwb.rally_start_s + 10.0
+        ) + 1.0 AS rally_end_s
+      FROM point_window_bounds pwb
+    ),
+
+    -- Per-row gate: does this row's ball_hit_s sit inside ANY rally window?
+    -- Pulls the two safety flags from the data-availability CTEs so the
+    -- final exclude_d expression can disarm the filter when either is
+    -- missing.
+    in_rally_flag AS (
+      SELECT w.id,
+        EXISTS (
+          SELECT 1 FROM rally_windows rw
+          WHERE rw.task_id = w.task_id
+            AND w.ball_hit_s >= rw.rally_start_s
+            AND w.ball_hit_s <= rw.rally_end_s
+        ) AS in_rally_window,
+        EXISTS (SELECT 1 FROM ball_bounces) AS has_bounce_data,
+        EXISTS (SELECT 1 FROM rally_windows) AS has_serves
+      FROM with_try_ff w
+    ),
+
     -- ========== FINAL ASSEMBLY ==========
     final AS (
       SELECT
@@ -1092,13 +1210,21 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         so.point_number,
         so.game_number,
 
-        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve).
-        -- Warm-up filter is NULL-safe — no detected serves => first_serve_s
-        -- is NULL => the right-hand operand is NULL => OR collapses to the
-        -- existing per-point value. Only ever flips FALSE -> TRUE, never the
-        -- reverse, so it can't undo any existing exclusion.
+        -- exclude_d: per-point exclusions OR warm-up filter (pre-first-serve)
+        --   OR between-point filter (Phase 3 part 2 — outside any rally window).
+        -- All three operands only ever flip FALSE -> TRUE, never the reverse,
+        -- so they can't undo an existing exclusion.
+        --   Warm-up: NULL-safe — no detected serves => first_serve_s NULL =>
+        --     right-hand operand NULL => OR collapses to per-point value.
+        --   Between-point: gated by `has_bounce_data` (no-op for SportAI tasks
+        --     and any T5 task with no ml_analysis.ball_detections rows) AND
+        --     `has_serves` (no-op when geometric serve detection found
+        --     nothing — protects against mass-excluding the whole match).
         (COALESCE(ec.exclude_d, FALSE)
          OR (fst.first_serve_s IS NOT NULL AND so.ball_hit_s < fst.first_serve_s)
+         OR (COALESCE(irf.has_bounce_data, FALSE)
+             AND COALESCE(irf.has_serves, FALSE)
+             AND NOT COALESCE(irf.in_rally_window, FALSE))
         ) AS exclude_d,
 
         CASE
@@ -1149,6 +1275,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       LEFT JOIN srv_loc_ff slf ON slf.id = so.id
       LEFT JOIN set_info si ON TRUE
       LEFT JOIN first_serve_task fst ON fst.task_id = so.task_id
+      LEFT JOIN in_rally_flag irf ON irf.id = so.id
     )
 
     UPDATE {SILVER_SCHEMA}.{TABLE} p
