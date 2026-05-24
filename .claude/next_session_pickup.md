@@ -10,9 +10,11 @@
 2. **Ball coverage adequate** — 52% on match 1 (`78c32f53`), 23,791 ball detections + 823 valid bounces on match 2 (`54710da5`). Phase 5 done-when materially met.
 3. **Phase 7 (bounce x,y accuracy) MEASURED — INSUFFICIENT.** Median Euclidean error 3.2-4.05m vs <2m target. x-axis (~width) is fine (<2m); y-axis (court length) has 3-6m systematic offset on normal bounces and 10-17m on some far-baseline bounces. Direction is consistent: T5 reports far-side bounces too close to the net. **This is the documented "2.4-7m y-axis offset" backlog item, now quantified.**
 
-**Next session's primary job:** Fix the y-axis far-baseline projection (court calibration). See backlog item in `docs/north_star.md`: "Likely needs a pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`)." Estimate: 2-3 days of focused calibration work.
+**Next session's primary job (Tomo decision 2026-05-24 night):** Close out **Phase 3 part 2** (between-point filter, Render-side) THEN **Phase 6** (production stroke detector at `ml_pipeline/stroke_detector/`, Render-side). Both are product-facing wins that make silver data + stroke detection materially better, neither needs Batch redeploys. **Phase 7 (y-axis calibration) is deferred to a later session** — it's a bigger structural fix needing Docker rebuild + dual-region ECR push, and the immediate product gains from 3b + 6 are larger.
 
-**Open at session close:** Match 2 (`ac8e28b3-a1ac-4004-b112-dd16078e56a3`) STILL RUNNING on Batch in ROI pose stage with no log output for 1h+; will hit 6h timeout at ~16:56 UTC if it doesn't finish. **Check first thing — may have completed naturally OR timed out.**
+**Match 2 verification stays in the OLD chat:** Tomo is keeping the 2026-05-24 chat open. If match 2 (`ac8e28b3`) completes and provides new data, the old chat will do the analysis. **You don't need to re-run probes on match 2.** Continue with the 3b + 6 work regardless.
+
+**Open at session close:** Match 2 (`ac8e28b3-a1ac-4004-b112-dd16078e56a3`) STILL RUNNING on Batch in ROI pose stage with no log output for 1h+; will hit 6h timeout at ~16:56 UTC if it doesn't finish. Status check is informational only — Tomo's old chat will handle if it lands.
 
 If the above is enough, stop reading. The rest is depth + verification commands.
 
@@ -138,70 +140,82 @@ When the projection works, errors are <1m. So geometry isn't broken in general �
 
 ---
 
-## Next session's job (in order)
+## Next session's job (in order — Tomo-prioritised 2026-05-24 night)
 
-### 1. First thing: check match 2 status
+**Strategic note:** the original ordering had Phase 7 calibration as the primary task. Tomo's revised priority on session close is **Phase 3 part 2 + Phase 6 production module first** (both Render-side, product-facing). Phase 7 (Batch-side, calibration) is deferred. The work below reflects the revised order.
+
+### 1. Quick: confirm match 2 state (informational only)
 
 ```bash
 aws batch describe-jobs --region eu-north-1 --jobs ac8e28b3-a1ac-4004-b112-dd16078e56a3 \
     --query 'jobs[0].[status,statusReason,stoppedAt,container.exitCode]' --output json
 ```
 
-Three possible outcomes:
+Just note the status. **Do NOT re-bench against match 2** — Tomo's 2026-05-24 chat is staying open for that. If match 2 succeeded and lands corpus row #2, the old chat will validate the Phase 7 finding on the second match. You stay focused on 3b + 6.
 
-- **SUCCEEDED:** Data is in ml_analysis. The orphan-sweep cron will fire ingest within 5 min if not already. Re-run all three probes against the `0fa94cf6 ↔ 54710da5` pair to validate findings on a second match.
-- **FAILED (timeout):** 5h of work lost. Either resubmit with longer timeout (job-def `:49` is already at 6h — would need `:50` with 8-10h) OR investigate why ROI pose hung for so long.
-- **STILL RUNNING:** Wait it out; check again later.
+### 2. Phase 3 part 2 — between-point filter (Render-side, product-facing)
 
-```bash
-# If SUCCEEDED, re-bench on match 2:
-.venv/bin/python -m ml_pipeline.diag.bounce_xy_accuracy \
-    --sa-task 0fa94cf6-7cdd-4a8f-9bf9-c603ce31e872 \
-    --t5-task 54710da5-7bcd-4f81-b2ea-82929b02d6ec --verbose
+Now unblocked (Phase 5 coverage prerequisite met). Today's reconcile showed the exact symptom this filter fixes:
+- T5 has 139 silver rows vs SA's 94 — ~45 extra rows
+- `shot_ix_in_point` populated on 38% of T5 rows vs 81% of SA — ~86 T5 rows are warmup/between-point activity
+- Knock-on effects: backhand 2.2× over-detection, volley 3.3× over-detection, bimodal ball_speed (low warmup + jitter spikes)
 
-.venv/bin/python -m ml_pipeline.diag.ball_hit_pose \
-    --sa-task 0fa94cf6-7cdd-4a8f-9bf9-c603ce31e872 \
-    --t5-task 54710da5-7bcd-4f81-b2ea-82929b02d6ec \
-    --tolerance-frames 6 --use-truth-window --in-rally-only --verbose
-```
+**Required reading before touching:** `docs/north_star.md` §"Phase 3" — the v1/v2 reverted-attempt history is preserved. Both v1 (107 dense serve anchors collapsed windows) and v2 (forward-fill of point_number put rows in the wrong point's window) failed in specific documented ways. **Don't repeat them.**
 
-If match 2 also shows ~3m median y-error, the calibration hypothesis is confirmed across matches and the fix work is justified.
+**Approach (the actual fix this time):**
+- Now that ball coverage is 50%+, we have bounce evidence between rallies.
+- The signal: between points, the ball is either (a) static / picked up by player or (b) bouncing on the ground unprompted. Both differ from rally play.
+- Use `ml_analysis.ball_detections` density windows + bounce clusters to identify between-point gaps.
+- Anchor on (first_serve_per_point, last_bounce_in_rally) windows rather than relying on serve detection alone.
 
-### 2. THE big work: fix the y-axis far-baseline projection
+**Where to land it:** `build_silver_v2.py` pass 3 (after the warmup filter, before zone classification). Sets `exclude_d=TRUE` on between-point rows.
 
-This is the dominant blocker for shipping the product (heatmaps need <2m bounce accuracy). Per `docs/north_star.md` backlog:
+**How to verify:**
+- Active T5 silver row count within ±5% of SA's (target ~94 ± 5 vs current 139)
+- `audit_points_reconcile.py` "T5 strokes outside ANY SA point window" count drops
+- Stroke distribution closes the gap: Backhand 38→17ish, Volley 20→6ish
+- Bench stays green (20/24 + 23/24)
 
-> *"Calibration extrapolation behind the far baseline produces court_y -3 to -7m for players who are visually at the baseline. Apr 29 verified naive widening (-3.5→-5.0) loses 2 PASS. Likely needs a pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`) — touches multiple call sites; deferred."*
+**Risk:** Render-side only, no Batch redeploy. CI bench runs on every PR. Safe to iterate.
 
-**Concrete starting points:**
-- `_baseline_zone(court_y)` function (grep the codebase — appears in multiple call sites per the backlog note)
-- `ml_pipeline/court_detector.py` and homography code
-- `ml_pipeline/camera_calibration.py` if it exists
-- Check `ml_pipeline/serve_detector/` for any y-axis correction logic that might already exist for serves
+**Estimate:** 1-2 days focused.
 
-**Approach (from the backlog note):**
-1. Diagnose: identify the pixel-y → court-y projection that goes wrong for far-baseline points
-2. Fix: replace the projection function with a pixel-y-based far-baseline check
-3. Validate: re-run `bounce_xy_accuracy.py` — median should drop from 3.2m to <2m
-4. Bench: ensure serve detection bench stays at 20/24 + 23/24
+### 3. Phase 6 — production stroke detector (Render-side, product-facing)
 
-Trips BATCH-SIDE CHANGE CHECKLIST: court detection / homography code is in the Batch container. Docker rebuild + dual-region ECR push required after the fix.
+Today's `ball_hit_pose.py` probe scored 63-67% recall on match 1. Production version lives at `ml_pipeline/stroke_detector/` (sibling to `serve_detector/`), pattern-matches the serve detector's pose-first architecture. Emits stroke events the silver builder consumes.
 
-### 3. After Phase 7 fix: production Phase 6 stroke detector
+**Key heuristic refinements to apply from today's probe findings:**
 
-When Phase 7 is sorted, the next concrete work is `ml_pipeline/stroke_detector/` — production version of the `ball_hit_pose.py` probe. Pattern matches `ml_pipeline/serve_detector/`. Emits stroke events the silver builder consumes.
+1. **Peak+offset correction.** Velocity peak fires 4-6 frames BEFORE SA's contact frame (backswing). Report `predicted_hit = velocity_peak_frame + 4` to align with SA's timing. This alone recovered 25pp recall when we widened tolerance from ±3 to ±6 — applying the offset means we can match at tight tolerance.
 
-Heuristic refinements to apply (from today's probe findings):
-- Peak+offset correction (report `velocity_peak_frame + 4` instead of `velocity_peak_frame`) — recovers 25% recall at ±3 tolerance
-- `--min-gap-frames` 15→25 to suppress multi-peak detection on same swing
-- Better FAR pose extraction
-- Optional: swing-template matching (acceleration profile)
+2. **Tighten `min_gap_frames` 15 → 25.** Today's probe over-fired on the same swing (backswing + forward swing + follow-through all generated peaks within 15 frames). Wider gap suppresses these duplicates without losing real hits (typical between-shot time is >1s = 25+ frames).
 
-Target: 75% recall at ±3, 50%+ precision. No training.
+3. **Add a deceleration check.** A genuine swing has the velocity profile: rising → peak → falling. Pure rises (player picking up ball) shouldn't fire. Filter peaks where `v[i+3] > v[i] * 0.5` (still rising).
 
-### 4. Phase 3 part 2 (between-point filter)
+4. **Better FAR pose extraction.** Today's probe found NEAR pose at 10,115 entries vs FAR at 6,130 — 40% less coverage. Investigate ROI pose extractor (`ml_pipeline/roi_extractors/pose.py`) — already runs per Phase 1.
 
-Now unblocked. The reconcile showed it would clean up the over-detection problem (T5 139 silver rows vs SA 94 — ~86 rows are warmup/between-point). Lower priority than Phase 7 + Phase 6 production. Could be a 1-2 day effort once Phase 7 + 6 ship.
+**Target metrics:** 75% recall at ±3, 50%+ precision. No training needed for this ceiling.
+
+**Where to land:**
+- `ml_pipeline/stroke_detector/` — new module, mirrors `serve_detector/` structure
+- Integrate into `build_silver_match_t5.py` so stroke events become silver rows
+- Silver consumer of stroke events similar to how `serve_events` is consumed
+
+**Risk:** Render-side, no Batch redeploy. Same iteration loop as Phase 3 part 2.
+
+**Estimate:** 2-3 days.
+
+### 4. DEFERRED — Phase 7 y-axis calibration
+
+The dominant blocker for shipping bounce-dependent features (heatmaps). Per today's measurement, median Euclidean error is 3.2m vs <2m target. Direction: T5 reports far-side bounces too close to net. Fix direction documented in north_star backlog: "pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`)."
+
+**Why deferred (Tomo decision 2026-05-24 night):**
+- Trips BATCH-SIDE CHANGE CHECKLIST (Docker rebuild + dual-region ECR push)
+- Bigger structural change than 3b + 6
+- 3b + 6 ship product-facing wins immediately; 7 doesn't show up until next data run anyway
+- Doing 7 last means we can validate the fix against a Phase-6-stable silver
+
+**Don't start Phase 7 until 3b + 6 are landed and bench is still green.**
 
 ---
 
