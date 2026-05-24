@@ -1116,15 +1116,18 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     -- Resolve the ml_analysis job row for this task. ml_analysis tables
     -- are keyed on job_id; some legacy data has job_id != task_id, so
     -- match either. Empty for SportAI tasks (no Batch run).
-    -- Both sides cast to text — psycopg3 sends Python str as text and
-    -- ml_analysis.video_analysis_jobs.job_id / task_id have drifted from
-    -- the db_schema.py TEXT declaration to UUID in production, so a bare
-    -- `WHERE job_id = :tid` errors with `text = uuid`. Casting the column
-    -- to text on both join sides works regardless of underlying type.
+    -- Param is cast to text via CAST(:tid AS text) for two reasons:
+    -- (1) SQLAlchemy's text() infers :tid's type from its first use against
+    --     silver.point_detail.task_id (UUID), so a bare `:tid` here gets
+    --     bound as UUID, producing `text = uuid` errors against the TEXT
+    --     columns in ml_analysis.video_analysis_jobs;
+    -- (2) :tid::text would trip SQLAlchemy's bind-param regex on the `::`
+    --     (it can't distinguish a Postgres double-colon cast from a typo),
+    --     so we use the SQL-standard CAST() form instead.
     vaj AS (
       SELECT job_id, total_frames, video_duration_sec, video_fps
       FROM ml_analysis.video_analysis_jobs
-      WHERE job_id::text = :tid OR task_id::text = :tid
+      WHERE job_id = CAST(:tid AS text) OR task_id = CAST(:tid AS text)
       LIMIT 1
     ),
 
