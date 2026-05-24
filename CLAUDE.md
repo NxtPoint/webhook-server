@@ -322,6 +322,7 @@ Try/except-wrapped (a failure is logged and the service still boots):
 
 - `cron_capacity_sweep.py` — periodic billing/capacity sweep. See `docs/billing.md` and `docs/env_vars.md` for schedule + env vars.
 - `cron_monthly_refill.py` — monthly entitlement refill for active subscriptions.
+- `cron_sweep_t5_orphans.py` — runs every 5 min; fires a single authenticated `POST /ops/sweep-t5-orphans` to kick stuck auto-spawned T5 tasks (the server-side trigger paired with the polling-gate gap in rule #10). See §Diagnostics & Ops for the endpoint.
 
 **Ignorable root directories** — present on disk but not part of the runtime:
 
