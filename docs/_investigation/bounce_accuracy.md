@@ -153,3 +153,93 @@ calibration is already faithful, and the dominant error is bounce *precision*, n
    Match 1 first, then port to Batch, mirrors the de-risking that produced this doc.
 3. **Is the original Match 1 video still in S3?** Not needed for this diagnosis (done from DB), but
    required if we want to re-run the Batch bounce detector to validate a precision change end-to-end.
+
+---
+
+## 6. Bounce-precision filter — scope (2026-05-25)
+
+**Problem (precise).** `ball_tracker.detect_bounces` (ball_tracker.py:583) flags **any** image-y
+velocity sign-flip as `is_bounce`. A floor bounce is specifically `vel +→−` (ball at local *max*
+image-y = lowest screen point). The current code also flags `vel −→+` (**ball-arc apexes**, local
+min) and racquet contacts (SA `swing`), and raw image-y is confounded by perspective foreshortening
+(image-y drifts as the ball moves near↔far regardless of height). Net: 303 events vs SA's 161; only
+~43 % of the coord-bearing 126 are ground-bounce-shaped. The 177 airborne FPs are already clamped
+out (NULL coords, excluded by the Pass-1 query `build_silver_match_t5.py:608`), so the live damage is
+the **impure 126 coord-bearing bounces** feeding bounce-driven silver rows + placement.
+
+**Goal / done-when.** On Match 1, the T5 floor set approaches SA's **67 floor** bounces — precision
+up, recall held (≈85 % event recall), count 126 → ~70–85.
+
+**Signals (by robustness under sparse ball data).**
+1. **Sign-order gate** — keep only `vel +→−` (local-max image-y). Kills apex FPs. ~1-line change.
+2. **Player-proximity gate** — reject a "bounce" co-located with a player's hitting zone (racquet
+   contact, not a floor landing). Uses `player_detections`. Attacks the `swing` contamination.
+3. **Net-crossing validity** — reuse `serve_detector/bounce_validity.validate_bounces` (Tomo's
+   May-7 rule) on the *placement* set too (today it only gates serve detection + ROI pose).
+4. **Perspective-aware detection** (court-y / height proxy instead of raw image-y) — **deferred**,
+   bigger change.
+
+**Where it lives — two stages (de-risk pattern).**
+- **Stage 1 (Render, ~1 day):** prototype signals 1–3 as a filter over `ml_analysis.ball_detections`,
+  measure precision/recall/count vs SA floor on M1, tune thresholds. No Batch, no schema change.
+- **Stage 2 (Batch, ~1–2 days, daylight):** port the validated rule into `ball_tracker.detect_bounces`
+  (+ `roi_extractors/bounces.py`) — the durable bronze fix (aligns with #11). Trips the BATCH-SIDE
+  CHECKLIST (Docker rebuild + dual-region ECR + job-def revisions).
+
+**Validation.** M1 reconciliation vs SA floor (precision↑, recall held, count→~SA). **Serve bench
+MUST stay green** — bounces gate serve detection (`rally_state.build_from_db` reads `is_bounce`; the
+geometric serve check uses `bounce_court_y`). Re-run bounce-driven silver on M1.
+
+**Risks.** (1) Serve-detection regression (highest — bench-gate everything; the net-crossing filter
+is already bench-safe at 20/24). (2) Over-filtering real bounces — sparse coverage makes the
+trajectory signal weak (43 % local-max on real bounces), so prefer proximity + net-crossing over
+pure trajectory; tune to hold recall. (3) Single-match calibration — validate on Match 2 when
+unblocked (Bug 2). (4) Perspective confound remains under 1–3 (full fix = signal 4, deferred).
+
+---
+
+## 7. Stage 1 measurement — RESULT 2026-05-25 (the cheap filter underdelivers)
+
+Ran the harness (`.claude/tmp/stage1_filter.py`) on Match 1's 126 coord-bearing bounces, labelling
+each by nearest SA event (±0.8 s) and testing each signal + combos vs SA `floor` (67).
+
+**Composition of the 126:** floor 41 / swing 14 / **none 71** (56 % match no SA event at all).
+
+**Signal separation — nothing separates cleanly:**
+
+| signal | floor | swing | none |
+|---|---|---|---|
+| local-max image-y rate | 51 % | 43 % | 39 % |
+| player-dist median (m) | 4.6 | 4.7 | 3.6 |
+
+**Filter combos (vs SA floor, ±0.8 s):**
+
+| filter | kept | floor-recall | precision(floor) |
+|---|---|---|---|
+| baseline | 126 | 61 % | 33 % |
+| sign-order (local-max) | 55 | 36 % | 38 % |
+| net-crossing | 74 | 37 % | 32 % |
+| **player-proximity ≥1.5 m** | **93** | **57 %** | **40 %** |
+| sign-order + net + proximity | 25 | 16 % | 40 % |
+
+**Conclusion.** The trajectory (local-max) and net-crossing signals **crater recall** (61 %→36 %/37 %)
+for ~no precision gain — sparse ball coverage destroys the trajectory signal (51 % local-max on real
+floor bounces is barely above the 39 % FP rate). The best signal, **player-proximity ≥1.5 m**, only
+nudges precision 33 %→40 % at held recall (drops 25 of the 71 FPs, 4 of the 41 floor). **A modest,
+safe Render-side guard — not a home run, and not worth a Batch cycle for +7 pts.**
+
+**Two deeper findings that re-orient the work:**
+1. **SA-relative precision is unreliable here.** Tomo: SA is weak on ball bounce. So the "71 none"
+   almost certainly includes **real bounces SA missed**, meaning true T5 precision is *higher* than
+   33 % and we **cannot trust SA floor as the precision denominator.** Bounce precision is not
+   reliably measurable against SA — we need **hand-labelled bounce ground truth** for ≥1 match
+   (cf. `.claude/serve_ground_truth/`) before this is a measurable target.
+2. **The real bottleneck is upstream:** 52 % ball coverage both starves the trajectory signal and
+   loosens timing. Higher coverage (Phase 5 / better far-ball detection) would do more for bounce
+   precision than any post-hoc filter, and would make the perspective-aware detector (signal 4)
+   viable.
+
+**Recommendation:** do **not** port a Stage-2 Batch change yet. Either (a) ship `proximity ≥1.5 m` as
+a small Render-side guard if a quick safe win is wanted, or (b) invest in hand-labelled bounce truth
++ coverage first, since the filter ceiling is capped by both sparse coverage and SA's unreliability
+as a yardstick.
