@@ -1173,27 +1173,57 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM point_starts ps
     ),
 
-    -- rally_end_s = max bounce time inside the candidate region + 1s
-    -- (1s buffer admits the final no-bounce stroke's follow-through).
-    -- Fallback to rally_start_s + 20s if NO bounce falls inside (long
-    -- rally with TrackNet ball-detection gaps, or single-stroke ace
-    -- where TrackNet missed the lone bounce) — admits the bulk of real
-    -- rallies on this footage; v2's "wrong rows dropped" failure mode
-    -- can't recur because the windows here are time-based not point-
-    -- number-based.
-    -- 2026-05-24 evening tuning bump: was +10s — that under-shot. On
-    -- Match 1 (78c32f53) the +10s filter dropped T5 active rows from
-    -- 139 → 61 (target 89-99 = SA's 94 ± 5%).
+    -- rally_end_s = GREATEST(last_bounce + 1s, rally_start + 20s),
+    -- capped at next_rally_start - 3s when a next rally exists.
+    --
+    -- The 20s minimum is the load-bearing piece. With ~50% TrackNet
+    -- ball coverage, the last VISIBLE bounce in a rally often lands
+    -- 5-10s before the real rally end — every stroke past the last
+    -- visible bounce would fall outside the window if we relied on
+    -- `last_bounce + 1s` alone (which is what the prior versions did,
+    -- producing T5 active=61 vs SA's 84 on Match 1: a 23-row
+    -- undercount).
+    --
+    -- Cap at next_rally_start - 3s prevents the 20s minimum from
+    -- bleeding into the next point's start when rallies are short
+    -- (quick aces). When there is no next rally (last point of the
+    -- match), no cap applies.
+    --
+    -- 2026-05-24 tuning history:
+    --   v3a (+10s no-bounce fallback only): T5 active 61
+    --   v3b (+20s no-bounce fallback + 2s pre-buffer): T5 active 61
+    --     — boundary widening alone didn't help because the binding
+    --       clip was `last_bounce + 1s`, not the no-bounce branch.
+    --   v3c (this): GREATEST(last_bounce + 1s, rally_start + 20s)
+    --     — minimum window enforced regardless of visible bounces.
     rally_windows AS (
       SELECT pwb.task_id, pwb.point_number,
         pwb.rally_start_s,
-        COALESCE(
-          (SELECT MAX(bb.bounce_s)
-           FROM ball_bounces bb
-           WHERE bb.bounce_s >= pwb.rally_start_s
-             AND bb.bounce_s < COALESCE(pwb.next_rally_start_s, pwb.rally_start_s + 60.0)),
-          pwb.rally_start_s + 20.0
-        ) + 1.0 AS rally_end_s
+        CASE
+          WHEN pwb.next_rally_start_s IS NULL THEN
+            GREATEST(
+              COALESCE(
+                (SELECT MAX(bb.bounce_s) FROM ball_bounces bb
+                  WHERE bb.bounce_s >= pwb.rally_start_s
+                    AND bb.bounce_s < pwb.rally_start_s + 60.0) + 1.0,
+                pwb.rally_start_s + 20.0
+              ),
+              pwb.rally_start_s + 20.0
+            )
+          ELSE
+            LEAST(
+              GREATEST(
+                COALESCE(
+                  (SELECT MAX(bb.bounce_s) FROM ball_bounces bb
+                    WHERE bb.bounce_s >= pwb.rally_start_s
+                      AND bb.bounce_s < pwb.next_rally_start_s) + 1.0,
+                  pwb.rally_start_s + 20.0
+                ),
+                pwb.rally_start_s + 20.0
+              ),
+              pwb.next_rally_start_s - 3.0
+            )
+        END AS rally_end_s
       FROM point_window_bounds pwb
     ),
 
