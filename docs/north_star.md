@@ -54,13 +54,21 @@ Layering reminder (the naming hides it): the T5 "bronze" is `ml_analysis.*` (bal
 
 **Why this is now the rule (proven 2026-05-25):** We wired `ml_analysis.stroke_events` into Pass 1 (the old Option B) — stroke-driven row generation, one stroke → one silver row. It overshot badly on Match 1: **141 vs SA's 84 active; near 114 / far 27 vs SA's balanced 43 / 41; far Forehands got *worse* (6 vs SA's 18)**. Root cause is bronze: the stroke detector's hitter attribution is perspective-biased to the near player (208/34 vs true ~50/50), far-player pose is sparse (1,105 vs 11,755 keypoint rows on M1), and bounce coords are off (Phase 7). The code is **committed but gated OFF** behind `T5_STROKE_DRIVEN_SILVER` (bounce-driven stays the live path) — **do not flip it on, and do not chase reconciliation by reorganising silver, until bronze is right.** See CLAUDE.md "Things not to do" #11.
 
+### Progress 2026-05-25 — far player fixed, near precision provisionally gated (all Render-side, gated path)
+
+The stroke-driven silver bronze gaps were attacked end-to-end (stroke-driven path still gated OFF; no live impact):
+- **Far player FIXED** (3 commits): ROI ViTPose pose wired into silver + stroke buckets (`ead857a`); far fh/bh camera-mirror (`a8479a8`); far wrist-velocity size-normalisation (`956b65a`). Gated stroke-driven far active 27→43 (SA 41); stroke attribution 208/34 → 165/106.
+- **Near precision PROVISIONAL gate** (`9a4ab0a`): near-only wrist swing-path ≥0.75 torso-lengths (cuts pre-serve ball-bounce + recovery twitches — small-arc, high-velocity false peaks). Gated stroke-driven near 108→43 (=SA 43); total 151→78 (SA 84). **Single-match-calibrated → re-validate on a 2nd match or supersede with Q1-D.**
+
+Full detail: `docs/_investigation/far_player_accuracy.md`, `.claude/next_session_pickup.md`.
+
 ### Priority order (reframed): fix bronze accuracy first
 
 | # | Work | Where | Why this position |
 |---|---|---|---|
-| **1** | **Far-player accuracy + player A/B identity** | Batch-side (`ml_pipeline/roi_extractors/`, pose, tracking) | The binding constraint. Far pose coverage is ~10% of near; per-player A/B identity is unreliable (silver assigns by court SIDE because track ids aren't persistent — Tomo flagged we can't yet tag A/B and hold it across a match). Long-standing issue → **diagnose, don't hack.** Research in flight: **`docs/_investigation/far_player_accuracy.md`** (read it before acting). Prerequisite to flipping the gated stroke-driven path on. |
-| **2** | **Phase 7 — y-axis bounce calibration** | Batch-side, `roi_extractors/bounces.py` + court calibration | The other bronze-accuracy lever; bounce x/y error 3.2m median, far-baseline 10-17m off. Biggest single product win once coverage/identity are sound. ~2-3 days, **daylight only** (`feedback_overnight_branch_only.md`). |
-| **C** | **Fix `roi_bounces` per-window slowdown (Bug 2)** | Batch-side, `ml_pipeline/roi_extractors/bounces.py` | Contained, well-diagnosed. Unblocks long matches (Match 2 timed out at 6h). One-file change (load TrackNet outside the window loop). Good to land alongside the Phase-1 work since it touches the same file. |
+| **1** | **Validate the near swing-path gate (2nd match) / Q1-D trained classifier; Q2-B A/B identity** | Render-side | The near gate is single-match-calibrated — needs a 2nd match's SA truth or the trained stroke classifier (Q1-D, `training_corpus` accumulating) before it's trustworthy. Player A/B identity (Q2-B) still unaddressed (silver assigns by court SIDE; can't hold A/B across an end-change). Both gate the stroke-driven flip. |
+| **2** | **Phase 7 — y-axis bounce calibration** | Batch-side, `roi_extractors/bounces.py` + court calibration | The remaining bronze-accuracy lever; bounce x/y error 3.2m median, far-baseline 10-17m off. Biggest single product win. ~2-3 days, **daylight only** (`feedback_overnight_branch_only.md`). |
+| **C** | **Fix `roi_bounces` per-window slowdown (Bug 2)** | Batch-side, `ml_pipeline/roi_extractors/bounces.py` | Contained, well-diagnosed. Unblocks long matches (Match 2 timed out at 6h). One-file change (load TrackNet outside the window loop). |
 
 **Deferred / lower-priority backlog:**
 
