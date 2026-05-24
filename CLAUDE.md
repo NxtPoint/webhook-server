@@ -371,8 +371,11 @@ Both T5 and SportAI share passes 3-5 in `build_silver_v2.py` (repo root). The se
 |---|---|
 | `ml_pipeline/` | Core detection pipeline (court, ball, player), `db_writer.py` (Batch-side writes to `ml_analysis.*`, `source='main'`), harness, evals |
 | `ml_pipeline/serve_detector/` | Pose-first serve detection + rally state machine + schema |
+| `ml_pipeline/stroke_detector/` | Velocity-signal stroke detection (`detector.py`, `velocity_signal.py`, `schema.py`) → emits `ml_analysis.stroke_events`. Home of the near-side swing-path precision gate (`9a4ab0a`). **Distinct from `stroke_classifier/`** — this is the live heuristic detector; the classifier is the not-yet-trained CNN replacement. |
+| `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification (training scaffold; awaits dual-submit `training_corpus` → weights `models/stroke_classifier.pt`, currently absent) |
+| `ml_pipeline/roi_extractors/` | Batch-side ROI extractors — `pose.py` (far-player ViTPose → `player_detections_roi`, wired into silver in `ead857a`) + `bounces.py`. Trips the BATCH-SIDE CHANGE CHECKLIST (rule #8). |
+| `ml_pipeline/point_structure/` | `point_boundaries.py` — point/game structure derivation shared by silver builders |
 | `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (note: `training/visual_debug/` is leftover local debug images, untracked — don't read or edit) |
-| `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification |
 | `ml_pipeline/diag/` | Dev tools — `bench` / `bench_ball` / `bench_silver` regression harnesses, serve viewer, pose probe |
 | `ml_pipeline/fixtures_ci/`, `fixtures_ball/`, `fixtures_silver/` | Locked bench fixtures (one dir per bench), with `*_baseline.json` siblings |
 
@@ -414,9 +417,9 @@ Tables, gold view list, key files, frontend swing-type list, full flow detail: *
 
 ## Other
 
-- **`docs/`**: feature-level design and reference docs. Active: `north_star.md` (T5 macro plan), `dashboards.md` (gold view + endpoint catalogue), `business.md` (canonical product behaviour), `billing.md` (billing implementation), `pricing_strategy.md` (pricing numerics), `ops_runbook.md` (every `/ops/*` endpoint), `env_vars.md` (full env-var matrix), `technique.md`, `support_bot.md`, `llm_coach_design.md`. Code links back by section number where relevant.
+- **`docs/`**: feature-level design and reference docs. Active: `north_star.md` (T5 macro plan), `dashboards.md` (gold view + endpoint catalogue), `business.md` (canonical product behaviour), `billing.md` (billing implementation), `pricing_strategy.md` (pricing numerics), `ops_runbook.md` (every `/ops/*` endpoint), `env_vars.md` (full env-var matrix), `technique.md`, `support_bot.md`, `llm_coach_design.md`. Code links back by section number where relevant. Subdirs: `docs/_investigation/` (deep-dive diagnoses, e.g. `far_player_accuracy.md` — read before acting on T5 far-player/A-B identity, cited by rule #11), `docs/sql/` (canonical diagnostic queries, e.g. `reconcile_serves.sql`), `docs/_archive/` (superseded docs).
 - **`migrations/`**: One-off backfill SQL scripts. No migration framework — schema is managed idempotently via `db_init.py` + `gold_init.py` + per-module `ensure_*` functions.
 - **`_archive/`**: Deprecated/replaced code kept for reference.
 - **`lambda/`**: AWS Lambda source (e.g., S3 trigger for ML pipeline).
-- **`.claude/`**: Claude Code handover docs + AWS Batch playbooks (tracked in git, see list above); per-run artefacts (debug frames, eval txts, run status) are gitignored.
+- **`.claude/`**: Claude Code handover docs + AWS Batch playbooks (tracked in git, see list above); per-run artefacts (debug frames, eval txts, run status) are gitignored. Subdirs: `infrastructure/` (`gpu_dev_box_runbook.md`), `research/` (market scans), `strategy/` (dated strategy notes — dual-submit status, infra audit, silver-bench design, T5-vs-SportAI), `serve_ground_truth/` (hand-labelled serve CSVs for bench/eval); plus the gitignored scratch `tmp/` and `worktrees/`.
 - **Auto-memory** (Claude Code's per-project memory dir, indexed by `MEMORY.md`): persistent cross-session notes loaded into every conversation. Historical T5 context (`project_t5_*.md`), user/feedback rules, and feature-launch records live here — check it for "why did we decide X" before re-deriving from code. Local to the machine, not in git.
