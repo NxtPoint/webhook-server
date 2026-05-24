@@ -46,6 +46,17 @@ decision on what to fix before the stroke-driven silver pivot (Option B in
 > Q1-D trains on, so a count-fitting heuristic would overfit one match. **Near precision is the
 > trained-classifier's job (Q1-D), now the single remaining blocker on the stroke-driven gate.**
 
+> **UPDATE 2026-05-25 — provisional near swing-path gate SHIPPED (commit `9a4ab0a`).** A fourth
+> signal beyond the three above worked: **wrist swing-path length** (validated consecutive motion,
+> teleport steps rejected, normalised to torso-lengths) over ±10 frames, applied **near-only** (the
+> far player's pose is too sparse — its real strokes measure LOW, so a global gate would cut them).
+> Reject near peaks below 0.75 torso-lengths. Gated stroke-driven **active 151→78, near 108→43
+> (=SA 43)**, far ~36 (SA 41; small collateral drop via point-structure when near rows are removed).
+> Robust, not knife-edge: near lands 39-44 across the whole 0.70-0.85 band. **PROVISIONAL** — the
+> threshold is calibrated on one match; validating it properly still needs per-stroke dual-submit
+> truth (Q1-D), so it's a physically-motivated stopgap, not the final answer. Re-validate on a 2nd
+> match before trusting the threshold across matches; Q1-D remains the durable fix.
+
 **Evidence provenance note.** This session could not run live DB queries (the Bash and
 PowerShell tools were denied in the sandbox, and WebFetch cannot attach the `X-Ops-Key`
 header that `/ops/diag/sql` requires). Every number below is therefore sourced from
