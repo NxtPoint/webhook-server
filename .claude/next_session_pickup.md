@@ -1,219 +1,287 @@
-# Next-session pickup — morning of 2026-05-23
+# Next-session pickup — 2026-05-24 night (huge strategic session)
 
 ## ⚡ Executive summary (read this first — 30 seconds)
 
-**Today's date:** 2026-05-23 (Tomo's morning — picking up from overnight Claude session that closed 2026-05-22 ~late night)
-**Phase active:** Phase 5c — dual-submit corpus pipeline. **5c.0 / 5c.1 / 5c.2 / 5c.3 LIVE + VERIFIED in prod.** Tonight's overnight work shipped Phase 5c.4 GROUNDWORK on a branch.
-**Bench:** Serve `a798eff0=20/24, 880dff02=23/24` — green on main as of `ec357f7`.
-**What shipped overnight (3 commits):**
-- `99bc379` docs: CLAUDE.md trim under 40k chars + polling-gate rule + Phase 5c.3 commands
-- `ec357f7` ops: `cron_sweep_t5_orphans.py` (the Render cron script — wiring is the only manual step left)
-- `82930a7` (on `feature/phase-5c-4-bench-gate` branch — NOT merged): Phase 5c.4 groundwork — `bench_finetuned.py`, `--weights-path` threading, promotion playbook
-**What's blocked:** Two things, both your decisions:
-  1. Wire the Render Cron Job for `cron_sweep_t5_orphans.py` (UI-only, ~5 min).
-  2. Review + merge the `feature/phase-5c-4-bench-gate` branch (no Batch deploy in this PR — just diag harness + docs; safe to merge anytime).
-**Next session's first job:** Do (1) above so future auto-spawned T5 tasks unblock themselves. Then merge (2) or leave parked.
+**Today's date:** 2026-05-24 (long session: morning cron wiring + match upload + afternoon Phase 6/7 probes)
+**Phase active:** Phase 6 unblocked (pose-only stroke detection viable, no training needed). Phase 7 measured but failing target — known calibration issue.
+**Bench:** Serve `a798eff0=20/24, 880dff02=23/24` — green on main.
+**Today's three strategic findings (the big news):**
+1. **Path 0 (no training) viable for Phase 6** — pose-only wrist-velocity peak detector hits 63-67% recall baseline at ±6 tolerance on the `78c32f53` fixture. Realistic refinement target 75-80%. Training stays as insurance/runway to 90%+, not load-bearing.
+2. **Ball coverage adequate** — 52% on match 1 (`78c32f53`), 23,791 ball detections + 823 valid bounces on match 2 (`54710da5`). Phase 5 done-when materially met.
+3. **Phase 7 (bounce x,y accuracy) MEASURED — INSUFFICIENT.** Median Euclidean error 3.2-4.05m vs <2m target. x-axis (~width) is fine (<2m); y-axis (court length) has 3-6m systematic offset on normal bounces and 10-17m on some far-baseline bounces. Direction is consistent: T5 reports far-side bounces too close to the net. **This is the documented "2.4-7m y-axis offset" backlog item, now quantified.**
 
-If the above is enough, stop reading. The rest of this file has details + verification commands.
+**Next session's primary job:** Fix the y-axis far-baseline projection (court calibration). See backlog item in `docs/north_star.md`: "Likely needs a pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`)." Estimate: 2-3 days of focused calibration work.
 
----
+**Open at session close:** Match 2 (`ac8e28b3-a1ac-4004-b112-dd16078e56a3`) STILL RUNNING on Batch in ROI pose stage with no log output for 1h+; will hit 6h timeout at ~16:56 UTC if it doesn't finish. **Check first thing — may have completed naturally OR timed out.**
 
-## Item 1 — Wire the Render cron (the only thing tonight didn't fully close)
-
-The script `cron_sweep_t5_orphans.py` is on `origin/main` (commit `ec357f7`). It POSTs to `/ops/sweep-t5-orphans` with `{"dry_run": false}` and exits non-zero on HTTP error. Pattern follows `cron_monthly_refill.py`.
-
-**Render dashboard steps (~5 min):**
-
-1. Render dashboard → **+ New** → **Cron Job**
-2. Repository: same GitHub repo as the existing crons (`NxtPoint/webhook-server`)
-3. Branch: `main`
-4. Build command: `pip install --upgrade pip && pip install -r requirements.txt`
-   (matches the pattern of the other crons; the script itself only uses stdlib + nothing in requirements.txt, but Render needs a non-empty build for the Python service to provision)
-5. Command: `python cron_sweep_t5_orphans.py`
-6. Schedule: `*/5 * * * *` (every 5 min)
-7. Env vars:
-   - `OPS_KEY` — copy from "Sport AI - API call" service env. **Same value** as that service uses.
-   - (optional) `SWEEP_T5_ORPHANS_LIMIT` — override the server-side default of 50 max tasks per sweep
-8. Create.
-
-**Pre-creation sanity check** (do this BEFORE creating the cron, while you have a shell open):
-```bash
-# From any shell with OPS_KEY in env:
-curl -sS -X POST https://api.nextpointtennis.com/ops/sweep-t5-orphans \
-     -H "X-Ops-Key: $OPS_KEY" \
-     -H "Content-Type: application/json" \
-     -d '{"dry_run": true}'
-```
-Expected response shape:
-```json
-{"ok": true, "dry_run": true, "found": 0, "triggered": [], "sample": []}
-```
-If `found > 0` in the sample, there are stuck T5 tasks waiting — those will get picked up on the first scheduled cron tick after wiring. (You can hit `dry_run=false` manually now if you want to clean up immediately.)
-
-**Post-creation verification:**
-1. Render → the new cron's logs after the first scheduled tick.
-2. Expect a one-line JSON response, `"ok": true`.
-3. No `"triggered"` entries is normal (means no orphans existed at that tick).
-
-That's the full Phase 5c.3 → 5c.3-prime closure. After this, no auto-spawned T5 task can sit in `queued` indefinitely.
+If the above is enough, stop reading. The rest is depth + verification commands.
 
 ---
 
-## Item 2 — Review the Phase 5c.4 branch (your call: merge or leave parked)
+## What today's session actually shipped
 
-Branch: `feature/phase-5c-4-bench-gate` (pushed to origin tonight, commit `82930a7`).
-
-**What's in it:**
-
-1. **Thread `weights_path` through `bench_ball` harness** — both `BallTracker` and `WASBBallTracker` already accept the kwarg in their constructors; the bench wrapper just didn't expose it. Now `bench_ball.py --weights-path <candidate.pt>` lets you bench a candidate finetune against fixtures without rebuilding the Docker image.
-   - Guard: `--weights-path` + `--update-baseline` is hard-rejected — the committed baseline must reflect production weights.
-2. **NEW `ml_pipeline/diag/bench_finetuned.py`** — runs the bench TWICE per (fixture, tracker) pair (production weights vs candidate) and emits a `PROMOTE` / `NEUTRAL` / `REJECT` verdict. Exit code follows verdict; safe to wire into a future CI gate.
-3. **NEW `.claude/playbook_phase_5c4_weights_promotion.md`** — deploy playbook for AFTER a PROMOTE verdict. Documents the env-gated `TRACKNET_WEIGHTS` override pattern (matches the WASB swap from 2026-05-21), the Docker rebuild + dual-region ECR push + job-def rev sequence, and the rollback path (unset env var, no rebuild needed).
-
-**Why on a branch and not main:**
-
-- The harness/diag changes are safe to land any time — they don't touch detector code.
-- The playbook references config.py and ball_tracker.py env-gating that ISN'T shipped yet. That's intentional — the playbook is forward-looking. Merging the playbook to main is fine; landing the env-gate code change is a separate decision that trips guardrail #8 (Docker rebuild required) and shouldn't happen overnight.
-
-**Pre-flight before merging:**
-
-```bash
-# 1. Verify the branch
-git fetch origin
-git log --oneline origin/feature/phase-5c-4-bench-gate -5
-git diff main..origin/feature/phase-5c-4-bench-gate --stat
-
-# 2. Run the locked benches against the branch (should be green — no detector code touched)
-git checkout feature/phase-5c-4-bench-gate
-.venv/Scripts/python -m ml_pipeline.diag.bench
-# Expect: a798eff0=20/24, 880dff02=23/24 [OK] No regressions
-
-# 3. Smoke-test the new harness path (won't have weights to compare yet, but
-#    confirms the CLI is wired correctly)
-.venv/Scripts/python -m ml_pipeline.diag.bench_finetuned --help
-.venv/Scripts/python -m ml_pipeline.diag.bench_finetuned --weights-path /tmp/nope.pt
-# Expect: "ERROR: candidate weights file not found" + exit code 2
-
-# 4. If everything looks good, merge
-git checkout main
-git merge --ff-only origin/feature/phase-5c-4-bench-gate
-git push origin main
-```
-
-The Render deploy on this merge is harmless — diag tools aren't loaded by the running services.
-
----
-
-## State at session end (2026-05-22 night → 2026-05-23 early hours)
-
-`origin/main` at **`ec357f7` cron: cron_sweep_t5_orphans.py — Phase 5c.3 closure**. Recent commits:
+11 commits on `origin/main` since the session-close commit. Headline trajectory:
 
 ```
+b097974 docs: north_star -- Phase 3 part 2 + Phase 8 unblocked  ← latest
+991abc7 diag: bounce_xy_accuracy.py -- Phase 7 measurement (meters of error vs SA truth)
+b1b7932 strategy: Phase 6 unblocked (pose-only), Phase 7 is next critical measurement
+74e863e diag: ball_hit_pose -- add --in-rally-only + --use-truth-window flags
+e833f91 diag: ball_hit_pose.py -- pose-only stroke detector (no ball signal)
+8a05570 diag: ball_hit_fusion.py -- pose+ball heuristic, follow-up to baseline  [DELETED in b1b7932]
+60d7301 diag: ball_hit_baseline.py -- 20-line heuristic ported from ameynarwadkar repo  [DELETED in b1b7932]
+50201fc phase 5c.4 groundwork: bench_finetuned + --weights-path threading
+cd903fd docs: morning pickup — cron script ready, Phase 5c.4 branch ready
 ec357f7 cron: add cron_sweep_t5_orphans.py — Phase 5c.3 closure
-99bc379 docs: trim CLAUDE.md under 40k chars + polling-gate rule + Phase 5c.3 harness commands
-065bbcf session close 2026-05-22 night — Phase 5c END-TO-END VERIFIED
-a1a7e96 ops: /ops/sweep-t5-orphans — fire ingest for stuck auto-spawned T5 tasks
-b48230c harness: build-corpus --task <t5_task_id> filter
 ```
 
-`origin/feature/phase-5c-4-bench-gate` at **`82930a7` phase 5c.4 groundwork: bench_finetuned + --weights-path threading**.
+Three probes were written today; only `ball_hit_pose.py` survives. Its findings + the comparison are captured in `docs/north_star.md` strategy update.
 
-**Phase 5c artefacts in prod (unchanged from last session):**
-- `AUTO_DUAL_SUBMIT_T5=1` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS=1` on Render
-- `ml_analysis.training_corpus` has 1 row (`78c32f53-...`, label_kind='ball_position', 161 labels)
-- S3: `s3://nextpoint-prod-uploads/training/labels/78c32f53-5580-4a88-a4e7-7506e59b2b52_ball_positions.json`
+## The three probes (one-line summary each)
 
-**Serve bench (verified `ec357f7` 2026-05-22 night):** `a798eff0` 20/24, `880dff02` 23/24, no regressions.
+| Probe | Approach | Result | Status |
+|---|---|---|---|
+| `ball_hit_baseline.py` | y-reversal heuristic (ameynarwadkar port) | 0% recall | DELETED — broadcast-camera assumption |
+| `ball_hit_fusion.py` | ball position vs wrist distance | 15% recall | DELETED — ball occluded at contact |
+| `ml_pipeline/diag/ball_hit_pose.py` | wrist velocity peaks, no ball | **63-67% recall** | KEPT — Phase 6 path |
+| `ml_pipeline/diag/bounce_xy_accuracy.py` | matched-bounce Euclidean error | **median 3.2m, target <2m** | KEPT — Phase 7 measurement |
 
-**Batch state (unchanged):** eu-north-1 `:48`, us-east-1 `:30` — amd64 `bc8f7d72…`
+## State at session end (2026-05-24 late evening)
+
+**`origin/main` at `b097974`.**
+
+**Match 1 (`78c32f53`, completed yesterday):**
+- 161 SA bounces, 139 T5 bounces, 45 time-matched within ±0.5s
+- Phase 7 median error 4.05m (loose tolerance), 3.16-3.38m (tight tolerance)
+- Phase 6 pose-only detector: 63.2% recall ±6 / 37.7% recall ±3 frames
+- 1 corpus row in `ml_analysis.training_corpus` (`78c32f53`, 161 labels)
+
+**Match 2 (`54710da5`, retry2 = batch job `ac8e28b3-a1ac-4004-b112-dd16078e56a3`):**
+- STATUS AT SESSION CLOSE: **RUNNING** in ROI pose stage, `progress_pct=78`, no log output for 1h+
+- Started 2026-05-24 10:56:36 UTC, 6h timeout hits at 16:56 UTC
+- Main pipeline completed at 14:57:52 UTC (4h 1m): 23,791 ball detections + 823 valid bounces + 0 phantom bounces filtered
+- Data NOT YET persisted to ml_analysis.* (writes happen at end of ROI pose stage)
+- Will likely either complete naturally (data lands, corpus row #2 auto-creates) OR timeout (need restart)
+
+**Render cron status:**
+- `/ops/sweep-t5-orphans` cron is wired and running (wired this morning 2026-05-24); confirmed firing.
+
+**Batch state:**
+- eu-north-1 `:49` (timeout 21600s = 6h), us-east-1 `:31` (same). Older revs `:48` / `:30` retained.
+- Image still `sha256:bc8f7d72…` (chain-rejection fix + WASB + source='main').
+
+---
+
+## Strategic scorecard for the project
+
+```
+DONE          Phase 1 (serve detection)        — 20/24 + 23/24 bench-locked
+DONE          Phase 4 (point reconciler tool)
+DONE          Phase 5a (ROI bounce extractor)
+DONE          Phase 5e (WASB integration)
+DONE          Phase 5e follow-ups (chain-rejection + source='main')
+MOSTLY DONE   Phase 5 (ball coverage)          — 52% on match 1, 23k on match 2; done-when met
+DONE          Phase 5c.0-5c.3 (corpus pipeline, with cron wiring)
+PARTIAL       Phase 2 (point boundaries)       — function exists, needs re-measurement
+PARTIAL       Phase 3 part 1 (warmup filter)
+UNBLOCKED     Phase 3 part 2 (between-point filter)  — reconcile exposes the symptom
+UNBLOCKED     Phase 6 (stroke detection)       — pose-only path validated, production module needed
+MEASURED      Phase 7 (bounce x,y accuracy)    — INSUFFICIENT (median 3.2m vs <2m target)
+UNBLOCKED     Phase 8 (final serve cleanup)    — but lower priority
+INSURANCE     Phase 5c.4 (bench-gate-before-promotion) + Phase 5d (training)
+```
+
+## The Phase 7 finding in detail
+
+This is THE most important practical finding of today. Worth understanding before doing the fix.
+
+**Test data:** Match 1 (`0d0514df ↔ 78c32f53` dual-submit pair). 161 SA bounces, 139 T5 bounces, court is 10.97m wide × 23.77m long.
+
+**Results at three tolerance levels:**
+
+| Tolerance | Matches | Median err | Within 1m | Within 2m | Within 3m |
+|---|---|---|---|---|---|
+| ±0.5s | 45 | 4.05m | 11% | 22% | 42% |
+| ±0.15s | 27 | 3.16m | 7% | 11% | 44% |
+| ±0.08s | 24 | 3.38m | 4% | 4% | 38% |
+
+Tightening tolerance barely helped. So errors are real, not matching artefacts.
+
+**Direction of errors (from same-time `dt=0.00` pairs):**
+
+```
+sa=(3.98, 10.30)  t5=(3.82,  4.16)  err=6.14m   <-- y too low by 6.14m
+sa=(7.64, 18.85)  t5=(9.57, 13.22)  err=5.96m   <-- y too low by 5.63m
+sa=(2.62, 24.79)  t5=(3.15, 20.08)  err=4.75m   <-- y too low by 4.71m
+sa=(9.59, 25.27)  t5=(11.92, 21.96) err=4.05m   <-- y too low by 3.31m
+```
+
+- **x errors ≈ 0.2-2.3m** (acceptable, fixable later)
+- **y errors ≈ 3-6m on normal bounces, 10-17m on far-baseline bounces**
+- **Always in the direction "T5 reports the bounce closer to the net than SA does"**
+
+**Best pairs (proves T5 CAN report accurate coords):**
+
+```
+sa=(3.96, 10.52)  t5=(3.97, 10.23)  err=0.29m   <-- ~perfect
+sa=(0.85, 26.24)  t5=(1.07, 25.71)  err=0.58m
+sa=(4.52, 19.35)  t5=(4.14, 19.13)  err=0.44m
+```
+
+When the projection works, errors are <1m. So geometry isn't broken in general — only the far-baseline extrapolation is broken.
+
+**Diagnosis:** This is the documented "2.4-7m y-axis offset" backlog item, but quantified more precisely:
+- 3-6m systematic offset on regular far-side bounces
+- 10-17m on some far-baseline bounces (catastrophic projection failure)
+- x-axis is fine
+- Fix direction (per backlog): "pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`) — touches multiple call sites"
+
+---
+
+## Next session's job (in order)
+
+### 1. First thing: check match 2 status
+
+```bash
+aws batch describe-jobs --region eu-north-1 --jobs ac8e28b3-a1ac-4004-b112-dd16078e56a3 \
+    --query 'jobs[0].[status,statusReason,stoppedAt,container.exitCode]' --output json
+```
+
+Three possible outcomes:
+
+- **SUCCEEDED:** Data is in ml_analysis. The orphan-sweep cron will fire ingest within 5 min if not already. Re-run all three probes against the `0fa94cf6 ↔ 54710da5` pair to validate findings on a second match.
+- **FAILED (timeout):** 5h of work lost. Either resubmit with longer timeout (job-def `:49` is already at 6h — would need `:50` with 8-10h) OR investigate why ROI pose hung for so long.
+- **STILL RUNNING:** Wait it out; check again later.
+
+```bash
+# If SUCCEEDED, re-bench on match 2:
+.venv/bin/python -m ml_pipeline.diag.bounce_xy_accuracy \
+    --sa-task 0fa94cf6-7cdd-4a8f-9bf9-c603ce31e872 \
+    --t5-task 54710da5-7bcd-4f81-b2ea-82929b02d6ec --verbose
+
+.venv/bin/python -m ml_pipeline.diag.ball_hit_pose \
+    --sa-task 0fa94cf6-7cdd-4a8f-9bf9-c603ce31e872 \
+    --t5-task 54710da5-7bcd-4f81-b2ea-82929b02d6ec \
+    --tolerance-frames 6 --use-truth-window --in-rally-only --verbose
+```
+
+If match 2 also shows ~3m median y-error, the calibration hypothesis is confirmed across matches and the fix work is justified.
+
+### 2. THE big work: fix the y-axis far-baseline projection
+
+This is the dominant blocker for shipping the product (heatmaps need <2m bounce accuracy). Per `docs/north_star.md` backlog:
+
+> *"Calibration extrapolation behind the far baseline produces court_y -3 to -7m for players who are visually at the baseline. Apr 29 verified naive widening (-3.5→-5.0) loses 2 PASS. Likely needs a pixel-y-based far-baseline check (replacing `_baseline_zone(court_y)`) — touches multiple call sites; deferred."*
+
+**Concrete starting points:**
+- `_baseline_zone(court_y)` function (grep the codebase — appears in multiple call sites per the backlog note)
+- `ml_pipeline/court_detector.py` and homography code
+- `ml_pipeline/camera_calibration.py` if it exists
+- Check `ml_pipeline/serve_detector/` for any y-axis correction logic that might already exist for serves
+
+**Approach (from the backlog note):**
+1. Diagnose: identify the pixel-y → court-y projection that goes wrong for far-baseline points
+2. Fix: replace the projection function with a pixel-y-based far-baseline check
+3. Validate: re-run `bounce_xy_accuracy.py` — median should drop from 3.2m to <2m
+4. Bench: ensure serve detection bench stays at 20/24 + 23/24
+
+Trips BATCH-SIDE CHANGE CHECKLIST: court detection / homography code is in the Batch container. Docker rebuild + dual-region ECR push required after the fix.
+
+### 3. After Phase 7 fix: production Phase 6 stroke detector
+
+When Phase 7 is sorted, the next concrete work is `ml_pipeline/stroke_detector/` — production version of the `ball_hit_pose.py` probe. Pattern matches `ml_pipeline/serve_detector/`. Emits stroke events the silver builder consumes.
+
+Heuristic refinements to apply (from today's probe findings):
+- Peak+offset correction (report `velocity_peak_frame + 4` instead of `velocity_peak_frame`) — recovers 25% recall at ±3 tolerance
+- `--min-gap-frames` 15→25 to suppress multi-peak detection on same swing
+- Better FAR pose extraction
+- Optional: swing-template matching (acceleration profile)
+
+Target: 75% recall at ±3, 50%+ precision. No training.
+
+### 4. Phase 3 part 2 (between-point filter)
+
+Now unblocked. The reconcile showed it would clean up the over-detection problem (T5 139 silver rows vs SA 94 — ~86 rows are warmup/between-point). Lower priority than Phase 7 + Phase 6 production. Could be a 1-2 day effort once Phase 7 + 6 ship.
 
 ---
 
 ## Read in this order before doing anything else
 
-1. **This file** — you're already here.
-2. `docs/north_star.md` §"Phase 5" — confirm phase status hasn't shifted.
-3. `CLAUDE.md` §"Things not to do" — note new rule #10 about auto-spawn polling-gate pairing.
-4. `.claude/playbook_phase_5c4_weights_promotion.md` IF you're about to attempt a finetune deploy (not relevant for Item 1 above; only matters if Phase 5c.4 work resumes).
+1. **This file** — you're here.
+2. `docs/north_star.md` §"Strategy update 2026-05-24" — full three-probe story + phase ladder updates.
+3. `docs/north_star.md` §"Phase 7" — the specific calibration issue + fix direction.
+4. `ml_pipeline/diag/bounce_xy_accuracy.py` — read the docstring to understand the measurement methodology.
+5. `ml_pipeline/diag/ball_hit_pose.py` — read the docstring; this is the model for the production stroke detector.
 
-Then run the locked bench to confirm the floor:
-
-```bash
-.venv/Scripts/python -m ml_pipeline.diag.bench
-```
-
-Expect: serve `a798eff0` 20/24, `880dff02` 23/24.
-
----
-
-## Next move — pick one (recommended order: 1 → 2 → 3 → 4)
-
-**Option 1: Wire the Render Cron Job for `cron_sweep_t5_orphans.py` (~5 min).** See Item 1 above. This is the last manual closure for Phase 5c.3. Strongly recommended as the first thing.
-
-**Option 2: Review + merge `feature/phase-5c-4-bench-gate` (~10 min).** See Item 2 above. Safe; no Batch deploy implied by the merge. Lands the bench_finetuned harness + promotion playbook on main so future sessions can use them.
-
-**Option 3: Re-capture `1d6feb3a` silver-bench fixture against post-fix Batch image (Tomo-side, ~15 min Render + 5 min local).** Still pending from last session — needs Render shell snapshot. If silver row count jumps 7 → 30+ that's direct evidence the chain-rejection fix is structurally repairing T5 bronze density.
-
-**Option 4: Smoke-test `harness build-corpus` end-to-end (~15 min, requires 2+ corpus rows).** Still blocked on having only 1 corpus row in prod. Either wait for another organic upload, or manually trigger one to seed a second pair.
-
-**Option 5: Phase 5c.4 actual training run.** With the harness shipped tonight (on the branch), the next concrete training step is collecting enough corpus rows (need ~5+ matches) and running `ml_pipeline/training/` to produce a candidate `.pt`. Once you have one, `bench_finetuned --weights-path <.pt>` is the gate.
-
----
-
-## Open admin items (unchanged from last session except where noted)
-
-- ~~`/ops/sweep-t5-orphans` shipped but NOT wired to a cron yet.~~ **Script shipped tonight (`ec357f7`); Render Cron Job entry still needs creation (Item 1 above).**
-- Render Postgres still open to `0.0.0.0/0` (since 2026-05-21 Phase 5a). Re-lock to `105.214.8.31/32` or build NAT Gateway + EIP.
-- Old GPU box `i-0fb3983fa555c16e3` (eu-north-1a) parked stopped (~$3.70/mo EBS).
-- Silver-bench has only 1 fixture (`1d6feb3a`). Adding `880dff02` would give a denser regression target.
-- Edge: a brand-new auto-spawned T5 within the cron's `min_age_minutes=5` window will not be picked up until the next 5-min sweep tick. Acceptable for now (T5 takes >25 min on Batch; first sweep tick will always catch them in time).
-
----
-
-## Things NOT to do (load-bearing, unchanged)
-
-- **Don't merge `ball_tracker.py`, `wasb_ball_tracker.py`, `wasb_hrnet.py`, `config.py`, `pipeline.py`, `db_writer.py`, or `Dockerfile` changes without BATCH-SIDE CHANGE CHECKLIST.** (Tonight's harness commits don't touch these.)
-- **Don't ship Phase 5c.4 actual config.py env-gate change overnight.** The branch tonight is deliberately groundwork-only — the env-gate code change trips guardrail #8 and needs daylight + bandwidth to deploy.
-- **Don't rollback WASB without running the bench against TrackNetV2 first.**
-- **Don't change `AUTO_DUAL_SUBMIT_T5` / `AUTO_LABEL_DUAL_SUBMIT_PAIRS` env-flag defaults to ON in code.**
-- **Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD`.**
-- **Don't auto-spawn a task without a paired server-side trigger** (new rule in CLAUDE.md "Things not to do" #10 — added tonight).
-- Don't ask Tomo to do Docker work — agent handles deploys.
-- Don't create parallel bronze tables.
-
----
-
-## Verification commands
+Then run the locked bench to confirm nothing regressed:
 
 ```bash
-# 1. Bench floor
 .venv/Scripts/python -m ml_pipeline.diag.bench
 # Expect: a798eff0=20/24, 880dff02=23/24
-
-# 2. /ops/sweep-t5-orphans dry-run (needs OPS_KEY in env)
-curl -sS -X POST https://api.nextpointtennis.com/ops/sweep-t5-orphans \
-     -H "X-Ops-Key: $OPS_KEY" \
-     -H "Content-Type: application/json" \
-     -d '{"dry_run": true}'
-# Expect: {"ok": true, "dry_run": true, "found": 0|N, ...}
-
-# 3. Corpus row still intact (run against DATABASE_URL)
-psql "$DATABASE_URL" -c "
-SELECT t5_task_id::text, label_kind, label_count, role_breakdown, created_at
-FROM ml_analysis.training_corpus
-ORDER BY created_at DESC LIMIT 3;
-"
-
-# 4. Branch overview
-git fetch origin
-git log --oneline origin/feature/phase-5c-4-bench-gate -3
-git diff main..origin/feature/phase-5c-4-bench-gate --stat
 ```
 
 ---
 
-## Notes from the overnight session
+## Open admin items
 
-- The overnight work was scoped specifically to avoid anything that requires Tomo to be awake for supervision: no Batch deploys, no Render env-var changes, no production data writes. Everything is either local diag harness OR a branch that requires explicit merge intent.
-- The Phase 5c.4 branch was a clean "pickup option 4 from yesterday's pickup, modulo the deploy" — the pickup language said "Don't ship this without bandwidth", so the deploy parts of Option 4 are explicitly punted.
-- CLAUDE.md was over the 40k-char warning threshold (41,879). Trimmed Support Bot section, /ops/diag/sql description, and Client API table to point to canonical docs — net 41,879 → 38,761. Three load-bearing additions in the same commit: rule #10 about auto-spawn polling gates, build-corpus harness commands, the new cron script reference.
+- **Match 2 may be hung** — Batch may have timed out at 16:56 UTC tonight. Check first thing.
+- **Render Postgres still open to `0.0.0.0/0`** — re-lock to `105.214.8.31/32` or build NAT Gateway + EIP. Outstanding for 4+ days.
+- **Silver-bench has only 1 fixture** — adding `880dff02` would give a denser regression target.
+- **EU job-def `:49` has a broken default command** (latent — production submissions use containerOverrides which bypasses). Cleanup: register `:50` with short command matching US `:31`, deregister `:49`. Low urgency.
+- **Stale GPU box `i-0fb3983fa555c16e3`** (eu-north-1a) parked stopped, ~$3.70/mo EBS.
+
+---
+
+## Things NOT to do (load-bearing)
+
+- **Don't auto-spawn a task without a paired server-side trigger** (CLAUDE.md "Things not to do" #10).
+- **Don't merge ball_tracker.py, wasb_*, pipeline.py, config.py, db_writer.py, Dockerfile changes without BATCH-SIDE CHANGE CHECKLIST.**
+- **Don't tune Tier 1 Hough or lower `TRACKNET_HEATMAP_THRESHOLD`.**
+- **Don't rollback WASB without bench against TrackNetV2 first.**
+- **Don't change `AUTO_DUAL_SUBMIT_T5` / `AUTO_LABEL_DUAL_SUBMIT_PAIRS` env-flag defaults to ON in code** (production override only).
+- **Don't ask Tomo to do Docker work.**
+- **Don't create parallel bronze tables.**
+- **Don't skip the bench CI check to land a PR.**
+
+---
+
+## Verification commands (paste-ready)
+
+```bash
+# 1. Locked serve bench
+.venv/Scripts/python -m ml_pipeline.diag.bench
+
+# 2. Phase 7 bounce accuracy on match 1 (yesterday's known result)
+.venv/bin/python -m ml_pipeline.diag.bounce_xy_accuracy \
+    --sa-task 0d0514df-68aa-4346-9e2d-64413429e47f \
+    --t5-task 78c32f53-5580-4a88-a4e7-7506e59b2b52 --verbose
+
+# 3. Phase 6 pose-only stroke detector on match 1
+.venv/bin/python -m ml_pipeline.diag.ball_hit_pose \
+    --sa-task 0d0514df-68aa-4346-9e2d-64413429e47f \
+    --t5-task 78c32f53-5580-4a88-a4e7-7506e59b2b52 \
+    --tolerance-frames 6 --use-truth-window --in-rally-only --verbose
+
+# 4. Match 2 Batch status
+aws batch describe-jobs --region eu-north-1 --jobs ac8e28b3-a1ac-4004-b112-dd16078e56a3 \
+    --query 'jobs[0].[status,statusReason,stoppedAt]' --output json
+
+# 5. Match 2 data persistence check (on Render shell)
+psql "$DATABASE_URL" -c "SELECT status, current_stage, progress_pct, (SELECT COUNT(*) FROM ml_analysis.ball_detections WHERE job_id::text = '54710da5-7bcd-4f81-b2ea-82929b02d6ec') AS balls FROM ml_analysis.video_analysis_jobs WHERE job_id = '54710da5-7bcd-4f81-b2ea-82929b02d6ec';"
+
+# 6. Corpus row count
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM ml_analysis.training_corpus;"
+```
+
+---
+
+## Final framing
+
+You went from "are we training when we shouldn't be?" (this morning) to **three definitive strategic answers in one session**:
+1. Pose-only Phase 6 is viable — no training needed for stroke detection
+2. Coverage is met — Phase 5 done-when materially achieved
+3. Phase 7 is a specific, scoped calibration problem with a known fix — not a fundamental redesign
+
+The bounce-x,y accuracy gap (3-6m y-axis offset) is real and is the dominant blocker for shipping product features that depend on bounce locations. But it's a **fixable calibration issue, not an architecture failure.**
+
+The day's work shipped 10+ commits, three diag probes, a major doc update, code cleanup, and answered three blocking questions. Big day.
