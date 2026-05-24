@@ -436,12 +436,52 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
       dets_by_pid             — mapped_pid -> (frames, dets) for that track
       pid_map, top_pids       — ghost-id → top-2 mapping (guarantees 2 players)
     """
-    player_dets = conn.execute(sql_text("""
+    player_dets = list(conn.execute(sql_text("""
         SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, stroke_class
         FROM ml_analysis.player_detections
         WHERE job_id = :jid
         ORDER BY frame_idx
-    """), {"jid": job_id}).fetchall()
+    """), {"jid": job_id}).fetchall())
+
+    # ---- Merge far ViTPose pose from ml_analysis.player_detections_roi ----
+    # extract_far_pose writes high-quality far-player keypoints (source=
+    # 'far_vitpose', player_id=1) that the full-frame YOLO in the main table
+    # misses on 30-40px far bodies. Same merge serve_detector already does:
+    # ROI wins wholesale for the far player (pid=1) where both exist; ROI-only
+    # frames are added. This lifts far keypoint coverage so far fh/bh swing
+    # inference can actually run instead of falling to the position fallback.
+    # Coordinate space note: the keypoints are full-frame-relative, and swing
+    # inference is intra-frame (wrist vs shoulder), so scale doesn't matter
+    # here. Existence is checked via information_schema BEFORE selecting so a
+    # missing table can't poison the txn (memory feedback_postgres_missing_table).
+    # No-op on SportAI tasks (they have no ROI rows) and on tasks predating the
+    # ROI extractor.
+    roi_present = conn.execute(sql_text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'ml_analysis' AND table_name = 'player_detections_roi'
+        LIMIT 1
+    """)).scalar()
+    if roi_present:
+        roi_rows = conn.execute(sql_text("""
+            SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, NULL AS stroke_class
+            FROM ml_analysis.player_detections_roi
+            WHERE job_id = :jid AND keypoints IS NOT NULL
+            ORDER BY frame_idx
+        """), {"jid": job_id}).fetchall()
+        if roi_rows:
+            merged = {(r[1], r[0]): r for r in player_dets}  # (player_id, frame_idx) -> row
+            roi_won = roi_added = 0
+            for r in roi_rows:
+                key = (r[1], r[0])
+                if r[1] == 1 or key not in merged:   # ROI wins wholesale for far (pid=1)
+                    roi_won += (key in merged)
+                    roi_added += (key not in merged)
+                    merged[key] = r
+            player_dets = sorted(merged.values(), key=lambda r: r[0])
+            logger.info(
+                "T5 Pass 1: merged %d far ViTPose ROI rows (override=%d add=%d) "
+                "from player_detections_roi", len(roi_rows), roi_won, roi_added,
+            )
 
     # Identify the two players — group by player_id, take top 2 by det count.
     from collections import Counter

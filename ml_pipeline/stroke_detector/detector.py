@@ -183,15 +183,64 @@ def _load_pose_rows(conn, task_id: str) -> List[Tuple[int, int, list]]:
             ORDER BY pd.player_id, pd.frame_idx
         """), {"tid": task_id}).fetchall()
 
-    out: List[Tuple[int, int, list]] = []
-    for r in rows:
-        kps = r[2]
-        if isinstance(kps, str):
-            try:
-                kps = json.loads(kps)
-            except (json.JSONDecodeError, TypeError):
-                continue
-        out.append((int(r[0]), int(r[1]), kps))
+    def _coerce(rs):
+        acc = []
+        for r in rs:
+            kps = r[2]
+            if isinstance(kps, str):
+                try:
+                    kps = json.loads(kps)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            acc.append((int(r[0]), int(r[1]), kps))
+        return acc
+
+    out = _coerce(rows)
+
+    # ---- Merge far ViTPose pose from ml_analysis.player_detections_roi ----
+    # The main table samples the far player sparsely (every PLAYER_DETECTION_
+    # INTERVAL=5 frames → gap > max_gap_frames, so far wrist velocity is rarely
+    # sampled) and its full-frame pid=1 rows are unreliable (often a static
+    # chair-umpire misclassification). extract_far_pose writes denser, cleaner
+    # far keypoints (every 2 frames, source='far_vitpose', player_id=1) that
+    # only the serve_detector currently reads. Merge them the same way: ROI
+    # wins wholesale for the far player (pid=1); ROI-only frames are added.
+    # Existence is checked via information_schema BEFORE selecting so a missing
+    # table can't poison the txn (memory feedback_postgres_missing_table).
+    #
+    # NOTE: far full-frame wrist velocity is small (the far body is ~30-40px),
+    # so this lifts far *coverage* but does not by itself fix the near-biased
+    # global-max attribution — that needs size-normalised velocity, tracked as
+    # follow-on. Harmless to live output: stroke_events feed only the gated-off
+    # stroke-driven silver path (T5_STROKE_DRIVEN_SILVER).
+    roi_present = conn.execute(sql_text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'ml_analysis' AND table_name = 'player_detections_roi'
+        LIMIT 1
+    """)).scalar()
+    if roi_present:
+        roi = conn.execute(sql_text("""
+            SELECT frame_idx, player_id, keypoints
+            FROM ml_analysis.player_detections_roi
+            WHERE job_id::text = :tid AND keypoints IS NOT NULL
+            ORDER BY frame_idx
+        """), {"tid": task_id}).fetchall()
+        roi_out = _coerce(roi)
+        if roi_out:
+            merged = {(pid, f): (f, pid, kp) for f, pid, kp in out}
+            won = added = 0
+            for f, pid, kp in roi_out:
+                key = (pid, f)
+                if pid == 1 or key not in merged:   # ROI wins wholesale for far
+                    won += key in merged
+                    added += key not in merged
+                    merged[key] = (f, pid, kp)
+            out = sorted(merged.values(), key=lambda r: (r[1], r[0]))
+            logger.info(
+                "stroke_detector: merged %d far ViTPose ROI pose rows "
+                "(override=%d add=%d)", len(roi_out), won, added,
+            )
+
     return out
 
 
