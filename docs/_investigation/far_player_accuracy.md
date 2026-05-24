@@ -15,6 +15,17 @@ decision on what to fix before the stroke-driven silver pivot (Option B in
 > `_infer_swing_type_from_keypoints`), and far stroke velocity is sub-threshold (needs
 > size-normalisation in `velocity_signal.py`). These now precede Q2-B in the sequence.
 
+> **UPDATE 2026-05-25 — far fh/bh mirror FIXED (commit `a8479a8`).** `_infer_swing_type_from_keypoints`
+> now mirrors the far half (dominant hand on image-right iff right-handed XOR far), since the far
+> player faces the camera. M1 far fh 9→11, bh 13→11 (toward SA 18/6); near byte-identical. Validated
+> by aggregate stats: across all 958 far ROI poses the corrected logic reads ~73% forehand, matching
+> SA's ~75%. **But per-hit far fh/bh stays pose-NOISE limited** — ViTPose left/right flickers on the
+> ~32px far body; a windowed majority vote over-corrects to ~all-forehand (the rare real backhands
+> never form a per-hit majority, so it would zero SA's 6 far backhands). Conclusion: precise per-hit
+> far fh/bh is a **trained-stroke-classifier (Q1-D)** job, not in-silver heuristic tuning (a vote
+> threshold would overfit one match). Next bronze gap before the gate: **far stroke velocity
+> size-normalisation** (`velocity_signal.py`).
+
 **Evidence provenance note.** This session could not run live DB queries (the Bash and
 PowerShell tools were denied in the sandbox, and WebFetch cannot attach the `X-Ops-Key`
 header that `/ops/diag/sql` requires). Every number below is therefore sourced from

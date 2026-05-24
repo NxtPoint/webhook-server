@@ -9,7 +9,9 @@
 **What's blocked:** The stroke-driven pivot overshoots (Match 1: 141 vs SA's 84 active; near 114 / far 27 vs SA's 43/41) because T5 **bronze** is inaccurate — near-biased hitter attribution + sparse far pose. Reconciliation is a bronze problem, not a silver one.
 **Q1-A — DONE (commit `ead857a`).** Wired `ml_analysis.player_detections_roi` (958 far ViTPose poses on M1) into both the silver `_build_player_buckets` and the stroke detector `_load_pose_rows`, mirroring serve_detector. Result: live bounce-driven row count unchanged (139), active 60→66, far groundstrokes now classify (far Backhand 14→19); stroke far attribution 63→85. Row generation untouched, SportAI unaffected, bench green.
 
-**Next session's job:** Close the two remaining bronze gaps the wiring exposed before the gate can flip — **(1) far fh/bh discrimination** (it now over-calls far backhands: M1 far fh 9 / bh 13 vs SA 18 / 6 — the far player faces the camera, so the handedness/wrist-vs-shoulder logic in `_infer_swing_type_from_keypoints` is likely mirrored for the far half); **(2) far stroke velocity size-normalisation** (full-frame far wrist motion is sub-threshold, so stroke attribution stays near-biased). Then **Q2-B end-anchored A/B identity**. Only flip `T5_STROKE_DRIVEN_SILVER` on once far near/far reconciles to ~50/50.
+**Next session's job:** Two bronze gaps remain before the gate can flip — **(1) far stroke velocity size-normalisation** (`stroke_detector/velocity_signal.py`): full-frame far wrist motion is sub-threshold, so stroke attribution stays near-biased (208/34); normalise far velocity by body size (bbox height) so far strokes can peak. **(2) Q2-B end-anchored A/B identity.** Only flip `T5_STROKE_DRIVEN_SILVER` on once near/far reconciles to ~50/50.
+
+**Far fh/bh mirror — FIXED (`a8479a8`).** Far player faces camera → dominant hand on image-left; the swing inference now mirrors (dom_on_right = right-handed XOR far). M1 far fh 9→11, bh 13→11 (toward SA 18/6); near unchanged. Residual per-hit gap is pose-NOISE limited (ViTPose left/right flickers on the 32px far body; aggregate ~73% fh matches SA, but a windowed vote over-corrects to ~all-fh, zeroing the rare real backhands). Precise per-hit far fh/bh is a trained-stroke-classifier job (Q1-D), NOT a one-match vote threshold — don't overfit it.
 
 If the above is enough, stop and go. Read on for the why and the full option set.
 
@@ -56,7 +58,7 @@ A read-only agent investigated far-player accuracy + A/B identity → **`docs/_i
 ## Priority order (reframed — fix bronze first)
 
 1. ~~Q1-A — merge `player_detections_roi` into the silver + stroke pose buckets~~ **DONE (`ead857a`).**
-2. **Far fh/bh discrimination + far velocity normalisation** (Render/detector). The ROI wiring exposed these: far swing inference over-calls backhands (mirrored far-player geometry), and far stroke velocity is sub-threshold. Fix in `_infer_swing_type_from_keypoints` (far-half handedness) + `stroke_detector/velocity_signal.py` (size-normalise far velocity). Prerequisite for the gate.
+2. ~~Far fh/bh mirror~~ **DONE (`a8479a8`)** — far-half handedness mirror in `_infer_swing_type_from_keypoints`. Remaining: **far stroke velocity size-normalisation** in `stroke_detector/velocity_signal.py` (sub-threshold far wrist motion keeps attribution near-biased). Prerequisite for the gate. Precise per-hit far fh/bh is a trained-classifier job (Q1-D), not in-silver tuning.
 3. **Q2-B — end-anchored player A/B identity** (Render-side). Anchor identity to court end + serve order so A/B persists across end-changes.
 3. **Bug 2 — `roi_bounces` per-window slowdown** (Batch-side, contained; load `BallTracker` once outside the window loop). Unblocks long matches. Trips BATCH-SIDE CHANGE CHECKLIST.
 4. **Phase 7 — y-axis bounce calibration** (Batch-side, daylight only). Do LAST — measures against clean silver.
