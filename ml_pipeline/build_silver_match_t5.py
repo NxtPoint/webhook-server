@@ -55,6 +55,12 @@ EPS_BASELINE_M = 1.5
 SERVE_GAP_S = 3.0       # seconds gap before a bounce to consider it a serve (was 5.0 — too strict for sparse bounce data)
 VOLLEY_NET_DISTANCE_M = 4.0  # player within 4m of net = volley
 SERVE_BOX_TOLERANCE_M = 1.5  # extra tolerance for service box check (real wide serves bounce in doubles alley)
+# Bounce-precision guard (Stage 1, 2026-05-25): a bounce within this court
+# distance (m) of a player is treated as a racquet contact / near-player
+# detection noise, not a floor landing, and dropped from the bounce-driven
+# row set. Stage-1 reconciliation vs SA on Match 1: lifts floor precision
+# 33%→40% at held recall. See docs/_investigation/bounce_accuracy.md §6-7.
+BOUNCE_PLAYER_PROXIMITY_M = 1.5
 
 # build_silver_v2 sport config (used when calling shared passes)
 SPORT_CONFIG_SINGLES = {
@@ -634,6 +640,32 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
 
     # ---- Step 4: Look up dominant hand ----
     is_left_handed = _lookup_dominant_hand(conn, task_id)
+
+    # ---- Step 4b: Bounce-precision proximity guard ----
+    # Drop bounces co-located with a player — those are racquet contacts /
+    # near-player detection noise, not floor landings. Keeps bounces with no
+    # nearby player detection (can't gate without evidence) and bounces with
+    # NULL court coords (handled/skipped downstream). Stage-1 reconciliation
+    # vs SA on Match 1: ~25 of 71 SA-unmatched bounces dropped, only ~4 of 41
+    # real floor bounces lost (recall held). docs/_investigation/bounce_accuracy.md.
+    prox_win = max(1, int(round(fps * 0.16)))  # ±~4 frames @25fps (matches the Stage-1 prototype)
+    _n_before = len(bounces)
+    _filtered = []
+    for _b in bounces:
+        _bf, _, _, _bcx, _bcy = _b[0], _b[1], _b[2], _b[3], _b[4]
+        if _bcx is not None and _bcy is not None:
+            _d = _min_player_distance_m(any_frames, any_dets, _bf, _bcx, _bcy, prox_win)
+            if _d is not None and _d < BOUNCE_PLAYER_PROXIMITY_M:
+                continue  # within proximity threshold of a player → drop
+        _filtered.append(_b)
+    if _n_before:
+        logger.info(
+            "T5 Pass 1 bounce-proximity guard: kept %d/%d bounces "
+            "(dropped %d within %.1fm of a player)",
+            len(_filtered), _n_before, _n_before - len(_filtered),
+            BOUNCE_PLAYER_PROXIMITY_M,
+        )
+    bounces = _filtered
 
     # ---- Step 5: Process each bounce → build row ----
     rows_to_insert = []
@@ -1314,6 +1346,29 @@ def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> i
 def _build_detection_index(dets: List[dict]) -> Tuple[List[int], List[dict]]:
     """Pre-compute sorted frame index for binary search."""
     return [d["frame_idx"] for d in dets], dets
+
+
+def _min_player_distance_m(any_frames: List[int], any_dets: List[dict],
+                           bounce_frame: int, bounce_cx: float, bounce_cy: float,
+                           frame_window: int) -> Optional[float]:
+    """Min court-distance (m) from a bounce to any player detected within
+    ±frame_window frames. Returns None if no player detection in the window
+    (then the caller keeps the bounce — we can't gate without evidence).
+
+    Used by the bounce-precision proximity guard (BOUNCE_PLAYER_PROXIMITY_M).
+    """
+    import bisect
+    lo = bisect.bisect_left(any_frames, bounce_frame - frame_window)
+    hi = bisect.bisect_right(any_frames, bounce_frame + frame_window)
+    best: Optional[float] = None
+    for d in any_dets[lo:hi]:
+        cx, cy = d.get("court_x"), d.get("court_y")
+        if cx is None or cy is None:
+            continue
+        dist = ((cx - bounce_cx) ** 2 + (cy - bounce_cy) ** 2) ** 0.5
+        if best is None or dist < best:
+            best = dist
+    return best
 
 
 def _check_hitter_stationary_pre_hit(
