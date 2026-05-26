@@ -243,3 +243,60 @@ safe Render-side guard — not a home run, and not worth a Batch cycle for +7 pt
 a small Render-side guard if a quick safe win is wanted, or (b) invest in hand-labelled bounce truth
 + coverage first, since the filter ceiling is capped by both sparse coverage and SA's unreliability
 as a yardstick.
+
+> **UPDATE 2026-05-25 — (a) SHIPPED** (`aa6c522`): proximity ≥1.5 m guard live in the bounce-driven
+> path (`build_silver_match_t5.py`). M1: rows 139→97, serve precision vs SA ~45→67 %, bench green.
+
+---
+
+## 8. Scope — hand-labelled bounce truth + ball coverage (2026-05-26)
+
+The two real levers behind §7. **A (truth)** is the measurement substrate; **B (coverage)** is the
+upstream fix. B's *bounce-quality* impact is only verifiable through A.
+
+### Existing infra to leverage (do NOT rebuild)
+- `diag/bounce_xy_accuracy.py` — SA-relative bounce accuracy probe (time-match + Euclidean error).
+  This is the §2-§7 reconciliation, already a tool. **SA-relative only** — extend for hand-truth.
+- `training/label_ball_positions.py` (~160 SA events/match) + `label_serve_bounces.py` — **SA-as-teacher**
+  TrackNet labels. Good for *ball-position* training (coverage), **not** bounce-event truth.
+- `training/{build_serve_bounce_dataset,extract_frames,tracknet_dataset,train_tracknet}.py` — full
+  fine-tune pipeline. `diag/{bench_ball,bench_finetuned}.py` + `bench_ball_baseline.json` — regression.
+- Phase 5c corpus accumulation (auto-label dual-submit) — multi-match training runway.
+- **No interactive human labeller exists** — Workstream A's tool is genuinely new.
+
+### Workstream A — hand-labelled bounce ground truth (NEW, Render/local)
+- **Goal:** SA-independent floor-bounce reference for ≥1 match — `frame_idx` + true court (x,y) +
+  in/out + confidence, so recall / precision / xy-error are measurable without SA.
+- **Build:** an OpenCV scrub-and-click labeller (this box has cv2): step the video, mark each
+  floor-bounce frame, click the bounce pixel; project pixel→court via the **faithful homography**
+  (§4, 0.11 m). Reuse `extract_frames.py`. Store CSV/JSON in a new `ground_truth/` dir (mirror
+  `.claude/serve_ground_truth/`). Then extend `bounce_xy_accuracy.py` to score vs hand-truth.
+- **Which match:** **`a798eff0`** — its video is already local (`ml_pipeline/test_videos/a798eff0_sa_video.mp4`)
+  and it's the bench reference with SA data. (Match 1 `78c32f53`'s video is **not** local — would need S3.)
+- **Caveat:** far-court hand-truth is still resolution-limited (~1 px ≈ m); near-half is the
+  trustworthy core. Flag per-bounce confidence.
+- **Effort:** tool ~1 day; labelling 1 match ~2-3 h human.
+
+### Workstream B — ball coverage (upstream lever)
+Match 1 gap analysis (`.claude/tmp/coverage_gaps.py`): 52 % coverage; short gaps (2-4 f) are
+interpolatable → **+7 % (59 %)**; but **29 % of the video is lost to *sustained* gaps (>8 f, up to
+4.6 s)** — a detector problem, not interpolation.
+- **B1 (cheap, Render or Batch):** short-gap (2-4 f) trajectory interpolation. +7 % coverage;
+  tightens bounce *timing* near detected segments. Does not recover sustained gaps.
+- **B2 (the real lever, Batch):** cut sustained gaps via detector fine-tune (TrackNet/WASB on
+  multi-match SA-teacher *position* labels + Phase 5c corpus). Measure with `bench_ball`/`bench_finetuned`.
+  Batch rebuild + dual-region, daylight, bench-gated. **SA-teacher labels are fine here** — SA ball
+  *position* is accurate when SA detects; only SA bounce-*event* truth is untrustworthy (that's A).
+- Coverage is measurable now (no truth needed); bounce-recall impact needs A.
+
+### Sequencing
+1. **A** — build the labeller, label `a798eff0` (~1-1.5 days). Unblocks trustworthy measurement.
+2. Re-score the shipped proximity guard + current bounce set **vs hand-truth** (is precision really
+   ~67 %, or higher once SA's undercount is removed from the denominator?).
+3. **B1** short-gap interpolation (cheap coverage + timing win), measured vs A.
+4. **B2** detector fine-tune for sustained gaps (the big lever), measured vs A + `bench_ball`.
+
+### Open questions
+1. Label `a798eff0` (video local) or retrieve Match 1's video from S3 to keep the M1 thread? **Lean: a798eff0.**
+2. Near-half first (reliable) with far-half flagged low-confidence — acceptable?
+3. Label floor bounces only, or also tag in/out + service-box for serve-placement truth?
