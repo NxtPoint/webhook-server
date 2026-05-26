@@ -48,6 +48,22 @@ Verbose mode prints per-pair details so you can eyeball whether the
 extreme outliers are real misses or just noise. Robust to UUID-vs-int-FK
 ambiguity on ball_detections.job_id (same fallback pattern as the other
 probes).
+
+## Hand-truth mode (SA-independent — SA is weak on bounce)
+
+Score against a hand-labelled bounce set instead of SA (see
+ml_pipeline/training/label_bounces_manual.py + ml_pipeline/ground_truth/):
+
+    python -m ml_pipeline.diag.bounce_xy_accuracy \\
+        --ground-truth ml_pipeline/ground_truth/78c32f53_practice_bounces.json \\
+        --t5-task 78c32f53-5580-4a88-a4e7-7506e59b2b52 \\
+        --gt-confidence high --verbose
+
+Hand labels are pixel-space; they're scaled (label frame_width -> job
+video_width, e.g. x1.5 for a 720p label video vs a 1080p pipeline run) and
+projected to court metres via the faithful player-feet homography, then
+matched to T5 bounces by time. Reports recall + precision + xy error.
+Needs cv2/numpy (lazy-imported; local/dev only — not Render).
 """
 from __future__ import annotations
 
@@ -77,14 +93,20 @@ def _connect_db():
     return create_engine(url, pool_pre_ping=True)
 
 
-def fetch_sa_bounces(engine, sa_task_id: str) -> List[Tuple[float, float, float]]:
+def fetch_sa_bounces(engine, sa_task_id: str,
+                     types: Optional[set] = None) -> List[Tuple[float, float, float]]:
     """Return [(timestamp_s, court_x, court_y), ...] for the SA task.
 
     Filters to rows where both court_x and court_y are populated AND
     timestamp is set. The "timestamp" column is double-quoted in SQL
     because it's a reserved word.
+
+    `types` filters bronze.ball_bounce.type — default {'floor'} (ground
+    bounces, the placement target). 'swing' rows are racquet contacts, not
+    landings, so they're excluded from a bounce-xy measurement by default.
     """
     from sqlalchemy import text as sql_text
+    types = types or {"floor"}
     with engine.connect() as conn:
         rows = conn.execute(sql_text('''
             SELECT "timestamp", court_x, court_y
@@ -93,8 +115,9 @@ def fetch_sa_bounces(engine, sa_task_id: str) -> List[Tuple[float, float, float]
               AND "timestamp" IS NOT NULL
               AND court_x IS NOT NULL
               AND court_y IS NOT NULL
+              AND type = ANY(:types)
             ORDER BY "timestamp"
-        '''), {"tid": sa_task_id}).fetchall()
+        '''), {"tid": sa_task_id, "types": list(types)}).fetchall()
     return [(float(r[0]), float(r[1]), float(r[2])) for r in rows]
 
 
@@ -131,6 +154,78 @@ def fetch_t5_bounces(
                 ORDER BY bd.frame_idx
             """), {"tid": t5_task_id}).fetchall()
     return [(float(r[0]) / fps, float(r[1]), float(r[2])) for r in rows]
+
+
+def _reconstruct_homography(engine, t5_task_id: str):
+    """Fit the image->court homography from this task's player-feet
+    correspondences (center_x, bbox_y2) -> (court_x, court_y) in the
+    pipeline's pixel space. Validated to reproduce stored bounce coords to
+    ~0.11 m median on Match 1 (see docs/_investigation/bounce_accuracy.md §4).
+
+    Lazy-imports cv2/numpy so the SA path stays dependency-light (cv2 is
+    absent on Render); the ground-truth path is a local/dev operation.
+    """
+    import numpy as np
+    import cv2
+    from sqlalchemy import text as sql_text
+    with engine.connect() as conn:
+        rows = conn.execute(sql_text("""
+            SELECT center_x, bbox_y2, court_x, court_y
+            FROM ml_analysis.player_detections
+            WHERE job_id::text = :tid
+              AND court_x IS NOT NULL AND court_y IS NOT NULL
+              AND center_x IS NOT NULL AND bbox_y2 IS NOT NULL
+        """), {"tid": t5_task_id}).fetchall()
+    if len(rows) < 50:
+        raise SystemExit(f"too few player-feet correspondences ({len(rows)}) to fit a homography")
+    img = np.array([[r[0], r[1]] for r in rows], dtype=float)
+    crt = np.array([[r[2], r[3]] for r in rows], dtype=float)
+    H, _ = cv2.findHomography(img, crt, cv2.RANSAC, 1.0)
+    if H is None:
+        raise SystemExit("homography fit failed (cv2.findHomography returned None)")
+    return H
+
+
+def fetch_ground_truth_bounces(
+    engine, gt_json_path: str, t5_task_id: str, fps: float,
+    types: set, confidences: set,
+) -> List[Tuple[float, float, float]]:
+    """Load hand-labelled bounces (SA-independent), scale pixels to the
+    pipeline pixel space, and project to court metres via the reconstructed
+    homography. Returns [(timestamp_s, court_x, court_y), ...] — same shape
+    as fetch_sa_bounces, so the matcher/reporter are reused unchanged.
+
+    Handles the practice.mp4 resolution mismatch: labels are clicked in the
+    label video's space (e.g. 1280x720) while ml_analysis ran at video_width
+    (e.g. 1920) — the pixel scale is derived from those two numbers.
+    See docs/_investigation/bounce_accuracy.md §8 + ground_truth/README.md.
+    """
+    import json
+    import numpy as np
+    from sqlalchemy import text as sql_text
+    with open(gt_json_path) as f:
+        data = json.load(f)
+    labels = data.get("labels", [])
+    label_w = data.get("frame_width") or 0
+    with engine.connect() as conn:
+        vw = conn.execute(sql_text(
+            "SELECT video_width FROM ml_analysis.video_analysis_jobs WHERE job_id::text = :t"
+        ), {"t": t5_task_id}).scalar()
+    scale = (float(vw) / float(label_w)) if (vw and label_w) else 1.0
+    H = _reconstruct_homography(engine, t5_task_id)
+    out: List[Tuple[float, float, float]] = []
+    for l in labels:
+        if l.get("type") not in types or l.get("confidence") not in confidences:
+            continue
+        px = float(l["pixel_x"]) * scale
+        py = float(l["pixel_y"]) * scale
+        q = H @ np.array([px, py, 1.0])
+        cx, cy = (q[:2] / q[2]).tolist()
+        out.append((float(l["frame_idx"]) / fps, float(cx), float(cy)))
+    out.sort()
+    print(f"  ground-truth: {len(out)}/{len(labels)} labels used "
+          f"(types={sorted(types)}, conf={sorted(confidences)}, pixel-scale x{scale:.3f})")
+    return out
 
 
 def match_bounces(
@@ -188,6 +283,7 @@ def report_errors(matched, sa_total: int, t5_total: int, tolerance_s: float) -> 
         "sa_total": sa_total, "t5_total": t5_total,
         "matched": len(matched),
         "recall": len(matched) / sa_total if sa_total else 0.0,
+        "precision": len(matched) / t5_total if t5_total else 0.0,
         "tolerance_s": tolerance_s,
         "errors": errors,
         "min_m": errs_sorted[0],
@@ -208,7 +304,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         description="Phase 7 ball-bounce geometric accuracy probe (meters of error vs SA truth).",
     )
-    ap.add_argument("--sa-task", required=True, help="SportAI task_id (ground truth)")
+    ap.add_argument("--sa-task", help="SportAI task_id (SA reference). Use this OR --ground-truth.")
+    ap.add_argument("--sa-type", default="floor",
+                    help="comma-list of bronze.ball_bounce.type to score in SA mode "
+                         "(default: floor — ground bounces; use 'floor,swing' for all)")
+    ap.add_argument("--ground-truth", help="path to hand-labelled bounce JSON "
+                    "(SA-independent reference; see ml_pipeline/ground_truth/). "
+                    "Scores vs hand-truth instead of SA.")
+    ap.add_argument("--gt-types", default="floor",
+                    help="comma-list of label types to score in GT mode (default: floor)")
+    ap.add_argument("--gt-confidence", default="high,low",
+                    help="comma-list of confidences to include in GT mode "
+                         "(default: high,low; use 'high' to score only the trustworthy near-half)")
     ap.add_argument("--t5-task", required=True, help="T5 task_id")
     ap.add_argument("--fps", type=float, default=DEFAULT_FPS,
                     help=f"FRAME_SAMPLE_FPS used by T5 pipeline (default {DEFAULT_FPS})")
@@ -224,23 +331,42 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help=f"Print this many worst-error pairs (default 10)")
     args = ap.parse_args(argv)
 
+    if bool(args.sa_task) == bool(args.ground_truth):
+        raise SystemExit("provide exactly one of --sa-task or --ground-truth")
+
     engine = _connect_db()
+    ref_name = "ground-truth (hand-labelled)" if args.ground_truth else "SA truth"
 
     print("=== bounce x,y geometric accuracy (Phase 7 measurement) ===")
-    print(f"  SA task: {args.sa_task}")
+    print(f"  reference: {ref_name}"
+          + (f"  [{args.ground_truth}]" if args.ground_truth else f"  [{args.sa_task}]"))
     print(f"  T5 task: {args.t5_task}")
     print(f"  fps={args.fps}  tolerance=+/-{args.tolerance_s}s  "
           f"target_median={args.target_median_m}m")
     print()
 
-    print("Loading SA bounces...")
-    sa = fetch_sa_bounces(engine, args.sa_task)
-    if not sa:
-        print(f"  ERROR: no SA bounces with court_x/court_y for task {args.sa_task}",
-              file=sys.stderr)
-        return 1
-    print(f"  loaded {len(sa)} SA bounces "
-          f"(t={sa[0][0]:.1f}s - {sa[-1][0]:.1f}s)")
+    if args.ground_truth:
+        print("Loading hand-labelled ground truth...")
+        types = {s.strip() for s in args.gt_types.split(",") if s.strip()}
+        confs = {s.strip() for s in args.gt_confidence.split(",") if s.strip()}
+        sa = fetch_ground_truth_bounces(engine, args.ground_truth, args.t5_task,
+                                        args.fps, types, confs)
+        if not sa:
+            print(f"  ERROR: no hand-truth labels matched types/confidence filters "
+                  f"in {args.ground_truth}", file=sys.stderr)
+            return 1
+        print(f"  loaded {len(sa)} hand-truth bounces "
+              f"(t={sa[0][0]:.1f}s - {sa[-1][0]:.1f}s)")
+    else:
+        sa_types = {s.strip() for s in args.sa_type.split(",") if s.strip()}
+        print(f"Loading SA bounces (type in {sorted(sa_types)})...")
+        sa = fetch_sa_bounces(engine, args.sa_task, sa_types)
+        if not sa:
+            print(f"  ERROR: no SA bounces with court_x/court_y for task {args.sa_task}",
+                  file=sys.stderr)
+            return 1
+        print(f"  loaded {len(sa)} SA bounces "
+              f"(t={sa[0][0]:.1f}s - {sa[-1][0]:.1f}s)")
 
     print("Loading T5 bounces...")
     t5 = fetch_t5_bounces(engine, args.t5_task, args.fps)
@@ -260,10 +386,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     result = report_errors(matched, len(sa), len(t5), args.tolerance_s)
 
     print("=== RESULT ===")
-    print(f"  SA bounces:        {result['sa_total']}")
+    print(f"  {ref_name} bounces: {result['sa_total']}")
     print(f"  T5 bounces:        {result['t5_total']}  (incl warmup/noise)")
     print(f"  Matched pairs:     {result['matched']}")
-    print(f"  Time-match recall: {result['recall']:.1%}  (matched / SA total)")
+    print(f"  Recall:            {result['recall']:.1%}  (matched / reference total)")
+    print(f"  Precision:         {result['precision']:.1%}  (matched / T5 total)")
     print()
 
     if result["matched"] == 0:
