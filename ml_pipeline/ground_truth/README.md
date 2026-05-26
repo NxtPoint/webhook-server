@@ -28,7 +28,24 @@ Controls are documented in the tool's module docstring. Needs a GUI-capable
 OpenCV (`opencv-python`, not `-headless`). Far-court / top-of-frame bounces are
 resolution-limited (~1 px ≈ metres) — mark them `confidence=low` (key `l`).
 
-## Caveat on a798eff0
-Its local `ml_analysis` ball run is **stale** (13 % coverage, pre-WASB). To
-score hand-truth against the current pipeline, re-run a798eff0 through the
-WASB pipeline first, or label a match that already has a current run.
+## Video availability (important)
+T5 **originals are deleted from S3 after trim** — `bronze.submission_context.s3_key`
+goes stale (404). What survives per task under `trimmed/<task_id>/`:
+- `review.mp4` — heavily cut (rally segments only); frame base does NOT match
+  `ml_analysis`. Not usable for labelling against bronze.
+- `practice.mp4` — **full-length render, frame-aligned to `ml_analysis`**
+  (same frame count @ 25 fps), but **downscaled to 1280×720** while the pipeline
+  processed at 1920×1080. So labels clicked on it are in 720 space and need a
+  **×1.5 scale** into `ml_analysis` pixel space before homography projection.
+  The labeller records its `frame_width/height` (1280×720) so scoring can derive
+  the factor from the job's `video_width` (1920) automatically.
+
+**Recommended target: Match 1 `78c32f53`** — it already has a current WASB run
+(52 % coverage) AND its `practice.mp4` is frame-aligned. Retrieved to
+`ml_pipeline/test_videos/78c32f53_practice.mp4` (gitignored). Label with:
+```bash
+python -m ml_pipeline.training.label_bounces_manual \
+    --video ml_pipeline/test_videos/78c32f53_practice.mp4
+```
+(a798eff0's local video is intact but its `ml_analysis` run is stale — 13 %
+pre-WASB — so it would need a re-run before scoring.)
