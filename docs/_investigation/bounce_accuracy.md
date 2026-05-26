@@ -246,6 +246,16 @@ as a yardstick.
 
 > **UPDATE 2026-05-25 — (a) SHIPPED** (`aa6c522`): proximity ≥1.5 m guard live in the bounce-driven
 > path (`build_silver_match_t5.py`). M1: rows 139→97, serve precision vs SA ~45→67 %, bench green.
+>
+> **UPDATE 2026-05-26 — SA *is* a usable yardstick; manual truth DEFERRED.** Tomo's calibrated read:
+> SportAI is **~95 % accurate on bounce identification and ~90 % on coordinates** — good enough as the
+> working reference now. This supersedes the §7 "SA unreliable → need hand-truth" framing: SA being
+> reliable actually *resolves* the §7 ambiguity (unmatched T5 bounces are genuinely T5 false positives,
+> not SA misses). So **Workstream A (hand-labelling) is built but PARKED** — it's a fine-tuning-stage
+> tool for when we try to *beat* SportAI, not needed now. The live measurement is `bounce_xy_accuracy.py`
+> SA-mode with the `--sa-type floor` filter. Current **T5 vs SA floor**: recall **55 %**, precision
+> **27 %**, median **4.57 m** → T5 bounce is well behind SportAI, so **use SportAI bounces for
+> placement now**; T5-bounce improvement + manual truth are a later project.
 
 ---
 
