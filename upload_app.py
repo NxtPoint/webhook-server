@@ -3905,19 +3905,26 @@ def ops_backfill_pair_labels():
 @app.post("/ops/sweep-t5-orphans")
 def ops_sweep_t5_orphans():
     """Catch up tennis_singles_t5 tasks whose Batch run completed but whose
-    Render-side ingest never fired.
+    Render-side ingest never fired OR started and then died mid-flight.
 
-    Background: `_auto_dual_submit_t5` submits a Batch job and creates a
-    `bronze.submission_context` row, but the ingest gate inside
-    `/upload/api/task-status` only opens when a browser polls for that
-    task_id. Auto-spawned T5 tasks have no polling browser, so they sit
-    in `last_status='queued'` indefinitely despite Batch having succeeded.
+    Two gaps, same symptom (Batch done, silver never built):
+      (a) ORPHAN — `_auto_dual_submit_t5` submits a Batch job + creates a
+          `bronze.submission_context` row, but the ingest gate inside
+          `/upload/api/task-status` only opens when a browser polls. Auto-
+          spawned T5 tasks have no polling browser, so they sit in
+          `last_status='queued'` despite Batch having succeeded.
+      (b) STUCK — the ingest started but the process died before any terminal
+          write (Render redeploy mid-ingest, OOM, worker timeout), leaving
+          `ingest_started_at` set + `ingest_finished_at` NULL. The original
+          query only matched `ingest_started_at IS NULL`, so a single mid-
+          flight death stuck the task forever (this is what blocked dual-
+          submit corpus #2). Now we also re-fire tasks stale past
+          INGEST_STALE_AFTER_S.
 
-    This endpoint scans for that exact gap and fires
-    `_start_ingest_background` for each orphan. Idempotency is delegated
-    to the inner ingest path (which checks `ingest_started_at` +
-    staleness before doing real work) and to the pair-completion hook
-    (UNIQUE constraint on training_corpus).
+    Fires `_start_ingest_background` for each. Idempotency is delegated to the
+    inner ingest path (checks `ingest_started_at` + staleness — re-fires only
+    if stale, so a live ingest is never double-run) and to the pair-completion
+    hook (UNIQUE constraint on training_corpus).
 
     Body (all optional):
       {
@@ -3951,18 +3958,35 @@ def ops_sweep_t5_orphans():
             rows = conn.execute(sql_text("""
                 SELECT sc.task_id::text          AS task_id,
                        sc.s3_key,
+                       sc.ingest_started_at      AS ingest_started_at,
                        vaj.updated_at            AS batch_complete_at
                   FROM bronze.submission_context sc
                   JOIN ml_analysis.video_analysis_jobs vaj
                     ON vaj.task_id = sc.task_id::text
                  WHERE sc.sport_type = 'tennis_singles_t5'
-                   AND sc.ingest_started_at IS NULL
                    AND sc.deleted_at IS NULL
+                   AND sc.ingest_finished_at IS NULL
                    AND vaj.status = 'complete'
-                   AND vaj.updated_at < NOW() - (:age || ' minutes')::interval
+                   AND (
+                         -- (a) ORPHAN: Batch done a while ago, ingest never fired
+                         --     (auto-spawned task, no polling browser to open the gate).
+                         (sc.ingest_started_at IS NULL
+                          AND vaj.updated_at < NOW() - (:age || ' minutes')::interval)
+                         -- (b) STUCK: ingest started but died mid-flight (Render
+                         --     redeploy / OOM / worker timeout) leaving no terminal
+                         --     state. Without this branch a single mid-flight death
+                         --     stuck the task forever, since started_at was set. The
+                         --     inner gate (_start_ingest_background + _is_stale_ingest_row)
+                         --     re-checks staleness before re-firing, so a live ingest
+                         --     is never double-run.
+                         OR (sc.ingest_started_at IS NOT NULL
+                             AND sc.ingest_started_at < NOW() - (:stale_s || ' seconds')::interval)
+                       )
                  ORDER BY vaj.updated_at ASC
                  LIMIT :lim
-            """), {"age": str(min_age_minutes), "lim": limit}).mappings().all()
+            """), {"age": str(min_age_minutes),
+                   "stale_s": str(INGEST_STALE_AFTER_S),
+                   "lim": limit}).mappings().all()
     except Exception as e:
         app.logger.exception("OPS SWEEP-T5-ORPHANS query failed")
         return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
@@ -3977,7 +4001,10 @@ def ops_sweep_t5_orphans():
 
     if dry_run:
         result["sample"] = [
-            {"task_id": o["task_id"], "batch_complete_at": str(o["batch_complete_at"])}
+            {"task_id": o["task_id"],
+             "kind": "orphan" if o["ingest_started_at"] is None else "stuck_stale",
+             "ingest_started_at": str(o["ingest_started_at"]),
+             "batch_complete_at": str(o["batch_complete_at"])}
             for o in orphans[:10]
         ]
         return jsonify(result), 200
