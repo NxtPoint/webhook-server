@@ -94,6 +94,18 @@ BALL_FILTER_REANCHOR_RUN = 4
 BALL_TRACKER = os.getenv("BALL_TRACKER", "tracknet_v2").strip().lower()
 
 # ---------------------------------------------------------------------------
+# GPU batching for the ball detector (Lever #2, docs/_investigation/
+# t5_pipeline_speed.md). The ball model runs EVERY frame at batch=1, which
+# leaves the Batch T4 badly underutilised on 512×288/640×360 inputs. Setting
+# BALL_BATCH_SIZE>1 accumulates that many sliding-window inputs and runs ONE
+# forward pass — same per-frame math (BatchNorm is eval/running-stats, conv is
+# batch-element-independent), so outputs are identical on CPU and within
+# fp-noise on GPU. Default 1 = current per-frame behaviour (zero-risk rollback,
+# same pattern as the BALL_TRACKER env gate). Only the WASB tracker implements
+# batching; TrackNet ignores it. 8 is a good T4 starting point.
+BALL_BATCH_SIZE = max(1, int(os.getenv("BALL_BATCH_SIZE", "1")))
+
+# ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)
 # ---------------------------------------------------------------------------
 COURT_INPUT_SIZE = 224             # ResNet50 expects 224x224

@@ -258,6 +258,10 @@ class TennisAnalysisPipeline:
         logger.info(f"Frame processing complete: {frame_idx} frames, {result.frame_errors} errors")
         self._log_stage_timings(frame_idx, final=True)
 
+        # Drain any batched ball-detection backlog before post-processing reads
+        # ball_tracker.detections (no-op unless BALL_BATCH_SIZE>1 on WASB).
+        self.ball_tracker.flush()
+
         # Post-processing
         self._report_progress("computing_analytics")
         t_post = time.perf_counter()

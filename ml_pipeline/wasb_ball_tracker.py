@@ -48,6 +48,7 @@ from ml_pipeline.config import (
     BALL_MAX_DIST_BETWEEN_FRAMES,
     BALL_MAX_DIST_GAP,
     BALL_FILTER_REANCHOR_RUN,
+    BALL_BATCH_SIZE,
     BOUNCE_VELOCITY_WINDOW,
     COURT_LENGTH_M,
     COURT_WIDTH_DOUBLES_M,
@@ -140,9 +141,14 @@ class WASBBallTracker:
         weights_path: Optional[str] = None,
         device: Optional[str] = None,
         score_threshold: float = 0.5,
+        batch_size: Optional[int] = None,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.score_threshold = score_threshold
+        # GPU batching (Lever #2). batch_size>1 accumulates that many
+        # sliding-window inputs and runs ONE forward pass. Default from
+        # BALL_BATCH_SIZE env (1 = per-frame, current behaviour).
+        self._batch_size = max(1, int(batch_size if batch_size is not None else BALL_BATCH_SIZE))
 
         wp = weights_path or str(_DEFAULT_WEIGHTS)
         if not os.path.exists(wp):
@@ -163,6 +169,10 @@ class WASBBallTracker:
 
         self._buffer: list = []                       # last 3 (H, W, 3) BGR frames resized to 512×288
         self._frame_orig_shape: Optional[Tuple[int, int]] = None
+        # Pending sliding-window inputs awaiting a batched forward pass.
+        # Each entry is (window_array (H,W,9) float32/255, frame_idx). Flushed
+        # when it reaches _batch_size, and by flush() at end-of-video.
+        self._pending: list = []
 
         # BallTracker-compatible: list of BallDetection in original frame coords.
         self.detections: List[BallDetection] = []
@@ -189,9 +199,12 @@ class WASBBallTracker:
     def detect_frame(
         self, frame: np.ndarray, frame_idx: int,
     ) -> Optional[BallDetection]:
-        """Feed one BGR frame (any HxW). Returns a BallDetection once the
-        3-frame window is filled and the heatmap peak clears score_threshold,
-        else None. Side-effect: appends to self.detections.
+        """Feed one BGR frame (any HxW). Returns the BallDetection for this
+        frame when batch_size==1 (per-frame, original behaviour). When
+        batch_size>1 the forward pass is deferred: this returns None and the
+        detections are produced in arrears by the batched flush and read from
+        self.detections (the pipeline ignores the return value). flush() drains
+        the final partial batch — the pipeline calls it before post-processing.
         """
         if self._frame_orig_shape is None:
             self._frame_orig_shape = frame.shape[:2]
@@ -203,37 +216,71 @@ class WASBBallTracker:
         if len(self._buffer) < WASB_FRAMES_IN:
             return None
 
-        self._diag["frames_inferred"] += 1
-
-        # Build input tensor (1, 9, 288, 512)
+        # Snapshot the current sliding window (H, W, 9) and queue it for the
+        # next batched forward pass.
         arr = np.concatenate(self._buffer, axis=2).astype(np.float32) / 255.0
-        ten = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(self.device)
+        self._pending.append((arr, frame_idx))
+        if len(self._pending) >= self._batch_size:
+            made = self._flush_pending()
+            if self._batch_size == 1:           # preserve the per-frame return contract
+                return made[-1] if made else None
+        return None
+
+    def _flush_pending(self) -> List[BallDetection]:
+        """Run ONE forward pass over all pending sliding windows, append the
+        detections (in frame order) to self.detections, return those created.
+
+        Equivalence: stacking B windows into (B, 9, H, W) is per-element
+        identical to B separate (1, 9, H, W) passes — conv is batch-independent
+        and BatchNorm runs in eval (running-stats) mode — so detections match
+        the per-frame path bit-for-bit on CPU (within fp-noise on GPU). Same
+        threshold / argmax / scaling / diag accounting as the original.
+        """
+        if not self._pending:
+            return []
+
+        arrs = [a for a, _ in self._pending]
+        idxs = [fi for _, fi in self._pending]
+        self._pending = []
+
+        # (B, 9, H, W) — one forward pass for the whole batch.
+        batch = np.stack([a.transpose(2, 0, 1) for a in arrs], axis=0)
+        ten = torch.from_numpy(batch).to(self.device)
         if self._fp16:
             ten = ten.half()
 
         with torch.no_grad():
-            y_out = self.model(ten)   # dict {scale: (1, frames_out, H, W)}
-        heatmap = torch.sigmoid(y_out[0]).float().cpu().numpy()[0]   # (frames_out, H, W)
-        hm = heatmap[-1]              # most-recent frame's channel
-
-        peak_val = float(hm.max())
-        if peak_val < self.score_threshold:
-            self._diag["below_threshold"] += 1
-            return None
-
-        peak_y_m, peak_x_m = np.unravel_index(int(hm.argmax()), hm.shape)
+            y_out = self.model(ten)   # dict {scale: (B, frames_out, H, W)}
+        heatmaps = torch.sigmoid(y_out[0]).float().cpu().numpy()   # (B, frames_out, H, W)
 
         orig_h, orig_w = self._frame_orig_shape
         scale_x = orig_w / WASB_INPUT_W
         scale_y = orig_h / WASB_INPUT_H
-        x = float(peak_x_m * scale_x)
-        y = float(peak_y_m * scale_y)
 
-        det = BallDetection(frame_idx=frame_idx, x=x, y=y)
-        self.detections.append(det)
-        self._scores.append(peak_val)
-        self._diag["detected"] += 1
-        return det
+        made: List[BallDetection] = []
+        for b, frame_idx in enumerate(idxs):
+            self._diag["frames_inferred"] += 1
+            hm = heatmaps[b][-1]      # most-recent frame's channel
+            peak_val = float(hm.max())
+            if peak_val < self.score_threshold:
+                self._diag["below_threshold"] += 1
+                continue
+            peak_y_m, peak_x_m = np.unravel_index(int(hm.argmax()), hm.shape)
+            det = BallDetection(
+                frame_idx=frame_idx,
+                x=float(peak_x_m * scale_x),
+                y=float(peak_y_m * scale_y),
+            )
+            self.detections.append(det)
+            self._scores.append(peak_val)
+            self._diag["detected"] += 1
+            made.append(det)
+        return made
+
+    def flush(self) -> None:
+        """Drain the final partial batch (idempotent). The pipeline calls this
+        after the last detect_frame, before post-processing."""
+        self._flush_pending()
 
     # ------------------------------------------------------------------
     # Post-processing (copied verbatim from BallTracker — tracker-agnostic;
@@ -444,6 +491,7 @@ class WASBBallTracker:
 
     def reset(self):
         self._buffer.clear()
+        self._pending.clear()
         self.detections.clear()
         self._scores.clear()
         self._frame_orig_shape = None

@@ -759,6 +759,12 @@ class BallTracker:
             window_frames,
         )
 
+    def flush(self) -> None:
+        """No-op — TrackNet detects per-frame (no batched-inference backlog).
+        Present so the pipeline can call ball_tracker.flush() uniformly
+        regardless of which tracker BALL_TRACKER selected (WASB batches)."""
+        return None
+
     def reset(self):
         self._frame_buffer.clear()
         self.detections.clear()
