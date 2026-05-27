@@ -489,13 +489,11 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     B3              = 3.0 * HALF_W / 4.0
 
     # Compute dynamic midline from serve hit locations.
-    # NOTE: same geometric serve criteria as the STOPGAP gate in srv_detect below
-    # (see ▸▸STOPGAP-until-pass3-inherits-serve_events◂◂). When pass-3 is reworked to
-    # inherit serve_events, this midline should derive from serve_events.hitter_court_x.
-    # Geometric-only: SportAI's `serve` flag is unreliable (observed 8/160 true
-    # positives on a 75-min match), so we ignore it and rely on overhead-type
-    # swing + baseline proximity + singles bounds. 'other' deliberately excluded
-    # — too loose without the SportAI flag as a guard.
+    # Same custom geometric serve criteria as `serve_d` in srv_detect below (see
+    # the note there). For T5 with T5_SERVE_FROM_EVENTS on, the inherited serves
+    # already carry serve_events.hitter_court_x, so this midline reflects them.
+    # Geometric-only here so it doesn't depend on SA's bronze serve flag; 'other'
+    # deliberately excluded — too loose without a serve flag as a guard.
     mid_x_row = conn.execute(text(f"""
         SELECT COALESCE(AVG(ball_hit_location_x), :mid_default)
         FROM {SILVER_SCHEMA}.{TABLE}
@@ -532,27 +530,23 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
 
     srv_detect AS (
       SELECT b.*,
-        -- ▸▸ STOPGAP-until-pass3-inherits-serve_events ◂◂ (RULE #2 one-model-per-fact)
-        --   A real model for "serve" already exists and is good: serve_detector →
-        --   ml_analysis.serve_events (pose-first, bench 20/24 + 23/24). The END STATE
-        --   is silver INHERITING serve_events, not re-deriving serves here. This
-        --   geometric gate is the re-derivation the audit flags as the one true
-        --   VIOLATION (docs/_investigation/bronze_silver_18_audit.md §UPDATE 2026-05-27).
-        --   It stays ONLY because point/serve-side numbering below is COUPLED to the
-        --   hit-location geometry these serve rows carry, and serve_events still
-        --   OVER-FIRES (M1: 26@conf>=0.70, 4 out-of-bounds, vs SA 25). Wiring it
-        --   naively regressed points 17->11 (measured + reverted 2026-05-27). The fix
-        --   is 2-part: (1) rework pass-3 to derive serve_side_d + point anchors from
-        --   serve_events.hitter_court_x instead of this gate, THEN (2) delete this gate
-        --   + improve serve-model precision. Do NOT delete this gate before pass-3 is
-        --   decoupled. DO NOT chase far-serve precision with pose_only gating (proven
-        --   bad — detector.py:539).
-        --
-        -- serve_d: geometric-only — overhead-type swing struck within 1.5m of
-        -- a baseline. SportAI's b.serve flag is unreliable (observed 8/160 true
-        -- positives on a 75-min match), so we deliberately ignore it. 'other'
-        -- excluded from the swing-type list because without the SportAI flag
-        -- it leaks too many non-serves (deep clearing groundstrokes etc.).
+        -- serve_d — the CUSTOM geometric serve label (overhead-type swing struck
+        --   within ~1.5m of a baseline). This is the SHARED serve derivation:
+        --   * SportAI uses it. SA's serve mapping is generally GOOD; we derive here
+        --     rather than trust SA's bronze `serve` flag because ONE camera-setup-
+        --     affected video mis-mapped serves badly (the 8/160-TP observation came
+        --     from that match, not SA in general). The geometric gate is the
+        --     conservative fallback that doesn't depend on the SA flag. (Inheriting
+        --     SA's serve flag for SportAI silver is a possible future cleanup now that
+        --     we know it's generally reliable — out of scope here.)
+        --   * T5 uses it ONLY when T5_SERVE_FROM_EVENTS is off. When ON, T5 silver
+        --     INHERITS its real serve model verbatim — ml_analysis.serve_events, the
+        --     pose-first 20/24+23/24 detector — via build_silver_match_t5
+        --     ._apply_serve_events_overlay (RULE #1, one-model-per-fact). That overlay
+        --     feeds the model's serves into the rows BEFORE this pass and demotes
+        --     leftover overheads, so for T5-with-flag this gate is superseded.
+        --   'other' excluded from the swing list — without a serve flag it leaks
+        --   non-serves (deep clearing groundstrokes).
         CASE
           WHEN lower(COALESCE(trim(b.swing_type), '')) IN ('fh_overhead','bh_overhead','overhead','smash')
            AND b.y IS NOT NULL
