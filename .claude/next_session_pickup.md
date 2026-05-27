@@ -6,9 +6,9 @@
 **Phase active:** Phase 7 reframed — bounce *precision + coverage*, NOT calibration (calibration is a faithful homography). See `docs/_investigation/bounce_accuracy.md`.
 **Bench:** serve `a798eff0=20/24, 880dff02=23/24` green; `bench_ball` green (no regressions). **Note: this box is CPU-only → `bench_ball` takes ~3 HOURS.**
 **What shipped (to main):** bounce-proximity precision guard (`aa6c522`); SportAI confirmed a usable bounce yardstick (95/90) so manual ground-truth is built-but-parked; full bounce diagnosis in `bounce_accuracy.md`.
-**What's staged (on a BRANCH, NOT main):** **ROI Bug 2 fix** — validated, on `origin/roi-bug2-balltracker-hoist` (`2cdb68c`).
-**What's blocked:** ROI Bug 2 needs a **daylight Batch deploy + a test-match upload** before merge (it's a Batch-side change; overnight rule forbids unsupervised deploy).
-**Next session's FIRST job:** deploy the ROI Bug 2 branch (steps below), have Tomo upload a test match, confirm it speeds up, then merge to main.
+**ROI Bug 2 — DEPLOYED 2026-05-27** (supervised). On main (`2c461e9`); image built + pushed both ECR regions (amd64 `sha256:255efa59`); job-def revisions eu-north-1 **rev 50** / us-east-1 **rev 32** pin the new image (retry attempts=3). Branch deleted. Lambda resolves by name → next job runs the fix.
+**What's blocked:** nothing actively. **VALIDATION PENDING:** Tomo uploads the 40-min match that previously timed out → confirms the speed fix (should finish well under 6h) + adds corpus #2. Tomo self-serves the upload (gated to tomo.stojakovic@gmail.com) and reports the task_id.
+**Next session's job:** confirm the 40-min validation run finished fast; if long videos still slow, profile the next bottleneck (roi_bounces re-opens the video per window; full-frame TrackNet/pose passes). Then B1 (ball interpolation heuristic). B2/training gated on corpus volume.
 
 ---
 
