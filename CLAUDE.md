@@ -406,7 +406,7 @@ python -m ml_pipeline.diag.serve_viewer <task_id> --video <path>  # visual conta
 
 ### Compute reality
 
-Production is Spot-only in both regions (on-demand G-family vCPU quota is zero — confirmed 2026-04-15). Manual cross-region failover when Spot is tight. Playbook: `.claude/playbook_aws_batch_ondemand_fallback.md`.
+On-demand G-family GPU capacity is available and **prioritised** — eu-north-1 queue order 1 = `ten-fifty5-ml-ce-eu-ondemand` (EC2), Spot CE `ten-fifty5-ml-compute` is order-2 fallback. Confirmed 2026-05-27 (job `9378f2dd` ran on the on-demand CE). The earlier "Spot-only / on-demand quota = 0 (2026-04-15)" reality is **stale** — the quota was raised. Prioritise Europe + on-demand for long runs so they aren't Spot-eviction-exposed; the cross-region failover + Spot-fallback playbook (`.claude/playbook_aws_batch_ondemand_fallback.md`) is the contingency for when on-demand is tight.
 
 Background / historical context lives in the auto-memory files (`project_t5_*.md`) referenced from `MEMORY.md`.
 
