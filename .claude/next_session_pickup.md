@@ -14,9 +14,12 @@
 
 ---
 
-## Serve — exactly where it stands (the "did we finish?" answer: NO)
-- `serve_detector` (pose-first, bench 23/24 on fixtures) → writes `ml_analysis.serve_events`. ✓ Works, always has (53 rows for M1).
-- **Silver still uses the bounce-geometric serve gate** — it does NOT inherit `serve_events`. The wiring was **attempted and reverted** this session (regressed points 17→11; commit history clean — nothing bad shipped).
+## Serve — exactly where it stands (plain language)
+**The detector is GOOD and did NOT regress** — don't let this session's Match-1 numbers mislead you:
+- `serve_detector` (pose-first: wrist-above-shoulder + ball-toss + bounce) scores **20/24 (a798eff0) and 23/24 (880dff02)** on the bench, at times close to SA. **NEAR serves are solid.** It writes to bronze (`serve_events`) ✓.
+- This session analysed a **different, harder match (Match 1)** where recall is ~60% and the **far** serves are the noisy bit — that's the **far-court ceiling** (30px far player, no far bounce to confirm), NOT a detector regression. Don't read "53 raw events / 60% / can't separate far" as the detector being broken — it's the raw candidate stream on a hard match + the far limit.
+- **THE ONE OPEN SERVE TASK = plumbing: silver still uses an old bounce-based shortcut and does NOT inherit `serve_events`.** Wiring it was attempted + reverted (silver's point-count needs the serve's `serve_side`, which needs a small adjustment; reverted to avoid a points regression — nothing bad shipped).
+- **Done-status:** model ✓ (near solid; far = training-grade), bronze ✓, **silver-inheritance ✗ (the gap)**. Far-serve precision is the far-court ceiling (coverage/training), not a detector bug — do NOT gate `pose_only` (proven-bad, `detector.py:539`).
 - **Two blockers:** (a) `serve_events` over-fires on far `pose_only` (24 events, 22 FP on M1) — gating it is **proven-bad** (kills real far serves on other matches; `detector.py:539` NOTE) = far-court ceiling; (b) silver pass-3 needs `serve_side` from the serve, which model-sourced serves lack (the append regression).
 - **To finish (later):** far-court coverage so far serves get bounce corroboration + have pass-3 read `serve_side` from the serve's hitter position (a bronze fact). Both = the coverage/training phase.
 - The bounce-geometric gate stays a **tagged stopgap** until then. Full detail: `bronze_silver_18_audit.md` §"UPDATE 2026-05-27".
