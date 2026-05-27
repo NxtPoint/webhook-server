@@ -1,9 +1,41 @@
 # T5 ML Pipeline — North Star
 
-**Last updated:** 2026-05-25 — **Phase 7 MEASURED + REFRAMED.** Ball-bounce reconciliation vs SA on Match 1 (live-DB, `docs/_investigation/bounce_accuracy.md`): the bounce problem is **detection precision + timing, NOT coordinate calibration** — the court calibration is a faithful homography (0.11m self-consistency), and the ~177 nulled bounces are ~84% airborne false-positives, not lost ground bounces. Phase 7 work reframed from "recalibrate" to "reject airborne `is_bounce` FPs + fix ~0.5s timing." (Prior: Phase 5e WASB production verification PASSED, task `1d6feb3a`, 54.3% detection; Phase 5c.2 SHIPPED `d7718e0` + silver bench `83e1ab7`.)
+**Last updated:** 2026-05-27 — **Build-first/train-last goal codified** (see "★ THE OVERARCHING GOAL" below) + live 18-field status snapshot. ROI Bug 2 deployed (eu rev50/us rev32). Earlier 2026-05-25 — **Phase 7 MEASURED + REFRAMED.** Ball-bounce reconciliation vs SA on Match 1 (live-DB, `docs/_investigation/bounce_accuracy.md`): the bounce problem is **detection precision + timing, NOT coordinate calibration** — the court calibration is a faithful homography (0.11m self-consistency), and the ~177 nulled bounces are ~84% airborne false-positives, not lost ground bounces. Phase 7 work reframed from "recalibrate" to "reject airborne `is_bounce` FPs + fix ~0.5s timing." (Prior: Phase 5e WASB production verification PASSED, task `1d6feb3a`, 54.3% detection; Phase 5c.2 SHIPPED `d7718e0` + silver bench `83e1ab7`.)
 **Last verified:** 2026-05-22 — serve bench green (a798eff0 20/24, 880dff02 23/24); ball-bench v2 locked at `7100792`; silver-bench schema init verified locally (24 tables on fresh Docker Postgres including `ml_analysis.training_corpus`); WASB pipeline verified in production on Batch task `1d6feb3a`. 5c.2 hook still gated behind `AUTO_LABEL_DUAL_SUBMIT_PAIRS=0` until Tomo flips it.
 **Previous version archived:** `docs/_archive/north_star_2026-05-07_phantom-bounce-era.md`
 **This is the single place where the T5 macro plan lives.** Phase work happens against this ladder. Don't invent new directions — pick a phase, claim it, deliver, update.
+
+---
+
+## ★ THE OVERARCHING GOAL — build the 18, THEN train (build-first, train-LAST)
+
+The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silver Pass 1) reproduces SportAI's **18 base facts materially.** Silver derives *everything else* (zones, aggression, serve location 1-8, rally analytics) off those same 18 — so **bronze-t5 ≈ bronze-sportai is the whole game.**
+
+**Sequence — do NOT reorder:**
+1. **BUILD** all 18 base fields to **~70-80%** using the standard models we already have (YOLOv8-pose, TrackNet/WASB, ViTPose). ← **current + dominant priority.**
+2. **THEN TRAIN** to 90-95% — and this is **FREE + automatic:** every production SportAI dual-submit accumulates a training pair, so once productionised we get hundreds of labelled games for nothing. **Training is LAST and self-funding.** Don't spend build-phase effort chasing accuracy that training will deliver by default.
+
+**Implication:** pipeline-speed / corpus-throughput optimisation is a *training-stage* lever (it makes the free training faster) — **NOT** a reason to pause building. Build the 18 first; sign off "dev done" before training.
+
+**The 18 base fields** = the Pass-1 projection in `build_silver_match_t5.py`: WHO hit (player_id/side), WHAT (serve, swing_type, volley), WHEN (ball_hit_s), WHERE-hit (ball_hit_location_x/y), WHERE-bounced (court_x/y), ball_speed, ball_player_distance, rally membership — plus the point/game/set structure passes 3-5 derive from them.
+
+### Build status vs SportAI — Match 1 (`78c32f53` vs `0d0514df`), 2026-05-27
+| base field | T5 | SA | read |
+|---|---|---|---|
+| active rows (overall) | 97 | 94 | ✅ aligned |
+| court mapping | faithful homography (0.11 m self-consistent) | — | ✅ ~90%; far-baseline extrapolation weak |
+| player side (near/far) | 2 pids, clean split | 2 | ✅ side ok — **A/B identity NOT solved** (Q2-B blocked) |
+| ball_hit_location x/y | 94 populated | 94 | ✅ populated; accuracy unmeasured (far sparse) |
+| swing — forehand | 38 | 41 | ✅ close |
+| swing — overhead/serve-motion | 26 | 30 | ✅ close |
+| swing — backhand | 28 | 18 | ⚠️ over-counts (~+10) |
+| volley | 13 | 6 | ⚠️ over-counts (net-distance proxy too loose) |
+| serve (silver count) | 15 | 25 | ⚠️ under-detects (~40% recall); **detector bench is separate**: 20/24 & 23/24 on the two fixtures |
+| point structure | pts 17 / games 3 | 18 / 2 | ✅ close |
+| ball bounce x/y | recall 55%, precision 27%, 4.57 m err | — | ❌ **weakest field** (this chat's focus) |
+| set_number | not populated | 1 | ⚠️ missing |
+
+**Verdict:** counts are already close to SA on most fields (active 97/94, fh 38/41, pts 17/18). **Below the 70-80% build bar:** ball bounce (worst), serve recall, volley over-count, backhand over-count, set numbering, A/B identity. **That list IS the "finish the build" backlog before train-sign-off.**
 
 ---
 
