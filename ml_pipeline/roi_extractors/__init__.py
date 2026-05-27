@@ -16,5 +16,8 @@ rather than propagating — Batch job stays successful if ROI extraction
 flakes out. Near-player detection + ball tracking already completed
 upstream, so the job's primary output is preserved.
 """
-from ml_pipeline.roi_extractors.pose import extract_far_pose  # noqa: F401
-from ml_pipeline.roi_extractors.bounces import extract_far_bounces  # noqa: F401
+from ml_pipeline.roi_extractors.pose import extract_far_pose, FarPoseProcessor  # noqa: F401
+from ml_pipeline.roi_extractors.bounces import (  # noqa: F401
+    extract_far_bounces, RoiBounceProcessor,
+)
+from ml_pipeline.roi_extractors.unified import run_unified_roi  # noqa: F401

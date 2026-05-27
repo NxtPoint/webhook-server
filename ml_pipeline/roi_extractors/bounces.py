@@ -24,6 +24,17 @@ Anchor logic (option c from the stub docstring + phase5a_kickoff.md):
      covering both service boxes; project back to court metres
   6. Keep only detections inside the service-box zone; persist with source tag
 
+Decode model: a single sequential sweep feeds frames to the active window's
+fresh BallTracker as the decode reaches them (RoiBounceProcessor). The earlier
+implementation re-opened the VideoCapture and CAP_PROP_POS_FRAMES-seeked PER
+WINDOW — on a long match with many bounce clusters that thrashed the decoder
+and was a primary reason long matches raced the 6h Batch timeout. The sweep
+reads each frame at most once. A fresh BallTracker is still constructed per
+window (per-window state stays clean) and the TrackNet model is loaded ONCE and
+shared (the original "Bug 2" fix), so outputs are identical — only the decode
+scheduling changed. unified.py drives the same processor off the shared pose
+decode so the whole video is decoded ONCE for both ROI passes.
+
 Failure-tolerant: any exception inside the call site is logged and the
 job continues. This module is ADDITIVE — silver/trim/notify must not be
 blocked by a bounce-extraction failure.
@@ -220,47 +231,8 @@ def _windows_from_centroids(
 
 
 # ---------------------------------------------------------------------------
-# ROI ball tracking
+# Court projection of crop-pixel detections
 # ---------------------------------------------------------------------------
-
-def _run_roi_window(
-    video_path: str,
-    start_frame: int,
-    end_frame: int,
-    roi: Tuple[int, int, int, int],
-    model=None,
-) -> list:
-    """Run a fresh BallTracker on the ROI crop for frames [start, end).
-
-    `model`: a preloaded TrackNet model shared across windows (Bug 2 fix) so
-    the weights aren't reloaded every window. A fresh BallTracker is still
-    constructed per window, so all per-window state stays clean.
-
-    Returns BallDetection list in CROP-PIXEL coords (caller projects)."""
-    import cv2
-    from ml_pipeline.ball_tracker import BallTracker
-
-    x0, y0, x1, y1 = roi
-    tracker = BallTracker(model=model)
-
-    cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    try:
-        for idx in range(start_frame, end_frame):
-            ok, frame = cap.read()
-            if not ok:
-                break
-            crop = frame[y0:y1, x0:x1]
-            if crop.size == 0:
-                continue
-            tracker.detect_frame(crop, idx)
-    finally:
-        cap.release()
-
-    tracker.interpolate_gaps()
-    tracker.detect_bounces()
-    return tracker.detections
-
 
 def _project_dets_to_court(dets, roi, detector):
     """Map crop-pixel detections to full-frame pixel + court metres."""
@@ -332,7 +304,224 @@ def _persist_rows(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Per-frame processor — single-sweep window state machine
+# ---------------------------------------------------------------------------
+
+class RoiBounceProcessor:
+    """Per-frame ROI-bounce core driven by a single sequential decode.
+
+    Lifecycle:
+        proc = RoiBounceProcessor(job_id, engine, court_detector=..., bounces=...)
+        if not proc.windows:            # 0 anchors → nothing to do
+            return 0
+        if not proc.prepare(frame_shape):   # projects service-box ROI, loads model
+            return 0
+        for idx, frame in decode(video):     # caller owns the decode (idx ascending)
+            proc.feed(frame, idx)
+        n = proc.finalize()                  # closes last window, writes rows
+
+    `windows` are merged, non-overlapping and sorted, so at most one window is
+    active at any frame. Each window gets its own fresh BallTracker fed the same
+    contiguous frames the per-window seek loop fed — so the rows are identical;
+    only the decode scheduling differs.
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        engine,
+        *,
+        court_detector=None,
+        bounces: Optional[List] = None,
+        fps: float = 25.0,
+        window_s: float = 2.5,
+        cluster_gap_s: float = 0.5,
+        anchor_zone_filter: bool = False,
+        anchor_bounce_only: bool = True,
+        max_windows: Optional[int] = None,
+        source_tag: str = "roi_prod",
+        replace: bool = True,
+    ):
+        self.job_id = job_id
+        self.engine = engine
+        self.court_detector = court_detector
+        self.fps = fps or 25.0
+        self.source_tag = source_tag
+        self.replace = replace
+
+        # Build anchors → clusters → windows up front (no video needed).
+        self.windows: List[Tuple[int, int, int]] = []
+        if bounces and court_detector is not None:
+            anchors = _select_anchors(
+                bounces, self.fps,
+                zone_filter=anchor_zone_filter,
+                bounce_only=anchor_bounce_only,
+            )
+            if not anchors:
+                logger.info(
+                    "roi_bounces: 0 anchors (zone_filter=%s, bounce_only=%s, "
+                    "from %d input); skipping",
+                    anchor_zone_filter, anchor_bounce_only, len(bounces),
+                )
+            else:
+                centroids = _cluster_anchors(anchors, self.fps, cluster_gap_s)
+                windows = _windows_from_centroids(centroids, self.fps, window_s)
+                if max_windows is not None and max_windows >= 0:
+                    windows = windows[:max_windows]
+                self.windows = windows
+                logger.info(
+                    "roi_bounces: %d bounces → %d anchors → %d clusters → "
+                    "%d merged windows",
+                    len(bounces), len(anchors), len(centroids), len(windows),
+                )
+
+        self._ready = False
+        self.pixel_roi: Optional[Tuple[int, int, int, int]] = None
+        self.x0 = self.y0 = self.x1 = self.y1 = 0
+        self._shared_model = None
+        self.all_rows: list = []
+        self._t_start = None
+        # window state machine
+        self._wptr = 0
+        self._active_tracker = None
+        self._active_t0 = None
+        self._windows_done = 0
+
+    # -- setup ---------------------------------------------------------------
+
+    def prepare(self, frame_shape) -> bool:
+        """Project the service-box ROI and load the shared TrackNet model.
+
+        Returns False (and logs) when there are no windows, the ROI can't be
+        projected, or there's no court_detector — caller then skips bounces."""
+        self._t_start = time.time()
+        if not self.windows:
+            return False
+        if self.court_detector is None:
+            logger.warning(
+                "roi_bounces: no court_detector supplied; cannot project ROI — "
+                "skipping"
+            )
+            return False
+
+        pixel_roi = _service_box_pixel_roi(self.court_detector, frame_shape)
+        if pixel_roi is None:
+            logger.warning(
+                "roi_bounces: cannot project service-box corners to pixels — "
+                "court_detector likely uncalibrated; skipping"
+            )
+            return False
+        self.pixel_roi = pixel_roi
+        self.x0, self.y0, self.x1, self.y1 = pixel_roi
+        logger.info(
+            "roi_bounces: service-box pixel ROI (%d,%d)-(%d,%d) size=%dx%d",
+            self.x0, self.y0, self.x1, self.y1,
+            self.x1 - self.x0, self.y1 - self.y0,
+        )
+
+        # Load the TrackNet model ONCE and share it across windows (Bug 2 fix:
+        # constructing a fresh BallTracker per window reloaded the weights every
+        # time, ~7x slowdown that timed out long matches at the 6h Batch limit).
+        from ml_pipeline.ball_tracker import BallTracker
+        self._shared_model = BallTracker().model
+        self._ready = True
+        return True
+
+    def first_frame_needed(self) -> int:
+        return self.windows[0][0] if self.windows else 0
+
+    def last_frame_needed(self) -> int:
+        """Exclusive end frame of the last window — the standalone driver
+        stops the sweep here; the unified driver may sweep past it for pose."""
+        return self.windows[-1][1] if self.windows else 0
+
+    # -- per-frame -----------------------------------------------------------
+
+    def feed(self, frame, idx: int):
+        """Accumulate one decoded frame into the active window's tracker.
+
+        Closes windows whose exclusive end has been reached as the decode
+        advances. Frames outside every window (gaps between merged windows) are
+        ignored."""
+        if not self._ready:
+            return
+        # Close any windows that ended at or before this frame.
+        while self._wptr < len(self.windows) and idx >= self.windows[self._wptr][1]:
+            self._close_active_window()
+            self._wptr += 1
+        if self._wptr >= len(self.windows):
+            return
+        s, e, _c = self.windows[self._wptr]
+        if idx < s:
+            return  # gap before the next window
+        # idx in [s, e): feed into the active tracker (create on window entry).
+        if self._active_tracker is None:
+            from ml_pipeline.ball_tracker import BallTracker
+            self._active_tracker = BallTracker(model=self._shared_model)
+            self._active_t0 = time.time()
+        crop = frame[self.y0:self.y1, self.x0:self.x1]
+        if crop.size == 0:
+            return
+        self._active_tracker.detect_frame(crop, idx)
+
+    def _close_active_window(self):
+        """Finalize the active window: interpolate, detect bounces, project,
+        filter to the service-box zone, collect rows."""
+        if self._active_tracker is None:
+            return
+        s, e, c = self.windows[self._wptr]
+        tracker = self._active_tracker
+        tracker.interpolate_gaps()
+        tracker.detect_bounces()
+        projected = _project_dets_to_court(
+            tracker.detections, self.pixel_roi, self.court_detector,
+        )
+        window_ts = c / self.fps
+        kept = []
+        for r in projected:
+            if not _in_service_box_zone(r["court_x"], r["court_y"]):
+                continue
+            r["window_serve_ts"] = window_ts
+            kept.append(r)
+        n_bounces = sum(1 for r in kept if r["is_bounce"])
+        self._windows_done += 1
+        logger.info(
+            "roi_bounces: [%d/%d] frames [%d,%d) center=%d ts=%.2fs "
+            "-> %d dets in zone, %d bounces (%.1fs)",
+            self._windows_done, len(self.windows), s, e, c, window_ts,
+            len(kept), n_bounces,
+            time.time() - self._active_t0 if self._active_t0 else 0.0,
+        )
+        self.all_rows.extend(kept)
+        self._active_tracker = None
+        self._active_t0 = None
+
+    # -- teardown ------------------------------------------------------------
+
+    def finalize(self) -> int:
+        """Close any open window, persist, return row count."""
+        if self._active_tracker is not None:
+            self._close_active_window()
+
+        n_bounces_total = sum(1 for r in self.all_rows if r["is_bounce"])
+        dt = (time.time() - self._t_start) if self._t_start else 0.0
+        logger.info(
+            "roi_bounces: total %d rows (%d bounces) across %d windows in %.1fs",
+            len(self.all_rows), n_bounces_total, len(self.windows), dt,
+        )
+
+        if self.engine is None:
+            logger.info("roi_bounces: engine=None — skipping DB write")
+        else:
+            _persist_rows(
+                self.engine, self.job_id, self.source_tag,
+                self.all_rows, self.replace,
+            )
+        return len(self.all_rows)
+
+
+# ---------------------------------------------------------------------------
+# Public entry point — standalone (owns its own single-sweep decode)
 # ---------------------------------------------------------------------------
 
 def extract_far_bounces(
@@ -353,6 +542,11 @@ def extract_far_bounces(
     return_rows: bool = False,
 ):
     """Run service-box-targeted TrackNet around in-memory bounce anchors.
+
+    Standalone driver: seeks once to the first window and sweeps sequentially
+    to the last window end, feeding the active window's tracker. For the
+    production path where pose also needs to decode, prefer
+    roi_extractors.unified which decodes the whole video ONCE for both passes.
 
     Args:
         video_path: local filesystem path to the video (Batch has it).
@@ -386,7 +580,7 @@ def extract_far_bounces(
     Returns:
         Number of rows written, or (count, rows) when return_rows=True.
     """
-    t_start = time.time()
+    import cv2
 
     if not os.path.exists(video_path):
         logger.warning("roi_bounces: video not found: %s; skipping", video_path)
@@ -402,35 +596,18 @@ def extract_far_bounces(
         )
         return (0, []) if return_rows else 0
 
-    # 1. Select anchors per configured strategy (see _select_anchors docstring)
-    anchors = _select_anchors(
-        bounces, fps,
-        zone_filter=anchor_zone_filter,
-        bounce_only=anchor_bounce_only,
+    proc = RoiBounceProcessor(
+        job_id, engine,
+        court_detector=court_detector, bounces=bounces, fps=fps,
+        window_s=window_s, cluster_gap_s=cluster_gap_s,
+        anchor_zone_filter=anchor_zone_filter,
+        anchor_bounce_only=anchor_bounce_only,
+        max_windows=max_windows, source_tag=source_tag, replace=replace,
     )
-    if not anchors:
-        logger.info(
-            "roi_bounces: 0 anchors (zone_filter=%s, bounce_only=%s, from %d input); "
-            "skipping",
-            anchor_zone_filter, anchor_bounce_only, len(bounces),
-        )
+    if not proc.windows:
         return (0, []) if return_rows else 0
 
-    # 2. Cluster anchors temporally
-    centroids = _cluster_anchors(anchors, fps, cluster_gap_s)
-
-    # 3. Build merged frame windows
-    windows = _windows_from_centroids(centroids, fps, window_s)
-    if max_windows is not None and max_windows >= 0:
-        windows = windows[:max_windows]
-
-    logger.info(
-        "roi_bounces: %d bounces → %d anchors → %d clusters → %d merged windows",
-        len(bounces), len(anchors), len(centroids), len(windows),
-    )
-
-    # 4. Compute service-box pixel ROI (one rectangle for all windows)
-    import cv2
+    # Read the first frame for shape (used to clamp the ROI rectangle).
     cap = cv2.VideoCapture(video_path)
     ok, first = cap.read()
     cap.release()
@@ -438,60 +615,26 @@ def extract_far_bounces(
         logger.warning("roi_bounces: cannot read first frame; skipping")
         return (0, []) if return_rows else 0
 
-    pixel_roi = _service_box_pixel_roi(court_detector, first.shape)
-    if pixel_roi is None:
-        logger.warning(
-            "roi_bounces: cannot project service-box corners to pixels — "
-            "court_detector likely uncalibrated; skipping"
-        )
+    if not proc.prepare(first.shape):
         return (0, []) if return_rows else 0
-    x0, y0, x1, y1 = pixel_roi
-    logger.info(
-        "roi_bounces: service-box pixel ROI (%d,%d)-(%d,%d) size=%dx%d",
-        x0, y0, x1, y1, x1 - x0, y1 - y0,
-    )
 
-    # 5. Run BallTracker on each window, project, filter to service-box zone.
-    #    Load the TrackNet model ONCE and share it across windows (Bug 2 fix:
-    #    constructing a fresh BallTracker per window reloaded the weights every
-    #    time, ~7x slowdown that timed out long matches at the 6h Batch limit).
-    from ml_pipeline.ball_tracker import BallTracker
-    shared_tracker = BallTracker()
-    shared_model = shared_tracker.model
-    all_rows: list = []
-    for i, (s, e, c) in enumerate(windows):
-        t0 = time.time()
-        dets = _run_roi_window(video_path, s, e, pixel_roi, model=shared_model)
-        projected = _project_dets_to_court(dets, pixel_roi, court_detector)
-        # Stamp the cluster centroid timestamp on each row for traceability
-        window_ts = c / fps
-        kept = []
-        for r in projected:
-            if not _in_service_box_zone(r["court_x"], r["court_y"]):
-                continue
-            r["window_serve_ts"] = window_ts
-            kept.append(r)
-        n_bounces = sum(1 for r in kept if r["is_bounce"])
-        logger.info(
-            "roi_bounces: [%d/%d] frames [%d,%d) center=%d ts=%.2fs "
-            "-> %d dets in zone, %d bounces (%.1fs)",
-            i + 1, len(windows), s, e, c, window_ts,
-            len(kept), n_bounces, time.time() - t0,
-        )
-        all_rows.extend(kept)
+    # Single sweep over the spanned range [first_window_start, last_window_end).
+    start = proc.first_frame_needed()
+    end = proc.last_frame_needed()
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    try:
+        idx = start
+        while idx < end:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            proc.feed(frame, idx)
+            idx += 1
+    finally:
+        cap.release()
 
-    n_bounces_total = sum(1 for r in all_rows if r["is_bounce"])
-    logger.info(
-        "roi_bounces: total %d rows (%d bounces) across %d windows in %.1fs",
-        len(all_rows), n_bounces_total, len(windows), time.time() - t_start,
-    )
-
-    # 6. Persist
-    if engine is None:
-        logger.info("roi_bounces: engine=None — skipping DB write")
-    else:
-        _persist_rows(engine, job_id, source_tag, all_rows, replace)
-
+    count = proc.finalize()
     if return_rows:
-        return len(all_rows), all_rows
-    return len(all_rows)
+        return count, proc.all_rows
+    return count

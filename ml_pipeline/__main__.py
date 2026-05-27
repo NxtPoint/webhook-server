@@ -188,64 +188,49 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         pipeline.player_tracker.set_debug_upload_context(s3, s3_bucket, job_id)
         result = pipeline.process(tmp_path)
 
-        # 2b. Far-baseline ROI pose extraction (ViTPose-Base on YOLOv8m-det
-        # crops). Supplements bronze pid=1 with high-quality keypoints on
-        # the 30-50 px far-player body where full-frame YOLOv8x-pose
-        # under-resolves. Writes to ml_analysis.player_detections_roi
-        # (source='far_vitpose'), consumed by serve_detector's merge
-        # logic on the Render side. Failure is non-fatal.
+        # 2b+2c. ROI extraction — single shared video decode (Lever #1,
+        # docs/_investigation/t5_pipeline_speed.md). Both post-pipeline ROI
+        # passes are fanned off ONE sequential decode instead of one decode
+        # each (pose) + one seek-decode per window (bounces). The video is now
+        # decoded twice per job total (main per-frame loop + this sweep) rather
+        # than ~3×, which is what raced long matches into the 6h Batch timeout.
+        # Same models, same frames, same rows — only the decode scheduling
+        # changed. Both passes depend on the FINAL bounce list so they can't be
+        # folded into the main loop (pose's rally gate + the bounce windows are
+        # only known after _postprocess). Failure of either pass is non-fatal
+        # and isolated — additive coverage must not block downstream.
+        #
+        # Pose: ViTPose-Base on YOLOv8m-det crops of the 30-50 px far player
+        #   → ml_analysis.player_detections_roi (source='far_vitpose'),
+        #   consumed by serve_detector's merge logic on Render.
+        # Bounces: TrackNet on tight service-box crops to recover bounces the
+        #   full-frame pass misses (ball 1-2 px at 640x360) → canonical
+        #   ml_analysis.ball_detections (source='roi_prod'). Anchor strategy is
+        #   bounce-only without zone filter — best of 4 strategies on 880dff02
+        #   (see bounces._select_anchors docstring).
         if not practice:
             try:
-                on_progress("roi_pose", 78)
-                from ml_pipeline.roi_extractors import extract_far_pose
+                on_progress("roi_extract", 78)
+                from ml_pipeline.roi_extractors import run_unified_roi
                 court_det = getattr(pipeline, "court_detector", None)
-                n_pose = extract_far_pose(
+                vid_fps = getattr(result, "video_fps", 25.0) or 25.0
+                n_pose, n_bounces = run_unified_roi(
                     video_path=tmp_path,
                     job_id=job_id,
                     engine=engine,
-                    fps=getattr(result, "video_fps", 25.0) or 25.0,
-                    sample_every=2,
+                    fps=vid_fps,
                     court_detector=court_det,
                     bounces=getattr(result, "ball_detections", None),
+                    pose_sample_every=2,
+                    bounce_window_s=2.5,
+                    bounce_cluster_gap_s=0.5,
+                    bounce_anchor_zone_filter=False,
+                    bounce_anchor_bounce_only=True,
                 )
-                logger.info(f"ROI pose: wrote {n_pose} rows")
+                logger.info(f"ROI unified: pose wrote {n_pose} rows, "
+                            f"bounces wrote {n_bounces} rows")
             except Exception as e:
-                logger.warning(f"ROI pose extraction failed (non-fatal): {e}")
-
-        # 2c. Service-box-targeted ROI bounce extraction (Phase 5a). Runs
-        # TrackNet on tight crops of both service boxes to recover bounces
-        # the full-frame pass misses because the ball is 1-2 px at 640x360
-        # global scale. Anchors on the in-memory result.ball_detections —
-        # the existing pipeline output already produces low-resolution
-        # signal in service-box areas; we use those as targets for a
-        # high-resolution second pass. Writes to ml_analysis.ball_detections_roi
-        # (source='roi_prod'), consumed by serve_detector's ROI merge logic.
-        # Failure is non-fatal — additive coverage must not block downstream.
-        if not practice:
-            try:
-                on_progress("roi_bounces", 80)
-                from ml_pipeline.roi_extractors import extract_far_bounces
-                court_det = getattr(pipeline, "court_detector", None)
-                # Anchor strategy: bounce-only without zone filter — best of 4
-                # strategies on the 880dff02 fixture (covers 6/24 SA serves vs
-                # 1/24 for the zone-filtered all-detections default the kickoff
-                # doc proposed). See _select_anchors docstring for the
-                # diagnostic table. Stage 2 measurement on 880dff02 validates.
-                n_bounces = extract_far_bounces(
-                    video_path=tmp_path,
-                    job_id=job_id,
-                    engine=engine,
-                    court_detector=court_det,
-                    bounces=getattr(result, "ball_detections", None),
-                    fps=getattr(result, "video_fps", 25.0) or 25.0,
-                    window_s=2.5,
-                    cluster_gap_s=0.5,
-                    anchor_zone_filter=False,
-                    anchor_bounce_only=True,
-                )
-                logger.info(f"ROI bounces: wrote {n_bounces} rows")
-            except Exception as e:
-                logger.warning(f"ROI bounce extraction failed (non-fatal): {e}")
+                logger.warning(f"ROI extraction failed (non-fatal): {e}")
 
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
         # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads
