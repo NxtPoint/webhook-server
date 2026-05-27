@@ -66,7 +66,7 @@ To revert to Spot-priority production behaviour after a testing campaign:
 aws batch update-job-queue --region eu-north-1 --job-queue ten-fifty5-ml-queue --compute-environment-order '[{"order":1,"computeEnvironment":"arn:aws:batch:eu-north-1:696793787014:compute-environment/ten-fifty5-ml-compute"},{"order":2,"computeEnvironment":"arn:aws:batch:eu-north-1:696793787014:compute-environment/ten-fifty5-ml-ce-eu-ondemand"}]'
 ```
 
-If on-demand has zero G-family vCPU quota (last confirmed 2026-04-15; quota may have been raised since), jobs will sit in RUNNABLE indefinitely. Fall back to swapping the order back to Spot-first if RUNNABLE → STARTING never transitions within ~5 min.
+**On-demand G-family vCPU quota IS available now — confirmed 2026-05-27** (job `9378f2dd` ran on `ten-fifty5-ml-ce-eu-ondemand` (EC2 type), queue order 1, in eu-north-1). The old "production is Spot-only / on-demand quota = 0 (2026-04-15)" note is **stale** — on-demand is prioritised and working. If on-demand quota is ever exhausted again, jobs sit in RUNNABLE — fall back to swapping the order to Spot-first if RUNNABLE → STARTING never transitions within ~5 min.
 
 ---
 
@@ -382,7 +382,7 @@ MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8 PYTHONUTF8=1 \
 
 **3. Sandbox blocks DATABASE_URL embedding.** Anything that writes the production DB URL into a freshly-authored file (heredoc to `/tmp`, manual JSON, etc.) gets rejected as "credential leakage". Workaround: fetch existing job-def via `describe-job-definitions`, modify in place via Python (the credential is pass-through, not new), register from that file. The eu-north-1 register works this way; us-east-1 sometimes still blocks — primary region is eu-north-1, so single-region register is OK.
 
-**4. Service-quotas API blocked for nextpoint-uploader IAM user.** Can't read on-demand vCPU quota directly. The on-demand CE `ten-fifty5-ml-ce-eu-ondemand` IS in the queue (order 2 behind Spot). Manual cross-region failover playbook at `.claude/playbook_aws_batch_ondemand_fallback.md`.
+**4. Service-quotas API blocked for nextpoint-uploader IAM user.** Can't read on-demand vCPU quota directly. The on-demand CE `ten-fifty5-ml-ce-eu-ondemand` (EC2) is queue **order 1 — ahead of Spot** — and confirmed working 2026-05-27 (job `9378f2dd` ran on it). Manual cross-region failover playbook at `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
 **5. `aws logs ... --output text` chokes on Unicode arrows in pipeline logs (`→`, `→`).** Use `--output json` and parse with Python that has `encoding='utf-8'`. Set `MSYS_NO_PATHCONV=1` to stop Git Bash mangling `/aws/batch/...` log group paths into Windows paths.
 
