@@ -29,7 +29,7 @@ Pick the closest match and jump there before reading the rest of this file:
 
 These look reasonable but will burn future sessions. Each is an explicit decision, not an oversight.
 
-1. **Don't run `pytest`, and don't add it as a dependency or scaffold test files.** No test suite exists; testing is manual against the live Render DB. The absence is a deliberate decision, not an oversight to "fix." The closest thing to a regression test is `python -m ml_pipeline.diag.bench` for the T5 serve detector — that one is mandatory before any `serve_detector` push.
+1. **Don't run `pytest`, and don't add it as a dependency or scaffold test files.** No test suite exists; testing is manual against the live Render DB. The absence is a deliberate decision, not an oversight to "fix." The closest thing to a regression test is `python -m ml_pipeline.diag.bench` for the T5 serve detector — that one is mandatory before any `serve_detector` push. (A few `python -m` scripts are git-tracked but are *not* a suite and *not* the CI gate: `ml_pipeline/serve_detector/tests/test_components.py` is a pure-logic component check; `ml_pipeline/test_pipeline.py` and `ml_pipeline/test_e2e.sh` need a gitignored `test_videos/` dir or full AWS infra, so they won't run casually. Don't grow these into a pytest suite — extend `bench`/`bench_ball`/`bench_silver` instead.)
 2. **Don't aggregate in Python or JavaScript if a gold view can do it.** The architecture rule is "SQL views own aggregation, Python is a thin passthrough, frontend is pure rendering." Adding `groupby` / `reduce` in `client_api.py` or a chart file means you skipped the right layer — extend or add a `gold.*` view instead.
 3. **Don't import `upload_app` from the ingest worker.** The worker is deliberately self-contained (it calls `ingest_bronze_strict()` directly). Importing the main app pulls in Flask boot side-effects and breaks the worker timeout split (3600s vs 1800s).
 4. **Don't `DELETE FROM billing.*` on match delete.** Matches are billable events — the consumption record stays. Match delete is soft-delete only via `submission_context.deleted_at`; workers honour this at four gates. See `cleanup/orphan_sweep.py`.
@@ -78,10 +78,15 @@ No automated test suite and no linter. All functional testing is manual against 
 **One CI check exists** — `.github/workflows/bench.yml` is the entire `.github/` surface, no other workflows. It runs `python -m ml_pipeline.diag.bench` and triggers on every push to `main` and every PR touching one of:
 
 - `ml_pipeline/serve_detector/**`
-- `ml_pipeline/diag/bench*`
+- `ml_pipeline/diag/bench.py`
 - `ml_pipeline/diag/replay_serves.py`
+- `ml_pipeline/diag/bench_baseline.json`
+- `ml_pipeline/diag/requirements-bench.txt`
+- `ml_pipeline/fixtures_ci/**`
 - `build_silver_v2.py`
 - `.github/workflows/bench.yml` itself
+
+(Only these exact paths gate CI — `bench_ball*` / `bench_silver*` are local-only and deliberately *not* triggers. Don't widen or narrow this glob set; see "Things not to do" #9.)
 
 It replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`ml_pipeline/diag/bench_baseline.json`, currently 20/24). Bench exits non-zero on any negative delta, which fails the PR check. Sub-second runtime; no DB, no AWS, no ML weights — see `.claude/handover_t5.md` §"TEST HARNESS". If the check goes red: revert the offending commit, reproduce locally with the same command, and only ship a fix that turns it green again. Do not skip or relax the check to land a PR — the regression is real (this is exactly the silent slip from `0cb645a` that motivated the harness).
 
@@ -389,7 +394,7 @@ See `.claude/handover_t5.md` for the full catalogue. The ones that come up const
 python -m ml_pipeline.diag.bench                        # serve detector regression (CI-gated; mandatory pre-push)
 python -m ml_pipeline.diag.bench_ball                   # ball-tracker regression (tracknet_v2 + wasb; local-only)
 python -m ml_pipeline.diag.bench_finetuned --weights-path <path>  # ball-bench against a fine-tuned weights file (Phase 5c.4)
-python -m ml_pipeline.diag.bench_silver                 # silver-builder regression (local Docker Postgres; empty until fixtures land)
+python -m ml_pipeline.diag.bench_silver                 # silver-builder regression (local Docker Postgres; first fixture 1d6feb3a landed — run --setup once to seed)
 python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
 python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
 python -m ml_pipeline.harness reconcile <sa_tid> <t5_tid>
