@@ -330,8 +330,14 @@ def replay(
         fixture["video_local_path"], fixture["windows"], target_fps=target_fps,
     ):
         frames_processed += 1
-        det = tracker.detect_frame(frame, frame_idx)
-        norm = _normalise_detection(det, frame_idx)
+        tracker.detect_frame(frame, frame_idx)
+    # Drain any batched-inference backlog (no-op at BALL_BATCH_SIZE=1), then
+    # read detections from tracker.detections rather than detect_frame's return
+    # value — under GPU batching the return is deferred (None) and the
+    # detections are produced in arrears. Identical set/order at batch=1.
+    tracker.flush()
+    for det in tracker.detections:
+        norm = _normalise_detection(det, det.frame_idx)
         if norm is not None:
             detections.append(norm)
     runtime = time.time() - t0
