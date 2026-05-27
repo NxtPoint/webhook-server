@@ -53,7 +53,10 @@ EPS_BASELINE_M = 1.5
 
 # Thresholds for match analysis
 SERVE_GAP_S = 3.0       # seconds gap before a bounce to consider it a serve (was 5.0 — too strict for sparse bounce data)
-VOLLEY_NET_DISTANCE_M = 4.0  # player within 4m of net = volley
+VOLLEY_NET_DISTANCE_M = 2.0  # hitter within 2m of net = volley. Was 4.0 (mid-court),
+# which over-counted volleys 13 vs SA's 6 on Match 1. A volley is physically struck
+# close to the net, so 2.0m is the motivated value (not a single-match fit to 6).
+# Used by both the is_volley flag and the volley-pose branch in swing inference.
 SERVE_BOX_TOLERANCE_M = 1.5  # extra tolerance for service box check (real wide serves bounce in doubles alley)
 # Bounce-precision guard (Stage 1, 2026-05-25): a bounce within this court
 # distance (m) of a player is treated as a racquet contact / near-player
