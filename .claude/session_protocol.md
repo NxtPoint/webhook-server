@@ -12,9 +12,9 @@ These are the only things Tomo needs to type. Everything else the agent does aut
 
 **Opening (start of session):**
 ```
-Read .claude/next_session_pickup.md then run the boot checklist in
-.claude/session_protocol.md. Acknowledge what you're working on in
-one sentence before touching anything. Today's task: [TASK].
+Read docs/north_star.md "RULES OF THE GAME" and .claude/next_session_pickup.md,
+then run the boot checklist in .claude/session_protocol.md. Acknowledge what
+you're working on in one sentence before touching anything. Today's task: [TASK].
 ```
 
 **Closing (end of session):**
@@ -33,7 +33,7 @@ If you're an agent reading this: the opening line is your trigger to run the boo
 
 Run through this in the first ~5 minutes before doing any real work. Don't skip steps because "I already know."
 
-1. ☐ **Read `.claude/next_session_pickup.md` first.** This is THE current-state doc. If it has a 200-word "Executive summary" at the top, read just that to know what's happening. Then expand into the full file only if your task needs the depth.
+1. ☐ **Read `docs/north_star.md` §"★ RULES OF THE GAME" FIRST** — the non-negotiable T5 architecture (bronze = source of truth, silver inherits/does-no-work, one-model-per-fact, build-first/train-last, keep-clean). The Rules govern HOW you work. **Then read `.claude/next_session_pickup.md`** — THE current-state doc (read its exec summary, expand if needed). It tells you WHAT to do. Build only in the vein of the Rules.
 2. ☐ **Check `git log --oneline -10`** to see what's landed since the pickup file was last updated. The pickup file is overwritten at session-end, but parallel agents may have pushed commits in between.
 3. ☐ **Acknowledge what you're working on, in user-visible text.** One sentence: "I'm working on X. The current phase is Y. Recent commits since pickup: Z." This catches misalignment early.
 4. ☐ **Skim `docs/north_star.md` phase ladder** — confirm your understanding of which phase is active. If you're about to work on something the ladder doesn't show, stop and re-read.
