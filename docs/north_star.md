@@ -7,6 +7,18 @@
 
 ---
 
+## ★ RULES OF THE GAME — read first, every session. ALL build happens in this vein.
+
+Non-negotiable. A change that violates one of these is going backwards — stop and rethink.
+
+1. **Bronze is the single source of truth. Silver inherits it 100% and does NO work.** Silver only *projects* bronze + adds analytics (score, serve location 1-8, zones, aggression, depth). If you catch silver *computing a base fact* (serve, swing, bounce, identity), that's a bug to fix — not to extend.
+2. **One model per fact.** Pipeline: raw detectors (TrackNet / WASB / YOLOv8-pose / ViTPose) → **analysis models** (serve_detector, stroke_detector, …) → **bronze** normalised answers (`ml_analysis.*`) → silver projects. A fact is "done" only when a *model* emits it. A fact with no model is a **model to build/train** — tag it `STOPGAP-until-model-X`, never a silent silver heuristic. (Audit: `docs/_investigation/bronze_silver_18_audit.md`.)
+3. **Build-first, train-LAST.** Build all 18 base fields to ~70-80% with the standard models *now*; train to 90-95% *later* — it's free + automatic via SportAI dual-submit. **Train selectively** (don't cap us at SportAI where our heavier models may be better). Pipeline-speed / throughput is a *training-stage* lever, never a reason to pause building.
+4. **Measure-first, bench-green.** Validate against live data (`db_init.engine`) before committing. Keep the serve bench green (`a798eff0 20/24, 880dff02 23/24`). No Batch push without the **BATCH-SIDE CHECKLIST** (`.claude/handover_t5.md`).
+5. **Keep it clean — always.** Doc structure is fixed: **this file = True North** (rules + 18-field status + phase ladder); `.claude/next_session_pickup.md` = handover; `.claude/handover_t5.md` = ops / how-to-run; `docs/_investigation/*` = per-model references; everything historical → `_archive/`. **Don't create a new doc when an existing one fits.** Every session reads this file + the handover before touching code.
+
+---
+
 ## ★ THE OVERARCHING GOAL — build the 18, THEN train (build-first, train-LAST)
 
 The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silver Pass 1) reproduces SportAI's **18 base facts materially.** Silver derives *everything else* (zones, aggression, serve location 1-8, rally analytics) off those same 18 — so **bronze-t5 ≈ bronze-sportai is the whole game.**
