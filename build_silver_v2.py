@@ -552,16 +552,31 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM base b
     ),
 
-    -- Forward-fill server_end
-    srv_end AS (
+    -- Forward-fill server_end (window-function gap-fill). Replaces a per-row
+    -- correlated subquery: the planner duplicated it once per server_end_d
+    -- reference downstream (4x in srv_side_raw's CASE) and re-scanned the
+    -- materialised CTE per row, with rows=1 misestimates hiding it — O(n^2+)
+    -- that hung pass-3 for 20+ min on long matches (see
+    -- project_dual_submit_autoland). _se_grp increments at each non-null
+    -- server_end_raw, so every row up to the next non-null shares a group and
+    -- max() carries the single non-null forward. Leading rows before the first
+    -- non-null get NULL — identical to the old COALESCE(own, latest-prior).
+    -- Columns listed explicitly (not g.*) so _se_grp does not leak downstream.
+    srv_end_grp AS (
       SELECT s.*,
-        COALESCE(s.server_end_raw, (
-          SELECT s2.server_end_raw FROM srv_detect s2
-          WHERE s2.task_id = s.task_id AND s2.server_end_raw IS NOT NULL
-            AND (s2.ball_hit_s < s.ball_hit_s OR (s2.ball_hit_s = s.ball_hit_s AND s2.id <= s.id))
-          ORDER BY s2.ball_hit_s DESC, s2.id DESC LIMIT 1
-        )) AS server_end_d
+        count(s.server_end_raw) OVER (
+          PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS _se_grp
       FROM srv_detect s
+    ),
+    srv_end AS (
+      SELECT g.id, g.task_id, g.player_id, g.valid, g.serve, g.swing_type,
+             g.volley, g.ball_hit_s, g.x, g.y, g.court_x, g.court_y,
+             g.serve_d, g.server_end_raw,
+             max(g.server_end_raw) OVER (PARTITION BY g.task_id, g._se_grp)
+               AS server_end_d
+      FROM srv_end_grp g
     ),
 
     -- Serve side (deuce/ad) — only within singles bounds
@@ -581,16 +596,24 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       FROM srv_end e
     ),
 
-    -- Forward-fill serve_side
-    srv_side AS (
+    -- Forward-fill serve_side (window-function gap-fill; same rewrite as
+    -- srv_end above — kills the per-row correlated subquery / SubPlan 7).
+    -- Columns listed explicitly so _ss_grp does not leak downstream.
+    srv_side_grp AS (
       SELECT s.*,
-        COALESCE(s.serve_side_raw, (
-          SELECT s0.serve_side_raw FROM srv_side_raw s0
-          WHERE s0.task_id = s.task_id AND s0.serve_side_raw IS NOT NULL
-            AND (s0.ball_hit_s < s.ball_hit_s OR (s0.ball_hit_s = s.ball_hit_s AND s0.id <= s.id))
-          ORDER BY s0.ball_hit_s DESC, s0.id DESC LIMIT 1
-        )) AS serve_side_d
+        count(s.serve_side_raw) OVER (
+          PARTITION BY s.task_id ORDER BY s.ball_hit_s, s.id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS _ss_grp
       FROM srv_side_raw s
+    ),
+    srv_side AS (
+      SELECT g.id, g.task_id, g.player_id, g.valid, g.serve, g.swing_type,
+             g.volley, g.ball_hit_s, g.x, g.y, g.court_x, g.court_y,
+             g.serve_d, g.server_end_raw, g.server_end_d, g.serve_side_raw,
+             max(g.serve_side_raw) OVER (PARTITION BY g.task_id, g._ss_grp)
+               AS serve_side_d
+      FROM srv_side_grp g
     ),
 
     -- ========== POINT NUMBERING ==========
