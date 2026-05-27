@@ -91,3 +91,18 @@ SILVER       pure projection of bronze events → point_detail, + analytics (sco
 | volley | none | derive in a model from bounce-vs-hit timing |
 
 **Answer to "are we overthinking it?": no — this IS the right structure, and it unifies everything.** "Build the 18 to 70-80%" = "build a model per fact." "Train to 90-95% free via dual-submit" = train each model. "Silver inherits 100%" = the end state once every fact has a model. We do NOT need to re-discover this with more agents; we need to build the models one at a time (and can parallelise *independent* model builds later).
+
+---
+
+## UPDATE 2026-05-27 — serve-wiring attempt: the gate can't just be deleted (pass-3 coupling)
+
+Tried wiring `serve_events` → silver (conf≥0.70) + deleting the bounce-geometric serve gate. **Validation on Match 1 caught a regression — reverted, not committed.** Findings:
+- Sourcing serves from `serve_events` and **appending** the bounce-less ones: serve recall 40 %→**60 %**, but **points 17→11** (SA 18) — the appended serves lack bounce coords, so pass-3 can't derive their `serve_side_d` → point-anchoring breaks.
+- Sourcing only the bounce-coincident serve_events (no append): points **17→11** *and* recall **40 %→32 %** — worse on both.
+- **Root cause:** pass-3 point/serve-side numbering is **coupled to the bounce-gate serves** (which carry the bounce geometry pass-3 reads). And `serve_events` itself **over-fires** on M1 (51 raw / 26 @conf≥0.70 vs SA 25) — a model-precision issue.
+
+**So the serve fix is a 2-part effort, not a one-line wire:**
+1. Rework **pass-3** (in `build_silver_v2.py`, shared with SA — careful) to derive point boundaries + `serve_side_d` from `serve_events` (hitter position) rather than from the bounce on serve rows.
+2. THEN delete the bounce-geometric gate. Plus serve-model precision (model-side).
+
+Until then the bounce-geometric serve gate stays as a **TAGGED stopgap** (it currently yields better silver metrics — 17 points / 40 % recall — *because* pass-3 is coupled to it). Tag it in code as `STOPGAP-until-pass3-inherits-serve_events`. This is the measure-first discipline working: it stopped a points regression from shipping.
