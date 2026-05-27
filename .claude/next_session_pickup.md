@@ -1,103 +1,60 @@
-# Next-session pickup — 2026-05-25 (Bronze-first pivot; far player fixed; near precision gated; stroke-driven silver still OFF)
+# Next-session pickup — 2026-05-27 (ROI Bug 2 fixed + validated, ON A BRANCH; needs daylight Batch deploy)
 
 ## ⚡ Executive summary (read this first — 30 seconds)
 
-**Today's date:** 2026-05-25
-**Phase active:** Phase 6 step 2 attempted → **reframed to BRONZE-FIRST.** Silver row-generation is frozen until the 18 base fields reconcile to SportAI in `ml_analysis.*`.
-**Bench:** `a798eff0=20/24, 880dff02=23/24` — green on main throughout.
-**What shipped (full session, 7 code/doc commits `f09d5df`→`cf40a11`):** (1) stroke-driven T5 silver Pass 1, env-gated OFF behind `T5_STROKE_DRIVEN_SILVER`; (2) bronze-first principle codified (CLAUDE.md #11, north_star); (3) **far player fixed end-to-end** — ROI pose wiring `ead857a`, fh/bh mirror `a8479a8`, velocity size-normalisation `956b65a`; (4) **near-side precision provisional gate** `9a4ab0a` (wrist swing-path ≥0.75 torso-lengths, near-only). Net on the GATED stroke-driven path (Match 1): **151→78 active, near 108→43 (=SA 43), far 43→~36 (SA 41)** — closest to SA's 84 yet. Live bounce-driven path unchanged (139/66), no live impact (stroke-driven still gated OFF).
-**What's blocked:** Nothing actively. The stroke-driven gate stays OFF pending: (a) the near swing-path gate is **single-match-calibrated** → re-validate on a 2nd match or supersede with Q1-D; (b) Q2-B A/B identity; (c) far fh/bh per-hit + the small far-active collateral drop (43→36).
-**Q1-A — DONE (commit `ead857a`).** Wired `ml_analysis.player_detections_roi` (958 far ViTPose poses on M1) into both the silver `_build_player_buckets` and the stroke detector `_load_pose_rows`, mirroring serve_detector. Result: live bounce-driven row count unchanged (139), active 60→66, far groundstrokes now classify (far Backhand 14→19); stroke far attribution 63→85. Row generation untouched, SportAI unaffected, bench green.
-
-**Far is now FIXED end-to-end** (3 commits `ead857a` ROI wiring, `a8479a8` fh/bh mirror, `956b65a` velocity size-normalisation). Gated stroke-driven far active **27→43, matches SA's 41**; stroke attribution 208/34 → 165/106. **The remaining blocker flipped sides:** gated stroke-driven near active is **108 vs SA's 43** — near-player FALSE-POSITIVE stroke peaks (recovery/fidget motion), a detector-PRECISION problem, not far starvation. Total gated stroke-driven active 151 vs SA 84, now entirely from near over-count.
-
-**Near-side precision — PROVISIONAL swing-path gate SHIPPED (`9a4ab0a`).** Four precision signals were probed on M1; the first three failed (ball-proximity: 58% of near hits have no ball within ±5f; rally-alternation collapse: over-corrects to near 34/far 26; time-gated collapse: near plateaus ~69, hurts far). The fourth — **wrist swing-path length** (validated motion, teleports rejected, normalised to torso-lengths), applied **near-only** (the far player's pose is too sparse for path length) — works: gated stroke-driven **active 151→78, near 108→43 (=SA 43)**, far ~36 (SA 41; small collateral drop from point-structure when near rows go). Robust, not knife-edge: near lands 39-44 across the whole 0.70-0.85 threshold band (default 0.75). **Mechanistic rationale (Tomo, confirmed plausible):** a big chunk of the near false positives are the player *bouncing the ball on the racquet before serving* (and recovery twitches) — small repetitive wrist motions with high velocity but tiny swing-path, exactly what the gate targets. So it's removing an identifiable motion class, not arbitrary peaks. **PROVISIONAL — calibrated on ONE match**; properly validating a precision gate needs per-stroke truth (dual-submit) = the Q1-D data, so treat the threshold as a stopgap, not final. Gated-off path → no live impact.
-
-**Next session's job:** **(1) Validate/replace the near swing-path gate on a 2nd match** (or supersede with Q1-D — train the stroke classifier on dual-submit pairs once `training_corpus` is ready; weights → `ml_pipeline/models/stroke_classifier.pt`, path wired, currently absent). The gate is single-match-calibrated; do NOT trust the 0.75 threshold across matches without a second data point. **(2) Q2-B end-anchored A/B identity.** **(3) far fh/bh per-hit + the far-active collateral drop (43→36).** Only flip `T5_STROKE_DRIVEN_SILVER` on after the gate is multi-match-validated AND Q2-B lands. Current gated stroke-driven: 78 vs SA 84 (near 43/43, far ~36/41) — closest yet.
-
-**Far fh/bh mirror — FIXED (`a8479a8`).** Far player faces camera → dominant hand on image-left; the swing inference now mirrors (dom_on_right = right-handed XOR far). M1 far fh 9→11, bh 13→11 (toward SA 18/6); near unchanged. Residual per-hit gap is pose-NOISE limited (ViTPose left/right flickers on the 32px far body; aggregate ~73% fh matches SA, but a windowed vote over-corrects to ~all-fh, zeroing the rare real backhands). Precise per-hit far fh/bh is a trained-stroke-classifier job (Q1-D), NOT a one-match vote threshold — don't overfit it.
-
-If the above is enough, stop and go. Read on for the why and the full option set.
+**Today's date:** 2026-05-27
+**Phase active:** Phase 7 reframed — bounce *precision + coverage*, NOT calibration (calibration is a faithful homography). See `docs/_investigation/bounce_accuracy.md`.
+**Bench:** serve `a798eff0=20/24, 880dff02=23/24` green; `bench_ball` green (no regressions). **Note: this box is CPU-only → `bench_ball` takes ~3 HOURS.**
+**What shipped (to main):** bounce-proximity precision guard (`aa6c522`); SportAI confirmed a usable bounce yardstick (95/90) so manual ground-truth is built-but-parked; full bounce diagnosis in `bounce_accuracy.md`.
+**What's staged (on a BRANCH, NOT main):** **ROI Bug 2 fix** — validated, on `origin/roi-bug2-balltracker-hoist` (`2cdb68c`).
+**What's blocked:** ROI Bug 2 needs a **daylight Batch deploy + a test-match upload** before merge (it's a Batch-side change; overnight rule forbids unsupervised deploy).
+**Next session's FIRST job:** deploy the ROI Bug 2 branch (steps below), have Tomo upload a test match, confirm it speeds up, then merge to main.
 
 ---
 
-## The decision that reframes everything (Tomo, 2026-05-25)
+## ⚠️ FIRST ACTION (daylight, with Tomo) — deploy ROI Bug 2
 
-**T5 reconciliation to SportAI is a BRONZE (`ml_analysis.*`) accuracy problem. Silver is NOT to be touched until the 18 base fields align with SportAI in the bronze layer.** Now load-bearing in:
-- `CLAUDE.md` "Things not to do" **#11**
-- `docs/north_star.md` §"★ BRONZE-FIRST PRINCIPLE" (supersedes the old B→C→A order)
-- memory `feedback_bronze_first_t5_reconciliation.md`
+**Branch:** `roi-bug2-balltracker-hoist` (`2cdb68c`), pushed to origin. **Not** on main.
+**What it fixes:** `roi_extractors/bounces.py` built a fresh `BallTracker()` per window → reloaded TrackNet weights every window → ~7× slowdown → **timed out Match 2 at the 6h Batch limit.** Now the model loads once and is shared; a fresh `BallTracker` per window keeps all per-window state clean. (`ball_tracker.py` gained an optional `model=` arg + `_use_fp16` moved to `__init__`.)
+**Validated (CPU box):** `bench_ball` no regressions (default path); injected-vs-load equivalence **IDENTICAL** (64=64 detections); serve bench green.
 
-Layering reminder: the T5 "bronze" is `ml_analysis.*`. `build_silver_match_t5.py` **Pass 1 is the bronze→base-fact projection** (the 18 columns that must match SportAI). Passes 3-5 are the silver analytics (serve location 1-8, zones, aggression) — garbage-in/garbage-out on top of Pass 1.
+**It's a BATCH-SIDE change** (`ball_tracker.py` + `roi_extractors/`) → full deploy required. Steps (full detail in `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST" + the deploy playbook ~line 285):
+1. `git checkout roi-bug2-balltracker-hoist` (or merge to main first — see note).
+2. ECR login both regions; `docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .` (code-only change → cached pip layers, ~3-5 min). Run build in background.
+3. Tag + push to eu-north-1 AND us-east-1 (~5-10 min each).
+4. Get the amd64 sub-manifest digest (`aws ecr batch-get-image`, Gotcha #1).
+5. Register new job-def revisions in **both** regions pinned to that digest, retryStrategy preserved.
+6. **Tomo uploads a fresh match** (Singles T5, gated to tomo.stojakovic@gmail.com) → gives the new task_id.
+7. Monitor the Batch job; confirm the per-window time is flat (no "BallTracker: loaded" every window) and a long match completes < 6h.
+8. **Merge `roi-bug2-balltracker-hoist` → main** once the run looks good. (Per `feedback_always_main_branch`, main is the home; the branch was only to avoid an unsupervised overnight Batch change per `feedback_overnight_branch_only`.)
 
-## What was built today (and why it's gated OFF)
+Docker 29.3.1 + aws-cli 2.34.26 are installed here; boto3 finds creds via default chain (region eu-north-1).
 
-`build_silver_match_t5.py` was refactored + extended:
-- Extracted `_build_player_buckets`, `_lookup_dominant_hand`, `_insert_pass1_rows` shared helpers.
-- `_t5_pass1_load` → `_t5_pass1_load_bounce_driven` (behaviour-preserving; verified 139/60).
-- New `_t5_pass1_load_stroke_driven`: one `ml_analysis.stroke_events` row → one silver row, bounce coords joined within ~1s after `predicted_hit_frame`. Hitter side from bounce-opposite-side (reliable) with attributed-pid fallback.
-- Dispatcher `_t5_pass1_load` picks stroke-driven **only when `T5_STROKE_DRIVEN_SILVER` is set** AND stroke events exist; else bounce-driven (the live default).
+---
 
-**Measured on Match 1 (T5 `78c32f53-5580-4a88-a4e7-7506e59b2b52` ↔ SA `0d0514df-68aa-4346-9e2d-64413429e47f`):**
+## Where the bounce thread stands (the arc this session)
 
-| | t5 stroke-driven | SA truth |
-|---|---|---|
-| active total | **141** | 84 |
-| near / far | **114 / 27** | 43 / 41 |
-| near fh / far fh | **38 / 6** | 20 / 18 |
+1. **Diagnosis (done):** bounce error is precision + coverage, NOT calibration. The homography is faithful (reproduces stored bounce coords to 0.11 m). The "177 dropped bounces" are ~84% airborne false-positives, correctly clamped. `docs/_investigation/bounce_accuracy.md` §1-7.
+2. **Proximity guard SHIPPED (main, `aa6c522`):** drops bounces within 1.5 m of a player (racquet contacts). M1: serve precision vs SA 45→67%, bench green.
+3. **SportAI is the working yardstick (Tomo: 95% bounce-ID / 90% coords).** So bounce precision IS measurable vs SA now; **manual ground-truth is built but PARKED** for the fine-tuning stage. Tooling ready: `ml_pipeline/training/label_bounces_manual.py` + `bounce_xy_accuracy.py --ground-truth` + Match 1 video at `ml_pipeline/test_videos/78c32f53_practice.mp4` (720p; labels need ×1.5 to ml_analysis 1080 space — see `ml_pipeline/ground_truth/README.md`).
+4. **Current T5-vs-SA-floor (the live measurement):** recall 55%, precision 27%, median 4.57 m → T5 bounce well behind SortAI → **use SortAI bounces in-product for now.** Improving T5 bounce = B1/B2 below.
+5. **ROI Bug 2 (this session):** fixed + validated, on branch (see above). Unblocks Match 2 → a SECOND validation match (everything so far is single-match-calibrated).
 
-The Forehand "recovery" (17→44 total) is **near-side false positives**, not real far recovery — far fh got *worse* (6 vs 18). Don't be fooled by the headline fh count.
-
-## Root cause (why it's bronze, with evidence)
-
-1. **Hitter attribution is near-biased.** `stroke_events.player_id` = whichever wrist has the global-max *pixel* velocity (`compute_global_max_velocity`); the near player is ~10× larger in frame, so it resolves 208 near / 34 far vs the true ~50/50. Unusable as hitter identity.
-2. **Far pose is sparse in the table silver reads.** `player_detections` far-with-keypoints = 1,105 vs near 16,245 on M1. **But** — verified today — `player_detections_roi` has **958 far poses, all with keypoints**, that silver + stroke detector never read (only the serve_detector reads the ROI table). ← cheapest lever.
-3. **No player A/B identity.** `_assign_ids` is stateless: pid 0 = near half, pid 1 = far half by pixel midline. Silver re-derives player_id by court SIDE. That's *side labelling, not identity* — when players change ends every odd game, the physical person behind pid=0 flips and nothing records it. Tomo's instinct ("not convinced we can tag A/B and hold it across a match") is correct.
-4. **Bounce x/y inaccurate** (Phase 7): median 3.2m, far-baseline 10-17m off.
-
-## Far-player research — read before acting
-
-A read-only agent investigated far-player accuracy + A/B identity → **`docs/_investigation/far_player_accuracy.md`**. Headline finding (code-verified, DB-confirmed by this session): the good far pose from `extract_far_pose` (ViTPose-Base) lands in `ml_analysis.player_detections_roi` but the silver builder (`_build_player_buckets`) and stroke detector (`_load_pose_rows`) only SELECT `ml_analysis.player_detections`. Some numbers in that doc are tagged `[VERIFY]` (the agent couldn't run DB queries) — the M1 ROI count (958 far-kp) and the stranded-table claim are now CONFIRMED.
-
-## Priority order (reframed — fix bronze first)
-
-1. ~~Q1-A — merge `player_detections_roi` into the silver + stroke pose buckets~~ **DONE (`ead857a`).**
-2. ~~Far fh/bh mirror~~ **DONE (`a8479a8`)**. ~~Far velocity size-normalisation~~ **DONE (`956b65a`)**. ~~Near-side precision~~ **PROVISIONAL gate SHIPPED (`9a4ab0a`)** — near-only wrist swing-path gate (0.75 torso-lengths); gated stroke-driven 151→78, near 108→43. Single-match-calibrated → **must be re-validated on a 2nd match or superseded by Q1-D** before trusting. Remaining: validate/replace the gate (Q1-D), Q2-B A/B identity, far fh/bh per-hit + the far-active collateral drop (43→36).
-3. **Q2-B — end-anchored player A/B identity** (Render-side). Anchor identity to court end + serve order so A/B persists across end-changes.
-3. **Bug 2 — `roi_bounces` per-window slowdown** (Batch-side, contained; load `BallTracker` once outside the window loop). Unblocks long matches. Trips BATCH-SIDE CHANGE CHECKLIST.
-4. **Phase 7 — y-axis bounce calibration** (Batch-side, daylight only). Do LAST — measures against clean silver.
-
-**Only flip `T5_STROKE_DRIVEN_SILVER` on after #1-#2 land and far/near reconciles to ~50/50.**
-
-## Verification commands (paste-ready)
-
-```bash
-# Serve bench (mandatory before any detector edit)
-.venv/Scripts/python -m ml_pipeline.diag.bench
-
-# Confirm the stranded far pose (the next move's premise)
-.venv/Scripts/python -c "from db_init import engine; from sqlalchemy import text; c=engine.connect(); \
-print([dict(r._mapping) for r in c.execute(text(\"SELECT 'main' t, COUNT(*) FILTER (WHERE keypoints IS NOT NULL AND court_y<11.885) far_kp FROM ml_analysis.player_detections WHERE job_id::text='78c32f53-5580-4a88-a4e7-7506e59b2b52' UNION ALL SELECT 'roi', COUNT(*) FILTER (WHERE keypoints IS NOT NULL AND court_y<11.885) FROM ml_analysis.player_detections_roi WHERE job_id::text='78c32f53-5580-4a88-a4e7-7506e59b2b52'\"))])"
-
-# Try the gated stroke-driven path locally (env ON) — for experimentation only
-T5_STROKE_DRIVEN_SILVER=1 .venv/Scripts/python -c "from ml_pipeline.build_silver_match_t5 import build_silver_match_t5; print(build_silver_match_t5('78c32f53-5580-4a88-a4e7-7506e59b2b52', replace=True))"
-# Restore live state (env OFF / default rebuilds bounce-driven 139/60)
-.venv/Scripts/python -c "from ml_pipeline.build_silver_match_t5 import build_silver_match_t5; print(build_silver_match_t5('78c32f53-5580-4a88-a4e7-7506e59b2b52', replace=True))"
-```
-
-## Read in this order before doing anything else
-
-1. This file.
-2. `docs/_investigation/far_player_accuracy.md` (the far-player + A/B identity diagnosis).
-3. `docs/north_star.md` §"★ BRONZE-FIRST PRINCIPLE".
-4. `CLAUDE.md` "Things not to do" #11.
-5. `.claude/handover_t5.md` §"Stroke detection" + §"BATCH-SIDE CHANGE CHECKLIST" if touching detector code.
-
-Then run the bench to confirm the floor before touching code.
+## Task board (open)
+- **#16 ROI Bug 2** — code done + validated on branch; **deploy is the open step** (above).
+- **#12 B1** — short-gap ball interpolation (+7% coverage, tightens timing). Batch-side. Measurable vs SA.
+- **#13 B2** — ball-detector fine-tune for the 29% sustained-gap loss (the big coverage lever). Batch, multi-day; uses existing `training/` pipeline + Phase 5c corpus.
+- **#9 Stage-2 bounce precision** — ON HOLD (cheap silver filters underdeliver; needs ground-truth/coverage first).
+- **Q2-B player identity — PARKED** (deleted from board). End-anchoring not viable: T5 detects only 3 noisy games for a ~12-game match; side-based tracking can't see changeovers. Use SortAI identity or relabel "Near/Far". Bronze-first #11.
 
 ## Things NOT to do (load-bearing)
+- **Don't put the ROI Bug 2 change on main without a daylight deploy + test match.** It's Batch-side; main = old image until deploy, so merging without deploying creates the silent-stale hazard (CLAUDE.md #8).
+- **Don't chase T5 bounce coords vs SA as "calibration"** — calibration is faithful; the gap is precision + coverage + far-court resolution limit.
+- **Don't flip `T5_STROKE_DRIVEN_SILVER`** (unchanged; still gated OFF).
+- **CPU box:** `bench_ball` ~3h here; prefer running it in the background and continuing.
 
-- **Don't flip `T5_STROKE_DRIVEN_SILVER` on** until far pose is wired in (#1) and near/far reconciles. It currently inflates the near side ~2.6×.
-- **Don't chase SportAI reconciliation by reorganising silver.** It's a bronze problem (CLAUDE.md #11).
-- **Don't touch Phase 7 / Bug 2 overnight** — Batch-side, big blast radius. Daylight only.
-- **Don't push T5 detector changes without `bench` green** (CLAUDE.md #5).
+## Read in this order
+1. This file.
+2. `docs/_investigation/bounce_accuracy.md` (§7 conclusion + §8 scope + the 2026-05-26 SA-yardstick update).
+3. `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST" + deploy playbook (for the ROI Bug 2 deploy).
+4. `docs/north_star.md` Phase 7 (reframed).
