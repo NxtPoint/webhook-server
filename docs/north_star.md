@@ -51,6 +51,8 @@ The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silv
 
 **Verdict:** counts are already close to SA on most fields (active 97/94, fh 38/41, pts 17/18). **Below the 70-80% build bar:** ball bounce (worst), serve recall, volley over-count, backhand over-count, set numbering, A/B identity. **That list IS the "finish the build" backlog before train-sign-off.**
 
+> **★ The far-court ceiling (confirmed 2026-05-27).** Four of the weak fields — **serve precision, ball bounce, far-player stroke, A/B identity** — all fail for the **same root reason**: the far player is ~30 px and far bounces are missed, so the far half lacks the corroborating signal. No heuristic/threshold separates real-far from FP-far (both lack the far bounce). Proven repeatedly: bounce-precision filters underdeliver; the near-stroke gate is provisional; Q2-B identity needs changeover detection we can't do; and gating `pose_only` serves was already reverted (kills real far serves — detector.py:539 NOTE). **Implication:** the build phase has hit its ceiling *with standard models* on the far-court fields. Their remaining gains come from **coverage (Phase 5-7, which lifts all four at once)** + **training** — NOT from more silver/detector heuristics. The non-far fields (near serves/strokes, court mapping, volley, point structure) are in good shape. **So: stop tweaking far-court fields; the path is coverage + train-later.**
+
 ---
 
 ## Product goal
