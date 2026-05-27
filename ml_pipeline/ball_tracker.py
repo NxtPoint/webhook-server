@@ -126,8 +126,19 @@ class BallDetection:
 # ── BallTracker ─────────────────────────────────────────────────────────────
 
 class BallTracker:
-    def __init__(self, weights_path: str = None, device: str = None):
+    def __init__(self, weights_path: str = None, device: str = None, model=None):
+        """`model`: an already-loaded TrackNet model to reuse instead of
+        loading weights from disk. Lets a caller that runs many short windows
+        (roi_extractors/bounces.py) load the model ONCE and share it across
+        per-window BallTracker instances — the model is read-only at inference,
+        and every other piece of per-run state (_frame_buffer, _prev_gray,
+        _bg_estimator, detections, _diag) is still re-initialised per instance,
+        so there is no cross-window state leak. Fixes the ~7x per-window
+        slowdown (Bug 2) that timed out long matches."""
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # FP16 on CUDA (~1.5x). Set here (not only in _load_model) so an
+        # injected model — which skips _load_model — still has the flag.
+        self._use_fp16 = ("cuda" in str(self.device))
 
         # ── TrackNet version selection ──────────────────────────────────────
         # V3 is automatically preferred when its weights file exists and no
@@ -145,17 +156,19 @@ class BallTracker:
                 weights_path = TRACKNET_V3_WEIGHTS
                 self._num_input_frames = TRACKNET_V3_NUM_INPUT_FRAMES    # 8
                 self._in_channels = TRACKNET_V3_IN_CHANNELS              # 27
-                logger.info(
-                    "TrackNet V3 weights found — loading V3 architecture "
-                    "(%d-frame + background, %d channels, U-Net with skips): %s",
-                    self._num_input_frames, self._in_channels, weights_path,
-                )
+                if model is None:
+                    logger.info(
+                        "TrackNet V3 weights found — loading V3 architecture "
+                        "(%d-frame + background, %d channels, U-Net with skips): %s",
+                        self._num_input_frames, self._in_channels, weights_path,
+                    )
             else:
                 self._use_v3 = False
                 weights_path = TRACKNET_WEIGHTS
                 self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES       # 3
                 self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3        # 9
-                logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
+                if model is None:
+                    logger.info("Using TrackNet V2 (3-frame context): %s", weights_path)
         else:
             # Explicit override — detect from channel count
             self._use_v3 = (weights_path == TRACKNET_V3_WEIGHTS) or (
@@ -168,7 +181,7 @@ class BallTracker:
                 self._num_input_frames = TRACKNET_NUM_INPUT_FRAMES
                 self._in_channels = TRACKNET_NUM_INPUT_FRAMES * 3
 
-        self.model = self._load_model(weights_path)
+        self.model = model if model is not None else self._load_model(weights_path)
         self.scale_x = 1.0
         self.scale_y = 1.0
         self._frame_buffer: list = []  # last N BGR frames (resized to model input dims)
@@ -218,8 +231,7 @@ class BallTracker:
         model.load_state_dict(state)
         model.to(self.device)
         model.eval()
-        # Enable FP16 on CUDA for ~1.5x inference speedup
-        self._use_fp16 = ("cuda" in str(self.device))
+        # FP16 flag is set in __init__ (so the injected-model path has it too).
         if self._use_fp16:
             model = model.half()
         logger.info(

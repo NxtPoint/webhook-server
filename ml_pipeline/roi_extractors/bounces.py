@@ -228,15 +228,20 @@ def _run_roi_window(
     start_frame: int,
     end_frame: int,
     roi: Tuple[int, int, int, int],
+    model=None,
 ) -> list:
     """Run a fresh BallTracker on the ROI crop for frames [start, end).
+
+    `model`: a preloaded TrackNet model shared across windows (Bug 2 fix) so
+    the weights aren't reloaded every window. A fresh BallTracker is still
+    constructed per window, so all per-window state stays clean.
 
     Returns BallDetection list in CROP-PIXEL coords (caller projects)."""
     import cv2
     from ml_pipeline.ball_tracker import BallTracker
 
     x0, y0, x1, y1 = roi
-    tracker = BallTracker()
+    tracker = BallTracker(model=model)
 
     cap = cv2.VideoCapture(video_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -446,11 +451,17 @@ def extract_far_bounces(
         x0, y0, x1, y1, x1 - x0, y1 - y0,
     )
 
-    # 5. Run BallTracker on each window, project, filter to service-box zone
+    # 5. Run BallTracker on each window, project, filter to service-box zone.
+    #    Load the TrackNet model ONCE and share it across windows (Bug 2 fix:
+    #    constructing a fresh BallTracker per window reloaded the weights every
+    #    time, ~7x slowdown that timed out long matches at the 6h Batch limit).
+    from ml_pipeline.ball_tracker import BallTracker
+    shared_tracker = BallTracker()
+    shared_model = shared_tracker.model
     all_rows: list = []
     for i, (s, e, c) in enumerate(windows):
         t0 = time.time()
-        dets = _run_roi_window(video_path, s, e, pixel_roi)
+        dets = _run_roi_window(video_path, s, e, pixel_roi, model=shared_model)
         projected = _project_dets_to_court(dets, pixel_roi, court_detector)
         # Stamp the cluster centroid timestamp on each row for traceability
         window_ts = c / fps
