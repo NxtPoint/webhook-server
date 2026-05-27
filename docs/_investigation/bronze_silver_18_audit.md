@@ -58,3 +58,36 @@ Your principle is the **right target**, and it's **partly true today** — but n
 6. **volley** → derive from a model signal (ball-not-bounced-before-hit) or keep as a labelled silver analytic.
 
 **Governance:** every silver "derivation" that isn't pure projection or a legitimate analytic (score/zone/serve-location) must be tagged in code as either (a) inherit-from-bronze, or (b) STOPGAP-until-model-X. No silent re-derivation.
+
+---
+
+## The target architecture — ONE MODEL PER FACT (Tomo's framing, 2026-05-27)
+
+The organising principle: **a fact is "done" when a dedicated model turns raw detections into a normalised bronze answer, and silver merely projects it.** Serve "works" precisely because it has a model (`serve_detector`). The fields that don't work are the ones with no model — silver is doing the model's job inside a SQL/Python query on raw data. That's the anti-pattern to eliminate.
+
+```
+RAW layer    detectors           →  per-frame detections (noisy, no semantics)
+             TrackNet/WASB           ml_analysis.ball_detections (x,y,court,is_bounce)
+             YOLOv8/ViTPose          ml_analysis.player_detections (bbox,pose)
+                                      court_detector (calibration)
+MODEL layer  one model per fact   →  normalised "final answer" events (THIS is what was missing)
+             serve_detector          ml_analysis.serve_events        ✅ EXISTS
+             stroke_detector         ml_analysis.stroke_events (timing only — NO type)  ⚠️ partial
+             ↳ swing-type classifier (fh/bh/overhead)                 ❌ MISSING (untrained)
+             ↳ bounce detector (true ground-contact model)            ❌ MISSING (only a velocity-reversal rule lives inside ball_tracker)
+             ↳ identity model (stable A/B)                            ❌ MISSING
+             ↳ volley signal (ball-not-bounced-before-hit)            ❌ MISSING
+BRONZE       = the MODEL-layer event tables (the normalised answers)
+SILVER       pure projection of bronze events → point_detail, + analytics (score, serve location 1-8, zones, aggression). NO re-derivation.
+```
+
+**Build backlog reframed as "build the missing models":**
+| fact | model today | action |
+|---|---|---|
+| serve | `serve_detector` ✅ | wire `serve_events`→silver NOW; improve model precision (over-fires 51 vs 25 on M1) |
+| ball bounce | velocity-reversal rule *inside* ball_tracker | promote to a real bounce model in the MODEL layer; move the silver proximity-filter into it |
+| swing type | none (classifier untrained) | train stroke_classifier → emits fh/bh to bronze → silver inherits |
+| identity | none | identity model or accept Near/Far |
+| volley | none | derive in a model from bounce-vs-hit timing |
+
+**Answer to "are we overthinking it?": no — this IS the right structure, and it unifies everything.** "Build the 18 to 70-80%" = "build a model per fact." "Train to 90-95% free via dual-submit" = train each model. "Silver inherits 100%" = the end state once every fact has a model. We do NOT need to re-discover this with more agents; we need to build the models one at a time (and can parallelise *independent* model builds later).
