@@ -1373,7 +1373,7 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
     WHERE p.task_id = :tid AND p.id = f.id;
     """
 
-    return conn.execute(text(sql), {
+    params = {
         "tid": task_id,
         "p1": p1, "p2": p2,
         "eps": float(EPS), "y_max": float(COURT_LEN),
@@ -1382,7 +1382,61 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
         "half_y": float(HALF_Y),
         "svc": float(SVC_LINE), "far_svc": float(FAR_SVC_LINE),
         "b1": float(B1), "b2": float(B2), "b3": float(B3),
-    }).rowcount or 0
+    }
+
+    # --- Route B staging (perf, no behaviour change) -----------------------
+    # The query above is one statement with ~25 chained CTEs. Postgres
+    # materialises each CTE with a rows=1 estimate (CTEs carry no stats), so the
+    # second-half per-row correlated subqueries (ace_pts / point_winner / serve
+    # labels that scan shot_outcome) get catastrophic nested-loop plans —
+    # pass-3 hung 20+ min on a 44-min match (ee12d918), which is why the SA
+    # ingest died and corpus auto-land stayed blocked.
+    #
+    # Fix: split the chain at shot_outcome. Stage 1 materialises everything
+    # through shot_outcome into a TEMP table; ANALYZE + index it so the planner
+    # has real row counts; Stage 2 runs the second half against that table. The
+    # spine CTEs the second half still references are re-derived from the temp
+    # table (shot_outcome itself is rewritten to read the table directly so the
+    # hot correlated subqueries get index scans, not rows=1 CTE scans). Same CTE
+    # logic, byte-identical output (validated). See project_dual_submit_autoland.
+    import re as _re
+    _MARKER = "-- ========== SERVE LABELS (ace, double, service_winner) =========="
+    _head, _tail = sql.split(_MARKER, 1)
+
+    _stage1 = (
+        "CREATE TEMP TABLE _p3_shots ON COMMIT DROP AS"
+        + _head.rstrip().rstrip(",")           # close shot_outcome CTE; drop the trailing comma
+        + "\n    SELECT * FROM shot_outcome;"
+    )
+    # Re-derive the spine CTEs the second half references, now reading from the
+    # analysed temp table. shot_outcome -> _p3_shots directly (real table =>
+    # stats => good plans for the hot per-row subqueries); the others stay thin
+    # wrappers (they're not scanned by per-row correlated subqueries).
+    _wrappers = """WITH
+    with_game AS (SELECT * FROM _p3_shots),
+    with_try_ff AS (SELECT * FROM _p3_shots),
+    excl_chain AS (SELECT id, exclude_d FROM _p3_shots),
+    first_serve_per_point AS (
+      SELECT DISTINCT ON (task_id, point_number) task_id, point_number, server_id
+      FROM _p3_shots
+      WHERE serve_d IS TRUE AND point_number > 0 AND ball_hit_s IS NOT NULL
+      ORDER BY task_id, point_number, ball_hit_s, id
+    ),
+    first_serve_task AS (
+      SELECT task_id, MIN(ball_hit_s) AS first_serve_s
+      FROM _p3_shots WHERE serve_d IS TRUE AND ball_hit_s IS NOT NULL
+      GROUP BY task_id
+    ),
+    """
+    _stage2 = _wrappers + _MARKER + _re.sub(r"\bshot_outcome\b", "_p3_shots", _tail)
+
+    conn.execute(text("DROP TABLE IF EXISTS _p3_shots"))
+    conn.execute(text(_stage1), params)
+    conn.execute(text("ANALYZE _p3_shots"))
+    conn.execute(text("CREATE INDEX ON _p3_shots (task_id, point_number)"))
+    conn.execute(text("CREATE INDEX ON _p3_shots (task_id, point_number, ball_hit_s, id)"))
+    rc = conn.execute(text(_stage2), params).rowcount or 0
+    return rc
 
 
 # ============================================================
