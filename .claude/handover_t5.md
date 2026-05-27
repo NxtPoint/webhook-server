@@ -239,7 +239,7 @@ python -m ml_pipeline.diag.bench_silver.snapshot --task <T5_TID>
 # upload both to s3://nextpoint-prod-uploads/fixtures/silver/
 ```
 
-Full bootstrap playbook (the steps you run NOW to land the first fixture): `.claude/strategy/silver_bench_design_2026-05-21.md` §11. Design + spec: same doc §2-§7.
+Full bootstrap playbook (the steps you run NOW to land the first fixture): `.claude/_archive/silver_bench_design_2026-05-21.md` §11. Design + spec: same doc §2-§7.
 
 The silver bench exists because Phase 3 part 2 was reverted twice (`00b8639`, `f0b104e`) — both shipped broken silver row counts to prod that a local bench would have caught in seconds.
 
