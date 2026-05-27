@@ -197,6 +197,22 @@ textarea.edit-input { resize: vertical; min-height: 60px; }
 .progress-stat-value { font-weight: 700; font-size: 0.88rem; color: var(--text); }
 .progress-stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.3px; }
 
+/* UPLOAD STATUS LINE */
+.upload-status {
+  font-size: 0.82rem; font-weight: 500; margin: 12px 0 6px;
+  display: flex; align-items: center; gap: 8px; color: var(--text-sec);
+  min-height: 18px; line-height: 1.4;
+}
+.upload-status.uploading { color: var(--green); }
+.upload-status.reconnecting, .upload-status.offline, .upload-status.paused { color: var(--amber); }
+.inline-spin {
+  width: 13px; height: 13px; flex-shrink: 0; border-radius: 50%;
+  border: 2px solid var(--border); border-top-color: var(--green);
+  animation: spin 0.8s linear infinite;
+}
+.upload-status.reconnecting .inline-spin { border-top-color: var(--amber); }
+#uploadActions { margin-top: 4px; }
+
 /* RESUME BANNER */
 .resume-banner {
   background: rgba(217,119,6,0.08); border: 1px solid var(--amber);
@@ -330,7 +346,7 @@ function apiPost(path, body) {
 const STATE = {
   step: 1,
   gameType: 'singles',
-  upload: { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 },
+  upload: { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0, fileLastModified: null, file: null, chunkSize: 10 * 1024 * 1024, status: 'idle' },
   taskId: null,
   entitlements: null,
   members: [],
@@ -343,7 +359,7 @@ const STATE = {
 const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_RETRIES = 3;
 const RESUME_KEY = 'tf5_media_upload_state';
-const ALLOWED_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv'];
+const ALLOWED_EXTENSIONS = ['mp4', 'mov', 'm4v', 'mpg', 'mpeg'];  // must match backend allow-list in api_multipart_initiate
 const LARGE_FILE_WARN_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
 
 // ============================================================
@@ -396,6 +412,7 @@ function saveUploadState() {
     fileName: STATE.upload.fileName,
     fileSize: STATE.upload.fileSize,
     fileLastModified: STATE.upload.fileLastModified,
+    chunkSize: STATE.upload.chunkSize || CHUNK_SIZE,
     savedAt: Date.now(),
   };
   try { localStorage.setItem(RESUME_KEY, JSON.stringify(s)); } catch (e) {}
@@ -634,30 +651,291 @@ function selectGameType(type, card) {
 }
 
 // ============================================================
-// TASK 4 — STEP 2: VIDEO UPLOAD (CHUNKED MULTIPART)
+// TASK 4 — STEP 2: VIDEO UPLOAD (CHUNKED MULTIPART, AUTO-RESUMING)
 // ============================================================
-let uploadAborted = false;
-let uploadInProgress = false;
+// Design: an upload never "dies". Transient failures (screen sleep, wifi
+// drop, timeout, expired presign, S3 hiccup) trigger a silent auto-resume
+// with capped backoff; we re-presign every attempt and wait out offline
+// periods. The in-memory File survives any in-session failure, so resume is
+// zero-click. Only a full page reload loses the File handle (browser security
+// limit) — that's the single case that needs a one-tap re-pick.
+let uploadAborted = false;       // hard cancel — stop everything, discard progress
+let uploadInProgress = false;    // a chunk-pushing loop is actively running
+let autoRetryCount = 0;          // auto-resume attempts since the last good chunk
+let autoRetryTimer = null;       // pending setTimeout for a scheduled auto-resume
+let countdownTimer = null;       // 1s interval driving the "resuming in Ns" countdown
+const MAX_AUTO_RETRIES = 10;     // automatic recovery attempts before we ask the user
+const MAX_BACKOFF_MS = 30000;    // cap the exponential backoff between auto-resumes
 
-function renderStep2(el) {
-  const saved = loadUploadState();
-  let resumeHtml = '';
-  if (saved && saved.key && saved.uploadId) {
-    resumeHtml = `
-      <div class="resume-banner" id="resumeBanner">
-        <div class="resume-banner-text">
-          Interrupted upload detected: <strong>${esc(saved.fileName)}</strong> (${fmtBytes(saved.fileSize)})
-          &mdash; ${saved.completedParts.length}/${Math.ceil(saved.fileSize / CHUNK_SIZE)} chunks uploaded
-        </div>
-        <div class="resume-banner-actions">
-          <button onclick="resumeUpload()">Resume</button>
-          <button class="discard" onclick="discardResume()">Discard</button>
-        </div>
-      </div>`;
+function freshUpload() {
+  return { key: null, uploadId: null, completedParts: [], fileName: null,
+           fileSize: 0, fileLastModified: null, file: null,
+           chunkSize: CHUNK_SIZE, status: 'idle' };
+}
+
+// Transient by default — driveUpload() will auto-resume on these.
+function recoverable(msg) { return new Error(msg || 'upload error'); }
+// Permanent — no amount of retrying helps (bad file, no entitlement, too large).
+function permanent(msg) { const e = new Error(msg || 'upload error'); e.permanent = true; return e; }
+
+function clearAutoRetry() {
+  if (autoRetryTimer) { clearTimeout(autoRetryTimer); autoRetryTimer = null; }
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+}
+
+// Resolves immediately if online, otherwise when the browser fires 'online'.
+function waitForOnline() {
+  if (navigator.onLine) return Promise.resolve();
+  return new Promise(resolve => {
+    const h = () => { window.removeEventListener('online', h); resolve(); };
+    window.addEventListener('online', h);
+  });
+}
+
+// Single source of truth for the visible state + which buttons to show.
+function setUploadStatus(state, text) {
+  STATE.upload.status = state;
+  const el = document.getElementById('uploadStatus');
+  if (el) {
+    const spin = (state === 'uploading' || state === 'reconnecting') ? '<span class="inline-spin"></span>' : '';
+    el.className = 'upload-status ' + state;
+    el.innerHTML = spin + '<span>' + esc(text) + '</span>';
+  }
+  renderUploadActions();
+}
+
+function renderUploadActions() {
+  const c = document.getElementById('uploadActions');
+  if (!c) return;
+  const st = STATE.upload.status;
+  if (st === 'paused') {
+    c.innerHTML =
+      '<button class="btn-primary" onclick="manualResume()">Resume upload</button>' +
+      '<button class="btn-danger" onclick="cancelUpload()">Cancel &amp; discard</button>';
+  } else if (st === 'offline' || st === 'reconnecting') {
+    c.innerHTML =
+      '<button class="btn-secondary" onclick="manualResume()">Try now</button>' +
+      '<button class="btn-danger" onclick="cancelUpload()">Cancel &amp; discard</button>';
+  } else { // uploading / finalising
+    c.innerHTML = '<button class="btn-danger" onclick="cancelUpload()">Cancel upload</button>';
+  }
+}
+
+// Bytes already durably stored (used for the progress bar + ETA on resume).
+function bytesFromParts(file, chunkSize) {
+  let b = 0;
+  for (const p of STATE.upload.completedParts) {
+    const s = (p.PartNumber - 1) * chunkSize;
+    const e = Math.min(s + chunkSize, file.size);
+    b += (e - s);
+  }
+  return b;
+}
+
+function showUploadShell() {
+  const dz = document.getElementById('dropZone'); if (dz) dz.style.display = 'none';
+  const rb = document.getElementById('resumeBanner'); if (rb) rb.style.display = 'none';
+  const ui = document.getElementById('uploadUI'); if (ui) ui.style.display = 'block';
+  const dn = document.getElementById('uploadDone'); if (dn) dn.style.display = 'none';
+  const fn = document.getElementById('uploadFileName');
+  if (fn) fn.textContent = STATE.upload.fileName || '';
+}
+
+// ---- the resumable driver: safe to call repeatedly, re-entrant-guarded ----
+async function driveUpload() {
+  if (uploadAborted || uploadInProgress) return;
+  const file = STATE.upload.file;
+  if (!file) return;            // File lost (page reloaded) — needs a one-time re-pick
+
+  uploadInProgress = true;
+  clearAutoRetry();
+  showUploadShell();
+  await acquireWakeLock();
+
+  try {
+    setUploadStatus('uploading', 'Preparing upload…');
+    await ensureLiveSession(file);
+
+    const chunkSize = STATE.upload.chunkSize || CHUNK_SIZE;
+    const totalChunks = Math.ceil(file.size / chunkSize);
+
+    setUploadStatus('uploading', 'Uploading…');
+    await uploadChunks(file, totalChunks);
+    if (uploadAborted) { uploadInProgress = false; return; }
+
+    setUploadStatus('uploading', 'Finalising…');
+    await syncCompletedFromServer();
+    const parts = STATE.upload.completedParts.slice().sort((a, b) => a.PartNumber - b.PartNumber);
+    if (parts.length < totalChunks) throw recoverable('incomplete (' + parts.length + '/' + totalChunks + ')');
+
+    const completeRes = await apiPost('/upload/api/multipart/complete', {
+      key: STATE.upload.key, upload_id: STATE.upload.uploadId, parts,
+    });
+    const completeData = await completeRes.json().catch(() => ({}));
+    if (!completeData.ok) throw recoverable(completeData.error || 'complete_failed');
+
+    onUploadSuccess(file);
+  } catch (e) {
+    uploadInProgress = false;
+    if (uploadAborted) return;
+    if (e && e.permanent) { showUploadFatal(e.message); return; }
+    scheduleAutoResume((e && e.message) ? e.message : 'network error');
+    return;
+  }
+  uploadInProgress = false;
+}
+
+async function initiateSession(file) {
+  const initRes = await apiPost('/upload/api/multipart/initiate', {
+    name: file.name, content_type: file.type || 'video/mp4', size: file.size,
+  });
+  const initData = await initRes.json().catch(() => ({}));
+  if (!initData.ok) {
+    // 400/403 are about the file or the account — retrying won't help.
+    if (initRes.status === 400 || initRes.status === 403) throw permanent(initData.error || 'cannot_start_upload');
+    throw recoverable(initData.error || 'initiate_failed');
+  }
+  STATE.upload.key = initData.key;
+  STATE.upload.uploadId = initData.upload_id;
+  STATE.upload.completedParts = [];
+  saveUploadState();
+}
+
+// Ensure a live multipart session; re-initiate if S3 has forgotten/expired it.
+async function ensureLiveSession(file) {
+  if (!STATE.upload.key || !STATE.upload.uploadId) { await initiateSession(file); return; }
+  try {
+    await syncCompletedFromServer();
+  } catch (e) {
+    if (/NoSuchUpload|NoSuchKey|not.?found|404|expired/i.test(e.message || '')) {
+      STATE.upload.key = null; STATE.upload.uploadId = null; STATE.upload.completedParts = [];
+      await initiateSession(file);
+    } else {
+      throw e;  // transient — let auto-resume retry the whole drive
+    }
+  }
+}
+
+// Server is the source of truth for which parts (and ETags) are durably stored.
+async function syncCompletedFromServer() {
+  const listRes = await apiPost('/upload/api/multipart/list-parts', {
+    key: STATE.upload.key, upload_id: STATE.upload.uploadId,
+  });
+  const listData = await listRes.json().catch(() => ({}));
+  if (!listData.ok) throw recoverable(listData.error || 'list_parts_failed');
+  STATE.upload.completedParts = (listData.parts || []).map(p => ({ PartNumber: p.PartNumber, ETag: p.ETag }));
+  saveUploadState();
+}
+
+// Upload one part with a fresh presign per attempt (so a 1h-expired URL never blocks).
+async function uploadOneChunk(partNumber, chunk) {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (uploadAborted) throw recoverable('aborted');
+    if (!navigator.onLine) {
+      setUploadStatus('offline', 'You’re offline — waiting for your connection…');
+      await waitForOnline();
+      if (uploadAborted) throw recoverable('aborted');
+    }
+    try {
+      const presignRes = await apiPost('/upload/api/multipart/presign-part', {
+        key: STATE.upload.key, upload_id: STATE.upload.uploadId, part_number: partNumber,
+      });
+      const presignData = await presignRes.json().catch(() => ({}));
+      if (!presignData.ok) {
+        if (presignRes.status === 403) throw permanent(presignData.error || 'not_allowed');
+        throw new Error(presignData.error || 'presign_failed');
+      }
+
+      const resp = await fetch(presignData.url, { method: 'PUT', body: chunk });
+      if (!resp.ok) throw new Error('S3 HTTP ' + resp.status);
+      // resp.ok proves the part landed; the authoritative ETag is re-read from
+      // list-parts at finalise, so a missing header here (CORS) is non-fatal.
+      return resp.headers.get('ETag') || '';
+    } catch (e) {
+      if (e && e.permanent) throw e;                  // don't burn retries on a permanent error
+      if (attempt < MAX_RETRIES - 1) {
+        setUploadStatus('reconnecting', 'Hiccup on part ' + partNumber + ' — retrying…');
+        await sleep(Math.pow(2, attempt) * 1000);
+      } else {
+        throw recoverable('part ' + partNumber + ': ' + e.message);
+      }
+    }
+  }
+}
+
+// Schedule a silent auto-resume with capped exponential backoff.
+function scheduleAutoResume(reason) {
+  if (uploadAborted) return;
+  clearAutoRetry();
+  if (autoRetryCount >= MAX_AUTO_RETRIES) { enterNeedsAttention(); return; }
+  autoRetryCount++;
+
+  if (!navigator.onLine) {
+    setUploadStatus('offline', 'You’re offline — we’ll resume automatically when your connection returns. Your progress is saved.');
+    return;  // the global 'online' handler restarts driveUpload()
   }
 
-  // Check if upload is already complete (we have a key and came back)
-  if (STATE.upload.key && !STATE.upload.uploadId) {
+  const backoff = Math.min(MAX_BACKOFF_MS, Math.pow(2, autoRetryCount) * 1000);
+  let secs = Math.round(backoff / 1000);
+  const msg = () => 'Connection interrupted — resuming automatically in ' + secs + 's… (your progress is saved)';
+  setUploadStatus('reconnecting', msg());
+  countdownTimer = setInterval(() => { secs = Math.max(0, secs - 1); setUploadStatus('reconnecting', msg()); }, 1000);
+  autoRetryTimer = setTimeout(() => { clearAutoRetry(); driveUpload(); }, backoff);
+}
+
+// Auto-recovery exhausted — hand control back to the user (progress still saved).
+function enterNeedsAttention() {
+  clearAutoRetry();
+  releaseWakeLock();
+  setUploadStatus('paused', 'We couldn’t finish automatically. Your progress is saved — tap Resume to keep going.');
+}
+
+function manualResume() {
+  if (uploadAborted) return;
+  clearAutoRetry();
+  autoRetryCount = 0;
+  driveUpload();
+}
+
+function onUploadSuccess(file) {
+  clearAutoRetry();
+  clearUploadState();
+  STATE.upload.uploadId = null;     // mark complete; key stays for submit
+  STATE.upload.status = 'complete';
+  uploadInProgress = false;
+  releaseWakeLock();
+  const ui = document.getElementById('uploadUI'); if (ui) ui.style.display = 'none';
+  const done = document.getElementById('uploadDone'); if (done) done.style.display = 'block';
+  const info = document.getElementById('uploadDoneInfo');
+  if (info) info.textContent = file.name + ' (' + fmtBytes(file.size) + ')';
+}
+
+// Map known backend error codes to friendly, actionable copy.
+function friendlyError(code) {
+  const c = String(code || '');
+  if (/entitle|credit|allow|gate|subscription|no_active|limit/i.test(c)) return 'You don’t have an upload available on your plan right now. Check your plan & credits, then try again.';
+  if (/unsupported_file_extension|invalid_content_type/i.test(c)) return 'That file type isn’t supported. Please upload an MP4, MOV, M4V, MPG, or MPEG video.';
+  if (/file_too_large/i.test(c)) return 'That file is too large to upload. Please trim it or export it at a smaller size, then try again.';
+  if (/invalid_size/i.test(c)) return 'We couldn’t read that file’s size. Please try a different file.';
+  return 'We couldn’t start the upload (' + c + '). Please try again, or pick a different file.';
+}
+
+// Permanent failure: abort the (empty) session, reset to the drop zone, explain clearly.
+function showUploadFatal(code) {
+  clearAutoRetry();
+  releaseWakeLock();
+  uploadInProgress = false;
+  const key = STATE.upload.key, uploadId = STATE.upload.uploadId;
+  if (key && uploadId) { apiPost('/upload/api/multipart/abort', { key, upload_id: uploadId }).catch(() => {}); }
+  clearUploadState();
+  STATE.upload = freshUpload();
+  renderStep2(document.getElementById('stepContent'));
+  showUploadMsg('error', friendlyError(code));
+}
+
+function renderStep2(el) {
+  // Already uploaded in this session — show the done card.
+  if (STATE.upload.key && !STATE.upload.uploadId && STATE.upload.status === 'complete') {
     el.innerHTML = `
       <div class="section-card">
         <div class="section-title">Upload Video</div>
@@ -671,6 +949,28 @@ function renderStep2(el) {
     return;
   }
 
+  // Reload case: a saved session exists but the File is no longer in memory
+  // (the page was reloaded/closed). This is the only path that needs a re-pick.
+  const saved = loadUploadState();
+  const showReloadBanner = saved && saved.key && saved.uploadId && !STATE.upload.file;
+  let resumeHtml = '';
+  if (showReloadBanner) {
+    const total = Math.max(1, Math.ceil(saved.fileSize / (saved.chunkSize || CHUNK_SIZE)));
+    const pct = Math.min(99, Math.round(((saved.completedParts || []).length / total) * 100));
+    resumeHtml = `
+      <div class="resume-banner" id="resumeBanner">
+        <div class="resume-banner-text">
+          <strong>Welcome back &mdash; your upload is saved.</strong><br>
+          ${esc(saved.fileName)} (${fmtBytes(saved.fileSize)}) &mdash; ${pct}% already uploaded.
+          Pick the same file again and we&rsquo;ll only upload what&rsquo;s left.
+        </div>
+        <div class="resume-banner-actions">
+          <button onclick="resumeFromReload()">Select file &amp; resume</button>
+          <button class="discard" onclick="discardResume()">Discard</button>
+        </div>
+      </div>`;
+  }
+
   el.innerHTML = `
     <div class="section-card">
       <div class="section-title">Upload Video</div>
@@ -681,9 +981,9 @@ function renderStep2(el) {
       <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
         <div class="drop-zone-icon">&#128249;</div>
         <div class="drop-zone-text">Drag & drop your match video here</div>
-        <div class="drop-zone-hint">or click to browse &mdash; MP4, MOV, AVI, MKV</div>
+        <div class="drop-zone-hint">or click to browse &mdash; MP4, MOV, M4V, MPG, MPEG</div>
       </div>
-      <input type="file" id="fileInput" accept="video/*,.mp4,.mov,.avi,.mkv" style="display:none" onchange="handleFileSelect(event)">
+      <input type="file" id="fileInput" accept="video/*,.mp4,.mov,.m4v,.mpg,.mpeg" style="display:none" onchange="handleFileSelect(event)">
       <div id="uploadUI" style="display:none">
         <div class="upload-progress">
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
@@ -698,7 +998,8 @@ function renderStep2(el) {
             <div class="progress-stat"><div class="progress-stat-value" id="statUploaded">0 MB</div><div class="progress-stat-label">Uploaded</div></div>
           </div>
         </div>
-        <button class="btn-danger" id="btnCancel" onclick="cancelUpload()">Cancel Upload</button>
+        <div class="upload-status uploading" id="uploadStatus"></div>
+        <div id="uploadActions"></div>
       </div>
       <div id="uploadDone" style="display:none">
         <div class="success-card">
@@ -719,6 +1020,18 @@ function renderStep2(el) {
   if (!('wakeLock' in navigator)) {
     const ww = document.getElementById('wakelockWarn');
     if (ww) ww.classList.add('show');
+  }
+
+  // Mid-session re-entry (navigated to another step and back while an upload was
+  // live or paused) — the File is still in memory, so show the upload UI and keep going.
+  if (STATE.upload.file && STATE.upload.uploadId && STATE.upload.status !== 'complete') {
+    showUploadShell();
+    const st = STATE.upload.status === 'idle' ? 'uploading' : STATE.upload.status;
+    const txt = st === 'paused'  ? 'Paused — tap Resume to continue. Your progress is saved.'
+              : st === 'offline' ? 'You’re offline — we’ll resume automatically when your connection returns.'
+              : 'Uploading…';
+    setUploadStatus(st, txt);
+    if (!uploadInProgress && !uploadAborted) driveUpload();
   }
 }
 
@@ -743,7 +1056,7 @@ function handleFileSelect(e) {
 function validateFile(file) {
   const ext = (file.name.split('.').pop() || '').toLowerCase();
   if (!ALLOWED_EXTENSIONS.includes(ext)) {
-    return `Unsupported file type (.${ext}). Please upload MP4, MOV, AVI, or MKV.`;
+    return `Unsupported file type (.${ext}). Please upload MP4, MOV, M4V, MPG, or MPEG.`;
   }
   return null;
 }
@@ -755,164 +1068,64 @@ function showUploadMsg(type, text) {
   bar.textContent = text;
 }
 
-async function startFileUpload(file) {
+function startFileUpload(file) {
   const err = validateFile(file);
   if (err) { showUploadMsg('error', err); return; }
 
   if (file.size > LARGE_FILE_WARN_BYTES) {
-    showUploadMsg('warn', `Large file (${fmtBytes(file.size)}). Upload may take a while. Keep your screen on.`);
+    showUploadMsg('warn', `Large file (${fmtBytes(file.size)}). This can take a while — you can leave this tab open; we’ll keep your screen awake and resume automatically if anything interrupts it.`);
   }
 
   uploadAborted = false;
-  uploadInProgress = true;
+  autoRetryCount = 0;
+  STATE.upload = {
+    key: null, uploadId: null, completedParts: [],
+    fileName: file.name, fileSize: file.size, fileLastModified: file.lastModified,
+    file: file, chunkSize: CHUNK_SIZE, status: 'uploading',
+  };
 
-  // Acquire Wake Lock
-  const wlOk = await acquireWakeLock();
-  if (!wlOk && 'wakeLock' in navigator) {
-    showUploadMsg('warn', 'Could not acquire Wake Lock. Keep your screen on during upload.');
-  }
-
-  // Show upload UI, hide drop zone
-  document.getElementById('dropZone').style.display = 'none';
-  const rb = document.getElementById('resumeBanner');
-  if (rb) rb.style.display = 'none';
-  document.getElementById('uploadUI').style.display = 'block';
-  document.getElementById('uploadFileName').textContent = file.name;
-
-  const contentType = file.type || 'video/mp4';
-
-  try {
-    // 1. INITIATE MULTIPART
-    const initRes = await apiPost('/upload/api/multipart/initiate', {
-      name: file.name,
-      content_type: contentType,
-      size: file.size,
-    });
-    const initData = await initRes.json();
-    if (!initData.ok) throw new Error(initData.error || 'initiate_failed');
-
-    const { key, upload_id } = initData;
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
-    STATE.upload = {
-      key, uploadId: upload_id,
-      completedParts: [],
-      fileName: file.name,
-      fileSize: file.size,
-      fileLastModified: file.lastModified,
-    };
-    saveUploadState();
-
-    // 2. UPLOAD CHUNKS
-    await uploadChunks(file, key, upload_id, totalChunks, 0);
-
-    if (uploadAborted) return;
-
-    // 3. LIST PARTS FROM SERVER (reliable ETag source)
-    const listRes = await apiPost('/upload/api/multipart/list-parts', { key, upload_id });
-    const listData = await listRes.json();
-    if (!listData.ok) throw new Error(listData.error || 'list_parts_failed');
-
-    const serverParts = listData.parts.map(p => ({
-      PartNumber: p.PartNumber,
-      ETag: p.ETag,
-    }));
-
-    if (serverParts.length < totalChunks) {
-      throw new Error(`Server has ${serverParts.length}/${totalChunks} parts. Upload incomplete.`);
-    }
-
-    // 4. COMPLETE MULTIPART
-    const completeRes = await apiPost('/upload/api/multipart/complete', {
-      key, upload_id, parts: serverParts,
-    });
-    const completeData = await completeRes.json();
-    if (!completeData.ok) throw new Error(completeData.error || 'complete_failed');
-
-    // SUCCESS
-    clearUploadState();
-    STATE.upload.uploadId = null; // mark complete (key stays for submit)
-
-    document.getElementById('uploadUI').style.display = 'none';
-    document.getElementById('uploadDone').style.display = 'block';
-    document.getElementById('uploadDoneInfo').textContent = `${file.name} (${fmtBytes(file.size)})`;
-
-    releaseWakeLock();
-    uploadInProgress = false;
-
-  } catch (e) {
-    uploadInProgress = false;
-    releaseWakeLock();
-    if (!uploadAborted) {
-      showUploadMsg('error', 'Upload failed: ' + e.message);
-      const bar = document.getElementById('progressBar');
-      if (bar) bar.classList.add('error');
-    }
-  }
+  driveUpload();   // initiates, uploads, finalises — and silently auto-resumes on any snag
 }
 
-async function uploadChunks(file, key, uploadId, totalChunks, startFrom) {
-  let uploadedBytes = 0;
-  const startTime = Date.now();
-  let lastTimestamp = startTime;
-  let lastBytes = 0;
+async function uploadChunks(file, totalChunks) {
+  const chunkSize = STATE.upload.chunkSize || CHUNK_SIZE;
+  const sessionStart = Date.now();
+  let sessionBytes = 0;                                 // bytes pushed in THIS drive (for speed)
+  let uploadedBytes = bytesFromParts(file, chunkSize);  // total durable bytes (for bar + ETA)
 
-  // Count already completed
-  for (const p of STATE.upload.completedParts) {
-    const pStart = (p.PartNumber - 1) * CHUNK_SIZE;
-    const pEnd = Math.min(pStart + CHUNK_SIZE, file.size);
-    uploadedBytes += (pEnd - pStart);
-  }
+  updateUploadProgress(STATE.upload.completedParts.length, totalChunks, uploadedBytes, file.size, 0, sessionStart);
 
-  for (let i = startFrom; i < totalChunks; i++) {
+  for (let i = 0; i < totalChunks; i++) {
     if (uploadAborted) return;
-
     const partNumber = i + 1;
 
-    // Skip already completed parts (resume)
-    if (STATE.upload.completedParts.some(p => p.PartNumber === partNumber)) {
-      updateUploadProgress(partNumber, totalChunks, uploadedBytes, file.size, 0, startTime);
-      continue;
-    }
+    // Skip parts already durably stored (resume).
+    if (STATE.upload.completedParts.some(p => p.PartNumber === partNumber)) continue;
 
-    // Get presigned URL
-    const presignRes = await apiPost('/upload/api/multipart/presign-part', {
-      key, upload_id: uploadId, part_number: partNumber,
-    });
-    const presignData = await presignRes.json();
-    if (!presignData.ok) throw new Error(presignData.error || 'presign_failed');
-
-    const chunkStart = i * CHUNK_SIZE;
-    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, file.size);
-    const chunk = file.slice(chunkStart, chunkEnd);
-    const chunkSize = chunkEnd - chunkStart;
-
-    // Upload with retries
-    let etag = null;
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (!navigator.onLine) {
+      setUploadStatus('offline', 'You’re offline — waiting for your connection…');
+      await waitForOnline();
       if (uploadAborted) return;
-      try {
-        const resp = await fetch(presignData.url, { method: 'PUT', body: chunk });
-        if (!resp.ok) throw new Error(`S3 HTTP ${resp.status}`);
-        etag = resp.headers.get('ETag') || null;
-        break;
-      } catch (e) {
-        if (attempt === MAX_RETRIES - 1) throw new Error(`Chunk ${partNumber} failed after ${MAX_RETRIES} retries: ${e.message}`);
-        await sleep(Math.pow(2, attempt) * 1000);
-      }
     }
+    if (STATE.upload.status !== 'uploading') setUploadStatus('uploading', 'Uploading…');
 
-    uploadedBytes += chunkSize;
+    const chunkStart = i * chunkSize;
+    const chunkEnd = Math.min(chunkStart + chunkSize, file.size);
+    const chunk = file.slice(chunkStart, chunkEnd);
+
+    const etag = await uploadOneChunk(partNumber, chunk);   // throws (recoverable) on failure
+    if (uploadAborted) return;
 
     STATE.upload.completedParts.push({ PartNumber: partNumber, ETag: etag || '' });
     saveUploadState();
+    autoRetryCount = 0;                                 // a good chunk refills the recovery budget
 
-    // Speed calculation
-    const now = Date.now();
-    const elapsed = (now - startTime) / 1000;
-    const speed = elapsed > 0 ? uploadedBytes / elapsed : 0;
-
-    updateUploadProgress(partNumber, totalChunks, uploadedBytes, file.size, speed, startTime);
+    const bytes = chunkEnd - chunkStart;
+    sessionBytes += bytes;
+    uploadedBytes += bytes;
+    const elapsed = (Date.now() - sessionStart) / 1000;
+    const speed = elapsed > 0 ? sessionBytes / elapsed : 0;
+    updateUploadProgress(partNumber, totalChunks, uploadedBytes, file.size, speed, sessionStart);
   }
 }
 
@@ -935,85 +1148,35 @@ function updateUploadProgress(current, total, uploadedBytes, totalBytes, speed, 
   if (uploaded) uploaded.textContent = fmtBytes(uploadedBytes);
 }
 
-async function resumeUpload() {
+// Reload recovery: the only path that needs the user to re-pick the file, because
+// browsers don't let JS restore a File handle across a page reload. One tap, then
+// the driver resumes from the last durable part — nothing already uploaded is redone.
+function resumeFromReload() {
   const saved = loadUploadState();
   if (!saved) { discardResume(); return; }
 
-  // User needs to re-select the same file
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = 'video/*,.mp4,.mov,.avi,.mkv';
-  input.onchange = async (e) => {
+  input.accept = 'video/*,.mp4,.mov,.m4v,.mpg,.mpeg';
+  input.onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    // Verify file identity
-    if (file.name !== saved.fileName || file.size !== saved.fileSize || file.lastModified !== saved.fileLastModified) {
-      showUploadMsg('error', 'Selected file does not match the interrupted upload. Please select the same file or discard the interrupted upload.');
+    if (file.name !== saved.fileName || file.size !== saved.fileSize ||
+        (saved.fileLastModified && file.lastModified !== saved.fileLastModified)) {
+      showUploadMsg('error', `That looks like a different file. Please choose the same one — ${esc(saved.fileName)} (${fmtBytes(saved.fileSize)}) — or tap Discard to start over.`);
       return;
     }
 
     uploadAborted = false;
-    uploadInProgress = true;
-    const wlOk = await acquireWakeLock();
-
-    document.getElementById('dropZone').style.display = 'none';
-    const rb = document.getElementById('resumeBanner');
-    if (rb) rb.style.display = 'none';
-    document.getElementById('uploadUI').style.display = 'block';
-    document.getElementById('uploadFileName').textContent = file.name;
-
+    autoRetryCount = 0;
     STATE.upload = {
-      key: saved.key,
-      uploadId: saved.uploadId,
+      key: saved.key, uploadId: saved.uploadId,
       completedParts: saved.completedParts || [],
-      fileName: saved.fileName,
-      fileSize: saved.fileSize,
-      fileLastModified: saved.fileLastModified,
+      fileName: saved.fileName, fileSize: saved.fileSize, fileLastModified: saved.fileLastModified,
+      file: file, chunkSize: saved.chunkSize || CHUNK_SIZE, status: 'uploading',
     };
-
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
-    try {
-      await uploadChunks(file, saved.key, saved.uploadId, totalChunks, 0);
-
-      if (uploadAborted) return;
-
-      const listRes = await apiPost('/upload/api/multipart/list-parts', { key: saved.key, upload_id: saved.uploadId });
-      const listData = await listRes.json();
-      if (!listData.ok) throw new Error(listData.error || 'list_parts_failed');
-
-      const serverParts = listData.parts.map(p => ({ PartNumber: p.PartNumber, ETag: p.ETag }));
-
-      if (serverParts.length < totalChunks) {
-        throw new Error(`Server has ${serverParts.length}/${totalChunks} parts. Upload incomplete.`);
-      }
-
-      const completeRes = await apiPost('/upload/api/multipart/complete', {
-        key: saved.key, upload_id: saved.uploadId, parts: serverParts,
-      });
-      const completeData = await completeRes.json();
-      if (!completeData.ok) throw new Error(completeData.error || 'complete_failed');
-
-      clearUploadState();
-      STATE.upload.uploadId = null;
-
-      document.getElementById('uploadUI').style.display = 'none';
-      document.getElementById('uploadDone').style.display = 'block';
-      document.getElementById('uploadDoneInfo').textContent = `${file.name} (${fmtBytes(file.size)})`;
-
-      releaseWakeLock();
-      uploadInProgress = false;
-
-    } catch (e) {
-      uploadInProgress = false;
-      releaseWakeLock();
-      if (!uploadAborted) {
-        showUploadMsg('error', 'Resume failed: ' + e.message);
-        const bar = document.getElementById('progressBar');
-        if (bar) bar.classList.add('error');
-      }
-    }
+    driveUpload();
   };
   input.click();
 }
@@ -1023,39 +1186,60 @@ function discardResume() {
   if (saved && saved.key && saved.uploadId) {
     apiPost('/upload/api/multipart/abort', { key: saved.key, upload_id: saved.uploadId }).catch(() => {});
   }
+  clearAutoRetry();
   clearUploadState();
-  STATE.upload = { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 };
+  STATE.upload = freshUpload();
   renderStep2(document.getElementById('stepContent'));
 }
 
 async function cancelUpload() {
+  // Confirm — cancelling discards everything uploaded so far. (Resume is the
+  // primary action on a stall; Cancel is the deliberate "throw it away" choice.)
+  if (!confirm('Cancel this upload and discard the progress so far? You’ll have to start over.')) return;
+
   uploadAborted = true;
   uploadInProgress = false;
+  clearAutoRetry();
   releaseWakeLock();
 
-  if (STATE.upload.key && STATE.upload.uploadId) {
-    try {
-      await apiPost('/upload/api/multipart/abort', { key: STATE.upload.key, upload_id: STATE.upload.uploadId });
-    } catch (e) {}
+  const key = STATE.upload.key, uploadId = STATE.upload.uploadId;
+  if (key && uploadId) {
+    try { await apiPost('/upload/api/multipart/abort', { key, upload_id: uploadId }); } catch (e) {}
   }
 
   clearUploadState();
-  STATE.upload = { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 };
+  STATE.upload = freshUpload();
   renderStep2(document.getElementById('stepContent'));
   showUploadMsg('info', 'Upload cancelled.');
 }
 
 function resetUpload() {
+  clearAutoRetry();
   clearUploadState();
-  STATE.upload = { key: null, uploadId: null, completedParts: [], fileName: null, fileSize: 0 };
+  STATE.upload = freshUpload();
   renderStep2(document.getElementById('stepContent'));
 }
 
-// Re-acquire Wake Lock when page becomes visible again (browser may release it)
+// Keep the screen awake, and auto-resume when the tab/app returns to the
+// foreground after a sleep or background suspension (a very common stall cause).
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && uploadInProgress) {
+  if (document.visibilityState !== 'visible') return;
+  if (uploadAborted || STATE.upload.status === 'complete') return;
+  if (STATE.upload.uploadId && STATE.upload.file) {
     await acquireWakeLock();
+    if (!uploadInProgress) { autoRetryCount = 0; driveUpload(); }
   }
+});
+
+// Network-aware: pause cleanly when the connection drops, resume the instant it returns.
+window.addEventListener('offline', () => {
+  if (uploadAborted || STATE.upload.status === 'complete' || !STATE.upload.uploadId) return;
+  clearAutoRetry();
+  setUploadStatus('offline', 'You’re offline — we’ll resume automatically when your connection returns. Your progress is saved.');
+});
+window.addEventListener('online', () => {
+  if (uploadAborted || STATE.upload.status === 'complete' || !STATE.upload.uploadId) return;
+  if (STATE.upload.file && !uploadInProgress) { autoRetryCount = 0; driveUpload(); }
 });
 
 // ============================================================
