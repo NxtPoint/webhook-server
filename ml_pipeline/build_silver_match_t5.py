@@ -65,6 +65,25 @@ SERVE_BOX_TOLERANCE_M = 1.5  # extra tolerance for service box check (real wide 
 # 33%→40% at held recall. See docs/_investigation/bounce_accuracy.md §6-7.
 BOUNCE_PLAYER_PROXIMITY_M = 1.5
 
+# Serve-from-events overlay (RULE #1 — silver INHERITS bronze, 2026-05-27).
+# T5 has a real serve model: serve_detector -> ml_analysis.serve_events (the
+# pose-first 20/24+23/24 detector). When T5_SERVE_FROM_EVENTS is on, T5 silver
+# inherits those serves VERBATIM instead of re-deriving them from the geometric
+# gate in build_silver_v2 (the "custom serve_d label" — necessary for SportAI,
+# whose own bronze serve flag is unreliable, but a stand-in T5 no longer needs).
+# The overlay (a) suppresses Pass-1's geometric serve firing, (b) maps each
+# serve_event >= min-conf onto a silver serve row carrying the model's hitter
+# position, and (c) demotes any leftover overhead-at-baseline row so the SHARED
+# pass-3 can't re-flag a stray serve_d — so T5 serve rows == bronze serve_events,
+# no more, no less. SportAI is untouched (it has no serve_events). Gated
+# default-OFF, env-flip rollback (no Docker rebuild) — same pattern as
+# T5_STROKE_DRIVEN_SILVER. NOTE: T5 silver will faithfully reflect bronze's
+# current over-fire (more serves / over-segmented points than SportAI) — the
+# honest bronze state, whose lever is TRAINING, not silver.
+SERVE_EVENTS_MIN_CONF_DEFAULT = 0.70  # count-aligns to SA on Match 1 (26≈26); env-tunable
+SERVE_EVENT_MATCH_TOL_S = 1.5         # a serve_event reuses a bounce row within ±this
+_OVERHEAD_SWINGS = ("fh_overhead", "bh_overhead", "overhead", "smash")  # pass-3 serve-gate keys
+
 # build_silver_v2 sport config (used when calling shared passes)
 SPORT_CONFIG_SINGLES = {
     "court_length_m": COURT_LENGTH_M,
@@ -644,6 +663,11 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     # ---- Step 4: Look up dominant hand ----
     is_left_handed = _lookup_dominant_hand(conn, task_id)
 
+    # When inheriting serves from serve_events, suppress the geometric serve
+    # firing here so serves come SOLELY from the detector's bronze output
+    # (the overlay runs after the loop, before insert).
+    suppress_geometric_serves = _serve_from_events_enabled()
+
     # ---- Step 4b: Bounce-precision proximity guard ----
     # Drop bounces co-located with a player — those are racquet contacts /
     # near-player detection noise, not floor landings. Keeps bounces with no
@@ -943,7 +967,7 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         # The geometric gate (hitter past a baseline + bounce on opposite half
         # of net + bounce_x in singles+alley) is precise enough on its own —
         # rally shots are almost never struck from past the baseline.
-        if geom_ok and cooldown_ok and stationarity_ok:
+        if geom_ok and cooldown_ok and stationarity_ok and not suppress_geometric_serves:
             # First-serve-min-ts gate — no match starts with a serve in
             # the first 15s. Kills warmup false positives that slipped
             # past stationarity (e.g. near player momentarily still at
@@ -1038,6 +1062,12 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         logger.warning("T5 Pass 1: no valid rows to insert")
         return 0
 
+    # ---- Step 5b: Serve-from-events overlay (RULE #1) ----
+    # Geometric serve firing was suppressed above; inherit serves from the
+    # serve_detector's bronze output now. No-op unless T5_SERVE_FROM_EVENTS.
+    if suppress_geometric_serves:
+        _apply_serve_events_overlay(conn, task_id, rows_to_insert, top_pids)
+
     # ---- Step 6: Bulk INSERT ----
     return _insert_pass1_rows(conn, rows_to_insert)
 
@@ -1061,6 +1091,121 @@ def _insert_pass1_rows(conn: Connection, rows_to_insert: List[dict]) -> int:
     """), rows_to_insert)
     logger.info("T5 Pass 1: inserted %d rows into silver.point_detail", len(rows_to_insert))
     return len(rows_to_insert)
+
+
+# ============================================================
+# Serve-from-events overlay (RULE #1 — T5 silver inherits serve_events)
+# ============================================================
+
+def _serve_from_events_enabled() -> bool:
+    """Read T5_SERVE_FROM_EVENTS at call time (env-flip rollback, no rebuild —
+    same pattern as _stroke_driven_enabled)."""
+    return os.getenv("T5_SERVE_FROM_EVENTS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _serve_events_min_conf() -> float:
+    """Min serve_detector confidence to inherit a serve (env-tunable)."""
+    try:
+        return float(os.getenv("T5_SERVE_EVENTS_MIN_CONF", str(SERVE_EVENTS_MIN_CONF_DEFAULT)))
+    except (TypeError, ValueError):
+        return SERVE_EVENTS_MIN_CONF_DEFAULT
+
+
+def _apply_serve_events_overlay(
+    conn: Connection, task_id: str, rows_to_insert: List[dict], top_pids: list,
+) -> dict:
+    """Overlay serves from ml_analysis.serve_events onto the Pass-1 rows.
+
+    Precondition: the caller has SUPPRESSED Pass-1 geometric serve firing (no
+    row is a serve yet). For each serve_event >= min-conf, in ts order:
+      - reuse the nearest UNCLAIMED bounce row within ±SERVE_EVENT_MATCH_TOL_S
+        (no row inflation — the serve's own bounce row becomes the serve), OR
+      - if none, append a fresh serve row.
+    The row carries the EVENT's hitter position (x = hitter_court_x for pass-3's
+    serve_side_d; y SNAPPED to the server's baseline so pass-3's baseline gate
+    inherits it as serve_d). court_x/y keep the bounce (serve location 1-8).
+    player_id from court SIDE (top_pids[0]=near, [1]=far).
+
+    Finally DEMOTE any non-serve overhead-at-baseline row to swing_type='other'
+    so the shared pass-3 geometric gate fires serve_d ONLY on these overlaid
+    serves — making T5 silver serves == the bronze serve_events exactly.
+
+    Mutates rows_to_insert in place. Returns a diagnostic dict.
+    """
+    min_conf = _serve_events_min_conf()
+    diag = {"events": 0, "converted": 0, "inserted": 0, "demoted": 0, "min_conf": min_conf}
+
+    present = conn.execute(sql_text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'ml_analysis' AND table_name = 'serve_events' LIMIT 1
+    """)).scalar()
+    if not present:
+        logger.warning("T5 serve overlay: ml_analysis.serve_events absent — leaving rows serve-less")
+        return diag
+
+    events = conn.execute(sql_text("""
+        SELECT ts, hitter_court_x, hitter_court_y, bounce_court_x, bounce_court_y
+        FROM ml_analysis.serve_events
+        WHERE task_id::text = :tid AND confidence >= :thr
+          AND hitter_court_x IS NOT NULL AND hitter_court_y IS NOT NULL
+        ORDER BY ts
+    """), {"tid": task_id, "thr": min_conf}).fetchall()
+    diag["events"] = len(events)
+
+    claimed: set = set()
+    next_id = max((r["id"] for r in rows_to_insert), default=0) + 1
+    eps = EPS_BASELINE_M
+
+    for ts, hx, hy, b_cx, b_cy in events:
+        ts, hx, hy = float(ts), float(hx), float(hy)
+        near = hy > HALF_Y
+        pid = str(top_pids[0]) if near else str(top_pids[1])
+        snap_y = COURT_LENGTH_M if near else 0.0  # snap to baseline → pass-3 serve_d gate passes
+
+        best_i, best_d = None, None
+        for i, r in enumerate(rows_to_insert):
+            if i in claimed:
+                continue
+            rt = r.get("ball_hit_s")
+            if rt is None:
+                continue
+            d = abs(rt - ts)
+            if best_d is None or d < best_d:
+                best_d, best_i = d, i
+
+        if best_i is not None and best_d <= SERVE_EVENT_MATCH_TOL_S:
+            r = rows_to_insert[best_i]
+            r.update(serve=True, swing_type="overhead", volley=False, player_id=pid,
+                     ball_hit_location_x=hx, ball_hit_location_y=snap_y,
+                     ball_hit_s=ts, timestamp=ts)
+            claimed.add(best_i)
+            diag["converted"] += 1
+        else:
+            rows_to_insert.append({
+                "id": next_id, "task_id": task_id, "player_id": pid, "valid": True,
+                "serve": True, "swing_type": "overhead", "volley": False, "is_in_rally": True,
+                "ball_player_distance": None, "ball_speed": None, "ball_impact_type": None,
+                "ball_hit_s": ts, "ball_hit_location_x": hx, "ball_hit_location_y": snap_y,
+                "type": "floor", "timestamp": ts,
+                "court_x": float(b_cx) if b_cx is not None else None,
+                "court_y": float(b_cy) if b_cy is not None else None,
+                "model": "t5",
+            })
+            next_id += 1
+            diag["inserted"] += 1
+
+    # Demote stray overhead-at-baseline non-serves so pass-3 doesn't re-flag them.
+    for i, r in enumerate(rows_to_insert):
+        if i in claimed or r.get("serve"):
+            continue
+        y = r.get("ball_hit_location_y")
+        if (y is not None and (y < eps or y > COURT_LENGTH_M - eps)
+                and str(r.get("swing_type", "")).lower() in _OVERHEAD_SWINGS):
+            r["swing_type"] = "other"
+            diag["demoted"] += 1
+
+    logger.info("T5 serve overlay (T5_SERVE_FROM_EVENTS): %s", diag)
+    return diag
 
 
 # ============================================================
