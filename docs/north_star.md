@@ -55,6 +55,19 @@ The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silv
 
 ---
 
+## How to run / query (quick reference)
+
+- **Serve bench** (mandatory pre-push on any detector edit; floor a798eff0 20/24, 880dff02 23/24): `.venv/Scripts/python -m ml_pipeline.diag.bench`
+- **Ball bench** (local; ~3h on this CPU-only box — background it): `python -m ml_pipeline.diag.bench_ball`
+- **Query the prod DB directly** (this dev box's IP is allowlisted — measure against live data, don't paste shell output): `PYTHONPATH=<repo> .venv/Scripts/python` then `from db_init import engine; engine.connect()`.
+- **Rebuild a T5 silver match**: `from ml_pipeline.build_silver_match_t5 import build_silver_match_t5; build_silver_match_t5('<task_id>', replace=True)`
+- **Measure a field vs SA / hand-truth**: `python -m ml_pipeline.diag.bounce_xy_accuracy --sa-task <sa> --t5-task <t5>` (or `--ground-truth <json>`); `harness reconcile <sa> <t5>`; `harness eval-serve <task>`.
+- **Batch deploy** (after a Batch-side change — see the file-list trigger in `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST"): Docker rebuild → dual-region ECR push → new job-def revisions in **eu-north-1 + us-east-1** (pin the amd64 sub-manifest digest; retryStrategy preserved).
+- **Run status** (no frontend visibility): query `ml_analysis.video_analysis_jobs` (`status, current_stage, progress_pct, updated_at`); `ball_detections` populate only AFTER Batch completes + the `sweep-t5-orphans` cron fires the Render ingest.
+- **Full ops/how-to-run reference**: `.claude/handover_t5.md`.
+
+---
+
 ## Product goal
 
 A tennis match analytics dashboard where:

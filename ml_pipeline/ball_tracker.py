@@ -1,6 +1,25 @@
-"""
-BallTracker — TrackNet V2 based ball detection with bounce/speed analysis.
-Sliding window of 3 frames → heatmap → (x,y). Linear interpolation for small gaps.
+"""BallTracker — the BALL + BOUNCE model (raw → bronze).
+
+ROLE (docs/north_star.md RULES OF THE GAME + the one-model-per-fact blueprint in
+docs/_investigation/bronze_silver_18_audit.md): raw video → THIS model →
+ml_analysis.ball_detections (x,y, court_x/y, speed_kmh, is_bounce, is_in) →
+silver INHERITS it (no re-derivation).
+
+BUSINESS RULES:
+  - Per-frame ball (x,y): TrackNet V2, 3-frame sliding window → heatmap → argmax
+    (WASB is the alternative via BALL_TRACKER env; see _make_ball_tracker).
+  - court_x/y: image→court via the locked homography; NULL when outside the ±5m
+    sanity bounds (court_detector.to_court_coords).
+  - is_bounce: y-velocity REVERSAL (sign flip) + min magnitude + min spacing.
+    NOTE: a velocity-reversal *rule*, not a trained bounce model — it conflates
+    floor bounces with racquet contacts / arc apexes, and far bounces are missed
+    (the far ball clears 1-2px). A real bounce model is a "build" target.
+  - is_in / speed_kmh: court-bounds check + peak-flight speed.
+
+KNOWN LIMIT: the far half is resolution-limited (ball ~1-2px) — the far-court
+ceiling that also caps bounce/serve/stroke accuracy. Fix = coverage + training.
+
+TrackNet V2: 3-frame window → heatmap → (x,y). Linear interpolation for small gaps.
 """
 
 import logging
