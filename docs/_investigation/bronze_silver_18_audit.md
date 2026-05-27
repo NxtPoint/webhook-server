@@ -1,0 +1,60 @@
+# 18-field inherit-vs-rederive audit — bronze→silver architecture
+
+**Status:** REFERENCE / architecture audit. 2026-05-27. Answers Tomo's question:
+*"single source of truth is bronze; silver inherits 100%; no work should happen in silver."*
+Verifies whether that's actually true today, field by field.
+
+## The intended architecture (Tomo's, and it's correct as the target)
+```
+detectors (TrackNet / WASB / YOLOv8-pose / ViTPose)  ──▶  ml_analysis.* raw detections
+analysis models (serve_detector, stroke_detector)    ──▶  ml_analysis.serve_events / stroke_events  ("final answers")
+                                                            └─ this whole layer = BRONZE
+build_silver_match_t5.py Pass 1   ──▶  silver.point_detail   (should be a PURE PROJECTION of the above)
+build_silver_v2.py passes 3-5     ──▶  silver analytics ON TOP (score, serve location 1-8, zones, aggression)
+```
+
+**One correction to the mental model:** the raw detection **data** does NOT go to CloudWatch — CloudWatch only holds the Batch job **logs** (stdout). The actual data goes to **`ml_analysis.*` tables in Postgres**, which IS the bronze layer (both the raw detections *and* the serve/stroke model outputs live there).
+
+## What each bronze table actually contains (verified, Match 1 `78c32f53`)
+| table | rows (M1) | what it is | carries |
+|---|---|---|---|
+| `ball_detections` | 8005 | TrackNet/WASB ball + bounce | x,y, court_x/y, speed_kmh, **is_bounce**, is_in |
+| `player_detections` | 18507 | YOLO/ViTPose players | bbox, center, court_x/y, **keypoints**, stroke_class (mostly null — classifier untrained) |
+| `serve_events` | **53** | **serve_detector (pose-first, the 23/24 model)** | ts, player_id, **source** (pose_only/pose_and_ball/pose_and_bounce), **confidence**, hitter_court_x/y, bounce_court_x/y, rally_state |
+| `stroke_events` | 176 | stroke_detector (velocity) | ts, predicted_hit_frame, player_id, confidence, peak_velocity — **NO swing TYPE** |
+
+## The audit — per base field
+| # | base field | bronze source available? | silver today | verdict |
+|---|---|---|---|---|
+| 1 | **serve** | ✅ `serve_events` (good, 23/24) | ❌ **RE-DERIVES** via bounce-geometric gate, ignores serve_events | **VIOLATION — fix now: inherit serve_events** |
+| 2 | ball bounce court_x/y | ✅ `ball_detections.is_bounce`+court | ✅ inherits — **but silver adds a proximity FILTER** | ⚠️ inherits; relocate the filter to the bounce detector (bronze) |
+| 3 | ball_speed | ✅ `ball_detections.speed_kmh` | ✅ inherits | ✅ clean |
+| 4 | ball_hit_location x/y | ✅ player_detections / serve_events.hitter_court_x/y | ~ reads bronze position, but selects hitter via logic | ✅ ok (reads bronze) |
+| 5 | ball_hit_s (timing) | ✅ serve_events.ts / stroke_events.ts | ⚠️ uses the **bounce** ts, not the stroke/serve event ts | ⚠️ should inherit event timing |
+| 6 | player_id (who) | ⚠️ only side-based in every table; **no stable identity** | RE-DERIVES by court side | model gap (identity) — stopgap |
+| 7 | **swing_type** (fh/bh/overhead) | ❌ **no model emits type** (stroke_events has none; stroke_classifier untrained) | RE-DERIVES from pose | **model gap — silver stopgap until classifier trained** |
+| 8 | **volley** | ❌ no model emits it | DERIVES via net-distance heuristic | **model gap — silver stopgap / analytic** |
+| 9 | ball_player_distance | derived from two bronze positions | computed | ✅ legit derivation |
+| 10 | is_in_rally | — | constant True | trivial |
+
+## The honest conclusion (this is the nuance)
+Your principle is the **right target**, and it's **partly true today** — but not fully, for two *different* reasons:
+
+1. **One real architectural VIOLATION** — `serve`. The model output (`serve_events`, the 23/24 pose-first detector) **exists and is good**, but silver throws it away and re-derives serves from bounces (the inferior "15"). This is the "lost the plot" — and it's **fixable now** by inheriting `serve_events`. The bounce-geometric serve gate is the rogue code to delete.
+
+2. **Model GAPS** — `swing_type`, `volley`, `identity`. Here silver re-derives **not** because of rogue code, but because **no model emits these facts yet**: the stroke_classifier (which would emit fh/bh) is **untrained/dormant**, there's no volley model, and nothing emits stable A/B identity. So silver's pose-inference / heuristics are **necessary stopgaps** that fill the gap until those models exist.
+
+**So "silver inherits 100%, no work in silver" is the END STATE we reach as the models get trained** — it can't be fully achieved today by deleting silver code, because for swing/volley/identity there's nothing in bronze to inherit *from* yet. This is exactly the build-first/train-last ladder: train the missing models → they emit to bronze → silver inherits → delete the stopgap.
+
+## Action plan (sequenced, bronze-first)
+**Now (model output exists → inherit, delete re-derivation):**
+1. **Wire `serve_events` → silver serves** (confidence-filtered to land near the true count; carries ts + hitter + bounce already). **Delete the bounce-geometric serve gate.** ← biggest architectural win.
+2. **Relocate the bounce proximity-filter** from silver into the bounce detector (Batch) so silver purely inherits `is_bounce`. (Until then it's a flagged silver filter.)
+3. **ball_hit_s**: prefer serve_events/stroke_events timing over bounce ts.
+
+**Later (no model output yet → train the model, then inherit):**
+4. **swing_type** → train the stroke_classifier (emits fh/bh to bronze) → silver inherits → delete pose-inference stopgap.
+5. **identity** → an identity model/signal (or accept "Near/Far") → silver inherits.
+6. **volley** → derive from a model signal (ball-not-bounced-before-hit) or keep as a labelled silver analytic.
+
+**Governance:** every silver "derivation" that isn't pure projection or a legitimate analytic (score/zone/serve-location) must be tagged in code as either (a) inherit-from-bronze, or (b) STOPGAP-until-model-X. No silent re-derivation.
