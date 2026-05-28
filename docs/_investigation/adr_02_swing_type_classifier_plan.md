@@ -1,6 +1,6 @@
 # ADR-02: Swing-type classifier training plan
 
-**Status:** APPROVED 2026-05-28 (architectural + research-grounded spec). Build can start once corpus extractor lands and >= 10 matches of `label_kind='stroke_classifier'` labels accumulate.
+**Status:** APPROVED 2026-05-28. Corpus extractor SHIPPED 2026-05-28 (`ml_pipeline/training/label_swing_types.py` + dual-kind `_label_pair_now`). Model still pending — needs ~5-10 more dual-submit matches (~2-3k labels) before v1 training. Today: 3 backfilled pairs (775 labels) + Corpus 4 (~397) auto-lands via hook.
 **Owner:** Tomo decides; any agent can implement post-approval.
 **Sequence:** see [ADR-05](./adr_05_detector_build_sequencing.md). Independent of bounce (ADR-01) and identity (ADR-03).
 **Last updated:** 2026-05-28.

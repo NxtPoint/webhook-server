@@ -2042,19 +2042,95 @@ def _manual_dual_submit_t5(sportai_task_id: str) -> dict:
     return {"status": "submitted", "t5_task_id": t5_task_id}
 
 
+def _label_one_kind(
+    sa_task_id: str,
+    t5_task_id: str,
+    video_s3_key: str,
+    label_kind: str,
+    exporter,
+    s3_key: str,
+) -> dict:
+    """Idempotent export of ONE label_kind for one (SA, T5) pair.
+
+    `exporter` is a callable matching the
+    `export_sa_ball_positions(t5_task_id, sa_task_id, engine) -> dict` shape;
+    its returned dict must carry `label_count` and `role_breakdown`.
+    `s3_key` is the destination key under S3_BUCKET (no leading slash).
+
+    Returns a status dict: {status, label_count?, label_s3_uri?, reason?}.
+    Never raises — orchestrator expects a dict.
+    """
+    try:
+        with engine.connect() as conn:
+            existing = conn.execute(sql_text("""
+                SELECT id FROM ml_analysis.training_corpus
+                 WHERE sa_task_id = :sa AND t5_task_id = :t5 AND label_kind = :kind
+                 LIMIT 1
+            """), {"sa": sa_task_id, "t5": t5_task_id, "kind": label_kind}).first()
+        if existing:
+            return {"status": "skipped", "reason": "training_corpus row already exists"}
+
+        labels = exporter(t5_task_id=t5_task_id, sa_task_id=sa_task_id, engine=engine)
+
+        if not S3_BUCKET:
+            return {"status": "error", "reason": "S3_BUCKET not configured"}
+
+        body = json.dumps(labels, indent=2).encode("utf-8")
+        _s3_client().put_object(
+            Bucket=S3_BUCKET, Key=s3_key, Body=body, ContentType="application/json",
+        )
+
+        label_s3_uri = f"s3://{S3_BUCKET}/{s3_key}"
+        video_s3_uri = f"s3://{S3_BUCKET}/{video_s3_key}" if video_s3_key else ""
+        with engine.begin() as conn:
+            conn.execute(sql_text("""
+                INSERT INTO ml_analysis.training_corpus (
+                    sa_task_id, t5_task_id, label_kind,
+                    label_s3_key, video_s3_key, label_count, role_breakdown
+                ) VALUES (
+                    :sa, :t5, :kind,
+                    :label_uri, :video_uri, :label_count, CAST(:role_breakdown AS JSONB)
+                )
+                ON CONFLICT (sa_task_id, t5_task_id, label_kind) DO NOTHING
+            """), {
+                "sa": sa_task_id,
+                "t5": t5_task_id,
+                "kind": label_kind,
+                "label_uri": label_s3_uri,
+                "video_uri": video_s3_uri,
+                "label_count": labels["label_count"],
+                "role_breakdown": json.dumps(labels.get("role_breakdown") or {}),
+            })
+
+        return {
+            "status": "labeled",
+            "label_count": labels["label_count"],
+            "label_s3_uri": label_s3_uri,
+        }
+    except Exception as e:
+        app.logger.exception(
+            "PAIR_LABEL kind=%s sa=%s t5=%s — error during label export: %s",
+            label_kind, sa_task_id, t5_task_id, e,
+        )
+        return {"status": "error", "reason": f"{e.__class__.__name__}: {e}"}
+
+
 def _label_pair_now(t5_task_id: str) -> dict:
     """
     Phase 5c.2 — ungated worker. Idempotent label export for one completed
     (SA, T5) pair. Used by both the auto hook (gated by env flag) and the
     /ops/backfill-pair-labels endpoint (ungated, explicit).
 
-    Returns a status dict: {status, sa_task_id?, t5_task_id?, reason?,
-    label_count?, label_s3_uri?}. Never raises — callers expect a dict.
+    Exports two label kinds per pair, each idempotent independently:
+      - 'ball_position'      — bronze.ball_bounce -> TrackNet ball-position trainer
+      - 'stroke_classifier'  — bronze.player_swing -> ADR-02 swing-type classifier
+
+    Returns: {status, sa_task_id?, t5_task_id?, reason?, kinds: {kind: {...}},
+              label_count?, label_s3_uri?}. The top-level `label_count` /
+    `label_s3_uri` mirror the FIRST newly-labeled kind for back-compat with
+    existing log lines; per-kind detail lives under `kinds`. Never raises.
     """
     try:
-        # 1. Find the completed SA pair via gold.vw_dual_submit_pairs.
-        #    The view filters deleted_at and requires both ingest_finished_at
-        #    non-null + ingest_error null on each side.
         with engine.connect() as conn:
             row = conn.execute(sql_text("""
                 SELECT sa_task_id, t5_task_id, s3_key
@@ -2070,70 +2146,49 @@ def _label_pair_now(t5_task_id: str) -> dict:
         sa_task_id = row["sa_task_id"]
         video_s3_key = row["s3_key"] or ""
 
-        # 2. Idempotency — skip if we've already exported ball_position labels
-        with engine.connect() as conn:
-            existing = conn.execute(sql_text("""
-                SELECT id FROM ml_analysis.training_corpus
-                 WHERE sa_task_id = :sa AND t5_task_id = :t5 AND label_kind = 'ball_position'
-                 LIMIT 1
-            """), {"sa": sa_task_id, "t5": t5_task_id}).first()
-        if existing:
-            return {
-                "status": "skipped",
-                "reason": "training_corpus row already exists",
-                "sa_task_id": sa_task_id, "t5_task_id": t5_task_id,
-            }
-
-        # 3. Export labels in-process from SA bronze.ball_bounce
         from ml_pipeline.training.label_ball_positions import export_sa_ball_positions
-        labels = export_sa_ball_positions(
-            t5_task_id=t5_task_id, sa_task_id=sa_task_id, engine=engine,
+        from ml_pipeline.training.label_swing_types import export_sa_swing_types
+
+        ball = _label_one_kind(
+            sa_task_id, t5_task_id, video_s3_key,
+            label_kind="ball_position",
+            exporter=export_sa_ball_positions,
+            s3_key=f"training/labels/{t5_task_id}_ball_positions.json",
+        )
+        swing = _label_one_kind(
+            sa_task_id, t5_task_id, video_s3_key,
+            label_kind="stroke_classifier",
+            exporter=export_sa_swing_types,
+            s3_key=f"training/labels/{t5_task_id}_swing_types.json",
         )
 
-        # 4. Upload to S3 — same bucket as the source video, under training/labels/
-        if not S3_BUCKET:
-            return {
-                "status": "error",
-                "reason": "S3_BUCKET not configured, cannot upload labels",
-                "sa_task_id": sa_task_id, "t5_task_id": t5_task_id,
-            }
-        label_s3_key = f"training/labels/{t5_task_id}_ball_positions.json"
-        body = json.dumps(labels, indent=2).encode("utf-8")
-        _s3_client().put_object(
-            Bucket=S3_BUCKET,
-            Key=label_s3_key,
-            Body=body,
-            ContentType="application/json",
-        )
+        kinds = {"ball_position": ball, "stroke_classifier": swing}
+        any_new = any(k["status"] == "labeled" for k in kinds.values())
+        any_error = any(k["status"] == "error" for k in kinds.values())
+        overall = "labeled" if any_new else ("error" if any_error else "skipped")
 
-        # 5. Record in training_corpus — UNIQUE constraint absorbs any race
-        label_s3_uri = f"s3://{S3_BUCKET}/{label_s3_key}"
-        video_s3_uri = f"s3://{S3_BUCKET}/{video_s3_key}" if video_s3_key else ""
-        with engine.begin() as conn:
-            conn.execute(sql_text("""
-                INSERT INTO ml_analysis.training_corpus (
-                    sa_task_id, t5_task_id, label_kind,
-                    label_s3_key, video_s3_key, label_count, role_breakdown
-                ) VALUES (
-                    :sa, :t5, 'ball_position',
-                    :label_uri, :video_uri, :label_count, CAST(:role_breakdown AS JSONB)
-                )
-                ON CONFLICT (sa_task_id, t5_task_id, label_kind) DO NOTHING
-            """), {
-                "sa": sa_task_id,
-                "t5": t5_task_id,
-                "label_uri": label_s3_uri,
-                "video_uri": video_s3_uri,
-                "label_count": labels["label_count"],
-                "role_breakdown": json.dumps(labels.get("role_breakdown") or {}),
-            })
-
-        return {
-            "status": "labeled",
-            "sa_task_id": sa_task_id, "t5_task_id": t5_task_id,
-            "label_count": labels["label_count"],
-            "label_s3_uri": label_s3_uri,
+        out = {
+            "status": overall,
+            "sa_task_id": sa_task_id,
+            "t5_task_id": t5_task_id,
+            "kinds": kinds,
         }
+        # Back-compat: hoist the first newly-labeled kind's fields to top level
+        primary = next(
+            (k for k in (ball, swing) if k["status"] == "labeled"), None
+        )
+        if primary is not None:
+            out["label_count"] = primary.get("label_count")
+            out["label_s3_uri"] = primary.get("label_s3_uri")
+        if overall == "skipped":
+            out["reason"] = "training_corpus rows already exist for all kinds"
+        elif overall == "error":
+            # Surface the first error reason for callers that only read top-level
+            first_err = next(
+                (k for k in kinds.values() if k["status"] == "error"), {}
+            )
+            out["reason"] = first_err.get("reason", "unknown error")
+        return out
 
     except Exception as e:
         app.logger.exception("PAIR_LABEL t5=%s — error during label export: %s", t5_task_id, e)
@@ -2164,10 +2219,14 @@ def _dual_submit_pair_complete_hook(t5_task_id: str) -> None:
     try:
         result = _label_pair_now(t5_task_id)
         if result["status"] == "labeled":
+            kinds = result.get("kinds") or {}
+            per_kind = ", ".join(
+                f"{k}={v.get('label_count', '?')}"
+                for k, v in kinds.items() if v.get("status") == "labeled"
+            ) or f"label_count={result.get('label_count')}"
             app.logger.info(
-                "PAIR_LABEL_HOOK sa=%s t5=%s — exported %d labels to %s",
-                result["sa_task_id"], result["t5_task_id"],
-                result["label_count"], result["label_s3_uri"],
+                "PAIR_LABEL_HOOK sa=%s t5=%s — exported %s",
+                result["sa_task_id"], result["t5_task_id"], per_kind,
             )
         else:
             app.logger.info(
@@ -3832,15 +3891,18 @@ def ops_dual_submit_t5_backfill():
 
 @app.post("/ops/backfill-pair-labels")
 def ops_backfill_pair_labels():
-    """Retro-export ball-position labels for completed (SA, T5) pairs that
-    have no `ml_analysis.training_corpus` row yet. Phase 5c.2 backfill —
-    sibling to `/ops/dual-submit-t5-backfill` (which queues the T5 jobs).
+    """Retro-export all corpus label kinds for completed (SA, T5) pairs that
+    are missing at least one. Phase 5c.2 backfill — sibling to
+    `/ops/dual-submit-t5-backfill` (which queues the T5 jobs).
 
     Eligibility: `gold.vw_dual_submit_pairs` rows where pair_complete=TRUE
-    AND there is no existing training_corpus row for (sa, t5, 'ball_position').
+    AND there is no training_corpus row for at least one of the known kinds
+    ('ball_position', 'stroke_classifier'). Each pair is processed by
+    `_label_pair_now`, which exports ALL kinds idempotently — already-present
+    kinds skip silently, missing kinds are exported.
 
-    Idempotent — each per-pair call goes through `_label_pair_now` which
-    re-checks the corpus before exporting. Safe to re-run.
+    Idempotent — safe to re-run. Adding a new label_kind requires updating
+    the KNOWN_KINDS list in the eligibility CTE below.
 
     Body (all optional):
       {
@@ -3864,17 +3926,32 @@ def ops_backfill_pair_labels():
         return jsonify({"ok": False, "error": "delay_ms must be in [0, 60000]"}), 400
 
     try:
+        # Eligibility: pair_complete AND missing at least one known label_kind.
+        # _label_pair_now is idempotent per-kind, so re-firing already-partial
+        # pairs is safe — only the missing kinds get exported.
         with engine.connect() as conn:
             rows = conn.execute(sql_text("""
+                WITH known_kinds(label_kind) AS (
+                    VALUES ('ball_position'), ('stroke_classifier')
+                ),
+                pair_kind_have AS (
+                    SELECT p.sa_task_id, p.t5_task_id,
+                           COUNT(tc.id) AS have_count
+                      FROM gold.vw_dual_submit_pairs p
+                      LEFT JOIN ml_analysis.training_corpus tc
+                        ON tc.sa_task_id = p.sa_task_id
+                       AND tc.t5_task_id = p.t5_task_id
+                       AND tc.label_kind IN (SELECT label_kind FROM known_kinds)
+                     WHERE p.pair_complete = TRUE
+                     GROUP BY p.sa_task_id, p.t5_task_id
+                )
                 SELECT p.sa_task_id, p.t5_task_id, p.s3_key, p.paired_at
                   FROM gold.vw_dual_submit_pairs p
+                  JOIN pair_kind_have h
+                    ON h.sa_task_id = p.sa_task_id
+                   AND h.t5_task_id = p.t5_task_id
                  WHERE p.pair_complete = TRUE
-                   AND NOT EXISTS (
-                       SELECT 1 FROM ml_analysis.training_corpus tc
-                        WHERE tc.sa_task_id = p.sa_task_id
-                          AND tc.t5_task_id = p.t5_task_id
-                          AND tc.label_kind = 'ball_position'
-                   )
+                   AND h.have_count < (SELECT COUNT(*) FROM known_kinds)
                  ORDER BY p.paired_at ASC
                  LIMIT :lim
             """), {"lim": limit}).mappings().all()
@@ -3905,9 +3982,14 @@ def ops_backfill_pair_labels():
         sub = _label_pair_now(t5_tid)
         if sub.get("status") == "labeled":
             labeled += 1
+            kinds = sub.get("kinds") or {}
+            per_kind = ", ".join(
+                f"{k}={v.get('label_count', '?')}"
+                for k, v in kinds.items() if v.get("status") == "labeled"
+            ) or f"{sub.get('label_count')}"
             app.logger.info(
-                "BACKFILL-PAIR-LABELS [%d/%d] sa=%s t5=%s -> %d labels",
-                i + 1, len(eligible), sub["sa_task_id"], t5_tid, sub["label_count"],
+                "BACKFILL-PAIR-LABELS [%d/%d] sa=%s t5=%s -> %s",
+                i + 1, len(eligible), sub["sa_task_id"], t5_tid, per_kind,
             )
         elif sub.get("status") == "skipped":
             result["skipped"].append({
