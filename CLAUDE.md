@@ -6,59 +6,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pick the closest match and jump there before reading the rest of this file:
 
-- **Any session, any task** → **first read `.claude/next_session_pickup.md`**. It's overwritten at the end of every session with: current state, what just shipped, open questions, and a "Read in this order" list specific to the next move. Skipping it wastes the first 30 min re-deriving state. **At session end, overwrite that file with the new state** so the next session inherits cleanly. A modified `.claude/session_*.md` in `git status` names the live thread — open that for the deep detail behind the pickup file's summary.
-- **Routine ops — "when X happens, do Y"** → `.claude/sop.md`. Single page covering Render deploys, Batch container deploys (full checklist), bench discipline, phase transitions, GPU box experiments, prod SQL diag, and the short list of actions that genuinely require Tomo.
-- **Session boot / close checklists** → `.claude/session_protocol.md`. Run the boot checklist in the first 5 min of every session; the close checklist before declaring done. Keeps handovers tight.
-- **Doc tier system + lifecycle rules** → `.claude/docs_hygiene.md`. Five tiers (TRUTH / REFERENCE / STRATEGY / HISTORICAL / MEMORY) + rules for when NOT to write a new doc.
-- **T5 ML pipeline / serve detector / Batch / silver_t5** → **FIRST read `docs/north_star.md` §"★ RULES OF THE GAME"** — the non-negotiable T5 architecture rules every session must respect (bronze = single source of truth, silver inherits 100% / does no work, one-model-per-fact, build-first/train-last, keep-it-clean). Then: *macro plan / current phase* in the rest of `docs/north_star.md`; *how to run / validate / ship* in `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS"). Architecture audit of all 18 base fields: `docs/_investigation/bronze_silver_18_audit.md`. Do **not** edit anything in `ml_pipeline/serve_detector/` without running the harness `bench` first.
-- **Dashboard / gold view / endpoint mapping** → `docs/dashboards.md`.
-- **Business rules / account model / credits / entitlement gates / soft-delete contract / share + referrals + pricing-pivot design** → `docs/business.md` (canonical for *how the product behaves*).
-- **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md` (canonical for *what's sold*).
-- **Billing implementation (file map, entry points, flows)** → `docs/billing.md`. Behaviour rules → `docs/business.md`.
-- **Module-level orientation (any subdirectory)** → look for `<module>/README.md` first. Each follows the same shape: purpose / files / entry points / flow / gotchas / see-also. Modules with READMEs:
-  - `coach_invite/`, `tennis_coach/`, `support_bot/`
-  - `technique/`, `video_pipeline/`
-  - `cleanup/`, `lambda/`, `migrations/`, `frontend/`
-- **Ops endpoints / Render shell tasks / `/ops/*` reference** → `docs/ops_runbook.md` (every endpoint with auth, body, expected output, when to run, plus operational task playbooks).
+- **Any session, any task** → `.claude/next_session_pickup.md` (current state + read-order for the next move). **Overwrite it at session end** so the next session inherits cleanly. A modified `.claude/session_*.md` in `git status` is the live thread for deep detail.
+- **Routine ops** ("when X happens, do Y") → `.claude/sop.md`. Render deploys, Batch container deploys, bench discipline, phase transitions, GPU box experiments, prod SQL diag, plus the short list of actions that genuinely require Tomo.
+- **Session boot / close checklists** → `.claude/session_protocol.md`. Run boot in the first 5 min; close before declaring done.
+- **Doc tier system + lifecycle** → `.claude/docs_hygiene.md`. Five tiers (TRUTH / REFERENCE / STRATEGY / HISTORICAL / MEMORY) + when NOT to write a new doc.
+- **T5 ML pipeline / serve detector / Batch / silver_t5** → **first** `docs/north_star.md` §"★ RULES OF THE GAME" (bronze = single source of truth; silver inherits 100% / does no work; one-model-per-fact; build-first / train-last; keep-it-clean). Then the macro plan in the rest of `docs/north_star.md`; how to run/validate/ship in `.claude/handover_t5.md` (read "NEXT SESSION" + "TEST HARNESS"). 18-base-field audit: `docs/_investigation/bronze_silver_18_audit.md`. **Run `bench` before any `ml_pipeline/serve_detector/` edit.**
+- **Dashboards / gold views / endpoint mapping** → `docs/dashboards.md`.
+- **Business rules / account model / credits / entitlements / soft-delete / share + referrals + pricing-pivot** → `docs/business.md` (canonical for *how the product behaves*).
+- **Pricing tier numerics / plan IDs / marketing copy** → `docs/pricing_strategy.md`.
+- **Billing implementation** (file map, entry points, flows) → `docs/billing.md`. Behaviour → `docs/business.md`.
+- **Module-level orientation** → `<module>/README.md` first. READMEs exist for: `coach_invite/`, `tennis_coach/`, `support_bot/`, `technique/`, `video_pipeline/`, `cleanup/`, `lambda/`, `migrations/`, `frontend/`.
+- **Ops endpoints / `/ops/*` reference** → `docs/ops_runbook.md`.
 - **Environment variables (any service)** → `docs/env_vars.md`.
-- **Technique pipeline** → `docs/technique.md` (canonical) + `technique/README.md` (file orientation).
-- **Support bot** → `docs/support_bot.md` (canonical) + `support_bot/README.md` (file orientation).
-- **Anything else** → keep reading. The §Architecture Overview is the right next stop.
+- **Technique pipeline** → `docs/technique.md` + `technique/README.md`.
+- **Support bot** → `docs/support_bot.md` + `support_bot/README.md`.
 
 ## Things not to do (load-bearing)
 
-These look reasonable but will burn future sessions. Each is an explicit decision, not an oversight.
+These look reasonable but will burn future sessions. Each is an explicit decision.
 
-1. **Don't run `pytest`, and don't add it as a dependency or scaffold test files.** No test suite exists; testing is manual against the live Render DB. The absence is a deliberate decision, not an oversight to "fix." The closest thing to a regression test is `python -m ml_pipeline.diag.bench` for the T5 serve detector — that one is mandatory before any `serve_detector` push. (A few `python -m` scripts are git-tracked but are *not* a suite and *not* the CI gate: `ml_pipeline/serve_detector/tests/test_components.py` is a pure-logic component check; `ml_pipeline/test_pipeline.py` and `ml_pipeline/test_e2e.sh` need a gitignored `test_videos/` dir or full AWS infra, so they won't run casually. Don't grow these into a pytest suite — extend `bench`/`bench_ball`/`bench_silver` instead.)
-2. **Don't aggregate in Python or JavaScript if a gold view can do it.** The architecture rule is "SQL views own aggregation, Python is a thin passthrough, frontend is pure rendering." Adding `groupby` / `reduce` in `client_api.py` or a chart file means you skipped the right layer — extend or add a `gold.*` view instead.
-3. **Don't import `upload_app` from the ingest worker.** The worker is deliberately self-contained (it calls `ingest_bronze_strict()` directly). Importing the main app pulls in Flask boot side-effects and breaks the worker timeout split (3600s vs 1800s).
+1. **Don't run `pytest` or add it as a dependency.** No suite exists; testing is manual against the live Render DB. The only regression gate is `python -m ml_pipeline.diag.bench` (mandatory before any `serve_detector` push). A few `python -m` scripts are git-tracked but are *not* a suite (`serve_detector/tests/test_components.py` is a pure-logic check; `ml_pipeline/test_pipeline.py` and `test_e2e.sh` need a gitignored `test_videos/` dir or full AWS). Extend `bench`/`bench_ball`/`bench_silver` instead of growing a pytest suite.
+2. **Don't aggregate in Python or JavaScript if a gold view can do it.** SQL views own aggregation, Python is a thin passthrough, frontend is pure rendering. Adding `groupby` / `reduce` in `client_api.py` or a chart file means you skipped the right layer — extend or add a `gold.*` view.
+3. **Don't import `upload_app` from the ingest worker.** The worker is deliberately self-contained (calls `ingest_bronze_strict()` directly). Importing the main app pulls in Flask boot side-effects and breaks the worker timeout split (3600s vs 1800s).
 4. **Don't `DELETE FROM billing.*` on match delete.** Matches are billable events — the consumption record stays. Match delete is soft-delete only via `submission_context.deleted_at`; workers honour this at four gates. See `cleanup/orphan_sweep.py`.
-5. **Don't push T5 `serve_detector` changes without `bench` green.** The 20/24 baseline on `a798eff0` is locked in `ml_pipeline/diag/bench_baseline.json`. Three prior silent regressions are why this rule exists. The four remaining misses are upstream (pose / court projection) — gate-tuning to chase them backfires.
-6. **Don't add ops endpoints with query-string `?key=` auth.** `_guard()` in `upload_app.py` deliberately rejects it to keep `OPS_KEY` out of access logs. Header-only (`X-Ops-Key` or `Authorization: Bearer`).
-7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code and waste the rerun.
-8. **Don't merge a T5 detector branch without the Batch-side change check.** Bench is green ≠ Batch is in sync. If `git diff origin/main HEAD --stat` against `ml_pipeline/roi_extractors/`, `ml_pipeline/__main__.py`, `ml_pipeline/pipeline.py`, `ml_pipeline/Dockerfile`, `ml_pipeline/requirements.txt`, `ml_pipeline/serve_detector/`, `ml_pipeline/ball_tracker.py`, `ml_pipeline/wasb_ball_tracker.py`, `ml_pipeline/wasb_hrnet.py`, `ml_pipeline/config.py`, or `ml_pipeline/db_writer.py` returns any rows, a Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1 are required before the user reruns. See `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST" — protocol exists because we shipped Phase 1 with code in `extract_far_pose` that lived only on Render and not in Batch on 2026-05-07. `db_writer.py` was added 2026-05-22 after we changed its INSERT shape (source='main') without realising the change is dormant until Batch redeploys.
-9. **Don't skip, relax, or work around the bench CI check to land a PR.** A red bench is a real regression — `bench.yml` replays a fixed CI fixture against the locked baseline (currently 20/24 on `a798eff0`). Revert the offending commit, reproduce locally with `python -m ml_pipeline.diag.bench`, and ship a fix that turns it green. The whole reason the harness exists is the silent slip from `0cb645a`; weakening the gate (lowering the baseline, narrowing the trigger globs, removing the workflow) is never the right move.
-10. **Don't auto-spawn a task without a paired server-side trigger.** Browser-polling ingest gates (like the one in `/upload/api/task-status`) only fire when a user has the page open. Auto-spawned tasks have no browser → the ingest never starts and the task sits in `queued` forever. Every auto-spawn must be paired with a cron, webhook, or sweep endpoint — `/ops/sweep-t5-orphans` was added for exactly this gap.
-11. **Don't change T5 silver row-generation (or chase SportAI reconciliation in silver) until the 18 bronze base fields align with SportAI in `ml_analysis.*`.** The T5 "bronze" is `ml_analysis.*` (ball/player detections, serve/stroke events); `build_silver_match_t5.py` Pass 1 is the **bronze→base-fact projection** that must reconcile to SportAI, and passes 3-5 are the silver analytics on top of it. Reconciliation gaps (e.g. the Forehand undercount) are **bronze accuracy** problems — far-player pose coverage, bounce/ball coordinate accuracy (Phase 7), and unreliable per-player A/B identity — not silver-derivation problems. We proved this on 2026-05-25: pivoting Pass 1 to stroke-driven row generation overshot (Match 1: 141 vs SA's 84 active; near 114/27 vs SA's balanced 43/41) because the stroke detector's hitter attribution is perspective-biased to the near player. That stroke-driven path is **committed but gated OFF** behind `T5_STROKE_DRIVEN_SILVER` (bounce-driven stays live); **do not flip it on, and do not "fix" reconciliation by reorganising silver, until bronze is right.** Garbage-in/garbage-out: serve-location (1-8), zones, and aggression in passes 3-5 are only as good as the Pass-1 rows. See `docs/north_star.md` §"Bronze-first" and `docs/_investigation/far_player_accuracy.md`.
+5. **Don't push T5 `serve_detector` changes without `bench` green.** The 20/24 baseline on `a798eff0` is locked in `ml_pipeline/diag/bench_baseline.json` (three prior silent regressions motivated this rule). The four remaining misses are upstream (pose / court projection) — gate-tuning to chase them backfires.
+6. **Don't add ops endpoints with query-string `?key=` auth.** `_guard()` in `upload_app.py` rejects it to keep `OPS_KEY` out of access logs. Header-only (`X-Ops-Key` or `Authorization: Bearer`).
+7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code.
+8. **Don't merge a T5 detector branch without the Batch-side change check.** Bench green ≠ Batch in sync. Any diff against `ml_pipeline/{roi_extractors/,__main__.py,pipeline.py,Dockerfile,requirements.txt,serve_detector/,ball_tracker.py,wasb_ball_tracker.py,wasb_hrnet.py,config.py,db_writer.py}` requires Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1 before rerun. Full checklist: `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST". Origin: Phase 1 shipped 2026-05-07 with `extract_far_pose` only on Render; `db_writer.py` joined the list 2026-05-22.
+9. **Don't skip, relax, or work around the bench CI check.** A red bench is a real regression — `bench.yml` replays the CI fixture against the locked baseline. Revert, reproduce locally with `python -m ml_pipeline.diag.bench`, ship a fix that turns it green. Weakening the gate (lowering baseline, narrowing trigger globs, removing the workflow) is never the right move — the silent slip from `0cb645a` is exactly why the harness exists.
+10. **Don't auto-spawn a task without a paired server-side trigger.** Browser-polling ingest gates (like `/upload/api/task-status`) only fire when a user has the page open. Auto-spawned tasks have no browser → ingest never starts and the task sits in `queued` forever. Every auto-spawn must be paired with a cron, webhook, or sweep endpoint — `/ops/sweep-t5-orphans` was added for exactly this gap.
+11. **Don't change T5 silver row-generation (or chase SportAI reconciliation in silver) until the 18 bronze base fields align with SportAI in `ml_analysis.*`.** The T5 "bronze" is `ml_analysis.*`; `build_silver_match_t5.py` Pass 1 is the bronze→base-fact projection that must reconcile, and passes 3-5 are silver analytics on top. Reconciliation gaps (e.g. the Forehand undercount) are **bronze accuracy** problems — far-player pose coverage, bounce/ball coordinate accuracy, A/B identity — not silver-derivation problems. We proved this on 2026-05-25 when pivoting Pass 1 to stroke-driven row generation overshot (the stroke detector's hitter attribution is perspective-biased to the near player). The stroke-driven path is **committed but gated OFF** behind `T5_STROKE_DRIVEN_SILVER`; do not flip it on until bronze is right. See `docs/north_star.md` §"Bronze-first" and `docs/_investigation/far_player_accuracy.md`.
 
-## Services and How to Run
+## Services and how to run
 
 Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 
 | Service | Start command | Entry point |
 |---|---|---|
-| **Sport AI - API call** (main API, custom domain `api.nextpointtennis.com`) | `gunicorn wsgi:app` | `wsgi.py` → `upload_app.py` |
+| **Sport AI - API call** (main API, `api.nextpointtennis.com`) | `gunicorn wsgi:app` | `wsgi.py` → `upload_app.py` |
 | **Ingest worker** | `gunicorn ingest_worker_app:app` | `ingest_worker_app.py` |
 | **Video trim worker** | Docker (`Dockerfile.worker`) | `video_pipeline/video_worker_wsgi.py` |
 | **Locker Room** (static) | `gunicorn locker_room_app:app` | `locker_room_app.py` |
 
-The main service appears in `render.yaml` as `name: webhook-server` (the legacy slug); the Render dashboard / billing displays it as **"Sport AI - API call"**. Prefer the display name when referring to it in conversation; the repo and local path remain `webhook-server` because the GitHub repo is `NxtPoint/webhook-server`.
+The main service is `name: webhook-server` in `render.yaml` (legacy slug) but Render UI/billing shows **"Sport AI - API call"** — prefer the display name in conversation. The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` (Flask + gunicorn only, no DB); the main API also serves them as same-origin backups for iframe API access.
 
-The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` — Flask + gunicorn only, no DB access. Routes: `/` (locker room dashboard), `/media-room` (upload wizard), `/register`, `/backoffice`, `/portal` (entry point for Wix), `/pricing`, `/coach-accept`, `/practice`, `/match-analysis` (primary match dashboard), plus public marketing pages `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`. The main API serves all of them as same-origin backups for API access from within iframes.
+**Shell** — default is PowerShell (use `$null` not `/dev/null`, `$env:VAR` not `$VAR`, backtick for line continuation, `if ($?) { B }` not `A && B`). Bash also available via the Bash tool.
 
-**Shell** — default is PowerShell (use `$null` not `/dev/null`, `$env:VAR` not `$VAR`, backtick for line continuation, `if ($?) { B }` not `A && B`). Bash is also available via the Bash tool for POSIX scripts when convenient.
-
-**Local dev** (Windows; the repo is developed on Win 11):
+**Local dev** (Windows / Win 11):
 ```bash
 # Git Bash:
 source .venv/Scripts/activate
@@ -69,46 +63,35 @@ pip install -r requirements.txt
 gunicorn wsgi:app --bind 0.0.0.0:8000 --workers 2 --threads 4 --timeout 1800
 ```
 
-**Deploy:** Render auto-deploys all four services on push to `origin/main` (build config in `render.yaml`). Always `git push` *before* asking the user to rerun an ingest from the Render shell — otherwise the shell executes stale code and the rerun is wasted.
+**Deploy:** Render auto-deploys all four services on push to `origin/main`. Always `git push` *before* asking the user to rerun an ingest — otherwise the shell runs stale code (rule #7).
 
-### Testing & Code Quality
+### Testing & CI
 
-No automated test suite and no linter. All functional testing is manual against the live Render database. Do not run `pytest`.
+No automated test suite, no linter. Functional testing is manual against the live Render DB. Do not run `pytest`.
 
-**One CI check exists** — `.github/workflows/bench.yml` is the entire `.github/` surface, no other workflows. It runs `python -m ml_pipeline.diag.bench` and triggers on every push to `main` and every PR touching one of:
+**The only CI check** is `.github/workflows/bench.yml` (the entire `.github/` surface). It runs `python -m ml_pipeline.diag.bench` and triggers on push to `main` and PRs touching:
 
 - `ml_pipeline/serve_detector/**`
-- `ml_pipeline/diag/bench.py`
-- `ml_pipeline/diag/replay_serves.py`
-- `ml_pipeline/diag/bench_baseline.json`
-- `ml_pipeline/diag/requirements-bench.txt`
+- `ml_pipeline/diag/{bench.py,replay_serves.py,bench_baseline.json,requirements-bench.txt}`
 - `ml_pipeline/fixtures_ci/**`
 - `build_silver_v2.py`
-- `.github/workflows/bench.yml` itself
+- `.github/workflows/bench.yml`
 
-(Only these exact paths gate CI — `bench_ball*` / `bench_silver*` are local-only and deliberately *not* triggers. Don't widen or narrow this glob set; see "Things not to do" #9.)
+Only these paths gate CI — `bench_ball*` / `bench_silver*` are local-only and deliberately *not* triggers. Don't widen or narrow this glob set (rule #9).
 
-It replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`ml_pipeline/diag/bench_baseline.json`, currently 20/24). Bench exits non-zero on any negative delta, which fails the PR check. Sub-second runtime; no DB, no AWS, no ML weights — see `.claude/handover_t5.md` §"TEST HARNESS". If the check goes red: revert the offending commit, reproduce locally with the same command, and only ship a fix that turns it green again. Do not skip or relax the check to land a PR — the regression is real (this is exactly the silent slip from `0cb645a` that motivated the harness).
+Replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`bench_baseline.json`, currently 20/24). Exits non-zero on any negative delta. Sub-second; no DB, no AWS, no weights. Details: `.claude/handover_t5.md` §"TEST HARNESS".
 
-Schema DDL is split across files:
-- `db_init.py::bronze_init()` — bronze tables (idempotent, called on boot)
-- `gold_init.py::gold_init_presentation()` — gold presentation views (idempotent, called on boot)
-- `tennis_coach/db.py::init_coach_cache()` — coach cache table (idempotent)
-- `tennis_coach/coach_views.py::init_coach_views()` — gold coach views (idempotent)
-- `support_bot/db.py::init_support_schema()` — support_bot.conversations + faq_cache (idempotent)
-- `_ensure_member_profile_columns()` in `client_api.py` — billing columns (on import)
-- `_ensure_submission_context_schema()` in `upload_app.py` — submission_context columns (on import)
-- `ensure_invite_token_column()` in `coach_invite/db.py`
+### Schema management
 
-All use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS` / `DROP VIEW IF EXISTS + CREATE VIEW` patterns.
+No migration framework. Schema is managed idempotently across multiple `_init` / `_ensure_*` functions (grep `CREATE TABLE IF NOT EXISTS` and `ADD COLUMN IF NOT EXISTS` to find them). Bronze tables boot via `db_init.py::bronze_init()`; gold views recreate on every boot via `gold_init.py`, `tennis_coach/coach_views.py`, and `technique/gold_technique.py`.
 
-Gold view recreation (`gold_init.py`, `tennis_coach/coach_views.py`, `technique/gold_technique.py`) wraps the **entire** DROP+CREATE loop in a **single transaction**. Postgres DDL is transactional and takes AccessExclusiveLock on each view, so concurrent readers block until COMMIT and then see the new views atomically — no mid-boot window where a view is absent. A single view failure rolls back the whole transaction; we keep the previous working set rather than a half-applied mix.
+**Gold view recreation wraps the entire DROP+CREATE loop in a single transaction.** Postgres DDL is transactional and takes AccessExclusiveLock on each view → concurrent readers block until COMMIT and then see the new views atomically. A single view failure rolls back the whole batch (we keep the previous working set rather than a half-applied mix).
 
 ---
 
-## Architecture Overview
+## Architecture overview
 
-### Data Layers (medallion)
+### Data layers (medallion)
 
 ```
 bronze.*  →  silver.*  →  gold.*  →  API  →  Dashboards + LLM Coach
@@ -117,17 +100,15 @@ bronze.*  →  silver.*  →  gold.*  →  API  →  Dashboards + LLM Coach
              (fact)        views         through
 ```
 
-**Bronze** (`bronze.*`): Raw SportAI JSON ingested verbatim. `db_init.py` owns schema. Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
+**Bronze** (`bronze.*`): raw SportAI JSON ingested verbatim. `db_init.py` owns schema. Key tables: `raw_result`, `submission_context`, `player_swing`, `rally`, `ball_position`, `ball_bounce`, `player_position`.
 
-**Silver** (`silver.*`): The single source of truth for match-level analytics.
-- `silver.point_detail` — one row per shot. Derived fields: serve zones (`serve_side_d`, `serve_bucket_d`), rally locations (A-D), aggression (`Attack`/`Neutral`/`Defence`), depth (`Deep`/`Middle`/`Short`), stroke (`Forehand`/`Backhand`/`Serve`/`Volley`/`Slice`/`Overhead`/`Other`), outcome (`Winner`/`Error`/`In`), serve try (`1st`/`2nd`/`Double`), ace/DF detection, normalised coordinates. Built by `build_silver_v2.py` (5-pass SQL). `model` column distinguishes `'sportai'` vs `'t5'` rows so both pipelines coexist.
+**Silver** (`silver.*`): single source of truth for match-level analytics.
+- `silver.point_detail` — one row per shot. Derived: serve zones (`serve_side_d`, `serve_bucket_d`), rally locations (A-D), aggression (Attack/Neutral/Defence), depth (Deep/Middle/Short), stroke (Forehand/Backhand/Serve/Volley/Slice/Overhead/Other), outcome (Winner/Error/In), serve try (1st/2nd/Double), ace/DF detection, normalised coordinates. Built by `build_silver_v2.py` (5-pass SQL). `model` column distinguishes `'sportai'` vs `'t5'` so both pipelines coexist.
 - `silver.practice_detail` — practice equivalent. Built by `ml_pipeline/build_silver_practice.py` (3-pass).
 
-**Gold** (`gold.*`): Presentation layer. Thin views — **one per chart or one per widget** — that aggregate silver into exactly the shape the frontend needs. No Python/JS aggregation downstream. Same views feed dashboards and LLM coach.
+**Gold** (`gold.*`): presentation layer. Thin views — one per chart or one per widget — that aggregate silver into exactly the shape the frontend needs. Same views feed dashboards and LLM coach. Full catalogue: `docs/dashboards.md`.
 
-Full view catalogue, dashboard-endpoint mapping, LLM Coach data flow, and the Practice / Match Analysis SPAs: see **`docs/dashboards.md`**.
-
-**Architecture rule**: **SQL views own aggregation. Python API endpoints are thin passthroughs. Frontend is pure rendering.** Never aggregate in Python or JavaScript if a view can do it once. This is enforced by code review — search `SELECT * FROM gold.` in `client_api.py` and confirm no new aggregation logic creeps in downstream.
+**Architecture rule** (rule #2): SQL views own aggregation. Python API endpoints are thin passthroughs. Frontend is pure rendering. Never aggregate in Python/JS if a view can do it once.
 
 ### Silver V2 (`build_silver_v2.py`)
 
@@ -138,228 +119,181 @@ Current prod implementation. 5-pass SQL pipeline:
 4. Zone classification + coordinate normalization
 5. Analytics (serve buckets, stroke, rally_length, aggression, depth)
 
-Court geometry constants live in `SPORT_CONFIG` at the top. T5 silver builders — `ml_pipeline/build_silver_match_t5.py` (matches) and `ml_pipeline/build_silver_practice.py` (practice) — call passes 3-5 directly from this module to share the derivation logic.
+Court geometry constants live in `SPORT_CONFIG` at the top. T5 silver builders (`ml_pipeline/build_silver_match_t5.py` and `build_silver_practice.py`) call passes 3-5 directly to share the derivation logic.
 
-### Service Topology & Data Flow
+### Service topology
 
 Media Room uploads video to S3 → `POST /api/submit_s3_task` → main app routes by `sport_type`:
-- **SportAI** (`tennis_singles`): async submit → poll status → delegate to ingest worker → bronze ingest → silver build → video trim → SES notify
-- **T5** (`*_practice`, `tennis_singles_t5`): AWS Batch job → sentinel `t5://complete/{id}` → in-process `_do_ingest_t5` → bronze (from ml_analysis) → silver → trim → notify
-- **Technique** (`technique_analysis`): single background thread → call technique API → bronze → silver → trim → notify (no auto-ingest routing, no sentinel URL)
+- **SportAI** (`tennis_singles`): async submit → poll → delegate to ingest worker → bronze → silver → trim → SES
+- **T5** (`*_practice`, `tennis_singles_t5`): AWS Batch → sentinel `t5://complete/{id}` → in-process `_do_ingest_t5` → bronze (from `ml_analysis`) → silver → trim → notify
+- **Technique** (`technique_analysis`): single background thread → external API → bronze → silver → trim → notify (no auto-ingest routing, no sentinel URL)
 
-**Key design**: the ingest worker is self-contained — it does NOT import `upload_app.py`. It calls `ingest_bronze_strict()` directly. Worker timeout 3600s vs main app 1800s.
+The ingest worker is **self-contained** — does NOT import `upload_app.py`, calls `ingest_bronze_strict()` directly (rule #3). Worker timeout 3600s vs main app 1800s.
 
-### Main App (`upload_app.py`)
+### Main app (`upload_app.py`)
 
-Primary service. Responsibilities: S3 presigned URLs + multipart lifecycle, SportAI/T5/Technique submission (routed by `sport_type`), task status orchestration, auto-ingest triggering, video trim callback, SES notification, CORS preflight for `/api/client/*`. Registered blueprints: grep `app.register_blueprint` in `upload_app.py`.
+S3 presigned URLs + multipart, sport-routed submission, task-status orchestration, auto-ingest, video-trim callback, SES notify, CORS preflight for `/api/client/*`. Blueprints: grep `app.register_blueprint`.
 
-**On-boot init** (idempotent, each try/except-wrapped so one failure can't kill the service — order matters because later steps may read from earlier views):
-1. `gold_init_presentation()` — `gold.vw_player`, `gold.vw_point`, `gold.match_*`, `gold.player_performance`
-2. legacy `gold_init()` from `db_init.py` — `gold.vw_client_match_summary` (feeds `/api/client/matches` sidebar; will be replaced by `gold.match_kpi`)
+**On-boot init order** (each try/except-wrapped so one failure can't kill the service; order matters because later steps may read earlier views):
+1. `gold_init_presentation()` — `gold.vw_player`, `vw_point`, `match_*`, `player_performance`
+2. legacy `gold_init()` — `gold.vw_client_match_summary` (feeds `/api/client/matches` sidebar; will be replaced by `gold.match_kpi`)
 3. `init_tennis_coach()` + register `coach_bp` — `gold.coach_*` views + `tennis_coach.coach_cache`
 4. `init_support_bot()` + register `support_bp` — `support_bot.conversations` + `faq_cache`
-5. register `cleanup.orphan_sweep_bp` — exposes `POST /ops/orphan-sweep`
-6. register `diag_sql.diag_sql_bp` — exposes `POST /ops/diag/sql`
-7. `technique_bronze_init()` + `ensure_silver_schema()` + `init_technique_gold_views()` — bronze/silver tables + `gold.technique_*` views
+5. register `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`
+6. register `diag_sql.diag_sql_bp` — `POST /ops/diag/sql`
+7. `technique_bronze_init()` + `ensure_silver_schema()` + `init_technique_gold_views()`
 
-### Video Trim Pipeline
+### Video trim pipeline
 
-Fire-and-forget async:
-1. Ingest worker (match) or `_do_ingest_t5` (practice) calls `trigger_video_trim(task_id)`
-2. Loads `silver.point_detail` (match) or `silver.practice_detail` (practice), builds EDL
-3. POSTs to video worker at `VIDEO_WORKER_BASE_URL/trim`
-4. Worker spawns detached subprocess → downloads from S3 → FFmpeg re-encodes → uploads `trimmed/{task_id}/review.mp4`
-5. Worker callback updates `bronze.submission_context.trim_status`
+Fire-and-forget async: ingest worker (match) or `_do_ingest_t5` (practice) calls `trigger_video_trim(task_id)` → loads silver, builds EDL → POSTs to video worker → worker spawns detached subprocess → downloads from S3 → FFmpeg re-encodes → uploads `trimmed/{task_id}/review.mp4` → callback updates `bronze.submission_context.trim_status`.
 
-For practice: trim source is `trim_output_s3_key` (the ML-produced practice.mp4), not the deleted original.
+For practice the trim source is `trim_output_s3_key` (the ML-produced `practice.mp4`), not the deleted original.
 
 ---
 
-## Dashboards & Gold Views
+## Subsystems
 
-Custom-built ECharts + canvas SPAs (`match_analysis.html`, `practice.html`) backed by thin gold views. Four-module match dashboard: Match Analytics, Placement Heatmaps, Player Performance, AI Coach. Practice is the reference design for new dashboards.
+### Dashboards & gold views
+Custom ECharts + canvas SPAs (`match_analysis.html`, `practice.html`) backed by thin gold views. Match dashboard has 4 modules: Match Analytics, Placement Heatmaps, Player Performance, AI Coach. Practice is the reference design for new dashboards. Full catalogue + endpoint mapping + LLM Coach data flow: `docs/dashboards.md`. LLM Coach design: `docs/llm_coach_design.md`.
 
-Full catalogue (gold view list, endpoint-to-view mapping, LLM Coach data flow, dashboard module breakdown): **`docs/dashboards.md`**.
-
-LLM Coach design doc: `docs/llm_coach_design.md`.
-
----
-
-## Billing System
-
-Credit-based usage tracking in `billing.*`. Core files: `billing_service.py`, `models_billing.py`, `billing_import_from_bronze.py`.
-
-Tables: `Account`, `Member`, `EntitlementGrant`, `EntitlementConsumption`. View: `billing.vw_customer_usage`.
+### Billing (`billing.*`)
+Credit-based usage tracking. Core: `billing_service.py`, `models_billing.py`, `billing_import_from_bronze.py`. Tables: `Account`, `Member`, `EntitlementGrant`, `EntitlementConsumption`. View: `billing.vw_customer_usage`. Blueprints: `subscriptions_api`, `usage_api`, `entitlements_api`.
 
 Key patterns:
 - 1 task = 1 match consumed (idempotent via `task_id` unique constraint)
 - Entitlement grants idempotent via `(account_id, source, plan_code, external_wix_id)`
 - **Immediate credit grant on purchase**: `subscription_event()` → `grant_entitlement()` instantly on `PLAN_PURCHASED + ACTIVE`
 - `billing_import_from_bronze.py` syncs completed tasks into consumption records, auto-creating accounts
-- `entitlements_api.py` gates uploads: allows if active subscription OR remaining credits
+- `entitlements_api.py` gates uploads (allows if active subscription OR remaining credits)
 
 **`billing.member` is the single source of truth** for customer/player/child/coach profile data. Match-level `player_a_name` / `player_b_name` stored separately in `bronze.submission_context` as point-in-time snapshots.
 
-API blueprints: `subscriptions_api`, `usage_api`, `entitlements_api`.
+### Coach invite
+Owner invites coaches from the Locker Room "Invite Coach" tab. Data in `billing.coaches_permission`. Module: `coach_invite/` (`db.py`, `email_sender.py`, `video_complete_email.py`, `accept_page.py`).
 
-## Coach Invite Flow
+- Client endpoints (`client_api.py`): `GET /api/client/coaches`, `POST /api/client/coach-invite` (creates row + token + SES email), `POST /api/client/coach-revoke` (clears token).
+- Accept flow: `GET /coach-accept?token=…` → `coach_accept.html` → `POST /api/coaches/accept-token` (**token IS the auth**; validates against `billing.coaches_permission`, sets ACCEPTED, clears token, redirects to portal).
+- Idempotent: re-inviting a revoked coach reuses the row (status → INVITED, new token, new email). Tokens single-use.
 
-Owner invites coaches from the Locker Room "Invite Coach" tab. Data in `billing.coaches_permission` (id, owner_account_id, coach_account_id, coach_email, status, active, invite_token, created_at, updated_at).
+### Email (AWS SES)
+Two emails (both in `coach_invite/`): coach invite (on `POST /api/client/coach-invite`) and video complete (ingest step 7 + task-status auto-fire, idempotent via `ses_notified_at`).
 
-Module: `coach_invite/` — `db.py`, `email_sender.py`, `video_complete_email.py`, `accept_page.py`.
+SES region `eu-north-1` (Stockholm, matches Render). IAM user `nextpoint-uploader` needs `ses:SendEmail` / `ses:SendRawEmail`. Domain `ten-fifty5.com` verified via DKIM. Must be out of sandbox to send to unverified recipients. Env: `SES_FROM_EMAIL` (default `noreply@ten-fifty5.com`), `COACH_ACCEPT_BASE_URL` (default `https://api.nextpointtennis.com`), `LOCKER_ROOM_BASE_URL` (default `https://www.ten-fifty5.com/portal`).
 
-**Client endpoints** (`client_api.py`): `GET /api/client/coaches`, `POST /api/client/coach-invite` (creates row + token + SES email), `POST /api/client/coach-revoke` (clears invite_token).
+### Support bot (`support_bot/` + `frontend/support.html`)
+Portal chat using Claude Haiku 4.5. FAQ-only (answers strictly from `support_bot/faq.md`), forced tool-use for structured output, auto-escalates account-specific questions to `info@ten-fifty5.com` via SES. Surface: `GET /help`. API: `/api/support/{ask,feedback,escalate,health}` under `X-Client-Key` auth. Kill switch: `SUPPORT_BOT_ENABLED=false`. FAQ is the load-bearing artefact (5 seeded, ~30 planned). Full reference: `docs/support_bot.md`.
 
-**Accept flow** (self-contained on Render): `GET /coach-accept?token=...` serves `coach_accept.html` which POSTs to `/api/coaches/accept-token` (token IS the auth, validates against `billing.coaches_permission`, sets ACCEPTED, clears token, auto-redirects to portal).
+### Client API (`client_api.py`)
+Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMIN_EMAILS` (hardcoded: `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`). Surface: customer-facing dashboard data + profile / entitlements / members / matches / footage URLs + `/backoffice/*` admin endpoints. Dashboard endpoints: `docs/dashboards.md`. Full list: grep `@.*\.route` in `client_api.py`.
 
-**Idempotency**: re-inviting a revoked coach reuses the row (status → INVITED, new token, new email). Tokens single-use.
-
-## Email System (AWS SES)
-
-Module: `coach_invite/` (contains both email types).
-
-| Email | Trigger |
-|---|---|
-| Coach invite | `POST /api/client/coach-invite` |
-| Video complete | Ingest step 7 + task-status auto-fire (idempotent via `ses_notified_at`) |
-
-**AWS SES setup**: region `eu-north-1` (Stockholm, matches Render). IAM user `nextpoint-uploader` needs `ses:SendEmail` / `ses:SendRawEmail`. Domain `ten-fifty5.com` verified via DKIM. Must be promoted out of sandbox to send to unverified recipients.
-
-**Env vars**: `SES_FROM_EMAIL` (default `noreply@ten-fifty5.com`), `COACH_ACCEPT_BASE_URL` (default `https://api.nextpointtennis.com`), `LOCKER_ROOM_BASE_URL` (default `https://www.ten-fifty5.com/portal`).
-
-## Support Bot (`support_bot/` + `frontend/support.html`)
-
-Portal customer-service chat. Claude Haiku 4.5, FAQ-only (answers strictly from `support_bot/faq.md`), forced tool-use for structured output, auto-escalates account-specific questions to `info@ten-fifty5.com` via SES. Surface: `GET /help` (in portal sidebar). API: `/api/support/{ask,feedback,escalate,health}` under `X-Client-Key` auth. Kill switch: `SUPPORT_BOT_ENABLED=false`. The FAQ is the load-bearing artefact (5 seeded entries, ~30 planned).
-
-Full reference: **`docs/support_bot.md`** + `support_bot/README.md`.
-
-## Client API (`client_api.py`)
-
-Auth: `X-Client-Key` header. Admin endpoints additionally require email in `ADMIN_EMAILS` (hardcoded: `info@ten-fifty5.com`, `tomo.stojakovic@gmail.com`). Surface: customer-facing dashboard data + profile / entitlements / members / matches / footage URLs + `/backoffice/*` admin endpoints. Dashboard endpoints catalogued in `docs/dashboards.md`; the full endpoint list is discoverable by grepping `@.*\.route` in `client_api.py`.
-
-## Locker Room SPAs
-
+### Locker Room SPAs (`frontend/`)
 All auth via URL params forwarded through the portal: `?email=&firstName=&surname=&wixMemberId=&key=&api=`.
 
-**Design system**: all pages share CSS variables, Inter font, green/amber/red palette, `.toggle-group` / `.toggle-btn` buttons, ECharts helpers (`eBar`, `eStackedBar`, `ePie`, `eGauge`) defined identically in every file.
+**Design system**: shared CSS variables, Inter font, green/amber/red palette, `.toggle-group` / `.toggle-btn` buttons, ECharts helpers (`eBar`, `eStackedBar`, `ePie`, `eGauge`) defined identically in every file.
 
-- **Locker Room** (`/`): dashboard. Header tabs (Account / My Details / Linked Players / Invite Coach), charts (matches per month, usage gauge), match history.
-- **Media Room** (`/media-room`): 4-step upload wizard (game type → upload → details → progress). Game types: Singles (SportAI, prod), Singles T5 / Serve / Rally / Technique (dev-only, gated to `tomo.stojakovic@gmail.com`).
-- **Pricing** (`/pricing`): fetches entitlements, renders one of three views (new plan / top-up only / coach view). Sends `postMessage({ type: 'wix-checkout', planId })` up to Wix for PayPal checkout.
-- **Portal** (`/portal`): **entry point**. Collapsible sidebar, inner iframe with auth params forwarded. Embedded in Wix page `https://www.ten-fifty5.com/portal`. Main nav: Dashboard, Upload Match, My Profile, **Analytics** (with sub-items: Match Analytics, Placement Heatmaps), Plans & Pricing. Admin section: Backoffice, Practice (WIP). Sub-nav items show tree-line connectors.
-- **Practice** (`/practice`): practice analytics (see Dashboards section).
-- **Match Analysis** (`/match-analysis`): match analytics — 4 modules: Match Analytics, Placement Heatmaps, Player Performance, AI Coach (see Dashboards section).
+Pages:
+- `/` Locker Room — dashboard, header tabs (Account / My Details / Linked Players / Invite Coach), charts (matches per month, usage gauge), match history.
+- `/media-room` — 4-step upload wizard (game type → upload → details → progress). Game types: Singles (SportAI, prod), Singles T5 / Serve / Rally / Technique (dev-only, gated to `tomo.stojakovic@gmail.com`).
+- `/pricing` — fetches entitlements, renders new-plan / top-up-only / coach view. Sends `postMessage({type:'wix-checkout', planId})` to Wix for PayPal checkout.
+- `/portal` — **entry point**. Collapsible sidebar, inner iframe with auth params forwarded. Embedded in Wix page `https://www.ten-fifty5.com/portal`. Nav: Dashboard, Upload Match, My Profile, Analytics (Match Analytics, Placement Heatmaps), Plans & Pricing, Backoffice (admin), Practice (WIP).
+- `/practice`, `/match-analysis` — analytics SPAs (see `docs/dashboards.md`).
+- Public marketing: `/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`.
 
 **Wix remaining dependencies** (everything else has been retired):
 1. Member authentication (Wix login → portal URL params)
-2. Payment checkout (`checkout.startOnlinePurchase(planId)` via Wix Pricing Plans API / PayPal)
+2. Payment checkout (`checkout.startOnlinePurchase(planId)` via Wix Pricing Plans / PayPal)
 3. Subscription event webhook (`POST /api/billing/subscription/event`)
 
 **iOS iframe CSS**: all pages run inside Wix → portal → page iframes. Use `height: 100%` (not `vh`), `viewport-fit=cover` meta tag, `padding-bottom: 300px` on mobile.
 
-## Auth Pattern
+---
 
-- **Ops endpoints**: `OPS_KEY` via `X-Ops-Key` header or `Authorization: Bearer <key>`
+## Auth, idempotency, env vars, S3 CORS
+
+### Auth
+- **Ops**: `OPS_KEY` via `X-Ops-Key` header or `Authorization: Bearer <key>` (never query string — rule #6)
 - **Video worker**: `VIDEO_WORKER_OPS_KEY` (worker auth), `VIDEO_TRIM_CALLBACK_OPS_KEY` (callback auth, must match main API `OPS_KEY`)
 - **Client API**: `CLIENT_API_KEY` via `X-Client-Key` header
 - **Coach accept**: token-based (the invite token IS the auth)
 
-## Idempotency Patterns
-
-- Billing consumption: unique constraint on `task_id`
+### Idempotency
+- Billing consumption: unique on `task_id`
 - Entitlement grants: unique on `(account_id, source, plan_code, external_wix_id)`
 - Bronze ingest: advisory locks on `task_id`
-- Customer notify: checks `wix_notified_at` / `ses_notified_at` before sending
-- Coach invite token: unique partial index `WHERE invite_token IS NOT NULL`
+- Customer notify: checks `wix_notified_at` / `ses_notified_at` before send
+- Coach invite: unique partial index `WHERE invite_token IS NOT NULL`
 - Gold views: `DROP VIEW IF EXISTS` + `CREATE VIEW` on every boot
 - Coach cache: unique `(task_id, email, prompt_key)`
 
-## Required Environment Variables
+### Env vars
+Full matrix (main API + workers + crons + Lambda + ML pipeline Docker): `docs/env_vars.md`.
 
-Full env-var matrix (main API required + optional + legacy, all worker services, crons, Lambda, ML pipeline Docker): **`docs/env_vars.md`**.
+Main API quick reference: `DATABASE_URL`, `OPS_KEY`, `CLIENT_API_KEY`, `ANTHROPIC_API_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS keys, `SPORT_AI_TOKEN`, worker-pair URLs/keys (`INGEST_WORKER_*`, `VIDEO_WORKER_*`, `VIDEO_TRIM_CALLBACK_*`). Plus two operational tunables at the top of `upload_app.py`: `MAX_CONTENT_MB` (default 150, sets Flask's `MAX_CONTENT_LENGTH`) and `ENABLE_CORS` (default 0; the per-path `CORS_PATHS` allowlist runs independently of this flag).
 
-Quick reference for the main API: `DATABASE_URL`, `OPS_KEY`, `CLIENT_API_KEY`, `ANTHROPIC_API_KEY`, `S3_BUCKET`, `AWS_REGION`, AWS keys, `SPORT_AI_TOKEN`, plus worker-pair URLs/keys (`INGEST_WORKER_*`, `VIDEO_WORKER_*`, `VIDEO_TRIM_CALLBACK_*`). Plus two operational tunables read at the top of `upload_app.py`: `MAX_CONTENT_MB` (default 150, sets Flask's `MAX_CONTENT_LENGTH`) and `ENABLE_CORS` (default 0; the per-path CORS allowlist in `CORS_PATHS` runs independently of this flag).
-
-## S3 CORS
-
-Bucket `nextpoint-prod-uploads` requires CORS for browser-to-S3 multipart uploads + video playback:
-- AllowedMethods: GET, PUT, POST, HEAD
-- AllowedHeaders: `*`
-- ExposeHeaders: `ETag` (required for multipart upload completion)
-- AllowedOrigins: `https://locker-room-26kd.onrender.com`, `https://api.nextpointtennis.com`, ten-fifty5.com variants, Wix editor/site domains
-
-## Diagnostics & Ops
-
-All `/ops/*` endpoints use **header-only** auth (`X-Ops-Key: <OPS_KEY>` or `Authorization: Bearer <OPS_KEY>`). Query-string `?key=` is deliberately rejected to keep OPS_KEY out of access logs — see `_guard()` in `upload_app.py`.
-
-- `GET /healthz` — liveness probe on the main API (no auth, returns "OK"). The Locker Room service has its own `/__alive` at `locker_room_app.py:113`; the main API does NOT serve `/__alive`.
-- `GET /ops/routes` — list all registered routes
-- `GET /ops/db-ping` — DB connectivity
-- `POST /ops/compact-storage` — runs `VACUUM (FULL, ANALYZE)` on the bronze/silver/ml_analysis table list, returns per-table `before_bytes` / `after_bytes` / `freed_bytes` JSON. Optional body `{"only": ["schema.table", ...]}` to scope. Each VACUUM takes ACCESS EXCLUSIVE — trigger during low traffic.
-- `POST /ops/orphan-sweep` — periodic mop-up for the soft-delete cascade. Two passes: (1) child rows whose parent `submission_context.deleted_at IS NOT NULL`, (2) true orphans whose `task_id` has no `submission_context` row at all. Body: `{"dry_run": true}` reports counts without changes; `{"include_orphans": false}` skips pass 2. Idempotent. Never touches `billing.*`. Implemented in `cleanup/orphan_sweep.py`.
-- `POST /ops/sweep-t5-orphans` — Phase 5c.2 catch-up sweep. Fires `_start_ingest_background` for any `tennis_singles_t5` task where `bronze.submission_context.ingest_started_at IS NULL` but `ml_analysis.video_analysis_jobs.status='complete'`. Auto-spawned T5 tasks have no polling browser to open the normal ingest gate in `/upload/api/task-status`, so they sit in `last_status='queued'` indefinitely despite Batch having succeeded — this endpoint plugs that exact gap. Body: `{"dry_run": true, "limit": 50, "min_age_minutes": 5}` (all optional; dry-run is the default). Returns `{ok, dry_run, found, triggered: [{task_id}], sample: [...] (dry-run only)}`. Idempotent via the inner ingest gate (checks `ingest_started_at` + staleness) and the `training_corpus` UNIQUE constraint. Header-only auth.
-- `POST /ops/diag/sql` — read-only SELECT runner for autonomous diagnostics (Tier-2 autonomy infra; future Claude sessions hit this via WebFetch instead of asking Tomo to paste Render-shell output). Body: `{"sql": "...", "limit": 100}`. `sqlparse`-enforced single-statement `SELECT`/`WITH...SELECT` only; keyword denylist + `statement_timeout=5s`. Implemented in `diag_sql/sql_endpoint.py`. Full constraints, curl example, residual risks: **`docs/ops_runbook.md`**.
-
-**Workers respect `submission_context.deleted_at`** — both the SportAI ingest worker (`ingest_worker_app.py::_do_ingest`) and the in-process T5 path (`upload_app.py::_do_ingest_t5`) check `deleted_at` at four gates (`pre_start`, `pre_bronze`, `pre_silver`, `pre_trim`) and abort cleanly without re-populating bronze rows if a delete races with an in-flight ingest.
-
-## Code Organisation
-
-New features **must live in their own subdirectory** with `__init__.py`. Examples: `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`, `cleanup/`. Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
-
-**Blueprints registered on the main API** (grep `app.register_blueprint` in `upload_app.py` for the full wiring):
-
-Top-level (registered unconditionally):
-- `client_api.py` — `/api/client/*`, CLIENT_API_KEY auth. Primary customer-facing API surface (dashboard endpoints, profile, entitlements, members, matches, footage URLs). Non-dashboard endpoints catalogued [above](#client-api-client_apipy--non-dashboard-endpoints); dashboard endpoints in `docs/dashboards.md`.
-- `coaches_api.py` — `/api/coaches/*`, OPS_KEY auth. Server-to-server coach permission management over `billing.coaches_permission` (invite / accept / revoke). Companion to the token-based public accept page in `coach_invite/accept_page.py`; called internally by `client_api.py` coach endpoints.
-- `members_api.py` — members CRUD blueprint.
-- `subscriptions_api.py`, `usage_api.py`, `entitlements_api.py` — billing surface (see [Billing System](#billing-system)).
-- `coach_invite.accept_bp` — serves `GET /coach-accept` and `POST /api/coaches/accept-token`. Token IS the auth (see §Coach Invite Flow).
-- `ingest_bronze` (no URL prefix) — bronze ingest HTTP surface from `ingest_bronze.py`; complements the self-contained ingest worker.
-- `ui_app.py` — **legacy** admin UI mounted at `/upload/*`, OPS_KEY auth. Renders bronze/silver inspection pages via `render_template_string`. Not used by any SPA (`backoffice.html` is the real admin UI) — retained for shell/debugging only.
-
-Try/except-wrapped (a failure is logged and the service still boots):
-- `tennis_coach.coach_bp` — LLM coach endpoints (see §Dashboards).
-- `support_bot.support_bp` — `/api/support/*` (see §Support Bot).
-- `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`.
-- `diag_sql.diag_sql_bp` — `POST /ops/diag/sql` (see §Diagnostics & Ops).
-- `ml_pipeline.api.ml_analysis_bp` — local-only; the import fails on Render because `cv2`/`torch` aren't installed there. Used by developer-machine diagnostics, never serves prod traffic.
-
-**Root-level cron scripts** (invoked by Render Cron Jobs, not registered as blueprints):
-
-- `cron_capacity_sweep.py` — periodic billing/capacity sweep. See `docs/billing.md` and `docs/env_vars.md` for schedule + env vars.
-- `cron_monthly_refill.py` — monthly entitlement refill for active subscriptions.
-- `cron_sweep_t5_orphans.py` — runs every 5 min; fires a single authenticated `POST /ops/sweep-t5-orphans` to kick stuck auto-spawned T5 tasks (the server-side trigger paired with the polling-gate gap in rule #10). See §Diagnostics & Ops for the endpoint.
-
-**Ignorable root directories** — present on disk but not part of the runtime:
-
-- `_archive/` — deprecated code kept for reference (don't read unless investigating a specific historical regression).
-- `diag_081e089c/`, `data/` — local investigation snapshots and scratch dumps (often git-ignored). Skip unless the current task explicitly references them.
-- `static/`, `templates/` — Flask defaults; the actual SPAs live under `frontend/` and bronze/silver inspection templates are inlined in `ui_app.py`.
-
-**`frontend/`** — all SPA HTML pages. Served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`:
-
-- Authenticated app: `locker_room.html`, `media_room.html`, `portal.html` (nav shell / Wix entry point), `backoffice.html`, `pricing.html`, `coach_accept.html`, `players_enclosure.html` (register wizard), `practice.html`, `match_analysis.html`, `support.html` (served at `/help`)
-- Public marketing: `home.html`, `how_it_works.html`, `pricing_public.html`, `for_coaches.html`
-
-**`docs/`** — design docs and strategy specs (`pricing_strategy.md`, `llm_coach_design.md`). Source of truth for business rules. Code links back to section numbers (e.g. "see docs/pricing_strategy.md §6").
+### S3 CORS
+Bucket `nextpoint-prod-uploads`. AllowedMethods GET/PUT/POST/HEAD; AllowedHeaders `*`; **ExposeHeaders `ETag` (required for multipart completion)**; AllowedOrigins include `https://locker-room-26kd.onrender.com`, `https://api.nextpointtennis.com`, ten-fifty5.com variants, Wix editor/site domains.
 
 ---
 
-## T5 ML Pipeline (`ml_pipeline/`)
+## Diagnostics & ops
 
-In-house tennis video analysis pipeline. Runs on AWS Batch GPU (Spot G4dn.xlarge) for detection; runs on Render for serve detection + silver build. Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
+All `/ops/*` use header-only auth (`X-Ops-Key: <OPS_KEY>` or `Authorization: Bearer <OPS_KEY>`). Query-string `?key=` is deliberately rejected by `_guard()` to keep `OPS_KEY` out of access logs.
 
-**Where to start a T5 session** — in this order:
-1. `docs/north_star.md` — macro plan + phase ladder
-2. The most recent `.claude/session_YYYY-MM-DD_review.md` if one exists — *live* handover with current design notes, validation commands, and the next path forward
-3. `.claude/handover_t5.md` — canonical operational reference (architecture, how-to-run, validation, Docker/Batch deploy, training, file index, current task IDs, known gaps). The "TEST HARNESS" + "BATCH-SIDE CHANGE CHECKLIST" sections are mandatory reading before any detector edit or push.
-4. `.claude/phase5_kickoff.md` and similar forward-looking docs — read if relevant to the chosen path
+- `GET /healthz` — liveness (main API, no auth, returns "OK"). The Locker Room service has its own `/__alive` at `locker_room_app.py:113`; the main API does NOT serve `/__alive`.
+- `GET /ops/routes` — list registered routes
+- `GET /ops/db-ping` — DB connectivity
+- `POST /ops/compact-storage` — `VACUUM (FULL, ANALYZE)` over bronze/silver/ml_analysis tables, returns per-table `before/after/freed` bytes. Optional `{"only": ["schema.table", …]}` to scope. Takes ACCESS EXCLUSIVE per table — low-traffic only.
+- `POST /ops/orphan-sweep` — soft-delete cascade mop-up. Two passes: (1) child rows of deleted `submission_context`, (2) true orphans with no `submission_context`. `{"dry_run": true}` reports counts; `{"include_orphans": false}` skips pass 2. Never touches `billing.*`. (`cleanup/orphan_sweep.py`)
+- `POST /ops/sweep-t5-orphans` — fires `_start_ingest_background` for `tennis_singles_t5` tasks where `ingest_started_at IS NULL` but Batch is `complete`. Plugs the polling-gate gap (rule #10). `{"dry_run": true, "limit": 50, "min_age_minutes": 5}`. Idempotent via the inner ingest gate + `training_corpus` UNIQUE. Cron runs every 5 min via `cron_sweep_t5_orphans.py`.
+- `POST /ops/diag/sql` — read-only SELECT runner for autonomous diagnostics. `{"sql": "...", "limit": 100}`. `sqlparse`-enforced single-statement `SELECT`/`WITH...SELECT`; keyword denylist + `statement_timeout=5s`. (`diag_sql/sql_endpoint.py`. Full constraints + curl: `docs/ops_runbook.md`.)
 
-Then run `.venv/Scripts/python -m ml_pipeline.diag.bench` to confirm the floor is locked (currently a798eff0=20/24, 880dff02=23/24) before touching code.
+**Workers respect `submission_context.deleted_at`** — both `ingest_worker_app.py::_do_ingest` and `upload_app.py::_do_ingest_t5` check at four gates (`pre_start`, `pre_bronze`, `pre_silver`, `pre_trim`) and abort cleanly without re-populating bronze if a delete races with an in-flight ingest.
 
-The `.claude/` folder is **tracked in git** (handover docs + playbooks live there); only specific per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) plus the scratch `.claude/tmp/` directory and `.claude/worktrees/` are gitignored.
+---
 
-### Data flow (overview only — detail in handover)
+## Code organisation
+
+New features **must live in their own subdirectory** with `__init__.py` (e.g. `video_pipeline/`, `ml_pipeline/`, `coach_invite/`, `tennis_coach/`, `cleanup/`). Repo root is for service entry points (`*_app.py`, `wsgi.py`, `gold_init.py`, `db_init.py`) and legacy top-level Flask blueprints.
+
+**Blueprints registered on the main API** (grep `app.register_blueprint` for the wiring):
+
+Always registered:
+- `client_api.py` — `/api/client/*`, CLIENT_API_KEY auth. Customer-facing API (dashboard endpoints in `docs/dashboards.md`).
+- `coaches_api.py` — `/api/coaches/*`, OPS_KEY auth. Server-to-server coach permission management over `billing.coaches_permission`; called internally by `client_api.py` coach endpoints.
+- `members_api.py` — members CRUD.
+- `subscriptions_api.py`, `usage_api.py`, `entitlements_api.py` — billing surface.
+- `coach_invite.accept_bp` — `GET /coach-accept` + `POST /api/coaches/accept-token` (token IS the auth).
+- `ingest_bronze` (no prefix) — bronze ingest HTTP surface from `ingest_bronze.py`.
+- `ui_app.py` — **legacy** admin UI at `/upload/*`, OPS_KEY auth. Bronze/silver inspection via `render_template_string`. Not used by any SPA (`backoffice.html` is the real admin UI) — retained for shell/debug only.
+
+Try/except-wrapped (failure is logged, service still boots):
+- `tennis_coach.coach_bp` — LLM coach endpoints.
+- `support_bot.support_bp` — `/api/support/*`.
+- `cleanup.orphan_sweep_bp` — `POST /ops/orphan-sweep`.
+- `diag_sql.diag_sql_bp` — `POST /ops/diag/sql`.
+- `ml_pipeline.api.ml_analysis_bp` — local-only; import fails on Render (no `cv2` / `torch`). Dev diagnostics only, never serves prod.
+
+**Cron scripts** (root-level, invoked by Render Cron Jobs, not blueprints):
+- `cron_capacity_sweep.py` — periodic billing/capacity sweep (see `docs/billing.md`, `docs/env_vars.md`).
+- `cron_monthly_refill.py` — monthly entitlement refill for active subscriptions.
+- `cron_sweep_t5_orphans.py` — every 5 min; fires `POST /ops/sweep-t5-orphans` (pairs with rule #10).
+
+**Ignorable root directories** (present on disk, not part of runtime):
+- `_archive/` — deprecated code (don't read unless chasing a specific historical regression).
+- `diag_081e089c/`, `data/` — local investigation snapshots / scratch dumps (often gitignored).
+- `static/`, `templates/` — Flask defaults; actual SPAs live under `frontend/`, inspection templates inlined in `ui_app.py`.
+
+`frontend/` contains all SPA HTML; served by `locker_room_app.py` and (same-origin backups) `upload_app.py` via a `_html(name)` helper that resolves an absolute path under `frontend/`.
+
+---
+
+## T5 ML pipeline (`ml_pipeline/`)
+
+In-house tennis video analysis. Runs on AWS Batch GPU (on-demand or Spot G4dn.xlarge) for detection; runs on Render for serve detection + silver build. Handles `tennis_singles_t5`, `serve_practice`, `rally_practice`. Dev-only — gated to `tomo.stojakovic@gmail.com` in `media_room.html`.
+
+**Session start**: see the Start Here pointer (`docs/north_star.md` §"★ RULES OF THE GAME" first, then `.claude/handover_t5.md`). Run `.venv/Scripts/python -m ml_pipeline.diag.bench` to confirm the floor (a798eff0=20/24, 880dff02=23/24) before touching code. The `.claude/` folder is **tracked in git** except per-run artefacts (`debug_frames_*/`, `eval_*.txt`, `reconcile_*.txt`, `run_status_*.md`) and the scratch `.claude/tmp/` and `.claude/worktrees/` dirs.
+
+### Data flow
 
 ```
 video.mp4 → Batch (court/ball/player detection) → ml_analysis.*
@@ -368,63 +302,59 @@ video.mp4 → Batch (court/ball/player detection) → ml_analysis.*
           → gold.* views → dashboards
 ```
 
-Both T5 and SportAI share passes 3-5 in `build_silver_v2.py` (repo root). The serve detector is a separate module (`ml_pipeline/serve_detector/`, pose-first architecture per Silent Impact 2025 + TAL4Tennis literature) that emits ServeEvent rows which the silver builder consumes.
+Both T5 and SportAI share passes 3-5 in `build_silver_v2.py`. The serve detector is a separate pose-first module (`ml_pipeline/serve_detector/`, per Silent Impact 2025 + TAL4Tennis literature) that emits ServeEvent rows the silver builder consumes.
 
 ### Key directories
 
 | Dir | Purpose |
 |---|---|
-| `ml_pipeline/` | Core detection pipeline (court, ball, player), `db_writer.py` (Batch-side writes to `ml_analysis.*`, `source='main'`), harness, evals |
+| `ml_pipeline/` | Core detection (court, ball, player), `db_writer.py` (Batch-side writes to `ml_analysis.*`, `source='main'`), harness, evals |
 | `ml_pipeline/serve_detector/` | Pose-first serve detection + rally state machine + schema |
-| `ml_pipeline/stroke_detector/` | Velocity-signal stroke detection (`detector.py`, `velocity_signal.py`, `schema.py`) → emits `ml_analysis.stroke_events`. Home of the near-side swing-path precision gate (`9a4ab0a`). **Distinct from `stroke_classifier/`** — this is the live heuristic detector; the classifier is the not-yet-trained CNN replacement. |
-| `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification (training scaffold; awaits dual-submit `training_corpus` → weights `models/stroke_classifier.pt`, currently absent) |
-| `ml_pipeline/roi_extractors/` | Batch-side ROI extractors — `pose.py` (far-player ViTPose → `player_detections_roi`, wired into silver in `ead857a`) + `bounces.py`. Trips the BATCH-SIDE CHANGE CHECKLIST (rule #8). |
+| `ml_pipeline/stroke_detector/` | Velocity-signal stroke detection (`detector.py`, `velocity_signal.py`, `schema.py`) → `ml_analysis.stroke_events`. Home of the near-side swing-path precision gate (`9a4ab0a`). **Live heuristic detector** — distinct from `stroke_classifier/` (the untrained CNN replacement). |
+| `ml_pipeline/stroke_classifier/` | Optical flow CNN for far-player stroke classification (training scaffold; awaits dual-submit data → weights `models/stroke_classifier.pt`, currently absent) |
+| `ml_pipeline/roi_extractors/` | Batch-side ROI extractors — `pose.py` (far-player ViTPose → `player_detections_roi`, wired in `ead857a`) + `bounces.py`. Trips the BATCH-SIDE CHANGE CHECKLIST (rule #8). |
 | `ml_pipeline/point_structure/` | `point_boundaries.py` — point/game structure derivation shared by silver builders |
-| `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (note: `training/visual_debug/` is leftover local debug images, untracked — don't read or edit) |
-| `ml_pipeline/diag/` | Dev tools — `bench` / `bench_ball` / `bench_silver` regression harnesses, serve viewer, pose probe |
-| `ml_pipeline/fixtures_ci/`, `fixtures_ball/`, `fixtures_silver/` | Locked bench fixtures (one dir per bench), with `*_baseline.json` siblings |
+| `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (`visual_debug/` is leftover local debug images, untracked — don't read or edit) |
+| `ml_pipeline/diag/` | Dev tools — `bench` / `bench_ball` / `bench_silver` harnesses, serve viewer, pose probe |
+| `ml_pipeline/{fixtures_ci,fixtures_ball,fixtures_silver}/` | Locked bench fixtures (one dir per bench) with `*_baseline.json` siblings |
 
 Weights in `ml_pipeline/models/` (~270 MB, git-ignored): TrackNet V2, YOLOv8x/m-pose, YOLOv8m, court_keypoints.pth, optional `stroke_classifier.pt` / `tracknet_v3.pt`.
 
 ### Most-used commands
 
-See `.claude/handover_t5.md` for the full catalogue. The ones that come up constantly:
+Full catalogue in `.claude/handover_t5.md`. The ones that come up constantly:
 
 ```bash
 python -m ml_pipeline.diag.bench                        # serve detector regression (CI-gated; mandatory pre-push)
 python -m ml_pipeline.diag.bench_ball                   # ball-tracker regression (tracknet_v2 + wasb; local-only)
-python -m ml_pipeline.diag.bench_finetuned --weights-path <path>  # ball-bench against a fine-tuned weights file (Phase 5c.4)
-python -m ml_pipeline.diag.bench_silver                 # silver-builder regression (local Docker Postgres; first fixture 1d6feb3a landed — run --setup once to seed)
+python -m ml_pipeline.diag.bench_finetuned --weights-path <path>  # ball-bench against fine-tuned weights (Phase 5c.4)
+python -m ml_pipeline.diag.bench_silver                 # silver-builder regression (local Docker Postgres; run --setup once to seed)
 python -m ml_pipeline.harness validate <task_id>        # bronze + silver sanity
 python -m ml_pipeline.harness eval-serve <task_id>      # pose-first serve detector vs SA
 python -m ml_pipeline.harness reconcile <sa_tid> <t5_tid>
 python -m ml_pipeline.harness rerun-silver <task_id>    # fast — no Batch needed
-python -m ml_pipeline.harness build-corpus              # assemble dataset from ml_analysis.training_corpus (Phase 5c.3); --task <id>, --upload-s3
-python -m ml_pipeline.harness verify-corpus-row <task_id>  # sanity-check a training_corpus row
-python -m ml_pipeline.diag.serve_viewer <task_id> --video <path>  # visual contact sheets
+python -m ml_pipeline.harness build-corpus              # dataset from ml_analysis.training_corpus (Phase 5c.3); --task <id>, --upload-s3
+python -m ml_pipeline.harness verify-corpus-row <task_id>
+python -m ml_pipeline.diag.serve_viewer <task_id> --video <path>
 ```
 
-### Compute reality
+### Compute reality (2026-05-27)
 
-On-demand G-family GPU capacity is available and **prioritised** — eu-north-1 queue order 1 = `ten-fifty5-ml-ce-eu-ondemand` (EC2), Spot CE `ten-fifty5-ml-compute` is order-2 fallback. Confirmed 2026-05-27 (job `9378f2dd` ran on the on-demand CE). The earlier "Spot-only / on-demand quota = 0 (2026-04-15)" reality is **stale** — the quota was raised. Prioritise Europe + on-demand for long runs so they aren't Spot-eviction-exposed; the cross-region failover + Spot-fallback playbook (`.claude/playbook_aws_batch_ondemand_fallback.md`) is the contingency for when on-demand is tight.
-
-Background / historical context lives in the auto-memory files (`project_t5_*.md`) referenced from `MEMORY.md`.
+On-demand G-family GPU is **available and prioritised** — eu-north-1 queue order 1 = `ten-fifty5-ml-ce-eu-ondemand` (EC2); Spot CE `ten-fifty5-ml-compute` is order-2 fallback (confirmed via job `9378f2dd`). The earlier "Spot-only / on-demand quota = 0 (2026-04-15)" reality is **stale** — quota was raised. Prioritise Europe + on-demand for long runs so they aren't Spot-eviction-exposed. Cross-region failover + Spot fallback playbook: `.claude/playbook_aws_batch_ondemand_fallback.md`.
 
 ---
 
-## Technique Analysis (`technique/`)
+## Technique analysis (`technique/`)
 
-Biomechanics stroke analysis via external SportAI Technique API. Dev-only (gated to `tomo.stojakovic@gmail.com`). Sport type: `technique_analysis`. Synchronous streaming (single background thread in `upload_app.py::_technique_run_pipeline()` does download → API call → bronze → silver → trim copy → SES notify, end-to-end).
-
-Tables, gold view list, key files, frontend swing-type list, full flow detail: **`docs/technique.md`**.
+Biomechanics stroke analysis via external SportAI Technique API. Dev-only (gated to `tomo.stojakovic@gmail.com`). Sport type: `technique_analysis`. Synchronous streaming — a single background thread in `upload_app.py::_technique_run_pipeline()` does download → API call → bronze → silver → trim copy → SES notify, end-to-end. Full reference: `docs/technique.md`.
 
 ---
 
 ## Other
 
-- **`docs/`**: feature-level design and reference docs. Active: `north_star.md` (T5 macro plan), `dashboards.md` (gold view + endpoint catalogue), `business.md` (canonical product behaviour), `billing.md` (billing implementation), `pricing_strategy.md` (pricing numerics), `ops_runbook.md` (every `/ops/*` endpoint), `env_vars.md` (full env-var matrix), `technique.md`, `support_bot.md`, `llm_coach_design.md`. Code links back by section number where relevant. Subdirs: `docs/_investigation/` (deep-dive diagnoses, e.g. `far_player_accuracy.md` — read before acting on T5 far-player/A-B identity, cited by rule #11), `docs/sql/` (canonical diagnostic queries, e.g. `reconcile_serves.sql`), `docs/_archive/` (superseded docs).
-- **`migrations/`**: One-off backfill SQL scripts. No migration framework — schema is managed idempotently via `db_init.py` + `gold_init.py` + per-module `ensure_*` functions.
-- **`_archive/`**: Deprecated/replaced code kept for reference.
+- **`docs/`**: feature design + reference. Active set listed in Start Here. Subdirs: `_investigation/` (deep-dive diagnoses, e.g. `far_player_accuracy.md` cited by rule #11), `sql/` (canonical diag queries, e.g. `reconcile_serves.sql`), `_archive/` (superseded).
+- **`migrations/`**: one-off backfill SQL scripts. No migration framework — schema is idempotent via `_init` / `_ensure_*` functions.
+- **`_archive/`**: deprecated/replaced code, reference only.
 - **`lambda/`**: AWS Lambda source (e.g., S3 trigger for ML pipeline).
-- **`.claude/`**: Claude Code handover docs + AWS Batch playbooks (tracked in git, see list above); per-run artefacts (debug frames, eval txts, run status) are gitignored. Subdirs: `infrastructure/` (`gpu_dev_box_runbook.md`), `research/` (market scans), `strategy/` (dated strategy notes — dual-submit status, infra audit, silver-bench design, T5-vs-SportAI), `serve_ground_truth/` (hand-labelled serve CSVs for bench/eval); plus the gitignored scratch `tmp/` and `worktrees/`.
-- **Auto-memory** (Claude Code's per-project memory dir, indexed by `MEMORY.md`): persistent cross-session notes loaded into every conversation. Historical T5 context (`project_t5_*.md`), user/feedback rules, and feature-launch records live here — check it for "why did we decide X" before re-deriving from code. Local to the machine, not in git.
+- **`.claude/`**: handover docs + AWS Batch playbooks (tracked in git, see Start Here); per-run artefacts gitignored. Subdirs: `infrastructure/`, `research/`, `strategy/`, `serve_ground_truth/`, plus gitignored `tmp/` and `worktrees/`.
+- **Auto-memory** (per-project, indexed by `MEMORY.md`, loaded into every conversation): historical T5 context (`project_t5_*.md`), user/feedback rules, feature-launch records. Check for "why did we decide X" before re-deriving from code. Local to the machine, not in git.
