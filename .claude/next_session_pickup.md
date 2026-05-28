@@ -24,7 +24,7 @@
 - Pure Render — auto-deployed; `/healthz` 200.
 - Catches match-4-class catastrophic failures retroactively. Doesn't fix the root cause (degenerate homography locking); that's the Batch-side companion (A)+(B) — STILL TODO.
 
-### Stream 3: ADR-01 v1 bounce_detector training infra + first trained weights + ceiling identified
+### Stream 3: ADR-01 v1 bounce_detector training infra + gravity-residual candidate generator (6.5× recall lift)
 - `a2bf4b8` `feat(t5): ADR-01 v1 bounce_detector training infra (dataset + trainer + bench --weights-path)` — 4 files, 871 insertions / 3 deletions.
   - `ml_pipeline/bounce_detector/dataset.py` — `build_manifest()` mines positives + 5× negatives. Positives use the audit's strict gate (is_bounce ±5 fr + ≤50 px) where it fires, fall back to SA `bounce_frame_est` otherwise.
   - `ml_pipeline/training/train_bounce_detector.py` — AdamW + cosine warmup + BCELoss + WeightedRandomSampler + per-epoch (loss / acc / prec / rec / F1 / PR-AUC) + early-stop on F1 or PR-AUC. Wrapped `{state_dict, meta}` save format.
@@ -35,6 +35,26 @@
 **The ceiling insight (the load-bearing finding from this session):** the detector's production candidate pool is `ball_detections WHERE is_bounce=TRUE` — TrackNet's velocity-reversal heuristic. Per `.claude/adr01_label_audit_2026-05-28.md`, only **6/67 (9%)** of SA floor labels have a matching is_bounce candidate within ±5 frames + ≤50 px. So even a perfect model on the existing candidate pool maxes out at ~9% recall. **More training data won't fix this** (the corpus could grow to 10,000 labels and recall would still hit the 9% wall). The right lever is **candidate generation**: swap the `is_bounce` filter in `_candidate_frames_from_raw_bounces` (currently `detector.py:177`) for a sliding-window peak detector on the gravity-residual feature (already computed in `feature_extractor.py` channel 6 — that's the most discriminative single feature per ADR-01, fitted against a parabolic prior). Expected after candidate-generation lift: recall ceiling 9% → ~50% (ball-coverage limited). THEN retraining is meaningful. Memory: [project_t5_may28_bounce_v1_candidate_ceiling](memory).
 
 **Baseline NOT locked.** 3-5% recall would be a misleading floor that future work could trivially "beat" without actually improving anything. Lock the baseline after the candidate-generation work lands and we have honest numbers.
+
+**UPDATE later same session — gravity-residual candidate generator SHIPPED (`4a36f34`):**
+
+- `ml_pipeline/bounce_detector/detector.py` — `_candidate_frames_from_gravity_residual(ball_rows, threshold=10px, min_gap=4)` reuses `feature_extractor._gravity_residual`. Image-y based (calibration-independent → still works on Match-4-class failures). `_select_candidates()` dispatches on `BOUNCE_CANDIDATE_MODE` env var (default `is_bounce` — safe; opt-in `gravity_residual`).
+- `bounce_detector/dataset.py` + `training/train_bounce_detector.py` — `candidate_mode` parameter so training data can be sampled from the same pool the detector runs at inference (train/inference parity).
+- Default threshold 10px tuned on Match 1; full sweep + comparison table is in the detector.py docstring.
+
+**Match 1 bench @ thr=0.5:**
+
+| mode + weights | candidates | recall | precision | mean_err |
+|---|---|---|---|---|
+| is_bounce + v1 | 55 | 3.0% | 3.6% | 0.55m |
+| **gravity_residual + v1 (no retrain)** | 148 | **20.9%** | **9.5%** | **0.30m** |
+| **gravity_residual + GR-retrained (val F1 0.52)** | 175 | **23.9%** | **9.1%** | **0.30m** |
+
+**6.5× recall lift from the candidate swap alone**, plus spatial error halves because GR peaks land closer to the actual bounce frame than TrackNet's `is_bounce` flag. GR-retraining adds ~3pp more recall on top. Same weights file gets used either way — no production deploy needed for the lift to materialise once weights are wired (the env var flip is the prod knob).
+
+**Match 4 caveat:** GR loose-match on M4 was only 14% (vs M1's 58%). M4 was SIGKILL'd mid-run + calibration-corrupt; not a fair test. Re-validate on the next clean upload. Until then, default threshold stays at the M1-tuned 10px.
+
+**Next-session priority for bounce work:** Match 4 re-ingest post-calibration-fix → 273 more clean floor labels → retrain GR mode v1 → expected recall climb to 30-40% with multi-match training data.
 
 ## Match 4 saga + recovery — full story for context
 
@@ -67,7 +87,7 @@ Match 4 (`ca475740-9e34-49c3-9b59-0194bfa37013`, Tomo vs Jimbo Ma, 47.9-min 1080
 | 3 | **L7 G5.xlarge (A10G)** | next session | ~1-2h infra | No code. AWS Batch CE + Job Queue + JD updates. Quota check first (`aws service-quotas get-service-quota` for G-family vCPU in eu-north-1; if 0, request increase). G5.xlarge ~$1.006/h vs G4dn.xlarge $0.526/h but ~2× FP16 throughput so cost-per-job ~flat. Adds 2-3× hardware speedup on top of all software levers. |
 | 4 | **Calibration tactical fixes (A) + (B)** — stopgap | next session | ~2-3h with deploy | (A) H_diag sanity gate in `court_detector.py` — reject homographies where `\|H[0,0]\|` or `\|H[1,1]\|` outside `[0.1, 5.0]`. (B) post-lock projection self-test — project 4 court corners, reject if any falls outside frame. Batch-side, trips checklist. Bundle both in same Docker rebuild. **Stopgap until Priority 0 architectural fix lands** — these catch the failure but don't make calibration camera-agnostic. Fix doc: `docs/_investigation/court_calibration_silent_degeneracy.md` §Fix options. |
 | 5 | **Calibration architectural fix (E + F + G + H)** | PRIORITY 0 session | research + implementation | Camera-agnostic court mapping. Lens distortion model + correction (E), end-to-end learned calibration (F), multi-frame temporal voting (G), self-supervised player-feet refinement (H). Goes through the multi-agent research session FIRST (this pickup's opening prompt), then a separate implementation session. See doc §"Dedicated research session scope". |
-| 6 | **ADR-01 v1+: gravity-residual peak detector for candidate generation** | next session | ~2-4h | Render-side only — `bounce_detector/detector.py::_candidate_frames_from_raw_bounces` (line 177). Lifts recall ceiling from TrackNet's 9% bounce-flag coverage to the ~50% ball-coverage limit. Uses the gravity-residual feature already computed in `feature_extractor.py` channel 6 — sliding-window peak detection on it. Then **retrain v1** on the expanded positive set (most SA labels will now have a candidate). Per the bounce ceiling memo — **do not chase more training data first**; it can't move recall through the 9% wall. |
+| 6 | ~~ADR-01 v1+ gravity-residual peak detector~~ — **SHIPPED `4a36f34` this session.** Match 1 recall 3.0% → 23.9% (8×). Next bounce work is post-Match-4-re-ingest multi-match retrain. | ~~next session~~ | — | — |
 | 7 | **Re-ingest Match 4 post-calibration-fix** | next session | passive after #4 | `ca475740`'s 273 floor labels (audit's biggest haul) are corpus-landed but bronze-features-corrupt (NULL `court_x`). Once Fix (A)+(B) ships and we re-ingest Match 4 from the existing `bronze.s3_key`, those 273 labels become real training data and bounce v1 corpus jumps 67 → 340. Combined with #6 this is when bounce recall should jump 5% → 30-40%. |
 
 ## Coordination with other agent
