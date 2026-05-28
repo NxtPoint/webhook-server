@@ -2397,6 +2397,94 @@ def _do_ingest_t5(task_id: str) -> bool:
         if _t5_abort_if_deleted(task_id, "pre_silver"):
             return False
 
+        # Fix (C) from docs/_investigation/court_calibration_silent_degeneracy.md
+        # — fail-loud if the Batch court calibration locked a degenerate
+        # homography. Symptom: 0% of bronze rows have court_x populated (every
+        # to_court_coords() projection returned None because the locked
+        # homography mapped pixels outside the ±5m sanity band). The downstream
+        # silver build would produce 0 rows and silently mark complete; the
+        # user gets an SES email saying their match is "ready" when it's empty.
+        # Match 4 (ca475740) hit this on 2026-05-28 with 0/824 bounces and
+        # 0/52,433 player rows holding court coords. The failure is
+        # deterministic — re-running on the same bronze.json.gz produces the
+        # same degenerate output — so we terminate and set ingest_finished_at
+        # =now() to keep the sweep cron from re-firing. The source-side fix
+        # is the H_diag sanity gate in court_detector (A) + post-lock
+        # projection self-test (B); this is the Render-side safety net.
+        try:
+            with engine.connect() as _cal_conn:
+                cal = _cal_conn.execute(sql_text("""
+                    SELECT
+                      (SELECT COUNT(*) FROM ml_analysis.ball_detections
+                        WHERE job_id = :t) AS ball_total,
+                      (SELECT COUNT(*) FROM ml_analysis.ball_detections
+                        WHERE job_id = :t AND court_x IS NOT NULL) AS ball_court,
+                      (SELECT COUNT(*) FROM ml_analysis.player_detections
+                        WHERE job_id = :t) AS player_total,
+                      (SELECT COUNT(*) FROM ml_analysis.player_detections
+                        WHERE job_id = :t AND court_x IS NOT NULL) AS player_court
+                """), {"t": task_id}).mappings().first()
+            ball_total = int(cal["ball_total"] or 0)
+            player_total = int(cal["player_total"] or 0)
+            ball_court = int(cal["ball_court"] or 0)
+            player_court = int(cal["player_court"] or 0)
+            # Treat as degenerate only when bronze is non-trivial on BOTH
+            # sides (≥100 rows) AND 0% court coverage on BOTH sides. A
+            # truly empty bronze (different failure mode) is left to the
+            # existing silver-build path to surface; we don't want to
+            # mis-classify a 0-row ingest as a calibration issue.
+            if (
+                ball_total >= 100 and ball_court == 0
+                and player_total >= 100 and player_court == 0
+            ):
+                err_msg = (
+                    "calibration_degenerate_no_court_coords "
+                    f"(ball {ball_court}/{ball_total}, "
+                    f"player {player_court}/{player_total})"
+                )
+                app.logger.error(
+                    "T5 INGEST task_id=%s CALIBRATION DEGENERATE — 0%% "
+                    "court coords on bronze; skipping silver/serve/stroke "
+                    "+ notify. %s",
+                    task_id, err_msg,
+                )
+                with engine.begin() as _cal_w:
+                    _ensure_submission_context_schema(_cal_w)
+                    _cal_w.execute(sql_text("""
+                        UPDATE bronze.submission_context
+                        SET ingest_error = :err,
+                            last_status = 'failed_calibration',
+                            last_status_at = now(),
+                            ingest_finished_at = now()
+                        WHERE task_id = :t
+                    """), {"err": err_msg, "t": task_id})
+                return False
+            # Partial degradation (some rows have court, some don't) is
+            # observed today in the 25-30% ball-court range and silver
+            # still builds usefully. Log a warning when coverage is
+            # unusually low so the trend is greppable in CloudWatch and
+            # future investigations can correlate against video metadata.
+            if (
+                ball_total >= 100 and ball_court > 0
+                and (ball_court / ball_total) < 0.20
+            ):
+                app.logger.warning(
+                    "T5 INGEST task_id=%s CALIBRATION WEAK — only %.1f%% "
+                    "of ball_detections have court coords (%d/%d); silver "
+                    "quality reduced.",
+                    task_id, 100.0 * ball_court / ball_total,
+                    ball_court, ball_total,
+                )
+        except Exception as _cal_e:
+            # Non-fatal: a check failure shouldn't stop the ingest. The
+            # check is purely a safety net; missing it falls back to
+            # current behaviour (silver might build 0 rows and silently
+            # complete, which is what we had pre-fix).
+            app.logger.warning(
+                "T5 INGEST task_id=%s calibration check failed "
+                "(non-fatal, continuing): %s", task_id, _cal_e,
+            )
+
         # Silver: build from ml_analysis detections. Track success — we only
         # set session_id below if silver actually built, so failures retry.
         silver_built = False
