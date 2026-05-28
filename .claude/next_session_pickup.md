@@ -1,4 +1,11 @@
-# Next-session pickup — 2026-05-28 (close 7) — Batch perf L1+L3+L4+L5+L7 + ADR-01 v1 + GR candidate gen + calibration fail-loud ALL SHIPPED
+# Next-session pickup — 2026-05-28 (close 7 + CALIBRATION session) — Batch perf + ADR-01 v1 + GR candidate gen SHIPPED; COURT CALIBRATION ROOT-CAUSE FIXED & DEPLOYED (rev 56/38)
+
+> ⭐ **CALIBRATION SESSION UPDATE (latest, supersedes the "calibration architectural fix / dedicated research session" items below).**
+> The dedicated calibration research session ran AND its fix shipped same-day. Root cause was **NOT wide-angle** (disproven by live reproduction on the real weights) — it was the fixed-camera **"lock in first 300 frames, never re-run CNN"** strategy freezing a degenerate Hough homography when the opening window is unrepresentative (pre-match/setup). The CNN finds 12-13/14 keypoints on rally footage; the calibration just never looked there.
+> **Shipped + deployed (all on `main`, bench green 20/24·23/24):** Fix G (lock-only-validated frame-selection + self-heal), Fix B (geometric degeneracy gate — corner-reprojection, NOT H-diag), 45×40 ROI guard, Fix C+ (Render coverage-floor fail-loud), `bench_calib` + 31 fixtures (4/4 pass). Commits `8c720a7`→`7be3cd1`.
+> **Batch image rebuilt from latest `main` (bundles calibration fix + L3), pushed dual-region; job-defs registered eu-north-1 rev 56 / us-east-1 rev 38** — amd64 `sha256:f70c5795…`, **all perf env vars preserved** (`PLAYER_BATCH_SIZE=8 + ROI_POSE_FP16=1 + ROI_BATCH_SIZE=16 + YOLO_FP16=1`) + retry 3; **queue untouched (g5 routing survives)**.
+> **→ Match 4 (`ca475740`) ready to re-run on rev 56** (g5, ~90 min) — will produce calibration-fixed coords + skip the ~2 h wasted ROI scan + land rich corpus data. **NEXT SESSION: validate that re-run** (queries in the calibration block lower down / impl-kickoff doc).
+> **Fix E (lens/camera-agnostic) DEFERRED ON PURPOSE** — zero benefit to match 4, cannot be validated without a phone-wide/GoPro-fisheye fixture (none exists yet). Own follow-up cycle. Docs: `docs/_investigation/court_calibration_silent_degeneracy.md` §Architectural proposal, `court_calibration_camera_taxonomy.md`, `.claude/court_calibration_implementation_kickoff.md`. Memory: [[feedback_calibration_lock_window]].
 
 ## ⚡ Executive summary (read first — 30 seconds)
 
