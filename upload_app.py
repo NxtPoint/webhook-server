@@ -2121,9 +2121,10 @@ def _label_pair_now(t5_task_id: str) -> dict:
     (SA, T5) pair. Used by both the auto hook (gated by env flag) and the
     /ops/backfill-pair-labels endpoint (ungated, explicit).
 
-    Exports two label kinds per pair, each idempotent independently:
-      - 'ball_position'      — bronze.ball_bounce -> TrackNet ball-position trainer
-      - 'stroke_classifier'  — bronze.player_swing -> ADR-02 swing-type classifier
+    Exports three label kinds per pair, each idempotent independently:
+      - 'ball_position'      — bronze.ball_bounce              -> TrackNet ball-position trainer
+      - 'stroke_classifier'  — bronze.player_swing             -> ADR-02 swing-type classifier
+      - 'serve'              — bronze.player_swing serves      -> serve_detector v2 (Stream 3)
 
     Returns: {status, sa_task_id?, t5_task_id?, reason?, kinds: {kind: {...}},
               label_count?, label_s3_uri?}. The top-level `label_count` /
@@ -2148,6 +2149,7 @@ def _label_pair_now(t5_task_id: str) -> dict:
 
         from ml_pipeline.training.label_ball_positions import export_sa_ball_positions
         from ml_pipeline.training.label_swing_types import export_sa_swing_types
+        from ml_pipeline.training.label_serves import export_sa_serves
 
         ball = _label_one_kind(
             sa_task_id, t5_task_id, video_s3_key,
@@ -2161,8 +2163,14 @@ def _label_pair_now(t5_task_id: str) -> dict:
             exporter=export_sa_swing_types,
             s3_key=f"training/labels/{t5_task_id}_swing_types.json",
         )
+        serve = _label_one_kind(
+            sa_task_id, t5_task_id, video_s3_key,
+            label_kind="serve",
+            exporter=export_sa_serves,
+            s3_key=f"training/labels/{t5_task_id}_serves.json",
+        )
 
-        kinds = {"ball_position": ball, "stroke_classifier": swing}
+        kinds = {"ball_position": ball, "stroke_classifier": swing, "serve": serve}
         any_new = any(k["status"] == "labeled" for k in kinds.values())
         any_error = any(k["status"] == "error" for k in kinds.values())
         overall = "labeled" if any_new else ("error" if any_error else "skipped")
@@ -2175,7 +2183,7 @@ def _label_pair_now(t5_task_id: str) -> dict:
         }
         # Back-compat: hoist the first newly-labeled kind's fields to top level
         primary = next(
-            (k for k in (ball, swing) if k["status"] == "labeled"), None
+            (k for k in (ball, swing, serve) if k["status"] == "labeled"), None
         )
         if primary is not None:
             out["label_count"] = primary.get("label_count")
@@ -3932,7 +3940,7 @@ def ops_backfill_pair_labels():
         with engine.connect() as conn:
             rows = conn.execute(sql_text("""
                 WITH known_kinds(label_kind) AS (
-                    VALUES ('ball_position'), ('stroke_classifier')
+                    VALUES ('ball_position'), ('stroke_classifier'), ('serve')
                 ),
                 pair_kind_have AS (
                     SELECT p.sa_task_id, p.t5_task_id,

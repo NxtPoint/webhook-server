@@ -190,7 +190,7 @@ Full strategic analysis is in `.claude/next_session_pickup.md`.
 | [ADR-04](./_investigation/adr_04_volley_model_or_analytic.md) | Volley analytic — pure bronze derivation from bounce + swing events | APPROVED, **BLOCKED** by ADR-01 + ADR-02 | Must wait |
 | [ADR-05](./_investigation/adr_05_detector_build_sequencing.md) | Build sequencing + coordination protocol | APPROVED | — |
 
-**Three parallel streams maximum.** Stream 1 (Tomo's option): ADR-01 → ADR-02 → ADR-04. Stream 2: ADR-03 (independent). Stream 3: serve training infra (corpus extractor for `label_kind='serve'`, then retrain `serve_detector`).
+**Three parallel streams maximum.** Stream 1 (Tomo's option): ADR-01 → ADR-02 → ADR-04. Stream 2: ADR-03 (independent). Stream 3: serve training infra — **corpus extractor for `label_kind='serve'` SHIPPED 2026-05-28** (`ml_pipeline/training/label_serves.py`, 3 backfilled rows / 118 serve labels + 114 once Corpus 4 lands); `serve_detector` retrain awaits ~500+ accumulated labels.
 
 **Coordination rule (ADR-05):** no agent starts a detector build without an APPROVED ADR + a pickup-file claim. Corpus extension lands in the same commit as the detector model it feeds.
 
