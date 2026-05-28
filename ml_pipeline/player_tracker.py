@@ -29,6 +29,7 @@ from ml_pipeline.config import (
     PLAYER_COURT_MARGIN_PX,
     PLAYER_OUTSIDE_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
+    PLAYER_BATCH_SIZE,
     DEBUG_FRAME_INTERVAL,
     MOG2_MIN_MOTION_RATIO,
     MOG2_MOTION_SCORE_WEIGHT,
@@ -182,6 +183,18 @@ class PlayerTracker:
             "would_skip_both":   0,
         }
 
+        # L1: GPU batching for the full-frame YOLOv8x-pose call. batch_size>1
+        # accumulates that many DETECT-frames (player_tracker runs every
+        # PLAYER_DETECTION_INTERVAL=5 source frames, so 8 detect-frames ≈
+        # 40 source frames of buffer) and runs ONE batched predict over them.
+        # SAHI + 3-pass crops stay per-frame inside _process_after_full_yolo.
+        # Each pending entry holds the per-frame inputs (frame, frame_idx,
+        # court bbox, motion mask, projection callables) so the replay reads
+        # the same arguments _process_after_full_yolo would have seen if the
+        # call hadn't been deferred.
+        self._batch_size = max(1, int(PLAYER_BATCH_SIZE))
+        self._pending: list = []
+
     def set_debug_upload_context(self, s3_client, s3_bucket: str, job_id: str) -> None:
         """Enable live debug frame upload to S3 (called from __main__.py)."""
         self._debug_s3_client = s3_client
@@ -211,34 +224,159 @@ class PlayerTracker:
                 court metres for the zone test instead of pixel-space
                 approximations.
         """
-        if (frame_idx - self._last_detect_frame) < self._detect_interval and self._last_result:
-            # Reuse last detection with updated frame_idx
-            reused = []
-            for d in self._last_result:
-                reused.append(PlayerDetection(
-                    frame_idx=frame_idx, player_id=d.player_id,
-                    bbox=d.bbox, center=d.center, keypoints=d.keypoints,
-                ))
-            self.detections.extend(reused)
-            return reused
-        self._last_detect_frame = frame_idx
+        # L1: gate decision shared by sync + batch paths. In batch mode we
+        # advance _last_detect_frame at queue time so the next call's gate
+        # sees the same value the synchronous path would have written —
+        # preserving the every-Nth-frame cadence regardless of when the
+        # batched YOLO predict actually runs.
+        is_detect = (
+            (frame_idx - self._last_detect_frame) >= self._detect_interval
+            or not self._last_result
+        )
+        if is_detect:
+            self._last_detect_frame = frame_idx
 
+        # Batch mode (PLAYER_BATCH_SIZE>1): queue per-frame inputs; flush
+        # once N detect-frames are buffered. SAHI + 3-pass crops + dedupe +
+        # choose_two + assign_ids still run per-frame inside
+        # _process_after_full_yolo — only the dominant full-frame
+        # YOLOv8x-pose call is batched. Equivalence: stacking N frames into
+        # one model.predict() is per-frame identical (conv is batch-element-
+        # independent, BatchNorm runs in eval/running-stats, NMS is post-hoc
+        # per element) so outputs match the per-frame path on CPU and within
+        # fp-noise on GPU — same equivalence as the WASB ball-batching gate.
+        if self._batch_size > 1:
+            self._pending.append({
+                "frame": frame, "frame_idx": frame_idx,
+                "is_detect": is_detect, "court_bbox": court_bbox,
+                "motion_mask": motion_mask, "court_corners": court_corners,
+                "to_court_coords": to_court_coords,
+                "to_pixel_coords": to_pixel_coords,
+            })
+            n_detect_pending = sum(1 for p in self._pending if p["is_detect"])
+            if n_detect_pending >= self._batch_size:
+                self._flush_pending()
+            return []
+
+        # Synchronous path — byte-identical to pre-L1 behaviour
+        # (PLAYER_BATCH_SIZE==1 default, zero-risk rollback).
+        if not is_detect:
+            return self._reuse_into_self(frame_idx)
+
+        import time as _time
+        _t = _time.perf_counter()
+        full_boxes_list, full_kps_list = self._run_yolo(frame)
+        self._sub_seconds["full_yolo"] += _time.perf_counter() - _t
+        return self._process_after_full_yolo(
+            frame, frame_idx, full_boxes_list, full_kps_list,
+            court_bbox=court_bbox, motion_mask=motion_mask,
+            court_corners=court_corners,
+            to_court_coords=to_court_coords,
+            to_pixel_coords=to_pixel_coords,
+        )
+
+    def _reuse_into_self(self, frame_idx: int) -> List[PlayerDetection]:
+        """Replay the last detect result into this frame_idx — the same
+        reuse logic the pre-L1 detect_frame did inline. Returns [] when no
+        prior detect has run (initial frames before the first detect)."""
+        if not self._last_result:
+            return []
+        reused = [
+            PlayerDetection(
+                frame_idx=frame_idx, player_id=d.player_id,
+                bbox=d.bbox, center=d.center, keypoints=d.keypoints,
+            )
+            for d in self._last_result
+        ]
+        self.detections.extend(reused)
+        return reused
+
+    def _flush_pending(self) -> None:
+        """Drain the pending batch.
+
+        Runs ONE batched model.predict over all queued detect-frames, then
+        replays each pending entry in queue order: detect entries get their
+        per-frame _process_after_full_yolo with the batched YOLO output for
+        that frame; reuse entries get _reuse_into_self against the current
+        _last_result. The temporal order matches the synchronous path so
+        _last_result transitions are identical (detect at frame N writes
+        _last_result before the reuse calls at frames N+1..N+interval-1 read
+        it).
+        """
+        if not self._pending:
+            return
+        pending = self._pending
+        self._pending = []
+
+        detect_frames = [p["frame"] for p in pending if p["is_detect"]]
+        batch_outs = []
+        if detect_frames:
+            import time as _time
+            _t = _time.perf_counter()
+            batch_outs = self._run_yolo_batch(detect_frames)
+            # Charge the entire batched call to full_yolo — same accumulator
+            # the sync path uses, just summed over N frames at once.
+            self._sub_seconds["full_yolo"] += _time.perf_counter() - _t
+
+        di = 0
+        for p in pending:
+            if p["is_detect"]:
+                full_boxes_list, full_kps_list = batch_outs[di]
+                di += 1
+                self._process_after_full_yolo(
+                    p["frame"], p["frame_idx"],
+                    full_boxes_list, full_kps_list,
+                    court_bbox=p["court_bbox"],
+                    motion_mask=p["motion_mask"],
+                    court_corners=p["court_corners"],
+                    to_court_coords=p["to_court_coords"],
+                    to_pixel_coords=p["to_pixel_coords"],
+                )
+            else:
+                self._reuse_into_self(p["frame_idx"])
+
+    def flush(self) -> None:
+        """Drain any pending batch — pipeline calls this after the main loop,
+        before _postprocess reads self.player_tracker.detections. No-op when
+        PLAYER_BATCH_SIZE==1 (nothing is ever queued in that mode)."""
+        self._flush_pending()
+
+    def _process_after_full_yolo(
+        self,
+        frame: np.ndarray,
+        frame_idx: int,
+        full_boxes_list,
+        full_kps_list,
+        court_bbox: Optional[tuple] = None,
+        motion_mask: Optional[np.ndarray] = None,
+        court_corners: Optional[list] = None,
+        to_court_coords: Optional[Callable] = None,
+        to_pixel_coords: Optional[Callable] = None,
+    ) -> List[PlayerDetection]:
+        """Per-frame postprocess shared by sync and batched paths.
+
+        Receives the already-computed full-frame YOLO output and runs SAHI
+        (or the legacy 3-pass crops), dedup, court filter, _choose_two_players,
+        debug frame, _assign_ids, and the per-frame sub-stage timing
+        accounting. The full-frame YOLO call is timed by the caller (sync
+        detect_frame or batched _flush_pending) so this function only
+        measures SAHI + choose2 + 'other' — same accounting as pre-L1,
+        with full_yolo accounted externally.
+        """
         import time as _time
         _pc = _time.perf_counter
         _t_detect_start = _pc()
         _sub_before = (
-            self._sub_seconds["full_yolo"]
-            + self._sub_seconds["sahi"]
+            self._sub_seconds["sahi"]
             + self._sub_seconds["choose2"]
         )
 
         # ── Detection strategy: SAHI (systematic) or manual 3-pass (legacy) ──
         if SAHI_ENABLED and self._sahi_model is not None:
-            # Full-frame YOLO first — catches the near player (large, ~400px)
-            # easily and occasionally the far player when they're visible.
-            _t = _pc()
-            full_boxes_list, full_kps_list = self._run_yolo(frame)
-            self._sub_seconds["full_yolo"] += _pc() - _t
+            # full_boxes_list / full_kps_list were already computed by
+            # detect_frame (sync) or _flush_pending (batched) — the full-frame
+            # YOLO call that used to live here has moved out so it can be
+            # batched. Everything else stays per-frame.
 
             # B4+ tightened skip rule — two independent predicates. Skip SAHI
             # if EITHER fires. Both are positive signals that full-frame YOLO
@@ -369,7 +507,12 @@ class PlayerTracker:
             all_kps = full_kps_list + sahi_kps
         else:
             # ── Pass 1: Full-frame YOLO ──
-            full_boxes_list, full_kps_list = self._run_yolo(frame)
+            # full_boxes_list / full_kps_list were already computed by the
+            # caller (sync detect_frame or batched _flush_pending) — the
+            # legacy 3-pass branch consumes them the same way the SAHI branch
+            # does above. SAHI_ENABLED defaults True so this branch is dead
+            # code in prod, but keep it correct for local dev runs that flip
+            # SAHI_ENABLED=False.
 
             # ── Pass 2: Court-cropped + upscaled YOLO ──
             crop_boxes_list, crop_kps_list = [], []
@@ -529,12 +672,15 @@ class PlayerTracker:
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
 
-        # "other" = this frame's detect_frame total minus its sub-stage time
-        # (dedup, court filter, _assign_ids, debug-frame bookkeeping).
+        # "other" = total time inside _process_after_full_yolo minus the
+        # sahi + choose2 deltas it accounted for explicitly (covers dedupe,
+        # court filter, _assign_ids, debug-frame bookkeeping). full_yolo is
+        # NOT in this subtraction because the full-frame YOLO call lives
+        # outside this function now — detect_frame (sync) or _flush_pending
+        # (batched) charge it directly to self._sub_seconds["full_yolo"].
         frame_total_s = _pc() - _t_detect_start
         sub_after = (
-            self._sub_seconds["full_yolo"]
-            + self._sub_seconds["sahi"]
+            self._sub_seconds["sahi"]
             + self._sub_seconds["choose2"]
         )
         self._sub_seconds["other"] += max(0.0, frame_total_s - (sub_after - _sub_before))
@@ -545,30 +691,60 @@ class PlayerTracker:
 
         boxes_list: list of (x1, y1, x2, y2) tuples in frame coordinates
         kps_list: list of (17, 3) numpy arrays or None per detection
+
+        Thin wrapper around _run_yolo_batch — the batched path is the only
+        place the actual model.predict() lives. For batch_size==1 (default)
+        this is identical to the pre-L1 implementation; same .predict() call,
+        same parsing, same tensor-to-numpy conversion.
+        """
+        return self._run_yolo_batch([frame], conf=conf)[0]
+
+    def _run_yolo_batch(self, frames, conf: float = None):
+        """Run YOLO on N frames in ONE forward pass. Returns a list of
+        (boxes_list, kps_list) per input frame.
+
+        Ultralytics' YOLO.predict() accepts a list of frames natively and
+        runs them as a batched tensor — same kernels as N separate calls,
+        but ONE device round-trip and ONE NMS post-process per frame. This
+        is what L1 batches: stacking N=8 full 1080p frames into a single
+        predict() leaves no per-frame Python/CUDA-launch overhead and lets
+        the T4 actually fill its FP units (per-frame batch=1 leaves it
+        ~25-35% busy on YOLOv8x-pose @ imgsz=1280).
+
+        Outputs are per-frame identical to N separate _run_yolo() calls on
+        CPU (and within fp-noise on GPU) — conv is batch-element-independent,
+        BatchNorm runs in eval/running-stats, NMS is per-element post-hoc.
         """
         confidence = conf or YOLO_CONFIDENCE
         if self.has_pose:
             results = self.model.predict(
-                frame, conf=confidence, imgsz=YOLO_IMGSZ, verbose=False,
+                frames, conf=confidence, imgsz=YOLO_IMGSZ, verbose=False,
             )
         else:
             results = self.model.predict(
-                frame, conf=confidence, imgsz=YOLO_IMGSZ,
+                frames, conf=confidence, imgsz=YOLO_IMGSZ,
                 classes=[YOLO_PERSON_CLASS_ID], verbose=False,
             )
-        boxes = results[0].boxes if results else []
-        kps_data = results[0].keypoints if (results and self.has_pose) else None
 
-        out_boxes = []
-        out_kps = []
-        for bi, box in enumerate(boxes):
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            out_boxes.append((float(x1), float(y1), float(x2), float(y2)))
-            if kps_data is not None and bi < len(kps_data.data):
-                out_kps.append(kps_data.data[bi].cpu().numpy())
-            else:
-                out_kps.append(None)
-        return out_boxes, out_kps
+        out_per_frame = []
+        for r in (results or []):
+            boxes = r.boxes if r is not None else []
+            kps_data = r.keypoints if (r is not None and self.has_pose) else None
+            out_boxes = []
+            out_kps = []
+            for bi, box in enumerate(boxes):
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                out_boxes.append((float(x1), float(y1), float(x2), float(y2)))
+                if kps_data is not None and bi < len(kps_data.data):
+                    out_kps.append(kps_data.data[bi].cpu().numpy())
+                else:
+                    out_kps.append(None)
+            out_per_frame.append((out_boxes, out_kps))
+        # Defensive: if predict() returned nothing, surface empty results so
+        # callers see a stable list-of-N-tuples shape.
+        while len(out_per_frame) < len(frames):
+            out_per_frame.append(([], []))
+        return out_per_frame
 
     def _run_yolo_court_crop(self, frame: np.ndarray, court_bbox: tuple):
         """Run YOLO on the court-cropped region. Returns (boxes_list, kps_list)
@@ -1499,3 +1675,5 @@ class PlayerTracker:
             self._sahi_skip_by_rule[k] = 0
         self._last_detect_frame = -self._detect_interval
         self._last_result = []
+        # L1: drop any queued frames from a prior run.
+        self._pending.clear()

@@ -261,6 +261,11 @@ class TennisAnalysisPipeline:
         # Drain any batched ball-detection backlog before post-processing reads
         # ball_tracker.detections (no-op unless BALL_BATCH_SIZE>1 on WASB).
         self.ball_tracker.flush()
+        # L1: drain the player-stage batch queue too (no-op when
+        # PLAYER_BATCH_SIZE==1). Mirrors the ball_tracker pattern — the
+        # postprocess block below reads player_tracker.detections, so the
+        # partial batch from the end of the loop must land before then.
+        self.player_tracker.flush()
 
         # Post-processing
         self._report_progress("computing_analytics")

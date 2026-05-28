@@ -106,6 +106,25 @@ BALL_TRACKER = os.getenv("BALL_TRACKER", "tracknet_v2").strip().lower()
 BALL_BATCH_SIZE = max(1, int(os.getenv("BALL_BATCH_SIZE", "1")))
 
 # ---------------------------------------------------------------------------
+# GPU batching for the player detector (Lever #1 from
+# docs/_investigation/batch_optimisation_plan.md). YOLOv8x-pose @ imgsz=1280
+# is the dominant per-frame cost on Batch (~75-85% of the player stage budget)
+# and runs at batch=1 — the T4 is grossly underutilised on a single 1080p
+# frame. Setting PLAYER_BATCH_SIZE>1 accumulates that many DETECT frames
+# (player tracker runs every PLAYER_DETECTION_INTERVAL=5 source frames, so
+# N=8 detect-frames = 40 source frames of buffer) and runs ONE batched
+# model.predict([f1..fN]) call. Same per-frame math (conv is batch-element-
+# independent, BatchNorm is eval/running-stats, NMS is per-element post-hoc)
+# so outputs match the per-frame path on CPU and within fp-noise on GPU —
+# same equivalence as the ball-batching gate (BALL_BATCH_SIZE).
+#
+# SAHI stays per-frame in this lever (the SAHI skip A/B test depends on the
+# per-frame full-YOLO output and SAHI's own tile-fan is a separate batching
+# target — L2 in the optimisation plan). Default 1 = current per-frame
+# behaviour (zero-risk rollback). Flip to 8 on the Batch job-def to activate.
+PLAYER_BATCH_SIZE = max(1, int(os.getenv("PLAYER_BATCH_SIZE", "1")))
+
+# ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)
 # ---------------------------------------------------------------------------
 COURT_INPUT_SIZE = 224             # ResNet50 expects 224x224
