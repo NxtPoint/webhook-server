@@ -27,6 +27,7 @@ ml_pipeline/models/*.onnx
 ml_pipeline/training/datasets/
 ml_pipeline/training/labels/
 ml_pipeline/training/visual_debug/
+ml_pipeline/training/_dataset_cache/
 
 # Test video clips
 ml_pipeline/test_videos/
