@@ -164,6 +164,8 @@ class FarPoseProcessor:
         frame_from: Optional[int] = None,
         frame_to: Optional[int] = None,
         replace: bool = True,
+        roi_batch_size: Optional[int] = None,
+        pose_fp16: Optional[bool] = None,
     ):
         self.job_id = job_id
         self.engine = engine
@@ -177,6 +179,23 @@ class FarPoseProcessor:
         self.frame_from = frame_from
         self.frame_to = frame_to
         self.replace = replace
+
+        # L4: batched ViTPose + FP16. Defaults read from config so the env
+        # vars set on the Batch job-def (ROI_BATCH_SIZE / ROI_POSE_FP16) flow
+        # through automatically. roi_batch_size==1 is the zero-risk per-frame
+        # fallback. pose_fp16 toggles model.half() in prepare(); inputs are
+        # cast accordingly in _flush_batch.
+        from ml_pipeline.config import ROI_BATCH_SIZE, ROI_POSE_FP16
+        self.roi_batch_size = max(
+            1, int(roi_batch_size if roi_batch_size is not None else ROI_BATCH_SIZE)
+        )
+        self.pose_fp16 = bool(pose_fp16) if pose_fp16 is not None else bool(ROI_POSE_FP16)
+        # Each pending entry holds the per-frame YOLO-det output AND the
+        # pose-input crop, with all metadata needed to project back to court
+        # after the batched ViTPose pass. Filled in feed(), drained by
+        # _flush_batch() when the queue reaches roi_batch_size and by
+        # finalize() at end of video.
+        self._pending: list = []
 
         self._ready = False
         self.rows_to_write: list = []
@@ -192,6 +211,9 @@ class FarPoseProcessor:
         self.total_in_rally_skipped = 0
         self.total_dets = 0
         self.total_usable = 0
+        # L4 perf counters — observable via the finalize log line.
+        self._pose_batch_count = 0
+        self._pose_batch_frames = 0
 
     # -- setup ---------------------------------------------------------------
 
@@ -231,9 +253,22 @@ class FarPoseProcessor:
         self.vit_model.eval()
         if torch.cuda.is_available():
             self.vit_model = self.vit_model.to("cuda")
-            logger.info("roi_pose: ViTPose on cuda")
+            # L4: FP16 cast on cuda only (pose_fp16 is False on cpu — fp16
+            # on cpu is slower than fp32). The full-frame YOLO already runs
+            # FP16 by default; this opts ViTPose in on the same path.
+            self._vit_fp16 = bool(self.pose_fp16)
+            if self._vit_fp16:
+                self.vit_model = self.vit_model.half()
+            logger.info(
+                "roi_pose: ViTPose on cuda fp16=%s batch_size=%d",
+                self._vit_fp16, self.roi_batch_size,
+            )
         else:
-            logger.info("roi_pose: ViTPose on cpu")
+            self._vit_fp16 = False
+            logger.info(
+                "roi_pose: ViTPose on cpu (fp16 ignored) batch_size=%d",
+                self.roi_batch_size,
+            )
         self.coco_idx = torch.tensor([0])
 
         self._build_rally_gate()
@@ -316,7 +351,16 @@ class FarPoseProcessor:
         return True
 
     def feed(self, frame, idx: int):
-        """Run YOLO-det + ViTPose on one decoded frame if it passes the gate."""
+        """Stage one decoded frame for ROI extraction.
+
+        L4: YOLO-det runs per-frame on the ROI crop (cheap relative to
+        ViTPose; ~5-10ms on a 640px crop). When YOLO finds a person, the
+        expanded pose_input crop + bbox metadata is queued. ViTPose runs in
+        a batched flush when the queue hits roi_batch_size (or when finalize
+        drains the partial tail). This collapses ~33,750 per-crop ViTPose
+        calls @ batch=1 on a 45-min match to ~33,750/N batched forward
+        passes — the dominant ROI cost.
+        """
         if not self._ready or not self.wants(idx):
             return
         self.total_frames_probed += 1
@@ -353,83 +397,152 @@ class FarPoseProcessor:
         if pose_input.size == 0:
             return
         rgb = cv2.cvtColor(pose_input, cv2.COLOR_BGR2RGB)
+
+        # L4: queue for batched ViTPose. roi_batch_size==1 falls through to
+        # an immediate flush below (zero-risk per-frame fallback, identical
+        # to pre-L4 behaviour).
+        self._pending.append({
+            "idx": idx, "rgb": rgb,
+            "bbox_w": bbox_w, "bbox_h": bbox_h,
+            "fbx1": fbx1, "fby1": fby1, "fbx2": fbx2, "fby2": fby2,
+            "ebx1": ebx1, "eby1": eby1,
+        })
+        if len(self._pending) >= self.roi_batch_size:
+            self._flush_batch()
+
+    def _flush_batch(self):
+        """Run ONE batched ViTPose forward pass over the queued pose-input
+        crops, then project + queue rows per result. Idempotent on an empty
+        queue.
+
+        Equivalence (zero accuracy risk vs per-frame, modulo FP16): the ViT
+        backbone is batch-element-independent (BatchNorm/LayerNorm run in
+        eval mode and standard attention is per-element), and
+        VitPoseImageProcessor pads images to its fixed input size before
+        stacking, so each element in the (N, 3, H_in, W_in) tensor produces
+        outputs identical to a (1, 3, H_in, W_in) pass with the same image.
+        FP16 introduces standard half-vs-single fp noise (~1e-3 on keypoint
+        confidences, sub-pixel on coords) and is env-gated separately.
+        """
+        if not self._pending:
+            return
+        pending = self._pending
+        self._pending = []
+        self._pose_batch_count += 1
+        self._pose_batch_frames += len(pending)
+
+        rgbs = [p["rgb"] for p in pending]
+        boxes_per_image = [
+            [[0, 0, p["bbox_w"], p["bbox_h"]]] for p in pending
+        ]
+
         vit_inputs = self.vit_proc(
-            images=[rgb],
-            boxes=[[[0, 0, bbox_w, bbox_h]]],
-            return_tensors="pt",
+            images=rgbs, boxes=boxes_per_image, return_tensors="pt",
         )
         torch = self._torch
         if torch.cuda.is_available():
             vit_inputs = {k: v.to("cuda") for k, v in vit_inputs.items()}
+            if self._vit_fp16:
+                vit_inputs["pixel_values"] = vit_inputs["pixel_values"].half()
+
+        N = len(pending)
+        # dataset_index is per-element; coco_idx is (1,) — repeat for the
+        # batch dimension so the model sees one index per stacked image.
+        dataset_index = self.coco_idx.repeat(N).to(self.vit_model.device)
+
         with torch.no_grad():
             vit_out = self.vit_model(
                 pixel_values=vit_inputs["pixel_values"],
-                dataset_index=self.coco_idx.to(self.vit_model.device),
+                dataset_index=dataset_index,
             )
         results = self.vit_proc.post_process_pose_estimation(
-            vit_out, boxes=[[[0, 0, bbox_w, bbox_h]]],
+            vit_out, boxes=boxes_per_image,
         )
-        if not results or not results[0]:
-            return
-        pkp = results[0][0]["keypoints"].cpu().numpy()
-        psc = results[0][0]["scores"].cpu().numpy()
-        kp_full = np.column_stack([
-            pkp[:, 0] + ebx1,
-            pkp[:, 1] + eby1,
-            psc,
-        ])
-        wrist_conf = float(max(kp_full[9, 2], kp_full[10, 2]))
-        shoulder_conf = float(max(kp_full[5, 2], kp_full[6, 2]))
-        has_usable = (
-            (wrist_conf > DEFAULT_WRIST_CONF and shoulder_conf > DEFAULT_SHOULDER_CONF)
-            or wrist_conf > 0.5
-        )
-        if not has_usable:
-            return
-        self.total_usable += 1
 
-        feet_x = (fbx1 + fbx2) / 2
-        feet_y = fby2
-        # Project feet to real court coords. The diag-tool predecessor
-        # (diag/extract_vitpose_far.py) hardcoded court_y=0.0 because it was
-        # bounded to ±2.5s windows around SA-GT serves where the player WAS at
-        # the baseline by definition. The production extractor scans the full
-        # video, so we MUST keep the real projected court_y — without it,
-        # downstream serve_detector can't tell a baseline trophy pose (real
-        # serve setup) apart from a mid-court trophy pose (rally
-        # overhead/forehand). Skip the row entirely when projection fails
-        # (strict=False already gives ±5m slack for far-baseline calib noise).
-        court = self.court_detector.to_court_coords(feet_x, feet_y, strict=False)
-        if court is None:
-            return
-        cx, cy = float(court[0]), float(court[1])
+        # Per-result postprocess — same gates and row construction as the
+        # pre-L4 per-frame path; only the model.forward and post_process
+        # calls are batched.
+        for p, res in zip(pending, results):
+            if not res or not res[0]:
+                continue
+            pkp = res[0]["keypoints"].cpu().numpy()
+            psc = res[0]["scores"].cpu().numpy()
+            kp_full = np.column_stack([
+                pkp[:, 0] + p["ebx1"],
+                pkp[:, 1] + p["eby1"],
+                psc,
+            ])
+            wrist_conf = float(max(kp_full[9, 2], kp_full[10, 2]))
+            shoulder_conf = float(max(kp_full[5, 2], kp_full[6, 2]))
+            has_usable = (
+                (wrist_conf > DEFAULT_WRIST_CONF and shoulder_conf > DEFAULT_SHOULDER_CONF)
+                or wrist_conf > 0.5
+            )
+            if not has_usable:
+                continue
+            self.total_usable += 1
 
-        import json as _json
-        kp_json = [
-            [float(kp_full[j, 0]), float(kp_full[j, 1]), float(kp_full[j, 2])]
-            for j in range(kp_full.shape[0])
-        ]
-        self.rows_to_write.append({
-            "job_id": self.job_id, "frame_idx": idx, "player_id": 1,
-            "bbox_x1": fbx1, "bbox_y1": fby1,
-            "bbox_x2": fbx2, "bbox_y2": fby2,
-            "center_x": feet_x, "center_y": feet_y,
-            "court_x": cx, "court_y": cy,
-            "keypoints": _json.dumps(kp_json),
-            "source": self.source_tag,
-        })
+            feet_x = (p["fbx1"] + p["fbx2"]) / 2
+            feet_y = p["fby2"]
+            # Project feet to real court coords. The diag-tool predecessor
+            # (diag/extract_vitpose_far.py) hardcoded court_y=0.0 because it
+            # was bounded to ±2.5s windows around SA-GT serves where the
+            # player WAS at the baseline by definition. The production
+            # extractor scans the full video, so we MUST keep the real
+            # projected court_y — without it, downstream serve_detector
+            # can't tell a baseline trophy pose (real serve setup) apart
+            # from a mid-court trophy pose (rally overhead/forehand). Skip
+            # the row entirely when projection fails (strict=False already
+            # gives ±5m slack for far-baseline calib noise).
+            court = self.court_detector.to_court_coords(
+                feet_x, feet_y, strict=False,
+            )
+            if court is None:
+                continue
+            cx, cy = float(court[0]), float(court[1])
+
+            import json as _json
+            kp_json = [
+                [
+                    float(kp_full[j, 0]),
+                    float(kp_full[j, 1]),
+                    float(kp_full[j, 2]),
+                ]
+                for j in range(kp_full.shape[0])
+            ]
+            self.rows_to_write.append({
+                "job_id": self.job_id, "frame_idx": p["idx"], "player_id": 1,
+                "bbox_x1": p["fbx1"], "bbox_y1": p["fby1"],
+                "bbox_x2": p["fbx2"], "bbox_y2": p["fby2"],
+                "center_x": feet_x, "center_y": feet_y,
+                "court_x": cx, "court_y": cy,
+                "keypoints": _json.dumps(kp_json),
+                "source": self.source_tag,
+            })
 
     # -- teardown ------------------------------------------------------------
 
     def finalize(self, scan_seconds: Optional[float] = None) -> int:
         """Write collected rows to DB (replace prior source rows). Returns count."""
+        # L4: drain any partial batch left over at end of video. No-op when
+        # roi_batch_size==1 (the queue was flushed each call) or when the
+        # last full batch fired exactly at the final frame.
+        self._flush_batch()
+
         gate_tag = " [RALLY GATE BROKEN — UNGATED RESULTS]" if self.rally_gate_broken else ""
         dt = f" in {scan_seconds:.1f}s" if scan_seconds is not None else ""
+        avg_batch = (
+            self._pose_batch_frames / self._pose_batch_count
+            if self._pose_batch_count else 0.0
+        )
         logger.info(
             "roi_pose: scanned %d sampled frames (every %d), skipped %d IN_RALLY "
-            "frames, %d detections, %d usable poses%s%s",
+            "frames, %d detections, %d usable poses, %d ViTPose batches "
+            "(avg %.1f/batch, target=%d, fp16=%s)%s%s",
             self.total_frames_probed, self.sample_every, self.total_in_rally_skipped,
-            self.total_dets, self.total_usable, dt, gate_tag,
+            self.total_dets, self.total_usable,
+            self._pose_batch_count, avg_batch, self.roi_batch_size, self._vit_fp16,
+            dt, gate_tag,
         )
 
         if not self.rows_to_write:

@@ -125,6 +125,31 @@ BALL_BATCH_SIZE = max(1, int(os.getenv("BALL_BATCH_SIZE", "1")))
 PLAYER_BATCH_SIZE = max(1, int(os.getenv("PLAYER_BATCH_SIZE", "1")))
 
 # ---------------------------------------------------------------------------
+# Post-pipeline ROI extractor batching (Lever #4 from
+# docs/_investigation/batch_optimisation_plan.md). The ROI passes
+# (far-pose ViTPose + service-box TrackNet) account for ~25% of total
+# Batch wall time on a long match (1.38h of 4.79h on `9378f2dd`). The
+# dominant cost is the ~33,750 per-crop ViTPose calls @ batch=1 over a
+# 45-min match. Batching N of them into ONE forward pass collapses that
+# to ~33,750/N device round-trips.
+#
+# ROI_BATCH_SIZE: how many pose-input crops to accumulate before flushing
+# one batched ViTPose call. Default 1 = current per-frame behaviour
+# (zero-risk rollback). 16 is a good T4 starting point. The YOLO-det
+# pre-pass that selects the person inside each ROI is also batched
+# inside FarPoseProcessor — same buffer.
+ROI_BATCH_SIZE = max(1, int(os.getenv("ROI_BATCH_SIZE", "1")))
+
+# ROI_POSE_FP16: enable half-precision inference for the ViTPose model
+# (and the YOLO-det pre-pass that runs on the ROI crop). T4 FP16 throughput
+# is ~2× FP32. The full-frame YOLOv8x-pose pass in player_tracker already
+# runs FP16 by default on cuda (see YOLO_CONFIDENCE comment) — ViTPose
+# hadn't been opted in until this lever. Env-gated default OFF so the
+# first deploy preserves FP32 outputs and we flip after benching the
+# batched-FP16 detection counts on a known job.
+ROI_POSE_FP16 = os.getenv("ROI_POSE_FP16", "0").strip().lower() in ("1", "true", "yes")
+
+# ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)
 # ---------------------------------------------------------------------------
 COURT_INPUT_SIZE = 224             # ResNet50 expects 224x224
