@@ -63,10 +63,18 @@ DEFAULT_SWING_STEP_CAP_TORSOS = 0.6   # reject single-step wrist jumps > this (t
 
 def _parse_keypoints(raw) -> Optional[list]:
     """Normalise keypoints to [[x, y, conf], ...] (17 elements). Returns None
-    on malformed input. Accepts the DB's JSONB nested form or the flat-51
-    form some YOLO outputs emit."""
+    on malformed input. Accepts the DB's JSONB nested form, the flat-51 form
+    some YOLO outputs emit, OR a numpy array (the compact in-memory form the
+    detectors' streaming loaders store to fit Render's 512MB main API)."""
     if raw is None:
         return None
+    # Numpy array (compact in-memory form): convert to nested list and let the
+    # existing branches handle it. tolist() is fast for small fixed-shape arrays.
+    if hasattr(raw, "tolist") and not isinstance(raw, (list, tuple, str, bytes)):
+        try:
+            raw = raw.tolist()
+        except Exception:
+            return None
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)

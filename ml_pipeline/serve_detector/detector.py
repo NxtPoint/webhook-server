@@ -34,7 +34,42 @@ import json
 import logging
 from typing import List, Optional, Sequence
 
+import numpy as np
 from sqlalchemy import text as sql_text
+
+
+def _kps_to_array(raw) -> Optional["np.ndarray"]:
+    """Compact keypoints to a float32 (17, 3) numpy array. Accepts the DB's
+    JSONB nested form, the flat-51 form, or a JSON string; None on malformed.
+
+    Storing as numpy float32 instead of nested Python lists is ~10x smaller
+    (~300B vs ~2.9KB per row) — crucial for the Render 512MB main API which
+    OOM'd on 70k+ player_detections rows loaded as nested lists (~210MB)."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not raw:
+        return None
+    if isinstance(raw[0], (int, float)):
+        if len(raw) < 51:
+            return None
+        return np.asarray(raw[:51], dtype=np.float32).reshape(17, 3)
+    try:
+        arr = np.asarray(raw, dtype=np.float32)
+    except (ValueError, TypeError):
+        return None
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] < 11:
+        return None
+    if arr.shape[0] > 17:
+        return arr[:17]
+    if arr.shape[0] < 17:
+        pad = np.zeros((17 - arr.shape[0], 3), dtype=np.float32)
+        return np.vstack([arr, pad])
+    return arr
 
 from ml_pipeline.serve_detector.ball_toss import detect_ball_toss
 from ml_pipeline.serve_detector.models import ServeEvent, SignalSource
@@ -98,13 +133,32 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
     row wins (canonical). ROI rows for frames where bronze has no row
     at all are appended.
     """
-    rows = conn.execute(sql_text("""
+    # Stream main player_detections server-side (yield_per releases cursor
+    # buffer per batch) + compact keypoints to numpy float32 (17, 3) per row
+    # — bounds peak memory on the Render 512MB main API which OOM'd on 70k+
+    # rows loaded as nested Python lists (~210MB peak vs ~25MB compact).
+    rows: list = []
+    _main_stmt = sql_text("""
         SELECT frame_idx, keypoints, court_x, court_y,
                bbox_x1, bbox_y1, bbox_x2, bbox_y2
         FROM ml_analysis.player_detections
         WHERE job_id = :tid AND player_id = :pid AND keypoints IS NOT NULL
         ORDER BY frame_idx
-    """), {"tid": task_id, "pid": player_id}).mappings().all()
+    """).execution_options(stream_results=True, yield_per=5000)
+    for r in conn.execute(_main_stmt, {"tid": task_id, "pid": player_id}).mappings():
+        kp = _kps_to_array(r["keypoints"])
+        if kp is None:
+            continue
+        rows.append({
+            "frame_idx": r["frame_idx"],
+            "keypoints": kp,
+            "court_x": r["court_x"],
+            "court_y": r["court_y"],
+            "bbox_x1": r["bbox_x1"],
+            "bbox_y1": r["bbox_y1"],
+            "bbox_x2": r["bbox_x2"],
+            "bbox_y2": r["bbox_y2"],
+        })
 
     # Check if ROI table exists (same information_schema guard as _load_ball_rows)
     table_exists = conn.execute(sql_text("""
@@ -115,15 +169,32 @@ def _load_pose_rows(conn, task_id: str, player_id: int,
         )
     """)).scalar()
 
-    roi_rows = []
+    roi_rows: list = []
     if table_exists:
-        roi_rows = conn.execute(sql_text("""
+        # Stream ROI rows + compact keypoints to numpy (same rationale as the
+        # main load — memory-bounds the Render 512MB main API).
+        _roi_stmt = sql_text("""
             SELECT frame_idx, keypoints, court_x, court_y,
                    bbox_x1, bbox_y1, bbox_x2, bbox_y2, source
             FROM ml_analysis.player_detections_roi
             WHERE job_id = :tid AND player_id = :pid AND keypoints IS NOT NULL
             ORDER BY frame_idx, source
-        """), {"tid": task_id, "pid": player_id}).mappings().all()
+        """).execution_options(stream_results=True, yield_per=5000)
+        for r in conn.execute(_roi_stmt, {"tid": task_id, "pid": player_id}).mappings():
+            kp = _kps_to_array(r["keypoints"])
+            if kp is None:
+                continue
+            roi_rows.append({
+                "frame_idx": r["frame_idx"],
+                "keypoints": kp,
+                "court_x": r["court_x"],
+                "court_y": r["court_y"],
+                "bbox_x1": r["bbox_x1"],
+                "bbox_y1": r["bbox_y1"],
+                "bbox_x2": r["bbox_x2"],
+                "bbox_y2": r["bbox_y2"],
+                "source": r["source"],
+            })
 
     # ROI ensemble (no-dedup): when multiple ROI rows exist at same
     # frame_idx from DIFFERENT source tags, KEEP BOTH. pose_signal

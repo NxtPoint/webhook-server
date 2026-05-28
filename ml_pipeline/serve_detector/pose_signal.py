@@ -58,9 +58,17 @@ class PoseScore:
 
 def parse_keypoints(raw) -> Optional[list]:
     """Normalise keypoints to a 17-element [x, y, conf] list. Returns
-    None if the input can't be coerced."""
+    None if the input can't be coerced. Accepts JSONB nested, flat-51, JSON
+    string, OR numpy array (the compact in-memory form the streaming loader
+    stores to fit Render's 512MB main API)."""
     if raw is None:
         return None
+    # Numpy compact form -> nested list (small array, .tolist() is fast).
+    if hasattr(raw, "tolist") and not isinstance(raw, (list, tuple, str, bytes)):
+        try:
+            raw = raw.tolist()
+        except Exception:
+            return None
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)

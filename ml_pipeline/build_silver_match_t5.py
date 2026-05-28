@@ -253,11 +253,18 @@ def _parse_keypoints(keypoints) -> Optional[list]:
     """Normalise keypoints to a list of [x, y, conf] triplets, or return None.
 
     The DB stores keypoints as a JSONB flat array [x1,y1,c1,x2,y2,c2,...] (51
-    floats) OR as a nested list [[x,y,c], ...] (17 entries). Either form is
-    accepted; missing/malformed input returns None.
+    floats) OR as a nested list [[x,y,c], ...] (17 entries). Also accepts a
+    numpy array (the compact in-memory form the streaming loaders store to fit
+    Render's 512MB main API). Missing/malformed input returns None.
     """
     if keypoints is None:
         return None
+    # Numpy compact form -> nested list; the existing branches then handle it.
+    if hasattr(keypoints, "tolist") and not isinstance(keypoints, (list, tuple, str, bytes)):
+        try:
+            keypoints = keypoints.tolist()
+        except Exception:
+            return None
     if isinstance(keypoints, str):
         try:
             keypoints = json.loads(keypoints)

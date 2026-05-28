@@ -34,6 +34,7 @@ import json
 import logging
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 from sqlalchemy import text as sql_text
 
 from ml_pipeline.stroke_detector.models import StrokeEvent
@@ -223,43 +224,79 @@ def _run_pipeline(
     return events
 
 
-def _load_pose_rows(conn, task_id: str) -> List[Tuple[int, int, list]]:
-    """Load all (frame_idx, player_id, keypoints) rows for a task.
+def _kps_to_array(raw) -> Optional["np.ndarray"]:
+    """Compact keypoints to a float32 (17, 3) numpy array. Accepts the DB's
+    JSONB nested form, the flat-51 form, or a JSON string; None on malformed.
+
+    Storing as numpy float32 instead of nested Python lists is ~10x smaller
+    (~300B vs ~2.9KB per row) — crucial for the Render 512MB main API which
+    OOM'd on 70k+ player_detections rows loaded as nested lists (~210MB)."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not raw:
+        return None
+    if isinstance(raw[0], (int, float)):
+        if len(raw) < 51:
+            return None
+        return np.asarray(raw[:51], dtype=np.float32).reshape(17, 3)
+    try:
+        arr = np.asarray(raw, dtype=np.float32)
+    except (ValueError, TypeError):
+        return None
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] < 11:
+        return None
+    if arr.shape[0] > 17:
+        return arr[:17]
+    if arr.shape[0] < 17:
+        pad = np.zeros((17 - arr.shape[0], 3), dtype=np.float32)
+        return np.vstack([arr, pad])
+    return arr
+
+
+def _load_pose_rows(conn, task_id: str) -> List[Tuple[int, int, "np.ndarray"]]:
+    """Load all (frame_idx, player_id, keypoints) rows for a task, streamed
+    server-side + compact numpy storage so peak memory fits Render's 512MB
+    main API (OOM'd on the bulk-loaded nested-list form for long matches).
 
     Pose-only — we don't need ball/court coordinates here, just the wrist
-    keypoint trajectory. Returns tuples to match the offline interface.
+    keypoint trajectory. Returns tuples (frame_idx, player_id, kps_array)
+    where kps_array is a float32 (17, 3) ndarray.
     """
-    rows = conn.execute(sql_text("""
+    def _stream_into(stmt, params, out):
+        """Stream rows server-side (yield_per batches release cursor buffer)
+        and append compact tuples — never materialises all rows in memory."""
+        result = conn.execute(stmt.execution_options(
+            stream_results=True, yield_per=5000,
+        ), params)
+        for row in result:
+            kp = _kps_to_array(row[2])
+            if kp is None:
+                continue
+            out.append((int(row[0]), int(row[1]), kp))
+
+    out: List[Tuple[int, int, "np.ndarray"]] = []
+    _stream_into(sql_text("""
         SELECT frame_idx, player_id, keypoints
         FROM ml_analysis.player_detections
         WHERE job_id::text = :tid AND keypoints IS NOT NULL
         ORDER BY player_id, frame_idx
-    """), {"tid": task_id}).fetchall()
+    """), {"tid": task_id}, out)
 
     # Fallback for the legacy schema where job_id is an int FK
-    if not rows:
-        rows = conn.execute(sql_text("""
+    if not out:
+        _stream_into(sql_text("""
             SELECT pd.frame_idx, pd.player_id, pd.keypoints
             FROM ml_analysis.player_detections pd
             JOIN ml_analysis.video_analysis_jobs vaj
               ON pd.job_id = vaj.id::text
             WHERE vaj.task_id::text = :tid AND pd.keypoints IS NOT NULL
             ORDER BY pd.player_id, pd.frame_idx
-        """), {"tid": task_id}).fetchall()
-
-    def _coerce(rs):
-        acc = []
-        for r in rs:
-            kps = r[2]
-            if isinstance(kps, str):
-                try:
-                    kps = json.loads(kps)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-            acc.append((int(r[0]), int(r[1]), kps))
-        return acc
-
-    out = _coerce(rows)
+        """), {"tid": task_id}, out)
 
     # ---- Merge far ViTPose pose from ml_analysis.player_detections_roi ----
     # The main table samples the far player sparsely (every PLAYER_DETECTION_
@@ -283,13 +320,13 @@ def _load_pose_rows(conn, task_id: str) -> List[Tuple[int, int, list]]:
         LIMIT 1
     """)).scalar()
     if roi_present:
-        roi = conn.execute(sql_text("""
+        roi_out: List[Tuple[int, int, "np.ndarray"]] = []
+        _stream_into(sql_text("""
             SELECT frame_idx, player_id, keypoints
             FROM ml_analysis.player_detections_roi
             WHERE job_id::text = :tid AND keypoints IS NOT NULL
             ORDER BY frame_idx
-        """), {"tid": task_id}).fetchall()
-        roi_out = _coerce(roi)
+        """), {"tid": task_id}, roi_out)
         if roi_out:
             merged = {(pid, f): (f, pid, kp) for f, pid, kp in out}
             won = added = 0
