@@ -1345,6 +1345,17 @@ function renderSinglesForm(el) {
       </div>
 
       <div class="edit-field">
+        <label class="edit-label">Player A is on the camera side at the start of the match</label>
+        <div class="toggle-group">
+          <button class="toggle-btn active" id="toggle-asn-yes" onclick="setAStartsNear(true)">Yes</button>
+          <button class="toggle-btn" id="toggle-asn-no" onclick="setAStartsNear(false)">No</button>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-dim);margin-top:4px">
+          Tick yes if the player on the near side of the camera at the start of the match is Player A. Untick if Player A is on the far side.
+        </div>
+      </div>
+
+      <div class="edit-field">
         <label class="edit-label">Seconds from video start to first point</label>
         <input class="edit-input" type="number" step="1" min="0" id="fd-start_time" placeholder="e.g. 30">
       </div>
@@ -1371,6 +1382,8 @@ function renderSinglesForm(el) {
 
   // Store first_server default
   STATE._firstServer = 'player_a';
+  // Default: Player A is on the camera side at match start (ADR-03 identity_detector)
+  STATE._aStartsNear = true;
   updateScoreNames();
 }
 
@@ -1378,6 +1391,12 @@ function setFirstServer(val) {
   STATE._firstServer = val;
   document.getElementById('toggle-server').classList.toggle('active', val === 'player_a');
   document.getElementById('toggle-returner').classList.toggle('active', val === 'player_b');
+}
+
+function setAStartsNear(val) {
+  STATE._aStartsNear = !!val;
+  document.getElementById('toggle-asn-yes').classList.toggle('active', !!val);
+  document.getElementById('toggle-asn-no').classList.toggle('active', !val);
 }
 
 function updateScoreNames() {
@@ -1589,6 +1608,8 @@ async function submitMatchDetails() {
       body.playerUTR = playerAUtr || undefined;
       body.opponentUtr = playerBUtr || undefined;
       body.firstServer = firstServer === 'player_a' ? 'S' : 'R';
+      // ADR-03 identity_detector: which side Player A starts on
+      body.a_starts_near = (STATE._aStartsNear !== false);
       body['Set 1 (A)'] = s1a || undefined;
       body['Set 1 (B)'] = s1b || undefined;
       body['Set 2 (A)'] = s2a || undefined;

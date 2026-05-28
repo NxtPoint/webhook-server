@@ -1,0 +1,6 @@
+{
+  "_note": "bench_bounce baseline \u2014 v0 STOPGAP, no values locked yet. Next session: train v1, run `python -m ml_pipeline.diag.bench_bounce --update-baseline`, commit.",
+  "commit": "9b19e0f",
+  "fixtures": {},
+  "updated_at": "2026-05-28"
+}

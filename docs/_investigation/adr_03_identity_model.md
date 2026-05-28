@@ -1,6 +1,18 @@
 # ADR-03: Player identity model (stable A/B across changeovers)
 
-**Status:** APPROVED 2026-05-28 (architectural + research-grounded spec). v1 rule build can start immediately. v2 CNN build queued after corpus accumulates >= 10 matches of dual-submit identity labels.
+**Status:** SCAFFOLDED 2026-05-28 — module + schema + form field + bench harness shipped; **v1 rule produces 0 useful changeover detections in current state** (see "v1 finding" below). Useful v1 requires a small follow-up patch (ITF-rule default) OR the v2 OSNet CNN.
+
+## ⚠️ v1 finding (2026-05-28) — tracker-binding invalidates the dual-cross signal
+
+The ADR-spec rule was: "both players cross net y=center during inter-rally gap" → confirms an ITF-expected changeover. Bench output on 3 tasks (880dff02, a798eff0, 78c32f53) shows **0% changeover-fire rate** across 14 ITF-expected boundaries. Direct DB query confirms root cause: **the YOLOv8 tracker pre-binds `pid=0=near, pid=1=far` permanently** — `player_detections.court_y` for `pid=0` stays in [21.4, 28.5] (always-near) regardless of physical position. Physical players swap; tracker IDs absorb the swap and never reflect it.
+
+**Implication:** the dual-cross check is the wrong signal on a tracker-bound system. The visually-verifiable swap the ADR specified literally cannot be observed. Two paths forward:
+
+1. **Simpler v1 (recommended for the next session, ~30 min build):** default to "assume ITF expected changeover happened" — confidence 0.85 (high but not 0.95, no visual confirmation). Edge cases: long inter-game gap (>90s) → still swap (medical break doesn't change side), confidence 0.7. Visual cross detected when ITF didn't expect → anomaly, confidence 0.4. This makes the v1 algorithm structurally simpler and produces correct identity 95%+ of the time given tennis rules are deterministic.
+
+2. **v2 OSNet CNN** — appearance-based re-id bypasses the tracker entirely. Was the planned upgrade for the residual; the tracker-binding finding promotes it to the actual lever (rather than a refinement).
+
+**Re-priority:** Either path is shippable next. Recommend Path 1 first (immediate v1 win) then Path 2 (training upgrade) — Path 1 doesn't conflict with Path 2 since the rule and CNN can fuse downstream.
 **Owner:** Tomo decides; any agent can implement post-approval.
 **Sequence:** see [ADR-05](./adr_05_detector_build_sequencing.md). Independent of bounce (ADR-01) and swing-type (ADR-02) — can run in parallel.
 **Last updated:** 2026-05-28.

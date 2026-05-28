@@ -182,9 +182,9 @@ Full strategic analysis is in `.claude/next_session_pickup.md`.
 
 | ADR | Topic | Status | Build dependency |
 |---|---|---|---|
-| [ADR-01](./_investigation/adr_01_bounce_model_architecture.md) | Bounce model — Render-side standalone, 1D temporal CNN + geometric pre-gates | APPROVED, ready to build | Independent |
+| [ADR-01](./_investigation/adr_01_bounce_model_architecture.md) | Bounce model — Render-side standalone, 1D temporal CNN + geometric pre-gates | **v0 SCAFFOLDED 2026-05-28** (module + schema + bench); awaits label audit + negative mining + training | Independent |
 | [ADR-02](./_investigation/adr_02_swing_type_classifier_plan.md) | Swing-type classifier — R(2+1)D-18 on 16-frame optical-flow ROI | APPROVED, blocked on corpus extractor for `label_kind='stroke_classifier'` | Independent of bounce |
-| [ADR-03](./_investigation/adr_03_identity_model.md) | Player identity — rule v1 (changeover detector), CNN v2 (OSNet) | APPROVED, v1 rule ready to build | Independent of bounce + swing-type |
+| [ADR-03](./_investigation/adr_03_identity_model.md) | Player identity — rule v1 (changeover detector), CNN v2 (OSNet) | **v1 SCAFFOLDED 2026-05-28** but ⚠️ tracker-binding finding — useful v1 needs ITF-rule-default patch (~30 min) OR v2 OSNet; see ADR-03 §"v1 finding" | Independent of bounce + swing-type |
 | [ADR-04](./_investigation/adr_04_volley_model_or_analytic.md) | Volley analytic — pure bronze derivation from bounce + swing events | APPROVED, **BLOCKED** by ADR-01 + ADR-02 | Must wait |
 | [ADR-05](./_investigation/adr_05_detector_build_sequencing.md) | Build sequencing + coordination protocol | APPROVED | — |
 

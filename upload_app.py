@@ -207,6 +207,22 @@ try:
 except Exception:
     app.logger.exception("technique init failed on boot")
 
+# ---------- Bounce detector schema (ADR-01, idempotent on boot) ----------
+try:
+    from ml_pipeline.bounce_detector.db import init_bounce_schema
+    with engine.begin() as conn:
+        init_bounce_schema(conn)
+except Exception:
+    app.logger.exception("bounce_detector init failed on boot")
+
+# ---------- Identity detector schema (ADR-03, idempotent on boot) ----------
+try:
+    from ml_pipeline.identity_detector.db import init_identity_schema
+    with engine.begin() as conn:
+        init_identity_schema(conn)
+except Exception:
+    app.logger.exception("identity_detector init failed on boot")
+
 
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
@@ -452,6 +468,7 @@ def _ensure_submission_context_schema(conn):
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS first_server TEXT",
         f"ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS sport_type TEXT DEFAULT '{DEFAULT_SPORT_TYPE}'",
         "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+        "ALTER TABLE bronze.submission_context ADD COLUMN IF NOT EXISTS a_starts_near BOOLEAN DEFAULT TRUE",
 
         # PowerBI integration removed 2026-05-20. DROP IF EXISTS is idempotent
         # (no-op after the first deploy drops them). Safe to delete this block
@@ -541,7 +558,8 @@ def _store_submission_context(
               player_a_set2_games, player_b_set2_games,
               player_a_set3_games, player_b_set3_games,
               first_server,
-              sport_type
+              sport_type,
+              a_starts_near
             ) VALUES (
               :task_id, :email, :customer_name, :match_date, :start_time, :location,
               :player_a_name, :player_b_name, :player_a_utr, :player_b_utr,
@@ -552,7 +570,8 @@ def _store_submission_context(
               :a2, :b2,
               :a3, :b3,
               :first_server,
-              :sport_type
+              :sport_type,
+              :a_starts_near
             )
             ON CONFLICT (task_id) DO UPDATE SET
               email=EXCLUDED.email,
@@ -577,7 +596,8 @@ def _store_submission_context(
               player_a_set3_games=EXCLUDED.player_a_set3_games,
               player_b_set3_games=EXCLUDED.player_b_set3_games,
               first_server=EXCLUDED.first_server,
-              sport_type=EXCLUDED.sport_type
+              sport_type=EXCLUDED.sport_type,
+              a_starts_near=EXCLUDED.a_starts_near
         """), {
             "task_id": task_id,
             "email": email,
@@ -600,6 +620,7 @@ def _store_submission_context(
             "a3": a3, "b3": b3,
             "first_server": first_server,
             "sport_type": sport_type or DEFAULT_SPORT_TYPE,
+            "a_starts_near": (m.get("a_starts_near") if m.get("a_starts_near") is not None else True),
         })
 
 
@@ -3308,6 +3329,7 @@ def api_submit_s3_task():
         "end_time": _norm(end_time),
         "location": location or None,
         "first_server": first_server or None,
+        "a_starts_near": (bool(body["a_starts_near"]) if "a_starts_near" in body and body["a_starts_near"] is not None else True),
         "score": {
             "set1": {"a": _norm(set1A), "b": _norm(set1B)},
             "set2": {"a": _norm(set2A), "b": _norm(set2B)},
