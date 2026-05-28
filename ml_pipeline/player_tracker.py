@@ -41,6 +41,7 @@ from ml_pipeline.config import (
     SAHI_CONFIDENCE,
     SAHI_POSTPROCESS_TYPE,
     SAHI_POSTPROCESS_MATCH_THRESHOLD,
+    SAHI_SKIP_A_FAR_YMAX,
     COURT_LENGTH_M,
     COURT_WIDTH_DOUBLES_M,
     COURT_WIDTH_SINGLES_M,
@@ -455,7 +456,14 @@ class PlayerTracker:
                             pt_box = to_court_coords(cx_box, y2_box)
                         except Exception:
                             pt_box = None
-                        if pt_box is not None and pt_box[1] <= 5.0:
+                        # L2(a): upper bound env-gated (SAHI_SKIP_A_FAR_YMAX,
+                        # default 5.0 = unchanged). Widening it (recommend 8.0)
+                        # lets a far player who stepped INTO the court for a
+                        # return satisfy has_far_pose, so SAHI can skip when the
+                        # full-frame pass already resolved both players. Kept
+                        # well below the net umpire at court_y ~11-12m so the
+                        # 2026-04-19 umpire-spoof guard still holds.
+                        if pt_box is not None and pt_box[1] <= SAHI_SKIP_A_FAR_YMAX:
                             has_far_pose = True
                 if has_near_pose and has_far_pose:
                     break

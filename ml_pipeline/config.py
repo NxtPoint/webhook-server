@@ -258,6 +258,24 @@ SAHI_CONFIDENCE = 0.15             # Low confidence for small distant players
 SAHI_POSTPROCESS_TYPE = "NMS"      # Non-Maximum Suppression for dedup
 SAHI_POSTPROCESS_MATCH_THRESHOLD = 0.5  # IoU threshold for NMS merge
 
+# L2(a) — SAHI skip-rule A relaxation (env-gated, default OFF = unchanged).
+# On the g5 profile SAHI fired on ~327/328 detect-frames (skip-rate ≈ 0%) even
+# though full-frame YOLOv8x-pose frequently resolved BOTH players. SAHI exists to
+# catch the ~30-40px far player below the pose model's ~60-80px keypoint floor;
+# when the full-frame pass ALREADY produced a pose-carrying far candidate, that
+# frame's far player is by definition large enough that SAHI's ~300ms tile-fan is
+# redundant. Rule A (player_tracker._detect_frame_postprocess) was meant to skip
+# SAHI in exactly that case, but its far-half gate requires the candidate's feet
+# to project to court_y <= 5.0m. That band is too tight: a far player who has
+# stepped INTO the court for a return projects to court_y 5-9m and is rejected,
+# so has_far_pose stays False and SAHI never skips. This flag widens the far-pose
+# acceptance UPPER bound from 5.0 to SAHI_SKIP_A_FAR_YMAX while keeping it WELL
+# below the net umpire at court_y ~11-12m (the 2026-04-19 reason the gate exists).
+# The lower bound is unbounded (lens extrapolation pushes the true far baseline to
+# negative court_y, already accepted). Default 5.0 = byte-identical to current.
+# Recommended human setting after a far-player coverage reconcile: 8.0.
+SAHI_SKIP_A_FAR_YMAX = float(os.getenv("SAHI_SKIP_A_FAR_YMAX", "5.0"))
+
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
 # every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg
 # by __main__.py post-processing. Set to 0 to disable.
