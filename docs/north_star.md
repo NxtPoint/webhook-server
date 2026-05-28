@@ -182,9 +182,9 @@ Full strategic analysis is in `.claude/next_session_pickup.md`.
 
 | ADR | Topic | Status | Build dependency |
 |---|---|---|---|
-| [ADR-01](./_investigation/adr_01_bounce_model_architecture.md) | Bounce model — Render-side standalone, 1D temporal CNN + geometric pre-gates | **v0 SCAFFOLDED 2026-05-28** (module + schema + bench); awaits label audit + negative mining + training | Independent |
-| [ADR-02](./_investigation/adr_02_swing_type_classifier_plan.md) | Swing-type classifier — R(2+1)D-18 on 16-frame optical-flow ROI | APPROVED, blocked on corpus extractor for `label_kind='stroke_classifier'` | Independent of bounce |
-| [ADR-03](./_investigation/adr_03_identity_model.md) | Player identity — rule v1 (changeover detector), CNN v2 (OSNet) | **v1 SCAFFOLDED 2026-05-28** but ⚠️ tracker-binding finding — useful v1 needs ITF-rule-default patch (~30 min) OR v2 OSNet; see ADR-03 §"v1 finding" | Independent of bounce + swing-type |
+| [ADR-01](./_investigation/adr_01_bounce_model_architecture.md) | Bounce model — Render-side standalone, 1D temporal CNN + geometric pre-gates | **v0 SCAFFOLDED 2026-05-28**, awaits training (corpus floor labels: 67 today; ~340 once Corpus 4 lands; ~684 if 2 unpaired SA tasks re-submitted). See `.claude/adr01_label_audit_2026-05-28.md`. | Independent |
+| [ADR-02](./_investigation/adr_02_swing_type_classifier_plan.md) | Swing-type classifier — R(2+1)D-18 on 16-frame optical-flow ROI | APPROVED, blocked on corpus extractor for `label_kind='stroke_classifier'`. 1,143 swing labels already in SA bronze across 4 matches — extractor is the only blocker. | Independent of bounce |
+| [ADR-03](./_investigation/adr_03_identity_model.md) | Player identity — rule v1 (changeover detector), CNN v2 (OSNet) | **v1 SHIPPED 2026-05-28** at 100% bench (n=14 ITF boundaries). Tracker-binding-aware ITF-default. v2 OSNet planned for residual. | Independent of bounce + swing-type |
 | [ADR-04](./_investigation/adr_04_volley_model_or_analytic.md) | Volley analytic — pure bronze derivation from bounce + swing events | APPROVED, **BLOCKED** by ADR-01 + ADR-02 | Must wait |
 | [ADR-05](./_investigation/adr_05_detector_build_sequencing.md) | Build sequencing + coordination protocol | APPROVED | — |
 
