@@ -58,13 +58,15 @@ Match 4 (`ca475740-9e34-49c3-9b59-0194bfa37013`, Tomo vs Jimbo Ma, 47.9-min 1080
 
 ## What's NOT done (next-session work)
 
+⭐ **PRIORITY 0 — Dedicated calibration research session (Tomo flagged 2026-05-28 close 6).** Match 4's calibration failure was almost certainly a wide-angle camera triggering barrel-distortion-driven homography degeneracy. As more users onboard with diverse phones / GoPros / consumer cameras, this long tail will keep breaking the bottom-most layer of the bronze stack. Move from "fix the bug" to **camera-agnostic court mapping**, multi-agent research-first. **OWN session.** Full scope + multi-agent strategy: `docs/_investigation/court_calibration_silent_degeneracy.md` §"Dedicated research session scope". Opening prompt at the bottom of this pickup file.
+
 | # | Item | Owner | Effort | Notes |
 |---|---|---|---|---|
 | 1 | **VALIDATE L1+L4+L5 perf** on the next real T5 upload | next session | passive | The next user-uploaded T5 match lands on eu-north-1 rev 54 with `PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16` active. Expected ms/frame to drop from ~183 → ~75-110 (conservative). Read `ms_per_frame` + `batch_duration_sec − processing_time_sec` from `ml_analysis.video_analysis_jobs`. Target full match ~2.5-3h vs match 4's 6h. |
 | 2 | **L3 YOLO FP16** | next session | ~1h code + Docker rebuild | Code: flip `predict(half=True)` on full-frame YOLOv8x-pose + SAHI's YOLOv8m. **Needs its own bench cycle** — FP16 can shift detection counts near thresholds (`config.py:158` documents this). Validate on bench + a real long match before promoting. Trips BATCH-SIDE CHECKLIST. |
 | 3 | **L7 G5.xlarge (A10G)** | next session | ~1-2h infra | No code. AWS Batch CE + Job Queue + JD updates. Quota check first (`aws service-quotas get-service-quota` for G-family vCPU in eu-north-1; if 0, request increase). G5.xlarge ~$1.006/h vs G4dn.xlarge $0.526/h but ~2× FP16 throughput so cost-per-job ~flat. Adds 2-3× hardware speedup on top of all software levers. |
-| 4 | **Calibration fix (A) + (B)** | next session | ~2-3h with deploy | (A) H_diag sanity gate in `court_detector.py` — reject homographies where `\|H[0,0]\|` or `\|H[1,1]\|` outside `[0.1, 5.0]`. (B) post-lock projection self-test — project 4 court corners, reject if any falls outside frame. Batch-side, trips checklist. Bundle both in same Docker rebuild. Fix doc: `docs/_investigation/court_calibration_silent_degeneracy.md` §Fix options. |
-| 5 | **Calibration (D) — CNN keypoints returning 0** | research | 1-3 days | Investigate why ResNet50 court-keypoint CNN returns 0 keypoints on this video's camera angle. Likely training-data gap. Defer until A/B/C are in. |
+| 4 | **Calibration tactical fixes (A) + (B)** — stopgap | next session | ~2-3h with deploy | (A) H_diag sanity gate in `court_detector.py` — reject homographies where `\|H[0,0]\|` or `\|H[1,1]\|` outside `[0.1, 5.0]`. (B) post-lock projection self-test — project 4 court corners, reject if any falls outside frame. Batch-side, trips checklist. Bundle both in same Docker rebuild. **Stopgap until Priority 0 architectural fix lands** — these catch the failure but don't make calibration camera-agnostic. Fix doc: `docs/_investigation/court_calibration_silent_degeneracy.md` §Fix options. |
+| 5 | **Calibration architectural fix (E + F + G + H)** | PRIORITY 0 session | research + implementation | Camera-agnostic court mapping. Lens distortion model + correction (E), end-to-end learned calibration (F), multi-frame temporal voting (G), self-supervised player-feet refinement (H). Goes through the multi-agent research session FIRST (this pickup's opening prompt), then a separate implementation session. See doc §"Dedicated research session scope". |
 | 6 | **ADR-01 v1+: gravity-residual peak detector for candidate generation** | next session | ~2-4h | Render-side only — `bounce_detector/detector.py::_candidate_frames_from_raw_bounces` (line 177). Lifts recall ceiling from TrackNet's 9% bounce-flag coverage to the ~50% ball-coverage limit. Uses the gravity-residual feature already computed in `feature_extractor.py` channel 6 — sliding-window peak detection on it. Then **retrain v1** on the expanded positive set (most SA labels will now have a candidate). Per the bounce ceiling memo — **do not chase more training data first**; it can't move recall through the 9% wall. |
 | 7 | **Re-ingest Match 4 post-calibration-fix** | next session | passive after #4 | `ca475740`'s 273 floor labels (audit's biggest haul) are corpus-landed but bronze-features-corrupt (NULL `court_x`). Once Fix (A)+(B) ships and we re-ingest Match 4 from the existing `bronze.s3_key`, those 273 labels become real training data and bounce v1 corpus jumps 67 → 340. Combined with #6 this is when bounce recall should jump 5% → 30-40%. |
 
@@ -144,3 +146,140 @@ c660845 perf(t5/batch): L5 NVENC GPU transcode (env-gated TRANSCODE_CODEC + Dock
 b25b356 perf(t5/batch): L4 ROI ViTPose batching + FP16 (env-gated ROI_BATCH_SIZE / ROI_POSE_FP16)
 024bb40 perf(t5/batch): L1 player-stage GPU batching (env-gated PLAYER_BATCH_SIZE)
 ```
+
+---
+
+## ⭐ OPENING PROMPT FOR THE NEXT DEDICATED SESSION: Camera-agnostic court calibration
+
+**Paste this into a fresh chat when starting the calibration research session.**
+
+```
+Read docs/north_star.md "RULES OF THE GAME" and .claude/next_session_pickup.md,
+then run the boot checklist in .claude/session_protocol.md. Acknowledge what
+you're working on in one sentence before touching anything.
+
+Today's session: dedicated multi-agent RESEARCH session — make T5 court
+calibration camera-agnostic. The goal is 100% robust calibration across
+the realistic consumer-camera variation space (wide-angle phones, GoPros,
+broadcast-style fixed tripods, handhelds — any field-of-view, any lens
+distortion, any vantage angle).
+
+WHY THIS SESSION EXISTS: match 4 (ca475740, 2026-05-28) silently locked a
+degenerate homography on a likely-wide-angle camera. CNN returned 0
+keypoints; Hough fallback locked H_diag [21.43, 0.05]; every projection
+returned None; all 23,796 ball + 52,433 player rows had court_x=NULL;
+silver built 0 rows; user got a "your match is ready" email. Match 4 was
+1 in 15 catastrophic, but 5 in 15 recent T5 matches show 25-32% ball-court
+coverage (well below the canonical 97%). As more users onboard with
+diverse cameras, this long tail keeps breaking the bottom-most layer of
+the bronze stack — every downstream T5 fact depends on it. Tomo wants the
+court mapping moved from ~95% to 100% across cameras, treated as the
+priority-zero piece going forward.
+
+Full re-scope + expanded fix set (E/F/G/H) + multi-agent research strategy:
+docs/_investigation/court_calibration_silent_degeneracy.md §"Dedicated
+research session scope".
+
+THIS IS A RESEARCH SESSION. No production code today. No BATCH-SIDE
+CHECKLIST. Output: a concrete architecture proposal + validation plan +
+implementation kickoff doc that the NEXT session executes.
+
+EXECUTION — spawn FOUR parallel general-purpose research agents in a
+SINGLE message (Agent tool with subagent_type=general-purpose, all in one
+turn so they run concurrently). Each owns a focused scope and returns a
+written report. Main thread synthesises.
+
+  Agent 1 — Academic + industry literature scan
+  Brief: research the state of the art in sports court / pitch
+  calibration for video analytics. Target papers + projects: TVCalib
+  (Theiner & Ewerth, CVPR 2023), "No Bells, Just Whistles" (broadcast
+  sport calibration), TenniSet, CourtSight, KaliCalib, Sport Camera
+  Calibration with View-Invariant Keypoints (TPAMI 2024), and any
+  related work on amateur/consumer-camera sport calibration (vs
+  broadcast). For each promising approach: model architecture, training
+  data, what cameras it handles, public code/weights availability, and
+  fit for our use case (amateur tennis, side-cam ~3-5m up, variable
+  phones / GoPros / tripods). Return a ranked shortlist with pros/cons.
+  Use WebFetch + WebSearch liberally.
+
+  Agent 2 — Lens distortion / camera intrinsics estimation
+  Brief: research how to estimate and correct lens distortion from a
+  single video (NO checkerboard, NO known calibration target). Focus
+  on: OpenCV cv2.calibrateCamera + cv2.fisheye.calibrate; Brown-Conrady
+  k1/k2/p1/p2 model; vanishing-point-based intrinsic estimation; using
+  known straight lines (court lines!) as the calibration target ("plumb
+  line" methods). Output: a concrete sub-pipeline that takes a frame
+  with visible court lines and outputs (i) lens distortion params,
+  (ii) an undistorted frame OR (iii) a distorted canonical court model
+  for homography fitting on the original frame. Include code snippets +
+  references.
+
+  Agent 3 — Current codebase audit
+  Brief: map exactly what ml_pipeline/court_detector.py does today. End
+  to end: CNN keypoint head (which model? which weights? what input
+  size? what training corpus?); Hough line fallback (algorithm + lock
+  criteria + H_diag values seen in prod); to_court_coords semantics
+  (±5m sanity bound, strict mode); _last_detection vs _locked_detection
+  vs _best_validated_detection vs _best_detection (which does what?);
+  every place a bad homography can leak through without warning;
+  current camera-intrinsics handling (any? probably none); the radial
+  calibration tracked in project_t5_apr15_breakthrough.md. Output: a
+  ~2-page architectural map + a list of every assumption the current
+  code makes about the camera (likely many implicit pinhole / standard-
+  FOV assumptions that wide-angle violates). Use the Explore agent for
+  the deep grep work.
+
+  Agent 4 — Production data audit + camera-class taxonomy
+  Brief: pull ~20-30 recent T5 videos from S3 (different uploaders,
+  dates — find the diversity). For each: extract metadata via ffprobe
+  (codec, resolution, FPS, camera signature if present in metadata
+  tags), pull 3 sample frames at known timestamps (early / mid / late),
+  query DB for current calibration health (ball court% + player court%
+  + silver row count + first court_calibration LOCKED log line if
+  available via CloudWatch). Build a CSV: task_id, uploader, video
+  date, resolution, est_camera_class (wide-angle / standard / unknown
+  based on visible distortion in the sample frames), current ball
+  court%, silver_rows. Identify which camera classes break and which
+  work. Use boto3 (default-chain creds work on this box) for S3, +
+  db_init.engine for DB. Sample frames go to .claude/tmp/calib_audit/.
+
+CONSTRAINTS:
+- No git commits this session. Output is doc-only.
+- No touching production. The L1+L4+L5 perf work + fix (C) shipped in
+  close-6; let the next user upload validate that work organically.
+- ADR agent is working on detector training (ADR-01 v1+ gravity-residual
+  + ADR-02 v1 swing-type). Their files: ml_pipeline/{bounce_detector,
+  stroke_classifier,training}/. Avoid touching those entirely.
+- All four agents run in PARALLEL (one Agent message with four blocks).
+  Don't sequence them — wastes hours.
+
+SYNTHESIS DELIVERABLE (main thread does this AFTER agents complete):
+1. docs/_investigation/court_calibration_silent_degeneracy.md — append
+   a §"Architectural proposal" section: the recommended approach (likely
+   E + G + H, with F as the longer-term target if the literature shows
+   it's feasible for amateur cameras). Include diagrams if helpful.
+2. docs/_investigation/court_calibration_camera_taxonomy.md (NEW) —
+   the camera-class taxonomy from Agent 4 + the breakage matrix +
+   a regression-fixture proposal (one canonical video per class).
+3. .claude/court_calibration_implementation_kickoff.md (NEW) — what the
+   NEXT (implementation) session does. File list. Step ordering. How
+   to bench. How to deploy through BATCH-SIDE CHECKLIST. Estimated
+   commits + Docker rebuilds.
+
+SUCCESS CRITERIA for this research session:
+- Four agent reports landed.
+- One synthesis doc with a clear architectural recommendation.
+- One taxonomy doc with the camera-class breakage matrix.
+- One implementation kickoff doc with a concrete next-session plan.
+- Tomo can read the synthesis in ~5 min and have a clear picture of
+  what to build and why.
+
+If at any point the multi-agent research surfaces something that
+contradicts the wide-angle hypothesis (e.g. match 4's video turns out
+NOT to be wide-angle), surface that to Tomo before continuing — the
+hypothesis is load-bearing for the architecture choice.
+```
+
+---
+
+**END OF PICKUP**

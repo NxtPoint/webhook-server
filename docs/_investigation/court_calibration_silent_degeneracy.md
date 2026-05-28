@@ -80,12 +80,72 @@ Render-side `_do_ingest_t5` then runs silver build which produces 0 rows. The `s
 
 ## Fix options
 
-| # | Fix | Where | Bench risk | BATCH-SIDE? | Estimated effort |
-|---|---|---|---|---|---|
-| **A** | **H_diag sanity gate** before locking. Reject homographies where `|H[0,0]|` or `|H[1,1]|` is outside `[0.1, 5.0]` regardless of inliers/confidence. Falls back to next candidate, or stays unlocked (job continues with no court coords but at least bronze stays NULL deterministically). | `ml_pipeline/court_detector.py` validator | Low — strictly more rejective | YES | 1h |
-| **B** | **Projection sanity self-test** after lock. Project the 4 doubles-court corners back to pixels via the locked homography. If any falls outside the frame bounds (with some margin), the homography is degenerate. Don't lock; keep searching. | `ml_pipeline/court_detector.py` lock path | Low | YES | 1h |
-| **C** | **Render-side fail-loud check** in `_do_ingest_t5`. After bronze ingest, before silver build: if 0% of `ball_detections` for the task have `court_x` populated, set `ingest_error='calibration_degenerate_no_court_coords'`, skip silver build entirely, surface the error in the SES email. Idempotent — re-firing the ingest won't help (deterministic bronze), so this is a terminal state. | `upload_app.py::_do_ingest_t5` | None | NO (Render only) | 30 min |
-| **D** | **Investigate why CNN returned 0 keypoints** on this video. Is it camera angle? Court color/contrast? Lighting? Cross-check against the canonical Tomo/Jimbo videos (which work fine) and the newer Dejan videos (which work partially). If a fixable pattern emerges, augment training data or add input-conditioned preprocessing. | research + maybe `court_detector.py` model layer | Medium — model change | YES (if model changes) | 1-3 days research |
+| # | Fix | Where | Bench risk | BATCH-SIDE? | Estimated effort | Status |
+|---|---|---|---|---|---|---|
+| **A** | **H_diag sanity gate** before locking. Reject homographies where `|H[0,0]|` or `|H[1,1]|` is outside `[0.1, 5.0]` regardless of inliers/confidence. Falls back to next candidate, or stays unlocked (job continues with no court coords but at least bronze stays NULL deterministically). | `ml_pipeline/court_detector.py` validator | Low — strictly more rejective | YES | 1h | TODO |
+| **B** | **Projection sanity self-test** after lock. Project the 4 doubles-court corners back to pixels via the locked homography. If any falls outside the frame bounds (with some margin), the homography is degenerate. Don't lock; keep searching. | `ml_pipeline/court_detector.py` lock path | Low | YES | 1h | TODO |
+| **C** | **Render-side fail-loud check** in `_do_ingest_t5`. After bronze ingest, before silver build: if 0% of `ball_detections` for the task have `court_x` populated, set `ingest_error='calibration_degenerate_no_court_coords'`, skip silver build entirely, surface the error in the SES email. Idempotent — re-firing the ingest won't help (deterministic bronze), so this is a terminal state. | `upload_app.py::_do_ingest_t5` | None | NO (Render only) | 30 min | **SHIPPED** (`eec1dae`) |
+| **D** | **Investigate why CNN returned 0 keypoints** on this video. Is it camera angle? Court color/contrast? Lighting? Cross-check against the canonical Tomo/Jimbo videos (which work fine) and the newer Dejan videos (which work partially). If a fixable pattern emerges, augment training data or add input-conditioned preprocessing. | research + maybe `court_detector.py` model layer | Medium — model change | YES (if model changes) | 1-3 days research | TODO (folds into the dedicated research session below) |
+
+---
+
+## 2026-05-28 (close 6) — RE-SCOPE: from "fix the bug" to "make calibration camera-agnostic"
+
+**Tomo's read:** match 4 was likely recorded with a **wide-angle camera**. Standard pinhole-camera homography assumes straight lines remain straight under projection — wide-angle / fisheye lenses introduce **barrel distortion** that breaks this assumption. The Hough-fallback fits 4 court corners to a planar homography, but with barrel-distorted court lines, no 4-point fit can be both geometrically valid AND consistent with the curved image — the optimiser settles on a degenerate solution that passes inlier counts but is mathematically broken (H_diag `[21.43, 0.05]` is the signature).
+
+This is **systemic, not a one-off bug**. As Tomo onboards more users with their own phones / GoPros / consumer cameras, the variability in:
+- **Lens type** — wide-angle vs standard vs zoom
+- **Field of view** — 60° vs 90° vs 120°+
+- **Camera height** — tripod (~1.5m) vs handheld vs ceiling-mounted (~5m)
+- **Court visibility** — full court vs partial (far baseline cropped)
+- **Lighting** — daylight outdoor vs indoor floodlight vs night-mode
+
+…will keep producing degenerate calibration in long-tail cases. We need a **camera-agnostic court mapping system** that is robust across the realistic variation space, not patches that only catch the specific failure mode we just saw.
+
+**This warrants its own dedicated session, multi-agent research-first.** See `docs/_investigation/court_calibration_silent_degeneracy.md` §"Dedicated research session scope" below.
+
+### Expanded fix set (E / F / G / H added)
+
+| # | Fix | Scope | When |
+|---|---|---|---|
+| **E** | **Lens distortion model + correction.** Estimate barrel/fisheye distortion parameters (Brown-Conrady k1, k2, p1, p2 — `cv2.calibrateCamera`-style) up-front by fitting court lines as straight under undistortion. Apply undistortion to frames OR distort the canonical court model. Then homography becomes well-conditioned. Reference: OpenCV `cv2.undistort` + `cv2.fisheye.calibrate`. | Bronze-side, court_detector.py | Dedicated session |
+| **F** | **End-to-end learned calibration.** A network that takes a frame and outputs the full 4×4 projection matrix (or 14 court keypoints) jointly. Trained on a diverse multi-camera corpus. Reference: TVCalib (CVPR 2023), Sport Camera Calibration with View-Invariant Keypoints (TPAMI 2024), No Bells Just Whistles (broadcast sport calibration). Replaces or augments the current 2-stage CNN-keypoint + homography-fit approach. | Bronze-side, new model layer | Dedicated session |
+| **G** | **Multi-frame temporal consistency.** Stop trying to lock from a single frame. Aggregate keypoint detections across the first ~10-30 seconds, RANSAC the consensus, use motion to disambiguate near-duplicate solutions. Even a weak per-frame detector becomes strong via temporal voting. | Bronze-side, court_detector.py | Dedicated session |
+| **H** | **Self-supervised calibration via player feet.** Player feet on the baseline / service line provide a free calibration signal (we know they're standing on a known line). YOLOv8x-pose already gives us ankle keypoints. Use feet-line correspondences as additional homography constraints. Robust to lens distortion if combined with E. | Bronze-side, court_detector.py + player_tracker.py | Dedicated session |
+
+---
+
+## Dedicated research session scope — "Court mapping 100% across cameras"
+
+**Goal:** Move from the current ~95% (which silently drops to 0% on wide-angle outliers) to a calibration system that gracefully handles ANY consumer camera the product will encounter — wide-angle phones, GoPros, broadcast feeds, fixed tripods, handhelds.
+
+**Why this is critical:** every downstream T5 fact (bounce x/y, serve detection, stroke classification, identity, far-player pose) is conditioned on a correct court projection. Bad calibration = bad bronze = bad silver = bad analytics. The user-facing dashboard is built on top of this layer. As the product onboards customers with diverse camera setups, the **bottom-most layer of the bronze stack** has to be the most robust.
+
+**Session output deliverables:**
+1. **Camera diversity audit** — collect 10-20 sample frames per camera class (wide-angle, standard, broadcast, low-angle, high-angle). Measure current calibration health on each. Identify which classes are broken and how.
+2. **State-of-the-art landscape** — what does the academic + industry literature offer? TVCalib, CourtSight, broadcast sport calibration papers, OpenCV intrinsic estimation, fisheye unwrap, vanishing-point methods. What's a fit for amateur consumer cameras (vs broadcast)?
+3. **Proposed architecture** — concrete recommendation for a calibration system that handles the realistic camera variation space. Likely: lens distortion estimation (E) + multi-frame temporal voting (G) + self-supervised player-feet refinement (H), gated by a robust sanity test that catches degeneracy before lock.
+4. **Validation plan** — how to test we've actually hit 100% across the diversity audit. Includes a regression bench fixture that covers every camera class.
+
+**Multi-agent strategy (PARALLEL, per the session prompt below):**
+- **Agent 1 — academic literature scan.** State-of-the-art in sports/court calibration: TVCalib, no-bells-just-whistles, sport camera intrinsic estimation, learned vs geometric.
+- **Agent 2 — lens distortion / camera intrinsics.** OpenCV calibrateCamera, fisheye module, Brown-Conrady model, distortion estimation from court lines / vanishing points.
+- **Agent 3 — current codebase audit.** Map out exactly what `court_detector.py` does today (CNN keypoint head, Hough fallback, lock logic, projection sanity, to_court_coords semantics). Identify every place a bad homography can leak through.
+- **Agent 4 — production data audit.** Pull ~20 recent T5 videos from S3 with diverse provenance (different uploaders, dates, camera signatures via ffprobe). Score each on current calibration health. Build the camera-class taxonomy from real data.
+
+Each agent produces a focused report. Main thread synthesises into the proposed architecture + validation plan + a kickoff doc for the actual implementation session (which then sits separately from this research session).
+
+**Out of scope for this research session:**
+- Writing any production code
+- Touching the deployed pipeline
+- BATCH-SIDE CHECKLIST work
+- The Render-side fail-loud already shipped as Fix (C) — orthogonal safety net
+
+**In scope:**
+- Reading code (Explore agent)
+- Reading academic papers + project repos (WebFetch + WebSearch)
+- Analysing production data (DB queries, S3 sampling)
+- Producing a concrete architecture proposal + implementation plan
 
 ## Recommended sequencing
 
