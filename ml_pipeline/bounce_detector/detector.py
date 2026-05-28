@@ -180,11 +180,124 @@ def _candidate_frames_from_raw_bounces(ball_rows: list) -> list[int]:
     velocity-reversal signal — the exact set the audit measured at 84%
     FP rate. The bounce model's job is to filter those down.
 
-    v1+ can add candidates from a sliding-window peak detector on the
-    gravity-residual feature so we catch bounces TrackNet missed; for v0
-    plumbing the raw set is sufficient.
+    LIMITATION (measured 2026-05-28): TrackNet's is_bounce flag covers
+    only ~9% of real SA-labelled floor bounces on Match 1 (6/67 strict
+    matches within ±5 frames + ≤50 px per the label audit). A perfect
+    model on this candidate pool therefore caps at ~9% recall vs SA.
+    See `_candidate_frames_from_gravity_residual` for the v1+ alternative.
     """
     return [int(r["frame_idx"]) for r in ball_rows if r.get("is_bounce")]
+
+
+# v1+ — sliding-window peak detector on the gravity-residual signal.
+# Image-y based (NOT court-y) so the signal survives calibration failures —
+# Match-4-class catastrophes still emit candidates because they don't need
+# a homography.
+#
+# Default threshold tuned 2026-05-28 on Match 1 (`78c32f53`):
+#   thr=10px → 761 candidates / 24 strict-match (36%) / 39 loose-match (58%)
+#   thr=20px → 481 candidates / 19 strict-match (28%) / 25 loose-match (37%)
+#   thr=30px → 356 candidates /  8 strict-match (12%) / 13 loose-match (19%)
+# vs is_bounce baseline: 341 candidates / 6 strict (9%) / 19 loose (28%).
+# At thr=10 we get a 4× lift on strict-match (the CNN's ceiling) for only
+# 2.2× more candidates. Match 4 isn't a reliable validation (calibration-
+# corrupt + SIGKILL'd mid-run); re-validate on next clean upload.
+GR_DEFAULT_RESIDUAL_THRESHOLD_PX = 10.0
+GR_DEFAULT_MIN_GAP_FRAMES = 4
+GR_FIT_HALFWIDTH = 5
+
+
+def _candidate_frames_from_gravity_residual(
+    ball_rows: list,
+    *,
+    residual_threshold_px: float = GR_DEFAULT_RESIDUAL_THRESHOLD_PX,
+    min_gap_frames: int = GR_DEFAULT_MIN_GAP_FRAMES,
+) -> list[int]:
+    """Sliding-window peak detector on the gravity-residual signal.
+
+    Bounces are 2nd-order discontinuities in the ball's image-y
+    coordinate. A parabolic fit on ±5 neighbours (excluding the
+    candidate frame, matching feature_extractor._gravity_residual)
+    accurately models ballistic mid-flight but mispredicts heavily at
+    the bounce frame because the parabola straight-lines through the
+    V-shaped bounce path. At a bounce: actual_y > predicted_y (the
+    ball is DEEPER in image than the parabola predicts), so the
+    residual is positive and large. Threshold + NMS turns the signal
+    into a candidate set.
+
+    Why image-y, not court-y:
+      1. Physically correct — image-y exhibits ballistic motion; court-y
+         (ground-plane projection) does not.
+      2. Calibration-independent — Match-4-class catastrophes (100% NULL
+         court_x) still emit candidates from this signal because it
+         only depends on raw ball detection coordinates.
+      3. Feature-parity with the CNN holds because the candidate
+         generator's job is to FIND frames worth scoring; the CNN's
+         features (court-based) score the windows around those frames.
+         Different signals at different layers is fine.
+
+    Returns sorted frame indices of accepted candidates.
+    """
+    import numpy as np
+    from ml_pipeline.bounce_detector.feature_extractor import _gravity_residual
+
+    if not ball_rows:
+        return []
+    last_fi = max(int(r["frame_idx"]) for r in ball_rows)
+    y_seq = np.full(last_fi + 1, np.nan, dtype=np.float32)
+    for r in ball_rows:
+        y = r.get("y")
+        if y is not None:
+            y_seq[int(r["frame_idx"])] = float(y)
+
+    # Score every frame that has a ball detection (skip detection-gap frames
+    # — residual is undefined there).
+    scored: list[tuple[int, float]] = []
+    for r in ball_rows:
+        fi = int(r["frame_idx"])
+        if r.get("y") is None:
+            continue
+        res = _gravity_residual(y_seq, fi, halfwidth=GR_FIT_HALFWIDTH)
+        if res > residual_threshold_px:
+            scored.append((fi, res))
+
+    # NMS by residual score (highest residual wins each cluster).
+    scored.sort(key=lambda x: -x[1])
+    accepted: list[int] = []
+    for fi, _ in scored:
+        if any(abs(fi - a) < min_gap_frames for a in accepted):
+            continue
+        accepted.append(fi)
+    accepted.sort()
+    return accepted
+
+
+def _select_candidates(ball_rows: list) -> list[int]:
+    """Dispatch on env var BOUNCE_CANDIDATE_MODE.
+
+    Modes:
+      'is_bounce' (default — safe, unchanged behaviour): TrackNet's
+                  is_bounce=TRUE frames.
+      'gravity_residual': sliding-window peak detector on image-y
+                  gravity-residual. Lifts the recall ceiling from
+                  TrackNet's 9% bounce-flag coverage to ball-detection
+                  coverage (~50% on Match 1).
+
+    Env-var rollback (per feedback memory env_var_rollback_pattern):
+    setting BOUNCE_CANDIDATE_MODE=is_bounce restores v0 behaviour
+    without a code revert.
+    """
+    import os
+    mode = os.environ.get("BOUNCE_CANDIDATE_MODE", "is_bounce").lower().strip()
+    if mode == "gravity_residual":
+        cands = _candidate_frames_from_gravity_residual(ball_rows)
+        logger.info("bounce_detector: candidate_mode=gravity_residual emitted=%d "
+                    "(vs is_bounce baseline of %d)",
+                    len(cands),
+                    sum(1 for r in ball_rows if r.get("is_bounce")))
+        return cands
+    # default + 'is_bounce' + any unrecognised value falls back to safe v0
+    return _candidate_frames_from_raw_bounces(ball_rows)
 
 
 def _nms(events: List[BounceEvent], min_gap_s: float) -> List[BounceEvent]:
@@ -225,7 +338,7 @@ def _run_pipeline(
     NMS. Mirrors `serve_detector.detector._run_pipeline` shape.
     """
     ball_by_frame: dict[int, dict] = {int(r["frame_idx"]): r for r in ball_rows}
-    candidates = _candidate_frames_from_raw_bounces(ball_rows)
+    candidates = _select_candidates(ball_rows)
 
     stats = {
         "candidates": len(candidates),

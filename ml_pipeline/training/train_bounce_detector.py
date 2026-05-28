@@ -188,6 +188,7 @@ def train(
     device: str | None = None,
     seed: int = 42,
     engine=None,
+    candidate_mode: str = "is_bounce",
 ) -> dict:
     """End-to-end: build manifest → split → train → save best weights.
 
@@ -203,11 +204,12 @@ def train(
         from db_init import engine as default_engine
         engine = default_engine
 
-    logger.info("building manifest (neg_per_pos=%d, task_filter=%s)…",
-                neg_per_pos, task_filter)
+    logger.info("building manifest (candidate_mode=%s, neg_per_pos=%d, task_filter=%s)…",
+                candidate_mode, neg_per_pos, task_filter)
     manifest = build_manifest(
         engine=engine, task_filter=task_filter,
         neg_per_pos=neg_per_pos, seed=seed,
+        candidate_mode=candidate_mode,
     )
     if not manifest:
         raise RuntimeError(
@@ -316,6 +318,7 @@ def train(
                         "val_frac": val_frac, "threshold": threshold,
                     },
                     "task_filter": task_filter,
+                    "candidate_mode": candidate_mode,
                 },
             }, output_path)
             logger.info("  ↑ new best %s=%.4f — saved to %s",
@@ -361,6 +364,11 @@ def main(argv=None) -> int:
                     help="Early-stop metric")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--candidate-mode", choices=("is_bounce", "gravity_residual"),
+                    default="is_bounce",
+                    help="Pool of candidates positives match against AND negatives "
+                         "are sampled from. Must match detector.py runtime "
+                         "BOUNCE_CANDIDATE_MODE for train/inference parity.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -381,6 +389,7 @@ def main(argv=None) -> int:
         metric=args.metric,
         device=args.device,
         seed=args.seed,
+        candidate_mode=args.candidate_mode,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0

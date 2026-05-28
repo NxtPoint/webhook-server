@@ -208,6 +208,7 @@ def build_manifest(
     task_filter: Optional[list[str]] = None,
     neg_per_pos: int = DEFAULT_NEG_PER_POS,
     seed: int = 42,
+    candidate_mode: str = "is_bounce",
 ) -> list[dict]:
     """Walk training_corpus → emit (positives + negatives) manifest.
 
@@ -216,12 +217,19 @@ def build_manifest(
     task_filter: optional list of t5_task_ids to include (rest are skipped).
     neg_per_pos: target ratio of negatives to positives per task. ~5 per ADR.
     seed: RNG seed for negative sampling.
+    candidate_mode: 'is_bounce' (default — v0/historical) or 'gravity_residual'
+        (v1+, matches detector.py's BOUNCE_CANDIDATE_MODE). Negatives are
+        sampled from this pool, and SA labels match against candidates in
+        this pool. For train/inference parity, use the same mode the
+        detector will run with at inference time.
 
     Returns: list of dicts (one per sample) — see _Sample.to_dict() for keys.
 
     Empty list when no corpus rows exist or no floor labels are accessible.
     Logs a per-task breakdown so the caller can see what's been mined.
     """
+    if candidate_mode not in ("is_bounce", "gravity_residual"):
+        raise ValueError(f"candidate_mode must be is_bounce or gravity_residual; got {candidate_mode!r}")
     rng = random.Random(seed)
 
     with engine.connect() as conn:
@@ -261,19 +269,46 @@ def build_manifest(
             logger.warning("task %s: 0 ball_detections rows — skipping", t5[:8])
             continue
         cands_by_frame: dict[int, dict] = {int(c["frame_idx"]): c for c in cands}
-        all_bounce_frames = [
-            int(c["frame_idx"]) for c in cands if c.get("is_bounce")
-        ]
+
+        # Build the candidate pool per mode. is_bounce mode reuses TrackNet's
+        # flag; gravity_residual mode computes the peak-detector pool that
+        # also drives detector.py at inference time (BOUNCE_CANDIDATE_MODE).
+        if candidate_mode == "gravity_residual":
+            from ml_pipeline.bounce_detector.detector import (
+                _candidate_frames_from_gravity_residual,
+            )
+            all_candidate_frames = _candidate_frames_from_gravity_residual(cands)
+        else:
+            all_candidate_frames = [
+                int(c["frame_idx"]) for c in cands if c.get("is_bounce")
+            ]
+        all_candidate_set = set(all_candidate_frames)
 
         # --- positives ---
         pos_frames: list[tuple[int, dict]] = []
         n_strict = 0
         for lbl in floor_lbls:
-            fi, is_strict = _match_label_to_candidate(
-                lbl, cands_by_frame,
-                frame_tol=POSITIVE_FRAME_TOL,
-                pixel_tol_px=POSITIVE_PIXEL_TOL_PX,
-            )
+            if candidate_mode == "gravity_residual":
+                # Loose match: any GR candidate within ±5 frames of SA label.
+                # GR candidates carry frame-index signal only (no pixel info
+                # of their own), so the pixel gate is dropped — frame
+                # proximity IS the matching evidence.
+                bf = int(lbl["bounce_frame_est"])
+                fi = None
+                best = 999
+                for k in range(bf - POSITIVE_FRAME_TOL, bf + POSITIVE_FRAME_TOL + 1):
+                    if k in all_candidate_set and abs(k - bf) < best:
+                        fi = k
+                        best = abs(k - bf)
+                is_strict = fi is not None
+                if fi is None:
+                    fi = bf       # SA-anchor fallback (same as is_bounce mode)
+            else:
+                fi, is_strict = _match_label_to_candidate(
+                    lbl, cands_by_frame,
+                    frame_tol=POSITIVE_FRAME_TOL,
+                    pixel_tol_px=POSITIVE_PIXEL_TOL_PX,
+                )
             pos_frames.append((fi, lbl))
             if is_strict:
                 n_strict += 1
@@ -286,7 +321,7 @@ def build_manifest(
             for k in range(fi - NEGATIVE_EXCLUSION_FRAMES,
                            fi + NEGATIVE_EXCLUSION_FRAMES + 1):
                 excluded.add(k)
-        eligible_negs = [f for f in all_bounce_frames if f not in excluded]
+        eligible_negs = [f for f in all_candidate_frames if f not in excluded]
         target_neg = neg_per_pos * len(pos_frames)
         # Drop duplicates while preserving frame ordering (a frame can only
         # appear once in is_bounce anyway, but defensive against future
@@ -323,11 +358,13 @@ def build_manifest(
         n_total_matched += len(pos_frames)
         n_total_neg += len(neg_frames)
         logger.info(
-            "task %s: floor_labels=%d  positives=%d (strict=%d/%.0f%%, "
-            "anchor_fallback=%d)  eligible_negs=%d  sampled_negs=%d  fps=%.1f",
-            t5[:8], len(floor_lbls), len(pos_frames),
+            "task %s [%s]: floor_labels=%d  positives=%d (strict=%d/%.0f%%, "
+            "anchor_fallback=%d)  candidate_pool=%d  eligible_negs=%d  "
+            "sampled_negs=%d  fps=%.1f",
+            t5[:8], candidate_mode, len(floor_lbls), len(pos_frames),
             n_strict, 100.0 * n_strict / max(1, len(floor_lbls)),
-            len(pos_frames) - n_strict, len(eligible_negs), len(neg_frames), fps,
+            len(pos_frames) - n_strict, len(all_candidate_frames),
+            len(eligible_negs), len(neg_frames), fps,
         )
 
     logger.info(
