@@ -176,6 +176,24 @@ Full strategic analysis is in `.claude/next_session_pickup.md`.
 
 ---
 
+## Current detector build queue (2026-05-28) — single source of truth
+
+**Five ADRs APPROVED 2026-05-28** define what to build next and in what order. **Every future session that touches a detector module reads ADR-05 first to claim the next available build.**
+
+| ADR | Topic | Status | Build dependency |
+|---|---|---|---|
+| [ADR-01](./_investigation/adr_01_bounce_model_architecture.md) | Bounce model — Render-side standalone, 1D temporal CNN + geometric pre-gates | APPROVED, ready to build | Independent |
+| [ADR-02](./_investigation/adr_02_swing_type_classifier_plan.md) | Swing-type classifier — R(2+1)D-18 on 16-frame optical-flow ROI | APPROVED, blocked on corpus extractor for `label_kind='stroke_classifier'` | Independent of bounce |
+| [ADR-03](./_investigation/adr_03_identity_model.md) | Player identity — rule v1 (changeover detector), CNN v2 (OSNet) | APPROVED, v1 rule ready to build | Independent of bounce + swing-type |
+| [ADR-04](./_investigation/adr_04_volley_model_or_analytic.md) | Volley analytic — pure bronze derivation from bounce + swing events | APPROVED, **BLOCKED** by ADR-01 + ADR-02 | Must wait |
+| [ADR-05](./_investigation/adr_05_detector_build_sequencing.md) | Build sequencing + coordination protocol | APPROVED | — |
+
+**Three parallel streams maximum.** Stream 1 (Tomo's option): ADR-01 → ADR-02 → ADR-04. Stream 2: ADR-03 (independent). Stream 3: serve training infra (corpus extractor for `label_kind='serve'`, then retrain `serve_detector`).
+
+**Coordination rule (ADR-05):** no agent starts a detector build without an APPROVED ADR + a pickup-file claim. Corpus extension lands in the same commit as the detector model it feeds.
+
+---
+
 ## Phase ladder
 
 | # | Phase | Done-when | Owner / Status |
