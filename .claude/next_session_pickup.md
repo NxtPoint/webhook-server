@@ -1,121 +1,132 @@
-# Next-session pickup — 2026-05-28 (close 5) — ADR-02 v1 model SCAFFOLD shipped, awaits corpus volume
+# Next-session pickup — 2026-05-28 (close 6) — L1+L4+L5 Batch perf SHIPPED & DEPLOYED; calibration fail-loud (C) live
 
 ## ⚡ Executive summary (read first — 60 seconds)
 
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME" + §"Current detector build queue (2026-05-28)".
 
-**Date:** 2026-05-28 (close 5)
-**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN. Identity `100%` unchanged. New `bench_swing_type` ships local-only in STOPGAP mode (returns `available=False` until weights ship).
+**Date:** 2026-05-28 (close 6)
+**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN. Identity `100%` unchanged. `bench_swing_type` STOPGAP (no weights).
+**Match 4:** RECOVERED — corpus #4 landed all 3 kinds (664 ball / 397 stroke / 114 serve).
 
-**What shipped this session — ADR-02 v1 model scaffold (Option G from close-4 pickup):**
+**What shipped this session — TWO parallel streams while ADR agent shipped ADR-01/ADR-02 v1:**
 
-Mirrors bounce_detector v0 pattern — STOPGAP-flagged scaffold ready for the moment training data crosses ~2-3k labels.
+### Stream 1: L1+L4+L5 Batch perf — SHIPPED + DEPLOYED + JOB-DEFS LIVE
+- `024bb40` L1 player-stage GPU batching (PLAYER_BATCH_SIZE env, default 1)
+- `b25b356` L4 ROI ViTPose batching + FP16 (ROI_BATCH_SIZE / ROI_POSE_FP16 env)
+- `c660845` L5 NVENC GPU transcode (Dockerfile installs nvenc-enabled ffmpeg from BtbN; Python auto-falls back to libx264 if nvenc fails; TRANSCODE_CODEC env)
+- Docker image rebuilt, pushed to eu-north-1 + us-east-1 ECR
+- AMD64 sub-manifest digest: `sha256:9dfb66c33296a3daf73c945d6223be422966dacd6ff5a0e748e32dfbf4697b20`
+- **Job-defs registered:** eu-north-1 rev **54**, us-east-1 rev **36** — both pin the new digest AND set `PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16` env vars (ROI_POSE_FP16 deliberately NOT set; defer with L3).
+- Equivalence verified locally: `.claude/tmp/test_player_batch_equiv.py` shows `_run_yolo_batch([f]*N)` per-frame-identical to N separate `_run_yolo(f)` calls (max box diff 0.000000).
 
-- `ml_pipeline/stroke_classifier/model_v2.py` — R(2+1)D-18 + 2-channel optical-flow stem + handedness concat (`SwingTypeR2plus1D`); `SwingTypeClassifierV2` wrapper with STOPGAP-no-weights behaviour
-- `ml_pipeline/stroke_classifier/dataset.py` — PyTorch `SwingTypeDataset` reading `build_swing_type_dataset` outputs; train/val/all split + ADR-02 augmentation (hflip + dx-sign-flip + handedness-toggle + temporal crop)
-- `ml_pipeline/stroke_classifier/detector_v2.py` — Render-side `detect_swing_types_for_task` entry point per ADR-02 Q4-A; stroke_events → bboxes → 1080p video crop → optical flow → batched predict → write `ml_analysis.swing_type_events`. Exception-safe (never raises, returns dict)
-- `ml_pipeline/stroke_classifier/db.py` — `ml_analysis.swing_type_events` schema (separate table per ADR-02 Q6 — preserves rule #8 ownership of `stroke_detector/`)
-- `ml_pipeline/training/train_swing_type.py` — Training loop: AdamW + cosine warmup + label-smoothing/focal loss + mixup + WeightedRandomSampler + early-stop on macro-F1
-- `ml_pipeline/diag/bench_swing_type.py` — Regression bench with `--bless` baseline lock; local-only (CI gate per ADR-02 v1 only after weights ship)
-- `upload_app.py` — boot init for `init_swing_type_schema()` + try/except `detect_swing_types_for_task()` call in `_do_ingest_t5` after stroke_detector. Cannot break ingest flow.
-- `ml_pipeline/stroke_classifier/__init__.py` — exposes v2 API alongside legacy v1
-- `.claude/swing_classifier_v2_kickoff.md` — handover doc
+### Stream 2: Calibration fail-loud safety net (C) — SHIPPED + DEPLOYED
+- `eec1dae` Render-side fail-loud in `_do_ingest_t5`: if 0% of bronze rows have court_x populated (≥100 row threshold both sides), mark `ingest_error='calibration_degenerate_no_court_coords'`, set `last_status='failed_calibration'` + `ingest_finished_at=now()`, skip silver/serve/stroke/notify, return False. Also logs WARN when ball-court coverage <20% (currently 5 of 15 recent matches show 25-32%).
+- Pure Render — auto-deployed; `/healthz` 200.
+- Catches match-4-class catastrophic failures retroactively. Doesn't fix the root cause (degenerate homography locking); that's the Batch-side companion (A)+(B) — STILL TODO.
 
-**Verified live:** all imports clean; `SwingTypeClassifierV2()` → `available=False` (STOPGAP); `predict_batch()` → `[]`; bench runs `available=False` and exits 0; `ml_analysis.swing_type_events` table created on prod DB. Serve bench unchanged.
+## Match 4 saga + recovery — full story for context
 
-**Match 4 SAFETY confirmed:** the new `detect_swing_types_for_task` runs as no-op when weights are absent. Match 4's eventual Render ingest hook will log `swing-type classifier: {'status': 'stopgap'}` and proceed cleanly to silver build. No risk to the running job.
+Match 4 (`ca475740-9e34-49c3-9b59-0194bfa37013`, Tomo vs Jimbo Ma, 47.9-min 1080p, 71915 frames) was the corpus #4 T5-side that started at 12:08 UTC and was supposed to complete in ~4h.
 
-**Two batch-optimisation commits piggyback on this push** (other agent's L1 + L4 work, env-gated, source-only — no production effect until Docker rebuild + ECR push):
-- `024bb40` perf(t5/batch): L1 player-stage GPU batching (env-gated PLAYER_BATCH_SIZE)
-- `b25b356` perf(t5/batch): L4 ROI ViTPose batching + FP16 (env-gated ROI_BATCH_SIZE / ROI_POSE_FP16)
+**Why it timed out:** Hit 6h Batch hard cap at 18:08 UTC (exit 137 SIGKILL, `statusReason: "Job attempt duration exceeded timeout"`). Three layered slow spots — exactly the L1/L4/L5 targets:
+- Main loop: 3h 41m (184 ms/frame on 71915 frames — YOLOv8x-pose @ batch=1 on T4)
+- ROI extract: 63 min (ViTPose @ batch=1)
+- libx264 transcode: 30-40+ min on T4's 4 vCPUs, still running when killed
 
-## Corpus state (unchanged from close-4)
+**Calibration degeneracy on top of that:** CNN returned 0 keypoints across 300-frame calibration window → Hough fallback locked a homography with H_diag `[21.43, 0.05]` (degenerate) that passed inliers/confidence gates. Every `to_court_coords()` projection returned None. **All 23,796 ball + 52,433 player rows had court_x=NULL.** `roi_pose: scanned 65243 sampled frames, 0 detections, 0 usable poses in 7736.8s` — 2h of GPU compute finding nothing because the projected ROI was 45×40 pixels.
 
-| Pair | T5 | SA | ball_position | stroke_classifier | serve |
-|---|---|---|---|---|---|
-| Match 1 (Tomo / Rivonia) | 78c32f53 | 0d0514df | 161 ✅ | 94 ✅ | 25 ✅ |
-| Match 2 (Erin / ccj)     | c645a7ee | ee12d918 | 327 ✅ | 341 ✅ | 46 ✅ |
-| Match 3 (Dejan / ccj)    | 9378f2dd | 2f355924 | 331 ✅ | 340 ✅ | 47 ✅ |
-| Corpus 4 (Tomo / Rivonia) | ca475740 *(T5 78%, roi_extract — last checked 15:58 UTC)* | 3922af92 ✅ | pending hook | pending hook | pending hook |
-| **Totals (today)** |  |  | 3 rows / 819 | 3 rows / 775 | 3 rows / 118 |
+**Recovery (in this session):**
+1. Found `bronze_s3_key` was set BEFORE timeout (export_bronze_to_s3 wrote 4.5MB gz at 18:07:10, 1 min before kill). Bronze IS in S3.
+2. UPDATE `vaj.status='complete'` (truthful — bronze IS complete; transcode died).
+3. Backdated `vaj.updated_at` to 10 min ago so sweep cron's age gate passes.
+4. Cron fired ≤5 min later → Render ingest read bronze.json.gz → DB populated → silver build ran (0 rows due to NULL court coords — see below) → stroke/serve/swing-type ran → SES email sent → **corpus auto-land hook fired and emitted all 3 kinds**.
+5. Result: `training_corpus` for match 4 = `ball_position 664, stroke_classifier 397, serve 114` — exactly the predicted volumes. **ADR agent fully unblocked.**
 
-ADR-02 v1 dataset (built last session): 368 training-ready hits / 16-frame Farneback flow / 3 matches. Below 2-3k volume target. Will rebuild + grow once Corpus 4 lands.
+**Silver=0 root cause investigated:** documented in `docs/_investigation/court_calibration_silent_degeneracy.md` (NEW). Match 4 is THE ONLY 0% case in the last 60 days of T5 matches, but 5 of 15 show sub-50% ball-court coverage. Trend is real on newer/longer videos. Memory: `project_t5_calibration_degeneracy.md`.
 
-## Honest status of the 5 facts (post-this-session)
+## What's NOT done (next-session work)
 
-| Fact | Status | Honest read |
-|---|---|---|
-| serve | **DEV CEILING** ✅; corpus extractor LIVE (Stream 3) | 118 labels + ~114 from Corpus 4 ≈ 232. Need ~500+ for receiver-FP training. |
-| bounce (ADR-01) | **v0 SCAFFOLDED — UNTRAINED** | STOPGAP threshold 1.1. 411 floor labels reachable. |
-| swing_type (ADR-02) | **v1 MODEL SCAFFOLD + DATASET + TRAINING + BENCH SHIPPED** | All plumbing in place; STOPGAP-no-weights. Need ~2-3k labels (~5-10 more matches) to train. |
-| identity (ADR-03) | **v1 SHIPPED at 100% bench** ✅ | v2 OSNet planned. |
-| volley (ADR-04) | **Not built — by design** | Blocked on bounce + swing-type. |
+| # | Item | Owner | Effort | Notes |
+|---|---|---|---|---|
+| 1 | **VALIDATE L1+L4+L5 perf** on the next real T5 upload | next session | passive | The next user-uploaded T5 match lands on eu-north-1 rev 54 with `PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16` active. Expected ms/frame to drop from ~183 → ~75-110 (conservative). Read `ms_per_frame` + `batch_duration_sec − processing_time_sec` from `ml_analysis.video_analysis_jobs`. Target full match ~2.5-3h vs match 4's 6h. |
+| 2 | **L3 YOLO FP16** | next session | ~1h code + Docker rebuild | Code: flip `predict(half=True)` on full-frame YOLOv8x-pose + SAHI's YOLOv8m. **Needs its own bench cycle** — FP16 can shift detection counts near thresholds (`config.py:158` documents this). Validate on bench + a real long match before promoting. Trips BATCH-SIDE CHECKLIST. |
+| 3 | **L7 G5.xlarge (A10G)** | next session | ~1-2h infra | No code. AWS Batch CE + Job Queue + JD updates. Quota check first (`aws service-quotas get-service-quota` for G-family vCPU in eu-north-1; if 0, request increase). G5.xlarge ~$1.006/h vs G4dn.xlarge $0.526/h but ~2× FP16 throughput so cost-per-job ~flat. Adds 2-3× hardware speedup on top of all software levers. |
+| 4 | **Calibration fix (A) + (B)** | next session | ~2-3h with deploy | (A) H_diag sanity gate in `court_detector.py` — reject homographies where `\|H[0,0]\|` or `\|H[1,1]\|` outside `[0.1, 5.0]`. (B) post-lock projection self-test — project 4 court corners, reject if any falls outside frame. Batch-side, trips checklist. Bundle both in same Docker rebuild. Fix doc: `docs/_investigation/court_calibration_silent_degeneracy.md` §Fix options. |
+| 5 | **Calibration (D) — CNN keypoints returning 0** | research | 1-3 days | Investigate why ResNet50 court-keypoint CNN returns 0 keypoints on this video's camera angle. Likely training-data gap. Defer until A/B/C are in. |
 
-**Three of the 5 facts are now at "scaffolded + ready for training" or "shipped":** identity (DONE), swing-type (SCAFFOLD READY), bounce (SCAFFOLD READY). The whole architecture pattern is now consistent and proven.
+## Coordination with other agent
 
-## Honest re-ordered roadmap
+ADR agent shipped + pushed in parallel this session:
+- `a2bf4b8` ADR-01 v1 bounce_detector training infra (dataset + trainer + `bench --weights-path`)
+- `8c6a1af` ADR-02 v1 swing-type model scaffold (model + dataset + detector + train + bench)
+- Earlier (from close-5): `d4d6580` ADR-02 swing-type dataset builder
 
-1. **Wait for Corpus 4 T5 to finish** — corpus rows auto-land via hook (all 3 kinds).
-2. **(Optional, Tomo's call)** Re-submit 2 unpaired Tomo-Rivonia matches → +411 floor + ~500 swing + ~50 serve.
-3. **Train ADR-01 bounce_detector v1** on accumulated floor labels — HIGHEST IMPACT next move (recipe: `.claude/adr01_label_audit_2026-05-28.md`).
-4. **Accumulate swing-type corpus to ~2-3k labels** (5-10 more matches), then train R(2+1)D-18 via `train_swing_type.py`.
-5. **Accumulate serve corpus to ~500+ labels**, then retrain serve_detector for receiver-FP.
-6. **ADR-04 volley analytic drops out** — ~30 lines.
-7. *(Maybe)* ADR-03 v2 OSNet.
+Their work is ADR detector-build / training. My work is Batch perf + Render-side safety net. **No file overlap.** All commits land cleanly on `main`.
 
-## Next session's job — pick ONE (parallel-safe ★)
+## How to validate L1+L4+L5 when a fresh T5 match lands
 
-- **★(A) ADR-01 v1 training** — IFF Corpus 4 has landed AND ideally 2 unpaired Rivonia matches re-submitted. **HIGHEST IMPACT** (unblocks bounce from STOPGAP zero). ~2-3 hr. Recipe in `.claude/adr01_label_audit_2026-05-28.md`.
-- **★(F) Batch runtime optimisation — finish the deploy** — L1 + L4 are committed but the BATCH-SIDE CHECKLIST hasn't run (Docker rebuild + ECR push + job-def revisions). Daylight-only. ~5 hr. Plan: `docs/_investigation/batch_optimisation_plan.md`. The two committed levers stack to ~25-55% speedup once activated via env vars.
-- **★(C) ADR-03 v2 OSNet** — not urgent.
-- (D) ADR-04 volley — still blocked on (A).
-- (E) Hand-label net-cord / racket-hit FPs for ADR-01 bounce_type enum — deferred until v1 bench tells us pre-gates aren't enough.
+```sql
+SELECT task_id, total_frames, processing_time_sec, ms_per_frame,
+       EXTRACT(EPOCH FROM (batch_end_at - batch_start_at))/60 AS batch_min
+  FROM ml_analysis.video_analysis_jobs
+ WHERE status = 'complete' AND batch_start_at > NOW() - INTERVAL '24 hours'
+ ORDER BY batch_start_at DESC;
+```
 
-**Recommended:** (A) if Corpus 4 has landed by then; (F) if Tomo wants the user-pain ceiling fixed in daylight.
+Look for: `ms_per_frame ≤ 110` (vs 184 baseline) AND `batch_min ≤ 180` (vs ~290 match 4). Bench MUST still be green — run `python -m ml_pipeline.diag.bench`.
 
-## Coordination protocol (per ADR-05) — unchanged
+CloudWatch grep for the new env-driven log lines:
+- `player_sub ... batch_size=8` in `player_tracker._sub_seconds`
+- `roi_pose: ViTPose on cuda fp16=False batch_size=16` (FP16 deliberately off; flip ROI_POSE_FP16=1 later if needed)
+- `Complete: ... in X.Xs` from `_transcode_to_mp4` — expect <120s with NVENC working
 
-1. No agent starts a detector build without an APPROVED ADR.
-2. Each detector build has its own commit scope.
-3. **Corpus extension lands in the same commit as the detector model it feeds.**
-4. Each detector ships with a bench.
-5. This pickup file gets updated at every detector ship.
+If NVENC failed and fell back to libx264, log will say: `NVENC transcode failed ... falling back to libx264`. Doesn't break, but means the Dockerfile overlay didn't take.
 
-## Commits this session
-- *(this commit)* `feat(t5): ADR-02 v1 swing-type model scaffold (model + dataset + detector + train + bench + boot wiring)` — 8 new/modified files + kickoff doc + pickup overwrite.
+## Files you'll touch on day 1
 
-(Pushed alongside: `024bb40` L1 player batching, `b25b356` L4 ROI batching + FP16 — both from the parallel batch-optimisation agent, env-gated.)
+For L3: `ml_pipeline/player_tracker.py` (`predict(half=True)` flags). For L7: AWS console only. For (A)+(B): `ml_pipeline/court_detector.py`. All trip BATCH-SIDE CHECKLIST except L7.
 
-## Memory ceiling reference (unchanged)
+## Background ADR work continues
 
-| Stage | Peak heap |
-|---|---|
-| Bronze ingest (streaming ijson) | ~15 MB |
-| serve_detector | ~75 MB |
-| stroke_detector | ~53 MB |
-| silver build | ~79 MB |
+`training_corpus` totals after match 4 lands:
+- ball_position: **1,483** labels (819 + 664)
+- stroke_classifier: **1,172** labels (775 + 397)
+- serve: **232** labels (118 + 114)
 
-## Runtime ceiling reference (unchanged from close-3)
+ADR-02 wants ~2-3k swing labels for v1 training; we're at 1,172 — needs ~5-10 more matches. ADR-01 wants the floor labels for bounce training (411-684 today depending on re-submits). ADR-03 v1 already at 100% bench. ADR-04 still blocked on ADR-01 + ADR-02.
 
-| Phase | Wall time (44-min match) | Status |
-|---|---|---|
-| AWS Batch | ~4.79 h | L1 + L4 committed, awaiting deploy |
-| Render ingest | ~3 min 39 sec | Solved |
-| Target | <1 h | Plan: `docs/_investigation/batch_optimisation_plan.md` |
+---
 
-## Read in this order
-0. **`docs/north_star.md` §"★ RULES OF THE GAME"** — non-negotiable.
-1. This file.
-2. `docs/north_star.md` §"Current detector build queue (2026-05-28)".
-3. `.claude/adr01_label_audit_2026-05-28.md` — for Task (A) ADR-01 work.
-4. `.claude/swing_classifier_v2_kickoff.md` — for context on the scaffold shipped this session.
-5. `docs/_investigation/batch_optimisation_plan.md` — for Task (F) Batch runtime work.
+## Detailed deploy state — for reference
 
-## Constraints (unchanged)
+**Code:**
+- `024bb40` L1, `b25b356` L4, `c660845` L5, `eec1dae` fix (C) — all pushed to `origin/main`.
 
-- Don't touch parallel-agent files: `serve_detector/`, `stroke_detector/`, `build_silver_match_t5.py`, `ball_tracker.py`, `wasb_*.py`, `roi_extractors/`, or any file in BATCH-SIDE CHECKLIST per rule #8 (unless doing Task F).
-- No pytest. No `?key=` query-string auth. Pull-rebase before push.
-- Always commit to main (no feature branches).
+**Docker image:**
+- Manifest list: `sha256:5801adfb479d6a23c9092843137b3b2b6e3d5d896fbff8844482150109b2e68f`
+- AMD64 sub-manifest: `sha256:9dfb66c33296a3daf73c945d6223be422966dacd6ff5a0e748e32dfbf4697b20`
+- Tagged + pushed to both regions.
 
-## Scratch
-None. All output went into committed code + docs.
+**Job-defs (BOTH register the new image AND env vars):**
+- `ten-fifty5-ml-pipeline:54` (eu-north-1) — PLAYER_BATCH_SIZE=8, ROI_BATCH_SIZE=16, retryStrategy preserved
+- `ten-fifty5-ml-pipeline:36` (us-east-1) — same
+
+**Render:**
+- Auto-deployed all four commits. `/healthz` 200. Ingest worker auto-deployed too.
+
+**Bench gates:**
+- Serve bench: a798eff0 20/24, 880dff02 23/24 — green pre-L1, green post-L1 (refactor preserves sync path), green post-L4, green post-L5.
+
+**Match 4 final state (`ca475740-...`):**
+- `vaj.status = complete`, `stage = transcoding` (DB shows the killed stage), `ms_per_frame = 191.7`
+- `bronze.submission_context.last_status = completed`, `ingest_finished_at = 18:26:55`, `ses_notified_at = 18:26:55`, `session_id = ca475740-...`
+- silver.point_detail = 0 (calibration degenerate)
+- training_corpus: 3 kinds × 1 row × {664, 397, 114} labels
+
+**This session's commits (newest first):**
+```
+eec1dae fix(t5/ingest): fail-loud on degenerate court calibration (no court coords)
+c660845 perf(t5/batch): L5 NVENC GPU transcode (env-gated TRANSCODE_CODEC + Dockerfile ffmpeg overlay)
+b25b356 perf(t5/batch): L4 ROI ViTPose batching + FP16 (env-gated ROI_BATCH_SIZE / ROI_POSE_FP16)
+024bb40 perf(t5/batch): L1 player-stage GPU batching (env-gated PLAYER_BATCH_SIZE)
+```
