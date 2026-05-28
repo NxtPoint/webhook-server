@@ -42,6 +42,23 @@ from ml_pipeline.config import (
     HOUGH_MAX_LINE_GAP,
 )
 
+# ── Calibration-lock policy (2026-05-28 frame-selection fix) ────────────────
+# Root cause of the silent-degeneracy failure (match 4 / f11eed2c): the lock
+# fired at COURT_CALIBRATION_FRAMES on whatever "best" detection existed —
+# including an ANY-BEST Hough fabrication — when the opening window was
+# unrepresentative (pre-match / setup / panning). The CNN actually nails
+# 12-13/14 keypoints seconds later on rally footage. Fix:
+#   • lock ONLY on a geometry-VALIDATED, non-degenerate detection
+#   • keep sampling the CNN PAST the initial window until we have enough
+#     validated observations (or hit the safety ceiling)
+#   • never lock an ANY-BEST/Hough detection; fail-loud if the whole search
+#     budget yields nothing validated.
+COURT_MIN_CALIB_OBS = 8            # validated observations required before locking (spread → stable calibration)
+COURT_LOCK_HARD_CAP_FRAMES = 18000  # safety ceiling (~12 min @25fps) → forced decision / fail-loud
+COURT_DEGEN_COND_MAX = 1.0e10      # homography condition-number ceiling (loose backstop)
+COURT_DEGEN_CORNER_MARGIN = 0.5    # reprojected court corners may fall at most this×dim outside frame
+COURT_DEGEN_MIN_AREA_FRAC = 0.02   # reprojected court quad must cover ≥ this fraction of frame area
+
 
 # ── Court keypoint CNN (same ConvBlock arch as TrackNet, different I/O) ─────
 
@@ -189,20 +206,32 @@ class CourtDetector:
         valid_mask = detection.keypoints[:, 0] >= 0
         n_kps = int(valid_mask.sum())
 
-        # Accumulate calibration observations based on KEYPOINTS alone —
-        # the per-frame homography may be rejected (e.g. by the inlier
-        # reprojection check) but well-distributed keypoints are still
-        # valid input for the calibration solver, which runs its own
-        # RANSAC + bundle adjustment across multiple frames.
+        # A frame counts as a calibration observation / lock candidate only if
+        # its keypoints pass the perspective sanity check (geom_ok) AND its
+        # homography is non-degenerate (Fix B). Gating observations on
+        # non-degeneracy keeps the radial calibration and the locked single-H
+        # fallback consistent — a "validated" window can never be a Hough
+        # fabrication, so enough validated observations always implies a real
+        # best-validated detection exists.
+        validated = False
         if n_kps >= 8:
             geom_ok = self._validate_homography_geometry(
                 detection.keypoints, valid_mask,
                 frame_h=frame.shape[0], frame_idx=frame_idx,
             )
-            if geom_ok:
-                self._calibration_observations.append(detection.keypoints.copy())
+            if geom_ok and detection.homography is not None:
+                degen, _dreason = self._homography_degenerate(
+                    detection.homography, frame.shape[1], frame.shape[0])
+                validated = not degen
+                if degen and self._geom_fail_log_count < 20:
+                    logger.info(
+                        "court_calibration: frame=%d geometry-pass but degenerate H (%s)",
+                        frame_idx, _dreason)
+                    self._geom_fail_log_count += 1
         else:
             geom_ok = False
+        if validated:
+            self._calibration_observations.append(detection.keypoints.copy())
 
         if detection.homography is not None:
             self._last_good_detection = detection
@@ -217,8 +246,8 @@ class CourtDetector:
                     frame_idx, n_kps, detection.confidence,
                     "PASS" if geom_ok else "FAIL",
                 )
-            # Track best-validated (only those passing geometry)
-            if geom_ok and n_kps > self._best_validated_inliers:
+            # Track best-validated (geometry-valid AND non-degenerate — Fix B/G)
+            if validated and n_kps > self._best_validated_inliers:
                 self._best_validated_inliers = n_kps
                 self._best_validated_detection = detection
                 logger.info(
@@ -228,20 +257,23 @@ class CourtDetector:
                 )
         self._last_frame_idx = frame_idx
 
-        # Check if calibration period is over
-        if frame_idx >= COURT_CALIBRATION_FRAMES and self._locked_detection is None:
-            # Pick the best detection to lock (used for post-lock early-return
-            # path, court polygon, and as a homography fallback for
-            # to_court_coords if lens calibration fails). Priority: validated
-            # geometry > any homography > last detection with any homography.
-            best = (self._best_validated_detection
-                    or self._best_detection
-                    or self._last_good_detection)
+        # ── Lock decision (Fix G: robust frame selection, 2026-05-28) ──
+        # Lock ONLY on a geometry-validated, non-degenerate detection, and only
+        # once we have >= COURT_MIN_CALIB_OBS validated observations. If the
+        # opening window is unrepresentative we keep sampling the CNN PAST
+        # COURT_CALIBRATION_FRAMES (rally footage recovers the keypoints)
+        # rather than freezing an ANY-BEST/Hough fabrication — the match-4 /
+        # f11eed2c silent-degeneracy root cause. Bounded by the hard cap.
+        have_validated = self._best_validated_detection is not None
+        enough_obs = len(self._calibration_observations) >= COURT_MIN_CALIB_OBS
+        past_window = frame_idx >= COURT_CALIBRATION_FRAMES
+        hit_cap = frame_idx >= COURT_LOCK_HARD_CAP_FRAMES
 
-            # Lens calibration runs from keypoint observations independently
-            # of the per-frame homography's success — many observations can
-            # be useful even if the per-frame H was rejected by the
-            # reprojection check.
+        if self._locked_detection is None and (
+            (past_window and have_validated and enough_obs) or hit_cap
+        ):
+            # Fit lens calibration from the validated keypoint observations
+            # (its own RANSAC + bundle adjustment).
             if self._calibration_observations:
                 self._calibration = fit_calibration(
                     self._calibration_observations,
@@ -249,43 +281,37 @@ class CourtDetector:
                     rms_threshold_px=10.0,
                 )
 
-            # FAIL-FAST: abort only if we have NO way to project pixel→metric.
-            # If we got a lock or a calibration, we can proceed.
+            # Lock candidate is the best VALIDATED detection ONLY — never an
+            # ANY-BEST/Hough fabrication. (Because observations require a
+            # validated frame, enough_obs implies best_validated is set; the
+            # only way best is None here is the hard-cap-with-nothing path.)
+            best = self._best_validated_detection
+
+            # FAIL-LOUD: no validated detection and no calibration → the video
+            # could not be calibrated. Raise so the pipeline marks it failed
+            # rather than silently locking a degenerate homography.
             if best is None and self._calibration is None:
-                kp_names = [
-                    "bl_top_L", "bl_top_R", "bl_bot_L", "bl_bot_R",
-                    "sg_top_L", "sg_bot_L", "sg_top_R", "sg_bot_R",
-                    "sv_top_L", "sv_top_R", "sv_bot_L", "sv_bot_R",
-                    "ctr_top",  "ctr_bot",
-                ]
-                logger.info("court_calibration: FAILURE DIAGNOSTICS (no best detection, no calibration):")
-                if self._best_detection is not None:
-                    for i, name in enumerate(kp_names):
-                        px = self._best_detection.keypoints[i]
-                        ref = self.ref_keypoints[i]
-                        det_str = f"({px[0]:.0f},{px[1]:.0f})" if px[0] >= 0 else "(MISSING)"
-                        logger.info(
-                            "court_kps[%02d] %s detected=%s ref=(%d,%d)",
-                            i, name, det_str, ref[0], ref[1],
-                        )
+                logger.warning(
+                    "court_calibration: FAIL-LOUD after %d frames — no validated, "
+                    "non-degenerate detection and no calibration (best-ANY existed=%s, "
+                    "validated_obs=%d). Refusing to lock a degenerate homography.",
+                    frame_idx, self._best_detection is not None,
+                    len(self._calibration_observations),
+                )
                 raise RuntimeError(
-                    f"court_calibration: FAILED after {frame_idx} frames — "
-                    f"no detection and no calibration could be produced. "
-                    f"Investigate CNN/Hough detection on this video."
+                    f"court_calibration: FAILED after {frame_idx} frames — no "
+                    f"geometry-validated, non-degenerate court calibration could be "
+                    f"produced. Refusing to lock a degenerate homography."
                 )
 
             self._locked_detection = best
             if best is not None:
                 locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
-                lock_source = (
-                    "VALIDATED" if best is self._best_validated_detection
-                    else "ANY-BEST" if best is self._best_detection
-                    else "LAST-GOOD"
-                )
                 logger.info(
-                    "court_calibration: LOCKED %s detection after %d frames "
-                    "(inliers=%d, confidence=%.2f). No more CNN runs.",
-                    lock_source, frame_idx, locked_inliers, best.confidence,
+                    "court_calibration: LOCKED VALIDATED detection after %d frames "
+                    "(inliers=%d, confidence=%.2f, validated_obs=%d). No more CNN runs.",
+                    frame_idx, locked_inliers, best.confidence,
+                    len(self._calibration_observations),
                 )
             if self._calibration is not None:
                 logger.info(
@@ -638,6 +664,61 @@ class CourtDetector:
         )
         return H
 
+    def _homography_degenerate(self, H: Optional[np.ndarray],
+                                frame_w: int, frame_h: int) -> tuple:
+        """Geometric degeneracy gate (Fix B, 2026-05-28).
+
+        Reprojects the four doubles-court corners (ref keypoints 0-3) BACK to
+        image pixels via H⁻¹ and rejects the homography if the result is not a
+        sane, in-frame, convex quad. This catches the degenerate Hough
+        fabrications (e.g. H_diag=[21.43, 0.05]) that pass the inlier /
+        reprojection checks but collapse the court to a line or fling the
+        corners off-screen.
+
+        IMPORTANT: we deliberately do NOT gate on the H diagonal / scale.
+        Legitimate wide-angle indoor courts (MATCHi) carry H_diag up to
+        ~1142 yet project perfectly — an H-diag range gate would reject the
+        bench-fixture court. The geometric quad test is scale-agnostic.
+
+        Returns (is_degenerate: bool, reason: str).
+        """
+        if H is None or not np.isfinite(H).all():
+            return True, "non-finite"
+        try:
+            cond = float(np.linalg.cond(H))
+        except Exception:
+            return True, "cond-failed"
+        if not np.isfinite(cond) or cond > COURT_DEGEN_COND_MAX:
+            return True, f"cond={cond:.1e}"
+        try:
+            Hinv = np.linalg.inv(H)
+        except np.linalg.LinAlgError:
+            return True, "singular"
+        # ref corners 0=top-L, 1=top-R, 2=bot-L, 3=bot-R (court ref pixel space)
+        corners_ref = self.ref_keypoints[:4].astype(np.float64)
+        pts = np.hstack([corners_ref, np.ones((4, 1))])
+        proj = (Hinv @ pts.T).T
+        w = proj[:, 2:3]
+        if np.any(np.abs(w) < 1e-9):
+            return True, "w~0"
+        img = proj[:, :2] / w  # (4,2) image-pixel corners
+        mx, my = frame_w * COURT_DEGEN_CORNER_MARGIN, frame_h * COURT_DEGEN_CORNER_MARGIN
+        if (np.any(img[:, 0] < -mx) or np.any(img[:, 0] > frame_w + mx) or
+                np.any(img[:, 1] < -my) or np.any(img[:, 1] > frame_h + my)):
+            return True, "corner-out-of-frame"
+        # Order as polygon tl,tr,br,bl (ref order is tl,tr,bl,br → indices 0,1,3,2)
+        quad = img[[0, 1, 3, 2]]
+        x, y = quad[:, 0], quad[:, 1]
+        area = 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+        if area < COURT_DEGEN_MIN_AREA_FRAC * frame_w * frame_h:
+            return True, f"area-small({area:.0f})"
+        # Convexity: all cross-products of consecutive edges share one sign
+        d = np.diff(np.vstack([quad, quad[0]]), axis=0)
+        cross = d[:, 0] * np.roll(d[:, 1], -1) - d[:, 1] * np.roll(d[:, 0], -1)
+        if not (np.all(cross > 0) or np.all(cross < 0)):
+            return True, "non-convex"
+        return False, "ok"
+
     def _detect_hough(self, frame: np.ndarray) -> Optional[CourtDetection]:
         """Robust fallback: detect white court lines via color mask + Hough.
 
@@ -778,6 +859,16 @@ class CourtDetector:
             homography = self._compute_homography(keypoints, valid_mask)
 
         if homography is None:
+            return None
+
+        # Degeneracy gate (Fix B): reject Hough fabrications whose corner
+        # reprojection isn't a sane in-frame convex quad. This is the source
+        # of the match-4-class silent degeneracy — the Hough fallback picks
+        # banner/logo edges as baselines and produces a homography that passes
+        # inlier checks but collapses the court.
+        degen, reason = self._homography_degenerate(homography, w, h)
+        if degen:
+            logger.info("_detect_hough: REJECTED degenerate homography (%s)", reason)
             return None
 
         return CourtDetection(
