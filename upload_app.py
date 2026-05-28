@@ -2428,25 +2428,39 @@ def _do_ingest_t5(task_id: str) -> bool:
             player_total = int(cal["player_total"] or 0)
             ball_court = int(cal["ball_court"] or 0)
             player_court = int(cal["player_court"] or 0)
-            # Treat as degenerate only when bronze is non-trivial on BOTH
-            # sides (≥100 rows) AND 0% court coverage on BOTH sides. A
-            # truly empty bronze (different failure mode) is left to the
-            # existing silver-build path to surface; we don't want to
-            # mis-classify a 0-row ingest as a calibration issue.
+            # Fix (C+) 2026-05-28: generalised from "exactly 0% both sides" to
+            # "below an env-tunable floor on BOTH sides". A degenerate
+            # calibration collapses court coverage on both ball AND player;
+            # the healthy partial tail (25-32% ball) keeps player coverage high
+            # (76-92%), so requiring BOTH below the floor cleanly separates a
+            # true degenerate (match 4 / f11eed2c, both ~0%) from a weak-but-
+            # usable partial. This also catches the "plausible-but-wrong"
+            # degenerate that projects a few points in-band but mostly out
+            # (which the old exact-0% check would have missed). Thresholds are
+            # env-tunable so they can be retuned without a redeploy.
+            # NOTE: this is the Render backstop; the source-side fix is the
+            # Fix G frame-selection + Fix B degeneracy gate in court_detector
+            # (a degenerate H should no longer lock in the first place).
+            import os as _os
+            min_cov = float(_os.environ.get("T5_CALIB_MIN_COVERAGE", "0.05"))
+            weak_cov = float(_os.environ.get("T5_CALIB_WEAK_COVERAGE", "0.20"))
+            ball_cov = (ball_court / ball_total) if ball_total else 0.0
+            player_cov = (player_court / player_total) if player_total else 0.0
             if (
-                ball_total >= 100 and ball_court == 0
-                and player_total >= 100 and player_court == 0
+                ball_total >= 100 and player_total >= 100
+                and ball_cov < min_cov and player_cov < min_cov
             ):
                 err_msg = (
-                    "calibration_degenerate_no_court_coords "
-                    f"(ball {ball_court}/{ball_total}, "
-                    f"player {player_court}/{player_total})"
+                    "calibration_degenerate_low_court_coverage "
+                    f"(ball {ball_court}/{ball_total}={ball_cov:.1%}, "
+                    f"player {player_court}/{player_total}={player_cov:.1%}, "
+                    f"floor={min_cov:.0%})"
                 )
                 app.logger.error(
-                    "T5 INGEST task_id=%s CALIBRATION DEGENERATE — 0%% "
-                    "court coords on bronze; skipping silver/serve/stroke "
-                    "+ notify. %s",
-                    task_id, err_msg,
+                    "T5 INGEST task_id=%s CALIBRATION DEGENERATE — court "
+                    "coverage below %.0f%% on BOTH sides; skipping silver/serve/"
+                    "stroke + notify. %s",
+                    task_id, 100.0 * min_cov, err_msg,
                 )
                 with engine.begin() as _cal_w:
                     _ensure_submission_context_schema(_cal_w)
@@ -2459,21 +2473,15 @@ def _do_ingest_t5(task_id: str) -> bool:
                         WHERE task_id = :t
                     """), {"err": err_msg, "t": task_id})
                 return False
-            # Partial degradation (some rows have court, some don't) is
-            # observed today in the 25-30% ball-court range and silver
-            # still builds usefully. Log a warning when coverage is
-            # unusually low so the trend is greppable in CloudWatch and
-            # future investigations can correlate against video metadata.
-            if (
-                ball_total >= 100 and ball_court > 0
-                and (ball_court / ball_total) < 0.20
-            ):
+            # Weak-but-usable: some coverage on at least one side. Silver still
+            # builds; log a warning so the trend stays greppable in CloudWatch
+            # and future investigations can correlate against video metadata.
+            if ball_total >= 100 and ball_cov < weak_cov:
                 app.logger.warning(
-                    "T5 INGEST task_id=%s CALIBRATION WEAK — only %.1f%% "
-                    "of ball_detections have court coords (%d/%d); silver "
-                    "quality reduced.",
-                    task_id, 100.0 * ball_court / ball_total,
-                    ball_court, ball_total,
+                    "T5 INGEST task_id=%s CALIBRATION WEAK — only %.1f%% of "
+                    "ball_detections have court coords (%d/%d); silver quality "
+                    "reduced.",
+                    task_id, 100.0 * ball_cov, ball_court, ball_total,
                 )
         except Exception as _cal_e:
             # Non-fatal: a check failure shouldn't stop the ingest. The
