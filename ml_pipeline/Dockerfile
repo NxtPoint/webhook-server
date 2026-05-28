@@ -5,7 +5,11 @@ FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python 3.11, FFmpeg, OpenCV system deps
+# Install Python 3.11, FFmpeg, OpenCV system deps.
+# NOTE: we install Ubuntu's apt ffmpeg as a baseline (libx264 fallback path
+# in _transcode_to_mp4), then overlay a static nvenc-enabled build from
+# BtbN/FFmpeg-Builds below at /usr/local/bin/ffmpeg. PATH puts /usr/local/bin
+# first so the nvenc build wins for ffmpeg / ffprobe lookups.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     python3.11-venv \
@@ -19,7 +23,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender-dev \
     libgomp1 \
     curl \
+    xz-utils \
     && rm -rf /var/lib/apt/lists/*
+
+# L5 (Lever #5 from docs/_investigation/batch_optimisation_plan.md):
+# overlay a static ffmpeg/ffprobe build with NVENC + CUDA support so
+# _transcode_to_mp4 can use h264_nvenc on the T4's dedicated encoder
+# silicon (~5-10× faster than libx264 ultrafast on a 44-min 1080p source).
+# Ubuntu 22.04's apt ffmpeg is NOT built with --enable-nvenc, so without
+# this overlay the Python code's NVENC primary call would fail and the
+# in-Python auto-fallback to libx264 would kick in (correct but slower).
+#
+# Source: BtbN/FFmpeg-Builds — the canonical source of nvenc-enabled
+# static linux64 ffmpeg builds. Uses the `latest` rolling release tag;
+# the runtime `grep h264_nvenc` check at the bottom of this RUN block
+# fails the Docker build immediately if the encoder ever drops out.
+# Re-pin to a specific autobuild tag (BTBN_FFMPEG_REL) once we've
+# observed a stable known-good build.
+#
+# Installs at /usr/local/bin which precedes /usr/bin in the default
+# image PATH — `ffmpeg` resolves to the nvenc build for both Python's
+# subprocess.run and any interactive shell session, while the apt-
+# installed /usr/bin/ffmpeg stays as a last-resort fallback.
+RUN set -eu; \
+    curl -fSL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz \
+        -o /tmp/ffmpeg.tar.xz; \
+    mkdir -p /tmp/ffmpeg-extract; \
+    tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract --strip-components=1; \
+    install -m 0755 /tmp/ffmpeg-extract/bin/ffmpeg  /usr/local/bin/ffmpeg; \
+    install -m 0755 /tmp/ffmpeg-extract/bin/ffprobe /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-extract; \
+    /usr/local/bin/ffmpeg -hide_banner -encoders 2>&1 | grep -q h264_nvenc \
+        || (echo "BUILD ABORT: /usr/local/bin/ffmpeg does not advertise h264_nvenc" && exit 1)
 
 # Make python3.11 the default
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \

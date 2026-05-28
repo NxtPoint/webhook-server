@@ -69,8 +69,17 @@ def _probe_video_codec(source_path: str) -> str:
 def _transcode_to_mp4(source_path: str) -> str:
     """
     Compress video for browser streaming.
-    Scales to 720p max height, CRF 28, ultrafast preset for speed.
-    Output is much smaller than source (~80-90% reduction for raw phone footage).
+    Scales to 720p max height, CQ/CRF 28, fast preset.
+
+    L5 (Lever #5 from docs/_investigation/batch_optimisation_plan.md):
+    primary encoder is h264_nvenc — the T4 host has dedicated NVENC silicon,
+    typically 5-10× faster than libx264 ultrafast at comparable quality
+    (NVENC p4 preset with -cq 28 is the standard CRF-28 equivalent). On a
+    44-min 1080p→720p source this saves ~5-10 min wall time per job.
+
+    Auto-fallback to libx264 if NVENC fails (driver / capability issue /
+    image lacks the nvenc encoder). Output is much smaller than source
+    (~80-90% reduction for raw phone footage).
     """
     import subprocess
     out_fd, out_path = tempfile.mkstemp(suffix=".mp4")
@@ -80,28 +89,74 @@ def _transcode_to_mp4(source_path: str) -> str:
     codec = _probe_video_codec(source_path)
     logger.info(f"Source codec: {codec}")
 
-    # Always compress for streaming — scale to 720p, CRF 28 for small file size
-    cmd = [
-        ffmpeg_bin, "-y",
-        "-i", source_path,
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-vf", "scale=-2:720",
-        "-c:a", "aac",
-        "-b:a", "96k",
-        "-movflags", "+faststart",
-        out_path,
-    ]
+    # Env-gated primary codec — defaults to nvenc, set TRANSCODE_CODEC=libx264
+    # on the job-def to pin the CPU path if NVENC ever causes trouble.
+    primary = os.environ.get("TRANSCODE_CODEC", "h264_nvenc").strip()
 
-    logger.info(f"Compressing for streaming: {' '.join(cmd)}")
+    def _cmd(codec_name: str):
+        if codec_name == "h264_nvenc":
+            return [
+                ffmpeg_bin, "-y",
+                "-i", source_path,
+                "-c:v", "h264_nvenc",
+                "-preset", "p4",          # NVENC speed/quality balance (p1=best p7=fastest)
+                "-rc", "vbr",
+                "-cq", "28",               # constant-quality target (CRF-28 equivalent)
+                "-vf", "scale=-2:720",
+                "-c:a", "aac",
+                "-b:a", "96k",
+                "-movflags", "+faststart",
+                out_path,
+            ]
+        # libx264 fallback / pinned CPU path — same params as pre-L5.
+        return [
+            ffmpeg_bin, "-y",
+            "-i", source_path,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-vf", "scale=-2:720",
+            "-c:a", "aac",
+            "-b:a", "96k",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+
+    cmd = _cmd(primary)
+    logger.info(f"Compressing for streaming ({primary}): {' '.join(cmd)}")
+    t_enc = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+    enc_sec = time.time() - t_enc
+
+    # NVENC failure auto-fallback. Covers two real failure modes:
+    #   (a) the image's ffmpeg is built without --enable-nvenc → ffmpeg
+    #       reports "Unknown encoder 'h264_nvenc'" and exits non-zero;
+    #   (b) NVENC capability missing at runtime (driver mismatch, max
+    #       concurrent encoders exceeded on shared GPU, etc.).
+    # We only fall back when nvenc was the primary AND it failed —
+    # an explicit TRANSCODE_CODEC=libx264 won't trigger a redundant
+    # second attempt.
+    if result.returncode != 0 and primary == "h264_nvenc":
+        logger.warning(
+            "NVENC transcode failed (rc=%d, %.1fs); falling back to libx264. "
+            "stderr tail: %s",
+            result.returncode, enc_sec, result.stderr[-500:],
+        )
+        cmd = _cmd("libx264")
+        logger.info(f"Fallback transcode (libx264): {' '.join(cmd)}")
+        t_enc = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        enc_sec = time.time() - t_enc
+
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg failed (rc={result.returncode}): {result.stderr[-500:]}")
 
     src_size = os.path.getsize(source_path)
     out_size = os.path.getsize(out_path)
-    logger.info(f"Complete: {src_size} → {out_size} bytes ({out_size/src_size*100:.0f}%)")
+    logger.info(
+        "Complete: %d → %d bytes (%.0f%%) in %.1fs",
+        src_size, out_size, out_size / src_size * 100, enc_sec,
+    )
     return out_path
 
 
