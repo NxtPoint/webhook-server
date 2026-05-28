@@ -419,6 +419,20 @@ class RoiBounceProcessor:
             self.x1 - self.x0, self.y1 - self.y0,
         )
 
+        # Min-ROI guard (45×40 degeneracy, 2026-05-28): a degenerate court
+        # calibration collapses the service-box ROI to a tiny box. Bail before
+        # loading the model / scanning. Thresholds are looser than the far-pose
+        # ROI because the service box is a smaller legit region, but still far
+        # above the ~45×40 degenerate box. Defence-in-depth behind Fix G.
+        fh, fw = frame_shape[:2]
+        roi_w, roi_h = self.x1 - self.x0, self.y1 - self.y0
+        if (roi_w < fw * 0.04 or roi_h < fh * 0.03 or roi_w * roi_h < fw * fh * 0.005):
+            logger.error(
+                "roi_bounces: service-box ROI degenerate (%dx%d = %.4f%% of frame) "
+                "— court calibration likely degenerate; skipping bounces to avoid a "
+                "wasted scan", roi_w, roi_h, 100.0 * roi_w * roi_h / max(1, fw * fh))
+            return False
+
         # Load the TrackNet model ONCE and share it across windows (Bug 2 fix:
         # constructing a fresh BallTracker per window reloaded the weights every
         # time, ~7x slowdown that timed out long matches at the 6h Batch limit).

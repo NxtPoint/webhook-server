@@ -239,6 +239,24 @@ class FarPoseProcessor:
             self.x1 - self.x0, self.y1 - self.y0,
         )
 
+        # Min-ROI guard (45×40 degeneracy, 2026-05-28): a degenerate court
+        # calibration projects all four ROI corners to nearly the same pixel,
+        # collapsing the far ROI to a tiny box. The match-4 incident logged a
+        # 45×40 ROI and then burned ~2h of GPU scanning it for 0 poses. Bail
+        # BEFORE loading models / scanning rather than waste GPU on a dead ROI.
+        # (With Fix G the calibration shouldn't be degenerate here; this is
+        # defence-in-depth.) Legit far ROIs cover ≳10% of the frame.
+        roi_w, roi_h = self.x1 - self.x0, self.y1 - self.y0
+        frame_area = self.W_FRAME * self.H_FRAME
+        if (roi_w < self.W_FRAME * 0.05 or roi_h < self.H_FRAME * 0.04
+                or roi_w * roi_h < frame_area * 0.01):
+            logger.error(
+                "roi_pose: far ROI degenerate (%dx%d = %.4f%% of frame) — court "
+                "calibration likely degenerate; skipping pose to avoid a wasted "
+                "multi-hour scan", roi_w, roi_h,
+                100.0 * roi_w * roi_h / max(1, frame_area))
+            return False
+
         # Load detectors
         from ultralytics import YOLO
         from ml_pipeline.config import YOLO_WEIGHTS
