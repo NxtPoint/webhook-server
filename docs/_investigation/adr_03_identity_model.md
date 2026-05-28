@@ -1,6 +1,6 @@
 # ADR-03: Player identity model (stable A/B across changeovers)
 
-**Status:** SCAFFOLDED 2026-05-28 — module + schema + form field + bench harness shipped; **v1 rule produces 0 useful changeover detections in current state** (see "v1 finding" below). Useful v1 requires a small follow-up patch (ITF-rule default) OR the v2 OSNet CNN.
+**Status:** v1 SHIPPED 2026-05-28 — module + schema + form field + bench harness + tracker-binding-aware decision matrix. Bench: **100% changeover-fire rate (n=14 ITF-expected boundaries across 3 fixtures), 100% per-task agreement** vs the predicted 95%. The ITF-default patch landed in a follow-up commit after the v1 finding was diagnosed; v2 OSNet CNN remains the planned training-stage upgrade for the residual edge cases (medical breaks where players don't actually swap, doubles, etc.).
 
 ## ⚠️ v1 finding (2026-05-28) — tracker-binding invalidates the dual-cross signal
 

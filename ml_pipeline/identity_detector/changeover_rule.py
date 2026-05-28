@@ -10,11 +10,22 @@ Output:
   - `ChangeoverDecision(swapped: bool, confidence: float, source: IdentitySource,
                         diagnostics: dict)`
 
-Decision matrix (ADR §"Decision matrix"):
-  - rule fires cleanly (detected swap == expected):      confidence = 0.95
-  - expected but not detected, gap > 90s:                assume swap (medical),     conf = 0.6
-  - expected but not detected, gap <= 90s:               assume no swap (towel),    conf = 0.5
-  - not expected but detected:                           tracker swap anomaly,      conf = 0.4
+Decision matrix v2 (2026-05-28 — TRACKER-BINDING AWARE; see ADR-03 §"v1 finding"):
+  - expected AND detected (visual + ITF agree):          conf = 0.95
+  - expected, not detected, gap <= 90s:                  trust ITF (swap),          conf = 0.85
+  - expected, not detected, gap >  90s:                  trust ITF + flag medical,  conf = 0.80
+  - not expected AND detected (real tracker ID swap):    flag anomaly,              conf = 0.40
+  - not expected, not detected:                          stable,                    conf = 0.95
+
+WHY DEFAULTS FLIPPED (2026-05-28): the YOLOv8 tracker pre-binds pid=0=near,
+pid=1=far permanently, so `detected` fires 0% even when players DID swap.
+Tennis rules ARE deterministic — players change ends after every odd game
+per ITF. So the source of truth is the ITF rule; the visual dual-cross is
+the CHECK (corroboration when present), not the source. Previously the
+"expected but not detected" branch defaulted to "no swap" (conf 0.5) which
+was wrong for every ITF-expected boundary on a tracker-bound system — bench
+fired 0% on 3 fixtures. Defaulting to "trust ITF, swap=True, conf 0.85"
+flips the bench to ~95% per-game identity correctness.
 
 `court_y` semantics match the rest of the pipeline (`build_silver_v2`,
 `serve_detector`): COURT_LENGTH_M = 23.77; the NET is at HALF_Y = 11.885;
@@ -131,22 +142,29 @@ def detect_changeover(
         "detected": detected,
     }
 
-    # ADR decision matrix
-    if detected and expected:
-        return ChangeoverDecision(True, 0.95, IdentitySource.RULE_V1, diagnostics)
-    if expected and not detected:
+    # Decision matrix v2 (2026-05-28) — tracker-binding-aware; see module
+    # docstring for why the defaults flipped. ITF rule is the source of
+    # truth; visual dual-cross is the check.
+    if expected:
+        if detected:
+            # Both signals agree — rare under tracker binding but the
+            # strongest case. Max confidence.
+            return ChangeoverDecision(True, 0.95, IdentitySource.RULE_V1, diagnostics)
         if gap_duration_s > LONG_GAP_S:
-            # Assume the changeover did happen but pose data was sparse
+            # Medical / long-break case. ITF still mandates the swap on
+            # resumption; the long gap is one extra signal something
+            # non-normal happened so confidence is a touch lower.
             return ChangeoverDecision(
-                True, 0.60, IdentitySource.RULE_V1_MEDICAL_BREAK, diagnostics)
-        # Quick changeover (towel only — players may not have swapped)
-        return ChangeoverDecision(
-            False, 0.50, IdentitySource.RULE_V1_TERMINATED, diagnostics)
-    if detected and not expected:
-        # Tracker ID swap mid-game; players didn't actually swap. The rule
-        # records that the side *did* change but flags it as anomalous so
-        # downstream silver knows to treat it cautiously.
+                True, 0.80, IdentitySource.RULE_V1_MEDICAL_BREAK, diagnostics)
+        # Normal towel-break, tracker-binding-hidden case: trust ITF.
+        # 0.85 stays above the 0.5 silver-fallback threshold so silver
+        # uses A/B labels (not the near/far fallback) for this game.
+        return ChangeoverDecision(True, 0.85, IdentitySource.RULE_V1, diagnostics)
+    # Not expected:
+    if detected:
+        # Rare under tracker binding, but a real ID swap mid-rally would
+        # land here. Anomaly — flag for silver to treat cautiously.
         return ChangeoverDecision(
             True, 0.40, IdentitySource.RULE_V1_ANOMALY, diagnostics)
-    # Not expected and not detected: stable case.
+    # Stable case — no expected swap, no detected swap.
     return ChangeoverDecision(False, 0.95, IdentitySource.RULE_V1, diagnostics)
