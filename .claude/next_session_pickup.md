@@ -51,8 +51,9 @@ SELECT label_kind, COUNT(*), SUM(label_count) FROM ml_analysis.training_corpus G
 - **★(C) ADR-03 v2 OSNet** — not urgent; only if v1 rule edge cases emerge.
 - (D) ADR-04 volley analytic — still blocked on (A).
 - (E) Hand-label net-cord / racket-hit FPs for ADR-01 bounce_type enum extension — deferred per `.claude/adr01_label_audit_2026-05-28.md` until v1 training tells us pre-gates aren't enough.
+- **★(F) Batch runtime optimisation — L1 + L4 + L5 from `docs/_investigation/batch_optimisation_plan.md`** (NEW 2026-05-28, the parallel "make it FASTER" workstream). Current runtime is the actual user-pain ceiling: **183 ms/frame → ~4.79 h per 44-min match** vs the 1-hour target (3.5× speedup needed, "without compromising quality"). Plan is ranked, sourced, quality-gated, ready to execute. Stacked L1+L4+L5 = ~1.7-2.2× speedup (4.79h → ~2.4h); add L3 (FP16 YOLO weights) to land near or under 1h. Parallel-safe with detector-build work (different files) BUT trips BATCH-SIDE CHECKLIST (rule #8) — full Docker rebuild + dual-region ECR push + job-def revisions required. **Daylight-only deploy** per `feedback_overnight_branch_only.md`. Estimated session: ~5 h (3 commits + Docker + ECR + job-defs + one test submission to verify ms/frame drop). Quality gates: serve `bench.yml` MUST stay green (a798eff0=20/24, 880dff02=23/24); local `bench_ball` MUST stay green.
 
-**Recommended:** (A) if Corpus 4 has landed by then; (B) otherwise.
+**Recommended:** (A) if Corpus 4 has landed by then; (B) otherwise; **(F) when Tomo wants the runtime fix prioritised** (he flagged it as "no-brainder, current times are just too long" 2026-05-28 close).
 
 ## What this session changed (concrete artefacts)
 
@@ -83,6 +84,16 @@ SELECT label_kind, COUNT(*), SUM(label_count) FROM ml_analysis.training_corpus G
 
 Render's 512MB main API has comfortable headroom. End-to-end ingest 44-min match: 3 min 39 sec.
 
+## Runtime ceiling reference (NEW 2026-05-28 — the next inflection point after memory)
+
+| Phase | Wall time (44-min match, ~67k frames) | Bottleneck |
+|---|---|---|
+| AWS Batch (court + ball + player + ROI + serialisation) | **~4.79 h** | YOLOv8x-pose @ 1280 + SAHI tile-fan, `batch=1` every 5th frame (~75-85% of wall) |
+| Render ingest (bronze re-ingest + detectors + silver + AUTO_LABEL hook) | ~3 min 39 sec | Solved this session |
+| **Target** | **<1 h** | Plan: `docs/_investigation/batch_optimisation_plan.md` |
+
+Empirical proof the bottleneck is player stage (not ball): tonight's commit `5317c50` added GPU batching for the WASB ball tracker; ms/frame moved from ~183.3 to ~183.1. Ball isn't on the critical path. `BALL_BATCH_SIZE=8` IS live in both regions' active job-defs (eu rev 53 — ca475740 confirmed running on it — and us rev 35). The 183 ms baseline is post-ball-batching. Player batching is the only remaining lever in the same template.
+
 ## Read in this order
 0. **`docs/north_star.md` §"★ RULES OF THE GAME"** — non-negotiable, every session, before this file.
 1. This file (next_session_pickup.md).
@@ -90,9 +101,11 @@ Render's 512MB main API has comfortable headroom. End-to-end ingest 44-min match
 3. `.claude/adr01_label_audit_2026-05-28.md` — corpus state diagnosis (the *why* behind floor-label scarcity + the negative mining recipe). Read if doing ADR-01 work.
 4. `docs/_investigation/adr_02_swing_type_classifier_plan.md` §"Build spec v1" — model architecture spec. Read if doing ADR-02 training work.
 5. `docs/_investigation/adr_03_identity_model.md` §"v1 finding" — tracker-binding pattern. Read if doing any rule+visual work.
+6. **`docs/_investigation/batch_optimisation_plan.md`** — Batch GPU inference speedup roadmap (per-stage profile + 7 ranked levers + daylight sequence). Read if doing Task (F) Batch runtime work.
 
-## Suggested opening prompt for next chat (paste verbatim)
+## Suggested opening prompt for next chat (paste verbatim — pick A or B based on intent)
 
+**Option A — corpus / detector training (default):**
 ```
 Read docs/north_star.md "RULES OF THE GAME" and .claude/next_session_pickup.md,
 then run the boot checklist in .claude/session_protocol.md. Acknowledge what
@@ -101,6 +114,21 @@ you're working on in one sentence before touching anything.
 Today's task: check the corpus state first (single SQL query). If Corpus 4
 (ca475740) landed, do ADR-01 v1 training (Task A in the pickup). If not yet,
 do Stream 3 serve corpus extractor (Task B). Either way, commit + close out.
+```
+
+**Option B — Batch runtime optimisation (Task F, daylight only):**
+```
+Read docs/north_star.md "RULES OF THE GAME" and .claude/next_session_pickup.md,
+then run the boot checklist in .claude/session_protocol.md. Acknowledge what
+you're working on in one sentence before touching anything.
+
+Today's task: land L1 + L4 + L5 from docs/_investigation/batch_optimisation_plan.md
+against the T5 Batch pipeline. Read the plan first. One commit per lever.
+After all three are in, run BATCH-SIDE CHECKLIST end to end (Docker rebuild,
+ECR push to eu-north-1 + us-east-1, job-def revisions in both regions). Then
+submit ONE test match and confirm ms/frame dropped from ~183 without breaking
+the serve bench (a798eff0=20/24, 880dff02=23/24) or bench_ball. Estimated ~5h
+session; do not start unless Tomo is awake for the test-submission window.
 ```
 
 ## Suggested task plan for next session
