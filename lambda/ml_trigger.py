@@ -81,8 +81,14 @@ def handler(event, context):
                 jobQueue=BATCH_JOB_QUEUE,
                 jobDefinition=BATCH_JOB_DEF,
                 containerOverrides={
+                    # Args-only — the image ENTRYPOINT is already
+                    # ["python","-m","ml_pipeline"]. A redundant
+                    # ["python","-m","ml_pipeline", ...] prefix here DOUBLE-INVOKES
+                    # against the entrypoint and the container dies with:
+                    #   __main__.py: error: unrecognized arguments: -m ml_pipeline
+                    # The correct form mirrors upload_app.py's submit path
+                    # (cmd = ["--job-id", job_id, "--s3-key", s3_key]).
                     "command": [
-                        "python", "-m", "ml_pipeline",
                         "--job-id", job_id,
                         "--s3-key", s3_key,
                     ],
