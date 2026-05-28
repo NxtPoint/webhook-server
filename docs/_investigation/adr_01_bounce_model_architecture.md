@@ -106,11 +106,23 @@ Inputs come from existing bronze tables (`ball_detections`, `court_keypoints` vi
 | Min-gap NMS | 0.15 s (~4 frames) | Tennis bounces never legitimately repeat <0.15 s |
 | Spatial TP tolerance | 1.0 m in-bounds / 2.0 m OOB, ±0.2 s | Matches ADR target; PES tolerance norms |
 
-**Training data assessment.** The 488 `ball_position` corpus labels (with `bounce_frame_est + pixel_x/y + court_x/y`) are the right shape — match what TTNet/PES models train on. Three gaps to close before training v1:
+**Training data assessment** (UPDATED 2026-05-28 after the label audit + corpus diagnostic — see `.claude/adr01_label_audit_2026-05-28.md` for full receipts).
 
-1. **Negative mining** — need ~5-10× negative windows (frames near but not at bounces, including racket-hit + net-cord frames). Mine automatically from `ball_detections` excluding ±0.2 s of any label.
-2. **`bounce_type` enum** — to learn net-cord/racket-hit rejection at the model level (not just pre-gates), extend the schema with `bounce_type ∈ {floor, net_cord, racket_hit}` and hand-label a few hundred FPs from current high-confidence T5 bounces in implausible positions.
-3. **Label-accuracy audit** — verify the 488 labels are themselves < 1 m accurate before training against them, else we train against noise.
+**Reality check on the 488-label number** (originally cited): that's the TOTAL across all corpus rows, but only ~67 are `type='floor'` (the rest are `type='swing'` = ball-at-hit positions, not bounce events). **Floor coverage in the corpus is location-locked:** all 3 "Tomo at Rivonia" SA matches emit floor labels (67 + 67 + 277 = 411 total); all 3 non-Rivonia SA matches emit 0 (Erin/ccj, Dejan/ccj, Erin/Bloem). This is an SA-side court-recognition pattern — bulk-loading from non-Rivonia courts will not add floor labels. 
+
+**What's accessible:** 67 floor labels in the current corpus + 344 in unpaired SA tasks (`0fa94cf6` = 277, `2c1ad953` = 67) that just need a T5 re-submit to be auto-extracted. Realistic v1 training set = **411 floor labels across 3 corpus tasks** once Tomo re-submits the unpaired Rivonia matches.
+
+**Label-accuracy audit results on the 67 Match-1 labels** (cross-checked against `ml_analysis.ball_detections`):
+- 95% have T5 ball detection within ±5 frames (good coverage).
+- 53% have T5 position agreement within 50 px in a ±5-frame window (strong positives).
+- Median pixel error 80 px (acceptable; reasonable ground truth).
+- Long tail: P90 = 652 px (likely tracker swaps / occlusion).
+
+Three gaps to close before training v1:
+
+1. **Negative mining** — recipe in `.claude/adr01_label_audit_2026-05-28.md`. Target ~500 windows mined from `ball_detections` excluding ±0.2 s of any positive. ~30 min script.
+2. **`bounce_type` enum extension** — DEFERRED. Pre-gates should handle bulk of net-cord/racket-hit FPs. Revisit if v1 bench plateaus precision ≤ 60%.
+3. **Pair the 2 unpaired Rivonia SA matches** — Tomo re-submits videos to T5 → corpus auto-lands the missing 344 floor labels. 6× uplift on training data with no new uploads.
 
 **Top 3 references.**
 1. Voeikov et al., *TTNet: Real-time temporal and spatial video analysis of table tennis*, CVPRW 2020 — the architectural blueprint (per-frame event spotting on ball trajectory).
