@@ -137,9 +137,24 @@ class BounceCNNWrapper:
         try:
             torch = _torch()
             state = torch.load(wp, map_location="cpu")
-            self._model.load_state_dict(state)
+            # Accept either a bare state_dict OR the trainer's wrapped
+            # format {"state_dict": ..., "meta": ...} — matches the
+            # swing-type training pattern.
+            sd = state.get("state_dict", state) if isinstance(state, dict) else state
+            self._model.load_state_dict(sd)
             self._weights_loaded = True
-            logger.info("bounce_detector: loaded weights from %s", wp)
+            meta = state.get("meta") if isinstance(state, dict) else None
+            if meta:
+                logger.info(
+                    "bounce_detector: loaded weights from %s "
+                    "(best_epoch=%s best_%s=%.4f n_train=%s n_val=%s)",
+                    wp, meta.get("best_epoch"),
+                    meta.get("best_metric_name", "metric"),
+                    meta.get("best_metric_value", float("nan")),
+                    meta.get("n_train"), meta.get("n_val"),
+                )
+            else:
+                logger.info("bounce_detector: loaded weights from %s", wp)
             return True
         except Exception:
             logger.exception("bounce_detector: failed to load weights from %s; "

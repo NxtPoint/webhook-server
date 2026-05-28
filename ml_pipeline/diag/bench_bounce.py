@@ -163,6 +163,7 @@ def _run_one(
     threshold_override: Optional[float],
     dist_tol_m: float,
     time_tol_s: float,
+    weights_path: Optional[str] = None,
 ) -> dict:
     """Run detector + reconcile against corpus labels for one task."""
     # Import here so the bench can fail fast on import errors with a clear msg.
@@ -196,7 +197,7 @@ def _run_one(
         ball_rows=ball_rows,
         wrists_by_frame=wrists_by_frame,
         rally_by_frame=rally_by_frame,
-        weights_path=None,
+        weights_path=weights_path,
         threshold_override=threshold_override,
     )
 
@@ -269,6 +270,11 @@ def main(argv=None) -> int:
     ap.add_argument("--threshold", type=float, default=None,
                     help="CNN threshold override (default uses STOPGAP 1.1 untrained, "
                          "0.55 trained)")
+    ap.add_argument("--weights-path", default=None,
+                    help="Path to trained .pt weights. When omitted runs with "
+                         "STOPGAP random init (plumbing-only). When supplied, "
+                         "loads either bare state_dict or {state_dict, meta} "
+                         "wrapper (the trainer's output format).")
     ap.add_argument("--dist-tol-m", type=float, default=DEFAULT_DIST_TOL_M)
     ap.add_argument("--time-tol-s", type=float, default=DEFAULT_TIME_TOL_S)
     ap.add_argument("--update-baseline", action="store_true",
@@ -302,6 +308,7 @@ def main(argv=None) -> int:
     print(f"    dist_tol_m={args.dist_tol_m}  time_tol_s={args.time_tol_s}")
     print(f"    threshold_override={args.threshold} "
           f"(default UNTRAINED=1.1, TRAINED=0.55)")
+    print(f"    weights_path={args.weights_path or '(STOPGAP — random init)'}")
     print()
     print(f"{'task':<10} {'fps':>6} {'cand':>6} {'emit':>6} "
           f"{'floor':>6} {'match':>6} {'rec%':>6} {'prec%':>6} "
@@ -318,6 +325,7 @@ def main(argv=None) -> int:
             threshold_override=args.threshold,
             dist_tol_m=args.dist_tol_m,
             time_tol_s=args.time_tol_s,
+            weights_path=args.weights_path,
         )
         results.append(r)
         if "error" in r:
