@@ -1,23 +1,31 @@
-# Next-session pickup — 2026-05-28 (close 6) — L1+L4+L5 Batch perf + ADR-01 v1 trained + calibration fail-loud SHIPPED
+# Next-session pickup — 2026-05-28 (close 7) — Batch perf L1+L3+L4+L5+L7 + ADR-01 v1 + GR candidate gen + calibration fail-loud ALL SHIPPED
 
-## ⚡ Executive summary (read first — 60 seconds)
+## ⚡ Executive summary (read first — 30 seconds)
 
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME" + §"Current detector build queue (2026-05-28)".
 
-**Date:** 2026-05-28 (close 6)
-**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN. Identity `100%` unchanged. `bench_swing_type` STOPGAP (no weights). **`bench_bounce` v1 trained but recall pool-limited (3-5%); baseline INTENTIONALLY NOT LOCKED — see Stream 3.**
-**Match 4:** RECOVERED — corpus #4 landed all 3 kinds (664 ball / 397 stroke / 114 serve). **BUT calibration-corrupt: all 273 floor labels unusable for bronze-feature training until Match 4 is re-ingested post-calibration-fix.**
+**Date:** 2026-05-28 (close 7)
+**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN. Identity `100%` unchanged. `bench_bounce` v1 GR-retrained @ thr=0.5: **23.9% recall / 9.1% precision** (vs is_bounce-mode 3.0%/3.6% — **6.5× lift**); baseline intentionally NOT locked until multi-match training data is available. `bench_swing_type` STOPGAP (no weights).
+**What shipped:** Batch perf (L1+L3+L4+L5+L7), calibration fail-loud (C), ADR-01 v1 training infra + gravity-residual candidate generator with env-rollback, ADR-02 v1 swing-type scaffold. Job-defs eu-north-1 rev 55 / us-east-1 rev 37 with `YOLO_FP16=1 + ROI_POSE_FP16=1 + PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16`; eu queue re-routed g5→g4dn→Spot.
+**What's open:** (1) validate L1+L3+L4+L5+L7 on the next real upload (passive — happens automatically); (2) calibration architectural fix (camera-agnostic court mapping) — **dedicated multi-agent research session** opening prompt at the bottom of this file; (3) tactical calibration (A)+(B) as stopgap; (4) re-ingest Match 4 post-calibration → +273 clean floor labels → retrain bounce v1 → expected 30-40% recall.
+**Match 4:** corpus row landed (664/397/114 labels) but bronze-features-corrupt (NULL `court_x`); awaits calibration fix + re-ingest.
 
-**What shipped this session — THREE parallel streams:**
+If this is enough → go. If you're picking up a blocker or need depth → continue reading.
 
-### Stream 1: L1+L4+L5 Batch perf — SHIPPED + DEPLOYED + JOB-DEFS LIVE
+---
+
+**What shipped this session — four parallel streams:**
+
+### Stream 1: Batch perf L1+L3+L4+L5 + L7 (G5.xlarge) — SHIPPED + DEPLOYED + JOB-DEFS LIVE
 - `024bb40` L1 player-stage GPU batching (PLAYER_BATCH_SIZE env, default 1)
 - `b25b356` L4 ROI ViTPose batching + FP16 (ROI_BATCH_SIZE / ROI_POSE_FP16 env)
 - `c660845` L5 NVENC GPU transcode (Dockerfile installs nvenc-enabled ffmpeg from BtbN; Python auto-falls back to libx264 if nvenc fails; TRANSCODE_CODEC env)
-- Docker image rebuilt, pushed to eu-north-1 + us-east-1 ECR
-- AMD64 sub-manifest digest: `sha256:9dfb66c33296a3daf73c945d6223be422966dacd6ff5a0e748e32dfbf4697b20`
-- **Job-defs registered:** eu-north-1 rev **54**, us-east-1 rev **36** — both pin the new digest AND set `PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16` env vars (ROI_POSE_FP16 deliberately NOT set; defer with L3).
+- `2218f09` L3 YOLO FP16 inference (YOLO_FP16 env)
+- L7 G5.xlarge (A10G) compute environment — no code, AWS Batch infra-only. New g5 CE created + eu queue re-routed g5→g4dn→Spot. SAHI FP16 (L2) deferred — sahi 0.11.18 has no half flag.
+- Docker image rebuilt, pushed to eu-north-1 + us-east-1 ECR.
+- **Job-defs registered:** eu-north-1 rev **55**, us-east-1 rev **37** — pin the new digest AND set `YOLO_FP16=1 + ROI_POSE_FP16=1 + PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16`. FP16 rollback = unset env (no rebuild); queue rollback = update-job-queue g4dn-first.
 - Equivalence verified locally: `.claude/tmp/test_player_batch_equiv.py` shows `_run_yolo_batch([f]*N)` per-frame-identical to N separate `_run_yolo(f)` calls (max box diff 0.000000).
+- **Nothing validated yet — no upload since close-6;** next real T5 upload runs the full stack on g5/rev55, read `ms_per_frame` (target ≤70 vs 183 baseline).
 
 ### Stream 2: Calibration fail-loud safety net (C) — SHIPPED + DEPLOYED
 - `eec1dae` Render-side fail-loud in `_do_ingest_t5`: if 0% of bronze rows have court_x populated (≥100 row threshold both sides), mark `ingest_error='calibration_degenerate_no_court_coords'`, set `last_status='failed_calibration'` + `ingest_finished_at=now()`, skip silver/serve/stroke/notify, return False. Also logs WARN when ball-court coverage <20% (currently 5 of 15 recent matches show 25-32%).
@@ -82,9 +90,9 @@ Match 4 (`ca475740-9e34-49c3-9b59-0194bfa37013`, Tomo vs Jimbo Ma, 47.9-min 1080
 
 | # | Item | Owner | Effort | Notes |
 |---|---|---|---|---|
-| 1 | **VALIDATE L1+L4+L5 perf** on the next real T5 upload | next session | passive | The next user-uploaded T5 match lands on eu-north-1 rev 54 with `PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16` active. Expected ms/frame to drop from ~183 → ~75-110 (conservative). Read `ms_per_frame` + `batch_duration_sec − processing_time_sec` from `ml_analysis.video_analysis_jobs`. Target full match ~2.5-3h vs match 4's 6h. |
-| 2 | **L3 YOLO FP16** | next session | ~1h code + Docker rebuild | Code: flip `predict(half=True)` on full-frame YOLOv8x-pose + SAHI's YOLOv8m. **Needs its own bench cycle** — FP16 can shift detection counts near thresholds (`config.py:158` documents this). Validate on bench + a real long match before promoting. Trips BATCH-SIDE CHECKLIST. |
-| 3 | **L7 G5.xlarge (A10G)** | next session | ~1-2h infra | No code. AWS Batch CE + Job Queue + JD updates. Quota check first (`aws service-quotas get-service-quota` for G-family vCPU in eu-north-1; if 0, request increase). G5.xlarge ~$1.006/h vs G4dn.xlarge $0.526/h but ~2× FP16 throughput so cost-per-job ~flat. Adds 2-3× hardware speedup on top of all software levers. |
+| 1 | **VALIDATE L1+L3+L4+L5+L7 perf** on the next real T5 upload | next session | passive | The next user-uploaded T5 match lands on eu-north-1 rev 55 with `YOLO_FP16=1 + ROI_POSE_FP16=1 + PLAYER_BATCH_SIZE=8 + ROI_BATCH_SIZE=16` active on G5.xlarge. Expected ms/frame ≤70 (vs 183 baseline). Read `ms_per_frame` + `batch_duration_sec − processing_time_sec` from `ml_analysis.video_analysis_jobs`. Target full match ≤90 min vs match 4's 6h (SIGKILL). |
+| 2 | ~~L3 YOLO FP16~~ — **SHIPPED `2218f09`.** Active on job-def rev 55/37. | ~~next session~~ | — | — |
+| 3 | ~~L7 G5.xlarge (A10G)~~ — **SHIPPED close-7.** g5 CE created, eu queue re-routed g5→g4dn→Spot. | ~~next session~~ | — | — |
 | 4 | **Calibration tactical fixes (A) + (B)** — stopgap | next session | ~2-3h with deploy | (A) H_diag sanity gate in `court_detector.py` — reject homographies where `\|H[0,0]\|` or `\|H[1,1]\|` outside `[0.1, 5.0]`. (B) post-lock projection self-test — project 4 court corners, reject if any falls outside frame. Batch-side, trips checklist. Bundle both in same Docker rebuild. **Stopgap until Priority 0 architectural fix lands** — these catch the failure but don't make calibration camera-agnostic. Fix doc: `docs/_investigation/court_calibration_silent_degeneracy.md` §Fix options. |
 | 5 | **Calibration architectural fix (E + F + G + H)** | PRIORITY 0 session | research + implementation | Camera-agnostic court mapping. Lens distortion model + correction (E), end-to-end learned calibration (F), multi-frame temporal voting (G), self-supervised player-feet refinement (H). Goes through the multi-agent research session FIRST (this pickup's opening prompt), then a separate implementation session. See doc §"Dedicated research session scope". |
 | 6 | ~~ADR-01 v1+ gravity-residual peak detector~~ — **SHIPPED `4a36f34` this session.** Match 1 recall 3.0% → 23.9% (8×). Next bounce work is post-Match-4-re-ingest multi-match retrain. | ~~next session~~ | — | — |
