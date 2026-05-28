@@ -23,10 +23,48 @@ import math
 import os
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 from sqlalchemy import text as sql_text
 from sqlalchemy.engine import Connection
 
 logger = logging.getLogger(__name__)
+
+
+def _kps_to_array(raw) -> Optional["np.ndarray"]:
+    """Compact JSON/list keypoints to numpy float32 (17, 3) or None.
+
+    Same helper used by serve_detector / stroke_detector — collapses each
+    keypoints row from ~2KB Python list to ~204 bytes numpy array. Applied at
+    load time in _build_player_buckets, this drops silver-build peak heap on
+    a ~44-min match from ~269MB to ~110MB (the dominant allocator was the
+    72k-row player_dets list with nested-list keypoints). _parse_keypoints
+    already accepts numpy arrays (.tolist() branch) so downstream is
+    untouched."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not raw:
+        return None
+    if isinstance(raw[0], (int, float)):
+        if len(raw) < 51:
+            return None
+        return np.asarray(raw[:51], dtype=np.float32).reshape(17, 3)
+    try:
+        arr = np.asarray(raw, dtype=np.float32)
+    except (ValueError, TypeError):
+        return None
+    if arr.ndim != 2 or arr.shape[1] != 3 or arr.shape[0] < 11:
+        return None
+    if arr.shape[0] > 17:
+        return arr[:17]
+    if arr.shape[0] < 17:
+        pad = np.zeros((17 - arr.shape[0], 3), dtype=np.float32)
+        return np.vstack([arr, pad])
+    return arr
 
 # ---------------------------------------------------------------------------
 # Court geometry (ITF standard — same constants as build_silver_v2.SPORT_CONFIG)
@@ -474,12 +512,26 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
       dets_by_pid             — mapped_pid -> (frames, dets) for that track
       pid_map, top_pids       — ghost-id → top-2 mapping (guarantees 2 players)
     """
-    player_dets = list(conn.execute(sql_text("""
-        SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, stroke_class
-        FROM ml_analysis.player_detections
-        WHERE job_id = :jid
-        ORDER BY frame_idx
-    """), {"jid": job_id}).fetchall())
+    # Stream with a server-side cursor on a SEPARATE connection + compact
+    # keypoints to numpy float32 (17,3) at load time. Without this, a 44-min
+    # match's 72k player_detections rows allocate ~180MB just for nested-list
+    # keypoints — the dominant driver of the 512MB-cap OOMs that stalled
+    # corpus #3 (9378f2dd, 2026-05-28). Streaming on a separate connection
+    # (not the caller's transaction) because `stream_results=True` flips the
+    # DBAPI to a named cursor, which can't host the downstream INSERT
+    # executemany on the same conn. Bronze isn't mutating during silver
+    # build, so a fresh-snapshot read is safe.
+    with conn.engine.connect() as _sc:
+        _sc = _sc.execution_options(stream_results=True, yield_per=5000)
+        player_dets = [
+            (r[0], r[1], r[2], r[3], r[4], r[5], _kps_to_array(r[6]), r[7])
+            for r in _sc.execute(sql_text("""
+                SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, stroke_class
+                FROM ml_analysis.player_detections
+                WHERE job_id = :jid
+                ORDER BY frame_idx
+            """), {"jid": job_id})
+        ]
 
     # ---- Merge far ViTPose pose from ml_analysis.player_detections_roi ----
     # extract_far_pose writes high-quality far-player keypoints (source=
@@ -500,12 +552,18 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
         LIMIT 1
     """)).scalar()
     if roi_present:
-        roi_rows = conn.execute(sql_text("""
-            SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints, NULL AS stroke_class
-            FROM ml_analysis.player_detections_roi
-            WHERE job_id = :jid AND keypoints IS NOT NULL
-            ORDER BY frame_idx
-        """), {"jid": job_id}).fetchall()
+        # Same streaming + numpy-compaction pattern (separate conn — see above).
+        with conn.engine.connect() as _sc:
+            _sc = _sc.execution_options(stream_results=True, yield_per=5000)
+            roi_rows = [
+                (r[0], r[1], r[2], r[3], r[4], r[5], _kps_to_array(r[6]), None)
+                for r in _sc.execute(sql_text("""
+                    SELECT frame_idx, player_id, court_x, court_y, center_x, center_y, keypoints
+                    FROM ml_analysis.player_detections_roi
+                    WHERE job_id = :jid AND keypoints IS NOT NULL
+                    ORDER BY frame_idx
+                """), {"jid": job_id})
+            ]
         if roi_rows:
             merged = {(r[1], r[0]): r for r in player_dets}  # (player_id, frame_idx) -> row
             roi_won = roi_added = 0
