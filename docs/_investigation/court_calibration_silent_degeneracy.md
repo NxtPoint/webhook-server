@@ -168,3 +168,63 @@ The catastrophic mode is rare today. But the failure is silent, and the partial-
 - `feedback_t5_architecture_rules.md` — bronze = single source of truth; degenerate bronze cascades to silver=0
 - `_archive/north_star_2026-05-07_phantom-bounce-era.md` — historical court-homography bug; ongoing concern
 - `bronze_silver_18_audit.md` — court mapping is field #2 of the 18, currently rated "faithful homography ~90%" — the degenerate-lock failure mode is what flips this from 90% to 0%
+
+---
+
+# 2026-05-28 — ARCHITECTURAL PROPOSAL (multi-agent research session + live reproduction)
+
+**Status:** Research complete. This section SUPERSEDES the "wide-angle barrel distortion" root-cause hypothesis above with reproduced, evidence-backed findings. The fix set A–H is re-prioritised accordingly. Sibling docs: `docs/_investigation/court_calibration_camera_taxonomy.md` (camera classes + breakage matrix + fixtures) and `.claude/court_calibration_implementation_kickoff.md` (next-session execution plan). Raw audit data: `.claude/tmp/calib_audit/` (`audit.csv` + sample frames + repro scripts).
+
+## ⚡ Executive summary (read this first — 90 seconds)
+
+The wide-angle hypothesis was **not** the cause. We reproduced both catastrophic cases locally against the real detector and weights.
+
+**Root cause (proven):** the fixed-camera calibration strategy **locks within the first 300 frames and then never runs the CNN again** ("No more CNN runs"). When that opening window is unrepresentative (pre-match / setup / panning / occlusion), the keypoint CNN finds 0 keypoints → the **Hough fallback fabricates 14 bogus keypoints** → a **degenerate homography locks as `ANY-BEST`** and is frozen for the entire video — even though the CNN nails 12–13/14 keypoints seconds later on real rally footage.
+
+**Receipts (local reproduction on the real `court_keypoints.pth`):**
+
+| Test | Result |
+|---|---|
+| Match 4, frames 0–330 (the actual lock window), CNN only | **0–3 / 14** keypoints → no geometry-valid frame → `calibration=None`, `n_obs=0` → locks Hough garbage `ANY-BEST` |
+| Match 4, frames at 5/30/50/70 % (rally footage), CNN only, **no preprocessing** | **12–13 / 14** keypoints |
+| Match 4, fed a representative window | locks **VALIDATED + radial** (13/14, conf 0.93, 11 obs); projects mid `x=5.57` (≈centre line), near `y=24.4`, far `y=15.0` — all physically correct ✅ |
+| `f11eed2c` (the *second* 0 % case — the MATCHi bench-fixture court), run on its clean trim | locks **VALIDATED + radial**, projection identical to the healthy `880dff02` ✅ |
+
+Match 4 was **always fully calibratable**; the lens and court never defeated the system. `f11eed2c` is the *same camera/court* as the healthy 97 % `880dff02` bench fixture — a fixed lens cannot be the variable. Both failures are **calibration-window / frame-selection failures**, and the partial-coverage tail (25–32 %, see table in §"How rare") is the same mechanism locking a *mediocre* window.
+
+**Two corrections to the original fix set:**
+- **🚩 Fix A (H-diag range gate) is actively DANGEROUS — DROP IT.** The *healthy* MATCHi lock carries `H_diag` up to `(-109, -1142)` and projects perfectly (projection runs through the radial calibration model, not the raw homography). The `MAX_SCALE=20` gate was correctly removed; re-adding any H-diagonal bound would reject the bench-fixture court.
+- **Fix C (0 %-NULL fail-loud, already shipped `eec1dae`) is necessary but INSUFFICIENT.** A degenerate homography can project to *plausible-but-wrong* non-NULL coordinates (our local match-4 repro did exactly this), which slips past a NULL-count check. We need a **positive calibration-quality gate**, not just "are the coords NULL".
+
+**Tomo's camera note stands and is consistent with the evidence:** both courts *are* wide lenses — the radial Brown-Conrady calibration is actively chosen and doing real work (`mode=radial`, `n_obs=11`) on both MATCHi and match 4 whenever it gets good keypoints. Wide-angle is real; it is just **not** the failure trigger here. Lens-distortion robustness (Fix E) therefore stays a **co-priority** (Tomo, 2026-05-28) — built now for the genuinely-wide phones/GoPros coming as users onboard — but it is decoupled from the priority-zero frame-selection fix.
+
+## Re-prioritised fix set
+
+Layered, defence-in-depth. Priority-zero closes the proven failure; co-priority future-proofs for diverse cameras.
+
+| Layer | Fix | What it does | Priority | Side | Trips BATCH-SIDE? |
+|---|---|---|---|---|---|
+| **0** | **G — robust frame selection + temporal voting** | Stop locking blindly at frame 300. Sample the CNN across a longer/smarter window (≥ first 60 s, skip low-keypoint/occluded frames), accumulate ≥N **geometry-validated** detections, aggregate via median-keypoint + RANSAC consensus, then lock. **Never lock an `ANY-BEST`/Hough detection when zero validated detections exist — keep sampling deeper into the video instead.** Fail-loud only if the *entire* video yields no validated calibration. | **P0** | court_detector.py | YES |
+| **0** | **B — geometric degeneracy gate** | Before accepting/locking any homography: reproject the 4 doubles corners (+ baselines) to pixels; reject if any corner falls outside frame (+margin), if the quad is non-convex, or if the homography condition number is pathological. Gates the Hough fallback's fabricated keypoints. **Use this, NOT H-diag (Fix A).** | **P0** | court_detector.py | YES |
+| **0** | **C+ — positive calibration-quality gate** | Upgrade the shipped Render fail-loud from "0 % NULL" to a quality score: radial-calibration RMS ≤ threshold, ≥N validated observations, corner-reprojection pass, AND a sample of real detections projecting in-band. Below quality → `calibration_degenerate`, skip silver, surface in SES. Catches plausible-but-wrong degenerates. | **P0** | upload_app.py (Render) + court_detector.py emits the score | NO (Render) |
+| **0** | **45×40 ROI guard** | In `roi_extractors/{pose,bounces}.py::prepare()`, bail (fatal) if the projected ROI area is below a min fraction of frame — prevents the ~2 h wasted GPU scan when calibration is degenerate. | **P0** | roi_extractors/ | YES |
+| **co** | **E — lens / camera-agnostic distortion** | Extend the existing radial Brown-Conrady (k1,k2) model per Agent 2: (a) line-based **division-model** distortion estimation as a front-end so distortion is recoverable even with sparse keypoints; (b) auto **fisheye (Kannala-Brandt)** escalation chosen by residual line-straightness for GoPro-class lenses; (c) apply correction at the **coordinate-transform layer via `cv2.undistortPoints`** (court keypoints for the fit, individual detections downstream) — **never full-frame remap**; (d) validate via residual line straightness. Future-proofs for diverse consumer cameras. | **co-P0** (Tomo) | camera_calibration.py | YES |
+| **later** | **Detector robustness (build-first / train-last)** | Short term: strengthen the line/Hough fallback so it only proposes through the Layer-B gate. Medium term: add a points+lines geometric calibrator (PnLCalib / TVCalib lineage) to vote with the CNN; train-last, fine-tune keypoints on the free dual-submit corpus across courts/lighting/FOV. | later | court_detector.py / new model | YES if model |
+| **later** | **H — self-supervised player-feet** | Use YOLOv8-pose ankle keypoints on known lines (baseline/service) as extra homography constraints when court keypoints are sparse. | later | court_detector.py + player_tracker.py | YES |
+
+## Why this ordering
+
+Layer-0 (G + B + C+ + ROI guard) is **cheap, Render/Batch-side `court_detector.py` logic, requires no model retrain**, and provably fixes match 4, f11eed2c, and the partial tail in one cycle. It is the highest leverage per line changed. E is built in parallel as the camera-agnostic insurance but is decoupled — it would not have fixed these matches. Detector-robustness/training and H follow the north-star "build-first, train-last" rule and ride the free dual-submit corpus.
+
+## What the literature contributes (Agents 1 + 2)
+
+- The current detector is a **TrackNet-style keypoint CNN** (yastrebksv/TennisCourtDetector lineage, 640×360 in, 15 heatmaps), **broadcast-trained** — a narrow-FOV inductive bias. An off-the-shelf end-to-end *learned* calibrator is **not** a drop-in: every sports calibrator with public weights (TVCalib, No-Bells, PnLCalib, KaliCalib) is trained on broadcast soccer/basketball; no public amateur-tennis calibrator with weights exists. The durable detector upgrade is a **points+lines + physically-constrained camera-model fit** (PnLCalib / TVCalib design) **fine-tuned on our own corpus** — which is the train-last lane, not today.
+- **PnLCalib** (HRNet points+lines → DLT + non-linear refinement, **native lens-distortion optimisation as of Mar 2026**, GPL-2.0) and **TVCalib** (differentiable segment-reprojection optimiser recovering pose+focal+**distortion**, immune by construction to a degenerate flat homography) are the two reference architectures for the later detector upgrade.
+- For Fix E specifically: the court lines **are** the calibration target — **plumb-line / one-parameter division-model** straightness fitting (Fitzgibbon; IPOL 2014/106 + 2016/130) estimates distortion with no checkerboard, converts to OpenCV `(k1,k2)`, escalates to fisheye when residual straightness demands. Apply via `cv2.undistortPoints` at the transform layer (microseconds/detection, no detector retraining, no full-frame remap).
+
+## Validation plan ("100 % across cameras")
+
+1. **New `bench_calib` harness** (local; mirrors `bench`/`bench_ball` discipline): replay the *opening calibration window* of one fixture per camera class and assert — locks **VALIDATED** (never `ANY-BEST`-from-Hough), correct calibration `mode`, ≥N observations, known reference points project within tolerance, and synthetic court-coverage ≥ threshold. Add the **window-trap negative fixture** (match 4's first 300 frames) and assert it does **NOT** lock garbage (must keep searching / fail-loud, not freeze a degenerate H).
+2. **Serve bench stays green** — the `a798eff0`/`880dff02` fixtures ARE the MATCHi court; any `court_detector.py` change can shift calibration on them, so `python -m ml_pipeline.diag.bench` must stay `20/24` & `23/24` after every edit (rules #5, #9).
+3. **Re-run match 4** (`ca475740`) on the fixed Batch image → expect VALIDATED + radial + high coverage + **no 2 h wasted ROI scan** → lands the rich corpus data. This is the end-to-end proof Tomo wants, and on the new g5/rev-55 perf stack it should be the ~60–90 min run.
+4. **Caveat (honest):** production has **zero real consumer-camera diversity** today (all uploads 1080p h264, single uploader). True camera-agnostic validation needs borrowed/synthetic GoPro-fisheye + phone-wide fixtures — proposed in the taxonomy doc. Until those exist we cannot *prove* E end-to-end, only the radial path on MATCHi/outdoor-club.
