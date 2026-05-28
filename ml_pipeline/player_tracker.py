@@ -30,6 +30,7 @@ from ml_pipeline.config import (
     PLAYER_OUTSIDE_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
     PLAYER_BATCH_SIZE,
+    YOLO_FP16,
     DEBUG_FRAME_INTERVAL,
     MOG2_MIN_MOTION_RATIO,
     MOG2_MOTION_SCORE_WEIGHT,
@@ -194,6 +195,15 @@ class PlayerTracker:
         # call hadn't been deferred.
         self._batch_size = max(1, int(PLAYER_BATCH_SIZE))
         self._pending: list = []
+
+        # L3: FP16 inference for the player-stage YOLO predict() calls. Gated to
+        # cuda — half() is meaningless (and a cast hazard) on cpu, so the flag is
+        # forced False off-GPU. Passed straight to predict(half=...); Ultralytics
+        # handles the model+input cast internally per call (no manual .half()).
+        # Default OFF preserves FP32; flip YOLO_FP16=1 on the Batch job-def.
+        self._yolo_fp16 = bool(YOLO_FP16) and ("cuda" in str(self.device))
+        if self._yolo_fp16:
+            logger.info("PlayerTracker: YOLO FP16 inference ENABLED (device=%s)", self.device)
 
     def set_debug_upload_context(self, s3_client, s3_bucket: str, job_id: str) -> None:
         """Enable live debug frame upload to S3 (called from __main__.py)."""
@@ -718,11 +728,12 @@ class PlayerTracker:
         confidence = conf or YOLO_CONFIDENCE
         if self.has_pose:
             results = self.model.predict(
-                frames, conf=confidence, imgsz=YOLO_IMGSZ, verbose=False,
+                frames, conf=confidence, imgsz=YOLO_IMGSZ, half=self._yolo_fp16,
+                verbose=False,
             )
         else:
             results = self.model.predict(
-                frames, conf=confidence, imgsz=YOLO_IMGSZ,
+                frames, conf=confidence, imgsz=YOLO_IMGSZ, half=self._yolo_fp16,
                 classes=[YOLO_PERSON_CLASS_ID], verbose=False,
             )
 
@@ -826,7 +837,7 @@ class PlayerTracker:
 
         # Use detection-only model (yolov8m) — NOT the pose model
         results = self._det_model.predict(
-            cropped, conf=0.15, imgsz=YOLO_IMGSZ,
+            cropped, conf=0.15, imgsz=YOLO_IMGSZ, half=self._yolo_fp16,
             classes=[YOLO_PERSON_CLASS_ID], verbose=False,
         )
         boxes = results[0].boxes if results else []

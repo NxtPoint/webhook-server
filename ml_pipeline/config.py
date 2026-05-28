@@ -149,6 +149,28 @@ ROI_BATCH_SIZE = max(1, int(os.getenv("ROI_BATCH_SIZE", "1")))
 # batched-FP16 detection counts on a known job.
 ROI_POSE_FP16 = os.getenv("ROI_POSE_FP16", "0").strip().lower() in ("1", "true", "yes")
 
+# YOLO_FP16: half-precision inference for the player-stage YOLO passes (Lever
+# #3 from docs/_investigation/batch_optimisation_plan.md). The T4's FP16
+# throughput is ~2× FP32, so this stacks on top of L1 (PLAYER_BATCH_SIZE) as a
+# pure kernel-level cut with no schedule change. Wired into the three
+# Ultralytics predict() calls in player_tracker that we control directly:
+# the full-frame YOLOv8x-pose pass (_run_yolo_batch), the court-crop pass
+# (routes through the same batch path), and the far-baseline detection-only
+# YOLOv8m (_run_yolo_far_baseline). SAHI's tile-fan is NOT covered here:
+# sahi==0.11.18's get_sliced_prediction exposes no half flag and force-half'ing
+# its wrapped model dtype-mismatches the FP32 input it feeds — SAHI FP16 is
+# deferred to L2 (the tile-fan rationalisation lever) where the predict path
+# is reworked.
+#
+# CAUTION (the reason this is its own validatable commit): FP16 can shift
+# detection counts near the confidence floor. YOLO_CONFIDENCE is already at
+# 0.10 (lowered in the 2026-04-19 episode below) so borderline detections
+# should survive, but this MUST be reconciled against a long-match SA pair on
+# real GPU — it cannot be validated on a CPU-only box (half() is a no-op / cast
+# error off cuda), so the cast is gated to cuda only. Default OFF = FP32, the
+# zero-risk rollback. Flip YOLO_FP16=1 on the Batch job-def to activate.
+YOLO_FP16 = os.getenv("YOLO_FP16", "0").strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)
 # ---------------------------------------------------------------------------
