@@ -307,6 +307,20 @@ MOG2_MOTION_SCORE_WEIGHT = 1000   # Bonus added to far-half candidate score when
                                    # score (~0-1080) so a moving candidate always beats a
                                    # stationary one regardless of y2 position.
 
+# L-MOG2 optimisation (env-gated, default 1 = full-res = byte-identical to the
+# pre-change behaviour). MOG2 bg-subtract runs full-1080p single-threaded CPU on
+# EVERY frame and measured ~44% / ~65 ms-per-frame on the g5 profile (the #1 cost
+# once the player-GPU levers landed). The mask is consumed ONLY by
+# _compute_motion_ratio() -> _choose_two_players(): a coarse "fraction of bbox
+# pixels that are foreground" ratio thresholded at MOG2_MIN_MOTION_RATIO=0.03
+# (a binary moving/stationary bonus). That ratio is downscale-invariant — a
+# player bbox keeps roughly the same 5-15% foreground fraction whether sampled at
+# 1080p or 540p. So MOG2 can run on a downscaled frame and the mask is upscaled
+# back to full size (NEAREST interp) before consumption. DOWNSCALE=2 -> a quarter
+# of the pixels -> ~4x cheaper apply(); =4 -> ~16x. 1 = disabled (full res); 2 is
+# the safe recommended setting for a human to flip after a coverage reconcile.
+MOG2_DOWNSCALE = max(1, int(os.getenv("MOG2_DOWNSCALE", "1")))
+
 # ---------------------------------------------------------------------------
 # Pipeline orchestration
 # ---------------------------------------------------------------------------
