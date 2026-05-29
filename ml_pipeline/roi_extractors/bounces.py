@@ -49,7 +49,58 @@ from typing import List, Optional, Tuple
 import numpy as np
 from sqlalchemy import text as sql_text
 
+from ml_pipeline.config import ROI_BOUNCE_BATCH
+
 logger = logging.getLogger("roi_bounces")
+
+
+# ---------------------------------------------------------------------------
+# TASK 2 — batched TrackNet forward across ROI bounce windows
+# ---------------------------------------------------------------------------
+#
+# The eager path (ROI_BOUNCE_BATCH==1, default) feeds each window's crops into a
+# fresh BallTracker one frame at a time; TrackNet runs at batch=1 per frame. The
+# batched path (ROI_BOUNCE_BATCH>1) defers the GPU forward: it collects a
+# window's crops, builds the per-frame TrackNet input tensors EXACTLY as
+# BallTracker._detect_frame_v2 would, runs them through the shared model in
+# batches of ROI_BOUNCE_BATCH, then replays the per-frame postprocess via a
+# fresh BallTracker whose model is swapped for a replay shim that serves the
+# precomputed forward output for that frame. Because the replay runs the real
+# detect_frame → _detect_frame_v2 → _postprocess_heatmap path (and the
+# sequential frame-delta Hough fallback when TrackNet emits no signal), the
+# per-window BallDetection rows — and therefore interpolate_gaps / detect_bounces
+# / projection / zone-filter outputs — are identical to the eager path on CPU
+# and within fp-noise on GPU (conv is batch-element-independent, BatchNorm is
+# eval/running-stats, the heatmap postprocess is per-element).
+#
+# Scope: the batched forward is implemented for TrackNet V2 (the production ROI
+# ball model — tracknet_v3.pt is absent in prod). If a window's shared model is
+# V3 (8-frame + background, 27-channel), the processor falls back to the eager
+# per-frame path for that window (logged once) — still correct, just unbatched.
+
+
+class _ReplayModel:
+    """Stand-in for BallTracker.model that serves precomputed forward outputs.
+
+    Constructed with the batched model output as a list of per-frame tensors
+    (each shaped exactly like a single-frame BallTrackerNet forward:
+    (1, out_channels, H*W)). __call__ pops them in invocation order, ignoring
+    the input tensor BallTracker rebuilds — the rebuilt tensor is the same one
+    we already ran through the real model in batch, so the served output is
+    identical to what an eager self.model(tensor, testing=True) call returns.
+    """
+
+    def __init__(self, outputs: list):
+        self._outputs = outputs
+        self._i = 0
+
+    def __call__(self, tensor, testing=False):  # noqa: D401 — mimics nn.Module
+        out = self._outputs[self._i]
+        self._i += 1
+        return out
+
+    def exhausted(self) -> bool:
+        return self._i >= len(self._outputs)
 
 
 # Court geometry — kept in sync with extract_roi_bounces.py (diag tool)
@@ -387,6 +438,15 @@ class RoiBounceProcessor:
         self._active_t0 = None
         self._windows_done = 0
 
+        # TASK 2: batched-forward mode. >1 defers the per-frame TrackNet GPU
+        # forward and runs it in batches of this size across each window's
+        # frames. 1 = eager per-frame (today's exact behaviour). Resolved at
+        # prepare() against the actual model version (V3 falls back to eager).
+        self._bounce_batch = max(1, int(ROI_BOUNCE_BATCH))
+        self._batched_mode = False           # set in prepare() once model known
+        self._active_crops: list = []         # [(idx, crop_ndarray), ...] for the active window
+        self._use_v3_model = False
+
     # -- setup ---------------------------------------------------------------
 
     def prepare(self, frame_shape) -> bool:
@@ -437,7 +497,34 @@ class RoiBounceProcessor:
         # constructing a fresh BallTracker per window reloaded the weights every
         # time, ~7x slowdown that timed out long matches at the 6h Batch limit).
         from ml_pipeline.ball_tracker import BallTracker
-        self._shared_model = BallTracker().model
+        probe = BallTracker()
+        self._shared_model = probe.model
+        # Capture inference config from the probe so the batched-forward path
+        # builds tensors identically to BallTracker._detect_frame_v2 (device,
+        # fp16, version). Read-only at inference, so sharing is safe.
+        self._model_device = probe.device
+        self._model_fp16 = probe._use_fp16
+        self._use_v3_model = probe._use_v3
+        self._num_input_frames = probe._num_input_frames
+
+        # TASK 2: enable batched forward only for V2 (the prod ROI ball model).
+        # V3 (8-frame + background, 27ch) keeps the eager per-frame path —
+        # correct, just unbatched. Logged once so the deploy log shows which
+        # path ran.
+        self._batched_mode = (self._bounce_batch > 1) and (not self._use_v3_model)
+        if self._bounce_batch > 1:
+            if self._batched_mode:
+                logger.info(
+                    "roi_bounces: ROI_BOUNCE_BATCH=%d → batched TrackNet-V2 "
+                    "forward ENABLED across window frames", self._bounce_batch,
+                )
+            else:
+                logger.info(
+                    "roi_bounces: ROI_BOUNCE_BATCH=%d set but model is V3 — "
+                    "falling back to eager per-frame forward (batched path is "
+                    "V2-only)", self._bounce_batch,
+                )
+
         self._ready = True
         return True
 
@@ -468,19 +555,39 @@ class RoiBounceProcessor:
         s, e, _c = self.windows[self._wptr]
         if idx < s:
             return  # gap before the next window
-        # idx in [s, e): feed into the active tracker (create on window entry).
+        crop = frame[self.y0:self.y1, self.x0:self.x1]
+        if crop.size == 0:
+            return
+
+        if self._batched_mode:
+            # TASK 2 batched path: collect the window's crops; the TrackNet
+            # forward + per-frame postprocess run together at window close so
+            # the forward can be batched. crop.copy() because `frame` is a
+            # decoder-owned buffer reused on the next read — without the copy
+            # the stored crop would alias whatever frame is decoded next.
+            if self._active_t0 is None:
+                self._active_t0 = time.time()
+            self._active_crops.append((idx, crop.copy()))
+            return
+
+        # Eager path (default) — byte-identical to pre-TASK-2 behaviour.
         if self._active_tracker is None:
             from ml_pipeline.ball_tracker import BallTracker
             self._active_tracker = BallTracker(model=self._shared_model)
             self._active_t0 = time.time()
-        crop = frame[self.y0:self.y1, self.x0:self.x1]
-        if crop.size == 0:
-            return
         self._active_tracker.detect_frame(crop, idx)
 
     def _close_active_window(self):
         """Finalize the active window: interpolate, detect bounces, project,
         filter to the service-box zone, collect rows."""
+        # Batched path: turn the collected crops into a populated tracker by
+        # running the batched forward + per-frame replay. Sets _active_tracker.
+        if self._batched_mode:
+            if not self._active_crops:
+                return
+            self._active_tracker = self._run_window_batched(self._active_crops)
+            self._active_crops = []
+
         if self._active_tracker is None:
             return
         s, e, c = self.windows[self._wptr]
@@ -510,11 +617,103 @@ class RoiBounceProcessor:
         self._active_tracker = None
         self._active_t0 = None
 
+    # -- TASK 2 batched forward ---------------------------------------------
+
+    def _build_v2_input(self, frame_buffer):
+        """Build the TrackNet-V2 model input tensor from a 3-frame buffer.
+
+        Byte-for-byte the same construction as BallTracker._detect_frame_v2:
+        concat the 3 resized BGR frames on the channel axis → (H, W, 9),
+        normalise /255, permute to (9, H, W), add batch dim → (1, 9, H, W),
+        cast to fp16 on cuda. Returns a torch tensor on the model's device.
+        """
+        import torch
+        stacked = np.concatenate(frame_buffer, axis=2)             # (H, W, 9)
+        tensor = torch.from_numpy(
+            stacked.astype(np.float32) / 255.0
+        ).permute(2, 0, 1).unsqueeze(0).to(self._model_device)
+        if self._model_fp16:
+            tensor = tensor.half()
+        return tensor
+
+    def _run_window_batched(self, crops):
+        """Replay a window's crops with the TrackNet forward run in batches.
+
+        Phase 1 — replicate BallTracker's resize + 3-frame sliding window to
+        enumerate every model-input tensor the eager path would have produced,
+        in frame order (the model is called once per frame ONCE the buffer is
+        full; the first num_input_frames-1 frames produce no call). Phase 2 —
+        run those tensors through the shared model in batches of
+        self._bounce_batch and slice the output per call. Phase 3 — replay
+        detect_frame on a fresh BallTracker whose model is swapped for a
+        _ReplayModel serving the precomputed slices in order; the real
+        _detect_frame_v2 postprocess + sequential frame-delta Hough fallback
+        run unchanged, so the resulting detections are identical to the eager
+        path (within fp-noise on GPU).
+
+        Returns a populated BallTracker (detections filled, model restored).
+        """
+        import cv2 as _cv2
+        import torch
+        from ml_pipeline.ball_tracker import BallTracker
+        from ml_pipeline.config import (
+            TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT, TRACKNET_BGR2RGB,
+        )
+
+        n = self._num_input_frames  # 3 for V2
+
+        # Phase 1: enumerate per-call input tensors using the SAME resize +
+        # buffer logic BallTracker.detect_frame uses. A model call happens for
+        # frame k once the buffer holds n frames, i.e. for crops[n-1:].
+        resized_buffer: list = []
+        call_tensors: list = []
+        for _idx, crop in crops:
+            resized = _cv2.resize(crop, (TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT))
+            if TRACKNET_BGR2RGB:
+                resized = _cv2.cvtColor(resized, _cv2.COLOR_BGR2RGB)
+            resized_buffer.append(resized)
+            if len(resized_buffer) > n:
+                resized_buffer.pop(0)
+            if len(resized_buffer) < n:
+                continue
+            call_tensors.append(self._build_v2_input(resized_buffer))
+
+        # Phase 2: batched forward. Concatenate up to self._bounce_batch
+        # single-frame tensors (each (1, 9, H, W)) into one (B, 9, H, W) batch,
+        # run ONE forward, and split the output back into per-call (1, C, H*W)
+        # slices. testing=True matches _detect_frame_v2's softmax path.
+        per_call_outputs: list = []
+        if call_tensors:
+            with torch.no_grad():
+                for i in range(0, len(call_tensors), self._bounce_batch):
+                    chunk = call_tensors[i:i + self._bounce_batch]
+                    batched = torch.cat(chunk, dim=0)             # (B, 9, H, W)
+                    out = self._shared_model(batched, testing=True)  # (B, C, H*W)
+                    # Slice per call, keeping the batch dim so the served tensor
+                    # is shaped exactly like a single-frame forward output.
+                    for b in range(out.shape[0]):
+                        per_call_outputs.append(out[b:b + 1])
+
+        # Phase 3: replay detect_frame with the precomputed outputs. Swap the
+        # tracker's model for a _ReplayModel; everything else (buffer warmup,
+        # postprocess, frame-delta fallback, scaling) runs unchanged.
+        tracker = BallTracker(model=self._shared_model)
+        tracker.model = _ReplayModel(per_call_outputs)
+        for _idx, crop in crops:
+            tracker.detect_frame(crop, _idx)
+        # Restore the shared model reference (defensive; the tracker is about to
+        # be consumed and discarded, but keep it in a sane state).
+        tracker.model = self._shared_model
+        return tracker
+
     # -- teardown ------------------------------------------------------------
 
     def finalize(self) -> int:
         """Close any open window, persist, return row count."""
-        if self._active_tracker is not None:
+        # Eager mode leaves a live _active_tracker; batched mode leaves
+        # collected crops. Either means the last window never hit its
+        # exclusive-end close in feed() — flush it here.
+        if self._active_tracker is not None or self._active_crops:
             self._close_active_window()
 
         n_bounces_total = sum(1 for r in self.all_rows if r["is_bounce"])
