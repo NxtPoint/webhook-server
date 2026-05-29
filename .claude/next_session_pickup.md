@@ -1,5 +1,11 @@
 # Next-session pickup — 2026-05-29 — Court calibration FIXED+DEPLOYED & proven in prod; match 4 blocked on SAHI (fix prototyped)
 
+> 🛑 **2026-05-29 11:48 — CORRECTION (new evidence; supersedes "calibration proven in prod" for match 4). Match-4 re-run #3 (`348c2293`, 11h-timeout override) RAN TO COMPLETION (6.5h, no timeout) — and the completed output proves calibration is STILL DEGENERATE on this match.** The earlier "PROVEN in prod" was inferred from the `LOCKED VALIDATED` log line on a run (`6000423a`) that **timed out before it ever projected/exported** — so the coords were never actually checked. The finished run shows:
+> - `compute_speeds: 23795/23795 pairs had None court coords` · `roi_pose: far ROI degenerate (48x41)` · `roi_bounces: degenerate (88x81)` · `bronze_export: ball=23796 player=3374` — **100% NULL court coords, 0% coverage** (`court_detected=True` notwithstanding).
+> - **Why the "validated" lock is still degenerate:** the locked homography's `H_diag` y-scale is **~8–38×** (healthy ≈ 0.5–2) — the inliers/confidence/corner-reproj gate PASSED it anyway. And `lens calibration locked → mode=piecewise rms=0.0000 px from 8 observations` = an **overfit piecewise lens fit** (8 pts, 0 error). So Fix E (piecewise) WAS active and did not rescue projection.
+> - **Net: match 4 still does NOT land usable coords; bounce full-data retrain stays BLOCKED.** I did NOT re-ingest (would load NULL-coord garbage / trip Fix C+). This is a **calibration-accuracy problem on this camera** — needs Tomo + calibration agent, not a brute re-run (same code → same degenerate lock). Leads: (1) make the degeneracy gate reject the ~8–38× y-scale that's passing; (2) the piecewise lens overfits on 8 obs — check it isn't worsening projection.
+> - **What worked:** 11h timeout let it finish; ROI guards skipped the wasted scan; pipeline is now robust end-to-end. **SAHI finding stands** (76% of wall) but the skip-relax won't help match 4 (far player full-frame-resolved only ~3% → SAHI genuinely needed; the real lever is L2 tile-fan cost reduction). State: g5 CE idle ($0), nothing running, `ml_analysis` ca475740 clean. Memory: [[project_t5_may28_batch_runtime_plan]].
+
 ## ⚡ Executive summary (read first — 30 seconds)
 
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
