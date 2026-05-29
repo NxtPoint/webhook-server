@@ -53,11 +53,25 @@ from ml_pipeline.config import (
 #     validated observations (or hit the safety ceiling)
 #   • never lock an ANY-BEST/Hough detection; fail-loud if the whole search
 #     budget yields nothing validated.
-COURT_MIN_CALIB_OBS = 8            # validated observations required before locking (spread → stable calibration)
-COURT_LOCK_HARD_CAP_FRAMES = 18000  # safety ceiling (~12 min @25fps) → forced decision / fail-loud
+COURT_MIN_CALIB_OBS = 12           # validated observations required before the FIRST lock attempt
+COURT_LOCK_RETRY_OBS_STEP = 4      # re-attempt the fit only after this many more obs (bounds fit cost)
+COURT_LOCK_HARD_CAP_FRAMES = 36000  # safety ceiling (~24 min @25fps) → forced decision / fail-loud
 COURT_DEGEN_COND_MAX = 1.0e10      # homography condition-number ceiling (loose backstop)
 COURT_DEGEN_CORNER_MARGIN = 0.5    # reprojected court corners may fall at most this×dim outside frame
 COURT_DEGEN_MIN_AREA_FRAC = 0.02   # reprojected court quad must cover ≥ this fraction of frame area
+# Positive projection self-test (2026-05-29 match-4 fix): a locked calibration
+# must actually project a grid of court-region pixels into the court. Catches
+# overfit/degenerate fits (clustered obs → piecewise rms~0 → 0% coverage) that
+# pass every geometric gate but project nothing — the silent gap that let
+# match 4 lock a "VALIDATED" but unusable calibration. Healthy MATCHi/club
+# courts project well above this floor; an overfit collapses below it.
+COURT_MIN_PROJECTION_COVERAGE = 0.35
+# …and the projection must spread across the court, not collapse to a line
+# (match 4's piecewise fit landed 80% in-band while pinning every pixel to
+# y≈23.77). Robust p90−p10 spans, in court metres. Full court is 10.97×23.77 m;
+# these floors admit half-court framings while rejecting a degenerate collapse.
+COURT_MIN_PROJECTION_Y_SPAN = 6.0
+COURT_MIN_PROJECTION_X_SPAN = 3.0
 
 
 # ── Court keypoint CNN (same ConvBlock arch as TrackNet, different I/O) ─────
@@ -157,6 +171,10 @@ class CourtDetector:
         self._calibration: Optional[CalibrationResult] = None
         self._calibration_observations: list[np.ndarray] = []
         self._geom_fail_log_count: int = 0
+        # next observation count at which to (re)attempt a lock fit — grows by
+        # COURT_LOCK_RETRY_OBS_STEP each failed attempt so we don't re-fit every
+        # frame while waiting for more/spread observations.
+        self._next_lock_attempt_obs: int = COURT_MIN_CALIB_OBS
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
         model = CourtKeypointNet(in_channels=3, out_channels=15)
@@ -257,62 +275,83 @@ class CourtDetector:
                 )
         self._last_frame_idx = frame_idx
 
-        # ── Lock decision (Fix G: robust frame selection, 2026-05-28) ──
-        # Lock ONLY on a geometry-validated, non-degenerate detection, and only
-        # once we have >= COURT_MIN_CALIB_OBS validated observations. If the
-        # opening window is unrepresentative we keep sampling the CNN PAST
-        # COURT_CALIBRATION_FRAMES (rally footage recovers the keypoints)
-        # rather than freezing an ANY-BEST/Hough fabrication — the match-4 /
-        # f11eed2c silent-degeneracy root cause. Bounded by the hard cap.
+        # ── Lock decision (Fix G frame-selection + projection self-test) ──
+        # Lock ONLY on a geometry-validated detection whose fitted calibration
+        # ACTUALLY PROJECTS the court (the 2026-05-29 match-4 fix). Clustered or
+        # too-few observations yield an overfit/singular lens fit that passes
+        # every geometric gate but projects ~0% coverage (match 4 locked a
+        # "VALIDATED" piecewise fit on 8 clustered obs → 0/23,795 court coords).
+        # We reject those via _projection_coverage and keep sampling the CNN for
+        # more / better-spread observations rather than freezing an unusable
+        # calibration. Re-attempt only as obs grow (bounds fit cost); force a
+        # decision at the hard cap (fail-loud, never lock garbage).
+        n_obs = len(self._calibration_observations)
         have_validated = self._best_validated_detection is not None
-        enough_obs = len(self._calibration_observations) >= COURT_MIN_CALIB_OBS
         past_window = frame_idx >= COURT_CALIBRATION_FRAMES
         hit_cap = frame_idx >= COURT_LOCK_HARD_CAP_FRAMES
 
         if self._locked_detection is None and (
-            (past_window and have_validated and enough_obs) or hit_cap
+            (past_window and have_validated and n_obs >= self._next_lock_attempt_obs)
+            or hit_cap
         ):
-            # Fit lens calibration from the validated keypoint observations
-            # (its own RANSAC + bundle adjustment).
+            self._next_lock_attempt_obs = n_obs + COURT_LOCK_RETRY_OBS_STEP
+            cal = None
             if self._calibration_observations:
-                self._calibration = fit_calibration(
-                    self._calibration_observations,
-                    img_shape=frame.shape[:2],
-                    rms_threshold_px=10.0,
-                )
-
-            # Lock candidate is the best VALIDATED detection ONLY — never an
-            # ANY-BEST/Hough fabrication. (Because observations require a
-            # validated frame, enough_obs implies best_validated is set; the
-            # only way best is None here is the hard-cap-with-nothing path.)
+                try:
+                    cal = fit_calibration(
+                        self._calibration_observations,
+                        img_shape=frame.shape[:2],
+                        rms_threshold_px=10.0,
+                    )
+                except Exception as e:  # e.g. singular matrix on clustered obs
+                    logger.info(
+                        "court_calibration: fit raised (%s) — treating as no fit", e)
+                    cal = None
             best = self._best_validated_detection
+            cov, y_span, x_span = self._projection_quality(cal, frame.shape[:2])
+            passed = (cal is not None and best is not None
+                      and cov >= COURT_MIN_PROJECTION_COVERAGE
+                      and y_span >= COURT_MIN_PROJECTION_Y_SPAN
+                      and x_span >= COURT_MIN_PROJECTION_X_SPAN)
 
-            # FAIL-LOUD: no validated detection and no calibration → the video
-            # could not be calibrated. Raise so the pipeline marks it failed
-            # rather than silently locking a degenerate homography.
-            if best is None and self._calibration is None:
-                logger.warning(
-                    "court_calibration: FAIL-LOUD after %d frames — no validated, "
-                    "non-degenerate detection and no calibration (best-ANY existed=%s, "
-                    "validated_obs=%d). Refusing to lock a degenerate homography.",
-                    frame_idx, self._best_detection is not None,
-                    len(self._calibration_observations),
-                )
-                raise RuntimeError(
-                    f"court_calibration: FAILED after {frame_idx} frames — no "
-                    f"geometry-validated, non-degenerate court calibration could be "
-                    f"produced. Refusing to lock a degenerate homography."
-                )
-
-            self._locked_detection = best
-            if best is not None:
-                locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
+            if not passed:
+                if hit_cap:
+                    logger.warning(
+                        "court_calibration: FAIL-LOUD after %d frames — best calibration "
+                        "cov=%.0f%% y_span=%.1fm x_span=%.1fm (mode=%s, obs=%d; floors "
+                        "%.0f%%/%.0f/%.0fm). Refusing to lock an unusable calibration.",
+                        frame_idx, 100.0 * cov, y_span, x_span,
+                        None if cal is None else cal.mode, n_obs,
+                        100.0 * COURT_MIN_PROJECTION_COVERAGE,
+                        COURT_MIN_PROJECTION_Y_SPAN, COURT_MIN_PROJECTION_X_SPAN,
+                    )
+                    raise RuntimeError(
+                        f"court_calibration: FAILED after {frame_idx} frames — no "
+                        f"calibration that projects the court non-degenerately "
+                        f"(best cov={100.0 * cov:.0f}%, y_span={y_span:.1f}m, "
+                        f"x_span={x_span:.1f}m)."
+                    )
+                # Not good enough yet — keep sampling for more / better-spread
+                # observations. Do NOT lock a non-projecting / collapsed fit.
                 logger.info(
-                    "court_calibration: LOCKED VALIDATED detection after %d frames "
-                    "(inliers=%d, confidence=%.2f, validated_obs=%d). No more CNN runs.",
-                    frame_idx, locked_inliers, best.confidence,
-                    len(self._calibration_observations),
+                    "court_calibration: candidate fit at frame=%d cov=%.0f%% "
+                    "y_span=%.1fm x_span=%.1fm (mode=%s, obs=%d) — below floors; "
+                    "keep searching.",
+                    frame_idx, 100.0 * cov, y_span, x_span,
+                    None if cal is None else cal.mode, n_obs,
                 )
+                return detection
+
+            # Passed the projection self-test → commit the lock.
+            self._calibration = cal
+            self._locked_detection = best
+            locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
+            logger.info(
+                "court_calibration: LOCKED after %d frames — mode=%s rms=%.3fpx obs=%d "
+                "cov=%.0f%% y_span=%.1fm x_span=%.1fm (inliers=%d, conf=%.2f). No more CNN runs.",
+                frame_idx, cal.mode, cal.rms_px, n_obs, 100.0 * cov, y_span, x_span,
+                locked_inliers, best.confidence,
+            )
             if self._calibration is not None:
                 logger.info(
                     "court_calibration: lens calibration locked — mode=%s rms=%.4f px "
@@ -718,6 +757,50 @@ class CourtDetector:
         if not (np.all(cross > 0) or np.all(cross < 0)):
             return True, "non-convex"
         return False, "ok"
+
+    def _projection_quality(self, calibration, frame_shape) -> tuple:
+        """Project a court-region pixel grid via a candidate calibration and
+        return (coverage, y_span, x_span) in court metres. The positive
+        output-validation gate for locking (Fix, 2026-05-29):
+
+          • coverage — fraction landing in the ±5 m court band; an overfit/
+            singular fit that projects nothing scores ~0.
+          • y_span / x_span — robust (p90−p10) spread of the projected coords.
+            A DEGENERATE fit can still land "in band" while collapsing the
+            court to a line (match 4's piecewise fit mapped every pixel to
+            y≈23.77 → 80% coverage but y_span≈0). Requiring real 2-D spread
+            catches that — a healthy fit maps the frame's vertical extent to
+            most of the court length (y_span ≫ 0) and its width to the court
+            width (x_span ≫ 0).
+
+        Does NOT mutate detector state (operates on the passed calibration).
+        """
+        if calibration is None:
+            return 0.0, 0.0, 0.0
+        h, w = frame_shape[:2]
+        fxs = np.linspace(0.15, 0.85, 8)
+        fys = np.linspace(0.30, 0.92, 8)
+        mxs, mys = [], []
+        total = inb = 0
+        for fy in fys:
+            for fx in fxs:
+                total += 1
+                r = project_pixel_to_metres(w * fx, h * fy, calibration)
+                if r is None:
+                    continue
+                mx, my = r
+                if (-5.0 <= mx <= COURT_WIDTH_DOUBLES_M + 5.0 and
+                        -5.0 <= my <= COURT_LENGTH_M + 5.0):
+                    inb += 1
+                    mxs.append(mx)
+                    mys.append(my)
+        cov = inb / total if total else 0.0
+        if len(mxs) >= 4:
+            x_span = float(np.percentile(mxs, 90) - np.percentile(mxs, 10))
+            y_span = float(np.percentile(mys, 90) - np.percentile(mys, 10))
+        else:
+            x_span = y_span = 0.0
+        return cov, y_span, x_span
 
     def _detect_hough(self, frame: np.ndarray) -> Optional[CourtDetection]:
         """Robust fallback: detect white court lines via color mask + Hough.
