@@ -258,6 +258,16 @@ SAHI_CONFIDENCE = 0.15             # Low confidence for small distant players
 SAHI_POSTPROCESS_TYPE = "NMS"      # Non-Maximum Suppression for dedup
 SAHI_POSTPROCESS_MATCH_THRESHOLD = 0.5  # IoU threshold for NMS merge
 
+# Batched tile-fan (perf prototype). When True, _run_sahi dispatches to
+# _run_sahi_batched: slice the ROI into tiles ourselves and run them as ONE
+# batched YOLO forward pass instead of SAHI's sequential per-tile loop
+# (get_sliced_prediction = one GPU round-trip per tile). SAHI tiled inference
+# is ~76% of Batch wall time on long matches; batching the tile-fan is the
+# single biggest runtime lever. Default OFF → byte-identical to the existing
+# get_sliced_prediction path. Flip SAHI_BATCHED=1 on the Batch job-def to
+# validate. See docs/_investigation/sahi_batched_tilefan_2026-05-29.md.
+SAHI_BATCHED = os.environ.get("SAHI_BATCHED", "0") == "1"
+
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
 # every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg
 # by __main__.py post-processing. Set to 0 to disable.

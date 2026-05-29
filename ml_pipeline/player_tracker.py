@@ -41,6 +41,7 @@ from ml_pipeline.config import (
     SAHI_CONFIDENCE,
     SAHI_POSTPROCESS_TYPE,
     SAHI_POSTPROCESS_MATCH_THRESHOLD,
+    SAHI_BATCHED,
     COURT_LENGTH_M,
     COURT_WIDTH_DOUBLES_M,
     COURT_WIDTH_SINGLES_M,
@@ -894,28 +895,38 @@ class PlayerTracker:
         if self._sahi_model is None:
             return [], []
 
+        # Crop to court region with 30% margin. The court_bbox comes
+        # from raw CNN keypoints which on wide-angle footage often put
+        # the "far baseline" at a pixel y much LOWER than the real far
+        # baseline (CNN collapses baseline + service line into the
+        # same visual feature). With a 10% margin, SAHI's crop started
+        # at pixel y~230 while the real far player was at pixel y~150-200,
+        # entirely outside the crop. 30% covers the gap.
+        #
+        # This ROI math is IDENTICAL for both the sequential get_sliced_prediction
+        # path and the batched tile-fan path — only the per-tile inference loop
+        # differs. Computed once here, passed to both.
+        roi_x, roi_y = 0, 0
+        target = frame
+        if court_bbox is not None:
+            h, w = frame.shape[:2]
+            cx1, cy1, cx2, cy2 = court_bbox
+            margin_x = int((cx2 - cx1) * 0.30)
+            margin_y = int((cy2 - cy1) * 0.30)
+            roi_x = max(0, int(cx1) - margin_x)
+            roi_y = max(0, int(cy1) - margin_y)
+            roi_x2 = min(w, int(cx2) + margin_x)
+            roi_y2 = min(h, int(cy2) + margin_y)
+            target = frame[roi_y:roi_y2, roi_x:roi_x2]
+
+        # SAHI_BATCHED env-gate: dispatch to the batched tile-fan prototype.
+        # Default OFF → the existing get_sliced_prediction path below runs
+        # unchanged (byte-identical to today).
+        if SAHI_BATCHED:
+            return self._run_sahi_batched(target, roi_x, roi_y)
+
         try:
             from sahi.predict import get_sliced_prediction
-
-            # Crop to court region with 30% margin. The court_bbox comes
-            # from raw CNN keypoints which on wide-angle footage often put
-            # the "far baseline" at a pixel y much LOWER than the real far
-            # baseline (CNN collapses baseline + service line into the
-            # same visual feature). With a 10% margin, SAHI's crop started
-            # at pixel y~230 while the real far player was at pixel y~150-200,
-            # entirely outside the crop. 30% covers the gap.
-            roi_x, roi_y = 0, 0
-            target = frame
-            if court_bbox is not None:
-                h, w = frame.shape[:2]
-                cx1, cy1, cx2, cy2 = court_bbox
-                margin_x = int((cx2 - cx1) * 0.30)
-                margin_y = int((cy2 - cy1) * 0.30)
-                roi_x = max(0, int(cx1) - margin_x)
-                roi_y = max(0, int(cy1) - margin_y)
-                roi_x2 = min(w, int(cx2) + margin_x)
-                roi_y2 = min(h, int(cy2) + margin_y)
-                target = frame[roi_y:roi_y2, roi_x:roi_x2]
 
             result = get_sliced_prediction(
                 target,
@@ -948,6 +959,179 @@ class PlayerTracker:
 
         except Exception as e:
             logger.warning("SAHI inference failed: %s", e)
+            return [], []
+
+    @staticmethod
+    def _tile_offsets(dim: int, tile: int, overlap_ratio: float):
+        """Replicate SAHI's per-axis slice start positions.
+
+        SAHI (sahi.slicing.get_slice_bboxes) steps by `tile - overlap` from 0,
+        emitting a window of width `tile` at each start, and the LAST start is
+        clamped so the final window's right edge sits exactly at `dim` (so the
+        remainder strip on the right/bottom is always covered, never dropped).
+        We mirror that geometry exactly so coverage matches get_sliced_prediction.
+
+        Returns a list of (start, end) pairs with end <= dim.
+        """
+        if dim <= tile:
+            return [(0, dim)]
+        overlap = int(tile * overlap_ratio)
+        step = tile - overlap
+        if step <= 0:
+            step = tile  # degenerate guard; overlap_ratio should be < 1.0
+        starts = []
+        s = 0
+        while s < dim:
+            if s + tile >= dim:
+                # final tile: clamp so the right/bottom edge lands on `dim`
+                starts.append(max(0, dim - tile))
+                break
+            starts.append(s)
+            s += step
+        # de-dup (the clamp can coincide with a prior start on exact fits)
+        seen = set()
+        out = []
+        for st in starts:
+            if st in seen:
+                continue
+            seen.add(st)
+            out.append((st, min(st + tile, dim)))
+        return out
+
+    @staticmethod
+    def _nms_numpy(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float):
+        """Greedy IoU NMS, returns kept indices (highest score first).
+
+        Pure-numpy so it works regardless of torchvision availability. Mirrors
+        SAHI's NMS postprocess (match_metric=IOU, match_threshold) used to merge
+        detections across overlapping tiles.
+        """
+        if boxes.shape[0] == 0:
+            return []
+        x1 = boxes[:, 0]; y1 = boxes[:, 1]; x2 = boxes[:, 2]; y2 = boxes[:, 3]
+        areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+        order = scores.argsort()[::-1]
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(int(i))
+            if order.size == 1:
+                break
+            rest = order[1:]
+            xx1 = np.maximum(x1[i], x1[rest])
+            yy1 = np.maximum(y1[i], y1[rest])
+            xx2 = np.minimum(x2[i], x2[rest])
+            yy2 = np.minimum(y2[i], y2[rest])
+            iw = np.maximum(0.0, xx2 - xx1)
+            ih = np.maximum(0.0, yy2 - yy1)
+            inter = iw * ih
+            union = areas[i] + areas[rest] - inter
+            iou = np.where(union > 0, inter / union, 0.0)
+            order = rest[iou <= iou_thresh]
+        return keep
+
+    def _run_sahi_batched(self, target: np.ndarray, roi_x: int, roi_y: int):
+        """Batched tile-fan: slice the ROI ourselves and run ONE batched YOLO pass.
+
+        Equivalent in coverage to get_sliced_prediction but with a single GPU
+        round-trip for the whole tile fan instead of one round-trip per tile.
+        On a long match SAHI's sequential tile loop is ~76% of Batch wall time;
+        the per-frame tile count is the lever.
+
+        Steps:
+          1. Tile `target` into SAHI_SLICE_HEIGHT x SAHI_SLICE_WIDTH windows with
+             SAHI_OVERLAP_RATIO overlap, replicating SAHI's slice geometry incl.
+             the clamped right/bottom remainder tiles (_tile_offsets).
+          2. Run all tiles through the underlying Ultralytics YOLO as ONE batched
+             predict([tile0, tile1, ...]).
+          3. Translate each tile's person boxes by (tile_offset + roi) back to
+             full-frame coords (matches the existing roi_x/roi_y offset).
+          4. De-duplicate across overlapping tiles with IoU NMS
+             (SAHI_POSTPROCESS_MATCH_THRESHOLD), then return in the same
+             (boxes, kps=[None, ...]) shape as _run_sahi.
+
+        Returns (boxes_list, kps_list) in full-frame coordinates.
+        """
+        if self._sahi_model is None:
+            return [], []
+
+        try:
+            if target is None or target.size == 0:
+                return [], []
+            th, tw = target.shape[:2]
+
+            # 1. Tile geometry — same as SAHI's get_slice_bboxes.
+            y_offsets = self._tile_offsets(th, SAHI_SLICE_HEIGHT, SAHI_OVERLAP_RATIO)
+            x_offsets = self._tile_offsets(tw, SAHI_SLICE_WIDTH, SAHI_OVERLAP_RATIO)
+
+            tiles = []
+            tile_origins = []  # (off_x, off_y) of each tile within `target`
+            for (oy, ey) in y_offsets:
+                for (ox, ex) in x_offsets:
+                    tile = target[oy:ey, ox:ex]
+                    if tile.size == 0:
+                        continue
+                    tiles.append(tile)
+                    tile_origins.append((ox, oy))
+
+            if not tiles:
+                return [], []
+
+            # 2. ONE batched forward pass. self._sahi_model.model is the
+            # Ultralytics YOLO inside SAHI's AutoDetectionModel. Ultralytics
+            # accepts a list of ndarrays natively and batches them internally.
+            yolo = self._sahi_model.model
+            results = yolo.predict(
+                tiles,
+                conf=SAHI_CONFIDENCE,
+                imgsz=max(SAHI_SLICE_HEIGHT, SAHI_SLICE_WIDTH),
+                classes=[YOLO_PERSON_CLASS_ID],
+                half=self._yolo_fp16,
+                verbose=False,
+            )
+
+            # 3. Map each tile's detections back to full-frame coords.
+            all_boxes = []
+            all_scores = []
+            for res, (ox, oy) in zip(results, tile_origins):
+                rboxes = getattr(res, "boxes", None)
+                if rboxes is None or len(rboxes) == 0:
+                    continue
+                xyxy = rboxes.xyxy.cpu().numpy()
+                confs = rboxes.conf.cpu().numpy()
+                cls = rboxes.cls.cpu().numpy()
+                for (bx1, by1, bx2, by2), conf, c in zip(xyxy, confs, cls):
+                    if int(c) != YOLO_PERSON_CLASS_ID:
+                        continue  # belt-and-braces; predict() already class-filtered
+                    all_boxes.append((
+                        float(bx1) + ox + roi_x,
+                        float(by1) + oy + roi_y,
+                        float(bx2) + ox + roi_x,
+                        float(by2) + oy + roi_y,
+                    ))
+                    all_scores.append(float(conf))
+
+            if not all_boxes:
+                logger.debug("sahi_batched_pass: 0 persons in %d tiles", len(tiles))
+                return [], []
+
+            # 4. NMS across overlapping tiles (IoU = SAHI_POSTPROCESS_MATCH_THRESHOLD).
+            boxes_arr = np.asarray(all_boxes, dtype=np.float32)
+            scores_arr = np.asarray(all_scores, dtype=np.float32)
+            keep = self._nms_numpy(
+                boxes_arr, scores_arr, SAHI_POSTPROCESS_MATCH_THRESHOLD)
+
+            boxes = [tuple(float(v) for v in boxes_arr[i]) for i in keep]
+            kps = [None] * len(boxes)
+            logger.debug(
+                "sahi_batched_pass: found %d persons in %d tiles (%d pre-NMS)",
+                len(boxes), len(tiles), len(all_boxes))
+            return boxes, kps
+
+        except Exception as e:
+            logger.warning(
+                "SAHI batched inference failed: %s — returning empty (caller "
+                "still has full-frame + crop passes)", e)
             return [], []
 
     @staticmethod
