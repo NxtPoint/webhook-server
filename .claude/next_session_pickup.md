@@ -1,6 +1,33 @@
-# Next-session pickup — 2026-05-29 — Court degenerate-lock FIXED (projection self-test), validated locally + on `main`; awaits ONE Batch rebuild to land match 4
+# Next-session pickup — 2026-05-29 (PM) — MATCH 4 LANDED ✅ calibration fix PROVEN in prod; runtime optimization roadmap to sub-1h is the next cycle
 
-## ⚡ Executive summary (read first — 30 seconds)
+> ✅ **2026-05-29 PM — THE BIG ONE: match 4 ran clean, landed, and the calibration fix is PROVEN IN PROD. The "awaits ONE Batch rebuild" framing below is DONE.** Sequence executed this session:
+> 1. **Deployed** calibration fix + L2c (batched SAHI) in one image (`2bd946a2`) → **job-defs eu rev 57 / us rev 39** (`SAHI_BATCHED` OFF on job-def, set per-job). Source re-uploaded (`wix-uploads/1779964630_Tomo_vs_Jimbo.mp4`, byte-verified).
+> 2. **Match 4 ran on g5 (job `51e0ffee`):** calibration locked a **radial fit, 84% projection coverage, conf 0.93** (vs the broken run's 0%) → **ms_per_frame 70.4** (broken 321 / baseline 183), ~2h12, **504 valid bounces**, player 69,424. Re-ingested → **silver 334 rows, ALL with court_x** (SA = 391, ~85%). Fix C+ did NOT fail-loud (43% ball coverage cleared the floor).
+> 3. **Calibration PROVEN in prod** — the decisive prod test passed (real coords, not the LOCKED-line false positive from last time).
+> 4. **Bounce v1 full-data retrain ran** (M1 78c32f53 + M4 ca475740, `gravity_residual`): **val F1 0.40 → 0.677.** Weights `ml_pipeline/models/bounce_detector_v1_m1m4.pt` (NOT baseline-locked). Bench recall/precision sweep: **[RESULT PENDING — re-running with `BOUNCE_CANDIDATE_MODE=gravity_residual` after the first bench used the wrong is_bounce pool → spurious 0%; will fill in].**
+>
+> **⚠️ Two honest caveats on match 4's quality:**
+> - **Coverage moderate (43% ball vs healthy ~97%)** — prod locked `rms=13.3px` vs the dev-box repro's `2.84px`. Same video/fix, looser prod lock (radial/32-obs). **Calibration agent is investigating WHY** (closing it lifts M4 coverage materially). Non-blocking; M4 is usable.
+> - **🐞 NEW corpus finding (mine to chase): Match 4 is tagged `fps=60` vs M1's `fps=25`** → its bounce-label strict-match to gravity-residual candidates **cratered to 8% (23/273)** vs M1's 58% → most of M4's 273 floor labels came in as **weak anchor-fallback positives**. A frame-rate/indexing mismatch between the SA label file and the T5 bronze. **Likely the bigger lever for M4's training value than the 43% coverage.** Investigate the fps source + SA-label↔T5-bronze frame alignment.
+>
+> ## 🚀 NEXT CYCLE (fresh session) — RUNTIME OPTIMIZATION to sub-1h
+> The live profile (clean match-4 run) gives a ranked, evidence-based roadmap. Target: **~2h → sub-1h** on a 45-min match.
+> | # | Lever | Status | Effect |
+> |---|---|---|---|
+> | 1 | **MOG2 downscale** (`MOG2_DOWNSCALE`) | **prototyped** on `opt/overnight-findings` | motion_mask is **58% of wall** (38ms/fr, CPU) → ~halve it |
+> | 2 | **CPU/GPU stage overlap** | **designed, NOT coded** (pipeline.py concurrency) | MOG2 (CPU 38ms) runs SERIAL with ball+player (GPU ~26ms) → overlap → ~25–40% cut. (Plan's L10 — *underrated*; profile shifted since.) |
+> | 3 | **ROI window batching** | **scoped, NOT coded** (`roi_extractors`) | ROI bounce = 194 sequential windows (~25min) → batch → ~8min |
+> - **Stacked: ~2h → sub-1h.** And **g5 EARNS its keep post-optimization**: the pipeline goes GPU-bound, where A10G ≈ 1.5–2× T4; on g4dn it'd be ~1.5–2× slower (~75–100min → back over 1h) at ~flat cost-per-job. So: optimize → stay on g5.
+> - **Deploy as a deliberate daylight cycle** (Batch rebuild + bench-green + a validation run). Needs a video source — **match 4's source was deleted again on this successful run** (pipeline deletes source on success → every run is one-shot; consider disabling source-delete during the optimization phase).
+>
+> ## Banked branches + open items
+> - `opt/sahi-batched-tilefan` (L2c) — **MERGED to main + deployed** (rev 57).
+> - `opt/overnight-findings` — MOG2 downscale + SAHI skip-relax (`SAHI_SKIP_A_FAR_YMAX`, won't help match-4-class but helps closer cameras) + **the Lambda command-fix**. NOT merged.
+> - **🐞 Confirmed prod bug:** job-def STORED command + `lambda/ml_trigger.py:85` both double-invoke the `python -m ml_pipeline` ENTRYPOINT → **direct S3 uploads broken on rev 55+**. Use args-only `containerOverrides.command`. Fix = deploy the Lambda branch + a job-def stored-command fix.
+> - **Calibration follow-up (other agent):** the rev-57 prod-vs-local fit-quality gap (rms 13.3px/43% vs 2.84px/86%).
+> - **Deploy state:** image `2bd946a2`, job-defs eu rev 57 / us rev 39, g5 queue (g5→g4dn→Spot), g5 CE idle ($0). Serve bench GREEN (20/24, 23/24).
+
+## ⚡ Executive summary (read first — 30 seconds) — ⚠️ SUPERSEDED by the block above (the rebuild it "awaits" is DONE; match 4 landed)
 
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
 **Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN. `bench_calib` 4/4. `bench_lens` well-behaved. Identity `100%`. `bench_bounce` v1 GR-mode `23.9%/9.1%` (baseline NOT locked). `bench_swing_type` STOPGAP.
