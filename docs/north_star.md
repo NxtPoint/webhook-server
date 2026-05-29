@@ -41,7 +41,7 @@ The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silv
 | base field | T5 | SA | read |
 |---|---|---|---|
 | active rows (overall) | 97 | 94 | ✅ aligned |
-| court mapping | faithful homography (0.11 m self-consistent) | — | ✅ ~90%; far-baseline extrapolation weak. **2026-05-28: silent-degeneracy tail FIXED** (frame-selection lock — Fix G/B, deployed rev 56/38, proven in prod); camera-agnostic lens model (Fix E) built but dormant. See `_investigation/court_calibration_silent_degeneracy.md`. |
+| court mapping | faithful homography (0.11 m self-consistent) | — | ✅ ~90%; far-baseline extrapolation weak. **2026-05-29: degenerate-lock tail FIXED on `main`, validated locally** (Fix G/B frame-selection + projection self-test rejecting overfit/collapsed fits; match 4 self-heals to sound coords). **Not yet rebuilt/redeployed — live rev 56/38 still runs the old calibration; prod confirmation pending.** Camera-agnostic lens model (Fix E) built but dormant. See `_investigation/court_calibration_silent_degeneracy.md`. |
 | player side (near/far) | 2 pids, clean split | 2 | ✅ side ok — **A/B identity NOT solved** (Q2-B blocked) |
 | ball_hit_location x/y | 94 populated | 94 | ✅ populated; accuracy unmeasured (far sparse) |
 | swing — forehand | 38 | 41 | ✅ close |
