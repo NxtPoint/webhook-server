@@ -24,6 +24,7 @@ from ml_pipeline.config import (
     MOG2_VAR_THRESHOLD,
     MOG2_DETECT_SHADOWS,
     MOG2_LEARNING_RATE,
+    MOG2_DOWNSCALE,
     BALL_TRACKER,
 )
 from ml_pipeline.video_preprocessor import VideoPreprocessor, VideoMetadata
@@ -301,10 +302,33 @@ class TennisAnalysisPipeline:
 
         # 3. MOG2 foreground mask — feed every frame so the background model
         #    learns. The mask is passed to player tracker for motion scoring.
+        #
+        #    L-MOG2: when MOG2_DOWNSCALE > 1 (env-gated, default 1 = full-res =
+        #    unchanged), run MOG2 on a downscaled frame then upscale the mask
+        #    back to full resolution. The mask's only consumer
+        #    (_compute_motion_ratio -> _choose_two_players) reads a coarse
+        #    foreground-pixel FRACTION over each full-res bbox, which is
+        #    downscale-invariant — so the upscaled mask preserves the
+        #    moving/stationary decision while MOG2.apply() runs on ~1/N^2 the
+        #    pixels. Upscale with NEAREST so 0/255 stays binary (no grey edges
+        #    that would dilute the fraction near the 0.03 threshold).
         t = pc()
-        motion_mask = self._bg_subtractor.apply(
-            frame, learningRate=MOG2_LEARNING_RATE,
-        )
+        if MOG2_DOWNSCALE > 1:
+            h, w = frame.shape[:2]
+            small = cv2.resize(
+                frame, (w // MOG2_DOWNSCALE, h // MOG2_DOWNSCALE),
+                interpolation=cv2.INTER_AREA,
+            )
+            small_mask = self._bg_subtractor.apply(
+                small, learningRate=MOG2_LEARNING_RATE,
+            )
+            motion_mask = cv2.resize(
+                small_mask, (w, h), interpolation=cv2.INTER_NEAREST,
+            )
+        else:
+            motion_mask = self._bg_subtractor.apply(
+                frame, learningRate=MOG2_LEARNING_RATE,
+            )
         self._stage_seconds["motion_mask"] += pc() - t
 
         # 4. Player tracking (with motion mask + court geometry for scoring)

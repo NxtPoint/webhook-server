@@ -268,6 +268,24 @@ SAHI_POSTPROCESS_MATCH_THRESHOLD = 0.5  # IoU threshold for NMS merge
 # validate. See docs/_investigation/sahi_batched_tilefan_2026-05-29.md.
 SAHI_BATCHED = os.environ.get("SAHI_BATCHED", "0") == "1"
 
+# L2(a) — SAHI skip-rule A relaxation (env-gated, default OFF = unchanged).
+# On the g5 profile SAHI fired on ~327/328 detect-frames (skip-rate ≈ 0%) even
+# though full-frame YOLOv8x-pose frequently resolved BOTH players. SAHI exists to
+# catch the ~30-40px far player below the pose model's ~60-80px keypoint floor;
+# when the full-frame pass ALREADY produced a pose-carrying far candidate, that
+# frame's far player is by definition large enough that SAHI's ~300ms tile-fan is
+# redundant. Rule A (player_tracker._detect_frame_postprocess) was meant to skip
+# SAHI in exactly that case, but its far-half gate requires the candidate's feet
+# to project to court_y <= 5.0m. That band is too tight: a far player who has
+# stepped INTO the court for a return projects to court_y 5-9m and is rejected,
+# so has_far_pose stays False and SAHI never skips. This flag widens the far-pose
+# acceptance UPPER bound from 5.0 to SAHI_SKIP_A_FAR_YMAX while keeping it WELL
+# below the net umpire at court_y ~11-12m (the 2026-04-19 reason the gate exists).
+# The lower bound is unbounded (lens extrapolation pushes the true far baseline to
+# negative court_y, already accepted). Default 5.0 = byte-identical to current.
+# Recommended human setting after a far-player coverage reconcile: 8.0.
+SAHI_SKIP_A_FAR_YMAX = float(os.getenv("SAHI_SKIP_A_FAR_YMAX", "5.0"))
+
 # Debug frame export — saves a sampled frame with YOLO bboxes drawn on it
 # every N detection frames. Uploaded to s3://{bucket}/debug/{job_id}/frame_*.jpg
 # by __main__.py post-processing. Set to 0 to disable.
@@ -316,6 +334,20 @@ MOG2_MOTION_SCORE_WEIGHT = 1000   # Bonus added to far-half candidate score when
                                    # above MOG2_MIN_MOTION_RATIO. Must dominate the y2-based
                                    # score (~0-1080) so a moving candidate always beats a
                                    # stationary one regardless of y2 position.
+
+# L-MOG2 optimisation (env-gated, default 1 = full-res = byte-identical to the
+# pre-change behaviour). MOG2 bg-subtract runs full-1080p single-threaded CPU on
+# EVERY frame and measured ~44% / ~65 ms-per-frame on the g5 profile (the #1 cost
+# once the player-GPU levers landed). The mask is consumed ONLY by
+# _compute_motion_ratio() -> _choose_two_players(): a coarse "fraction of bbox
+# pixels that are foreground" ratio thresholded at MOG2_MIN_MOTION_RATIO=0.03
+# (a binary moving/stationary bonus). That ratio is downscale-invariant — a
+# player bbox keeps roughly the same 5-15% foreground fraction whether sampled at
+# 1080p or 540p. So MOG2 can run on a downscaled frame and the mask is upscaled
+# back to full size (NEAREST interp) before consumption. DOWNSCALE=2 -> a quarter
+# of the pixels -> ~4x cheaper apply(); =4 -> ~16x. 1 = disabled (full res); 2 is
+# the safe recommended setting for a human to flip after a coverage reconcile.
+MOG2_DOWNSCALE = max(1, int(os.getenv("MOG2_DOWNSCALE", "1")))
 
 # ---------------------------------------------------------------------------
 # Pipeline orchestration
