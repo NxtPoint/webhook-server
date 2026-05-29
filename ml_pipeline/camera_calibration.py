@@ -541,6 +541,37 @@ def _probe_bad_keypoint_indices(
     return bad
 
 
+def _projection_score(cal: "CalibrationResult", img_shape: tuple[int, int]) -> tuple:
+    """(coverage, y_span) of a court-region pixel grid projected via `cal`.
+
+    Candidate-selection metric (2026-05-29): an overfit piecewise fit can post
+    a tiny pixel-rms by memorising the observation keypoints while collapsing
+    the court in depth (small y_span, low coverage); the radial fit projects
+    the full court. Higher (coverage, y_span) = geometrically better. Mirrors
+    CourtDetector._projection_quality (kept local to avoid a circular import).
+    """
+    if cal is None:
+        return 0.0, 0.0
+    h, w = img_shape
+    mys = []
+    inb = total = 0
+    for fy in np.linspace(0.30, 0.92, 8):
+        for fx in np.linspace(0.15, 0.85, 8):
+            total += 1
+            r = project_pixel_to_metres(w * fx, h * fy, cal)
+            if r is None:
+                continue
+            mx, my = r
+            if (-5.0 <= mx <= COURT_WIDTH_DOUBLES_M + 5.0 and
+                    -5.0 <= my <= COURT_LENGTH_M + 5.0):
+                inb += 1
+                mys.append(my)
+    cov = inb / total if total else 0.0
+    y_span = (float(np.percentile(mys, 90) - np.percentile(mys, 10))
+              if len(mys) >= 4 else 0.0)
+    return cov, y_span
+
+
 def fit_calibration(
     keypoint_observations: list[np.ndarray],
     img_shape: tuple[int, int],  # (h, w)
@@ -582,10 +613,21 @@ def fit_calibration(
         logger.warning("Calibration: both options failed; returning None")
         return None
 
-    candidates.sort(key=lambda kv: kv[1].rms_px)
-    winner_name, winner = candidates[0]
+    # Select by PROJECTION QUALITY, not pixel-rms (2026-05-29 polish). A
+    # piecewise fit can post a tiny pixel-rms by overfitting the observation
+    # keypoints while collapsing the court in depth (small y_span, low
+    # coverage); the radial fit projects the full court. Rank by coverage then
+    # y_span (court-region pixel grid), with pixel-rms only as the final
+    # tiebreak. Selecting on projection can only hold or improve downstream
+    # court coverage vs the old lowest-rms pick.
+    scored = []
     for name, r in candidates:
-        logger.info("Calibration candidate %-20s RMS=%.4f", name, r.rms_px)
+        cov, y_span = _projection_score(r, img_shape)
+        scored.append((name, r, cov, y_span))
+        logger.info("Calibration candidate %-20s RMS=%.4f cov=%.0f%% y_span=%.1fm",
+                    name, r.rms_px, 100.0 * cov, y_span)
+    scored.sort(key=lambda t: (-round(t[2], 2), -round(t[3], 1), t[1].rms_px))
+    winner_name, winner = scored[0][0], scored[0][1]
     over_threshold_note = (
         " (above rms_threshold_px=%.1f but still the best candidate)" %
         rms_threshold_px
