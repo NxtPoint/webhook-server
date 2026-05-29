@@ -14,6 +14,8 @@
 > 3. Re-run match 4: `aws batch submit-job ... --container-overrides '{"command":["--job-id","ca475740-9e34-49c3-9b59-0194bfa37013","--s3-key","wix-uploads/1779964630_Tomo_vs_Jimbo.mp4"]}'` (args-only — NOT the job-def stored command). With SAHI skipping, expect completion well under 6h AND calibration-fixed coords.
 > 4. THEN: re-ingest → corpus → ADR-01 bounce v1 **full-data retrain** (blocked tonight — no match-4 corpus landed).
 > Memory: [[project_t5_may28_batch_runtime_plan]].
+>
+> ✅ **Calibration agent confirms (2026-05-29):** the calibration fix (G/B/ROI/C+) + Fix E (dormant) + L3 are ALL on `main` (through `f7fc330`) and already baked into rev 56's image. **Building from `main` (with `opt/overnight-findings` merged on top) automatically includes the calibration fix** — the SAHI rebuild picks it up for free (it's `court_detector.py` code on main, not env). Clone rev **56** (eu) / **38** (us) for the env baseline, add `SAHI_SKIP_A_FAR_YMAX=8.0`. No calibration re-work needed; once SAHI is unblocked, match 4 lands with calibration-fixed coords in one rebuild.
 
 > ⭐ **CALIBRATION SESSION UPDATE (latest, supersedes the "calibration architectural fix / dedicated research session" items below).**
 > The dedicated calibration research session ran AND its fix shipped same-day. Root cause was **NOT wide-angle** (disproven by live reproduction on the real weights) — it was the fixed-camera **"lock in first 300 frames, never re-run CNN"** strategy freezing a degenerate Hough homography when the opening window is unrepresentative (pre-match/setup). The CNN finds 12-13/14 keypoints on rally footage; the calibration just never looked there.
