@@ -29,7 +29,7 @@ These look reasonable but will burn future sessions. Each is an explicit decisio
 2. **Don't aggregate in Python or JavaScript if a gold view can do it.** SQL views own aggregation, Python is a thin passthrough, frontend is pure rendering. Adding `groupby` / `reduce` in `client_api.py` or a chart file means you skipped the right layer — extend or add a `gold.*` view.
 3. **Don't import `upload_app` from the ingest worker.** The worker is deliberately self-contained (calls `ingest_bronze_strict()` directly). Importing the main app pulls in Flask boot side-effects and breaks the worker timeout split (3600s vs 1800s).
 4. **Don't `DELETE FROM billing.*` on match delete.** Matches are billable events — the consumption record stays. Match delete is soft-delete only via `submission_context.deleted_at`; workers honour this at four gates. See `cleanup/orphan_sweep.py`.
-5. **Don't push T5 `serve_detector` changes without `bench` green.** The 20/24 baseline on `a798eff0` is locked in `ml_pipeline/diag/bench_baseline.json` (three prior silent regressions motivated this rule). The four remaining misses are upstream (pose / court projection) — gate-tuning to chase them backfires.
+5. **Don't push T5 `serve_detector` changes without `bench` green.** Two fixtures are locked in `ml_pipeline/diag/bench_baseline.json`: `a798eff0`=20/24 (CI-gated — the only fixture in `fixtures_ci/`) and `880dff02`=23/24 (local-only). `python -m ml_pipeline.diag.bench` checks both; CI checks just `a798eff0`. Three prior silent regressions motivated this rule. The remaining misses on `a798eff0` are upstream (pose / court projection) — gate-tuning to chase them backfires.
 6. **Don't add ops endpoints with query-string `?key=` auth.** `_guard()` in `upload_app.py` rejects it to keep `OPS_KEY` out of access logs. Header-only (`X-Ops-Key` or `Authorization: Bearer`).
 7. **Don't ask the user to rerun an ingest before `git push`.** Render deploys from `origin/main`; the Render shell would otherwise execute stale code.
 8. **Don't merge a T5 detector branch without the Batch-side change check.** Bench green ≠ Batch in sync. Any diff against `ml_pipeline/{roi_extractors/,__main__.py,pipeline.py,Dockerfile,requirements.txt,serve_detector/,ball_tracker.py,wasb_ball_tracker.py,wasb_hrnet.py,config.py,db_writer.py}` requires Docker rebuild + dual-region ECR push + new job-def revisions in eu-north-1 + us-east-1 before rerun. Full checklist: `.claude/handover_t5.md` §"BATCH-SIDE CHANGE CHECKLIST". Origin: Phase 1 shipped 2026-05-07 with `extract_far_pose` only on Render; `db_writer.py` joined the list 2026-05-22.
@@ -79,7 +79,7 @@ No automated test suite, no linter. Functional testing is manual against the liv
 
 Only these paths gate CI — `bench_ball*` / `bench_silver*` are local-only and deliberately *not* triggers. Don't widen or narrow this glob set (rule #9).
 
-Replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`bench_baseline.json`, currently 20/24). Exits non-zero on any negative delta. Sub-second; no DB, no AWS, no weights. Details: `.claude/handover_t5.md` §"TEST HARNESS".
+Replays the committed CI fixture (`ml_pipeline/fixtures_ci/a798eff0.pkl.gz`) against the locked baseline (`bench_baseline.json`, `a798eff0`=20/24 — that fixture only; the file also locks `880dff02`=23/24 for the local `bench` run). Exits non-zero on any negative delta. Sub-second; no DB, no AWS, no weights. Details: `.claude/handover_t5.md` §"TEST HARNESS".
 
 ### Schema management
 
