@@ -72,6 +72,11 @@ COURT_MIN_PROJECTION_COVERAGE = 0.35
 # these floors admit half-court framings while rejecting a degenerate collapse.
 COURT_MIN_PROJECTION_Y_SPAN = 6.0
 COURT_MIN_PROJECTION_X_SPAN = 3.0
+# Lock the BEST fit, not the first above the floor (2026-05-29 prod-vs-local
+# gap: prod locked the first floor-passing fit at 43% coverage while a tighter
+# ~86% fit was reachable a few observations later). Keep searching until a fit
+# reaches this "great" bar (early-exit), else lock the best-so-far at the cap.
+COURT_GREAT_COVERAGE = 0.70
 
 
 # ── Court keypoint CNN (same ConvBlock arch as TrackNet, different I/O) ─────
@@ -175,6 +180,10 @@ class CourtDetector:
         # COURT_LOCK_RETRY_OBS_STEP each failed attempt so we don't re-fit every
         # frame while waiting for more/spread observations.
         self._next_lock_attempt_obs: int = COURT_MIN_CALIB_OBS
+        # best floor-passing calibration seen across attempts (lock-best, not
+        # lock-first): (calibration, detection, coverage, y_span, x_span).
+        self._best_lock: Optional[tuple] = None
+        self._best_lock_cov: float = -1.0
 
     def _load_model(self, weights_path: str) -> CourtKeypointNet:
         model = CourtKeypointNet(in_channels=3, out_channels=15)
@@ -314,43 +323,60 @@ class CourtDetector:
                       and y_span >= COURT_MIN_PROJECTION_Y_SPAN
                       and x_span >= COURT_MIN_PROJECTION_X_SPAN)
 
-            if not passed:
-                if hit_cap:
-                    logger.warning(
-                        "court_calibration: FAIL-LOUD after %d frames — best calibration "
-                        "cov=%.0f%% y_span=%.1fm x_span=%.1fm (mode=%s, obs=%d; floors "
-                        "%.0f%%/%.0f/%.0fm). Refusing to lock an unusable calibration.",
-                        frame_idx, 100.0 * cov, y_span, x_span,
-                        None if cal is None else cal.mode, n_obs,
-                        100.0 * COURT_MIN_PROJECTION_COVERAGE,
-                        COURT_MIN_PROJECTION_Y_SPAN, COURT_MIN_PROJECTION_X_SPAN,
-                    )
-                    raise RuntimeError(
-                        f"court_calibration: FAILED after {frame_idx} frames — no "
-                        f"calibration that projects the court non-degenerately "
-                        f"(best cov={100.0 * cov:.0f}%, y_span={y_span:.1f}m, "
-                        f"x_span={x_span:.1f}m)."
-                    )
-                # Not good enough yet — keep sampling for more / better-spread
-                # observations. Do NOT lock a non-projecting / collapsed fit.
+            # Track the BEST floor-passing fit across attempts (lock-best, not
+            # lock-first — closes the prod 43%-vs-local-86% gap: prod froze the
+            # first fit above the floor while a tighter one was a few obs away).
+            if passed and cov > self._best_lock_cov:
+                self._best_lock_cov = cov
+                self._best_lock = (cal, best, cov, y_span, x_span)
+
+            if passed and cov >= COURT_GREAT_COVERAGE:
+                # Great fit — early-exit, lock it now.
+                lock_cal, lock_det, lcov, lys, lxs = cal, best, cov, y_span, x_span
+            elif hit_cap and self._best_lock is not None:
+                # Search budget exhausted — lock the best fit found so far (it
+                # cleared the floor; it just never reached the 'great' bar).
+                lock_cal, lock_det, lcov, lys, lxs = self._best_lock
                 logger.info(
-                    "court_calibration: candidate fit at frame=%d cov=%.0f%% "
-                    "y_span=%.1fm x_span=%.1fm (mode=%s, obs=%d) — below floors; "
-                    "keep searching.",
+                    "court_calibration: hard cap at frame=%d — locking BEST-so-far "
+                    "cov=%.0f%% (great bar %.0f%% never reached).",
+                    frame_idx, 100.0 * lcov, 100.0 * COURT_GREAT_COVERAGE)
+            elif hit_cap:
+                # Nothing ever projected the court → fail-loud.
+                logger.warning(
+                    "court_calibration: FAIL-LOUD after %d frames — no calibration "
+                    "projected the court (latest cov=%.0f%% y_span=%.1fm x_span=%.1fm, "
+                    "obs=%d). Refusing to lock an unusable calibration.",
+                    frame_idx, 100.0 * cov, y_span, x_span, n_obs,
+                )
+                raise RuntimeError(
+                    f"court_calibration: FAILED after {frame_idx} frames — no "
+                    f"calibration that projects the court (best "
+                    f"cov={100.0 * max(cov, self._best_lock_cov):.0f}%)."
+                )
+            else:
+                # Passing-but-not-great, or below floor — keep sampling for a
+                # better fit. Do NOT freeze a mediocre/collapsed calibration.
+                logger.info(
+                    "court_calibration: candidate at frame=%d cov=%.0f%% y_span=%.1fm "
+                    "x_span=%.1fm (mode=%s, obs=%d, best=%.0f%%) — below great bar "
+                    "%.0f%%; keep searching.",
                     frame_idx, 100.0 * cov, y_span, x_span,
                     None if cal is None else cal.mode, n_obs,
+                    100.0 * max(self._best_lock_cov, 0.0), 100.0 * COURT_GREAT_COVERAGE,
                 )
                 return detection
 
-            # Passed the projection self-test → commit the lock.
-            self._calibration = cal
-            self._locked_detection = best
-            locked_inliers = int((best.keypoints[:, 0] >= 0).sum())
+            # Commit the chosen lock.
+            self._calibration = lock_cal
+            self._locked_detection = lock_det
+            cov, y_span, x_span = lcov, lys, lxs
+            locked_inliers = int((lock_det.keypoints[:, 0] >= 0).sum())
             logger.info(
                 "court_calibration: LOCKED after %d frames — mode=%s rms=%.3fpx obs=%d "
                 "cov=%.0f%% y_span=%.1fm x_span=%.1fm (inliers=%d, conf=%.2f). No more CNN runs.",
-                frame_idx, cal.mode, cal.rms_px, n_obs, 100.0 * cov, y_span, x_span,
-                locked_inliers, best.confidence,
+                frame_idx, lock_cal.mode, lock_cal.rms_px, n_obs, 100.0 * cov, y_span, x_span,
+                locked_inliers, lock_det.confidence,
             )
             if self._calibration is not None:
                 logger.info(
