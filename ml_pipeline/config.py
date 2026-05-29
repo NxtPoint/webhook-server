@@ -149,6 +149,35 @@ ROI_BATCH_SIZE = max(1, int(os.getenv("ROI_BATCH_SIZE", "1")))
 # batched-FP16 detection counts on a known job.
 ROI_POSE_FP16 = os.getenv("ROI_POSE_FP16", "0").strip().lower() in ("1", "true", "yes")
 
+# ---------------------------------------------------------------------------
+# ROI bounce-window TrackNet batching (TASK 2 in
+# docs/_investigation/batch_optimisation_plan.md, detailed in
+# docs/_investigation/runtime_overlap_roi_2026-05-29.md). The service-box
+# bounce extractor (roi_extractors/bounces.py) runs ~194 windows on a long
+# match, each feeding a fresh BallTracker a contiguous crop sequence
+# SEQUENTIALLY — TrackNet forward at batch=1 per frame, ~4-21 s per window
+# (~25 min total). The TrackNet GPU forward pass is the cost; the T4 is badly
+# underutilised on a single 640×360 sliding-window tensor.
+#
+# ROI_BOUNCE_BATCH: how many TrackNet sliding-window inputs to accumulate
+# across the active window's frames before running ONE batched model forward.
+# Default 1 = the current per-frame, eager-forward behaviour (zero-risk
+# rollback — the processor calls BallTracker.detect_frame per frame exactly as
+# today). >1 switches roi_extractors/bounces.py to a deferred-inference path:
+# it collects each window's resized model-input tensors, runs them through the
+# shared TrackNet model in batches of this size, then replays the *identical*
+# per-frame postprocess (heatmap → Hough/CC/argmax → BallDetection,
+# interpolate, detect_bounces, project, zone-filter) so the per-window rows are
+# byte-identical to the sequential path on CPU and within fp-noise on GPU
+# (conv is batch-element-independent, BatchNorm/eval running-stats, the
+# heatmap postprocess is per-element). 8-16 is a good T4 starting point.
+#
+# NOTE: only the TrackNet (V2/V3) heatmap forward is batched. The frame-delta
+# Hough fallback (used when TrackNet emits no signal) stays per-frame because
+# it is a CPU op with sequential _prev_gray state — it is replayed in frame
+# order during the postprocess pass, exactly as the eager path would run it.
+ROI_BOUNCE_BATCH = max(1, int(os.getenv("ROI_BOUNCE_BATCH", "1")))
+
 # YOLO_FP16: half-precision inference for the player-stage YOLO passes (Lever
 # #3 from docs/_investigation/batch_optimisation_plan.md). The T4's FP16
 # throughput is ~2× FP32, so this stacks on top of L1 (PLAYER_BATCH_SIZE) as a
@@ -170,6 +199,35 @@ ROI_POSE_FP16 = os.getenv("ROI_POSE_FP16", "0").strip().lower() in ("1", "true",
 # error off cuda), so the cast is gated to cuda only. Default OFF = FP32, the
 # zero-risk rollback. Flip YOLO_FP16=1 on the Batch job-def to activate.
 YOLO_FP16 = os.getenv("YOLO_FP16", "0").strip().lower() in ("1", "true", "yes")
+
+# ---------------------------------------------------------------------------
+# CPU/GPU stage overlap (TASK 1 / L10 in
+# docs/_investigation/batch_optimisation_plan.md, detailed in
+# docs/_investigation/runtime_overlap_roi_2026-05-29.md). In the per-frame
+# loop, MOG2 motion_mask is a CPU op (OpenCV C++ MOG2, ~37.6 ms/fr on the
+# steady-state long-match profile) while ball + court + player are GPU ops
+# (~26 ms/fr combined). They run SERIALLY today, so the CPU idles during the
+# GPU launch and vice-versa; per-frame time is the SUM.
+#
+# PIPELINE_STAGE_OVERLAP=1 runs MOG2(frame N) on a bounded single-worker thread
+# CONCURRENTLY with the court + ball GPU stages of the SAME frame N, then JOINS
+# before the player stage (which is the only consumer of the motion_mask). MOG2
+# is OpenCV C++ and releases the GIL for the duration of cv2's apply(), so the
+# Python worker thread genuinely overlaps the GPU kernel launch + CUDA work
+# rather than time-slicing under the GIL. Per-frame wall time approaches
+# max(CPU_mog2, GPU_court+ball) + player instead of the full sum.
+#
+# CORRECTNESS: only the SCHEDULE changes. motion_mask(N) is computed from
+# frame N with the same MOG2 background-subtractor state, the same
+# learningRate, and in the same strict frame order (the worker processes
+# exactly one frame and we join every frame before the next iteration). The
+# player stage therefore receives the byte-identical motion_mask(N) it would
+# have received synchronously. Court and ball mutate only their own state and
+# never read the motion_mask, so they are independent of it. Outputs are
+# identical to the sequential path — see the correctness argument in the
+# investigation doc. Default 0 = today's exact sequential behaviour
+# (zero-risk rollback).
+PIPELINE_STAGE_OVERLAP = os.getenv("PIPELINE_STAGE_OVERLAP", "0").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # Court detector (ResNet50 keypoints)

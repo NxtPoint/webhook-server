@@ -25,6 +25,7 @@ from ml_pipeline.config import (
     MOG2_DETECT_SHADOWS,
     MOG2_LEARNING_RATE,
     BALL_TRACKER,
+    PIPELINE_STAGE_OVERLAP,
 )
 from ml_pipeline.video_preprocessor import VideoPreprocessor, VideoMetadata
 from ml_pipeline.court_detector import CourtDetector
@@ -139,6 +140,32 @@ class TennisAnalysisPipeline:
             detectShadows=MOG2_DETECT_SHADOWS,
         )
 
+        # TASK 1: CPU/GPU stage overlap. When PIPELINE_STAGE_OVERLAP is on we
+        # run the CPU-bound MOG2 motion-mask of frame N on a single bounded
+        # worker thread CONCURRENTLY with the GPU-bound court + ball stages of
+        # the SAME frame N, then join before the player stage (the only
+        # consumer of the mask). One worker = strict frame ordering: exactly
+        # one MOG2 apply() is ever in flight, fed in frame order, joined every
+        # frame — so the background-subtractor state mutates in the identical
+        # sequence as the synchronous path and motion_mask(N) is byte-identical.
+        # MOG2's cv2 apply() is C++ and releases the GIL, so the thread overlaps
+        # the GPU kernel launch + CUDA work instead of time-slicing under it.
+        self._stage_overlap = bool(PIPELINE_STAGE_OVERLAP)
+        self._mog2_executor = None
+        if self._stage_overlap:
+            from concurrent.futures import ThreadPoolExecutor
+            # max_workers=1: the join-every-frame contract already serialises
+            # MOG2 calls; a single worker keeps the background-model update
+            # order deterministic and avoids any cross-frame race on the
+            # subtractor's internal state.
+            self._mog2_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mog2",
+            )
+            logger.info(
+                "Pipeline stage overlap ENABLED (PIPELINE_STAGE_OVERLAP=1): "
+                "MOG2 motion-mask runs concurrently with court+ball per frame"
+            )
+
         # Apply practice-mode intervals
         if practice:
             from ml_pipeline import config
@@ -155,6 +182,12 @@ class TennisAnalysisPipeline:
             "motion_mask": 0.0,
             "player": 0.0,
             "postprocess": 0.0,
+            # TASK 1 observability: true MOG2 compute time. In sequential mode
+            # this stays 0 (the inline apply is charged to "motion_mask"). In
+            # overlap mode "motion_mask" holds only the residual join wait and
+            # this holds the real (overlapped) MOG2 cost — the gap between them
+            # is the wall-clock the overlap hid behind the GPU stages.
+            "motion_mask_compute": 0.0,
         }
 
     def _report_progress(self, stage: str, pct: int = None):
@@ -177,16 +210,37 @@ class TennisAnalysisPipeline:
         single most useful number for deciding where to optimise next.
         """
         totals = self._stage_seconds
-        grand = sum(totals.values())
+        # motion_mask_compute is an OBSERVABILITY counter (TASK 1) that overlaps
+        # the GPU stages in overlap mode — it is NOT a sequential wall-clock
+        # contributor, so exclude it from the grand total / share maths to keep
+        # the percentages meaningful. It is still printed separately below.
+        WALL = ("court", "ball", "motion_mask", "player", "postprocess")
+        grand = sum(totals.get(k, 0.0) for k in WALL)
         if grand <= 0 or frame_idx <= 0:
             return
         label = "FINAL" if final else f"@ frame {frame_idx}"
         parts = []
-        for name, secs in totals.items():
+        for name in WALL:
+            secs = totals.get(name, 0.0)
             ms_per = secs * 1000 / max(1, frame_idx)
             share = 100 * secs / grand if grand else 0
             parts.append(f"{name}={secs:.1f}s ({ms_per:.1f}ms/fr, {share:.0f}%)")
         logger.info("stage_timings %s [total=%.1fs]  %s", label, grand, "  ".join(parts))
+
+        # TASK 1: surface how much MOG2 work was overlapped away. In overlap
+        # mode motion_mask (residual join wait) << motion_mask_compute (true
+        # MOG2 cost); the difference is the wall-clock the overlap hid behind
+        # court+ball. In sequential mode motion_mask_compute is 0.
+        mm_compute = totals.get("motion_mask_compute", 0.0)
+        if mm_compute > 0:
+            mm_residual = totals.get("motion_mask", 0.0)
+            hidden = max(0.0, mm_compute - mm_residual)
+            logger.info(
+                "stage_overlap %s  mog2_compute=%.1fs  mog2_residual_wait=%.1fs  "
+                "overlapped_hidden=%.1fs (%.1fms/fr saved)",
+                label, mm_compute, mm_residual, hidden,
+                hidden * 1000 / max(1, frame_idx),
+            )
 
         # Player sub-stage breakdown — tells us whether SAHI, full-frame YOLO,
         # or scoring logic is the bottleneck inside the player stage.
@@ -258,6 +312,14 @@ class TennisAnalysisPipeline:
         logger.info(f"Frame processing complete: {frame_idx} frames, {result.frame_errors} errors")
         self._log_stage_timings(frame_idx, final=True)
 
+        # TASK 1: tear down the MOG2 worker — the per-frame loop is done and
+        # postprocess never touches the motion mask. The single-worker queue is
+        # already empty (we joined every frame), so this returns promptly. Guard
+        # so a re-run via reset() can re-create it.
+        if self._mog2_executor is not None:
+            self._mog2_executor.shutdown(wait=True)
+            self._mog2_executor = None
+
         # Drain any batched ball-detection backlog before post-processing reads
         # ball_tracker.detections (no-op unless BALL_BATCH_SIZE>1 on WASB).
         self.ball_tracker.flush()
@@ -281,6 +343,26 @@ class TennisAnalysisPipeline:
         )
         return result
 
+    def _make_motion_mask(self, frame: np.ndarray) -> np.ndarray:
+        """Compute the MOG2 foreground mask for one frame.
+
+        Extracted so the overlap path (TASK 1) can run it on the worker thread
+        while court + ball occupy the GPU. Identical call to the inline
+        sequential version — same subtractor, same learningRate. The single
+        worker + join-every-frame contract guarantees frame-ordered state
+        mutation, so the returned mask is byte-identical to the synchronous
+        path. The compute cost is accumulated into `motion_mask_compute` purely
+        for observability — in overlap mode `_stage_seconds["motion_mask"]`
+        only captures the residual join wait (the part NOT hidden behind the
+        GPU), so this separate counter lets the stage-timing log show how much
+        MOG2 work was actually overlapped away.
+        """
+        import time as _t
+        _s = _t.perf_counter()
+        mask = self._bg_subtractor.apply(frame, learningRate=MOG2_LEARNING_RATE)
+        self._stage_seconds["motion_mask_compute"] += _t.perf_counter() - _s
+        return mask
+
     def _process_frame(self, frame: np.ndarray, frame_idx: int):
         """Process a single frame through all three models."""
         # Keep the raw (distorted) frame. Detectors operate in raw pixel
@@ -289,22 +371,53 @@ class TennisAnalysisPipeline:
         # space geometry (court polygon, debug bboxes, motion masks) aligned.
         pc = time.perf_counter
 
-        # 1. Court detection (runs every N frames, cached otherwise)
-        t = pc()
-        court = self.court_detector.detect(frame, frame_idx)
-        self._stage_seconds["court"] += pc() - t
+        # TASK 1 overlap path: dispatch the CPU MOG2 of THIS frame to the
+        # worker FIRST, so it runs while court + ball occupy the GPU, then join
+        # before the player stage. The motion_mask is identical because the
+        # single worker applies exactly one frame at a time in frame order and
+        # we join every frame (see _make_motion_mask / __init__ comment).
+        mog2_future = None
+        if self._stage_overlap:
+            mog2_future = self._mog2_executor.submit(self._make_motion_mask, frame)
 
-        # 2. Ball tracking
-        t = pc()
-        self.ball_tracker.detect_frame(frame, frame_idx)
-        self._stage_seconds["ball"] += pc() - t
+        try:
+            # 1. Court detection (runs every N frames, cached otherwise)
+            t = pc()
+            court = self.court_detector.detect(frame, frame_idx)
+            self._stage_seconds["court"] += pc() - t
+
+            # 2. Ball tracking
+            t = pc()
+            self.ball_tracker.detect_frame(frame, frame_idx)
+            self._stage_seconds["ball"] += pc() - t
+        except Exception:
+            # If court/ball raises in overlap mode, still DRAIN the MOG2 future
+            # so the single-worker queue can't deadlock the next frame's
+            # submit(). The mask is discarded (the player stage won't run for
+            # this errored frame — same as the sequential path, which skips
+            # steps 3-4 on a court/ball exception via the caller's try/except).
+            if mog2_future is not None:
+                try:
+                    mog2_future.result()
+                except Exception:
+                    pass
+            raise
 
         # 3. MOG2 foreground mask — feed every frame so the background model
         #    learns. The mask is passed to player tracker for motion scoring.
+        #    Overlap path: the apply() already ran (or is finishing) on the
+        #    worker; .result() returns it and the accumulated "motion_mask"
+        #    time becomes the RESIDUAL wait (≈0 when MOG2 finished during the
+        #    GPU stages — that residual is exactly the wall-clock saving). The
+        #    true MOG2 compute cost in overlap mode is logged separately so the
+        #    speedup is observable.
         t = pc()
-        motion_mask = self._bg_subtractor.apply(
-            frame, learningRate=MOG2_LEARNING_RATE,
-        )
+        if mog2_future is not None:
+            motion_mask = mog2_future.result()
+        else:
+            motion_mask = self._bg_subtractor.apply(
+                frame, learningRate=MOG2_LEARNING_RATE,
+            )
         self._stage_seconds["motion_mask"] += pc() - t
 
         # 4. Player tracking (with motion mask + court geometry for scoring)
@@ -626,3 +739,12 @@ class TennisAnalysisPipeline:
             varThreshold=MOG2_VAR_THRESHOLD,
             detectShadows=MOG2_DETECT_SHADOWS,
         )
+        # TASK 1: re-arm the MOG2 worker for the next process() if overlap is
+        # enabled (process() shuts it down at the end of the frame loop). Reset
+        # the observability counter too so the per-run log starts clean.
+        if self._stage_overlap and self._mog2_executor is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._mog2_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mog2",
+            )
+        self._stage_seconds["motion_mask_compute"] = 0.0
