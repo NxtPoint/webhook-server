@@ -54,6 +54,7 @@ from ml_pipeline.bounce_detector.feature_extractor import (
     WINDOW_FRAMES,
     build_window,
 )
+from ml_pipeline.config import FRAME_SAMPLE_FPS
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +135,43 @@ def _load_candidates(conn, t5_task_id: str) -> list[dict]:
 
 
 def _load_fps(conn, t5_task_id: str) -> float:
+    """SOURCE video fps (the space SA's `bounce_frame_est` lives in) — NOT the
+    T5 bronze sampling rate. See _sa_label_to_t5_frame for why this distinction
+    matters."""
     fps = conn.execute(sql_text(
         "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs "
         "WHERE job_id = :t OR task_id = :t LIMIT 1"
     ), {"t": t5_task_id}).scalar()
     return float(fps) if fps else 25.0
+
+
+def _sa_label_to_t5_frame(
+    label: dict, t5_sample_fps: float, sa_fps: float,
+) -> int:
+    """Map a SportAI floor label to the T5 BRONZE frame index.
+
+    Two distinct frame spaces are in play (the fps=60 corpus bug, 2026-05-29):
+      • SA `bounce_frame_est` is in the SOURCE video frame space (e.g. 60 fps
+        for Match 4) — `bounce_frame_est == round(timestamp * source_fps)`,
+        verified exactly (implied fps 25.00 on M1, 60.00 on M4).
+      • T5 bronze `ball_detections.frame_idx` is the RESAMPLED output counter at
+        `FRAME_SAMPLE_FPS` (25) regardless of source fps — the preprocessor
+        yields at target_fps and the consumer enumerates the yield.
+
+    Using `bounce_frame_est` directly as a T5 frame index (the old code) only
+    worked when source_fps == 25 (M1). On Match 4 it was off by 60/25 = 2.4×,
+    so 92% of floor labels fell outside any candidate window → anchor-fallback
+    noise → the retrain regression.
+
+    The robust bridge is the label's `timestamp` (seconds, fps-independent):
+        t5_frame = round(timestamp * FRAME_SAMPLE_FPS).
+    Fall back to rescaling the source-fps frame index by the fps ratio when a
+    label has no timestamp (none observed in current corpora, but defensive)."""
+    ts = label.get("timestamp")
+    if ts is not None:
+        return int(round(float(ts) * t5_sample_fps))
+    bf = float(label["bounce_frame_est"])
+    return int(round(bf * t5_sample_fps / sa_fps)) if sa_fps else int(round(bf))
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +180,16 @@ def _load_fps(conn, t5_task_id: str) -> float:
 
 def _match_label_to_candidate(
     label: dict,
+    bf: int,
     candidates_by_frame: dict[int, dict],
     frame_tol: int,
     pixel_tol_px: float,
 ) -> tuple[int, bool]:
     """For one SA floor label, return (frame_idx_to_use, is_strict_match).
+
+    `bf` is the label's anchor frame ALREADY MAPPED to the T5 bronze frame
+    space (see _sa_label_to_t5_frame) — do NOT read `bounce_frame_est` here,
+    that is in source-fps space and would mis-align on non-25fps videos.
 
     Strict path: nearest is_bounce=TRUE candidate within ±frame_tol AND
     ≤pixel_tol_px image-pixel distance — the audit's "strong positive"
@@ -174,7 +212,6 @@ def _match_label_to_candidate(
     candidate generation graduates to gravity-residual peak detection
     (ADR-01 v1+ follow-up), strict-mode and fallback converge.
     """
-    bf = int(label["bounce_frame_est"])
     lbl_px = float(label.get("pixel_x", 0.0) or 0.0)
     lbl_py = float(label.get("pixel_y", 0.0) or 0.0)
     best_fi = None
@@ -263,8 +300,11 @@ def build_manifest(
             continue
 
         with engine.connect() as conn:
-            fps = _load_fps(conn, t5)
+            sa_fps = _load_fps(conn, t5)           # source video fps (bounce_frame_est space)
             cands = _load_candidates(conn, t5)
+        # T5 bronze frame_idx is the resampled output counter at FRAME_SAMPLE_FPS
+        # (25), NOT the source fps — SA labels must be mapped into this space.
+        t5_sample_fps = float(FRAME_SAMPLE_FPS)
         if not cands:
             logger.warning("task %s: 0 ball_detections rows — skipping", t5[:8])
             continue
@@ -288,12 +328,15 @@ def build_manifest(
         pos_frames: list[tuple[int, dict]] = []
         n_strict = 0
         for lbl in floor_lbls:
+            # Map the SA label into the T5 bronze frame space FIRST (fps=60
+            # corpus fix). bf is now a 25-fps T5 frame index, directly
+            # comparable to candidate frame_idx.
+            bf = _sa_label_to_t5_frame(lbl, t5_sample_fps, sa_fps)
             if candidate_mode == "gravity_residual":
                 # Loose match: any GR candidate within ±5 frames of SA label.
                 # GR candidates carry frame-index signal only (no pixel info
                 # of their own), so the pixel gate is dropped — frame
                 # proximity IS the matching evidence.
-                bf = int(lbl["bounce_frame_est"])
                 fi = None
                 best = 999
                 for k in range(bf - POSITIVE_FRAME_TOL, bf + POSITIVE_FRAME_TOL + 1):
@@ -305,7 +348,7 @@ def build_manifest(
                     fi = bf       # SA-anchor fallback (same as is_bounce mode)
             else:
                 fi, is_strict = _match_label_to_candidate(
-                    lbl, cands_by_frame,
+                    lbl, bf, cands_by_frame,
                     frame_tol=POSITIVE_FRAME_TOL,
                     pixel_tol_px=POSITIVE_PIXEL_TOL_PX,
                 )
@@ -342,7 +385,7 @@ def build_manifest(
                 t5_task_id=t5, frame_idx=fi, label=1,
                 court_x=cx, court_y=cy,
                 timestamp=(float(lbl["timestamp"]) if lbl.get("timestamp") is not None else None),
-                fps=fps,
+                fps=t5_sample_fps,
             ).to_dict())
         for fi in neg_frames:
             c = cands_by_frame[fi]
@@ -350,8 +393,9 @@ def build_manifest(
                 t5_task_id=t5, frame_idx=fi, label=0,
                 court_x=(float(c["court_x"]) if c.get("court_x") is not None else None),
                 court_y=(float(c["court_y"]) if c.get("court_y") is not None else None),
-                timestamp=fi / fps if fps else None,
-                fps=fps,
+                # fi is a T5 (25-fps) frame → use the T5 sampling rate, not source fps.
+                timestamp=fi / t5_sample_fps if t5_sample_fps else None,
+                fps=t5_sample_fps,
             ).to_dict())
 
         n_total_floor += len(floor_lbls)
@@ -360,11 +404,11 @@ def build_manifest(
         logger.info(
             "task %s [%s]: floor_labels=%d  positives=%d (strict=%d/%.0f%%, "
             "anchor_fallback=%d)  candidate_pool=%d  eligible_negs=%d  "
-            "sampled_negs=%d  fps=%.1f",
+            "sampled_negs=%d  sa_fps=%.1f  t5_sample_fps=%.1f",
             t5[:8], candidate_mode, len(floor_lbls), len(pos_frames),
             n_strict, 100.0 * n_strict / max(1, len(floor_lbls)),
             len(pos_frames) - n_strict, len(all_candidate_frames),
-            len(eligible_negs), len(neg_frames), fps,
+            len(eligible_negs), len(neg_frames), sa_fps, t5_sample_fps,
         )
 
     logger.info(
