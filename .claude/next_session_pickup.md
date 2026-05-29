@@ -4,7 +4,7 @@
 > 1. **Deployed** calibration fix + L2c (batched SAHI) in one image (`2bd946a2`) → **job-defs eu rev 57 / us rev 39** (`SAHI_BATCHED` OFF on job-def, set per-job). Source re-uploaded (`wix-uploads/1779964630_Tomo_vs_Jimbo.mp4`, byte-verified).
 > 2. **Match 4 ran on g5 (job `51e0ffee`):** calibration locked a **radial fit, 84% projection coverage, conf 0.93** (vs the broken run's 0%) → **ms_per_frame 70.4** (broken 321 / baseline 183), ~2h12, **504 valid bounces**, player 69,424. Re-ingested → **silver 334 rows, ALL with court_x** (SA = 391, ~85%). Fix C+ did NOT fail-loud (43% ball coverage cleared the floor).
 > 3. **Calibration PROVEN in prod** — the decisive prod test passed (real coords, not the LOCKED-line false positive from last time).
-> 4. **Bounce v1 full-data retrain ran** (M1 78c32f53 + M4 ca475740, `gravity_residual`): **val F1 0.40 → 0.677.** Weights `ml_pipeline/models/bounce_detector_v1_m1m4.pt` (NOT baseline-locked). Bench recall/precision sweep: **[RESULT PENDING — re-running with `BOUNCE_CANDIDATE_MODE=gravity_residual` after the first bench used the wrong is_bounce pool → spurious 0%; will fill in].**
+> 4. **Bounce v1 full-data retrain ran** (M1 78c32f53 + M4 ca475740, `gravity_residual`): **val F1 0.40 → 0.677.** Weights `ml_pipeline/models/bounce_detector_v1_m1m4.pt` (NOT baseline-locked, **DO NOT SHIP**). **Bench result (GR-mode): the retrain REGRESSED — Match 1 dropped ~24% → 10.5% recall @0.5, Match 4 = 0%.** Root cause = the `fps=60` mismatch (below): Match 4's labels are 92% anchor-fallback noise → training on M1+noisy-M4 pulled the model off M1's optimum, and the fps mismatch breaks M4's bench timestamp matching. **Keep the M1-only v1 (~24%) live. The fps/frame-alignment fix is a PREREQUISITE — not an enhancement — before Match 4 (or any 60fps match) is usable bounce-training data.** Next bounce step: fix fps handling → rebuild corpus → retrain.
 >
 > **⚠️ Two honest caveats on match 4's quality:**
 > - **Coverage moderate (43% ball vs healthy ~97%)** — prod locked `rms=13.3px` vs the dev-box repro's `2.84px`. Same video/fix, looser prod lock (radial/32-obs). **Calibration agent is investigating WHY** (closing it lifts M4 coverage materially). Non-blocking; M4 is usable.
@@ -14,11 +14,15 @@
 > The live profile (clean match-4 run) gives a ranked, evidence-based roadmap. Target: **~2h → sub-1h** on a 45-min match.
 > | # | Lever | Status | Effect |
 > |---|---|---|---|
-> | 1 | **MOG2 downscale** (`MOG2_DOWNSCALE`) | **prototyped** on `opt/overnight-findings` | motion_mask is **58% of wall** (38ms/fr, CPU) → ~halve it |
-> | 2 | **CPU/GPU stage overlap** | **designed, NOT coded** (pipeline.py concurrency) | MOG2 (CPU 38ms) runs SERIAL with ball+player (GPU ~26ms) → overlap → ~25–40% cut. (Plan's L10 — *underrated*; profile shifted since.) |
-> | 3 | **ROI window batching** | **scoped, NOT coded** (`roi_extractors`) | ROI bounce = 194 sequential windows (~25min) → batch → ~8min |
-> - **Stacked: ~2h → sub-1h.** And **g5 EARNS its keep post-optimization**: the pipeline goes GPU-bound, where A10G ≈ 1.5–2× T4; on g4dn it'd be ~1.5–2× slower (~75–100min → back over 1h) at ~flat cost-per-job. So: optimize → stay on g5.
-> - **Deploy as a deliberate daylight cycle** (Batch rebuild + bench-green + a validation run). Needs a video source — **match 4's source was deleted again on this successful run** (pipeline deletes source on success → every run is one-shot; consider disabling source-delete during the optimization phase).
+> | 1 | **MOG2 downscale** (`MOG2_DOWNSCALE`) | **CODED** on `opt/overnight-findings` | motion_mask is **58% of wall** (38ms/fr, CPU) → ~halve it |
+> | 2 | **CPU/GPU stage overlap** (`PIPELINE_STAGE_OVERLAP`) | **CODED** on `opt/runtime-overlap-roi` (`d2eff02`) | MOG2(CPU) runs on a worker thread (cv2 releases GIL) concurrent with court+ball GPU, joined before player. ~15–20% main-loop cut. |
+> | 3 | **ROI bounce-window batching** (`ROI_BOUNCE_BATCH`) | **CODED** on `opt/runtime-overlap-roi` (`d2eff02`) | 194 sequential TrackNet windows → batched. ~25min → ~6–10min. V2-only (V3 falls back). |
+> | 4 | **SAHI_BATCHED=1** | **CODED + DEPLOYED** (rev 57, off on job-def) | flip the env to activate |
+> | 5 | **L7 g5/A10G** | **ACTIVE** (queue order 1) | ~1.5–2× on GPU-bound stages |
+> - **Honest stack math (per the prototype report):** MOG2 + overlap + ROI-batch land **~2h → ~1h30m**; **sub-1h additionally needs flipping `SAHI_BATCHED=1` + the g5 hardware lever** (both already in place). All software levers are now CODED/banked — the next cycle is **deploy + validate**, not build.
+> - **g5 EARNS its keep post-optimization**: pipeline goes GPU-bound (A10G ≈ 1.5–2× T4); g4dn would be ~1.5–2× slower (~over 1h) at ~flat cost-per-job. Optimize → stay on g5.
+> - **Deploy as ONE daylight cycle** (Batch rebuild from `main` + merged opt branches → bench-green → dual-region ECR → job-defs → validation run). **3 human-verify gates from the prototype report:** (1) `frame_errors==0` on the overlap run; (2) `roi_prod` bounce-row count matches eager within fp-noise; (3) the `overlapped_hidden` log line is non-zero (confirms cv2 releases GIL on the base image). Needs a video source — **match 4's source was deleted again on this successful run** (pipeline deletes source on success → one-shot; consider disabling source-delete during the optimization phase).
+> - **Banked branches to merge for the cycle:** `opt/sahi-batched-tilefan` (L2c — already merged), `opt/overnight-findings` (MOG2 + SAHI-skip + Lambda fix), `opt/runtime-overlap-roi` (overlap + ROI-batch). Report: `docs/_investigation/runtime_overlap_roi_2026-05-29.md`.
 >
 > ## Banked branches + open items
 > - `opt/sahi-batched-tilefan` (L2c) — **MERGED to main + deployed** (rev 57).
