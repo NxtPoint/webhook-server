@@ -46,6 +46,7 @@ from ml_pipeline.bounce_detector.models import (
     SignalSource,
 )
 from ml_pipeline.bounce_detector.pre_gates import apply_pre_gates
+from ml_pipeline.config import FRAME_SAMPLE_FPS
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,15 @@ def _run_pipeline(
             continue
         stats["above_threshold"] += 1
 
-        ts = fi / fps
+        # fi is a T5 BRONZE frame index — bronze is sampled at FRAME_SAMPLE_FPS
+        # (25) regardless of the SOURCE video fps. The threaded `fps` arg is the
+        # source video_fps (e.g. 60 on Match 4); dividing by it gave event
+        # timestamps 60/25=2.4× too small, so the bench could never match M4
+        # events to SA-label seconds (the "fps mismatch breaks M4 bench" note).
+        # Convert via the bronze sampling rate, not source fps. (Match-scoped;
+        # practice bronze would use FRAME_SAMPLE_FPS_PRACTICE — revisit if the
+        # bounce detector is ever run on practice.)
+        ts = fi / FRAME_SAMPLE_FPS
         source = (
             SignalSource.BOUNCE_DETECTOR_V1
             if cnn.weights_loaded
