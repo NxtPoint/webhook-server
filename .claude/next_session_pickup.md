@@ -4,8 +4,8 @@
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
 **Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN. `bench_calib` 4/4. bounce fps-fix validated (M4 0%→26.7%, M1 22.4%) — baseline NOT locked.
 **What landed overnight:** the runtime-optimization deploy (job-defs **eu rev 58 / us rev 40**, image `7f1998a5` / amd64 `sha256:1722156a…`) RAN IN PROD on match 4. **Main loop 70.4→48.8 ms/frame**, **court locked piecewise 88% / player court_x 98.7%** (calibration polish proven in prod), **CPU/GPU overlap confirmed** (8.5 ms/fr hidden). Plus the **fps=60 bounce-corpus fix** (committed `f081bcd`+`d2d4182`, validated).
-**What's NOT done:** TWO env-triggered ROI bugs dropped far-pose + ROI bounces (details below). A **clean re-run** (`ab814d65`) with both levers rolled back via env is in flight as of 07:30Z.
-**Next session's job:** code-fix the 2 ROI bugs (`pose.py` fp16 cast + `bounces.py` OOM mgmt) → ONE daylight rebuild → re-run → that's the sub-1h-CLEAN target. Full analysis: `docs/_investigation/match4_opt_run_2026-05-30.md`.
+**What's NOT done:** TWO env-triggered ROI bugs dropped far-pose + ROI bounces in run #1. The **clean re-run** (`ab814d65`) with both levers rolled back via env (`ROI_POSE_FP16=0`+`ROI_BOUNCE_BATCH=1`) **SUCCEEDED** — complete bronze (far-pose 47974 rows, ROI bounces 12144/604, court 88%, 0 errors) — BUT total 2h37m because the rollback made the ROI sweep slow (pose 67m fp32 + bounce 86m @ batch=1).
+**Honest sub-1h verdict:** NOT yet for a COMPLETE run. Main loop is ~58m (near target); the ROI far-pose+bounce sweep is the wall, and its optimizations ARE the 2 bugs. **Next session's job:** code-fix the 2 ROI bugs (`pose.py` fp16 cast + `bounces.py` OOM mgmt → re-enable fp16-pose + bounce-batching) → ONE daylight rebuild → re-run; that + further ROI cost reduction (far-pose sampling / memory headroom) is the sub-1h-CLEAN path. Full analysis: `docs/_investigation/match4_opt_run_2026-05-30.md`.
 
 If that's enough, go. Depth below.
 
@@ -30,7 +30,7 @@ Main loop alone is 58.5 min. A clean run needs the ROI-bounce batching WORKING (
 
 ## In-flight / jobs (NOT auto-ingested — manual Batch submits)
 - Run #1 bronze (main only): `s3://nextpoint-prod-uploads/analysis/540000b4-…/bronze.json.gz` (ball=23796, player=62206). `ml_analysis` empty for it by design.
-- Clean re-run: T5 `ab814d65-dbaf-4db9-8c6a-75bec136d4c8`, Batch `ad240ed2-b967-45cc-84a5-0369a95cba10`. Check status: `aws batch describe-jobs --region eu-north-1 --jobs ad240ed2-…`. Its bronze will have far-pose + ROI bounces. To land it in `ml_analysis`/silver you must trigger ingest manually (manual submits have no auto-ingest; no `submission_context`, so `/ops/sweep-t5-orphans` won't pick it up either).
+- Clean re-run **SUCCEEDED**: T5 `ab814d65-dbaf-4db9-8c6a-75bec136d4c8`, Batch `ad240ed2-…`. **Complete bronze** at `s3://nextpoint-prod-uploads/analysis/ab814d65-…/bronze.json.gz` — main + far-pose (47974) + ROI bounces (12144/604 bounces), court 88%/player 98.7%, 0 errors. This is a SUPERIOR match-4 bronze vs the corpus's current `ca475740` (84%). **NOT ingested** — manual submits have no auto-ingest + no `submission_context`, so `/ops/sweep-t5-orphans` won't pick it up. To land in `ml_analysis`/silver, trigger ingest manually. **Daylight option:** refresh the corpus match-4 entry from this better bronze → bounce re-bench (currently corpus uses `ca475740`; don't double-count match 4).
 - **Corpus task `ca475740` was NOT touched** (ran under fresh job_ids — `ball/player_detections` inserts have no delete/ON CONFLICT, so reusing a job_id DOUBLES rows).
 
 ## ⚠️ Operational finding — overnight g5 capacity

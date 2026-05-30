@@ -76,6 +76,19 @@ full. Non-fatal (pass dropped), but **all ROI-refined bounces were lost**.
   #1 lever for a sub-1h CLEAN run.**
 - Trim/NVENC adds ~7 min serially after detection.
 
+## Run #2 — CLEAN re-run (job `ab814d65`, env rollback `ROI_POSE_FP16=0` + `ROI_BOUNCE_BATCH=1`)
+Both ROI passes succeeded this time → **complete bronze**:
+- `roi_pose: wrote 47974 rows (far_vitpose)` (fp16=False) · `roi_bounces: 12144 rows (604 bounces)` (batch=1)
+- Main loop identical: 48.8 ms/frame, 0 errors. Court `LOCKED piecewise 88%`, player court_x 98.7%.
+- **BUT total = 9430 s (2h37m)** — the ROI sweep alone was **91 min** (pose 67 min fp32 + bounce 86 min @ batch=1). The rollback that made it *correct* made it *slow*. Est $0.41.
+
+**This is the crux for sub-1h:** the main loop is ~58 min (near target), but a COMPLETE run is dominated by the ROI far-pose + bounce sweep — and the optimizations for that sweep are exactly the two bugs above. Run #1 (ROI crashed = ~free) was 72 min; run #2 (ROI works but unoptimized) was 157 min. A true optimized-clean run sits between (~58 main + ~40 optimized-ROI + 7 trim ≈ ~105 min).
+
+**Honest sub-1h verdict:** NOT yet achieved for a complete 47-min-match run. Huge progress (main loop 70→49 ms/fr, 2h12→ the loop nearly halved, calibration proven, fps fix done, complete clean bronze produced), but sub-1h-CLEAN needs (a) the 2 ROI bug-fixes to re-enable fp16-pose + bounce-batching AND (b) further ROI cost reduction (far-pose sampling rate / larger batches / GPU memory headroom).
+
+## ⚠️ Operational: overnight g5 capacity
+Run #2 sat RUNNABLE ~8.5 h (submitted 22:15Z, started 06:43Z) waiting for a g5; the g4dn/Spot fallback in the queue did not pick it up. Check CE min-vCPU / capacity strategy for overnight runs.
+
 ## Optimization opportunities (ranked — for the daylight cycle)
 
 1. **Fix ROI-bounce OOM → re-enable batching** (`bounces.py`): the gating lever for sub-1h-clean.
