@@ -5,11 +5,14 @@ Falls back to FFmpeg subprocess if available for better codec support.
 """
 
 import os
+import logging
 import numpy as np
 import cv2
 from dataclasses import dataclass
 
 from ml_pipeline.config import FRAME_SAMPLE_FPS, SUPPORTED_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,17 +80,32 @@ class VideoPreprocessor:
         # Frame sampling: if source is 30fps and target is 25fps, skip some frames
         frame_interval = source_fps / self.target_fps if self.target_fps < source_fps else 1.0
 
+        # Decode-skip (B1): grab() advances the decoder cheaply (demux only, no
+        # full decode); we retrieve() ONLY the sampled frames we actually yield.
+        # On a 60fps source down-sampled to 25fps this avoids fully decoding the
+        # ~59% of frames we discard. Output-identical to the old read()-every-frame
+        # loop: same sample condition, same frame_interval advance. Same template
+        # as the ROI sweep (roi_extractors/unified.py).
         try:
             source_frame_idx = 0
             next_sample_at = 0.0
+            decoded = 0
             while True:
-                ret, frame = cap.read()
-                if not ret:
+                if not cap.grab():
                     break
                 if source_frame_idx >= next_sample_at:
+                    ret, frame = cap.retrieve()
+                    if not ret:
+                        break
+                    decoded += 1
                     yield frame
                     next_sample_at += frame_interval
                 source_frame_idx += 1
+            logger.info(
+                "VideoPreprocessor: decoded %d sampled frames of %d source "
+                "(interval=%.2f, source_fps=%.1f target_fps=%d)",
+                decoded, source_frame_idx, frame_interval, source_fps, self.target_fps,
+            )
         finally:
             cap.release()
 
