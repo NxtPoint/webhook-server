@@ -36,7 +36,7 @@ Every known runtime lever with cost/impact/risk/validation/status (10 shipped, ~
 | # | Item | Notes |
 |---|---|---|
 | 1 | Main-loop optimization cycle (sub-1h) | backlog B1→B2→D1; fresh session |
-| 2 | Lambda **function** code deploy (`update-function-code`) | rev-59 job-def fixed the stored-command half; the Lambda path still needs deploy to restore DIRECT S3 uploads |
+| 2 | Lambda **function** code deploy (`update-function-code`) | rev-59 job-def fixed the stored-command half; the Lambda path still needs deploy to restore DIRECT S3 uploads. ⚠️ **BLOCKED from this box** — IAM user `nextpoint-uploader` has NO Lambda perms (`lambda:ListFunctions`/`UpdateFunctionCode` denied). Needs a Lambda-capable credential (Tomo) or an IAM grant. Code fix already committed (`lambda/ml_trigger.py`, args-only). |
 | 3 | far-pose density (`pose_sample_every=1`) | backlog C4; validate coverage |
 | 4 | Bounce pass is CPU/postprocess-bound | backlog C1 |
 | 5 | Optional: refresh corpus match-4 entry from a clean run's superior bronze | backlog/corpus; don't double-count `ca475740` |
