@@ -473,6 +473,14 @@ class FarPoseProcessor:
                 pixel_values=vit_inputs["pixel_values"],
                 dataset_index=dataset_index,
             )
+        # FP16 fix: post_process_pose_estimation runs numpy/scipy heatmap ops
+        # that reject float16 ("array type dtype('float16') not supported") — it
+        # crashed the whole pose pass on rev 58 (ROI_POSE_FP16=1), dropping ALL
+        # far-pose rows. Cast the model output heatmaps back to float32 before
+        # post-processing. The expensive forward stays fp16; only the small
+        # heatmap tensor is upcast, so the speed win is preserved.
+        if self._vit_fp16 and getattr(vit_out, "heatmaps", None) is not None:
+            vit_out.heatmaps = vit_out.heatmaps.float()
         results = self.vit_proc.post_process_pose_estimation(
             vit_out, boxes=boxes_per_image,
         )

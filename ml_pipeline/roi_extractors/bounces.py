@@ -51,6 +51,14 @@ from sqlalchemy import text as sql_text
 
 from ml_pipeline.config import ROI_BOUNCE_BATCH
 
+# Each TrackNet-V2 forward output is (1, out_channels, H*W) — ~118 MB in fp16 for
+# a 360x640 crop. The batched path accumulates ONE output per window frame before
+# replay, so a large window (hundreds of frames) would need tens of GB and OOM
+# the GPU (this is what crashed rev 58). Windows larger than this run eagerly
+# (per-frame, bounded memory). The GPU forward is NOT the bounce bottleneck (the
+# pass is CPU/postprocess-bound), so the speed cost of falling back is small.
+_MAX_BATCHED_WINDOW_FRAMES = 48
+
 logger = logging.getLogger("roi_bounces")
 
 
@@ -660,6 +668,19 @@ class RoiBounceProcessor:
             TRACKNET_INPUT_WIDTH, TRACKNET_INPUT_HEIGHT, TRACKNET_BGR2RGB,
         )
 
+        # Memory guard: a large window accumulates too many (1, C, H*W) outputs
+        # to hold on the GPU at once → OOM. Run those eagerly instead (bounded
+        # memory, proven path). Real windows are usually >48 frames, so the
+        # batched path mainly benefits short windows; that's fine — the forward
+        # is not the bounce bottleneck.
+        if len(crops) > _MAX_BATCHED_WINDOW_FRAMES:
+            return self._run_window_eager(crops)
+        # Free the main-pipeline's cached GPU memory before the batched forward —
+        # the A10G is near-full after detection, which is why a 900 MiB forward
+        # alloc failed on rev 58.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         n = self._num_input_frames  # 3 for V2
 
         # Phase 1: enumerate per-call input tensors using the SAME resize +
@@ -684,15 +705,30 @@ class RoiBounceProcessor:
         # slices. testing=True matches _detect_frame_v2's softmax path.
         per_call_outputs: list = []
         if call_tensors:
-            with torch.no_grad():
-                for i in range(0, len(call_tensors), self._bounce_batch):
-                    chunk = call_tensors[i:i + self._bounce_batch]
-                    batched = torch.cat(chunk, dim=0)             # (B, 9, H, W)
-                    out = self._shared_model(batched, testing=True)  # (B, C, H*W)
-                    # Slice per call, keeping the batch dim so the served tensor
-                    # is shaped exactly like a single-frame forward output.
-                    for b in range(out.shape[0]):
-                        per_call_outputs.append(out[b:b + 1])
+            try:
+                with torch.no_grad():
+                    for i in range(0, len(call_tensors), self._bounce_batch):
+                        chunk = call_tensors[i:i + self._bounce_batch]
+                        batched = torch.cat(chunk, dim=0)             # (B, 9, H, W)
+                        out = self._shared_model(batched, testing=True)  # (B, C, H*W)
+                        # Slice per call, keeping the batch dim so the served tensor
+                        # is shaped exactly like a single-frame forward output.
+                        for b in range(out.shape[0]):
+                            per_call_outputs.append(out[b:b + 1])
+            except RuntimeError as exc:
+                if "out of memory" not in str(exc).lower():
+                    raise
+                # Degrade gracefully instead of dropping the whole pass: free the
+                # batched intermediates and re-run this window eagerly (per-frame
+                # forward, bounded memory).
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                logger.warning(
+                    "roi_bounces: CUDA OOM in batched window (%d frames) — "
+                    "falling back to eager per-frame forward for this window",
+                    len(crops),
+                )
+                return self._run_window_eager(crops)
 
         # Phase 3: replay detect_frame with the precomputed outputs. Swap the
         # tracker's model for a _ReplayModel; everything else (buffer warmup,
@@ -704,6 +740,18 @@ class RoiBounceProcessor:
         # Restore the shared model reference (defensive; the tracker is about to
         # be consumed and discarded, but keep it in a sane state).
         tracker.model = self._shared_model
+        return tracker
+
+    def _run_window_eager(self, crops):
+        """Per-frame fallback for the batched path: feed each crop through a
+        fresh BallTracker with the REAL shared model (no precomputed-output
+        accumulation, so memory is bounded). Byte-identical to the default
+        ROI_BOUNCE_BATCH=1 path. Used for windows too large to batch safely and
+        as the CUDA-OOM fallback."""
+        from ml_pipeline.ball_tracker import BallTracker
+        tracker = BallTracker(model=self._shared_model)
+        for _idx, crop in crops:
+            tracker.detect_frame(crop, _idx)
         return tracker
 
     # -- teardown ------------------------------------------------------------
