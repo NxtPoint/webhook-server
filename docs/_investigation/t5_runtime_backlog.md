@@ -5,8 +5,9 @@ with cost / expected impact / risk / validation-needed / status. Update this as 
 ones are found. Supersedes the scattered opportunity lists in `batch_optimisation_plan.md` +
 `match4_opt_run_2026-05-30.md` (kept for their run detail).
 
-**Baseline (rev 59 era, 47-min / 60-fps match):** main loop ~58 min @ 48.8 ms/frame;
-ROI sweep ~91 min (pre-fix) → ~?? (this run measures it). Total clean ~157 min (pre-ROI-fix).
+**Baseline (rev 59, 47-min / 60-fps match, MEASURED):** main loop 57.5 min @ 48.0 ms/frame;
+ROI sweep **52 min** (was 91 pre-fix); total **118 min** (was 157 pre-ROI-fix), $0.31. far-pose +
+bounce now 25-fps-aligned with bronze.
 Stage profile (main loop): **player 43% (17.6 ms/fr) · ball 32% (13.2) · MOG2 23% (9.3) · court 2% · ~16% unaccounted**.
 
 Legend — Risk: 🟢 safe/env-only · 🟡 needs validation · 🔴 accuracy/correctness risk.
@@ -43,6 +44,7 @@ Status: ✅ shipped · 🔬 needs measurement · 📋 todo.
 |---|---|---|---|---|---|
 | C1 | Bounce pass is **CPU/postprocess-bound** (~0.13 s/frame): per-window `BallTracker()` construction (194×), frame-delta Hough fallback on no-ball frames, resize. | large if addressed | 🟡 | reuse tracker / batch CPU work / profile the Hough fallback frequency | 📋 |
 | C2 | Far-pose `sample_every` (12.5 fps effective) — raise stride to sample fewer far-pose frames | pose pass | 🔴 far-player coverage density | reconcile | 📋 |
+| C4 | **Far-pose density DROPPED 47,974→14,153** after the 25fps fix (now `every-2` of 25fps = 12.5fps; was `every-2` of 60fps = 30fps). Now aligned + fp16-cheap → consider `pose_sample_every=1` (25fps, ~matches bronze player density). | restores far-pose coverage | 🟡 | far-player coverage reconcile vs SA | 📋 |
 | C3 | Fold ROI passes into the main decode (single decode total) — currently 2 decodes/job | decode | 🔴 ROI needs final bounce list (ordering) | architectural | 📋 |
 
 ## D. Cross-cutting
