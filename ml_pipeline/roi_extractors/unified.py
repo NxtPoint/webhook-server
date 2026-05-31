@@ -116,37 +116,61 @@ def run_unified_roi(
     if pose is None and bounce is not None:
         sweep_to = bounce.last_frame_needed()
 
-    # Single sequential decode from frame 0 (we already consumed frame 0 above).
+    # Single sequential decode, SAMPLED to the bronze frame rate.
+    #
+    # The ROI passes must index frames in the SAME sampled space as the main
+    # pipeline / bronze (the caller passes fps = the pipeline's FRAME_SAMPLE_FPS,
+    # e.g. 25). The old code walked every SOURCE frame and emitted source-frame
+    # indices, so on a 60fps match far-pose rows landed in 60fps space (idx up to
+    # ~172k) while bronze player_detections are 25fps (~72k) — misaligning the
+    # bronze_export merge AND wasting a 2.4x over-decode. Here we sample the
+    # source down to target fps and emit a target-fps-aligned out_idx, and we
+    # grab()-skip (no decode) the unsampled frames — the big sweep speedup.
+    source_fps = cap.get(cv2.CAP_PROP_FPS) or float(fps) or 25.0
+    target_fps = float(fps) if fps else source_fps
+    stride = (source_fps / target_fps) if (target_fps and target_fps < source_fps) else 1.0
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     pose_failed = False
     bounce_failed = False
-    idx = 0
+    src_idx = 0
+    out_idx = 0
+    next_sample_at = 0.0
     while True:
-        if sweep_to is not None and idx >= sweep_to:
+        if sweep_to is not None and out_idx >= sweep_to:
             break
-        ok, frame = cap.read()
-        if not ok:
+        if not cap.grab():           # advance decoder; cheap (no full decode)
             break
-        if pose is not None and not pose_failed:
-            try:
-                pose.feed(frame, idx)
-            except Exception as e:
-                logger.error(
-                    "roi_unified: pose.feed raised at frame %d (dropping pose "
-                    "pass, no rows written): %s", idx, e,
-                )
-                pose_failed = True
-        if bounce is not None and not bounce_failed:
-            try:
-                bounce.feed(frame, idx)
-            except Exception as e:
-                logger.error(
-                    "roi_unified: bounce.feed raised at frame %d (dropping "
-                    "bounce pass, no rows written): %s", idx, e,
-                )
-                bounce_failed = True
-        idx += 1
+        if src_idx >= next_sample_at:
+            ok, frame = cap.retrieve()   # decode ONLY the sampled frames
+            if not ok:
+                break
+            if pose is not None and not pose_failed:
+                try:
+                    pose.feed(frame, out_idx)
+                except Exception as e:
+                    logger.error(
+                        "roi_unified: pose.feed raised at frame %d (dropping pose "
+                        "pass, no rows written): %s", out_idx, e,
+                    )
+                    pose_failed = True
+            if bounce is not None and not bounce_failed:
+                try:
+                    bounce.feed(frame, out_idx)
+                except Exception as e:
+                    logger.error(
+                        "roi_unified: bounce.feed raised at frame %d (dropping "
+                        "bounce pass, no rows written): %s", out_idx, e,
+                    )
+                    bounce_failed = True
+            next_sample_at += stride
+            out_idx += 1
+        src_idx += 1
     cap.release()
+    logger.info(
+        "roi_unified: decoded %d sampled frames of %d source (stride=%.2f, "
+        "source_fps=%.1f target_fps=%.1f)",
+        out_idx, src_idx, stride, source_fps, target_fps,
+    )
 
     # Finalize each surviving consumer independently.
     n_pose = 0
@@ -164,8 +188,8 @@ def run_unified_roi(
             logger.error("roi_unified: bounce.finalize raised (non-fatal): %s", e)
 
     logger.info(
-        "roi_unified: single-decode sweep of %d frames in %.1fs "
+        "roi_unified: single-decode sweep of %d sampled frames in %.1fs "
         "(pose=%d rows, bounce=%d rows)",
-        idx, time.time() - t_start, n_pose, n_bounce,
+        out_idx, time.time() - t_start, n_pose, n_bounce,
     )
     return (n_pose, n_bounce)

@@ -267,13 +267,18 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
             try:
                 on_progress("roi_extract", 78)
                 from ml_pipeline.roi_extractors import run_unified_roi
+                from ml_pipeline.config import FRAME_SAMPLE_FPS
                 court_det = getattr(pipeline, "court_detector", None)
-                vid_fps = getattr(result, "video_fps", 25.0) or 25.0
+                # Pass the BRONZE sample rate (FRAME_SAMPLE_FPS), NOT the source
+                # video fps: the ROI passes must index frames in the same 25fps
+                # space as bronze/the main pipeline. run_unified_roi reads the
+                # true source fps off the video itself to compute the decimation
+                # stride. (Match path only — this block is `if not practice`.)
                 n_pose, n_bounces = run_unified_roi(
                     video_path=tmp_path,
                     job_id=job_id,
                     engine=engine,
-                    fps=vid_fps,
+                    fps=float(FRAME_SAMPLE_FPS),
                     court_detector=court_det,
                     bounces=getattr(result, "ball_detections", None),
                     pose_sample_every=2,
