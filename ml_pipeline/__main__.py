@@ -243,6 +243,28 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         pipeline.player_tracker.set_debug_upload_context(s3, s3_bucket, job_id)
         result = pipeline.process(tmp_path)
 
+        # D1 (GPU memory audit) — phase boundary cleanup. The main loop's detection
+        # data is already copied into `result` (player_detections / ball_detections),
+        # so the GPU still holds only the main-loop allocator cache (activations,
+        # fragmented blocks) when the ROI sweep is about to load ViTPose + bounce
+        # TrackNet. Return that cache to the driver before ROI allocates — directly
+        # targets the rev-58 ROI OOM theme. empty_cache() only frees unreferenced
+        # cached blocks (PyTorch re-allocates on demand), so it is correctness-neutral.
+        # Heavier model-weight eviction (move player/ball nets to CPU; court_detector
+        # is reused by ROI and must stay) is a follow-up that needs a real GPU box to
+        # validate — see docs/_investigation/t5_runtime_backlog.md D1.
+        try:
+            import gc
+            import torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("D1: freed main-loop GPU cache before ROI sweep "
+                            f"(reserved={torch.cuda.memory_reserved()//(1024*1024)}MB "
+                            f"allocated={torch.cuda.memory_allocated()//(1024*1024)}MB)")
+        except Exception as e:
+            logger.warning(f"D1 phase-boundary cache free failed (non-fatal): {e}")
+
         # 2b+2c. ROI extraction — single shared video decode (Lever #1,
         # docs/_investigation/t5_pipeline_speed.md). Both post-pipeline ROI
         # passes are fanned off ONE sequential decode instead of one decode
