@@ -36,6 +36,7 @@ These look reasonable but will burn future sessions. Each is an explicit decisio
 9. **Don't skip, relax, or work around the bench CI check.** A red bench is a real regression — `bench.yml` replays the CI fixture against the locked baseline. Revert, reproduce locally with `python -m ml_pipeline.diag.bench`, ship a fix that turns it green. Weakening the gate (lowering baseline, narrowing trigger globs, removing the workflow) is never the right move — the silent slip from `0cb645a` is exactly why the harness exists.
 10. **Don't auto-spawn a task without a paired server-side trigger.** Browser-polling ingest gates (like `/upload/api/task-status`) only fire when a user has the page open. Auto-spawned tasks have no browser → ingest never starts and the task sits in `queued` forever. Every auto-spawn must be paired with a cron, webhook, or sweep endpoint — `/ops/sweep-t5-orphans` was added for exactly this gap.
 11. **Don't change T5 silver row-generation (or chase SportAI reconciliation in silver) until the 18 bronze base fields align with SportAI in `ml_analysis.*`.** The T5 "bronze" is `ml_analysis.*`; `build_silver_match_t5.py` Pass 1 is the bronze→base-fact projection that must reconcile, and passes 3-5 are silver analytics on top. Reconciliation gaps (e.g. the Forehand undercount) are **bronze accuracy** problems — far-player pose coverage, bounce/ball coordinate accuracy, A/B identity — not silver-derivation problems. We proved this on 2026-05-25 when pivoting Pass 1 to stroke-driven row generation overshot (the stroke detector's hitter attribution is perspective-biased to the near player). The stroke-driven path is **committed but gated OFF** behind `T5_STROKE_DRIVEN_SILVER`; do not flip it on until bronze is right. See `docs/north_star.md` §"Bronze-first" and `docs/_investigation/far_player_accuracy.md`.
+12. **Don't use feature branches.** Commit and `git push` directly to `main`, every time — Render deploys from `origin/main` and this repo's whole workflow assumes a single line of history. The one exception is overnight/unsupervised Batch-side work, which is branch-only by deliberate policy (small blast radius — see auto-memory `feedback_overnight_branch_only`).
 
 ## Services and how to run
 
@@ -51,6 +52,8 @@ Python 3.12 / Flask + Gunicorn, deployed on Render (see `render.yaml`):
 The main service is `name: webhook-server` in `render.yaml` (legacy slug) but Render UI/billing shows **"Sport AI - API call"** — prefer the display name in conversation. The Locker Room service serves HTML SPAs from `frontend/` via `send_file()` (Flask + gunicorn only, no DB); the main API also serves them as same-origin backups for iframe API access.
 
 **Shell** — default is PowerShell (use `$null` not `/dev/null`, `$env:VAR` not `$VAR`, backtick for line continuation, `if ($?) { B }` not `A && B`). Bash also available via the Bash tool.
+
+**`python` invocation (Windows)** — there is no project `python` on PATH; always invoke the venv interpreter explicitly: `.venv\Scripts\python -m ml_pipeline.diag.bench` (PowerShell) or `.venv/Scripts/python -m …` (Git Bash). The bare `python -m …` forms shown throughout the T5 sections assume this venv is already activated.
 
 **Local dev** (Windows / Win 11):
 ```bash
