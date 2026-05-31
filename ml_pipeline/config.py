@@ -291,7 +291,10 @@ YOLO_CONFIDENCE = 0.10             # Was 0.25. 2026-04-19: prod_pose_audit + rep
 YOLO_COURT_CROP_CONFIDENCE = 0.15  # Lower threshold for the court-crop pass — distant players are small
                                    # and produce lower-confidence detections. Safe to be permissive here
                                    # because _choose_two_players span check filters non-players downstream.
-YOLO_IMGSZ = 1280                  # Input resolution. Default 640 → too small for distant players. 1280 = 2x = 4x pixels per object
+YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "1280"))  # Input resolution. Default 640 → too small for distant players. 1280 = 2x = 4x pixels per object.
+                                   # B5 (env-gated 2026-05-31): the player stage (YOLOv8x-pose @ 1280) is the dominant main-loop cost
+                                   # (~43%). YOLO_IMGSZ=960 cuts ~44% of its pixels for a runtime win, at risk to far-player (30px) recall —
+                                   # validate far-player coverage vs the rev-59 baseline before keeping. Rollback = unset env (no rebuild).
 YOLO_COURT_CROP_INFERENCE = True   # Run a SECOND YOLO pass on the court-cropped+upscaled region (catches distant players)
 YOLO_COURT_CROP_MARGIN_PX = 120    # Pixels of margin around court when cropping (was 80 — widened to
                                    # include more of the far baseline area where distant players stand)
