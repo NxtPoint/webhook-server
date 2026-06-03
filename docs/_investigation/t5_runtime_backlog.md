@@ -5,10 +5,12 @@ with cost / expected impact / risk / validation-needed / status. Update this as 
 ones are found. Supersedes the scattered opportunity lists in `batch_optimisation_plan.md` +
 `match4_opt_run_2026-05-30.md` (kept for their run detail).
 
-**Baseline (rev 59, 47-min / 60-fps match, MEASURED):** main loop 57.5 min @ 48.0 ms/frame;
-ROI sweep **52 min** (was 91 pre-fix); total **118 min** (was 157 pre-ROI-fix), $0.31. far-pose +
-bounce now 25-fps-aligned with bronze.
-Stage profile (main loop): **player 43% (17.6 ms/fr) · ball 32% (13.2) · MOG2 23% (9.3) · court 2% · ~16% unaccounted**.
+**Baseline (rev 60, 47-min / 60-fps match `b2f16f55`, MEASURED 2026-06-03):** main loop **49.9 min @ 41.6 ms/frame**
+(was 57.5 / 48.0 at rev 59 — B1 decode-skip); ROI sweep **51.4 min** (pose pass alone 39.4 min = THE rock);
+trim/export ~8 min; total **109 min** (was 118), court_conf 0.93 locked clean.
+Stage profile (main loop): **player ~46% · ball ~16% · court 2% (post-lock) · MOG2 ~6% (overlap-hidden)**.
+**Two rocks for sub-1h:** main loop ~50 min + ROI sweep ~51 min (sequential). D1 confirmed 380MB/24GB GPU use →
+batching headroom is wide open (run 2 testing ROI_BATCH=32 / PLAYER_BATCH=16 / BALL_BATCH=16, accuracy-neutral).
 
 Legend — Risk: 🟢 safe/env-only · 🟡 needs validation · 🔴 accuracy/correctness risk.
 Status: ✅ shipped · 🔬 needs measurement · 📋 todo.
@@ -28,15 +30,18 @@ Status: ✅ shipped · 🔬 needs measurement · 📋 todo.
 | A8 | NVENC encode (L5) | trim | ✅ |
 | A9 | g5/A10G hardware (L7) | GPU-bound stages 1.5-2× | ✅ |
 | A10 | **ROI sweep 25-fps alignment + decode-skip** | far-pose/bounce ALIGNED w/ bronze (correctness) + ~2.4× fewer decodes + correct bounce window widths | ✅ rev 59 (measuring) |
+| A11 | **B1: main `VideoPreprocessor` decode-skip** (`grab()`/`retrieve()`) | main loop 57.5→**49.9 min**, ms/fr 48→**41.6** | ✅ rev 60, VALIDATED 2026-06-03 (run `b2f16f55`: `decoded 71915 of 172596`, output byte-identical) |
+| A12 | **D1: free main-loop GPU cache at main→ROI boundary** | only **380MB reserved before ROI on 24GB A10G** → huge batching headroom confirmed; no OOM | ✅ rev 60, VALIDATED |
+| A13 | **B2: `MOG2_DOWNSCALE=4`** | MOG2 compute halved again | ✅ rev 60, VALIDATED accuracy-NEUTRAL (far-pose 14153=14153, bounces 952=952 vs baseline — identical) |
 
 ## B. NEXT — main loop (the ~58 min floor for sub-1h)
 | # | Lever | Est. impact | Risk | Validation | Status |
 |---|---|---|---|---|---|
-| **B1** | **✅ CONFIRMED: main `VideoPreprocessor.frames()` over-decodes.** `video_preprocessor.py:84` does `cap.read()` on EVERY source frame and yields only the sampled ~41% (60→25fps) — it fully decodes ~100k frames it discards. Fix = same `grab()`/`retrieve()` decode-skip as the ROI sweep (grab the skipped frames, retrieve only sampled). **TOP main-loop lever, SAFE (output-identical).** Likely a big chunk of the ~16% (575 s) unaccounted overhead. | large (only on >25fps sources) | 🟢 output-identical | confirm frame count + a bench-style spot check | 📋 **DO FIRST next session** |
-| B2 | `MOG2_DOWNSCALE=4` (env, no rebuild) | halve MOG2 compute again (~part of 9.3 ms/fr) | 🟡 motion-mask feeds far-player scoring (bonus, not gate) | player-coverage reconcile vs SA | 📋 fold into next run |
+| **B1** | ✅ **SHIPPED rev 60** — main `VideoPreprocessor` decode-skip. main loop 57.5→49.9 min. | large | 🟢 output-identical | ✅ byte-identical (synthetic 60fps + prod row counts) | ✅ DONE (A11) |
+| B2 | ✅ **SHIPPED rev 60** — `MOG2_DOWNSCALE=4`. | part of MOG2 | 🟡→🟢 | ✅ accuracy-NEUTRAL on `b2f16f55` (identical coverage) | ✅ DONE (A13) |
 | B3 | `SAHI_SKIP_A_FAR_YMAX=8.0` (env) | skips SAHI when full-frame already resolved far player — helps CLOSER cameras, ~0 for match-4-far | 🟡 far-player coverage | coverage reconcile | 📋 |
-| B4 | `BALL_BATCH_SIZE=16` (env) | ball stage | 🟡 GPU OOM (memory theme — see D1) | watch OOM + bench_ball | 📋 |
-| B5 | YOLO-pose `imgsz` 1280→960 (env/code) | player stage (dominant) | 🔴 small far-player detection | far-player coverage reconcile | 📋 |
+| B4 | `BALL_BATCH_SIZE=16` (env) — now SAFE per D1 headroom | ball stage | 🟢 (D1 freed GPU) | 🔄 run 2 (`fdf1bf05`) testing 16 + ROI 32 + player 16 | 🔄 RUN 2 |
+| B5 | YOLO-pose `imgsz` 1280→960 — **env-gated `c852352`, image `b5gate` (sha256:84c1c4a2)** pushed both regions | player stage (dominant) | 🔴 small far-player detection | far-player vs `b2f16f55` bronze (pid0=38660 pid1=23643); roll back env if >10% drop | 📋 run 3 |
 | B6 | Ball TrackNet FP16 (code) | ball stage | 🟡 fp-noise on heatmap | bench_ball | 📋 |
 
 ## C. NEXT — ROI sweep (post-alignment)
