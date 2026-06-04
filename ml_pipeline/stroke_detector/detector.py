@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from sqlalchemy import text as sql_text
 
+from ml_pipeline.config import FRAME_SAMPLE_FPS
 from ml_pipeline.stroke_detector.models import StrokeEvent
 from ml_pipeline.stroke_detector.schema import (
     delete_strokes_for_task,
@@ -389,9 +390,21 @@ def detect_strokes_for_task(
         if deleted:
             logger.info("stroke_detector: deleted %d prior stroke events", deleted)
 
-    fps = conn.execute(sql_text(
-        "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
-    ), {"t": task_id}).scalar() or 25.0
+    # stroke_events.ts is in the SAMPLED frame space: predicted_hit_frame comes
+    # from player_detections.frame_idx (sampled at FRAME_SAMPLE_FPS), so ts must
+    # divide by the SAMPLED fps, NOT the source video_fps. Using video_fps here
+    # was a frame-space bug (feedback_t5_two_frame_spaces) — on a 30fps source it
+    # understated ts by 25/30 (~17%; ~58% at 60fps; confirmed on 63a0130d
+    # 2026-06-04). Derive the sampled fps exactly like build_silver_match_t5
+    # (total_frames is the sampled count / real duration) so ts matches silver;
+    # fall back to FRAME_SAMPLE_FPS.
+    _jr = conn.execute(sql_text(
+        "SELECT total_frames, video_duration_sec FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
+    ), {"t": task_id}).mappings().first()
+    if _jr and _jr["total_frames"] and _jr["video_duration_sec"] and _jr["video_duration_sec"] > 0:
+        fps = _jr["total_frames"] / _jr["video_duration_sec"]
+    else:
+        fps = float(FRAME_SAMPLE_FPS)
 
     poses = _load_pose_rows(conn, task_id)
     if not poses:
