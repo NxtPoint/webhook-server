@@ -43,19 +43,12 @@ from ml_pipeline.stroke_classifier.db import (
 from ml_pipeline.stroke_classifier.model_v2 import (
     CLASSES, MODEL_WEIGHTS_V2, SwingTypeClassifierV2,
 )
-from ml_pipeline.training.build_swing_type_dataset import (
-    BBOX_FALLBACK_RADIUS,
-    HALF_Y_METRES,
-    ROI_SIZE,
-    S3_BUCKET,
-    WINDOW_PRE,
-    WINDOW_TOTAL,
-    _bbox_to_roi,
-    _compute_flow_window,
-    _fetch_bboxes_for_frames,
-    _pick_player_with_fallback,
-    _read_window_frames,
-)
+# NOTE: ml_pipeline.training.build_swing_type_dataset is imported LAZILY inside
+# detect_swing_types_for_task() — `training/` is NOT shipped in the Batch image,
+# and importing it at module load broke the whole stroke_classifier package
+# import in Batch (model_v2 import triggers this package __init__, which imports
+# this module). This detector only runs on Render (where training/ exists), so a
+# lazy import is safe. Caught by the Dockerfile import smoke test 2026-06-04.
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +76,7 @@ def _resolve_video_s3_key(engine, t5_task_id: str) -> Optional[str]:
 def _ensure_video_local(s3_client, t5_task_id: str,
                         s3_key: str, cache_root: Path) -> Optional[Path]:
     """Download s3://<S3_BUCKET>/<s3_key> to cache_root if not already there."""
+    from ml_pipeline.training.build_swing_type_dataset import S3_BUCKET  # lazy (see module note)
     cache_root.mkdir(parents=True, exist_ok=True)
     local_path = cache_root / f"{t5_task_id}_{Path(s3_key).name}"
     if local_path.exists() and local_path.stat().st_size > 0:
@@ -119,6 +113,21 @@ def detect_swing_types_for_task(task_id: str, engine=None, s3_client=None) -> di
             return {"status": "stopgap",
                     "reason": f"no weights at {MODEL_WEIGHTS_V2}",
                     "n_hits": 0, "n_written": 0}
+
+        # Lazy import — training/ is not in the Batch image (see module note).
+        from ml_pipeline.training.build_swing_type_dataset import (
+            BBOX_FALLBACK_RADIUS,
+            HALF_Y_METRES,
+            ROI_SIZE,
+            S3_BUCKET,
+            WINDOW_PRE,
+            WINDOW_TOTAL,
+            _bbox_to_roi,
+            _compute_flow_window,
+            _fetch_bboxes_for_frames,
+            _pick_player_with_fallback,
+            _read_window_frames,
+        )
 
         if engine is None:
             from db_init import engine as default_engine
