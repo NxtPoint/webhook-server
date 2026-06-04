@@ -1,60 +1,46 @@
-# Next-session pickup — 2026-06-04 — 4 far-side bugs fixed + swing classifier built; NEXT = deploy the swing classifier
+# Next-session pickup — 2026-06-04 (PM) — swing classifier DEPLOYED to prod (rev 63/44); AWAITING validation rerun
 
 ## ⚡ Executive summary (read first — 30 seconds)
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
-**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN.
-**Pipeline (Tomo's mental model, CONFIRMED correct):** SportAI upload → auto T5 shadow → auto-ingest → auto-corpus-label is **FULLY AUTOMATED** in prod (both `AUTO_DUAL_SUBMIT_T5` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS` ON). **Training is manual when required (by design).** T5 runtime optimised + accuracy-clean. Infra transfer to friend's A4000 box = future phase (spec in chat 2026-06-04).
-**What landed this session (huge):**
-- **Runtime:** B1 decode-skip + D1 + B2 shipped (118→~109 min, accuracy-clean). Queue switched to **g4-primary → g5-backup → Spot** (g4 ~1.45× slower but ~24% cheaper/match + matches the A4000 target; validated A/B: g4 158min/65ms-fr vs g5 109min/42ms-fr). Leaking + retired GPU boxes killed.
-- **🎯 FAR-SIDE: it was BUGS, not physics** (the session's big win). Two fixable bugs found + fixed: (1) **frame-space mismatch** (`fab487a`) — SA hit_frame in source-fps matched against 25fps detections, dropped 62% of swing training hits bimodal-by-fps; (2) **far NULL court_y** (`353a6cc`) — strict ±5m bound nulls ~50% of far detections (court_y overshoots 2.4-7m). Combined: swing training data **786 → 1588 hits, FAR 207 → 595 (~2.9×)**. Did NOT relax map_to_court (would store bad far coords in silver — precise far coords stay a calibration task).
-- **Swing classifier (stroke TYPE) — went from UNTRAINED (0%) to a real v1/v2 model.** v2 (far-rich): val macro-F1 **0.77** (fh 0.77 / bh 0.68 / overhead 0.87). Per-role NEAR/FAR eval added (`b07be60`) — far number pending (eval running). Weights `models/swing_classifier_v2.pt`, NOT deployed.
-- **Bounce v2 retrained** on 7-match corpus: val F1 0.40 → **0.54** (still recall-limited). Weights `models/bounce_detector_v2_7match.pt`, NOT deployed.
-- **Corpus paired 3 more matches** (now 7-8: bounce 2477 / swing 1763 / serve 395 labels).
-- **🐛 FOUR bugs found + fixed today, all tooling/logic (NOT physics/pipeline):** (1) swing frame-space `fab487a`, (2) far NULL-court_y `353a6cc`, (3) **reconcile counted excluded rows** `3577601` (always reconcile on `exclude_d IS NOT TRUE`), (4) **gap_break cascade** `2ef26bd` (a >5s mid-rally gap excluded the whole point tail; far-skewed). The gap_break fix recovered active **forehand 20→40 (= SA 39)** — validated on the real pair + bench_silver fixture improved (1→4 active). **Corrected scorecard:** bronze-vs-SA much closer than the stale table — backhand/serve/volley aligned, forehand now recovered. Residual bh/overhead over-count = the swing HEURISTIC → the classifier deploy fixes it.
+**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN (re-verified this session).
+**What shipped this session (the swing-classifier deploy — fully done end-to-end):**
+- **Bronze inference wired (Batch):** new `ml_pipeline/stroke_classifier/inference_v2.py` runs in `pipeline.py` (`_classify_far_player_strokes` → delegates), classifies BOTH players' swing type per bounce with the trained v2 model (`SwingTypeR2plus1D`, near 0.86 / far 0.61), writes canonical `fh/bh/overhead` to `player_detections.stroke_class`. Frame-space handled (sampled `frame_idx` → source-fps window via `frame_interval`); handedness=1.0 (matches training default); memory micro-batched. Commits `877eaa6` (+ `7962088` detector_v2 lazy-import fix).
+- **Silver prefers the model (Render, auto-deployed):** both Pass-1 cascades now PREFER `stroke_class` over the pose/position heuristics (heuristics demoted to STOPGAP fallback). Added `near_sc/far_sc` buckets + a windowed `stroke_class` patch. Commit on `main`.
+- **Rule #8 rebuild DONE:** image rebuilt, pushed to both ECRs (amd64 digest `sha256:0eb6ad9c637d4ea2d5fecd1560d5b48a3ff0741b62ebefc101f144e58927978b`), job-defs registered **eu rev 63 / us rev 44** (retryStrategy preserved, g4-primary queue unchanged). Container import smoke test passed; weights bundle + load confirmed in-container.
+- **Rollback without rebuild:** set Batch env `SWING_CLASSIFIER_ENABLED=0` (kill-switch) or tune `SWING_CLASSIFIER_MIN_CONF` (default 0.5).
+
+**⛔ THE ONLY THING LEFT = THE VALIDATION GATE (Tomo's rerun + my reconcile):**
+A fresh Singles-T5 Batch run has NOT yet happened on the new image. **Tomo triggers a Singles-T5 upload of the reference/"Jimbo" match via the frontend** (gated to tomo.stojakovic@gmail.com) and replies with the new T5 task_id. Then:
+```
+python -m ml_pipeline.harness reconcile <sa_task> <new_t5_task>   # exclude_d-correct
+```
+**GATE:** swing_type must reconcile BETTER than the heuristic — backhand toward 15 (not over-counting), overhead toward 0. **Heuristic baseline to beat:** T5 `a35b37f6` vs SA `ba4812be` (north_star corrected scorecard: bh 14 vs 15, overhead 9 vs 0 ← the over-label the classifier should fix; fh recovered 40 vs 39). **Deploy STAYS only if it wins; else flip `SWING_CLASSIFIER_ENABLED=0`.**
+Recent dual-submit pairs (SA ← T5): `ba4812be ← a35b37f6` (reference), `2c1ad953 ← 17e2da3a`, `0336b82b ← 63a0130d`.
 
 If that's enough, go. Depth below.
 
-## 🧭 WHERE WE ARE vs True North — the model/field scorecard (what Tomo asked 2026-06-04)
-Build-first/train-last. Status of the buildable models (one-per-fact):
-| Model | Status | At ~70% build bar? |
-|---|---|---|
-| **1. Serve** (serve_detector) | dev ceiling (bench 20/24, 23/24; count-aligned 26/26); far recall = residual | ✅ build-done → train selectively |
-| **2. Stroke TYPE** (stroke_classifier) | **NEW v1/v2 model this session** (was 0%/heuristic). v2 macro-F1 0.77 — **per-role: NEAR 0.86, FAR 0.61** | ✅ **at bar** (far 0.61 ~= 60-70% on the hardest fact; near 0.86) |
-| **3. Ball bounce** (bounce_detector) | v2 F1 0.54, recall-limited | ❌ **weakest — below bar** |
-| **4. Ball track + hit** (WASB/TrackNet + hit timing) | ball detection ~build-done; ball_hit_location populated, accuracy unmeasured | ~partial |
-| **5. Court calibration** (CNN+Hough) | ~88-94%, silent-degeneracy fixed; far-coord extrapolation overshoot remains | ✅ build-done (far-coord caveat) |
-| (Player A/B identity) | Near/Far only; stable identity NOT solved (Q2-B blocked) | ❌ below bar |
+## 🔍 Validation specifics (do this when the rerun lands)
+1. `harness reconcile <sa> <new_t5>` — read backhand/overhead/forehand active counts (exclude_d-correct).
+2. Confirm the model actually fired: `SELECT count(*) FROM ml_analysis.player_detections WHERE job_id=:t5 AND stroke_class IS NOT NULL` (expect tens–hundreds). If 0 → check Batch CloudWatch logs for `swing_classifier_v2:` lines (look for "weights not present", bounce count, classified count).
+3. Compare swing distribution of new T5 vs the heuristic baseline (`a35b37f6`) both vs SA `ba4812be`. Classifier wins if bh over-count shrinks (toward 15) and overhead over-label drops (toward 0) WITHOUT regressing forehand.
+4. If it wins: keep; update north_star scorecard (swing_type now model-owned, heuristic = fallback). If it loses: `SWING_CLASSIFIER_ENABLED=0` on both job-defs' env (no rebuild) and record why.
 
-**Answer to "are we only training for accuracy now?": NOT YET.** Serve + court are build-done; stroke-TYPE just got its first model today; but **ball bounce + A/B identity are still below the build bar**, and ball_hit_location accuracy is unmeasured. So it's a mix: train-selectively on the done ones, finish the build on bounce + identity.
+## 🧹 Cleanup flagged (not blocking — Tomo decision)
+**Redundant swing path:** `stroke_classifier/detector_v2.py` (wired in `upload_app.py::_do_ingest_t5`) writes a SEPARATE `ml_analysis.swing_type_events` table that **silver Pass 1 does not read**, and it runs on Render where the git-ignored weights never exist → permanent no-op. The LIVE path is now `inference_v2` (Batch) → `stroke_class` → silver. Candidate for retirement (detector_v2 + swing_type_events table) once the deploy is validated — "one model per fact / keep it clean."
 
-## 🚀 NEXT SESSION'S MAIN TASK — DEPLOY THE SWING CLASSIFIER (fully scoped, do fresh)
-The trained model exists (`models/swing_classifier_v2.pt`; near 0.86 / far 0.61) but is NOT wired to prod. It's the highest-value silver win (fixes the bh/overhead type mislabel the reconcile exposed). **It is a real Batch-side deploy — give it a fresh session.** Steps:
-1. **Re-wire the pipeline hook** (`pipeline.py:643` — the dormant `_classify_far_strokes` block). It currently loads the OLD `stroke_classifier.model.StrokeClassifier` + `flow_extractor`. My trained model is **`stroke_classifier.model_v2.SwingTypeR2plus1D`** (R(2+1)D, forward(flow, handedness)) — INCOMPATIBLE. Swap to model_v2 + port the optical-flow crop extraction from `training/build_swing_type_dataset.py` (the `_bbox_to_roi` + Farneback flow + 16-frame window) into a production inference path. Output → `player_detections.stroke_class`.
-2. **Bundle weights** in `ml_pipeline/Dockerfile` (COPY `models/swing_classifier_v2.pt`).
-3. **Silver inherit** already reads `stroke_class` (`build_silver_match_t5.py:529,620`) and falls back to the heuristic when null — confirm it PREFERS the classifier output; the `_infer_swing_type_from_keypoints/position` heuristics become the stopgap-only fallback.
-4. **Rule #8**: Docker rebuild → dual-region ECR → job-defs eu/us (current eu rev 62 / us rev 43, g4-primary queue).
-5. **Validate**: a real Batch run on the Jimbo source → reconcile vs SA (`harness reconcile`, now exclude_d-correct). Gate: does swing_type reconcile BETTER than the heuristic (bh toward 15, overhead toward 0)? Far per-role from the classifier ~0.61. Deploy stays only if it beats the heuristic.
-Frame-space caution: the classifier consumes the source-fps trimmed video; the bbox is 25fps — reuse the dual-space handling from `build_swing_type_dataset` (`_bbox_lookup_frame`).
+## 🐛 Known stale baseline (not mine, pre-existing)
+`bench_silver` fixture `1d6feb3a` reports REGRESSION (row_count 7→4 from the bounce-proximity guard, downstream distributions). **Confirmed identical on clean HEAD** before my changes — it's a stale baseline from recent guard/gap_break commits, NOT this deploy. `bench_silver` is local-only (not a CI gate). Re-baseline it in a future session.
 
-## 🎯 ALSO ON THE RADAR (after the deploy)
-1. **RE-MEASURE the 18-field reconciliation vs SportAI** — `harness reconcile <sa> <t5>`. Today's far-side bug fixes (frame-space + far court_y) almost certainly improved the bronze-vs-SA alignment (the whole "bronze ≈ SportAI" game). The 18-field table below is STALE (2026-05-27, pre-fixes). Re-running it tells us how close to "dev done" we actually are now. **This is the scorecard that decides what's left.**
-2. **Finish the per-role swing eval** (running) → know far swing F1 → decide if stroke-TYPE is build-done or needs more far data.
-3. **Ball bounce** (the weakest) — lift recall: gravity-residual candidate-gen + the far-side fixes (re-build bounce dataset with the frame-space fix — likely has the SAME bug as the swing builder did) + more diverse matches.
-4. **A/B identity** — product call: build changeover detection OR formally accept "Near/Far" as identity.
-5. THEN sign off "dev done" → shift fully to selective training (already automated).
-
-## Open items
-| # | Item | Notes |
-|---|---|---|
-| 1 | Per-role swing eval | running locally (CPU); far macro-F1 pending |
-| 2 | Bounce dataset frame-space bug? | the swing builder had it (fixed); CHECK build_serve_bounce_dataset / bounce manifest for the same fps mismatch |
-| 3 | Deploy decisions | swing v2 + bounce v2 trained but NOT deployed — need per-role/far validation + rule-#8 rebuild + sign-off |
-| 4 | Lambda function deploy | still IAM-blocked (needs Tomo cred) |
-| 5 | Infra transfer to A4000 box | future phase; spec + polling-worker design in 2026-06-04 chat |
+## 🎯 ALSO ON THE RADAR (after validation)
+1. **RE-MEASURE 18-field reconciliation vs SA** — `harness reconcile`. Today's far-side fixes + the swing model likely improved bronze-vs-SA alignment; the north_star table is stale (pre-fixes).
+2. **Ball bounce** (weakest field) — lift recall: gravity-residual candidate-gen + check `build_serve_bounce_dataset` for the SAME frame-space bug the swing builder had (`feedback_t5_two_frame_spaces`).
+3. **A/B identity** — product call: changeover detection OR formally accept Near/Far.
+4. **Per-role far swing eval** — finish to know far swing F1 → decide if stroke-TYPE is build-done.
 
 ## Canonical state
-- Batch job-def: **eu rev 62 / us rev 43** (b5gate image, MOG2=4, imgsz1280, g4-primary queue).
-- GPU dev box: `i-0295d636` (t5-dev-gpu-1b, Tesla T4) — STOPPED. Drive via the runbook (`.claude/infrastructure/gpu_dev_box_runbook.md`); rsync absent on Win box → use tar+scp / S3.
-- New weights (local, NOT deployed): `swing_classifier_v2.pt`, `bounce_detector_v2_7match.pt`.
+- Batch job-def: **eu rev 63 / us rev 44** (digest `0eb6ad9c…`, g4-primary → g5 → Spot queue). Prior rev 62/43.
+- New weights deployed (in-image, git-ignored): `swing_classifier_v2.pt`. Local-only not-yet-deployed: `bounce_detector_v2_7match.pt`.
+- GPU dev box `i-0295d636` (t5-dev-gpu-1b, Tesla T4) — STOPPED.
+- Env knobs (Batch): `SWING_CLASSIFIER_ENABLED` (default 1), `SWING_CLASSIFIER_MIN_CONF` (default 0.5).
 ---
 **END OF PICKUP**
