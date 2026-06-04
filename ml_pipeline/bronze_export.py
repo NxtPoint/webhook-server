@@ -77,6 +77,11 @@ def _player_detection_to_dict(d) -> Dict[str, Any]:
         "court_x": float(d.court_x) if d.court_x is not None else None,
         "court_y": float(d.court_y) if d.court_y is not None else None,
         "keypoints": keypoints_flat,
+        # Swing-type classifier output (bronze fact). Without this, the Batch-side
+        # stroke_class is lost in the export→Render-reingest round-trip (the
+        # reingest DELETEs + re-COPYs from this JSON), so silver never sees the
+        # model and falls back to the pose heuristic. 2026-06-04.
+        "stroke_class": getattr(d, "stroke_class", None),
     }
 
 

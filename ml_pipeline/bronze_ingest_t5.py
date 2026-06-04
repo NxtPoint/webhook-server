@@ -111,7 +111,7 @@ def _copy_player_detections_stream(conn_raw, job_id: str, gz_path: str) -> int:
         with cur.copy(
             "COPY ml_analysis.player_detections "
             "(job_id, frame_idx, player_id, bbox_x1, bbox_y1, bbox_x2, bbox_y2, "
-            " center_x, center_y, court_x, court_y, keypoints) "
+            " center_x, center_y, court_x, court_y, keypoints, stroke_class) "
             "FROM STDIN"
         ) as copy:
             with gzip.open(gz_path, "rb") as f:
@@ -135,6 +135,7 @@ def _copy_player_detections_stream(conn_raw, job_id: str, gz_path: str) -> int:
                         r.get("court_x"),
                         r.get("court_y"),
                         kp_json,
+                        r.get("stroke_class"),  # swing-type fact from Batch (may be None)
                     ])
                     n += 1
     return n
@@ -268,8 +269,14 @@ def ingest_bronze_t5(
 
         with engine.begin() as conn:
             if replace:
+                # Preserve source='roi_prod' bounces: roi_bounces (Batch) writes
+                # them DIRECTLY to ml_analysis and self-replaces within its own
+                # run, but they are NOT in this JSON export — a blanket DELETE
+                # here wiped ~16 min of ROI bounce work on every auto-ingest.
+                # Delete only the main/null-source rows the COPY re-inserts.
                 conn.execute(sql_text(
-                    "DELETE FROM ml_analysis.ball_detections WHERE job_id = :jid"
+                    "DELETE FROM ml_analysis.ball_detections "
+                    "WHERE job_id = :jid AND source IS DISTINCT FROM 'roi_prod'"
                 ), {"jid": job_id})
                 conn.execute(sql_text(
                     "DELETE FROM ml_analysis.player_detections WHERE job_id = :jid"
