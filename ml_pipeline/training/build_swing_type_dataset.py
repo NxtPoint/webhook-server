@@ -518,7 +518,10 @@ def build_one_match(
     return {
         "t5_task_id": t5_task_id,
         "sa_task_id": sa_task_id,
-        "pt_path": str(pt_path),
+        "pt_path": pt_path.name,  # basename only — loader resolves as dataset_dir/name.
+                                  # (str(pt_path) embedded the Windows full path w/ backslashes,
+                                  #  which the Linux loader's Path().name couldn't split → broke
+                                  #  cross-platform training on the GPU box. 2026-06-04.)
         "n_in": len(labels),
         "n_out": len(out_flows),
         "dropped": dropped,
