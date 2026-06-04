@@ -1,4 +1,4 @@
-# Next-session pickup — 2026-06-04 — far-side bugs fixed + swing classifier built; next = re-measure the 18-field scorecard
+# Next-session pickup — 2026-06-04 — 4 far-side bugs fixed + swing classifier built; NEXT = deploy the swing classifier
 
 ## ⚡ Executive summary (read first — 30 seconds)
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
