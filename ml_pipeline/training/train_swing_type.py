@@ -89,9 +89,25 @@ def _cosine_with_warmup(epoch: int, total: int, warmup: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+def _class_metrics(preds, labels) -> dict:
+    """Per-class precision/recall/F1 + macro-F1 over a (preds, labels) pair."""
+    per_class = {}
+    for ci, c in enumerate(CLASSES):
+        tp = sum(1 for p, l in zip(preds, labels) if p == ci and l == ci)
+        fp = sum(1 for p, l in zip(preds, labels) if p == ci and l != ci)
+        fn = sum(1 for p, l in zip(preds, labels) if p != ci and l == ci)
+        prec = tp / max(1, tp + fp)
+        rec = tp / max(1, tp + fn)
+        f1 = 2 * prec * rec / max(1e-9, prec + rec)
+        per_class[c] = {"precision": prec, "recall": rec, "f1": f1,
+                        "n": Counter(labels)[ci]}
+    macro_f1 = sum(v["f1"] for v in per_class.values()) / NUM_CLASSES
+    return {"macro_f1": macro_f1, "per_class": per_class, "n": len(labels)}
+
+
 def _validate(model, loader, device) -> dict:
     model.eval()
-    all_preds, all_labels = [], []
+    all_preds, all_labels, all_roles = [], [], []
     with torch.no_grad():
         for batch in loader:
             flow = batch["flow"].to(device)
@@ -101,21 +117,19 @@ def _validate(model, loader, device) -> dict:
             pred = logits.argmax(dim=1)
             all_preds.extend(pred.cpu().tolist())
             all_labels.extend(lbl.cpu().tolist())
+            all_roles.extend(list(batch.get("role", ["?"] * len(pred))))
 
-    # Per-class precision/recall/F1 + macro-F1
-    per_class = {}
-    for ci, c in enumerate(CLASSES):
-        tp = sum(1 for p, l in zip(all_preds, all_labels) if p == ci and l == ci)
-        fp = sum(1 for p, l in zip(all_preds, all_labels) if p == ci and l != ci)
-        fn = sum(1 for p, l in zip(all_preds, all_labels) if p != ci and l == ci)
-        prec = tp / max(1, tp + fp)
-        rec = tp / max(1, tp + fn)
-        f1 = 2 * prec * rec / max(1e-9, prec + rec)
-        per_class[c] = {"precision": prec, "recall": rec, "f1": f1,
-                        "n": Counter(all_labels)[ci]}
-    macro_f1 = sum(v["f1"] for v in per_class.values()) / NUM_CLASSES
-    return {"macro_f1": macro_f1, "per_class": per_class,
-            "n_val": len(all_labels)}
+    overall = _class_metrics(all_preds, all_labels)
+    # Per-role (NEAR/FAR) breakdown — the far court is the whole point of this
+    # classifier; aggregate macro-F1 is near-dominated and hides far performance.
+    per_role = {}
+    for role in ("NEAR", "FAR"):
+        idxs = [i for i, r in enumerate(all_roles) if r == role]
+        if idxs:
+            per_role[role] = _class_metrics([all_preds[i] for i in idxs],
+                                             [all_labels[i] for i in idxs])
+    return {"macro_f1": overall["macro_f1"], "per_class": overall["per_class"],
+            "n_val": len(all_labels), "per_role": per_role}
 
 
 def train(
@@ -180,9 +194,10 @@ def train(
         train_loss = epoch_loss / max(1, n_batches)
         val_metrics = _validate(model, val_loader, device)
         logger.info(
-            "epoch %02d/%02d lr_mult=%.3f train_loss=%.4f val_macro_f1=%.4f  per_class=%s",
+            "epoch %02d/%02d lr_mult=%.3f train_loss=%.4f val_macro_f1=%.4f  per_class=%s  per_role=%s",
             epoch + 1, epochs, lr_mult, train_loss, val_metrics["macro_f1"],
             {c: f"f1={v['f1']:.2f} n={v['n']}" for c, v in val_metrics["per_class"].items()},
+            {r: f"macro_f1={v['macro_f1']:.2f} n={v['n']}" for r, v in val_metrics.get("per_role", {}).items()},
         )
 
         if val_metrics["macro_f1"] > best_macro_f1:
@@ -198,6 +213,7 @@ def train(
                     "best_epoch": best_epoch + 1,
                     "best_macro_f1": best_macro_f1,
                     "per_class": val_metrics["per_class"],
+                    "per_role": val_metrics.get("per_role", {}),
                     "n_train": len(train_ds),
                     "n_val": len(val_ds),
                     "classes": list(CLASSES),
