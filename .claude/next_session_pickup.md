@@ -32,6 +32,24 @@ If that's enough, go. Depth below.
 3. Compare swing distribution of new T5 vs the heuristic baseline (`a35b37f6`) both vs SA `ba4812be`. Classifier wins if bh over-count shrinks (toward 15) and overhead over-label drops (toward 0) WITHOUT regressing forehand.
 4. If it wins: keep; update north_star scorecard (swing_type now model-owned, heuristic = fallback). If it loses: `SWING_CLASSIFIER_ENABLED=0` on both job-defs' env (no rebuild) and record why.
 
+## 📊 FRESH 18-field scorecard — 2026-06-04 overnight (b008888c CLEAN main-only vs SA ba4812be)
+Re-measured with all today's fixes live (far-side bug fixes + fps fixes + leak fix). **Supersedes the stale north_star table.**
+| field | SA | T5 clean | read |
+|---|---:|---:|---|
+| active rows | 84 | **121** | ⚠️ **over +44% — bounce OVER-GENERATION is the #1 reconciliation gap** (phantom/pre-point/duplicate bounces → extra shot rows). roi_prod made it 254 → reverted. |
+| points | 18 | 18 | ✅ aligned |
+| games | 2 | 4 | ⚠️ over-segmented (known) |
+| volley | 4 | 3 | ✅ close |
+| serves | 24 | ~16–22 | ⚠️ under — far serve recall (known ceiling → training) |
+| swing fh/bh/oh | 39/15/0 | 62/22/12 (clf) · 40/23/13 (heur) | heuristic LIVE; fh≈SA, bh/oh over. classifier disabled (see above). |
+| hit_x/y, court_x/y, pid | — | 100% pop | ✅ coverage solid |
+| ball_hit_location far accuracy | — | 2b: far court_y NULL-driven stale/mirror | calibration task |
+
+**Verdict — where we are vs "dev done":** structure (points/games/volley/coverage) is GOOD. **Three remaining gaps, ranked:**
+1. **🔴 Bounce over-generation (NEW #1 priority, dominant).** Even main-only silver is 121 vs SA 84 (+44%); the bounce field is the weakest (precision 27%). Every silver row is a bounce, so phantom/duplicate bounces inflate everything. **Two sub-tasks:** (a) tighten bounce precision / phantom-rejection in the main pass + silver bounce-validity; (b) the roi_prod dedup/merge so roi_bounces' ~16 min becomes recall without flooding. This is the highest-leverage reconciliation work left.
+2. **🟠 Swing classifier v2.1** — add 4th "other/none" class (or high min_conf gate) to stop the forced-forehand; re-validate per-hit vs SA (must beat heuristic's 38%). Infra is live, one env flip to re-enable.
+3. **🟠 Far serve recall + far ball_hit_location** — both far-court ceiling (training + calibration), as documented.
+
 ## 🔬 Far-side ball-hit / bounce investigation (2026-06-04 PM — 2 agents, while validation ran)
 Tomo asked whether the far-player frame-space bug (that we fixed for swings) also hits **ball bounce** or **ball hit**. Findings (measured on prod, not just code-read):
 - **Ball BOUNCE = NOT a bug.** The bounce corpus builder (`bounce_detector/dataset.py::_sa_label_to_t5_frame`) was already fixed for this exact frame-space bug on 2026-05-29 (it converts via `timestamp × FRAME_SAMPLE_FPS`) — it actually *templated* the swing fix. `build_serve_bounce_dataset.py` works purely in source-frame space, never crosses into 25fps. Far-bounce weakness is precision/coverage/resolution (`docs/_investigation/bounce_accuracy.md`), not frame-space. **No action.**
