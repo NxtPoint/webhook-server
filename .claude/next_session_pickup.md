@@ -18,7 +18,7 @@ Build-first/train-last. Status of the buildable models (one-per-fact):
 | Model | Status | At ~70% build bar? |
 |---|---|---|
 | **1. Serve** (serve_detector) | dev ceiling (bench 20/24, 23/24; count-aligned 26/26); far recall = residual | ✅ build-done → train selectively |
-| **2. Stroke TYPE** (stroke_classifier) | **NEW v1/v2 model this session** (was 0%/heuristic). v2 macro-F1 0.77 | ~at bar aggregate; **far TBD (pending per-role eval)** |
+| **2. Stroke TYPE** (stroke_classifier) | **NEW v1/v2 model this session** (was 0%/heuristic). v2 macro-F1 0.77 — **per-role: NEAR 0.86, FAR 0.61** | ✅ **at bar** (far 0.61 ~= 60-70% on the hardest fact; near 0.86) |
 | **3. Ball bounce** (bounce_detector) | v2 F1 0.54, recall-limited | ❌ **weakest — below bar** |
 | **4. Ball track + hit** (WASB/TrackNet + hit timing) | ball detection ~build-done; ball_hit_location populated, accuracy unmeasured | ~partial |
 | **5. Court calibration** (CNN+Hough) | ~88-94%, silent-degeneracy fixed; far-coord extrapolation overshoot remains | ✅ build-done (far-coord caveat) |
