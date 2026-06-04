@@ -71,6 +71,7 @@ def _kps_to_array(raw) -> Optional["np.ndarray"]:
         return np.vstack([arr, pad])
     return arr
 
+from ml_pipeline.config import FRAME_SAMPLE_FPS
 from ml_pipeline.serve_detector.ball_toss import detect_ball_toss
 from ml_pipeline.serve_detector.models import ServeEvent, SignalSource
 from ml_pipeline.serve_detector.pose_signal import (
@@ -888,9 +889,26 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
         if deleted:
             logger.info("serve_detector: deleted %d prior serve events", deleted)
 
-    fps = conn.execute(sql_text(
-        "SELECT COALESCE(video_fps, 25.0) FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
-    ), {"t": task_id}).scalar() or 25.0
+    # fps MUST be the SAMPLED rate, not source video_fps: every frame_idx the
+    # serve detector reads (ball_detections / player_detections) is sampled at
+    # FRAME_SAMPLE_FPS, and fps is used both for ts (frame_idx/fps) AND for
+    # seconds->frame windows (serve interval, ball-toss, search). Using source
+    # video_fps was a frame-space bug (feedback_t5_two_frame_spaces): on a 30fps
+    # source it skewed ts by 25/30 and stretched the 8s serve interval to ~9.6s.
+    # serve_events.ts is inherited LIVE by silver (T5_SERVE_FROM_EVENTS), so this
+    # is a live correctness fix (vs the latent stroke one). Bench-neutral: the
+    # offline path (detect_serves_offline) takes fps from the fixture, and all
+    # CI fixtures are 25fps so sampled==video_fps==25 there. Derive sampled fps
+    # like build_silver_match_t5 (total_frames/duration), fallback FRAME_SAMPLE_FPS.
+    # NOTE: when a non-25fps bench fixture is added, store the SAMPLED fps in it
+    # so detect_serves_offline keeps matching prod.
+    _jr = conn.execute(sql_text(
+        "SELECT total_frames, video_duration_sec FROM ml_analysis.video_analysis_jobs WHERE job_id=:t"
+    ), {"t": task_id}).mappings().first()
+    if _jr and _jr["total_frames"] and _jr["video_duration_sec"] and _jr["video_duration_sec"] > 0:
+        fps = _jr["total_frames"] / _jr["video_duration_sec"]
+    else:
+        fps = float(FRAME_SAMPLE_FPS)
     is_left_handed = _get_dominant_hand(conn, task_id)
 
     pose_near = _load_pose_rows(conn, task_id, 0, is_left_handed=is_left_handed)
