@@ -605,6 +605,12 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
     # window is pose-less (SAHI bbox without pose, or PLAYER_DETECTION_INTERVAL
     # straddling the hit frame).
     near_kp_dets, far_kp_dets = [], []
+    # Swing-classifier (bronze stroke_class) carriers, by side. Mirrors the
+    # keypoint lists: lets the hitter block adopt a nearby model-classified
+    # swing_type when the exact resolved-hitter detection lacks one (the
+    # inference frame and silver's hitter frame can differ by a few frames at
+    # PLAYER_DETECTION_INTERVAL granularity / fps rounding).
+    near_sc_dets, far_sc_dets = [], []
     # Per-track index — the stroke-driven path resolves the attributed player's
     # own position when no bounce is available to imply the hitter's side.
     raw_by_pid: dict = {}
@@ -626,10 +632,14 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
                 near_dets.append(entry)
                 if kps is not None:
                     near_kp_dets.append(entry)
+                if stroke_cls is not None:
+                    near_sc_dets.append(entry)
             else:
                 far_dets.append(entry)
                 if kps is not None:
                     far_kp_dets.append(entry)
+                if stroke_cls is not None:
+                    far_sc_dets.append(entry)
         # Entries with NULL court coords aren't useful for hit_x/y, so they're
         # excluded from every list; the mirror fallback uses any_with_coords.
 
@@ -638,6 +648,8 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
     any_frames, any_dets = _build_detection_index(any_with_coords)
     near_kp_frames, near_kp_dets = _build_detection_index(near_kp_dets)
     far_kp_frames, far_kp_dets = _build_detection_index(far_kp_dets)
+    near_sc_frames, near_sc_dets = _build_detection_index(near_sc_dets)
+    far_sc_frames, far_sc_dets = _build_detection_index(far_sc_dets)
     dets_by_pid = {pid: _build_detection_index(dets) for pid, dets in raw_by_pid.items()}
 
     logger.info(
@@ -653,6 +665,8 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
         "any_frames": any_frames, "any_dets": any_dets,
         "near_kp_frames": near_kp_frames, "near_kp_dets": near_kp_dets,
         "far_kp_frames": far_kp_frames, "far_kp_dets": far_kp_dets,
+        "near_sc_frames": near_sc_frames, "near_sc_dets": near_sc_dets,
+        "far_sc_frames": far_sc_frames, "far_sc_dets": far_sc_dets,
         "dets_by_pid": dets_by_pid,
         "pid_map": pid_map, "top_pids": top_pids,
         "n_player_dets": len(player_dets),
@@ -723,6 +737,8 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     any_frames, any_dets = buckets["any_frames"], buckets["any_dets"]
     near_kp_frames, near_kp_dets = buckets["near_kp_frames"], buckets["near_kp_dets"]
     far_kp_frames, far_kp_dets = buckets["far_kp_frames"], buckets["far_kp_dets"]
+    near_sc_frames, near_sc_dets = buckets["near_sc_frames"], buckets["near_sc_dets"]
+    far_sc_frames, far_sc_dets = buckets["far_sc_frames"], buckets["far_sc_dets"]
     pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
 
     # ---- Step 4: Look up dominant hand ----
@@ -943,6 +959,25 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
             else:
                 serve_diag["kp_still_missing"] += 1
 
+        # stroke_class windowed patch — the swing classifier (bronze) labels the
+        # detection nearest the contact frame; silver's resolved hitter may be a
+        # neighbouring detection (sparse pose / fps rounding), so adopt the
+        # nearest same-side model classification within KP_WINDOW. Same guard as
+        # the keypoint patch: skip synthesised hitters (their coords came from
+        # the opposite half, so the expected-side classification isn't theirs).
+        if (hitter is not None
+                and hitter.get("stroke_class") is None
+                and not hitter.get("_synthesized")):
+            sc_frames = near_sc_frames if bounce_on_top else far_sc_frames
+            sc_dets = near_sc_dets if bounce_on_top else far_sc_dets
+            sc_match = _find_nearest_detection(
+                sc_frames, sc_dets, hit_frame_est,
+                max_distance_frames=KP_WINDOW_FRAMES,
+            )
+            if sc_match is not None:
+                hitter = dict(hitter)  # copy — don't mutate the shared index entry
+                hitter["stroke_class"] = sc_match.get("stroke_class")
+
         # Compute ball-player distance FIRST so we can use it for serve detection
         # (it's the strongest single signal — all SportAI ground truth serves
         # have ball_player_distance < 1.10m, avg 0.41m)
@@ -1054,23 +1089,26 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         if is_serve:
             last_serve_ts = ts
 
-        # Swing type inference — three-tier cascade:
-        # 1. Pose keypoints (near player, 200-400px, high confidence)
-        # 2. Optical flow classifier (far player, stored in stroke_class)
-        # 3. Position-based fallback (ball vs player side → fh/bh)
+        # Swing type — RULE #1/#2: the swing classifier is the bronze MODEL that
+        # OWNS this fact. Prefer its answer (projected verbatim from stroke_class)
+        # over silver's pose/position heuristics, which are STOPGAP-until the
+        # model covers every hit. The classifier has no serve class, so serves
+        # keep their own label (serve is owned by geometry/serve_events); the
+        # classifier only applies to non-serves.
         swing_type = "other"
         if hitter:
-            swing_type = _infer_swing_type_from_keypoints(
-                hitter.get("keypoints"), hitter.get("center_x"),
-                is_serve, is_left_handed,
-                court_y=hitter.get("court_y"),
-            )
-            if swing_type == "other" and not is_serve:
-                # Try optical flow classification (far player)
-                flow_class = hitter.get("stroke_class")
-                if flow_class and flow_class != "other":
-                    swing_type = flow_class
-                else:
+            flow_class = hitter.get("stroke_class")
+            if not is_serve and flow_class in ("fh", "bh", "overhead"):
+                swing_type = flow_class  # bronze model wins
+            else:
+                # STOPGAP fallback — model produced no answer for this hit (or
+                # it's a serve). Pose keypoints, then position.
+                swing_type = _infer_swing_type_from_keypoints(
+                    hitter.get("keypoints"), hitter.get("center_x"),
+                    is_serve, is_left_handed,
+                    court_y=hitter.get("court_y"),
+                )
+                if swing_type == "other" and not is_serve:
                     swing_type = _infer_swing_type_from_position(
                         cx, hitter.get("court_x"), hitter.get("court_y"),
                         is_serve, is_left_handed,
@@ -1458,16 +1496,16 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
                     last_serve_ts = ts
                     diag["fired_serve"] += 1
 
-        # ---- swing type (same three-tier cascade) ----
-        swing_type = _infer_swing_type_from_keypoints(
-            hitter.get("keypoints"), hitter.get("center_x"),
-            is_serve, is_left_handed, court_y=hit_y,
-        )
-        if swing_type == "other" and not is_serve:
-            flow_class = hitter.get("stroke_class")
-            if flow_class and flow_class != "other":
-                swing_type = flow_class
-            elif b_cx is not None:
+        # ---- swing type — prefer the bronze classifier (see bounce-driven path) ----
+        flow_class = hitter.get("stroke_class")
+        if not is_serve and flow_class in ("fh", "bh", "overhead"):
+            swing_type = flow_class  # bronze model wins
+        else:
+            swing_type = _infer_swing_type_from_keypoints(
+                hitter.get("keypoints"), hitter.get("center_x"),
+                is_serve, is_left_handed, court_y=hit_y,
+            )
+            if swing_type == "other" and not is_serve and b_cx is not None:
                 # Position fallback needs a ball x — only available with a bounce.
                 swing_type = _infer_swing_type_from_position(
                     b_cx, hit_x, hit_y, is_serve, is_left_handed,
