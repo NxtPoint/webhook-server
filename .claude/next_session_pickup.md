@@ -11,8 +11,13 @@
 
 **🔴 CRITICAL FIX THIS SESSION (the deploy was inert without it): export→reingest dropped stroke_class.** First validation run (`db3937fb`) completed but post-ingest `stroke_class=0` — the swing classifier RAN in Batch (436 classified) but `bronze_export._player_detection_to_dict` didn't serialize `stroke_class`, and the Render reingest DELETEs+re-COPYs from that JSON → silver fell back to the heuristic. Same leak wiped `roi_prod` bounces (the blanket ball_detections DELETE) → roi_bounces' ~16 min was 100% wasted on every auto-ingested task. **FIXED (`f4449b0`):** export serializes stroke_class; ingest COPYs it; ingest DELETE now preserves `source='roi_prod'`. **Rebuilt: eu rev 64 / us rev 45** (digest `sha256:108153d7…`). Render ingest auto-deploys.
 
-**⛔ THE ONLY THING LEFT = THE VALIDATION GATE (Tomo's FRESH rerun on rev 64 + my reconcile):**
-`db3937fb` ran on rev 63 (pre-fix) so its silver is heuristic-only — **a NEW run is required.** **Tomo triggers a fresh Singles-T5 upload of the same 10-min test video via the frontend** and replies with the new T5 task_id. Then:
+**✅ VALIDATED OVERNIGHT (b008888c, rev 64) — leak fixed, but classifier FAILED the gate → DISABLED.**
+- **Plumbing fix CONFIRMED working:** post-ingest `stroke_class`=211 (was 0 on rev 63), `roi_prod`=3502 survived (was wiped). The export→reingest leak is closed.
+- **Swing gate: classifier LOSES to the heuristic → DISABLED via `SWING_CLASSIFIER_ENABLED=0` (eu rev 65 / us rev 46, image unchanged).** Definitive per-hit swing agreement vs SA: **heuristic 38% (16/42) vs classifier 32% (15/47)**. Root cause: the v2 model has only 3 classes (fh/bh/overhead), **no "other"/volley**, so every hitter-candidate near a bounce is forced to a groundstroke → forehand over-prediction (clean-silver Forehand 62 vs SA 39 vs heuristic 40; top classifier errors `Serve→Forehand` ×8, `Backhand→Forehand` ×7). The heuristic actually nails forehand (40≈39); its weakness is bh/overhead over-count, which the classifier only marginally improved while breaking forehand. **Aggregate fh+bh+oh error: heuristic ≈22 vs classifier ≈42.**
+- **To RE-ENABLE the classifier (next iteration):** (1) add a 4th "other/none" class (or a high `SWING_CLASSIFIER_MIN_CONF` gate, e.g. 0.7-0.8) so non-groundstrokes fall back to the heuristic instead of defaulting to forehand; (2) address the far forehand lean (far eval was 0.61); (3) re-validate per-hit agreement vs SA. The DEPLOY INFRA is fully validated + one env flip from live — flip `SWING_CLASSIFIER_ENABLED=1` on the job-def when the model is fixed.
+- **`roi_prod` REVERTED (`9d0a30b`):** preserving it flooded silver (bounce-driven: 254 active rows vs 121 main-only vs SA 84) → worse reconciliation. roi_bounces can only feed silver behind a **bounce dedup/merge** step (merge roi_prod into the main bounce set, don't add net-new shot rows). Until then it stays wiped on ingest (its pre-tonight state — no regression). **This is now the highest-value bounce task:** roi_bounces does ~16 min of work that's discarded; a dedup step would turn that into real far/service-box recall (the weakest field).
+
+**(stale gate instructions, kept for the re-enable path):** A fresh Singles-T5 run on a classifier-enabled rev, then:
 ```
 python -m ml_pipeline.harness reconcile <sa_task> <new_t5_task>   # exclude_d-correct
 ```
@@ -47,7 +52,7 @@ Tomo asked whether the far-player frame-space bug (that we fixed for swings) als
 4. **Per-role far swing eval** — finish to know far swing F1 → decide if stroke-TYPE is build-done.
 
 ## Canonical state
-- Batch job-def: **eu rev 64 / us rev 45** (digest `sha256:108153d7a9df6f5774f0d4fbb545219b1c2b18f1b7fe6b2365187e733730a98a`, g4-primary → g5 → Spot queue). rev 63/44 = swing classifier but export-leak-inert; rev 62/43 = pre-swing.
+- Batch job-def: **eu rev 65 / us rev 46** (image digest `sha256:108153d7…` unchanged from rev 64; **rev 65/46 add `SWING_CLASSIFIER_ENABLED=0`** — classifier off pending the 4th-class/threshold fix). g4-primary → g5 → Spot queue. History: rev 64/45 = leak-fixed export + classifier ON (failed gate); rev 63/44 = classifier but export-leak-inert; rev 62/43 = pre-swing.
 - **Validation sanity checks after a rev-64 run ingests:** `SELECT count(stroke_class) FROM ml_analysis.player_detections WHERE job_id=:t` should be >0 now; `SELECT count(*) FILTER (WHERE source='roi_prod') FROM ml_analysis.ball_detections WHERE job_id=:t` should survive ingest (was wiped pre-fix). Reference SA teacher = `ba4812be`.
 - New weights deployed (in-image, git-ignored): `swing_classifier_v2.pt`. Local-only not-yet-deployed: `bounce_detector_v2_7match.pt`.
 - GPU dev box `i-0295d636` (t5-dev-gpu-1b, Tesla T4) — STOPPED.
