@@ -269,14 +269,18 @@ def ingest_bronze_t5(
 
         with engine.begin() as conn:
             if replace:
-                # Preserve source='roi_prod' bounces: roi_bounces (Batch) writes
-                # them DIRECTLY to ml_analysis and self-replaces within its own
-                # run, but they are NOT in this JSON export — a blanket DELETE
-                # here wiped ~16 min of ROI bounce work on every auto-ingest.
-                # Delete only the main/null-source rows the COPY re-inserts.
+                # NOTE (2026-06-04): roi_prod bounces are intentionally NOT
+                # preserved here. Preserving them (so the ~16-min roi_bounces
+                # Batch pass reaches silver) was tried and REVERTED same-night:
+                # silver Pass 1 is bounce-driven (one row per bounce) and the
+                # low-precision service-box roi_prod bounces ~2.4x'd the active
+                # row count (b008888c: 254 active rows vs 121 main-only vs SA 84),
+                # badly worsening SA reconciliation. roi_prod can only feed silver
+                # once a bounce-DEDUP/merge step exists (merge roi_prod into the
+                # main bounce set instead of adding net-new shot events). Until
+                # then the blanket delete keeps silver clean. See next_session_pickup.
                 conn.execute(sql_text(
-                    "DELETE FROM ml_analysis.ball_detections "
-                    "WHERE job_id = :jid AND source IS DISTINCT FROM 'roi_prod'"
+                    "DELETE FROM ml_analysis.ball_detections WHERE job_id = :jid"
                 ), {"jid": job_id})
                 conn.execute(sql_text(
                     "DELETE FROM ml_analysis.player_detections WHERE job_id = :jid"
