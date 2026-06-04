@@ -115,6 +115,17 @@ BBOX_SCALE = VIDEO_RES_HEIGHT / PIPELINE_RES_HEIGHT  # = 0.6667
 
 HALF_Y_METRES = 11.885  # net midline, matches serve_detector/bounce_validity.py
 BBOX_FALLBACK_RADIUS = 5  # frames; search +/-N if no role-matching det at hit_frame
+# FIX #2 (2026-06-04): the far player's court_y is NULL ~50% of the time on
+# wide-camera matches — map_to_court's strict ±5m bound rejects the far-baseline
+# projection (which overshoots by 2.4-7m, a known calibration extrapolation
+# error). Those far detections have a perfectly good bbox, just no court_y, so
+# the court_y-based FAR role matcher drops them. Recover by bbox SIZE: the far
+# player is small (~100-140px h at 1080p) vs the near player (~260-340px). This
+# is for the CROP only (training); we deliberately do NOT relax map_to_court,
+# which would store the inaccurate far coords into silver. Precise far coords
+# remain a separate calibration problem. Measured: far NULL 50.4% (78c32f53),
+# 52.1% (63a0130d).
+FAR_BBOX_MAX_H_PX = 200  # far-player bbox height ceiling (1080p pipeline coords)
 
 S3_BUCKET = "nextpoint-prod-uploads"
 
@@ -244,6 +255,14 @@ def _pick_player_for_label(detections_at_frame: list[dict],
     else:
         candidates = [d for d in detections_at_frame
                       if d["court_y"] is not None and d["court_y"] <= HALF_Y_METRES]
+        if not candidates:
+            # FIX #2: far court_y is NULL ~50% (strict ±5m bound rejects the
+            # overshooting far-baseline projection). Recover the far player by
+            # bbox size — it is reliably the smallest detection in the frame.
+            small = [d for d in detections_at_frame
+                     if (d["bbox_y2"] - d["bbox_y1"]) < FAR_BBOX_MAX_H_PX]
+            if small:
+                candidates = [min(small, key=lambda d: d["bbox_y2"] - d["bbox_y1"])]
     if not candidates:
         return None
     if len(candidates) == 1:
