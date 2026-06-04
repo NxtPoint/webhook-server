@@ -44,7 +44,9 @@ The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silv
 **The 18 base fields** = the Pass-1 projection in `build_silver_match_t5.py`: WHO hit (player_id/side), WHAT (serve, swing_type, volley), WHEN (ball_hit_s), WHERE-hit (ball_hit_location_x/y), WHERE-bounced (court_x/y), ball_speed, ball_player_distance, rally membership — plus the point/game/set structure passes 3-5 derive from them.
 
 ### Build status vs SportAI — Match 1 (`78c32f53` vs `0d0514df`), 2026-05-27
-> ⚠️ **STALE (pre-far-side-fix).** This table is from 2026-05-27, BEFORE the 2026-06-04 frame-space + far-NULL-court_y fixes and the stroke-TYPE classifier. **Re-run `harness reconcile` to refresh — the far-court fields almost certainly improved.** Notably: swing_type now has a TRAINED classifier (v2 macro-F1 0.77), not just the over-counting heuristic; far training data ~2.9×.
+> ⚠️ **STALE (pre-far-side-fix).** Table is from 2026-05-27. Swing_type now has a TRAINED classifier (v2 macro-F1 0.77; near 0.86 / far 0.61), far training data ~2.9×.
+>
+> **★ CORRECTED SCORECARD 2026-06-04 (reconcile tool was distorting it — `3577601`).** The reconcile counted `exclude_d=True` rows, badly over-stating T5. Respecting `exclude_d` (ACTIVE rows), the current-rev pair `a35b37f6` vs SA `ba4812be` is **much more aligned than the old table implies**: active 71 vs 84; **backhand 14 vs 15 ✅** (NOT the "+10 over-count" — that was the artifact); serve 24 vs 26 ✅; volley 4 vs 4 ✅; points 17 vs 18 ✅. **Real remaining gaps:** forehand UNDER-count (20 vs 39), overhead over-label (9 vs 0, some fh mislabelled), game over-segmentation (4 vs 2), and the silver exclusion may be over-aggressive (66 of 137 in-point rows excluded — worth auditing). The swing-classifier deploy should help forehand/overhead. Lesson: **always reconcile on `exclude_d IS NOT TRUE`.**
 | base field | T5 | SA | read |
 |---|---|---|---|
 | active rows (overall) | 97 | 94 | ✅ aligned |
