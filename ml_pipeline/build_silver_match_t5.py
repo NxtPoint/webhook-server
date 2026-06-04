@@ -820,6 +820,18 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     # Coords still come from the tight HIT_WINDOW (A1); only keypoints widen.
     KP_WINDOW_FRAMES = max(1, int(round(fps * 1.20)))
 
+    # OBSERVABILITY (2b, 2026-06-04): how the hitter was resolved, split by side.
+    # Quantifies the far ball_hit_location gap — far hits frequently fall to a
+    # STALE (±1.2s) or MIRRORED position because the far court_y is NULL ~50% on
+    # wide-camera matches (map_to_court ±5m bound rejects the far-baseline
+    # overshoot). This is measurement only — NO behaviour change. The accuracy
+    # fix is the documented far-court calibration task, NOT a silver tweak (silver
+    # has no accurate far court_y to read). See next_session_pickup 2b + north_star.
+    hit_resolve_diag = {
+        "near_fresh": 0, "near_stale": 0, "near_mirror": 0, "near_none": 0,
+        "far_fresh": 0,  "far_stale": 0,  "far_mirror": 0,  "far_none": 0,
+    }
+
     # Diagnostic counters — why serves are accepted/rejected
     serve_diag = {
         "total_bounces": 0,
@@ -977,6 +989,18 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
             if sc_match is not None:
                 hitter = dict(hitter)  # copy — don't mutate the shared index entry
                 hitter["stroke_class"] = sc_match.get("stroke_class")
+
+        # OBSERVABILITY (2b) — record how this hit's location was resolved, by
+        # side. hitter side = opposite of the bounce side. No behaviour change.
+        _side = "near" if bounce_on_top else "far"
+        if hitter is None:
+            hit_resolve_diag[f"{_side}_none"] += 1
+        elif hitter.get("_synthesized"):
+            hit_resolve_diag[f"{_side}_mirror"] += 1
+        elif hitter.get("_hitter_stale"):
+            hit_resolve_diag[f"{_side}_stale"] += 1
+        else:
+            hit_resolve_diag[f"{_side}_fresh"] += 1
 
         # Compute ball-player distance FIRST so we can use it for serve detection
         # (it's the strongest single signal — all SportAI ground truth serves
@@ -1160,6 +1184,15 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
 
     # Log serve detection diagnostics — shows where the filter is rejecting
     logger.info("T5 serve diagnostics: %s", serve_diag)
+    # Hit-location resolution by side (2b observability) — high far_stale/far_mirror
+    # = far ball_hit_location is approximate; the fix is far-court calibration.
+    _hr = hit_resolve_diag
+    _far_tot = _hr["far_fresh"] + _hr["far_stale"] + _hr["far_mirror"] + _hr["far_none"]
+    _far_approx = _hr["far_stale"] + _hr["far_mirror"] + _hr["far_none"]
+    logger.info(
+        "T5 hit-resolve by side: %s (far approx/total = %d/%d = %.0f%%)",
+        _hr, _far_approx, _far_tot, (100.0 * _far_approx / _far_tot) if _far_tot else 0.0,
+    )
 
     if not rows_to_insert:
         logger.warning("T5 Pass 1: no valid rows to insert")
