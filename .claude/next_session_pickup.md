@@ -1,60 +1,50 @@
-# Next-session pickup — 2026-06-03 — overnight runtime cycle: 118→109 min ACCURACY-CLEAN; sub-1h needs accuracy trades
+# Next-session pickup — 2026-06-04 — far-side bugs fixed + swing classifier built; next = re-measure the 18-field scorecard
 
 ## ⚡ Executive summary (read first — 30 seconds)
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
-**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN (unchanged all night).
-**Canonical Batch config:** **job-def eu rev 62 / us rev 43** (image `b5gate` = `sha256:84c1c4a2`). Validated-good:
-B1 decode-skip + D1 GPU-cache-free + B2 `MOG2_DOWNSCALE=4` + `YOLO_IMGSZ=1280` + standard batch (8/16/8). Both regions synced.
-**What shipped (overnight, 3 g5 runs on the 60fps Jimbo match `1779519790`):**
-- ✅ **B1 (decode-skip)** — `VideoPreprocessor` grab()/retrieve(): main loop **57.5→~50 min**, ms/fr 48→41.6. Byte-identical (proven synthetic + prod). `c5109ff`
-- ✅ **D1 (free GPU cache at main→ROI boundary)** — no OOM; **only 380MB/24GB reserved → proved the GPU is COMPUTE-bound, not memory/launch-bound.** `9e0e980`
-- ✅ **B2 (`MOG2_DOWNSCALE=4`)** — accuracy-NEUTRAL (coverage identical to baseline). Live in rev 62.
-- ❌ **Batching REJECTED (run 2)** — PLAYER_BATCH=16/ROI_BATCH=32/BALL_BATCH=16 = **no-op** (ms/fr 41.6→41.9, total unchanged). GPU compute-bound at batch 8. Reverted to defaults.
-- ❌ **imgsz=960 REJECTED (run 3)** — env-gated `c852352`, **but cost −18.5% FAR-player dets (pid1 23643→19264) for only −3.6 min.** Bad trade vs far-court priority (rule #11). Rolled back to 1280 (rev 62/43).
-**Net: 118 → ~109 min, ZERO accuracy loss.** B1 is the accuracy-safe runtime win; B2 neutral; D1 enabling.
-**NOT sub-1h.** The two rocks (main loop ~50 + ROI sweep ~51-60, SEQUENTIAL) only yield to **accuracy-sensitive** levers — see below.
-**Lambda:** still IAM-blocked (`nextpoint-uploader` denied `lambda:*`). DEFERRED per Tomo. Code fix committed (`lambda/ml_trigger.py`).
+**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN.
+**Pipeline (Tomo's mental model, CONFIRMED correct):** SportAI upload → auto T5 shadow → auto-ingest → auto-corpus-label is **FULLY AUTOMATED** in prod (both `AUTO_DUAL_SUBMIT_T5` + `AUTO_LABEL_DUAL_SUBMIT_PAIRS` ON). **Training is manual when required (by design).** T5 runtime optimised + accuracy-clean. Infra transfer to friend's A4000 box = future phase (spec in chat 2026-06-04).
+**What landed this session (huge):**
+- **Runtime:** B1 decode-skip + D1 + B2 shipped (118→~109 min, accuracy-clean). Queue switched to **g4-primary → g5-backup → Spot** (g4 ~1.45× slower but ~24% cheaper/match + matches the A4000 target; validated A/B: g4 158min/65ms-fr vs g5 109min/42ms-fr). Leaking + retired GPU boxes killed.
+- **🎯 FAR-SIDE: it was BUGS, not physics** (the session's big win). Two fixable bugs found + fixed: (1) **frame-space mismatch** (`fab487a`) — SA hit_frame in source-fps matched against 25fps detections, dropped 62% of swing training hits bimodal-by-fps; (2) **far NULL court_y** (`353a6cc`) — strict ±5m bound nulls ~50% of far detections (court_y overshoots 2.4-7m). Combined: swing training data **786 → 1588 hits, FAR 207 → 595 (~2.9×)**. Did NOT relax map_to_court (would store bad far coords in silver — precise far coords stay a calibration task).
+- **Swing classifier (stroke TYPE) — went from UNTRAINED (0%) to a real v1/v2 model.** v2 (far-rich): val macro-F1 **0.77** (fh 0.77 / bh 0.68 / overhead 0.87). Per-role NEAR/FAR eval added (`b07be60`) — far number pending (eval running). Weights `models/swing_classifier_v2.pt`, NOT deployed.
+- **Bounce v2 retrained** on 7-match corpus: val F1 0.40 → **0.54** (still recall-limited). Weights `models/bounce_detector_v2_7match.pt`, NOT deployed.
+- **Corpus paired 3 more matches** (now 7-8: bounce 2477 / swing 1763 / serve 395 labels).
 
 If that's enough, go. Depth below.
 
----
-
-## 🎯 The honest sub-1h verdict (the decision Tomo needs to make)
-
-Tonight banked every **accuracy-safe** runtime lever (118→109). The remaining gap to sub-1h is locked behind the **far-court signal**, which is the project's stated #1 weakness/priority (rule #11). Proven empirically tonight: **imgsz960 cut far-player dets 18.5%.** The far court is fragile to every compute cut.
-
-**The two rocks, and why safe levers don't crack them:**
-| Phase | Time | Safe lever? |
+## 🧭 WHERE WE ARE vs True North — the model/field scorecard (what Tomo asked 2026-06-04)
+Build-first/train-last. Status of the buildable models (one-per-fact):
+| Model | Status | At ~70% build bar? |
 |---|---|---|
-| Main loop | ~50 min | player stage dominant → only imgsz cuts it → **−18.5% far player (rejected).** Batching = no-op (GPU-bound). |
-| ROI sweep | ~51-60 min | pose pass (ViTPose ~39 min, GPU-bound, batching no help) + bounce finalize (CPU-bound ~30 min). |
+| **1. Serve** (serve_detector) | dev ceiling (bench 20/24, 23/24; count-aligned 26/26); far recall = residual | ✅ build-done → train selectively |
+| **2. Stroke TYPE** (stroke_classifier) | **NEW v1/v2 model this session** (was 0%/heuristic). v2 macro-F1 0.77 | ~at bar aggregate; **far TBD (pending per-role eval)** |
+| **3. Ball bounce** (bounce_detector) | v2 F1 0.54, recall-limited | ❌ **weakest — below bar** |
+| **4. Ball track + hit** (WASB/TrackNet + hit timing) | ball detection ~build-done; ball_hit_location populated, accuracy unmeasured | ~partial |
+| **5. Court calibration** (CNN+Hough) | ~88-94%, silent-degeneracy fixed; far-coord extrapolation overshoot remains | ✅ build-done (far-coord caveat) |
+| (Player A/B identity) | Near/Far only; stable identity NOT solved (Q2-B blocked) | ❌ below bar |
 
-**The ONLY remaining levers (ALL accuracy-sensitive → need Tomo sign-off, do in daylight):**
-- **C1 — ROI bounce-pass CPU rework.** The model is ALREADY shared (`_shared_model`); the ~30 min is genuine `detect_frame` postprocess + per-frame Hough fallback on no-ball frames (`bounces.py`). Lever = skip/cheapen the Hough fallback or reduce no-ball-frame work. **Risk: bounce coords** (a silver accuracy field). Validate bounce count(=952)+coords vs baseline.
-- **Pose stride** every-2→every-3: cuts ViTPose ~33% (~13 min) but drops far-pose density 14153→~9400. **Risk: far-pose coverage** (the far-court ceiling — same signal imgsz960 hurt).
-- D2 (trim/export overlap, ~min), C3 (single-decode fold, architectural/risky).
+**Answer to "are we only training for accuracy now?": NOT YET.** Serve + court are build-done; stroke-TYPE just got its first model today; but **ball bounce + A/B identity are still below the build bar**, and ball_hit_location accuracy is unmeasured. So it's a mix: train-selectively on the done ones, finish the build on bounce + identity.
 
-**Recommendation:** the ~109 min is accuracy-clean and shipped. Sub-1h requires deliberately trading far-court accuracy — which contradicts bronze-first (rule #11). **Decide with eyes open:** is <1h worth −15-20% far-court signal? If runtime isn't a hard blocker, bank 109 and move on. If sub-1h is required, the path is C1 + pose-stride, each gated on a far-court-coverage reconcile, **with you watching.**
-
----
-
-## How to reproduce / validate (mechanics that worked)
-- **Submit a run:** `.claude/tmp/submit_run3.py`-style (fresh job_id, `aws s3 cp ... --copy-props none` to a throwaway `b1val_<id>.mp4` key — uploader IAM lacks GetObjectTagging; submit on eu rev 62, g5 queue `ten-fifty5-ml-queue`). Source = `wix-uploads/1779519790_Tomo_vs_Jimbo.mp4` (60fps, 172596 frames, = the rev-59/baseline Jimbo match; PRESERVED, copy-on-submit). Also local: `ml_pipeline/test_videos/1779519790_Tomo_vs_Jimbo.mp4`.
-- **Validate speed + far-player accuracy:** `.claude/tmp/bronze_compare.py <job_id> <baseline_job_id>` — pulls bronze.json.gz from S3, reports ms/frame, main-loop proc_sec, and **per-player_id det counts** (pid0=near ~38660, pid1=FAR ~23643). >10% pid1 drop = material regression. **1280 baseline = `b2f16f55`.**
-- **Validate logs:** `.claude/tmp/validate_v60.py <batch_job> <t5_job>` — decode-skip line, court lock, D1, ROI sweep, coverage.
-- **Deploy:** `docker build -f ml_pipeline/Dockerfile ...` → push both ECR → `.claude/tmp/calib_audit/register_jobdef_opt.py <digest> <region>` (edit OPT_ENV for flags; clones latest active). g5 overnight had ~2h capacity wait (D3) — consider g4dn-first for unattended runs.
+## 🎯 NEXT ON THE RADAR (highest-value, True-North-aligned)
+1. **RE-MEASURE the 18-field reconciliation vs SportAI** — `harness reconcile <sa> <t5>`. Today's far-side bug fixes (frame-space + far court_y) almost certainly improved the bronze-vs-SA alignment (the whole "bronze ≈ SportAI" game). The 18-field table below is STALE (2026-05-27, pre-fixes). Re-running it tells us how close to "dev done" we actually are now. **This is the scorecard that decides what's left.**
+2. **Finish the per-role swing eval** (running) → know far swing F1 → decide if stroke-TYPE is build-done or needs more far data.
+3. **Ball bounce** (the weakest) — lift recall: gravity-residual candidate-gen + the far-side fixes (re-build bounce dataset with the frame-space fix — likely has the SAME bug as the swing builder did) + more diverse matches.
+4. **A/B identity** — product call: build changeover detection OR formally accept "Near/Far" as identity.
+5. THEN sign off "dev done" → shift fully to selective training (already automated).
 
 ## Open items
 | # | Item | Notes |
 |---|---|---|
-| 1 | sub-1h decision (above) | C1 + pose-stride, accuracy-gated, daylight + Tomo sign-off |
-| 2 | Lambda function deploy | BLOCKED — needs Lambda-capable cred (Tomo). Code committed. |
-| 3 | 3 manual runs NOT ingested to silver | jobs `b2f16f55`(1280 base), `ce048588`(batching), `d39a6f07`(imgsz960). bronze in S3; not in corpus. Don't double-count. |
+| 1 | Per-role swing eval | running locally (CPU); far macro-F1 pending |
+| 2 | Bounce dataset frame-space bug? | the swing builder had it (fixed); CHECK build_serve_bounce_dataset / bounce manifest for the same fps mismatch |
+| 3 | Deploy decisions | swing v2 + bounce v2 trained but NOT deployed — need per-role/far validation + rule-#8 rebuild + sign-off |
+| 4 | Lambda function deploy | still IAM-blocked (needs Tomo cred) |
+| 5 | Infra transfer to A4000 box | future phase; spec + polling-worker design in 2026-06-04 chat |
 
-## Jobs (manual submits — NOT auto-ingested)
-- Run 1 (B1+D1+B2, 1280 baseline): `b2f16f55` — 109min, ms/fr 41.6, far pid1=23643. THE accuracy baseline.
-- Run 2 (batching): `ce048588` — 109min, no-op.
-- Run 3 (imgsz960): `d39a6f07` — far pid1=19264 (−18.5%), rolled back.
-
+## Canonical state
+- Batch job-def: **eu rev 62 / us rev 43** (b5gate image, MOG2=4, imgsz1280, g4-primary queue).
+- GPU dev box: `i-0295d636` (t5-dev-gpu-1b, Tesla T4) — STOPPED. Drive via the runbook (`.claude/infrastructure/gpu_dev_box_runbook.md`); rsync absent on Win box → use tar+scp / S3.
+- New weights (local, NOT deployed): `swing_classifier_v2.pt`, `bounce_detector_v2_7match.pt`.
 ---
 **END OF PICKUP**
