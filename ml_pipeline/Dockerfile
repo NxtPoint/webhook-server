@@ -105,7 +105,10 @@ COPY ml_pipeline/db_schema.py /app/ml_pipeline/
 COPY ml_pipeline/db_writer.py /app/ml_pipeline/
 COPY ml_pipeline/bronze_export.py /app/ml_pipeline/
 
-# Stroke classifier (optical flow for far player)
+# Swing-type classifier (ADR-02 v2 — optical-flow R(2+1)D, both players).
+# inference_v2.py runs in pipeline.py and writes bronze stroke_class. The v2
+# weights (swing_classifier_v2.pt) ship via the wholesale `COPY models/` layer
+# above — no separate weight COPY needed.
 COPY ml_pipeline/stroke_classifier/ /app/ml_pipeline/stroke_classifier/
 
 # ROI extractors — far-baseline ViTPose + (stubbed) WASB bounces. Called
