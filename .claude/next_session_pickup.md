@@ -10,6 +10,7 @@
 - **Swing classifier (stroke TYPE) — went from UNTRAINED (0%) to a real v1/v2 model.** v2 (far-rich): val macro-F1 **0.77** (fh 0.77 / bh 0.68 / overhead 0.87). Per-role NEAR/FAR eval added (`b07be60`) — far number pending (eval running). Weights `models/swing_classifier_v2.pt`, NOT deployed.
 - **Bounce v2 retrained** on 7-match corpus: val F1 0.40 → **0.54** (still recall-limited). Weights `models/bounce_detector_v2_7match.pt`, NOT deployed.
 - **Corpus paired 3 more matches** (now 7-8: bounce 2477 / swing 1763 / serve 395 labels).
+- **🐛 FOUR bugs found + fixed today, all tooling/logic (NOT physics/pipeline):** (1) swing frame-space `fab487a`, (2) far NULL-court_y `353a6cc`, (3) **reconcile counted excluded rows** `3577601` (always reconcile on `exclude_d IS NOT TRUE`), (4) **gap_break cascade** `2ef26bd` (a >5s mid-rally gap excluded the whole point tail; far-skewed). The gap_break fix recovered active **forehand 20→40 (= SA 39)** — validated on the real pair + bench_silver fixture improved (1→4 active). **Corrected scorecard:** bronze-vs-SA much closer than the stale table — backhand/serve/volley aligned, forehand now recovered. Residual bh/overhead over-count = the swing HEURISTIC → the classifier deploy fixes it.
 
 If that's enough, go. Depth below.
 
@@ -26,7 +27,16 @@ Build-first/train-last. Status of the buildable models (one-per-fact):
 
 **Answer to "are we only training for accuracy now?": NOT YET.** Serve + court are build-done; stroke-TYPE just got its first model today; but **ball bounce + A/B identity are still below the build bar**, and ball_hit_location accuracy is unmeasured. So it's a mix: train-selectively on the done ones, finish the build on bounce + identity.
 
-## 🎯 NEXT ON THE RADAR (highest-value, True-North-aligned)
+## 🚀 NEXT SESSION'S MAIN TASK — DEPLOY THE SWING CLASSIFIER (fully scoped, do fresh)
+The trained model exists (`models/swing_classifier_v2.pt`; near 0.86 / far 0.61) but is NOT wired to prod. It's the highest-value silver win (fixes the bh/overhead type mislabel the reconcile exposed). **It is a real Batch-side deploy — give it a fresh session.** Steps:
+1. **Re-wire the pipeline hook** (`pipeline.py:643` — the dormant `_classify_far_strokes` block). It currently loads the OLD `stroke_classifier.model.StrokeClassifier` + `flow_extractor`. My trained model is **`stroke_classifier.model_v2.SwingTypeR2plus1D`** (R(2+1)D, forward(flow, handedness)) — INCOMPATIBLE. Swap to model_v2 + port the optical-flow crop extraction from `training/build_swing_type_dataset.py` (the `_bbox_to_roi` + Farneback flow + 16-frame window) into a production inference path. Output → `player_detections.stroke_class`.
+2. **Bundle weights** in `ml_pipeline/Dockerfile` (COPY `models/swing_classifier_v2.pt`).
+3. **Silver inherit** already reads `stroke_class` (`build_silver_match_t5.py:529,620`) and falls back to the heuristic when null — confirm it PREFERS the classifier output; the `_infer_swing_type_from_keypoints/position` heuristics become the stopgap-only fallback.
+4. **Rule #8**: Docker rebuild → dual-region ECR → job-defs eu/us (current eu rev 62 / us rev 43, g4-primary queue).
+5. **Validate**: a real Batch run on the Jimbo source → reconcile vs SA (`harness reconcile`, now exclude_d-correct). Gate: does swing_type reconcile BETTER than the heuristic (bh toward 15, overhead toward 0)? Far per-role from the classifier ~0.61. Deploy stays only if it beats the heuristic.
+Frame-space caution: the classifier consumes the source-fps trimmed video; the bbox is 25fps — reuse the dual-space handling from `build_swing_type_dataset` (`_bbox_lookup_frame`).
+
+## 🎯 ALSO ON THE RADAR (after the deploy)
 1. **RE-MEASURE the 18-field reconciliation vs SportAI** — `harness reconcile <sa> <t5>`. Today's far-side bug fixes (frame-space + far court_y) almost certainly improved the bronze-vs-SA alignment (the whole "bronze ≈ SportAI" game). The 18-field table below is STALE (2026-05-27, pre-fixes). Re-running it tells us how close to "dev done" we actually are now. **This is the scorecard that decides what's left.**
 2. **Finish the per-role swing eval** (running) → know far swing F1 → decide if stroke-TYPE is build-done or needs more far data.
 3. **Ball bounce** (the weakest) — lift recall: gravity-residual candidate-gen + the far-side fixes (re-build bounce dataset with the frame-space fix — likely has the SAME bug as the swing builder did) + more diverse matches.
