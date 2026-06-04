@@ -59,6 +59,11 @@ def run_summary(conn, sportai_tid: str, t5_tid: str):
         r = conn.execute(text("""
             SELECT
               count(*) AS total_rows,
+              -- ACTIVE rows = what the dashboard/coach actually sees. The bronze-vs-SA
+              -- comparison must be on active rows: counting excluded rows over-stated T5
+              -- (149 vs 94) and made swing look like it over-counted 2x when active is
+              -- aligned (bh 15 vs 16). exclude_d IS NOT TRUE keeps NULL + false. 2026-06-04.
+              count(*) FILTER (WHERE exclude_d IS NOT TRUE) AS active_rows,
               count(DISTINCT player_id) AS players,
               count(DISTINCT point_number) FILTER (WHERE point_number IS NOT NULL) AS points,
               count(DISTINCT game_number) FILTER (WHERE game_number IS NOT NULL) AS games,
@@ -173,13 +178,15 @@ def run_distributions(conn, sportai_tid: str, t5_tid: str):
     for field in ["stroke_d", "serve_bucket_d", "rally_location_bounce", "depth_d", "aggression_d"]:
         _sub(field)
         print(f"{'value':15s} {'SPORTAI':>10s} {'T5':>10s}")
+        # ACTIVE rows only — excluded rows distorted the swing breakdown (raw bh
+        # 35 vs 17 looked like 2x over-count; active is 15 vs 16 = aligned). 2026-06-04.
         sp_rows = conn.execute(text(
             f"SELECT {field} AS v, count(*) AS n FROM silver.point_detail "
-            f"WHERE task_id = CAST(:tid AS uuid) GROUP BY v ORDER BY n DESC"
+            f"WHERE task_id = CAST(:tid AS uuid) AND exclude_d IS NOT TRUE GROUP BY v ORDER BY n DESC"
         ), {"tid": sportai_tid}).mappings().all()
         t5_rows = conn.execute(text(
             f"SELECT {field} AS v, count(*) AS n FROM silver.point_detail "
-            f"WHERE task_id = CAST(:tid AS uuid) GROUP BY v ORDER BY n DESC"
+            f"WHERE task_id = CAST(:tid AS uuid) AND exclude_d IS NOT TRUE GROUP BY v ORDER BY n DESC"
         ), {"tid": t5_tid}).mappings().all()
         sp_map = {str(r["v"]): r["n"] for r in sp_rows}
         t5_map = {str(r["v"]): r["n"] for r in t5_rows}
