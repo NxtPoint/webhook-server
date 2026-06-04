@@ -718,23 +718,41 @@ def pass3_point_context(conn: Connection, task_id: str, cfg: dict) -> int:
       WHERE w.point_number > 0
     ),
 
+    -- RE-ANCHOR FIX (2026-06-04): per point, the latest POST-serve shot that is
+    -- still <=5s from its predecessor — i.e., the last shot of a LIVE rally. The
+    -- old gap_break cascaded a single >5s gap to exclude the whole point tail via a
+    -- cumulative BOOL_OR, so one mid-rally DETECTION gap (esp. the intermittently-
+    -- detected far player) killed the rest of a real rally (measured: 19/21 shots
+    -- in one point, far-skewed). A resumed dense rally now RE-ANCHORS: only the
+    -- genuine trailing tail BEYOND last_connected_s is gap-excluded; live rally
+    -- shots up to it are kept. See feedback_greedy_chain_rejection.
+    last_connected_per_point AS (
+      SELECT task_id, point_number,
+        MAX(ball_hit_s) FILTER (
+          WHERE prev_s IS NOT NULL AND last_serve_s IS NOT NULL
+            AND ball_hit_s > last_serve_s AND (ball_hit_s - prev_s) <= 5.0
+        ) AS last_connected_s
+      FROM excl_base
+      GROUP BY task_id, point_number
+    ),
+
     excl_flags AS (
       SELECT e.id,
         (NOT e.serve_d AND e.last_serve_s IS NOT NULL AND e.ball_hit_s < e.last_serve_s) AS r1,
-        (e.prev_s IS NOT NULL AND e.last_serve_s IS NOT NULL
-         AND e.ball_hit_s > e.last_serve_s AND (e.ball_hit_s - e.prev_s) > 5.0) AS gap_break,
+        -- trailing-tail (non-cascading, re-anchored): a post-serve shot beyond the
+        -- last live-rally shot is genuine between-point activity. NULL last_connected_s
+        -- (no connected rally) -> comparison is NULL -> not gap-excluded (conservative).
+        (NOT e.serve_d AND e.last_serve_s IS NOT NULL AND e.ball_hit_s > e.last_serve_s
+         AND lc.last_connected_s IS NOT NULL AND e.ball_hit_s > lc.last_connected_s) AS gap_break,
         (NOT e.serve_d AND e.x IS NULL AND e.y IS NULL) AS r3
       FROM excl_base e
+      LEFT JOIN last_connected_per_point lc
+        ON lc.task_id = e.task_id AND lc.point_number = e.point_number
     ),
 
     excl_chain AS (
-      SELECT f.id,
-        (f.r1 OR BOOL_OR(f.gap_break) OVER (
-          PARTITION BY w.task_id, w.point_number ORDER BY w.ball_hit_s, w.id
-          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) OR f.r3) AS exclude_d
+      SELECT f.id, (f.r1 OR f.gap_break OR f.r3) AS exclude_d
       FROM excl_flags f
-      JOIN with_try_ff w ON w.id = f.id
     ),
 
     -- ========== WARM-UP FILTER (Phase 3, May 7) ==========
