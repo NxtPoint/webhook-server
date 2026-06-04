@@ -9,8 +9,10 @@
 - **Rule #8 rebuild DONE:** image rebuilt, pushed to both ECRs (amd64 digest `sha256:0eb6ad9c637d4ea2d5fecd1560d5b48a3ff0741b62ebefc101f144e58927978b`), job-defs registered **eu rev 63 / us rev 44** (retryStrategy preserved, g4-primary queue unchanged). Container import smoke test passed; weights bundle + load confirmed in-container.
 - **Rollback without rebuild:** set Batch env `SWING_CLASSIFIER_ENABLED=0` (kill-switch) or tune `SWING_CLASSIFIER_MIN_CONF` (default 0.5).
 
-**⛔ THE ONLY THING LEFT = THE VALIDATION GATE (Tomo's rerun + my reconcile):**
-A fresh Singles-T5 Batch run has NOT yet happened on the new image. **Tomo triggers a Singles-T5 upload of the reference/"Jimbo" match via the frontend** (gated to tomo.stojakovic@gmail.com) and replies with the new T5 task_id. Then:
+**🔴 CRITICAL FIX THIS SESSION (the deploy was inert without it): export→reingest dropped stroke_class.** First validation run (`db3937fb`) completed but post-ingest `stroke_class=0` — the swing classifier RAN in Batch (436 classified) but `bronze_export._player_detection_to_dict` didn't serialize `stroke_class`, and the Render reingest DELETEs+re-COPYs from that JSON → silver fell back to the heuristic. Same leak wiped `roi_prod` bounces (the blanket ball_detections DELETE) → roi_bounces' ~16 min was 100% wasted on every auto-ingested task. **FIXED (`f4449b0`):** export serializes stroke_class; ingest COPYs it; ingest DELETE now preserves `source='roi_prod'`. **Rebuilt: eu rev 64 / us rev 45** (digest `sha256:108153d7…`). Render ingest auto-deploys.
+
+**⛔ THE ONLY THING LEFT = THE VALIDATION GATE (Tomo's FRESH rerun on rev 64 + my reconcile):**
+`db3937fb` ran on rev 63 (pre-fix) so its silver is heuristic-only — **a NEW run is required.** **Tomo triggers a fresh Singles-T5 upload of the same 10-min test video via the frontend** and replies with the new T5 task_id. Then:
 ```
 python -m ml_pipeline.harness reconcile <sa_task> <new_t5_task>   # exclude_d-correct
 ```
@@ -45,7 +47,8 @@ Tomo asked whether the far-player frame-space bug (that we fixed for swings) als
 4. **Per-role far swing eval** — finish to know far swing F1 → decide if stroke-TYPE is build-done.
 
 ## Canonical state
-- Batch job-def: **eu rev 63 / us rev 44** (digest `0eb6ad9c…`, g4-primary → g5 → Spot queue). Prior rev 62/43.
+- Batch job-def: **eu rev 64 / us rev 45** (digest `sha256:108153d7a9df6f5774f0d4fbb545219b1c2b18f1b7fe6b2365187e733730a98a`, g4-primary → g5 → Spot queue). rev 63/44 = swing classifier but export-leak-inert; rev 62/43 = pre-swing.
+- **Validation sanity checks after a rev-64 run ingests:** `SELECT count(stroke_class) FROM ml_analysis.player_detections WHERE job_id=:t` should be >0 now; `SELECT count(*) FILTER (WHERE source='roi_prod') FROM ml_analysis.ball_detections WHERE job_id=:t` should survive ingest (was wiped pre-fix). Reference SA teacher = `ba4812be`.
 - New weights deployed (in-image, git-ignored): `swing_classifier_v2.pt`. Local-only not-yet-deployed: `bounce_detector_v2_7match.pt`.
 - GPU dev box `i-0295d636` (t5-dev-gpu-1b, Tesla T4) — STOPPED.
 - Env knobs (Batch): `SWING_CLASSIFIER_ENABLED` (default 1), `SWING_CLASSIFIER_MIN_CONF` (default 0.5).
