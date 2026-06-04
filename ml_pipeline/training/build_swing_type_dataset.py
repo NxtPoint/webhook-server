@@ -76,7 +76,27 @@ import torch
 
 from sqlalchemy import text as sql_text
 
+from ml_pipeline.config import FRAME_SAMPLE_FPS
+
 logger = logging.getLogger("build_swing_type_dataset")
+
+
+def _bbox_lookup_frame(label: dict) -> int:
+    """T5 25fps frame index for the player_detections bbox lookup.
+
+    FRAME-SPACE FIX (2026-06-04): SportAI's hit_frame is stored verbatim in the
+    SOURCE video's fps (25/30/60, per match) — but ml_analysis.player_detections
+    is indexed in the fixed FRAME_SAMPLE_FPS (25fps) sampled space. Matching the
+    bbox by the raw SA hit_frame silently misaligns by (source_fps/25 - 1) and
+    dropped ~62% of hits (bimodal by fps: ~28% on 25fps matches, 77-81% on 30/60fps).
+    Convert via the fps-independent hit_ts (seconds). NOTE: the VIDEO seek for the
+    optical-flow crop stays on the raw SA hit_frame — the trimmed video is SOURCE-fps,
+    so the SA frame is already correct there. See feedback_t5_two_frame_spaces.
+    """
+    ts = label.get("hit_ts")
+    if ts is not None:
+        return int(round(float(ts) * FRAME_SAMPLE_FPS))
+    return int(label["hit_frame"])  # fallback: assume already 25fps-aligned
 
 # ADR-02 spec constants (Build spec v1 table)
 WINDOW_PRE = 10        # frames before predicted_hit_frame
@@ -380,7 +400,8 @@ def build_one_match(
                 t5_task_id[:8], video_w, video_h, fps, n_frames_in_video)
 
     # 3. Pre-fetch all needed bboxes (incl. fallback radius) in one query
-    needed_frames = sorted({int(l["hit_frame"]) for l in labels
+    # 25fps bbox-lookup frames (NOT the raw SA hit_frame — see _bbox_lookup_frame)
+    needed_frames = sorted({_bbox_lookup_frame(l) for l in labels
                             if l.get("hit_frame") is not None})
     bbox_by_frame = _fetch_bboxes_for_frames(
         engine, t5_task_id, needed_frames,
@@ -398,12 +419,13 @@ def build_one_match(
     dropped = {"no_role_match_within_radius": 0, "video_eof": 0, "bad_bbox": 0}
 
     for li, lbl in enumerate(labels):
-        hit_frame = int(lbl["hit_frame"])
+        hit_frame = int(lbl["hit_frame"])        # SOURCE-fps index → video seek (below)
+        t5_frame = _bbox_lookup_frame(lbl)       # 25fps index → bbox lookup
         role = lbl["role"]
         cx = float(lbl["court_x"]); cy = float(lbl["court_y"])
 
         player, frame_delta = _pick_player_with_fallback(
-            bbox_by_frame, hit_frame, role, cx, cy,
+            bbox_by_frame, t5_frame, role, cx, cy,
             fallback_radius=BBOX_FALLBACK_RADIUS,
         )
         if player is None:
