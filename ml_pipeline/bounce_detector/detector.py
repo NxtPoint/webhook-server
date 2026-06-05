@@ -547,13 +547,15 @@ def detect_bounces_offline(
     rally_by_frame: dict[int, str],
     weights_path: Optional[str] = None,
     threshold_override: Optional[float] = None,
+    candidate_mode: Optional[str] = None,
 ) -> List[BounceEvent]:
-    """In-memory detection for bench / replay. No DB writes.
+    """In-memory detection for bench / replay / the Batch bronze stage. No DB writes.
 
     threshold_override: lets the bench drop below UNTRAINED_THRESHOLD to
     see what the (untrained) scoring layer produces for a sanity check.
     Default = UNTRAINED_THRESHOLD when weights absent, TRAINED_THRESHOLD
     when present.
+    candidate_mode: explicit 'gravity_residual'|'is_bounce' (else env).
     """
     cnn = BounceCNNWrapper()
     cnn.load_weights(weights_path)
@@ -566,4 +568,5 @@ def detect_bounces_offline(
         wrists_by_frame=wrists_by_frame,
         rally_by_frame=rally_by_frame,
         cnn=cnn, threshold=threshold,
+        candidate_mode=candidate_mode,
     )

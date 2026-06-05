@@ -314,6 +314,56 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
             except Exception as e:
                 logger.warning(f"ROI extraction failed (non-fatal): {e}")
 
+        # 2d. Bronze BOUNCE MODEL (match only) — gravity-residual candidates +
+        # trained CNN v2 → ml_analysis.ball_bounces (the MODEL-layer bounce fact
+        # that replaces the velocity-reversal is_bounce rule per the bronze-first
+        # cleanup). torch + weights live in THIS Batch image (the Render main API
+        # has neither). Features are assembled from the IN-MEMORY result because
+        # ml_analysis isn't populated until the Render re-ingest; rally state is
+        # approximated in_rally (validated 2026-06-05: the rally gate barely moves
+        # precision, 37%→34%). ball_bounces SURVIVES the re-ingest (it deletes only
+        # ball/player_detections + match_analytics). Additive + non-fatal.
+        if not practice:
+            try:
+                import os as _os
+                from ml_pipeline.bounce_detector.detector import (
+                    detect_bounces_offline, _persist_events as _persist_bounces,
+                )
+                from ml_pipeline.bounce_detector.db import (
+                    init_bounce_schema, delete_bounces_for_task,
+                )
+                from ml_pipeline.config import FRAME_SAMPLE_FPS as _BFPS
+                _bw = _os.path.join(_os.path.dirname(__file__), "models",
+                                    "bounce_detector_v2_7match.pt")
+                _balls = [
+                    {"frame_idx": int(d.frame_idx), "x": d.x, "y": d.y,
+                     "court_x": d.court_x, "court_y": d.court_y,
+                     "is_bounce": d.is_bounce, "speed_kmh": d.speed_kmh}
+                    for d in (result.ball_detections or [])
+                ]
+                _wrists: dict = {}
+                for _pd in (result.player_detections or []):
+                    if _pd.court_x is not None and _pd.court_y is not None:
+                        _wrists.setdefault(int(_pd.frame_idx), []).append(
+                            (float(_pd.court_x), float(_pd.court_y)))
+                _last = max((b["frame_idx"] for b in _balls), default=0)
+                _rally = {fi: "in_rally" for fi in range(_last + 1)}
+                _bev = detect_bounces_offline(
+                    task_id=job_id, fps=float(_BFPS), ball_rows=_balls,
+                    wrists_by_frame=_wrists, rally_by_frame=_rally,
+                    weights_path=_bw, candidate_mode="gravity_residual",
+                    threshold_override=0.5,
+                )
+                with engine.begin() as _bc:
+                    init_bounce_schema(_bc)
+                    delete_bounces_for_task(_bc, job_id)
+                    _persist_bounces(_bc, _bev)
+                logger.info("Bounce CNN v2: wrote %d ball_bounces "
+                            "(gravity_residual, thr 0.5, weights_loaded=%s)",
+                            len(_bev), _os.path.exists(_bw))
+            except Exception as e:
+                logger.warning(f"Bounce CNN stage failed (non-fatal): {e}")
+
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
         # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads
         # and bulk-inserts into ml_analysis.* in the same region as the DB.
