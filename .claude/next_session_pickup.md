@@ -2,6 +2,12 @@
 
 ## ⚡ Executive summary (read first — 30 seconds)
 **FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
+
+## 🧭 ARCHITECTURE REALIGNMENT (Tomo, 2026-06-05) — READ THIS, it reframes everything
+**Clean silver. Inherit bronze 100%, no exceptions. Bronze is the answer; silver is NEVER the answer.** The unlocking insight: **a stroke IS a ball-hit (one event)** → silver must be **STROKE/HIT-DRIVEN** (one row per bronze `stroke_events` hit, projected verbatim), NOT bounce-driven. Today's bounce-driven Pass 1 (`_t5_pass1_load_bounce_driven`) heuristically reconstructs the hit (mirror-fallback, geometric serve, `_infer_swing_type`, gap_break, exclude_d) — that whole pile is DEBT to DELETE once bronze is right. **Overcounts die automatically when hit-driven:** no valid stroke+hit ⇒ no row, so phantom/racquet/double bounces vanish and T5's ~162/343 collapses toward the real **~84 hits** as a consequence of correctness. Full audit + heuristic-debt checklist + locked roadmap: `docs/_investigation/bronze_silver_18_audit.md` §"UPDATE 2026-06-05".
+**Locked order (bronze-first):** 1) **bounce** → promote CNN v2 to the bronze bounce model; 2) **serve** → pass-3 inherits `serve_events` + serve-model precision, delete geometric gate; 3) **stroke=ball-hit** → `stroke_events` carries swing_type + ball_hit_location + correct attribution; 4) **flip silver STROKE-DRIVEN** (`T5_STROKE_DRIVEN_SILVER`), delete Pass-1 debt. Build bronze fact-by-fact; never extend a silver heuristic.
+**Bounce CNN v2 validated this session:** gravity_residual + `bounce_detector_v2_7match.pt` @thr 0.5 → precision 20%→37%, count 343→**172 (≈SA 162)**, recall held. Weights 144KB (committable). Next: promote to bronze bounce model (not into the doomed bounce-driven silver).
+
 **Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN (re-verified this session).
 **What shipped this session (the swing-classifier deploy — fully done end-to-end):**
 - **Bronze inference wired (Batch):** new `ml_pipeline/stroke_classifier/inference_v2.py` runs in `pipeline.py` (`_classify_far_player_strokes` → delegates), classifies BOTH players' swing type per bounce with the trained v2 model (`SwingTypeR2plus1D`, near 0.86 / far 0.61), writes canonical `fh/bh/overhead` to `player_detections.stroke_class`. Frame-space handled (sampled `frame_idx` → source-fps window via `frame_interval`); handedness=1.0 (matches training default); memory micro-batched. Commits `877eaa6` (+ `7962088` detector_v2 lazy-import fix).

@@ -106,3 +106,44 @@ Tried wiring `serve_events` → silver (conf≥0.70) + deleting the bounce-geome
 2. THEN delete the bounce-geometric gate. Plus serve-model precision (model-side).
 
 Until then the bounce-geometric serve gate stays as a **TAGGED stopgap** (it currently yields better silver metrics — 17 points / 40 % recall — *because* pass-3 is coupled to it). Tag it in code as `STOPGAP-until-pass3-inherits-serve_events`. This is the measure-first discipline working: it stopped a points regression from shipping.
+
+---
+
+## ★ UPDATE 2026-06-05 — silver-heuristic audit (Tomo's "clean silver, inherit bronze 100%, no exceptions") + the STROKE = BALL-HIT reframe
+
+**The unlocking insight (Tomo, 2026-06-05): a stroke IS a ball-hit — one and the same event.** So bronze `stroke_events` should be the canonical *hit* event carrying `{frame, player_id, swing_type, ball_hit_location_x/y, ball_hit_s}`, and **silver must be STROKE-DRIVEN: exactly one row per bronze hit event, projected verbatim.** Bounces are a *separate* bronze fact (where the ball landed) attached to the hit for outcome/zone — they must NOT generate rows.
+
+**Today silver is BOUNCE-DRIVEN** (`_t5_pass1_load_bounce_driven`): it iterates bounces and *heuristically reconstructs* the hit. **That inversion is the source of nearly all the debt AND the overcount.** Tomo's corollary: once silver is hit-driven, *a row exists only if there's a valid stroke with a valid hit* — so pre-serve racquet taps, missed hits, double bounces, phantom bounces all vanish automatically. T5's inflated count collapses from ~162/343 toward **the real ~84 hits** as a *consequence of correctness*, not a filter. **Bronze is the answer; silver is never the answer.**
+
+### Full Pass-1 heuristic debt catalog (the cleanup checklist)
+Everything in `build_silver_match_t5.py::_t5_pass1_load_bounce_driven` that computes a base fact = DEBT to delete once bronze is right. The shared passes 3–5 (`build_silver_v2.py`) are legitimate analytics (KEEP).
+
+| Silver logic (Pass 1) | Verdict | Bronze owner it belongs to |
+|---|---|---|
+| Bounce-driven **row generation** (1 row/bounce) | 🔴 DEBT | `stroke_events` (1 row per hit) |
+| **Hitter attribution** — `_build_player_buckets`, `_find_nearest_detection`, soft-window, **mirror-fallback**, stale-tagging | 🔴 DEBT | `stroke_events.player_id` |
+| **Geometric serve** — `_serve_geometric_check`, `_check_hitter_stationary_pre_hit`, cooldown, `FIRST_SERVE_MIN_TS`, `_is_overhead_pose` | 🔴 DEBT (partly addressed by `T5_SERVE_FROM_EVENTS` overlay) | `serve_events` |
+| **swing_type** — `_infer_swing_type_from_keypoints` / `_infer_swing_type_from_position` | 🔴 DEBT (swing classifier now exists but is disabled — failed gate) | `stroke_events.swing_type` |
+| **volley** — net-distance proxy | 🔴 DEBT | `stroke_events` (ball-not-bounced-before-hit signal) |
+| **ball_hit_location_x/y** — hitter court_x/y at the bounce | 🔴 DEBT | `stroke_events.ball_hit_location` (the stroke *is* the hit) |
+| **ball_hit_s** — uses the **bounce** ts (wrong; ~0.3–0.5s after the hit) | 🔴 DEBT | `stroke_events` hit time |
+| Bounce **proximity guard**, **gap_break** re-anchor, **exclude_d** | 🔴 DEBT (exclusion heuristics) | eliminated by hit-driven: no valid stroke+hit ⇒ no row |
+| Point/game structure, server alternation | 🟢 KEEP (analytics — not in bronze) | silver |
+| serve location 1-8 / serve_side_d / zones (A-D) / aggression / depth | 🟢 KEEP (analytics) | silver |
+| stroke_d (swing_type → Forehand/Backhand/… mapping), rally_length | 🟢 KEEP (rename/count) | silver |
+| shot_outcome_d (Winner/Error/In), ace/DF/service-winner/point/game winner | 🟢 KEEP — geometric in/out of the *bounce* fact + sequence logic (conditional on correct bronze bounce coords) | silver |
+
+### Per-fact status refresh (what changed since 2026-05-27)
+- **serve** — `T5_SERVE_FROM_EVENTS` overlay now inherits `serve_events`; the geometric gate remains a tagged stopgap (pass-3 coupling, line 104-108, still open). Model over-fires (precision) — the serve "check + train + lock" step.
+- **ball bounce** — the velocity-reversal rule in `ball_tracker.detect_bounces` is the rogue base-fact computation; the **bounce CNN v2** is now validated (`bounce_detector_v2_7match.pt`, gravity_residual, **precision 20%→37%, count 343→172 ≈ SA 162** at thr 0.5). Promote it to THE bronze bounce model (MODEL layer) → silver inherits. *(This is "finish bounce.")*
+- **swing_type** — classifier now EXISTS (trained, deployed rev 64, **disabled rev 65** — failed the gate: no "other" class → forces volleys/serves→forehand). Needs v2.1 (4th class) before it's the bronze answer.
+- **stroke = ball-hit** — `stroke_events` still carries timing only (**NO swing_type, NO ball_hit_location**). Making it carry both is the keystone that lets silver go hit-driven.
+- **identity** — still Near/Far only; unchanged.
+
+### Locked roadmap (Tomo's order, 2026-06-05) — bronze-first, then silver becomes a thin projection
+1. **Bounce** → promote CNN v2 to the bronze bounce model. *(finish bounce)*
+2. **Serve** → fix pass-3 to anchor on `serve_events` (hitter pos, not the bounce on serve rows) + serve-model precision; then delete the geometric gate. *(check → model → train → lock)*
+3. **Stroke = ball-hit** → bronze `stroke_events` carries `swing_type` + `ball_hit_location` (+ correct hitter attribution — the perspective-bias, rule #11). The hard one.
+4. **Flip silver to STROKE-DRIVEN** (`T5_STROKE_DRIVEN_SILVER`): 1 row per bronze hit, project verbatim, feed the SAME passes 3–5. **Delete the entire Pass-1 debt list above.** Overcounts die (→ ~84 real hits). Gate: per-hit reconcile vs SA must hold/improve.
+
+**Governance reaffirmed:** no new base-fact logic in silver. Every existing silver derivation is either KEEP (analytic above) or tagged `STOPGAP-until-<bronze model>`. We extend bronze models, never silver heuristics.
