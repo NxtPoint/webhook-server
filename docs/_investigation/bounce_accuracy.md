@@ -15,6 +15,17 @@ offset ≈ 0).
 
 ---
 
+## ★ UPDATE 2026-06-05 — re-measured on b008888c; the "airborne FP" ROOT pinned + two cheap fixes empirically REJECTED
+
+Re-confirmed on a fresh match (T5 `b008888c` vs SA `ba4812be`, both 25fps), bounce-vs-bounce (not bounce-vs-stroke):
+- **SA `bronze.ball_bounce` = 162; T5 `ml_analysis.ball_detections(is_bounce)` = 343 (2.1× over-detect).** At tol 0.3s: **precision 20%, recall 43%** (tol 0.5s: 23% / 49%). Matches the ~2×/27%-precision picture above — bounce is still the weakest field.
+- **ROOT pinned:** `ball_tracker.detect_bounces` (ball_tracker.py:614) flags EVERY image-y velocity sign-flip as a bounce — `(vel>0→vel<0) OR (vel<0→vel>0)`. The first is a real ground bounce (ball falls then rebounds); the **second is the APEX of the ball's arc** (top of trajectory) — not a bounce. So it counts apexes as bounces ≈ the 2× over-count. This IS the "airborne false-positives."
+- **Cheap fix #1 REJECTED — `validate_bounces` (cross-net) applied in silver:** 343→196, but recall **43%→27%** while precision only 20%→22%. T5 `court_y` is too noisy for the cross-net rule to fire cleanly → it drops real bounces. Net negative.
+- **Cheap fix #2 REJECTED — directional clause (keep only down-then-up `vel>0→vel<0`):** replayed on b008888c's stored trajectory (8011 pts, faithful to prod: reproduces n=343 exactly). down-up-only → n=259, recall **43%→35%**, precision 20%→22%. The **perspective confound** kills it: image-y velocity is dominated by near/far court-depth drift, NOT pure vertical motion, so many real bounces don't present as a clean down-then-up reversal and get dropped. Same recall-for-nothing trade as #1.
+- **Therefore the precision fix needs a BETTER SIGNAL, not a filter on the image-y reversal.** The path is **gravity-residual** (`bounce_detector/feature_extractor._gravity_residual` — fits a parabola to remove the trajectory drift, perspective-robust) and/or deploying the **trained bounce CNN v2** (`models/bounce_detector_v2_7match.pt`, val F1 0.54, NOT deployed). Both are Batch-side (rule #8) + need a recall/precision tradeoff call + `bench_ball` validation → a supervised daytime session, not a cheap win. Scripts for this update: ad-hoc (db_init.engine replays); rule #11 holds (this is a bronze-detector problem, not silver-derivation).
+
+---
+
 ## 1. Executive summary — the binding findings
 
 1. **SA's 161 "bounces" are two kinds:** `floor` = 67 (ground bounces, the placement target) +
