@@ -287,7 +287,11 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         #   (see bounces._select_anchors docstring).
         if not practice:
             try:
-                on_progress("roi_extract", 78)
+                # 81: must sit between the main pipeline's final stage
+                # (computing_analytics=80, pipeline.py) and saving_results=82
+                # below — it was 78, which made the UI progress bar visibly
+                # step BACKWARDS (80→78) at the ROI phase boundary every run.
+                on_progress("roi_extract", 81)
                 from ml_pipeline.roi_extractors import run_unified_roi
                 from ml_pipeline.config import FRAME_SAMPLE_FPS
                 court_det = getattr(pipeline, "court_detector", None)
