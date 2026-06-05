@@ -1,47 +1,64 @@
-# Next-session pickup — 2026-06-05 — bronze-first realignment + bounce bronze model built; NEXT = finish bounce (rebuild + serve consumer) then serve
+# Next-session pickup — 2026-06-06 (overnight session) — SERVE FEED REGRESSION FOUND+FIXED; next = morning validation + serve model v1 training
 
 ## ⚡ Executive summary (read first — 30 seconds)
-**FIRST ACTION:** read `docs/north_star.md` §"★ RULES OF THE GAME".
-**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN.
+**Today's date:** 2026-06-06 (written ~01:30 after an overnight autonomous session)
+**Phase active:** bronze-first roadmap step 2 (serve) — build phase ~DONE pending live validation; training next.
+**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN (verified 3×). **CI bench GREEN again** (was silently red since May 28 — missing numpy in requirements-bench.txt, fixed `f24f4f5`).
+**What shipped overnight:** (1) bounce stage live (rev 66/47) + validated on a real run; (2) serve detector consumes CNN `ball_bounces` w/ legacy fallback (`05fe85d`, env `SERVE_CNN_BOUNCES`); (3) **the serve-feed regression root-caused to `SAHI_BATCHED=1` and fixed in job-def eu rev 67 / us rev 48**; (4) CI repaired.
+**What's blocked:** nothing.
+**Next session's job:** Tomo uploads fresh match → confirm ~15-17/26 serves live on rev 67 → then serve model v1 training (kickoff draft ready).
 
-### 🧭 THE REFRAME (Tomo, 2026-06-05) — this governs everything now
-**Clean silver. Inherit bronze 100%, no exceptions. Bronze is the answer; silver is NEVER the answer.** A **stroke IS a ball-hit** (one event) → silver must be **STROKE/HIT-DRIVEN** (one row per bronze `stroke_events` hit, projected verbatim), NOT bounce-driven. Today's `_t5_pass1_load_bounce_driven` heuristically reconstructs the hit (mirror-fallback, geometric serve, `_infer_swing_type`, gap_break/exclude_d) — that whole pile is DEBT to DELETE once bronze is right. **Overcounts die from correctness, not filtering:** when hit-driven, no valid stroke+hit ⇒ no row, so phantom/racquet/double bounces vanish and T5's ~162/343 collapses toward the real **~84 hits**. Full audit + heuristic-debt checklist: `docs/_investigation/bronze_silver_18_audit.md` §"UPDATE 2026-06-05". Memory: `feedback_silver_must_be_hit_driven`.
+## 🎯 THE OVERNIGHT FINDING (read this before touching serve or Batch perf knobs)
+Fresh runs scored 7/26 serves while the bench said 20-23/24. NOT a detector regression — the **upstream near-pose
+feed lost 26%** (10150→7535 rows; serve-window coverage 101→~64 ragged) somewhere in the May runtime campaign.
+Probe ladder (6 Batch reruns of the reference video, one env knob at a time, full table in the session log below):
+- Exonerated: YOLO_FP16 (keep =1, saves 9min, bit-identical), PLAYER_BATCH_SIZE, MOG2_DOWNSCALE,
+  PIPELINE_STAGE_OVERLAP, PLAYER_DETECTION_INTERVAL (predates), hardware (all g4dn/T4).
+- **Culprit: `SAHI_BATCHED=1`** (May-29 tile-fan prototype). With =0: pose_near 10333, near recall 12-13/14
+  (fixture level), 17/26 total matched, F1 66.7 vs 35.9. Runtime price ~+13min/10-min video — accepted.
+- **Fixed: job-def eu rev 67 / us rev 48** (env-only, image unchanged `a60c3909`). p6 probe = the validation run.
+- Memory: `feedback_perf_levers_need_accuracy_probe`. SAHI_BATCHED code path still exists (env-gated off) —
+  consider daylight investigation of WHY batched tile-fan drops near detections, or delete the prototype.
 
-**LOCKED ROADMAP (bronze-first, fix one fact at a time, then silver becomes a thin projection):**
-1. **Bounce** → CNN bronze model. *(stage BUILT this session — see below; remaining: rebuild + serve consumer)*
-2. **Serve** → check + improve model precision + pass-3 inherits `serve_events` (delete geometric gate) + train/lock.
-3. **Stroke = ball-hit** → `stroke_events` carries swing_type + ball_hit_location + correct attribution (perspective bias, rule #11). The keystone.
-4. **Flip silver STROKE-DRIVEN** (`T5_STROKE_DRIVEN_SILVER`) → DELETE the Pass-1 debt; overcounts die.
+## Serve status after the fix (reference video, vs SA 26 = 14 near / 12 far)
+- Near: 13/14 (heuristic ceiling — the 1 miss is the known pose-amplitude case)
+- Far: 4/12 ← the remaining gap to Tomo's 20/26 target. Heuristic-unfixable (receiver-FP + faults outside
+  service box are structurally invisible to bounce-first far path — bench-proven). **= TRAINING territory.**
+- Serve ts accuracy on matches: mean 0.32s (CNN bounce path). Far xy capped by far-calibration (separate item).
 
-## 🎯 NEXT SESSION'S JOB — finish bounce (step 1), then start serve (step 2)
-**Bounce bronze model is BUILT + VALIDATED + COMMITTED (`68fdf12`) but NOT rebuilt or consumed yet.** `ml_pipeline/__main__.py` runs the CNN v2 (gravity_residual, thr 0.5, in-memory features, rally≈in_rally) post-pipeline → writes `ml_analysis.ball_bounces`. Validated end-to-end on b008888c: **197 bounces, precision 34%, recall 41%** vs SA 162 (vs the velocity-reversal `is_bounce` rule: 343 / 20% / 43%) — count ≈ SA, precision ~2×. torch+weights are Batch-only (Render main API has neither — confirmed), so it MUST run in Batch.
-
-**Two remaining pieces (couple them — one rebuild covers both):**
-1. **Rebuild** (rule #8) to land the Batch bounce stage live (current rev 65/46 predates it). `.claude/handover_t5.md` §BATCH-SIDE CHECKLIST.
-2. **Serve-consumer migration (CI-SENSITIVE — do carefully):** point `serve_detector`'s bounce input at `ml_analysis.ball_bounces` instead of `ball_detections.is_bounce`. ⚠️ The locked CI fixtures (a798eff0/880dff02) carry `is_bounce` in their pickled ball_rows, NOT `ball_bounces` → migrating naively breaks the bench (rule #9). Options: regenerate fixtures, or decouple the bench path, or feed both. PLUS the documented pass-3 serve-anchor rework (serve_side_d from `serve_events` hitter, not the bounce on serve rows). This is genuinely step 2's scope — treat bounce-consumer + serve as one focused effort.
-
-## 📦 WHAT SHIPPED THIS SESSION (all on main)
-- **Swing classifier**: built + deployed (rev 64) but **FAILED the gate** (per-hit swing agreement vs SA: heuristic 38% > classifier 32%; root = 3-class model with no "other" → forces volleys/serves→forehand). **DISABLED via `SWING_CLASSIFIER_ENABLED=0`** (rev 65/46, image unchanged). Infra fully validated — one env flip to re-enable once the model gets a 4th "other" class (or high min_conf gate) + the far forehand lean fixed, re-validated per-hit vs SA.
-- **🔴 Export→reingest leak FIXED** (`f4449b0`): Batch-side enrichments were silently wiped by the Render auto-ingest (DELETE+re-COPY). `bronze_export` now serializes `stroke_class`; ingest COPYs it. (roi_prod preservation was tried then **reverted `9d0a30b`** — it floods the bounce-driven silver 2.4×; it'll be consumed properly once silver is hit-driven.) Memory: `feedback_batch_enrichments_need_export_reingest_carry`.
-- **Frame-space fps fixes**: `stroke_events.ts` (`7df8276`) + `serve_events.ts` (`50c0dd3`) now use the SAMPLED fps, not source video_fps (was wrong by source/25 on non-25fps). Serve one is LIVE (serve_events→silver). Bench stayed green. + 2b far-hit-location observability (`931072e`).
-- **Silver-heuristic audit + reframe** (`b82f832`) + **bounce root-cause** (apex FPs + perspective confound; cheap fixes empirically rejected) in `bounce_accuracy.md` §"UPDATE 2026-06-05".
-- **Bounce CNN bronze stage** (`68fdf12`) — see NEXT JOB above. detect_bounces gained explicit `candidate_mode`/`threshold_override` params.
-
-## 📊 Field status vs SA (fresh, b008888c clean main-only vs ba4812be) — supersedes the stale north_star table
-- points 18=18 ✅ · games 4 vs 2 ⚠️over-seg · volley 3≈4 ✅ · serves ~16-22 vs 24 ⚠️far recall · **active rows 121 vs 84 ⚠️over-gen** (dies when hit-driven) · swing: heuristic LIVE (classifier disabled).
-- Bounce (bronze, the weak field): velocity-reversal 343/20%/43% → **CNN v2 197/34%/41%** (≈SA 162). Structure/coverage solid; the gaps are over-generation (→hit-driven) + far recall (→training).
+## 🎓 SERVE MODEL v1 — ready to start (the morning's main job)
+Kickoff draft: `.claude/tmp/serve_model_v1_kickoff_draft.md` (promote to .claude/ after Tomo review). Key facts:
+- Corpus VERIFIED: 404 serve labels / 8 matches (200 FAR / 204 NEAR) with hit_frame/ts, server court xy, role,
+  ball_speed — `training/labels/*_serves.json`. ⚠️ corpus video_s3_keys are all DELETED (post-trim) → v1 must be
+  FEATURE-based (pose/ball/bounce series from ml_analysis), not pixel-based. ⚠️ frame-space: convert via ts only.
+- Recipe = bounce-CNN port: high-recall candidates (relaxed far gates) → small scorer → gate per-serve vs SA
+  ≥ heuristic baseline + serve bench green → env-gated `SERVE_MODEL_ENABLED=0` default.
+- Sequencing gate: measure candidate recall on corpus FIRST (target ≥90%) before training anything.
+- Where it runs: prefer Batch-side post-pipeline (one-model-per-fact; Render has no torch/weights).
 
 ## Canonical state
-- Batch job-def: **eu rev 66 / us rev 47** (digest `sha256:a60c3909…`, env carried verbatim incl. `SWING_CLASSIFIER_ENABLED=0`). ✅ **Bounce stage rebuild DONE 2026-06-05** — image includes `bounce_detector/` (a missing Dockerfile `COPY` was caught + fixed in `f593ab8`; without it the stage would have import-failed silently). Smoke-tested in-image (module + weights + import OK). **Not yet validated on a live run** — next T5 upload should show `Bounce CNN v2: wrote N ball_bounces` in CloudWatch. g4-primary → g5 → Spot queue.
-- Render (auto-deploys main): ingest carries `stroke_class`, roi_prod blanket-delete, fps fixes live, swing-prefer silver cascade live (but classifier disabled in Batch so stroke_class is null → heuristic runs).
-- Reference pair: SA `ba4812be` ↔ T5 (heuristic baseline) `a35b37f6`; clean classifier test task `b008888c` (its `ball_bounces` now holds 197 CNN bounces from the stage validation).
-- New weights (Batch-bundled, git-ignored): `bounce_detector_v2_7match.pt` (144KB), `swing_classifier_v2.pt` (125MB). GPU dev box `i-0295d636` STOPPED.
-- Env knobs (Batch): `SWING_CLASSIFIER_ENABLED`(0), `SWING_CLASSIFIER_MIN_CONF`(0.5), `BOUNCE_CANDIDATE_MODE`, `BOUNCE_DETECTOR_THRESHOLD`(via param).
+- Batch job-def: **eu rev 67 / us rev 48** (digest `a60c3909`, `SAHI_BATCHED=0`, `SWING_CLASSIFIER_ENABLED=0`).
+  Bounce CNN stage LIVE + validated (60b11b09: 174 ball_bounces, survives re-ingest).
+- ⚠️ main carries 2 Batch-side diffs vs deployed image (both benign, ride with next rebuild): `04bd38a`
+  progress-pct fix (roi_extract 78→81) + `05fe85d` serve_detector (Render-only behavior; image sync policy).
+- Render (main): serve detector prefers CNN ball_bounces, falls back to legacy is_bounce (old tasks/fixtures);
+  rollback knob `SERVE_CNN_BOUNCES=0` (docs/env_vars.md).
+- Reference video: local copies `ml_pipeline/test_videos/a798eff0_sa_video.mp4` ≡ Tomo's
+  `C:\Users\tomos\OneDrive\ten-fifty5\videos\match.mp4` (md5 089207968c…). SA companion ba4812be (26 serves,
+  68 floor bounces + 94 swing rows — "bounce" target = the 68 floor).
+- Probe harness (reusable): `.claude/tmp/probe_{submit,measure}.py` — direct Batch submit + local bronze ingest
+  + eval, zero prod side effects. Probe ml_analysis rows cleaned after use (this session: all 6 probes deleted).
+- Probe ledger: `.claude/tmp/probe_results.md` (gitignored — key numbers replicated above).
+- CI: green (`f24f4f5`). Latest main: serve-consumer migration + CI fix + progress fix.
 
-## 🗂️ Backlog after bounce+serve (deferred, scoped)
-- **Swing v2.1**: add 4th "other"/none class (or high min_conf gate) → stop forced-forehand → re-validate per-hit → flip `SWING_CLASSIFIER_ENABLED=1`. (GPU box needed for retrain.)
-- **Stroke = ball-hit**: make `stroke_events` carry swing_type + ball_hit_location + correct attribution → unlocks the stroke-driven silver flip (the big cleanup).
-- **Far serve recall + far ball_hit_location**: training + far-court calibration (the 2.4-7m overshoot nulling far court_y).
-- `bench_silver` stale baseline (pre-existing 6-issue regression from the bounce-proximity guard) — re-baseline.
+## 🗂️ Backlog (in order, after serve v1)
+- **Stroke = ball-hit** (roadmap step 3, keystone): stroke_events has NO swing_type / ball-hit-xy columns —
+  SA carries both at 100%. Then flip silver hit-driven; T5 silver 183 rows vs SA 94 dies from correctness.
+- **Far-court calibration** (2.4-7m overshoot, 40% NULL bounce coords) — caps far xy for serve+bounce+stroke.
+- Swing v2.1 retrain (4th "other" class) → re-gate → `SWING_CLASSIFIER_ENABLED=1`.
+- Per-run scorecard automation (eval-serve + bounce eval auto-run on reference-video ingests) — kills the
+  "regression invisible for a week" class permanently. Cheap, high value.
+- SAHI_BATCHED prototype: root-cause or delete. bench_silver stale baseline re-base. Corpus video retention gap
+  (labels point at deleted videos — blocks pixel-based training).
 ---
 **END OF PICKUP**
