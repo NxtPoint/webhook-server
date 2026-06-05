@@ -32,7 +32,7 @@
 - Bounce (bronze, the weak field): velocity-reversal 343/20%/43% → **CNN v2 197/34%/41%** (≈SA 162). Structure/coverage solid; the gaps are over-generation (→hit-driven) + far recall (→training).
 
 ## Canonical state
-- Batch job-def: **eu rev 65 / us rev 46** (digest `sha256:108153d7…`, `SWING_CLASSIFIER_ENABLED=0`). ⚠️ **The Batch bounce stage (`68fdf12`) is on `main` but NOT in this deployed image — needs the rebuild.** g4-primary → g5 → Spot queue.
+- Batch job-def: **eu rev 66 / us rev 47** (digest `sha256:a60c3909…`, env carried verbatim incl. `SWING_CLASSIFIER_ENABLED=0`). ✅ **Bounce stage rebuild DONE 2026-06-05** — image includes `bounce_detector/` (a missing Dockerfile `COPY` was caught + fixed in `f593ab8`; without it the stage would have import-failed silently). Smoke-tested in-image (module + weights + import OK). **Not yet validated on a live run** — next T5 upload should show `Bounce CNN v2: wrote N ball_bounces` in CloudWatch. g4-primary → g5 → Spot queue.
 - Render (auto-deploys main): ingest carries `stroke_class`, roi_prod blanket-delete, fps fixes live, swing-prefer silver cascade live (but classifier disabled in Batch so stroke_class is null → heuristic runs).
 - Reference pair: SA `ba4812be` ↔ T5 (heuristic baseline) `a35b37f6`; clean classifier test task `b008888c` (its `ball_bounces` now holds 197 CNN bounces from the stage validation).
 - New weights (Batch-bundled, git-ignored): `bounce_detector_v2_7match.pt` (144KB), `swing_classifier_v2.pt` (125MB). GPU dev box `i-0295d636` STOPPED.
