@@ -3,13 +3,18 @@
 # the prod serve_detector pipeline. It does NOT touch the DB, does NOT need
 # ML weights (torch/opencv/transformers), and does NOT need AWS credentials.
 #
-# The only third-party imports along the bench path are sqlalchemy (top-level
-# `from sqlalchemy import text` in serve_detector/detector.py) and its
-# transitive deps. Everything else (json, gzip, pickle, math, dataclasses)
-# is stdlib.
+# The third-party imports along the bench path are sqlalchemy (top-level
+# `from sqlalchemy import text` in serve_detector/detector.py) and numpy
+# (top-level `import numpy as np` in detector.py since the 2026-05-28
+# keypoint-compaction OOM fix — its absence here broke CI silently from
+# 859718d to 05fe85d while local bench stayed green). Everything else
+# (json, gzip, pickle, math, dataclasses) is stdlib.
 #
-# Pinned to match the main requirements.txt entry so CI reflects prod.
+# Pinned to match the main requirements.txt entries so CI reflects prod
+# (Render runs the serve detector — numpy 2.0.2 there, not the Batch
+# image's 1.26.4).
 SQLAlchemy==2.0.43
+numpy==2.0.2
 
 # bench_silver: needs psycopg to talk to the ephemeral Docker Postgres.
 # Lazy-imported by ml_pipeline.diag.bench_silver.db_helper.get_engine, so
