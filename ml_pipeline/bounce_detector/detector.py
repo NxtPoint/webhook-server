@@ -273,8 +273,8 @@ def _candidate_frames_from_gravity_residual(
     return accepted
 
 
-def _select_candidates(ball_rows: list) -> list[int]:
-    """Dispatch on env var BOUNCE_CANDIDATE_MODE.
+def _select_candidates(ball_rows: list, candidate_mode: Optional[str] = None) -> list[int]:
+    """Dispatch on `candidate_mode` (explicit) or env var BOUNCE_CANDIDATE_MODE.
 
     Modes:
       'is_bounce' (default — safe, unchanged behaviour): TrackNet's
@@ -289,7 +289,7 @@ def _select_candidates(ball_rows: list) -> list[int]:
     without a code revert.
     """
     import os
-    mode = os.environ.get("BOUNCE_CANDIDATE_MODE", "is_bounce").lower().strip()
+    mode = (candidate_mode or os.environ.get("BOUNCE_CANDIDATE_MODE", "is_bounce")).lower().strip()
     if mode == "gravity_residual":
         cands = _candidate_frames_from_gravity_residual(ball_rows)
         logger.info("bounce_detector: candidate_mode=gravity_residual emitted=%d "
@@ -332,6 +332,7 @@ def _run_pipeline(
     rally_by_frame: dict[int, str],
     cnn: BounceCNNWrapper,
     threshold: float,
+    candidate_mode: Optional[str] = None,
 ) -> List[BounceEvent]:
     """Shared in-memory bounce-detection pipeline.
 
@@ -339,7 +340,7 @@ def _run_pipeline(
     NMS. Mirrors `serve_detector.detector._run_pipeline` shape.
     """
     ball_by_frame: dict[int, dict] = {int(r["frame_idx"]): r for r in ball_rows}
-    candidates = _select_candidates(ball_rows)
+    candidates = _select_candidates(ball_rows, candidate_mode=candidate_mode)
 
     stats = {
         "candidates": len(candidates),
@@ -452,6 +453,8 @@ def detect_bounces(
     conn=None,
     replace: bool = True,
     weights_path: Optional[str] = None,
+    candidate_mode: Optional[str] = None,
+    threshold_override: Optional[float] = None,
 ) -> List[BounceEvent]:
     """Production entry point. Returns the list of detected bounces and
     persists them to ml_analysis.ball_bounces.
@@ -467,7 +470,7 @@ def detect_bounces(
     """
     cnn = BounceCNNWrapper()
     cnn.load_weights(weights_path)
-    threshold = (
+    threshold = threshold_override if threshold_override is not None else (
         TRAINED_THRESHOLD if cnn.weights_loaded else UNTRAINED_THRESHOLD
     )
 
@@ -476,17 +479,18 @@ def detect_bounces(
         with engine.begin() as managed_conn:
             return _detect_with_conn(
                 conn=managed_conn, task_id=task_id, replace=replace,
-                cnn=cnn, threshold=threshold,
+                cnn=cnn, threshold=threshold, candidate_mode=candidate_mode,
             )
     return _detect_with_conn(
         conn=conn, task_id=task_id, replace=replace,
-        cnn=cnn, threshold=threshold,
+        cnn=cnn, threshold=threshold, candidate_mode=candidate_mode,
     )
 
 
 def _detect_with_conn(
     *, conn, task_id: str, replace: bool,
     cnn: BounceCNNWrapper, threshold: float,
+    candidate_mode: Optional[str] = None,
 ) -> List[BounceEvent]:
     init_bounce_schema(conn)
     if replace:
@@ -516,6 +520,7 @@ def _detect_with_conn(
         wrists_by_frame=wrists_by_frame,
         rally_by_frame=rally_by_frame,
         cnn=cnn, threshold=threshold,
+        candidate_mode=candidate_mode,
     )
 
     _persist_events(conn, events)
