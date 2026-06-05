@@ -24,8 +24,15 @@ just those that satisfy the rule. The two consumers in production are:
       bounces from `ml_analysis.ball_detections WHERE is_bounce=TRUE`
       to build the rally state machine consumed by the FAR-bounce serve
       detector and the augmented rally check on the NEAR pose path.
+      (Legacy fallback path — used when the task has no CNN bounce rows.)
 
-Both consumers share THIS filter (no third pathway). Bench locked at
+    - `ml_pipeline/serve_detector/detector.py::detect_serves_for_task` —
+      when `ml_analysis.ball_bounces` (the CNN bounce model, Batch rev
+      66+) has rows for the task, the detector re-flags ball_rows from
+      that set and builds the rally machine through THIS filter directly,
+      bypassing build_from_db.
+
+All consumers share THIS filter (no unvalidated pathway). Bench locked at
 20/24 on a798eff0 — the filter must not regress that.
 
 HALF_Y = 11.885 m (singles court midline). Defined in

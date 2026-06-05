@@ -39,9 +39,11 @@ class RallyStateMachine:
     """Given a list of bounce timestamps, answer per-ts state queries.
 
     Bounce timestamps are the ONLY input — keeps this pure and testable.
-    In production the list comes from ml_analysis.ball_detections WHERE
-    is_bounce=TRUE, ordered by frame_idx/fps. In offline mode it can be
-    supplied from any source.
+    In production the list comes from the CNN bounce model
+    (ml_analysis.ball_bounces, Batch rev 66+) when the task has rows,
+    else from ml_analysis.ball_detections WHERE is_bounce=TRUE (legacy
+    rule), ordered by frame_idx/fps. In offline mode it can be supplied
+    from any source.
 
     idle_threshold_s: seconds of no bounces to leave IN_RALLY.
     match_start_s: timestamps before this are PRE_POINT by convention

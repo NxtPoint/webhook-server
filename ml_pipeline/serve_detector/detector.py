@@ -415,6 +415,108 @@ def _load_ball_rows(conn, task_id: str) -> list:
     return rows
 
 
+def _load_cnn_bounces(conn, task_id: str) -> list:
+    """Load the CNN bounce-model events (`ml_analysis.ball_bounces`) for a
+    task — the MODEL-layer bounce fact written by the Batch bounce stage
+    (rev 66+), replacing the velocity-reversal `is_bounce` rule per the
+    bronze-first cleanup (2.6x fewer phantoms on the reference video:
+    174 vs 343).
+
+    Returns [] when:
+      - env SERVE_CNN_BOUNCES=0 (rollback knob — forces the legacy
+        is_bounce path without a code change, same pattern as the WASB
+        swap; see feedback_env_var_rollback_pattern), or
+      - the table doesn't exist yet (pre-rev-66 DB), or
+      - the task has no rows (pre-rev-66 runs, practice flow).
+    Callers treat [] as "fall back to legacy is_bounce".
+
+    The information_schema existence check runs BEFORE the SELECT — a
+    failed SELECT on a missing table poisons the surrounding transaction
+    (every later query raises InFailedSqlTransaction even if the Python
+    exception is caught).
+    """
+    import os
+    if os.environ.get("SERVE_CNN_BOUNCES", "1") == "0":
+        logger.info("serve_detector: SERVE_CNN_BOUNCES=0 — legacy is_bounce path forced")
+        return []
+    table_exists = conn.execute(sql_text("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'ml_analysis'
+              AND table_name = 'ball_bounces'
+        )
+    """)).scalar()
+    if not table_exists:
+        return []
+    rows = conn.execute(sql_text("""
+        SELECT frame_idx, court_x, court_y, confidence
+        FROM ml_analysis.ball_bounces
+        WHERE job_id = :tid
+        ORDER BY frame_idx
+    """), {"tid": task_id}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _apply_cnn_bounce_flags(ball_rows: list, cnn_bounces: list) -> tuple:
+    """Re-flag `ball_rows` so the is_bounce currency carries the CNN bounce
+    set instead of the velocity-reversal rule's.
+
+    Everything downstream of detect_serves_for_task (rally construction,
+    the near serve→bounce link, _detect_bounce_based_serves_far) derives
+    bounces as `[b for b in ball_rows if b["is_bounce"]]` — so rewriting
+    the flags at this single choke point migrates every consumer at once
+    while keeping _run_pipeline's signature (and therefore the offline /
+    bench fixture path) untouched.
+
+    Each CNN event is matched to the nearest ball_detections row within
+    ±2 frames (both live in the same FRAME_SAMPLE_FPS space — the CNN
+    candidates were generated FROM ball_detections frames on Batch). An
+    unmatched event gets a synthetic coordinate-only row: downstream
+    consumers only read frame_idx / court_x / court_y off bounce rows.
+
+    Returns (rows, n_flagged, n_synthetic).
+    """
+    by_frame = {}
+    for r in ball_rows:
+        r["is_bounce"] = False
+        by_frame.setdefault(int(r.get("frame_idx", 0)), []).append(r)
+
+    n_flagged = 0
+    n_synthetic = 0
+    for ev in cnn_bounces:
+        fi = int(ev["frame_idx"])
+        target = None
+        for d in (0, 1, -1, 2, -2):
+            cands = by_frame.get(fi + d)
+            if cands:
+                target = cands[0]
+                break
+        if target is not None:
+            if not target["is_bounce"]:
+                n_flagged += 1
+            target["is_bounce"] = True
+            # CNN court coords come from the same calibration; fill gaps
+            # but never overwrite the row's own projection.
+            if target.get("court_x") is None and ev.get("court_x") is not None:
+                target["court_x"] = ev["court_x"]
+            if target.get("court_y") is None and ev.get("court_y") is not None:
+                target["court_y"] = ev["court_y"]
+        else:
+            ball_rows.append({
+                "frame_idx": fi,
+                "x": None,
+                "y": None,
+                "is_bounce": True,
+                "court_x": ev.get("court_x"),
+                "court_y": ev.get("court_y"),
+                "speed_kmh": None,
+            })
+            n_synthetic += 1
+
+    ball_rows.sort(key=lambda r: r["frame_idx"])
+    return ball_rows, n_flagged, n_synthetic
+
+
 def _baseline_zone(court_y: Optional[float]) -> Optional[str]:
     """Classify a court_y into 'near' / 'far' baseline zones. Tolerant of
     calibration extrapolation slack past the painted baselines AND of
@@ -914,7 +1016,32 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
     pose_near = _load_pose_rows(conn, task_id, 0, is_left_handed=is_left_handed)
     pose_far = _load_pose_rows(conn, task_id, 1, is_left_handed=is_left_handed)
     ball_rows = _load_ball_rows(conn, task_id)
-    rally = build_from_db(conn, task_id, fps)
+
+    # Bounce source precedence: CNN bounce model (ml_analysis.ball_bounces,
+    # Batch rev 66+) > legacy velocity-reversal is_bounce flags. When CNN
+    # rows exist we rewrite the is_bounce currency on ball_rows and build
+    # the rally machine from the SAME validated set, so rally gating and
+    # bounce-link/far-bounce detection see one consistent bounce fact.
+    # No CNN rows (old tasks, fixtures, practice) → exact legacy behaviour.
+    # Rollback: SERVE_CNN_BOUNCES=0 (no deploy needed beyond env change).
+    cnn_bounces = _load_cnn_bounces(conn, task_id)
+    if cnn_bounces:
+        from ml_pipeline.serve_detector.bounce_validity import validate_bounces
+        ball_rows, n_flagged, n_synth = _apply_cnn_bounce_flags(ball_rows, cnn_bounces)
+        raw_bounces = [
+            {"frame_idx": b["frame_idx"], "court_y": b.get("court_y")}
+            for b in ball_rows if b.get("is_bounce")
+        ]
+        valid = validate_bounces(raw_bounces)
+        rally = RallyStateMachine(bounce_ts=[b["frame_idx"] / fps for b in valid])
+        logger.info(
+            "serve_detector: bounce source=CNN ball_bounces "
+            "(%d events -> %d rows flagged + %d synthetic, %d rally-valid)",
+            len(cnn_bounces), n_flagged, n_synth, len(valid),
+        )
+    else:
+        rally = build_from_db(conn, task_id, fps)
+        logger.info("serve_detector: bounce source=legacy is_bounce (no CNN rows)")
 
     near_events, far_pose_events, far_bounce_events = _run_pipeline(
         task_id=task_id, fps=fps, is_left_handed=is_left_handed,
