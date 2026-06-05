@@ -111,6 +111,13 @@ COPY ml_pipeline/bronze_export.py /app/ml_pipeline/
 # above — no separate weight COPY needed.
 COPY ml_pipeline/stroke_classifier/ /app/ml_pipeline/stroke_classifier/
 
+# Bounce detector — CNN bounce bronze model (ADR-01 v2). __main__ runs it
+# post-pipeline (match flow only) and writes ml_analysis.ball_bounces; the
+# weights (bounce_detector_v2_7match.pt) ship via the models/ layer above.
+# Without this COPY the try/except around the stage in __main__ swallows
+# the ImportError and the bounce stage silently never runs on Batch.
+COPY ml_pipeline/bounce_detector/ /app/ml_pipeline/bounce_detector/
+
 # ROI extractors — far-baseline ViTPose + (stubbed) WASB bounces. Called
 # after TennisAnalysisPipeline in __main__._run_batch. See
 # ml_pipeline/roi_extractors/pose.py for the pose extractor.

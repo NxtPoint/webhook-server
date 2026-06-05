@@ -13,8 +13,10 @@ Bench going green is necessary but **not sufficient**. Bench replays a pickled f
 **Before merging any T5 detector branch, run this:**
 
 ```bash
-git diff origin/main HEAD --stat -- ml_pipeline/roi_extractors/ ml_pipeline/__main__.py ml_pipeline/pipeline.py ml_pipeline/Dockerfile ml_pipeline/requirements.txt ml_pipeline/court_detector.py ml_pipeline/ball_tracker.py ml_pipeline/wasb_ball_tracker.py ml_pipeline/wasb_hrnet.py ml_pipeline/config.py ml_pipeline/player_tracker.py ml_pipeline/camera_calibration.py ml_pipeline/heatmaps.py ml_pipeline/bronze_export.py ml_pipeline/db_writer.py ml_pipeline/db_schema.py ml_pipeline/tracknet_v3.py ml_pipeline/video_preprocessor.py ml_pipeline/serve_detector/
+git diff origin/main HEAD --stat -- ml_pipeline/roi_extractors/ ml_pipeline/serve_detector/ ml_pipeline/stroke_classifier/ ml_pipeline/bounce_detector/ ml_pipeline/__main__.py ml_pipeline/pipeline.py ml_pipeline/Dockerfile ml_pipeline/requirements.txt ml_pipeline/court_detector.py ml_pipeline/ball_tracker.py ml_pipeline/wasb_ball_tracker.py ml_pipeline/wasb_hrnet.py ml_pipeline/config.py ml_pipeline/player_tracker.py ml_pipeline/camera_calibration.py ml_pipeline/heatmaps.py ml_pipeline/bronze_export.py ml_pipeline/db_writer.py ml_pipeline/db_schema.py ml_pipeline/tracknet_v3.py ml_pipeline/video_preprocessor.py
 ```
+
+**The canonical list is the `COPY` lines in `ml_pipeline/Dockerfile`** — if this command and the Dockerfile ever disagree, the Dockerfile wins; update this command in the same commit. When adding a NEW Batch-side module, add its `COPY` line in the same commit — `__main__.py` wraps stages in try/except, so a missing COPY skips the stage **silently** (caught with `bounce_detector/` on 2026-06-05).
 
 If the diff is empty: Render-only deploy is enough — `git push origin main` and you're done.
 
