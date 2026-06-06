@@ -669,21 +669,45 @@ class CourtDetector:
         if n < 4:
             logger.warning("_compute_homography: src/dst mismatch — src=%d dst=%d", len(src), len(dst))
             return None
-        H, mask = cv2.findHomography(src[:n], dst[:n], cv2.RANSAC, 5.0)
+        # ── Fit strategy (changed 2026-06-06, far-calibration fix) ──
+        # dst (ref keypoints) is in ~1cm units (ref_h = 2374 for 23.77m), so
+        # the previous RANSAC threshold of 5.0 meant FIVE CENTIMETRES in
+        # court space — uniform across the court, while detection noise is
+        # uniform in PIXEL space where 1 far-end pixel ≈ 10-20cm of court.
+        # Far keypoints therefore could not mathematically pass the gate:
+        # every fit kept 4-6 near/mid points of the 14 detected, and the far
+        # half of the court was EXTRAPOLATED. Measured against SportAI on the
+        # reference video: far-player court_y biased +11.0m median (near
+        # 0.30m); refitting least-squares on all keypoints collapsed the far
+        # bias to +0.93m with near unchanged (.claude/tmp/refit_experiment).
+        #
+        # New strategy: RANSAC stays only as a GROSS-outlier guard (60 units
+        # ≈ 0.6m — catches collapsed-line misdetections, admits honest far
+        # pixel noise), then a least-squares refit on the inliers so every
+        # court region constrains the fit.
+        H, mask = cv2.findHomography(src[:n], dst[:n], cv2.RANSAC, 60.0)
         if H is None:
             logger.warning("_compute_homography: findHomography returned None with %d points", n)
             return None
+        if mask is not None and 4 <= int(mask.sum()) < n:
+            inl = mask.flatten().astype(bool)
+            H_ls, _ = cv2.findHomography(src[:n][inl], dst[:n][inl], 0)
+            if H_ls is not None and np.isfinite(H_ls).all():
+                H = H_ls
 
         # ── Validation strategy ──
         # 1. RANSAC inlier count: need at least MIN_INLIERS good points
-        # 2. Inlier-only mean reprojection error < MAX_INLIER_ERR_PX
+        # 2. Inlier-only mean reprojection error < MAX_INLIER_ERR (ref units
+        #    ≈ cm; raised 15 → 60 with the far points now in the inlier set —
+        #    far keypoints carry honest 10-40cm reprojection noise that the
+        #    old cap would have re-rejected)
         # 3. Sanity-only finite-values check on H (filters NaN/Inf blowups)
         # Previously had a MAX_SCALE=20 diagonal check, removed because
         # wide-angle indoor cameras legitimately produce H_diag > 20 and it
         # was rejecting valid CNN detections; reprojection error is the
         # correct quality gate.
         MIN_INLIERS = 4
-        MAX_INLIER_ERR_PX = 15.0
+        MAX_INLIER_ERR_PX = 60.0
 
         n_inliers = int(mask.sum()) if mask is not None else 0
 

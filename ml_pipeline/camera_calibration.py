@@ -87,12 +87,20 @@ def _build_point_lists(
 def _drop_outlier_keypoints(
     object_points: list,
     image_points: list,
-    inlier_threshold_px: float = 3.0,
+    inlier_threshold_px: float = 12.0,
 ) -> tuple[list, list]:
     """RANSAC homography on the aggregated planar keypoints to identify
     and drop outliers. Returns per-frame object/image point lists with
     outliers removed. A frame that loses too many points (<6) is dropped
     entirely.
+
+    NOTE the threshold is in WORLD units (metres — dst is object_points).
+    Raised 3.0 → 12.0 (2026-06-06 far-calibration fix): RANSAC consensus is
+    near-dominated (10 of 14 court keypoints are near/mid), so far keypoints
+    sit 3-6m from the near-consensus H — that's the consensus H's own far
+    extrapolation error, not keypoint garbage — and a 3m gate structurally
+    amputated the far baseline before the radial fit ever saw it. 12m keeps
+    honest far keypoints while still dropping true mis-detections.
     """
     frame_sizes = [len(p) for p in image_points]
     all_img = np.concatenate(image_points, axis=0).reshape(-1, 2).astype(np.float32)
@@ -176,9 +184,12 @@ def _option_a_single_pass(
     if not object_points:
         return None
 
-    # RANSAC pre-filter: drop individual outlier point observations
+    # RANSAC pre-filter: drop individual outlier point observations.
+    # No explicit threshold — uses the far-tolerant default (12m, see
+    # _drop_outlier_keypoints docstring; the old explicit 3.0 here silently
+    # shadowed the 2026-06-06 far-calibration fix on first edit).
     object_points, image_points = _drop_outlier_keypoints(
-        object_points, image_points, inlier_threshold_px=3.0,
+        object_points, image_points,
     )
     if not object_points:
         return None
@@ -235,7 +246,7 @@ def _option_a(
     img_shape: tuple[int, int],
     rms_threshold_px: float,
     max_refinement_iters: int = 3,
-    bad_kp_error_m: float = 1.0,
+    bad_kp_error_m: float = 8.0,
 ) -> Optional[CalibrationResult]:
     """Brown-Conrady radial calibration with iterative outlier-keypoint
     rejection. The CNN can systematically mis-detect specific keypoint
@@ -243,6 +254,15 @@ def _option_a(
     on wide-angle footage). After each fit, any keypoint index whose
     per-keypoint error exceeds bad_kp_error_m metres is marked missing
     across all observations and we refit.
+
+    bad_kp_error_m raised 1.0 → 8.0 (2026-06-06 far-calibration fix): an
+    intermediate near-dominated fit shows 2-6m errors AT the far keypoints
+    (the fit's own extrapolation error, not keypoint garbage), so a 1m gate
+    amputated the far baseline from the refit and the final calibration
+    extrapolated the far half — measured +11m far-player court_y bias vs
+    SportAI (near 0.30m). With far-tolerant gates the same observations
+    fit to +0.52m far / -0.49m near (.claude/tmp/radial_refit_experiment).
+    8m still drops true garbage (collapsed-line/banner picks land 10m+ off).
     """
     observations = keypoint_observations
     last_result = None
@@ -516,12 +536,18 @@ def _option_c(
 def _probe_bad_keypoint_indices(
     observations: list[np.ndarray],
     img_shape: tuple[int, int],
-    bad_kp_error_m: float = 1.0,
+    bad_kp_error_m: float = 8.0,
 ) -> set:
     """One-shot probe calibration to identify systematically-wrong keypoint
     indices before the main fit. Uses a loose RMS threshold so we can
     probe even on noisy data; returns the set of keypoint indices whose
-    per-keypoint error exceeds bad_kp_error_m metres."""
+    per-keypoint error exceeds bad_kp_error_m metres.
+
+    bad_kp_error_m raised 1.0 → 8.0 (2026-06-06 far-calibration fix, same
+    rationale as _option_a): the probe fit is near-dominated, so its OWN
+    far-extrapolation error (2-6m at the far keypoints) tripped the 1m gate
+    and amputated the far baseline before the main fit — the root cause of
+    the +11m far-court bias vs SportAI. 8m still catches true collapses."""
     fit = _option_a_single_pass(observations, img_shape)
     if fit is None:
         return set()
