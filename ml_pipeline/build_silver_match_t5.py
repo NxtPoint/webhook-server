@@ -118,7 +118,12 @@ BOUNCE_PLAYER_PROXIMITY_M = 1.5
 # T5_STROKE_DRIVEN_SILVER. NOTE: T5 silver will faithfully reflect bronze's
 # current over-fire (more serves / over-segmented points than SportAI) — the
 # honest bronze state, whose lever is TRAINING, not silver.
-SERVE_EVENTS_MIN_CONF_DEFAULT = 0.70  # count-aligns to SA on Match 1 (26≈26); env-tunable
+# 0.0 = inherit EVERY bronze serve_event verbatim (Tomo, 2026-06-06: "I want
+# literally everything verbatim" — RULE #1; bronze precision is bronze's
+# problem, silver does no filtering). Env-tunable via T5_SERVE_EVENTS_MIN_CONF
+# if a quality gate is ever needed again; the old 0.70 was tuned to
+# count-align Match 1 to SA (26≈26) — a silver-side judgment, removed.
+SERVE_EVENTS_MIN_CONF_DEFAULT = 0.0
 SERVE_EVENT_MATCH_TOL_S = 1.5         # a serve_event reuses a bounce row within ±this
 _OVERHEAD_SWINGS = ("fh_overhead", "bh_overhead", "overhead", "smash")  # pass-3 serve-gate keys
 
