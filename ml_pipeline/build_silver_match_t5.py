@@ -1235,8 +1235,17 @@ def _insert_pass1_rows(conn: Connection, rows_to_insert: List[dict]) -> int:
 
 def _serve_from_events_enabled() -> bool:
     """Read T5_SERVE_FROM_EVENTS at call time (env-flip rollback, no rebuild —
-    same pattern as _stroke_driven_enabled)."""
-    return os.getenv("T5_SERVE_FROM_EVENTS", "0").strip().lower() in ("1", "true", "yes", "on")
+    same pattern as _stroke_driven_enabled).
+
+    DEFAULT ON since 2026-06-06: the overlay shipped 2026-05-27 (fc9bc6b)
+    defaulting OFF pending a Render env flip that never landed — the flag
+    was in neither render.yaml nor docs/env_vars.md, so prod silver kept
+    running the legacy geometric serve path the whole time (verified: the
+    Jun-4 'count-aligned 24v26' pair traced only 1/24 silver serves to a
+    bronze serve_event — count coincidence, not inheritance). RULE #1
+    requires bronze->silver verbatim; the code default is now the truthful
+    one and the env var is the rollback, not the enabler."""
+    return os.getenv("T5_SERVE_FROM_EVENTS", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _serve_events_min_conf() -> float:
@@ -1279,11 +1288,20 @@ def _apply_serve_events_overlay(
         logger.warning("T5 serve overlay: ml_analysis.serve_events absent — leaving rows serve-less")
         return diag
 
+    # No hitter-coord NOT NULL filter (removed 2026-06-06): it silently
+    # dropped every event whose far-player feet couldn't be projected —
+    # half the conf-passing events on warp-era tasks, and ALL model_far
+    # events (the Batch serve-model candidates carry bounce coords +
+    # player_id, not hitter coords). Near/far comes from the event's OWN
+    # player_id — the detector's verdict (trust-the-rule) — with the old
+    # hitter_court_y geometry as fallback for legacy rows. NULL hitter_x
+    # just means serve_side_d stays NULL downstream; a serve with an
+    # unknown side beats a dropped serve.
     events = conn.execute(sql_text("""
-        SELECT ts, hitter_court_x, hitter_court_y, bounce_court_x, bounce_court_y
+        SELECT ts, player_id, hitter_court_x, hitter_court_y,
+               bounce_court_x, bounce_court_y
         FROM ml_analysis.serve_events
         WHERE task_id::text = :tid AND confidence >= :thr
-          AND hitter_court_x IS NOT NULL AND hitter_court_y IS NOT NULL
         ORDER BY ts
     """), {"tid": task_id, "thr": min_conf}).fetchall()
     diag["events"] = len(events)
@@ -1292,9 +1310,16 @@ def _apply_serve_events_overlay(
     next_id = max((r["id"] for r in rows_to_insert), default=0) + 1
     eps = EPS_BASELINE_M
 
-    for ts, hx, hy, b_cx, b_cy in events:
-        ts, hx, hy = float(ts), float(hx), float(hy)
-        near = hy > HALF_Y
+    for ts, ev_pid, hx, hy, b_cx, b_cy in events:
+        ts = float(ts)
+        hx = float(hx) if hx is not None else None
+        hy = float(hy) if hy is not None else None
+        if ev_pid is not None:
+            near = int(ev_pid) == 0
+        elif hy is not None:
+            near = hy > HALF_Y
+        else:
+            continue  # no side evidence at all — cannot place the serve
         pid = str(top_pids[0]) if near else str(top_pids[1])
         snap_y = COURT_LENGTH_M if near else 0.0  # snap to baseline → pass-3 serve_d gate passes
 
