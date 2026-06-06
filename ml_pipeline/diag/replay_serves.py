@@ -101,6 +101,9 @@ def replay(fixture: dict, *, window: float = 2.0) -> dict:
         pose_rows_near=fixture["pose_near"],
         pose_rows_far=fixture["pose_far"],
         ball_rows=fixture["ball_rows"],
+        # Schema-v2 fixtures carry the CNN bounce events so replay mirrors
+        # prod's bounce-source precedence; v1 fixtures fall back to legacy.
+        cnn_bounces=fixture.get("cnn_bounces") or (),
         is_left_handed=fixture["is_left_handed"],
         fps=fixture["fps"],
         return_split=True,

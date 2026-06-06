@@ -1069,12 +1069,21 @@ def detect_serves_offline(
     pose_rows_near: Sequence[dict],
     pose_rows_far: Sequence[dict] = (),
     ball_rows: Sequence[dict] = (),
+    cnn_bounces: Sequence[dict] = (),
     is_left_handed: bool = False,
     fps: float = 25.0,
     return_split: bool = False,
 ):
     """In-memory detection for local validation — shares _run_pipeline
     with the prod entry point so offline numbers always match prod.
+
+    `cnn_bounces` mirrors the prod CNN bounce-source precedence
+    (detect_serves_for_task lines above): when non-empty, the is_bounce
+    currency on ball_rows is rewritten from the CNN events via the same
+    `_apply_cnn_bounce_flags` choke point and the rally machine is built
+    from the SAME validated set. Empty → exact legacy behaviour (pre-rev-66
+    fixtures). Schema-v2 fixtures (snapshot_task) carry this key so
+    bench/replay can't drift from prod on CNN-era tasks.
 
     If return_split=True, returns (near_events, far_pose_events,
     far_bounce_events) instead of the merged sorted list — useful for
@@ -1086,6 +1095,10 @@ def detect_serves_offline(
     # equivalent here keeps offline (bench / replay) numbers in sync with
     # prod. See `bounce_validity.validate_bounces`.
     from ml_pipeline.serve_detector.bounce_validity import validate_bounces
+    ball_rows = list(ball_rows)
+    if cnn_bounces:
+        ball_rows, _n_flagged, _n_synth = _apply_cnn_bounce_flags(
+            ball_rows, list(cnn_bounces))
     raw_bounces = [
         {"frame_idx": b["frame_idx"], "court_y": b.get("court_y")}
         for b in ball_rows if b.get("is_bounce")
@@ -1097,7 +1110,7 @@ def detect_serves_offline(
     near_events, far_pose_events, far_bounce_events = _run_pipeline(
         task_id=task_id, fps=fps, is_left_handed=is_left_handed,
         pose_near=list(pose_rows_near), pose_far=list(pose_rows_far),
-        ball_rows=list(ball_rows), rally=rally,
+        ball_rows=ball_rows, rally=rally,
     )
     if return_split:
         return near_events, far_pose_events, far_bounce_events

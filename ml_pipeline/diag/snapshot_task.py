@@ -38,11 +38,15 @@ from sqlalchemy import create_engine, text as sql_text
 from ml_pipeline.serve_detector.detector import (
     _load_pose_rows,
     _load_ball_rows,
+    _load_cnn_bounces,
     _get_dominant_hand,
 )
 
 
-SCHEMA_VERSION = 1
+# v2 (2026-06-06): adds `cnn_bounces` (ml_analysis.ball_bounces) so replay
+# mirrors prod's CNN bounce-source precedence. v1 fixtures (no key) replay
+# on the legacy is_bounce path — correct for pre-rev-66 tasks.
+SCHEMA_VERSION = 2
 DEFAULT_SA = "2c1ad953-b65b-41b4-9999-975964ff92e1"
 
 
@@ -87,6 +91,10 @@ def _take_snapshot(conn, task_id: str, sa_task_id: str) -> dict:
     pose_near = _load_pose_rows(conn, task_id, 0, is_left_handed=is_left_handed)
     pose_far = _load_pose_rows(conn, task_id, 1, is_left_handed=is_left_handed)
     ball_rows = _load_ball_rows(conn, task_id)
+    # Capture the CNN bounce events regardless of the SERVE_CNN_BOUNCES env
+    # rollback knob — the fixture carries the fact; replay mirrors prod's
+    # default-on precedence. (Empty for pre-rev-66 tasks.)
+    cnn_bounces = _load_cnn_bounces(conn, task_id)
     sa_truth = _load_sa_truth(conn, sa_task_id)
 
     # Convert any non-pickleable mapping types (RowMapping etc.) to plain
@@ -96,6 +104,7 @@ def _take_snapshot(conn, task_id: str, sa_task_id: str) -> dict:
     pose_near = [dict(r) for r in pose_near]
     pose_far = [dict(r) for r in pose_far]
     ball_rows = [dict(r) for r in ball_rows]
+    cnn_bounces = [dict(r) for r in cnn_bounces]
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -106,6 +115,7 @@ def _take_snapshot(conn, task_id: str, sa_task_id: str) -> dict:
         "pose_near": pose_near,
         "pose_far": pose_far,
         "ball_rows": ball_rows,
+        "cnn_bounces": cnn_bounces,
         "sa_truth": sa_truth,
     }
 
@@ -140,6 +150,7 @@ def main(argv=None) -> int:
     print(f"  pose_near={len(snap['pose_near'])}  "
           f"pose_far={len(snap['pose_far'])}  "
           f"ball_rows={len(snap['ball_rows'])}  "
+          f"cnn_bounces={len(snap['cnn_bounces'])}  "
           f"sa_truth={len(snap['sa_truth'])}")
 
     with gzip.open(out_path, "wb") as f:
