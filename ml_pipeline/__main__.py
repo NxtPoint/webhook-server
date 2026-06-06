@@ -301,6 +301,15 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         # starved far-pose ROI coverage (391 usable poses vs ~7,800 healthy).
         _cnn_bounce_ts = None
         _cnn_bounce_events = None
+        # Shared by the bounce stage AND the serve-model stage below — built
+        # outside the bounce try block so a bounce-stage failure can't
+        # NameError the serve stage.
+        _balls = [
+            {"frame_idx": int(d.frame_idx), "x": d.x, "y": d.y,
+             "court_x": d.court_x, "court_y": d.court_y,
+             "is_bounce": d.is_bounce, "speed_kmh": d.speed_kmh}
+            for d in (result.ball_detections or [])
+        ] if not practice else []
         if not practice:
             try:
                 import os as _os
@@ -313,12 +322,6 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                 from ml_pipeline.config import FRAME_SAMPLE_FPS as _BFPS
                 _bw = _os.path.join(_os.path.dirname(__file__), "models",
                                     "bounce_detector_v2_7match.pt")
-                _balls = [
-                    {"frame_idx": int(d.frame_idx), "x": d.x, "y": d.y,
-                     "court_x": d.court_x, "court_y": d.court_y,
-                     "is_bounce": d.is_bounce, "speed_kmh": d.speed_kmh}
-                    for d in (result.ball_detections or [])
-                ]
                 _wrists: dict = {}
                 for _pd in (result.player_detections or []):
                     if _pd.court_x is not None and _pd.court_y is not None:
@@ -386,6 +389,55 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                             f"bounces wrote {n_bounces} rows")
             except Exception as e:
                 logger.warning(f"ROI extraction failed (non-fatal): {e}")
+
+        # 2e. SERVE MODEL stage (match only) — score far-serve candidate
+        # anchors with the trained MLP → ml_analysis.serve_candidates (the
+        # MODEL-layer serve fact, same pattern as the bounce stage above).
+        # Runs AFTER the ROI sweep because the pose anchors + arm-raise
+        # features consume player_detections_roi. Consumed Render-side by
+        # serve_detector behind SERVE_MODEL_ENABLED; this stage just lands
+        # the scored fact. Rollback: SERVE_MODEL_STAGE=0 (no rebuild).
+        if not practice:
+            try:
+                import os as _os
+                if _os.environ.get("SERVE_MODEL_STAGE", "1") != "0":
+                    from sqlalchemy import text as _sqltext
+                    from ml_pipeline.serve_model.infer import (
+                        detect_serve_candidates_offline,
+                    )
+                    from ml_pipeline.serve_model.db import (
+                        init_serve_candidates_schema,
+                        delete_candidates_for_task, persist_candidates,
+                    )
+                    from ml_pipeline.config import FRAME_SAMPLE_FPS as _SFPS
+                    _smw = _os.path.join(_os.path.dirname(__file__), "models",
+                                         "serve_model_v1.pt")
+                    # ROI rows were just written by the sweep — read back in
+                    # the exact shape dataset.load_task_arrays trained on.
+                    with engine.connect() as _sc:
+                        _roi_raw = _sc.execute(_sqltext(
+                            "SELECT frame_idx, keypoints, bbox_y1, bbox_y2 "
+                            "FROM ml_analysis.player_detections_roi "
+                            "WHERE job_id::text = :t ORDER BY frame_idx"
+                        ), {"t": job_id}).fetchall()
+                    _far_f = [int(p.frame_idx) for p in (result.player_detections or [])
+                              if p.player_id == 1]
+                    _near_f = [int(p.frame_idx) for p in (result.player_detections or [])
+                               if p.player_id == 0]
+                    _cands = detect_serve_candidates_offline(
+                        task_id=job_id, fps=float(_SFPS),
+                        ball_rows=_balls,
+                        roi_rows_raw=_roi_raw,
+                        far_pose_frames=_far_f, near_pose_frames=_near_f,
+                        weights_path=_smw,
+                    )
+                    with engine.begin() as _smc:
+                        init_serve_candidates_schema(_smc)
+                        delete_candidates_for_task(_smc, job_id)
+                        _n = persist_candidates(_smc, job_id, _cands)
+                    logger.info("Serve model stage: wrote %d serve_candidates", _n)
+            except Exception as e:
+                logger.warning(f"Serve model stage failed (non-fatal): {e}")
 
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
         # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads

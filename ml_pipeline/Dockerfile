@@ -130,6 +130,14 @@ COPY ml_pipeline/roi_extractors/ /app/ml_pipeline/roi_extractors/
 # the rally gate silently fails open and processes every frame.
 COPY ml_pipeline/serve_detector/ /app/ml_pipeline/serve_detector/
 
+# Serve model — trained far-serve candidate scorer (MLP, ~150KB weights via
+# the models/ layer above). __main__ runs the serve-candidates stage after
+# the ROI sweep (match flow only) and writes ml_analysis.serve_candidates;
+# consumed Render-side by serve_detector behind SERVE_MODEL_ENABLED.
+# Without this COPY the stage's try/except swallows the ImportError and
+# candidates silently never land (rule-8 lesson, bounce_detector 2026-06-05).
+COPY ml_pipeline/serve_model/ /app/ml_pipeline/serve_model/
+
 # Copy package entry point
 COPY ml_pipeline/__main__.py /app/ml_pipeline/__main__.py
 
