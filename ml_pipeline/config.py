@@ -359,6 +359,17 @@ PLAYER_DETECTION_INTERVAL = 5      # Was 3 — increased to 5 (200ms between det
                                    # changes). Cuts detection work by 40%. Further increases
                                    # risk missing serve impact positions.
 PLAYER_DETECTION_INTERVAL_PRACTICE = 10  # Less frequent for practice
+# Near/far split rule for candidate selection + pid assignment (2026-06-06
+# identity fix). The legacy rule split at the FRAME midline (frame_h/2) —
+# but the net line's pixel-y is nowhere near the frame midline on wide-angle
+# MATCHI footage, so a near player stepping forward of ~y=13m crossed the
+# pixel midline and was selected/labelled as the FAR player: measured 46% of
+# pid=1 rows on the reference video weren't the far player, AND
+# _choose_two_players could pick the near player as the far-half best,
+# dropping the real far player entirely. =1: split by the COURT net line
+# (projected feet court_y vs 11.885) whenever the calibration resolves,
+# pixel-midline fallback otherwise. =0: legacy pixel-midline everywhere.
+PLAYER_SPLIT_BY_NET = os.getenv("PLAYER_SPLIT_BY_NET", "1").strip().lower() in ("1", "true", "yes")
 # Identity stability (A2): bbox-to-prev matching needs two guards beyond
 # raw IoU or a false-positive in one half can steal the OTHER half's pid.
 PLAYER_MAX_CENTER_DRIFT_PX = 250   # Max pixel distance between prev and new

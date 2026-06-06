@@ -30,6 +30,7 @@ from ml_pipeline.config import (
     PLAYER_OUTSIDE_COURT_MARGIN_PX,
     PLAYER_DETECTION_INTERVAL,
     PLAYER_BATCH_SIZE,
+    PLAYER_SPLIT_BY_NET,
     YOLO_FP16,
     DEBUG_FRAME_INTERVAL,
     MOG2_MIN_MOTION_RATIO,
@@ -683,10 +684,12 @@ class PlayerTracker:
                         frame_idx, len(far_half_diag), far_half_diag,
                     )
 
-        # Assign player_id by semantic frame half (pid 0 = near, pid 1 = far).
-        # Pass frame height so the midline is computed correctly for the video.
+        # Assign player_id by semantic half (pid 0 = near, pid 1 = far) —
+        # court-net split when calibration resolves, pixel-midline fallback
+        # (PLAYER_SPLIT_BY_NET; must match _choose_two_players' rule).
         frame_detections = self._assign_ids(
             candidates, frame_idx, candidate_kps, frame_height=frame.shape[0],
+            to_court_coords=to_court_coords,
         )
         self.detections.extend(frame_detections)
         self._last_result = frame_detections
@@ -1457,6 +1460,17 @@ class PlayerTracker:
                 court_x_m, court_y_m = court_xy
                 NET_Y = COURT_LENGTH_M / 2  # 11.885
 
+                # Identity fix (2026-06-06): the half this candidate competes
+                # in is decided by which side of the NET its feet project to,
+                # not by the frame's pixel midline — the two lines don't
+                # coincide on wide-angle footage, and the pixel rule let the
+                # near player win the FAR half whenever they stepped forward
+                # of ~13m (46% pid-1 pollution on the reference video, real
+                # far player dropped). Pixel fallback stays for frames where
+                # the projection fails (handled in the elif branches below).
+                if PLAYER_SPLIT_BY_NET:
+                    half = "far" if court_y_m < NET_Y else "near"
+
                 # Priority 1 (3000): inside doubles court
                 in_court = (
                     0.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M
@@ -1701,7 +1715,8 @@ class PlayerTracker:
 
     def _assign_ids(self, bboxes: list, frame_idx: int,
                     kps_list: list = None,
-                    frame_height: Optional[int] = None) -> List[PlayerDetection]:
+                    frame_height: Optional[int] = None,
+                    to_court_coords=None) -> List[PlayerDetection]:
         """Assign player_id by frame half.
 
         SEMANTIC ASSIGNMENT: pid 0 = near-side (bbox center cy > midline),
@@ -1747,7 +1762,21 @@ class PlayerTracker:
             cy = (bbox[1] + bbox[3]) / 2.0
             area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
             entry = (area, bbox, kps)
-            if cy > midline_y:
+            # Identity fix (2026-06-06): same court-net split rule as
+            # _choose_two_players — feet court_y vs the net line whenever the
+            # calibration resolves, pixel-midline fallback otherwise. Keeping
+            # the two functions on the same rule matters: a candidate chosen
+            # as the FAR-half best must not flip to pid=0 here.
+            is_near = cy > midline_y
+            if PLAYER_SPLIT_BY_NET and to_court_coords is not None:
+                try:
+                    pt = to_court_coords(
+                        (bbox[0] + bbox[2]) / 2.0, bbox[3], strict=False)
+                except Exception:
+                    pt = None
+                if pt is not None:
+                    is_near = pt[1] >= COURT_LENGTH_M / 2.0
+            if is_near:
                 near_cands.append(entry)
             else:
                 far_cands.append(entry)
