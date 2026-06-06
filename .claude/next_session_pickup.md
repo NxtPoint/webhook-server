@@ -1,66 +1,44 @@
-# Next-session pickup — 2026-06-06 (overnight session) — SERVE FEED REGRESSION FOUND+FIXED; next = morning validation + serve model v1 training
+# Next-session pickup — 2026-06-06 PM — FAR-COURT FOUNDATION FIXED (calibration+identity+ROI); next = compensation cleanup → fresh scorecard → serve model retrain
 
 ## ⚡ Executive summary (read first — 30 seconds)
-**Today's date:** 2026-06-06 (written ~01:30 after an overnight autonomous session)
-**Phase active:** bronze-first roadmap step 2 (serve) — build phase ~DONE pending live validation; training next.
-**Bench:** serve `a798eff0 20/24, 880dff02 23/24` GREEN (verified 3×). **CI bench GREEN again** (was silently red since May 28 — missing numpy in requirements-bench.txt, fixed `f24f4f5`).
-**What shipped overnight:** (1) bounce stage live (rev 66/47) + validated on a real run; (2) serve detector consumes CNN `ball_bounces` w/ legacy fallback (`05fe85d`, env `SERVE_CNN_BOUNCES`); (3) **the serve-feed regression root-caused to `SAHI_BATCHED=1` and fixed in job-def eu rev 67 / us rev 48**; (4) CI repaired.
-**What's blocked:** nothing.
-**Next session's job:** Tomo uploads fresh match → confirm ~15-17/26 serves live on rev 67 → then serve model v1 training (kickoff draft ready).
+**Phase:** bronze-first; the far-court structural defects are FIXED and probe-validated. Deployed: **rev 70/51**.
+**Bench:** serve 20/24, 23/24 GREEN (every push gated). CI green.
+**The day's chain (each measured vs SA on the reference video, probe ledger below):**
+1. **Calibration** (`b08a858`): far keypoints were amputated by every fitting stage → far court extrapolated.
+   Far-player bias **+11.0m → -1.05m**; bounce xy **4.9m → 0.90m**; in-flight phantom bounces now auto-killed by honest projection.
+2. **Identity** (`e9ae36f`, env `PLAYER_SPLIT_BY_NET`): near/far split by court NET line, not frame midline.
+   pid-1 pollution **46% → 0%** (probe p8). Near pose rows 7535 → 11767.
+3. **ROI gate** (`328d3b8`): bounce-CNN stage reordered BEFORE ROI sweep; rally gate consumes CNN events.
+   Far-ROI usable poses **391 → 1019** (det 598→2008, p7).
+4. Serve consumer on CNN bounces (`05fe85d`, env `SERVE_CNN_BOUNCES`); SAHI_BATCHED=0 feed fix (rev 67); CI repaired (`f24f4f5`).
+**Serve now:** near 13/14 (ceiling), far 3/12 — far heuristic is signal-saturated (more coverage → FPs not recall, P 53→39 with ROI lift): **TRAINING territory, now with clean data.**
+**Next jobs (order):** (1) compensation cleanup, (2) fresh 18-field scorecard, (3) serve model retrain on clean corpus.
 
-## 🎯 THE OVERNIGHT FINDING (read this before touching serve or Batch perf knobs)
-Fresh runs scored 7/26 serves while the bench said 20-23/24. NOT a detector regression — the **upstream near-pose
-feed lost 26%** (10150→7535 rows; serve-window coverage 101→~64 ragged) somewhere in the May runtime campaign.
-Probe ladder (6 Batch reruns of the reference video, one env knob at a time, full table in the session log below):
-- Exonerated: YOLO_FP16 (keep =1, saves 9min, bit-identical), PLAYER_BATCH_SIZE, MOG2_DOWNSCALE,
-  PIPELINE_STAGE_OVERLAP, PLAYER_DETECTION_INTERVAL (predates), hardware (all g4dn/T4).
-- **Culprit: `SAHI_BATCHED=1`** (May-29 tile-fan prototype). With =0: pose_near 10333, near recall 12-13/14
-  (fixture level), 17/26 total matched, F1 66.7 vs 35.9. Runtime price ~+13min/10-min video — accepted.
-- **Fixed: job-def eu rev 67 / us rev 48** (env-only, image unchanged `a60c3909`). p6 probe = the validation run.
-- Memory: `feedback_perf_levers_need_accuracy_probe`. SAHI_BATCHED code path still exists (env-gated off) —
-  consider daylight investigation of WHY batched tile-fan drops near detections, or delete the prototype.
+## 🧹 JOB 1 — Warp-compensation cleanup (verified in code, each its own probe)
+The codebase grew compensations for the old +11m far bias; they're now wrong in the OPPOSITE direction (over-wide gates admitting noise):
+- `build_silver_match_t5.py:191-192` — `HITTER_FAR_MAX = COURT_LENGTH_M + 6.0` / `HITTER_NEAR_MIN = -6.0` → honest ≈ ±4m.
+- `player_tracker.py:489` — SAHI skip predicate `-10.0 <= pt[1] <= 5.0` (A0 widening) and tier-2 `-10m` behind-baseline zone (~line 1479) → honest ≈ -4m. Also the line-1472 TODO ("investigate far extrapolation bias") is RESOLVED — delete it.
+- `roi_extractors/pose.py:41` — `FAR_ROI_Y_LO = -8.0` → can tighten (~-5) = smaller crop, faster, less noise.
+- ⚠️ `serve_detector/detector.py` `_baseline_zone` far range (-3.5..4.5) — **CI-SENSITIVE and BLOCKED on fixture regeneration**: the locked bench fixtures carry WARP-ERA court coords; tightening zones breaks the bench falsely. Correct path: regenerate fixtures from a rev-70 run (snapshot_task) + re-baseline in the same commit (rule #9-compliant, justified), THEN tighten.
+- Also stale serve eval data: 41 emissions / P 39% on rev 70 — partly the far-pose path over-firing on the new ROI coverage. Expected to be fixed by the serve model, not heuristics.
 
-## Serve status after the fix (reference video, vs SA 26 = 14 near / 12 far)
-- Near: 13/14 (heuristic ceiling — the 1 miss is the known pose-amplitude case)
-- Far: 4/12 ← the remaining gap to Tomo's 20/26 target. Heuristic-unfixable (receiver-FP + faults outside
-  service box are structurally invisible to bounce-first far path — bench-proven). **= TRAINING territory.**
-- Serve ts accuracy on matches: mean 0.32s (CNN bounce path). Far xy capped by far-calibration (separate item).
+## 📊 JOB 2 — Fresh 18-field scorecard
+All historical accuracy numbers were measured against the warped map. Re-run the field-by-field scorecard on a rev-70 run (probe p8 data exists under job 52e072a7, in ml_analysis now — or cleaner: next real upload). Tool: `.claude/tmp/scorecard.py <job_id>` + `harness eval-serve`. Output: per-field build-bar status → the dev-ceiling sign-off list. Promote scorecard.py into ml_pipeline/diag/ as the automated per-run scorecard (backlog item, high value).
 
-## 🎓 SERVE MODEL v1 — ready to start (the morning's main job)
-Kickoff draft: `.claude/tmp/serve_model_v1_kickoff_draft.md` (promote to .claude/ after Tomo review). Key facts:
-- Corpus VERIFIED: 404 serve labels / 8 matches (200 FAR / 204 NEAR) with hit_frame/ts, server court xy, role,
-  ball_speed — `training/labels/*_serves.json`. ⚠️ corpus video_s3_keys are all DELETED (post-trim) → v1 must be
-  FEATURE-based (pose/ball/bounce series from ml_analysis), not pixel-based. ⚠️ frame-space: convert via ts only.
-- Recipe = bounce-CNN port: high-recall candidates (relaxed far gates) → small scorer → gate per-serve vs SA
-  ≥ heuristic baseline + serve bench green → env-gated `SERVE_MODEL_ENABLED=0` default.
-- Sequencing gate: measure candidate recall on corpus FIRST (target ≥90%) before training anything.
-- Where it runs: prefer Batch-side post-pipeline (one-model-per-fact; Render has no torch/weights).
+## 🎓 JOB 3 — Serve model retrain (after 1+2)
+Scaffold shipped `61b677b` (ml_pipeline/serve_model/). v1 weights trained on WARPED far coords → held-out parity only (gate not met, not wired). Retrain needs clean-coordinate corpus: every new SportAI dual-submit now generates clean labels+features. Candidate recall 98.5% already. Far ROI coverage 2.6× + identity clean = better features. Target: far 3/12 → 8+/12 ⇒ ≥20/26 total.
 
 ## Canonical state
-- Batch job-def: **eu rev 68 / us rev 49** (digest `830cf1f5`, `SAHI_BATCHED=0`, `SWING_CLASSIFIER_ENABLED=0`).
-  Image = main @ `b08a858`: **far-calibration fix** (far-player bias +11.0m→+0.52m vs SA — keypoint-amputation
-  root cause, see commit msg; benches green incl. degeneracy traps) + bounce CNN stage + progress-pct fix +
-  serve_detector sync. **Awaiting first live validation run** (expect: far bounce/hit xy accurate ~±1m,
-  bounce NULL-coord rate collapsing from 40%, far serve-geometry gate judging true coords).
-- No Batch-side diffs pending vs deployed image (all synced at b08a858).
-- Render (main): serve detector prefers CNN ball_bounces, falls back to legacy is_bounce (old tasks/fixtures);
-  rollback knob `SERVE_CNN_BOUNCES=0` (docs/env_vars.md).
-- Reference video: local copies `ml_pipeline/test_videos/a798eff0_sa_video.mp4` ≡ Tomo's
-  `C:\Users\tomos\OneDrive\ten-fifty5\videos\match.mp4` (md5 089207968c…). SA companion ba4812be (26 serves,
-  68 floor bounces + 94 swing rows — "bounce" target = the 68 floor).
-- Probe harness (reusable): `.claude/tmp/probe_{submit,measure}.py` — direct Batch submit + local bronze ingest
-  + eval, zero prod side effects. Probe ml_analysis rows cleaned after use (this session: all 6 probes deleted).
-- Probe ledger: `.claude/tmp/probe_results.md` (gitignored — key numbers replicated above).
-- CI: green (`f24f4f5`). Latest main: serve-consumer migration + CI fix + progress fix.
+- Batch: **eu rev 70 / us rev 51** (digest `97af43b3`, identity fix; SAHI_BATCHED=0, SWING_CLASSIFIER_ENABLED=0 carried).
+  main @ `e9ae36f` fully synced with image. Env knobs: `PLAYER_SPLIT_BY_NET`(1), `SERVE_CNN_BOUNCES`(1), `BOUNCE_CANDIDATE_MODE`, `SWING_CLASSIFIER_ENABLED`(0).
+- Probe harness: `.claude/tmp/probe_{submit,measure}.py` + `scorecard.py`. Probe ledger `.claude/tmp/probe_results.md`.
+  Probe ml_analysis rows for p7 (c2d33296) + p8 (52e072a7) still in DB — KEEP p8 (scorecard source), delete p7 when done.
+- Real-task runs of reference video: 60b11b09 (rev66) → 0bc3a869 (rev67) → d777f090 (rev68). SA companion ba4812be.
+- Reference video local: `ml_pipeline/test_videos/a798eff0_sa_video.mp4` (≡ Tomo's OneDrive match.mp4).
+- Serve corpus: 404 labels / 8 matches — features must be REGENERATED from clean-coordinate runs for retraining (old task coords are warped; only new runs/dual-submits carry honest coords).
+- bench_silver stale baseline (pre-existing) + swing v2.1 retrain (4th class) still in backlog.
 
-## 🗂️ Backlog (in order, after serve v1)
-- **Stroke = ball-hit** (roadmap step 3, keystone): stroke_events has NO swing_type / ball-hit-xy columns —
-  SA carries both at 100%. Then flip silver hit-driven; T5 silver 183 rows vs SA 94 dies from correctness.
-- **Far-court calibration** (2.4-7m overshoot, 40% NULL bounce coords) — caps far xy for serve+bounce+stroke.
-- Swing v2.1 retrain (4th "other" class) → re-gate → `SWING_CLASSIFIER_ENABLED=1`.
-- Per-run scorecard automation (eval-serve + bounce eval auto-run on reference-video ingests) — kills the
-  "regression invisible for a week" class permanently. Cheap, high value.
-- SAHI_BATCHED prototype: root-cause or delete. bench_silver stale baseline re-base. Corpus video retention gap
-  (labels point at deleted videos — blocks pixel-based training).
+## Memory entries this arc
+`feedback_perf_levers_need_accuracy_probe` (SAHI lesson). Calibration-amputation + compensation-debt pattern recorded in commit messages b08a858/e9ae36f/328d3b8.
 ---
 **END OF PICKUP**
