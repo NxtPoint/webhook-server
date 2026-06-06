@@ -522,12 +522,24 @@ def _baseline_zone(court_y: Optional[float]) -> Optional[str]:
     calibration extrapolation slack past the painted baselines AND of
     slight mid-court drift during the serve motion (player shifts
     forward ~1-2m during the toss + trophy pose even though their
-    feet stay behind the baseline)."""
+    feet stay behind the baseline).
+
+    Far range re-derived 2026-06-06 from rev-72 clean-coordinate data
+    (fixture ea1e500c): SA far servers hit at court_y -2.6..-1.6; the
+    warp-era +4.5 in-court bound admitted near-service-line FPs and is
+    tightened to +2.0 (hit position + <=1.5m toss drift). Behind-baseline
+    widened -3.5 -> -5.0: the residual extrapolation overshoot puts real
+    far servers at -4..-6 (canonical 5m slack, same bound b696c26 set on
+    the tracker gates); deeper than -5 is the spectator band. NOTE the
+    far pose path is currently starved upstream of this gate — far
+    serve-window rows are ~90-100% NULL court_y (ROI sweep is rally-gated
+    past serve windows); fixing that is coverage/training work, not zone
+    work."""
     if court_y is None:
         return None
     if 18.5 <= court_y <= 28.0:
         return "near"
-    if -3.5 <= court_y <= 4.5:
+    if -5.0 <= court_y <= 2.0:
         return "far"
     return None
 

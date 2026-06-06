@@ -1,13 +1,13 @@
 {
-  "commit": "f28a4d9",
+  "commit": "08b5b13",
   "fixtures": {
     "880dff02": {
       "far": [
-        10,
+        9,
         10
       ],
       "near": [
-        13,
+        14,
         14
       ],
       "total": [
@@ -15,8 +15,8 @@
         24
       ],
       "verdicts": {
-        "FAR_IN_TIME": 1,
-        "MATCH": 23
+        "MATCH": 23,
+        "WEAK_TIME": 1
       }
     },
     "ea1e500c": {
