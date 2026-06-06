@@ -1,5 +1,5 @@
 {
-  "commit": "c925681",
+  "commit": "f28a4d9",
   "fixtures": {
     "880dff02": {
       "far": [
@@ -19,26 +19,27 @@
         "MATCH": 23
       }
     },
-    "a798eff0": {
+    "ea1e500c": {
       "far": [
-        7,
-        10
+        0,
+        12
       ],
       "near": [
-        13,
+        12,
         14
       ],
       "total": [
-        20,
-        24
+        12,
+        26
       ],
       "verdicts": {
-        "FAR_IN_TIME": 2,
-        "MATCH": 20,
-        "NO_MATCH": 1,
-        "WEAK_TIME": 1
+        "FAR_IN_TIME": 1,
+        "MATCH": 12,
+        "NO_MATCH": 10,
+        "SUSPECT_BOUNCE": 1,
+        "WEAK_TIME": 2
       }
     }
   },
-  "updated_at": "2026-05-07"
+  "updated_at": "2026-06-06"
 }

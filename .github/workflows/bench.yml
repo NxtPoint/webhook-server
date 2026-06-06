@@ -3,10 +3,11 @@ name: bench
 # Tier 3 of T5 autonomy infrastructure (docs/north_star.md).
 #
 # Runs `python -m ml_pipeline.diag.bench` against the committed CI fixture
-# (ml_pipeline/fixtures_ci/a798eff0.pkl.gz) on every push to main and every
-# PR. Bench replays prod serve_detector logic and compares to the locked
-# baseline at ml_pipeline/diag/bench_baseline.json — currently 20/24 on
-# a798eff0. The job exits non-zero on any regression (bench's own exit
+# (ml_pipeline/fixtures_ci/ea1e500c.pkl.gz — rev-72 clean-coordinate run of
+# the reference video, SA truth ba4812be 26 serves) on every push to main
+# and every PR. Bench replays prod serve_detector logic and compares to the
+# locked baseline at ml_pipeline/diag/bench_baseline.json — currently 12/26
+# on ea1e500c. The job exits non-zero on any regression (bench's own exit
 # code), so the GitHub check fails and the PR is blocked.
 #
 # What this catches: silent serve_detector regressions before review. Three
@@ -43,7 +44,7 @@ name: bench
 
 jobs:
   bench:
-    name: serve_detector bench (a798eff0 20/24)
+    name: serve_detector bench (ea1e500c 12/26)
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
