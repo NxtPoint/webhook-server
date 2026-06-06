@@ -37,10 +37,12 @@ Kickoff draft: `.claude/tmp/serve_model_v1_kickoff_draft.md` (promote to .claude
 - Where it runs: prefer Batch-side post-pipeline (one-model-per-fact; Render has no torch/weights).
 
 ## Canonical state
-- Batch job-def: **eu rev 67 / us rev 48** (digest `a60c3909`, `SAHI_BATCHED=0`, `SWING_CLASSIFIER_ENABLED=0`).
-  Bounce CNN stage LIVE + validated (60b11b09: 174 ball_bounces, survives re-ingest).
-- ⚠️ main carries 2 Batch-side diffs vs deployed image (both benign, ride with next rebuild): `04bd38a`
-  progress-pct fix (roi_extract 78→81) + `05fe85d` serve_detector (Render-only behavior; image sync policy).
+- Batch job-def: **eu rev 68 / us rev 49** (digest `830cf1f5`, `SAHI_BATCHED=0`, `SWING_CLASSIFIER_ENABLED=0`).
+  Image = main @ `b08a858`: **far-calibration fix** (far-player bias +11.0m→+0.52m vs SA — keypoint-amputation
+  root cause, see commit msg; benches green incl. degeneracy traps) + bounce CNN stage + progress-pct fix +
+  serve_detector sync. **Awaiting first live validation run** (expect: far bounce/hit xy accurate ~±1m,
+  bounce NULL-coord rate collapsing from 40%, far serve-geometry gate judging true coords).
+- No Batch-side diffs pending vs deployed image (all synced at b08a858).
 - Render (main): serve detector prefers CNN ball_bounces, falls back to legacy is_bounce (old tasks/fixtures);
   rollback knob `SERVE_CNN_BOUNCES=0` (docs/env_vars.md).
 - Reference video: local copies `ml_pipeline/test_videos/a798eff0_sa_video.mp4` ≡ Tomo's
