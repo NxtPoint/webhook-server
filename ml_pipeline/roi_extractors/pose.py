@@ -166,6 +166,7 @@ class FarPoseProcessor:
         replace: bool = True,
         roi_batch_size: Optional[int] = None,
         pose_fp16: Optional[bool] = None,
+        cnn_bounce_ts: Optional[List[float]] = None,
     ):
         self.job_id = job_id
         self.engine = engine
@@ -176,6 +177,7 @@ class FarPoseProcessor:
         self.vitpose_repo = vitpose_repo
         self.court_detector = court_detector
         self.bounces = bounces
+        self.cnn_bounce_ts = cnn_bounce_ts
         self.frame_from = frame_from
         self.frame_to = frame_to
         self.replace = replace
@@ -302,7 +304,7 @@ class FarPoseProcessor:
         ml_analysis.ball_detections is empty at this stage (Render ingests
         bronze later from the JSON export), which is why the in-memory list is
         the right input — see handover_t5.md NEXT SESSION block."""
-        if not self.bounces:
+        if not self.bounces and not self.cnn_bounce_ts:
             logger.info(
                 "roi_pose: no bounces supplied; processing all sampled frames "
                 "(no rally gate)"
@@ -312,6 +314,22 @@ class FarPoseProcessor:
             from ml_pipeline.serve_detector.rally_state import (
                 RallyStateMachine, RallyState,
             )
+            # PREFERRED gate input (2026-06-06): the bounce-CNN model's events
+            # (2.6x cleaner than the velocity-reversal is_bounce flags — 174
+            # vs 343 on the reference video at ~2x the precision). Phantom
+            # raw flags held the rally state IN_RALLY for 63% of frames and
+            # starved the ROI sweep (391 usable poses vs ~7,800 on healthy
+            # matches). The CNN stage now runs BEFORE the ROI sweep in
+            # __main__ precisely so this gate can consume it.
+            if self.cnn_bounce_ts:
+                self.rally = RallyStateMachine(bounce_ts=sorted(self.cnn_bounce_ts))
+                self.rally_in_rally_state = RallyState.IN_RALLY
+                logger.info(
+                    "roi_pose: rally gate active from CNN ball_bounces "
+                    "(%d events; legacy is_bounce path bypassed)",
+                    len(self.cnn_bounce_ts),
+                )
+                return
             from ml_pipeline.serve_detector.bounce_validity import validate_bounces
             raw_bounces = [
                 {"frame_idx": d.frame_idx, "court_y": getattr(d, "court_y", None)}

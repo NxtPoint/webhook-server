@@ -285,39 +285,6 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         #   ml_analysis.ball_detections (source='roi_prod'). Anchor strategy is
         #   bounce-only without zone filter — best of 4 strategies on 880dff02
         #   (see bounces._select_anchors docstring).
-        if not practice:
-            try:
-                # 81: must sit between the main pipeline's final stage
-                # (computing_analytics=80, pipeline.py) and saving_results=82
-                # below — it was 78, which made the UI progress bar visibly
-                # step BACKWARDS (80→78) at the ROI phase boundary every run.
-                on_progress("roi_extract", 81)
-                from ml_pipeline.roi_extractors import run_unified_roi
-                from ml_pipeline.config import FRAME_SAMPLE_FPS
-                court_det = getattr(pipeline, "court_detector", None)
-                # Pass the BRONZE sample rate (FRAME_SAMPLE_FPS), NOT the source
-                # video fps: the ROI passes must index frames in the same 25fps
-                # space as bronze/the main pipeline. run_unified_roi reads the
-                # true source fps off the video itself to compute the decimation
-                # stride. (Match path only — this block is `if not practice`.)
-                n_pose, n_bounces = run_unified_roi(
-                    video_path=tmp_path,
-                    job_id=job_id,
-                    engine=engine,
-                    fps=float(FRAME_SAMPLE_FPS),
-                    court_detector=court_det,
-                    bounces=getattr(result, "ball_detections", None),
-                    pose_sample_every=2,
-                    bounce_window_s=2.5,
-                    bounce_cluster_gap_s=0.5,
-                    bounce_anchor_zone_filter=False,
-                    bounce_anchor_bounce_only=True,
-                )
-                logger.info(f"ROI unified: pose wrote {n_pose} rows, "
-                            f"bounces wrote {n_bounces} rows")
-            except Exception as e:
-                logger.warning(f"ROI extraction failed (non-fatal): {e}")
-
         # 2d. Bronze BOUNCE MODEL (match only) — gravity-residual candidates +
         # trained CNN v2 → ml_analysis.ball_bounces (the MODEL-layer bounce fact
         # that replaces the velocity-reversal is_bounce rule per the bronze-first
@@ -327,6 +294,12 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         # approximated in_rally (validated 2026-06-05: the rally gate barely moves
         # precision, 37%→34%). ball_bounces SURVIVES the re-ingest (it deletes only
         # ball/player_detections + match_analytics). Additive + non-fatal.
+        #
+        # ORDER (2026-06-06): runs BEFORE the ROI sweep so the sweep's rally
+        # gate can consume the CNN events instead of the raw 20%-precision
+        # is_bounce flags — phantom flags held IN_RALLY for 63% of frames and
+        # starved far-pose ROI coverage (391 usable poses vs ~7,800 healthy).
+        _cnn_bounce_ts = None
         if not practice:
             try:
                 import os as _os
@@ -362,11 +335,46 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     init_bounce_schema(_bc)
                     delete_bounces_for_task(_bc, job_id)
                     _persist_bounces(_bc, _bev)
+                _cnn_bounce_ts = sorted(float(e.ts) for e in _bev)
                 logger.info("Bounce CNN v2: wrote %d ball_bounces "
                             "(gravity_residual, thr 0.5, weights_loaded=%s)",
                             len(_bev), _os.path.exists(_bw))
             except Exception as e:
                 logger.warning(f"Bounce CNN stage failed (non-fatal): {e}")
+
+        if not practice:
+            try:
+                # 81: must sit between the main pipeline's final stage
+                # (computing_analytics=80, pipeline.py) and saving_results=82
+                # below — it was 78, which made the UI progress bar visibly
+                # step BACKWARDS (80→78) at the ROI phase boundary every run.
+                on_progress("roi_extract", 81)
+                from ml_pipeline.roi_extractors import run_unified_roi
+                from ml_pipeline.config import FRAME_SAMPLE_FPS
+                court_det = getattr(pipeline, "court_detector", None)
+                # Pass the BRONZE sample rate (FRAME_SAMPLE_FPS), NOT the source
+                # video fps: the ROI passes must index frames in the same 25fps
+                # space as bronze/the main pipeline. run_unified_roi reads the
+                # true source fps off the video itself to compute the decimation
+                # stride. (Match path only — this block is `if not practice`.)
+                n_pose, n_bounces = run_unified_roi(
+                    video_path=tmp_path,
+                    job_id=job_id,
+                    engine=engine,
+                    fps=float(FRAME_SAMPLE_FPS),
+                    court_detector=court_det,
+                    bounces=getattr(result, "ball_detections", None),
+                    pose_sample_every=2,
+                    bounce_window_s=2.5,
+                    bounce_cluster_gap_s=0.5,
+                    bounce_anchor_zone_filter=False,
+                    bounce_anchor_bounce_only=True,
+                    cnn_bounce_ts=_cnn_bounce_ts,
+                )
+                logger.info(f"ROI unified: pose wrote {n_pose} rows, "
+                            f"bounces wrote {n_bounces} rows")
+            except Exception as e:
+                logger.warning(f"ROI extraction failed (non-fatal): {e}")
 
         # 3. Export results to S3 as gzipped JSON (fast — single PUT)
         # The Render-side ingest worker (ml_pipeline.bronze_ingest_t5) downloads
