@@ -33,6 +33,13 @@ aws ecr get-login-password --region us-east-1  | docker login --username AWS --p
 docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .
 
 # 3. Tag + push to BOTH regions (run in parallel)
+# ⚠️ The `docker tag` lines are LOAD-BEARING — a 2026-06-06 one-shot chain
+# skipped them and pushed the PREVIOUS image (regional-repo tags still
+# pointed at the old build); rev 71/52 got registered against stale bits
+# and a probe measured nothing. Before registering, VERIFY the change is
+# in-image:  docker run --rm --entrypoint python ten-fifty5-ml-pipeline:latest \
+#   -c "import inspect; from ml_pipeline import <module>; print('<new code marker>' in inspect.getsource(<module>))"
+# and confirm the pushed manifest digest CHANGED vs the previous revision.
 docker tag ten-fifty5-ml-pipeline:latest 696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
 docker tag ten-fifty5-ml-pipeline:latest 696793787014.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
 docker push 696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest &
