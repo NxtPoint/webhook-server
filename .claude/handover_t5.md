@@ -40,6 +40,15 @@ docker build -f ml_pipeline/Dockerfile -t ten-fifty5-ml-pipeline:latest .
 # in-image:  docker run --rm --entrypoint python ten-fifty5-ml-pipeline:latest \
 #   -c "import inspect; from ml_pipeline import <module>; print('<new code marker>' in inspect.getsource(<module>))"
 # and confirm the pushed manifest digest CHANGED vs the previous revision.
+# ⚠️ ALSO (second 2026-06-06 incident, same evening): pushing "in parallel"
+# must not RACE the tag commands — a backgrounded `tag && push EU & push US`
+# chain let the US push start from the STALE us-east-1 tag, and the two
+# regions ended up with DIFFERENT digests. Before step 4, ALWAYS compare:
+#   for R in eu-north-1 us-east-1; do aws ecr describe-images --region $R \
+#     --repository-name ten-fifty5-ml-pipeline --image-ids imageTag=latest \
+#     --query 'imageDetails[0].imageDigest' --output text; done
+# The two digests MUST be identical AND equal the fresh build's manifest
+# list digest from the `docker build` output.
 docker tag ten-fifty5-ml-pipeline:latest 696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
 docker tag ten-fifty5-ml-pipeline:latest 696793787014.dkr.ecr.us-east-1.amazonaws.com/ten-fifty5-ml-pipeline:latest
 docker push 696793787014.dkr.ecr.eu-north-1.amazonaws.com/ten-fifty5-ml-pipeline:latest &
