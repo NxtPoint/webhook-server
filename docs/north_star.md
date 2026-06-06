@@ -26,7 +26,7 @@ Non-negotiable. A change that violates one of these is going backwards — stop 
 1. **Bronze is the single source of truth. Silver inherits it 100% and does NO work.** Silver only *projects* bronze + adds analytics (score, serve location 1-8, zones, aggression, depth). If you catch silver *computing a base fact* (serve, swing, bounce, identity), that's a bug to fix — not to extend.
 2. **One model per fact.** Pipeline: raw detectors (TrackNet / WASB / YOLOv8-pose / ViTPose) → **analysis models** (serve_detector, stroke_detector, …) → **bronze** normalised answers (`ml_analysis.*`) → silver projects. A fact is "done" only when a *model* emits it. A fact with no model is a **model to build/train** — tag it `STOPGAP-until-model-X`, never a silent silver heuristic. (Audit: `docs/_investigation/bronze_silver_18_audit.md`.)
 3. **Build-first, train-LAST.** Build all 18 base fields to ~70-80% with the standard models *now*; train to 90-95% *later* — it's free + automatic via SportAI dual-submit. **Train selectively** (don't cap us at SportAI where our heavier models may be better). Pipeline-speed / throughput is a *training-stage* lever, never a reason to pause building.
-4. **Measure-first, bench-green.** Validate against live data (`db_init.engine`) before committing. Keep the serve bench green (`a798eff0 20/24, 880dff02 23/24`). No Batch push without the **BATCH-SIDE CHECKLIST** (`.claude/handover_t5.md`).
+4. **Measure-first, bench-green.** Validate against live data (`db_init.engine`) before committing. Keep the serve bench green (`ea1e500c 12/26, 880dff02 23/24` — re-baselined 2026-06-06 on rev-72 clean coordinates). No Batch push without the **BATCH-SIDE CHECKLIST** (`.claude/handover_t5.md`).
 5. **Keep it clean — always.** Doc structure is fixed: **this file = True North** (rules + 18-field status + phase ladder); `.claude/next_session_pickup.md` = handover; `.claude/handover_t5.md` = ops / how-to-run; `docs/_investigation/*` = per-model references; everything historical → `_archive/`. **Don't create a new doc when an existing one fits.** Every session reads this file + the handover before touching code.
 
 ---
@@ -44,6 +44,38 @@ The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silv
 **Implication:** pipeline-speed / corpus-throughput optimisation is a *training-stage* lever (it makes the free training faster) — **NOT** a reason to pause building. Build the 18 first; sign off "dev done" before training.
 
 **The 18 base fields** = the Pass-1 projection in `build_silver_match_t5.py`: WHO hit (player_id/side), WHAT (serve, swing_type, volley), WHEN (ball_hit_s), WHERE-hit (ball_hit_location_x/y), WHERE-bounced (court_x/y), ball_speed, ball_player_distance, rally membership — plus the point/game/set structure passes 3-5 derive from them.
+
+### ★ FRESH 18-FIELD SCORECARD — rev 72 clean coordinates (p9b `ea1e500c` vs SA `ba4812be`), 2026-06-06 PM
+
+First field-by-field measurement on post-far-court-fix data (calibration `b08a858` + identity `e9ae36f` + ROI gate `328d3b8` + decomp `b696c26`). Tool: `python -m ml_pipeline.diag.scorecard <job_id>` (promoted `12aad57`) + `harness eval-serve`. All prior accuracy numbers were measured against the warped map — treat this table as the new canonical baseline.
+
+| field | measure (rev 72) | vs 70-80% build bar |
+|---|---|---|
+| WHO — identity (near-half pollution) | 0% | ✅ **SIGNED OFF** |
+| WHO — identity (off-court static FP) | 45% of non-null pid-1 rows locked at (x≈-4.8, y≈+6.0) — spectator band, evades the court_y>13 metric | ⚠️ dev item D1 |
+| WHERE — player position NEAR | med -0.42m (p10 -0.79 / p90 +0.20) | ✅ **SIGNED OFF** |
+| WHERE — player position FAR | med -0.43m == NEAR; spread p10 -3.94 / p90 +8.07 is the D1 static FP + sparse coverage, not calibration | ✅ median **SIGNED OFF**; spread rides D1 |
+| serve NEAR | 13/14 recall (eval-serve), 12/14 strict bench | ✅ **SIGNED OFF** (dev ceiling) |
+| serve FAR | 3/12 eval / 0/12 strict; P 45.7 F1 52.5 (post zone-tighten `3b33c9c`, was P 39.0 F1 47.8) | ❌ TRAIN (serve model) + coverage C1 |
+| stroke WHEN/WHO NEAR | 13/51 @1.0s (7/51 @0.5s); 55 emitted vs SA 51 — count parity masked event-level misalignment; consistent across rev 67/68/72 (never worked, not a regression) | ❌ TRAIN |
+| stroke WHEN/WHO FAR | 19/51 @1.0s; 161 emitted vs SA 51 (3.2× over) | ❌ TRAIN |
+| swing_type | classifier DISABLED (per-hit 32% vs heuristic 38%, both below bar) | ❌ TRAIN (v2.1 + 4th class) |
+| bounce — count | 194 CNN vs SA 68 floor (2.9× over) | ⚠️ over-emission |
+| bounce — xy accuracy | med 0.90m on matched (26/68 within 0.6s) | ✅ accuracy at bar; recall 38% below |
+| bounce — NULL coords | 72% of CNN bounces lack court coords | ❌ dev item D2 |
+| ball speed | 2040/8011 detections carry speed_kmh; accuracy unmeasured | ⚠️ presence only |
+| ball_hit_location x/y | blocked on stroke ts alignment | ❌ blocked by stroke |
+| rally / point / game / set structure | not measurable on a probe job (no silver rows) | ⏸ measure on next real upload |
+
+**Dev-ceiling sign-off list (what "finish the build" means now):**
+
+- **SIGNED OFF — no further heuristics:** near serve, near position, far position median, near-half identity, court mapping. Touch these only via training.
+- **Dev items remaining (cheap + deterministic, do before/alongside training):**
+  - **D1 — pid-1 off-court static-FP gate**: kill detections with court_x outside [-1.5, 12.5] persisting in a tight y-band. Deterministic rule (trust-the-rule pattern), Batch-side tracker or Render-side filter. Cleans far position spread AND stroke far over-emission inputs.
+  - **D2 — bounce NULL-coord projection**: 72% of CNN bounces carry no court coords; the projection exists (calibration is fixed) — wire it through the bounce stage.
+  - **C1 — ROI sweep serve-window coverage (Batch-side, next deploy cycle)**: the rally gate (`328d3b8`) leaves **0-1 far ROI pose rows in ALL far serve windows** (measured p9b); ROI rows are the only far rows carrying court_y, so the far pose path starves upstream of every serve gate. Pad the rally gate backward ~5-8s (or anchor on near-half CNN bounces) so serve wind-ups are swept. This also feeds the serve model better far features (Job 3).
+- **Training territory (bronze-first, SA-as-teacher where SA is reliable):** far serve (serve_model v1 retrain — gate: ≥ heuristic far 3/12 eval + bench green), stroke event alignment (heuristic detector confirmed at ceiling on three revisions), swing type v2.1, bounce recall.
+- **Deferred to next real upload:** point/game/set structure, silver-level fields (probe jobs have no silver).
 
 ### Build status vs SportAI — Match 1 (`78c32f53` vs `0d0514df`), 2026-05-27
 > ⚠️ **STALE (pre-far-side-fix).** Table is from 2026-05-27. Swing_type now has a TRAINED classifier (v2 macro-F1 0.77; near 0.86 / far 0.61), far training data ~2.9×.
@@ -76,7 +108,8 @@ The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silv
 
 ## How to run / query (quick reference)
 
-- **Serve bench** (mandatory pre-push on any detector edit; floor a798eff0 20/24, 880dff02 23/24): `.venv/Scripts/python -m ml_pipeline.diag.bench`
+- **Serve bench** (mandatory pre-push on any detector edit; floor ea1e500c 12/26, 880dff02 23/24): `.venv/Scripts/python -m ml_pipeline.diag.bench`
+- **Per-run scorecard** (after any probe/run of a dual-submit pair): `python -m ml_pipeline.diag.scorecard <job_id> [--sportai-tid <sa>]`
 - **Ball bench** (local; ~3h on this CPU-only box — background it): `python -m ml_pipeline.diag.bench_ball`
 - **Query the prod DB directly** (this dev box's IP is allowlisted — measure against live data, don't paste shell output): `PYTHONPATH=<repo> .venv/Scripts/python` then `from db_init import engine; engine.connect()`.
 - **Rebuild a T5 silver match**: `from ml_pipeline.build_silver_match_t5 import build_silver_match_t5; build_silver_match_t5('<task_id>', replace=True)`

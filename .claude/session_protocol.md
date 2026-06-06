@@ -37,7 +37,7 @@ Run through this in the first ~5 minutes before doing any real work. Don't skip 
 2. ☐ **Check `git log --oneline -10`** to see what's landed since the pickup file was last updated. The pickup file is overwritten at session-end, but parallel agents may have pushed commits in between.
 3. ☐ **Acknowledge what you're working on, in user-visible text.** One sentence: "I'm working on X. The current phase is Y. Recent commits since pickup: Z." This catches misalignment early.
 4. ☐ **Skim `docs/north_star.md` phase ladder** — confirm your understanding of which phase is active. If you're about to work on something the ladder doesn't show, stop and re-read.
-5. ☐ **If touching T5 detector code:** run bench before any edits. Verify floor is locked (`a798eff0=20/24`, `880dff02=23/24`). If it's red on a clean checkout, something's broken upstream — investigate before touching anything.
+5. ☐ **If touching T5 detector code:** run bench before any edits. Verify floor is locked (`ea1e500c=12/26`, `880dff02=23/24`). If it's red on a clean checkout, something's broken upstream — investigate before touching anything.
 6. ☐ **If touching `ml_pipeline/` code:** check who else might be in there. If you're a parallel agent and another session is active on adjacent files, coordinate explicitly via the pickup file or with Tomo.
 7. ☐ **For parallel-agent sessions:** confirm your scope doesn't overlap. Different subdirectories or different files. If overlap risk exists, surface it to Tomo before starting.
 
@@ -80,7 +80,7 @@ Every pickup file should start with this block. Future sessions read this first;
 
 **Today's date:** [YYYY-MM-DD]
 **Phase active:** [e.g. Phase 5c — dual-submit pipeline]
-**Bench:** `a798eff0=X/24, 880dff02=Y/24` — green/red
+**Bench:** `ea1e500c=X/26, 880dff02=Y/24` — green/red
 **What shipped last session:** [one sentence]
 **What's blocked:** [one sentence, or "nothing"]
 **Next session's job:** [one sentence — what to actually do]
