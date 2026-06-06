@@ -300,6 +300,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
         # is_bounce flags — phantom flags held IN_RALLY for 63% of frames and
         # starved far-pose ROI coverage (391 usable poses vs ~7,800 healthy).
         _cnn_bounce_ts = None
+        _cnn_bounce_events = None
         if not practice:
             try:
                 import os as _os
@@ -336,6 +337,15 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     delete_bounces_for_task(_bc, job_id)
                     _persist_bounces(_bc, _bev)
                 _cnn_bounce_ts = sorted(float(e.ts) for e in _bev)
+                # frame_idx + court coords for the ROI rally gate: it keeps
+                # only VALIDATED PROJECTED bounces (NULL-coord pre-serve
+                # ball-bouncing was holding IN_RALLY through far serve
+                # wind-ups — 11/12 blocked on ea1e500c).
+                _cnn_bounce_events = [
+                    {"frame_idx": int(e.frame_idx),
+                     "court_x": e.court_x, "court_y": e.court_y}
+                    for e in _bev
+                ]
                 logger.info("Bounce CNN v2: wrote %d ball_bounces "
                             "(gravity_residual, thr 0.5, weights_loaded=%s)",
                             len(_bev), _os.path.exists(_bw))
@@ -370,6 +380,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     bounce_anchor_zone_filter=False,
                     bounce_anchor_bounce_only=True,
                     cnn_bounce_ts=_cnn_bounce_ts,
+                    cnn_bounce_events=_cnn_bounce_events,
                 )
                 logger.info(f"ROI unified: pose wrote {n_pose} rows, "
                             f"bounces wrote {n_bounces} rows")

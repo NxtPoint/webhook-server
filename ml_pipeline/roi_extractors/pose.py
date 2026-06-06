@@ -167,6 +167,7 @@ class FarPoseProcessor:
         roi_batch_size: Optional[int] = None,
         pose_fp16: Optional[bool] = None,
         cnn_bounce_ts: Optional[List[float]] = None,
+        cnn_bounce_events: Optional[List[dict]] = None,
     ):
         self.job_id = job_id
         self.engine = engine
@@ -178,6 +179,7 @@ class FarPoseProcessor:
         self.court_detector = court_detector
         self.bounces = bounces
         self.cnn_bounce_ts = cnn_bounce_ts
+        self.cnn_bounce_events = cnn_bounce_events
         self.frame_from = frame_from
         self.frame_to = frame_to
         self.replace = replace
@@ -304,7 +306,7 @@ class FarPoseProcessor:
         ml_analysis.ball_detections is empty at this stage (Render ingests
         bronze later from the JSON export), which is why the in-memory list is
         the right input — see handover_t5.md NEXT SESSION block."""
-        if not self.bounces and not self.cnn_bounce_ts:
+        if not self.bounces and not self.cnn_bounce_ts and not self.cnn_bounce_events:
             logger.info(
                 "roi_pose: no bounces supplied; processing all sampled frames "
                 "(no rally gate)"
@@ -314,23 +316,47 @@ class FarPoseProcessor:
             from ml_pipeline.serve_detector.rally_state import (
                 RallyStateMachine, RallyState,
             )
-            # PREFERRED gate input (2026-06-06): the bounce-CNN model's events
-            # (2.6x cleaner than the velocity-reversal is_bounce flags — 174
-            # vs 343 on the reference video at ~2x the precision). Phantom
-            # raw flags held the rally state IN_RALLY for 63% of frames and
-            # starved the ROI sweep (391 usable poses vs ~7,800 on healthy
-            # matches). The CNN stage now runs BEFORE the ROI sweep in
-            # __main__ precisely so this gate can consume it.
+            from ml_pipeline.serve_detector.bounce_validity import validate_bounces
+            # PREFERRED gate input (2026-06-06 PM): the bounce-CNN events,
+            # VALIDATED and PROJECTED-ONLY. Feeding raw CNN timestamps
+            # (the earlier same-day wiring) blocked 11/12 far serve
+            # wind-ups on the reference video: pre-serve ball-bouncing by
+            # the FAR server produces real floor bounces with NULL court
+            # coords (tiny far-court ball, unprojectable), and the
+            # validity rule keeps NULL bounces conservatively — so they
+            # held the gate IN_RALLY through exactly the windows the far
+            # sweep exists to cover. Gate principle: only net-crossing
+            # VALIDATED bounces WITH coordinates are rally evidence for
+            # gating. Measured on ea1e500c: far wind-ups blocked 11/12 ->
+            # 0/12; IN_RALLY fraction 53% -> 13% (sweep covers more video
+            # — accepted accuracy/runtime trade; downstream consumers
+            # (detector rally gate, serve model scorer) re-filter
+            # mid-rally FPs with richer context).
+            if self.cnn_bounce_events:
+                projected = [b for b in self.cnn_bounce_events
+                             if b.get("court_y") is not None]
+                valid = validate_bounces(projected)
+                self.rally = RallyStateMachine(
+                    bounce_ts=sorted(b["frame_idx"] / self.fps for b in valid))
+                self.rally_in_rally_state = RallyState.IN_RALLY
+                logger.info(
+                    "roi_pose: rally gate active from CNN ball_bounces, "
+                    "validated-projected (%d events -> %d projected -> %d valid)",
+                    len(self.cnn_bounce_events), len(projected), len(valid),
+                )
+                return
+            # Legacy CNN wiring (ts-only, raw): kept for callers that can't
+            # supply coordinates. Known to over-block far serve wind-ups.
             if self.cnn_bounce_ts:
                 self.rally = RallyStateMachine(bounce_ts=sorted(self.cnn_bounce_ts))
                 self.rally_in_rally_state = RallyState.IN_RALLY
                 logger.info(
                     "roi_pose: rally gate active from CNN ball_bounces "
-                    "(%d events; legacy is_bounce path bypassed)",
+                    "(%d raw ts events; ts-only legacy wiring — over-blocks "
+                    "far serve wind-ups, prefer cnn_bounce_events)",
                     len(self.cnn_bounce_ts),
                 )
                 return
-            from ml_pipeline.serve_detector.bounce_validity import validate_bounces
             raw_bounces = [
                 {"frame_idx": d.frame_idx, "court_y": getattr(d, "court_y", None)}
                 for d in self.bounces

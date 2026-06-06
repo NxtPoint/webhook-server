@@ -54,6 +54,7 @@ def run_unified_roi(
     bounce_anchor_zone_filter: bool = False,
     bounce_anchor_bounce_only: bool = True,
     cnn_bounce_ts: Optional[List[float]] = None,
+    cnn_bounce_events: Optional[List[dict]] = None,
 ) -> Tuple[int, int]:
     """Decode the video once, drive both ROI extractors, return (n_pose, n_bounce).
 
@@ -85,6 +86,7 @@ def run_unified_roi(
             fps=fps, sample_every=pose_sample_every,
             court_detector=court_detector, bounces=bounces,
             cnn_bounce_ts=cnn_bounce_ts,
+            cnn_bounce_events=cnn_bounce_events,
         )
         if p.prepare(frame_shape):
             pose = p
