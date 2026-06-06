@@ -21,7 +21,7 @@ from sqlalchemy import text
 from ml_pipeline.serve_model.candidates import (
     Anchor, bounce_anchors, pose_anchors, merge_anchors,
 )
-from ml_pipeline.serve_model.features import featurize
+from ml_pipeline.serve_model.features import featurize, N_FEATURES
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,18 @@ S3_BUCKET = "nextpoint-prod-uploads"
 
 # Reference video = the held-out eval video (BOTH its corpus tasks).
 HELDOUT_TASKS = {"a35b37f6", "17e2da3a"}
+
+# Extra held-out eval tasks that are NOT corpus rows: clean-coordinate
+# reruns of an already-labeled video, evaluated against the original
+# video's corpus labels (md5-identical file -> identical timestamps).
+# ea1e500c = p9b, the rev-72 clean-coordinate run of the reference video
+# (2026-06-06). This is the gate eval: the warp-era corpus tasks carry
+# warped features, so the held-out number that matters is the clean one.
+EXTRA_EVAL = {
+    "ea1e500c-56b8-48a3-b0d0-6697813a0155":
+        "s3://nextpoint-prod-uploads/training/labels/"
+        "a35b37f6-d9da-4edb-a9a4-71ecc855554b_serves.json",
+}
 
 # Duplicate-video tasks dropped from TRAINING (each is a second SA run of
 # a video already in the train set — keeping both double-counts correlated
@@ -109,9 +121,16 @@ def build_dataset(engine) -> Dict[str, dict]:
             WHERE label_kind = 'serve' ORDER BY created_at
         """)).fetchall()
 
-        for tid, key in corpus:
-            labels = _load_labels(s3, key)
-            far_ts = sorted(float(l["hit_ts"]) for l in labels if l.get("role") == "FAR")
+    # One FRESH connection per task: the build interleaves S3 label fetches
+    # with multi-minute DB pulls, and a single long-lived connection gets
+    # silently dropped by NAT idle timeout -- the next execute then blocks
+    # forever with no server-side query (hung 30+ min on 2026-06-06).
+    for tid, key in (list(corpus) + list(EXTRA_EVAL.items())):
+        short = tid[:8]
+        heldout = short in HELDOUT_TASKS or tid in EXTRA_EVAL
+        labels = _load_labels(s3, key)
+        far_ts = sorted(float(l["hit_ts"]) for l in labels if l.get("role") == "FAR")
+        with engine.connect() as conn:
             arrays = load_task_arrays(conn, tid)
             anchors = task_anchors(arrays)
 
@@ -120,7 +139,7 @@ def build_dataset(engine) -> Dict[str, dict]:
                           arrays["near_ts"], arrays["ball_t"], arrays["ball_y"],
                           roi_rows=arrays["roi_rows"])
                 for a in anchors
-            ]) if anchors else np.zeros((0, 26), dtype=np.float32)
+            ]) if anchors else np.zeros((0, N_FEATURES), dtype=np.float32)
 
             y = np.zeros(len(anchors), dtype=np.float32)
             for i, a in enumerate(anchors):
@@ -128,14 +147,12 @@ def build_dataset(engine) -> Dict[str, dict]:
                 if j < len(far_ts) and far_ts[j] <= a.ts + POS_TOL_S:
                     y[i] = 1.0
 
-            short = tid[:8]
             out[short] = dict(task_id=tid, X=X, y=y,
                               anchor_ts=[a.ts for a in anchors],
                               far_label_ts=far_ts,
-                              heldout=short in HELDOUT_TASKS)
+                              heldout=heldout)
             logger.info("dataset %s: anchors=%d positives=%d far_labels=%d heldout=%s",
-                        short, len(anchors), int(y.sum()), len(far_ts),
-                        short in HELDOUT_TASKS)
+                        short, len(anchors), int(y.sum()), len(far_ts), heldout)
     return out
 
 
