@@ -486,7 +486,13 @@ class PlayerTracker:
                             pt = None
                     except Exception:
                         pt = None
-                    if pt is not None and -10.0 <= pt[1] <= 5.0:
+                    # Warp-compensation removed (2026-06-06): was -10..5 to
+                    # tolerate the old far-calibration bias projecting the
+                    # real far player to y≈-7. With the b08a858 fix the far
+                    # player projects honestly (feet ≥ ~-4 behind baseline);
+                    # -5..5 keeps the real player while no longer letting
+                    # back-wall spectators (y -10..-5) suppress the SAHI pass.
+                    if pt is not None and -5.0 <= pt[1] <= 5.0:
                         skip_B = True
                         break
 
@@ -1476,22 +1482,19 @@ class PlayerTracker:
                     0.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
-                # Priority 2 (2000): nearest player behind baseline, up
-                # to 10m either side. Observed on MATCHI wide-angle that
-                # a far player physically ~4m behind the baseline projects
-                # to metric y ~-6/-7 — calibration extrapolation on the
-                # far edge is over-negative. Expanding both sides to 10m
-                # catches the real player; tier 0 + MIN_SELECTABLE_SCORE
-                # still rejects spectators on the back wall.
-                # TODO: investigate far-side extrapolation bias (physical
-                # ~4m → measured -6/-7m suggests k1/k2 fit leaves residual
-                # distortion near the image top). Tightening this range
-                # depends on that fix.
+                # Priority 2 (2000): player behind their own baseline, up to
+                # 5m deep. Was 10m — a warp compensation: the old far
+                # calibration projected a player physically ~4m behind the
+                # baseline to y≈-6/-7 (the b08a858 fix RESOLVED that
+                # extrapolation bias — far feet now project honestly, so the
+                # old TODO here is closed). 5m covers serving stance + deep
+                # recovery with margin while no longer giving back-wall
+                # spectators (y -10..-5) a tier-2 score.
                 behind_baseline = (
                     -3.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 3.0
                     and (
-                        -10.0 <= court_y_m < 0.0
-                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 10.0
+                        -5.0 <= court_y_m < 0.0
+                        or COURT_LENGTH_M < court_y_m <= COURT_LENGTH_M + 5.0
                     )
                 )
                 # Priority 3 (1000): wide-alley corridor — 1m off each
