@@ -18,6 +18,8 @@ class SignalSource(str, Enum):
     POSE_AND_BALL = "pose_and_ball"  # pose + rising-ball toss confirmation
     BOUNCE_ONLY = "bounce_only"      # ball bounce in service box, no pose (far player)
     POSE_AND_BOUNCE = "pose_and_bounce"  # pose + bounce confirmed
+    MODEL_FAR = "model_far"          # trained serve-model candidate (Batch
+                                     # ml_analysis.serve_candidates; far only)
 
     @property
     def has_pose(self) -> bool:

@@ -101,6 +101,11 @@ SERVICE_LINE_FROM_NET_M = 6.40
 # Minimum seconds between any two accepted serves (cross-player dedupe).
 CROSS_PLAYER_DEDUP_S = 3.0
 
+# Serve-model merge: a model candidate within this gap of ANY heuristic
+# event is dropped (heuristic wins — the model only ADDS far serves the
+# heuristic missed; near path untouched per the wire-in gate).
+MODEL_MERGE_GAP_S = 4.0
+
 
 def _get_dominant_hand(conn, task_id: str) -> bool:
     """Return True if the submitter is left-handed. Default right."""
@@ -515,6 +520,91 @@ def _apply_cnn_bounce_flags(ball_rows: list, cnn_bounces: list) -> tuple:
 
     ball_rows.sort(key=lambda r: r["frame_idx"])
     return ball_rows, n_flagged, n_synthetic
+
+
+def _load_model_candidates(conn, task_id: str) -> list:
+    """Load Batch-scored serve-model candidates (`ml_analysis.serve_candidates`).
+
+    Returns [] when:
+      - env SERVE_MODEL_ENABLED != "1" (ships dark; flip after probe
+        validation — same env-rollback pattern as SERVE_CNN_BOUNCES), or
+      - the table doesn't exist yet (pre-deploy DB), or
+      - the task has no rows (pre-deploy runs, practice flow).
+
+    information_schema existence check BEFORE the SELECT (a failed SELECT
+    on a missing table poisons the surrounding transaction).
+    """
+    import os
+    if os.environ.get("SERVE_MODEL_ENABLED", "0") != "1":
+        return []
+    table_exists = conn.execute(sql_text("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'ml_analysis'
+              AND table_name = 'serve_candidates'
+        )
+    """)).scalar()
+    if not table_exists:
+        return []
+    rows = conn.execute(sql_text("""
+        SELECT ts, frame_idx, score, anchor_source,
+               bounce_court_x, bounce_court_y, train_threshold
+        FROM ml_analysis.serve_candidates
+        WHERE job_id::text = :tid
+        ORDER BY ts
+    """), {"tid": task_id}).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _merge_model_far_events(
+    existing_events: list,
+    candidates: list,
+    task_id: str,
+    fps: float,
+) -> List[ServeEvent]:
+    """Threshold + NMS the raw model candidates, then keep only those that
+    don't collide with a heuristic event. Pure function — shared by the
+    prod and offline entry points so bench/replay mirror prod.
+
+    Threshold: env SERVE_MODEL_THRESHOLD overrides the train-time operating
+    point stored on the rows (tunable without a Batch rerun). NMS is
+    score-ordered greedy (same rationale as serve_model.model.nms —
+    time-ordered greedy freezes on a bad early anchor)."""
+    if not candidates:
+        return []
+    import os
+    env_thr = os.environ.get("SERVE_MODEL_THRESHOLD")
+    thr = (float(env_thr) if env_thr
+           else float(candidates[0].get("train_threshold") or 0.6))
+    scored = [c for c in candidates if float(c["score"]) >= thr]
+    # score-ordered greedy NMS, 5s gap (the model's training-time NMS gap)
+    kept: list = []
+    for c in sorted(scored, key=lambda c: -float(c["score"])):
+        if any(abs(float(c["ts"]) - float(k["ts"])) < 5.0 for k in kept):
+            continue
+        kept.append(c)
+    existing_ts = [e.ts for e in existing_events]
+    out: List[ServeEvent] = []
+    for c in sorted(kept, key=lambda c: float(c["ts"])):
+        if any(abs(float(c["ts"]) - t) < MODEL_MERGE_GAP_S for t in existing_ts):
+            continue  # heuristic already has this serve — model only ADDS
+        out.append(ServeEvent(
+            task_id=task_id,
+            frame_idx=int(c["frame_idx"]),
+            ts=float(c["ts"]),
+            player_id=1,
+            source=SignalSource.MODEL_FAR,
+            confidence=float(c["score"]),
+            bounce_frame=None,
+            bounce_court_x=c.get("bounce_court_x"),
+            bounce_court_y=c.get("bounce_court_y"),
+        ))
+    logger.info(
+        "serve_detector: serve-model merge — %d candidates, %d >= thr %.2f, "
+        "%d after NMS, %d added (others within %.1fs of heuristic events)",
+        len(candidates), len(scored), thr, len(kept), len(out), MODEL_MERGE_GAP_S,
+    )
+    return out
 
 
 def _baseline_zone(court_y: Optional[float]) -> Optional[str]:
@@ -1062,11 +1152,19 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
     )
 
     all_events = near_events + far_pose_events + far_bounce_events
+    # Serve-model far candidates (Batch ml_analysis.serve_candidates) —
+    # additive only, behind SERVE_MODEL_ENABLED. Heuristic events win
+    # collisions; near path untouched.
+    model_events = _merge_model_far_events(
+        all_events, _load_model_candidates(conn, task_id), task_id, fps)
+    all_events += model_events
     all_events.sort(key=lambda e: e.ts)
     _persist_events(conn, all_events)
     logger.info(
-        "serve_detector: persisted %d serve events (near_pose=%d far_pose=%d far_bounce=%d)",
-        len(all_events), len(near_events), len(far_pose_events), len(far_bounce_events),
+        "serve_detector: persisted %d serve events "
+        "(near_pose=%d far_pose=%d far_bounce=%d model_far=%d)",
+        len(all_events), len(near_events), len(far_pose_events),
+        len(far_bounce_events), len(model_events),
     )
     return all_events
 
@@ -1082,6 +1180,7 @@ def detect_serves_offline(
     pose_rows_far: Sequence[dict] = (),
     ball_rows: Sequence[dict] = (),
     cnn_bounces: Sequence[dict] = (),
+    serve_candidates: Sequence[dict] = (),
     is_left_handed: bool = False,
     fps: float = 25.0,
     return_split: bool = False,
@@ -1124,8 +1223,15 @@ def detect_serves_offline(
         pose_near=list(pose_rows_near), pose_far=list(pose_rows_far),
         ball_rows=ball_rows, rally=rally,
     )
+    # Mirror the prod serve-model merge. Offline callers (bench/replay)
+    # pass candidates explicitly; the env gate doesn't apply here — the
+    # caller decides by supplying or omitting them. Empty = unchanged
+    # legacy behaviour (all committed fixtures).
+    model_events = _merge_model_far_events(
+        near_events + far_pose_events + far_bounce_events,
+        list(serve_candidates), task_id, fps) if serve_candidates else []
     if return_split:
-        return near_events, far_pose_events, far_bounce_events
-    all_events = near_events + far_pose_events + far_bounce_events
+        return near_events, far_pose_events, far_bounce_events + model_events
+    all_events = near_events + far_pose_events + far_bounce_events + model_events
     all_events.sort(key=lambda e: e.ts)
     return all_events
