@@ -526,8 +526,12 @@ def _load_model_candidates(conn, task_id: str) -> list:
     """Load Batch-scored serve-model candidates (`ml_analysis.serve_candidates`).
 
     Returns [] when:
-      - env SERVE_MODEL_ENABLED != "1" (ships dark; flip after probe
-        validation — same env-rollback pattern as SERVE_CNN_BOUNCES), or
+      - env SERVE_MODEL_ENABLED=0 (rollback knob — DEFAULT ON since
+        2026-06-06 after p10 validation: far 3/12 -> 7/12, total 20/26
+        at eval tolerance on rev 73; same env-rollback pattern as
+        SERVE_CNN_BOUNCES, and default-ON-in-code per
+        feedback_count_alignment_is_not_provenance — default-OFF
+        features waiting on a manual env flip rot silently), or
       - the table doesn't exist yet (pre-deploy DB), or
       - the task has no rows (pre-deploy runs, practice flow).
 
@@ -535,7 +539,7 @@ def _load_model_candidates(conn, task_id: str) -> list:
     on a missing table poisons the surrounding transaction).
     """
     import os
-    if os.environ.get("SERVE_MODEL_ENABLED", "0") != "1":
+    if os.environ.get("SERVE_MODEL_ENABLED", "1") == "0":
         return []
     table_exists = conn.execute(sql_text("""
         SELECT EXISTS (

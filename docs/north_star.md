@@ -56,7 +56,7 @@ First field-by-field measurement on post-far-court-fix data (calibration `b08a85
 | WHERE — player position NEAR | med -0.42m (p10 -0.79 / p90 +0.20) | ✅ **SIGNED OFF** |
 | WHERE — player position FAR | med -0.43m == NEAR; spread p10 -3.94 / p90 +8.07 is the D1 static FP + sparse coverage, not calibration | ✅ median **SIGNED OFF**; spread rides D1 |
 | serve NEAR | 13/14 recall (eval-serve), 12/14 strict bench | ✅ **SIGNED OFF** (dev ceiling) |
-| serve FAR | 3/12 eval / 0/12 strict; P 45.7 F1 52.5 (post zone-tighten `3b33c9c`, was P 39.0 F1 47.8) | ❌ TRAIN (serve model) + coverage C1 |
+| serve FAR | **7/12 eval (was 3/12)** — serve model v1 live end-to-end (p10, rev 73, 2026-06-06 PM): Batch `serve_candidates` stage → detector `model_far` merge → silver verbatim 48/48 both directions. C1 ROI gate fixed same day. | ✅ **SIGNED OFF at build bar** — further gains = training (corpus growth retrains the model free) + ROI serve-window detection depth (2/10 windows still thin) |
 | stroke WHEN/WHO NEAR | 13/51 @1.0s (7/51 @0.5s); 55 emitted vs SA 51 — count parity masked event-level misalignment; consistent across rev 67/68/72 (never worked, not a regression) | ❌ TRAIN |
 | stroke WHEN/WHO FAR | 19/51 @1.0s; 161 emitted vs SA 51 (3.2× over) | ❌ TRAIN |
 | swing_type | classifier DISABLED (per-hit 32% vs heuristic 38%, both below bar) | ❌ TRAIN (v2.1 + 4th class) |
@@ -69,7 +69,8 @@ First field-by-field measurement on post-far-court-fix data (calibration `b08a85
 
 **Dev-ceiling sign-off list (what "finish the build" means now):**
 
-- **SIGNED OFF — no further heuristics:** near serve, near position, far position median, near-half identity, court mapping. Touch these only via training.
+- **SIGNED OFF — no further heuristics:** near serve, **far serve (2026-06-06 PM — see below)**, near position, far position median, near-half identity, court mapping. Touch these only via training.
+- **★ SERVE: FULLY SIGNED OFF 2026-06-06 PM (p10, rev 73).** The complete chain is live and verbatim: Batch serve-model stage (`ml_analysis.serve_candidates`, `SERVE_MODEL_STAGE=1`) → Render detector merge (`model_far` additive, `SERVE_MODEL_ENABLED` default-on) → bronze `serve_events` → silver inherits 100% verbatim (`T5_SERVE_FROM_EVENTS` default-on, min-conf 0). p10 numbers: near 13/14, **far 7/12 (was 3/12)**, total **20/26 at eval tolerance**; silver↔bronze trace **48/48 both directions**. ⚠️ Same audit found the May-27 inheritance had NEVER been live in prod (default-OFF flag, Render env flip never landed — `feedback_count_alignment_is_not_provenance`); fixed by flipping code defaults ON. Accuracy from here = free training (every SA dual-submit upload retrains the serve model on clean labels) — NOT detector heuristics.
 - **Dev items remaining (cheap + deterministic, do before/alongside training):**
   - **D1 — pid-1 off-court static-FP gate**: kill detections with court_x outside [-1.5, 12.5] persisting in a tight y-band. Deterministic rule (trust-the-rule pattern), Batch-side tracker or Render-side filter. Cleans far position spread AND stroke far over-emission inputs.
   - **D2 — bounce NULL-coord projection**: 72% of CNN bounces carry no court coords; the projection exists (calibration is fixed) — wire it through the bounce stage.

@@ -28,6 +28,11 @@
 - `BATCH_JOB_QUEUE=ten-fifty5-ml-queue`, `BATCH_JOB_DEF=ten-fifty5-ml-pipeline`
 - `BILLING_OPS_KEY` (falls back to `OPS_KEY`)
 - `SERVE_CNN_BOUNCES=1` — T5 serve detector's bounce source. Default: consume the CNN bounce model (`ml_analysis.ball_bounces`, Batch rev 66+) when the task has rows, falling back to the legacy velocity-reversal `is_bounce` flags when it doesn't (old tasks, fixtures). Set `0` to force the legacy path everywhere (rollback knob, no code change). Validated 2026-06-05 on `60b11b09`: CNN beats legacy on every serve metric (P 53.8 vs 42.9, R 26.9 vs 23.1, ts-err 0.32s vs 1.05s).
+- `SERVE_MODEL_ENABLED=1` — T5 serve detector consumes the Batch serve-model candidates (`ml_analysis.serve_candidates`, rev 73+) as ADDITIVE far events (`source='model_far'`; heuristic wins collisions, near path untouched). Set `0` to roll back to heuristic-only (no code change). Validated 2026-06-06 (p10, rev 73): far 3/12 → 7/12, total 20/26 at eval tolerance.
+- `SERVE_MODEL_THRESHOLD` — optional override of the serve model's operating point (default: the train-time threshold stored on the candidate rows, currently 0.60). Tunable without a Batch rerun (candidates persist raw above a 0.2 floor).
+- `T5_SERVE_FROM_EVENTS=1` — T5 silver inherits `ml_analysis.serve_events` verbatim (north_star RULE #1). Default ON since 2026-06-06 — it had shipped default-OFF on 2026-05-27 and the Render env flip never landed, so prod silver silently ran the legacy geometric serve path for 10 days. Set `0` to roll back.
+- `T5_SERVE_EVENTS_MIN_CONF=0.0` — min serve_event confidence silver inherits. `0.0` = literally everything verbatim (Tomo, 2026-06-06); raise only if a bronze-quality gate is ever needed again.
+- `SERVE_MODEL_STAGE=1` — **Batch job-def env, not Render**: run the serve-candidates scoring stage after the ROI sweep (rev 73+). Set `0` on the job-def to skip the stage (rollback, no rebuild).
 
 **Legacy (Wix payment transition — remove when own payment auth is built):**
 `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`, `WIX_NOTIFY_TIMEOUT_S`, `WIX_NOTIFY_RETRIES`
