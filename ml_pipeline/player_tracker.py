@@ -1508,13 +1508,30 @@ class PlayerTracker:
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
 
+                # Tier-500 geometric domain (D1, 2026-06-07): mid-court
+                # playing surface with generous slack. Every other tier has
+                # an explicit court domain; tier-500 had NONE, so any
+                # pose-carrying off-court person qualified — a standing
+                # spectator at court (-4.8, +6.1) was pid-1's row in 45% of
+                # its non-NULL frames on the reference video (it won
+                # whenever the real far player wasn't among the candidates),
+                # dragging far position p90 to +8m and feeding phantom far
+                # strokes. The pixel-polygon net (-300px) is too loose at
+                # far-court depth to catch it. Bounds validated on p10:
+                # drops 950/969 pid-1 + 185/190 pid-0 off-court rows, 0
+                # plausibly-real rows (.claude/tmp/probe_d1_predicate2.py).
+                in_pose_domain = (
+                    -2.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 2.0
+                    and -1.0 <= court_y_m <= COURT_LENGTH_M + 1.0
+                )
+
                 if in_court:
                     tier = 3000
                 elif behind_baseline:
                     tier = 2000
                 elif wide_alley:
                     tier = 1000
-                elif kps is not None:
+                elif kps is not None and in_pose_domain:
                     # Net-zone / mid-court with pose keypoints. This is where
                     # real players end up during rally (approach shots, net
                     # play, recovery). Before this tier existed, these
