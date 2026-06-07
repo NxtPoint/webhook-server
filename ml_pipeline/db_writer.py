@@ -121,7 +121,32 @@ class MLDBWriter:
         logger.info(f"Saved {len(detections)} ball detections for job {job_id}")
 
     def save_player_detections(self, job_id: str, detections, batch_size: int = 5000):
-        """Bulk insert player detections (with optional pose keypoints)."""
+        """Bulk insert player detections (with optional pose keypoints).
+
+        D1 v3 (2026-06-07): rows whose STORED court_x sits clearly off the
+        playing surface are dropped at this write boundary — a standing
+        spectator at (x≈-4.8, y≈+6.1) was pid-1's row in 45% of its
+        non-NULL frames on the reference video. The drop lives HERE (not
+        in tracker selection) because stored coords are strict-bounded and
+        trustworthy, while the tracker's strict=False scoring projections
+        put the REAL far player off-domain in both axes too (p11/p12:
+        selection-level bounds killed 8,146 real far rows, far serve
+        7/12 -> 3/12; see feedback_stored_rows_blind_to_scoring_population).
+        Predicate validated on stored rows: 950/969 pid-1 + 185/190 pid-0
+        off-court FPs dropped, 0 plausibly-real rows. NULL-coord rows
+        always pass (the far player's unprojectable majority).
+        """
+        if not detections:
+            return
+        n_in = len(detections)
+        detections = [
+            d for d in detections
+            if d.court_x is None or -2.0 <= d.court_x <= 12.97  # doubles W + 2m
+        ]
+        if len(detections) != n_in:
+            logger.info(
+                "save_player_detections: dropped %d off-court-x rows "
+                "(spectator band) of %d", n_in - len(detections), n_in)
         if not detections:
             return
         import json

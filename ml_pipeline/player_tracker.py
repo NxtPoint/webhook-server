@@ -1508,34 +1508,28 @@ class PlayerTracker:
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
 
-                # Tier-500 geometric domain (D1, 2026-06-07): X-ONLY, on
-                # purpose. Every other tier has an explicit court domain;
-                # tier-500 had NONE, so any pose-carrying off-court person
-                # qualified — a standing spectator at court (-4.8, +6.1)
-                # was pid-1's row in 45% of its non-NULL frames on the
-                # reference video, dragging far position p90 to +8m.
-                # ⚠️ p11 lesson: the first cut also bounded y and KILLED
-                # 8,146 real far-player rows — the far player's strict=False
-                # scoring projections ride the documented behind-baseline
-                # y-overshoot tail (y -6..-8+), and those rows were ALSO
-                # living on the unbounded tier-500 (their STORED coords are
-                # NULL, so the p10 predicate check was blind to them). Far
-                # serve recall collapsed 7/12 -> 3/12. The y-axis is the
-                # known extrapolation failure mode; x projects sanely — so
-                # x alone separates spectator (x=-4.8) from overshooting
-                # far player (x in-court, y wild). Validated: x-bound kills
-                # 959/969 spectator rows, keeps the overshoot tail.
-                in_pose_domain = (
-                    -2.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 2.0
-                )
-
+                # D1 history (2026-06-07): two attempts to bound tier-500
+                # at SELECTION failed — the real far player's strict=False
+                # scoring projections are off-domain in BOTH axes (the
+                # behind-baseline extrapolation tail corrupts x and y
+                # together; p11 x+y bound and p12 x-only bound each killed
+                # the same 8,146 real far rows, far serve 7/12 -> 3/12),
+                # while the spectator's projections are sane-but-off-court.
+                # The two populations are inseparable here because scoring
+                # coords aren't persisted to design against
+                # (feedback_stored_rows_blind_to_scoring_population).
+                # Tier-500 therefore stays UNBOUNDED (p10 behaviour); the
+                # spectator is dropped at the bronze-write boundary instead
+                # (db_writer), where only STORED strict-bounded coords
+                # exist — the population the drop predicate was actually
+                # validated on.
                 if in_court:
                     tier = 3000
                 elif behind_baseline:
                     tier = 2000
                 elif wide_alley:
                     tier = 1000
-                elif kps is not None and in_pose_domain:
+                elif kps is not None:
                     # Net-zone / mid-court with pose keypoints. This is where
                     # real players end up during rally (approach shots, net
                     # play, recovery). Before this tier existed, these
