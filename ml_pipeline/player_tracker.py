@@ -1508,21 +1508,25 @@ class PlayerTracker:
                     and 0.0 <= court_y_m <= COURT_LENGTH_M
                 )
 
-                # Tier-500 geometric domain (D1, 2026-06-07): mid-court
-                # playing surface with generous slack. Every other tier has
-                # an explicit court domain; tier-500 had NONE, so any
-                # pose-carrying off-court person qualified — a standing
-                # spectator at court (-4.8, +6.1) was pid-1's row in 45% of
-                # its non-NULL frames on the reference video (it won
-                # whenever the real far player wasn't among the candidates),
-                # dragging far position p90 to +8m and feeding phantom far
-                # strokes. The pixel-polygon net (-300px) is too loose at
-                # far-court depth to catch it. Bounds validated on p10:
-                # drops 950/969 pid-1 + 185/190 pid-0 off-court rows, 0
-                # plausibly-real rows (.claude/tmp/probe_d1_predicate2.py).
+                # Tier-500 geometric domain (D1, 2026-06-07): X-ONLY, on
+                # purpose. Every other tier has an explicit court domain;
+                # tier-500 had NONE, so any pose-carrying off-court person
+                # qualified — a standing spectator at court (-4.8, +6.1)
+                # was pid-1's row in 45% of its non-NULL frames on the
+                # reference video, dragging far position p90 to +8m.
+                # ⚠️ p11 lesson: the first cut also bounded y and KILLED
+                # 8,146 real far-player rows — the far player's strict=False
+                # scoring projections ride the documented behind-baseline
+                # y-overshoot tail (y -6..-8+), and those rows were ALSO
+                # living on the unbounded tier-500 (their STORED coords are
+                # NULL, so the p10 predicate check was blind to them). Far
+                # serve recall collapsed 7/12 -> 3/12. The y-axis is the
+                # known extrapolation failure mode; x projects sanely — so
+                # x alone separates spectator (x=-4.8) from overshooting
+                # far player (x in-court, y wild). Validated: x-bound kills
+                # 959/969 spectator rows, keeps the overshoot tail.
                 in_pose_domain = (
                     -2.0 <= court_x_m <= COURT_WIDTH_DOUBLES_M + 2.0
-                    and -1.0 <= court_y_m <= COURT_LENGTH_M + 1.0
                 )
 
                 if in_court:
