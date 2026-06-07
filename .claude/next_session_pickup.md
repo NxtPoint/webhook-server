@@ -24,6 +24,15 @@
 - **eu rev 74 / us rev 55** @ amd64 `ac33fc04` (D1+D2). rev 73/54 @ `606a5c7d` (serve stack). Cross-region digests VERIFIED equal (a tag/push race on the 73 deploy briefly pushed stale bits to us-east-1 — caught by the digest check; handover step 3 now mandates cross-region digest equality, `c2f8f65`).
 - Env knobs (all default-ON in code, env = rollback): `SERVE_MODEL_ENABLED`, `T5_SERVE_FROM_EVENTS`, `SERVE_CNN_BOUNCES`; `T5_SERVE_EVENTS_MIN_CONF=0.0`; Batch-side `SERVE_MODEL_STAGE=1`. All documented in docs/env_vars.md.
 
+## STROKE ARC (started 2026-06-07 — the serve recipe, replayed)
+**Silver purity DONE (`46c8a91`):** legacy geometric serve path DELETED from build_silver_match_t5 (-376 lines): per-bounce serve decision, _serve_geometric_check (+HITTER_FAR_MAX warp tolerances), _is_overhead_pose, _check_hitter_stationary_pre_hit, T5_SERVE_FROM_EVENTS flag — overlay now UNCONDITIONAL. Validated: rebuilds identical (a35b37f6 13/13, p10 48/48 both ways).
+**B1 DONE (probe ladder, 4 probes on p14 clean data):**
+- Ball-trajectory discontinuity (velocity-vector angle >90°, speed>1px/f) = THE anchor signal: 94-96% recall of 102 SA swings, BALANCED near/far (47/47). The heuristic stroke_detector adds ZERO anchors beyond it (strictly dominated).
+- ⚠️ Design-critical: bounce-discontinuity and hit-discontinuity are 0.3-0.7s neighbours — clustering CONFLATES them (gap=0.3 collapsed recall to 73/102). v1 = PER-CANDIDATE classification (hit/bounce/noise), tiny dedup ~0.1s only, bounce-CNN pattern. ~900-1500 candidates/match vs ~100 hits.
+- Residual: 1 true ball-gap miss (334.72s); other misses are cluster-absorption artifacts that per-candidate design recovers. Anchor ceiling ≈ 99%.
+- Probes: `.claude/tmp/stroke_b1_p{1..4}.py`.
+**B2 (next): hit model v1** — port serve_model recipe: `ml_pipeline/hit_model/` (candidates=discontinuities per-candidate; features: discontinuity geometry, ball y-traj, player/wrist proximity near+far, CNN-bounce proximity (candidate NEAR a CNN bounce = bounce not hit), rally context; labels: SA player_swing.ball_hit_s via training_corpus.sa_task_id — **2,592 labels / 8 pairs** (106/400/404/441/106/106/443/586), no S3 JSONs needed; split by VIDEO, reference video held out + clean eval like EXTRA_EVAL). Gate: event-level near+far alignment >= heuristic (13/51+19/51 @1s) at >= precision; then B3 = stroke-driven silver flip (hit-driven verbatim, delete bounce-driven row gen + legacy swing heuristics).
+
 ## NEXT (in order)
 1. **p11 validation** (if not done): `.claude/tmp/p11_validate.py 90bba646-2745-4d4a-8e03-10c0b8ad4ad3`. Bars: pid-1 off-court ≪45%, FAR p90 tightens from +8.07, bounce NULL ≪72%, far serve ≥7/12, near 13/14. If D2 fills change serve numbers (more validated bounces → rally gating shifts), investigate before celebrating either direction.
 2. **Regen ea1e500c fixture from a rev-74 run + re-baseline** if p11 moves serve numbers (same rule-9 unit as before). Note: p11 silver build for probe needs local rerun-silver.
