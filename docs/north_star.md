@@ -52,9 +52,9 @@ First field-by-field measurement on post-far-court-fix data (calibration `b08a85
 | field | measure (rev 72) | vs 70-80% build bar |
 |---|---|---|
 | WHO — identity (near-half pollution) | 0% | ✅ **SIGNED OFF** |
-| WHO — identity (off-court static FP) | 45% of non-null pid-1 rows locked at (x≈-4.8, y≈+6.0) — spectator band, evades the court_y>13 metric | ⚠️ dev item D1 |
+| WHO — identity (off-court static FP) | **FIXED 2026-06-07 (p14, rev 77/58): 45% → 1%.** Drop on STORED court_x ∉ [-2, 12.97] at BOTH write boundaries (db_writer `3f04f21` + bronze_export `c991f2a` — the re-ingest wipes a db_writer-only drop). ⚠️ Selection-level bounds were tried twice and killed 8,146 real far rows (`feedback_stored_rows_blind_to_scoring_population`) — do NOT re-add tier bounds. | ✅ **D1 DONE** |
 | WHERE — player position NEAR | med -0.42m (p10 -0.79 / p90 +0.20) | ✅ **SIGNED OFF** |
-| WHERE — player position FAR | med -0.43m == NEAR; spread p10 -3.94 / p90 +8.07 is the D1 static FP + sparse coverage, not calibration | ✅ median **SIGNED OFF**; spread rides D1 |
+| WHERE — player position FAR | **p90 +8.07 → +0.36 (D1 fixed, p14).** ⚠️ Honest median is **-2.17m** — the earlier "-0.43 == NEAR" was spectator-flattered; the residual is real behind-baseline extrapolation bias (the documented recurring tail). | ✅ spread **DONE**; median bias = known calibration item (training/calibration, not heuristics) |
 | serve NEAR | 13/14 recall (eval-serve), 12/14 strict bench | ✅ **SIGNED OFF** (dev ceiling) |
 | serve FAR | **7/12 eval (was 3/12)** — serve model v1 live end-to-end (p10, rev 73, 2026-06-06 PM): Batch `serve_candidates` stage → detector `model_far` merge → silver verbatim 48/48 both directions. C1 ROI gate fixed same day. | ✅ **SIGNED OFF at build bar** — further gains = training (corpus growth retrains the model free) + ROI serve-window detection depth (2/10 windows still thin) |
 | stroke WHEN/WHO NEAR | 13/51 @1.0s (7/51 @0.5s); 55 emitted vs SA 51 — count parity masked event-level misalignment; consistent across rev 67/68/72 (never worked, not a regression) | ❌ TRAIN |
@@ -62,7 +62,7 @@ First field-by-field measurement on post-far-court-fix data (calibration `b08a85
 | swing_type | classifier DISABLED (per-hit 32% vs heuristic 38%, both below bar) | ❌ TRAIN (v2.1 + 4th class) |
 | bounce — count | 194 CNN vs SA 68 floor (2.9× over) | ⚠️ over-emission |
 | bounce — xy accuracy | med 0.90m on matched (26/68 within 0.6s) | ✅ accuracy at bar; recall 38% below |
-| bounce — NULL coords | 72% of CNN bounces lack court coords | ❌ dev item D2 |
+| bounce — NULL coords | 72% → **61%** (D2, `aba54ad`: ball image xy projected at the bounce frame — valid exactly then, ball on ground). Matched bounces 26→30. Residual NULLs are strict-bounds rejections of far projections — honest. | 🟡 **D2 partial** — residual rides the far-calibration tail |
 | ball speed | 2040/8011 detections carry speed_kmh; accuracy unmeasured | ⚠️ presence only |
 | ball_hit_location x/y | blocked on stroke ts alignment | ❌ blocked by stroke |
 | rally / point / game / set structure | not measurable on a probe job (no silver rows) | ⏸ measure on next real upload |
