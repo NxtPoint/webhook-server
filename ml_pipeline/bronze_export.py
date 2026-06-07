@@ -115,6 +115,26 @@ def build_bronze_payload(
     ball_dets = list(result.ball_detections or [])
     player_dets_full = list(result.player_detections or [])
 
+    # D1 v3 spectator drop — SAME predicate as db_writer.save_player_
+    # detections, applied here TOO because this payload is built from the
+    # IN-MEMORY result and the Render re-ingest (DELETE+COPY from this
+    # JSON) wipes the direct DB write — p13 proved the db_writer-only drop
+    # gets undone by the export->ingest path (the export+reingest-carry
+    # rule, feedback_batch_enrichments_need_export_reingest_carry). Rows
+    # whose STORED (strict-bounded, trustworthy) court_x sits clearly off
+    # the playing surface are spectators; NULL-coord rows always pass
+    # (the far player's unprojectable majority).
+    _n_pre_drop = len(player_dets_full)
+    player_dets_full = [
+        d for d in player_dets_full
+        if d.court_x is None or -2.0 <= d.court_x <= 12.97  # doubles W + 2m
+    ]
+    if len(player_dets_full) != _n_pre_drop:
+        logger.info(
+            "bronze_export: dropped %d off-court-x player rows "
+            "(spectator band) of %d", _n_pre_drop - len(player_dets_full),
+            _n_pre_drop)
+
     # Filter NON-POSE player detections to a window around each bounce —
     # silver only needs nearest-player per bounce. But keep ALL pose-
     # carrying rows (keypoints is not None). The serve_detector needs
