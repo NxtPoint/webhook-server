@@ -1,10 +1,11 @@
-# Next-session pickup — 2026-06-07 — SERVE SIGNED OFF end-to-end; D1+D2 deployed (rev 74/55), p11 validating
+# Next-session pickup — 2026-06-07 — SERVE SIGNED OFF; D1 took 3 attempts (v3 = bronze-write drop, rev 76/57), p13 validating
 
 ## ⚡ Executive summary (read first — 30 seconds)
-**Phase:** bronze-first; **SERVE IS SIGNED OFF** (north_star sign-off list updated). Deployed: **eu rev 74 / us rev 55** (amd64 `ac33fc04`).
-**Bench:** NEW FLOOR `ea1e500c=12/26` (CI fixture, rev-72 clean coords, SA truth ba4812be 26 serves) + `880dff02=23/24` (legacy-path guard). Green, CI green.
+**Phase:** bronze-first; **SERVE IS SIGNED OFF** (north_star sign-off list updated). Deployed: **eu rev 76 / us rev 57** (amd64 `cb444b47`).
+**Bench:** floor `ea1e500c=12/26` (CI) + `880dff02=23/24` (legacy guard). Green, CI green.
 **Serve final (p10, rev 73):** near 13/14, **far 7/12 (was 3/12)**, total **20/26** at eval tol; silver↔bronze trace **48/48 BOTH directions**. Chain: Batch serve-model stage (`serve_candidates`) → detector `model_far` merge → bronze `serve_events` → silver verbatim (min-conf **0**).
-**In flight:** p11 probe (`90bba646` / Batch `e5cb2197`, rev 74) validating D1+D2. Validate with `.claude/tmp/p11_validate.py` when SUCCEEDED.
+**⚠️ D1 SAGA (read before touching tracker gates):** v1 (x+y bound on tier-500, p11) and v2 (x-only, p12) each killed the SAME 8,146 real far-player rows — the far player's strict=False scoring projections are off-domain in BOTH axes and aren't persisted to design against (`feedback_stored_rows_blind_to_scoring_population`). Far serve collapsed 7/12→3/12 both times. **v3 (`3f04f21`, rev 76/57): selection reverted to p10 behaviour; spectator dropped at db_writer on STORED court_x ∉ [-2, 12.97]** — the strict-bounded population the predicate was validated on. p11/p12 also showed: near 14/14 (148.52 recovered when spectator gone), FAR p90 +0.24 (was +8.07), honest FAR median is **-2.17m** (the old -0.43 was spectator-flattered — residual behind-baseline bias is real, on the list), bounce NULL 72%→61% (D2 partial: strict bounds reject most far fills — honest).
+**In flight:** p13 probe (`3280358f` / Batch `dbd4ad0e`, rev 76). Validate: `.claude/tmp/p11_validate.py 3280358f-3ef7-4fc5-ba81-c43f1adcf6a6`. Bars: far serve **back to 7/12**, near ≥13/14, pid-1 off-court ~1%, player rows ~21k (22k minus ~1.1k dropped).
 
 ## The day's chain (all on main, all bench-green, CI green)
 1. **Fixture regen + re-baseline** (`f28a4d9`,`08b5b13`): harness drift fixed — fixtures now carry CNN bounces (schema v2, prod-parity); CI fixture a798eff0→ea1e500c (12/26); a798eff0 retired (S3 archived). All old fixtures were the SAME video, warp-era.
