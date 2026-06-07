@@ -81,12 +81,12 @@ CENTRE_X = COURT_WIDTH_DOUBLES_M / 2                            # 5.485m
 # A5 widen — was 0.30m but T5's calibration extrapolation places
 # real-baseline hitters at 0.38-1.01m INSIDE court on MATCHI wide-
 # angle footage, so the tight gate rejected 8 of 11 missing serves
-# in the a015bf3a reconcile (Apr 16). 1.5m matches Pass 1's
-# HITTER_NEAR_MAX tolerance in _serve_geometric_check below. Zero
-# SportAI impact (their hy sits at ~24.47 or ~0.0, nowhere near the
-# 0.3-1.5m band the widening opens). This constant is the one the
-# T5 builder actually uses — the matching value in build_silver_v2.py
-# is overridden by this via SPORT_CONFIG_SINGLES below.
+# in the a015bf3a reconcile (Apr 16). Zero SportAI impact (their hy
+# sits at ~24.47 or ~0.0, nowhere near the 0.3-1.5m band the widening
+# opens). This constant is the one the T5 builder actually uses — the
+# matching value in build_silver_v2.py is overridden by this via
+# SPORT_CONFIG_SINGLES below. (Still used by pass-3's shared serve_d
+# gate via SPORT_CONFIG and by the overlay's baseline snap/demote.)
 EPS_BASELINE_M = 1.5
 
 # Thresholds for match analysis
@@ -166,130 +166,10 @@ def _is_in_service_box(court_x: float, court_y: float) -> bool:
     return in_x and (near_box or far_box)
 
 
-def _serve_geometric_check(
-    hitter_court_y: Optional[float],
-    bounce_court_x: Optional[float],
-    bounce_court_y: Optional[float],
-    ball_player_distance: Optional[float] = None,
-) -> Tuple[bool, str]:
-    """Detect a serve by geometry — returns (is_serve, reason).
-
-    Empirical observations from sportai_4a194ff3_serves.csv:
-      - Far baseline server: hit_y in [24.42, 24.47]
-      - Near baseline server: hit_y in [-2.58, -1.61]
-      - Ball-player distance ALWAYS < 1.10m (avg 0.41m) — strongest universal signal
-      - Bounce on the opposite side of the net from the hitter
-
-    NOTE: We do NOT require bounce in the strict service box — T5's court_y
-    has a ~5m systematic offset vs SportAI.
-    """
-    if hitter_court_y is None or bounce_court_x is None or bounce_court_y is None:
-        return False, "null_coords"
-
-    # NOTE: We do NOT use ball_player_distance for serve detection.
-    # SportAI's ground-truth distance is measured at the HIT moment (~0.4m).
-    # Our T5 distance is measured at the BOUNCE moment (~12m across the net),
-    # so the SportAI threshold doesn't apply. Param kept for API compatibility.
-    _ = ball_player_distance
-
-    HITTER_FAR_MIN = 22.0
-    HITTER_FAR_MAX = COURT_LENGTH_M + 6.0   # 29.77
-    HITTER_NEAR_MIN = -6.0
-    HITTER_NEAR_MAX = 1.5
-
-    hitter_at_far = HITTER_FAR_MIN <= hitter_court_y <= HITTER_FAR_MAX
-    hitter_at_near = HITTER_NEAR_MIN <= hitter_court_y <= HITTER_NEAR_MAX
-
-    if not (hitter_at_far or hitter_at_near):
-        return False, "fail_hitter_y"
-
-    if not (-1.0 <= bounce_court_x <= COURT_WIDTH_DOUBLES_M + 1.0):
-        return False, "fail_bounce_x"
-
-    if hitter_at_far:
-        if bounce_court_y < HALF_Y:
-            return True, "pass"
-        return False, "fail_wrong_side"
-    if hitter_at_near:
-        if bounce_court_y > HALF_Y:
-            return True, "pass"
-        return False, "fail_wrong_side"
-    return False, "fail_hitter_y"
-
-
-def _is_serve_geometric(
-    hitter_court_y: Optional[float],
-    bounce_court_x: Optional[float],
-    bounce_court_y: Optional[float],
-    ball_player_distance: Optional[float] = None,
-) -> bool:
-    """Boolean wrapper around _serve_geometric_check (kept for compatibility)."""
-    ok, _ = _serve_geometric_check(
-        hitter_court_y, bounce_court_x, bounce_court_y, ball_player_distance
-    )
-    return ok
-
-
-def _is_overhead_pose(keypoints, is_left_handed: bool) -> bool:
-    """Check if pose keypoints show an overhead motion (serve).
-
-    A real overhead requires:
-      - Dominant wrist ABOVE both shoulders (smaller pixel y)
-      - Dominant wrist ABOVE the nose (above face/head)
-      - Sufficient confidence on the relevant keypoints
-
-    COCO keypoint order:
-      0=nose, 5=left_shoulder, 6=right_shoulder,
-      9=left_wrist, 10=right_wrist
-    Each keypoint is (x, y, conf).
-    """
-    if keypoints is None:
-        return False
-
-    # Parse if string (sometimes JSONB comes through as str)
-    if isinstance(keypoints, str):
-        try:
-            keypoints = json.loads(keypoints)
-        except (json.JSONDecodeError, TypeError):
-            return False
-
-    # Need at least 17 keypoints
-    if len(keypoints) < 11:
-        return False
-
-    try:
-        nose = keypoints[0]
-        l_shoulder = keypoints[5]
-        r_shoulder = keypoints[6]
-        l_wrist = keypoints[9]
-        r_wrist = keypoints[10]
-    except (IndexError, KeyError, TypeError):
-        return False
-
-    MIN_CONF = 0.3
-    dominant_wrist = l_wrist if is_left_handed else r_wrist
-
-    # All keypoints we use must have decent confidence
-    if dominant_wrist[2] < MIN_CONF or nose[2] < MIN_CONF:
-        return False
-
-    # At least one shoulder must be confident
-    use_l_shoulder = l_shoulder[2] >= MIN_CONF
-    use_r_shoulder = r_shoulder[2] >= MIN_CONF
-    if not (use_l_shoulder or use_r_shoulder):
-        return False
-
-    if use_l_shoulder and use_r_shoulder:
-        avg_shoulder_y = (l_shoulder[1] + r_shoulder[1]) / 2
-    elif use_l_shoulder:
-        avg_shoulder_y = l_shoulder[1]
-    else:
-        avg_shoulder_y = r_shoulder[1]
-
-    # Lower pixel y = higher in image (image origin is top-left)
-    # Wrist must be above shoulders AND above nose
-    wrist_y = dominant_wrist[1]
-    return wrist_y < avg_shoulder_y and wrist_y < nose[1]
+# Legacy in-silver serve helpers (_serve_geometric_check, _is_serve_geometric,
+# _is_overhead_pose, _check_hitter_stationary_pre_hit) DELETED 2026-06-07 —
+# serve is a pure bronze import from ml_analysis.serve_events (RULE #1).
+# The serve MODELS live in ml_pipeline/serve_detector + ml_pipeline/serve_model.
 
 
 def _parse_keypoints(keypoints) -> Optional[list]:
@@ -749,10 +629,12 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     # ---- Step 4: Look up dominant hand ----
     is_left_handed = _lookup_dominant_hand(conn, task_id)
 
-    # When inheriting serves from serve_events, suppress the geometric serve
-    # firing here so serves come SOLELY from the detector's bronze output
-    # (the overlay runs after the loop, before insert).
-    suppress_geometric_serves = _serve_from_events_enabled()
+    # SERVE IS A PURE BRONZE IMPORT (Tomo, 2026-06-07): the legacy in-silver
+    # geometric serve derivation (geometric gate + overhead pose + cooldown +
+    # stationarity + first-serve-min-ts, ~150 lines) was DELETED in this
+    # commit. Pass 1 emits serve=False on every row; serves come SOLELY from
+    # ml_analysis.serve_events via _apply_serve_events_overlay (unconditional,
+    # min-conf 0). RULE #1: silver inherits bronze 100% and does no work.
 
     # ---- Step 4b: Bounce-precision proximity guard ----
     # Drop bounces co-located with a player — those are racquet contacts /
@@ -782,9 +664,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
 
     # ---- Step 5: Process each bounce → build row ----
     rows_to_insert = []
-    prev_ts = -999.0
-    last_serve_ts = -999.0  # for serve cooldown
-    MIN_SERVE_INTERVAL_S = 8.0  # minimum seconds between consecutive serves
 
     # Ball flight from hit → bounce on the opposite side is ~0.3s for a
     # typical rally shot (and as low as ~0.15s for a hard serve). We
@@ -797,16 +676,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     # across many bounces, so serve_side_d never alternated.
     HIT_BEFORE_BOUNCE_FRAMES = max(1, int(round(fps * 0.32)))
     HIT_WINDOW_FRAMES = max(1, int(round(fps * 0.20)))
-    # A5+ addendum — the first candidate serve in a match must be at
-    # least this many seconds into the video. Observed on a015bf3a /
-    # 081e089c: two false-positive serves at ts=0.3 and ts=8.5 during
-    # warmup. Stationarity gate couldn't catch ts=0.3 because the
-    # video has no prior frames to sample. SportAI's FIRST real serve
-    # on the reference match is at ts=54.48. 15s is a conservative
-    # floor that kills warmup while not clipping any legitimate early
-    # serve — coach-camera MATCHI footage always has at least 15s of
-    # setup/warmup before the first point.
-    FIRST_SERVE_MIN_TS_S = 15.0
     # Soft-fallback window for hitter resolution (#2 post-validation). The
     # tight HIT_WINDOW_FRAMES was returning None on 38% of bounces in the
     # a015bf3a reconcile — those rows lost hit_x/y → null serve_side_d →
@@ -837,41 +706,13 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         "far_fresh": 0,  "far_stale": 0,  "far_mirror": 0,  "far_none": 0,
     }
 
-    # Diagnostic counters — why serves are accepted/rejected
-    serve_diag = {
-        "total_bounces": 0,
-        "no_hitter": 0,
-        "no_hitter_stale_only": 0,  # detections exist but none within tight window
-        "hitter_soft_fallback": 0,  # tight window missed, soft fallback resolved it
-        "no_hitter_even_soft": 0,   # soft fallback also missed — genuinely no data
-        "geometric_pass": 0,
-        "geometric_fail_no_dist": 0,   # ball_player_distance > 1.5
-        "geometric_fail_hitter_y": 0,  # hitter not past baseline
-        "geometric_fail_bounce_x": 0,  # bounce_x out of range
-        "geometric_fail_wrong_side": 0, # bounce on same side as hitter
-        "pose_pass": 0,
-        "pose_no_keypoints": 0,
-        "kp_patched_widened": 0,  # A4: hitter had coord but no pose; wider window supplied pose
-        "kp_still_missing": 0,    # A4: even widened window had no pose on this side
-        "stationary_ok": 0,       # A5+: hitter stationary 1-2s pre-hit
-        "stationary_fail": 0,     # A5+: hitter moved > 0.5m in 1-2s before hit (warmup/ball-roll)
-        "stationary_nodata": 0,   # A5+: no prior detections; benefit of doubt granted
-        "stationarity_block": 0,  # A5+: geom+cooldown passed but stationarity rejected
-        "first_serve_too_early": 0,  # A5+: first candidate serve < FIRST_SERVE_MIN_TS_S
-        "cooldown_block": 0,
-        "fired_primary": 0,
-        "fired_secondary": 0,
-    }
-
     for i, b in enumerate(bounces):
         frame_idx, px, py, cx, cy, speed_kmh, is_in = b
 
         ts = frame_idx / fps
-        gap_s = ts - prev_ts
 
         if cx is None or cy is None:
             # No court coords — skip (we can't do spatial analysis)
-            prev_ts = ts
             continue
 
         # Determine hitter: ball bounced on one side → hitter was on the OTHER side
@@ -901,7 +742,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         # this, reconcile showed 38% of rows with null hit_x/y → null
         # point_number → artificially low points count.
         if hitter is None and h_dets:
-            serve_diag["no_hitter_stale_only"] += 1
             hitter = _find_nearest_detection(
                 h_frames, h_dets, hit_frame_est,
                 max_distance_frames=HIT_SOFT_WINDOW_FRAMES,
@@ -909,9 +749,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
             if hitter is not None:
                 hitter = dict(hitter)  # copy so we don't mutate the index
                 hitter["_hitter_stale"] = True
-                serve_diag["hitter_soft_fallback"] += 1
-            else:
-                serve_diag["no_hitter_even_soft"] += 1
 
         # Fallback: if no player on the hitter's side, use ANY player with
         # valid coords and mirror them to the hitter's side. This handles the
@@ -972,9 +809,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
             if kp_match is not None:
                 hitter["keypoints"] = kp_match.get("keypoints")
                 hitter["_kp_source_frame"] = kp_match["frame_idx"]
-                serve_diag["kp_patched_widened"] += 1
-            else:
-                serve_diag["kp_still_missing"] += 1
 
         # stroke_class windowed patch — the swing classifier (bronze) labels the
         # detection nearest the contact frame; silver's resolved hitter may be a
@@ -1007,9 +841,7 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         else:
             hit_resolve_diag[f"{_side}_fresh"] += 1
 
-        # Compute ball-player distance FIRST so we can use it for serve detection
-        # (it's the strongest single signal — all SportAI ground truth serves
-        # have ball_player_distance < 1.10m, avg 0.41m)
+        # Ball-player distance — a base field on the row (and pass-3 input).
         ball_player_dist = None
         if hitter and hitter.get("court_x") is not None and hitter.get("court_y") is not None:
             ball_player_dist = math.hypot(
@@ -1017,106 +849,12 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
                 cy - hitter["court_y"],
             )
 
-        # Serve detection: combines GEOMETRY + POSE + DISTANCE for high precision.
-        # Stale (soft-fallback) hitters are treated as "no hitter" here —
-        # serves need exact coords to get serve_side_d right, and a
-        # soft-resolved position from ±1.2s back could flip the deuce/ad
-        # attribution. Rally-shot rows still USE the stale hitter for
-        # hit_x/y (set further below) so point structure stays intact.
-        serve_diag["total_bounces"] += 1
+        # SERVE: pure bronze import — Pass 1 never decides serves. The
+        # ~150-line geometric/pose/cooldown/stationarity serve derivation
+        # that lived here was deleted 2026-06-07 (Tomo: silver does no
+        # work); _apply_serve_events_overlay() sets serve=True on the rows
+        # bronze serve_events claims, after this loop.
         is_serve = False
-
-        hitter_is_stale = bool(hitter and hitter.get("_hitter_stale"))
-        if hitter is None or hitter_is_stale:
-            serve_diag["no_hitter"] += 1
-            geom_ok, geom_reason = False, "no_hitter"
-            is_overhead = False
-        else:
-            geom_ok, geom_reason = _serve_geometric_check(
-                hitter.get("court_y"), cx, cy, ball_player_dist,
-            )
-            if geom_ok:
-                serve_diag["geometric_pass"] += 1
-            else:
-                key = f"geometric_{geom_reason}"
-                if key in serve_diag:
-                    serve_diag[key] += 1
-            is_overhead = _is_overhead_pose(hitter.get("keypoints"), is_left_handed)
-            if is_overhead:
-                serve_diag["pose_pass"] += 1
-            elif hitter.get("keypoints") is None:
-                serve_diag["pose_no_keypoints"] += 1
-
-        ts_since_last_serve = ts - last_serve_ts
-        cooldown_ok = ts_since_last_serve >= MIN_SERVE_INTERVAL_S
-
-        # A5+ pre-hit stationarity — real servers stand still ~1-2s before
-        # contact. Warmup ball-bouncing and between-point rolls involve
-        # players wandering on court, which is the single cleanest signal
-        # that separates them from a real serve. Kills the two false
-        # positives observed on a015bf3a (ts=27, ts=35 warmup bounces
-        # before the SportAI-confirmed first serve at ts=54.48).
-        stationary = None
-        if geom_ok:
-            stationary = _check_hitter_stationary_pre_hit(
-                h_frames, h_dets, hit_frame_est, hitter, fps,
-            )
-            if stationary is True:
-                serve_diag["stationary_ok"] += 1
-            elif stationary is False:
-                serve_diag["stationary_fail"] += 1
-            else:
-                serve_diag["stationary_nodata"] += 1
-        # None = no prior samples. Benefit of doubt (don't reject real
-        # far-side serves where tracking is sparse and we have no prior
-        # pose data to confirm stationarity).
-        stationarity_ok = stationary is not False
-
-        # Per-candidate trace: log every bounce that passes the geometric gate
-        # so we can see exactly where serves are being accepted/rejected.
-        if geom_ok and logger.isEnabledFor(logging.INFO):
-            hy = hitter.get("court_y") if hitter else None
-            logger.info(
-                "T5 serve cand frame=%d ts=%.2f hy=%.2f bx=%.2f by=%.2f dist=%s overhead=%s cooldown_ok=%s stationary=%s (since_last=%.1fs)",
-                frame_idx, ts,
-                hy if hy is not None else float("nan"),
-                cx, cy,
-                f"{ball_player_dist:.2f}" if ball_player_dist is not None else "None",
-                is_overhead, cooldown_ok, stationary, ts_since_last_serve,
-            )
-
-        # Primary trigger: geometric + cooldown + stationary pre-hit.
-        #
-        # Pose is intentionally NOT required: the actual serve motion happens
-        # ~0.5-1.0s BEFORE the bounce frame, so by the time we look at the
-        # hitter's pose at the bounce, they're already in follow-through and
-        # the wrist-above-shoulders test always fails. We tracked this with
-        # diagnostics on task 911f0dce: 21 geometric_pass, 0 fired_primary.
-        #
-        # The geometric gate (hitter past a baseline + bounce on opposite half
-        # of net + bounce_x in singles+alley) is precise enough on its own —
-        # rally shots are almost never struck from past the baseline.
-        if geom_ok and cooldown_ok and stationarity_ok and not suppress_geometric_serves:
-            # First-serve-min-ts gate — no match starts with a serve in
-            # the first 15s. Kills warmup false positives that slipped
-            # past stationarity (e.g. near player momentarily still at
-            # ts=0.3s because video JUST started and no prior samples
-            # exist to refute stationarity).
-            if last_serve_ts < 0 and ts < FIRST_SERVE_MIN_TS_S:
-                serve_diag["first_serve_too_early"] += 1
-            else:
-                is_serve = True
-                serve_diag["fired_primary"] += 1
-                if is_overhead:
-                    # Bonus signal — track for diagnostics, doesn't change outcome
-                    serve_diag["fired_secondary"] += 1
-        elif geom_ok and not cooldown_ok:
-            serve_diag["cooldown_block"] += 1
-        elif geom_ok and not stationarity_ok:
-            serve_diag["stationarity_block"] += 1
-
-        if is_serve:
-            last_serve_ts = ts
 
         # Swing type — RULE #1/#2: the swing classifier is the bronze MODEL that
         # OWNS this fact. Prefer its answer (projected verbatim from stroke_class)
@@ -1185,10 +923,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
             "model": "t5",
         })
 
-        prev_ts = ts
-
-    # Log serve detection diagnostics — shows where the filter is rejecting
-    logger.info("T5 serve diagnostics: %s", serve_diag)
     # Hit-location resolution by side (2b observability) — high far_stale/far_mirror
     # = far ball_hit_location is approximate; the fix is far-court calibration.
     _hr = hit_resolve_diag
@@ -1204,10 +938,10 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         return 0
 
     # ---- Step 5b: Serve-from-events overlay (RULE #1) ----
-    # Geometric serve firing was suppressed above; inherit serves from the
-    # serve_detector's bronze output now. No-op unless T5_SERVE_FROM_EVENTS.
-    if suppress_geometric_serves:
-        _apply_serve_events_overlay(conn, task_id, rows_to_insert, top_pids)
+    # UNCONDITIONAL: serves are a pure bronze import from
+    # ml_analysis.serve_events. There is no fallback serve derivation —
+    # the legacy geometric path was deleted 2026-06-07.
+    _apply_serve_events_overlay(conn, task_id, rows_to_insert, top_pids)
 
     # ---- Step 6: Bulk INSERT ----
     return _insert_pass1_rows(conn, rows_to_insert)
@@ -1238,19 +972,13 @@ def _insert_pass1_rows(conn: Connection, rows_to_insert: List[dict]) -> int:
 # Serve-from-events overlay (RULE #1 — T5 silver inherits serve_events)
 # ============================================================
 
-def _serve_from_events_enabled() -> bool:
-    """Read T5_SERVE_FROM_EVENTS at call time (env-flip rollback, no rebuild —
-    same pattern as _stroke_driven_enabled).
-
-    DEFAULT ON since 2026-06-06: the overlay shipped 2026-05-27 (fc9bc6b)
-    defaulting OFF pending a Render env flip that never landed — the flag
-    was in neither render.yaml nor docs/env_vars.md, so prod silver kept
-    running the legacy geometric serve path the whole time (verified: the
-    Jun-4 'count-aligned 24v26' pair traced only 1/24 silver serves to a
-    bronze serve_event — count coincidence, not inheritance). RULE #1
-    requires bronze->silver verbatim; the code default is now the truthful
-    one and the env var is the rollback, not the enabler."""
-    return os.getenv("T5_SERVE_FROM_EVENTS", "1").strip().lower() in ("1", "true", "yes", "on")
+# T5_SERVE_FROM_EVENTS flag DELETED 2026-06-07: the overlay is now
+# unconditional and the legacy geometric serve path it used to toggle
+# against no longer exists (pure bronze import — Tomo directive). History:
+# shipped default-OFF 2026-05-27 (fc9bc6b), Render env flip never landed,
+# prod ran the legacy path 10 days (count coincidence masked it —
+# feedback_count_alignment_is_not_provenance), default flipped ON
+# 2026-06-06 (d4ebb95), deleted along with the legacy path 2026-06-07.
 
 
 def _serve_events_min_conf() -> float:
@@ -1437,8 +1165,6 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     # Ball struck at predicted_hit_frame → crosses net → bounces on opponent's
     # side. The matching bounce is the first one in (hit, hit + ~1s].
     BOUNCE_AFTER_FRAMES = max(1, int(round(fps * 1.0)))
-    MIN_SERVE_INTERVAL_S = 8.0
-    FIRST_SERVE_MIN_TS_S = 15.0
 
     logger.info(
         "T5 Pass 1 (stroke-driven): %d stroke events, %d court bounces, job=%s at %.1f fps",
@@ -1452,7 +1178,6 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     }
 
     rows_to_insert: List[dict] = []
-    last_serve_ts = -999.0
     for i, (hf, raw_stroke_pid, _conf) in enumerate(strokes):
         ts = hf / fps if fps > 0 else 0.0
 
@@ -1543,21 +1268,13 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         if b_cx is not None and hit_x is not None and hit_y is not None:
             ball_player_dist = math.hypot(b_cx - hit_x, b_cy - hit_y)
 
-        # ---- Serve detection: requires a matched bounce (serves bounce in the
-        # box). Same geometric + cooldown + stationarity + first-serve gates as
-        # the bounce-driven path. pass3 re-derives serve_d from swing_type +
-        # baseline-y, so this mainly drives swing_type='overhead'. ----
+        # ---- SERVE: pure bronze import (2026-06-07) — this path emits
+        # serve=False like the bounce-driven path; the unconditional
+        # _apply_serve_events_overlay sets serves from bronze serve_events.
+        # The geometric gates that lived here were deleted with the legacy
+        # path. (This whole function is dormant behind T5_STROKE_DRIVEN_SILVER
+        # and gets rewritten at the B3 stroke flip.) ----
         is_serve = False
-        if matched_bounce is not None and hit_y is not None:
-            geom_ok, _reason = _serve_geometric_check(hit_y, b_cx, b_cy, ball_player_dist)
-            if geom_ok:
-                cooldown_ok = (ts - last_serve_ts) >= MIN_SERVE_INTERVAL_S
-                stationary = _check_hitter_stationary_pre_hit(h_frames, h_dets, hf, hitter, fps)
-                stationarity_ok = stationary is not False
-                if cooldown_ok and stationarity_ok and not (last_serve_ts < 0 and ts < FIRST_SERVE_MIN_TS_S):
-                    is_serve = True
-                    last_serve_ts = ts
-                    diag["fired_serve"] += 1
 
         # ---- swing type — prefer the bronze classifier (see bounce-driven path) ----
         flow_class = hitter.get("stroke_class")
@@ -1685,59 +1402,8 @@ def _min_player_distance_m(any_frames: List[int], any_dets: List[dict],
     return best
 
 
-def _check_hitter_stationary_pre_hit(
-    h_frames: List[int], h_dets: List[dict],
-    hit_frame_est: int, hitter: Optional[dict], fps: float,
-    threshold_m: float = 0.5,
-) -> Optional[bool]:
-    """A5+ pre-hit stationarity gate — serves require the hitter to be
-    roughly still in the 1-2 seconds before contact (ball-toss stance,
-    preparation). Warmup and between-point bounces fail this because
-    both players are wandering.
-
-    Samples the hitter's own side (h_dets) at hit_frame - 1s and
-    hit_frame - 2s, each with ±0.3s tolerance. Compares each sample's
-    court_x/y to the hitter's current position.
-
-    Returns
-    -------
-    True
-        All prior samples within threshold_m of the hitter. Serve OK.
-    False
-        At least one prior sample > threshold_m away. Player was moving.
-    None
-        No prior samples found in either window. Can't confirm, caller
-        should give benefit of doubt (sparse far-side tracking often
-        leaves real far serves with no prior pose data).
-
-    Reference: academic systems (TenniSet, TAL4Tennis) use rally-state
-    labels or player-stationarity windows to reject warmup bounces.
-    yastrebksv/TennisProject and ArtLabss/tennis-tracking have no such
-    gate and so over-count serve-like bounces during practice footage.
-    """
-    if hitter is None or hitter.get("court_x") is None or hitter.get("court_y") is None:
-        return False
-
-    tol_frames = max(1, int(round(fps * 0.3)))
-    samples: List[dict] = []
-    for offset_s in (1.0, 2.0):
-        target = max(0, hit_frame_est - int(round(fps * offset_s)))
-        prior = _find_nearest_detection(
-            h_frames, h_dets, target, max_distance_frames=tol_frames,
-        )
-        if prior is not None and prior.get("court_x") is not None \
-                and prior.get("court_y") is not None:
-            samples.append(prior)
-
-    if not samples:
-        return None
-
-    for s in samples:
-        dx = abs(s["court_x"] - hitter["court_x"])
-        dy = abs(s["court_y"] - hitter["court_y"])
-        if dx > threshold_m or dy > threshold_m:
-            return False
-    return True
+# _check_hitter_stationary_pre_hit DELETED 2026-06-07 with the legacy
+# in-silver serve path (pure bronze import — see header of this section).
 
 
 def _find_nearest_detection(frames: List[int], dets: List[dict],
