@@ -335,6 +335,44 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     weights_path=_bw, candidate_mode="gravity_residual",
                     threshold_override=0.5,
                 )
+                # D2 (2026-06-07): fill NULL court coords by projecting the
+                # ball's IMAGE position at the bounce frame. Ball court
+                # coords were only ever computed for legacy is_bounce
+                # frames (ball_tracker.detect_bounces), so 72% of CNN
+                # events carried NULL — but at the bounce moment the ball
+                # IS on the ground plane, which is exactly when the
+                # homography projection is geometrically valid. Strict
+                # bounds (to_court_coords default) keep wild projections
+                # NULL — honest. Runs BEFORE persist + BEFORE the ROI
+                # rally gate consumes the events, so the validated-
+                # projected gate gains evidence density automatically.
+                _court_det_b = getattr(pipeline, "court_detector", None)
+                if _court_det_b is not None:
+                    from ml_pipeline.bounce_detector.detector import (
+                        _classify_player_side as _b_side,
+                    )
+                    _ball_xy = {int(b["frame_idx"]): (b["x"], b["y"])
+                                for b in _balls
+                                if b.get("x") is not None and b.get("y") is not None}
+                    _filled = 0
+                    for _e in _bev:
+                        if _e.court_x is not None and _e.court_y is not None:
+                            continue
+                        _xy = _ball_xy.get(int(_e.frame_idx))
+                        if not _xy:
+                            continue
+                        try:
+                            _coords = _court_det_b.to_court_coords(_xy[0], _xy[1])
+                        except Exception:
+                            _coords = None
+                        if _coords is not None:
+                            _e.court_x = float(_coords[0])
+                            _e.court_y = float(_coords[1])
+                            _e.player_side = _b_side(_e.court_y)
+                            _filled += 1
+                    logger.info(
+                        "Bounce CNN D2: projected court coords for %d "
+                        "NULL-coord events (of %d total)", _filled, len(_bev))
                 with engine.begin() as _bc:
                     init_bounce_schema(_bc)
                     delete_bounces_for_task(_bc, job_id)
