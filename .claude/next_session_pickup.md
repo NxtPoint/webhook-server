@@ -1,4 +1,21 @@
-# Next-session pickup — 2026-06-12 — B2 hit-model: NEAR shippable (31/51), FAR proven UPSTREAM → option 2 (runtime-neutral fine-tune). Serve still signed off (rev 77/58).
+# Next-session pickup — 2026-06-12 (OVERNIGHT) — Far-ROI built + validated (trackability FIXED, 6.7× sharper); DAYLIGHT: resolve merge + Batch deploy + retrain. Serve signed off (rev 77/58).
+
+## 🌙 OVERNIGHT far-ROI session (read first — Tomo asleep, autonomous)
+**Mandate:** complete B2-far + train. **Honored constraint:** no Batch deploy / no Batch-side merge to main overnight (`feedback_overnight_branch_only`) — so the bronze rebuild (needs Batch+GPU+corpus videos) and retrain are DAYLIGHT work, teed up.
+
+**Decision chain this session:** B2 far proven UPSTREAM (not labeling/features/data — 3 probes) → option 2 chosen → research: **WASB dethroned** (RacketVision: TrackNetV3+BM+4F 1.66px vs WASB 3.62px) BUT **WASB stays as the global tracker**; far fix = **far-court ROI re-detection with TrackNet on a high-res crop** (hybrid, same as bounces.py). v3+BM+4F = a SEPARATE future global-tracker decision, NOT this build.
+
+**Built + validated (LOCAL, reference video):**
+- `ml_pipeline/roi_extractors/far_ball.py` — far-ball ROI extractor. **On branch `far-ball-roi`** (Batch-bundled dir → branch per overnight rule). Smoke-tested (124 rows/3 windows).
+- A/B: far trajectory residual **298px→45px (6.7× sharper)**. Real `candidates.py`: far hits+bounces **25/25 matched** with clean ~169° discontinuities (baseline: feature-weak noise). **FAR-BALL TRACKABILITY FIXED.**
+- ⚠️ Caveat: angle/speed don't separate hit-vs-bounce (both reverse); separation needs proximity/court_y = the calibrated Batch pipeline. Far-GATE fix plausible but UNPROVEN locally.
+
+**⚠️ KEY OPEN DECISION before wiring:** `roi_far_ball` rows OVERLAP WASB rows in `ball_detections` (2 rows/far-frame → corrupts the trajectory readers). Merge strategy (recommend: read-time `source` preference `roi_far_ball>roi_prod>main`, audit ALL readers) must be resolved first. **Full design + daylight checklist: `docs/_investigation/far_ball_roi.md`.**
+
+**DAYLIGHT next (in order):** (1) resolve merge strategy + audit `ball_detections` readers; (2) wire `FarBallProcessor` into `unified.py`/`__main__.py`; (3) Batch deploy (rule #8 full cycle); (4) re-run reference → rebuild hit dataset → retrain → read far gate (target >6/51→19/51); (5) bounce #4 likely benefits free (re-measure recall); (6) THEN swing (scoped below, purity-corrected).
+
+**SWING (banked, not started — Tomo: focus one thing):** 4th "other" class. **Purity correction (Tomo):** silver swing heuristics (`_infer_swing_type_from_keypoints/_from_position` + volley-distance) VIOLATE the end-state architecture — DELETE them (mirror serve deletion), classifier owns fh/bh/overhead/volley to ceiling, "other"=non-groundstroke (not "heuristic guesses"). Gate = classifier vs SA STANDALONE (no heuristic crutch). Full scope in this session's transcript.
+
 
 ## ⚡ Executive summary (read first — 30 seconds)
 **Phase:** bronze-first; **SERVE IS SIGNED OFF** (north_star sign-off list updated). Deployed: **eu rev 76 / us rev 57** (amd64 `cb444b47`).
