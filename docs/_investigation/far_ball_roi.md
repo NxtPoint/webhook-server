@@ -35,11 +35,35 @@ Scripts in `.claude/tmp/far_roi_*.py`, `far_ball_smoke.py`.
    need the CALIBRATED pipeline (court_y + far-player positions) — not provable
    locally without reconstructing calibration.
 
-## Verdict
-Far-ball **trackability is fixed** = a real bronze-accuracy improvement, valid
-on its own ("build bronze to the ceiling"). The **far-gate** fix is plausible
-(proximity becomes reliable once the ball position is accurate) but UNPROVEN —
-it needs the Batch run (calibrated court_y/proximity) + a hit-model retrain.
+## Proximity de-risk (the key follow-up, 2026-06-13)
+Tested whether the hit model's actual discriminator — ball→far-player gap
+(image-space, `far_player_gap_px`) — separates hit from bounce once the ball is
+sharp. **It does NOT:** far-HIT gap med 445px vs far-BOUNCE 391px (both ~400px,
+hit even farther). Confirmed (not a frame-alignment artifact): the fork probe on
+`a35b37f6`'s internally-consistent ball+player data found the same ~500px for
+both. Far-player coverage is fine (7203 dets). So a far hit and a far bounce sit
+~equally far from the far player — proximity can't tell them apart.
+
+## Verdict (REVISED — necessary, not sufficient)
+- **Far-ball trackability is FIXED** by the ROI sharpening — a real bronze
+  improvement, valid on its own, and it feeds BOTH the hit candidates and the
+  bounce detector. Ship it.
+- **But the sharp ball ALONE does NOT fix the far hit GATE.** Three discriminators
+  the hit model relies on — angle (169° both), speed (overlapping), proximity
+  (~400px both) — ALL fail to separate a far hit from a far bounce even on a clean
+  trajectory. At distance they genuinely look alike.
+- **What the far gate actually needs (beyond the sharp ball):**
+  1. **Reliable far-bounce marking** — if the bounce model (ADR-01, currently 38%
+     recall) reliably tags far bounces, then far HITS = the far discontinuities
+     that AREN'T bounces. The sharp far ball ALSO improves far-bounce candidates,
+     so far-ROI is the shared enabler. **This couples strokes-far with bounce #4.**
+  2. and/or **temporal/sequence features** — a hit is preceded by the ball arriving
+     at a player and reverses up→down; a bounce is the ball descending to ground
+     and reverses down→up. The current hit model is PER-CANDIDATE (no sequence).
+     The rally's hit→bounce→hit alternation is unused signal.
+- **So:** far-ROI is necessary infrastructure (build + ship it), but don't expect
+  the far gate to jump on the sharp ball alone — plan the bounce-coupling
+  (and/or a sequence head) as the second half of the far-gate fix.
 
 ## ⚠️ KEY OPEN DESIGN DECISION — merge strategy (resolve before wiring)
 `far_ball.py` inserts `roi_far_ball` rows that OVERLAP WASB (`main`/NULL) far
@@ -67,11 +91,17 @@ trajectory. Options:
    revisions. Confirm cross-region digest equality (handover step 3).
 4. **Re-run the reference** (a35b37f6 lineage) on Batch → far ball re-detected
    WITH calibration (court_y + proximity now accurate).
-5. **Rebuild hit dataset → retrain → read far gate** (target: >6/51, toward the
-   19/51 heuristic). This is the definitive proof.
-6. If far gate improves: far-strokes unblocked; also **re-measure bounce recall**
-   (sharper far ball → better far-bounce candidates — bounce #4 likely benefits
-   for free).
+5. **Rebuild hit dataset → retrain → read far gate.** EMISSION should rise (the
+   model can now fire on real far candidates, 25/25 trackable). But per the
+   proximity de-risk, DISCRIMINATION (hit-vs-bounce) likely WON'T fully resolve on
+   the sharp ball alone — temper the far-gate expectation. The definitive proof is
+   here, but a partial far-gate gain is the realistic first outcome.
+6. **Bounce #4 is now part of the far-gate fix, not just a free beneficiary.**
+   Re-measure bounce recall on the sharp far ball (should improve), and treat
+   reliable far-bounce marking as the SECOND half of the far hit gate (far hits =
+   non-bounce far discontinuities). Strokes-far and bounce #4 are coupled through
+   the sharp ball. Consider also a sequence/temporal head on the hit model
+   (hit→bounce→hit alternation) as an alternative discriminator.
 7. **Bench:** `far_ball` doesn't touch serve — confirm serve `bench` stays green
    (12/26 + 23/24) after the Batch-side change anyway.
 
