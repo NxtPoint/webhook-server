@@ -1,4 +1,4 @@
-# Next-session pickup — 2026-06-07 — SERVE SIGNED OFF; D1 took 3 attempts (v3 = bronze-write drop, rev 76/57), p13 validating
+# Next-session pickup — 2026-06-12 — B2 hit-model: NEAR shippable (31/51), FAR proven UPSTREAM → option 2 (runtime-neutral fine-tune). Serve still signed off (rev 77/58).
 
 ## ⚡ Executive summary (read first — 30 seconds)
 **Phase:** bronze-first; **SERVE IS SIGNED OFF** (north_star sign-off list updated). Deployed: **eu rev 76 / us rev 57** (amd64 `cb444b47`).
@@ -34,15 +34,19 @@
 **B2 IN FLIGHT — hit model v1 scaffold LANDED (`c06a198`), gate NOT met yet:**
 - `ml_pipeline/hit_model/` (candidates/features/dataset/model/train, serve-model recipe). Trains in ~3 min CPU; weights `models/hit_model_v1.pt`.
 - **Three label bugs found+fixed during the build** (each general): (1) SA player_id filter was reference-video-specific → 5/6 train tasks had ZERO labels; (2) every-candidate-in-tolerance positives taught "hit-adjacent" not "hit" → nearest-only + ignore-zone (w=0) labeling; (3) **SA player_id is a PERSON and swaps ends at changeovers** → side labels must be positional PER SWING (ball_hit_location_y > 11.885 = near), never a person mapping (person mapping scored 40-57% on long matches).
-- **State**: clean heldout 42/102 events matched @0.5s at 87 emitted (heuristic 216 emitted → model is 2.5x precision). Pid-strict @1s: near **24/51 BEATS heuristic 13/51**; far **6/51 vs 19/51 FAILS**. Diagnosis: detection head works; **WHO attribution is the bottleneck** — 4 deterministic rules tested (incoming-direction, player-proximity, net-row, post-hit-trend probes in `.claude/tmp/who_rule_*.py` + dataset diag) all 60-79%, polluted by bounce-candidates wearing hit labels (TrackNet loses the ball at racquet contact → nearest discontinuity is the NEXT BOUNCE, opposite side, flips every geometric rule).
-- **B2 next steps**: (1) label-level hit-vs-bounce disambiguation — use CNN ball_bounces to EXCLUDE bounce-claimed candidates from positives, or 3-class (hit/bounce/noise); (2) WHO as a learned second head (features: post-window trend + both proximities + net-row) instead of a single rule; (3) far recall needs far-normalized speed features. Gate unchanged: pid-strict >= heuristic BOTH sides @>= precision.
+- **State after 2026-06-12 probe ladder**: near **31/51 BEATS heuristic 13/51** (was 24, +perspective features `c84851f`), F1 0.444→0.491; far **3-6/51 vs 19/51 STILL FAILS**. Gate not met (far blocker). **Far is now PROVEN UPSTREAM, not fixable in the hit model** — three probes:
+  1. **Labeling is not the blocker** (`.claude/tmp/hit_sidematch.log`): side-consistent positive selection via the SA pid lifted label WHO 67%→94% but held-out far only 6→8 and F1 regressed 0.444→0.410. Reverted.
+  2. **Emission/attribution decomposition** (`.claude/tmp/emission_vs_attribution.py`): far FIRES 22/51 (near 32/51) and of those only 8/22 attribute right (near 28/32). Both far losses share one root — the scorer fires on the stronger BOUNCE, not the weak far hit.
+  3. **Fork probe** (`.claude/tmp/far_fork_probe.py`): far is **56% of training positives** (NOT data-starved → reweighting won't help), and far-hit vs far-bounce are **feature-INDISTINGUISHABLE** (angle 135 vs 139, speed 5-8px both, density 8 both, player-gap ~500px both — vs NEAR-hit's sharp 30px/264px signature). The far ball/player trajectory is too coarse at distance for ANY scorer to separate a hit reversal from a bounce reversal.
+- **VERDICT → option 2**: far needs sharper upstream far ball (+ far player) tracking. Candidates EXIST (46/51 far hits have one) so the far ball IS detected → **runtime-neutral TrackNet fine-tune** (same model/resolution, better weights via `ml_pipeline/training/` + `bench_finetuned`), NOT a resolution/tiling/fps increase (Tomo's runtime budget: <2h for a 45-min match must hold). Option 1 (perspective features) and labeling are EXHAUSTED — don't re-try them.
 
 ## NEXT (in order)
-1. **p11 validation** (if not done): `.claude/tmp/p11_validate.py 90bba646-2745-4d4a-8e03-10c0b8ad4ad3`. Bars: pid-1 off-court ≪45%, FAR p90 tightens from +8.07, bounce NULL ≪72%, far serve ≥7/12, near 13/14. If D2 fills change serve numbers (more validated bounces → rally gating shifts), investigate before celebrating either direction.
-2. **Regen ea1e500c fixture from a rev-74 run + re-baseline** if p11 moves serve numbers (same rule-9 unit as before). Note: p11 silver build for probe needs local rerun-silver.
-3. **bench_silver baseline regen** (stale + the serve-inheritance flip shifts it).
-4. Remaining 18-field items: **stroke event alignment** (TRAIN territory — heuristic at ceiling on 3 revisions: near 13/51@1s), **swing v2.1** (4th class), **bounce recall** (38%), set_number, point/game structure on next real upload.
-5. Corpus retrains as Tomo uploads (serve model first — clean-coordinate features now accumulating).
+1. **B2 far = option 2 (Tomo-approved direction, 2026-06-12).** Runtime-neutral TrackNet far-ball fine-tune. Sequence: (a) build/extend far-ball training set from the dual-submit corpus (`ml_pipeline/training/`); (b) fine-tune at CURRENT resolution (no runtime add); (c) validate `bench_ball` + `bench_finetuned` (must not regress near-ball); (d) Batch re-run the reference video (rev rebuild + dual-region ECR + job-defs — rule #8) to regenerate cleaner candidates; (e) rebuild hit dataset + retrain hit model, re-measure far on clean heldout (86ade942). Bar: far-hit becomes feature-separable from far-bounce (speed/angle gap opens) → far emission+attribution rise toward 19/51. **If fine-tune plateaus → resolution/tiling is the only remaining lever and is a Tomo runtime-budget decision (<2h hold).**
+2. **Near side is shippable now** (31/51 ≫ 13/51 heuristic). Option: wire hit model in as near-side-only with far gated known-limited, in parallel with the far work.
+3. **p11 validation** (if not done): `.claude/tmp/p11_validate.py 90bba646-2745-4d4a-8e03-10c0b8ad4ad3`. Bars: pid-1 off-court ≪45%, FAR p90 tightens from +8.07, bounce NULL ≪72%, far serve ≥7/12, near 13/14.
+4. **bench_silver baseline regen** (stale + the serve-inheritance flip shifts it).
+5. Remaining 18-field items: **swing v2.1** (4th class), **bounce recall** (38% — note: low bounce recall also degrades hit-vs-bounce labeling, ties into B2), set_number, point/game structure on next real upload.
+6. Corpus retrains as Tomo uploads.
 
 ## Canonical state
 - main @ `aba54ad` synced with image rev 74/55. Bench floor: ea1e500c 12/26 + 880dff02 23/24.
