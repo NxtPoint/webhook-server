@@ -1,4 +1,12 @@
-# Next-session pickup — 2026-06-12 (OVERNIGHT) — Far-ROI built + validated (trackability FIXED, 6.7× sharper); DAYLIGHT: resolve merge + Batch deploy + retrain. Serve signed off (rev 77/58).
+# Next-session pickup — 2026-06-13 — Far-ROI built+validated (trackability FIXED, necessary-not-sufficient); BOUNCE-COUPLING work STARTED (the 2nd half of the far gate). Serve signed off (rev 77/58). main pushed @ 18589d1.
+
+## ▶️ ACTIVE THREAD (resume here) — bounce-coupling
+**Why:** far-ROI sharp ball fixes far-ball TRACKABILITY but NOT hit-vs-bounce DISCRIMINATION (angle/speed/proximity all fail — see below). The far gate's 2nd half = reliable far-bounce marking so far hits = non-bounce far events. The bounce candidate generator (`bounce_detector/detector.py::_candidate_frames_from_gravity_residual`) keys off the ball's IMAGE-Y trajectory → the sharp far ball should lift its recall (coarse-ball ceiling was ~36-58%; 38% end-to-end).
+**In flight (re-run it):** `.venv/Scripts/python .claude/tmp/far_bounce_coupling.py` — measures far-BOUNCE candidate recall, WASB ball vs sharp far-ROI ball, on 30 SA far bounces. **Result not captured before disconnect — re-run + read it first.**
+**Decision tree:** sharp≫WASB → coupling real: far-ROI deploy lifts bounce #4 recall AND feeds the hit model reliable far-bounce marks (one deploy, both halves). sharp≈WASB → far-bounce bottleneck is downstream (CNN scorer/pre-gates/labels) → pivot there.
+**Bounce pipeline:** gravity-residual candidates → trained CNN (v2 7-match, `models/bounce_detector_v2_7match.pt`, thr 0.55) → `ml_analysis.ball_bounces`. Candidate stage is the bottleneck.
+
+
 
 ## 🌙 OVERNIGHT far-ROI session (read first — Tomo asleep, autonomous)
 **Mandate:** complete B2-far + train. **Honored constraint:** no Batch deploy / no Batch-side merge to main overnight (`feedback_overnight_branch_only`) — so the bronze rebuild (needs Batch+GPU+corpus videos) and retrain are DAYLIGHT work, teed up.
