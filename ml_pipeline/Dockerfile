@@ -104,6 +104,11 @@ COPY ml_pipeline/heatmaps.py /app/ml_pipeline/
 COPY ml_pipeline/db_schema.py /app/ml_pipeline/
 COPY ml_pipeline/db_writer.py /app/ml_pipeline/
 COPY ml_pipeline/bronze_export.py /app/ml_pipeline/
+# Ball source-preference merge helper (pure SQL strings, no deps). Imported by
+# bounce_detector + serve_detector + far_ball reader paths. Without this COPY
+# the bounce_detector import fails in the image and __main__'s try/except
+# silently skips the bounce stage (the rule-#8 trap). Same-commit as the import.
+COPY ml_pipeline/ball_merge.py /app/ml_pipeline/
 
 # Swing-type classifier (ADR-02 v2 — optical-flow R(2+1)D, both players).
 # inference_v2.py runs in pipeline.py and writes bronze stroke_class. The v2

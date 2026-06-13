@@ -20,6 +20,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from sqlalchemy import text
 
+from ml_pipeline.ball_merge import merged_ball_subquery
 from ml_pipeline.hit_model.candidates import hit_candidates, attribute_player
 from ml_pipeline.hit_model.features import featurize, N_FEATURES
 
@@ -49,10 +50,12 @@ def _task_fps(conn, tid: str) -> float:
 
 def load_task_arrays(conn, tid: str) -> dict:
     fps = _task_fps(conn, tid)
-    ball_rows = [dict(r) for r in conn.execute(text(
-        "SELECT frame_idx, x, y, is_bounce, court_x, court_y "
-        "FROM ml_analysis.ball_detections WHERE job_id::text = :t "
-        "ORDER BY frame_idx"), {"t": tid}).mappings().all()]
+    # Source-preference deduped (roi_far_ball > roi_prod > main > NULL) so the
+    # sharp far-ROI ball wins per far frame and the overlapping main row doesn't
+    # double the trajectory. No-op until roi_* rows exist. See ml_pipeline.ball_merge.
+    ball_rows = [dict(r) for r in conn.execute(text(merged_ball_subquery(
+        "frame_idx, x, y, is_bounce, court_x, court_y",
+        job_pred="job_id::text = :t")), {"t": tid}).mappings().all()]
     cnn_ts = sorted(float(r[0]) for r in conn.execute(text(
         "SELECT ts FROM ml_analysis.ball_bounces WHERE job_id::text = :t"),
         {"t": tid}).fetchall())

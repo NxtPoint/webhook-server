@@ -71,6 +71,7 @@ def _kps_to_array(raw) -> Optional["np.ndarray"]:
         return np.vstack([arr, pad])
     return arr
 
+from ml_pipeline.ball_merge import merged_ball_subquery
 from ml_pipeline.config import FRAME_SAMPLE_FPS
 from ml_pipeline.serve_detector.ball_toss import detect_ball_toss
 from ml_pipeline.serve_detector.models import ServeEvent, SignalSource
@@ -339,12 +340,13 @@ def _load_ball_rows(conn, task_id: str) -> list:
     the bronze one already anchors the serve. Otherwise the ROI row
     is kept (and will fill a gap the serve_detector currently can't).
     """
-    rows = conn.execute(sql_text("""
-        SELECT frame_idx, x, y, is_bounce, court_x, court_y, speed_kmh
-        FROM ml_analysis.ball_detections
-        WHERE job_id = :tid
-        ORDER BY frame_idx
-    """), {"tid": task_id}).mappings().all()
+    # Source-preference deduped (roi_far_ball > roi_prod > main > NULL): the
+    # sharp far-ROI ball wins per far frame; without the dedup the overlapping
+    # roi_far_ball + main rows would double far frames in the ball_toss lookups.
+    # No-op until roi_* rows exist, so serve behaviour is unchanged today.
+    rows = conn.execute(sql_text(merged_ball_subquery(
+        "frame_idx, x, y, is_bounce, court_x, court_y, speed_kmh"
+    )), {"tid": task_id}).mappings().all()
     rows = [dict(r) for r in rows]
 
     # Check table existence via information_schema BEFORE selecting — if the

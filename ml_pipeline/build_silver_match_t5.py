@@ -27,6 +27,8 @@ import numpy as np
 from sqlalchemy import text as sql_text
 from sqlalchemy.engine import Connection
 
+from ml_pipeline.ball_merge import MAIN_ONLY_WHERE
+
 logger = logging.getLogger(__name__)
 
 
@@ -593,20 +595,24 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     _t5_pass1_load_stroke_driven.
     """
     # ---- Step 1: Fetch all bounces ordered by time ----
-    bounces = conn.execute(sql_text("""
+    # MAIN-ONLY: silver Pass-1 is bounce-driven (one row per bounce); roi-source
+    # bounces (roi_prod / roi_far_ball) would add net-new shot events and 2.4x
+    # the active count (bronze_ingest_t5.py:272). The roi_far_ball arc feeds the
+    # bounce DETECTOR + hit model, NOT silver's bounce-driven row generation.
+    bounces = conn.execute(sql_text(f"""
         SELECT frame_idx, x, y, court_x, court_y, speed_kmh, is_in
         FROM ml_analysis.ball_detections
-        WHERE job_id = :jid AND is_bounce = TRUE
+        WHERE job_id = :jid AND is_bounce = TRUE AND {MAIN_ONLY_WHERE}
           AND court_x IS NOT NULL AND court_y IS NOT NULL
         ORDER BY frame_idx
     """), {"jid": job_id}).fetchall()
 
     if not bounces:
         # Fallback: try without court_x/court_y filter
-        bounces = conn.execute(sql_text("""
+        bounces = conn.execute(sql_text(f"""
             SELECT frame_idx, x, y, court_x, court_y, speed_kmh, is_in
             FROM ml_analysis.ball_detections
-            WHERE job_id = :jid AND is_bounce = TRUE
+            WHERE job_id = :jid AND is_bounce = TRUE AND {MAIN_ONLY_WHERE}
             ORDER BY frame_idx
         """), {"jid": job_id}).fetchall()
         if not bounces:
@@ -1148,11 +1154,12 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
     is_left_handed = _lookup_dominant_hand(conn, task_id)
 
-    # Bounce index (court coords only) for the stroke→bounce join.
-    bounce_rows = conn.execute(sql_text("""
+    # Bounce index (court coords only) for the stroke→bounce join. MAIN-ONLY:
+    # keep roi-source bounces out of silver's bounce set (see Step 1 note).
+    bounce_rows = conn.execute(sql_text(f"""
         SELECT frame_idx, court_x, court_y, speed_kmh, is_in
         FROM ml_analysis.ball_detections
-        WHERE job_id = :jid AND is_bounce = TRUE
+        WHERE job_id = :jid AND is_bounce = TRUE AND {MAIN_ONLY_WHERE}
           AND court_x IS NOT NULL AND court_y IS NOT NULL
         ORDER BY frame_idx
     """), {"jid": job_id}).fetchall()

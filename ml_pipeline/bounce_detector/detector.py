@@ -26,6 +26,7 @@ from typing import List, Optional
 
 from sqlalchemy import text as sql_text
 
+from ml_pipeline.ball_merge import merged_ball_subquery
 from ml_pipeline.bounce_detector.cnn import (
     BounceCNNWrapper,
     CENTRE_IDX,
@@ -66,19 +67,17 @@ KP_RIGHT_WRIST = 10
 
 
 def _load_ball_rows(conn, task_id: str) -> list:
-    """All ball detections for a task, ordered by frame_idx.
+    """All ball detections for a task, one row per frame_idx, ordered.
 
-    Lighter version of the serve_detector's _load_ball_rows — we don't
-    need the ROI merge here in v0 (the bounce model is trained on bronze
-    ball_detections; ROI bounces from extract_roi_bounces are a separate
-    signal pathway that v1+ can fold in).
+    Source-preference deduped (roi_far_ball > roi_prod > main > NULL) via
+    ball_merge — the sharp far-ROI ball lifts far-bounce candidate recall
+    (40%->80% offline, 2026-06-13), and without the dedup the overlapping
+    roi_far_ball + main rows would put 2 rows on every far frame and corrupt
+    the gravity-residual peak detector. No-op until roi_* rows exist.
     """
-    rows = conn.execute(sql_text("""
-        SELECT frame_idx, x, y, court_x, court_y, is_bounce, speed_kmh
-        FROM ml_analysis.ball_detections
-        WHERE job_id = :tid
-        ORDER BY frame_idx
-    """), {"tid": task_id}).mappings().all()
+    rows = conn.execute(sql_text(merged_ball_subquery(
+        "frame_idx, x, y, court_x, court_y, is_bounce, speed_kmh"
+    )), {"tid": task_id}).mappings().all()
     return [dict(r) for r in rows]
 
 
