@@ -1,10 +1,15 @@
 # Far-ball ROI re-detection (option 2, path c) — 2026-06-12
 
-**Status (2026-06-13 PM):** built, validated, **WIRED + merge-resolved on `main`**;
-awaiting Batch deploy + reference re-run. `far_ball.py` cherry-picked to main;
-`FarBallProcessor` wired as the 3rd consumer in `unified.py`/`__main__.py`
-(env `ROI_FAR_BALL_ENABLED`, default on); merge strategy Option A implemented;
-export+reingest carry added. Bench green (12/26 + 23/24).
+**Status (2026-06-13 PM):** ✅ **DEPLOYED + COUPLING PROVEN END-TO-END.** Shipped
+to main (`506c986` merge, `fa2acf9` wiring+carry), Batch-deployed (amd64
+`316c1c4c…`, eu rev 78 / us rev 59). Reference re-run probe `75d9dd7e` SUCCEEDED
+(2237 roi_far_ball rows). Coupling on the DEPLOYED pipeline (from the S3 export,
+which carries main 8011 + roi_far_ball 2237): far-bounce candidate recall
+**(A) main-only 12/30 (40%) → (B) merged sharp 26/30 (87%)**. The candidate stage
+was THE bottleneck → fixed. NEXT: far-gate hit-model retrain, gated on a corpus
+re-run (the 7 training jobs need re-running through Batch+re-ingest so the model
+TRAINS on sharp-far — probes don't populate the main ball in ml_analysis, memory
+`feedback_probes_no_main_ball_in_ml_analysis`).
 
 ## ★ Bounce-coupling PROVEN (2026-06-13) — far-ROI fixes BOTH halves
 `.claude/tmp/far_bounce_coupling.py` on 30 SA far bounces: far-BOUNCE candidate
