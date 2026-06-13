@@ -1,4 +1,6 @@
-# Next-session pickup — 2026-06-13 — Far-ROI built+validated (trackability FIXED, necessary-not-sufficient); BOUNCE-COUPLING work STARTED (the 2nd half of the far gate). Serve signed off (rev 77/58). main pushed @ 18589d1.
+# Next-session pickup — 2026-06-13 PM — ✅ FAR-ROI DEPLOYED (eu rev 78 / us rev 59) + BOUNCE-COUPLING PROVEN end-to-end (far-bounce candidate recall 40%→87%). main @ `2066b6d`. Far-gate hit-model retrain accrues from NEW full-res uploads (corpus originals deleted; see the ✅ section below). Serve still signed off.
+
+> **Resume:** read the "✅ 2026-06-13 PM — FAR-ROI DEPLOYED" section directly below — it supersedes the older threads. The far-gate number now grows automatically as new dual-submit matches flow through rev 78 (which captures sharp-far via the export-carry). No manual re-run is possible (corpus originals are 404 post-trim, only 720p trimmed survive).
 
 ## ✅ 2026-06-13 PM — FAR-ROI DEPLOYED + COUPLING PROVEN END-TO-END (resume = corpus re-run for the far-gate read)
 **Shipped (main @ `fa2acf9`, bench green):** `506c986` source-preference merge for ball_detections readers (`ml_pipeline/ball_merge.py`; bounce_detector/hit_model/serve readers dedup roi_far_ball>roi_prod>main>NULL; silver stays main-only) + `fa2acf9` far_ball wired into unified.py/__main__ (env `ROI_FAR_BALL_ENABLED` default-on) + export-reingest carry (roi_far_ball survives via bronze_export `extra_ball_rows` + bronze_ingest_t5 `source` COPY) + Dockerfile COPY for ball_merge (rule #8).
