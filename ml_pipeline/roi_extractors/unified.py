@@ -36,6 +36,7 @@ import cv2
 
 from ml_pipeline.roi_extractors.pose import FarPoseProcessor
 from ml_pipeline.roi_extractors.bounces import RoiBounceProcessor
+from ml_pipeline.roi_extractors.far_ball import FarBallProcessor
 
 logger = logging.getLogger("roi_unified")
 
@@ -55,16 +56,25 @@ def run_unified_roi(
     bounce_anchor_bounce_only: bool = True,
     cnn_bounce_ts: Optional[List[float]] = None,
     cnn_bounce_events: Optional[List[dict]] = None,
-) -> Tuple[int, int]:
-    """Decode the video once, drive both ROI extractors, return (n_pose, n_bounce).
+    far_ball_window_s: float = 1.5,
+    far_ball_cluster_gap_s: float = 0.5,
+) -> Tuple[int, int, int]:
+    """Decode the video once, drive the ROI extractors, return
+    (n_pose, n_bounce, n_far_ball).
 
-    Args mirror the kwargs __main__ passed to the two standalone extractors so
-    the production behaviour is identical. court_detector must be the calibrated
-    pipeline.court_detector; bounces is result.ball_detections.
+    Args mirror the kwargs __main__ passed to the standalone extractors so the
+    production behaviour is identical. court_detector must be the calibrated
+    pipeline.court_detector; bounces is result.ball_detections (also the
+    far-ball anchor source — far-court presence frames).
+
+    The far-ball consumer (env ROI_FAR_BALL_ENABLED, default on) re-detects the
+    far ball on a high-res far-court crop → sharper far trajectory that lifts
+    far-bounce candidate recall (40%->80% offline) and far-hit emission. Writes
+    source='roi_far_ball'; readers dedup via ml_pipeline.ball_merge.
     """
     if not os.path.exists(video_path):
         logger.warning("roi_unified: video not found: %s; skipping", video_path)
-        return (0, 0)
+        return (0, 0, 0)
 
     t_start = time.time()
 
@@ -74,7 +84,7 @@ def run_unified_roi(
     if not ok:
         cap.release()
         logger.warning("roi_unified: cannot read first frame; skipping")
-        return (0, 0)
+        return (0, 0, 0)
     frame_shape = first.shape
 
     # Build + prepare each processor. A prepare failure (e.g. ROI can't project,
@@ -109,16 +119,36 @@ def run_unified_roi(
         logger.warning("roi_unified: bounce prepare failed (non-fatal): %s", e)
         bounce = None
 
-    if pose is None and bounce is None:
-        cap.release()
-        logger.info("roi_unified: nothing to do (both processors disabled)")
-        return (0, 0)
+    far_ball: Optional[FarBallProcessor] = None
+    if os.environ.get("ROI_FAR_BALL_ENABLED", "1") != "0":
+        try:
+            fb = FarBallProcessor(
+                job_id, engine,
+                court_detector=court_detector, detections=bounces, fps=fps,
+                window_s=far_ball_window_s, cluster_gap_s=far_ball_cluster_gap_s,
+            )
+            if fb.windows and fb.prepare(frame_shape):
+                far_ball = fb
+        except Exception as e:
+            logger.warning("roi_unified: far_ball prepare failed (non-fatal): %s", e)
+            far_ball = None
 
-    # Sweep extent: pose needs the whole video; bounce only up to its last
-    # window end. If only bounce is active we can stop early.
+    if pose is None and bounce is None and far_ball is None:
+        cap.release()
+        logger.info("roi_unified: nothing to do (all processors disabled)")
+        return (0, 0, 0)
+
+    # Sweep extent: pose needs the whole video; bounce + far_ball each only up
+    # to their last window end. If pose is inactive we can stop at the latest
+    # window any active windowed consumer needs.
     sweep_to = None
-    if pose is None and bounce is not None:
-        sweep_to = bounce.last_frame_needed()
+    if pose is None:
+        ends = []
+        if bounce is not None:
+            ends.append(bounce.last_frame_needed())
+        if far_ball is not None:
+            ends.append(far_ball.last_frame_needed())
+        sweep_to = max(ends) if ends else 0
 
     # Single sequential decode, SAMPLED to the bronze frame rate.
     #
@@ -136,6 +166,7 @@ def run_unified_roi(
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     pose_failed = False
     bounce_failed = False
+    far_ball_failed = False
     src_idx = 0
     out_idx = 0
     next_sample_at = 0.0
@@ -166,6 +197,15 @@ def run_unified_roi(
                         "bounce pass, no rows written): %s", out_idx, e,
                     )
                     bounce_failed = True
+            if far_ball is not None and not far_ball_failed:
+                try:
+                    far_ball.feed(frame, out_idx)
+                except Exception as e:
+                    logger.error(
+                        "roi_unified: far_ball.feed raised at frame %d (dropping "
+                        "far_ball pass, no rows written): %s", out_idx, e,
+                    )
+                    far_ball_failed = True
             next_sample_at += stride
             out_idx += 1
         src_idx += 1
@@ -191,9 +231,16 @@ def run_unified_roi(
         except Exception as e:
             logger.error("roi_unified: bounce.finalize raised (non-fatal): %s", e)
 
+    n_far_ball = 0
+    if far_ball is not None and not far_ball_failed:
+        try:
+            n_far_ball = far_ball.finalize()
+        except Exception as e:
+            logger.error("roi_unified: far_ball.finalize raised (non-fatal): %s", e)
+
     logger.info(
         "roi_unified: single-decode sweep of %d sampled frames in %.1fs "
-        "(pose=%d rows, bounce=%d rows)",
-        out_idx, time.time() - t_start, n_pose, n_bounce,
+        "(pose=%d rows, bounce=%d rows, far_ball=%d rows)",
+        out_idx, time.time() - t_start, n_pose, n_bounce, n_far_ball,
     )
-    return (n_pose, n_bounce)
+    return (n_pose, n_bounce, n_far_ball)

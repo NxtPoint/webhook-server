@@ -1,8 +1,32 @@
 # Far-ball ROI re-detection (option 2, path c) — 2026-06-12
 
-**Status:** built + locally validated (trackability FIXED); NOT wired/deployed.
-Code on branch `far-ball-roi` (`ml_pipeline/roi_extractors/far_ball.py`).
-Far-gate proof is daylight Batch work (see checklist).
+**Status (2026-06-13 PM):** built, validated, **WIRED + merge-resolved on `main`**;
+awaiting Batch deploy + reference re-run. `far_ball.py` cherry-picked to main;
+`FarBallProcessor` wired as the 3rd consumer in `unified.py`/`__main__.py`
+(env `ROI_FAR_BALL_ENABLED`, default on); merge strategy Option A implemented;
+export+reingest carry added. Bench green (12/26 + 23/24).
+
+## ★ Bounce-coupling PROVEN (2026-06-13) — far-ROI fixes BOTH halves
+`.claude/tmp/far_bounce_coupling.py` on 30 SA far bounces: far-BOUNCE candidate
+recall **(A) WASB ball 12/30 (40%) → (B) sharp far-ROI 24/30 (80%)**. B≫A (2×).
+The sharp far ball lifts far-bounce candidate recall, so far-ROI is the shared
+enabler for BOTH the hit emission (25/25 trackable) AND reliable far-bounce
+marking (far hits = non-bounce far events). One deploy, both halves of the far
+gate. Decision tree resolved → branch 1 (deploy; do NOT pivot downstream).
+
+## ⚠️ Two carry/order findings from the wire-in (2026-06-13)
+1. **Export+reingest carry (DONE).** roi_far_ball writes to ml_analysis.ball_
+   detections, which the Render re-ingest blanket-DELETEs + COPYs from the S3
+   export → rows wiped unless carried. Added: `bronze_export` carries
+   roi_far_ball via `extra_ball_rows` (source field now in the ball dict);
+   `bronze_ingest_t5` COPY includes `source`. Probe jobs (no re-ingest) keep the
+   rows regardless — fine for the reference far-gate read.
+2. **Pipeline ordering (coupling lands next-cycle on Batch).** bounce_detector
+   runs BEFORE the ROI sweep in `__main__` (its bounces rally-gate pose), so on a
+   single job the bounce stage can't see roi_far_ball. To MEASURE the coupling on
+   the reference, re-run the bounce detector OFFLINE on the now-merged ball
+   (reads ml_analysis via the deduped `_load_ball_rows`). A production reorder /
+   second bounce pass is a later optimisation, not required for the gate read.
 
 ## Problem
 At full-frame WASB downscale the FAR ball is ~1.6 px (sub-pixel), so its

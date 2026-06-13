@@ -393,6 +393,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
             except Exception as e:
                 logger.warning(f"Bounce CNN stage failed (non-fatal): {e}")
 
+        far_ball_export_rows: list = []
         if not practice:
             try:
                 # 81: must sit between the main pipeline's final stage
@@ -408,7 +409,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                 # space as bronze/the main pipeline. run_unified_roi reads the
                 # true source fps off the video itself to compute the decimation
                 # stride. (Match path only — this block is `if not practice`.)
-                n_pose, n_bounces = run_unified_roi(
+                n_pose, n_bounces, n_far_ball = run_unified_roi(
                     video_path=tmp_path,
                     job_id=job_id,
                     engine=engine,
@@ -424,7 +425,19 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                     cnn_bounce_events=_cnn_bounce_events,
                 )
                 logger.info(f"ROI unified: pose wrote {n_pose} rows, "
-                            f"bounces wrote {n_bounces} rows")
+                            f"bounces wrote {n_bounces} rows, "
+                            f"far_ball wrote {n_far_ball} rows")
+                # Carry the roi_far_ball rows into the bronze export so they
+                # survive the Render re-ingest's blanket DELETE+COPY (the
+                # export+reingest-carry rule). far_ball.py already persisted
+                # them; read them back for the payload.
+                if n_far_ball:
+                    with engine.connect() as _c:
+                        far_ball_export_rows = [dict(r) for r in _c.execute(sql_text(
+                            "SELECT frame_idx, x, y, court_x, court_y, speed_kmh, "
+                            "is_bounce, is_in, source FROM ml_analysis.ball_detections "
+                            "WHERE job_id = :jid AND source = 'roi_far_ball' "
+                            "ORDER BY frame_idx"), {"jid": job_id}).mappings()]
             except Exception as e:
                 logger.warning(f"ROI extraction failed (non-fatal): {e}")
 
@@ -497,6 +510,7 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
             s3_client=s3,
             s3_bucket=s3_bucket,
             practice=practice,
+            extra_ball_rows=far_ball_export_rows,
         )
         # Record the S3 key on the job row so the ingest worker can find it
         with engine.begin() as conn:

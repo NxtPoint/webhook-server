@@ -81,7 +81,7 @@ def _copy_ball_detections_stream(conn_raw, job_id: str, gz_path: str) -> int:
     with conn_raw.cursor() as cur:
         with cur.copy(
             "COPY ml_analysis.ball_detections "
-            "(job_id, frame_idx, x, y, court_x, court_y, speed_kmh, is_bounce, is_in) "
+            "(job_id, frame_idx, x, y, court_x, court_y, speed_kmh, is_bounce, is_in, source) "
             "FROM STDIN"
         ) as copy:
             with gzip.open(gz_path, "rb") as f:
@@ -96,6 +96,9 @@ def _copy_ball_detections_stream(conn_raw, job_id: str, gz_path: str) -> int:
                         r.get("speed_kmh"),
                         r.get("is_bounce", False),
                         r.get("is_in"),
+                        # source carries roi_far_ball through re-ingest; older
+                        # exports without the field default to 'main'.
+                        r.get("source") or "main",
                     ])
                     n += 1
     return n

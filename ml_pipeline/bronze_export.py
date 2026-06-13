@@ -30,7 +30,12 @@ BRONZE_S3_KEY_TEMPLATE = "analysis/{job_id}/bronze.json.gz"
 
 
 def _ball_detection_to_dict(d) -> Dict[str, Any]:
-    """Convert BallDetection dataclass → plain dict for JSON serialization."""
+    """Convert BallDetection dataclass → plain dict for JSON serialization.
+
+    source='main' tags the global WASB ball. roi_far_ball rows are carried
+    separately via build_bronze_payload(extra_ball_rows=...) so they survive
+    the Render re-ingest's blanket DELETE+COPY (the export+reingest-carry rule).
+    """
     return {
         "frame_idx": int(d.frame_idx),
         "x": float(d.x) if d.x is not None else None,
@@ -40,6 +45,7 @@ def _ball_detection_to_dict(d) -> Dict[str, Any]:
         "speed_kmh": float(d.speed_kmh) if d.speed_kmh is not None else None,
         "is_bounce": bool(d.is_bounce),
         "is_in": bool(d.is_in) if d.is_in is not None else None,
+        "source": getattr(d, "source", None) or "main",
     }
 
 
@@ -91,6 +97,7 @@ def build_bronze_payload(
     result,
     practice: bool = False,
     player_window_frames: int = 5,
+    extra_ball_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Build the complete bronze JSON payload from ML pipeline result.
@@ -207,6 +214,28 @@ def build_bronze_payload(
         "player_detections": [_player_detection_to_dict(d) for d in player_dets],
     }
 
+    # Carry roi_far_ball rows (DB-direct writes from the far-ball ROI sweep)
+    # into the export so they survive the Render re-ingest's blanket DELETE+COPY
+    # (export+reingest-carry rule). Appended AFTER the bounce/keep computation so
+    # they never shift the player keep-window; readers dedup via ball_merge, and
+    # silver stays main-only — so these extra rows feed only the hit/bounce
+    # trajectory readers, never silver's bounce-driven row count.
+    if extra_ball_rows:
+        for r in extra_ball_rows:
+            payload["ball_detections"].append({
+                "frame_idx": int(r["frame_idx"]),
+                "x": float(r["x"]) if r.get("x") is not None else None,
+                "y": float(r["y"]) if r.get("y") is not None else None,
+                "court_x": float(r["court_x"]) if r.get("court_x") is not None else None,
+                "court_y": float(r["court_y"]) if r.get("court_y") is not None else None,
+                "speed_kmh": float(r["speed_kmh"]) if r.get("speed_kmh") is not None else None,
+                "is_bounce": bool(r.get("is_bounce")),
+                "is_in": bool(r["is_in"]) if r.get("is_in") is not None else None,
+                "source": r.get("source") or "roi_far_ball",
+            })
+        logger.info("bronze_export: carried %d roi_far_ball rows into payload",
+                    len(extra_ball_rows))
+
     logger.info(
         "bronze_export: built payload ball=%d player=%d",
         len(payload["ball_detections"]), len(payload["player_detections"]),
@@ -221,6 +250,7 @@ def export_bronze_to_s3(
     s3_client,
     s3_bucket: str,
     practice: bool = False,
+    extra_ball_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Build the bronze payload, gzip it, and upload to S3.
@@ -229,6 +259,7 @@ def export_bronze_to_s3(
     """
     payload = build_bronze_payload(
         job_id=job_id, task_id=task_id, result=result, practice=practice,
+        extra_ball_rows=extra_ball_rows,
     )
 
     # Serialize with compact separators (smaller file)

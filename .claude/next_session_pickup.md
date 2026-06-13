@@ -2,8 +2,8 @@
 
 ## ▶️ ACTIVE THREAD (resume here) — bounce-coupling
 **Why:** far-ROI sharp ball fixes far-ball TRACKABILITY but NOT hit-vs-bounce DISCRIMINATION (angle/speed/proximity all fail — see below). The far gate's 2nd half = reliable far-bounce marking so far hits = non-bounce far events. The bounce candidate generator (`bounce_detector/detector.py::_candidate_frames_from_gravity_residual`) keys off the ball's IMAGE-Y trajectory → the sharp far ball should lift its recall (coarse-ball ceiling was ~36-58%; 38% end-to-end).
-**In flight (re-run it):** `.venv/Scripts/python .claude/tmp/far_bounce_coupling.py` — measures far-BOUNCE candidate recall, WASB ball vs sharp far-ROI ball, on 30 SA far bounces. **Result not captured before disconnect — re-run + read it first.**
-**Decision tree:** sharp≫WASB → coupling real: far-ROI deploy lifts bounce #4 recall AND feeds the hit model reliable far-bounce marks (one deploy, both halves). sharp≈WASB → far-bounce bottleneck is downstream (CNN scorer/pre-gates/labels) → pivot there.
+**✅ RESULT CAPTURED 2026-06-13 PM (`.claude/tmp/far_bounce_coupling.log`):** far-BOUNCE candidate recall @0.2s on 30 SA far bounces — **(A) WASB ball 12/30 (40%) vs (B) sharp far-ROI 24/30 (80%). B ≫ A (2×).** COUPLING IS REAL. The sharp far ball directly improves far-bounce candidate recall → bounce #4 improves AND the hit model gets reliable far-bounce marks. **One far-ROI deploy fixes both halves of the far gate** (emission already proven 25/25 trackable; discrimination via bounce-coupling now proven). This is the "sharp≫WASB" branch → proceed with the far-ROI deploy (do NOT pivot downstream).
+**Decision tree (resolved → branch 1):** sharp≫WASB → coupling real: far-ROI deploy lifts bounce #4 recall AND feeds the hit model reliable far-bounce marks (one deploy, both halves). sharp≈WASB → far-bounce bottleneck is downstream (CNN scorer/pre-gates/labels) → pivot there.
 **Bounce pipeline:** gravity-residual candidates → trained CNN (v2 7-match, `models/bounce_detector_v2_7match.pt`, thr 0.55) → `ml_analysis.ball_bounces`. Candidate stage is the bottleneck.
 
 
