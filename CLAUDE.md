@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pick the closest match and jump there before reading the rest of this file:
 
+> **Snapshots vs. ground truth.** Specific numbers, job-def revisions, bench baselines, and "current phase" notes in this file are point-in-time snapshots and drift. On any conflict, `.claude/next_session_pickup.md` + the live `.claude/session_*.md` in `git status` win.
+
 - **Any session, any task** → `.claude/next_session_pickup.md` (current state + read-order for the next move). **Overwrite it at session end** so the next session inherits cleanly. A modified `.claude/session_*.md` in `git status` is the live thread for deep detail.
 - **Routine ops** ("when X happens, do Y") → `.claude/sop.md`. Render deploys, Batch container deploys, bench discipline, phase transitions, GPU box experiments, prod SQL diag, plus the short list of actions that genuinely require Tomo.
 - **Session boot / close checklists** → `.claude/session_protocol.md`. Run boot in the first 5 min; close before declaring done.
