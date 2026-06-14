@@ -6,3 +6,11 @@ __pycache__/
 _archive/
 node_modules/
 *.egg-info/
+# Training data — never bake into any image (trainers fetch corpus from S3/DB
+# at runtime). These are GBs (datasets .pt + cached videos). Safe for the
+# detection build too (it does not COPY ml_pipeline/training/). Do NOT add
+# ml_pipeline/models/ here — the detection image COPYs weights from it.
+ml_pipeline/training/datasets/
+ml_pipeline/training/_dataset_cache/
+ml_pipeline/training/labels/
+ml_pipeline/training/*.log
