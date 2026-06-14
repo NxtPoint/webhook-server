@@ -1194,6 +1194,14 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     if not rows_to_insert:
         logger.warning("T5 Pass 1 (stroke-driven): no valid rows to insert")
         return 0
+    # Serve overlay — sets serve=True on the rows bronze serve_events claims.
+    # MUST run for the stroke-driven path too (mirrors the bounce-driven path,
+    # ~line 827). Without it silver has ZERO serves, so the shared passes 3-5
+    # derive no point/game/serve structure (serves_d=0, points=0, games=0).
+    # Regression introduced when stroke-driven flipped default-ON (472b244) —
+    # the call lived only in the bounce-driven path; fixed 2026-06-14 after it
+    # surfaced on the first real re-run task (93ebb93d).
+    _apply_serve_events_overlay(conn, task_id, rows_to_insert, top_pids)
     return _insert_pass1_rows(conn, rows_to_insert)
 
 
