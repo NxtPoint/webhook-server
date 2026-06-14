@@ -80,6 +80,10 @@ from ml_pipeline.config import FRAME_SAMPLE_FPS
 
 logger = logging.getLogger("build_swing_type_dataset")
 
+# Canonical swing classes (ADR-02 REVISION 2026-06-14 — 4-class incl. `other`).
+# Kept in sync with stroke_classifier/model_v2.CLASSES (model-side authority).
+SWING_CLASSES = ("forehand", "backhand", "overhead", "other")
+
 
 def _bbox_lookup_frame(label: dict) -> int:
     """T5 25fps frame index for the player_detections bbox lookup.
@@ -389,18 +393,39 @@ def build_one_match(
     cache_dir: Path,
     engine,
     s3_client,
+    relabel: bool = False,
 ) -> dict:
-    """Run the full builder pipeline for one corpus row. Returns stats."""
+    """Run the full builder pipeline for one corpus row. Returns stats.
+
+    relabel=True regenerates the label set DIRECTLY from `bronze.player_swing`
+    via label_swing_types.export_sa_swing_types (4-class incl. `other`) instead
+    of downloading the corpus `label_s3_key` JSON. Needed for the ADR-02
+    revision: the S3 label JSONs were produced by the old 3-class extractor and
+    carry NO `other` rows, so a 4-class rebuild must relabel from source.
+    """
     t5_task_id = corpus_row["t5_task_id"]
     sa_task_id = corpus_row["sa_task_id"]
-    label_s3_key = _s3_uri_to_key(corpus_row["label_s3_key"])
     video_s3_key = _s3_uri_to_key(corpus_row["video_s3_key"])
 
-    # 1. Download label JSON
-    label_local = _download_to_cache(s3_client, label_s3_key, cache_dir / "labels")
-    labels_obj = json.loads(label_local.read_text())
-    labels: list[dict] = labels_obj["labels"]
-    logger.info("[%s] %d labels loaded", t5_task_id[:8], len(labels))
+    # 1. Labels — fresh from bronze (4-class) or the cached S3 JSON (legacy 3-class)
+    if relabel:
+        from ml_pipeline.training.label_swing_types import (
+            export_sa_swing_types, DEFAULT_INCLUDE_TYPES,
+        )
+        labels_obj = export_sa_swing_types(
+            t5_task_id, sa_task_id, engine=engine,
+            include_types=DEFAULT_INCLUDE_TYPES,
+        )
+        labels = labels_obj["labels"]
+        label_s3_key = f"(relabel-from-bronze:{sa_task_id})"
+        logger.info("[%s] %d labels RELABELLED from bronze (4-class)",
+                    t5_task_id[:8], len(labels))
+    else:
+        label_s3_key = _s3_uri_to_key(corpus_row["label_s3_key"])
+        label_local = _download_to_cache(s3_client, label_s3_key, cache_dir / "labels")
+        labels_obj = json.loads(label_local.read_text())
+        labels = labels_obj["labels"]
+        logger.info("[%s] %d labels loaded from S3", t5_task_id[:8], len(labels))
 
     # 2. Download trimmed 720p video (or use the cached one)
     trimmed_key = f"trimmed/{t5_task_id}/practice.mp4"
@@ -530,8 +555,7 @@ def build_one_match(
     }, pt_path)
 
     # Class + role tallies for the manifest
-    by_class = {c: meta_lists["swing_type"].count(c)
-                for c in ("forehand", "backhand", "overhead")}
+    by_class = {c: meta_lists["swing_type"].count(c) for c in SWING_CLASSES}
     by_role = {"NEAR": meta_lists["role"].count("NEAR"),
                "FAR": meta_lists["role"].count("FAR")}
     return {
@@ -560,6 +584,7 @@ def build_dataset(
     t5_filter: Optional[str] = None,
     engine=None,
     s3_client=None,
+    relabel: bool = False,
 ) -> dict:
     if engine is None:
         engine = _get_engine()
@@ -578,7 +603,8 @@ def build_dataset(
     per_match = []
     for r in rows:
         try:
-            res = build_one_match(r, output_path, cache_path, engine, s3_client)
+            res = build_one_match(r, output_path, cache_path, engine, s3_client,
+                                  relabel=relabel)
             per_match.append(res)
         except Exception as e:
             logger.exception("FAILED %s: %s", r["t5_task_id"], e)
@@ -593,7 +619,7 @@ def build_dataset(
     train_ids = [m["t5_task_id"] for i, m in enumerate(success) if i % 2 == 0]
     val_ids = [m["t5_task_id"] for i, m in enumerate(success) if i % 2 == 1]
 
-    totals_by_class = {"forehand": 0, "backhand": 0, "overhead": 0}
+    totals_by_class = {c: 0 for c in SWING_CLASSES}
     totals_by_role = {"NEAR": 0, "FAR": 0}
     total_hits = 0
     for m in success:
@@ -630,6 +656,10 @@ def main():
     )
     ap.add_argument("--t5", default=None,
                     help="If set, build only this one t5_task_id (smoke testing).")
+    ap.add_argument("--relabel", action="store_true",
+                    help="Regenerate labels from bronze.player_swing (4-class incl. "
+                         "`other`) instead of the stale 3-class S3 label JSONs. "
+                         "Required for the ADR-02 revision 4-class rebuild.")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -639,6 +669,7 @@ def main():
         output_dir=args.output_dir,
         cache_dir=args.cache_dir,
         t5_filter=args.t5,
+        relabel=args.relabel,
     )
     logger.info("=== BUILD SUMMARY ===")
     logger.info("  n_matches=%d  total_hits=%d", manifest["n_matches"], manifest["total_hits"])

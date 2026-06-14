@@ -5,7 +5,8 @@ Per ADR-02 §"Build spec v1" (docs/_investigation/adr_02_swing_type_classifier_p
   - Input: 16-frame x 112x112 dense optical flow, 2-channel (dx, dy)
     -> reshaped from (N, 16, 112, 112, 2) -> (N, 2, 16, 112, 112) at dataloader time
   - Handedness: 1-bit feature concatenated to the penultimate FC layer
-  - Output: 3 classes {forehand=0, backhand=1, overhead=2} + per-class confidences
+  - Output: 4 classes {forehand=0, backhand=1, overhead=2, other=3} + per-class
+    confidences (ADR-02 revision 2026-06-14; `other` is SA-labelled, not mined)
 
 Two adaptations from the stock torchvision implementation:
   1. The stem's first conv is 3-channel (RGB-pretrained). We replace it with a
@@ -38,8 +39,14 @@ import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
-# Class order (matches Dataset label encoding -- keep in sync)
-CLASSES = ("forehand", "backhand", "overhead")
+# Class order (matches Dataset label encoding -- keep in sync).
+# ADR-02 REVISION 2026-06-14: 4th class `other` added (SA labels it; 291 of
+# 2,592 corpus swings). It lets the model REJECT the hit detector's false
+# positives instead of forcing fh/bh/overhead onto junk hits — the cause of
+# the 3-class model losing the per-hit gate to the silver heuristic (32% vs
+# 38%, 2026-06-05). Volley is NOT here — it is a separate boolean fact
+# (bronze.player_swing.volley), per the ADR-02 revision.
+CLASSES = ("forehand", "backhand", "overhead", "other")
 NUM_CLASSES = len(CLASSES)
 CLASS_TO_IDX = {c: i for i, c in enumerate(CLASSES)}
 

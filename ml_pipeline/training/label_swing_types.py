@@ -1,4 +1,4 @@
-"""Export SA-GT swing-type labels (fh/bh/overhead) for ADR-02 classifier training.
+"""Export SA-GT swing-type labels (fh/bh/overhead/other) for ADR-02 classifier training.
 
 Sibling of label_ball_positions.py — same overall shape, different source
 table and different downstream consumer.
@@ -22,12 +22,13 @@ Why this exists:
   ball coords to pixels -- the classifier's input is the player ROI, not
   the ball position. Court coords are kept for sanity / role classification.
 
-Canonical class mapping (ADR-02 Q3 = {forehand, backhand, overhead} only):
+Canonical class mapping (ADR-02 REVISION 2026-06-14 = {forehand, backhand, overhead, other}):
   fh           -> forehand
   1h_bh        -> backhand
   2h_bh        -> backhand
   fh_overhead  -> overhead   (includes serves -- serve is mechanically a smash)
-  other        -> EXCLUDED  (SA's catch-all -- not learnable signal for 3-class)
+  other        -> other      (4th class — lets the classifier reject non-groundstroke /
+                              junk hits instead of mislabelling them; was previously dropped)
 
 `swing_type_raw` is preserved per-label so a future analysis can separate
 1h_bh vs 2h_bh, or filter out serves via the `is_serve` flag.
@@ -61,16 +62,27 @@ logger = logging.getLogger("label_swing_types")
 DEFAULT_FRAME_W = 1920
 DEFAULT_FRAME_H = 1080
 DEFAULT_FPS = 30
-DEFAULT_INCLUDE_TYPES = ("forehand", "backhand", "overhead")
+DEFAULT_INCLUDE_TYPES = ("forehand", "backhand", "overhead", "other")
 HALF_Y = 11.885  # court midline (net) in metres -- matches serve_detector/bounce_validity.py
 
-# SA raw -> canonical 3-class mapping (ADR-02 Q3)
+# SA raw -> canonical class mapping.
+# ADR-02 REVISION 2026-06-14: 4-class {fh, bh, overhead, other}. SA's raw
+# `other` (291 of 2,592 corpus swings) was previously DROPPED; it is now the
+# 4th class so the classifier can reject non-groundstroke / junk hits instead
+# of mislabelling them as fh/bh/overhead. Volley is NOT a swing_type — it is a
+# separate boolean fact (bronze.player_swing.volley), handled elsewhere.
 SA_TO_CANONICAL = {
     "fh": "forehand",
     "1h_bh": "backhand",
     "2h_bh": "backhand",
     "fh_overhead": "overhead",
+    "other": "other",
 }
+
+# Canonical class set (the valid output vocabulary). Single source for the
+# include_types validation below + the model's CLASSES (kept in sync manually;
+# model_v2.CLASSES is the model-side authority).
+CANONICAL_CLASSES = frozenset({"forehand", "backhand", "overhead", "other"})
 
 
 def _normalize_db_url(url: str) -> str:
@@ -114,10 +126,10 @@ def export_sa_swing_types(
     include = tuple(t.strip().lower() for t in include_types if t and t.strip())
     if not include:
         raise ValueError("include_types must not be empty")
-    invalid = [t for t in include if t not in {"forehand", "backhand", "overhead"}]
+    invalid = [t for t in include if t not in CANONICAL_CLASSES]
     if invalid:
         raise ValueError(
-            f"include_types must be subset of {{forehand, backhand, overhead}}; "
+            f"include_types must be subset of {sorted(CANONICAL_CLASSES)}; "
             f"got invalid: {invalid}"
         )
 

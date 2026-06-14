@@ -51,7 +51,11 @@ ROI_SIZE = 112
 
 # Model class name -> canonical bronze/silver swing_type vocabulary.
 # Old StrokeClassifier emitted silver-vocab directly; v2 emits the long names.
-_VOCAB_MAP = {"forehand": "fh", "backhand": "bh", "overhead": "overhead"}
+# ADR-02 revision 2026-06-14: `other` is now a real model output (SA-labelled
+# non-groundstroke / junk-hit) — projected verbatim so silver can carry it
+# instead of a heuristic guess.
+_VOCAB_MAP = {"forehand": "fh", "backhand": "bh", "overhead": "overhead",
+              "other": "other"}
 
 
 def _bbox_to_roi(bbox_x1: float, bbox_y1: float, bbox_x2: float, bbox_y2: float,
