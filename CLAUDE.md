@@ -284,7 +284,6 @@ Try/except-wrapped (failure is logged, service still boots):
 - `cron_sweep_t5_orphans.py` — every 5 min; fires `POST /ops/sweep-t5-orphans` (pairs with rule #10).
 
 **Ignorable root directories** (present on disk, not part of runtime):
-- `_archive/` — deprecated code (don't read unless chasing a specific historical regression).
 - `diag_081e089c/`, `data/` — local investigation snapshots / scratch dumps (often gitignored).
 - `static/`, `templates/` — Flask defaults; actual SPAs live under `frontend/`, inspection templates inlined in `ui_app.py`.
 
@@ -323,9 +322,10 @@ Both T5 and SportAI share passes 3-5 in `build_silver_v2.py`. The serve detector
 | `ml_pipeline/identity_detector/` | A/B player-identity detection (ADR-03 — changeover rule + game boundaries). Render-side (schema init on main-app boot), not in the Batch image. |
 | `ml_pipeline/roi_extractors/` | Batch-side ROI extractors — `pose.py` (far-player ViTPose → `player_detections_roi`, wired in `ead857a`) + `bounces.py`. Trips the BATCH-SIDE CHANGE CHECKLIST (rule #8). |
 | `ml_pipeline/point_structure/` | `point_boundaries.py` — point/game structure derivation shared by silver builders |
+| `ml_pipeline/ground_truth/` | Hand-labelled reference data backing the bench/eval harnesses |
 | `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (`visual_debug/` is leftover local debug images, untracked — don't read or edit) |
 | `ml_pipeline/diag/` | Dev tools — the bench family (`bench` / `bench_ball` / `bench_silver` are the load-bearing three; plus `bench_bounce`, `bench_calib`, `bench_identity`, `bench_lens`, `bench_swing_type`, `bench_finetuned`), serve viewer, pose probe |
-| `ml_pipeline/fixtures*/` | Locked bench fixtures (`fixtures_ci`, `fixtures_ball`, `fixtures_silver`, `fixtures_calib` — one dir per bench) with `*_baseline.json` siblings in `diag/` |
+| `ml_pipeline/fixtures*/` | Locked bench fixtures (`fixtures_ci`, `fixtures_ball`, `fixtures_silver`, `fixtures_calib` — one dir per bench, plus a bare `fixtures/`) with `*_baseline.json` siblings in `diag/` |
 
 Weights in `ml_pipeline/models/` (git-ignored, Batch-bundled via the Dockerfile `models/` COPY): TrackNet V2, YOLOv8x/m-pose, YOLOv8m, court_keypoints.pth, `bounce_detector_v2_7match.pt` (144KB), `swing_classifier_v2.pt` (125MB), optional `tracknet_v3.pt`.
 
@@ -363,7 +363,7 @@ Biomechanics stroke analysis via external SportAI Technique API. Dev-only (gated
 
 - **`docs/`**: feature design + reference. Active set listed in Start Here. Subdirs: `_investigation/` (deep-dive diagnoses, e.g. `far_player_accuracy.md` cited by rule #11), `sql/` (canonical diag queries, e.g. `reconcile_serves.sql`), `_archive/` (superseded).
 - **`migrations/`**: one-off backfill SQL scripts. No migration framework — schema is idempotent via `_init` / `_ensure_*` functions.
-- **`_archive/`**: deprecated/replaced code, reference only.
+- **Archived code/docs** live under `docs/_archive/` (superseded docs) and `.claude/_archive/` (old handover/session docs) — there is no root-level `_archive/`. Reference only; don't read unless chasing a specific historical regression.
 - **`lambda/`**: AWS Lambda source (e.g., S3 trigger for ML pipeline).
 - **`.claude/`**: handover docs + AWS Batch playbooks (tracked in git, see Start Here); per-run artefacts gitignored. Subdirs: `infrastructure/`, `research/`, `strategy/`, `serve_ground_truth/`, plus gitignored `tmp/` and `worktrees/`.
 - **Auto-memory** (per-project, indexed by `MEMORY.md`, loaded into every conversation): historical T5 context (`project_t5_*.md`), user/feedback rules, feature-launch records. Check for "why did we decide X" before re-deriving from code. Local to the machine, not in git.
