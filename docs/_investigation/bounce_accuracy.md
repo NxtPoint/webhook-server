@@ -322,3 +322,63 @@ interpolatable → **+7 % (59 %)**; but **29 % of the video is lost to *sustaine
 1. Label `a798eff0` (video local) or retrieve Match 1's video from S3 to keep the M1 thread? **Lean: a798eff0.**
 2. Near-half first (reliable) with far-half flagged low-confidence — acceptable?
 3. Label floor bounces only, or also tag in/out + service-box for serve-placement truth?
+
+---
+
+## Lever B — silver bounce PURITY: the entanglement + the gate (2026-06-14)
+
+**Context.** After lever A (bounce precision, deployed eu rev 79 / us rev 60 — CNN
+threshold 0.5→0.70), the next bounce build-lever Tomo teed up was "silver purity":
+deprecate the `is_bounce` heuristic and make silver inherit the model fact
+`ml_analysis.ball_bounces` verbatim (mirror the serve-purity deletion `46c8a91`).
+
+**Where silver reads bounces today (measured 2026-06-14):**
+- `build_silver_match_t5.py:699` — `ball_detections.is_bounce = TRUE`, **bounce-DRIVEN
+  row generation** (one silver row per bounce). This is the rule-#11-entangled site.
+- `build_silver_v2.py:1191` — a local CTE *named* `ball_bounces` built from
+  `ball_detections.is_bounce`, used only for rally-END timing (`MAX(bounce_s)` windows)
+  + a `has_bounce_data` flag. NOT per-shot coords. (It does NOT read the model table —
+  the name collision is misleading.)
+- **Nothing reads `ml_analysis.ball_bounces` (the model) into silver.** Finding #3 of the
+  2026-06-13 pickup confirmed.
+
+**Why the flip CANNOT land now — three concrete blockers (do not regress prod silver):**
+
+1. **The model table is empty on existing tasks.** `ml_analysis.ball_bounces` has **0 rows
+   for all 8 corpus tasks** (78c32f53, ca475740, 105290c3, … — query in
+   `.claude/tmp/`). The "ball_bounces SURVIVES re-ingest" claim (`__main__.py:295`) only
+   holds for NEW tasks processed post-rev-66; older/re-ingested tasks have none. Flipping
+   silver to inherit it would collapse silver to zero rows on the entire existing corpus.
+   (This is the export+reingest-carry family — memory
+   `feedback_batch_enrichments_need_export_reingest_carry`.)
+
+2. **The model isn't accurate enough to drive row-gen.** Post-lever-A floor (offline sweep
+   `.claude/tmp/bounce_precision_sweep.py`, 5 labelled tasks): thr 0.70 → recall 18.2%,
+   precision 23.3%, 589 emitted. The `is_bounce` population that currently drives silver is
+   ~2,669 frames across the same 5 tasks (different membership, ~4.5× larger). Swapping the
+   source regenerates the ENTIRE row set from an 18%-recall fact → guaranteed regression.
+   Recall is **training-gated** (CNN trained on coarse distribution; sharp-far retrain pending
+   new full-res footage — memory `feedback_far_roi_payoff_is_scorer_training_gated`).
+
+3. **★ The architecture is wrong-by-design either way.** Memory `silver_must_be_hit_driven`:
+   a stroke IS a ball-hit; silver should be **hit-driven** (one row per bronze stroke event),
+   never bounce-driven. The current Pass-1 is bounce-driven; swapping `is_bounce`→`ball_bounces`
+   makes it a *better-sourced but still bounce-driven* design — it does NOT achieve purity, it
+   polishes the wrong axle. The real purity fix is hit-driven row-gen, **gated on the hit model
+   (B2, gate not met — far attribution 6/51)**. The stroke-driven path exists but is committed
+   OFF behind `T5_STROKE_DRIVEN_SILVER` (rule #11).
+
+**The gate — all THREE must clear before silver inherits a model bounce fact:**
+  (a) `ml_analysis.ball_bounces` is carried through bronze_export + bronze_ingest_t5 so it
+      survives re-ingest on every task (like `roi_far_ball` was in the far-ROI deploy); AND
+  (b) the bounce model is accurate enough that its population ≈ the real bounce set (needs the
+      sharp-far retrain, which accrues from new full-res uploads); AND
+  (c) the **bounce-driven-vs-hit-driven architecture question is settled** — and the likely
+      answer (silver_must_be_hit_driven) means lever B as literally specified ("inherit
+      ball_bounces") may be SUPERSEDED by hit-driven row-gen. **Resolve (c) with Tomo before
+      building any bounce-model→silver plumbing**, or it's wasted work.
+
+**This session's call:** measured the three blockers, documented the gate, did NOT flip prod
+silver and did NOT add speculative plumbing to `build_silver_match_t5.py` (the most delicate
+file). The general pattern: replacing a silver heuristic with a model needs carry + accuracy +
+architecture-fit, not just "the model exists."
