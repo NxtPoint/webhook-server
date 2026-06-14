@@ -53,13 +53,14 @@ Verified on live data 2026-06-14. **Verdict: BUILD is done (models emit both fac
 | 3 | Bounce precision lever (thr 0.5→0.70, rev 79/60) | build | ✅ DONE this session |
 | 4 | Silver row architecture decided = HIT-DRIVEN | decision | ✅ DONE this session |
 | 5 | **Bounce model output survives re-ingest** (0 rows on ALL existing tasks — vintage/carry; "survives" claim unverified) | verify | ⬜ check on next real upload |
-| 6 | **Locked hit bench** (`bench_hit`) — repeatable accuracy gate (bounce has `bench_bounce`, hit has none) | build | ⬜ can do NOW, no data needed |
+| 6 | **Locked hit bench** (`bench_hit`) — repeatable accuracy gate | build | ✅ DONE 2026-06-14 (`bench_baseline_hit.json`: NEAR gate 67%, FAR gate 19%, prec 54%) |
 | 7 | **Sharp-far footage accrues** — new FULL-RES SA uploads re-run through rev-79 (carries `roi_far_ball`); old corpus originals deleted | DATA (Tomo) | ⬜ gating dependency |
-| 8 | **Retrain** bounce CNN + hit model on the sharp-far distribution → far recall/attribution reach the ~70-80% bar | TRAIN | ⬜ gated on #7 |
-| 9 | **Flip silver HIT-DRIVEN** — Pass-1 inserts from `stroke_events`; bounce model → Pass-2 coord enricher (mirror SA `build_silver_v2.py:357/376`) | build | ⬜ LAST step, after #8 (early flip regresses silver — 2026-05-25 overshoot) |
+| 8 | **Retrain** bounce CNN + hit model on the sharp-far distribution → far recall/attribution reach the ~70-80% bar | TRAIN | ⬜ gated on #7 (measure with `bench_hit` / `bench_bounce`) |
+| 9 | **Flip silver HIT-DRIVEN** — Pass-1 from `stroke_events`; bounce → enricher | build | ✅ DONE 2026-06-14 (Tomo: T5 unused → flipped early; `T5_STROKE_DRIVEN_SILVER` default ON; validated 78c32f53 pass1 110→174 rows clean). Rule #11 updated. |
 | → | THEN: SWING (4th "other" class, purity-corrected) — the second-last model | next | — |
 
-**What to do NOW:** the cheap build-levers are spent. Forward progress = #7 (Tomo uploads full-res matches → corpus accrues sharp-far) → #8 retrain. #6 (hit bench) is the only no-data build item left and can be done anytime. #5 is a one-glance verify on the next upload. #9 waits for #8.
+**STATE NOW:** architecture is fully in place — silver is HIT-DRIVEN (default on), bounce-precision deployed, hit bench locked. The ONLY thing left for hit+bounce DoD = ACCURACY, which is purely TRAIN-LAST: #7 (Tomo uploads full-res matches → corpus accrues sharp-far) → #8 retrain (measure via `bench_hit`/`bench_bounce`). #5 = one-glance verify on next upload.
+**Residual (not blocking, documented):** the hit-driven path still reads bounce coords from `is_bounce` (the bounce MODEL `ball_bounces` is empty on existing tasks — column mismatch + zero benefit until carried/accrued); swing_type still STOPGAP-falls to heuristic when the bronze `stroke_class` model didn't classify (swing = next model). Both are correct-by-design holds, not debt to flip blind.
 
 ---
 

@@ -1,0 +1,106 @@
+{
+  "updated_at": "2026-06-14",
+  "commit": "bed73f8",
+  "weights": "ml_pipeline/models/hit_model_v1.pt",
+  "threshold": 0.4,
+  "aggregate": {
+    "near_labels": 1002,
+    "near_emit": 772,
+    "near_gate": 667,
+    "far_labels": 1261,
+    "far_emit": 716,
+    "far_gate": 245,
+    "emitted": 2735,
+    "matched_any": 1488
+  },
+  "tasks": [
+    {
+      "task": "78c32f53",
+      "emitted": 62,
+      "matched_any": 56,
+      "near_labels": 51,
+      "near_emit": 34,
+      "near_gate": 32,
+      "far_labels": 52,
+      "far_emit": 22,
+      "far_gate": 3
+    },
+    {
+      "task": "c645a7ee",
+      "emitted": 539,
+      "matched_any": 246,
+      "near_labels": 135,
+      "near_emit": 105,
+      "near_gate": 90,
+      "far_labels": 217,
+      "far_emit": 141,
+      "far_gate": 47
+    },
+    {
+      "task": "9378f2dd",
+      "emitted": 543,
+      "matched_any": 246,
+      "near_labels": 136,
+      "near_emit": 105,
+      "near_gate": 90,
+      "far_labels": 219,
+      "far_emit": 141,
+      "far_gate": 47
+    },
+    {
+      "task": "ca475740",
+      "emitted": 506,
+      "matched_any": 252,
+      "near_labels": 160,
+      "near_emit": 134,
+      "near_gate": 104,
+      "far_labels": 171,
+      "far_emit": 118,
+      "far_gate": 45
+    },
+    {
+      "task": "a35b37f6",
+      "emitted": 75,
+      "matched_any": 56,
+      "near_labels": 51,
+      "near_emit": 33,
+      "near_gate": 32,
+      "far_labels": 51,
+      "far_emit": 23,
+      "far_gate": 3
+    },
+    {
+      "task": "17e2da3a",
+      "emitted": 75,
+      "matched_any": 56,
+      "near_labels": 51,
+      "near_emit": 33,
+      "near_gate": 32,
+      "far_labels": 52,
+      "far_emit": 23,
+      "far_gate": 3
+    },
+    {
+      "task": "105290c3",
+      "emitted": 437,
+      "matched_any": 240,
+      "near_labels": 163,
+      "near_emit": 132,
+      "near_gate": 104,
+      "far_labels": 169,
+      "far_emit": 108,
+      "far_gate": 37
+    },
+    {
+      "task": "63a0130d",
+      "emitted": 498,
+      "matched_any": 336,
+      "near_labels": 255,
+      "near_emit": 196,
+      "near_gate": 183,
+      "far_labels": 330,
+      "far_emit": 140,
+      "far_gate": 60
+    }
+  ]
+}

@@ -1338,8 +1338,21 @@ def _stroke_driven_enabled() -> bool:
     """Read the T5_STROKE_DRIVEN_SILVER gate at call time (so flipping the env
     var + restart applies without a code change / Docker rebuild — same
     rollback pattern as the WASB swap, memory feedback_env_var_rollback_pattern).
+
+    DEFAULT FLIPPED ON 2026-06-14 (Tomo): silver is now HIT-DRIVEN by default.
+    The architecture decision is settled (one row per stroke event = one shot;
+    bounce is an attribute — north_star §"SILVER ROW ARCHITECTURE"). T5 silver is
+    not consumed by prod, so the old "wait until bronze is right" hold (rule #11)
+    no longer blocks the flip — accuracy fills in at training, the architecture
+    is correct now. Set T5_STROKE_DRIVEN_SILVER=0 to roll back to bounce-driven.
+    Residual heuristics still in this path are bronze-MODEL-first with documented
+    STOPGAP fallbacks: swing_type prefers the bronze classifier (`stroke_class`),
+    falling to _infer_swing_type only when the swing model didn't classify (swing
+    is the NEXT model); bounce coords still read is_bounce (the bounce MODEL
+    ball_bounces is empty on existing tasks — lever-B detail, swaps in once it's
+    carried through re-ingest + accrued from new uploads).
     """
-    return os.getenv("T5_STROKE_DRIVEN_SILVER", "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("T5_STROKE_DRIVEN_SILVER", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> int:
