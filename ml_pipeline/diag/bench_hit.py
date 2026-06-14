@@ -123,6 +123,36 @@ def _agg(results: list[dict]) -> dict:
     return a
 
 
+def _load_baseline() -> dict:
+    if not BASELINE_PATH.exists():
+        return {}
+    return json.loads(BASELINE_PATH.read_text())
+
+
+# Enforcement slack: counts can wobble ±a few between runs (NMS ties /
+# corpus row ordering). The gate is the two real accuracy axes: NEAR gate,
+# FAR gate, and total matched_any (precision proxy).
+HIT_GATE_SLACK = 2
+
+
+def _check_regression(agg: dict, base_agg: dict | None) -> tuple[bool, list[str]]:
+    """Compare the aggregate to the committed baseline — same contract as the
+    serve bench.py: negative delta on a tracked axis => regression."""
+    if not base_agg:
+        return (False, ["(no committed baseline aggregate — nothing to compare)"])
+    regressed = False
+    lines: list[str] = []
+    for axis in ("near_gate", "far_gate", "matched_any"):
+        cur = agg.get(axis, 0)
+        bas = base_agg.get(axis, 0)
+        d = cur - bas
+        tag = "" if d >= -HIT_GATE_SLACK else "  [!] REGRESSION"
+        if tag:
+            regressed = True
+        lines.append(f"  {axis:<12} {cur:>5} vs {bas:<5} (delta {d:+d}){tag}")
+    return (regressed, lines)
+
+
 def _fmt_pct(n, d):
     return f"{(100.0*n/d):.0f}%" if d else "  -"
 
@@ -198,6 +228,25 @@ def main(argv=None) -> int:
             "aggregate": a, "tasks": results,
         }, indent=2, default=str))
         print(f"\n-> wrote baseline {BASELINE_PATH}")
+        return 0
+
+    # Enforcement: compare to the committed baseline and exit non-zero on a
+    # negative delta (mirrors the serve bench.py contract). --task narrows the
+    # population, so skip the gate there.
+    if args.task:
+        print("\n[skip gate] --task narrows the population; run the full "
+              "corpus to enforce against the baseline.")
+        return 0
+    base_agg = _load_baseline().get("aggregate")
+    regressed, lines = _check_regression(a, base_agg)
+    print("\n=== vs committed baseline ===")
+    for ln in lines:
+        print(ln)
+    if regressed:
+        print("\n[!] REGRESSION DETECTED vs bench_baseline_hit.json. "
+              "Investigate before pushing.")
+        return 1
+    print("\n[OK] No regression vs committed hit baseline.")
     return 0
 
 

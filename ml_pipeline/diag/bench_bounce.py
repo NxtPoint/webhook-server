@@ -7,16 +7,31 @@ LOCAL-ONLY — not CI-gated. The serve `bench.py` is the only CI gate
 that gate. This bench runs against the live prod DB (the dev box's IP is
 allowlisted) plus S3-hosted corpus labels from `training/labels/`.
 
-Usage:
-    python -m ml_pipeline.diag.bench_bounce
-    python -m ml_pipeline.diag.bench_bounce --task <UUID>      # single task
-    python -m ml_pipeline.diag.bench_bounce --threshold 0.45   # override
+Usage (PROD-config run that locks the baseline — must pass the candidate
+mode + weights or you measure STOPGAP random init, not the deployed model):
+    BOUNCE_CANDIDATE_MODE=gravity_residual \
+    python -m ml_pipeline.diag.bench_bounce \
+        --threshold 0.70 \
+        --weights-path ml_pipeline/models/bounce_detector_v2_7match.pt
 
-v0 expectations (STOPGAP-untrained):
-  - recall ~0%, precision ~0%
-  - the bench MUST run end-to-end without exceptions
-  - this proves the plumbing works (DB reads + pre-gates + features + scoring)
-  - once trained weights land, baseline values lock in `bench_baseline_bounce.json`
+    python -m ml_pipeline.diag.bench_bounce ... --task <UUID>   # single task (gate skipped)
+    python -m ml_pipeline.diag.bench_bounce ... --update-baseline  # re-lock after a real change
+
+ENFORCEMENT: a plain run compares the labelled-task AGGREGATE (matched count
++ precision%) to `bench_baseline_bounce.json` and exits non-zero on a
+negative delta — same contract as the serve `bench.py`. `--task` narrows the
+population so the gate is skipped there.
+
+Baseline locked 2026-06-14 (prod config: gravity_residual + thr 0.70 +
+bounce_detector_v2_7match.pt): recall 18.2% / precision 23.3% / over_x 0.78
+(matched 137 / floor 752 / emit 589 across 5 labelled corpus tasks). This is
+the live floor — recall is training-gated (lifts with the sharp-far retrain,
+DoD #8). The 3 zero-label corpus tasks are excluded from the aggregate
+(memory `stored_rows_blind_to_scoring_population`).
+
+NOTE: the per-task numbers depend on BOTH `BOUNCE_CANDIDATE_MODE` and
+`--weights-path`. Omitting either runs STOPGAP random init -> emit 0 -> a
+FALSE all-zero "regression". Always pass the prod config shown above.
 
 Metrics per task:
   - candidates           : raw is_bounce flags pulled from bronze
@@ -243,21 +258,77 @@ def _save_baseline(data: dict) -> None:
         json.dump(data, f, indent=2, sort_keys=True)
 
 
-def _ensure_baseline_seed() -> None:
-    """Create the baseline file as an empty stub if missing. v0 doesn't
-    lock-in numbers (untrained model) but committing the stub means the
-    next session has a place to write trained-weight metrics into."""
-    if BASELINE_PATH.exists():
-        return
-    stub = {
-        "_note": "bench_bounce baseline — v0 STOPGAP, no values locked yet. "
-                 "Next session: train v1, run `python -m ml_pipeline.diag.bench_bounce "
-                 "--update-baseline`, commit.",
-        "updated_at": date.today().isoformat(),
-        "commit": _git_sha(),
-        "fixtures": {},
+def _load_baseline() -> dict:
+    if not BASELINE_PATH.exists():
+        return {}
+    with open(BASELINE_PATH) as f:
+        return json.load(f)
+
+
+def _aggregate(results: list[dict]) -> dict:
+    """Roll the per-task results up into the headline gate metrics.
+
+    PRECISION-FAIR POPULATION: only tasks that actually HAVE floor labels
+    count. Zero-label corpus tasks (no SA ground-bounce coverage) emit
+    candidates that can never match — counting their emissions as all-FP
+    tanks precision ~3x (memory `stored_rows_blind_to_scoring_population`).
+    The threshold sweep that set the floor used the same labelled-only
+    population, so the bench must too or the numbers don't reconcile.
+    """
+    labelled = [r for r in results
+                if "error" not in r and r.get("corpus_floor_labels", 0) > 0]
+    floor = sum(r["corpus_floor_labels"] for r in labelled)
+    matched = sum(r["matched"] for r in labelled)
+    emitted = sum(r["emitted"] for r in labelled)
+    return {
+        "labelled_tasks": len(labelled),
+        "floor_labels": floor,
+        "matched": matched,
+        "emitted": emitted,
+        "recall_pct": round(100.0 * matched / floor, 2) if floor else 0.0,
+        "precision_pct": round(100.0 * matched / emitted, 2) if emitted else 0.0,
+        "over_emission_x": round(emitted / floor, 3) if floor else None,
     }
-    _save_baseline(stub)
+
+
+# Enforcement tolerance: integer counts can wobble ±1 between runs (corpus
+# row ordering / NMS ties) without being a real regression. Recall/precision
+# are derived, so we gate on the integer matched count and on precision% not
+# slipping more than this many points.
+MATCHED_SLACK = 1
+PRECISION_SLACK_PP = 1.0
+
+
+def _check_regression(agg: dict, base_agg: dict | None) -> tuple[bool, list[str]]:
+    """Compare the current aggregate to the committed baseline aggregate.
+
+    Mirrors the serve `bench.py` contract: a negative delta on a tracked
+    axis (matched count, or precision%) is a regression and exits non-zero.
+    Returns (any_regression, human_lines).
+    """
+    if not base_agg:
+        return (False, ["(no committed baseline aggregate — nothing to compare)"])
+    lines: list[str] = []
+    regressed = False
+
+    dm = agg["matched"] - base_agg.get("matched", 0)
+    tag = "" if dm >= -MATCHED_SLACK else "  [!] REGRESSION"
+    if tag:
+        regressed = True
+    lines.append(f"  matched     {agg['matched']:>5} vs {base_agg.get('matched', 0):<5} "
+                 f"(delta {dm:+d}){tag}")
+
+    dp = agg["precision_pct"] - base_agg.get("precision_pct", 0.0)
+    tag = "" if dp >= -PRECISION_SLACK_PP else "  [!] REGRESSION"
+    if tag:
+        regressed = True
+    lines.append(f"  precision%  {agg['precision_pct']:>5.1f} vs {base_agg.get('precision_pct', 0.0):<5.1f} "
+                 f"(delta {dp:+.1f}pp){tag}")
+
+    dr = agg["recall_pct"] - base_agg.get("recall_pct", 0.0)
+    lines.append(f"  recall%     {agg['recall_pct']:>5.1f} vs {base_agg.get('recall_pct', 0.0):<5.1f} "
+                 f"(delta {dr:+.1f}pp)  [informational — gate is matched+precision]")
+    return (regressed, lines)
 
 
 def main(argv=None) -> int:
@@ -283,8 +354,6 @@ def main(argv=None) -> int:
     ap.add_argument("--json-out", default=None,
                     help="Optional path to dump the per-task JSON report")
     args = ap.parse_args(argv)
-
-    _ensure_baseline_seed()
 
     from db_init import engine
     with engine.connect() as conn:
@@ -342,16 +411,26 @@ def main(argv=None) -> int:
             f"{prec_str:>6} {mean_str:>8} {med_str:>8} {p90_str:>8}"
         )
 
+    agg = _aggregate(results)
     print()
+    print("-" * 88)
+    print(f"AGGREGATE (labelled tasks only, n={agg['labelled_tasks']}): "
+          f"matched {agg['matched']}/{agg['floor_labels']} "
+          f"(recall {agg['recall_pct']:.1f}%)  "
+          f"emit {agg['emitted']} (precision {agg['precision_pct']:.1f}%, "
+          f"over_x {agg['over_emission_x']})")
+
     json_report = {
         "commit": _git_sha(),
         "generated_at": date.today().isoformat(),
         "dist_tol_m": args.dist_tol_m,
         "time_tol_s": args.time_tol_s,
         "threshold_override": args.threshold,
+        "weights_path": args.weights_path,
+        "candidate_mode": __import__("os").environ.get("BOUNCE_CANDIDATE_MODE", "is_bounce"),
+        "aggregate": agg,
         "tasks": results,
     }
-    print(json.dumps(json_report, indent=2, default=str))
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(json_report, indent=2, default=str))
@@ -361,12 +440,38 @@ def main(argv=None) -> int:
         new_baseline = {
             "updated_at": date.today().isoformat(),
             "commit": _git_sha(),
+            "weights_path": args.weights_path,
+            "threshold": args.threshold,
+            "candidate_mode": json_report["candidate_mode"],
+            "dist_tol_m": args.dist_tol_m,
+            "time_tol_s": args.time_tol_s,
+            "aggregate": agg,
             "fixtures": {r["task"]: r for r in results if "error" not in r},
         }
         _save_baseline(new_baseline)
         print(f"\n-> wrote new baseline to {BASELINE_PATH}")
         print("   Commit it: git add ml_pipeline/diag/bench_baseline_bounce.json")
+        return 0
 
+    # Enforcement: compare aggregate to the committed baseline. A negative
+    # delta on matched or precision is a regression -> non-zero exit (mirrors
+    # the serve bench.py contract). When --task narrows the run, the aggregate
+    # population differs from the full-corpus baseline, so skip the gate.
+    if args.task:
+        print("\n[skip gate] --task narrows the population; "
+              "run the full corpus to enforce against the baseline.")
+        return 0
+    base = _load_baseline()
+    base_agg = base.get("aggregate")
+    regressed, lines = _check_regression(agg, base_agg)
+    print("\n=== vs committed baseline ===")
+    for ln in lines:
+        print(ln)
+    if regressed:
+        print("\n[!] REGRESSION DETECTED vs bench_baseline_bounce.json. "
+              "Investigate before pushing (rule #9 spirit).")
+        return 1
+    print("\n[OK] No regression vs committed bounce baseline.")
     return 0
 
 

@@ -1,0 +1,12 @@
+{
+  "updated_at": "2026-06-14",
+  "commit": "bdcac6a",
+  "tasks": [
+    "880dff02-58bd-412c-9a29-5c5151004447",
+    "a798eff0-551f-4b5a-838f-7933866a727c",
+    "78c32f53-5580-4a88-a4e7-7506e59b2b52"
+  ],
+  "floor": 0.9,
+  "weighted_agreement": 1.0,
+  "n_changeovers": 14
+}

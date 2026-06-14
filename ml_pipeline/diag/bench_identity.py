@@ -37,11 +37,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from collections import Counter
+from datetime import date
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text as sql_text
+
+BASELINE_PATH = Path("ml_pipeline/diag/bench_baseline_identity.json")
+# Enforcement slack: the weighted agreement is a fraction; allow a tiny
+# epsilon for float wobble. The real gate is "agreement must not drop below
+# the locked baseline" (and the baseline must stay >= the ADR-03 floor).
+AGREEMENT_SLACK = 0.001
 
 # Default fixture set — the two bench-locked T5 matches + the spec's "Match 1"
 # pointer (78c32f53). All three are Tomo vs Jimbo Ma on prod, the most
@@ -302,6 +311,33 @@ def _print_human(results: List[dict]) -> None:
             print(f"    ... +{len(r['segments']) - 30} more")
 
 
+def _git_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    except Exception:
+        return "unknown"
+
+
+def _weighted_agreement(results: List[dict]) -> Tuple[Optional[float], int]:
+    """Roll per-task agreement into the headline weighted figure + n.
+    Returns (weighted_fraction or None, total ITF-expected changeovers)."""
+    s = 0.0
+    n = 0
+    for r in results:
+        if r.get("agreement_pct") is not None:
+            s += r["agreement_pct"] * r["agreement_n"]
+            n += r["agreement_n"]
+    return (s / n if n else None, n)
+
+
+def _load_baseline() -> dict:
+    if not BASELINE_PATH.exists():
+        return {}
+    with open(BASELINE_PATH) as f:
+        return json.load(f)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", action="append", default=None,
@@ -310,6 +346,9 @@ def main(argv=None) -> int:
     ap.add_argument("--json", default=None,
                     help="Write full results to JSON path (in addition to "
                          "human output)")
+    ap.add_argument("--update-baseline", action="store_true",
+                    help="Write the current weighted agreement as the locked "
+                         "baseline (commit it).")
     args = ap.parse_args(argv)
 
     tasks = args.task or DEFAULT_TASKS
@@ -339,6 +378,55 @@ def main(argv=None) -> int:
             json.dump({"results": results, "floor": AGREEMENT_FLOOR},
                       f, indent=2)
         print(f"\nWrote JSON results to {args.json}")
+
+    weighted, n = _weighted_agreement(results)
+
+    if args.update_baseline:
+        if weighted is None:
+            print("[ABORT] no SA cross-reference data — cannot lock a baseline.",
+                  file=sys.stderr)
+            return 1
+        BASELINE_PATH.write_text(json.dumps({
+            "updated_at": date.today().isoformat(),
+            "commit": _git_sha(),
+            "tasks": tasks,
+            "floor": AGREEMENT_FLOOR,
+            "weighted_agreement": round(weighted, 4),
+            "n_changeovers": n,
+        }, indent=2))
+        print(f"\n-> wrote new baseline to {BASELINE_PATH}")
+        print("   Commit it: git add ml_pipeline/diag/bench_baseline_identity.json")
+        return 0
+
+    # Enforcement (mirrors the serve bench.py contract): the weighted
+    # agreement must not drop below the committed baseline, and must stay
+    # >= the ADR-03 floor. --task narrows the population so the gate is
+    # skipped (the baseline is locked on the default 3-task set).
+    if args.task:
+        print("\n[skip gate] --task narrows the population; run the default "
+              "task set to enforce against the baseline.")
+        return 0
+    base = _load_baseline()
+    base_agree = base.get("weighted_agreement")
+    print("\n=== vs committed baseline ===")
+    if base_agree is None:
+        print("  (no committed baseline — nothing to compare)")
+        return 0
+    if weighted is None:
+        print("  [!] no SA cross-reference this run but baseline expects one "
+              "-> REGRESSION (lost the reference data).")
+        return 1
+    delta = weighted - base_agree
+    print(f"  weighted agreement  {100*weighted:5.1f}% vs {100*base_agree:5.1f}% "
+          f"(delta {100*delta:+.1f}pp)")
+    if delta < -AGREEMENT_SLACK:
+        print("\n[!] REGRESSION DETECTED vs bench_baseline_identity.json. "
+              "Investigate before pushing.")
+        return 1
+    if weighted < AGREEMENT_FLOOR - AGREEMENT_SLACK:
+        print(f"\n[!] below ADR-03 floor (>= {100*AGREEMENT_FLOOR:.0f}%).")
+        return 1
+    print("\n[OK] No regression vs committed identity baseline.")
     return 0
 
 
