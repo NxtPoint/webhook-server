@@ -411,6 +411,53 @@ def _lookup_dominant_hand(conn: Connection, task_id: str) -> bool:
 
 
 # ============================================================
+# Bounce source — the MODEL table, not the legacy is_bounce flag
+# ============================================================
+
+def _bounce_from_model_enabled() -> bool:
+    """Silver takes bounce coords from the bounce MODEL (`ml_analysis.ball_bounces`,
+    the CNN's curated court-coord events) verbatim, NOT the legacy is_bounce
+    velocity-reversal flag on `ball_detections`. Default ON (2026-06-14, the
+    bronze-MODEL-first rule #1/#2). Set `T5_BOUNCE_FROM_MODEL=0` to fall back to
+    is_bounce. Env-rollback pattern (feedback_env_var_rollback_pattern)."""
+    return os.getenv("T5_BOUNCE_FROM_MODEL", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _load_bounce_index(conn: Connection, job_id: str):
+    """Return [(frame_idx, court_x, court_y, speed_kmh, is_in), …] ordered by
+    frame_idx — the bounce set the stroke→bounce coordinate join consumes.
+
+    Source = the bounce MODEL (`ml_analysis.ball_bounces`) when enabled (default)
+    AND it has rows for this job; otherwise the legacy is_bounce flag. The model
+    table carries no speed / in-bounds, so those come back None (ball_speed is
+    nullable; is_in is unused downstream). The model is EMPTY on pre-rev-66 tasks
+    — those fall through to is_bounce automatically, so no task regresses to zero
+    bounces. The tuple shape matches the legacy query exactly, so callers are
+    unchanged. MAIN-ONLY on the is_bounce fallback keeps roi-source bounces out
+    of silver (the model table is already curated, so no such filter needed)."""
+    if _bounce_from_model_enabled():
+        rows = conn.execute(sql_text("""
+            SELECT frame_idx, court_x, court_y,
+                   NULL::float AS speed_kmh, NULL::boolean AS is_in
+            FROM ml_analysis.ball_bounces
+            WHERE job_id::text = :jid
+              AND court_x IS NOT NULL AND court_y IS NOT NULL
+            ORDER BY frame_idx
+        """), {"jid": job_id}).fetchall()
+        if rows:
+            return rows
+        logger.info("T5 bounce source: ball_bounces empty for job=%s — "
+                    "falling back to legacy is_bounce", job_id)
+    return conn.execute(sql_text(f"""
+        SELECT frame_idx, court_x, court_y, speed_kmh, is_in
+        FROM ml_analysis.ball_detections
+        WHERE job_id = :jid AND is_bounce = TRUE AND {MAIN_ONLY_WHERE}
+          AND court_x IS NOT NULL AND court_y IS NOT NULL
+        ORDER BY frame_idx
+    """), {"jid": job_id}).fetchall()
+
+
+# ============================================================
 # T5 PASS 1 (bounce-driven): one bounce → one silver row
 # ============================================================
 
@@ -984,15 +1031,10 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
     is_left_handed = _lookup_dominant_hand(conn, task_id)
 
-    # Bounce index (court coords only) for the stroke→bounce join. MAIN-ONLY:
-    # keep roi-source bounces out of silver's bounce set (see Step 1 note).
-    bounce_rows = conn.execute(sql_text(f"""
-        SELECT frame_idx, court_x, court_y, speed_kmh, is_in
-        FROM ml_analysis.ball_detections
-        WHERE job_id = :jid AND is_bounce = TRUE AND {MAIN_ONLY_WHERE}
-          AND court_x IS NOT NULL AND court_y IS NOT NULL
-        ORDER BY frame_idx
-    """), {"jid": job_id}).fetchall()
+    # Bounce index (court coords only) for the stroke→bounce join. Source = the
+    # bounce MODEL (ml_analysis.ball_bounces) verbatim when present, else the
+    # legacy is_bounce flag (pre-rev-66 tasks). See _load_bounce_index.
+    bounce_rows = _load_bounce_index(conn, job_id)
     bounce_frames = [b[0] for b in bounce_rows]
 
     # Windows / thresholds mirror the bounce-driven path.
