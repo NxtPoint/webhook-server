@@ -8,7 +8,7 @@
 **Bench:** floor `ea1e500c=12/26` + `880dff02=23/24`. Green, CI green.
 **What shipped:** bounce CNN threshold 0.5→0.70 (env `BOUNCE_CNN_THRESHOLD`, `b4bf5ac`) — offline-proven precision 11%→23% (2.1×), over-emission 1.88×→0.78×, −2.5pp recall (training-gated).
 **What's blocked:** lever B (silver inherits ball_bounces) — 3 preconditions unmet (carry + accuracy + architecture). See below.
-**Next session's job:** EITHER (1) resolve the bounce-driven-vs-hit-driven silver architecture question with Tomo (lever B precondition c — likely redirects lever B entirely), OR (2) progress the sharp-far retrain (the only thing that lifts bounce/hit recall). Both are training/architecture, not quick build levers.
+**Next session's job:** silver architecture is now SETTLED (hit-driven, see §"⛔ LEVER B"). The one remaining bottleneck for both bounce recall AND the hit-driven flip = **sharp-far retrain** (lift the hit model's far WHO-attribution from ~6/51) — accrues from new full-res uploads. After that: flip T5 Pass-1 to insert from `stroke_events`, demote bounce to a Pass-2 enricher. Training/architecture work, not quick build levers.
 
 ---
 
@@ -37,7 +37,9 @@
 1. **Empty table.** `ml_analysis.ball_bounces` = **0 rows on all 8 corpus tasks** (measured). "Survives re-ingest" (`__main__.py:295`) only holds for NEW post-rev-66 tasks; older/re-ingested have none. Flip → silver collapses to 0 rows on the existing corpus. Needs the export+reingest carry (like roi_far_ball got).
 2. **Not accurate enough.** Model @ 0.70 = 18% recall, ~589 rows vs is_bounce's ~2,669 (5 tasks) — different + 4.5× smaller population. Driving row-gen off an 18%-recall fact regresses. Recall is training-gated.
 3. **★ Wrong axle.** Silver should be HIT-driven not bounce-driven (memory `silver_must_be_hit_driven`). Swapping is_bounce→ball_bounces makes a *better-sourced but still bounce-driven* Pass-1 — it does NOT achieve purity. Real fix = hit-driven row-gen, gated on the hit model (B2, gate not met). Stroke-driven path is committed OFF behind `T5_STROKE_DRIVEN_SILVER`.
-**→ DECISION FOR TOMO (precondition c):** lever B as literally specified may be SUPERSEDED by hit-driven row-gen. Resolve "bounce-driven vs hit-driven silver" BEFORE building any bounce-model→silver plumbing, or it's wasted work. This session did NOT flip silver and did NOT add speculative plumbing to the delicate `build_silver_match_t5.py`.
+**✅ ARCHITECTURE QUESTION SETTLED 2026-06-14 (precondition c — probe ladder on live SA data): HIT-DRIVEN.** Every SA swing has hit coords (100%/2,380 swings); bounce stream is multi-typed at 1.12× swings (not 1:1 with shots); **prod SA silver is ALREADY hit-driven** (`build_silver_v2.py:357` inserts 1 row/`player_swing`, Pass-2 `:376` matches bounce in as UPDATE) — only T5 Pass-1 is bounce-driven (the outlier). Writeup: north_star §"SILVER ROW ARCHITECTURE", memory `silver_must_be_hit_driven`.
+**→ LEVER B REDIRECTED:** "deprecate is_bounce → inherit ball_bounces" was the WRONG axle (keeps T5 bounce-driven). Real fix = **T5 Pass-1 inserts from the HIT stream `ml_analysis.stroke_events`** (mirror SA's player_swing insert) + bounce MODEL `ml_analysis.ball_bounces` demoted to the **Pass-2 coordinate enricher** (matched into each hit row, like SA Pass-2). Lever A's precision feeds this. This session did NOT flip silver / add speculative plumbing (rule #11).
+**→ STILL GATED on enablement:** flip is gated on the T5 hit model's far-side WHO-attribution (far ~6/51; emission fine — B1 anchor recall 94-96% balanced near/far) — same sharp-far retrain bottleneck. NEXT bounce/silver work = lift far attribution (sharp-far retrain), THEN flip T5 Pass-1 hit-driven + demote bounce to Pass-2.
 
 ---
 
