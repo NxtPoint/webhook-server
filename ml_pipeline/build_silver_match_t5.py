@@ -1170,12 +1170,14 @@ def _stroke_driven_enabled() -> bool:
     not consumed by prod, so the old "wait until bronze is right" hold (rule #11)
     no longer blocks the flip — accuracy fills in at training, the architecture
     is correct now. Set T5_STROKE_DRIVEN_SILVER=0 to roll back to bounce-driven.
-    Residual heuristics still in this path are bronze-MODEL-first with documented
-    STOPGAP fallbacks: swing_type prefers the bronze classifier (`stroke_class`),
-    falling to _infer_swing_type only when the swing model didn't classify (swing
-    is the NEXT model); bounce coords still read is_bounce (the bounce MODEL
-    ball_bounces is empty on existing tasks — lever-B detail, swaps in once it's
-    carried through re-ingest + accrued from new uploads).
+    Swing_type is now projected VERBATIM from the bronze classifier
+    (`stroke_class`, 4-class incl. `other`); the silver pose/position heuristics
+    were DELETED 2026-06-14 (ADR-02 revision) — no swing inference here at all.
+    Two documented residuals remain (NOT swing heuristics): (1) the `volley`
+    flag is still a net-distance stopgap (VOLLEY_NET_DISTANCE_M) until the volley
+    fact lands (derive + validate vs SA player_swing.volley); (2) bounce coords
+    still read is_bounce (the bounce MODEL ball_bounces is empty on existing
+    tasks — swaps in once it's carried through re-ingest + accrued from uploads).
     """
     return os.getenv("T5_STROKE_DRIVEN_SILVER", "1").strip().lower() in ("1", "true", "yes", "on")
 
