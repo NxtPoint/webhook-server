@@ -33,6 +33,7 @@
 - ~~`T5_SERVE_FROM_EVENTS`~~ — **DELETED 2026-06-07**: the serve-events overlay is now unconditional and the legacy geometric serve path it toggled against was removed from `build_silver_match_t5.py` (pure bronze import, Tomo directive). Setting the env var does nothing.
 - `T5_SERVE_EVENTS_MIN_CONF=0.0` — min serve_event confidence silver inherits. `0.0` = literally everything verbatim (Tomo, 2026-06-06); raise only if a bronze-quality gate is ever needed again.
 - `SERVE_MODEL_STAGE=1` — **Batch job-def env, not Render**: run the serve-candidates scoring stage after the ROI sweep (rev 73+). Set `0` on the job-def to skip the stage (rollback, no rebuild).
+- `BOUNCE_CNN_THRESHOLD=0.70` — **Batch-side** (`ml_pipeline/__main__.py` bounce stage): CNN score cutoff for `ml_analysis.ball_bounces`. Tuned 2026-06-14 via the offline corpus sweep (`.claude/tmp/bounce_precision_sweep.py`, 5 labelled tasks): default raised 0.5→0.70 → precision 11%→23% (2.1×), over-emission 1.88×→0.78×, −2.5pp recall (recall is training-gated). Lower it to recover recall once the CNN is retrained on sharp-far footage. Env-tunable on the job-def, no Batch rebuild.
 
 **Legacy (Wix payment transition — remove when own payment auth is built):**
 `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`, `WIX_NOTIFY_TIMEOUT_S`, `WIX_NOTIFY_RETRIES`

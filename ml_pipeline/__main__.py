@@ -329,11 +329,20 @@ def _run_batch(job_id: str, s3_key: str, practice: bool = False):
                             (float(_pd.court_x), float(_pd.court_y)))
                 _last = max((b["frame_idx"] for b in _balls), default=0)
                 _rally = {fi: "in_rally" for fi in range(_last + 1)}
+                # Bounce CNN cutoff. Tuned 2026-06-14 via the offline corpus
+                # threshold sweep (.claude/tmp/bounce_precision_sweep.py over the
+                # 5 labelled corpus tasks): 0.5 -> 0.70 lifts precision 11%->23%
+                # (2.1x) and erases the 1.88x over-emission (over_x ->0.78) for
+                # only -2.5pp recall — and recall is training-gated anyway
+                # (sharp-far retrain pending, memory far_roi_payoff_is_scorer_
+                # training_gated). Env-configurable so future tuning is a Render/
+                # job-def env flip, no Batch rebuild (env_var_rollback_pattern).
+                _bthr = float(_os.environ.get("BOUNCE_CNN_THRESHOLD", "0.70"))
                 _bev = detect_bounces_offline(
                     task_id=job_id, fps=float(_BFPS), ball_rows=_balls,
                     wrists_by_frame=_wrists, rally_by_frame=_rally,
                     weights_path=_bw, candidate_mode="gravity_residual",
-                    threshold_override=0.5,
+                    threshold_override=_bthr,
                 )
                 # D2 (2026-06-07): fill NULL court coords by projecting the
                 # ball's IMAGE position at the bounce frame. Ball court
