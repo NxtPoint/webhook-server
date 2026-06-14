@@ -2,67 +2,79 @@
 # ============================================================
 # Render Cron Job — runs every 5 minutes (configured in Render dashboard).
 #
-# Phase 5c.3 closure: auto-spawned T5 tasks have no polling browser to open
-# the ingest gate in /upload/api/task-status, so they sit in
-# last_status='queued' indefinitely despite Batch having succeeded.
+# ONE Render cron fires BOTH orphan sweeps (kept in this single script on
+# purpose — a second Render cron would cost extra; two HTTP calls cost nothing):
 #
-# This cron fires a single authenticated POST to:
-#   POST https://api.nextpointtennis.com/ops/sweep-t5-orphans
-#   body: {"dry_run": false}
+#   1. POST /ops/sweep-t5-orphans  — tennis_singles_t5 tasks whose Batch run
+#      completed but whose Render-side ingest never fired (auto-spawned T5 tasks
+#      have no polling browser to open the ingest gate in /upload/api/task-status).
 #
-# The endpoint (upload_app.py / cleanup or upload_app inline) scans for
-# tennis_singles_t5 tasks where:
-#   - bronze.submission_context.ingest_started_at IS NULL
-#   - ml_analysis.video_analysis_jobs.status = 'complete'
-#   - age >= 5 minutes (min_age_minutes default)
-# and fires _start_ingest_background for each.
+#   2. POST /ops/sweep-sa-orphans  — tennis_singles (SportAI) tasks that finished
+#      on SportAI's side but whose ingest never fired. The SA completion→ingest
+#      gate ALSO lives in the browser-polled /upload/api/task-status, so an
+#      unattended dual-submit re-run (upload a batch, close the tab) leaves SA
+#      tasks stuck in last_status='processing' → the T5 twin never spawns → no
+#      corpus row lands. This is the SA-side twin of the T5 sweep (rule #10).
 #
-# Idempotent (inner ingest gate checks ingest_started_at + staleness;
-# ml_analysis.training_corpus has a UNIQUE constraint downstream).
+# Both endpoints are idempotent (inner ingest gate checks ingest_started_at +
+# staleness; training_corpus has a UNIQUE constraint downstream).
 #
 # Required env vars:
 #   OPS_KEY — used as X-Ops-Key auth header
 #
 # Optional env vars:
-#   SWEEP_T5_ORPHANS_URL — override target URL (default: prod api.nextpointtennis.com)
+#   SWEEP_T5_ORPHANS_URL — override the T5 target URL (default prod)
+#   SWEEP_SA_ORPHANS_URL — override the SA target URL (default prod)
+#   SWEEP_ORPHANS_BASE_URL — override the base for BOTH (default prod api)
 #   SWEEP_T5_ORPHANS_LIMIT — override max tasks per sweep (default: server-side 50)
 # ============================================================
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 
 key = (os.environ.get("OPS_KEY") or "").strip()
 if not key:
     raise RuntimeError("Missing OPS_KEY")
 
-url = os.environ.get("SWEEP_T5_ORPHANS_URL") or "https://api.nextpointtennis.com/ops/sweep-t5-orphans"
+base = (os.environ.get("SWEEP_ORPHANS_BASE_URL") or "https://api.nextpointtennis.com").rstrip("/")
+t5_url = os.environ.get("SWEEP_T5_ORPHANS_URL") or f"{base}/ops/sweep-t5-orphans"
+sa_url = os.environ.get("SWEEP_SA_ORPHANS_URL") or f"{base}/ops/sweep-sa-orphans"
 
-body = {"dry_run": False}
-limit = os.environ.get("SWEEP_T5_ORPHANS_LIMIT")
-if limit:
+_body = {"dry_run": False}
+_limit = os.environ.get("SWEEP_T5_ORPHANS_LIMIT")
+if _limit:
     try:
-        body["limit"] = int(limit)
+        _body["limit"] = int(_limit)
     except ValueError:
-        print(f"SWEEP-T5: ignoring invalid SWEEP_T5_ORPHANS_LIMIT={limit!r}", file=sys.stderr)
+        print(f"SWEEP: ignoring invalid SWEEP_T5_ORPHANS_LIMIT={_limit!r}", file=sys.stderr)
 
-req = urllib.request.Request(
-    url,
-    data=json.dumps(body).encode("utf-8"),
-    headers={
-        "Content-Type": "application/json",
-        "X-Ops-Key": key,
-    },
-    method="POST",
-)
 
-try:
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read().decode("utf-8")
-        print(raw)
-except urllib.error.HTTPError as e:
-    print(f"SWEEP-T5: HTTP {e.code} {e.reason}: {e.read().decode('utf-8', errors='replace')}", file=sys.stderr)
-    sys.exit(1)
-except urllib.error.URLError as e:
-    print(f"SWEEP-T5: URL error: {e.reason}", file=sys.stderr)
-    sys.exit(1)
+def _post_sweep(name: str, url: str) -> bool:
+    """POST one sweep; print its response. Returns False on HTTP/URL error.
+    Failures are isolated so one sweep failing never blocks the other."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(_body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Ops-Key": key},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            print(f"{name}: {resp.read().decode('utf-8')}")
+            return True
+    except urllib.error.HTTPError as e:
+        print(f"{name}: HTTP {e.code} {e.reason}: "
+              f"{e.read().decode('utf-8', errors='replace')}", file=sys.stderr)
+    except urllib.error.URLError as e:
+        print(f"{name}: URL error: {e.reason}", file=sys.stderr)
+    return False
+
+
+ok_t5 = _post_sweep("SWEEP-T5", t5_url)
+ok_sa = _post_sweep("SWEEP-SA", sa_url)
+
+# Non-zero exit only if BOTH failed (so a transient single-endpoint blip doesn't
+# red the cron when the other swept fine).
+sys.exit(0 if (ok_t5 or ok_sa) else 1)

@@ -4259,6 +4259,102 @@ def ops_sweep_t5_orphans():
     return jsonify(result), 200
 
 
+@app.post("/ops/sweep-sa-orphans")
+def ops_sweep_sa_orphans():
+    """Catch up SportAI (tennis_singles) tasks that finished on SportAI's side
+    but whose Render ingest never fired — the SA-side twin of
+    /ops/sweep-t5-orphans (rule #10).
+
+    The SA completion→ingest gate lives in /upload/api/task-status, which only
+    runs when a BROWSER polls it. On an unattended dual-submit re-run (upload a
+    batch, close the tab), SportAI completes in minutes but the SA task sits in
+    `last_status='processing'` forever — so the T5 twin never auto-spawns and no
+    corpus row lands. This sweep is the server-side poller that closes that gap.
+
+    Unlike the T5 sweep, "SportAI is done" is NOT in our DB — so the worker calls
+    `_sportai_status(task_id)` per candidate and fires `_start_ingest_background`
+    only for tasks SportAI has actually finished (result_url present). The SA
+    ingest then fires `_auto_dual_submit_t5` exactly as the browser path does.
+
+    Idempotent: the inner ingest gate checks `ingest_started_at` + staleness, so
+    a live/finished ingest is never double-run; the dual-submit + corpus hooks
+    are UNIQUE-guarded downstream.
+
+    Body (all optional): {"dry_run": true, "limit": 50, "min_age_minutes": 5}.
+    `min_age_minutes` avoids racing the normal browser-poll path on fresh uploads.
+    Header-only auth (OPS_KEY). Safe to re-run (paired with the T5 sweep in
+    cron_sweep_t5_orphans.py — one Render cron does both)."""
+    if not _guard():
+        return Response("Forbidden", 403)
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run", True))
+    limit = int(body.get("limit", 50))
+    min_age_minutes = int(body.get("min_age_minutes", 5))
+    if limit < 1 or limit > 500:
+        return jsonify({"ok": False, "error": "limit must be in [1, 500]"}), 400
+    if min_age_minutes < 0 or min_age_minutes > 1440:
+        return jsonify({"ok": False, "error": "min_age_minutes must be in [0, 1440]"}), 400
+
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(sql_text("""
+                SELECT sc.task_id::text AS task_id,
+                       sc.last_status,
+                       sc.last_status_at
+                  FROM bronze.submission_context sc
+                 WHERE sc.sport_type = 'tennis_singles'
+                   AND sc.deleted_at IS NULL
+                   AND sc.ingest_started_at IS NULL
+                   AND sc.ingest_finished_at IS NULL
+                   AND sc.last_status_at < NOW() - (:age || ' minutes')::interval
+                   -- skip terminal FAILURES (SportAI will never produce a result);
+                   -- keep 'completed' — a completed-but-not-ingested task is the
+                   -- prime stuck case this sweep exists to catch.
+                   AND lower(coalesce(sc.last_status, '')) NOT IN
+                       ('canceled', 'cancelled', 'failed', 'error')
+                 ORDER BY sc.last_status_at ASC
+                 LIMIT :lim
+            """), {"age": str(min_age_minutes), "lim": limit}).mappings().all()
+    except Exception as e:
+        app.logger.exception("OPS SWEEP-SA-ORPHANS query failed")
+        return jsonify({"ok": False, "error": f"{e.__class__.__name__}: {e}"}), 500
+
+    candidates = [dict(r) for r in rows]
+    result = {"ok": True, "dry_run": dry_run, "found": len(candidates), "triggered": []}
+
+    if dry_run:
+        result["sample"] = [
+            {"task_id": o["task_id"], "last_status": o["last_status"],
+             "last_status_at": str(o["last_status_at"])}
+            for o in candidates[:10]
+        ]
+        return jsonify(result), 200
+
+    def _worker(items: list) -> None:
+        for it in items:
+            tid = it["task_id"]
+            try:
+                live = _sportai_status(tid)
+                result_url = (live or {}).get("result_url")
+                if result_url:
+                    ok = _start_ingest_background(tid, result_url)
+                    app.logger.info(
+                        "SWEEP-SA-ORPHANS task_id=%s sportai_done=1 started=%s", tid, ok)
+                else:
+                    app.logger.info(
+                        "SWEEP-SA-ORPHANS task_id=%s sportai_not_ready status=%s",
+                        tid, (live or {}).get("status"))
+            except Exception as exc:
+                app.logger.exception("SWEEP-SA-ORPHANS task_id=%s error: %s", tid, exc)
+
+    threading.Thread(target=_worker, args=(candidates,), daemon=True).start()
+    # "triggered" here = candidates queued for a SportAI check + ingest-if-done
+    # (the worker skips any SportAI hasn't finished). See logs for per-task result.
+    result["triggered"] = [{"task_id": o["task_id"]} for o in candidates]
+    return jsonify(result), 200
+
+
 # ==========================
 # SQL HELPERS FOR QUICK INSPECTION
 # ==========================
