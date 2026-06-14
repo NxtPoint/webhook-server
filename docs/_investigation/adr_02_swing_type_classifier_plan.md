@@ -1,9 +1,49 @@
 # ADR-02: Swing-type classifier training plan
 
-**Status:** APPROVED 2026-05-28. Corpus extractor SHIPPED 2026-05-28 (`ml_pipeline/training/label_swing_types.py` + dual-kind `_label_pair_now`). Model still pending — needs ~5-10 more dual-submit matches (~2-3k labels) before v1 training. Today: 3 backfilled pairs (775 labels) + Corpus 4 (~397) auto-lands via hook.
+**Status:** APPROVED 2026-05-28. **REVISED 2026-06-14 (Tomo) — class set finalised `{fh, bh, overhead, other}` + volley split out as its own fact. See the REVISION block immediately below; the original 3-class plan + options analysis is preserved underneath as history.**
 **Owner:** Tomo decides; any agent can implement post-approval.
 **Sequence:** see [ADR-05](./adr_05_detector_build_sequencing.md). Independent of bounce (ADR-01) and identity (ADR-03).
-**Last updated:** 2026-05-28.
+**Last updated:** 2026-06-14.
+
+---
+
+## ★ REVISION 2026-06-14 — class set finalised + volley split (supersedes Q3)
+
+This is the decision of record. The original Q3 ("3 classes; volley derived") and Recommendation below are kept as history, but the class set and volley handling are now **revised on live-data evidence**.
+
+### What changed and why
+
+The original ADR picked **3 classes `{forehand, backhand, overhead}`** and deferred volley to a derivation (ADR-04). Two things forced a revision, both measured on the 8 corpus SA tasks (`bronze.player_swing`, 2,592 labelled swings):
+
+1. **The classifier needs a 4th `other` class — and SportAI already provides it.** The 3-class model is forced to assign fh/bh/overhead to *every* hitter-candidate, including the hit detector's false positives (it over-emits ~3.2× on the far side). With no "not a groundstroke" option, every junk detection gets a confident wrong label → distribution pollution. This is why the trained v2 model **lost the per-hit gate to the silver heuristic (32% vs 38%, 2026-06-05)**. SA's raw `swing_type` vocabulary **already contains `other` (291 of 2,592 labels)** — the extractor was *discarding* it. So `other` is a real, teacher-labelled class, not mined negatives.
+
+   | SA raw `swing_type` | count | → canonical |
+   |---|---|---|
+   | `fh` | 864 | forehand |
+   | `fh_overhead` | 819 | overhead |
+   | `1h_bh` + `2h_bh` | 618 | backhand |
+   | **`other`** | **291** | **other** ← was dropped; now the 4th class |
+
+2. **Volley is NOT a swing type — it is a separate boolean fact, and SA labels it as one.** `bronze.player_swing` has a dedicated `volley BOOLEAN` column (+ `confidence_volley`), exactly like `serve`. Live counts: **96 volley=TRUE / 2,496 FALSE**, and volley **cross-cuts** swing_type (fh 30, fh_overhead 34, 1h_bh 19, other 13, 2h_bh 0 are volleys). A volley is mechanically a forehand/backhand/overhead *struck near the net before the bounce* — never its own swing shape. There are **zero `volley` values in the `swing_type` column**, so it cannot be a teacher-trained swing class regardless. This reconciles the original ADR-02 (volley isn't a swing type ✅) with Tomo's correction (volley is a real SA fact, not a heuristic ✅).
+
+### Revised decisions
+
+- **Q3 → `{forehand, backhand, overhead, other}` (4 classes).** `other` = SA `other` (non-groundstroke / junk-hit). This lets the model reject false-positive hits instead of mislabelling them.
+- **Volley = a separate fact (call it ADR-02b / folds into ADR-04).** Its ground truth is `bronze.player_swing.volley` (96 positives). For T5 it is **derived** (fh/bh/overhead struck before the ball's bounce crosses the net) and **validated against SA's 96 labels** with its own bench — replacing today's net-distance-only heuristic (`VOLLEY_NET_DISTANCE_M`). Built as a **separate follow-up**, not inside the swing_type classifier.
+- **Silver consumes the classifier verbatim.** Delete the silver swing_type heuristics (`_infer_swing_type_from_keypoints` / `_infer_swing_type_from_position`) — the classifier owns `{fh, bh, overhead, other}` to ceiling. Safe to delete now because T5 silver is **not prod-consumed** (same basis as the 2026-06-14 hit-driven flip); accuracy fills in at train-last.
+- **Build-validation train runs now (Tomo, 2026-06-14)** to produce valid 4-class weights + lock the swing bench. The train-to-ceiling (GPU, full epochs, sharp-far corpus) happens later in the batched train-all-5 push. Build-first / train-last.
+
+### Build checklist (this session)
+
+1. `label_swing_types.py` — add `other`→`other` to `SA_TO_CANONICAL` + `DEFAULT_INCLUDE_TYPES` + validation set; stop discarding it.
+2. `model_v2.py` + `inference_v2.py` — `CLASSES`/`_VOCAB_MAP` gain `other`; `NUM_CLASSES` auto-derives to 4.
+3. `build_swing_type_dataset.py` — `other` in the class tallies; regenerate labels from bronze (the S3 label JSONs are stale 3-class).
+4. Rebuild the 4-class dataset → build-validation train → lock `bench_baseline_swing_type.json`.
+5. `build_silver_match_t5.py` — delete the two swing heuristics; project `stroke_class` verbatim (incl. `other`). Leave the volley flag as the stopgap until the volley fact (point above) lands.
+
+**Note on serves:** `fh_overhead` includes serve motions (a serve is mechanically a smash). Serves remain owned by `serve_events`; the classifier's `overhead` covers mid-court smashes. Unchanged from the original plan.
+
+---
 
 ## Context
 
