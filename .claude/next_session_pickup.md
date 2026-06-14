@@ -43,6 +43,26 @@
 
 ---
 
+## ✅ DEFINITION OF DONE — HIT + BOUNCE (the gate before SWING)
+Verified on live data 2026-06-14. **Verdict: BUILD is done (models emit both facts); we are at the TRAIN-LAST stage.** The remaining accuracy gap on BOTH facts is ONE root cause — far ball/player too coarse — proven un-movable by heuristics → training-gated. "Done building" = no code lever moves accuracy, only data.
+
+| # | Item | Type | Status |
+|---|------|------|--------|
+| 1 | Bounce model emits → `ml_analysis.ball_bounces` | build | ✅ |
+| 2 | Hit model emits → `ml_analysis.stroke_events` (108-810 rows/task) | build | ✅ |
+| 3 | Bounce precision lever (thr 0.5→0.70, rev 79/60) | build | ✅ DONE this session |
+| 4 | Silver row architecture decided = HIT-DRIVEN | decision | ✅ DONE this session |
+| 5 | **Bounce model output survives re-ingest** (0 rows on ALL existing tasks — vintage/carry; "survives" claim unverified) | verify | ⬜ check on next real upload |
+| 6 | **Locked hit bench** (`bench_hit`) — repeatable accuracy gate (bounce has `bench_bounce`, hit has none) | build | ⬜ can do NOW, no data needed |
+| 7 | **Sharp-far footage accrues** — new FULL-RES SA uploads re-run through rev-79 (carries `roi_far_ball`); old corpus originals deleted | DATA (Tomo) | ⬜ gating dependency |
+| 8 | **Retrain** bounce CNN + hit model on the sharp-far distribution → far recall/attribution reach the ~70-80% bar | TRAIN | ⬜ gated on #7 |
+| 9 | **Flip silver HIT-DRIVEN** — Pass-1 inserts from `stroke_events`; bounce model → Pass-2 coord enricher (mirror SA `build_silver_v2.py:357/376`) | build | ⬜ LAST step, after #8 (early flip regresses silver — 2026-05-25 overshoot) |
+| → | THEN: SWING (4th "other" class, purity-corrected) — the second-last model | next | — |
+
+**What to do NOW:** the cheap build-levers are spent. Forward progress = #7 (Tomo uploads full-res matches → corpus accrues sharp-far) → #8 retrain. #6 (hit bench) is the only no-data build item left and can be done anytime. #5 is a one-glance verify on the next upload. #9 waits for #8.
+
+---
+
 ## Canonical state
 - main @ `b4bf5ac` (+ this pickup/doc commit on top) synced with image **eu rev 79 / us rev 60** (amd64 `1069f87e`).
 - Bench floor: ea1e500c 12/26 + 880dff02 23/24 (green, CI green).
