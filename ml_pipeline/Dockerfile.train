@@ -1,0 +1,56 @@
+# Training image for the T5 ML pipeline — GPU one-off training jobs.
+#
+# Builds FROM the detection image so it inherits CUDA torch/torchvision,
+# opencv, ultralytics, transformers, ViTPose cache, ALL the model weights,
+# and every Batch-side module (config, ball_merge, bounce_detector,
+# stroke_classifier, serve_model, …). This image only ADDS the training-only
+# code that the detection image deliberately does not ship:
+#   - db_init.py            (trainers read the prod corpus via db_init.engine)
+#   - ml_pipeline/training/ (swing + bounce dataset builders + trainers)
+#   - ml_pipeline/serve_model/  -> already in the detection image
+#   - ml_pipeline/hit_model/    -> NOT in the detection image (added here)
+#   - ml_pipeline/training/batch_train.py (the unified entrypoint)
+#
+# Keeping training in its OWN image means a training change never forces a
+# detection-pipeline rebuild (and vice versa) — the detection job-def
+# (ten-fifty5-ml-pipeline) and the training job-def
+# (ten-fifty5-ml-train) are independent.
+#
+# Build from repo root (the detection image must be built/pulled first and
+# tagged ten-fifty5-ml-pipeline:latest):
+#   docker build -f ml_pipeline/Dockerfile.train -t ten-fifty5-ml-train:latest .
+#
+# requirements-train.txt is a thin extra layer (no torch — inherited). It
+# exists so a future training-only dep (e.g. scikit-learn, tensorboard) is a
+# one-line add that doesn't touch the detection requirements.
+
+ARG BASE_IMAGE=ten-fifty5-ml-pipeline:latest
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+# Extra training-only Python deps (currently none beyond the base image, but
+# the layer is here so additions don't disturb the detection requirements).
+COPY ml_pipeline/requirements-train.txt /app/ml_pipeline/requirements-train.txt
+RUN pip install --no-cache-dir -r /app/ml_pipeline/requirements-train.txt
+
+# db_init.py — trainers import `from db_init import engine`. Needs DATABASE_URL
+# at runtime (set in the training job-def, same value as the detection job-def).
+COPY db_init.py /app/db_init.py
+
+# hit_model — NOT bundled in the detection image (inference reads the .pt via
+# serve_detector at silver-build time on Render, so the detector path never
+# imports the trainer). The training image needs the full package.
+COPY ml_pipeline/hit_model/ /app/ml_pipeline/hit_model/
+
+# training/ — dataset builders + train loops for swing + bounce + tracknet.
+# Self-contained except db_init (above). The detection image does not ship
+# this dir at all.
+COPY ml_pipeline/training/ /app/ml_pipeline/training/
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+
+# Entrypoint: the unified per-fact trainer. The job-def's command override
+# supplies the args, e.g. command=["--fact","swing","--epochs","50"].
+ENTRYPOINT ["python", "-m", "ml_pipeline.training.batch_train"]

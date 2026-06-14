@@ -1,0 +1,22 @@
+# Training-only dependency overlay for ml_pipeline/Dockerfile.train.
+#
+# This image is built FROM the detection image (ten-fifty5-ml-pipeline), so it
+# ALREADY HAS the full training stack pinned in ml_pipeline/requirements.txt:
+#
+#   torch==2.3.1+cu121        # CUDA — the GPU compute the swing R(2+1)D needs
+#   torchvision==0.18.1+cu121 # provides torchvision.models.video.r2plus1d_18
+#   opencv-python==4.9.0.80   # Farneback optical flow for the swing dataset
+#   numpy==1.26.4  scipy==1.13.1
+#   boto3==1.34.131           # S3 corpus video/label download + weights upload
+#   sqlalchemy==2.0.31  psycopg[binary]==3.1.19  # prod corpus reads via db_init
+#   pandas / matplotlib / seaborn / tqdm
+#
+# DO NOT re-pin torch/torchvision here — that would shadow the inherited CUDA
+# build with a CPU wheel and silently break GPU training. Add ONLY net-new
+# training-only deps below (e.g. tensorboard, scikit-learn for richer metrics).
+#
+# Keeping this file separate from requirements.txt means a training dep change
+# never triggers a detection-pipeline rebuild (rule #8) and vice versa.
+
+# (intentionally empty — all current training deps are inherited from the
+#  detection image. Add training-only packages here as needed.)
