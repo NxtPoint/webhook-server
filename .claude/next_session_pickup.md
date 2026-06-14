@@ -1,8 +1,26 @@
-# Next-session pickup — 2026-06-13 PM — ✅ FAR-ROI DEPLOYED (eu rev 78 / us rev 59) + BOUNCE-COUPLING PROVEN end-to-end (far-bounce candidate recall 40%→87%). main @ `2066b6d`. Far-gate hit-model retrain accrues from NEW full-res uploads (corpus originals deleted; see the ✅ section below). Serve still signed off.
+# Next-session pickup — 2026-06-13 PM — ▶️ BOUNCE PUSH (current thread). Diagnosis done; two BUILD levers teed up: (A) bounce PRECISION then (B) SILVER PURITY. Far-ROI is DEPLOYED + coupling PROVEN (prior thread, done). eu rev 78 / us rev 59. main @ HEAD. Serve signed off.
 
-> **Resume:** read the "✅ 2026-06-13 PM — FAR-ROI DEPLOYED" section directly below — it supersedes the older threads. The far-gate number now grows automatically as new dual-submit matches flow through rev 78 (which captures sharp-far via the export-carry). No manual re-run is possible (corpus originals are 404 post-trim, only 720p trimmed survive).
+> **Resume:** read the "▶️ BOUNCE PUSH STARTED" section directly below FIRST — it's the live thread. Tomo's order: do bounce **precision** (cut over-emission, measure offline then deploy), THEN **silver purity** (deprecate the `is_bounce` heuristic, make silver inherit `ball_bounces` — DELICATE, read the entanglement note). The far-side RECALL (bounce + hit) is now training-gated and accrues from new full-res uploads — not a build lever.
 
-## ✅ 2026-06-13 PM — FAR-ROI DEPLOYED + COUPLING PROVEN END-TO-END (resume = corpus re-run for the far-gate read)
+## ▶️ 2026-06-13 PM — BOUNCE PUSH STARTED (resume here): diagnosis DONE, two build-levers teed up
+**Decision (Tomo): work ball BOUNCE next** (closest to ceiling — it got the far-ROI candidate lift "for free"). Definition of done agreed = build to ceiling + silver inherits the model 100% (no heuristics) + training bench ready; PHYSICAL training is LAST, once footage accrues. Diagnosis complete; the BUILD work below is the resume point.
+
+**Real bounce floor (prod config: gravity_residual + trained `bounce_detector_v2_7match.pt` + thr 0.5, coarse ball, 5 labeled corpus tasks):** recall **20.7%** / precision **11.0%** (1416 emitted for 752 labels — over-emission is the louder problem). Tool: `BOUNCE_CANDIDATE_MODE=gravity_residual python -m ml_pipeline.diag.bench_bounce --weights-path ml_pipeline/models/bounce_detector_v2_7match.pt --threshold 0.5`. ⚠️ bench `--weights-path` defaults to None = RANDOM init (emit 0); ALWAYS pass the weights or you measure an untrained model.
+
+**★ THREE findings:**
+1. **Coupling NOT yet realized in the bounce MODEL.** The bounce stage builds candidates from the IN-MEMORY coarse ball (`__main__.py:307`) and runs BEFORE the far_ball sweep — so the proven 40→87% far-candidate lift isn't in `ml_analysis.ball_bounces`. Fix = a SECOND cheap bounce pass (no decode) after the ROI sweep, scoring the merged sharp ball.
+2. **★ DE-RISK (`.claude/tmp/bounce_sharp_derisk.py`): the sharp ball only PARTIALLY helps the trained scorer.** Far model recall coarse 26% → sharp 32% (+6pp), emission RISES 206→327 (precision worse). The CNN was trained on the COARSE distribution → sharp-far candidates are off-distribution → scored low. **So the headline bounce recall is TRAINING-GATED** (retrain the CNN on sharp-far → needs new full-res footage; corpus originals deleted). Memory `feedback_far_roi_payoff_is_scorer_training_gated`. Same wall as the hit gate.
+3. **Silver bypasses the bounce model.** `build_silver_v2.py:1191` (+ build_silver_match_t5 605/615/1162) read `ball_detections.is_bounce` (TrackNet HEURISTIC), NOT `ml_analysis.ball_bounces` (the model). Nothing reads the model fact.
+
+**TWO remaining BUILD levers (NOT training-gated) — Tomo wants both, precision FIRST then silver:**
+- **(A) Bounce PRECISION:** cut the 2.9× over-emission (11% precision). Offline first: sweep `--threshold` on bench_bounce to find the P/R knee + tighten pre_gates (`bounce_detector/pre_gates.py`) — NO deploy to measure. Then the prod change is `threshold_override` in `__main__.py:336` + a rule-#8 Batch deploy (eu rev 78 / us rev 59 is current; deploy playbook below worked clean).
+- **(B) SILVER PURITY (delicate — do AFTER precision, read first):** flip silver to inherit `ml_analysis.ball_bounces` verbatim and DELETE the `is_bounce` CTE/heuristic (mirror the serve-purity deletion `46c8a91`). ⚠️ ENTANGLED: silver Pass-1 is bounce-driven (rule #11 freezes silver row-gen until bronze is right) and flipping to a 21%-recall model source would REGRESS silver — so this lands only once the bounce model is good enough AND the bounce-driven-vs-hit-driven silver-architecture question is settled. Treat as plumbing-then-enable, env-gated, measure-first on a real silver build.
+
+**Deploy playbook (worked clean this session, eu rev 78 / us rev 59):** `register_jobdefs.py` in `.claude/tmp/`; sequential ECR push (not parallel — digest race); verify cross-region digest equal + amd64 sub-manifest; in-image `docker run` check that bounce_detector imports. Full rule-#8 in `.claude/handover_t5.md`.
+
+---
+
+## ✅ 2026-06-13 PM — FAR-ROI DEPLOYED + COUPLING PROVEN END-TO-END (prior thread, DONE)
 **Shipped (main @ `fa2acf9`, bench green):** `506c986` source-preference merge for ball_detections readers (`ml_pipeline/ball_merge.py`; bounce_detector/hit_model/serve readers dedup roi_far_ball>roi_prod>main>NULL; silver stays main-only) + `fa2acf9` far_ball wired into unified.py/__main__ (env `ROI_FAR_BALL_ENABLED` default-on) + export-reingest carry (roi_far_ball survives via bronze_export `extra_ball_rows` + bronze_ingest_t5 `source` COPY) + Dockerfile COPY for ball_merge (rule #8).
 **Deployed (rule #8 full cycle):** amd64 `316c1c4c…`, cross-region digest equal, **eu rev 78 / us rev 59** latest-ACTIVE.
 **Reference re-run:** probe `p15_far_roi` = job `75d9dd7e` (SA `ba4812be`), SUCCEEDED ~54min, 2237 roi_far_ball rows.
