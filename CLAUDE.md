@@ -324,7 +324,7 @@ Both T5 and SportAI share passes 3-5 in `build_silver_v2.py`. The serve detector
 | `ml_pipeline/point_structure/` | `point_boundaries.py` — point/game structure derivation shared by silver builders |
 | `ml_pipeline/ground_truth/` | Hand-labelled reference data backing the bench/eval harnesses |
 | `ml_pipeline/training/` | TrackNet fine-tuning on dual-submit labels (`visual_debug/` is leftover local debug images, untracked — don't read or edit) |
-| `ml_pipeline/diag/` | Dev tools — the bench family (`bench` / `bench_ball` / `bench_silver` are the load-bearing three; plus `bench_bounce`, `bench_calib`, `bench_identity`, `bench_lens`, `bench_swing_type`, `bench_finetuned`), serve viewer, pose probe |
+| `ml_pipeline/diag/` | Dev tools — the bench family (`bench` / `bench_ball` / `bench_silver` are the load-bearing three; plus `bench_hit` (locked hit-model accuracy gate, `bench_baseline_hit.json` — NEAR/FAR/precision), `bench_bounce`, `bench_calib`, `bench_identity`, `bench_lens`, `bench_swing_type`, `bench_finetuned`), serve viewer, pose probe |
 | `ml_pipeline/fixtures*/` | Locked bench fixtures (`fixtures_ci`, `fixtures_ball`, `fixtures_silver`, `fixtures_calib` — one dir per bench, plus a bare `fixtures/`) with `*_baseline.json` siblings in `diag/` |
 
 Weights in `ml_pipeline/models/` (git-ignored, Batch-bundled via the Dockerfile `models/` COPY): TrackNet V2, YOLOv8x/m-pose, YOLOv8m, court_keypoints.pth, `bounce_detector_v2_7match.pt` (144KB), `swing_classifier_v2.pt` (125MB), optional `tracknet_v3.pt`.
