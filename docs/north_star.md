@@ -60,8 +60,8 @@ First field-by-field measurement on post-far-court-fix data (calibration `b08a85
 | stroke WHEN/WHO NEAR | 13/51 @1.0s (7/51 @0.5s); 55 emitted vs SA 51 — count parity masked event-level misalignment; consistent across rev 67/68/72 (never worked, not a regression) | ❌ TRAIN |
 | stroke WHEN/WHO FAR | 19/51 @1.0s; 161 emitted vs SA 51 (3.2× over) | ❌ TRAIN |
 | swing_type | classifier DISABLED (per-hit 32% vs heuristic 38%, both below bar) | ❌ TRAIN (v2.1 + 4th class) |
-| bounce — count | 194 CNN vs SA 68 floor (2.9× over) | ⚠️ over-emission |
-| bounce — xy accuracy | med 0.90m on matched (26/68 within 0.6s) | ✅ accuracy at bar; recall 38% below |
+| bounce — recall/precision | **2026-06-13 floor (prod cfg: gravity_residual + trained `v2_7match` + thr 0.5, coarse ball, 5 labeled corpus tasks): recall 20.7% / precision 11.0%** (1416 emitted for 752 labels). Sharp ball (de-risk) lifts far recall only 26→32% (emission ↑) — the trained CNN was fit to the COARSE distribution → **headline recall is TRAINING-GATED** (`feedback_far_roi_payoff_is_scorer_training_gated`). | ❌ recall TRAIN-gated; over-emission = build lever (precision) |
+| bounce — xy accuracy | med 0.90m on matched (26/68 within 0.6s); corpus medErr 0.26-0.50m | ✅ accuracy at bar |
 | bounce — NULL coords | 72% → **61%** (D2, `aba54ad`: ball image xy projected at the bounce frame — valid exactly then, ball on ground). Matched bounces 26→30. Residual NULLs are strict-bounds rejections of far projections — honest. | 🟡 **D2 partial** — residual rides the far-calibration tail |
 | ball speed | 2040/8011 detections carry speed_kmh; accuracy unmeasured | ⚠️ presence only |
 | ball_hit_location x/y | blocked on stroke ts alignment | ❌ blocked by stroke |
