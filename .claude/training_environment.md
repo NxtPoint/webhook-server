@@ -116,12 +116,23 @@ gates to run BEFORE shipping a retrained weight — see
 
 ---
 
-## ONE-TIME SETUP (do once; then training is the single command above)
+## ONE-TIME SETUP — ✅ DONE 2026-06-14 (proven end-to-end on GPU)
 
-The submit/schedule/upload mechanics are already proven (job role has
-`AmazonS3FullAccess`; GPU jobs schedule on the queue). The only remaining setup
-is the training image + its job-def. **Requires Docker running** (the agent
-does this per `feedback_agent_handles_deploys`).
+**Status: COMPLETE + VALIDATED.** Image built + pushed to ECR
+(`ten-fifty5-ml-train`, amd64 digest `sha256:72a01cf2…`), job-def
+**`ten-fifty5-ml-train:1`** registered (pinned to that digest, cloned from the
+detection job-def's role/env). A `--fact bounce --epochs 5` GPU smoke
+**SUCCEEDED** (jobId `b96acf06…`, ~3 min: provision → image pull → corpus
+dataset build → train → weights to `s3://…/training/weights/bounce/_latest/`;
+val F1 0.47, recall 0.81). Training is now genuinely one command per fact.
+⚠️ The smoke left a 5-epoch bounce model in `bounce/_latest/` — do NOT
+`--download` it over the deployed `bounce_detector_v2_7match.pt`; the next REAL
+(full-epoch, fresh-corpus) bounce train overwrites it. Re-run the steps below
+only to REBUILD the image after a trainer change.
+
+The submit/schedule/upload mechanics are proven (job role has
+`AmazonS3FullAccess`; GPU jobs schedule on the queue). **Requires Docker running**
+(the agent does this per `feedback_agent_handles_deploys`).
 
 ```bash
 # 0. Auth Docker to ECR (eu primary; add us-east-1 for failover parity).
