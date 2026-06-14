@@ -209,177 +209,14 @@ def _parse_keypoints(keypoints) -> Optional[list]:
     return keypoints
 
 
-def _infer_swing_type_from_keypoints(
-    keypoints: Optional[list],
-    center_x: Optional[float],
-    is_serve: bool,
-    is_left_handed: bool,
-    court_y: Optional[float] = None,
-) -> str:
-    """Infer swing type from COCO pose keypoints.
-
-    Returns one of: 'overhead', 'volley', 'fh', 'bh', 'other'
-
-    Decision hierarchy (each level falls through to next if confidence too low):
-
-    1. Serve (is_serve=True)  → 'overhead'  (serve detection is geometric, trusted)
-    2. Overhead/smash pose    → 'overhead'  (arm raised, player near net / mid-court)
-    3. Volley pose            → 'volley'    (compact arm + player within VOLLEY_NET_DISTANCE_M)
-    4. Forehand/Backhand      → 'fh' / 'bh' (dominant wrist vs opposite-side shoulder)
-    5. Fallback               → 'other'
-
-    COCO keypoint indices used:
-      0=nose, 5=left_shoulder, 6=right_shoulder,
-      7=left_elbow, 8=right_elbow,
-      9=left_wrist, 10=right_wrist
-    All coordinates are in pixel space (y increases downward).
-    """
-    MIN_CONF = 0.3
-
-    # --- 1. Serve is already known from geometry ---
-    if is_serve:
-        return "overhead"
-
-    # --- Parse keypoints ---
-    kps = _parse_keypoints(keypoints)
-    if kps is None:
-        return "other"
-
-    def kp(idx):
-        """Return (x, y, conf) for keypoint idx, or (None, None, 0) if missing."""
-        if idx >= len(kps):
-            return None, None, 0.0
-        row = kps[idx]
-        if len(row) < 3:
-            return None, None, 0.0
-        return float(row[0]), float(row[1]), float(row[2])
-
-    l_shoulder_x, l_shoulder_y, l_shoulder_c = kp(5)
-    r_shoulder_x, r_shoulder_y, r_shoulder_c = kp(6)
-    dom_wrist_x, dom_wrist_y, dom_wrist_c = kp(9 if is_left_handed else 10)
-    off_wrist_x, off_wrist_y, off_wrist_c = kp(10 if is_left_handed else 9)
-    dom_elbow_x, dom_elbow_y, dom_elbow_c = kp(7 if is_left_handed else 8)
-
-    # Shoulder anchor: prefer the same-side shoulder, fall back to the other
-    dom_shoulder_x  = (l_shoulder_x  if is_left_handed else r_shoulder_x)
-    dom_shoulder_y  = (l_shoulder_y  if is_left_handed else r_shoulder_y)
-    dom_shoulder_c  = (l_shoulder_c  if is_left_handed else r_shoulder_c)
-    off_shoulder_x  = (r_shoulder_x  if is_left_handed else l_shoulder_x)
-    off_shoulder_y  = (r_shoulder_y  if is_left_handed else l_shoulder_y)
-    off_shoulder_c  = (r_shoulder_c  if is_left_handed else l_shoulder_c)
-
-    have_dom_wrist   = dom_wrist_c   >= MIN_CONF and dom_wrist_x   is not None
-    have_dom_shoulder = dom_shoulder_c >= MIN_CONF and dom_shoulder_x is not None
-    have_off_shoulder = off_shoulder_c >= MIN_CONF and off_shoulder_x is not None
-    have_dom_elbow   = dom_elbow_c   >= MIN_CONF and dom_elbow_x   is not None
-
-    # --- 2. Overhead / smash detection ---
-    # Arm fully raised: dominant wrist above both shoulders in pixel coords
-    # (lower pixel y = higher in frame). Player must NOT be at the baseline
-    # (otherwise it would be a serve, already handled above).
-    if have_dom_wrist and (have_dom_shoulder or have_off_shoulder):
-        # Use the average shoulder y when both are visible
-        shoulder_ys = []
-        if have_dom_shoulder:
-            shoulder_ys.append(dom_shoulder_y)
-        if have_off_shoulder:
-            shoulder_ys.append(off_shoulder_y)
-        avg_shoulder_y = sum(shoulder_ys) / len(shoulder_ys)
-        # Wrist must be well above the shoulder line (at least 20% of inter-
-        # shoulder width as a tolerance — avoids firing on neutral stance)
-        shoulder_width_px = abs((dom_shoulder_x or 0) - (off_shoulder_x or dom_shoulder_x or 1))
-        overhead_margin = max(10.0, shoulder_width_px * 0.2)
-        if dom_wrist_y < avg_shoulder_y - overhead_margin:
-            # Distinguish overhead from serve: serve hitter is past baseline
-            # (handled by is_serve=True above). Any overhead here is mid-court.
-            return "overhead"
-
-    # --- 3. Volley detection ---
-    # Player is close to the net AND arm is compact (wrist near the shoulder,
-    # not extended for a full groundstroke swing).
-    near_net = (
-        court_y is not None
-        and abs(court_y - HALF_Y) < VOLLEY_NET_DISTANCE_M
-    )
-    if near_net and have_dom_wrist and have_dom_shoulder:
-        # Compact arm: wrist is close to shoulder height (within 30% of
-        # shoulder-width tolerance). A real volley punch has the wrist roughly
-        # in front of the shoulder, not dropped or raised like a groundstroke.
-        wrist_height_diff = abs(dom_wrist_y - dom_shoulder_y)
-        shoulder_width_px = max(
-            20.0,
-            abs((dom_shoulder_x or 0) - (off_shoulder_x or dom_shoulder_x or 1)),
-        )
-        if wrist_height_diff < shoulder_width_px * 0.8:
-            return "volley"
-
-    # --- 4. Forehand / Backhand ---
-    # Forehand = dominant wrist extended to the player's dominant side;
-    # backhand = the wrist crosses to the off side. Whether the dominant side
-    # maps to IMAGE-left or IMAGE-right depends on which way the player faces:
-    #   - NEAR player (court_y > HALF_Y) faces AWAY from the camera → their
-    #     right side is image-right.
-    #   - FAR player (court_y < HALF_Y) faces TOWARD the camera → mirrored, so
-    #     their right side is image-LEFT.
-    # So the dominant hand sits on image-right iff (right-handed) XOR (far).
-    # Without this far-mirror the far player's forehands were misread as
-    # backhands (Match 1 far fh 9 / bh 13 vs SA 18 / 6, 2026-05-25). The
-    # position fallback `_infer_swing_type_from_position` already mirrors the
-    # same way. court_y is None → assume near (preserves prior behaviour, so
-    # near-player classification is byte-identical to before this change).
-    if have_dom_wrist:
-        is_far = court_y is not None and court_y < HALF_Y
-        dom_on_right = (not is_left_handed) != is_far  # XOR of handedness & facing
-
-        # Strong signal: dominant wrist vs the OFF-side shoulder.
-        if have_dom_shoulder and have_off_shoulder:
-            # Backhand = dominant wrist has crossed PAST the off-side shoulder.
-            crossed_body = (dom_wrist_x < off_shoulder_x) if dom_on_right \
-                else (dom_wrist_x > off_shoulder_x)
-            return "bh" if crossed_body else "fh"
-
-        # Medium signal: dominant wrist vs the dominant shoulder.
-        if have_dom_shoulder:
-            on_dom_side = (dom_wrist_x > dom_shoulder_x) if dom_on_right \
-                else (dom_wrist_x < dom_shoulder_x)
-            return "fh" if on_dom_side else "bh"
-
-        # Weak signal: dominant wrist vs body centre_x.
-        if center_x is not None:
-            on_dom_side = (dom_wrist_x > center_x) if dom_on_right \
-                else (dom_wrist_x < center_x)
-            return "fh" if on_dom_side else "bh"
-
-    return "other"
-
-
-def _infer_swing_type_from_position(
-    ball_x: Optional[float],
-    player_x: Optional[float],
-    player_y: Optional[float],
-    is_serve: bool,
-    is_left_handed: bool,
-) -> str:
-    """Fallback swing type inference from ball/player positions."""
-    if is_serve:
-        return "overhead"
-    if ball_x is None or player_x is None:
-        return "other"
-
-    # Player on near half (y > HALF_Y): ball to their right = forehand for right-hander
-    # Player on far half (y < HALF_Y): ball to their left = forehand for right-hander
-    near_half = player_y is not None and player_y > HALF_Y
-
-    if is_left_handed:
-        if near_half:
-            return "fh" if ball_x < player_x else "bh"
-        else:
-            return "fh" if ball_x > player_x else "bh"
-    else:
-        if near_half:
-            return "fh" if ball_x > player_x else "bh"
-        else:
-            return "fh" if ball_x < player_x else "bh"
+# NOTE 2026-06-14 (ADR-02 revision): the silver swing-type heuristics
+# _infer_swing_type_from_keypoints() and _infer_swing_type_from_position()
+# were DELETED here. Swing type is a BRONZE fact owned by the v2 classifier
+# (ml_pipeline/stroke_classifier/, emits stroke_class) and projected verbatim
+# in Pass 1. Silver does NO swing inference of its own (rule #1/#2). Volley
+# stays a separate boolean fact (bronze.player_swing.volley); the
+# VOLLEY_NET_DISTANCE_M flag is its interim stopgap until the volley fact lands.
+# See docs/_investigation/adr_02_swing_type_classifier_plan.md.
 
 
 # ============================================================
@@ -871,21 +708,14 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
         swing_type = "other"
         if hitter:
             flow_class = hitter.get("stroke_class")
-            if not is_serve and flow_class in ("fh", "bh", "overhead"):
-                swing_type = flow_class  # bronze model wins
-            else:
-                # STOPGAP fallback — model produced no answer for this hit (or
-                # it's a serve). Pose keypoints, then position.
-                swing_type = _infer_swing_type_from_keypoints(
-                    hitter.get("keypoints"), hitter.get("center_x"),
-                    is_serve, is_left_handed,
-                    court_y=hitter.get("court_y"),
-                )
-                if swing_type == "other" and not is_serve:
-                    swing_type = _infer_swing_type_from_position(
-                        cx, hitter.get("court_x"), hitter.get("court_y"),
-                        is_serve, is_left_handed,
-                    )
+            if not is_serve and flow_class in ("fh", "bh", "overhead", "other"):
+                swing_type = flow_class  # bronze model owns this fact (projected verbatim)
+            # else: no model answer (weights absent / disabled / serve) -> 'other'.
+            # Silver does NO swing inference of its own. The pose/position
+            # heuristics were DELETED 2026-06-14 (ADR-02 revision; rule #1/#2):
+            # the classifier owns {fh,bh,overhead,other} to ceiling; accuracy
+            # fills in at train-last. T5 silver is not prod-consumed, so the
+            # interim 'other'-heavy output while weights are disabled is benign.
 
         # Volley detection: hitter within VOLLEY_NET_DISTANCE_M of net
         is_volley = False
@@ -1283,20 +1113,15 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         # and gets rewritten at the B3 stroke flip.) ----
         is_serve = False
 
-        # ---- swing type — prefer the bronze classifier (see bounce-driven path) ----
+        # ---- swing type — project the bronze classifier verbatim ----
         flow_class = hitter.get("stroke_class")
-        if not is_serve and flow_class in ("fh", "bh", "overhead"):
-            swing_type = flow_class  # bronze model wins
+        if not is_serve and flow_class in ("fh", "bh", "overhead", "other"):
+            swing_type = flow_class  # bronze model owns this fact (projected verbatim)
         else:
-            swing_type = _infer_swing_type_from_keypoints(
-                hitter.get("keypoints"), hitter.get("center_x"),
-                is_serve, is_left_handed, court_y=hit_y,
-            )
-            if swing_type == "other" and not is_serve and b_cx is not None:
-                # Position fallback needs a ball x — only available with a bounce.
-                swing_type = _infer_swing_type_from_position(
-                    b_cx, hit_x, hit_y, is_serve, is_left_handed,
-                )
+            # No model answer (weights absent / disabled / serve) -> 'other'.
+            # Silver does NO swing inference (ADR-02 revision 2026-06-14; rule #1/#2;
+            # the pose/position heuristics were deleted).
+            swing_type = "other"
 
         is_volley = hit_y is not None and abs(hit_y - HALF_Y) < VOLLEY_NET_DISTANCE_M
         hitter_pid = str(top_pids[0]) if hitter_side_near else str(top_pids[1])
