@@ -179,7 +179,6 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
       any_frames/any_dets     — ALL players with valid coords (mirror fallback)
       near_kp_frames/..._dets — near players that also carry pose keypoints
       far_kp_frames/..._dets  — far players that also carry pose keypoints
-      dets_by_pid             — mapped_pid -> (frames, dets) for that track
       pid_map, top_pids       — ghost-id → top-2 mapping (guarantees 2 players)
     """
     # Stream with a server-side cursor on a SEPARATE connection + compact
@@ -281,9 +280,6 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
     # inference frame and silver's hitter frame can differ by a few frames at
     # PLAYER_DETECTION_INTERVAL granularity / fps rounding).
     near_sc_dets, far_sc_dets = [], []
-    # Per-track index — the stroke-driven path resolves the attributed player's
-    # own position when no bounce is available to imply the hitter's side.
-    raw_by_pid: dict = {}
     for pd in player_dets:
         frame_idx, pid, cx, cy, centerx, centery, kps, stroke_cls = pd
         mapped_pid = pid_map.get(pid, str(pid))
@@ -297,7 +293,6 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
         }
         if cy is not None and cx is not None:
             any_with_coords.append(entry)
-            raw_by_pid.setdefault(mapped_pid, []).append(entry)
             if cy > HALF_Y:
                 near_dets.append(entry)
                 if kps is not None:
@@ -320,7 +315,6 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
     far_kp_frames, far_kp_dets = _build_detection_index(far_kp_dets)
     near_sc_frames, near_sc_dets = _build_detection_index(near_sc_dets)
     far_sc_frames, far_sc_dets = _build_detection_index(far_sc_dets)
-    dets_by_pid = {pid: _build_detection_index(dets) for pid, dets in raw_by_pid.items()}
 
     logger.info(
         "T5 Pass 1: player buckets — near=%d far=%d any_with_coords=%d "
@@ -337,23 +331,9 @@ def _build_player_buckets(conn: Connection, job_id: str) -> dict:
         "far_kp_frames": far_kp_frames, "far_kp_dets": far_kp_dets,
         "near_sc_frames": near_sc_frames, "near_sc_dets": near_sc_dets,
         "far_sc_frames": far_sc_frames, "far_sc_dets": far_sc_dets,
-        "dets_by_pid": dets_by_pid,
         "pid_map": pid_map, "top_pids": top_pids,
         "n_player_dets": len(player_dets),
     }
-
-
-def _lookup_dominant_hand(conn: Connection, task_id: str) -> bool:
-    """Return True if the primary member is left-handed (defaults right)."""
-    hand_row = conn.execute(sql_text("""
-        SELECT COALESCE(m.dominant_hand, 'right') AS hand
-        FROM bronze.submission_context sc
-        LEFT JOIN billing.member m
-            ON lower(m.email) = lower(sc.email) AND m.is_primary = true
-        WHERE sc.task_id = :tid
-        LIMIT 1
-    """), {"tid": task_id}).fetchone()
-    return (hand_row[0] if hand_row else "right") == "left"
 
 
 # ============================================================
@@ -461,9 +441,6 @@ def _t5_pass1_load_bounce_driven(conn: Connection, task_id: str, job_id: str, fp
     near_sc_frames, near_sc_dets = buckets["near_sc_frames"], buckets["near_sc_dets"]
     far_sc_frames, far_sc_dets = buckets["far_sc_frames"], buckets["far_sc_dets"]
     pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
-
-    # ---- Step 4: Look up dominant hand ----
-    is_left_handed = _lookup_dominant_hand(conn, task_id)
 
     # SERVE IS A PURE BRONZE IMPORT (Tomo, 2026-06-07): the legacy in-silver
     # geometric serve derivation (geometric gate + overhead pose + cooldown +
@@ -989,7 +966,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     # Swing-type carriers (bronze stroke_class) by side — silver projects the
     # classifier verbatim. Hit location + SIDE now come VERBATIM from bronze
     # stroke_events (the model owns the hit fact, 867119f), so the hit-
-    # reconstruction buckets (near/far/any/kp/dets_by_pid/pid_map) are no longer
+    # reconstruction buckets (near/far/any/kp/pid_map) are no longer
     # read here — that assembly moved to stroke_detector.hit_location.
     buckets = _build_player_buckets(conn, job_id)
     near_sc_frames, near_sc_dets = buckets["near_sc_frames"], buckets["near_sc_dets"]
