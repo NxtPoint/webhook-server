@@ -57,6 +57,13 @@ COPY ml_pipeline/training/ /app/ml_pipeline/training/
 # from the base image this run; add their COPY here too if they ever drift.)
 COPY ml_pipeline/stroke_classifier/ /app/ml_pipeline/stroke_classifier/
 
+# diag/ — the bench harness. The swing bench (bench_swing_type) does a
+# torchvision R(2+1)D forward, so it can ONLY run where torchvision works = this
+# GPU training image (the CPU dev box's torch is broken). Shipping diag/ here lets
+# `batch_train --bench swing` lock/verify the swing gate on GPU. The other benches
+# (serve/hit/bounce/identity) are CPU/DB gates and also become runnable in-image.
+COPY ml_pipeline/diag/ /app/ml_pipeline/diag/
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 

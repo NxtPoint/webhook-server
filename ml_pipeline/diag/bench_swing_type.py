@@ -37,7 +37,7 @@ from ml_pipeline.stroke_classifier.model_v2 import (
 
 logger = logging.getLogger("bench_swing_type")
 
-DEFAULT_DATASET_DIR = "ml_pipeline/training/datasets/swing_type_v1"
+DEFAULT_DATASET_DIR = "ml_pipeline/training/datasets/swing_type_v3_4class"
 BASELINE_PATH = Path(__file__).resolve().parent / "bench_baseline_swing_type.json"
 
 

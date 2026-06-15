@@ -168,6 +168,35 @@ def _train_swing(args, device: str) -> str:
     return WEIGHT_FILES["swing"]
 
 
+def _bench_swing(args, device: str) -> dict:
+    """Build/refresh the 4-class swing dataset, then run the swing bench in-image
+    (GPU torchvision R(2+1)D forward) and return the result dict. This is the
+    ONLY bench that needs the training image — it locks/verifies
+    bench_baseline_swing_type.json. Mirrors _train_swing's dataset build so the
+    bench sees the same val split the model trained on."""
+    from ml_pipeline.training.build_swing_type_dataset import build_dataset
+    from ml_pipeline.diag.bench_swing_type import run_bench
+
+    dataset_dir = args.dataset_dir or str(
+        Path(__file__).resolve().parent / "datasets" / "swing_type_v3_4class"
+    )
+    cache_dir = args.cache_dir or str(
+        Path(__file__).resolve().parent / "_dataset_cache"
+    )
+    manifest_path = Path(dataset_dir) / "manifest.json"
+    if args.skip_dataset and manifest_path.exists():
+        logger.info("swing-bench: reusing existing dataset at %s (--skip-dataset)", dataset_dir)
+    else:
+        logger.info("swing-bench: building 4-class dataset -> %s (relabel=%s)",
+                    dataset_dir, args.relabel)
+        t0 = time.time()
+        m = build_dataset(output_dir=dataset_dir, cache_dir=cache_dir,
+                          t5_filter=args.t5, relabel=args.relabel)
+        logger.info("swing-bench: dataset built in %.0fs — %d matches / %d hits / %s",
+                    time.time() - t0, m["n_matches"], m["total_hits"], m["totals_by_class"])
+    return run_bench(dataset_dir=dataset_dir)
+
+
 TRAINERS = {
     "serve": (_train_serve, False),   # (fn, require_gpu) — coord MLPs run fine on CPU too
     "hit": (_train_hit, False),
@@ -252,7 +281,27 @@ def main(argv=None) -> int:
                     help="Skip the S3 weights upload (local-only run).")
     ap.add_argument("--require-gpu", action="store_true",
                     help="Hard-fail if CUDA is unavailable (always true for swing).")
+    ap.add_argument("--bench", action="store_true",
+                    help="Run the fact's bench in-image instead of training "
+                         "(swing only — the torchvision R(2+1)D bench needs this "
+                         "GPU image; prints the result JSON between "
+                         "BENCH_RESULT_JSON_BEGIN/END markers for log scraping).")
     args = ap.parse_args(argv)
+
+    # Bench mode — lock/verify a gate in-image (GPU torchvision). Only swing needs
+    # the image; serve/hit/bounce/identity benches are CPU/DB gates run locally.
+    if args.bench:
+        if args.fact != "swing":
+            raise SystemExit(
+                "--bench supports only 'swing' (the torchvision bench). The other "
+                "benches are CPU/DB gates — run them locally against the prod DB."
+            )
+        device = _preflight(require_gpu=True)
+        result = _bench_swing(args, device)
+        print("BENCH_RESULT_JSON_BEGIN")
+        print(json.dumps(result, indent=2))
+        print("BENCH_RESULT_JSON_END")
+        return 0
 
     # Per-fact epoch defaults if not overridden.
     if args.epochs is None:
