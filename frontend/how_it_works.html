@@ -329,6 +329,9 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 14px 20px; } }
 </style>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
 <style>
@@ -339,6 +342,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 .topnav-links{display:flex;justify-content:center;align-items:center;gap:22px;}
 .topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec,#6b7280);text-decoration:none;transition:color .2s;white-space:nowrap;}
 .topnav-links a:hover{color:var(--green,#1a5c2e);}
+.topnav-links a.active{color:var(--green,#1a5c2e);font-weight:600;}
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
 .topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;}
 .topnav-cta:hover{background:var(--green-light,#22783c);}
@@ -369,6 +373,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     </div>
   </div>
 </nav>
+<script>(function(){try{var p=(location.pathname||"/").replace(/\/+$/,"")||"/";document.querySelectorAll(".topnav-links a").forEach(function(a){var ap=new URL(a.href).pathname.replace(/\/+$/,"")||"/";if(ap===p||(ap==="/blog"&&p.indexOf("/post")===0))a.classList.add("active");});}catch(e){}})();</script>
 
 <!-- HERO — full-bleed longitudinal progression chart ("The Long Game") -->
 <section class="page-hero">
@@ -984,19 +989,19 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     </div>
     <div class="faq">
       <div class="faq-item">
-        <button class="faq-q">What camera do I need to record my tennis match?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">What camera do I need to record my tennis match?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Any smartphone or camera works. Just set it up courtside and record your match — no special equipment needed. iPhone, Android, GoPro, or DSLR all produce video Ten-Fifty5 can analyse.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">How long does the AI analysis take?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">How long does the AI analysis take?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Most matches are analysed within a few hours of upload. You'll receive an email notification when your dashboard is ready to view.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">What does the AI coach do?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">What does the AI coach do?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Our AI coach reviews your match data and provides personalised feedback on technique, strategy, and areas for improvement based on your actual match performance — not generic advice.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">Can coaches use Ten-Fifty5 for their players?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">Can coaches use Ten-Fifty5 for their players?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Yes — we offer coach-specific features including multi-player dashboards, development tracking, and team management tools. Your first linked player is free, forever.</div></div>
       </div>
     </div>
@@ -1072,9 +1077,14 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 
   // FAQ accordion
   document.querySelectorAll('.faq-item').forEach(function(item) {
-    item.querySelector('.faq-q').addEventListener('click', function() {
-      document.querySelectorAll('.faq-item.open').forEach(function(o) { if (o !== item) o.classList.remove('open'); });
-      item.classList.toggle('open');
+    var btn = item.querySelector('.faq-q');
+    btn.setAttribute('aria-expanded', item.classList.contains('open') ? 'true' : 'false');
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.faq-item.open').forEach(function(o) {
+        if (o !== item) { o.classList.remove('open'); var ob = o.querySelector('.faq-q'); if (ob) ob.setAttribute('aria-expanded', 'false'); }
+      });
+      var open = item.classList.toggle('open');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
   });
 })();

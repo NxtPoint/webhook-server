@@ -196,6 +196,7 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .topnav-links{display:flex;justify-content:center;align-items:center;gap:22px}
 .topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec);text-decoration:none;transition:color .2s;white-space:nowrap}
 .topnav-links a:hover{color:var(--green);text-decoration:none}
+.topnav-links a.active{color:var(--green);font-weight:600}
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px}
 .topnav-cta{background:var(--green);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap}
 .topnav-cta:hover{background:var(--green-light);text-decoration:none}
@@ -208,6 +209,12 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .topnav-links a{padding:13px 28px}
 }
 """
+
+# highlight the current page in the shared nav (Blog stays active on /post/*)
+NAV_ACTIVE_JS = ('<script>(function(){try{var p=(location.pathname||"/").replace(/\\/+$/,"")||"/";'
+                 'document.querySelectorAll(".topnav-links a").forEach(function(a){'
+                 'var ap=new URL(a.href).pathname.replace(/\\/+$/,"")||"/";'
+                 'if(ap===p||(ap==="/blog"&&p.indexOf("/post")===0))a.classList.add("active");});}catch(e){}})();</script>')
 
 NAV = f"""<nav class="topnav">
   <div class="topnav-inner">
@@ -226,7 +233,8 @@ NAV = f"""<nav class="topnav">
       <button class="topnav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.topnav-links').classList.toggle('open')">&#9776;</button>
     </div>
   </div>
-</nav>"""
+</nav>
+""" + NAV_ACTIVE_JS
 
 FOOTER = f"""<footer class="footer">
   <div class="footer-inner">
@@ -254,6 +262,10 @@ FONT = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">')
 
+FAVICON = ('<link rel="icon" href="/favicon.svg" type="image/svg+xml">'
+           '<link rel="icon" href="/favicon.ico" sizes="any">'
+           '<link rel="apple-touch-icon" href="/apple-touch-icon.png">')
+
 CTA_BAND = f"""<div class="cta-band">
   <h3>See your own game in data</h3>
   <p>Your first match is free — no credit card. Full dashboard, heatmaps, and AI coaching in a couple of hours.</p>
@@ -268,7 +280,7 @@ def render_post(p):
     date = p.get("date", "")
     image = p.get("image", "")
     hero = (f'<figure class="post-hero"><img src="{image}" alt="{_html.escape(title)}" '
-            f'width="900" height="506"></figure>\n') if image else ""
+            f'width="900" height="506" fetchpriority="high" decoding="async"></figure>\n') if image else ""
     og_img = f"{SITE}{image}" if image.startswith("/") else (image or OG_IMAGE)
     article = (
         '{"@context":"https://schema.org","@type":"Article",'
@@ -304,6 +316,7 @@ def render_post(p):
 <meta name="twitter:image" content="{og_img}">
 <script type="application/ld+json">{article}</script>
 <script type="application/ld+json">{breadcrumb}</script>
+{FAVICON}
 {FONT}
 <style>{STYLE}</style>
 </head>
@@ -358,6 +371,7 @@ def render_index(posts):
 <meta property="og:url" content="{SITE}/blog">
 <meta property="og:image" content="{OG_IMAGE}">
 <meta name="twitter:card" content="summary_large_image">
+{FAVICON}
 {FONT}
 <style>{STYLE}</style>
 </head>

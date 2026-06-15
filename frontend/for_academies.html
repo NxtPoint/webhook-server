@@ -291,6 +291,9 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } }
 </style>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
 <style>
@@ -301,6 +304,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
 .topnav-links{display:flex;justify-content:center;align-items:center;gap:22px;}
 .topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec,#6b7280);text-decoration:none;transition:color .2s;white-space:nowrap;}
 .topnav-links a:hover{color:var(--green,#1a5c2e);}
+.topnav-links a.active{color:var(--green,#1a5c2e);font-weight:600;}
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
 .topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;}
 .topnav-cta:hover{background:var(--green-light,#22783c);}
@@ -331,6 +335,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: 0; }
     </div>
   </div>
 </nav>
+<script>(function(){try{var p=(location.pathname||"/").replace(/\/+$/,"")||"/";document.querySelectorAll(".topnav-links a").forEach(function(a){var ap=new URL(a.href).pathname.replace(/\/+$/,"")||"/";if(ap===p||(ap==="/blog"&&p.indexOf("/post")===0))a.classList.add("active");});}catch(e){}})();</script>
 
 
 <!-- HERO — full-bleed academy-as-hub roster diagram -->

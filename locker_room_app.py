@@ -174,6 +174,27 @@ def blog_image(filename: str):
     return _html(os.path.join("blog", "images", filename))
 
 
+# Favicon + touch icons (avoid the silent /favicon.ico 404 and brand the tab).
+@app.get("/favicon.svg")
+def favicon_svg():
+    return _html("favicon.svg")
+
+
+@app.get("/favicon.ico")
+def favicon_ico():
+    return _html("favicon.ico")
+
+
+@app.get("/favicon.png")
+def favicon_png():
+    return _html("favicon.png")
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    return _html("apple-touch-icon.png")
+
+
 # Legacy same-origin marketing backups (kept; their canonicals point at the
 # clean URLs above so search engines don't treat them as duplicates).
 @app.get("/home")
@@ -256,7 +277,13 @@ def alive():
 
 @app.errorhandler(404)
 def not_found(e):
-    """Return JSON for API paths that accidentally hit the locker-room service."""
+    """Branded HTML 404 for humans; JSON for API/ops paths and JSON clients."""
+    path = request.path or ""
+    is_api = path.startswith("/api") or path.startswith("/ops")
+    if not is_api and request.accept_mimetypes.accept_html:
+        page = os.path.join(FRONTEND_DIR, "404.html")
+        if os.path.isfile(page):
+            return send_file(page), 404
     return jsonify({"ok": False, "error": "not_found", "service": "locker-room"}), 404
 
 

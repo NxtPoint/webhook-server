@@ -373,6 +373,9 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 520px) { .wrap, .wrap-narrow { padding: 0 20px; } .nav { padding: 14px 20px; } }
 </style>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
 <style>
@@ -383,6 +386,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 .topnav-links{display:flex;justify-content:center;align-items:center;gap:22px;}
 .topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec,#6b7280);text-decoration:none;transition:color .2s;white-space:nowrap;}
 .topnav-links a:hover{color:var(--green,#1a5c2e);}
+.topnav-links a.active{color:var(--green,#1a5c2e);font-weight:600;}
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
 .topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;}
 .topnav-cta:hover{background:var(--green-light,#22783c);}
@@ -413,6 +417,7 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
     </div>
   </div>
 </nav>
+<script>(function(){try{var p=(location.pathname||"/").replace(/\/+$/,"")||"/";document.querySelectorAll(".topnav-links a").forEach(function(a){var ap=new URL(a.href).pathname.replace(/\/+$/,"")||"/";if(ap===p||(ap==="/blog"&&p.indexOf("/post")===0))a.classList.add("active");});}catch(e){}})();</script>
 
 <!-- HERO — full-bleed, typography-forward price ladder -->
 <section class="page-hero">
@@ -719,27 +724,27 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
 
     <div class="faq">
       <div class="faq-item">
-        <button class="faq-q">Is there really no credit card required for the free trial?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">Is there really no credit card required for the free trial?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Zero. You sign up with an email, get your 1 free match and 5 free technique credits, and use them whenever you want. We'll only ask for payment when you upgrade to a paid plan.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">What happens to unused monthly credits?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">What happens to unused monthly credits?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Monthly subscription credits don't roll over — they reset each billing cycle. If you're worried about a heavy training month, top up with pay-as-you-go credits (they never expire) alongside your subscription.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">Can I mix subscription and pay-as-you-go?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">Can I mix subscription and pay-as-you-go?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Yes. Active subscribers can buy PAYG credit packs any time as top-ups. Your PAYG credits stack on top of your monthly allotment and never expire.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">If I cancel, do I lose my past matches?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">If I cancel, do I lose my past matches?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">No. Your entire match history, dashboards, AI Coach cards and footage remain accessible — forever, in read-only mode. You just can't upload new matches until you reactivate a subscription or buy PAYG credits.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">What counts as "one match"?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">What counts as "one match"?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">One video upload of a singles match — no length limit. The fee covers the full analysis (every point, every tab, every dashboard). We don't charge per set or per minute.</div></div>
       </div>
       <div class="faq-item">
-        <button class="faq-q">Can I change plans later?<span class="faq-plus"></span></button>
+        <button class="faq-q" aria-expanded="false">Can I change plans later?<span class="faq-plus"></span></button>
         <div class="faq-a"><div class="faq-a-inner">Yes — you can upgrade or downgrade any time from your account. New tier takes effect at the next billing cycle and your existing credits carry over where possible.</div></div>
       </div>
     </div>
@@ -803,9 +808,14 @@ h3 { font-size: clamp(1.15rem, 2vw, 1.4rem); font-weight: 600; letter-spacing: -
   }
 
   document.querySelectorAll('.faq-item').forEach(function(item) {
-    item.querySelector('.faq-q').addEventListener('click', function() {
-      document.querySelectorAll('.faq-item.open').forEach(function(o) { if (o !== item) o.classList.remove('open'); });
-      item.classList.toggle('open');
+    var btn = item.querySelector('.faq-q');
+    btn.setAttribute('aria-expanded', item.classList.contains('open') ? 'true' : 'false');
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.faq-item.open').forEach(function(o) {
+        if (o !== item) { o.classList.remove('open'); var ob = o.querySelector('.faq-q'); if (ob) ob.setAttribute('aria-expanded', 'false'); }
+      });
+      var open = item.classList.toggle('open');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
   });
 
