@@ -1,98 +1,106 @@
-# SEO Marketing-Site Migration — Cutover Runbook + Off-Page Plan
+# Public Marketing Site — Architecture, State + Off-Page Plan
 
-**Status:** Stage 0 (build) COMPLETE in code, not yet deployed/cut over.
-**Goal:** Serve the public marketing site as native HTML from Render at `www.ten-fifty5.com`, replacing the Wix-built marketing pages (Wix buries content in JavaScript → thin for Google). The logged-in app (login + portal + checkout) stays on Wix, moved to `my.ten-fifty5.com`. Dashboards are unchanged — they're already Render-hosted, embedded in the Wix portal shell.
+**Status: LIVE since 2026-06-15.** `www.ten-fifty5.com` + apex `ten-fifty5.com` serve the native, fully-crawlable marketing site from Render (the existing **`locker-room`** service, host-switched — no second paid service). The logged-in Wix app (login + portal + checkout) moved to its **free Wix Studio URL** `https://info5945780.wixstudio.com/online-tennis-analyt`. Dashboards are unchanged (Render-hosted, embedded in the Wix portal shell).
 
-> **Why this exists.** 6 months live, ~6 visitors/month. Two causes: (1) on-page — the live marketing pages render through Wix JS so the only solid crawlable text was a block pasted at the bottom of each page; (2) off-page — Domain Rating 0.0, zero backlinks. This migration fixes (1). The backlink plan at the end addresses (2), which is the bigger traffic lever for a young domain.
+> **Why this exists.** 6 months on Wix → ~6 visitors/month. Two causes: (1) on-page — Wix rendered the marketing pages through JavaScript, so the only solid crawlable text was a block pasted at the bottom of each page; (2) off-page — Domain Rating 0.0, zero backlinks. The migration fixed (1): the marketing site is now native HTML, content-first, no iframe. The backlink plan at the end addresses (2), the bigger lever for a young domain.
 
----
-
-## What was built (Stage 0 — in the repo now)
-
-- **`locker_room_app.py`** (host-aware routing) — the marketing site is served by the **existing `locker-room` Render service** (no second paid service). When the request host is `www.ten-fifty5.com` / `ten-fifty5.com`, `/` → `home.html` and `/pricing` → `pricing_public.html`, plus `/overview`, `/coaching`, `/blog`, `/post/<slug>`, `/contact-us`, `/robots.txt`, `/sitemap.xml`. On every other host (the onrender URL the Wix portal embeds, `my.ten-fifty5.com`) behaviour is **unchanged** — `/` is the Locker Room dashboard, `/pricing` the app pricing. Hosts overridable via `MARKETING_HOSTS` env. (`marketing_app.py` remains as a standalone-service alternative but is NOT deployed.)
-- **Home / Overview / Pricing / Coaching** — hardened: canonical, Open Graph + Twitter cards, JSON-LD (Organization + FAQPage on home; Product + Offers on pricing), all "Start free" CTAs repointed to `my.ten-fifty5.com` (would have 404'd otherwise).
-- **`frontend/contact.html`** — new Contact page (meta, og, ContactPage schema, consistent `info@ten-fifty5.com`).
-- **`build_blog.py` + `frontend/blog/_posts/*.md`** — static blog generator + the 6 migrated posts at their original `/post/<slug>` URLs (Article + BreadcrumbList schema). Re-run `.venv/Scripts/python build_blog.py` after adding a post.
-
-Everything is tested locally via the Flask test client. **Nothing is live until DNS is cut over (Stage 3).**
+> **Heads-up — the `my.` subdomain was abandoned.** Earlier drafts of this runbook pointed the Wix app at `my.ten-fifty5.com`. Wix Studio refuses plain subdomains, so the app stayed on its free `info5945780.wixstudio.com/online-tennis-analyt` URL and `www`/apex went to Render. All marketing "Log in / Start free" CTAs point at `…/portal` on that wixstudio URL. In Wix Domains, ignore the cosmetic "domain points away from Wix" warning — **never click "Try Again"** (it reverts `www` to Wix).
 
 ---
 
-## Staged cutover — reversible at every step
+## How it's served (canonical: `locker_room_app.py`)
 
-### Stage 1 — Deploy host-aware routing (no new service, no domain change, ZERO user impact)
-1. Push to `main`. The existing **`locker-room`** service redeploys with the host-aware marketing routes. No new service, no extra cost.
-2. Preview on the locker-room `onrender.com` URL. Because `/` and `/pricing` are host-switched (that host isn't a marketing host), preview the marketing pages at: `/home`, `/overview`, `/coaching`, `/pricing-public`, `/blog`, a `/post/...`, `/contact-us`. The app's `/` (dashboard) and `/pricing` stay unchanged there.
-3. Run a few pages through [Google Rich Results Test](https://search.google.com/test/rich-results) — confirm Organization / FAQ / Product / Article parse with no errors.
-   - *Live site untouched. Nothing to roll back.*
+`_is_marketing_host()` checks `request.host` against `MARKETING_HOSTS` (`www.ten-fifty5.com` / `ten-fifty5.com`, extendable via the `MARKETING_HOSTS` env var). On a marketing host, `/` → `home.html` and `/pricing` → `pricing_public.html`; on every other host (the onrender URL the Wix portal embeds) those two paths are the unchanged **app** pages. Every other marketing path is a pure addition (harmless on the app host).
 
-### Stage 2 — Stand up `my.ten-fifty5.com` for the Wix app (while `www` still works)
-1. In **Wix**, add `my.ten-fifty5.com` as an additional/primary connected domain for the existing site (Wix dashboard → Domains). The login, `/portal`, and checkout now answer at `my.` *and* still at `www.`.
-2. Confirm at `https://my.ten-fifty5.com/portal`: login works, dashboards load, a test checkout opens PayPal.
-   - *Rollback: remove the `my.` domain in Wix. `www` unaffected.*
+`marketing_app.py` is a standalone-service variant of the same site and is **NOT** wired into `render.yaml` — `locker_room_app.py` is the deployed path. Don't edit `marketing_app.py` expecting it to ship.
 
-### Stage 3 — Point `www` (+ apex) at the existing locker-room service (GO LIVE)
-1. In the Render dashboard, open the **existing `locker-room` service** → Settings → Custom Domains → add `www.ten-fifty5.com` (and apex `ten-fifty5.com`). Render shows the exact DNS target.
-2. In Wix DNS (Domains → Domain Actions → Manage DNS Records), point `www` at the Render target. (Wix-registered domain: you edit records in Wix; name servers can't be changed — see Sources in chat.)
-3. Wait for DNS propagation + Render's automatic TLS cert issue (minutes to ~1 hour).
-4. Verify `https://www.ten-fifty5.com/` now serves the marketing home (View Source → your `<h1>` and full body are in the HTML; no Wix JS). The app keeps working on its onrender URL / `my.` unchanged.
-   - **Rollback (minutes): point `www` DNS back to Wix.** This is why Stages 1–2 happen first — the app already works at `my.` regardless.
+### Marketing routes
 
-### Stage 4 — Tell Google + clean up
-1. **Google Search Console** → add/confirm `www.ten-fifty5.com`, submit `https://www.ten-fifty5.com/sitemap.xml`. Use URL Inspection → Request Indexing on `/`, `/overview`, `/pricing`, `/coaching`, `/blog`.
-2. **Bing Webmaster Tools** → submit the same sitemap.
-3. The `/post/<slug>` and `/blog` URLs are unchanged, so existing blog rankings carry over. Spot-check 2–3 in Search Console after a week for crawl errors.
-4. Optional: `noindex` the `/coach-accept` page (transactional, token-auth) so it doesn't sit in the index.
+| Route | File | Notes |
+|---|---|---|
+| `/` | `home.html` | marketing host only; else app dashboard |
+| `/overview` | `how_it_works.html` | "How It Works" |
+| `/pricing` | `pricing_public.html` | marketing host only; else app pricing |
+| `/coaching` | `for_coaches.html` | |
+| `/academies` | `for_academies.html` | **added 2026-06-15** |
+| `/contact-us` | `contact.html` | |
+| `/blog`, `/post/<slug>` | generated `blog/*.html` | static blog (see below) |
+| `/blog/images/<f>` | `blog/images/*` | per-article hero/thumbnail images |
+| `/favicon.svg` · `/favicon.ico` · `/favicon.png` · `/apple-touch-icon.png` | `frontend/*` | brand favicon (tennis-ball mark) |
+| `/og/<f>` | `frontend/og/*` | per-page 1200×630 social-share cards |
+| `/robots.txt` · `/sitemap.xml` | generated | sitemap auto-includes every marketing route + blog post |
+| (any unknown path) | `404.html` | **branded 404** for browsers; JSON for `/api`·`/ops` + JSON clients |
 
-### Config reference (locker-room service)
-No env vars are required — the defaults in `locker_room_app.py` already cover it:
+Legacy same-origin backups still exist (`/home`, `/how-it-works`, `/pricing-public`, `/for-coaches`, `/for-academies`); their canonicals point at the clean URLs so they aren't treated as duplicates.
+
+### Config reference (no env vars required — code defaults cover it)
 | Env var | Default (in code) | When to set |
 |---|---|---|
 | `MARKETING_HOSTS` | `www.ten-fifty5.com,ten-fifty5.com` | only if the marketing host differs |
 | `SITE_BASE_URL` | `https://www.ten-fifty5.com` | used in robots/sitemap output |
-| `APP_BASE_URL` | `https://my.ten-fifty5.com` | reference only (CTAs are hardcoded in HTML) |
+| `APP_BASE_URL` | `https://info5945780.wixstudio.com/online-tennis-analyt` | reference only — the portal CTAs are hardcoded in the HTML |
 
-If you choose a different app subdomain than `my.`, update the hardcoded `my.ten-fifty5.com/portal` CTA links in `frontend/{home,how_it_works,pricing_public,for_coaches,contact}.html` (find-replace).
+The "Start free / Log in" CTAs are hardcoded `…wixstudio.com/online-tennis-analyt/portal` links in `frontend/{home,how_it_works,pricing_public,for_coaches,for_academies,contact}.html` and `build_blog.py`. If the app URL ever changes, find-replace there.
 
 ---
 
-## Audit items — status
+## The static blog (`build_blog.py`)
+
+Dependency-free generator (no framework). **Publish a post:**
+1. Drop `frontend/blog/_posts/<slug>.md` with frontmatter `title` / `description` / `date` (and optional `image: /blog/images/<file>` for a hero + index thumbnail).
+2. Run `.venv/Scripts/python build_blog.py`.
+3. Commit the generated `frontend/blog/*.html` (+ any image) and push.
+
+Each post gets Article + BreadcrumbList JSON-LD, Open Graph (its own hero image as the OG card, else the homepage card), a canonical at `/post/<slug>`, the shared nav + footer, a skip link, and is auto-added to the sitemap. The Markdown supports `##`–`####` headings, lists, `**bold**`, `*italics*`, `[links]()`, and pipe tables.
+
+---
+
+## Shared design system + components
+
+Every marketing surface (6 HTML pages + the blog templates) carries:
+- a **shared sticky top-nav** — identical markup/CSS, centered links (Home · How It Works · Pricing · For Coaches · Academies · Blog · Contact), "Start Free" CTA, a 980px hamburger breakpoint, and a tiny script that highlights the current page (`aria-current`-style `.active`).
+- a **shared dark footer** — Product + Get-in-touch columns, same link set.
+- the locker-room palette (`--green #1a5c2e` …) + Inter, unified **1200px** content width, WCAG-AA contrast, lossless/near-lossless WebP imagery, `:focus-visible`, `prefers-reduced-motion`, and a skip-to-content link.
+
+The system is **duplicated per file by convention** (no shared CSS). A site-wide colour/width/nav change is an N-file edit — the cross-page scripts in `.claude/tmp/` during the 2026-06-15 polish are the pattern (write once, apply to all, verify). See also `frontend/README.md`.
+
+---
+
+## On-page audit — status (all ✅)
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Move content out of iframe / native content | ✅ Whole site is native HTML on Render |
-| 2 | SEO copy in main flow, not buried | ✅ Content *is* the page, top-down with headings |
-| 3 | JSON-LD schema | ✅ Organization, FAQPage, Product+Offers, ContactPage, Article, BreadcrumbList |
-| 4 | Contact page meta + social image | ✅ Built with meta + og/twitter |
-| 5 | Small on-page (email, alt, titles) | ✅ Email consistent, decorative SVGs, clean titles |
-| 6 | Crawl infra (robots, sitemap, canonical, 301) | ✅ Generated robots + sitemap; self-canonicals; apex→www 301 at Stage 3 |
-| 7 | Linked blog hub | ✅ `/blog` hub + 6 posts migrated; linked in every footer |
-| — | Off-page (DR 0.0) | ⏳ Owner task — see below |
+| 1 | Native content (no iframe) | ✅ Whole site is native HTML on Render |
+| 2 | SEO copy in main flow | ✅ Content *is* the page, top-down with headings |
+| 3 | JSON-LD schema | ✅ Organization + FAQPage (home), Product + Offers + FAQ (pricing), ContactPage (contact), WebPage/Service + BreadcrumbList (overview/coaching/academies), Article + BreadcrumbList (every post) |
+| 4 | Social cards | ✅ Per-page dedicated 1200×630 OG images (`/og/*`); posts use their hero |
+| 5 | Favicon / touch icon | ✅ Brand SVG + .ico + apple-touch (ends the silent `/favicon.ico` 404) |
+| 6 | Branded 404 | ✅ `404.html` for humans; JSON for API/ops |
+| 7 | Crawl infra (robots, sitemap, canonical) | ✅ Generated; self-canonicals; `/academies` + all posts in sitemap |
+| 8 | Accessibility | ✅ Skip links, ARIA tabs + FAQ accordions, 44px tap targets, focus states |
+| 9 | Performance | ✅ WebP imagery, LCP hints, dropped unused Fraunces font, dead CSS/JS culled |
+| 10 | Linked blog hub | ✅ `/blog` + 7 posts, linked in every footer |
+| — | Off-page (DR 0.0) | ⏳ Owner task — see below + `docs/seo_backlink_kit.md` |
 
 ---
 
 ## Off-page: the real traffic lever (owner task, not code)
 
-On-page is now fixed, but a domain with **zero backlinks** won't rank for competitive terms no matter how clean the HTML. This is the bigger job for a young domain, and it's yours (with my help on content/outreach copy anytime).
+On-page is fixed, but a domain with **zero backlinks** won't rank for competitive terms no matter how clean the HTML. This is the bigger job for a young domain. Full kit (listing copy, directories, outreach templates) in `docs/seo_backlink_kit.md`.
 
-### Backlink hit-list (start here)
-1. **Tool directories / aggregators** — submit Ten-Fifty5 to: AlternativeTo, Product Hunt, SaaS directories, "AI tools" directories, sports-tech directories.
-2. **SwingVision-alternative space** — you already appear in comparison content; pursue inclusion/links on roundup posts ("best tennis analysis apps", "SwingVision alternatives"). Your migrated comparison post is the asset to pitch alongside.
-3. **Tennis communities** — relevant subreddits (r/tennis), tennis forums, Facebook coaching groups: be genuinely useful, link where it adds value (not spam).
-4. **Coach / academy partnerships** — every coach who uses Coach Pro is a potential backlink from their club/academy site ("we use Ten-Fifty5 for match analysis").
+### Backlink hit-list
+1. **Tool directories** — AlternativeTo, Product Hunt, SaaS / "AI tools" / sports-tech directories.
+2. **SwingVision-alternative space** — pursue inclusion on roundups ("best tennis analysis apps", "SwingVision alternatives"); the migrated comparison post is the asset to pitch.
+3. **Tennis communities** — r/tennis, tennis forums, coaching groups: be useful, link where it adds value.
+4. **Coach / academy partnerships** — every Coach Pro user is a potential link from their club/academy site.
 5. **Local business listings** — Google Business Profile, local sports directories.
-6. **Guest posts / mentions** — offer a data-driven guest article to tennis blogs; earn a link back.
+6. **Guest posts / mentions** — data-driven guest article → link back.
 
-### Keyword strategy — chase winnable terms first
-Don't target head terms ("tennis analysis") yet — they're owned by established domains. Target **long-tail, low-competition** queries your blog already addresses:
-- "how to read tennis serve placement zones"
-- "tennis rally length analysis"
-- "what is tennis match analysis"
-- "swingvision alternative android"
-- "analyse tennis serve with data"
-
-These match the migrated posts. As authority builds via backlinks, move up to harder terms. Realistic timeline: meaningful organic growth over **2–3 months**, compounding as backlinks + content accumulate.
+### Keyword strategy — winnable long-tail first
+Not head terms ("tennis analysis") yet. Target what the blog already covers: "how to read tennis serve placement zones", "tennis rally length analysis", "what is tennis match analysis", "swingvision alternative android", "analyse tennis serve with data". As authority builds, move up. Realistic: meaningful organic growth over 2–3 months, compounding with backlinks + content.
 
 ---
 
-*Owner-only steps are confined to Stages 2–4 (Wix domain + DNS + Search Console) and the off-page plan. Everything else is shipped in code.*
+## History — how it went live (done, kept for reference)
+
+Cutover happened 2026-06-15 in stages, reversible at each: (1) deploy host-aware routing to the existing `locker-room` service; (2) verify the Wix app on its wixstudio URL; (3) point `www` + apex DNS at the Render service (rollback = point DNS back to Wix); (4) Google/Bing Search Console — submit `sitemap.xml`, request indexing. The `/post/<slug>` + `/blog` URLs were preserved so prior blog rankings carried over.
