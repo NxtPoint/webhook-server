@@ -50,7 +50,6 @@
   - **Batch perf levers** (all in `ml_pipeline/config.py`, set on the detection job-def; each is a `0`/`1`-default zero-risk rollback unless noted). Live rev-80 job-def state shown:
     - `PIPELINE_STAGE_OVERLAP` — code default `0`; **ADOPTED `=1`** on rev-80. Runs MOG2(frame N) on a bounded worker thread concurrently with the court+ball GPU stages of the same frame, joining before the player stage. Only the schedule changes — byte-identical motion_mask.
     - `MOG2_DOWNSCALE` — code default `1`; **ADOPTED `=4`** on rev-80. Runs MOG2 on a 1/N-scaled frame (=4 → ~16× cheaper apply); the motion ratio it feeds is downscale-invariant. Keep the OFF (`=1`) branch as rollback.
-    - `SAHI_BATCHED` — default `0`; **DEAD prototype** (job-def `=0`, never adopted). Would batch the SAHI tile-fan into one YOLO forward; the `_run_sahi_batched`/`_tile_offsets` code path is a removal candidate.
     - `SAHI_SKIP_A_FAR_YMAX` — default `5.0` (= unchanged). Widens the far-pose acceptance upper bound that lets a frame skip SAHI when full-frame YOLO already resolved the far player; recommended `8.0` after a far-coverage reconcile.
     - `BALL_BATCH_SIZE` — default `1` (per-frame). `>1` accumulates that many WASB sliding-window inputs into one forward pass (TrackNet ignores it); `8` is a good T4 start.
     - `ROI_BOUNCE_BATCH` — default `1` (eager per-frame). `>1` switches `roi_extractors/bounces.py` to a deferred batched TrackNet forward (V2 only), replaying an identical per-frame postprocess; `8-16` is a good T4 start.

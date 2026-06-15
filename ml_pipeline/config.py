@@ -39,29 +39,12 @@ TRACKNET_BGR2RGB = False           # DO NOT convert BGR→RGB. Empirically confi
                                    # BGR→RGB dropped detection from 41% to 28% — this TrackNet V2
                                    # checkpoint was trained on BGR (cv2 convention). Keep False.
 
-# TrackNet V3 (qaz812345/TrackNetV3) — NOT a drop-in V2 upgrade.
-# V3 uses 8 input frames + a background median image = 27 input channels,
-# a U-Net architecture with skip connections, and a separate rectification
-# module for occluded trajectory repair. This is a fundamentally different
-# model from V2 (3 frames, 9 channels, encoder-decoder without skips).
-#
-# Architecture is ported in ml_pipeline/tracknet_v3.py (TrackNetV3 class).
-# BallTracker auto-selects V3 when tracknet_v3.pt exists in the models dir.
-# V2 (tracknet_v2.pt) remains the default when V3 weights are absent.
-#
-# To activate V3:
-#   1. Train or obtain V3 weights (qaz812345/TrackNetV3 training pipeline)
-#   2. Place the .pt file at ml_pipeline/models/tracknet_v3.pt
-#   3. No code changes needed — BallTracker detects and loads V3 automatically
-TRACKNET_V3_WEIGHTS = os.path.join(MODELS_DIR, "tracknet_v3.pt")
-TRACKNET_V3_NUM_INPUT_FRAMES = 8  # V3 uses 8-frame sliding window
-TRACKNET_V3_IN_CHANNELS = 27      # 8 frames × 3 channels + 3 background = 27
-# Number of frames sampled from the start of a video to compute the per-pixel
-# median background for V3 input. More frames → more stable; 200 at 25 fps
-# = ~8 s of warmup. During warmup the 8-frame buffer fills but detections are
-# still returned (background is force-computed on the first full window if not
-# yet ready).
-TRACKNET_V3_BACKGROUND_WARMUP_FRAMES = 200
+# NOTE: a TrackNet V3 (qaz812345/TrackNetV3) scaffold lived here + in
+# ml_pipeline/tracknet_v3.py until 2026-06-15. It was removed in the cleanup
+# sprint: the "keep WASB" ball-tracker decision is locked (memory
+# project_ball_tracker_decision_keep_wasb) and tracknet_v3.pt never existed in
+# prod, so the V3 path was permanently inert. The live ball model is WASB; the
+# TrackNet V2 path here is retained only for ROI bounce extraction.
 TRACKNET_HOUGH_DP = 1
 TRACKNET_HOUGH_MIN_DIST = 1
 TRACKNET_HOUGH_PARAM1 = 50
@@ -319,15 +302,11 @@ SAHI_CONFIDENCE = 0.15             # Low confidence for small distant players
 SAHI_POSTPROCESS_TYPE = "NMS"      # Non-Maximum Suppression for dedup
 SAHI_POSTPROCESS_MATCH_THRESHOLD = 0.5  # IoU threshold for NMS merge
 
-# Batched tile-fan (perf prototype). When True, _run_sahi dispatches to
-# _run_sahi_batched: slice the ROI into tiles ourselves and run them as ONE
-# batched YOLO forward pass instead of SAHI's sequential per-tile loop
-# (get_sliced_prediction = one GPU round-trip per tile). SAHI tiled inference
-# is ~76% of Batch wall time on long matches; batching the tile-fan is the
-# single biggest runtime lever. Default OFF → byte-identical to the existing
-# get_sliced_prediction path. Flip SAHI_BATCHED=1 on the Batch job-def to
-# validate. See docs/_investigation/sahi_batched_tilefan_2026-05-29.md.
-SAHI_BATCHED = os.environ.get("SAHI_BATCHED", "0") == "1"
+# NOTE: a batched tile-fan perf prototype (SAHI_BATCHED + player_tracker.
+# _run_sahi_batched / _tile_offsets / _nms_numpy) lived here until 2026-06-15.
+# It was never adopted (job-def always SAHI_BATCHED=0) and was removed in the
+# cleanup sprint. See docs/_investigation/sahi_batched_tilefan_2026-05-29.md for
+# the design if it's ever revisited.
 
 # L2(a) — SAHI skip-rule A relaxation (env-gated, default OFF = unchanged).
 # On the g5 profile SAHI fired on ~327/328 detect-frames (skip-rate ≈ 0%) even

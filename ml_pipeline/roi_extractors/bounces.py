@@ -82,9 +82,7 @@ logger = logging.getLogger("roi_bounces")
 # eval/running-stats, the heatmap postprocess is per-element).
 #
 # Scope: the batched forward is implemented for TrackNet V2 (the production ROI
-# ball model — tracknet_v3.pt is absent in prod). If a window's shared model is
-# V3 (8-frame + background, 27-channel), the processor falls back to the eager
-# per-frame path for that window (logged once) — still correct, just unbatched.
+# ball model). The window's shared model is always V2 here.
 
 
 class _ReplayModel:
@@ -449,11 +447,10 @@ class RoiBounceProcessor:
         # TASK 2: batched-forward mode. >1 defers the per-frame TrackNet GPU
         # forward and runs it in batches of this size across each window's
         # frames. 1 = eager per-frame (today's exact behaviour). Resolved at
-        # prepare() against the actual model version (V3 falls back to eager).
+        # prepare() once the model is loaded.
         self._bounce_batch = max(1, int(ROI_BOUNCE_BATCH))
         self._batched_mode = False           # set in prepare() once model known
         self._active_crops: list = []         # [(idx, crop_ndarray), ...] for the active window
-        self._use_v3_model = False
 
     # -- setup ---------------------------------------------------------------
 
@@ -509,29 +506,19 @@ class RoiBounceProcessor:
         self._shared_model = probe.model
         # Capture inference config from the probe so the batched-forward path
         # builds tensors identically to BallTracker._detect_frame_v2 (device,
-        # fp16, version). Read-only at inference, so sharing is safe.
+        # fp16). Read-only at inference, so sharing is safe.
         self._model_device = probe.device
         self._model_fp16 = probe._use_fp16
-        self._use_v3_model = probe._use_v3
         self._num_input_frames = probe._num_input_frames
 
-        # TASK 2: enable batched forward only for V2 (the prod ROI ball model).
-        # V3 (8-frame + background, 27ch) keeps the eager per-frame path —
-        # correct, just unbatched. Logged once so the deploy log shows which
-        # path ran.
-        self._batched_mode = (self._bounce_batch > 1) and (not self._use_v3_model)
-        if self._bounce_batch > 1:
-            if self._batched_mode:
-                logger.info(
-                    "roi_bounces: ROI_BOUNCE_BATCH=%d → batched TrackNet-V2 "
-                    "forward ENABLED across window frames", self._bounce_batch,
-                )
-            else:
-                logger.info(
-                    "roi_bounces: ROI_BOUNCE_BATCH=%d set but model is V3 — "
-                    "falling back to eager per-frame forward (batched path is "
-                    "V2-only)", self._bounce_batch,
-                )
+        # TASK 2: enable batched forward across each window's frames (TrackNet V2,
+        # the prod ROI ball model). Logged once so the deploy log shows it ran.
+        self._batched_mode = (self._bounce_batch > 1)
+        if self._batched_mode:
+            logger.info(
+                "roi_bounces: ROI_BOUNCE_BATCH=%d → batched TrackNet-V2 "
+                "forward ENABLED across window frames", self._bounce_batch,
+            )
 
         self._ready = True
         return True
