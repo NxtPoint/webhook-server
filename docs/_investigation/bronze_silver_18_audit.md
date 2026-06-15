@@ -36,16 +36,18 @@ the wrong signal (count-alignment with SportAI, or "the model exists"). Lock thi
 | **swing_type** (fh/bh/overhead/other) | stroke_classifier → `player_detections.stroke_class` | verbatim (windowed same-side patch, fix `15734f5`) | ✅ **COMPLETE** (build); **verified on `ea085d50`** fh 1→43 bh 1→24 | accuracy = train-last; `other` F1 0.59 |
 | **hit WHEN** (`ball_hit_s`) | stroke_detector → `stroke_events.predicted_hit_frame` | verbatim (frame→sec) | ✅ **COMPLETE** | — |
 | **hit WHO** (`player_id`) | ❌ none wired — `stroke_events.player_id` is perspective-biased, deliberately unused (rule #11); identity_detector v1 not wired into `_do_ingest_t5` and not read by silver | silver derives court SIDE | 🟡 **STOPGAP-until-identity-model** | wire `detect_identity_for_task` into ingest + add A/B join in silver |
-| **hit WHERE** (`ball_hit_location_x/y`) | ❌ `stroke_events` carries timing only — **no hit location** | silver **RECONSTRUCTS** from `player_detections` (side resolve + window + mirror-fallback) | 🟡 **STOPGAP — THE KEYSTONE** (option B) | enrich `stroke_events` to carry `ball_hit_location_x/y` (Batch, rule #8) → silver projects verbatim |
-| **volley** | ❌ no volley model | silver net-distance flag (`VOLLEY_NET_DISTANCE_M`) | 🟡 **STOPGAP-until-volley-model** | bronze volley signal (ball-not-bounced-before-hit) |
+| **hit WHERE** (`ball_hit_location_x/y`) | ✅ `stroke_detector.hit_location` → `stroke_events.ball_hit_location_x/y` + `hitter_side_near` (`867119f`) | ✅ verbatim (`746b954`) — reconstruction deleted | ✅ **COMPLETE** (build) — verified `ea085d50`: Pass-3 unchanged, 432/432 traced | far-court NULL court_y = train/calibration |
+| **volley** | ✅ deterministic no-bounce-since-hit rule → `stroke_events.volley` (`fba739a`) | ✅ verbatim — net-distance heuristic deleted | 🟡 **architecture done; accuracy BLOCKED on bounce recall** (train-last) | bounce-model recall retrain — `ea085d50` emits 566 vs SA 20 because only 119/407 bounces detected; NOT buildable here |
 | **ball_player_distance** | derived from two bronze coords | computed (`hypot`) | 🟢 **legit derivation** (allowed — deterministic, both inputs bronze) | — |
 | identifiers/constants (`id, task_id, valid, is_in_rally, ball_impact_type, type, model`) | — | constant/tag | n/a | — |
 
-**Scoreboard:** 4 facts BRONZE-COMPLETE (serve, bounce, swing_type, hit-WHEN); 3 STOPGAP
-model-gaps (hit-WHO, hit-WHERE, volley); 1 legit derivation. **We are NOT bronze-complete.**
-The two that move the needle: **hit-WHERE** (enrich `stroke_events`, option B — the keystone)
-and **hit-WHO** (wire identity). volley is last. Each STOPGAP is tagged `STOPGAP-until-<model>`
-at its point of use in `_t5_pass1_load_stroke_driven` — grep that string to find them all.
+**Scoreboard (2026-06-15 PM):** 5 facts BRONZE-COMPLETE (serve, bounce, swing_type, hit-WHEN,
+**hit-WHERE** ✅ new) + 1 legit derivation. **volley** = architecture done but accuracy
+BLOCKED on bounce recall (train-last). **hit-WHO (identity)** = the one remaining build
+stopgap. So: build-wise we are one wiring task (identity) from bronze-architecture-complete;
+the residual accuracy on volley/serve/far-side is all train-last (not buildable). Each
+remaining stopgap is tagged `STOPGAP-until-<model>` at its point of use in
+`_t5_pass1_load_stroke_driven` — grep that string to find them.
 
 **Governance (unchanged, now enforced):** no base-fact logic may exist in silver without a
 `STOPGAP-until-<model>` tag. When a model lands, delete the stopgap and project verbatim — and
