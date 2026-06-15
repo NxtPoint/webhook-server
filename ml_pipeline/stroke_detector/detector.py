@@ -38,6 +38,7 @@ import numpy as np
 from sqlalchemy import text as sql_text
 
 from ml_pipeline.config import FRAME_SAMPLE_FPS
+from ml_pipeline.stroke_detector.hit_location import assemble_hit_locations
 from ml_pipeline.stroke_detector.models import StrokeEvent
 from ml_pipeline.stroke_detector.schema import (
     delete_strokes_for_task,
@@ -354,11 +355,13 @@ def _persist_events(conn, events: List[StrokeEvent]) -> None:
         INSERT INTO ml_analysis.stroke_events
             (task_id, frame_idx, ts, predicted_hit_frame, player_id,
              confidence, peak_velocity_px_per_frame,
-             pre_peak_v, post_peak_v, decel_ratio)
+             pre_peak_v, post_peak_v, decel_ratio,
+             ball_hit_location_x, ball_hit_location_y, hitter_side_near)
         VALUES
             (:task_id, :frame_idx, :ts, :predicted_hit_frame, :player_id,
              :confidence, :peak_velocity_px_per_frame,
-             :pre_peak_v, :post_peak_v, :decel_ratio)
+             :pre_peak_v, :post_peak_v, :decel_ratio,
+             :ball_hit_location_x, :ball_hit_location_y, :hitter_side_near)
         ON CONFLICT (task_id, predicted_hit_frame, player_id) DO NOTHING
     """), rows)
 
@@ -426,6 +429,23 @@ def detect_strokes_for_task(
         near_min_swing_path_torsos=near_min_swing_path_torsos,
         swing_path_window=swing_path_window,
     )
+
+    # Hit-WHERE keystone: the model owns the complete hit fact. Assemble
+    # ball_hit_location_x/y + hitter_side_near onto each event from bounce-opposite
+    # side + nearest player detection, so silver projects them verbatim (rule #1/#2)
+    # instead of reconstructing. Best-effort + NULL on the far-court tail (train-last).
+    try:
+        locs = assemble_hit_locations(
+            conn, task_id, fps,
+            [(e.predicted_hit_frame, e.player_id) for e in events],
+        )
+        for ev, loc in zip(events, locs):
+            ev.ball_hit_location_x = loc["ball_hit_location_x"]
+            ev.ball_hit_location_y = loc["ball_hit_location_y"]
+            ev.hitter_side_near = loc["hitter_side_near"]
+    except Exception:
+        logger.exception("stroke_detector: hit-location assembly failed (non-fatal); "
+                         "events persisted with NULL hit location")
 
     _persist_events(conn, events)
     logger.info(

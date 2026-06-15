@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS ml_analysis.stroke_events (
     post_peak_v                 DOUBLE PRECISION,
     decel_ratio                 DOUBLE PRECISION,
 
+    -- The COMPLETE hit fact (stroke = ball-hit). Silver projects these verbatim
+    -- (rule #1/#2) instead of reconstructing them. Nullable: far-court court_y is
+    -- ~50% NULL (calibration tail) -> emit NULL, never block the row.
+    ball_hit_location_x         DOUBLE PRECISION,   -- hitter court_x at the hit
+    ball_hit_location_y         DOUBLE PRECISION,   -- hitter court_y at the hit
+    hitter_side_near            BOOLEAN,            -- resolved side (near=court_y>HALF_Y); bounce-opposite, attribution fallback
+
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT uq_stroke_events_task_frame_player
@@ -34,6 +41,12 @@ CREATE TABLE IF NOT EXISTS ml_analysis.stroke_events (
 
 CREATE INDEX IF NOT EXISTS ix_stroke_events_task_ts
     ON ml_analysis.stroke_events (task_id, ts);
+
+-- Idempotent migrations for existing tables (CREATE TABLE IF NOT EXISTS won't
+-- add columns to a table that already exists, e.g. rev-80 task ea085d50).
+ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_hit_location_x DOUBLE PRECISION;
+ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_hit_location_y DOUBLE PRECISION;
+ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS hitter_side_near BOOLEAN;
 """
 
 

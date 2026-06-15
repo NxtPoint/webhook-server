@@ -30,6 +30,11 @@ class StrokeEvent:
     post_peak_v: Optional[float] = None   # smoothed velocity at frame i+3
     decel_ratio: Optional[float] = None   # post_peak_v / peak_velocity
 
+    # The complete hit fact — silver projects these verbatim (rule #1/#2).
+    ball_hit_location_x: Optional[float] = None   # hitter court_x at the hit
+    ball_hit_location_y: Optional[float] = None   # hitter court_y at the hit
+    hitter_side_near: Optional[bool] = None       # resolved side (near = court_y > HALF_Y)
+
     diagnostics: dict = field(default_factory=dict)
 
     def to_db_row(self) -> dict:
@@ -44,4 +49,7 @@ class StrokeEvent:
             "pre_peak_v": self.pre_peak_v,
             "post_peak_v": self.post_peak_v,
             "decel_ratio": self.decel_ratio,
+            "ball_hit_location_x": self.ball_hit_location_x,
+            "ball_hit_location_y": self.ball_hit_location_y,
+            "hitter_side_near": self.hitter_side_near,
         }
