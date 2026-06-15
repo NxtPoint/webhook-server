@@ -9,8 +9,7 @@
 
 ## What was built (Stage 0 — in the repo now)
 
-- **`marketing_app.py`** — new Render service serving the indexed URLs natively: `/`, `/overview`, `/pricing`, `/coaching`, `/blog`, `/post/<slug>`, `/contact-us`, plus generated `/robots.txt` and `/sitemap.xml`. Old paths 301 (`/home`→`/`, etc.). Config: `SITE_BASE_URL`, `APP_BASE_URL` (env vars in `render.yaml`).
-- **`render.yaml`** — new `marketing` web service (service #6).
+- **`locker_room_app.py`** (host-aware routing) — the marketing site is served by the **existing `locker-room` Render service** (no second paid service). When the request host is `www.ten-fifty5.com` / `ten-fifty5.com`, `/` → `home.html` and `/pricing` → `pricing_public.html`, plus `/overview`, `/coaching`, `/blog`, `/post/<slug>`, `/contact-us`, `/robots.txt`, `/sitemap.xml`. On every other host (the onrender URL the Wix portal embeds, `my.ten-fifty5.com`) behaviour is **unchanged** — `/` is the Locker Room dashboard, `/pricing` the app pricing. Hosts overridable via `MARKETING_HOSTS` env. (`marketing_app.py` remains as a standalone-service alternative but is NOT deployed.)
 - **Home / Overview / Pricing / Coaching** — hardened: canonical, Open Graph + Twitter cards, JSON-LD (Organization + FAQPage on home; Product + Offers on pricing), all "Start free" CTAs repointed to `my.ten-fifty5.com` (would have 404'd otherwise).
 - **`frontend/contact.html`** — new Contact page (meta, og, ContactPage schema, consistent `info@ten-fifty5.com`).
 - **`build_blog.py` + `frontend/blog/_posts/*.md`** — static blog generator + the 6 migrated posts at their original `/post/<slug>` URLs (Article + BreadcrumbList schema). Re-run `.venv/Scripts/python build_blog.py` after adding a post.
@@ -21,10 +20,10 @@ Everything is tested locally via the Flask test client. **Nothing is live until 
 
 ## Staged cutover — reversible at every step
 
-### Stage 1 — Deploy the marketing service (no domain change, ZERO user impact)
-1. Push to `main`. Render Blueprint sync creates the new `marketing` service from `render.yaml`.
-2. Open the service's `onrender.com` URL. Verify `/`, `/overview`, `/pricing`, `/coaching`, `/blog`, a `/post/...`, `/contact-us`, `/robots.txt`, `/sitemap.xml`.
-3. Run each page through [Google Rich Results Test](https://search.google.com/test/rich-results) — confirm Organization / FAQ / Product / Article parse with no errors.
+### Stage 1 — Deploy host-aware routing (no new service, no domain change, ZERO user impact)
+1. Push to `main`. The existing **`locker-room`** service redeploys with the host-aware marketing routes. No new service, no extra cost.
+2. Preview on the locker-room `onrender.com` URL. Because `/` and `/pricing` are host-switched (that host isn't a marketing host), preview the marketing pages at: `/home`, `/overview`, `/coaching`, `/pricing-public`, `/blog`, a `/post/...`, `/contact-us`. The app's `/` (dashboard) and `/pricing` stay unchanged there.
+3. Run a few pages through [Google Rich Results Test](https://search.google.com/test/rich-results) — confirm Organization / FAQ / Product / Article parse with no errors.
    - *Live site untouched. Nothing to roll back.*
 
 ### Stage 2 — Stand up `my.ten-fifty5.com` for the Wix app (while `www` still works)
@@ -32,10 +31,11 @@ Everything is tested locally via the Flask test client. **Nothing is live until 
 2. Confirm at `https://my.ten-fifty5.com/portal`: login works, dashboards load, a test checkout opens PayPal.
    - *Rollback: remove the `my.` domain in Wix. `www` unaffected.*
 
-### Stage 3 — Point `www` (+ apex) at Render (GO LIVE)
-1. In your DNS host, change `www.ten-fifty5.com` to point at the Render `marketing` service (Render shows the exact CNAME/target when you add the custom domain to the service). Add the custom domain `www.ten-fifty5.com` (and apex `ten-fifty5.com` → 301 to `www`) in the Render `marketing` service settings.
-2. Wait for DNS propagation + Render's automatic TLS cert issue (minutes to ~1 hour).
-3. Verify `https://www.ten-fifty5.com/` now serves the Render home page (View Source → your `<h1>` and full body are in the HTML; no Wix JS).
+### Stage 3 — Point `www` (+ apex) at the existing locker-room service (GO LIVE)
+1. In the Render dashboard, open the **existing `locker-room` service** → Settings → Custom Domains → add `www.ten-fifty5.com` (and apex `ten-fifty5.com`). Render shows the exact DNS target.
+2. In Wix DNS (Domains → Domain Actions → Manage DNS Records), point `www` at the Render target. (Wix-registered domain: you edit records in Wix; name servers can't be changed — see Sources in chat.)
+3. Wait for DNS propagation + Render's automatic TLS cert issue (minutes to ~1 hour).
+4. Verify `https://www.ten-fifty5.com/` now serves the marketing home (View Source → your `<h1>` and full body are in the HTML; no Wix JS). The app keeps working on its onrender URL / `my.` unchanged.
    - **Rollback (minutes): point `www` DNS back to Wix.** This is why Stages 1–2 happen first — the app already works at `my.` regardless.
 
 ### Stage 4 — Tell Google + clean up
@@ -44,13 +44,15 @@ Everything is tested locally via the Flask test client. **Nothing is live until 
 3. The `/post/<slug>` and `/blog` URLs are unchanged, so existing blog rankings carry over. Spot-check 2–3 in Search Console after a week for crawl errors.
 4. Optional: `noindex` the `/coach-accept` page (transactional, token-auth) so it doesn't sit in the index.
 
-### Config reference (set in Render `marketing` service)
-| Env var | Value |
-|---|---|
-| `SITE_BASE_URL` | `https://www.ten-fifty5.com` |
-| `APP_BASE_URL` | `https://my.ten-fifty5.com` |
+### Config reference (locker-room service)
+No env vars are required — the defaults in `locker_room_app.py` already cover it:
+| Env var | Default (in code) | When to set |
+|---|---|---|
+| `MARKETING_HOSTS` | `www.ten-fifty5.com,ten-fifty5.com` | only if the marketing host differs |
+| `SITE_BASE_URL` | `https://www.ten-fifty5.com` | used in robots/sitemap output |
+| `APP_BASE_URL` | `https://my.ten-fifty5.com` | reference only (CTAs are hardcoded in HTML) |
 
-If you choose a different app subdomain than `my.`, change `APP_BASE_URL`, then re-run `build_blog.py` and update the hardcoded `my.ten-fifty5.com/portal` CTA links in `frontend/{home,how_it_works,pricing_public,for_coaches,contact}.html` (find-replace).
+If you choose a different app subdomain than `my.`, update the hardcoded `my.ten-fifty5.com/portal` CTA links in `frontend/{home,how_it_works,pricing_public,for_coaches,contact}.html` (find-replace).
 
 ---
 

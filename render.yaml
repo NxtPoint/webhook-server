@@ -165,28 +165,10 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.3"
-
-  # =========================================
-  # 6) Public marketing site (SEO)
-  #    Native, fully-crawlable marketing pages — replaces the Wix-hosted
-  #    marketing pages on cutover. Connect custom domain www.ten-fifty5.com
-  #    (+ apex 301 → www) to THIS service in the Render dashboard.
-  #    No DB; marketing only. The logged-in app stays on Wix at my.ten-fifty5.com.
-  # =========================================
-  - type: web
-    name: marketing
-    env: python
-    pythonVersion: 3.12.3
-    plan: starter
-    buildCommand: "pip install --upgrade pip && pip install flask gunicorn"
-    startCommand: "gunicorn marketing_app:app --bind 0.0.0.0:$PORT --workers 2 --threads 2 --timeout 120"
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.3"
-      # Canonical public host (apex/non-www should 301 to this).
-      - key: SITE_BASE_URL
-        value: "https://www.ten-fifty5.com"
-      # Where the logged-in app (Wix login + portal) lives. Marketing CTAs
-      # ("Log in", "Get started", "Analyse my first match") point here.
-      - key: APP_BASE_URL
-        value: "https://my.ten-fifty5.com"
+      # The public marketing site is served by THIS locker-room service via
+      # host-aware routing in locker_room_app.py (no separate paid service).
+      # When www.ten-fifty5.com is connected to this service, `/` and `/pricing`
+      # serve the marketing pages; on every other host the app is unchanged.
+      # Defaults in code already cover www/apex; override only if hosts change.
+      # - key: MARKETING_HOSTS
+      #   value: "www.ten-fifty5.com,ten-fifty5.com"
