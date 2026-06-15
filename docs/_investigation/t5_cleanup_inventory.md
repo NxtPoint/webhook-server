@@ -8,6 +8,21 @@ churn-sensitive (silver Pass-1 + upload_app are load-bearing).
 
 Each item: confidence (HIGH = provably unreferenced) · removal-risk · recommendation.
 
+## ★ SPRINT PROGRESS
+- **DONE (`1f55b9b`, verified compile + silver-rebuild ea085d50 unchanged + serve bench green):**
+  Tier 1 doc fixes in `build_silver_match_t5.py` (the WRONG `_t5_pass1_load` docstring,
+  the stale `T5_SERVE_FROM_EVENTS` log string + volley-stopgap comment) + Tier 0 dead
+  helpers in that file (`_is_in_service_box`+`SERVE_BOX_TOLERANCE_M`, `SERVE_GAP_S`,
+  `_parse_keypoints`). **The live-silver-path confusion sources are now fixed.**
+- **VERIFIED-DEAD, not yet removed:** the 3 `db_writer` methods (0 callers confirmed
+  this session) — contiguous lines 82–260.
+- **REMAINING (queued below):** db_writer methods; swing_type_events dead path (touches
+  prod `upload_app._do_ingest_t5`); v1 stroke_classifier; TrackNet V3; SAHI_BATCHED
+  (confirmed dead — job-def env `SAHI_BATCHED=0`); the bounce-driven retirement (LAST,
+  after stroke-driven is proven on a real upload). Tier 3 resolved by the live rev-80
+  env: only SAHI_BATCHED is dead; PIPELINE_STAGE_OVERLAP=1 + MOG2_DOWNSCALE=4 are
+  ADOPTED (keep their OFF-branches as rollback).
+
 ---
 
 ## TIER 0 — Zero-risk deletes (provably dead, no decision needed)
