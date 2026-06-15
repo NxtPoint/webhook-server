@@ -39,7 +39,7 @@ SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://www.ten-fifty5.com").rs
 # Where the logged-in app lives (Wix login + portal). Marketing "Log in / Get
 # started" CTAs point here. Single source of truth so the subdomain is a 1-line
 # change at cutover.
-APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://my.ten-fifty5.com").rstrip("/")
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://info5945780.wixstudio.com/online-tennis-analyt").rstrip("/")
 
 
 def _html(name: str):

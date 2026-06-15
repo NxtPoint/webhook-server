@@ -33,7 +33,7 @@ BLOG_DIR = os.path.join(BASE_DIR, "frontend", "blog")
 POSTS_DIR = os.path.join(BLOG_DIR, "_posts")
 
 SITE = "https://www.ten-fifty5.com"
-APP = "https://my.ten-fifty5.com"
+APP = "https://info5945780.wixstudio.com/online-tennis-analyt"
 OG_IMAGE = "https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png"
 
 # ---- Markdown → HTML (minimal) ------------------------------------------------

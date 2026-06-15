@@ -47,7 +47,7 @@ BLOG_DIR = os.path.join(FRONTEND_DIR, "blog")
 SITE_BASE_URL = os.environ.get("SITE_BASE_URL", "https://www.ten-fifty5.com").rstrip("/")
 # Where the logged-in app lives (Wix login + portal). Marketing CTAs already
 # point here in the HTML; kept here for reference / future use.
-APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://my.ten-fifty5.com").rstrip("/")
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://info5945780.wixstudio.com/online-tennis-analyt").rstrip("/")
 
 # Hosts that should see the marketing site at `/`. Extra hosts can be added via
 # the MARKETING_HOSTS env var (comma-separated) without a code change.
