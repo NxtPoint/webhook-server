@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS ml_analysis.stroke_events (
     ball_hit_location_x         DOUBLE PRECISION,   -- hitter court_x at the hit
     ball_hit_location_y         DOUBLE PRECISION,   -- hitter court_y at the hit
     hitter_side_near            BOOLEAN,            -- resolved side (near=court_y>HALF_Y); bounce-opposite, attribution fallback
+    volley                      BOOLEAN,            -- no ball bounce since the previous hit (struck out of the air)
 
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -47,6 +48,7 @@ CREATE INDEX IF NOT EXISTS ix_stroke_events_task_ts
 ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_hit_location_x DOUBLE PRECISION;
 ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS ball_hit_location_y DOUBLE PRECISION;
 ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS hitter_side_near BOOLEAN;
+ALTER TABLE ml_analysis.stroke_events ADD COLUMN IF NOT EXISTS volley BOOLEAN;
 """
 
 

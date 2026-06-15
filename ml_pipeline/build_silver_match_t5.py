@@ -1012,7 +1012,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
 
     strokes = conn.execute(sql_text("""
         SELECT predicted_hit_frame, player_id, confidence,
-               ball_hit_location_x, ball_hit_location_y, hitter_side_near
+               ball_hit_location_x, ball_hit_location_y, hitter_side_near, volley
         FROM ml_analysis.stroke_events
         WHERE task_id::text = :tid
         ORDER BY predicted_hit_frame
@@ -1057,7 +1057,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     }
 
     rows_to_insert: List[dict] = []
-    for i, (hf, raw_stroke_pid, _conf, bhx, bhy, bsn) in enumerate(strokes):
+    for i, (hf, raw_stroke_pid, _conf, bhx, bhy, bsn, s_volley) in enumerate(strokes):
         ts = hf / fps if fps > 0 else 0.0
 
         # ---- Match a bounce in (hf, hf + ~1s] ----
@@ -1127,10 +1127,10 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
             # the pose/position heuristics were deleted).
             swing_type = "other"
 
-        # STOPGAP-until-volley-model: no bronze model emits volley yet, so silver
-        # flags it by net proximity. NOT verbatim bronze. Governance:
-        # docs/_investigation/bronze_silver_18_audit.md §"Definition of bronze-complete".
-        is_volley = hit_y is not None and abs(hit_y - HALF_Y) < VOLLEY_NET_DISTANCE_M
+        # volley — VERBATIM from bronze stroke_events.volley (the model owns it:
+        # no ball bounce since the previous hit). The silver net-distance heuristic
+        # was DELETED 2026-06-15. NULL bronze (pre-volley rows) -> False.
+        is_volley = bool(s_volley)
         # STOPGAP-until-identity-model: WHO is derived from court SIDE (bounce-
         # opposite, or attribution fallback) — NOT a bronze identity fact. The
         # bronze stroke_events.player_id is perspective-biased so it is NOT used

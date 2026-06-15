@@ -182,9 +182,23 @@ def assemble_hit_locations(
     by_canon = pc["by_canon"]
     pid_map = pc["pid_map"]
 
-    n_bounce_side = n_attr_side = n_unresolved = n_mirror = 0
+    n_bounce_side = n_attr_side = n_unresolved = n_mirror = n_volley = 0
     out: List[dict] = []
+    prev_hf: Optional[int] = None
     for hf, raw_pid in strokes:
+        # ---- volley: no ball bounce in (prev_hit, this_hit) -> struck out of the
+        # air. First stroke is never a volley; with no bounce stream we cannot tell
+        # honestly -> False (no silver net-distance heuristic; bronze owns it).
+        if prev_hf is None or not bounce_frames:
+            vol = False
+        else:
+            lo = bisect.bisect_right(bounce_frames, prev_hf)
+            hi = bisect.bisect_left(bounce_frames, hf)
+            vol = (lo >= hi)
+        if vol:
+            n_volley += 1
+        prev_hf = hf
+
         # ---- resolve SIDE (near = court_y > HALF_Y) ----
         bi = bisect.bisect_left(bounce_frames, hf)
         b_cy = None
@@ -207,7 +221,7 @@ def assemble_hit_locations(
         if side_near is None:
             n_unresolved += 1
             out.append({"ball_hit_location_x": None, "ball_hit_location_y": None,
-                        "hitter_side_near": None})
+                        "hitter_side_near": None, "volley": vol})
             continue
 
         # ---- hitter court position on the resolved side (+ mirror fallback) ----
@@ -225,18 +239,19 @@ def assemble_hit_locations(
                 n_mirror += 1
         if hitter is None:
             out.append({"ball_hit_location_x": None, "ball_hit_location_y": None,
-                        "hitter_side_near": side_near})
+                        "hitter_side_near": side_near, "volley": vol})
             continue
         out.append({
             "ball_hit_location_x": hitter.get("court_x"),
             "ball_hit_location_y": hitter.get("court_y"),
             "hitter_side_near": side_near,
+            "volley": vol,
         })
 
     logger.info(
         "stroke_detector hit-loc: %d strokes — side(bounce=%d attr=%d unresolved=%d) "
-        "mirror=%d, %d bounces / %d player-pos",
-        len(strokes), n_bounce_side, n_attr_side, n_unresolved, n_mirror,
+        "mirror=%d volley=%d, %d bounces / %d player-pos",
+        len(strokes), n_bounce_side, n_attr_side, n_unresolved, n_mirror, n_volley,
         len(bounce_rows), len(any_d),
     )
     return out

@@ -34,6 +34,7 @@ class StrokeEvent:
     ball_hit_location_x: Optional[float] = None   # hitter court_x at the hit
     ball_hit_location_y: Optional[float] = None   # hitter court_y at the hit
     hitter_side_near: Optional[bool] = None       # resolved side (near = court_y > HALF_Y)
+    volley: Optional[bool] = None                 # no bounce since the previous hit (out of the air)
 
     diagnostics: dict = field(default_factory=dict)
 
@@ -52,4 +53,5 @@ class StrokeEvent:
             "ball_hit_location_x": self.ball_hit_location_x,
             "ball_hit_location_y": self.ball_hit_location_y,
             "hitter_side_near": self.hitter_side_near,
+            "volley": self.volley,
         }
