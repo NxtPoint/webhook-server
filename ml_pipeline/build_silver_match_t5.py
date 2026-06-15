@@ -1011,7 +1011,8 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     import bisect
 
     strokes = conn.execute(sql_text("""
-        SELECT predicted_hit_frame, player_id, confidence
+        SELECT predicted_hit_frame, player_id, confidence,
+               ball_hit_location_x, ball_hit_location_y, hitter_side_near
         FROM ml_analysis.stroke_events
         WHERE task_id::text = :tid
         ORDER BY predicted_hit_frame
@@ -1020,18 +1021,15 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         logger.info("T5 Pass 1 (stroke-driven): no stroke events for task=%s", task_id)
         return 0
 
-    # Shared player-detection buckets + dominant hand.
+    # Swing-type carriers (bronze stroke_class) by side — silver projects the
+    # classifier verbatim. Hit location + SIDE now come VERBATIM from bronze
+    # stroke_events (the model owns the hit fact, 867119f), so the hit-
+    # reconstruction buckets (near/far/any/kp/dets_by_pid/pid_map) are no longer
+    # read here — that assembly moved to stroke_detector.hit_location.
     buckets = _build_player_buckets(conn, job_id)
-    near_frames, near_dets = buckets["near_frames"], buckets["near_dets"]
-    far_frames, far_dets = buckets["far_frames"], buckets["far_dets"]
-    any_frames, any_dets = buckets["any_frames"], buckets["any_dets"]
-    near_kp_frames, near_kp_dets = buckets["near_kp_frames"], buckets["near_kp_dets"]
-    far_kp_frames, far_kp_dets = buckets["far_kp_frames"], buckets["far_kp_dets"]
     near_sc_frames, near_sc_dets = buckets["near_sc_frames"], buckets["near_sc_dets"]
     far_sc_frames, far_sc_dets = buckets["far_sc_frames"], buckets["far_sc_dets"]
-    dets_by_pid = buckets["dets_by_pid"]
-    pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
-    is_left_handed = _lookup_dominant_hand(conn, task_id)
+    top_pids = buckets["top_pids"]
 
     # Bounce index (court coords only) for the stroke→bounce join. Source = the
     # bounce MODEL (ml_analysis.ball_bounces) verbatim when present, else the
@@ -1059,7 +1057,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     }
 
     rows_to_insert: List[dict] = []
-    for i, (hf, raw_stroke_pid, _conf) in enumerate(strokes):
+    for i, (hf, raw_stroke_pid, _conf, bhx, bhy, bsn) in enumerate(strokes):
         ts = hf / fps if fps > 0 else 0.0
 
         # ---- Match a bounce in (hf, hf + ~1s] ----
@@ -1076,92 +1074,36 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
             b_cx = b_cy = b_speed = b_is_in = None
             diag["no_bounce"] += 1
 
-        # ---- Resolve hitter SIDE (near = court_y > HALF_Y) ----
-        hitter_side_near = None
-        if matched_bounce is not None:
-            # Ball bounced on one half → hitter struck from the OTHER half.
-            # Bucket convention (matches bounce-driven path): bounce on the
-            # top/far half (court_y < HALF_Y) ⇒ hitter is in the NEAR bucket
-            # (court_y > HALF_Y, which includes the near baseline ~23.77).
+        # ---- hit SIDE + LOCATION: VERBATIM from bronze stroke_events (rule
+        # #1/#2). The model (stroke_detector.hit_location) owns the hit fact now;
+        # silver only projects it. The side-resolution + nearest-detection +
+        # mirror reconstruction that lived here was DELETED 2026-06-15.
+        # Transition shim: pre-867119f rows have NULL bronze side -> fall back to
+        # bounce-opposite (the identical signal). Remove once tasks are re-ingested.
+        hitter_side_near = bsn
+        if hitter_side_near is None and matched_bounce is not None:
             hitter_side_near = (b_cy < HALF_Y)
-            diag["side_from_bounce"] += 1
-        else:
-            # Fallback: attributed player's own court position. Biased, last
-            # resort — only used when no bounce pins the side.
-            mapped_pid = pid_map.get(raw_stroke_pid, str(raw_stroke_pid))
-            pid_index = dets_by_pid.get(mapped_pid)
-            attr = None
-            if pid_index is not None:
-                pf, pd_list = pid_index
-                attr = (_find_nearest_detection(pf, pd_list, hf, HIT_WINDOW_FRAMES)
-                        or _find_nearest_detection(pf, pd_list, hf, HIT_SOFT_WINDOW_FRAMES))
-            if attr is not None and attr.get("court_y") is not None:
-                hitter_side_near = attr["court_y"] > HALF_Y
-                diag["side_from_attribution"] += 1
-
         if hitter_side_near is None:
             diag["unresolved"] += 1
             continue
+        diag["side_from_bounce" if matched_bounce is not None else "side_from_attribution"] += 1
 
-        # ---- Look up hitter pose+position on the resolved side ----
-        if hitter_side_near:
-            h_frames, h_dets = near_frames, near_dets
-            kp_frames, kp_dets = near_kp_frames, near_kp_dets
-            sc_frames, sc_dets = near_sc_frames, near_sc_dets
-        else:
-            h_frames, h_dets = far_frames, far_dets
-            kp_frames, kp_dets = far_kp_frames, far_kp_dets
-            sc_frames, sc_dets = far_sc_frames, far_sc_dets
+        hit_x = bhx
+        hit_y = bhy
 
-        hitter = _find_nearest_detection(h_frames, h_dets, hf, HIT_WINDOW_FRAMES)
-        if hitter is None and h_dets:
-            hitter = _find_nearest_detection(h_frames, h_dets, hf, HIT_SOFT_WINDOW_FRAMES)
-        # Mirror fallback: no detection on the resolved side → borrow any player
-        # with coords and mirror them onto the hitter's side (same shape as the
-        # bounce-driven mirror path).
-        if hitter is None and any_dets:
-            other = _find_nearest_detection(any_frames, any_dets, hf, HIT_SOFT_WINDOW_FRAMES)
-            if other is not None and other.get("court_y") is not None:
-                other_near = other["court_y"] > HALF_Y
-                mirror_y = (COURT_LENGTH_M - other["court_y"]) if other_near != hitter_side_near else other["court_y"]
-                mirror_y = max(0.0, min(COURT_LENGTH_M, mirror_y))
-                hitter = {
-                    "frame_idx": other["frame_idx"], "player_id": other["player_id"],
-                    "court_x": other["court_x"], "court_y": mirror_y,
-                    "center_x": other.get("center_x"), "center_y": other.get("center_y"),
-                    "keypoints": other.get("keypoints"), "_synthesized": True,
-                }
-
-        if hitter is None:
-            diag["unresolved"] += 1
-            continue
-
-        # Dual-window keypoint patch (mirrors the bounce path A4 step).
-        if hitter.get("keypoints") is None and not hitter.get("_synthesized"):
-            kp_match = _find_nearest_detection(kp_frames, kp_dets, hf, KP_WINDOW_FRAMES)
-            if kp_match is not None:
-                hitter = dict(hitter)
-                hitter["keypoints"] = kp_match.get("keypoints")
-                diag["kp_patched"] += 1
-
-        # stroke_class windowed patch — mirrors the bounce-driven path (703-720).
-        # The swing classifier (bronze) labels the detection nearest the contact
-        # frame; silver's resolved hitter is a neighbouring detection (sparse pose
-        # / fps rounding — median ~23f on ea085d50), so adopt the nearest same-side
-        # model classification within KP_WINDOW. This is VERBATIM projection of the
-        # bronze fact (rule #1/#2), not silver inference — it only reads the model's
-        # answer off the correct carrier. Skip synthesised hitters (their coords
-        # came from the opposite half, so the expected-side class isn't theirs).
-        if (hitter.get("stroke_class") is None
-                and not hitter.get("_synthesized")):
-            sc_match = _find_nearest_detection(sc_frames, sc_dets, hf, KP_WINDOW_FRAMES)
-            if sc_match is not None:
-                hitter = dict(hitter)
-                hitter["stroke_class"] = sc_match.get("stroke_class")
-                diag["sc_patched"] += 1
-
-        hit_x = hitter.get("court_x")
-        hit_y = hitter.get("court_y")
+        # swing_type — VERBATIM bronze stroke_class via the nearest same-side
+        # classified carrier within KP_WINDOW. The classifier labels the contact
+        # detection; sparse pose / fps rounding means silver's hit frame is a
+        # neighbour, so adopt the nearest same-side model class. Projection of the
+        # bronze fact (rule #1/#2), not silver inference.
+        sc_frames, sc_dets = (
+            (near_sc_frames, near_sc_dets) if hitter_side_near
+            else (far_sc_frames, far_sc_dets)
+        )
+        sc_match = _find_nearest_detection(sc_frames, sc_dets, hf, KP_WINDOW_FRAMES)
+        flow_class = sc_match.get("stroke_class") if sc_match is not None else None
+        if flow_class is not None:
+            diag["sc_patched"] += 1
 
         ball_player_dist = None
         if b_cx is not None and hit_x is not None and hit_y is not None:
@@ -1175,8 +1117,8 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         # and gets rewritten at the B3 stroke flip.) ----
         is_serve = False
 
-        # ---- swing type — project the bronze classifier verbatim ----
-        flow_class = hitter.get("stroke_class")
+        # ---- swing type — project the bronze classifier verbatim (flow_class
+        # read above from the nearest same-side stroke_class carrier) ----
         if not is_serve and flow_class in ("fh", "bh", "overhead", "other"):
             swing_type = flow_class  # bronze model owns this fact (projected verbatim)
         else:
