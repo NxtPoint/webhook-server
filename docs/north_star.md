@@ -40,8 +40,10 @@ Non-negotiable. A change that violates one of these is going backwards — stop 
 > in `stroke_events`), hit-WHO (identity A/B wired + projected), and volley landed this session
 > (commits `867119f`→`1b31bba`); serve/bounce/swing/hit-WHEN already done. **No BUILD stopgaps
 > remain — the only lever left is TRAINING.** Caveats: volley accuracy is blocked on bounce
-> recall (566 vs SA 20); swing bench not yet locked; all verified on `ea085d50` (re-verify on
-> the next real upload). Field-by-field: `docs/_investigation/bronze_silver_18_audit.md`.
+> recall (566 vs SA 20); all verified on `ea085d50` (re-verify on the next real upload).
+> **5/5 training benches LOCKED (incl. swing 0.7468, GPU).** Before training: finish the
+> **hardening/cleanup sprint** (`docs/_investigation/t5_cleanup_inventory.md`, Phase 1 done).
+> Field-by-field: `docs/_investigation/bronze_silver_18_audit.md`.
 
 The objective is an in-house pipeline whose **bronze** (`ml_analysis.*` → silver Pass 1) reproduces SportAI's **18 base facts materially.** Silver derives *everything else* (zones, aggression, serve location 1-8, rally analytics) off those same 18 — so **bronze-t5 ≈ bronze-sportai is the whole game.**
 
