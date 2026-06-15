@@ -35,19 +35,21 @@ the wrong signal (count-alignment with SportAI, or "the model exists"). Lock thi
 | **bounce** court_x/y + ball_speed | bounce CNN v2 → `ball_bounces` | `T5_BOUNCE_FROM_MODEL` verbatim (is_bounce fallback only on pre-rev-66 tasks) | ✅ **COMPLETE** (build) | recall = train-last |
 | **swing_type** (fh/bh/overhead/other) | stroke_classifier → `player_detections.stroke_class` | verbatim (windowed same-side patch, fix `15734f5`) | ✅ **COMPLETE** (build); **verified on `ea085d50`** fh 1→43 bh 1→24 | accuracy = train-last; `other` F1 0.59 |
 | **hit WHEN** (`ball_hit_s`) | stroke_detector → `stroke_events.predicted_hit_frame` | verbatim (frame→sec) | ✅ **COMPLETE** | — |
-| **hit WHO** (`player_id`) | ❌ none wired — `stroke_events.player_id` is perspective-biased, deliberately unused (rule #11); identity_detector v1 not wired into `_do_ingest_t5` and not read by silver | silver derives court SIDE | 🟡 **STOPGAP-until-identity-model** | wire `detect_identity_for_task` into ingest + add A/B join in silver |
+| **hit WHO** (`player_id`) | ✅ identity_detector v1 wired into `_do_ingest_t5` → `player_identity_segments` (`943b159`) | ✅ silver maps side→stable A/B verbatim (rally + serve via `_ab_pid`) | ✅ **COMPLETE** (build) — verified `ea085d50`: player_id person-stable across changeovers (each id on both ends), Pass-3 preserved | v2 CNN re-id = future/train |
 | **hit WHERE** (`ball_hit_location_x/y`) | ✅ `stroke_detector.hit_location` → `stroke_events.ball_hit_location_x/y` + `hitter_side_near` (`867119f`) | ✅ verbatim (`746b954`) — reconstruction deleted | ✅ **COMPLETE** (build) — verified `ea085d50`: Pass-3 unchanged, 432/432 traced | far-court NULL court_y = train/calibration |
 | **volley** | ✅ deterministic no-bounce-since-hit rule → `stroke_events.volley` (`fba739a`) | ✅ verbatim — net-distance heuristic deleted | 🟡 **architecture done; accuracy BLOCKED on bounce recall** (train-last) | bounce-model recall retrain — `ea085d50` emits 566 vs SA 20 because only 119/407 bounces detected; NOT buildable here |
 | **ball_player_distance** | derived from two bronze coords | computed (`hypot`) | 🟢 **legit derivation** (allowed — deterministic, both inputs bronze) | — |
 | identifiers/constants (`id, task_id, valid, is_in_rally, ball_impact_type, type, model`) | — | constant/tag | n/a | — |
 
-**Scoreboard (2026-06-15 PM):** 5 facts BRONZE-COMPLETE (serve, bounce, swing_type, hit-WHEN,
-**hit-WHERE** ✅ new) + 1 legit derivation. **volley** = architecture done but accuracy
-BLOCKED on bounce recall (train-last). **hit-WHO (identity)** = the one remaining build
-stopgap. So: build-wise we are one wiring task (identity) from bronze-architecture-complete;
-the residual accuracy on volley/serve/far-side is all train-last (not buildable). Each
-remaining stopgap is tagged `STOPGAP-until-<model>` at its point of use in
-`_t5_pass1_load_stroke_driven` — grep that string to find them.
+**Scoreboard (2026-06-15 PM — BRONZE BUILD COMPLETE):** 6 facts BRONZE-COMPLETE (serve,
+bounce, swing_type, hit-WHEN, **hit-WHERE** ✅, **hit-WHO** ✅) + 1 legit derivation
+(ball_player_distance). **volley** = architecture done (bronze rule + silver verbatim) but
+accuracy BLOCKED on bounce recall (train-last). **No BUILD stopgaps remain** — every base
+fact now comes from a model and silver projects it verbatim (no Pass-1 heuristics). All
+residual accuracy (volley via bounce recall; serve far over-emission; far-side hit/bounce)
+is TRAIN-LAST, not buildable. The next lever is training on the sharp-far corpus, not silver
+or detector edits. Re-verify each fact on a real upload after the next ingest before treating
+the accuracy as moved.
 
 **Governance (unchanged, now enforced):** no base-fact logic may exist in silver without a
 `STOPGAP-until-<model>` tag. When a model lands, delete the stopgap and project verbatim — and
