@@ -66,12 +66,6 @@ Training pipeline (TrackNet fine-tuning):
                                            S3 label JSON + video both exist and the JSON parses
                                            into the expected schema
 
-Stroke classifier (far-player optical flow):
-    export-stroke-data --sportai-task <id> --t5-task <id> --video <path> --output <dir>
-                                         — export optical flow training data from dual-submit pair
-    train-stroke --data <dir> [--epochs 50] [--batch-size 16] [--lr 1e-3]
-                                         — train the stroke flow CNN classifier
-
 Exit codes:
     0 = all checks passed
     1 = one or more checks failed
@@ -1522,55 +1516,6 @@ def cmd_eval_serve(args: argparse.Namespace) -> int:
 
 
 # ============================================================
-# Stroke classifier commands
-# ============================================================
-
-def cmd_export_stroke_data(args: argparse.Namespace) -> int:
-    """Export optical flow training data from a dual-submit pair."""
-    hr("EXPORT STROKE DATA")
-    from ml_pipeline.stroke_classifier.export_training_data import export_training_examples
-    try:
-        n = export_training_examples(
-            sportai_task_id=args.sportai_task,
-            t5_task_id=args.t5_task,
-            video_path=args.video,
-            output_dir=args.output,
-            fps=args.fps,
-        )
-        print(f"  {PASS} exported {n} training examples -> {args.output}")
-        return 0
-    except Exception as exc:
-        print(f"  {FAIL} {exc}")
-        return 1
-
-
-def cmd_train_stroke(args: argparse.Namespace) -> int:
-    """Train the optical flow stroke classifier."""
-    hr("TRAIN STROKE CLASSIFIER")
-    from ml_pipeline.stroke_classifier.train import train
-    import json
-    try:
-        result = train(
-            data_dir=args.data,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            lr=args.lr,
-            output_path=args.output,
-        )
-        if "error" in result:
-            print(f"  {FAIL} {result['error']}")
-            return 1
-        print(f"  {PASS} best_val_acc={result['best_val_acc']:.1%} "
-              f"(train={result['n_train']}, val={result['n_val']})")
-        return 0
-    except Exception as exc:
-        print(f"  {FAIL} {exc}")
-        import traceback
-        traceback.print_exc()
-        return 1
-
-
-# ============================================================
 # CLI dispatch
 # ============================================================
 
@@ -1722,27 +1667,6 @@ def main():
                            "(excluding the S3 cache dir) to this s3:// destination. "
                            "Example: s3://nextpoint-prod-uploads/training/datasets/<name>/")
 
-    # Stroke classifier — training data export + training
-    p_sc_export = sub.add_parser(
-        "export-stroke-data",
-        help="Export optical flow training data from dual-submit pair",
-    )
-    p_sc_export.add_argument("--sportai-task", required=True, help="SportAI task ID")
-    p_sc_export.add_argument("--t5-task", required=True, help="T5 task ID")
-    p_sc_export.add_argument("--video", required=True, help="Video path")
-    p_sc_export.add_argument("--output", required=True, help="Output directory")
-    p_sc_export.add_argument("--fps", type=float, default=25.0)
-
-    p_sc_train = sub.add_parser(
-        "train-stroke",
-        help="Train optical flow stroke classifier",
-    )
-    p_sc_train.add_argument("--data", required=True, help="Training data directory")
-    p_sc_train.add_argument("--epochs", type=int, default=50)
-    p_sc_train.add_argument("--batch-size", type=int, default=16)
-    p_sc_train.add_argument("--lr", type=float, default=1e-3)
-    p_sc_train.add_argument("--output", default=None, help="Output weights path")
-
     args = p.parse_args()
 
     if args.cmd == "validate-bronze":
@@ -1791,10 +1715,6 @@ def main():
         return cmd_build_corpus(args)
     if args.cmd == "verify-corpus-row":
         return cmd_verify_corpus_row(args)
-    if args.cmd == "export-stroke-data":
-        return cmd_export_stroke_data(args)
-    if args.cmd == "train-stroke":
-        return cmd_train_stroke(args)
 
     return 1
 

@@ -45,9 +45,8 @@ What this does per corpus row (one per dual-submit match):
 Why Farneback over TV-L1/RAFT (ADR-02 lists those):
   - cv2.calcOpticalFlowFarneback ships with stock OpenCV; TV-L1 needs
     opencv-contrib (not in our requirements). RAFT needs a model weight
-    file + GPU. Farneback is the same algorithm the pre-ADR-02
-    stroke_classifier/flow_extractor.py uses, so the data shape is
-    consistent with the existing scaffold. If a future training run
+    file + GPU. Farneback is the same algorithm the (now-removed) pre-ADR-02
+    v1 stroke_classifier flow extractor used. If a future training run
     measures Farneback as the accuracy bottleneck, swap is one function.
 
 CLI:
