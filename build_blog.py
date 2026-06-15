@@ -114,7 +114,12 @@ def parse_post(path):
         for ln in fm.strip().split("\n"):
             if ":" in ln:
                 k, v = ln.split(":", 1)
-                meta[k.strip()] = v.strip()
+                val = v.strip()
+                # strip a single layer of matching wrapping quotes (so a
+                # quoted YAML title doesn't render literal " in the heading)
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                    val = val[1:-1].strip()
+                meta[k.strip()] = val
     meta["slug"] = os.path.splitext(os.path.basename(path))[0]
     meta["body_html"] = md_to_html(body.strip())
     return meta
@@ -136,6 +141,9 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .post-head{padding:80px 0 30px;background:linear-gradient(180deg,var(--green-bg),transparent)}
 .post-head h1{font-size:clamp(2rem,4.6vw,3rem);font-weight:800;letter-spacing:-.02em;line-height:1.08;color:var(--text);margin-top:16px}
 .post-meta{margin-top:18px;color:var(--text-dim);font-size:.9rem}
+.post-hero{max-width:900px;margin:0 auto;padding:26px 28px 0}
+.post-hero img{width:100%;border-radius:12px;border:1px solid var(--border);box-shadow:0 18px 40px -24px rgba(10,31,20,.35);display:block}
+.post-hero figcaption{margin-top:10px;font-size:.82rem;color:var(--text-dim);text-align:center}
 .article{padding:34px 0 70px}
 .article h2{font-size:1.55rem;font-weight:700;letter-spacing:-.01em;margin:42px 0 14px;color:var(--text)}
 .article h3{font-size:1.2rem;font-weight:700;margin:30px 0 10px;color:var(--text)}
@@ -157,13 +165,17 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .idx-head{padding:84px 0 24px;background:linear-gradient(180deg,var(--green-bg),transparent)}
 .idx-head h1{font-size:clamp(2.2rem,5vw,3.2rem);font-weight:800;letter-spacing:-.02em;margin-top:16px}
 .idx-head p{margin-top:14px;color:var(--text-sec);font-size:1.1rem;max-width:560px}
-.post-list{padding:30px 0 70px;display:grid;gap:4px}
-.post-card{display:block;padding:26px 0;border-bottom:1px solid var(--border)}
+.post-list{padding:30px 0 70px;display:grid;gap:6px}
+.post-card{display:grid;grid-template-columns:230px 1fr;gap:26px;align-items:center;padding:24px 0;border-bottom:1px solid var(--border)}
 .post-card:hover{text-decoration:none}
+.post-card .thumb{aspect-ratio:16/10;border-radius:10px;overflow:hidden;background:linear-gradient(150deg,#226e3c,#0c3a1e);border:1px solid var(--border)}
+.post-card .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s ease}
+.post-card:hover .thumb img{transform:scale(1.04)}
 .post-card .date{color:var(--text-dim);font-size:.82rem;text-transform:uppercase;letter-spacing:.08em}
-.post-card h2{font-size:1.4rem;font-weight:700;letter-spacing:-.01em;color:var(--text);margin:8px 0 8px}
+.post-card h2{font-size:1.35rem;font-weight:700;letter-spacing:-.01em;color:var(--text);margin:7px 0 8px}
 .post-card:hover h2{color:var(--green)}
-.post-card p{color:var(--text-sec);font-size:1rem}
+.post-card p{color:var(--text-sec);font-size:.98rem}
+@media(max-width:600px){.post-card{grid-template-columns:1fr;gap:14px}}
 /* footer */
 .footer{background:var(--green-dark);color:rgba(255,255,255,.82);padding:60px 0 28px;margin-top:20px}
 .footer-inner{max-width:1100px;margin:0 auto;padding:0 28px;display:grid;grid-template-columns:2fr 1fr 1fr;gap:40px}
@@ -252,10 +264,14 @@ def render_post(p):
     title = p.get("title", p["slug"])
     desc = p.get("description", "")
     date = p.get("date", "")
+    image = p.get("image", "")
+    hero = (f'<figure class="post-hero"><img src="{image}" alt="{_html.escape(title)}" '
+            f'width="900" height="506"></figure>\n') if image else ""
+    og_img = f"{SITE}{image}" if image.startswith("/") else (image or OG_IMAGE)
     article = (
         '{"@context":"https://schema.org","@type":"Article",'
         f'"headline":{_json(title)},"description":{_json(desc)},'
-        f'"datePublished":{_json(date)},"image":{_json(OG_IMAGE)},'
+        f'"datePublished":{_json(date)},"image":{_json(og_img)},'
         '"author":{"@type":"Organization","name":"Ten-Fifty5"},'
         '"publisher":{"@type":"Organization","name":"Ten-Fifty5","logo":{"@type":"ImageObject","url":'
         f'{_json(OG_IMAGE)}}}}},"mainEntityOfPage":{_json(url)}}}'
@@ -279,11 +295,11 @@ def render_post(p):
 <meta property="og:title" content="{_html.escape(title)}">
 <meta property="og:description" content="{_html.escape(desc)}">
 <meta property="og:url" content="{url}">
-<meta property="og:image" content="{OG_IMAGE}">
+<meta property="og:image" content="{og_img}">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="{_html.escape(title)}">
 <meta name="twitter:description" content="{_html.escape(desc)}">
-<meta name="twitter:image" content="{OG_IMAGE}">
+<meta name="twitter:image" content="{og_img}">
 <script type="application/ld+json">{article}</script>
 <script type="application/ld+json">{breadcrumb}</script>
 {FONT}
@@ -298,7 +314,7 @@ def render_post(p):
     <div class="post-meta">{_fmt_date(date)}</div>
   </div>
 </header>
-<main class="article">
+{hero}<main class="article">
   <div class="wrap">
 {p['body_html']}
 {CTA_BAND}
@@ -313,11 +329,16 @@ def render_post(p):
 def render_index(posts):
     cards = []
     for p in posts:
+        img = p.get("image", "")
+        thumb = (f'<div class="thumb"><img src="{img}" alt="" loading="lazy" '
+                 f'width="230" height="144"></div>') if img else ""
         cards.append(
             f'<a class="post-card" href="{SITE}/post/{p["slug"]}">'
+            f'{thumb}'
+            f'<div class="post-card-body">'
             f'<div class="date">{_fmt_date(p.get("date",""))}</div>'
             f'<h2>{_html.escape(p.get("title", p["slug"]))}</h2>'
-            f'<p>{_html.escape(p.get("description",""))}</p></a>'
+            f'<p>{_html.escape(p.get("description",""))}</p></div></a>'
         )
     return f"""<!DOCTYPE html>
 <html lang="en">

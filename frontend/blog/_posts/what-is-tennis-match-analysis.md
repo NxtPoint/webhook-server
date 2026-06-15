@@ -2,6 +2,7 @@
 title: What Is Tennis Match Analysis? A Complete Guide for Club Players
 description: Tennis match analysis turns every point, shot and pattern into data you can train against. Here's what it measures, why it matters, and how AI made it accessible.
 date: 2026-05-06
+image: /blog/images/what-is-match-analysis.png
 ---
 Tennis match analysis is the systematic study of a tennis match using data — every point, every shot, every pattern — to understand why you won or lost and what to work on next. It's the difference between "I felt slow on my second serve today" and "your second-serve win rate dropped from 62% to 41% when you served to the deuce-court body."
 

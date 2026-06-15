@@ -12,12 +12,12 @@
 <meta property="og:title" content="The Complete Guide to Tennis Rally Analysis">
 <meta property="og:description" content="Rally length and aggression profile reveal your tactical identity — where you win points, where you lose them, and how patterns shift under pressure.">
 <meta property="og:url" content="https://www.ten-fifty5.com/post/the-complete-guide-to-tennis-rally-analysis">
-<meta property="og:image" content="https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png">
+<meta property="og:image" content="https://www.ten-fifty5.com/blog/images/rally-analysis.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="The Complete Guide to Tennis Rally Analysis">
 <meta name="twitter:description" content="Rally length and aggression profile reveal your tactical identity — where you win points, where you lose them, and how patterns shift under pressure.">
-<meta name="twitter:image" content="https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Complete Guide to Tennis Rally Analysis","description":"Rally length and aggression profile reveal your tactical identity \u2014 where you win points, where you lose them, and how patterns shift under pressure.","datePublished":"2026-05-24","image":"https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png","author":{"@type":"Organization","name":"Ten-Fifty5"},"publisher":{"@type":"Organization","name":"Ten-Fifty5","logo":{"@type":"ImageObject","url":"https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png"}},"mainEntityOfPage":"https://www.ten-fifty5.com/post/the-complete-guide-to-tennis-rally-analysis"}</script>
+<meta name="twitter:image" content="https://www.ten-fifty5.com/blog/images/rally-analysis.png">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"The Complete Guide to Tennis Rally Analysis","description":"Rally length and aggression profile reveal your tactical identity \u2014 where you win points, where you lose them, and how patterns shift under pressure.","datePublished":"2026-05-24","image":"https://www.ten-fifty5.com/blog/images/rally-analysis.png","author":{"@type":"Organization","name":"Ten-Fifty5"},"publisher":{"@type":"Organization","name":"Ten-Fifty5","logo":{"@type":"ImageObject","url":"https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png"}},"mainEntityOfPage":"https://www.ten-fifty5.com/post/the-complete-guide-to-tennis-rally-analysis"}</script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Blog","item":"https://www.ten-fifty5.com/blog"},{"@type":"ListItem","position":2,"name":"The Complete Guide to Tennis Rally Analysis","item":"https://www.ten-fifty5.com/post/the-complete-guide-to-tennis-rally-analysis"}]}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -34,6 +34,9 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .post-head{padding:80px 0 30px;background:linear-gradient(180deg,var(--green-bg),transparent)}
 .post-head h1{font-size:clamp(2rem,4.6vw,3rem);font-weight:800;letter-spacing:-.02em;line-height:1.08;color:var(--text);margin-top:16px}
 .post-meta{margin-top:18px;color:var(--text-dim);font-size:.9rem}
+.post-hero{max-width:900px;margin:0 auto;padding:26px 28px 0}
+.post-hero img{width:100%;border-radius:12px;border:1px solid var(--border);box-shadow:0 18px 40px -24px rgba(10,31,20,.35);display:block}
+.post-hero figcaption{margin-top:10px;font-size:.82rem;color:var(--text-dim);text-align:center}
 .article{padding:34px 0 70px}
 .article h2{font-size:1.55rem;font-weight:700;letter-spacing:-.01em;margin:42px 0 14px;color:var(--text)}
 .article h3{font-size:1.2rem;font-weight:700;margin:30px 0 10px;color:var(--text)}
@@ -55,13 +58,17 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .idx-head{padding:84px 0 24px;background:linear-gradient(180deg,var(--green-bg),transparent)}
 .idx-head h1{font-size:clamp(2.2rem,5vw,3.2rem);font-weight:800;letter-spacing:-.02em;margin-top:16px}
 .idx-head p{margin-top:14px;color:var(--text-sec);font-size:1.1rem;max-width:560px}
-.post-list{padding:30px 0 70px;display:grid;gap:4px}
-.post-card{display:block;padding:26px 0;border-bottom:1px solid var(--border)}
+.post-list{padding:30px 0 70px;display:grid;gap:6px}
+.post-card{display:grid;grid-template-columns:230px 1fr;gap:26px;align-items:center;padding:24px 0;border-bottom:1px solid var(--border)}
 .post-card:hover{text-decoration:none}
+.post-card .thumb{aspect-ratio:16/10;border-radius:10px;overflow:hidden;background:linear-gradient(150deg,#226e3c,#0c3a1e);border:1px solid var(--border)}
+.post-card .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s ease}
+.post-card:hover .thumb img{transform:scale(1.04)}
 .post-card .date{color:var(--text-dim);font-size:.82rem;text-transform:uppercase;letter-spacing:.08em}
-.post-card h2{font-size:1.4rem;font-weight:700;letter-spacing:-.01em;color:var(--text);margin:8px 0 8px}
+.post-card h2{font-size:1.35rem;font-weight:700;letter-spacing:-.01em;color:var(--text);margin:7px 0 8px}
 .post-card:hover h2{color:var(--green)}
-.post-card p{color:var(--text-sec);font-size:1rem}
+.post-card p{color:var(--text-sec);font-size:.98rem}
+@media(max-width:600px){.post-card{grid-template-columns:1fr;gap:14px}}
 /* footer */
 .footer{background:var(--green-dark);color:rgba(255,255,255,.82);padding:60px 0 28px;margin-top:20px}
 .footer-inner{max-width:1100px;margin:0 auto;padding:0 28px;display:grid;grid-template-columns:2fr 1fr 1fr;gap:40px}
@@ -119,6 +126,7 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
     <div class="post-meta">24 May 2026</div>
   </div>
 </header>
+<figure class="post-hero"><img src="/blog/images/rally-analysis.png" alt="The Complete Guide to Tennis Rally Analysis" width="900" height="506"></figure>
 <main class="article">
   <div class="wrap">
 <p>Rally analysis tracks every point in a match and categorises it by how the rally played out — not just the final result. The two most fundamental dimensions are rally length (how many shots the point lasted) and rally outcome (who won, and how — winner, forced error, unforced error).</p>

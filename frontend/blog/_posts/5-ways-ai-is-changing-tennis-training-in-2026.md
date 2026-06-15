@@ -2,6 +2,7 @@
 title: 5 Ways AI Is Changing Tennis Training in 2026
 description: From personalised game plans to pre-match scouting and democratised coaching, here are five ways AI is reshaping how serious club players train and improve.
 date: 2026-05-23
+image: /blog/images/ai-tennis-training.png
 ---
 Tennis coaching hasn't changed much in decades. A player hits, a coach watches, and feedback comes through experience, instinct, and whatever the coach can remember from the last set. It works — but it's limited by what one person can observe, recall, and communicate in real time.
 

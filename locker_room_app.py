@@ -166,6 +166,14 @@ def blog_post(slug: str):
     return _html(os.path.join("blog", f"{slug}.html"))
 
 
+@app.get("/blog/images/<filename>")
+def blog_image(filename: str):
+    # Static blog hero/thumbnail images (frontend/blog/images/*).
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        abort(404)
+    return _html(os.path.join("blog", "images", filename))
+
+
 # Legacy same-origin marketing backups (kept; their canonicals point at the
 # clean URLs above so search engines don't treat them as duplicates).
 @app.get("/home")

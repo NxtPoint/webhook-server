@@ -2,6 +2,7 @@
 title: How to Film Your Tennis Match for Analysis (Any Camera, Any Court)
 description: How to film a tennis match for AI analysis — the camera, angle, height and settings that turn any phone footage into clean point-by-point match data. No special gear.
 date: 2026-06-15
+image: /blog/images/film-your-match.webp
 ---
 Here is the good news before we start: you do not need a smart court, a special tripod, or a four-figure camera to get pro-level match data. You need a phone, a sensible spot to put it, and about two minutes of setup. The footage that powers a full point-by-point breakdown — serve placement, rally length, win patterns, technique — is the same footage you could shoot this weekend on the camera already in your pocket.
 

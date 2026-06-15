@@ -1,7 +1,8 @@
 ---
-title: "How to Analyse Your Tennis Serve Using Data: A Complete Guide"
+title: How to Analyse Your Tennis Serve Using Data: A Complete Guide
 description: Your serve is the one shot you fully control. Learn the five metrics that matter, the patterns that cost you breaks, and how AI makes serve analysis accessible.
 date: 2026-05-19
+image: /blog/images/analyse-your-serve.png
 ---
 Your serve is the only shot in tennis you have complete control over. No opponent pressure, no time constraints, no unpredictable bounces. And yet, for most club players, it's also the shot they understand least about their own game.
 

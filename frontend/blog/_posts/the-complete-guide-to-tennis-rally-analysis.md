@@ -2,6 +2,7 @@
 title: The Complete Guide to Tennis Rally Analysis
 description: Rally length and aggression profile reveal your tactical identity — where you win points, where you lose them, and how patterns shift under pressure.
 date: 2026-05-24
+image: /blog/images/rally-analysis.png
 ---
 Rally analysis tracks every point in a match and categorises it by how the rally played out — not just the final result. The two most fundamental dimensions are rally length (how many shots the point lasted) and rally outcome (who won, and how — winner, forced error, unforced error).
 

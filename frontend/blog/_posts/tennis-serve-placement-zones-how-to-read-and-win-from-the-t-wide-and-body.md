@@ -1,7 +1,8 @@
 ---
-title: "Tennis Serve Placement Zones: How to Read (and Win From) the T, Wide, and Body"
+title: Tennis Serve Placement Zones: How to Read (and Win From) the T, Wide, and Body
 description: Placement beats power. Learn what the T, wide and body serve each do to your opponent, and how to read your own serve data to build a winning pattern.
 date: 2026-06-15
+image: /blog/images/serve-placement-zones.png
 ---
 If you only ever measure one thing about your serve, make it placement. Speed is satisfying, but the players who quietly win more service games are usually the ones who can put the ball where they want it — and who know, match to match, whether they actually did. This guide breaks down the three serve placement zones every serious player should master, what each one does to your opponent, and how to read your own serve data so you stop guessing and start building a pattern.
 
