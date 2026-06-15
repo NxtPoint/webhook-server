@@ -2525,6 +2525,24 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s serve detection failed (non-fatal): %s", task_id, e)
 
+            # Rule-based A/B identity (ADR-03) — runs AFTER the serve detector
+            # (consumes ml_analysis.serve_events for game-boundary derivation) and
+            # BEFORE the silver build (silver maps per-game side->A/B so player_id
+            # is stable across changeovers, matching SA's person-based id). Failure
+            # is non-fatal: silver falls back to the side-based player_id.
+            try:
+                from ml_pipeline.identity_detector import detect_identity_for_task
+                with engine.begin() as conn:
+                    identity_segments = detect_identity_for_task(conn, task_id, replace=True)
+                app.logger.info(
+                    "T5 INGEST task_id=%s identity detector produced %d segments",
+                    task_id, len(identity_segments),
+                )
+            except ImportError:
+                app.logger.warning("T5 INGEST task_id=%s identity_detector module not available", task_id)
+            except Exception as e:
+                app.logger.warning("T5 INGEST task_id=%s identity detection failed (non-fatal): %s", task_id, e)
+
             # Pose-first stroke detection — wrist-velocity peak detector;
             # mirrors serve_detector. Populates ml_analysis.stroke_events.
             # Failure is non-fatal; the current silver builder is bounce-

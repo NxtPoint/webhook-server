@@ -872,8 +872,27 @@ def _serve_events_min_conf() -> float:
         return SERVE_EVENTS_MIN_CONF_DEFAULT
 
 
+def _ab_pid(near: bool, ts: float, top_pids: list, ident) -> str:
+    """Map a hitter's SIDE (near) at time `ts` to the STABLE person token (A/B)
+    via the identity segments, so player_id survives changeovers (matches SA's
+    person-based id). top_pids[0] = A token, top_pids[1] = B token. Falls back to
+    the side-based assignment when there's no identity lookup or the game's segment
+    is low-confidence (never worse than side-based). Used by BOTH the Pass-1 rally
+    rows AND the serve overlay so serve + rally share one consistent A/B id."""
+    import bisect as _bis
+    side_pid = str(top_pids[0]) if near else str(top_pids[1])
+    if not ident:
+        return side_pid
+    starts, anear, conf = ident
+    gi = _bis.bisect_right(starts, ts) - 1
+    if gi >= 0 and anear[gi] is not None and conf[gi] >= 0.5:
+        return str(top_pids[0]) if (near == anear[gi]) else str(top_pids[1])
+    return side_pid
+
+
 def _apply_serve_events_overlay(
     conn: Connection, task_id: str, rows_to_insert: List[dict], top_pids: list,
+    ident_lookup=None,
 ) -> dict:
     """Overlay serves from ml_analysis.serve_events onto the Pass-1 rows.
 
@@ -936,7 +955,7 @@ def _apply_serve_events_overlay(
             near = hy > HALF_Y
         else:
             continue  # no side evidence at all — cannot place the serve
-        pid = str(top_pids[0]) if near else str(top_pids[1])
+        pid = _ab_pid(near, ts, top_pids, ident_lookup)  # stable A/B (serve rows too)
         snap_y = COURT_LENGTH_M if near else 0.0  # snap to baseline → pass-3 serve_d gate passes
 
         best_i, best_d = None, None
@@ -1054,7 +1073,48 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         "strokes": len(strokes), "bounce_matched": 0, "no_bounce": 0,
         "side_from_bounce": 0, "side_from_attribution": 0,
         "unresolved": 0, "kp_patched": 0, "sc_patched": 0, "fired_serve": 0,
+        "ab_identity": 0,
     }
+
+    # ---- A/B identity (ADR-03): map each hit's SIDE -> the stable person (A/B)
+    # so player_id survives changeovers (matches SA's person-based id). Silver
+    # Pass-1 runs before Pass-3 (no game_number yet), so re-derive the game windows
+    # from serve_events and join the persisted per-game side->A/B segments. VERBATIM
+    # projection of the identity model; falls back to side-based top_pids[0/1] when
+    # there's no/low-confidence segment (never worse than the prior behaviour).
+    ident_game_starts: List[float] = []
+    ident_game_anear: List[Optional[bool]] = []   # is player A on the NEAR side that game?
+    ident_game_conf: List[float] = []
+    try:
+        from ml_pipeline.identity_detector.game_boundaries import derive_game_boundaries
+        _sev = conn.execute(sql_text("""
+            SELECT ts, player_id FROM ml_analysis.serve_events
+            WHERE task_id::text = :tid ORDER BY ts
+        """), {"tid": task_id}).fetchall()
+        _bounds = (derive_game_boundaries(
+            [{"ts": float(t), "player_id": int(p)} for t, p in _sev]) if _sev else [])
+        _seg: Dict[int, Tuple[bool, float]] = {}
+        _seg_present = conn.execute(sql_text("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema='ml_analysis' AND table_name='player_identity_segments' LIMIT 1
+        """)).scalar()
+        if _seg_present:
+            for gn, a_side, conf in conn.execute(sql_text("""
+                SELECT game_number, player_a_side, confidence
+                FROM ml_analysis.player_identity_segments WHERE job_id::text = :tid
+            """), {"tid": task_id}).fetchall():
+                _seg[int(gn)] = (a_side == "near", float(conf) if conf is not None else 0.0)
+        for gb in _bounds:
+            a = _seg.get(gb.game_number)
+            ident_game_starts.append(gb.t_start)
+            ident_game_anear.append(a[0] if a else None)
+            ident_game_conf.append(a[1] if a else 0.0)
+    except Exception as _e:
+        logger.warning("T5 Pass 1: identity A/B mapping unavailable (%s) — side-based player_id", _e)
+    _ident_on = len(ident_game_starts) > 0
+    _ident = (ident_game_starts, ident_game_anear, ident_game_conf) if _ident_on else None
+    if _ident_on:
+        logger.info("T5 Pass 1: A/B identity active — %d game windows", len(ident_game_starts))
 
     rows_to_insert: List[dict] = []
     for i, (hf, raw_stroke_pid, _conf, bhx, bhy, bsn, s_volley) in enumerate(strokes):
@@ -1135,7 +1195,11 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         # opposite, or attribution fallback) — NOT a bronze identity fact. The
         # bronze stroke_events.player_id is perspective-biased so it is NOT used
         # (rule #11). Flips to verbatim once the identity model is wired.
-        hitter_pid = str(top_pids[0]) if hitter_side_near else str(top_pids[1])
+        # player_id — stable A/B (person), not side: survives changeovers. Same
+        # helper the serve overlay uses, so serve + rally rows share one id basis.
+        hitter_pid = _ab_pid(hitter_side_near, ts, top_pids, _ident)
+        if _ident is not None:
+            diag["ab_identity"] += 1
 
         # Pass-1 row = VERBATIM bronze projection except where STOPGAP-tagged.
         #   VERBATIM: serve (serve_events), swing_type (player_detections.stroke_class),
@@ -1179,7 +1243,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     # Regression introduced when stroke-driven flipped default-ON (472b244) —
     # the call lived only in the bounce-driven path; fixed 2026-06-14 after it
     # surfaced on the first real re-run task (93ebb93d).
-    _apply_serve_events_overlay(conn, task_id, rows_to_insert, top_pids)
+    _apply_serve_events_overlay(conn, task_id, rows_to_insert, top_pids, ident_lookup=_ident)
     return _insert_pass1_rows(conn, rows_to_insert)
 
 
