@@ -568,6 +568,39 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 </style>
 </head>
 <body>
+<style>
+.topnav{position:sticky;top:0;z-index:1000;background:rgba(255,255,255,0.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border,#e5e5e5);}
+.topnav-inner{max-width:1200px;margin:0 auto;padding:0 28px;height:62px;display:flex;align-items:center;justify-content:space-between;gap:18px;}
+.topnav-logo{font-weight:800;font-size:1.1rem;letter-spacing:-.01em;color:var(--text,#1a1a1a);text-decoration:none;}
+.topnav-links{display:flex;align-items:center;gap:24px;}
+.topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec,#6b7280);text-decoration:none;transition:color .2s;}
+.topnav-links a:hover{color:var(--green,#1a5c2e);}
+.topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;}
+.topnav-cta:hover{background:var(--green-light,#22783c);}
+.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:6px;}
+@media(max-width:780px){
+.topnav-toggle{display:block;}
+.topnav-links{display:none;position:absolute;top:62px;left:0;right:0;background:#fff;flex-direction:column;align-items:stretch;gap:0;padding:6px 0;border-bottom:1px solid var(--border,#e5e5e5);box-shadow:0 8px 20px rgba(0,0,0,.06);}
+.topnav-links.open{display:flex;}
+.topnav-links a{padding:13px 28px;}
+.topnav-cta{margin:8px 28px;text-align:center;}
+}
+</style>
+<nav class="topnav">
+  <div class="topnav-inner">
+    <a href="https://www.ten-fifty5.com/" class="topnav-logo">TEN-FIFTY5</a>
+    <button class="topnav-toggle" aria-label="Toggle menu" onclick="this.nextElementSibling.classList.toggle('open')">&#9776;</button>
+    <div class="topnav-links">
+      <a href="https://www.ten-fifty5.com/overview">How It Works</a>
+      <a href="https://www.ten-fifty5.com/pricing">Pricing</a>
+      <a href="https://www.ten-fifty5.com/coaching">For Coaches</a>
+      <a href="https://www.ten-fifty5.com/academies">Academies</a>
+      <a href="https://www.ten-fifty5.com/blog">Blog</a>
+      <a href="https://www.ten-fifty5.com/contact-us">Contact</a>
+      <a href="https://info5945780.wixstudio.com/online-tennis-analyt/portal" class="topnav-cta">Start Free</a>
+    </div>
+  </div>
+</nav>
 
 <!-- HERO — full-bleed Hawkeye-style court visualization as background -->
 <section class="hero">

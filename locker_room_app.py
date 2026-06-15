@@ -23,6 +23,7 @@
 #     GET /overview    → how_it_works.html
 #     GET /pricing     → pricing_public.html  (marketing host only; else app pricing)
 #     GET /coaching    → for_coaches.html
+#     GET /academies   → for_academies.html
 #     GET /contact-us  → contact.html
 #     GET /blog        → blog/index.html
 #     GET /post/<slug> → blog/<slug>.html     (migrated posts, original URLs)
@@ -143,6 +144,11 @@ def coaching():
     return _html("for_coaches.html")
 
 
+@app.get("/academies")
+def academies():
+    return _html("for_academies.html")
+
+
 @app.get("/contact-us")
 def contact():
     return _html("contact.html")
@@ -182,6 +188,11 @@ def public_for_coaches():
     return _html("for_coaches.html")
 
 
+@app.get("/for-academies")
+def public_for_academies():
+    return _html("for_academies.html")
+
+
 # ----------------------------------------------------------------
 # Crawl infrastructure (only meaningful on the marketing host, harmless elsewhere)
 # ----------------------------------------------------------------
@@ -191,6 +202,7 @@ _MARKETING_URLS = [
     ("/overview", "monthly", "0.9"),
     ("/pricing", "monthly", "0.9"),
     ("/coaching", "monthly", "0.8"),
+    ("/academies", "monthly", "0.8"),
     ("/blog", "weekly", "0.7"),
     ("/contact-us", "yearly", "0.4"),
 ]
