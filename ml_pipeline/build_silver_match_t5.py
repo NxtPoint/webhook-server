@@ -39,9 +39,7 @@ def _kps_to_array(raw) -> Optional["np.ndarray"]:
     keypoints row from ~2KB Python list to ~204 bytes numpy array. Applied at
     load time in _build_player_buckets, this drops silver-build peak heap on
     a ~44-min match from ~269MB to ~110MB (the dominant allocator was the
-    72k-row player_dets list with nested-list keypoints). _parse_keypoints
-    already accepts numpy arrays (.tolist() branch) so downstream is
-    untouched."""
+    72k-row player_dets list with nested-list keypoints)."""
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -92,12 +90,10 @@ CENTRE_X = COURT_WIDTH_DOUBLES_M / 2                            # 5.485m
 EPS_BASELINE_M = 1.5
 
 # Thresholds for match analysis
-SERVE_GAP_S = 3.0       # seconds gap before a bounce to consider it a serve (was 5.0 — too strict for sparse bounce data)
 VOLLEY_NET_DISTANCE_M = 2.0  # hitter within 2m of net = volley. Was 4.0 (mid-court),
 # which over-counted volleys 13 vs SA's 6 on Match 1. A volley is physically struck
-# close to the net, so 2.0m is the motivated value (not a single-match fit to 6).
-# Used by both the is_volley flag and the volley-pose branch in swing inference.
-SERVE_BOX_TOLERANCE_M = 1.5  # extra tolerance for service box check (real wide serves bounce in doubles alley)
+# close to the net, so 2.0m is the motivated value. Now only used by the dormant
+# bounce-driven path (the live path reads stroke_events.volley verbatim).
 # Bounce-precision guard (Stage 1, 2026-05-25): a bounce within this court
 # distance (m) of a player is treated as a racquet contact / near-player
 # detection noise, not a floor landing, and dropped from the bounce-driven
@@ -150,72 +146,22 @@ TABLE = "point_detail"
 # HELPERS
 # ============================================================
 
-def _is_in_service_box(court_x: float, court_y: float) -> bool:
-    """Check if a bounce position is within either service box.
-
-    Uses SERVE_BOX_TOLERANCE_M extra slack on each side because:
-    - Real wide serves bounce just outside the singles line (in the doubles alley)
-    - Court coordinate accuracy isn't perfect (~1m error common)
-    """
-    if court_x is None or court_y is None:
-        return False
-    tol = SERVE_BOX_TOLERANCE_M
-    in_x = (SINGLES_LEFT_X - tol) <= court_x <= (SINGLES_RIGHT_X + tol)
-    # Near service box: between net and near service line (with tolerance)
-    near_box = (HALF_Y - tol) < court_y <= (FAR_SERVICE_LINE_M + tol)
-    # Far service box: between far service line and net (with tolerance)
-    far_box = (SERVICE_LINE_M - tol) <= court_y < (HALF_Y + tol)
-    return in_x and (near_box or far_box)
-
-
 # Legacy in-silver serve helpers (_serve_geometric_check, _is_serve_geometric,
 # _is_overhead_pose, _check_hitter_stationary_pre_hit) DELETED 2026-06-07 —
 # serve is a pure bronze import from ml_analysis.serve_events (RULE #1).
 # The serve MODELS live in ml_pipeline/serve_detector + ml_pipeline/serve_model.
 
 
-def _parse_keypoints(keypoints) -> Optional[list]:
-    """Normalise keypoints to a list of [x, y, conf] triplets, or return None.
-
-    The DB stores keypoints as a JSONB flat array [x1,y1,c1,x2,y2,c2,...] (51
-    floats) OR as a nested list [[x,y,c], ...] (17 entries). Also accepts a
-    numpy array (the compact in-memory form the streaming loaders store to fit
-    Render's 512MB main API). Missing/malformed input returns None.
-    """
-    if keypoints is None:
-        return None
-    # Numpy compact form -> nested list; the existing branches then handle it.
-    if hasattr(keypoints, "tolist") and not isinstance(keypoints, (list, tuple, str, bytes)):
-        try:
-            keypoints = keypoints.tolist()
-        except Exception:
-            return None
-    if isinstance(keypoints, str):
-        try:
-            keypoints = json.loads(keypoints)
-        except (json.JSONDecodeError, TypeError):
-            return None
-    if not isinstance(keypoints, (list, tuple)) or len(keypoints) == 0:
-        return None
-    # Flat list of 51 floats → reshape to 17 × 3
-    if isinstance(keypoints[0], (int, float)):
-        if len(keypoints) < 51:
-            return None
-        return [[keypoints[i * 3], keypoints[i * 3 + 1], keypoints[i * 3 + 2]]
-                for i in range(17)]
-    # Already nested
-    if len(keypoints) < 11:
-        return None
-    return keypoints
 
 
 # NOTE 2026-06-14 (ADR-02 revision): the silver swing-type heuristics
 # _infer_swing_type_from_keypoints() and _infer_swing_type_from_position()
 # were DELETED here. Swing type is a BRONZE fact owned by the v2 classifier
 # (ml_pipeline/stroke_classifier/, emits stroke_class) and projected verbatim
-# in Pass 1. Silver does NO swing inference of its own (rule #1/#2). Volley
-# stays a separate boolean fact (bronze.player_swing.volley); the
-# VOLLEY_NET_DISTANCE_M flag is its interim stopgap until the volley fact lands.
+# in Pass 1. Silver does NO swing inference of its own (rule #1/#2). Volley is
+# also a BRONZE fact now (stroke_events.volley, no-bounce-since-hit, 2026-06-15),
+# projected verbatim in the stroke-driven path; VOLLEY_NET_DISTANCE_M survives
+# ONLY in the dormant bounce-driven path (retirement candidate).
 # See docs/_investigation/adr_02_swing_type_classifier_plan.md.
 
 
@@ -1000,7 +946,7 @@ def _apply_serve_events_overlay(
             r["swing_type"] = "other"
             diag["demoted"] += 1
 
-    logger.info("T5 serve overlay (T5_SERVE_FROM_EVENTS): %s", diag)
+    logger.info("T5 serve overlay (bronze serve_events, unconditional): %s", diag)
     return diag
 
 
@@ -1277,15 +1223,14 @@ def _stroke_driven_enabled() -> bool:
 def _t5_pass1_load(conn: Connection, task_id: str, job_id: str, fps: float) -> int:
     """Pick the Pass-1 row-generation strategy.
 
-    BOUNCE-DRIVEN IS THE LIVE PROD PATH. The stroke-driven path (Phase 6 step 2)
-    is GATED OFF behind T5_STROKE_DRIVEN_SILVER and MUST stay off until the T5
-    bronze (ml_analysis.*) 18 base fields reconcile to SportAI. Reason (proven
-    2026-05-25): stroke-driven row generation overshoots (Match 1: 141 vs SA's
-    84 active, near 114/27 vs SA 43/41) because the stroke detector's hitter
-    attribution is perspective-biased to the near player and far pose is sparse.
-    That is a BRONZE-accuracy problem, not a silver one — see CLAUDE.md "Things
-    not to do" #11 and docs/north_star.md. Flip the env var on (no redeploy)
-    once far-pose coverage + bounce accuracy land.
+    STROKE-DRIVEN IS THE LIVE PROD PATH (T5_STROKE_DRIVEN_SILVER defaults ON,
+    flipped 2026-06-14, `472b244`). One silver row per bronze stroke_events hit;
+    hit location/side/swing/volley are projected VERBATIM from the model (the
+    `hit_location` assembly moved to stroke_detector, 2026-06-15). The
+    BOUNCE-DRIVEN path below is the dormant fallback, reached only when the flag
+    is OFF or a task has no stroke_events (pre-Phase-6 ingests / failed stroke
+    detection). It is a retirement candidate once stroke-driven is proven on real
+    uploads — see docs/_investigation/t5_cleanup_inventory.md Tier 2 #1.
 
     The information_schema existence check runs BEFORE any SELECT on
     stroke_events so a missing table on an older deployment can't poison the
