@@ -394,7 +394,7 @@ def _run_pipeline(
         # bounce detector is ever run on practice.)
         ts = fi / FRAME_SAMPLE_FPS
         source = (
-            SignalSource.BOUNCE_DETECTOR_V1
+            SignalSource.BOUNCE_DETECTOR_V2
             if cnn.weights_loaded
             else SignalSource.STOPGAP_UNTRAINED
         )
@@ -527,7 +527,7 @@ def _detect_with_conn(
         "bounce_detector: persisted %d bounce events for task %s "
         "(model_source=%s threshold=%.2f)",
         len(events), task_id,
-        "bounce_detector_v1" if cnn.weights_loaded else "STOPGAP-untrained",
+        "bounce_detector_v2" if cnn.weights_loaded else "STOPGAP-untrained",
         threshold,
     )
     return events

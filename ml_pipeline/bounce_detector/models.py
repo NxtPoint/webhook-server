@@ -25,6 +25,7 @@ class SignalSource(str, Enum):
       - the legacy raw-TrackNet-derived signal (for backfill / diag).
     """
     BOUNCE_DETECTOR_V1 = "bounce_detector_v1"
+    BOUNCE_DETECTOR_V2 = "bounce_detector_v2"  # the deployed weights (v2_7match.pt)
     STOPGAP_UNTRAINED = "STOPGAP-untrained"   # v0 — no weights loaded
     LEGACY_RAW = "legacy_raw"                  # raw ball_detections.is_bounce passthrough
 
