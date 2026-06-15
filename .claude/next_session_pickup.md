@@ -11,7 +11,7 @@
 - **swing fh/bh** (`15734f5`): silver was dropping bronze stroke_class; now projected verbatim (fh 1→43, bh 1→24).
 - **Definition-of-Bronze-Complete** locked (`d551700`) to kill the "complete→not" churn.
 **What's blocked:** nothing build-wise. All residual is TRAIN-LAST.
-**Next session's job:** TRAIN. (1) lock the swing bench (the one missing committed gate); (2) retrain on the sharp-far corpus (serve/hit/bounce/swing); (3) re-verify each fact on a real upload. NO more silver/detector build work to reach bronze-complete.
+**Next session's job:** TRAIN. Bronze build + silver verbatim + **5/5 benches all DONE**. So: (1) retrain on the sharp-far corpus (serve/hit/bounce/swing) when more full-res uploads land; (2) re-verify each fact on a real upload; (3) deploy decisions (rule-#8 rebuild). NO more silver/detector build work to reach bronze-complete. Optional: the T5 hardening/cleanup sprint (`docs/_investigation/t5_cleanup_inventory.md`).
 
 ---
 
@@ -36,7 +36,7 @@ A fact is bronze-complete ONLY when **a MODEL emits it to `ml_analysis.*`** AND 
 All five changes verified **on `ea085d50`** (the only rev-80 task) by **re-firing the Render detectors locally vs the prod DB** + rebuilding silver. **Existing T5 tasks need a full re-ingest** to populate the new bronze columns (`ball_hit_location`, `hitter_side_near`, `volley`, `player_identity_segments`); until then they fall back (transition shims). New uploads get everything natively. **Re-verify on the next real upload** before treating any accuracy as moved (rule: count alignment is not provenance).
 
 ## Next steps (priority — ALL train-last)
-1. **Lock the swing bench** — `bench_swing_type --bless` in the training image (local torch broken). The one missing committed gate. Confirm `--dataset-dir swing_type_v3_4class`.
+1. ✅ **Swing bench LOCKED** (2026-06-15, macro-F1 0.7468, GPU in-image). All 5 gates done — see the 5/5 section below.
 2. **Train on the sharp-far corpus** — `submit_train_job --fact {serve|hit|bounce|swing}` (GPU job-def `ten-fifty5-ml-train:2`, trains on full 11-pair corpus incl. 3 sharp-far). Measure with the benches.
 3. **Bounce recall** is the highest-leverage train target — it gates BOTH bounce accuracy AND volley accuracy (volley over-emits at 566 because bounce recall is low).
 4. **Re-verify** WHERE/WHO/volley on the next real upload (full re-ingest path, not local re-fire).
@@ -45,8 +45,10 @@ All five changes verified **on `ea085d50`** (the only rev-80 task) by **re-firin
 ## Corpus / training state
 `ml_analysis.training_corpus` = **11 SA↔T5 pairs**, all 3 label kinds; the 3 most recent (Jun 14–15) are the sharp-far re-runs (`93ebb93d`, `7d3e2392`, `ea085d50`). Only `ea085d50` ran on rev-80; the other two are pre-deploy (re-run to refresh). Trainer trains on the FULL corpus (no per-match flag). Identity has no trainer (rule-v1).
 
+## ✅ Training benches: 5/5 LOCKED (2026-06-15)
+serve (CI), hit, bounce, identity (rule gate), **swing** (`bench_baseline_swing_type.json`, macro-F1 0.7468 — locked on GPU via `batch_train --bench swing`, job-def `ten-fifty5-ml-train:3`; the training image now bundles `diag/` so the torchvision bench runs in-image, NOT local CPU). Re-bench recipe + the in-image bench path: `.claude/training_harness_status.md`.
+
 ## HELD items (train-last / decisions, AFTER the build is verified on a real upload)
-- **Swing bench NOT locked** (`bench_baseline_swing_type.json` absent).
 - **Serve far over-emission** (ea085d50: 336 far events → 389 serves / 173 points), inherited verbatim — precision = train (no silver filter, rule #1).
 - **Overnight weights HELD in S3** (serve F1 0.47; hit prec 54→68% strong; bounce precision dropped at thr 0.70 → re-sweep before deploy). Bounce deployed at thr 0.85.
 
