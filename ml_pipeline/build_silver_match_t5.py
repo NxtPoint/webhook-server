@@ -1027,6 +1027,8 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     any_frames, any_dets = buckets["any_frames"], buckets["any_dets"]
     near_kp_frames, near_kp_dets = buckets["near_kp_frames"], buckets["near_kp_dets"]
     far_kp_frames, far_kp_dets = buckets["far_kp_frames"], buckets["far_kp_dets"]
+    near_sc_frames, near_sc_dets = buckets["near_sc_frames"], buckets["near_sc_dets"]
+    far_sc_frames, far_sc_dets = buckets["far_sc_frames"], buckets["far_sc_dets"]
     dets_by_pid = buckets["dets_by_pid"]
     pid_map, top_pids = buckets["pid_map"], buckets["top_pids"]
     is_left_handed = _lookup_dominant_hand(conn, task_id)
@@ -1053,7 +1055,7 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
     diag = {
         "strokes": len(strokes), "bounce_matched": 0, "no_bounce": 0,
         "side_from_bounce": 0, "side_from_attribution": 0,
-        "unresolved": 0, "kp_patched": 0, "fired_serve": 0,
+        "unresolved": 0, "kp_patched": 0, "sc_patched": 0, "fired_serve": 0,
     }
 
     rows_to_insert: List[dict] = []
@@ -1105,9 +1107,11 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
         if hitter_side_near:
             h_frames, h_dets = near_frames, near_dets
             kp_frames, kp_dets = near_kp_frames, near_kp_dets
+            sc_frames, sc_dets = near_sc_frames, near_sc_dets
         else:
             h_frames, h_dets = far_frames, far_dets
             kp_frames, kp_dets = far_kp_frames, far_kp_dets
+            sc_frames, sc_dets = far_sc_frames, far_sc_dets
 
         hitter = _find_nearest_detection(h_frames, h_dets, hf, HIT_WINDOW_FRAMES)
         if hitter is None and h_dets:
@@ -1139,6 +1143,22 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
                 hitter = dict(hitter)
                 hitter["keypoints"] = kp_match.get("keypoints")
                 diag["kp_patched"] += 1
+
+        # stroke_class windowed patch — mirrors the bounce-driven path (703-720).
+        # The swing classifier (bronze) labels the detection nearest the contact
+        # frame; silver's resolved hitter is a neighbouring detection (sparse pose
+        # / fps rounding — median ~23f on ea085d50), so adopt the nearest same-side
+        # model classification within KP_WINDOW. This is VERBATIM projection of the
+        # bronze fact (rule #1/#2), not silver inference — it only reads the model's
+        # answer off the correct carrier. Skip synthesised hitters (their coords
+        # came from the opposite half, so the expected-side class isn't theirs).
+        if (hitter.get("stroke_class") is None
+                and not hitter.get("_synthesized")):
+            sc_match = _find_nearest_detection(sc_frames, sc_dets, hf, KP_WINDOW_FRAMES)
+            if sc_match is not None:
+                hitter = dict(hitter)
+                hitter["stroke_class"] = sc_match.get("stroke_class")
+                diag["sc_patched"] += 1
 
         hit_x = hitter.get("court_x")
         hit_y = hitter.get("court_y")
