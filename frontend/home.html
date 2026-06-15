@@ -14,11 +14,11 @@
 <meta property="og:title" content="Ten-Fifty5 | AI Tennis Match Analysis for Serious Players">
 <meta property="og:description" content="Upload your tennis match video and get AI-powered analysis of serves, rallies, and strategy. Your first match is free.">
 <meta property="og:url" content="https://www.ten-fifty5.com/">
-<meta property="og:image" content="https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png">
+<meta property="og:image" content="https://www.ten-fifty5.com/og/og_homepage.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Ten-Fifty5 | AI Tennis Match Analysis for Serious Players">
 <meta name="twitter:description" content="Upload your tennis match video and get AI-powered analysis of serves, rallies, and strategy. Your first match is free.">
-<meta name="twitter:image" content="https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png">
+<meta name="twitter:image" content="https://www.ten-fifty5.com/og/og_homepage.png">
 
 <!-- Structured data: Organization (site-wide) -->
 <script type="application/ld+json">
@@ -27,7 +27,7 @@
   "@type": "Organization",
   "name": "Ten-Fifty5",
   "url": "https://www.ten-fifty5.com",
-  "logo": "https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png",
+  "logo": "https://www.ten-fifty5.com/og/og_homepage.png",
   "description": "AI-powered tennis match analysis. Upload a match from any camera and get point-by-point performance data, heatmaps, trends, and an AI coach.",
   "email": "info@ten-fifty5.com"
 }
@@ -145,33 +145,6 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .btn-ghost-light:hover { background: rgba(255,255,255,0.08); border-color: var(--white); }
 .btn-sm { padding: 9px 16px; font-size: 0.82rem; }
 .btn-lg { padding: 16px 30px; font-size: 0.95rem; }
-
-/* NAV */
-.nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 14px 28px; background: rgba(26, 92, 46, 0.92); backdrop-filter: saturate(180%) blur(10px); -webkit-backdrop-filter: saturate(180%) blur(10px); transition: background var(--t-fast) var(--ease), padding var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
-.nav.scrolled { padding: 10px 28px; background: rgba(19, 66, 33, 0.98); box-shadow: 0 1px 0 rgba(0,0,0,0.1); }
-.nav-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.nav-brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: 0.1em; color: var(--white); font-size: 1.02rem; }
-.nav-links { display: flex; align-items: center; gap: 28px; list-style: none; }
-.nav-links a { color: rgba(255,255,255,0.78); font-size: 0.88rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
-.nav-links a:hover { color: var(--white); }
-.nav-right { display: flex; align-items: center; gap: 14px; }
-.nav-signin { color: rgba(255,255,255,0.78); font-size: 0.88rem; font-weight: 500; }
-.nav-signin:hover { color: var(--white); }
-.nav-cta { background: var(--white); color: var(--green); padding: 9px 16px; border-radius: var(--radius); font-size: 0.82rem; font-weight: 600; display: inline-flex; align-items: center; gap: 7px; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
-.nav-cta:hover { background: var(--green-bg); }
-.nav-cta svg { width: 14px; height: 14px; }
-.nav-burger { display: none; padding: 8px; color: var(--white); }
-.nav-burger svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; }
-@media (max-width: 880px) { .nav-links, .nav-signin { display: none; } .nav-burger { display: inline-flex; } .nav-cta { padding: 8px 12px; font-size: 0.76rem; } }
-
-.drawer { position: fixed; inset: 0; z-index: 200; background: var(--green-dark); color: var(--white); padding: 22px 28px; transform: translateX(100%); transition: transform var(--t-med) var(--ease); display: flex; flex-direction: column; }
-.drawer.open { transform: translateX(0); }
-.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 48px; }
-.drawer-close { padding: 8px; color: var(--white); }
-.drawer-close svg { width: 26px; height: 26px; stroke: currentColor; fill: none; stroke-width: 2; }
-.drawer-nav { display: flex; flex-direction: column; }
-.drawer-nav a { padding: 16px 0; font-size: 1.2rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--white); }
-.drawer-cta { margin-top: auto; padding-top: 24px; }
 
 /* ================================================================
    HERO — full-bleed Hawkeye-style court visualization
@@ -566,6 +539,9 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<style>.skip-link{position:absolute;left:-9999px;top:0;z-index:2000;background:var(--green,#1a5c2e);color:#fff;padding:10px 16px;border-radius:4px;font-weight:600;text-decoration:none}.skip-link:focus{left:8px;top:8px}</style>
+
 <style>
 /* SHARED TOP NAV — centered links, identical across every native marketing page */
 .topnav{position:sticky;top:0;z-index:1000;background:rgba(255,255,255,0.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border,#e5e5e5);}
@@ -605,6 +581,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
     </div>
   </div>
 </nav>
+<span id="main-content" tabindex="-1"></span>
 <script>(function(){try{var p=(location.pathname||"/").replace(/\/+$/,"")||"/";document.querySelectorAll(".topnav-links a").forEach(function(a){var ap=new URL(a.href).pathname.replace(/\/+$/,"")||"/";if(ap===p||(ap==="/blog"&&p.indexOf("/post")===0))a.classList.add("active");});}catch(e){}})();</script>
 
 <!-- HERO — full-bleed Hawkeye-style court visualization as background -->
@@ -1628,13 +1605,6 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 
 <script>
 (function() {
-  // Scroll nav
-  var nav = document.getElementById('nav');
-  if (nav) {
-    var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
-  }
 
   // FAQ accordion
   document.querySelectorAll('.faq-item').forEach(function(item) {
@@ -1650,16 +1620,51 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
   });
 
   // REPORT TABS
-  document.querySelectorAll('.report-tab').forEach(function(tab) {
-    tab.addEventListener('click', function() {
-      var target = tab.getAttribute('data-tab');
-      document.querySelectorAll('.report-tab').forEach(function(t) { t.classList.remove('active'); });
-      document.querySelectorAll('.report-panel').forEach(function(p) { p.classList.remove('active'); });
-      tab.classList.add('active');
-      var panel = document.querySelector('.report-panel[data-panel="' + target + '"]');
-      if (panel) panel.classList.add('active');
+  (function() {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('.report-tab'));
+    var tablist = document.querySelector('.reports-tabs');
+    if (tablist && !tablist.getAttribute('aria-label')) tablist.setAttribute('aria-label', 'Dashboard preview');
+    tabs.forEach(function(tab) {
+      var key = tab.getAttribute('data-tab');
+      var panel = document.querySelector('.report-panel[data-panel="' + key + '"]');
+      if (!tab.id) tab.id = 'tab-' + key;
+      if (panel) {
+        if (!panel.id) panel.id = 'panel-' + key;
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('aria-labelledby', tab.id);
+        panel.setAttribute('tabindex', '0');
+        tab.setAttribute('aria-controls', panel.id);
+      }
+      var on = tab.classList.contains('active');
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.setAttribute('tabindex', on ? '0' : '-1');
     });
-  });
+    function activate(tab, focus) {
+      tabs.forEach(function(t) {
+        var sel = t === tab;
+        t.classList.toggle('active', sel);
+        t.setAttribute('aria-selected', sel ? 'true' : 'false');
+        t.setAttribute('tabindex', sel ? '0' : '-1');
+      });
+      document.querySelectorAll('.report-panel').forEach(function(p) { p.classList.remove('active'); });
+      var panel = document.querySelector('.report-panel[data-panel="' + tab.getAttribute('data-tab') + '"]');
+      if (panel) panel.classList.add('active');
+      if (focus) tab.focus();
+    }
+    tabs.forEach(function(tab, i) {
+      tab.addEventListener('click', function() { activate(tab, false); });
+      tab.addEventListener('keydown', function(e) {
+        var n;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') n = (i + 1) % tabs.length;
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') n = (i - 1 + tabs.length) % tabs.length;
+        else if (e.key === 'Home') n = 0;
+        else if (e.key === 'End') n = tabs.length - 1;
+        else return;
+        e.preventDefault();
+        activate(tabs[n], true);
+      });
+    });
+  })();
 
   // Fade-in
   if ('IntersectionObserver' in window) {

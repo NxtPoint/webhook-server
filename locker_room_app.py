@@ -195,6 +195,14 @@ def apple_touch_icon():
     return _html("apple-touch-icon.png")
 
 
+@app.get("/og/<filename>")
+def og_image(filename: str):
+    # Open Graph / social-share images (frontend/og/*).
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        abort(404)
+    return _html(os.path.join("og", filename))
+
+
 # Legacy same-origin marketing backups (kept; their canonicals point at the
 # clean URLs above so search engines don't treat them as duplicates).
 @app.get("/home")

@@ -34,7 +34,7 @@ POSTS_DIR = os.path.join(BLOG_DIR, "_posts")
 
 SITE = "https://www.ten-fifty5.com"
 APP = "https://info5945780.wixstudio.com/online-tennis-analyt"
-OG_IMAGE = "https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png"
+OG_IMAGE = f"{SITE}/og/og_homepage.png"
 
 # ---- Markdown → HTML (minimal) ------------------------------------------------
 
@@ -197,6 +197,8 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec);text-decoration:none;transition:color .2s;white-space:nowrap}
 .topnav-links a:hover{color:var(--green);text-decoration:none}
 .topnav-links a.active{color:var(--green);font-weight:600}
+.skip-link{position:absolute;left:-9999px;top:0;z-index:2000;background:var(--green);color:#fff;padding:10px 16px;border-radius:4px;font-weight:600;text-decoration:none}
+.skip-link:focus{left:8px;top:8px}
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px}
 .topnav-cta{background:var(--green);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap}
 .topnav-cta:hover{background:var(--green-light);text-decoration:none}
@@ -321,7 +323,9 @@ def render_post(p):
 <style>{STYLE}</style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 {NAV}
+<span id="main-content" tabindex="-1"></span>
 <header class="post-head">
   <div class="wrap">
     <a class="eyebrow" href="{SITE}/blog" style="text-decoration:none;">Ten-Fifty5 Blog</a>
@@ -376,7 +380,9 @@ def render_index(posts):
 <style>{STYLE}</style>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 {NAV}
+<span id="main-content" tabindex="-1"></span>
 <header class="idx-head">
   <div class="wrap">
     <div class="eyebrow">Blog</div>

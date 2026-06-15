@@ -14,11 +14,11 @@
 <meta property="og:title" content="How Ten-Fifty5 Works — from match video to data edge">
 <meta property="og:description" content="Record your match with any camera. Our AI analyses every shot, rally, and pattern. Get a pro-level dashboard with actionable insights in hours.">
 <meta property="og:url" content="https://www.ten-fifty5.com/overview">
-<meta property="og:image" content="https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png">
+<meta property="og:image" content="https://www.ten-fifty5.com/og/og_how_it_works.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="How Ten-Fifty5 Works — from match video to data edge">
 <meta name="twitter:description" content="Record your match with any camera. Our AI analyses every shot, rally, and pattern. Get a pro-level dashboard with actionable insights in hours.">
-<meta name="twitter:image" content="https://static.wixstatic.com/media/7b1ac1_97e5f4cb1f54480dbac8bebe4e5aeb1e~mv2.png">
+<meta name="twitter:image" content="https://www.ten-fifty5.com/og/og_how_it_works.png">
 
 <script type="application/ld+json">
 {
@@ -149,31 +149,6 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 .btn-lg { padding: 18px 34px; font-size: 1rem; }
 
 /* NAV — same as home */
-.nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 18px 28px; background: rgba(15,42,28,0.88); backdrop-filter: saturate(180%) blur(12px); -webkit-backdrop-filter: saturate(180%) blur(12px); transition: all var(--t-fast) var(--ease); }
-.nav.scrolled { padding: 12px 28px; background: rgba(10,31,20,0.96); border-bottom: 1px solid rgba(255,255,255,0.06); }
-.nav-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.nav-brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.08em; color: var(--white); font-size: 1.08rem; }
-.nav-brand-dot { color: var(--gold); font-size: 1.4em; line-height: 0; margin-top: -2px; }
-.nav-links { display: flex; align-items: center; gap: 32px; list-style: none; }
-.nav-links a { color: rgba(255,255,255,0.78); font-size: 0.9rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
-.nav-links a:hover, .nav-links a.active { color: var(--gold-light); }
-.nav-right { display: flex; align-items: center; gap: 14px; }
-.nav-signin { color: rgba(255,255,255,0.78); font-size: 0.9rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
-.nav-signin:hover { color: var(--gold-light); }
-.nav-burger { display: none; padding: 8px; color: var(--white); }
-.nav-burger svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; }
-@media (max-width: 880px) { .nav-links, .nav-signin { display: none; } .nav-burger { display: inline-flex; } .nav-right .btn { padding: 10px 16px; font-size: 0.78rem; } }
-
-.drawer { position: fixed; inset: 0; z-index: 200; background: var(--green-deep); color: var(--white); padding: 24px 28px; transform: translateX(100%); transition: transform var(--t-med) var(--ease); display: flex; flex-direction: column; }
-.drawer.open { transform: translateX(0); }
-.drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 60px; }
-.drawer-close { padding: 8px; color: var(--white); }
-.drawer-close svg { width: 28px; height: 28px; stroke: currentColor; fill: none; stroke-width: 2; }
-.drawer-nav { display: flex; flex-direction: column; gap: 4px; }
-.drawer-nav a { padding: 18px 0; font-size: 1.4rem; font-weight: 600; border-bottom: 1px solid rgba(255,255,255,0.08); color: var(--white); }
-.drawer-nav a:last-child { border-bottom: none; }
-.drawer-cta { margin-top: auto; padding-top: 32px; }
-
 /* HERO — full-bleed, data-extraction visualization */
 .page-hero {
   position: relative;
@@ -374,6 +349,9 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<style>.skip-link{position:absolute;left:-9999px;top:0;z-index:2000;background:var(--green,#1a5c2e);color:#fff;padding:10px 16px;border-radius:4px;font-weight:600;text-decoration:none}.skip-link:focus{left:8px;top:8px}</style>
+
 <style>
 /* SHARED TOP NAV — centered links, identical across every native marketing page */
 .topnav{position:sticky;top:0;z-index:1000;background:rgba(255,255,255,0.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border,#e5e5e5);}
@@ -413,6 +391,7 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
     </div>
   </div>
 </nav>
+<span id="main-content" tabindex="-1"></span>
 <script>(function(){try{var p=(location.pathname||"/").replace(/\/+$/,"")||"/";document.querySelectorAll(".topnav-links a").forEach(function(a){var ap=new URL(a.href).pathname.replace(/\/+$/,"")||"/";if(ap===p||(ap==="/blog"&&p.indexOf("/post")===0))a.classList.add("active");});}catch(e){}})();</script>
 
 <!-- HERO — full-bleed longitudinal progression chart ("The Long Game") -->
@@ -1099,12 +1078,6 @@ h3 { font-size: clamp(1.2rem, 2vw, 1.5rem); font-weight: 600; letter-spacing: -0
 
 <script>
 (function() {
-  var nav = document.getElementById('nav');
-  if (nav) {
-    var onScroll = function() { if (window.scrollY > 20) nav.classList.add('scrolled'); else nav.classList.remove('scrolled'); };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
-  }
 
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function(entries) {
