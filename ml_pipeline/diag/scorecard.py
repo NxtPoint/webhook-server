@@ -26,7 +26,7 @@ Field map (the 18-base-field audit: docs/_investigation/bronze_silver_18_audit.m
   WHEN  stroke_events ts-alignment vs SA ball_hit_s (pid-strict, 0.5s/1.0s)
   bounce CNN count / NULL-coord rate / xy error vs SA floor bounces
   serve  persisted serve_events count (eval via harness)
-  presence: ball speed coverage, swing_type_events (classifier gate)
+  presence: ball speed coverage, player_detections.stroke_class (swing classifier gate)
 """
 from __future__ import annotations
 
@@ -206,9 +206,10 @@ def section_presence(conn, job_id: str) -> None:
         "WHERE job_id::text = :t"), {"t": job_id}).fetchone()
     print(f"  ball speed: {sp[1]}/{sp[0]} detections carry speed_kmh")
     st = conn.execute(sql_text(
-        "SELECT COUNT(*) FROM ml_analysis.swing_type_events WHERE job_id::text = :t"),
+        "SELECT COUNT(stroke_class) FROM ml_analysis.player_detections WHERE job_id::text = :t"),
         {"t": job_id}).scalar()
-    print(f"  swing_type_events: {st} (0 expected while SWING_CLASSIFIER_ENABLED=0)")
+    print(f"  swing stroke_class: {st} detections classified "
+          f"(Batch v2 classifier; 0 if SWING_CLASSIFIER_ENABLED=0 or pre-rev-80 task)")
     se = conn.execute(sql_text(
         "SELECT COUNT(*) FROM ml_analysis.serve_events WHERE task_id::text = :t"),
         {"t": job_id}).scalar()

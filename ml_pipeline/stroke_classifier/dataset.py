@@ -26,7 +26,7 @@ Handedness:
   (forehand-side preference). For STOPGAP v0 the default is right-handed (1.0)
   for every player. Override via the `handedness_overrides` constructor arg
   (dict: {(t5_task_id, player_id): "right"|"left"}). Training time can pass an
-  inferred map; inference time (detector_v2.py) can override per-match too.
+  inferred map; inference time (inference_v2.py) can override per-match too.
 """
 from __future__ import annotations
 

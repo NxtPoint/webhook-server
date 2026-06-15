@@ -9,23 +9,21 @@ Two coexisting implementations during the ADR-02 transition:
     - Status: UNTRAINED (weights file `models/stroke_classifier.pt` absent)
     - Production wiring: gated on weights existence in ml_pipeline/pipeline.py
 
-  v2 (ADR-02, approved 2026-05-28):
-    - 3-class R(2+1)D-18 with handedness bit, 112x112 input, NEAR + FAR
+  v2 (ADR-02, approved 2026-05-28) — LIVE, BATCH-side:
+    - 4-class R(2+1)D-18 with handedness bit, 112x112 input, NEAR + FAR
     - Files: model_v2.py (SwingTypeR2plus1D, SwingTypeClassifierV2),
       dataset.py (SwingTypeDataset reads build_swing_type_dataset .pt files),
-      detector_v2.py (detect_swing_types_for_task entry point),
-      db.py (ml_analysis.swing_type_events DDL)
-    - Status: SCAFFOLDED — model class + training loop + bench + DB writer
-      all live. STOPGAP-no-weights: predict_batch returns []. Wired into
-      upload_app.py::_do_ingest_t5; runs as a no-op until weights ship.
-    - Training pending corpus volume (~5-10 more matches for 2-3k labels).
-    - Trains via: python -m ml_pipeline.training.train_swing_type
-    - Benches via: python -m ml_pipeline.diag.bench_swing_type
+      inference_v2.py (classify_strokes_v2 entry point — runs in the Batch
+      image from pipeline.py, writes ml_analysis.player_detections.stroke_class)
+    - Status: ENABLED (SWING_CLASSIFIER_ENABLED default 1); swing bench LOCKED
+      at macro-F1 0.7468. Silver projects stroke_class verbatim.
+    - Trains via: python -m ml_pipeline.training.train_swing_type (GPU)
+    - Benches via: python -m ml_pipeline.diag.bench_swing_type (GPU)
+    - NOTE: the old Render-side detector_v2.py -> ml_analysis.swing_type_events
+      path (no consumer) was removed 2026-06-15. stroke_class is the only swing
+      output silver reads.
 
-The two coexist (v1 imports still work) because v2 wholly supersedes v1
-when its weights land — at which point the old files can be moved to
-_legacy/. Until then, two scaffolds is acceptable; one of them is
-unwired and harmless.
+v1 imports are preserved for the pipeline.py weights-gated import path.
 """
 # v1 surface — preserved for the pipeline.py weights-gated import path
 from ml_pipeline.stroke_classifier.model import (
@@ -37,13 +35,6 @@ from ml_pipeline.stroke_classifier.model import (
 )
 
 # v2 surface (ADR-02)
-from ml_pipeline.stroke_classifier.db import (
-    delete_swing_types_for_task,
-    init_swing_type_schema,
-)
-from ml_pipeline.stroke_classifier.detector_v2 import (
-    detect_swing_types_for_task,
-)
 from ml_pipeline.stroke_classifier.model_v2 import (
     CLASSES as V2_CLASSES,
     CLASS_TO_IDX as V2_CLASS_TO_IDX,
@@ -60,6 +51,4 @@ __all__ = [
     # v2
     "SwingTypeR2plus1D", "SwingTypeClassifierV2",
     "V2_CLASSES", "V2_NUM_CLASSES", "V2_CLASS_TO_IDX", "MODEL_WEIGHTS_V2",
-    "detect_swing_types_for_task",
-    "init_swing_type_schema", "delete_swing_types_for_task",
 ]

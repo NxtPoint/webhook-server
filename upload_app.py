@@ -223,14 +223,6 @@ try:
 except Exception:
     app.logger.exception("identity_detector init failed on boot")
 
-# ---------- Swing-type classifier schema (ADR-02, idempotent on boot) ----------
-try:
-    from ml_pipeline.stroke_classifier.db import init_swing_type_schema
-    with engine.begin() as conn:
-        init_swing_type_schema(conn)
-except Exception:
-    app.logger.exception("swing-type classifier init failed on boot")
-
 
 # ---------- S3 config (MANDATORY) ----------
 AWS_REGION = os.getenv("AWS_REGION", "").strip() or None
@@ -2561,23 +2553,12 @@ def _do_ingest_t5(task_id: str) -> bool:
             except Exception as e:
                 app.logger.warning("T5 INGEST task_id=%s stroke detection failed (non-fatal): %s", task_id, e)
 
-            # ADR-02 v2 swing-type classifier — predicts {forehand, backhand,
-            # overhead} per stroke event from optical flow on the ORIGINAL 1080p
-            # video (still present at ingest time; trimmed copy doesn't exist
-            # yet). STOPGAP-no-weights: no-op until trained weights ship at
-            # ml_pipeline/models/swing_classifier_v2.pt. Wired here so the
-            # path is exercised end-to-end the moment weights land.
-            try:
-                from ml_pipeline.stroke_classifier import detect_swing_types_for_task
-                swing_result = detect_swing_types_for_task(task_id, engine=engine)
-                app.logger.info(
-                    "T5 INGEST task_id=%s swing-type classifier: %s",
-                    task_id, swing_result,
-                )
-            except ImportError:
-                app.logger.warning("T5 INGEST task_id=%s stroke_classifier module not available", task_id)
-            except Exception as e:
-                app.logger.warning("T5 INGEST task_id=%s swing-type classification failed (non-fatal): %s", task_id, e)
+            # Swing type is a BRONZE fact produced BATCH-side by the v2 classifier
+            # (ml_pipeline/stroke_classifier/inference_v2.classify_strokes_v2 ->
+            # ml_analysis.player_detections.stroke_class), which silver projects
+            # verbatim. The old Render-side detect_swing_types_for_task ->
+            # ml_analysis.swing_type_events path was a no-op parallel write with no
+            # consumer and was removed 2026-06-15 (cleanup sprint).
 
             try:
                 from ml_pipeline.build_silver_match_t5 import build_silver_match_t5
