@@ -149,7 +149,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 /* NAV */
 .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 14px 28px; background: rgba(26, 92, 46, 0.92); backdrop-filter: saturate(180%) blur(10px); -webkit-backdrop-filter: saturate(180%) blur(10px); transition: background var(--t-fast) var(--ease), padding var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease); }
 .nav.scrolled { padding: 10px 28px; background: rgba(19, 66, 33, 0.98); box-shadow: 0 1px 0 rgba(0,0,0,0.1); }
-.nav-inner { max-width: 1280px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.nav-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .nav-brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: 0.1em; color: var(--white); font-size: 1.02rem; }
 .nav-links { display: flex; align-items: center; gap: 28px; list-style: none; }
 .nav-links a { color: rgba(255,255,255,0.78); font-size: 0.88rem; font-weight: 500; transition: color var(--t-fast) var(--ease); }
@@ -223,7 +223,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 
 .hero-inner {
   position: relative; z-index: 6;
-  max-width: 1280px; margin: 0 auto; width: 100%;
+  max-width: 1200px; margin: 0 auto; width: 100%;
 }
 .hero-content { max-width: 640px; }
 
@@ -466,7 +466,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
    ================================================================ */
 .coach-cta { position: relative; background: linear-gradient(140deg, var(--green) 0%, var(--green-dark) 100%); color: var(--white); padding: 90px 28px; overflow: hidden; }
 .coach-cta::before { content: ''; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(900px 500px at 15% 20%, rgba(34,120,60,0.4), transparent 60%), radial-gradient(700px 400px at 90% 80%, rgba(255,255,255,0.04), transparent 60%); }
-.coach-cta-inner { max-width: 1180px; margin: 0 auto; position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+.coach-cta-inner { max-width: 1200px; margin: 0 auto; position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
 @media (max-width: 900px) { .coach-cta-inner { grid-template-columns: 1fr; gap: 40px; } .coach-cta { padding: 70px 24px; } }
 .coach-cta h2 { color: var(--white); margin-bottom: 18px; }
 .coach-cta .lede { color: rgba(255,255,255,0.85); margin-bottom: 28px; }
@@ -517,7 +517,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .test-who { display: flex; align-items: center; gap: 12px; margin-top: auto; }
 .test-avatar { width: 36px; height: 36px; border-radius: 50%; background: var(--green-bg); color: var(--green); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.82rem; }
 .test-name { font-size: 0.86rem; font-weight: 600; }
-.test-role { font-size: 0.74rem; color: var(--text-dim); }
+.test-role { font-size: 0.78rem; color: var(--text-sec); }
 
 /* ================================================================
    FAQ
@@ -574,7 +574,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
 .topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;}
 .topnav-cta:hover{background:var(--green-light,#22783c);}
-.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:6px;}
+.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:9px;min-width:44px;min-height:44px;}
 @media(max-width:980px){
 .topnav-inner{display:flex;justify-content:space-between;}
 .topnav-toggle{display:block;}
@@ -597,7 +597,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
     </div>
     <div class="topnav-right">
       <a href="https://info5945780.wixstudio.com/online-tennis-analyt/portal" class="topnav-cta">Start Free</a>
-      <button class="topnav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.topnav-links').classList.toggle('open')">&#9776;</button>
+      <button class="topnav-toggle" aria-label="Toggle menu" aria-expanded="false" onclick="const o=document.querySelector('.topnav-links').classList.toggle('open');this.setAttribute('aria-expanded',o)">&#9776;</button>
     </div>
   </div>
 </nav>
@@ -703,7 +703,7 @@ h4 { font-size: 1.02rem; font-weight: 600; letter-spacing: -0.005em; }
 
       <!-- Small court annotation label, bottom-right of visual -->
       <g transform="translate(1220, 770)" opacity="0.4">
-        <text x="0" y="0" fill="rgba(255,255,255,0.8)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.18em">HAWK-EYE VIEW · 8 SHOTS TRACKED</text>
+        <text x="0" y="0" fill="rgba(255,255,255,0.8)" font-family="Inter, sans-serif" font-size="10" font-weight="700" letter-spacing="0.18em">BALL TRACKING · 8 SHOTS TRACKED</text>
       </g>
     </svg>
   </div>

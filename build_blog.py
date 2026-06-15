@@ -43,8 +43,10 @@ def _inline(text):
     out = _html.escape(text, quote=False)
     # links [text](url) — apply before bold so bracketed text is safe
     out = re.sub(r'\[([^\]]+)\]\((https?://[^)\s]+)\)', r'<a href="\2">\1</a>', out)
-    # bold **text**
+    # bold **text** (must run before single-* italics)
     out = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', out)
+    # italic *text* (single asterisks left after bold)
+    out = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<em>\1</em>', out)
     return out
 
 
@@ -135,13 +137,13 @@ STYLE = """
 html{font-size:16px;scroll-behavior:smooth;-webkit-text-size-adjust:100%}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--white);color:var(--text);line-height:1.6;-webkit-font-smoothing:antialiased}
 a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
-.wrap{max-width:760px;margin:0 auto;padding:0 28px}
+.wrap{max-width:820px;margin:0 auto;padding:0 28px}
 .eyebrow{display:inline-flex;align-items:center;gap:10px;font-size:.72rem;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:.14em}
 .eyebrow::before{content:"";width:20px;height:1px;background:var(--green);opacity:.6}
 .post-head{padding:80px 0 30px;background:linear-gradient(180deg,var(--green-bg),transparent)}
 .post-head h1{font-size:clamp(2rem,4.6vw,3rem);font-weight:800;letter-spacing:-.02em;line-height:1.08;color:var(--text);margin-top:16px}
-.post-meta{margin-top:18px;color:var(--text-dim);font-size:.9rem}
-.post-hero{max-width:900px;margin:0 auto;padding:26px 28px 0}
+.post-meta{margin-top:18px;color:var(--text-sec);font-size:.9rem}
+.post-hero{max-width:820px;margin:0 auto;padding:26px 28px 0}
 .post-hero img{width:100%;border-radius:12px;border:1px solid var(--border);box-shadow:0 18px 40px -24px rgba(10,31,20,.35);display:block}
 .post-hero figcaption{margin-top:10px;font-size:.82rem;color:var(--text-dim);text-align:center}
 .article{padding:34px 0 70px}
@@ -171,7 +173,7 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .post-card .thumb{aspect-ratio:16/10;border-radius:10px;overflow:hidden;background:linear-gradient(150deg,#226e3c,#0c3a1e);border:1px solid var(--border)}
 .post-card .thumb img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s ease}
 .post-card:hover .thumb img{transform:scale(1.04)}
-.post-card .date{color:var(--text-dim);font-size:.82rem;text-transform:uppercase;letter-spacing:.08em}
+.post-card .date{color:var(--text-sec);font-size:.82rem;text-transform:uppercase;letter-spacing:.08em}
 .post-card h2{font-size:1.35rem;font-weight:700;letter-spacing:-.01em;color:var(--text);margin:7px 0 8px}
 .post-card:hover h2{color:var(--green)}
 .post-card p{color:var(--text-sec);font-size:.98rem}

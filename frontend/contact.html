@@ -131,7 +131,7 @@ h2 { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
 .topnav-right{justify-self:end;display:flex;align-items:center;gap:10px;}
 .topnav-cta{background:var(--green,#1a5c2e);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap;}
 .topnav-cta:hover{background:var(--green-light,#22783c);}
-.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:6px;}
+.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text,#1a1a1a);cursor:pointer;padding:9px;min-width:44px;min-height:44px;}
 @media(max-width:980px){
 .topnav-inner{display:flex;justify-content:space-between;}
 .topnav-toggle{display:block;}
@@ -154,7 +154,7 @@ h2 { font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; }
     </div>
     <div class="topnav-right">
       <a href="https://info5945780.wixstudio.com/online-tennis-analyt/portal" class="topnav-cta">Start Free</a>
-      <button class="topnav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.topnav-links').classList.toggle('open')">&#9776;</button>
+      <button class="topnav-toggle" aria-label="Toggle menu" aria-expanded="false" onclick="const o=document.querySelector('.topnav-links').classList.toggle('open');this.setAttribute('aria-expanded',o)">&#9776;</button>
     </div>
   </div>
 </nav>
