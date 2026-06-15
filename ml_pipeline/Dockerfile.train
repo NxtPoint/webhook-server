@@ -48,6 +48,15 @@ COPY ml_pipeline/hit_model/ /app/ml_pipeline/hit_model/
 # this dir at all.
 COPY ml_pipeline/training/ /app/ml_pipeline/training/
 
+# stroke_classifier/ — IS in the base detection image, but that snapshot can be
+# STALE relative to main (e.g. the 2026-06-14 4-class {fh,bh,overhead,other}
+# change). The swing trainer imports model_v2.CLASS_TO_IDX / SwingTypeDataset
+# from here, so an old 3-class copy fails on the 'other' class (KeyError 'other'
+# in class_counts). COPY the fresh version so the training image always reflects
+# main, not the base image's snapshot. (serve_model/bounce_detector trained fine
+# from the base image this run; add their COPY here too if they ever drift.)
+COPY ml_pipeline/stroke_classifier/ /app/ml_pipeline/stroke_classifier/
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
