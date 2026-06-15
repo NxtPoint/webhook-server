@@ -1,8 +1,59 @@
 # 18-field inherit-vs-rederive audit — bronze→silver architecture
 
-**Status:** REFERENCE / architecture audit. 2026-05-27. Answers Tomo's question:
+**Status:** REFERENCE / architecture audit. **Head section refreshed 2026-06-15 to the
+LIVE stroke-driven path** (`_t5_pass1_load_stroke_driven`). Answers Tomo's question:
 *"single source of truth is bronze; silver inherits 100%; no work should happen in silver."*
-Verifies whether that's actually true today, field by field.
+Verifies whether that's actually true today, field by field. **Sections below the line
+marked "═══ HISTORICAL ═══" describe the older BOUNCE-DRIVEN path — kept for context,
+not current.**
+
+---
+
+## ★ DEFINITION OF BRONZE-COMPLETE (read this first — it is the anti-drift gate)
+
+We keep declaring "bronze complete" and then re-discovering it isn't. The cause is using
+the wrong signal (count-alignment with SportAI, or "the model exists"). Lock this instead:
+
+> **A base fact is BRONZE-COMPLETE only when BOTH are true:**
+> 1. **A dedicated MODEL emits it to `ml_analysis.*`** — not a silver/SQL rule, not a
+>    `ball_tracker` velocity heuristic, not silver reconstruction.
+> 2. **Silver Pass-1 projects it VERBATIM** — no reconstruction, no heuristic, no fallback
+>    synthesis. (Pass-2+ analytics on top are fine and expected — that is what silver is for.)
+>
+> **NOT completion signals:** counts matching SportAI; a model existing but disabled/unwired;
+> silver "inheriting" a value it actually recomputed. **Accuracy is train-LAST and does NOT
+> gate completeness** — a fact can be bronze-complete and still inaccurate (that's the train step).
+>
+> **Verified ≠ coded.** A fact only counts once it is observed end-to-end on a REAL rev-80+
+> upload. The only such task today is `ea085d50` (ran post bounce+swing deploy 2026-06-15).
+
+### The 18 base fields — LIVE status (stroke-driven Pass-1, 2026-06-15)
+
+| Base fact | Bronze model → table | Silver Pass-1 | Status | Gate to flip to DONE |
+|---|---|---|---|---|
+| **serve** | serve_detector → `serve_events` | overlay, verbatim | ✅ **COMPLETE** (build) | accuracy/precision = train-last (far over-emission) |
+| **bounce** court_x/y + ball_speed | bounce CNN v2 → `ball_bounces` | `T5_BOUNCE_FROM_MODEL` verbatim (is_bounce fallback only on pre-rev-66 tasks) | ✅ **COMPLETE** (build) | recall = train-last |
+| **swing_type** (fh/bh/overhead/other) | stroke_classifier → `player_detections.stroke_class` | verbatim (windowed same-side patch, fix `15734f5`) | ✅ **COMPLETE** (build); **verified on `ea085d50`** fh 1→43 bh 1→24 | accuracy = train-last; `other` F1 0.59 |
+| **hit WHEN** (`ball_hit_s`) | stroke_detector → `stroke_events.predicted_hit_frame` | verbatim (frame→sec) | ✅ **COMPLETE** | — |
+| **hit WHO** (`player_id`) | ❌ none wired — `stroke_events.player_id` is perspective-biased, deliberately unused (rule #11); identity_detector v1 not wired into `_do_ingest_t5` and not read by silver | silver derives court SIDE | 🟡 **STOPGAP-until-identity-model** | wire `detect_identity_for_task` into ingest + add A/B join in silver |
+| **hit WHERE** (`ball_hit_location_x/y`) | ❌ `stroke_events` carries timing only — **no hit location** | silver **RECONSTRUCTS** from `player_detections` (side resolve + window + mirror-fallback) | 🟡 **STOPGAP — THE KEYSTONE** (option B) | enrich `stroke_events` to carry `ball_hit_location_x/y` (Batch, rule #8) → silver projects verbatim |
+| **volley** | ❌ no volley model | silver net-distance flag (`VOLLEY_NET_DISTANCE_M`) | 🟡 **STOPGAP-until-volley-model** | bronze volley signal (ball-not-bounced-before-hit) |
+| **ball_player_distance** | derived from two bronze coords | computed (`hypot`) | 🟢 **legit derivation** (allowed — deterministic, both inputs bronze) | — |
+| identifiers/constants (`id, task_id, valid, is_in_rally, ball_impact_type, type, model`) | — | constant/tag | n/a | — |
+
+**Scoreboard:** 4 facts BRONZE-COMPLETE (serve, bounce, swing_type, hit-WHEN); 3 STOPGAP
+model-gaps (hit-WHO, hit-WHERE, volley); 1 legit derivation. **We are NOT bronze-complete.**
+The two that move the needle: **hit-WHERE** (enrich `stroke_events`, option B — the keystone)
+and **hit-WHO** (wire identity). volley is last. Each STOPGAP is tagged `STOPGAP-until-<model>`
+at its point of use in `_t5_pass1_load_stroke_driven` — grep that string to find them all.
+
+**Governance (unchanged, now enforced):** no base-fact logic may exist in silver without a
+`STOPGAP-until-<model>` tag. When a model lands, delete the stopgap and project verbatim — and
+re-verify on a real upload before checking the box here.
+
+═══════════════════════════════════════════════════════════════════════
+═══ HISTORICAL (2026-05-27 → 06-05) — bounce-driven path, kept for context ═══
+═══════════════════════════════════════════════════════════════════════
 
 ## The intended architecture (Tomo's, and it's correct as the target)
 ```

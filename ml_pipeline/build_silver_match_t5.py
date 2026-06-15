@@ -1185,9 +1185,25 @@ def _t5_pass1_load_stroke_driven(conn: Connection, task_id: str, job_id: str, fp
             # the pose/position heuristics were deleted).
             swing_type = "other"
 
+        # STOPGAP-until-volley-model: no bronze model emits volley yet, so silver
+        # flags it by net proximity. NOT verbatim bronze. Governance:
+        # docs/_investigation/bronze_silver_18_audit.md §"Definition of bronze-complete".
         is_volley = hit_y is not None and abs(hit_y - HALF_Y) < VOLLEY_NET_DISTANCE_M
+        # STOPGAP-until-identity-model: WHO is derived from court SIDE (bounce-
+        # opposite, or attribution fallback) — NOT a bronze identity fact. The
+        # bronze stroke_events.player_id is perspective-biased so it is NOT used
+        # (rule #11). Flips to verbatim once the identity model is wired.
         hitter_pid = str(top_pids[0]) if hitter_side_near else str(top_pids[1])
 
+        # Pass-1 row = VERBATIM bronze projection except where STOPGAP-tagged.
+        #   VERBATIM: serve (serve_events), swing_type (player_detections.stroke_class),
+        #     ball_speed + court_x/court_y (ball_bounces), ball_hit_s/timestamp
+        #     (stroke_events.predicted_hit_frame -> sec).
+        #   STOPGAP (model gap, see tags above + the audit doc): player_id (identity),
+        #     volley (volley model), and ball_hit_location_x/y below — RECONSTRUCTED
+        #     because stroke_events carries no hit location yet (the keystone bronze
+        #     enrichment, audit §B). hit_x/hit_y come from the resolved hitter's
+        #     player_detections court pos (+ mirror fallback), not a bronze hit fact.
         rows_to_insert.append({
             "id": i + 1,
             "task_id": task_id,
