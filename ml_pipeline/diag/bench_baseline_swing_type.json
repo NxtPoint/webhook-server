@@ -1,0 +1,28 @@
+{
+  "available": true,
+  "macro_f1": 0.7468,
+  "per_class": {
+    "forehand": {
+      "precision": 0.7518,
+      "recall": 0.7829,
+      "f1": 0.767
+    },
+    "backhand": {
+      "precision": 0.7698,
+      "recall": 0.7368,
+      "f1": 0.7529
+    },
+    "overhead": {
+      "precision": 0.9073,
+      "recall": 0.8474,
+      "f1": 0.8763
+    },
+    "other": {
+      "precision": 0.5368,
+      "recall": 0.6577,
+      "f1": 0.5911
+    }
+  },
+  "n_val": 1264,
+  "weights_path": "ml_pipeline/models/swing_classifier_v2.pt"
+}
