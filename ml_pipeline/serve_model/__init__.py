@@ -17,8 +17,11 @@ Recipe (port of the bounce_detector ADR-01 pattern):
   4. model.py     — small torch MLP scorer (CPU-trainable).
   5. train.py     — python -m ml_pipeline.serve_model.train
 
-Gate before wiring into the serve detector: per-serve far recall/precision
-on the held-out video ≥ the heuristic baseline (far 4/12), AND the serve
-bench stays green (the model only ADDS far candidates; near pose path is
-untouched). Wire-in is env-gated SERVE_MODEL_ENABLED (default 0).
+WIRED IN AND LIVE (default-on since 2026-06-06): the Batch `serve_candidates`
+stage scores far-serve anchors (SERVE_MODEL_STAGE=1) and the serve detector
+merges `model_far` additively (SERVE_MODEL_ENABLED default 1). It only ADDS
+far candidates; the near pose path is untouched and the serve bench stays
+green. Gate that was met before enabling: per-serve far recall/precision on
+the held-out video ≥ the heuristic baseline — validated far 3/12→7/12 (rev 73).
+Rollback: either env=0 (no rebuild).
 """

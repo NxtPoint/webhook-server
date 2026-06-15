@@ -103,19 +103,19 @@ BOUNCE_PLAYER_PROXIMITY_M = 1.5
 
 # Serve-from-events overlay (RULE #1 — silver INHERITS bronze, 2026-05-27).
 # T5 has a real serve model: serve_detector -> ml_analysis.serve_events (the
-# pose-first 20/24+23/24 detector). When T5_SERVE_FROM_EVENTS is on, T5 silver
-# inherits those serves VERBATIM instead of re-deriving them from the geometric
-# gate in build_silver_v2 (the "custom serve_d label" — necessary for SportAI,
-# whose own bronze serve flag is unreliable, but a stand-in T5 no longer needs).
+# pose-first 20/24+23/24 detector). T5 silver inherits those serves VERBATIM
+# instead of re-deriving them from the geometric gate in build_silver_v2 (the
+# "custom serve_d label" — necessary for SportAI, whose own bronze serve flag
+# is unreliable, but a stand-in T5 no longer needs).
 # The overlay (a) suppresses Pass-1's geometric serve firing, (b) maps each
 # serve_event >= min-conf onto a silver serve row carrying the model's hitter
 # position, and (c) demotes any leftover overhead-at-baseline row so the SHARED
 # pass-3 can't re-flag a stray serve_d — so T5 serve rows == bronze serve_events,
-# no more, no less. SportAI is untouched (it has no serve_events). Gated
-# default-OFF, env-flip rollback (no Docker rebuild) — same pattern as
-# T5_STROKE_DRIVEN_SILVER. NOTE: T5 silver will faithfully reflect bronze's
-# current over-fire (more serves / over-segmented points than SportAI) — the
-# honest bronze state, whose lever is TRAINING, not silver.
+# no more, no less. SportAI is untouched (it has no serve_events). The overlay is
+# UNCONDITIONAL (the T5_SERVE_FROM_EVENTS gate was deleted 2026-06-07). NOTE: T5
+# silver will faithfully reflect bronze's current over-fire (more serves /
+# over-segmented points than SportAI) — the honest bronze state, whose lever is
+# TRAINING, not silver.
 # 0.0 = inherit EVERY bronze serve_event verbatim (Tomo, 2026-06-06: "I want
 # literally everything verbatim" — RULE #1; bronze precision is bronze's
 # problem, silver does no filtering). Env-tunable via T5_SERVE_EVENTS_MIN_CONF
@@ -1188,11 +1188,12 @@ def _stroke_driven_enabled() -> bool:
     Swing_type is now projected VERBATIM from the bronze classifier
     (`stroke_class`, 4-class incl. `other`); the silver pose/position heuristics
     were DELETED 2026-06-14 (ADR-02 revision) — no swing inference here at all.
-    Two documented residuals remain (NOT swing heuristics): (1) the `volley`
-    flag is still a net-distance stopgap (VOLLEY_NET_DISTANCE_M) until the volley
-    fact lands (derive + validate vs SA player_swing.volley); (2) bounce coords
+    One documented residual remains (NOT a swing heuristic): bounce coords
     still read is_bounce (the bounce MODEL ball_bounces is empty on existing
     tasks — swaps in once it's carried through re-ingest + accrued from uploads).
+    (Volley is no longer a residual: it became a BRONZE fact 2026-06-15 —
+    stroke_events.volley — and the stroke-driven path projects it verbatim;
+    VOLLEY_NET_DISTANCE_M now survives only in the dormant bounce-driven fallback.)
     """
     return os.getenv("T5_STROKE_DRIVEN_SILVER", "1").strip().lower() in ("1", "true", "yes", "on")
 

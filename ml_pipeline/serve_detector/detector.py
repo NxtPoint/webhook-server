@@ -1105,7 +1105,7 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
     # seconds->frame windows (serve interval, ball-toss, search). Using source
     # video_fps was a frame-space bug (feedback_t5_two_frame_spaces): on a 30fps
     # source it skewed ts by 25/30 and stretched the 8s serve interval to ~9.6s.
-    # serve_events.ts is inherited LIVE by silver (T5_SERVE_FROM_EVENTS), so this
+    # serve_events.ts is inherited LIVE by silver (the unconditional overlay), so this
     # is a live correctness fix (vs the latent stroke one). Bench-neutral: the
     # offline path (detect_serves_offline) takes fps from the fixture, and all
     # CI fixtures are 25fps so sampled==video_fps==25 there. Derive sampled fps
