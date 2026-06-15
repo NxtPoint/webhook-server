@@ -174,7 +174,45 @@ a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
 .footer-col a{color:rgba(255,255,255,.82)}.footer-col a:hover{color:#fff}
 .footer-bottom{max-width:1100px;margin:36px auto 0;padding:22px 28px 0;border-top:1px solid rgba(255,255,255,.12);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;font-size:.82rem;color:rgba(255,255,255,.5)}
 @media(max-width:720px){.footer-inner{grid-template-columns:1fr;gap:28px}}
+/* shared top nav — centered links, matches the rest of the marketing site */
+.topnav{position:sticky;top:0;z-index:1000;background:rgba(255,255,255,0.96);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+.topnav-inner{max-width:1200px;margin:0 auto;padding:0 28px;height:62px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:18px}
+.topnav-logo{justify-self:start;font-weight:800;font-size:1.1rem;letter-spacing:-.01em;color:var(--text);text-decoration:none;white-space:nowrap}
+.topnav-logo:hover{text-decoration:none}
+.topnav-links{display:flex;justify-content:center;align-items:center;gap:22px}
+.topnav-links a{font-size:.92rem;font-weight:500;color:var(--text-sec);text-decoration:none;transition:color .2s;white-space:nowrap}
+.topnav-links a:hover{color:var(--green);text-decoration:none}
+.topnav-right{justify-self:end;display:flex;align-items:center;gap:10px}
+.topnav-cta{background:var(--green);color:#fff!important;padding:9px 18px;border-radius:4px;font-weight:600!important;white-space:nowrap}
+.topnav-cta:hover{background:var(--green-light);text-decoration:none}
+.topnav-toggle{display:none;font-size:1.5rem;line-height:1;background:none;border:none;color:var(--text);cursor:pointer;padding:6px}
+@media(max-width:980px){
+.topnav-inner{display:flex;justify-content:space-between}
+.topnav-toggle{display:block}
+.topnav-links{display:none;position:absolute;top:62px;left:0;right:0;background:#fff;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:0;padding:6px 0;border-bottom:1px solid var(--border);box-shadow:0 8px 20px rgba(0,0,0,.06)}
+.topnav-links.open{display:flex}
+.topnav-links a{padding:13px 28px}
+}
 """
+
+NAV = f"""<nav class="topnav">
+  <div class="topnav-inner">
+    <a href="{SITE}/" class="topnav-logo">TEN-FIFTY5</a>
+    <div class="topnav-links">
+      <a href="{SITE}/">Home</a>
+      <a href="{SITE}/overview">How It Works</a>
+      <a href="{SITE}/pricing">Pricing</a>
+      <a href="{SITE}/coaching">For Coaches</a>
+      <a href="{SITE}/academies">Academies</a>
+      <a href="{SITE}/blog">Blog</a>
+      <a href="{SITE}/contact-us">Contact</a>
+    </div>
+    <div class="topnav-right">
+      <a href="{APP}/portal" class="topnav-cta">Start Free</a>
+      <button class="topnav-toggle" aria-label="Toggle menu" onclick="document.querySelector('.topnav-links').classList.toggle('open')">&#9776;</button>
+    </div>
+  </div>
+</nav>"""
 
 FOOTER = f"""<footer class="footer">
   <div class="footer-inner">
@@ -187,6 +225,7 @@ FOOTER = f"""<footer class="footer">
       <li><a href="{SITE}/overview" target="_top">How It Works</a></li>
       <li><a href="{SITE}/pricing" target="_top">Pricing</a></li>
       <li><a href="{SITE}/coaching" target="_top">For Coaches</a></li>
+      <li><a href="{SITE}/academies" target="_top">For Academies</a></li>
       <li><a href="{SITE}/blog" target="_top">Blog</a></li>
     </ul></div>
     <div class="footer-col"><h5>Get in touch</h5><ul>
@@ -251,6 +290,7 @@ def render_post(p):
 <style>{STYLE}</style>
 </head>
 <body>
+{NAV}
 <header class="post-head">
   <div class="wrap">
     <a class="eyebrow" href="{SITE}/blog" style="text-decoration:none;">Ten-Fifty5 Blog</a>
@@ -299,6 +339,7 @@ def render_index(posts):
 <style>{STYLE}</style>
 </head>
 <body>
+{NAV}
 <header class="idx-head">
   <div class="wrap">
     <div class="eyebrow">Blog</div>
