@@ -27,7 +27,6 @@
 
 from __future__ import annotations
 
-import hmac
 import os
 
 from flask import Blueprint, current_app, jsonify, request
@@ -35,24 +34,20 @@ from sqlalchemy import text
 
 from paypal_billing import client, plans
 from subscriptions_api import apply_subscription_event
+# Reuse the client API's dual-mode auth so PayPal checkout works whether the portal
+# forwards a per-user Clerk JWT (auth_v2) or the legacy shared key.
+from client_api import _guard as _client_guard, _client_email
 
 paypal_bp = Blueprint("paypal_billing", __name__)
 
 
 # ── auth + small helpers ─────────────────────────────────────────────────────
-
-def _client_key_ok() -> bool:
-    expected = (os.getenv("CLIENT_API_KEY") or "").strip()
-    supplied = (request.headers.get("X-Client-Key") or "").strip()
-    return bool(expected) and hmac.compare_digest(supplied, expected)
-
-
-def _req_email() -> str:
-    e = request.args.get("email") or ""
-    if not e:
-        e = (request.get_json(silent=True) or {}).get("email") or ""
-    return e.strip().lower()
-
+# Checkout endpoints authenticate with the SAME dual-mode guard as the rest of the
+# client API (client_api._guard): a per-user Clerk JWT (auth_v2) OR the legacy
+# X-Client-Key. The buyer email comes from client_api._client_email — derived
+# SERVER-SIDE from the verified token under JWT (a spoofed ?email is ignored), or
+# ?email under the legacy key. So PayPal works regardless of which auth the portal
+# forwards, and binds the purchase to the authenticated account either way.
 
 def _currency() -> str:
     return (plans.load_catalog().get("currency") or plans.CURRENCY)
@@ -102,9 +97,9 @@ def register_always(app) -> None:
 
 @paypal_bp.post("/api/billing/paypal/create-subscription")
 def create_subscription():
-    if not _client_key_ok():
+    if not _client_guard():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    email = _req_email()
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
     code = ((request.get_json(silent=True) or {}).get("plan_code") or "").strip()
@@ -124,9 +119,9 @@ def create_subscription():
 
 @paypal_bp.post("/api/billing/paypal/create-order")
 def create_order():
-    if not _client_key_ok():
+    if not _client_guard():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    email = _req_email()
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
     code = ((request.get_json(silent=True) or {}).get("plan_code") or "").strip()
@@ -150,9 +145,9 @@ def create_order():
 
 @paypal_bp.post("/api/billing/paypal/capture-order")
 def capture_order():
-    if not _client_key_ok():
+    if not _client_guard():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    if not _req_email():
+    if not _client_email():
         return jsonify({"ok": False, "error": "email required"}), 400
     order_id = ((request.get_json(silent=True) or {}).get("order_id") or "").strip()
     if not order_id:
@@ -174,9 +169,9 @@ def capture_order():
 
 @paypal_bp.post("/api/billing/paypal/cancel-subscription")
 def cancel_subscription_route():
-    if not _client_key_ok():
+    if not _client_guard():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-    email = _req_email()
+    email = _client_email()
     if not email:
         return jsonify({"ok": False, "error": "email required"}), 400
     sub_id = _lookup_paypal_subscription_id(email)
