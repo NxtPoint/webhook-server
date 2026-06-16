@@ -87,6 +87,11 @@ Everything else — marketing site, member profile data, billing state storage, 
 
 ---
 
+> **Detailed migration plan:** [`AUTH-MIGRATION-PLAN.md`](AUTH-MIGRATION-PLAN.md) — provider
+> recommendation (Clerk/Auth0/Cognito), phased no-downtime auth migration with effort/risk per phase,
+> and a payment-off-Wix appendix (PayPal-direct vs Stripe vs Merchant-of-Record sizing). The summary
+> below stays here for context.
+
 ## 6. Migration plan (off Wix)
 
 **Sequencing principle:** payment depends on identities existing, so **own auth first, then payment** (the reverse of how they're entangled today). Marketing + member data are already done. Keep Wix running in parallel for a gradual cutover — no big-bang.
