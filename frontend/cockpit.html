@@ -60,6 +60,7 @@
   <div class="tab" data-tab="customers">Customers</div>
   <div class="tab" data-tab="risk">At-risk &amp; opportunity</div>
   <div class="tab" data-tab="ops">Processing ops</div>
+  <div class="tab" data-tab="feedback">Feedback</div>
 </div>
 <main>
   <div id="err" class="err hidden"></div>
@@ -91,6 +92,12 @@
   <section id="tab-ops" class="tabpane hidden">
     <div class="chips" id="opsChips"></div>
     <div class="wrap"><table id="opsTable"></table></div>
+  </section>
+
+  <section id="tab-feedback" class="tabpane hidden">
+    <div class="grid" id="npsCards"></div>
+    <div class="sec"><h2>Recent verbatims</h2><div class="wrap"><table id="verbatims"></table></div></div>
+    <div class="sec"><h2>Recent feedback &amp; cancellations</h2><div class="wrap"><table id="recentFb"></table></div></div>
   </section>
 </main>
 
@@ -140,6 +147,7 @@ async function load(tab, force){
     if(tab==='customers') await loadCustomers();
     if(tab==='risk') await loadRisk();
     if(tab==='ops') await loadOps();
+    if(tab==='feedback') await loadFeedback();
     loaded[tab]=true;
   }catch(e){ showErr(e.message + '  — check that COCKPIT_ENABLED=1 on the API and your email is an admin.'); }
 }
@@ -209,6 +217,24 @@ async function loadOps(){
           <td>${when(r.ingest_started_at)}</td><td>${when(r.ingest_finished_at)}</td>
           <td class="muted">${r.ingest_error? r.ingest_error.slice(0,60):''}</td></tr>`);
 }
+
+async function loadFeedback(){
+  const d = await api(`${C}/feedback`);
+  const s = d.summary||{};
+  const cards=[['NPS', s.nps??'—', `${s.responses||0} responses`],
+               ['Promoters', s.promoters||0,''],['Passives', s.passives||0,''],['Detractors', s.detractors||0,'']];
+  document.getElementById('npsCards').innerHTML=cards.map(c=>
+    `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
+  tbl(document.getElementById('verbatims'), ['Score','Bucket','Comment','When'], d.verbatims,
+      r=>`<tr><td>${r.score}</td><td>${pill(r.bucket)}</td><td>${esc(r.comment)}</td><td>${when(r.submitted_at)}</td></tr>`);
+  tbl(document.getElementById('recentFb'), ['Type','Detail','When'], d.recent_feedback, r=>{
+      const j=r.responses||{};
+      const detail = r.survey_key==='cancellation'
+        ? `${j.reason||''}${j.comment?' — '+j.comment:''}`
+        : `${j.area?('['+j.area+'] '):''}${j.message||''}`;
+      return `<tr><td>${r.survey_key}</td><td>${esc(detail)}</td><td>${when(r.submitted_at)}</td></tr>`;});
+}
+function esc(s){ return (s||'').toString().replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
 
 load('health');
 </script>

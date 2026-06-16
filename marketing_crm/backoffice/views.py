@@ -154,6 +154,32 @@ _VIEWS = [
     FROM bronze.submission_context sc
     WHERE sc.deleted_at IS NULL
     """,
+
+    # ── Feedback: NPS summary (scalars) ──────────────────────────────────────
+    """
+    CREATE OR REPLACE VIEW core.vw_nps_summary AS
+    SELECT
+        count(*)                                          AS responses,
+        count(*) FILTER (WHERE bucket = 'promoter')       AS promoters,
+        count(*) FILTER (WHERE bucket = 'passive')        AS passives,
+        count(*) FILTER (WHERE bucket = 'detractor')      AS detractors,
+        CASE WHEN count(*) = 0 THEN NULL
+             ELSE ROUND((count(*) FILTER (WHERE bucket='promoter')
+                         - count(*) FILTER (WHERE bucket='detractor')) * 100.0 / count(*), 1)
+        END                                               AS nps
+    FROM core.nps_response
+    """,
+
+    # ── Feedback: NPS by month (trend) ───────────────────────────────────────
+    """
+    CREATE OR REPLACE VIEW core.vw_nps_monthly AS
+    SELECT date_trunc('month', submitted_at) AS month,
+           count(*) AS responses,
+           ROUND((count(*) FILTER (WHERE bucket='promoter')
+                  - count(*) FILTER (WHERE bucket='detractor')) * 100.0 / NULLIF(count(*),0), 1) AS nps
+    FROM core.nps_response
+    GROUP BY 1 ORDER BY 1 DESC
+    """,
 ]
 
 

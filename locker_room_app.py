@@ -111,6 +111,12 @@ def cockpit():
     return _html("cockpit.html")
 
 
+@app.get("/feedback_widget.js")
+def feedback_widget_js():
+    # In-app feedback + NPS widget (marketing_crm). Included by portal/dashboard pages.
+    return _html("feedback_widget.js")
+
+
 @app.get("/practice")
 def practice():
     return _html("practice.html")

@@ -126,6 +126,24 @@ def processing_ops():
                     "summary": {r["derived_status"]: r["n"] for r in summary}})
 
 
+@cockpit_bp.route(f"{_PREFIX}/feedback", methods=["GET", "OPTIONS"])
+def feedback():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    summary = _one("SELECT * FROM core.vw_nps_summary")
+    monthly = _rows("SELECT to_char(month,'YYYY-MM') AS month, responses, nps FROM core.vw_nps_monthly LIMIT 12")
+    verbatims = _rows(
+        "SELECT score, bucket, comment, submitted_at FROM core.nps_response "
+        "WHERE comment IS NOT NULL AND comment <> '' ORDER BY submitted_at DESC LIMIT 25")
+    recent_feedback = _rows(
+        "SELECT survey_key, responses, submitted_at FROM core.survey_response "
+        "ORDER BY submitted_at DESC LIMIT 25")
+    return jsonify({"ok": True, "summary": summary, "monthly": monthly,
+                    "verbatims": verbatims, "recent_feedback": recent_feedback})
+
+
 def register(app):
     """Register the cockpit blueprint IFF COCKPIT_ENABLED=1. No-op otherwise (dark by default)."""
     if os.getenv("COCKPIT_ENABLED", "0") != "1":

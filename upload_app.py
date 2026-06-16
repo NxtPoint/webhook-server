@@ -208,6 +208,15 @@ try:
 except Exception:
     app.logger.exception("marketing_crm cockpit register failed on boot")
 
+# ---------- In-app feedback + NPS (marketing_crm) — DARK by default ----------
+# Registers /api/client/feedback/* only when FEEDBACK_ENABLED=1.
+try:
+    from marketing_crm.feedback import register as register_feedback
+    if register_feedback(app):
+        app.logger.info("marketing_crm feedback registered (FEEDBACK_ENABLED=1)")
+except Exception:
+    app.logger.exception("marketing_crm feedback register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init
