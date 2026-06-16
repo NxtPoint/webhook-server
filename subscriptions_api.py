@@ -283,10 +283,16 @@ def subscription_event():
         # Product event (fire-and-forget; no-op unless TRACKING_ENABLED=1)
         try:
             from marketing_crm.tracking import track
-            from marketing_crm.tracking.events import SUBSCRIPTION_STARTED, SUBSCRIPTION_CANCELLED
+            from marketing_crm.tracking.events import (
+                SUBSCRIPTION_STARTED, SUBSCRIPTION_CANCELLED, CREDIT_PURCHASED)
             if new_status == "ACTIVE" and event_type == "PLAN_PURCHASED":
-                track(SUBSCRIPTION_STARTED, email=buyer_email, ref_type="subscription",
-                      ref_id=order_id, properties={"plan_code": plan_code, "plan_type": plan_type})
+                # PAYG top-up vs recurring subscription are distinct funnel events
+                if plan_type == "payg":
+                    track(CREDIT_PURCHASED, email=buyer_email, ref_type="order", ref_id=order_id,
+                          properties={"plan_code": plan_code, "matches": matches_granted})
+                else:
+                    track(SUBSCRIPTION_STARTED, email=buyer_email, ref_type="subscription",
+                          ref_id=order_id, properties={"plan_code": plan_code, "plan_type": plan_type})
             elif new_status == "CANCELLED":
                 track(SUBSCRIPTION_CANCELLED, email=buyer_email, ref_type="subscription",
                       ref_id=order_id, properties={"plan_code": plan_code})

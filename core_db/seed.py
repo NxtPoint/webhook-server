@@ -175,9 +175,9 @@ def seed():
 
         # Usage events
         matches.record_usage(s, event_type="login", account_id=acct.id, user_id=owner.id)
-        matches.record_usage(s, event_type="match_upload", account_id=acct.id, user_id=owner.id,
+        matches.record_usage(s, event_type="match_uploaded", account_id=acct.id, user_id=owner.id,
                              ref_type="match", ref_id="seed-task-0001")
-        matches.record_usage(s, event_type="report_view", account_id=acct.id, user_id=owner.id,
+        matches.record_usage(s, event_type="report_viewed", account_id=acct.id, user_id=owner.id,
                              ref_type="match", ref_id="seed-task-0001")
         matches.record_usage(s, event_type="ai_coach_query", account_id=acct.id, user_id=owner.id,
                              metadata={"q": "how is my second serve?"})
