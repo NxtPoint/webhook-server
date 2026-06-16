@@ -127,10 +127,12 @@ becomes material"** obligation, **owned by the accountant**, not a launch blocke
 integration touches. Action: ask the accountant "when do I need to worry about EU/UK VAT?" at some point;
 don't let it shape the build.
 
-**Build status (2026-06-16): code complete, dark.** The PayPal-direct integration is built in
-`paypal_billing/` (steps 1–4): catalog tooling, the shared grant-path refactor
-(`subscriptions_api.apply_subscription_event` now serves both Wix and PayPal), the
-signature-verified webhook receiver + secure server-side checkout endpoints, and PayPal Buttons in
-`frontend/pricing.html` (with a cancel action). It's **vanilla PayPal, `billing.*` only** (core mirror
-deferred), **dark behind `PAYPAL_ENABLED=0`** with the Wix checkout intact as fallback. Remaining:
-set prices, run the sandbox E2E, then flip live. Full runbook: `paypal_billing/README.md`.
+**Build status (2026-06-16): LIVE.** The PayPal-direct integration in `paypal_billing/` is
+**live in production** (`PAYPAL_ENABLED=1`, `PAYPAL_ENV=live`) — proven end-to-end on sandbox AND a
+real live purchase (PAYG + subscribe + cancel). It is **vanilla PayPal, `billing.*` only** (core mirror
+deferred): catalog tooling, the shared grant-path refactor (`subscriptions_api.apply_subscription_event`
+serves both Wix and PayPal), a signature-verified webhook receiver that refetches before granting,
+secure server-side checkout endpoints (dual-mode auth — Clerk JWT or legacy key), and PayPal Buttons +
+cancel in `frontend/pricing.html`. **Wix Pricing Plans checkout is retired** — it remains only as the
+`PAYPAL_ENABLED=0` rollback fallback. Full runbook: `paypal_billing/README.md`. So **payment is now off
+Wix** — the §6.2/Phase-2 "own payment" work is done.

@@ -8,15 +8,22 @@
 
 ## 1. Executive summary
 
-As of the 2026-06-15 marketing migration, Wix is reduced to **three responsibilities, all hard-coupled and interdependent**:
+> **UPDATE 2026-06-16 — Wix is effectively retired.** Both remaining couplings were migrated the
+> same day: **Payment** moved to **direct PayPal** (`paypal_billing/`, LIVE — Wix Pricing Plans
+> checkout retired; see `paypal_billing/README.md`), and **Authentication** moved to **Clerk**
+> (`auth_v2/`, LIVE dual-mode — see `marketing_crm/STATUS.md`). Marketing/data were already off Wix.
+> The detailed sections below are the pre-migration map, kept for history + the remaining cleanup
+> (retire the Wix `postMessage` handoff + the standalone wixstudio app after the fallback window).
 
-1. **Authentication** — Wix login is the *only* identity source; it hands off `email` + the shared `CLIENT_API_KEY` to our portal via `postMessage`.
-2. **Payment checkout** — Wix Pricing Plans → **PayPal** is the *only* payment path (confirmed: no Stripe/other processor).
-3. **Subscription webhook** — Wix POSTs lifecycle events to `/api/billing/subscription/event`, the only way credits get granted.
+As of the 2026-06-15 marketing migration, Wix had been reduced to **three responsibilities, all hard-coupled and interdependent** (all now migrated — see the update above):
 
-Everything else — marketing site, member profile data, billing state storage, email — already lives on our side. The remaining three are **tightly woven and must be migrated together** (you can't replace payment without owning identity, and you can't grant credits without the webhook). One legacy coupling (`WIX_NOTIFY_*`) is inactive.
+1. **Authentication** — Wix login was the identity source; handed off `email` + the shared `CLIENT_API_KEY` to our portal via `postMessage`. → **Now Clerk** (`auth_v2/`, dual-mode).
+2. **Payment checkout** — Wix Pricing Plans → PayPal was the only payment path. → **Now direct PayPal** (`paypal_billing/`, LIVE), no Wix in the loop.
+3. **Subscription webhook** — Wix POSTed lifecycle events to `/api/billing/subscription/event`. → **Now the PayPal webhook** (`/api/billing/paypal/webhook`) feeds the same `apply_subscription_event` grant path. The Wix endpoint remains for the rollback fallback.
 
-**Overall coupling: ⭐⭐⭐⭐ Very Tight** on the auth+payment axis; **⭐ None** on marketing/data.
+Everything else — marketing site, member profile data, billing state storage, email — already lived on our side. One legacy coupling (`WIX_NOTIFY_*`) is inactive.
+
+**Overall coupling (pre-migration): ⭐⭐⭐⭐ Very Tight** on the auth+payment axis; **⭐ None** on marketing/data. **Post-migration: ⭐ None** — Wix retained only as a rollback fallback until the handoff is removed.
 
 ---
 

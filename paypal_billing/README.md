@@ -2,8 +2,11 @@
 
 Replaces the Wix Pricing Plans → PayPal checkout with **our own** PayPal integration
 (recurring subscriptions + PAYG credit packs). Vanilla PayPal, server-side, security-first.
-**Touches `billing.*` only** (the `core.*` mirror is deferred). **Dark by default** —
-nothing happens unless `PAYPAL_ENABLED=1`.
+**Touches `billing.*` only** (the `core.*` mirror is deferred).
+
+> **Status: LIVE since 2026-06-16** (`PAYPAL_ENABLED=1`, `PAYPAL_ENV=live`). Proven
+> end-to-end on sandbox AND a real live purchase (PAYG + subscribe + cancel). The Wix
+> checkout is retired — it remains only as the `PAYPAL_ENABLED=0` rollback fallback.
 
 ## Why it's a small build
 The billing backend is provider-agnostic. `subscriptions_api.apply_subscription_event()`
@@ -68,21 +71,25 @@ PayPal subscriptions are **webhook-driven only**. The Wix monthly-refill cron is
 | `PAYPAL_WEBHOOK_ID` | id of the webhook you register in the dashboard (after the URL exists) |
 | `PAYPAL_CURRENCY` | presentment currency (default `USD`) |
 
-## Go-live runbook
+## Go-live runbook (DONE 2026-06-16 — kept for re-runs / reference)
+Sandbox E2E (PAYG + subscribe + cancel) and a real live purchase are both proven; live
+`catalog.json` + live webhook + live creds are in place. The sequence, for re-running the
+catalog or standing this up again elsewhere:
 1. **Set prices** in `plans.py` `PRICES` (all of them; catalog refuses to run with gaps).
-2. **Sandbox creds** in env (`PAYPAL_ENV=sandbox`, sandbox `PAYPAL_CLIENT_ID`/`SECRET`).
+2. **Creds** in env (`PAYPAL_ENV` + `PAYPAL_CLIENT_ID`/`SECRET`).
 3. **Create the catalog:** `python -m paypal_billing.catalog` → commit `catalog.json`.
 4. **Register the webhook** in the PayPal dashboard at
    `https://api.nextpointtennis.com/api/billing/paypal/webhook`, subscribe to:
    `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`,
    `BILLING.SUBSCRIPTION.EXPIRED`, `PAYMENT.SALE.COMPLETED`, `PAYMENT.CAPTURE.COMPLETED`.
    Put its id in `PAYPAL_WEBHOOK_ID`.
-5. **Flip `PAYPAL_ENABLED=1`** (still sandbox). Test from `/pricing`: subscribe + buy a PAYG
-   pack with a sandbox buyer; confirm credits land in `billing.entitlement_grant` /
-   `billing.subscription_state`; test cancel. Use the PayPal webhook simulator for the
-   signature path.
-6. **Promote to live:** swap to live `PAYPAL_CLIENT_ID`/`SECRET`, `PAYPAL_ENV=live`,
-   re-run catalog.py (live plans), register a live webhook, set the live `PAYPAL_WEBHOOK_ID`.
+5. **`PAYPAL_ENABLED=1`** + verify `/api/billing/paypal/config` reports `enabled:true` and
+   the right `env` (see the gotcha below).
+
+**Operational gotcha (bit the live cut):** a `value:` change in `render.yaml` (e.g.
+`PAYPAL_ENV`) does NOT reliably auto-apply on push — set critical flips in the **Render
+dashboard** too, then **verify via `/config`** rather than assuming the deploy applied it.
+Secrets stay `sync:false` (dashboard-owned).
 
 **Rollback:** `PAYPAL_ENABLED=0` — instantly reverts the frontend to Wix checkout. No deploy
 needed beyond the env change.

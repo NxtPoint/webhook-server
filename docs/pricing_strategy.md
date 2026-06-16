@@ -35,7 +35,7 @@ No competitor bundles all three. That is the pricing moat.
 | **Coach** (LAUNCH) | Invited coaches | Free | ❌ cannot upload | ✅ on linked players | ✅ on linked players | ✅ all linked players |
 | **Coach** (PHASE 2) | Coaches with >1 player | Free ≤1 player / paid 2+ | ❌ | ✅ | ✅ | ✅ |
 
-**Prices** live in Wix Payment Plans — not hard-coded here. The pricing page renders the Wix-driven plan catalogue.
+**Prices** (UPDATE 2026-06-16 — payment moved off Wix to direct PayPal): the canonical prices now live in **`paypal_billing/plans.py` (`PRICES`)** and the PayPal Billing Plan ids in `paypal_billing/catalog.json`; `/pricing` reads them via `GET /api/billing/paypal/config`. Current: Starter $25/mo, Standard $40/mo, Advanced $70/mo; PAYG 1/3/5 = $25/$50/$100. The legacy Wix `wixPlanId` UUIDs remain in `frontend/pricing.html` only for the `PAYPAL_ENABLED=0` fallback. See `paypal_billing/README.md`.
 
 ---
 
