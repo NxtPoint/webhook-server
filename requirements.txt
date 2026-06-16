@@ -29,3 +29,4 @@ numpy==2.0.2
 gunicorn==22.0.0
 anthropic>=0.40.0
 sqlparse==0.5.5
+PyJWT[crypto]==2.10.1  # per-user IdP (Clerk) token verification — auth_v2 (dark until AUTH_V2_ENABLED=1)

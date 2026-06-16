@@ -65,6 +65,36 @@ def get_user_by_email(session, email):
     ).scalar_one_or_none()
 
 
+def get_user_by_auth_provider_uid(session, auth_provider, auth_provider_uid):
+    """Resolve a login identity by its external IdP id (e.g. Clerk `sub`).
+    This is the primary lookup for per-user token auth (auth_v2)."""
+    if not auth_provider or not auth_provider_uid:
+        return None
+    return session.execute(
+        select(AppUser).where(
+            AppUser.auth_provider == auth_provider,
+            AppUser.auth_provider_uid == auth_provider_uid,
+            AppUser.deleted_at.is_(None),
+        )
+    ).scalar_one_or_none()
+
+
+def set_auth_provider(session, user_id, *, auth_provider, auth_provider_uid, email_verified=None):
+    """Bind/refresh a user's external IdP identity. Used when an existing
+    (e.g. wix-seeded) user logs in via the new provider for the first time —
+    we link by email, then stamp the provider uid so future logins resolve directly."""
+    user = session.get(AppUser, user_id)
+    if user is None:
+        return None
+    user.auth_provider = auth_provider
+    user.auth_provider_uid = auth_provider_uid
+    if email_verified is not None:
+        user.email_verified = bool(email_verified)
+    user.updated_at = _now()
+    session.flush()
+    return user
+
+
 def create_user(session, *, account_id, email, auth_provider="wix", auth_provider_uid=None,
                 is_account_owner=False, marketing_opt_in=False, email_verified=False):
     existing = get_user_by_email(session, email)
