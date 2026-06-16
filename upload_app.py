@@ -196,6 +196,18 @@ try:
 except Exception:
     app.logger.exception("diag_sql.diag_sql_bp register failed on boot")
 
+# ---------- Internal admin cockpit (marketing_crm) — DARK by default ----------
+# Registers /api/client/backoffice/cockpit/* only when COCKPIT_ENABLED=1. Creating the
+# cockpit views on boot is additive + safe (core.* never touches billing/bronze data).
+try:
+    from marketing_crm.backoffice import register as register_cockpit
+    if register_cockpit(app):
+        from marketing_crm.backoffice import init_cockpit_views
+        init_cockpit_views()
+        app.logger.info("marketing_crm cockpit registered (COCKPIT_ENABLED=1)")
+except Exception:
+    app.logger.exception("marketing_crm cockpit register failed on boot")
+
 # ---------- Technique Analysis (idempotent on boot) ----------
 try:
     from technique.db_schema import technique_bronze_init

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ten-Fifty5 · Internal Cockpit</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --txt:#e7ebf0; --muted:#9aa4b2; --green:#22c55e; --amber:#f59e0b; --red:#ef4444; --blue:#3b82f6;
+    --radius:12px; font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-size:14px}
+  header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.2px}
+  .badge{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:99px;padding:2px 10px}
+  .tabs{display:flex;gap:6px;padding:12px 20px 0;flex-wrap:wrap}
+  .tab{padding:8px 14px;border:1px solid var(--line);border-bottom:none;border-radius:10px 10px 0 0;
+       background:var(--panel);color:var(--muted);cursor:pointer;font-weight:500}
+  .tab.active{background:var(--panel2);color:var(--txt)}
+  main{padding:20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+  .card .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .card .v{font-size:24px;font-weight:700}
+  .card .s{font-size:12px;color:var(--muted);margin-top:4px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;white-space:nowrap}
+  th{color:var(--muted);font-weight:600;background:var(--panel2);position:sticky;top:0}
+  tr:last-child td{border-bottom:none}
+  .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;text-transform:capitalize}
+  .pill.paid{background:rgba(34,197,94,.15);color:var(--green)}
+  .pill.at_risk,.pill.failed{background:rgba(239,68,68,.15);color:var(--red)}
+  .pill.trial,.pill.payg,.pill.processing,.pill.queued{background:rgba(245,158,11,.15);color:var(--amber)}
+  .pill.signup,.pill.churned{background:rgba(154,164,178,.15);color:var(--muted)}
+  .pill.complete,.pill.activated{background:rgba(59,130,246,.15);color:var(--blue)}
+  .controls{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+  input,select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 12px;border-radius:8px;font-size:13px}
+  .sec{margin-bottom:26px}
+  .sec h2{font-size:14px;margin:0 0 10px;font-weight:600}
+  .muted{color:var(--muted)}
+  .err{background:rgba(239,68,68,.12);border:1px solid var(--red);color:#fecaca;padding:12px 16px;border-radius:10px;margin-bottom:16px}
+  .empty{color:var(--muted);padding:24px;text-align:center}
+  .wrap{max-height:60vh;overflow:auto;border-radius:var(--radius)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .chip{padding:6px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);cursor:pointer;font-size:12px}
+  .chip.active{background:var(--panel2);color:var(--txt);border-color:var(--blue)}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎾 Ten-Fifty5 — Internal Cockpit</h1>
+  <span class="badge" id="srcBadge">core.* + bronze</span>
+  <span class="badge muted" id="whoBadge"></span>
+</header>
+<div class="tabs">
+  <div class="tab active" data-tab="health">Business health</div>
+  <div class="tab" data-tab="customers">Customers</div>
+  <div class="tab" data-tab="risk">At-risk &amp; opportunity</div>
+  <div class="tab" data-tab="ops">Processing ops</div>
+</div>
+<main>
+  <div id="err" class="err hidden"></div>
+
+  <section id="tab-health" class="tabpane">
+    <div class="grid" id="healthCards"></div>
+    <div class="sec"><h2>Active subscriptions by plan</h2><div class="wrap"><table id="byPlan"></table></div></div>
+  </section>
+
+  <section id="tab-customers" class="tabpane hidden">
+    <div class="controls">
+      <input id="custSearch" placeholder="Search email / name…" style="min-width:240px">
+      <select id="custStage">
+        <option value="">All stages</option>
+        <option>signup</option><option>trial</option><option>payg</option>
+        <option>paid</option><option>at_risk</option><option>churned</option>
+      </select>
+      <span class="muted" id="custCount"></span>
+    </div>
+    <div class="wrap"><table id="custTable"></table></div>
+  </section>
+
+  <section id="tab-risk" class="tabpane hidden">
+    <div class="sec"><h2>Trials that haven't uploaded <span class="muted" id="c1"></span></h2><div class="wrap"><table id="r1"></table></div></div>
+    <div class="sec"><h2>Subscribers inactive 30+ days <span class="muted" id="c2"></span></h2><div class="wrap"><table id="r2"></table></div></div>
+    <div class="sec"><h2>Coaches (linkable players) <span class="muted" id="c3"></span></h2><div class="wrap"><table id="r3"></table></div></div>
+  </section>
+
+  <section id="tab-ops" class="tabpane hidden">
+    <div class="chips" id="opsChips"></div>
+    <div class="wrap"><table id="opsTable"></table></div>
+  </section>
+</main>
+
+<script>
+const params = new URLSearchParams(location.search);
+const API_BASE = params.get('api') || 'https://api.nextpointtennis.com';
+const API_KEY  = params.get('key') || '';
+const EMAIL    = (params.get('email') || '').trim();
+const C = '/api/client/backoffice/cockpit';
+document.getElementById('whoBadge').textContent = EMAIL ? ('admin: ' + EMAIL) : 'no email — auth will fail';
+
+function showErr(msg){ const e=document.getElementById('err'); e.textContent=msg; e.classList.remove('hidden'); }
+function clearErr(){ document.getElementById('err').classList.add('hidden'); }
+function money(c){ return '$' + ((c||0)/100).toLocaleString(undefined,{maximumFractionDigits:0}); }
+function pct(x){ return x==null ? '—' : (x*100).toFixed(1)+'%'; }
+function when(t){ if(!t) return '—'; const d=new Date(t); return isNaN(d)?'—':d.toLocaleDateString(); }
+function pill(v){ return v ? `<span class="pill ${v}">${String(v).replace('_',' ')}</span>` : '—'; }
+
+async function api(path){
+  const u = new URL(API_BASE + path);
+  if(EMAIL) u.searchParams.set('email', EMAIL);
+  const r = await fetch(u, { headers: { 'X-Client-Key': API_KEY } });
+  if(!r.ok){ throw new Error(`${path} → ${r.status} ${r.statusText}`); }
+  return r.json();
+}
+function tbl(el, cols, rows, render){
+  const thead = '<tr>' + cols.map(c=>`<th>${c}</th>`).join('') + '</tr>';
+  if(!rows || !rows.length){ el.innerHTML = thead + `<tr><td colspan="${cols.length}" class="empty">No rows</td></tr>`; return; }
+  el.innerHTML = thead + rows.map(render).join('');
+}
+
+// ---- Tabs ----
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.querySelectorAll('.tabpane').forEach(p=>p.classList.add('hidden'));
+  document.getElementById('tab-'+t.dataset.tab).classList.remove('hidden');
+  load(t.dataset.tab);
+});
+
+const loaded = {};
+async function load(tab, force){
+  if(loaded[tab] && !force) return;
+  clearErr();
+  try{
+    if(tab==='health') await loadHealth();
+    if(tab==='customers') await loadCustomers();
+    if(tab==='risk') await loadRisk();
+    if(tab==='ops') await loadOps();
+    loaded[tab]=true;
+  }catch(e){ showErr(e.message + '  — check that COCKPIT_ENABLED=1 on the API and your email is an admin.'); }
+}
+
+async function loadHealth(){
+  const d = await api(`${C}/business-health`);
+  const h = d.health || {};
+  const cards = [
+    ['MRR', money(h.mrr_cents), `${h.active_subscriptions||0} active subs`],
+    ['New accounts (mo)', h.new_accounts_this_month||0, ''],
+    ['Churned (mo)', h.churned_this_month||0, ''],
+    ['Activation rate', pct(h.activation_rate), `${h.activated_accounts||0}/${h.total_accounts||0}`],
+    ['Free → paid', pct(h.free_to_paid_rate), ''],
+    ['PAYG revenue', money(h.payg_revenue_cents), 'all-time'],
+    ['Total accounts', h.total_accounts||0, ''],
+  ];
+  document.getElementById('healthCards').innerHTML = cards.map(c=>
+    `<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]||''}</div></div>`).join('');
+  tbl(document.getElementById('byPlan'), ['Plan','Type','Active','MRR'], d.by_plan,
+      r=>`<tr><td>${r.plan_code}</td><td>${r.plan_type||'—'}</td><td>${r.active_count}</td><td>${money(r.mrr_cents)}</td></tr>`);
+}
+
+async function loadCustomers(){
+  const s = encodeURIComponent(document.getElementById('custSearch').value);
+  const st = encodeURIComponent(document.getElementById('custStage').value);
+  const d = await api(`${C}/customers?search=${s}&stage=${st}`);
+  document.getElementById('custCount').textContent = `${d.count} shown`;
+  tbl(document.getElementById('custTable'),
+      ['Email','Role','Stage','Plan','MRR','Uploads','Credits','Links','NPS','Last active'], d.customers,
+      r=>`<tr><td>${r.email}</td><td>${r.role||'—'}</td><td>${pill(r.stage)}</td>
+          <td>${r.plan_code||'—'}</td><td>${money(r.mrr_cents)}</td><td>${r.matches_uploaded}</td>
+          <td>${r.matches_remaining}</td><td>${r.linked_count}</td><td>${r.nps_latest??'—'}</td>
+          <td>${when(r.last_activity)}</td></tr>`);
+}
+document.getElementById('custSearch').oninput = debounce(()=>loadCustomers(),300);
+document.getElementById('custStage').onchange = ()=>loadCustomers();
+function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};}
+
+async function loadRisk(){
+  const d = await api(`${C}/at-risk`);
+  const g = d.groups||{};
+  document.getElementById('c1').textContent = `(${(g.trial_no_upload||[]).length})`;
+  document.getElementById('c2').textContent = `(${(g.inactive_subscriber||[]).length})`;
+  document.getElementById('c3').textContent = `(${(g.coach_linkable||[]).length})`;
+  tbl(document.getElementById('r1'), ['Email','Name','Detail'], g.trial_no_upload,
+      r=>`<tr><td>${r.email}</td><td>${r.display_name||'—'}</td><td>${r.detail}</td></tr>`);
+  tbl(document.getElementById('r2'), ['Email','Name','Days idle','Last active'], g.inactive_subscriber,
+      r=>`<tr><td>${r.email}</td><td>${r.display_name||'—'}</td><td>${Math.round(r.metric)}</td><td>${when(r.last_activity)}</td></tr>`);
+  tbl(document.getElementById('r3'), ['Email','Name','Linked players'], g.coach_linkable,
+      r=>`<tr><td>${r.email}</td><td>${r.display_name||'—'}</td><td>${Math.round(r.metric)}</td></tr>`);
+}
+
+let opsFilter = '';
+async function loadOps(){
+  const d = await api(`${C}/processing-ops${opsFilter?`?status=${opsFilter}`:''}`);
+  const sum = d.summary||{};
+  const states = ['','queued','processing','complete','failed'];
+  document.getElementById('opsChips').innerHTML = states.map(s=>{
+    const label = s||'all'; const n = s? (sum[s]||0) : Object.values(sum).reduce((a,b)=>a+b,0);
+    return `<span class="chip ${opsFilter===s?'active':''}" data-s="${s}">${label} (${n})</span>`;
+  }).join('');
+  document.querySelectorAll('#opsChips .chip').forEach(c=>c.onclick=()=>{opsFilter=c.dataset.s;loadOps();});
+  tbl(document.getElementById('opsTable'),
+      ['Task','Email','Sport','Status','Trim','Started','Finished','Error'], d.matches,
+      r=>`<tr><td>${(r.task_id||'').slice(0,8)}</td><td>${r.email||'—'}</td><td>${r.sport_type||'—'}</td>
+          <td>${pill(r.derived_status)}</td><td>${r.trim_status||'—'}</td>
+          <td>${when(r.ingest_started_at)}</td><td>${when(r.ingest_finished_at)}</td>
+          <td class="muted">${r.ingest_error? r.ingest_error.slice(0,60):''}</td></tr>`);
+}
+
+load('health');
+</script>
+</body>
+</html>

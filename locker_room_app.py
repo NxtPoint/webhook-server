@@ -104,6 +104,13 @@ def backoffice():
     return _html("backoffice.html")
 
 
+@app.get("/cockpit")
+def cockpit():
+    # Internal admin cockpit (marketing_crm). Static SPA; data via the main API
+    # (/api/client/backoffice/cockpit/*), admin-gated there.
+    return _html("cockpit.html")
+
+
 @app.get("/practice")
 def practice():
     return _html("practice.html")
