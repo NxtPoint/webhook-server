@@ -244,3 +244,10 @@ services:
         value: "pk_test_ZGVmaW5pdGUtdGVycmFwaW4tOS5jbGVyay5hY2NvdW50cy5kZXYk"  # dev instance; public by design
       - key: AUTH_AFTER_LOGIN_URL
         value: "/portal"
+      # Backend that verifies the Clerk token from /login (the whoami check).
+      - key: AUTH_API_BASE
+        value: "https://api.nextpointtennis.com"
+      # Optional Clerk JWT template name. Leave blank to use the default session
+      # token (add the `email` claim via Configure -> Sessions -> Customize token).
+      - key: CLERK_JWT_TEMPLATE
+        value: ""

@@ -152,6 +152,31 @@ def _client_email(legacy_fallback: Optional[str] = None) -> str:
 
 
 # ----------------------------
+# GET /api/client/me — whoami (auth verification)
+# ----------------------------
+
+@client_bp.route("/api/client/me", methods=["GET", "OPTIONS"])
+def whoami():
+    """Return the authenticated principal. Works for BOTH auth methods:
+    - legacy shared key + ?email  -> {method:"legacy", email, is_admin}
+    - per-user Clerk JWT          -> {method:"jwt", email, account_id, user_id, is_admin}
+    Under a JWT the email/account are derived SERVER-SIDE from the verified token
+    (a spoofed ?email is ignored). This is the end-to-end check for the de-Wix auth:
+    a 200 here from a Clerk token proves verify -> core.* resolve -> authorize."""
+    if not _guard():
+        return _forbid()
+    p = getattr(g, "principal", None)
+    return jsonify({
+        "ok": True,
+        "email": _client_email(),
+        "method": getattr(p, "method", None),
+        "account_id": getattr(p, "account_id", None),
+        "user_id": getattr(p, "user_id", None),
+        "is_admin": bool(getattr(p, "is_admin", False)),
+    })
+
+
+# ----------------------------
 # GET /api/client/matches
 # ----------------------------
 

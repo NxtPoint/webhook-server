@@ -175,7 +175,9 @@ def _serve_login():
     html = (html
             .replace("__CLERK_PUBLISHABLE_KEY__", os.getenv("CLERK_PUBLISHABLE_KEY", "").strip())
             .replace("__CLERK_AFTER_LOGIN__", os.getenv("AUTH_AFTER_LOGIN_URL", "/portal").strip())
-            .replace("__AUTH_V2_ENABLED__", os.getenv("AUTH_V2_ENABLED", "0").strip()))
+            .replace("__AUTH_V2_ENABLED__", os.getenv("AUTH_V2_ENABLED", "0").strip())
+            .replace("__AUTH_API_BASE__", os.getenv("AUTH_API_BASE", "https://api.nextpointtennis.com").strip())
+            .replace("__CLERK_JWT_TEMPLATE__", os.getenv("CLERK_JWT_TEMPLATE", "").strip()))
     if "/analytics.js" not in html:
         html = html.replace("</body>", '<script src="/analytics.js" defer></script>\n</body>', 1)
     return Response(html, mimetype="text/html")

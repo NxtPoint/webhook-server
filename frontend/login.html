@@ -79,6 +79,8 @@ const CFG = {
   publishableKey: "__CLERK_PUBLISHABLE_KEY__",
   afterLogin:     "__CLERK_AFTER_LOGIN__",
   enabled:        "__AUTH_V2_ENABLED__",
+  apiBase:        "__AUTH_API_BASE__",      // backend that verifies the token
+  jwtTemplate:    "__CLERK_JWT_TEMPLATE__", // optional Clerk JWT template name
 };
 
 const mount = document.getElementById("clerk-auth");
@@ -140,25 +142,77 @@ async function initClerk() {
     const Clerk = window.Clerk;
     await Clerk.load();
 
-    // Already signed in? Hand straight off to the portal.
-    if (Clerk.user) { go(CFG.afterLogin); return; }
+    // Already signed in? Verify with our backend and show the result.
+    if (Clerk.user) { verifyWithBackend(Clerk); return; }
 
     mount.innerHTML = "";
     Clerk.mountSignIn(mount, {
-      // let users switch to sign-up from the same surface
       signUpUrl: "/login#/sign-up",
-      // after a successful auth, Clerk navigates here
-      afterSignInUrl: CFG.afterLogin,
-      afterSignUpUrl: CFG.afterLogin,
+      afterSignInUrl: "/login",   // come back here so we can verify the token
+      afterSignUpUrl: "/login",
     });
 
-    // Belt-and-braces: if a session becomes active, forward to the portal.
+    // When a session becomes active, verify it against our API.
     Clerk.addListener(function (e) {
-      if (e && e.user) go(CFG.afterLogin);
+      if (e && e.user) verifyWithBackend(Clerk);
     });
   } catch (err) {
     showNotice("Sign-in unavailable", "Something went wrong loading sign-in. Please retry shortly.");
   }
+}
+
+// Mint a fresh per-request token (Clerk session tokens are short-lived) and call
+// our backend's whoami. A 200 proves the full chain: Clerk -> JWKS verify ->
+// core.* resolve -> authorized. Then offer to continue into the portal.
+async function verifyWithBackend(Clerk) {
+  mount.innerHTML = '<div class="state"><div class="spinner"></div>Verifying your account…</div>';
+  const email = (Clerk.user && Clerk.user.primaryEmailAddress &&
+                 Clerk.user.primaryEmailAddress.emailAddress) || "";
+  try {
+    const opts = (CFG.jwtTemplate && CFG.jwtTemplate.indexOf("__") !== 0)
+      ? { template: CFG.jwtTemplate } : undefined;
+    const token = await Clerk.session.getToken(opts);
+    const base = (CFG.apiBase && CFG.apiBase.indexOf("__") !== 0) ? CFG.apiBase : "";
+    const res = await fetch(base + "/api/client/me", {
+      headers: { "Authorization": "Bearer " + token },
+    });
+    const data = await res.json().catch(function () { return {}; });
+
+    if (res.ok && data && data.ok && data.method === "jwt") {
+      mount.innerHTML =
+        '<div class="state">' +
+        '<h2>✅ You’re signed in</h2>' +
+        '<div>Signed in as <b>' + (data.email || email) + '</b>.<br>' +
+        'Backend authorised you (account #' + (data.account_id == null ? "—" : data.account_id) +
+        ', via ' + data.method + ').</div>' +
+        '<div style="margin-top:18px"><a href="' + CFG.afterLogin + '">Continue to your portal →</a></div>' +
+        '<div style="margin-top:10px"><a href="#" id="signout">Sign out</a></div>' +
+        '</div>';
+    } else if (res.status === 403 || res.status === 401) {
+      // Most common cause: the token has no email claim yet (add it in Clerk).
+      mount.innerHTML =
+        '<div class="state"><h2>Almost there</h2>' +
+        '<div>Signed in as <b>' + email + '</b>, but the backend couldn’t authorise the token ' +
+        '(HTTP ' + res.status + '). If you just set up Clerk, add an <code>email</code> claim to the ' +
+        'session token, then sign out and back in.</div>' +
+        '<div style="margin-top:14px"><a href="#" id="signout">Sign out</a></div></div>';
+    } else {
+      mount.innerHTML =
+        '<div class="state"><h2>Couldn’t verify</h2><div>Unexpected response (HTTP ' +
+        res.status + '). Please retry, or <a href="mailto:info@ten-fifty5.com">contact us</a>.</div>' +
+        '<div style="margin-top:14px"><a href="#" id="signout">Sign out</a></div></div>';
+    }
+  } catch (err) {
+    mount.innerHTML =
+      '<div class="state"><h2>Couldn’t reach the server</h2>' +
+      '<div>Signed in as <b>' + email + '</b>, but the verification call failed. Please retry shortly.</div>' +
+      '<div style="margin-top:14px"><a href="#" id="signout">Sign out</a></div></div>';
+  }
+  var so = document.getElementById("signout");
+  if (so) so.addEventListener("click", function (ev) {
+    ev.preventDefault();
+    if (window.Clerk && window.Clerk.signOut) window.Clerk.signOut().then(function () { location.reload(); });
+  });
 }
 
 boot();
