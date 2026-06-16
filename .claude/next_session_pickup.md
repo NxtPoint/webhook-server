@@ -1,59 +1,74 @@
-# Next-session pickup — 2026-06-15 EOD — ✅ BRONZE BUILD COMPLETE · SILVER 100% VERBATIM · 5/5 BENCHES LOCKED · **HARDENING/CLEANUP SPRINT DONE** (one item held, one deferred). main @ `cc57ea3` (+).
+# Next-session pickup — 2026-06-16 EOD — ★ BRONZE DETERMINISTIC DEV COMPLETE. Training is the next (and final) phase. main @ `2a4886a`.
 
 ## ⚡ Executive summary (read first — 60 seconds)
-**The build is DONE and the hardening/cleanup sprint is DONE.** All base facts come from models → silver Pass-1 projects them VERBATIM → 5/5 training benches locked → GPU training env proven. This session finished the cleanup sprint (`docs/_investigation/t5_cleanup_inventory.md`). The ONLY things left: (1) **TRAIN** (the next big phase — Tomo has questions), and (2) the two cleanup items that are deliberately NOT done yet (see "Cleanup — what's left" below).
 
-**main @ `cc57ea3`.** Detection image eu rev 80 / us rev 61. Training job-def `ten-fifty5-ml-train:3`. Serve bench floor GREEN (`ea1e500c=12/26`, `880dff02=23/24`).
+**Today's date:** 2026-06-16
+**Phase:** **Bronze deterministic DEV is DONE** — every clean code fix is shipped. Every remaining gap is **training/data** (the build-first/train-LAST endpoint we've been driving to).
+**Bench:** `ea1e500c=12/26, 880dff02=23/24` — GREEN (verified repeatedly today).
+**What shipped this session:** far-pose serve path retired + ball_speed wired + pre-match warm-up exclusion + the `recon_line` tool + RULE 6 (reconciliation/exclusion methodology).
+**What's blocked:** nothing on DEV. Training needs (a) more sharp-far full-res uploads (data, Tomo) and (b) a GPU train run.
+**Next session's job:** EITHER (1) **training** (stroke/hit, bounce, swing — measure with `recon_line`), OR (2) the **doc + legacy-code baseline cleanup** (scoped below — Tomo asked for it).
 
-**⚠️ THE ONE CAVEAT THAT GOVERNS EVERYTHING:** every bronze/silver change was verified on **`ea085d50` only**. **The next REAL T5 upload (full re-ingest) is the true proof.** Until then: don't trust accuracy as "moved," don't deploy retrained weights, and DON'T retire the bounce-driven rollback.
-
-**⚠️ TWO BATCH-SIDE cleanup commits ride the next detection rebuild (rule #8):** `f11b8ac` (bounce provenance v1→v2 tag) and `cc57ea3` (TrackNet V3 + SAHI_BATCHED removal). They're dead-code/label-only (no behaviour change, serve bench green, imports verified) but they touch Batch-bundled files (`ball_tracker.py`, `player_tracker.py`, `config.py`, `Dockerfile`, `bounce_detector/`). **The next detection-image rebuild MUST include them** (the Dockerfile lost its `tracknet_v3.py` COPY, so a stale rebuild would be fine, but a rebuild from an OLD checkout would re-add the file — rebuild from `main`).
-
-**⚠️ Parallel marketing session is live** on `frontend/`, `locker_room_app.py`, `marketing_app.py`, `build_blog.py`, `CLAUDE.md` (marketing rows), `MEMORY.md`. Commit only T5 files by explicit path; stay out of those.
-
----
-
-## What shipped THIS session (cleanup sprint — all on origin/main, T5 only)
-1. `7854d91` removed 3 dead `db_writer` methods (`save_ball/player/match_*`, 0 callers; Batch writes via S3 re-ingest)
-2. `b1f8b3f` dropped dead `dets_by_pid`/`raw_by_pid` bucket + `_lookup_dominant_hand` in `build_silver_match_t5` (rerun-silver ea085d50 = 821 rows, no-op)
-3. `5207c7c` fixed stale `T5_SERVE_FROM_EVENTS`/volley comments + `serve_model` doc + documented 6 Batch perf levers in `env_vars.md` (CLAUDE.md serve_model/stroke_classifier/point_structure rows landed in marketing's `3a46fa7`)
-4. `f11b8ac` **(BATCH-SIDE)** bounce provenance tag `bounce_detector_v1`→`v2` to match deployed weights
-5. `0764df0` removed dead `swing_type_events` path (`detector_v2.py` + `db.py` + `upload_app` boot/ingest blocks; silver reads `stroke_class` from the live Batch `inference_v2` path)
-6. `3f9c270` removed v1 `stroke_classifier` scaffold (`model/train/flow_extractor/export_training_data` + harness `export-stroke-data`/`train-stroke`; superseded by v2)
-7. `cc57ea3` **(BATCH-SIDE)** removed inert TrackNet V3 scaffold (collapsed `ball_tracker.py` to V2-only, deleted `tracknet_v3.py` + Dockerfile COPY) + SAHI_BATCHED prototype (`player_tracker._run_sahi_batched`/`_tile_offsets`/`_nms_numpy`, ~173 lines)
-
-Rhythm followed per item: grep-verify-each-symbol → compile/import → (silver: rerun-silver ea085d50 unchanged) → serve bench green → small verified commit.
-
-## Cleanup — what's left (the inventory is otherwise fully executed)
-- **HELD (do NOT do until a real upload proves stroke-driven):** Tier 2 #1 — retire the bounce-driven silver path (`_t5_pass1_load_bounce_driven` + near/far/any/kp buckets + mirror + `_min_player_distance_m`/proximity guard + `VOLLEY_NET_DISTANCE_M` + keypoint compaction). It removes the `T5_STROKE_DRIVEN_SILVER=0` rollback — gated on Section B below.
-- **DEFERRED (env-knob risk I couldn't clear locally):** Tier 2 #6 — trim the `INGEST_REPLACE_EXISTING`/`DEFAULT_REPLACE_ON_INGEST`/`STRICT_REINGEST` aliases (upload_app + ingest_worker). They could be set in the live Render env (not in the repo); removing a lookup would flip replace behaviour. **Do this with the job-def/Render env dump in hand** (same Tier-3 dependency). The constant `DEFAULT_REPLACE_ON_INGEST` and default `"1"` are fine; only the redundant env aliases are the target.
-- **N/A:** Tier 2 #5 orphaned weights (`bounce_detector_v1*.pt` etc.) are gitignored disk-only — delete on the box if reclaiming space; not a code change.
-- **bench_ball validation:** full run can't complete locally — `ml_pipeline/test_videos/880dff02_*.mp4` is absent (only `a798eff0_sa_video.mp4` is present). Validated the V3-removal ball path with `bench_ball --fixture a798eff0` [RESULT: see session note] + the V2 path is byte-identical in the diff + imports verified. The full 2-fixture bench_ball + the next Batch rebuild are the remaining gates.
+If that's enough, stop reading. Depth below.
 
 ---
 
-## NEXT SESSION — do these in order
+## THE BIG REFRAME (what happened today — important context)
 
-### A) (optional) finish the two leftover cleanup items
-Only if you have the live job-def/Render env dump: trim the INGEST_REPLACE aliases (deferred above). Otherwise skip — the sprint is effectively complete.
+The 2026-06-15 "BRONZE BUILD COMPLETE / train next" claim was **audited and found wrong**, then corrected. A full due-diligence audit (`.claude/audit_bronze_build_2026-06-16.md`) on the reference video proved:
+- Serve over-emission (8× on ea085d50) was NOT training-fixable — it came from the **far-pose heuristic path unioned into bronze**; training the model can't remove it (separate path). The fix was **architectural** (retire far-pose), proven on a real upload (model_far covers the same serves, recall held 18/24).
+- The candidate "quick fixes" were tested against the bench and **one failed** (a far-pose corroboration gate regressed 9/10→0/10 — real far serves are indistinguishable from FPs without the model). The bounce rally-gate "bug" was a **measured non-bug** (37%→34%, deliberately disabled).
+- Conclusion: only THREE clean DEV fixes existed, and they're now all shipped.
 
-### B) Verify on the next REAL upload (the governing gate — unchanged)
-On the next `tennis_singles_t5` upload (full re-ingest): confirm `stroke_events.ball_hit_location_x/y`+`hitter_side_near`+`volley` populate, `player_identity_segments` populates, silver player_id is stable A/B, Pass-3 holds, **and `player_detections.stroke_class` populates** (the live swing path). THEN the bounce-driven retirement (HELD item) + accuracy/deploy decisions unlock.
+**Lesson banked:** count-alignment ≠ correctness; reconcile SA-active vs T5-active at the EVENT level (`recon_line`); classify every gap as structural-exclusion / detector-fix / training (RULE 6). Never ship a heuristic the bench disproves.
 
-### C) Training (the next big phase — Tomo has questions; don't start until B is proven)
-GPU only. `submit_train_job --fact {serve|hit|bounce|swing}` (job-def rev 3, scale-to-0). Bounce recall is highest-leverage (gates bounce AND volley accuracy). Re-bench swing on GPU via `batch_train --bench swing`. Deploying retrained serve/bounce/swing weights = rule-#8 detection-image rebuild — **fold the two pending Batch-side cleanup commits (`f11b8ac`,`cc57ea3`) into that same rebuild.**
+## What shipped (commit trail, all on origin/main)
+1. `1c05502` docs — RULE 6 (reconcile SA-active vs T5-active; exclusion is a bronze fact) + audit verdict
+2. `c174df5` **far-pose serve path retired in prod** (`SERVE_FAR_POSE_ENABLED=0` in render.yaml; code default stays ON so CI bench stays green)
+3. `185b796` **`recon_line` diag tool** — line-level SA-active vs T5-active, ~12 fields, ~1s match
+4. `ffa4567` **ball_speed wired** — `stroke_events.ball_speed` (was 0/n in silver); silver projects verbatim
+5. `6576054` **pre-match warm-up exclusion** — first-net-crossing-bounce cutoff in both detectors (prod-side)
+6. `2a4886a` docs — north_star marked BRONZE DETERMINISTIC DEV COMPLETE
 
----
+## The reference pair (use for every recon)
+SA truth `079d2c62-b871-4364-b0ad-5da0fc268848` ↔ T5 `375198f5-1adf-4c6f-9862-be8466f0c192`
+(video `1781589562_match.mp4` — the canonical 10-min test match; SA ≈ 24 serves / 68 floor bounces / 87 active swings).
+Run: `python -m ml_pipeline.diag.recon_line 375198f5-... --sa 079d2c62-...`
 
-## HELD / train-last items (after B)
-- swing `other` class weak (F1 0.591); serve far over-emission (336 far events on ea085d50, inherited verbatim — train, not silver filter); bounce recall low (119/407 — gates volley too); overnight retrained weights in S3 `_latest` UNDEPLOYED.
+## Post-fix recon scorecard (far-pose off + ball_speed + cutoff) — the honest state
+| element | state | verdict |
+|---|---|---|
+| serve count | 28 vs SA 24 | ✅ DEV done (far recall = train) |
+| serve agree (matched) | 77% | — |
+| volley agree | 80% | bounce-recall-gated (TRAIN) |
+| swing_type agree | 57% | TRAIN (classifier accuracy) |
+| ball_hit_xy | ~1.0m median | OK |
+| **ball_speed** | wired; matched median T5 ~83 vs SA ~90 | ✅ DEV done; per-shot ±40 = ball-tracker-limited (TRAIN) |
+| identity A/B | clean (0% pollution) | ✅ done |
+| near player position | −0.42m | ✅ done |
+| stroke WHEN/WHO recall | **40% line-level (35/87)** | ❌ TRAIN (the big one — stroke detector) |
+| bounce recall | 28 vs 68 floor | ❌ TRAIN (sharp-far retrain) |
+| far player position | ~absent | ❌ TRAIN/coverage |
 
-## Corpus / training env
-- `ml_analysis.training_corpus` = 11 SA↔T5 pairs; 3 most recent (Jun 14–15) are sharp-far re-runs (only `ea085d50` on rev-80). More sharp-far uploads = the accuracy lever.
-- Training: GPU Batch proven; `ten-fifty5-ml-train:3` (eu-north-1 only). Local CPU cannot train/bench torchvision; **local bench_ball is also impractically slow + needs `test_videos/` mp4s present.**
+**No code fix remains for any ❌** — all are training/data. That is the DEV-done line.
+
+## Env flags that make prod correct (don't lose these)
+- `SERVE_FAR_POSE_ENABLED=0` (render.yaml, main API) — far-pose retired. Rollback=1.
+- `T5_STROKE_DRIVEN_SILVER=1` (default on) — hit-driven silver.
+- `T5_SERVE_FROM_EVENTS`, `T5_BOUNCE_FROM_MODEL`, `SERVE_MODEL_ENABLED`, `SWING_CLASSIFIER_ENABLED`, `BOUNCE_CNN_THRESHOLD=0.70` — all default-on/set; see docs/env_vars.md.
+
+## NEXT SESSION — pick one
+### A) TRAINING (the final phase) — `.claude/training_environment.md`
+GPU Batch one-off jobs: `submit_train_job.py --fact {serve|hit|bounce|swing}` (job-def rev 3). Bounce recall is highest-leverage (gates bounce + volley). Re-bench swing on GPU. Deploying retrained detection weights = rule-#8 detection-image rebuild. Gated on Tomo's sharp-far full-res uploads (data).
+### B) DOC + LEGACY-CODE BASELINE CLEANUP (Tomo asked 2026-06-16)
+Plan in the close-out recommendation: (1) doc-tier sanity sweep (north_star / CLAUDE.md / handover all reflect DEV-done + RULE 6), (2) legacy-code inventory refresh (cleanup sprint did Phase 1; bounce-driven retirement still HELD — see below), (3) archive superseded session docs.
+
+## HELD / not-yet-done (deliberate)
+- **Bounce-driven silver rollback NOT retired** — still the fallback until stroke-driven is proven on a fresh REAL upload (this session validated by re-firing detectors on 375198f5, which is strong but is one match). Keep `_t5_pass1_load_bounce_driven` until then.
+- `recon_line` swing-type mapping is coarse (fh/bh/oh/other) — fine for now.
 
 ## Key docs
-- `docs/north_star.md` §RULES + BRONZE-BUILD-COMPLETE banner · `docs/_investigation/bronze_silver_18_audit.md` · `docs/_investigation/t5_cleanup_inventory.md` (sprint playbook — Phase 1 + the rest now executed) · `.claude/training_harness_status.md` · `.claude/training_environment.md`.
+`docs/north_star.md` (banner + RULE 6) · `.claude/audit_bronze_build_2026-06-16.md` (the full audit + 3 rounds of verdicts) · `docs/_investigation/bronze_silver_18_audit.md` · `.claude/handover_t5.md` (ops) · `.claude/training_environment.md` (how to train) · memory `feedback_reconciliation_and_exclusion_methodology`.
 
 ---
 **END OF PICKUP**
