@@ -39,6 +39,14 @@
 - `SERVE_MODEL_STAGE=1` — **Batch job-def env, not Render**: run the serve-candidates scoring stage after the ROI sweep (rev 73+). Set `0` on the job-def to skip the stage (rollback, no rebuild).
 - `BOUNCE_CNN_THRESHOLD=0.70` — **Batch-side** (`ml_pipeline/__main__.py` bounce stage): CNN score cutoff for `ml_analysis.ball_bounces`. Tuned 2026-06-14 via the offline corpus sweep (`.claude/tmp/bounce_precision_sweep.py`, 5 labelled tasks): default raised 0.5→0.70 → precision 11%→23% (2.1×), over-emission 1.88×→0.78×, −2.5pp recall (recall is training-gated). Lower it to recover recall once the CNN is retrained on sharp-far footage. Env-tunable on the job-def, no Batch rebuild.
 
+**Direct PayPal payments (`paypal_billing/`, replaces Wix checkout — DARK by default):**
+- `PAYPAL_ENABLED` — `0` (default, dark) / `1`. When `0`, `/pricing` falls back to Wix checkout and the public `/api/billing/paypal/config` probe reports `enabled:false`. Rollback knob — no deploy needed.
+- `PAYPAL_ENV` — `sandbox` (default) / `live`. Selects the PayPal API base.
+- `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` — REST app credentials (developer.paypal.com → Apps & Credentials), `sync:false`.
+- `PAYPAL_WEBHOOK_ID` — id of the webhook registered in the PayPal dashboard for `…/api/billing/paypal/webhook`; required for signature verification, `sync:false`.
+- `PAYPAL_CURRENCY` — presentment currency (default `USD`).
+Full runbook (catalog, webhook registration, go-live, rollback): `paypal_billing/README.md`.
+
 **Legacy (Wix payment transition — remove when own payment auth is built):**
 `WIX_NOTIFY_UPLOAD_COMPLETE_URL`, `RENDER_TO_WIX_OPS_KEY`, `WIX_NOTIFY_TIMEOUT_S`, `WIX_NOTIFY_RETRIES`
 

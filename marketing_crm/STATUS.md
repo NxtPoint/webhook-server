@@ -33,6 +33,7 @@ vault — for a hard lock add GitHub branch protection + CODEOWNERS.)
 | Consent capture | `marketing_crm/consent/` + `frontend/consent.js` + `/privacy-settings` | `CONSENT_ENABLED=1` | ✅ (DRAFT copy, pre-legal) |
 | core_api | `core_api/` | `CORE_API_ENABLED=1` | ✅ |
 | De-Wix auth (Clerk) — Phase 0+1 | `auth_v2/` + `client_api._guard()` + `frontend/login.html` (`/login`) | `AUTH_V2_ENABLED=1` (+ `CLERK_PUBLISHABLE_KEY` / `AUTH_JWKS_URL` / `AUTH_ISSUER`) | ✅ code, dark — awaiting Clerk app keys |
+| Direct PayPal payments | `paypal_billing/` + `frontend/pricing.html` | `PAYPAL_ENABLED=1` (+ `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `PAYPAL_WEBHOOK_ID` / `PAYPAL_ENV`) | ✅ code, dark (steps 1–4) — pending sandbox E2E + prices + creds. Reuses `apply_subscription_event` grant path; `billing.*` only (core mirror deferred). Runbook: `paypal_billing/README.md` |
 
 **Consent = the forward write-path into `core.*`:** recording consent ensures the core account/user/
 person exist, so `core.*` fills going forward (no backfill needed for new signups). Copy lives in

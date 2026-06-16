@@ -126,3 +126,11 @@ early-stage SA business with low international consumer volume it's a **"handle 
 becomes material"** obligation, **owned by the accountant**, not a launch blocker and not something the
 integration touches. Action: ask the accountant "when do I need to worry about EU/UK VAT?" at some point;
 don't let it shape the build.
+
+**Build status (2026-06-16): code complete, dark.** The PayPal-direct integration is built in
+`paypal_billing/` (steps 1–4): catalog tooling, the shared grant-path refactor
+(`subscriptions_api.apply_subscription_event` now serves both Wix and PayPal), the
+signature-verified webhook receiver + secure server-side checkout endpoints, and PayPal Buttons in
+`frontend/pricing.html` (with a cancel action). It's **vanilla PayPal, `billing.*` only** (core mirror
+deferred), **dark behind `PAYPAL_ENABLED=0`** with the Wix checkout intact as fallback. Remaining:
+set prices, run the sandbox E2E, then flip live. Full runbook: `paypal_billing/README.md`.
