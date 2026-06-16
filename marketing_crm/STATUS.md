@@ -33,7 +33,7 @@ vault — for a hard lock add GitHub branch protection + CODEOWNERS.)
 | Consent capture | `marketing_crm/consent/` + `frontend/consent.js` + `/privacy-settings` | `CONSENT_ENABLED=1` | ✅ (DRAFT copy, pre-legal) |
 | core_api | `core_api/` | `CORE_API_ENABLED=1` | ✅ |
 | De-Wix auth (Clerk) — Phase 0+1 | `auth_v2/` + `client_api._guard()` + `frontend/login.html` (`/login`) | `AUTH_V2_ENABLED=1` (+ `CLERK_PUBLISHABLE_KEY` / `AUTH_JWKS_URL` / `AUTH_ISSUER`) | ✅ code, dark — awaiting Clerk app keys |
-| Direct PayPal payments | `paypal_billing/` + `frontend/pricing.html` | `PAYPAL_ENABLED=1` (+ `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `PAYPAL_WEBHOOK_ID` / `PAYPAL_ENV`) | ✅ code, dark (steps 1–4) — pending sandbox E2E + prices + creds. Reuses `apply_subscription_event` grant path; `billing.*` only (core mirror deferred). Runbook: `paypal_billing/README.md` |
+| Direct PayPal payments | `paypal_billing/` + `frontend/pricing.html` | `PAYPAL_ENABLED=1` + `PAYPAL_ENV=live` (+ `PAYPAL_CLIENT_ID` / `PAYPAL_SECRET` / `PAYPAL_WEBHOOK_ID`) | ✅ **LIVE 2026-06-16** (env=live). Replaces Wix Pricing Plans checkout. PAYG + subscribe + cancel proven end-to-end on sandbox AND a real live purchase. Reuses `apply_subscription_event`; `billing.*` only (core mirror deferred). Dual-mode auth (Clerk JWT or legacy key, via `client_api._guard`). Rollback: `PAYPAL_ENABLED=0` → instant Wix fallback. Runbook: `paypal_billing/README.md` |
 
 **Consent = the forward write-path into `core.*`:** recording consent ensures the core account/user/
 person exist, so `core.*` fills going forward (no backfill needed for new signups). Copy lives in
@@ -94,6 +94,7 @@ string**, **retention day-counts**, and **age threshold** come back into `core.c
   before real launch; retire the Wix `postMessage` handoff after a fallback window.
 
 ## Changelog
+- 2026-06-16: **Direct PayPal payments LIVE** (`paypal_billing/`). Vanilla PayPal — Subscriptions (recurring) + Orders (PAYG) via the JS SDK, signature-verified webhook → refetch → the shared `apply_subscription_event` grant path (idempotent, `billing.*` only). PAYG/subscribe/cancel proven on sandbox + a real live purchase (grant id 24). Replaces Wix Pricing Plans checkout; works on both the Wix-embedded and standalone Clerk portals (dual-mode auth). `PAYPAL_ENABLED=1` + `PAYPAL_ENV=live` in `render.yaml`; rollback = `PAYPAL_ENABLED=0`. Runbook: `paypal_billing/README.md`.
 - 2026-06-16: core_db live · contracts hub · cockpit (P5) · tracking (P3) · feedback (P6) · crm_sync (P4) · this STATUS.md. Cowork added `klaviyo/` + `privacy/`.
 - 2026-06-16: de-Wix auth Phase 0+1 (Clerk) built dark — `auth_v2/` verifier+principal, wired into `client_api._guard()` (legacy-identical with flag off, proven), `/login` page. `AUTH_V2_ENABLED=0` everywhere; Wix login untouched. Awaiting Clerk app keys.
 - 2026-06-16: de-Wix auth WENT LIVE (Phases 2-3). All 10 portal SPAs converted to `TFAuth` dual-mode (`frontend/auth_client.js` — auth-once: Clerk in the portal, children relay tokens via postMessage); marketing CTAs cut over to `/login`; `AUTH_V2_ENABLED=1` both services. Clerk dev instance `definite-terrapin-9`. Wix login kept as fallback. Remaining: Phase-4 harden (drop shared key) + Clerk prod instance before launch.
