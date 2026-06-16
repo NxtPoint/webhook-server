@@ -432,6 +432,26 @@ def detect_strokes_for_task(
         swing_path_window=swing_path_window,
     )
 
+    # Pre-match cutoff (RULE 6, bronze-side): drop warm-up strokes before the
+    # ball first crosses the net (first validated bounce). Same generalizable
+    # boundary the serve detector uses — warm-up ball-bouncing never crosses the
+    # net, so it produces no bounce and falls before the cutoff. No bounces ->
+    # no filtering (never drops real play blindly).
+    try:
+        from ml_pipeline.serve_detector.detector import match_start_cutoff_ts
+        _bt = [int(r[0]) / fps for r in conn.execute(sql_text(
+            "SELECT frame_idx FROM ml_analysis.ball_bounces WHERE job_id::text = :t "
+            "ORDER BY frame_idx"), {"t": task_id}).fetchall()]
+        _cutoff = match_start_cutoff_ts(_bt)
+        if _cutoff is not None:
+            _before = len(events)
+            events = [e for e in events if e.ts >= _cutoff]
+            if _before != len(events):
+                logger.info("stroke_detector: pre-match cutoff %.1fs dropped %d warm-up strokes",
+                            _cutoff, _before - len(events))
+    except Exception:
+        logger.exception("stroke_detector: pre-match cutoff failed (non-fatal)")
+
     # Hit-WHERE keystone: the model owns the complete hit fact. Assemble
     # ball_hit_location_x/y + hitter_side_near onto each event from bounce-opposite
     # side + nearest player detection, so silver projects them verbatim (rule #1/#2)

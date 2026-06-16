@@ -126,6 +126,21 @@ import os as _os
 _FAR_POSE_ENABLED = _os.environ.get("SERVE_FAR_POSE_ENABLED", "1") != "0"
 
 
+def match_start_cutoff_ts(bounce_ts: Sequence[float], lead_s: float = 2.0) -> Optional[float]:
+    """Pre-match (warm-up) boundary — RULE 6 membership, bronze-side.
+
+    The match begins when the ball first crosses the net, i.e. the FIRST
+    validated bounce (the net-crossing bounce-validity filter already rejects a
+    player bouncing the ball at their feet pre-serve — that never crosses the
+    net). Everything before that is warm-up: isolated pose/ball FPs with no real
+    point structure. `lead_s` keeps the first serve's toss + contact, which
+    precede its bounce. Generalizable — NOT a per-video constant. Returns None
+    when there are no bounces (-> no filtering, never drops real play blindly)."""
+    if not bounce_ts:
+        return None
+    return float(min(bounce_ts)) - lead_s
+
+
 def _get_dominant_hand(conn, task_id: str) -> bool:
     """Return True if the submitter is left-handed. Default right."""
     row = conn.execute(sql_text("""
@@ -1190,6 +1205,25 @@ def detect_serves_for_task(conn, task_id: str, *, replace: bool = True) -> List[
         all_events, _load_model_candidates(conn, task_id), task_id, fps)
     all_events += model_events
     all_events.sort(key=lambda e: e.ts)
+
+    # Pre-match cutoff (RULE 6, prod-side): drop warm-up serve FPs before the
+    # ball first crosses the net. Applied here (not in the shared offline path)
+    # so the CI bench fixtures — pre-clipped match segments with no warm-up —
+    # are untouched. Use the CANONICAL bronze bounce fact (ml_analysis.ball_bounces,
+    # the CNN model) — the SAME source the stroke detector uses, so both cutoffs
+    # agree. (NOT rally.bounce_ts: its extra validate_bounces pass rejected the
+    # early real bounces here, pushing the cutoff past the real first serve.)
+    _bb = [int(r[0]) / fps for r in conn.execute(sql_text(
+        "SELECT frame_idx FROM ml_analysis.ball_bounces WHERE job_id::text = :t "
+        "ORDER BY frame_idx"), {"t": task_id}).fetchall()]
+    _cutoff = match_start_cutoff_ts(_bb)
+    if _cutoff is not None:
+        _before = len(all_events)
+        all_events = [e for e in all_events if e.ts >= _cutoff]
+        if _before != len(all_events):
+            logger.info("serve_detector: pre-match cutoff %.1fs dropped %d warm-up serve FPs",
+                        _cutoff, _before - len(all_events))
+
     _persist_events(conn, all_events)
     logger.info(
         "serve_detector: persisted %d serve events "
