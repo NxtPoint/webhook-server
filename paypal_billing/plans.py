@@ -32,14 +32,14 @@ CURRENCY = os.getenv("PAYPAL_CURRENCY", "USD")
 # Only `player standard` is known from repo copy (nudge banner: "$40/mo for 5 matches").
 # The rest are None and catalog.py will REFUSE to run until they are real numbers.
 PRICES = {
-    # Recurring (per month)
-    "player starter":   None,    # 3 matches / mo  — TODO confirm
-    "player standard":  40.00,   # 5 matches / mo  — from pricing.html nudge banner
-    "player advances":  None,    # 10 matches / mo — TODO confirm
+    # Recurring (per month) — from the live Wix Pricing Plans (2026-06-16)
+    "player starter":   25.00,   # 3 matches / mo   (Wix "Player – Starter")
+    "player standard":  40.00,   # 5 matches / mo   (Wix "Player – Standard")
+    "player advances":  70.00,   # 10 matches / mo  (Wix "Player – Advanced")
     # PAYG one-off packs
-    "once off":         None,    # 1 match  — TODO confirm
-    "payg 3 matches":   None,    # 3 matches — TODO confirm
-    "payg 5 matches":   None,    # 5 matches — TODO confirm
+    "once off":         25.00,   # 1 match   (Wix "Once off")
+    "payg 3 matches":   50.00,   # 3 matches (Wix "Pay as you go - 3 matches")
+    "payg 5 matches":  100.00,   # 5 matches (Wix "Pay as you go - 5 matches")
 }
 
 # ── PLAN CATALOGUE (codes + matches mirror frontend/pricing.html exactly) ─────

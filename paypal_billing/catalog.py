@@ -41,7 +41,7 @@ def build_catalog(*, dry_run: bool = False) -> dict:
             continue
 
         price = plans.price_of(code)
-        print(f"[create] {code}: {plan['name']} — {price:.2f} {plans.CURRENCY}/{plan['interval'].lower()}")
+        print(f"[create] {code}: {plan['name']} - {price:.2f} {plans.CURRENCY}/{plan['interval'].lower()}")
         if dry_run:
             out_plans[code] = {"product_id": "<dry-run>", "plan_id": "<dry-run>",
                                "price": price, "matches": plan["matches"]}
