@@ -61,13 +61,13 @@ How to do specific things. Read when doing that thing.
 
 Decision docs and research outputs. The session that produced them dates them; future sessions read them once for context, then leave them alone.
 
-Examples currently in tree:
+Examples (the `.claude/strategy/` and `.claude/research/` dirs no longer exist — these were superseded and now live in `.claude/_archive/`):
 
-- `.claude/strategy/t5_vs_sportai_2026-05-20.md`
-- `.claude/strategy/infrastructure_audit_2026-05-20.md`
-- `.claude/strategy/dual_submit_status_2026-05-20.md`
-- `.claude/strategy/silver_bench_design_2026-05-21.md`
-- `.claude/research/market_scan_2026-05-20.md`
+- `.claude/_archive/t5_vs_sportai_2026-05-20.md`
+- `.claude/_archive/infrastructure_audit_2026-05-20.md`
+- `.claude/_archive/dual_submit_status_2026-05-20.md`
+- `.claude/_archive/silver_bench_design_2026-05-21.md`
+- `.claude/_archive/market_scan_2026-05-20.md`
 
 **Rules:**
 

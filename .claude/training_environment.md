@@ -114,13 +114,21 @@ register new ten-fifty5-ml-pipeline job-def rev (rule #8 dual-region) → live
 gates to run BEFORE shipping a retrained weight — see
 `.claude/training_harness_status.md`.
 
+AFTER a retrain ships, measure the end-to-end effect line-level with
+`recon_line` (it complements the per-fact benches — those gate the model in
+isolation; `recon_line` scores SA-active vs T5-active across the ~12 reconcile
+fields on a real task pair):
+```bash
+.venv/Scripts/python -m ml_pipeline.diag.recon_line <t5_tid> --sa <sa_tid>
+```
+
 ---
 
 ## ONE-TIME SETUP — ✅ DONE 2026-06-14 (proven end-to-end on GPU)
 
 **Status: COMPLETE + VALIDATED.** Image built + pushed to ECR
 (`ten-fifty5-ml-train`, amd64 digest `sha256:72a01cf2…`), job-def
-**`ten-fifty5-ml-train:1`** registered (pinned to that digest, cloned from the
+**`ten-fifty5-ml-train:3`** registered (pinned to that digest, cloned from the
 detection job-def's role/env). A `--fact bounce --epochs 5` GPU smoke
 **SUCCEEDED** (jobId `b96acf06…`, ~3 min: provision → image pull → corpus
 dataset build → train → weights to `s3://…/training/weights/bounce/_latest/`;
@@ -208,13 +216,13 @@ never risks the prod detection pipeline.
 
 ## What's left for fully-seamless training of all 5
 
-1. **One-time image build/push + job-def register** (steps above) — needs Docker
-   running. Until done, `submit_train_job --fact …` has no job-def to target.
-2. **Smoke-validate one cheap GPU job** end-to-end (e.g. `--fact bounce` ~3 min
-   GPU) once the image exists — confirms train→S3 upload on real GPU.
-3. **swing dataset across all 8 matches** — the smoke built 1 match; the full
+1. ✅ **DONE** — the one-time image build/push + job-def register (now
+   `ten-fifty5-ml-train:3`) and the cheap-GPU smoke (`--fact bounce`) both
+   completed 2026-06-14 (see "ONE-TIME SETUP" above). `submit_train_job --fact …`
+   has a job-def to target.
+2. **swing dataset across all 8 matches** — the smoke built 1 match; the full
    build runs inside the swing job (or pre-bake into the image with
    `--skip-dataset`). Current swing corpus (2301 stroke labels) is approaching
    but below the ADR-02 ~2-3k target; accuracy is train-LAST, gated on more
    full-res uploads (north_star DoD).
-4. identity v2 — out of scope until a crop label_kind exists.
+3. identity v2 — out of scope until a crop label_kind exists.

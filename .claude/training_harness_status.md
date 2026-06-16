@@ -2,7 +2,8 @@
 
 > **What this is:** the single map of "does every T5 fact have an enforceable,
 > committed regression gate before a *train-all-5* run?" Point-in-time snapshot
-> 2026-06-14. On conflict, `.claude/next_session_pickup.md` + the live
+> 2026-06-14 (still current as of 2026-06-16 — training is now the active phase).
+> On conflict, `.claude/next_session_pickup.md` + the live
 > `session_*.md` win. Companion: `.claude/training_environment.md` (trainer
 > entrypoints), `docs/north_star.md` §"RULES OF THE GAME".
 >

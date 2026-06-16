@@ -31,7 +31,7 @@ Files: `*_app.py`, `client_api.py`, `build_silver_v2.py`, `gold_init.py`, `db_in
    ```bash
    .venv/Scripts/python -m ml_pipeline.diag.bench
    ```
-   Expect: `a798eff0=20/24`, `880dff02=23/24`. Don't proceed if red.
+   Expect: `ea1e500c=12/26`, `880dff02=23/24`. Don't proceed if red.
 2. `git add` the changed files (specific paths — never `git add -A`).
 3. `git commit -m "<topic>: <one-line what changed>"` with a HEREDOC body if needed.
 4. `git pull --rebase origin main` (catches parallel-agent commits).

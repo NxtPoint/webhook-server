@@ -1,6 +1,6 @@
 # T5 ML Pipeline — Operational Handover
 
-**Last updated:** 2026-05-07 (phantom-bounce root cause identified; bench locked at 20/24 on a798eff0; the 4 remaining misses split into TWO classes with distinct upstream fixes needed)
+**Last updated:** 2026-06-16 — BRONZE DETERMINISTIC DEV COMPLETE; training is the final (incremental) phase. Bench floor: ea1e500c=12/26, 880dff02=23/24.
 **Owner:** Tomo
 **This is the single authoritative doc for T5.** CLAUDE.md now points here. Old handovers (`handover_t5_current.md`, `handover_serve_detector_build.md`) were folded in on 2026-04-18.
 
@@ -90,53 +90,32 @@ aws batch update-job-queue --region eu-north-1 --job-queue ten-fifty5-ml-queue -
 
 ## NEXT SESSION — READ THIS FIRST
 
-You're picking up cold. **READ THE TEST HARNESS SECTION BELOW BEFORE TOUCHING ANY DETECTOR CODE.** The harness is now the unit of work — every detector change goes through it before push. No more Render-shell trial-and-error.
+**Bronze deterministic DEV is COMPLETE (2026-06-16).** Every clean, deterministic code fix has shipped — including the pre-match warm-up exclusion via first-net-crossing-bounce (RULE 6, commit `6576054`), which closed out Tomo's bounce-validity rule that earlier versions of this section listed as future work. The remaining reconciliation gaps (stroke WHEN/WHO recall, bounce recall, swing-type accuracy, far position) are **TRAINING / data problems only** — not deterministic-code problems. Don't restart that diagnosis.
 
-**Then read `project_t5_may07_phantom_bounces.md`** in MEMORY.md — it has the full evidence chain (visual + DB + harness) for why the 4 remaining misses are upstream and what the actual fix direction is. Don't restart the diagnosis; the receipts are already there.
+Read these first, in order:
+1. `.claude/next_session_pickup.md` — current state + read-order for the next move (overwritten at session end; authoritative).
+2. `.claude/audit_bronze_build_2026-06-16.md` — the bronze-build audit that declared dev complete.
+3. `.claude/training_environment.md` + `.claude/training_harness_status.md` — the training environment (Batch GPU) and harness, since **the next move is TRAINING**.
 
-### Current state (verified 2026-05-07 on task `a798eff0-551f-4b5a-838f-7933866a727c` vs SA `2c1ad953-b65b-41b4-9999-975964ff92e1`)
+**Measure reconciliation with `recon_line`** against the canonical reference pair:
+```bash
+python -m ml_pipeline.diag.recon_line 375198f5-1adf-4c6f-9862-be8466f0c192 \
+    --sa 079d2c62-b871-4364-b0ad-5da0fc268848
+```
+This is the RULE 6 reconciliation tool — line-level SA-active vs T5-active, ~12 fields, ~1s.
 
-| Metric | Value | vs 80-90% gate | Status |
-|---|---|---|---|
-| Total MATCH | 20/24 = 83% | ✓ | Floor — won't move without bounce filtering. |
-| Near MATCH | 13/14 = 93% | ✓ | 148.52 is real bronze pose-amplitude gap (separate problem). |
-| Far MATCH | 7/10 = 70% | ✓ | 458/463/584 all blocked by phantom-bounce rally pollution. |
-| Bench baseline | committed at `ml_pipeline/diag/bench_baseline.json` | — | Any detector edit goes through `bench` first. |
+### Canonical reference pair
 
-### The 4 remaining misses — two distinct upstream problems
+| Role | Task ID | Notes |
+|---|---|---|
+| **SA ground truth** | `079d2c62-b871-4364-b0ad-5da0fc268848` | ≈24 serves / 68 floor bounces / 87 active swings |
+| **T5** | `375198f5-1adf-4c6f-9862-be8466f0c192` | video `1781589562_match.mp4` |
 
-**Class A — phantom-bounce rally pollution (FAR misses 458.08, 463.52, 584.92).** Bronze TrackNet emits dense clusters of phantom "bounces" on the near baseline (cy 21-26), 0.3-1.0s apart, never crossing the net. They keep `RallyStateMachine` in IN_RALLY for 16-second blocks centred on each miss. Both upstream (`extract_far_pose`'s rally gate) and downstream (`_detect_pose_based_serves` for far) skip these windows. With the rally gate disabled locally (May 7 test), ROI **does** find the actual far player at the baseline — verified visually. The problem is the rally gate, fed by phantom bounces, blocks them.
+This pair supersedes the old `a798eff0` / `2c1ad953` reference framing.
 
-**Class B — bronze pose-amplitude gap (NEAR miss 148.52).** Bronze YOLOv8x-pose returns 0.95-conf keypoints throughout the trophy window, but the dominant wrist physically never clears the avg shoulder line by more than 0.1 px. trophy_frames=0 in ±2s; cluster scores 2 only via toss + both_up. arm_ext distribution for the cluster: min=-76.6 p50=-6.1 max=0.1. Independent of FAR class — needs different fix (different pose model, training data, or accept the floor).
+### Bench floor (mandatory pre-push)
 
-### Tomo's bounce-validity rule (May 7) — the architectural fix direction
-
-> "A bounce can only be valid if it travels from one side to the other side of the net, or into the net. Those phantom bounces are bounces that happen before serve. Players bouncing the ball on racquet etc. It's mostly up and down or perhaps multiple bounces on the same side of the court."
-
-**A bounce sequence `[b1, b2]` is valid rally evidence only if `(b1.cy - HALF_Y)` and `(b2.cy - HALF_Y)` have opposite signs (ball crossed the net) OR there's a net-hit between them.** Same-side bounce sequences are pre-serve racquet bounces or detector noise and must not advance rally state.
-
-### Why this needs three coupled changes (not one knob)
-
-1. **Bounce validation** (new logic — somewhere between `ml_analysis.ball_detections` consumers and `RallyStateMachine`). Filter out non-net-crossing bounces.
-2. **`extract_far_pose`** must consume validated bounces (or have its rally gate dropped — downstream gate becomes the safety).
-3. **Downstream `_detect_pose_based_serves` for far** must consume validated bounces too. May also need `sustained_ok` cluster_size relaxed from 30 → 20 (real serve trophy ≈12-25 frames at 25fps).
-
-Each iteration validates via Batch rerun → re-snapshot → bench. ~30-60 min per cycle. Don't try to validate via local rerun — local court calibration is unreliable.
-
-### What you can do — read in order
-
-1. **READ THE TEST HARNESS SECTION below.** It's the operating manual.
-2. **Read `project_t5_may07_phantom_bounces.md`** for the receipts. Don't redo the diagnosis.
-3. **Don't widen `_baseline_zone` slack.** Apr 29 verified -3.5→-5.0 lost 2 PASS without bounce filtering as the prerequisite.
-4. **Don't try to relax `idle_threshold_s`.** Phantom bounces are <1s apart — no gap-based threshold short of disabling the gate works. The fix is bounce validation, not threshold tuning.
-5. **Start with bounce validation.** Implement the net-crossing rule. That's the leaf-most upstream fix; everything downstream gets simpler once it's in.
-
-### Diag tools added May 7 (alongside the Apr 29 harness)
-
-- `ml_pipeline/diag/inspect_pose_window.py` — per-frame pose profiler (arm_ext distribution, score breakdown, 5-bucket verdict). Use this any time you need to characterise pose data in a window.
-- `ml_pipeline/diag/probe_roi_coverage.py` — task-wide + per-window ROI coverage probe with neighbour-density buckets. Distinguishes "ROI ran but skipped this window" from "ROI is sparse here generally."
-- `ml_pipeline/diag/replay_roi_pose.py` — CLI to re-run `extract_far_pose` locally (or on Render) on chosen frame ranges with rally gate disabled. Includes `--cleanup` for removing debug rows from `ml_analysis.player_detections_roi`.
-- `extract_far_pose` (production) now accepts `frame_from`/`frame_to`/`replace` params (defaults preserve prior behaviour).
+`ea1e500c=12/26` (CI-gated, the only fixture in `fixtures_ci/`), `880dff02=23/24` (local-only). Run `.venv/Scripts/python -m ml_pipeline.diag.bench` and confirm both before touching any serve-detector code. See the TEST HARNESS section below — it's still the operating manual for the serve detector.
 
 ---
 
@@ -167,10 +146,12 @@ ml_pipeline/diag/
 ├─ audit_all_serves.py          ← per-serve gate matrix + prod-kill tracer
 ├─ probe_baseline_empty.py      ← diagnoses why a window has 0 baseline rows
 ├─ inspect_cluster_topology.py  ← dumps cluster structure around one ts
-└─ bench_baseline.json          ← committed regression baseline (current: 20/24)
+└─ bench_baseline.json          ← committed regression baseline (ea1e500c=12/26, 880dff02=23/24)
 
 ml_pipeline/fixtures/            ← gitignored. Fixtures are 1-2 MB each, regen from DB.
 ```
+
+**Training-phase gates:** `bench` (above) is the serve-detector gate. With bronze dev complete, the broader bench family — `bench_hit`, `bench_bounce`, `bench_identity`, `bench_swing_type` — plus `recon_line` (line-level SA-vs-T5 reconciliation against the canonical reference pair) are the operative gates for the training phase.
 
 The critical refactor: **`_run_pipeline()` is the single source of truth for serve detection logic.** Both prod and offline call it. Before this refactor, `detect_serves_offline` had drifted (different ordering, no rally augmentation) — that's why "cloudnet" numbers diverged from prod for months. Don't let that drift back.
 
@@ -552,6 +533,8 @@ video.mp4 (S3)
              gold.* views  →  API  →  dashboards
 ```
 
+**Env flag — far-POSE serve path is RETIRED in prod** (`SERVE_FAR_POSE_ENABLED=0` in render.yaml); code default is ON so the CI bench stays green (fixtures carry no model candidates). Trained `model_far` + near-pose cover the same real far serves. Rollback = `1`.
+
 **Split of responsibilities:**
 
 | Layer | Runs on | Writes | Iteration speed |
@@ -627,6 +610,8 @@ python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <ta
 
 ## Reference data
 
+> **CURRENT canonical reference pair (2026-06-16):** SA `079d2c62-b871-4364-b0ad-5da0fc268848` ↔ T5 `375198f5-1adf-4c6f-9862-be8466f0c192` (video `1781589562_match.mp4`, SA ≈ 24 serves / 68 floor bounces / 87 active swings). Use this pair with `recon_line`. The rows below are HISTORICAL (the Apr-2026 baseline).
+
 | Purpose | Task ID / path |
 |---|---|
 | **Baseline T5** (validated 2026-04-16) | `081e089c-f7b1-49ce-b51c-d623bcc60953` |
@@ -686,7 +671,7 @@ python -m ml_pipeline.harness reconcile 4a194ff3-b734-4b0b-bcb5-94d5b7caf3fb <ta
 
 Pose-first wrist-velocity peak detector, sibling to `serve_detector/`. Same lifecycle: schema auto-created on first call, delete+reinsert per task on re-detection. Wired into `upload_app.py::_do_ingest_t5` right after serve detection.
 
-**Silver consumption — BUILT but GATED OFF (2026-05-25).** `build_silver_match_t5.py` now has a stroke-driven Pass 1 (`_t5_pass1_load_stroke_driven`) behind `T5_STROKE_DRIVEN_SILVER` (default OFF; bounce-driven `_t5_pass1_load_bounce_driven` stays live). It overshot on Match 1 (141 vs SA's 84 active; near 114/27 vs SA 43/41) because the detector's hitter attribution is perspective-biased to the near player — a **bronze** problem. **Do not flip the gate on until the 18 bronze base fields reconcile to SportAI** (CLAUDE.md "Things not to do" #11; `docs/north_star.md` §BRONZE-FIRST). Full diagnosis: `docs/_investigation/far_player_accuracy.md`.
+**Silver consumption — LIVE.** `T5_STROKE_DRIVEN_SILVER` **DEFAULTS ON (2026-06-14)**; the stroke-driven Pass 1 (`_t5_pass1_load_stroke_driven` in `build_silver_match_t5.py`) is the prod path — hit-driven silver (one row per stroke event = one shot). The bounce-driven path (`_t5_pass1_load_bounce_driven`) is HELD as a rollback (`T5_STROKE_DRIVEN_SILVER=0`) until stroke-driven is re-proven on a fresh real upload. The architecture is settled; remaining accuracy (far attribution ~19% gate, far fh/bh) fills in at training (build-first/train-last). Background on the original overshoot + the bronze fixes that closed it: `docs/_investigation/far_player_accuracy.md`; architecture in `docs/north_star.md` §"SILVER ROW ARCHITECTURE".
 
 **Bronze prerequisite Q1-A — DONE (commit `ead857a`, 2026-05-25).** `ml_analysis.player_detections_roi` (far ViTPose pose, `source='far_vitpose'`, pid=1) is now merged into both `_build_player_buckets` (silver) and `stroke_detector/detector.py::_load_pose_rows`, same as serve_detector (ROI wins wholesale for pid=1). Match 1: live bounce-driven silver row count unchanged (139), active 60→66, far groundstrokes now classify (far Backhand 14→19); stroke detector far attribution 63→85 of 256. **Remaining bronze gaps before the gate can flip:** (1) ~~far fh/bh mirror~~ **FIXED (`a8479a8`)** — far player faces camera → dominant hand on image-left; `_infer_swing_type_from_keypoints` now mirrors (dom_on_right = right-handed XOR far). Match 1 far fh 9→11, bh 13→11 (SA 18/6). Residual per-hit gap is pose-NOISE limited (ViTPose left/right flickers on the ~32px far body; aggregate is ~73% fh, matching SA, but a windowed vote over-corrects to ~all-fh) → precise far fh/bh needs the trained stroke classifier (Q1-D), not a one-match vote threshold. (2) ~~far stroke velocity size-normalisation~~ **FIXED (`956b65a`)** — per-player body-scale normalisation (factor far=3.03; reference=largest player so near unchanged). Stroke attribution 208/34 → 165/106; gated stroke-driven far active 27→43 (SA 41). (3) **near-side stroke precision** — PROVISIONAL swing-path gate SHIPPED (`9a4ab0a`): near-only wrist swing-path ≥0.75 torso-lengths (real strokes sweep a large arc; fidgets don't). Gated stroke-driven near 108→43 (=SA 43), active 151→78. Robust across the 0.70-0.85 band. **Single-match-calibrated → re-validate on a 2nd match or supersede with Q1-D before trusting the threshold.** (Three other gates — ball-proximity, rally-alternation, time-gated collapse — failed; see the investigation doc.) (4) player A/B identity (Q2-B). (5) far fh/bh per-hit + the small far-active collateral drop (43→36) the near gate introduces via point-structure. See `docs/_investigation/far_player_accuracy.md`.
 
@@ -735,6 +720,7 @@ psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(ts)::int, MAX(ts)::int, AVG(confid
 | `diag/probe_roi_coverage.py` | Task-wide + per-window ROI coverage probe with neighbour density (May 7) |
 | `diag/replay_roi_pose.py` | Local re-run of extract_far_pose on chosen frame ranges with rally gate disabled (May 7) |
 | `diag/reconcile_serves_strict.py` | SA-vs-T5 serve reconciliation, strict ±0.5s, opposite-side bounce check |
+| `diag/recon_line.py` | Line-level SA-active vs T5-active reconciliation (~12 fields, ~1s) — the RULE 6 reconciliation tool. `python -m ml_pipeline.diag.recon_line <t5_tid> --sa <sa_tid>` |
 | `diag/extract_roi_bounces.py` | ROI-cropped TrackNet pass for missed serve bounces (still used pending production bounce extractor) |
 
 **Older diag tools archived** at `ml_pipeline/diag/_archive/` (extract_far_player_pose, extract_vitpose_far, wasb_*, trace_missed_*, probe_*, etc — superseded by current harness or by Apr 23 production ROI extractor).
@@ -753,6 +739,8 @@ psql "$DATABASE_URL" -c "SELECT COUNT(*), MIN(ts)::int, MAX(ts)::int, AVG(confid
 ---
 
 ## Reference data
+
+> **CURRENT canonical reference pair (2026-06-16):** SA `079d2c62-b871-4364-b0ad-5da0fc268848` ↔ T5 `375198f5-1adf-4c6f-9862-be8466f0c192` (video `1781589562_match.mp4`). The rows below are HISTORICAL (Apr-2026 baseline).
 
 | Purpose | Task ID / path |
 |---|---|
