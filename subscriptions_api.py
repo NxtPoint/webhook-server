@@ -113,22 +113,55 @@ def _find_account(session: Session, *, email: str) -> Optional[Account]:
     return session.execute(select(Account).where(Account.email == email)).scalar_one_or_none()
 
 
+def _ensure_subscription_state_columns() -> None:
+    """Idempotent: add billing_provider to billing.subscription_state. Existing rows are
+    all Wix, so the column defaults to 'wix'; the PayPal path stamps 'paypal'. The monthly
+    refill cron refills only Wix subs — PayPal subs are webhook-driven (each renewal
+    payment grants its own credits), so cron-refilling them would double-grant. Safe on
+    every import (matches the _ensure_* idempotent-schema pattern)."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE billing.subscription_state "
+                "ADD COLUMN IF NOT EXISTS billing_provider TEXT NOT NULL DEFAULT 'wix'"
+            ))
+    except Exception:
+        pass
+
+
+_ensure_subscription_state_columns()
+
+
 # ----------------------------
 # Endpoints
 # ----------------------------
 
 @subscriptions_bp.post("/api/billing/subscription/event")
 def subscription_event():
-    """
-    Ops-protected subscription lifecycle update from Wix.
-    Writes:
-      - billing.subscription_event_log (idempotent via event_id)
-      - billing.subscription_state (upsert + update)
-    """
+    """Ops-protected subscription lifecycle update from Wix. Thin wrapper around the
+    shared normalize->grant path (apply_subscription_event), also used by the PayPal
+    webhook receiver (paypal_billing/webhook.py)."""
     if not _ops_key_ok():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
-
     payload = request.get_json(silent=True) or {}
+    body, status = apply_subscription_event(payload, provider="wix")
+    return jsonify(body), status
+
+
+def apply_subscription_event(payload: Dict[str, Any], *, provider: str = "wix"):
+    """Normalize a subscription/payment event -> upsert billing.subscription_state and
+    grant credits idempotently. Shared by the Wix webhook endpoint and the PayPal
+    receiver. `provider` in {'wix','paypal'} sets the grant source label and
+    subscription_state.billing_provider, so the monthly refill cron can skip PayPal
+    subs (they are webhook-driven, not cron-refilled).
+
+    Returns (response_dict, http_status). No auth here — callers authenticate.
+    Writes: billing.subscription_event_log (idempotent via event_id) +
+    billing.subscription_state (upsert + update).
+    """
+    provider = (provider or "wix").strip().lower()
+    if provider not in ("wix", "paypal"):
+        return {"ok": False, "error": "invalid provider"}, 400
 
     event_type = (payload.get("event_type") or "").strip().upper()
     buyer_email = _norm_email(payload.get("buyer_email"))
@@ -145,25 +178,25 @@ def subscription_event():
     plan_end_dt = _parse_dt(payload.get("plan_end"))
 
     if not buyer_email:
-        return jsonify({"ok": False, "error": "buyer_email required"}), 400
+        return {"ok": False, "error": "buyer_email required"}, 400
     if not event_type:
-        return jsonify({"ok": False, "error": "event_type required"}), 400
+        return {"ok": False, "error": "event_type required"}, 400
 
     if plan_type is not None and plan_type not in ("recurring", "payg"):
-        return jsonify({"ok": False, "error": "invalid plan_type"}), 400
+        return {"ok": False, "error": "invalid plan_type"}, 400
 
     if matches_granted is not None:
         try:
             matches_granted = int(matches_granted)
         except Exception:
-            return jsonify({"ok": False, "error": "matches_granted must be int"}), 400
+            return {"ok": False, "error": "matches_granted must be int"}, 400
 
     ev_id = _event_id(payload)
 
     with Session(engine) as session:
         acct = _find_account(session, email=buyer_email)
         if acct is None:
-            return jsonify({"ok": False, "error": "account not found"}), 404
+            return {"ok": False, "error": "account not found"}, 404
 
         account_id = int(acct.id)
 
@@ -172,7 +205,7 @@ def subscription_event():
             {"event_id": ev_id},
         ).first()
         if exists:
-            return jsonify({"ok": True, "ignored": True, "reason": "duplicate_event", "event_id": ev_id})
+            return {"ok": True, "ignored": True, "reason": "duplicate_event", "event_id": ev_id}, 200
 
         session.execute(
             text("""
@@ -215,7 +248,7 @@ def subscription_event():
 
         if new_status is None:
             session.commit()
-            return jsonify({"ok": True, "stored": True, "state_changed": False, "event_id": ev_id})
+            return {"ok": True, "stored": True, "state_changed": False, "event_id": ev_id}, 200
 
         session.execute(
             text("""
@@ -224,6 +257,7 @@ def subscription_event():
                   plan_id = COALESCE(:plan_id, plan_id),
                   plan_code = COALESCE(:plan_code, plan_code),
                   plan_type = COALESCE(:plan_type, plan_type),
+                  billing_provider = :provider,
                   matches_granted = COALESCE(:matches_granted, matches_granted),
                   status = :status,
                   current_period_start = COALESCE(:start_dt, current_period_start),
@@ -244,6 +278,7 @@ def subscription_event():
                 "plan_id": plan_id,
                 "plan_code": plan_code,
                 "plan_type": plan_type,
+                "provider": provider,
                 "matches_granted": matches_granted,
                 "status": new_status,
                 "start_dt": plan_start_dt,
@@ -265,7 +300,7 @@ def subscription_event():
             and matches_granted
             and matches_granted > 0
         ):
-            source = "wix_subscription" if plan_type == "recurring" else "wix_payg"
+            source = f"{provider}_subscription" if plan_type == "recurring" else f"{provider}_payg"
             ext_id = f"purchase:{order_id or ev_id}:{account_id}"
             grant_id = grant_entitlement(
                 account_id=account_id,
@@ -306,7 +341,7 @@ def subscription_event():
         except Exception:
             pass
 
-        return jsonify({
+        return {
             "ok": True,
             "stored": True,
             "state_changed": True,
@@ -314,7 +349,7 @@ def subscription_event():
             "account_id": account_id,
             "status": new_status,
             "grant_id": grant_id,
-        })
+        }, 200
 
 
 @subscriptions_bp.post("/api/billing/cron/monthly_refill")
@@ -357,6 +392,7 @@ def monthly_refill():
                 FROM billing.subscription_state s
                 WHERE s.status = 'ACTIVE'
                   AND s.plan_type = 'recurring'
+                  AND s.billing_provider = 'wix'
                   AND s.cancelled_at IS NULL
                   AND s.payment_cancelled_at IS NULL
                   AND (s.current_period_end IS NULL OR s.current_period_end >= now())

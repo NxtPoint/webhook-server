@@ -66,6 +66,7 @@ def _ensure_technique_columns() -> None:
                 "ALTER TABLE billing.entitlement_grant "
                 "ADD CONSTRAINT entitlement_grant_source_check "
                 "CHECK (source IN ('wix_subscription','wix_payg',"
+                "'paypal_subscription','paypal_payg',"
                 "'manual_adjustment','signup_bonus'))"
             ))
     except Exception:
@@ -228,6 +229,8 @@ def add_member_to_account(
 _ALLOWED_GRANT_SOURCES = (
     "wix_subscription",
     "wix_payg",
+    "paypal_subscription",
+    "paypal_payg",
     "manual_adjustment",
     "signup_bonus",
 )
