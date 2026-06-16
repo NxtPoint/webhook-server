@@ -1556,6 +1556,26 @@ function showDetailsMsg(type, text) {
 }
 
 async function submitMatchDetails() {
+  // Biometric (pose) consent gate — required before the first technique analysis. Shows the
+  // explicit consent modal if not already granted; proceeds straight through once it is.
+  if (STATE.gameType === 'technique' && !STATE._biometricOk && window.TF_Consent) {
+    let granted = false;
+    try {
+      const st = await TF_Consent.getState(EMAIL);
+      granted = !!(st && st.consents && st.consents.biometric_processing === 'granted');
+    } catch (e) { /* fall through to modal */ }
+    if (granted) {
+      STATE._biometricOk = true;
+    } else {
+      TF_Consent.biometricModal({
+        email: EMAIL,
+        onAgree: function () { STATE._biometricOk = true; submitMatchDetails(); },
+        onCancel: function () { showDetailsMsg('info', 'Technique analysis needs your consent to process pose data.'); },
+      });
+      return;  // wait for the consent decision
+    }
+  }
+
   const btn = document.getElementById('btnSubmitDetails');
   btn.disabled = true;
   btn.textContent = 'Submitting...';
@@ -1897,5 +1917,6 @@ async function cancelAnalysis() {
 // ============================================================
 init();
 </script>
+<script src="/consent.js" defer></script>
 </body>
 </html>

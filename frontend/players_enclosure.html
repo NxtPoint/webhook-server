@@ -439,6 +439,17 @@ async function completeSignup(btn) {
   }
   const wantsMarketing = !!(document.getElementById('pe-mkt') && document.getElementById('pe-mkt').checked);
 
+  // Parental consent gate — if the adult is adding juniors, show the guardian-consent modal first.
+  const validKids = STATE.children.filter(c => c.first_name && c.surname);
+  if (STATE.role === 'player_parent' && STATE.hasChildren && validKids.length && !STATE._parentalOk && window.TF_Consent) {
+    TF_Consent.parentalModal({
+      juniorName: validKids.length === 1 ? validKids[0].first_name : (validKids.length + ' young players'),
+      record: false,                                   // we record one consent per child below
+      onConfirm: function () { STATE._parentalOk = true; completeSignup(btn); },
+    });
+    return;
+  }
+
   btn.disabled = true;
   btn.textContent = 'Saving…';
 
@@ -497,6 +508,11 @@ async function completeSignup(btn) {
         TF_Consent.record(STATE.email, 'terms_of_service', { full_name: fullName, source: 'signup' });
         TF_Consent.record(STATE.email, 'privacy_policy', { full_name: fullName, source: 'signup' });
         if (wantsMarketing) TF_Consent.record(STATE.email, 'marketing_email', { full_name: fullName, source: 'signup' });
+        // Guardian consent for each junior (creates the minor's core.person + gates their processing)
+        STATE.children.filter(c => c.first_name && c.surname).forEach(function (c) {
+          TF_Consent.record(STATE.email, 'minor_processing_parental',
+            { subject_name: (c.first_name + ' ' + c.surname).trim(), source: 'signup' });
+        });
       }
     } catch (e) { console.warn('consent record error', e); }
 

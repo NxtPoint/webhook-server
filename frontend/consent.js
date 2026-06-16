@@ -124,9 +124,16 @@
       + '<div class="tfc-btns"><button class="tfc-btn pri" id="tfc-par-go">Confirm &amp; continue</button></div>');
     ov.querySelector("#tfc-par-go").onclick = function () {
       if (!ov.querySelector("#tfc-par").checked) return;
+      close(ov);
+      // record:false → caller records (e.g. signup records one consent per child). Otherwise
+      // record a single minor_processing_parental for opts.juniorName here.
+      if (opts.record === false) {
+        if (opts.onConfirm) opts.onConfirm();
+        return;
+      }
       record(opts.email, "minor_processing_parental", {
         subject_name: opts.juniorName, subject_dob: opts.juniorDob || null, source: "add_junior",
-      }).finally(function () { close(ov); if (opts.onConfirm) opts.onConfirm(); });
+      }).finally(function () { if (opts.onConfirm) opts.onConfirm(); });
     };
   }
 

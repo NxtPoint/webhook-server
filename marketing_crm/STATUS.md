@@ -37,8 +37,9 @@ vault — for a hard lock add GitHub branch protection + CODEOWNERS.)
 person exist, so `core.*` fills going forward (no backfill needed for new signups). Copy lives in
 `frontend/consent.js` + Cowork's `privacy/consent_screens_copy.md` (DRAFT). After legal sign-off, set
 the `policy_version` string (consent.js `TF_Consent.setPolicyVersion(...)` + pass into record calls)
-and the retention day-counts into `core.retention_rule`. To activate: include `/consent.js` in the
-signup + technique pages, set `CONSENT_ENABLED=1`.
+and the retention day-counts into `core.retention_rule`. **All three consent moments are wired:**
+signup block (players_enclosure), biometric modal before technique submit (media_room), and parental
+modal when adding juniors at signup (records `minor_processing_parental` per child).
 
 **Env switches (set on the `webhook-server` Render service):** `COCKPIT_ENABLED`, `TRACKING_ENABLED`,
 `FEEDBACK_ENABLED`, `CRM_SYNC_ENABLED`, `CORE_API_ENABLED` + keys `AMPLITUDE_API_KEY`,
