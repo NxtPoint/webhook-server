@@ -210,3 +210,15 @@ services:
       # Defaults in code already cover www/apex; override only if hosts change.
       # - key: MARKETING_HOSTS
       #   value: "www.ten-fifty5.com,ten-fifty5.com"
+
+      # De-Wix auth (Phase 1) — the /login page (Clerk). Served by THIS service.
+      # DARK: with AUTH_V2_ENABLED=0 /login shows a "being set up" notice and Wix
+      # login stays the only door. To go live: set CLERK_PUBLISHABLE_KEY (pk_…),
+      # set AUTH_V2_ENABLED=1, then point CTAs at /login. The publishable key is
+      # public (browser-side by design). AUTH_AFTER_LOGIN_URL defaults to /portal.
+      - key: AUTH_V2_ENABLED
+        value: "0"
+      - key: CLERK_PUBLISHABLE_KEY
+        value: ""          # pk_test_… / pk_live_… from the Clerk dashboard
+      - key: AUTH_AFTER_LOGIN_URL
+        value: "/portal"

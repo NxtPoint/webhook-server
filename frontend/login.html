@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Sign in · Ten-Fifty5</title>
+<link rel="icon" href="/favicon.svg" />
+<style>
+  :root {
+    --green: #1f7a4d; --green-d: #155e3a; --ink: #16241c; --muted: #5b6b62;
+    --bg: #f4f7f5; --card: #ffffff; --line: #e3eae6; --amber: #c77d18;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; padding-bottom: 80px;
+  }
+  .wrap { width: 100%; max-width: 440px; }
+  .brand { text-align: center; margin-bottom: 22px; }
+  .brand .logo { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: var(--green-d); }
+  .brand .tag { margin-top: 4px; font-size: 13px; color: var(--muted); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(20, 60, 40, 0.06); padding: 28px;
+  }
+  #clerk-auth { min-height: 360px; display: flex; align-items: center; justify-content: center; }
+  .state { text-align: center; color: var(--muted); font-size: 14px; line-height: 1.6; padding: 24px 8px; }
+  .state h2 { color: var(--ink); font-size: 17px; margin: 0 0 8px; }
+  .state a { color: var(--green-d); font-weight: 600; text-decoration: none; }
+  .state a:hover { text-decoration: underline; }
+  .spinner {
+    width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--green);
+    border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .foot { text-align: center; margin-top: 18px; font-size: 12px; color: var(--muted); }
+  .foot a { color: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <div class="logo">Ten-Fifty5</div>
+      <div class="tag">AI tennis analysis — sign in to your portal</div>
+    </div>
+
+    <div class="card">
+      <div id="clerk-auth">
+        <div class="state">
+          <div class="spinner"></div>
+          Loading sign-in…
+        </div>
+      </div>
+    </div>
+
+    <div class="foot">
+      Trouble signing in? <a href="mailto:info@ten-fifty5.com">info@ten-fifty5.com</a>
+    </div>
+  </div>
+
+<script>
+// ============================================================
+// Clerk-backed login/signup (de-Wix auth, Phase 1).
+//
+// Config is injected SERVER-SIDE by the /login route from env:
+//   __CLERK_PUBLISHABLE_KEY__  -> CLERK_PUBLISHABLE_KEY  (pk_test_… / pk_live_…)
+//   __CLERK_AFTER_LOGIN__      -> where to go after sign-in (default /portal)
+//   __AUTH_V2_ENABLED__        -> "1" to actually run Clerk; else show a notice
+// When the key is blank/unconfigured we show a graceful "being set up" message,
+// so this page is safe to serve live before the Clerk app exists. Wix login is
+// untouched — this is an ADDITIONAL door, dark until AUTH_V2_ENABLED=1 and CTAs
+// point here.
+// ============================================================
+const CFG = {
+  publishableKey: "__CLERK_PUBLISHABLE_KEY__",
+  afterLogin:     "__CLERK_AFTER_LOGIN__",
+  enabled:        "__AUTH_V2_ENABLED__",
+};
+
+const mount = document.getElementById("clerk-auth");
+
+function showNotice(title, html) {
+  mount.innerHTML = '<div class="state"><h2>' + title + '</h2><div>' + html + '</div></div>';
+}
+
+function isConfigured(k) {
+  // Unconfigured if blank or still the literal placeholder, or not a real pk.
+  return !!k && k.indexOf("__CLERK") !== 0 && /^pk_(test|live)_/.test(k);
+}
+
+// Derive the Clerk Frontend API host from the publishable key. The key is
+// `pk_<env>_<base64(frontendApi + "$")>` — decoding it avoids hardcoding the host.
+function frontendApiFromKey(k) {
+  try {
+    const b64 = k.split("_").slice(2).join("_");
+    return atob(b64).replace(/\$+$/, "");
+  } catch (e) { return null; }
+}
+
+function go(url) { window.location.replace(url); }
+
+function boot() {
+  if (CFG.enabled !== "1") {
+    showNotice("Sign-in is being set up",
+      "Our new sign-in isn’t live yet. Please use your existing login link, or " +
+      '<a href="mailto:info@ten-fifty5.com">contact us</a>.');
+    return;
+  }
+  if (!isConfigured(CFG.publishableKey)) {
+    showNotice("Sign-in is being set up",
+      "We’re finishing configuration. Please check back shortly, or " +
+      '<a href="mailto:info@ten-fifty5.com">contact us</a>.');
+    return;
+  }
+
+  const host = frontendApiFromKey(CFG.publishableKey);
+  if (!host) { showNotice("Sign-in unavailable", "Configuration error — please contact support."); return; }
+
+  // Load Clerk JS for this instance, then mount the sign-in component. Social
+  // providers (Google, etc.) and sign-up are configured in the Clerk dashboard
+  // and appear automatically — no code change needed to add them.
+  const s = document.createElement("script");
+  s.async = true;
+  s.crossOrigin = "anonymous";
+  s.setAttribute("data-clerk-publishable-key", CFG.publishableKey);
+  s.src = "https://" + host + "/npm/@clerk/clerk-js@5/dist/clerk.browser.js";
+  s.addEventListener("error", function () {
+    showNotice("Sign-in unavailable", "Couldn’t reach the sign-in service. Please retry shortly.");
+  });
+  s.addEventListener("load", initClerk);
+  document.head.appendChild(s);
+}
+
+async function initClerk() {
+  try {
+    const Clerk = window.Clerk;
+    await Clerk.load();
+
+    // Already signed in? Hand straight off to the portal.
+    if (Clerk.user) { go(CFG.afterLogin); return; }
+
+    mount.innerHTML = "";
+    Clerk.mountSignIn(mount, {
+      // let users switch to sign-up from the same surface
+      signUpUrl: "/login#/sign-up",
+      // after a successful auth, Clerk navigates here
+      afterSignInUrl: CFG.afterLogin,
+      afterSignUpUrl: CFG.afterLogin,
+    });
+
+    // Belt-and-braces: if a session becomes active, forward to the portal.
+    Clerk.addListener(function (e) {
+      if (e && e.user) go(CFG.afterLogin);
+    });
+  } catch (err) {
+    showNotice("Sign-in unavailable", "Something went wrong loading sign-in. Please retry shortly.");
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

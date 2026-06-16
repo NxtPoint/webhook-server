@@ -162,6 +162,30 @@ def portal():
     return _html("portal.html")
 
 
+def _serve_login():
+    """Serve login.html with Clerk config injected from env. The publishable key
+    is PUBLIC (browser-side by design), so substituting it into the page is fine.
+    Dark until AUTH_V2_ENABLED=1 + CLERK_PUBLISHABLE_KEY set — until then the page
+    renders a graceful 'being set up' notice. Wix login is unaffected."""
+    path = os.path.join(FRONTEND_DIR, "login.html")
+    if not os.path.isfile(path):
+        abort(404)
+    with open(path, "r", encoding="utf-8") as f:
+        html = f.read()
+    html = (html
+            .replace("__CLERK_PUBLISHABLE_KEY__", os.getenv("CLERK_PUBLISHABLE_KEY", "").strip())
+            .replace("__CLERK_AFTER_LOGIN__", os.getenv("AUTH_AFTER_LOGIN_URL", "/portal").strip())
+            .replace("__AUTH_V2_ENABLED__", os.getenv("AUTH_V2_ENABLED", "0").strip()))
+    if "/analytics.js" not in html:
+        html = html.replace("</body>", '<script src="/analytics.js" defer></script>\n</body>', 1)
+    return Response(html, mimetype="text/html")
+
+
+@app.get("/login")
+def login_page():
+    return _serve_login()
+
+
 @app.get("/coach-accept")
 def coach_accept():
     return _html("coach_accept.html")
