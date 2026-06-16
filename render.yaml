@@ -49,7 +49,7 @@ services:
       # Clerk note: tokens set `iss` (Frontend API URL) but not `aud`, so leave
       # AUTH_AUDIENCE blank; add an `email` claim via a Clerk JWT template.
       - key: AUTH_V2_ENABLED
-        value: "0"
+        value: "1"          # ON: accepts per-user Clerk JWTs ALONGSIDE the legacy key (Wix unaffected)
       - key: AUTH_PROVIDER
         value: "clerk"
       # Clerk dev instance "definite-terrapin-9" (derived from the publishable key).
@@ -239,7 +239,7 @@ services:
       # set AUTH_V2_ENABLED=1, then point CTAs at /login. The publishable key is
       # public (browser-side by design). AUTH_AFTER_LOGIN_URL defaults to /portal.
       - key: AUTH_V2_ENABLED
-        value: "0"
+        value: "1"          # ON: /login runs the Clerk widget (no CTA routes real users here yet)
       - key: CLERK_PUBLISHABLE_KEY
         value: "pk_test_ZGVmaW5pdGUtdGVycmFwaW4tOS5jbGVyay5hY2NvdW50cy5kZXYk"  # dev instance; public by design
       - key: AUTH_AFTER_LOGIN_URL
