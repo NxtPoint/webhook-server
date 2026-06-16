@@ -273,6 +273,15 @@ button { cursor: pointer; font-family: inherit; }
   box-shadow: 0 4px 16px rgba(0,0,0,0.2); z-index: 10000; max-width: 90%;
 }
 .pp-toast.err { background: var(--red); }
+.pp-confirm-actions { display: flex; gap: 10px; justify-content: center; }
+.pp-btn-ghost, .pp-btn-danger {
+  padding: 9px 18px; border-radius: var(--radius); font-size: 0.85rem; font-weight: 600;
+  border: 1px solid var(--border); background: var(--white); color: var(--text);
+  transition: all var(--transition);
+}
+.pp-btn-ghost:hover { background: var(--bg); }
+.pp-btn-danger { background: var(--red); color: #fff; border-color: var(--red); }
+.pp-btn-danger:hover { opacity: 0.9; }
 </style>
 </head>
 <body>
@@ -518,7 +527,7 @@ function mountPayPalButtons() {
       window.paypal_sub.Buttons({
         style: { layout: 'horizontal', height: 40, label: 'subscribe', tagline: false },
         createSubscription: () => apiPost('/api/billing/paypal/create-subscription', { plan_code: code }).then(d => d.id),
-        onApprove: () => onPaid('Subscription active — your credits will appear in a few seconds.'),
+        onApprove: () => onPaid('Subscription active — updating your plan…', { waitForSub: true }),
         onError: (err) => { console.error(err); toast('Something went wrong with checkout. Please try again.', true); },
       }).render(slot);
     } else {
@@ -536,20 +545,35 @@ function mountPayPalButtons() {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// After payment: credits land via webhook (subscriptions) or capture (PAYG). Poll a few
-// times so the UI reflects the new balance/plan without a manual refresh.
-async function onPaid(message) {
+// After payment, credits/plan land via webhook (subscription) or capture (PAYG). Poll and
+// re-render until the right signal appears. For a subscription we wait for plan_active to
+// flip (NOT for credits > 0 — the account usually already has credits, which would make us
+// stop before the subscription webhook lands). For PAYG we wait for the balance to rise.
+async function onPaid(message, opts = {}) {
   toast(message);
-  for (let i = 0; i < 5; i++) {
+  const baseCredits = entitlements?.credits_remaining ?? 0;
+  const basePlan = entitlements?.plan_code || null;
+  for (let i = 0; i < 9; i++) {
     await sleep(1800);
     await fetchEntitlements();
     render();
-    if ((entitlements?.credits_remaining ?? 0) > 0 || entitlements?.plan_active) break;
+    const planChanged = (entitlements?.plan_code || null) !== basePlan;
+    if (opts.waitForSub) {
+      if (entitlements?.plan_active || planChanged) break;
+    } else {
+      if ((entitlements?.credits_remaining ?? 0) > baseCredits || planChanged) break;
+    }
   }
 }
 
 async function cancelSubscription() {
-  if (!confirm('Cancel your subscription? You keep access and remaining credits until the end of your current billing period.')) return;
+  const ok = await showConfirm({
+    title: 'Cancel subscription?',
+    body: 'You’ll keep your plan and any remaining credits until the end of your current billing period — after that it won’t renew.',
+    confirmLabel: 'Yes, cancel',
+    cancelLabel: 'Keep my plan',
+  });
+  if (!ok) return;
   try {
     await apiPost('/api/billing/paypal/cancel-subscription', {});
     toast('Subscription cancelled. Access continues until your period ends.');
@@ -559,6 +583,30 @@ async function cancelSubscription() {
     console.error(e);
     toast('Could not cancel right now — please contact support@ten-fifty5.com.', true);
   }
+}
+
+// Styled confirm dialog (replaces the browser's native confirm()). Returns Promise<bool>.
+function showConfirm({ title, body, confirmLabel = 'Confirm', cancelLabel = 'Cancel' }) {
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.className = 'block-overlay';
+    ov.innerHTML = `
+      <div class="block-overlay-box">
+        <h2 style="color:var(--text)">${esc(title)}</h2>
+        <p style="margin-bottom:22px">${body}</p>
+        <div class="pp-confirm-actions">
+          <button class="pp-btn-ghost" data-act="cancel">${esc(cancelLabel)}</button>
+          <button class="pp-btn-danger" data-act="confirm">${esc(confirmLabel)}</button>
+        </div>
+      </div>`;
+    const done = (val) => { ov.remove(); resolve(val); };
+    ov.addEventListener('click', (e) => {
+      const act = e.target.getAttribute && e.target.getAttribute('data-act');
+      if (act === 'confirm') done(true);
+      else if (act === 'cancel' || e.target === ov) done(false);
+    });
+    document.body.appendChild(ov);
+  });
 }
 
 function toast(msg, isErr) {
