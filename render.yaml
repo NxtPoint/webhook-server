@@ -31,6 +31,16 @@ services:
       - key: AUTO_INGEST_ON_COMPLETE
         value: "1"
 
+      # Serve over-emission fix (2026-06-16): retire the far-POSE serve path.
+      # Proving run (T5 375198f5 vs SA 079d2c62): far-pose is pure FP on a real
+      # upload — the trained model_far catches the same far serves (recall
+      # 18/24 unchanged, precision 33%->60%, serves 55->30). Code default stays
+      # ON so the CI bench (fixtures carry no model candidates) stays green;
+      # this env makes prod correct. RULE 6 + .claude/audit_bronze_build_2026-06-16.md.
+      # Rollback: set to "1".
+      - key: SERVE_FAR_POSE_ENABLED
+        value: "0"
+
       - key: S3_BUCKET
         sync: false
       - key: S3_PREFIX
